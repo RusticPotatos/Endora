@@ -17,8 +17,8 @@ use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post};
 use endora_application::{
-    ActivityItem, AppError, Butler, ButlerProposal, MemorySnapshot, Proposer, RepositoryError,
-    usecases,
+    ActivityItem, AppError, AttentionItem, AttentionKind, Butler, ButlerProposal, MemorySnapshot,
+    Proposer, RepositoryError, usecases,
 };
 use endora_domain::{
     Assumption, AssumptionId, AuditRecord, AutonomyLevel, ChatMessage, Direction, DirectionId,
@@ -140,6 +140,8 @@ pub fn app(state: AppState) -> Router {
             post(decide_process_change),
         )
         .route("/v1/chat", post(send_chat).get(chat_history))
+        .route("/v1/attention", get(attention))
+        .route("/v1/attention/snooze", post(snooze_attention))
         .route("/v1/audit", get(audit))
         .route("/v1/activity", get(activity))
         .route("/v1/activity/stream", get(activity_stream))
@@ -1023,6 +1025,70 @@ async fn chat_history(
     Ok(Json(messages.iter().map(MessageResponse::from).collect()))
 }
 
+#[derive(Serialize)]
+struct AttentionResponse {
+    kind: String,
+    subject: String,
+    headline: String,
+}
+
+impl From<&AttentionItem> for AttentionResponse {
+    fn from(i: &AttentionItem) -> Self {
+        Self {
+            kind: i.kind.name().to_owned(),
+            subject: i.subject.clone(),
+            headline: i.headline.clone(),
+        }
+    }
+}
+
+/// What currently needs the person's attention (snoozed items suppressed).
+async fn attention(
+    State(state): State<AppState>,
+) -> Result<Json<Vec<AttentionResponse>>, ApiError> {
+    let store = state.store.clone();
+    let clock = state.clock.clone();
+    let items = blocking(move || {
+        usecases::attention(
+            store.as_ref(),
+            store.as_ref(),
+            store.as_ref(),
+            store.as_ref(),
+            clock.as_ref(),
+        )
+    })
+    .await?;
+    Ok(Json(items.iter().map(AttentionResponse::from).collect()))
+}
+
+#[derive(Deserialize)]
+struct SnoozeRequest {
+    kind: String,
+    subject: String,
+}
+
+/// Snoozes an attention item ("not now"), with exponential backoff.
+async fn snooze_attention(
+    State(state): State<AppState>,
+    Json(req): Json<SnoozeRequest>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let kind = AttentionKind::from_name(&req.kind).ok_or_else(|| {
+        ApiError(AppError::BadRequest {
+            message: format!("unknown attention kind {:?}", req.kind),
+        })
+    })?;
+    let store = state.store.clone();
+    let clock = state.clock.clone();
+    let snooze = blocking(move || {
+        usecases::snooze_attention(store.as_ref(), clock.as_ref(), kind, &req.subject)
+    })
+    .await?;
+    Ok(Json(json!({
+        "count": snooze.count,
+        "snoozed_until_ms": snooze.until.unix_millis(),
+    })))
+}
+
 /// The full export of the user's data — the "exportable" memory right.
 #[derive(Serialize)]
 struct ExportResponse {
@@ -1413,6 +1479,53 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn attention_lists_north_star_items_and_snooze_hides_one() {
+        let app = app(test_state());
+        let did = json_body(
+            app.clone()
+                .oneshot(post(
+                    "/v1/directions",
+                    r#"{"title":"Get back into running"}"#,
+                ))
+                .await
+                .unwrap(),
+        )
+        .await["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+
+        // Unfiled + empty North Star → two attention items.
+        let items = json_body(app.clone().oneshot(get("/v1/attention")).await.unwrap()).await;
+        let kinds: Vec<String> = items
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|i| i["kind"].as_str().unwrap().to_owned())
+            .collect();
+        assert!(kinds.contains(&"unfiled_north_star".to_owned()));
+        assert!(kinds.contains(&"empty_north_star".to_owned()));
+
+        // Snooze the unfiled item; it disappears, the other remains.
+        let body = format!(r#"{{"kind":"unfiled_north_star","subject":"{did}"}}"#);
+        let res = app
+            .clone()
+            .oneshot(post("/v1/attention/snooze", &body))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let after = json_body(app.clone().oneshot(get("/v1/attention")).await.unwrap()).await;
+        let kinds2: Vec<String> = after
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|i| i["kind"].as_str().unwrap().to_owned())
+            .collect();
+        assert!(!kinds2.contains(&"unfiled_north_star".to_owned()));
+        assert!(kinds2.contains(&"empty_north_star".to_owned()));
     }
 
     #[tokio::test]
