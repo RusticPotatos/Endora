@@ -6,37 +6,66 @@
 <title>Endora</title>
 <style>
   :root {
-    --bg: #f7f7f8; --card: #fff; --ink: #1a1a1f; --muted: #6b6b76;
-    --line: #e3e3e8; --accent: #3a5bd9; --ok: #1c7c46; --warn: #9a6b00; --bad: #b02a2a;
+    --bg: #f5f6f9; --card: #ffffff; --ink: #15161c; --muted: #676b78;
+    --line: #e7e9f0; --accent: #4260e0; --ok: #12805c; --warn: #9a6b00; --bad: #c23b3b;
+    --accent-weak: color-mix(in srgb, var(--accent) 10%, transparent);
+    --shadow: 0 1px 2px rgba(18,20,30,.05), 0 3px 12px rgba(18,20,30,.05);
+    --shadow-lift: 0 2px 6px rgba(18,20,30,.07), 0 12px 30px rgba(18,20,30,.12);
+    --radius: 14px;
   }
   @media (prefers-color-scheme: dark) {
     :root {
-      --bg: #16161a; --card: #202027; --ink: #ececf1; --muted: #9a9aa6;
-      --line: #2e2e37; --accent: #7f96f0; --ok: #4bd08a; --warn: #e0b04a; --bad: #f0776f;
+      --bg: #101218; --card: #191b22; --ink: #e9eaf1; --muted: #9699a6;
+      --line: #282b35; --accent: #8098ff; --ok: #4bd08a; --warn: #e0b04a; --bad: #f0776f;
+      --accent-weak: color-mix(in srgb, var(--accent) 18%, transparent);
+      --shadow: 0 1px 2px rgba(0,0,0,.35), 0 4px 16px rgba(0,0,0,.30);
+      --shadow-lift: 0 2px 8px rgba(0,0,0,.4), 0 16px 36px rgba(0,0,0,.5);
     }
   }
   * { box-sizing: border-box; }
   body {
     margin: 0; background: var(--bg); color: var(--ink);
     font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    -webkit-font-smoothing: antialiased;
   }
   header {
-    display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
-    padding: 14px 20px; border-bottom: 1px solid var(--line); background: var(--card);
+    display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+    padding: 12px 20px; border-bottom: 1px solid var(--line);
+    background: color-mix(in srgb, var(--card) 82%, transparent);
+    backdrop-filter: saturate(1.4) blur(10px);
+    position: sticky; top: 0; z-index: 10;
   }
-  header h1 { font-size: 17px; margin: 0; font-weight: 650; }
+  header h1 {
+    font-size: 17px; margin: 0; font-weight: 680; letter-spacing: -.01em;
+    display: flex; align-items: center; gap: 8px;
+  }
+  header h1 .dot {
+    width: 9px; height: 9px; border-radius: 50%; background: var(--accent);
+    box-shadow: 0 0 0 3px var(--accent-weak);
+  }
   header .spacer { flex: 1; }
   main { max-width: 900px; margin: 0 auto; padding: 20px; }
   .crumbs { color: var(--muted); font-size: 13px; margin-bottom: 14px; }
   .crumbs a { color: var(--accent); cursor: pointer; text-decoration: none; }
   .crumbs a:hover { text-decoration: underline; }
-  h2 { font-size: 15px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin: 22px 0 10px; }
+  h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 24px 0 10px; font-weight: 650; }
   .card {
-    background: var(--card); border: 1px solid var(--line); border-radius: 10px;
-    padding: 12px 14px; margin-bottom: 8px;
+    background: var(--card); border: 1px solid var(--line); border-radius: var(--radius);
+    padding: 13px 15px; margin-bottom: 9px; box-shadow: var(--shadow);
+    transition: transform .13s ease, box-shadow .13s ease, border-color .13s ease;
   }
   .card.click { cursor: pointer; }
-  .card.click:hover { border-color: var(--accent); }
+  .card.click:hover { border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); box-shadow: var(--shadow-lift); transform: translateY(-1px); }
+  .ic { display: inline-block; vertical-align: -3px; flex: none; }
+  /* Needs-your-attention card */
+  .attn-card { border-color: color-mix(in srgb, var(--warn) 45%, var(--line)); background: color-mix(in srgb, var(--warn) 6%, var(--card)); }
+  .attn-head { font-weight: 650; font-size: 13px; letter-spacing: .01em; margin-bottom: 6px; color: var(--ink); }
+  .attn-item { display: flex; align-items: center; gap: 8px; padding: 3px 0; }
+  .attn-go { display: inline-flex; align-items: center; gap: 8px; flex: 1; min-width: 0; border-radius: 8px; padding: 5px 7px; margin: -5px -7px; color: var(--ink); }
+  .attn-go[data-act] { cursor: pointer; }
+  .attn-go[data-act]:hover { background: color-mix(in srgb, var(--warn) 14%, transparent); }
+  .attn-go .ic { color: var(--warn); }
+  .attn-go > span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .row { display: flex; align-items: center; gap: 10px; }
   .grow { flex: 1; min-width: 0; }
   .title { font-weight: 550; }
@@ -54,13 +83,18 @@
   }
   textarea { min-height: 54px; resize: vertical; }
   button {
-    font: inherit; cursor: pointer; border: 1px solid var(--line); background: var(--card);
-    color: var(--ink); border-radius: 8px; padding: 7px 13px; white-space: nowrap;
+    font: inherit; font-weight: 550; cursor: pointer; border: 1px solid var(--line);
+    background: var(--card); color: var(--ink); border-radius: 10px; padding: 7px 13px;
+    white-space: nowrap; display: inline-flex; align-items: center; gap: 6px;
+    transition: background .12s ease, border-color .12s ease, color .12s ease, box-shadow .12s ease;
   }
-  button:hover { border-color: var(--accent); }
-  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
-  button.ghost { background: transparent; }
-  button.danger { color: var(--bad); border-color: var(--bad); }
+  button:hover { border-color: color-mix(in srgb, var(--accent) 55%, var(--line)); background: var(--accent-weak); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; box-shadow: 0 1px 2px var(--accent-weak); }
+  button.primary:hover { background: color-mix(in srgb, var(--accent) 88%, #000); border-color: color-mix(in srgb, var(--accent) 88%, #000); }
+  button.ghost { background: transparent; border-color: transparent; color: var(--muted); padding: 7px 10px; }
+  button.ghost:hover { background: var(--accent-weak); color: var(--ink); }
+  button.danger { color: var(--bad); }
+  button.danger:hover { background: color-mix(in srgb, var(--bad) 12%, transparent); border-color: color-mix(in srgb, var(--bad) 40%, var(--line)); color: var(--bad); }
   button:disabled { opacity: .5; cursor: default; }
   .form { display: flex; gap: 8px; margin: 8px 0 4px; align-items: flex-start; }
   .stack { display: flex; flex-direction: column; gap: 6px; }
@@ -94,13 +128,13 @@
 </head>
 <body>
 <header>
-  <h1 id="brand">Endora</h1>
+  <h1 id="brand"><span class="dot"></span><span>Endora</span></h1>
   <span class="spacer"></span>
-  <button class="ghost" data-act="go:chat">💬 Chat</button>
-  <button class="ghost" data-act="go:prefs">🧠 Prefs</button>
-  <button class="ghost" data-act="go:audit">Audit</button>
-  <button class="ghost" data-act="export">Export</button>
-  <button class="ghost danger" data-act="purge">Purge</button>
+  <button class="ghost" data-act="go:chat" id="btn-chat"></button>
+  <button class="ghost" data-act="go:prefs" id="btn-prefs"></button>
+  <button class="ghost" data-act="go:audit" id="btn-audit"></button>
+  <button class="ghost" data-act="export" id="btn-export"></button>
+  <button class="ghost danger" data-act="purge" id="btn-purge"></button>
 </header>
 <main>
   <div id="msg" class="msg"></div>
@@ -118,6 +152,33 @@ let NAV = { v: "home" };       // current view
 
 const app = document.getElementById("app");
 const msgEl = document.getElementById("msg");
+
+// ---- icons ----------------------------------------------------------------
+// A small monochrome line-icon set (inherits currentColor) so the console reads
+// consistently instead of relying on the browser's emoji rendering.
+const ICONS = {
+  chat: '<path d="M21 11.5a8.4 8.4 0 0 1-12.9 7.1L3 20.5l1.9-4.8A8.4 8.4 0 1 1 21 11.5z"/><path d="M8.5 10.5h7M8.5 13.5h4.5"/>',
+  prefs: '<line x1="4" y1="8" x2="20" y2="8"/><line x1="4" y1="16" x2="20" y2="16"/><circle cx="15" cy="8" r="2.4"/><circle cx="9" cy="16" r="2.4"/>',
+  audit: '<line x1="9" y1="6" x2="20" y2="6"/><line x1="9" y1="12" x2="20" y2="12"/><line x1="9" y1="18" x2="20" y2="18"/><circle cx="4.5" cy="6" r="1.1"/><circle cx="4.5" cy="12" r="1.1"/><circle cx="4.5" cy="18" r="1.1"/>',
+  export: '<path d="M12 3v12M8 11l4 4 4-4"/><path d="M5 20h14"/>',
+  purge: '<path d="M4 7h16M9 7V4h6v3M18 7l-1 13H7L6 7"/><path d="M10 11v6M14 11v6"/>',
+  clock: '<circle cx="12" cy="12" r="8.2"/><path d="M12 8v4.3l2.8 1.7"/>',
+  tag: '<path d="M3.5 12.5V5a1.5 1.5 0 0 1 1.5-1.5h7.5L21 12l-8.5 8.5z"/><circle cx="7.8" cy="7.8" r="1.3"/>',
+  target: '<circle cx="12" cy="12" r="8.2"/><circle cx="12" cy="12" r="3.3"/>',
+  speakerOn: '<path d="M4 9.5v5h3.5L12 18V6L7.5 9.5H4z"/><path d="M15.5 9a4 4 0 0 1 0 6M18 6.5a7.5 7.5 0 0 1 0 11"/>',
+  speakerOff: '<path d="M4 9.5v5h3.5L12 18V6L7.5 9.5H4z"/><line x1="16" y1="9.5" x2="21" y2="14.5"/><line x1="21" y1="9.5" x2="16" y2="14.5"/>',
+  mic: '<rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5.5 11a6.5 6.5 0 0 0 13 0"/><line x1="12" y1="17.5" x2="12" y2="21"/><line x1="9" y1="21" x2="15" y2="21"/>',
+  send: '<path d="M4.5 12h13M11 5.5l6.5 6.5-6.5 6.5"/>',
+  chevron: '<path d="M9 6l6 6-6 6"/>',
+  note: '<path d="M6 3h9l4 4v14H6z"/><path d="M15 3v4h4M9 12h6M9 16h4"/>',
+  scale: '<path d="M12 4v16M7 20h10"/><path d="M4 8h16M4 8l-2.2 5a2.6 2.6 0 0 0 4.4 0zM20 8l-2.2 5a2.6 2.6 0 0 0 4.4 0z"/><path d="M8 5h8"/>',
+  sparkle: '<path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8z"/>',
+};
+function icon(name, size = 17) {
+  const p = ICONS[name];
+  if (!p) return "";
+  return `<svg class="ic" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${p}</svg>`;
+}
 
 // ---- tiny helpers ---------------------------------------------------------
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) =>
@@ -200,7 +261,7 @@ function lifecycleRow(noun, item) {
       ${opt("active", "Active")}${opt("achieved", "Achieved")}${opt("abandoned", "Abandoned")}${opt("archived", "Archived")}
     </select>
     <span class="grow"></span>
-    <button class="ghost danger" data-act="delete:${noun}:${item.id}" title="Delete permanently">🗑 Delete</button>
+    <button class="ghost danger" data-act="delete:${noun}:${item.id}" title="Delete permanently">${icon("purge",15)}<span>Delete</span></button>
   </div>`;
 }
 
@@ -217,7 +278,7 @@ const isReviewDue = (e) => e.review_by_ms != null && e.review_by_ms <= Date.now(
 function reviewLabel(e) {
   if (e.review_by_ms == null) return "No review scheduled.";
   const when = new Date(e.review_by_ms).toLocaleDateString();
-  return isReviewDue(e) ? `⏰ Review due (${when})` : `Review scheduled for ${when}`;
+  return isReviewDue(e) ? `${icon("clock", 14)} Review due (${when})` : `Review scheduled for ${when}`;
 }
 
 // ---- views ----------------------------------------------------------------
@@ -239,22 +300,36 @@ function dirCard(d) {
     <div class="card click" data-act="go:direction:${d.id}">
       <div class="row"><div class="grow"><div class="title">${esc(d.title)}${statusPill(d)}</div>
       <div class="sub">${DB.targets.filter((g) => g.direction_id === d.id).length} target(s)</div></div>
-      <span class="sub">→</span></div>
+      <span class="sub">${icon("chevron",16)}</span></div>
     </div>`;
 }
 
 // What needs the person's attention, from /v1/attention. Each item can be
 // deferred ("Later") with backoff — snoozing repeatedly asks less often.
-const ATTENTION_ICON = { review_due: "⏰", unfiled_north_star: "🏷️", empty_north_star: "•" };
+const ATTENTION_ICON = { review_due: "clock", unfiled_north_star: "tag", empty_north_star: "target" };
+// Where clicking an attention item takes you: to the thing that needs the work.
+// Review-due points at the experiment's assumption; the North-Star items point
+// at the North Star itself (to file it under a value, or add a target).
+function attentionAct(a) {
+  if (a.kind === "review_due") {
+    const e = (DB.experiments || []).find((x) => x.id === a.subject);
+    return e ? `go:assumption:${e.assumption_id}` : null;
+  }
+  return `go:direction:${a.subject}`;
+}
 function attentionSection() {
   if (!ATTENTION.length) return "";
-  const rows = ATTENTION.map((a) => `
-    <div class="row" style="gap:8px; margin:5px 0; align-items:center;">
-      <span class="grow">${ATTENTION_ICON[a.kind] || "•"} ${esc(a.headline)}</span>
+  const rows = ATTENTION.map((a) => {
+    const act = attentionAct(a);
+    const clickable = act ? `data-act="${act}" role="button" tabindex="0"` : "";
+    return `
+    <div class="attn-item">
+      <span class="attn-go" ${clickable}>${icon(ATTENTION_ICON[a.kind] || "target", 16)}<span>${esc(a.headline)}</span></span>
       <button class="ghost" data-act="snooze:attention:${a.kind}:${a.subject}" title="ask me later">Later</button>
-    </div>`).join("");
-  return `<div class="card" style="border-color: var(--warn);">
-    <div class="title">Needs your attention</div>${rows}</div>`;
+    </div>`;
+  }).join("");
+  return `<div class="card attn-card">
+    <div class="attn-head">Needs your attention</div>${rows}</div>`;
 }
 
 function viewHome() {
@@ -265,7 +340,7 @@ function viewHome() {
     return `
       <div class="row" style="align-items:baseline; margin-top:16px;">
         <h3 style="margin:0; flex:1;">${esc(v.name)}</h3>
-        <button class="ghost danger" data-act="delete:value:${v.id}" title="delete value">✕</button>
+        <button class="ghost danger" data-act="delete:value:${v.id}" title="delete value">${icon("purge", 15)}</button>
       </div>
       ${ds.length ? ds.map(dirCard).join("") : `<div class="empty">Nothing filed under this value yet.</div>`}`;
   }).join("");
@@ -293,12 +368,12 @@ function viewHome() {
 }
 
 // The live activity feed: newest first, updated in place by the change stream.
-const ACTIVITY_ICON = { observation: "•", decision: "⚖︎" };
+const ACTIVITY_ICON = { observation: "note", decision: "scale" };
 function activityFeed() {
   if (!ACTIVITY.length) return `<div class="empty">No activity yet.</div>`;
   return ACTIVITY.map((a) => `
     <div class="card"><div class="row">
-      <div class="grow"><div class="title">${ACTIVITY_ICON[a.kind] || "•"} ${esc(a.summary)}</div>
+      <div class="grow"><div class="title">${icon(ACTIVITY_ICON[a.kind] || "note", 15)} ${esc(a.summary)}</div>
       <div class="sub">${esc(a.kind)}</div></div>
       <span class="sub">${esc(new Date(a.at_ms).toLocaleString())}</span>
     </div></div>`).join("");
@@ -313,7 +388,7 @@ function viewDirection(id) {
       <div class="row"><div class="grow"><div class="title">${esc(g.statement)}${statusPill(g)}</div>
       <div class="sub">${DB.assumptions.filter((a) => a.target_id === g.id).length} assumption(s) ·
       ${DB.reflections.filter((r) => r.target_id === g.id).length} reflection(s)</div></div>
-      <span class="sub">→</span></div>
+      <span class="sub">${icon("chevron",16)}</span></div>
       ${lifecycleRow("target", g)}
     </div>`);
   const valueOptions = `<option value="">(unfiled)</option>` +
@@ -344,14 +419,14 @@ function viewTarget(id) {
     <div class="card click" data-act="go:assumption:${a.id}">
       <div class="row"><div class="grow"><div class="title">${esc(a.statement)}</div>
       <div class="sub">${DB.experiments.filter((e) => e.assumption_id === a.id).length} experiment(s)</div></div>
-      <span class="sub">→</span></div>
+      <span class="sub">${icon("chevron",16)}</span></div>
     </div>`);
   const reflections = DB.reflections.filter((r) => r.target_id === id).map((r) => `
     <div class="card click" data-act="go:reflection:${r.id}">
       <div class="row"><div class="grow"><div class="title">${esc(r.summary)}</div>
       <div class="sub">${r.evidence.length} observation(s) cited ·
       ${DB.process_changes.filter((c) => c.reflection_id === r.id).length} proposed change(s)</div></div>
-      <span class="sub">→</span></div>
+      <span class="sub">${icon("chevron",16)}</span></div>
     </div>`);
   const obs = observationsForTarget(id);
   const eviBoxes = obs.length
@@ -452,7 +527,7 @@ function viewReflection(id) {
     <div class="form">
       <input id="new-change" placeholder="A process change this reflection suggests…" />
       <button class="primary" data-act="propose:change:${id}">Propose</button>
-      <button data-act="draft:change:${id}" title="let the local model draft one">✨ Draft with model</button>
+      <button data-act="draft:change:${id}" title="let the local model draft one">${icon("sparkle")}<span>Draft with model</span></button>
     </div>`;
 }
 
@@ -512,11 +587,13 @@ function viewChat() {
       <div class="sub">the butler proposes this — you decide</div></div>
       <button class="primary" data-act="confirm:proposal:${i}">Confirm</button>
       <button data-act="dismiss:proposal:${i}">Dismiss</button></div></div>`).join("");
-  const speakBtn = TTS ? `<button class="ghost" data-act="toggle:speak">${SPEAK ? "🔊 Speaking" : "🔇 Speak"}</button>` : "";
+  const speakBtn = TTS
+    ? `<button class="ghost" data-act="toggle:speak" title="read replies aloud">${icon(SPEAK ? "speakerOn" : "speakerOff")}<span>${SPEAK ? "Speaking" : "Speak"}</span></button>`
+    : "";
   const micBtn = STT
     ? (window.isSecureContext
-        ? `<button data-act="chat:mic" title="speak your message">🎤</button>`
-        : `<button data-act="chat:mic" title="voice input needs HTTPS or localhost">🎤 (needs HTTPS)</button>`)
+        ? `<button data-act="chat:mic" title="speak your message">${icon("mic")}</button>`
+        : `<button data-act="chat:mic" title="voice input needs HTTPS or localhost">${icon("mic")}<span>needs HTTPS</span></button>`)
     : "";
   return `
     ${crumbs([{ label: "Directions", act: "go:home" }, { label: "Butler" }])}
@@ -526,7 +603,7 @@ function viewChat() {
     <div class="form">
       <input id="chat-input" placeholder="Talk to your butler…" />
       ${micBtn}
-      <button class="primary" data-act="chat:send">Send</button>
+      <button class="primary" data-act="chat:send">${icon("send")}<span>Send</span></button>
     </div>`;
 }
 
@@ -536,7 +613,7 @@ function viewPrefs() {
     <div class="card"><div class="row">
       <div class="grow"><div class="title">${esc(p.text)}</div>
       <div class="sub">${esc(p.kind)}</div></div>
-      <button class="ghost danger" data-act="delete:pref:${p.id}" title="forget this">🗑</button>
+      <button class="ghost danger" data-act="delete:pref:${p.id}" title="forget this">${icon("purge",15)}</button>
     </div></div>`);
   return `
     ${crumbs([{ label: "Directions", act: "go:home" }, { label: "Preferences" }])}
@@ -709,11 +786,30 @@ document.body.addEventListener("change", (ev) => {
   if (sel) dispatch(sel.getAttribute("data-change") + ":" + sel.value);
 });
 
+// Fill the header nav buttons with icon + label (kept out of the markup so the
+// icon set lives in one place).
+function setupHeader(service) {
+  const set = (id, name, label) => {
+    const el = document.getElementById(id);
+    if (el) el.innerHTML = icon(name) + `<span>${label}</span>`;
+  };
+  set("btn-chat", "chat", "Chat");
+  set("btn-prefs", "prefs", "Prefs");
+  set("btn-audit", "audit", "Audit");
+  set("btn-export", "export", "Export");
+  set("btn-purge", "purge", "Purge");
+  // Brand: keep "Endora" and, if the health string carries a version, a pill.
+  const ver = (service || "").match(/\b\d+\.\d+\.\d+\b/);
+  const brand = document.getElementById("brand");
+  const label = brand && brand.querySelector("span:last-child");
+  if (label) label.innerHTML = `Endora${ver ? ` <span class="pill" style="font-weight:500">v${ver[0]}</span>` : ""}`;
+}
+
 // ---- boot -----------------------------------------------------------------
 (async function () {
   try {
     const health = await api("GET", "/health");
-    document.getElementById("brand").textContent = health.service || "Endora";
+    setupHeader(health.service);
     await reload();
     subscribeToActivity();
   } catch (e) {
