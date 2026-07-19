@@ -7,8 +7,10 @@ tagged release.
 
 ## [Unreleased]
 
-Endora is in its foundation phase; there is no tagged release yet. This section
-captures what has been built toward the first one.
+## [0.1.0] - 2026-07-19
+
+First tagged release. Endora is in its foundation phase and is **not** a general
+autonomous agent; interfaces may still change before 1.0.
 
 ### Added
 
@@ -37,4 +39,5 @@ captures what has been built toward the first one.
 - **Tooling** — a `Makefile` (bootstrap, run, dev, `ci`), GitHub Actions CI
   (fmt, Clippy with warnings denied, tests on Linux and macOS), and Dependabot.
 
-[Unreleased]: https://github.com/RusticPotatos/Endora/commits/develop
+[Unreleased]: https://github.com/RusticPotatos/Endora/compare/v0.1.0...develop
+[0.1.0]: https://github.com/RusticPotatos/Endora/releases/tag/v0.1.0
