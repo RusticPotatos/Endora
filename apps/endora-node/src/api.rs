@@ -41,7 +41,10 @@ pub fn app(state: AppState) -> Router {
     Router::new()
         .route("/", get(index))
         .route("/health", get(health))
-        .route("/v1/directions", post(create_direction))
+        .route(
+            "/v1/directions",
+            post(create_direction).get(list_directions),
+        )
         .route(
             "/v1/directions/{id}/goals",
             post(create_goal).get(list_goals),
@@ -151,6 +154,16 @@ async fn create_direction(
         blocking(move || usecases::create_direction(store.as_ref(), ids.as_ref(), &req.title))
             .await?;
     Ok(Json(DirectionResponse::from(&direction)))
+}
+
+async fn list_directions(
+    State(state): State<AppState>,
+) -> Result<Json<Vec<DirectionResponse>>, ApiError> {
+    let store = state.store.clone();
+    let directions = blocking(move || usecases::list_directions(store.as_ref())).await?;
+    Ok(Json(
+        directions.iter().map(DirectionResponse::from).collect(),
+    ))
 }
 
 async fn create_goal(
@@ -846,6 +859,31 @@ mod tests {
         assert!(ct.starts_with("text/html"), "content-type was {ct}");
         let body = res.into_body().collect().await.unwrap().to_bytes();
         assert!(String::from_utf8_lossy(&body).contains("<title>Endora</title>"));
+    }
+
+    #[tokio::test]
+    async fn directions_can_be_listed() {
+        let app = app(test_state());
+        app.clone()
+            .oneshot(post("/v1/directions", r#"{"title":"Be healthier"}"#))
+            .await
+            .unwrap();
+        app.clone()
+            .oneshot(post("/v1/directions", r#"{"title":"Learn guitar"}"#))
+            .await
+            .unwrap();
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/directions")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        assert_eq!(json_body(res).await.as_array().unwrap().len(), 2);
     }
 
     #[tokio::test]
