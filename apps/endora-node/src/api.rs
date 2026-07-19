@@ -59,6 +59,8 @@ pub fn app(state: AppState) -> Router {
         )
         .route("/v1/experiments/{id}/start", post(start_experiment))
         .route("/v1/experiments/{id}/conclude", post(conclude_experiment))
+        .route("/v1/experiments/{id}/review", post(schedule_review))
+        .route("/v1/reviews/due", get(due_reviews))
         .route(
             "/v1/experiments/{id}/observations",
             post(record_observation).get(list_observations),
@@ -263,6 +265,8 @@ struct ExperimentResponse {
     assumption_id: String,
     hypothesis: String,
     status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    review_by_ms: Option<i64>,
 }
 
 impl From<&Experiment> for ExperimentResponse {
@@ -272,6 +276,7 @@ impl From<&Experiment> for ExperimentResponse {
             assumption_id: e.assumption().value().to_string(),
             hypothesis: e.hypothesis().to_owned(),
             status: e.status().name().to_owned(),
+            review_by_ms: e.review_by().map(|t| t.unix_millis()),
         }
     }
 }
@@ -330,6 +335,43 @@ async fn conclude_experiment(
     let experiment =
         blocking(move || usecases::conclude_experiment(store.as_ref(), experiment_id)).await?;
     Ok(Json(ExperimentResponse::from(&experiment)))
+}
+
+#[derive(Deserialize)]
+struct ScheduleReviewRequest {
+    in_days: u32,
+}
+
+async fn schedule_review(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(req): Json<ScheduleReviewRequest>,
+) -> Result<Json<ExperimentResponse>, ApiError> {
+    let experiment_id = parse_experiment_id(&id)?;
+    let store = state.store.clone();
+    let clock = state.clock.clone();
+    let experiment = blocking(move || {
+        usecases::schedule_experiment_review(
+            store.as_ref(),
+            clock.as_ref(),
+            experiment_id,
+            req.in_days,
+        )
+    })
+    .await?;
+    Ok(Json(ExperimentResponse::from(&experiment)))
+}
+
+async fn due_reviews(
+    State(state): State<AppState>,
+) -> Result<Json<Vec<ExperimentResponse>>, ApiError> {
+    let store = state.store.clone();
+    let clock = state.clock.clone();
+    let experiments =
+        blocking(move || usecases::list_due_reviews(store.as_ref(), clock.as_ref())).await?;
+    Ok(Json(
+        experiments.iter().map(ExperimentResponse::from).collect(),
+    ))
 }
 
 #[derive(Deserialize)]

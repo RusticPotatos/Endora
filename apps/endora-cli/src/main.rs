@@ -86,6 +86,11 @@ fn route(args: &[&str]) -> Option<Action> {
             format!("/v1/experiments/{id}/conclude"),
             json!({}),
         )),
+        ["experiment", "review", id, days] => Some(Action::Post(
+            format!("/v1/experiments/{id}/review"),
+            json!({ "in_days": days.parse::<u32>().ok()? }),
+        )),
+        ["reviews", "due"] => Some(Action::Get("/v1/reviews/due".to_owned())),
         ["observation", "record", experiment, note] => Some(Action::Post(
             format!("/v1/experiments/{experiment}/observations"),
             json!({ "note": note }),
@@ -172,6 +177,8 @@ fn print_usage() {
            experiment list <assumption-id>        list an assumption's experiments\n  \
            experiment start <experiment-id>       start a proposed experiment\n  \
            experiment conclude <experiment-id>    conclude a running experiment\n  \
+           experiment review <experiment-id> <days>  remind me to review it in N days\n  \
+           reviews due                            list experiments due for review\n  \
            observation record <experiment-id> <n> record an observation\n  \
            observation list <experiment-id>       list an experiment's observations\n  \
            reflection create <goal-id> <summary> <obs-ids>  reflect (obs-ids: comma-separated)\n  \
@@ -271,6 +278,23 @@ mod tests {
                 "/v1/experiments/9/conclude".to_owned(),
                 json!({})
             ))
+        );
+    }
+
+    #[test]
+    fn routes_review_commands() {
+        assert_eq!(
+            route(&["experiment", "review", "9", "7"]),
+            Some(Action::Post(
+                "/v1/experiments/9/review".to_owned(),
+                json!({ "in_days": 7 })
+            ))
+        );
+        // A non-numeric day count is not a valid review command.
+        assert_eq!(route(&["experiment", "review", "9", "soon"]), None);
+        assert_eq!(
+            route(&["reviews", "due"]),
+            Some(Action::Get("/v1/reviews/due".to_owned()))
         );
     }
 
