@@ -338,6 +338,38 @@ pub fn decide_process_change(
     Ok(decision)
 }
 
+/// Loads a stored process change and decides whether `actor` may enact it,
+/// recording the decision to the audit trail.
+///
+/// This is the seam that ties the persisted change, the deterministic policy,
+/// and accountability together — the interface-facing form of
+/// [`decide_process_change`].
+///
+/// # Errors
+/// [`AppError::NotFound`] if the change does not exist, or [`AppError`] if the
+/// decision cannot be recorded.
+pub fn decide_stored_process_change(
+    changes: &impl ProcessChangeRepository,
+    ids: &impl IdSource,
+    clock: &impl Clock,
+    audit: &impl AuditLog,
+    id: ProcessChangeId,
+    actor: AutonomyLevel,
+) -> Result<PolicyDecision, AppError> {
+    let change = changes.get(id)?.ok_or(AppError::NotFound {
+        entity: "process change",
+    })?;
+    decide_process_change(&change, actor, ids, clock, audit)
+}
+
+/// Returns the most recent audit records, newest first, up to `limit`.
+///
+/// # Errors
+/// [`AppError::Repository`] if the backend fails.
+pub fn recent_audit(audit: &impl AuditLog, limit: usize) -> Result<Vec<AuditRecord>, AppError> {
+    Ok(audit.recent(limit)?)
+}
+
 /// A short verb phrase for an audit summary.
 fn describe(decision: PolicyDecision) -> &'static str {
     match decision {
@@ -351,9 +383,10 @@ fn describe(decision: PolicyDecision) -> &'static str {
 mod tests {
     use super::{
         approve_process_change, conclude_experiment, create_assumption, create_direction,
-        create_goal, create_reflection, decide_process_change, list_assumptions, list_experiments,
-        list_goals, list_observations, list_process_changes, list_reflections, propose_experiment,
-        propose_process_change, record_observation, reject_process_change, start_experiment,
+        create_goal, create_reflection, decide_process_change, decide_stored_process_change,
+        list_assumptions, list_experiments, list_goals, list_observations, list_process_changes,
+        list_reflections, propose_experiment, propose_process_change, recent_audit,
+        record_observation, reject_process_change, start_experiment,
     };
     use crate::error::AppError;
     use crate::ports::{
@@ -928,6 +961,52 @@ mod tests {
     fn approving_a_missing_change_is_not_found() {
         let store = FakeStore::default();
         let err = approve_process_change(&store, ProcessChangeId::new(1)).unwrap_err();
+        assert_eq!(
+            err,
+            AppError::NotFound {
+                entity: "process change"
+            }
+        );
+    }
+
+    #[test]
+    fn deciding_a_stored_approved_change_permits_and_audits() {
+        let store = FakeStore::default();
+        let ids = SeqIds::default();
+        let clock = FixedClock(1_000);
+        let audit = FakeAudit::default();
+        let reflection = seed_reflection(&store, &ids);
+        let c = propose_process_change(&store, &store, &ids, reflection, "Do mornings").unwrap();
+        approve_process_change(&store, c.id()).unwrap();
+
+        let decision = decide_stored_process_change(
+            &store,
+            &ids,
+            &clock,
+            &audit,
+            c.id(),
+            AutonomyLevel::ActWithinPolicy,
+        )
+        .unwrap();
+        assert_eq!(decision, PolicyDecision::Permit);
+        assert_eq!(recent_audit(&audit, 10).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn deciding_a_missing_change_is_not_found() {
+        let store = FakeStore::default();
+        let ids = SeqIds::default();
+        let clock = FixedClock(0);
+        let audit = FakeAudit::default();
+        let err = decide_stored_process_change(
+            &store,
+            &ids,
+            &clock,
+            &audit,
+            ProcessChangeId::new(1),
+            AutonomyLevel::Observe,
+        )
+        .unwrap_err();
         assert_eq!(
             err,
             AppError::NotFound {

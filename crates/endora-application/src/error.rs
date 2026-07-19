@@ -23,6 +23,12 @@ pub enum AppError {
         /// What kind of entity was missing, e.g. `"direction"`.
         entity: &'static str,
     },
+    /// The request was malformed in a way the domain does not model (e.g. an
+    /// unrecognized enum value supplied by an interface).
+    BadRequest {
+        /// A human-readable explanation.
+        message: String,
+    },
 }
 
 impl fmt::Display for AppError {
@@ -31,6 +37,7 @@ impl fmt::Display for AppError {
             Self::Domain(e) => write!(f, "{e}"),
             Self::Repository(e) => write!(f, "{e}"),
             Self::NotFound { entity } => write!(f, "{entity} not found"),
+            Self::BadRequest { message } => write!(f, "{message}"),
         }
     }
 }
