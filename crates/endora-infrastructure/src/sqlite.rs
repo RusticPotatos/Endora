@@ -10,15 +10,16 @@ use std::sync::Mutex;
 
 use endora_application::{
     AssumptionRepository, AuditLog, ChatRepository, DirectionRepository, ExperimentRepository,
-    MemorySnapshot, MemoryStore, ObservationRepository, ProcessChangeRepository,
-    ReflectionRepository, RepositoryError, Snooze, SnoozeRepository, TargetRepository,
-    ValueRepository,
+    MemorySnapshot, MemoryStore, ObservationRepository, PreferenceRepository,
+    ProcessChangeRepository, ReflectionRepository, RepositoryError, Snooze, SnoozeRepository,
+    TargetRepository, ValueRepository,
 };
 use endora_domain::{
     ApprovalState, Assumption, AssumptionId, AuditId, AuditRecord, ChatMessage, Direction,
     DirectionId, Experiment, ExperimentId, ExperimentStatus, LifecycleStatus, MessageId,
-    MessageRole, Observation, ObservationId, ProcessChangeId, ProposedProcessChange, Reflection,
-    ReflectionId, Target, TargetId, Timestamp, Value, ValueId,
+    MessageRole, Observation, ObservationId, Preference, PreferenceId, PreferenceKind,
+    ProcessChangeId, ProposedProcessChange, Reflection, ReflectionId, Target, TargetId, Timestamp,
+    Value, ValueId,
 };
 use rusqlite::{Connection, OptionalExtension, params};
 
@@ -120,6 +121,13 @@ CREATE TABLE IF NOT EXISTS attention_snoozes (
     count    INTEGER NOT NULL,
     until_ms INTEGER NOT NULL,
     PRIMARY KEY (kind, subject)
+) STRICT;
+
+CREATE TABLE IF NOT EXISTS preferences (
+    id    TEXT PRIMARY KEY,
+    body  TEXT NOT NULL,
+    kind  TEXT NOT NULL,
+    at_ms INTEGER NOT NULL
 ) STRICT;
 ";
 
@@ -798,6 +806,7 @@ impl MemoryStore for SqliteStore {
             process_changes: all_process_changes(&conn)?,
             audit: all_audit(&conn)?,
             messages: all_messages(&conn)?,
+            preferences: all_preferences(&conn)?,
         })
     }
 
@@ -818,6 +827,7 @@ impl MemoryStore for SqliteStore {
             "audit_log",
             "messages",
             "attention_snoozes",
+            "preferences",
         ] {
             tx.execute(&format!("DELETE FROM {table}"), [])
                 .map_err(backend)?;
@@ -929,6 +939,70 @@ impl ChatRepository for SqliteStore {
         let conn = self.lock()?;
         all_messages(&conn)
     }
+}
+
+impl PreferenceRepository for SqliteStore {
+    fn save(&self, preference: &Preference) -> Result<(), RepositoryError> {
+        let conn = self.lock()?;
+        conn.execute(
+            "INSERT OR REPLACE INTO preferences (id, body, kind, at_ms) VALUES (?1, ?2, ?3, ?4)",
+            params![
+                id_text(preference.id().value()),
+                preference.text(),
+                preference.kind().name(),
+                preference.at().unix_millis()
+            ],
+        )
+        .map_err(backend)?;
+        Ok(())
+    }
+
+    fn list_all(&self) -> Result<Vec<Preference>, RepositoryError> {
+        let conn = self.lock()?;
+        all_preferences(&conn)
+    }
+
+    fn delete(&self, id: PreferenceId) -> Result<(), RepositoryError> {
+        let conn = self.lock()?;
+        conn.execute(
+            "DELETE FROM preferences WHERE id = ?1",
+            params![id_text(id.value())],
+        )
+        .map_err(backend)?;
+        Ok(())
+    }
+}
+
+fn all_preferences(conn: &Connection) -> Result<Vec<Preference>, RepositoryError> {
+    let mut stmt = conn
+        .prepare("SELECT id, body, kind, at_ms FROM preferences ORDER BY at_ms, rowid")
+        .map_err(backend)?;
+    let rows = stmt
+        .query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, i64>(3)?,
+            ))
+        })
+        .map_err(backend)?;
+    let mut out = Vec::new();
+    for row in rows {
+        let (id, body, kind, at_ms) = row.map_err(backend)?;
+        let kind = PreferenceKind::from_name(&kind)
+            .ok_or_else(|| RepositoryError::Corrupt(format!("unknown preference kind {kind:?}")))?;
+        out.push(
+            Preference::new(
+                PreferenceId::new(parse_id(&id)?),
+                &body,
+                kind,
+                Timestamp::from_unix_millis(at_ms),
+            )
+            .map_err(corrupt)?,
+        );
+    }
+    Ok(out)
 }
 
 fn all_messages(conn: &Connection) -> Result<Vec<ChatMessage>, RepositoryError> {

@@ -23,8 +23,8 @@ use endora_application::{
 use endora_domain::{
     Assumption, AssumptionId, AuditRecord, AutonomyLevel, ChatMessage, Direction, DirectionId,
     Experiment, ExperimentId, LifecycleStatus, Observation, ObservationId, PolicyDecision,
-    ProcessChangeId, ProposedProcessChange, Reflection, ReflectionId, Target, TargetId, Value,
-    ValueId,
+    Preference, PreferenceId, PreferenceKind, ProcessChangeId, ProposedProcessChange, Reflection,
+    ReflectionId, Target, TargetId, Value, ValueId,
 };
 use endora_infrastructure::{RandomIdSource, SqliteStore, SystemClock};
 use futures_util::stream::{Stream, unfold};
@@ -140,6 +140,14 @@ pub fn app(state: AppState) -> Router {
             post(decide_process_change),
         )
         .route("/v1/chat", post(send_chat).get(chat_history))
+        .route(
+            "/v1/preferences",
+            post(create_preference).get(list_preferences),
+        )
+        .route(
+            "/v1/preferences/{id}",
+            axum::routing::delete(delete_preference),
+        )
         .route("/v1/attention", get(attention))
         .route("/v1/attention/snooze", post(snooze_attention))
         .route("/v1/audit", get(audit))
@@ -982,6 +990,10 @@ fn proposal_json(p: &ButlerProposal) -> serde_json::Value {
             );
             obj.insert("statement".to_owned(), json!(statement));
         }
+        ButlerProposal::RememberPreference { text, kind } => {
+            obj.insert("text".to_owned(), json!(text));
+            obj.insert("preference_kind".to_owned(), json!(kind.name()));
+        }
     }
     base
 }
@@ -1003,6 +1015,7 @@ async fn send_chat(
     let (reply, proposals) = blocking(move || {
         usecases::send_to_butler(
             store.as_ref(),
+            store.as_ref(),
             butler.as_ref(),
             ids.as_ref(),
             clock.as_ref(),
@@ -1023,6 +1036,82 @@ async fn chat_history(
     let store = state.store.clone();
     let messages = blocking(move || usecases::chat_history(store.as_ref())).await?;
     Ok(Json(messages.iter().map(MessageResponse::from).collect()))
+}
+
+#[derive(Serialize)]
+struct PreferenceResponse {
+    id: String,
+    text: String,
+    kind: String,
+    at_ms: i64,
+}
+
+impl From<&Preference> for PreferenceResponse {
+    fn from(p: &Preference) -> Self {
+        Self {
+            id: p.id().value().to_string(),
+            text: p.text().to_owned(),
+            kind: p.kind().name().to_owned(),
+            at_ms: p.at().unix_millis(),
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct CreatePreferenceRequest {
+    text: String,
+    #[serde(default)]
+    kind: Option<String>,
+}
+
+async fn create_preference(
+    State(state): State<AppState>,
+    Json(req): Json<CreatePreferenceRequest>,
+) -> Result<Json<PreferenceResponse>, ApiError> {
+    let kind = match req.kind.as_deref() {
+        Some(k) => PreferenceKind::from_name(k).ok_or_else(|| {
+            ApiError(AppError::BadRequest {
+                message: format!("unknown preference kind {k:?}; expected taste or authority"),
+            })
+        })?,
+        None => PreferenceKind::Taste,
+    };
+    let store = state.store.clone();
+    let ids = state.ids.clone();
+    let clock = state.clock.clone();
+    let preference = blocking(move || {
+        usecases::create_preference(
+            store.as_ref(),
+            ids.as_ref(),
+            clock.as_ref(),
+            &req.text,
+            kind,
+        )
+    })
+    .await?;
+    Ok(Json(PreferenceResponse::from(&preference)))
+}
+
+async fn list_preferences(
+    State(state): State<AppState>,
+) -> Result<Json<Vec<PreferenceResponse>>, ApiError> {
+    let store = state.store.clone();
+    let prefs = blocking(move || usecases::list_preferences(store.as_ref())).await?;
+    Ok(Json(prefs.iter().map(PreferenceResponse::from).collect()))
+}
+
+async fn delete_preference(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let pref_id = id.parse::<u128>().map(PreferenceId::new).map_err(|_| {
+        ApiError(AppError::NotFound {
+            entity: "preference",
+        })
+    })?;
+    let store = state.store.clone();
+    blocking(move || usecases::delete_preference(store.as_ref(), pref_id)).await?;
+    Ok(Json(json!({ "deleted": true })))
 }
 
 #[derive(Serialize)]
@@ -1102,6 +1191,7 @@ struct ExportResponse {
     process_changes: Vec<ProcessChangeResponse>,
     audit: Vec<AuditResponse>,
     messages: Vec<MessageResponse>,
+    preferences: Vec<PreferenceResponse>,
 }
 
 impl From<&MemorySnapshot> for ExportResponse {
@@ -1125,6 +1215,7 @@ impl From<&MemorySnapshot> for ExportResponse {
                 .collect(),
             audit: s.audit.iter().map(AuditResponse::from).collect(),
             messages: s.messages.iter().map(MessageResponse::from).collect(),
+            preferences: s.preferences.iter().map(PreferenceResponse::from).collect(),
         }
     }
 }
@@ -1526,6 +1617,33 @@ mod tests {
             .collect();
         assert!(!kinds2.contains(&"unfiled_north_star".to_owned()));
         assert!(kinds2.contains(&"empty_north_star".to_owned()));
+    }
+
+    #[tokio::test]
+    async fn preferences_round_trip_and_are_deletable() {
+        let app = app(test_state());
+        let res = app
+            .clone()
+            .oneshot(post("/v1/preferences", r#"{"text":"I prefer mornings"}"#))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let created = json_body(res).await;
+        assert_eq!(created["text"], "I prefer mornings");
+        assert_eq!(created["kind"], "taste");
+        let pid = created["id"].as_str().unwrap().to_owned();
+
+        let listed = json_body(app.clone().oneshot(get("/v1/preferences")).await.unwrap()).await;
+        assert_eq!(listed.as_array().unwrap().len(), 1);
+
+        let res = app
+            .clone()
+            .oneshot(del(&format!("/v1/preferences/{pid}")))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let after = json_body(app.clone().oneshot(get("/v1/preferences")).await.unwrap()).await;
+        assert!(after.as_array().unwrap().is_empty());
     }
 
     #[tokio::test]

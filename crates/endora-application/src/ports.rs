@@ -9,8 +9,8 @@ use core::fmt;
 
 use endora_domain::{
     Assumption, AssumptionId, AuditRecord, ChatMessage, Direction, DirectionId, Experiment,
-    ExperimentId, Observation, ProcessChangeId, ProposedProcessChange, Reflection, ReflectionId,
-    Target, TargetId, Timestamp, Value, ValueId,
+    ExperimentId, Observation, Preference, PreferenceId, PreferenceKind, ProcessChangeId,
+    ProposedProcessChange, Reflection, ReflectionId, Target, TargetId, Timestamp, Value, ValueId,
 };
 
 /// A complete snapshot of the user's stored data, for the memory rights of the
@@ -37,6 +37,8 @@ pub struct MemorySnapshot {
     pub audit: Vec<AuditRecord>,
     /// The whole conversation with the butler.
     pub messages: Vec<ChatMessage>,
+    /// The preferences the butler has learned.
+    pub preferences: Vec<Preference>,
 }
 
 /// The user's right to export and delete all of their data (constitution:
@@ -304,6 +306,13 @@ pub enum ButlerProposal {
         /// The target statement.
         statement: String,
     },
+    /// Remember a preference about the person (so it stops re-asking).
+    RememberPreference {
+        /// The preference text.
+        text: String,
+        /// Whether it is taste or a grant of authority.
+        kind: PreferenceKind,
+    },
 }
 
 impl ButlerProposal {
@@ -314,6 +323,7 @@ impl ButlerProposal {
             Self::CreateValue { .. } => "create_value",
             Self::CreateNorthStar { .. } => "create_north_star",
             Self::CreateTarget { .. } => "create_target",
+            Self::RememberPreference { .. } => "remember_preference",
         }
     }
 
@@ -324,6 +334,7 @@ impl ButlerProposal {
             Self::CreateValue { name } => format!("Create value: \"{name}\""),
             Self::CreateNorthStar { title } => format!("Create North Star: \"{title}\""),
             Self::CreateTarget { statement, .. } => format!("Create target: \"{statement}\""),
+            Self::RememberPreference { text, .. } => format!("Remember: \"{text}\""),
         }
     }
 }
@@ -344,11 +355,38 @@ pub struct ButlerReply {
 /// *proposes*. Infrastructure supplies a scripted implementation (offline/tests)
 /// or a model-backed one (`docs/adr/0014-the-butler-conversation-values-attention.md`).
 pub trait Butler {
-    /// Responds to the conversation so far (the last message is the newest).
+    /// Responds to the conversation so far (the last message is the newest),
+    /// given the preferences already learned about the person, so it need not
+    /// re-ask what it already knows.
     ///
     /// # Errors
     /// [`ProposalError`] if a backing model is unreachable or returns nothing.
-    fn respond(&self, history: &[ChatMessage]) -> Result<ButlerReply, ProposalError>;
+    fn respond(
+        &self,
+        history: &[ChatMessage],
+        preferences: &[Preference],
+    ) -> Result<ButlerReply, ProposalError>;
+}
+
+/// Persists and retrieves [`Preference`]s (what the butler has learned).
+pub trait PreferenceRepository {
+    /// Inserts a preference, or replaces the existing one with the same id.
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if the backend fails.
+    fn save(&self, preference: &Preference) -> Result<(), RepositoryError>;
+
+    /// Lists all preferences, oldest first.
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if the backend fails or stored data is corrupt.
+    fn list_all(&self) -> Result<Vec<Preference>, RepositoryError>;
+
+    /// Permanently removes a preference.
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if the backend fails.
+    fn delete(&self, id: PreferenceId) -> Result<(), RepositoryError>;
 }
 
 /// Persists and retrieves the conversation with the butler.

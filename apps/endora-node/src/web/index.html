@@ -97,6 +97,7 @@
   <h1 id="brand">Endora</h1>
   <span class="spacer"></span>
   <button class="ghost" data-act="go:chat">💬 Chat</button>
+  <button class="ghost" data-act="go:prefs">🧠 Prefs</button>
   <button class="ghost" data-act="go:audit">Audit</button>
   <button class="ghost" data-act="export">Export</button>
   <button class="ghost danger" data-act="purge">Purge</button>
@@ -490,6 +491,25 @@ function viewChat() {
     </div>`;
 }
 
+// What the butler has learned — visible, correctable, deletable memory.
+function viewPrefs() {
+  const rows = (DB.preferences || []).map((p) => `
+    <div class="card"><div class="row">
+      <div class="grow"><div class="title">${esc(p.text)}</div>
+      <div class="sub">${esc(p.kind)}</div></div>
+      <button class="ghost danger" data-act="delete:pref:${p.id}" title="forget this">🗑</button>
+    </div></div>`);
+  return `
+    ${crumbs([{ label: "Directions", act: "go:home" }, { label: "Preferences" }])}
+    <h2>What the butler knows about you</h2>
+    <div class="sub" style="margin-bottom:10px;">Your own words — the butler honours these and won't re-ask. Correctable and deletable.</div>
+    ${listOr(rows, "Nothing yet. The butler will propose things to remember as you talk — or add one below.")}
+    <div class="form">
+      <input id="new-pref" placeholder="e.g. I prefer mornings…" />
+      <button class="primary" data-act="create:pref">Remember</button>
+    </div>`;
+}
+
 function render() {
   const v = NAV.v;
   app.innerHTML =
@@ -500,6 +520,7 @@ function render() {
     : v === "reflection" ? viewReflection(NAV.id)
     : v === "audit" ? viewAudit()
     : v === "chat" ? viewChat()
+    : v === "prefs" ? viewPrefs()
     : viewHome();
 }
 
@@ -549,6 +570,7 @@ async function dispatch(act) {
       if (p.kind === "create_value") await api("POST", "/v1/values", { name: p.name });
       else if (p.kind === "create_north_star") await api("POST", "/v1/directions", { title: p.title });
       else if (p.kind === "create_target") await api("POST", `/v1/directions/${p.direction_id}/targets`, { statement: p.statement });
+      else if (p.kind === "remember_preference") await api("POST", "/v1/preferences", { text: p.text, kind: p.preference_kind });
       CHAT_PROPOSALS.splice(Number(id), 1);
       flash("Done — added.", "ok");
       return reload();
@@ -559,6 +581,14 @@ async function dispatch(act) {
     if (verb === "snooze" && noun === "attention") {
       // data-act = snooze:attention:<kind>:<subject>
       await api("POST", "/v1/attention/snooze", { kind: id, subject: arg }); return reload();
+    }
+    if (verb === "create" && noun === "pref") {
+      const text = val("new-pref");
+      if (!text) return;
+      await api("POST", "/v1/preferences", { text }); return reload();
+    }
+    if (verb === "delete" && noun === "pref") {
+      await api("DELETE", `/v1/preferences/${id}`); return reload();
     }
     if (verb === "create" && noun === "target") {
       await api("POST", `/v1/directions/${id}/targets`, { statement: val("new-target") }); return reload();
