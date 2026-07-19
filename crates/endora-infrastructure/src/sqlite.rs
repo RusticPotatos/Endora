@@ -8,8 +8,12 @@
 
 use std::sync::Mutex;
 
-use endora_application::{AuditLog, DirectionRepository, GoalRepository, RepositoryError};
-use endora_domain::{AuditId, AuditRecord, Direction, DirectionId, Goal, GoalId, Timestamp};
+use endora_application::{
+    AssumptionRepository, AuditLog, DirectionRepository, GoalRepository, RepositoryError,
+};
+use endora_domain::{
+    Assumption, AssumptionId, AuditId, AuditRecord, Direction, DirectionId, Goal, GoalId, Timestamp,
+};
 use rusqlite::{Connection, OptionalExtension, params};
 
 const SCHEMA: &str = "
@@ -25,6 +29,14 @@ CREATE TABLE IF NOT EXISTS goals (
 ) STRICT;
 
 CREATE INDEX IF NOT EXISTS idx_goals_direction ON goals(direction_id);
+
+CREATE TABLE IF NOT EXISTS assumptions (
+    id        TEXT PRIMARY KEY,
+    goal_id   TEXT NOT NULL REFERENCES goals(id),
+    statement TEXT NOT NULL
+) STRICT;
+
+CREATE INDEX IF NOT EXISTS idx_assumptions_goal ON assumptions(goal_id);
 
 CREATE TABLE IF NOT EXISTS audit_log (
     id      TEXT PRIMARY KEY,
@@ -159,6 +171,43 @@ impl GoalRepository for SqliteStore {
     }
 }
 
+impl AssumptionRepository for SqliteStore {
+    fn save(&self, assumption: &Assumption) -> Result<(), RepositoryError> {
+        let conn = self.lock()?;
+        conn.execute(
+            "INSERT OR REPLACE INTO assumptions (id, goal_id, statement) VALUES (?1, ?2, ?3)",
+            params![
+                id_text(assumption.id().value()),
+                id_text(assumption.goal().value()),
+                assumption.statement()
+            ],
+        )
+        .map_err(backend)?;
+        Ok(())
+    }
+
+    fn list_for_goal(&self, goal: GoalId) -> Result<Vec<Assumption>, RepositoryError> {
+        let conn = self.lock()?;
+        let mut stmt = conn
+            .prepare("SELECT id, statement FROM assumptions WHERE goal_id = ?1 ORDER BY id")
+            .map_err(backend)?;
+        let rows = stmt
+            .query_map(params![id_text(goal.value())], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .map_err(backend)?;
+
+        let mut assumptions = Vec::new();
+        for row in rows {
+            let (id, statement) = row.map_err(backend)?;
+            let assumption = Assumption::new(AssumptionId::new(parse_id(&id)?), goal, &statement)
+                .map_err(corrupt)?;
+            assumptions.push(assumption);
+        }
+        Ok(assumptions)
+    }
+}
+
 impl AuditLog for SqliteStore {
     fn append(&self, record: &AuditRecord) -> Result<(), RepositoryError> {
         let conn = self.lock()?;
@@ -288,6 +337,31 @@ mod tests {
 
         assert_eq!(goals.get(GoalId::new(10)).unwrap(), Some(g1.clone()));
         assert_eq!(goals.list_for_direction(direction).unwrap(), vec![g1, g2]);
+    }
+
+    #[test]
+    fn assumptions_round_trip_and_list_by_goal() {
+        use endora_application::AssumptionRepository;
+        use endora_domain::{Assumption, AssumptionId, GoalId};
+
+        let store = store();
+        let directions: &dyn DirectionRepository = &store;
+        let goals: &dyn GoalRepository = &store;
+        let assumptions: &dyn AssumptionRepository = &store;
+
+        let direction = DirectionId::new(1);
+        directions
+            .save(&Direction::new(direction, "Be healthier").unwrap())
+            .unwrap();
+        let goal = GoalId::new(2);
+        goals
+            .save(&Goal::new(goal, direction, "Run a 5k").unwrap())
+            .unwrap();
+
+        let a = Assumption::new(AssumptionId::new(3), goal, "Mornings are freest").unwrap();
+        assumptions.save(&a).unwrap();
+        assert_eq!(assumptions.list_for_goal(goal).unwrap(), vec![a]);
+        assert_eq!(assumptions.list_for_goal(GoalId::new(999)).unwrap(), vec![]);
     }
 
     #[test]

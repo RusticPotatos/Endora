@@ -65,6 +65,11 @@ fn route(args: &[&str]) -> Option<Action> {
         ["goal", "list", direction] => {
             Some(Action::Get(format!("/v1/directions/{direction}/goals")))
         }
+        ["assumption", "create", goal, statement] => Some(Action::Post(
+            format!("/v1/goals/{goal}/assumptions"),
+            json!({ "statement": statement }),
+        )),
+        ["assumption", "list", goal] => Some(Action::Get(format!("/v1/goals/{goal}/assumptions"))),
         _ => None,
     }
 }
@@ -98,7 +103,9 @@ fn print_usage() {
            health                                 check the node is up\n  \
            direction create <title>               create a direction\n  \
            goal create <direction-id> <statement> add a goal to a direction\n  \
-           goal list <direction-id>               list a direction's goals\n\n\
+           goal list <direction-id>               list a direction's goals\n  \
+           assumption create <goal-id> <text>     add an assumption to a goal\n  \
+           assumption list <goal-id>              list a goal's assumptions\n\n\
          Environment:\n  \
            ENDORA_URL   node base URL (default http://127.0.0.1:8787)"
     );
@@ -137,6 +144,21 @@ mod tests {
         assert_eq!(
             route(&["goal", "list", "42"]),
             Some(Action::Get("/v1/directions/42/goals".to_owned()))
+        );
+    }
+
+    #[test]
+    fn routes_assumption_create_and_list() {
+        assert_eq!(
+            route(&["assumption", "create", "7", "Mornings are freest"]),
+            Some(Action::Post(
+                "/v1/goals/7/assumptions".to_owned(),
+                json!({ "statement": "Mornings are freest" })
+            ))
+        );
+        assert_eq!(
+            route(&["assumption", "list", "7"]),
+            Some(Action::Get("/v1/goals/7/assumptions".to_owned()))
         );
     }
 
