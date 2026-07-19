@@ -6,13 +6,15 @@
 //! and the use cases stay testable with fakes.
 
 use endora_domain::{
-    Assumption, AssumptionId, AuditId, AuditRecord, AutonomyLevel, Direction, DirectionId, Goal,
-    GoalId, PolicyDecision, ProposedProcessChange, authorize_process_change,
+    Assumption, AssumptionId, AuditId, AuditRecord, AutonomyLevel, Direction, DirectionId,
+    Experiment, ExperimentId, Goal, GoalId, PolicyDecision, ProposedProcessChange,
+    authorize_process_change,
 };
 
 use crate::error::AppError;
 use crate::ports::{
-    AssumptionRepository, AuditLog, Clock, DirectionRepository, GoalRepository, IdSource,
+    AssumptionRepository, AuditLog, Clock, DirectionRepository, ExperimentRepository,
+    GoalRepository, IdSource,
 };
 
 /// Creates and stores a new [`Direction`].
@@ -94,6 +96,73 @@ pub fn list_assumptions(
     Ok(assumptions.list_for_goal(goal)?)
 }
 
+/// Proposes and stores a new [`Experiment`] under an existing assumption.
+///
+/// # Errors
+/// [`AppError::NotFound`] if the assumption does not exist, [`AppError::Domain`]
+/// if the hypothesis is invalid, or [`AppError::Repository`] if persistence fails.
+pub fn propose_experiment(
+    assumptions: &impl AssumptionRepository,
+    experiments: &impl ExperimentRepository,
+    ids: &impl IdSource,
+    assumption: AssumptionId,
+    hypothesis: &str,
+) -> Result<Experiment, AppError> {
+    if assumptions.get(assumption)?.is_none() {
+        return Err(AppError::NotFound {
+            entity: "assumption",
+        });
+    }
+    let experiment = Experiment::propose(ExperimentId::new(ids.new_id()), assumption, hypothesis)?;
+    experiments.save(&experiment)?;
+    Ok(experiment)
+}
+
+/// Lists the experiments testing an assumption, in a stable order.
+///
+/// # Errors
+/// [`AppError::Repository`] if persistence fails.
+pub fn list_experiments(
+    experiments: &impl ExperimentRepository,
+    assumption: AssumptionId,
+) -> Result<Vec<Experiment>, AppError> {
+    Ok(experiments.list_for_assumption(assumption)?)
+}
+
+/// Starts a proposed experiment and persists the transition.
+///
+/// # Errors
+/// [`AppError::NotFound`] if the experiment does not exist, [`AppError::Domain`]
+/// if it is not in a startable state, or [`AppError::Repository`] on failure.
+pub fn start_experiment(
+    experiments: &impl ExperimentRepository,
+    id: ExperimentId,
+) -> Result<Experiment, AppError> {
+    let mut experiment = experiments.get(id)?.ok_or(AppError::NotFound {
+        entity: "experiment",
+    })?;
+    experiment.start()?;
+    experiments.save(&experiment)?;
+    Ok(experiment)
+}
+
+/// Concludes a running experiment and persists the transition.
+///
+/// # Errors
+/// [`AppError::NotFound`] if the experiment does not exist, [`AppError::Domain`]
+/// if it is not running, or [`AppError::Repository`] on failure.
+pub fn conclude_experiment(
+    experiments: &impl ExperimentRepository,
+    id: ExperimentId,
+) -> Result<Experiment, AppError> {
+    let mut experiment = experiments.get(id)?.ok_or(AppError::NotFound {
+        entity: "experiment",
+    })?;
+    experiment.conclude()?;
+    experiments.save(&experiment)?;
+    Ok(experiment)
+}
+
 /// Decides whether an actor may enact a proposed process change, and records
 /// the decision to the audit trail.
 ///
@@ -134,17 +203,19 @@ fn describe(decision: PolicyDecision) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::{
-        create_assumption, create_direction, create_goal, decide_process_change, list_assumptions,
-        list_goals,
+        conclude_experiment, create_assumption, create_direction, create_goal,
+        decide_process_change, list_assumptions, list_experiments, list_goals, propose_experiment,
+        start_experiment,
     };
     use crate::error::AppError;
     use crate::ports::{
-        AssumptionRepository, AuditLog, Clock, DirectionRepository, GoalRepository, IdSource,
-        RepositoryError,
+        AssumptionRepository, AuditLog, Clock, DirectionRepository, ExperimentRepository,
+        GoalRepository, IdSource, RepositoryError,
     };
     use endora_domain::{
-        Assumption, AuditRecord, AutonomyLevel, Direction, DirectionId, Goal, GoalId,
-        PolicyDecision, ProcessChangeId, ProposedProcessChange, ReflectionId, Timestamp,
+        Assumption, AssumptionId, AuditRecord, AutonomyLevel, Direction, DirectionId, Experiment,
+        ExperimentId, ExperimentStatus, Goal, GoalId, PolicyDecision, ProcessChangeId,
+        ProposedProcessChange, ReflectionId, Timestamp,
     };
     use std::cell::{Cell, RefCell};
     use std::collections::HashMap;
@@ -155,6 +226,7 @@ mod tests {
         directions: RefCell<HashMap<u128, Direction>>,
         goals: RefCell<HashMap<u128, Goal>>,
         assumptions: RefCell<HashMap<u128, Assumption>>,
+        experiments: RefCell<HashMap<u128, Experiment>>,
     }
 
     impl AssumptionRepository for FakeStore {
@@ -163,6 +235,9 @@ mod tests {
                 .borrow_mut()
                 .insert(assumption.id().value(), assumption.clone());
             Ok(())
+        }
+        fn get(&self, id: AssumptionId) -> Result<Option<Assumption>, RepositoryError> {
+            Ok(self.assumptions.borrow().get(&id.value()).cloned())
         }
         fn list_for_goal(&self, goal: GoalId) -> Result<Vec<Assumption>, RepositoryError> {
             let mut found: Vec<Assumption> = self
@@ -173,6 +248,32 @@ mod tests {
                 .cloned()
                 .collect();
             found.sort_by_key(|a| a.id().value());
+            Ok(found)
+        }
+    }
+
+    impl ExperimentRepository for FakeStore {
+        fn save(&self, experiment: &Experiment) -> Result<(), RepositoryError> {
+            self.experiments
+                .borrow_mut()
+                .insert(experiment.id().value(), experiment.clone());
+            Ok(())
+        }
+        fn get(&self, id: ExperimentId) -> Result<Option<Experiment>, RepositoryError> {
+            Ok(self.experiments.borrow().get(&id.value()).cloned())
+        }
+        fn list_for_assumption(
+            &self,
+            assumption: AssumptionId,
+        ) -> Result<Vec<Experiment>, RepositoryError> {
+            let mut found: Vec<Experiment> = self
+                .experiments
+                .borrow()
+                .values()
+                .filter(|e| e.assumption() == assumption)
+                .cloned()
+                .collect();
+            found.sort_by_key(|e| e.id().value());
             Ok(found)
         }
     }
@@ -388,5 +489,72 @@ mod tests {
         let a2 = create_assumption(&store, &store, &ids, goal.id(), "Rain is rare").unwrap();
 
         assert_eq!(list_assumptions(&store, goal.id()).unwrap(), vec![a1, a2]);
+    }
+
+    /// Builds direction → goal → assumption and returns the assumption id.
+    fn seed_assumption(store: &FakeStore, ids: &SeqIds) -> AssumptionId {
+        let direction = create_direction(store, ids, "Be healthier").unwrap();
+        let goal = create_goal(store, store, ids, direction.id(), "Run a 5k").unwrap();
+        create_assumption(store, store, ids, goal.id(), "Mornings are freest")
+            .unwrap()
+            .id()
+    }
+
+    #[test]
+    fn propose_experiment_requires_an_existing_assumption() {
+        let store = FakeStore::default();
+        let ids = SeqIds::default();
+        let err = propose_experiment(&store, &store, &ids, AssumptionId::new(404), "Try mornings")
+            .unwrap_err();
+        assert_eq!(
+            err,
+            AppError::NotFound {
+                entity: "assumption"
+            }
+        );
+    }
+
+    #[test]
+    fn experiment_lifecycle_persists_transitions() {
+        let store = FakeStore::default();
+        let ids = SeqIds::default();
+        let assumption = seed_assumption(&store, &ids);
+
+        let e = propose_experiment(&store, &store, &ids, assumption, "Try mornings").unwrap();
+        assert_eq!(e.status(), ExperimentStatus::Proposed);
+
+        let started = start_experiment(&store, e.id()).unwrap();
+        assert_eq!(started.status(), ExperimentStatus::Running);
+
+        let concluded = conclude_experiment(&store, e.id()).unwrap();
+        assert_eq!(concluded.status(), ExperimentStatus::Concluded);
+
+        assert_eq!(
+            list_experiments(&store, assumption).unwrap(),
+            vec![concluded]
+        );
+    }
+
+    #[test]
+    fn concluding_a_proposed_experiment_is_a_domain_error() {
+        let store = FakeStore::default();
+        let ids = SeqIds::default();
+        let assumption = seed_assumption(&store, &ids);
+        let e = propose_experiment(&store, &store, &ids, assumption, "Try mornings").unwrap();
+
+        let err = conclude_experiment(&store, e.id()).unwrap_err();
+        assert!(matches!(err, AppError::Domain(_)));
+    }
+
+    #[test]
+    fn starting_a_missing_experiment_is_not_found() {
+        let store = FakeStore::default();
+        let err = start_experiment(&store, ExperimentId::new(1)).unwrap_err();
+        assert_eq!(
+            err,
+            AppError::NotFound {
+                entity: "experiment"
+            }
+        );
     }
 }

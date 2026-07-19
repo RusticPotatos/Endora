@@ -14,7 +14,9 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use endora_application::{AppError, RepositoryError, usecases};
-use endora_domain::{Assumption, Direction, DirectionId, Goal, GoalId};
+use endora_domain::{
+    Assumption, AssumptionId, Direction, DirectionId, Experiment, ExperimentId, Goal, GoalId,
+};
 use endora_infrastructure::{RandomIdSource, SqliteStore};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -41,6 +43,12 @@ pub fn app(state: AppState) -> Router {
             "/v1/goals/{id}/assumptions",
             post(create_assumption).get(list_assumptions),
         )
+        .route(
+            "/v1/assumptions/{id}/experiments",
+            post(propose_experiment).get(list_experiments),
+        )
+        .route("/v1/experiments/{id}/start", post(start_experiment))
+        .route("/v1/experiments/{id}/conclude", post(conclude_experiment))
         .with_state(state)
 }
 
@@ -188,6 +196,86 @@ async fn list_assumptions(
     ))
 }
 
+#[derive(Deserialize)]
+struct CreateExperimentRequest {
+    hypothesis: String,
+}
+
+#[derive(Serialize)]
+struct ExperimentResponse {
+    id: String,
+    assumption_id: String,
+    hypothesis: String,
+    status: String,
+}
+
+impl From<&Experiment> for ExperimentResponse {
+    fn from(e: &Experiment) -> Self {
+        Self {
+            id: e.id().value().to_string(),
+            assumption_id: e.assumption().value().to_string(),
+            hypothesis: e.hypothesis().to_owned(),
+            status: e.status().name().to_owned(),
+        }
+    }
+}
+
+async fn propose_experiment(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(req): Json<CreateExperimentRequest>,
+) -> Result<Json<ExperimentResponse>, ApiError> {
+    let assumption = parse_assumption_id(&id)?;
+    let store = state.store.clone();
+    let ids = state.ids.clone();
+    let experiment = blocking(move || {
+        usecases::propose_experiment(
+            store.as_ref(),
+            store.as_ref(),
+            ids.as_ref(),
+            assumption,
+            &req.hypothesis,
+        )
+    })
+    .await?;
+    Ok(Json(ExperimentResponse::from(&experiment)))
+}
+
+async fn list_experiments(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<Vec<ExperimentResponse>>, ApiError> {
+    let assumption = parse_assumption_id(&id)?;
+    let store = state.store.clone();
+    let experiments =
+        blocking(move || usecases::list_experiments(store.as_ref(), assumption)).await?;
+    Ok(Json(
+        experiments.iter().map(ExperimentResponse::from).collect(),
+    ))
+}
+
+async fn start_experiment(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<ExperimentResponse>, ApiError> {
+    let experiment_id = parse_experiment_id(&id)?;
+    let store = state.store.clone();
+    let experiment =
+        blocking(move || usecases::start_experiment(store.as_ref(), experiment_id)).await?;
+    Ok(Json(ExperimentResponse::from(&experiment)))
+}
+
+async fn conclude_experiment(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<ExperimentResponse>, ApiError> {
+    let experiment_id = parse_experiment_id(&id)?;
+    let store = state.store.clone();
+    let experiment =
+        blocking(move || usecases::conclude_experiment(store.as_ref(), experiment_id)).await?;
+    Ok(Json(ExperimentResponse::from(&experiment)))
+}
+
 /// Parses a path id into a [`DirectionId`]; a malformed id can name no
 /// direction, so it is reported as not found.
 fn parse_direction_id(id: &str) -> Result<DirectionId, ApiError> {
@@ -203,6 +291,24 @@ fn parse_goal_id(id: &str) -> Result<GoalId, ApiError> {
     id.parse::<u128>()
         .map(GoalId::new)
         .map_err(|_| ApiError(AppError::NotFound { entity: "goal" }))
+}
+
+/// Parses a path id into an [`AssumptionId`]; a malformed id names no assumption.
+fn parse_assumption_id(id: &str) -> Result<AssumptionId, ApiError> {
+    id.parse::<u128>().map(AssumptionId::new).map_err(|_| {
+        ApiError(AppError::NotFound {
+            entity: "assumption",
+        })
+    })
+}
+
+/// Parses a path id into an [`ExperimentId`]; a malformed id names no experiment.
+fn parse_experiment_id(id: &str) -> Result<ExperimentId, ApiError> {
+    id.parse::<u128>().map(ExperimentId::new).map_err(|_| {
+        ApiError(AppError::NotFound {
+            entity: "experiment",
+        })
+    })
 }
 
 /// Runs blocking use-case work on the blocking thread pool, mapping a task
@@ -353,6 +459,76 @@ mod tests {
         let listed = json_body(res).await;
         assert_eq!(listed.as_array().unwrap().len(), 1);
         assert_eq!(listed[0]["statement"], "Mornings are freest");
+    }
+
+    #[tokio::test]
+    async fn experiment_lifecycle_over_http() {
+        let app = app(test_state());
+
+        // direction -> goal -> assumption
+        let res = app
+            .clone()
+            .oneshot(post("/v1/directions", r#"{"title":"Be healthier"}"#))
+            .await
+            .unwrap();
+        let did = json_body(res).await["id"].as_str().unwrap().to_owned();
+        let res = app
+            .clone()
+            .oneshot(post(
+                &format!("/v1/directions/{did}/goals"),
+                r#"{"statement":"Run a 5k"}"#,
+            ))
+            .await
+            .unwrap();
+        let gid = json_body(res).await["id"].as_str().unwrap().to_owned();
+        let res = app
+            .clone()
+            .oneshot(post(
+                &format!("/v1/goals/{gid}/assumptions"),
+                r#"{"statement":"Mornings are freest"}"#,
+            ))
+            .await
+            .unwrap();
+        let aid = json_body(res).await["id"].as_str().unwrap().to_owned();
+
+        // propose experiment
+        let res = app
+            .clone()
+            .oneshot(post(
+                &format!("/v1/assumptions/{aid}/experiments"),
+                r#"{"hypothesis":"Try mornings"}"#,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let created = json_body(res).await;
+        assert_eq!(created["status"], "proposed");
+        let eid = created["id"].as_str().unwrap().to_owned();
+
+        // start -> running
+        let res = app
+            .clone()
+            .oneshot(post(&format!("/v1/experiments/{eid}/start"), ""))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        assert_eq!(json_body(res).await["status"], "running");
+
+        // conclude -> concluded
+        let res = app
+            .clone()
+            .oneshot(post(&format!("/v1/experiments/{eid}/conclude"), ""))
+            .await
+            .unwrap();
+        assert_eq!(json_body(res).await["status"], "concluded");
+
+        // concluding again is a domain error -> 400
+        let res = app
+            .clone()
+            .oneshot(post(&format!("/v1/experiments/{eid}/conclude"), ""))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test]
