@@ -1,0 +1,57 @@
+//! # Endora domain layer
+//!
+//! This crate holds the **Domain** layer of the Endora modular monolith. It
+//! contains only pure concepts and rules of the platform. By construction it
+//! has no dependencies and must never depend on:
+//!
+//! - HTTP, transports, or serialization formats
+//! - databases or storage engines
+//! - AI vendors or model-specific concepts
+//! - user-interface frameworks
+//! - operating-system integrations (including the system clock)
+//!
+//! Higher layers (Application, Infrastructure, Interface) depend inward on this
+//! crate; this crate depends on nothing. See `docs/architecture.md`.
+//!
+//! ## What lives here
+//!
+//! - [`autonomy`] — how much authority a component has before a human is
+//!   involved ([`AutonomyLevel`]).
+//! - [`goals`] — the Direction & Goals context: [`Direction`], [`Goal`],
+//!   [`Assumption`].
+//! - [`experiments`] — the Experiments & Learning context: [`Experiment`],
+//!   [`ExperimentStatus`], [`Observation`].
+//! - [`reflection`] — the Reflection context: [`Reflection`],
+//!   [`ProposedProcessChange`], [`ApprovalState`].
+//! - [`policy`] — the Policy & Consent boundary: deterministic authorization
+//!   ([`PolicyDecision`], [`authorize_process_change`]).
+//! - [`ids`] — typed identifiers and [`Timestamp`], both supplied by callers.
+//! - [`error`] — [`DomainError`].
+//!
+//! Together these model the first vertical slice — the learning loop for a
+//! single goal (see `docs/adr/0006-first-vertical-slice.md`). Identifiers and
+//! time are always supplied by outer layers, so the domain is fully
+//! deterministic and testable.
+
+#![forbid(unsafe_code)]
+
+pub mod audit;
+pub mod autonomy;
+pub mod error;
+pub mod experiments;
+pub mod goals;
+pub mod ids;
+pub mod policy;
+pub mod reflection;
+
+pub use audit::AuditRecord;
+pub use autonomy::AutonomyLevel;
+pub use error::DomainError;
+pub use experiments::{Experiment, ExperimentStatus, Observation};
+pub use goals::{Assumption, Direction, Goal};
+pub use ids::{
+    AssumptionId, AuditId, DirectionId, ExperimentId, GoalId, ObservationId, ProcessChangeId,
+    ReflectionId, Timestamp,
+};
+pub use policy::{PolicyDecision, authorize_process_change};
+pub use reflection::{ApprovalState, ProposedProcessChange, Reflection};
