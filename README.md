@@ -121,6 +121,12 @@ curl -s -X POST localhost:8787/v1/directions \
   -H 'content-type: application/json' -d '{"title":"Be healthier"}'
 ```
 
+Or in a container (data persists in `./endora-data`):
+
+```bash
+make docker-build && make docker-run    # → http://localhost:8787
+```
+
 ### Using the CLI
 
 With the node running, the `endora` CLI (a thin client) talks to it:
