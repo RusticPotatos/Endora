@@ -15,10 +15,11 @@ use endora_domain::{
 
 use crate::error::AppError;
 use crate::ports::{
-    AssumptionRepository, AttentionItem, AttentionKind, AuditLog, Butler, ButlerProposal,
-    ChatRepository, Clock, DirectionRepository, ExperimentRepository, IdSource, MemorySnapshot,
-    MemoryStore, ObservationRepository, PreferenceRepository, ProcessChangeRepository, Proposer,
-    ReflectionRepository, Snooze, SnoozeRepository, TargetRepository, ValueRepository,
+    AssumptionRepository, AttentionItem, AttentionKind, AuditLog, Butler, ButlerContext,
+    ButlerProposal, ChatRepository, Clock, DirectionRepository, ExperimentRepository, IdSource,
+    MemorySnapshot, MemoryStore, NorthStarBrief, ObservationRepository, PreferenceRepository,
+    ProcessChangeRepository, Proposer, ReflectionRepository, Snooze, SnoozeRepository,
+    TargetRepository, ValueRepository,
 };
 
 /// Creates and stores a new [`Direction`].
@@ -753,6 +754,7 @@ pub fn send_to_butler(
     butler: &dyn Butler,
     ids: &impl IdSource,
     clock: &impl Clock,
+    context: &ButlerContext,
     text: &str,
 ) -> Result<(ChatMessage, Vec<ButlerProposal>), AppError> {
     let user = ChatMessage::new(
@@ -766,7 +768,7 @@ pub fn send_to_butler(
     let history = chat.list()?;
     let prefs = preferences.list_all()?;
     let reply = butler
-        .respond(&history, &prefs)
+        .respond(&history, &prefs, context)
         .map_err(|e| AppError::Model {
             message: e.to_string(),
         })?;
@@ -793,6 +795,52 @@ pub fn send_to_butler(
 /// [`AppError::Repository`] if the backend fails or stored data is corrupt.
 pub fn chat_history(chat: &impl ChatRepository) -> Result<Vec<ChatMessage>, AppError> {
     Ok(chat.list()?)
+}
+
+/// Assembles the [`ButlerContext`] — a snapshot of the person's current life
+/// (values, North Stars with status/value/whether they have a target, and what
+/// needs attention) — so the butler's conversation is grounded in what exists.
+///
+/// # Errors
+/// [`AppError::Repository`] if the backend fails or stored data is corrupt.
+pub fn butler_context(
+    values: &impl ValueRepository,
+    directions: &impl DirectionRepository,
+    targets: &impl TargetRepository,
+    experiments: &impl ExperimentRepository,
+    snoozes: &impl SnoozeRepository,
+    clock: &impl Clock,
+) -> Result<ButlerContext, AppError> {
+    let value_list = values.list_all()?;
+    let mut north_stars = Vec::new();
+    for d in directions.list_all()? {
+        let has_active_target = targets
+            .list_for_direction(d.id())?
+            .iter()
+            .any(|t| t.status().is_active());
+        let value = d.value().and_then(|vid| {
+            value_list
+                .iter()
+                .find(|v| v.id() == vid)
+                .map(|v| v.name().to_owned())
+        });
+        north_stars.push(NorthStarBrief {
+            id: d.id().value().to_string(),
+            title: d.title().to_owned(),
+            status: d.status().name().to_owned(),
+            value,
+            has_active_target,
+        });
+    }
+    let attention = attention(directions, targets, experiments, snoozes, clock)?
+        .into_iter()
+        .map(|i| i.headline)
+        .collect();
+    Ok(ButlerContext {
+        values: value_list.iter().map(|v| v.name().to_owned()).collect(),
+        north_stars,
+        attention,
+    })
 }
 
 /// Records a preference the butler should keep in mind. In this build every
@@ -954,8 +1002,8 @@ mod tests {
     };
     use crate::error::AppError;
     use crate::ports::{
-        AssumptionRepository, AttentionKind, AuditLog, Butler, ButlerProposal, ButlerReply,
-        ChatRepository, Clock, DirectionRepository, ExperimentRepository, IdSource,
+        AssumptionRepository, AttentionKind, AuditLog, Butler, ButlerContext, ButlerProposal,
+        ButlerReply, ChatRepository, Clock, DirectionRepository, ExperimentRepository, IdSource,
         ObservationRepository, PreferenceRepository, ProcessChangeRepository, ProposalError,
         Proposer, ReflectionRepository, RepositoryError, Snooze, SnoozeRepository,
         TargetRepository, ValueRepository,
@@ -1177,6 +1225,7 @@ mod tests {
             &self,
             history: &[ChatMessage],
             _preferences: &[Preference],
+            _context: &ButlerContext,
         ) -> Result<ButlerReply, ProposalError> {
             let last = history.last().map(ChatMessage::text).unwrap_or_default();
             Ok(ButlerReply {
@@ -1476,6 +1525,7 @@ mod tests {
             &ScriptedTestButler,
             &ids,
             &clock,
+            &ButlerContext::default(),
             "I want to run more",
         )
         .unwrap();
@@ -1567,6 +1617,7 @@ mod tests {
                 &self,
                 _history: &[ChatMessage],
                 preferences: &[Preference],
+                _context: &ButlerContext,
             ) -> Result<ButlerReply, ProposalError> {
                 Ok(ButlerReply {
                     text: format!("I already know {} thing(s) about you", preferences.len()),
@@ -1574,8 +1625,16 @@ mod tests {
                 })
             }
         }
-        let (reply, _) =
-            send_to_butler(&store, &store, &EchoPrefsButler, &ids, &clock, "hi").unwrap();
+        let (reply, _) = send_to_butler(
+            &store,
+            &store,
+            &EchoPrefsButler,
+            &ids,
+            &clock,
+            &ButlerContext::default(),
+            "hi",
+        )
+        .unwrap();
         assert!(reply.text().contains("1 thing"));
 
         // Memory is deletable.

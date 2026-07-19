@@ -306,7 +306,13 @@ the release that carries it is **0.5.0**; tagging is a human decision.)
   structure, attention is proactive and calibrated, and the butler is candid and
   never sycophantic — all local-first, memory rights intact, policy boundary
   enforced. 1.0 is redefined around this; the CLI learning loop was an early
-  milestone, now passed.
+  milestone, now passed. *Integration delivered*: the butler is now **grounded in
+  the person's current life** — each turn it is handed a `ButlerContext` (their
+  values, North Stars with status/value/whether they have a target, and what needs
+  attention), so it refers to what actually exists and proposes the next concrete
+  step, including a **target under an existing North Star** (`create_target`). The
+  code carries the 1.0 feature set; **cutting the `1.0.0` release/tag is a human
+  decision** (it commits to protocol stability within the major version).
 
 Cross-cutting, in **every** release: the deterministic **policy boundary** authorizes
 consequential actions, **memory stays visible / correctable / exportable / deletable**,
