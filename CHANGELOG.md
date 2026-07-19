@@ -9,6 +9,14 @@ tagged release.
 
 ### Added
 
+- **Adaptive attention (0.8)** ([ADR 0016](docs/adr/0016-adaptive-attention.md)):
+  the butler surfaces what needs attention — due reviews, North Stars not yet filed
+  under a value, and North Stars with no active target — via `GET /v1/attention`,
+  most pressing first. Each item can be deferred (`POST /v1/attention/snooze`) with
+  **exponential backoff**: every "not now" doubles how long it stays hidden (1, 2,
+  4, … days), so a repeatedly-deferred item asks less and less. The console home
+  shows a "Needs your attention" section with a per-item "Later". The ranking serves
+  the person's stated values, not engagement.
 - **The butler — conversational MVP (0.7)**
   ([ADR 0014](docs/adr/0014-the-butler-conversation-values-attention.md)): a chat
   surface where the butler **proposes** structured actions from a closed set

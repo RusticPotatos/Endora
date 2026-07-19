@@ -11,7 +11,8 @@ use std::sync::Mutex;
 use endora_application::{
     AssumptionRepository, AuditLog, ChatRepository, DirectionRepository, ExperimentRepository,
     MemorySnapshot, MemoryStore, ObservationRepository, ProcessChangeRepository,
-    ReflectionRepository, RepositoryError, TargetRepository, ValueRepository,
+    ReflectionRepository, RepositoryError, Snooze, SnoozeRepository, TargetRepository,
+    ValueRepository,
 };
 use endora_domain::{
     ApprovalState, Assumption, AssumptionId, AuditId, AuditRecord, ChatMessage, Direction,
@@ -112,6 +113,14 @@ CREATE TABLE IF NOT EXISTS messages (
 ) STRICT;
 
 CREATE INDEX IF NOT EXISTS idx_messages_at ON messages(at_ms);
+
+CREATE TABLE IF NOT EXISTS attention_snoozes (
+    kind     TEXT NOT NULL,
+    subject  TEXT NOT NULL,
+    count    INTEGER NOT NULL,
+    until_ms INTEGER NOT NULL,
+    PRIMARY KEY (kind, subject)
+) STRICT;
 ";
 
 /// A SQLite-backed store implementing the persistence ports.
@@ -808,6 +817,7 @@ impl MemoryStore for SqliteStore {
             "\"values\"",
             "audit_log",
             "messages",
+            "attention_snoozes",
         ] {
             tx.execute(&format!("DELETE FROM {table}"), [])
                 .map_err(backend)?;
@@ -865,6 +875,40 @@ impl AuditLog for SqliteStore {
     }
 }
 
+impl SnoozeRepository for SqliteStore {
+    fn get(&self, kind: &str, subject: &str) -> Result<Option<Snooze>, RepositoryError> {
+        let conn = self.lock()?;
+        let row: Option<(i64, i64)> = conn
+            .query_row(
+                "SELECT count, until_ms FROM attention_snoozes WHERE kind = ?1 AND subject = ?2",
+                params![kind, subject],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()
+            .map_err(backend)?;
+        Ok(row.map(|(count, until)| Snooze {
+            count: u32::try_from(count).unwrap_or(0),
+            until: Timestamp::from_unix_millis(until),
+        }))
+    }
+
+    fn set(&self, kind: &str, subject: &str, snooze: Snooze) -> Result<(), RepositoryError> {
+        let conn = self.lock()?;
+        conn.execute(
+            "INSERT OR REPLACE INTO attention_snoozes (kind, subject, count, until_ms) \
+             VALUES (?1, ?2, ?3, ?4)",
+            params![
+                kind,
+                subject,
+                i64::from(snooze.count),
+                snooze.until.unix_millis()
+            ],
+        )
+        .map_err(backend)?;
+        Ok(())
+    }
+}
+
 impl ChatRepository for SqliteStore {
     fn append(&self, message: &ChatMessage) -> Result<(), RepositoryError> {
         let conn = self.lock()?;
@@ -888,8 +932,10 @@ impl ChatRepository for SqliteStore {
 }
 
 fn all_messages(conn: &Connection) -> Result<Vec<ChatMessage>, RepositoryError> {
+    // Insertion order (rowid) breaks ties so same-millisecond turns keep their
+    // real order — ids are random and cannot be a tiebreak.
     let mut stmt = conn
-        .prepare("SELECT id, role, body, at_ms FROM messages ORDER BY at_ms, id")
+        .prepare("SELECT id, role, body, at_ms FROM messages ORDER BY at_ms, rowid")
         .map_err(backend)?;
     let rows = stmt
         .query_map([], |r| {

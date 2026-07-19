@@ -366,6 +366,79 @@ pub trait ChatRepository {
     fn list(&self) -> Result<Vec<ChatMessage>, RepositoryError>;
 }
 
+/// The kind of thing needing the person's attention.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AttentionKind {
+    /// An experiment whose scheduled review has arrived.
+    ReviewDue,
+    /// An active North Star not yet filed under a value.
+    UnfiledNorthStar,
+    /// An active North Star with no active target under it.
+    EmptyNorthStar,
+}
+
+impl AttentionKind {
+    /// A stable, lowercase name for the protocol.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::ReviewDue => "review_due",
+            Self::UnfiledNorthStar => "unfiled_north_star",
+            Self::EmptyNorthStar => "empty_north_star",
+        }
+    }
+
+    /// Parses a kind from its [`name`](Self::name), or `None` if unrecognized.
+    #[must_use]
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "review_due" => Some(Self::ReviewDue),
+            "unfiled_north_star" => Some(Self::UnfiledNorthStar),
+            "empty_north_star" => Some(Self::EmptyNorthStar),
+            _ => None,
+        }
+    }
+}
+
+/// One thing the butler would raise, unless snoozed. A read projection, ranked by
+/// the order it is produced (most pressing first).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AttentionItem {
+    /// What kind of attention this is.
+    pub kind: AttentionKind,
+    /// The id of the experiment or North Star it concerns.
+    pub subject: String,
+    /// A human-readable one-line description.
+    pub headline: String,
+}
+
+/// A recorded deferral of an attention item: how many times it has been snoozed,
+/// and the time it stays hidden until. Each snooze roughly doubles the interval,
+/// so a repeatedly-deferred item is raised less and less.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Snooze {
+    /// How many times the item has been snoozed.
+    pub count: u32,
+    /// The item stays hidden until this time.
+    pub until: Timestamp,
+}
+
+/// Persists deferral (snooze) state for attention items, keyed by
+/// `(kind, subject)`.
+pub trait SnoozeRepository {
+    /// The current snooze for an item, if any.
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if the backend fails or stored data is corrupt.
+    fn get(&self, kind: &str, subject: &str) -> Result<Option<Snooze>, RepositoryError>;
+
+    /// Records (or replaces) the snooze for an item.
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if the backend fails.
+    fn set(&self, kind: &str, subject: &str, snooze: Snooze) -> Result<(), RepositoryError>;
+}
+
 /// Supplies the current time to use cases.
 ///
 /// The domain never reads the clock, so time enters through this port. The node

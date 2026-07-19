@@ -14,10 +14,10 @@ use endora_domain::{
 
 use crate::error::AppError;
 use crate::ports::{
-    AssumptionRepository, AuditLog, Butler, ButlerProposal, ChatRepository, Clock,
-    DirectionRepository, ExperimentRepository, IdSource, MemorySnapshot, MemoryStore,
-    ObservationRepository, ProcessChangeRepository, Proposer, ReflectionRepository,
-    TargetRepository, ValueRepository,
+    AssumptionRepository, AttentionItem, AttentionKind, AuditLog, Butler, ButlerProposal,
+    ChatRepository, Clock, DirectionRepository, ExperimentRepository, IdSource, MemorySnapshot,
+    MemoryStore, ObservationRepository, ProcessChangeRepository, Proposer, ReflectionRepository,
+    Snooze, SnoozeRepository, TargetRepository, ValueRepository,
 };
 
 /// Creates and stores a new [`Direction`].
@@ -790,6 +790,101 @@ pub fn chat_history(chat: &impl ChatRepository) -> Result<Vec<ChatMessage>, AppE
     Ok(chat.list()?)
 }
 
+/// Computes what currently needs the person's attention, most pressing first,
+/// with snoozed items suppressed (see `docs/adr/0016-adaptive-attention.md`).
+///
+/// This is a fresh read each time, so resolving an item removes it and new ones
+/// appear on their own — reprioritization is automatic.
+///
+/// # Errors
+/// [`AppError::Repository`] if the backend fails or stored data is corrupt.
+pub fn attention(
+    directions: &impl DirectionRepository,
+    targets: &impl TargetRepository,
+    experiments: &impl ExperimentRepository,
+    snoozes: &impl SnoozeRepository,
+    clock: &impl Clock,
+) -> Result<Vec<AttentionItem>, AppError> {
+    let now = clock.now();
+    let mut candidates: Vec<AttentionItem> = Vec::new();
+
+    // Due reviews are the most pressing.
+    for e in experiments.list_due_reviews(now)? {
+        candidates.push(AttentionItem {
+            kind: AttentionKind::ReviewDue,
+            subject: e.id().value().to_string(),
+            headline: format!("Review due: \"{}\"", e.hypothesis()),
+        });
+    }
+    // Active North Stars that are unfiled or have no active target.
+    for d in directions.list_all()? {
+        if !d.status().is_active() {
+            continue;
+        }
+        if d.value().is_none() {
+            candidates.push(AttentionItem {
+                kind: AttentionKind::UnfiledNorthStar,
+                subject: d.id().value().to_string(),
+                headline: format!(
+                    "\"{}\" isn't filed under a value yet — what does it serve?",
+                    d.title()
+                ),
+            });
+        }
+        let has_active_target = targets
+            .list_for_direction(d.id())?
+            .iter()
+            .any(|t| t.status().is_active());
+        if !has_active_target {
+            candidates.push(AttentionItem {
+                kind: AttentionKind::EmptyNorthStar,
+                subject: d.id().value().to_string(),
+                headline: format!(
+                    "\"{}\" has no active target yet — add one to start.",
+                    d.title()
+                ),
+            });
+        }
+    }
+
+    // Drop anything currently snoozed.
+    let mut out = Vec::new();
+    for item in candidates {
+        let hidden = snoozes
+            .get(item.kind.name(), &item.subject)?
+            .is_some_and(|s| s.until.unix_millis() > now.unix_millis());
+        if !hidden {
+            out.push(item);
+        }
+    }
+    Ok(out)
+}
+
+/// Snoozes an attention item ("not now"), with exponential backoff: each snooze
+/// roughly doubles the hidden interval (1, 2, 4, … days, capped), so a
+/// repeatedly-deferred item is raised less and less.
+///
+/// # Errors
+/// [`AppError::Repository`] if persistence fails.
+pub fn snooze_attention(
+    snoozes: &impl SnoozeRepository,
+    clock: &impl Clock,
+    kind: AttentionKind,
+    subject: &str,
+) -> Result<Snooze, AppError> {
+    let now = clock.now();
+    let count = snoozes.get(kind.name(), subject)?.map_or(0, |s| s.count);
+    // 1, 2, 4, 8, … days, capped at 64 so an item never disappears forever.
+    let days = 1i64 << count.min(6);
+    let until = Timestamp::from_unix_millis(now.unix_millis() + days * MILLIS_PER_DAY);
+    let snooze = Snooze {
+        count: count + 1,
+        until,
+    };
+    snoozes.set(kind.name(), subject, snooze)?;
+    Ok(snooze)
+}
+
 /// A short verb phrase for an audit summary.
 fn describe(decision: PolicyDecision) -> &'static str {
     match decision {
@@ -813,10 +908,11 @@ mod tests {
     };
     use crate::error::AppError;
     use crate::ports::{
-        AssumptionRepository, AuditLog, Butler, ButlerProposal, ButlerReply, ChatRepository, Clock,
-        DirectionRepository, ExperimentRepository, IdSource, ObservationRepository,
-        ProcessChangeRepository, ProposalError, Proposer, ReflectionRepository, RepositoryError,
-        TargetRepository, ValueRepository,
+        AssumptionRepository, AttentionKind, AuditLog, Butler, ButlerProposal, ButlerReply,
+        ChatRepository, Clock, DirectionRepository, ExperimentRepository, IdSource,
+        ObservationRepository, ProcessChangeRepository, ProposalError, Proposer,
+        ReflectionRepository, RepositoryError, Snooze, SnoozeRepository, TargetRepository,
+        ValueRepository,
     };
     use endora_domain::LifecycleStatus;
     use endora_domain::{
@@ -833,6 +929,7 @@ mod tests {
     struct FakeStore {
         values: RefCell<HashMap<u128, Value>>,
         messages: RefCell<Vec<ChatMessage>>,
+        snoozes: RefCell<HashMap<(String, String), Snooze>>,
         directions: RefCell<HashMap<u128, Direction>>,
         targets: RefCell<HashMap<u128, Target>>,
         assumptions: RefCell<HashMap<u128, Assumption>>,
@@ -991,6 +1088,22 @@ mod tests {
         }
         fn list(&self) -> Result<Vec<ChatMessage>, RepositoryError> {
             Ok(self.messages.borrow().clone())
+        }
+    }
+
+    impl SnoozeRepository for FakeStore {
+        fn get(&self, kind: &str, subject: &str) -> Result<Option<Snooze>, RepositoryError> {
+            Ok(self
+                .snoozes
+                .borrow()
+                .get(&(kind.to_owned(), subject.to_owned()))
+                .copied())
+        }
+        fn set(&self, kind: &str, subject: &str, snooze: Snooze) -> Result<(), RepositoryError> {
+            self.snoozes
+                .borrow_mut()
+                .insert((kind.to_owned(), subject.to_owned()), snooze);
+            Ok(())
         }
     }
 
@@ -1313,6 +1426,53 @@ mod tests {
         assert_eq!(history.len(), 2);
         assert_eq!(history[0].role(), MessageRole::User);
         assert_eq!(history[1].role(), MessageRole::Butler);
+    }
+
+    #[test]
+    fn attention_surfaces_unfiled_and_empty_north_stars_then_backs_off_on_snooze() {
+        use super::{attention, snooze_attention};
+        let store = FakeStore::default();
+        let ids = SeqIds::default();
+        let day = 24 * 60 * 60 * 1_000;
+
+        // An active North Star with no value and no target: two attention items.
+        let d = create_direction(&store, &ids, "Get back into running").unwrap();
+        let items = attention(&store, &store, &store, &store, &FixedClock(0)).unwrap();
+        let kinds: Vec<_> = items.iter().map(|i| i.kind).collect();
+        assert!(kinds.contains(&AttentionKind::UnfiledNorthStar));
+        assert!(kinds.contains(&AttentionKind::EmptyNorthStar));
+
+        // Snooze the "unfiled" item: hidden for 1 day, back after.
+        snooze_attention(
+            &store,
+            &FixedClock(0),
+            AttentionKind::UnfiledNorthStar,
+            &d.id().value().to_string(),
+        )
+        .unwrap();
+        let after = attention(&store, &store, &store, &store, &FixedClock(day / 2)).unwrap();
+        assert!(
+            !after
+                .iter()
+                .any(|i| i.kind == AttentionKind::UnfiledNorthStar)
+        );
+        let later = attention(&store, &store, &store, &store, &FixedClock(day + 1)).unwrap();
+        assert!(
+            later
+                .iter()
+                .any(|i| i.kind == AttentionKind::UnfiledNorthStar)
+        );
+
+        // A second snooze backs off to ~2 days.
+        let s = snooze_attention(
+            &store,
+            &FixedClock(day + 1),
+            AttentionKind::UnfiledNorthStar,
+            &d.id().value().to_string(),
+        )
+        .unwrap();
+        assert_eq!(s.count, 2);
+        assert_eq!(s.until.unix_millis(), day + 1 + 2 * day);
     }
 
     #[test]

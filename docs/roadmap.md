@@ -272,7 +272,13 @@ the release that carries it is **0.5.0**; tagging is a human decision.)
   raise, with **hybrid triggers** — events (the existing change stream) + scheduled
   sweeps + conversation. The butler surfaces stale North Stars and due reviews and
   asks *less* as they are deferred, reprioritizing on new evidence. Its own ADR pins
-  the attention formula. "It comes to you."
+  the attention formula. "It comes to you." *Delivered*
+  ([ADR 0016](adr/0016-adaptive-attention.md)): a computed attention read model
+  (`GET /v1/attention`) surfacing due reviews, unfiled North Stars, and empty North
+  Stars, with **deferral-backoff** (`POST /v1/attention/snooze` — each snooze doubles
+  the hidden interval). The console home shows a "Needs your attention" section with
+  a per-item "Later". *Still ahead*: time-based **staleness** (needs per-item
+  activity timestamps) and value-weighted priority.
 
 ### 0.9 — Voice & character
 - **Personality**: style mirroring with the golden-rule floor (ADR 0014 §4), and the
