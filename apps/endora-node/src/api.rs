@@ -13,7 +13,7 @@ use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
-use endora_application::{AppError, Proposer, RepositoryError, usecases};
+use endora_application::{AppError, MemorySnapshot, Proposer, RepositoryError, usecases};
 use endora_domain::{
     Assumption, AssumptionId, AuditRecord, AutonomyLevel, Direction, DirectionId, Experiment,
     ExperimentId, Goal, GoalId, Observation, ObservationId, PolicyDecision, ProcessChangeId,
@@ -84,6 +84,8 @@ pub fn app(state: AppState) -> Router {
             post(decide_process_change),
         )
         .route("/v1/audit", get(audit))
+        .route("/v1/export", get(export))
+        .route("/v1/memory/purge", post(purge))
         .with_state(state)
 }
 
@@ -609,6 +611,68 @@ async fn audit(
     let store = state.store.clone();
     let records = blocking(move || usecases::recent_audit(store.as_ref(), limit)).await?;
     Ok(Json(records.iter().map(AuditResponse::from).collect()))
+}
+
+/// The full export of the user's data — the "exportable" memory right.
+#[derive(Serialize)]
+struct ExportResponse {
+    directions: Vec<DirectionResponse>,
+    goals: Vec<GoalResponse>,
+    assumptions: Vec<AssumptionResponse>,
+    experiments: Vec<ExperimentResponse>,
+    observations: Vec<ObservationResponse>,
+    reflections: Vec<ReflectionResponse>,
+    process_changes: Vec<ProcessChangeResponse>,
+    audit: Vec<AuditResponse>,
+}
+
+impl From<&MemorySnapshot> for ExportResponse {
+    fn from(s: &MemorySnapshot) -> Self {
+        Self {
+            directions: s.directions.iter().map(DirectionResponse::from).collect(),
+            goals: s.goals.iter().map(GoalResponse::from).collect(),
+            assumptions: s.assumptions.iter().map(AssumptionResponse::from).collect(),
+            experiments: s.experiments.iter().map(ExperimentResponse::from).collect(),
+            observations: s
+                .observations
+                .iter()
+                .map(ObservationResponse::from)
+                .collect(),
+            reflections: s.reflections.iter().map(ReflectionResponse::from).collect(),
+            process_changes: s
+                .process_changes
+                .iter()
+                .map(ProcessChangeResponse::from)
+                .collect(),
+            audit: s.audit.iter().map(AuditResponse::from).collect(),
+        }
+    }
+}
+
+async fn export(State(state): State<AppState>) -> Result<Json<ExportResponse>, ApiError> {
+    let store = state.store.clone();
+    let snapshot = blocking(move || usecases::export_memory(store.as_ref())).await?;
+    Ok(Json(ExportResponse::from(&snapshot)))
+}
+
+#[derive(Deserialize)]
+struct PurgeRequest {
+    #[serde(default)]
+    confirm: bool,
+}
+
+async fn purge(
+    State(state): State<AppState>,
+    Json(req): Json<PurgeRequest>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    if !req.confirm {
+        return Err(ApiError(AppError::BadRequest {
+            message: r#"send {"confirm": true} to permanently delete all data"#.to_owned(),
+        }));
+    }
+    let store = state.store.clone();
+    blocking(move || usecases::purge_memory(store.as_ref())).await?;
+    Ok(Json(json!({ "purged": true })))
 }
 
 /// Parses a path id into a [`ReflectionId`]; a malformed id names no reflection.
@@ -1183,6 +1247,69 @@ mod tests {
             .unwrap();
         assert_eq!(res.status(), StatusCode::OK);
         assert_eq!(json_body(res).await.as_array().unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn export_then_purge_clears_all_data() {
+        let app = app(test_state());
+        let (gid, _oid) = seed_chain(&app).await;
+
+        // Export shows the seeded data.
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/export")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let export = json_body(res).await;
+        assert_eq!(export["goals"].as_array().unwrap().len(), 1);
+        assert_eq!(export["observations"].as_array().unwrap().len(), 1);
+
+        // Purge without confirmation is refused.
+        let res = app
+            .clone()
+            .oneshot(post("/v1/memory/purge", r#"{"confirm":false}"#))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+
+        // Purge with confirmation wipes everything.
+        let res = app
+            .clone()
+            .oneshot(post("/v1/memory/purge", r#"{"confirm":true}"#))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+
+        // The goal's data is gone.
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/v1/directions/{gid}/goals"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        // (gid no longer exists, but listing a goal's assumptions is by goal id)
+        let res2 = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/export")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(json_body(res2).await["goals"].as_array().unwrap().len(), 0);
+        assert_eq!(res.status(), StatusCode::OK);
     }
 
     #[tokio::test]
