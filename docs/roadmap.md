@@ -184,12 +184,15 @@ a prerequisite.
 ### 0.3 — Retention: the loop that pulls you back
 
 - **Scheduled review prompts** — "you said you'd check this experiment in two
-  weeks." A background scheduler in the node reviews state and raises reminders.
-  A reminder is a notification/proposal, never a consequential action, so this is
-  Endora's first *proactive* behavior and is constitutionally safe (it gets its
-  own ADR when built).
+  weeks." *Delivered* ([ADR 0011](adr/0011-review-scheduling-reminders.md)): an
+  experiment can carry a scheduled review time, and the system surfaces reviews
+  that are due (`GET /v1/reviews/due`, a console banner) without acting on them —
+  Endora's first *proactive* behavior, and the first application of the autonomy
+  model ([ADR 0010](adr/0010-autonomy-model.md)). Reviews are computed on read,
+  not pushed by a background scheduler; live delivery comes next.
 - An **activity feed** (`GET /v1/activity`) recording what happened, and
-  **server-sent events** so the console reflects new activity live.
+  **server-sent events** so the console reflects new activity — including due
+  reviews — live.
 
 This is the make-or-break mechanic: the loop only closes if experiments actually
 get observed. The most design care goes here.

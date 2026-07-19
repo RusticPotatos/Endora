@@ -7,6 +7,21 @@ tagged release.
 
 ## [Unreleased]
 
+### Added
+
+- **Review scheduling** ([ADR 0011](docs/adr/0011-review-scheduling-reminders.md)),
+  the first application of the autonomy model
+  ([ADR 0010](docs/adr/0010-autonomy-model.md)): an experiment can carry a
+  scheduled review time, and the system surfaces reviews that are due without
+  acting on them. New protocol endpoints `POST /v1/experiments/{id}/review` and
+  `GET /v1/reviews/due`; CLI `experiment review <id> <days>` and `reviews due`;
+  and a web-console "Remind me" control plus a due-review banner on the home view.
+
+### Changed
+
+- The `experiments` table gains a nullable `review_by_ms` column, added to
+  existing databases by an automatic forward migration on open.
+
 ## [0.1.0] - 2026-07-19
 
 First tagged release. Endora is in its foundation phase and is **not** a general

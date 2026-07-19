@@ -46,7 +46,8 @@ CREATE TABLE IF NOT EXISTS experiments (
     id            TEXT PRIMARY KEY,
     assumption_id TEXT NOT NULL REFERENCES assumptions(id),
     hypothesis    TEXT NOT NULL,
-    status        TEXT NOT NULL
+    status        TEXT NOT NULL,
+    review_by_ms  INTEGER
 ) STRICT;
 
 CREATE INDEX IF NOT EXISTS idx_experiments_assumption ON experiments(assumption_id);
@@ -123,6 +124,14 @@ impl SqliteStore {
         conn.pragma_update(None, "foreign_keys", "ON")
             .map_err(backend)?;
         conn.execute_batch(SCHEMA).map_err(backend)?;
+        // Migrations for databases created by an earlier schema version. The
+        // review index is created only once the column is guaranteed present,
+        // so opening a pre-review database does not fail on the missing column.
+        ensure_column(&conn, "experiments", "review_by_ms", "INTEGER")?;
+        conn.execute_batch(
+            "CREATE INDEX IF NOT EXISTS idx_experiments_review ON experiments(review_by_ms);",
+        )
+        .map_err(backend)?;
         Ok(Self {
             conn: Mutex::new(conn),
         })
@@ -283,13 +292,14 @@ impl ExperimentRepository for SqliteStore {
     fn save(&self, experiment: &Experiment) -> Result<(), RepositoryError> {
         let conn = self.lock()?;
         conn.execute(
-            "INSERT OR REPLACE INTO experiments (id, assumption_id, hypothesis, status) \
-             VALUES (?1, ?2, ?3, ?4)",
+            "INSERT OR REPLACE INTO experiments (id, assumption_id, hypothesis, status, review_by_ms) \
+             VALUES (?1, ?2, ?3, ?4, ?5)",
             params![
                 id_text(experiment.id().value()),
                 id_text(experiment.assumption().value()),
                 experiment.hypothesis(),
-                experiment.status().name()
+                experiment.status().name(),
+                experiment.review_by().map(|t| t.unix_millis())
             ],
         )
         .map_err(backend)?;
@@ -298,22 +308,25 @@ impl ExperimentRepository for SqliteStore {
 
     fn get(&self, id: ExperimentId) -> Result<Option<Experiment>, RepositoryError> {
         let conn = self.lock()?;
-        let row: Option<(String, String, String)> = conn
+        let row: Option<(String, String, String, Option<i64>)> = conn
             .query_row(
-                "SELECT assumption_id, hypothesis, status FROM experiments WHERE id = ?1",
+                "SELECT assumption_id, hypothesis, status, review_by_ms FROM experiments WHERE id = ?1",
                 params![id_text(id.value())],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
             )
             .optional()
             .map_err(backend)?;
-        let Some((assumption_id, hypothesis, status)) = row else {
+        let Some((assumption_id, hypothesis, status, review_by_ms)) = row else {
             return Ok(None);
         };
         let assumption = AssumptionId::new(parse_id(&assumption_id)?);
-        let experiment =
-            Experiment::from_parts(id, assumption, &hypothesis, parse_status(&status)?)
-                .map_err(corrupt)?;
-        Ok(Some(experiment))
+        Ok(Some(build_experiment(
+            id,
+            assumption,
+            &hypothesis,
+            &status,
+            review_by_ms,
+        )?))
     }
 
     fn list_for_assumption(
@@ -323,7 +336,7 @@ impl ExperimentRepository for SqliteStore {
         let conn = self.lock()?;
         let mut stmt = conn
             .prepare(
-                "SELECT id, hypothesis, status FROM experiments \
+                "SELECT id, hypothesis, status, review_by_ms FROM experiments \
                  WHERE assumption_id = ?1 ORDER BY id",
             )
             .map_err(backend)?;
@@ -333,21 +346,56 @@ impl ExperimentRepository for SqliteStore {
                     row.get::<_, String>(0)?,
                     row.get::<_, String>(1)?,
                     row.get::<_, String>(2)?,
+                    row.get::<_, Option<i64>>(3)?,
                 ))
             })
             .map_err(backend)?;
 
         let mut experiments = Vec::new();
         for row in rows {
-            let (id, hypothesis, status) = row.map_err(backend)?;
-            let experiment = Experiment::from_parts(
+            let (id, hypothesis, status, review_by_ms) = row.map_err(backend)?;
+            experiments.push(build_experiment(
                 ExperimentId::new(parse_id(&id)?),
                 assumption,
                 &hypothesis,
-                parse_status(&status)?,
+                &status,
+                review_by_ms,
+            )?);
+        }
+        Ok(experiments)
+    }
+
+    fn list_due_reviews(&self, now: Timestamp) -> Result<Vec<Experiment>, RepositoryError> {
+        let conn = self.lock()?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, assumption_id, hypothesis, status, review_by_ms FROM experiments \
+                 WHERE review_by_ms IS NOT NULL AND review_by_ms <= ?1 AND status != 'concluded' \
+                 ORDER BY review_by_ms, id",
             )
-            .map_err(corrupt)?;
-            experiments.push(experiment);
+            .map_err(backend)?;
+        let rows = stmt
+            .query_map(params![now.unix_millis()], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, Option<i64>>(4)?,
+                ))
+            })
+            .map_err(backend)?;
+
+        let mut experiments = Vec::new();
+        for row in rows {
+            let (id, assumption_id, hypothesis, status, review_by_ms) = row.map_err(backend)?;
+            experiments.push(build_experiment(
+                ExperimentId::new(parse_id(&id)?),
+                AssumptionId::new(parse_id(&assumption_id)?),
+                &hypothesis,
+                &status,
+                review_by_ms,
+            )?);
         }
         Ok(experiments)
     }
@@ -734,7 +782,10 @@ fn all_assumptions(conn: &Connection) -> Result<Vec<Assumption>, RepositoryError
 
 fn all_experiments(conn: &Connection) -> Result<Vec<Experiment>, RepositoryError> {
     let mut stmt = conn
-        .prepare("SELECT id, assumption_id, hypothesis, status FROM experiments ORDER BY id")
+        .prepare(
+            "SELECT id, assumption_id, hypothesis, status, review_by_ms \
+             FROM experiments ORDER BY id",
+        )
         .map_err(backend)?;
     let rows = stmt
         .query_map([], |r| {
@@ -743,23 +794,41 @@ fn all_experiments(conn: &Connection) -> Result<Vec<Experiment>, RepositoryError
                 r.get::<_, String>(1)?,
                 r.get::<_, String>(2)?,
                 r.get::<_, String>(3)?,
+                r.get::<_, Option<i64>>(4)?,
             ))
         })
         .map_err(backend)?;
     let mut out = Vec::new();
     for row in rows {
-        let (id, assumption, hypothesis, status) = row.map_err(backend)?;
-        out.push(
-            Experiment::from_parts(
-                ExperimentId::new(parse_id(&id)?),
-                AssumptionId::new(parse_id(&assumption)?),
-                &hypothesis,
-                parse_status(&status)?,
-            )
-            .map_err(corrupt)?,
-        );
+        let (id, assumption, hypothesis, status, review_by_ms) = row.map_err(backend)?;
+        out.push(build_experiment(
+            ExperimentId::new(parse_id(&id)?),
+            AssumptionId::new(parse_id(&assumption)?),
+            &hypothesis,
+            &status,
+            review_by_ms,
+        )?);
     }
     Ok(out)
+}
+
+/// Reconstitutes an [`Experiment`] from its persisted columns, mapping the
+/// stored millisecond timestamp back into a domain [`Timestamp`].
+fn build_experiment(
+    id: ExperimentId,
+    assumption: AssumptionId,
+    hypothesis: &str,
+    status: &str,
+    review_by_ms: Option<i64>,
+) -> Result<Experiment, RepositoryError> {
+    Experiment::from_parts(
+        id,
+        assumption,
+        hypothesis,
+        parse_status(status)?,
+        review_by_ms.map(Timestamp::from_unix_millis),
+    )
+    .map_err(corrupt)
 }
 
 fn all_observations(conn: &Connection) -> Result<Vec<Observation>, RepositoryError> {
@@ -918,6 +987,33 @@ fn parse_approval(text: &str) -> Result<ApprovalState, RepositoryError> {
         .ok_or_else(|| RepositoryError::Corrupt(format!("unknown approval state {text:?}")))
 }
 
+/// Adds `column` to `table` if it is not already present.
+///
+/// A minimal forward migration for STRICT tables: adding a nullable column to
+/// databases created before the column existed. Existing rows read back `NULL`.
+fn ensure_column(
+    conn: &Connection,
+    table: &str,
+    column: &str,
+    decl: &str,
+) -> Result<(), RepositoryError> {
+    let present: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info(?1) WHERE name = ?2",
+            params![table, column],
+            |row| row.get(0),
+        )
+        .map_err(backend)?;
+    if present == 0 {
+        conn.execute(
+            &format!("ALTER TABLE {table} ADD COLUMN {column} {decl}"),
+            [],
+        )
+        .map_err(backend)?;
+    }
+    Ok(())
+}
+
 /// Maps any backend error into a [`RepositoryError::Backend`].
 fn backend(error: impl core::fmt::Display) -> RepositoryError {
     RepositoryError::Backend(error.to_string())
@@ -1052,6 +1148,82 @@ mod tests {
             experiments.list_for_assumption(assumption).unwrap(),
             vec![loaded]
         );
+    }
+
+    #[test]
+    fn scheduled_review_round_trips_and_lists_when_due() {
+        use endora_application::{AssumptionRepository, ExperimentRepository};
+        use endora_domain::{
+            Assumption, AssumptionId, Experiment, ExperimentId, GoalId, Timestamp,
+        };
+
+        let store = store();
+        let directions: &dyn DirectionRepository = &store;
+        let goals: &dyn GoalRepository = &store;
+        let assumptions: &dyn AssumptionRepository = &store;
+        let experiments: &dyn ExperimentRepository = &store;
+
+        directions
+            .save(&Direction::new(DirectionId::new(1), "Be healthier").unwrap())
+            .unwrap();
+        goals
+            .save(&Goal::new(GoalId::new(2), DirectionId::new(1), "Run a 5k").unwrap())
+            .unwrap();
+        let assumption = AssumptionId::new(3);
+        assumptions
+            .save(&Assumption::new(assumption, GoalId::new(2), "Mornings").unwrap())
+            .unwrap();
+
+        let mut e = Experiment::propose(ExperimentId::new(4), assumption, "Try mornings").unwrap();
+        e.schedule_review(Timestamp::from_unix_millis(1_000));
+        experiments.save(&e).unwrap();
+
+        // The due time survives a reload.
+        let loaded = experiments.get(ExperimentId::new(4)).unwrap().unwrap();
+        assert_eq!(loaded.review_by(), Some(Timestamp::from_unix_millis(1_000)));
+
+        // Not yet due before its time; due once the time arrives.
+        assert!(
+            experiments
+                .list_due_reviews(Timestamp::from_unix_millis(999))
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            experiments
+                .list_due_reviews(Timestamp::from_unix_millis(1_000))
+                .unwrap(),
+            vec![loaded]
+        );
+    }
+
+    #[test]
+    fn opening_a_pre_review_database_migrates_the_column() {
+        use endora_application::ExperimentRepository;
+        use endora_domain::ExperimentId;
+        use rusqlite::Connection;
+
+        // Simulate a database created before `review_by_ms` existed: the
+        // experiments table has the old four columns and a stored row.
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE experiments (
+                id            TEXT PRIMARY KEY,
+                assumption_id TEXT NOT NULL,
+                hypothesis    TEXT NOT NULL,
+                status        TEXT NOT NULL
+            ) STRICT;
+            INSERT INTO experiments (id, assumption_id, hypothesis, status)
+            VALUES ('4', '3', 'Try mornings', 'proposed');",
+        )
+        .unwrap();
+
+        // Opening the store must add the column and read the legacy row back
+        // with no review scheduled.
+        let store = SqliteStore::from_connection(conn).unwrap();
+        let experiments: &dyn ExperimentRepository = &store;
+        let loaded = experiments.get(ExperimentId::new(4)).unwrap().unwrap();
+        assert_eq!(loaded.review_by(), None);
     }
 
     #[test]

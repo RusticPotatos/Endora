@@ -44,3 +44,4 @@ of an existing record and take the next number.
 | [0008](0008-local-model-adapter.md) | Local model adapter | Accepted |
 | [0009](0009-node-served-ui-and-single-container.md) | Node-served web UI and single-container packaging | Accepted |
 | [0010](0010-autonomy-model.md) | Autonomy model: the act/ask loop and preferences | Accepted |
+| [0011](0011-review-scheduling-reminders.md) | Review scheduling: the first act of the autonomy model | Accepted |
