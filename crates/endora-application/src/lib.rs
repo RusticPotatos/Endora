@@ -5,11 +5,15 @@
 //! implements. It depends inward on [`endora_domain`] and must not depend on
 //! concrete infrastructure, transports, or UI frameworks.
 //!
-//! In the foundation phase this layer is intentionally almost empty: it exists
-//! to fix the dependency direction (`Interface -> Application -> Domain`) so the
-//! first real vertical slice has a place to live. See `docs/architecture.md`.
+//! It fixes the dependency direction (`Interface -> Application -> Domain`) and
+//! defines the [`ports`] that infrastructure implements. See
+//! `docs/architecture.md`.
 
 #![forbid(unsafe_code)]
+
+pub mod ports;
+
+pub use ports::{DirectionRepository, GoalRepository, RepositoryError};
 
 use endora_domain::AutonomyLevel;
 
