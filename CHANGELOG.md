@@ -9,6 +9,16 @@ tagged release.
 
 ### Added
 
+- **The butler — conversational MVP (0.7)**
+  ([ADR 0014](docs/adr/0014-the-butler-conversation-values-attention.md)): a chat
+  surface where the butler **proposes** structured actions from a closed set
+  (create value / North Star) and the person **confirms** each one — existing
+  deterministic use cases execute; the model never acts on its own. Two brains: a
+  `ScriptedButler` (offline, deterministic, the reliable fallback) and an
+  `LlmButler` (a local OpenAI-compatible model, with a candid, explicitly
+  anti-sycophantic prompt, falling back to scripted if unavailable). The
+  conversation is persisted and included in export/purge. New `POST/GET /v1/chat`,
+  CLI `chat "<message>"`, and a console chat panel with confirmable proposals.
 - **Values layer (0.6)** ([ADR 0015](docs/adr/0015-identity-and-values-context.md)):
   a **`Value`** — the *why* a North Star serves (health, community, craft) — sits
   above North Stars: **Value → North Star → Target**. A North Star can be filed

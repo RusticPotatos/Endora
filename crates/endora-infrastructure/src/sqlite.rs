@@ -9,15 +9,15 @@
 use std::sync::Mutex;
 
 use endora_application::{
-    AssumptionRepository, AuditLog, DirectionRepository, ExperimentRepository, MemorySnapshot,
-    MemoryStore, ObservationRepository, ProcessChangeRepository, ReflectionRepository,
-    RepositoryError, TargetRepository, ValueRepository,
+    AssumptionRepository, AuditLog, ChatRepository, DirectionRepository, ExperimentRepository,
+    MemorySnapshot, MemoryStore, ObservationRepository, ProcessChangeRepository,
+    ReflectionRepository, RepositoryError, TargetRepository, ValueRepository,
 };
 use endora_domain::{
-    ApprovalState, Assumption, AssumptionId, AuditId, AuditRecord, Direction, DirectionId,
-    Experiment, ExperimentId, ExperimentStatus, LifecycleStatus, Observation, ObservationId,
-    ProcessChangeId, ProposedProcessChange, Reflection, ReflectionId, Target, TargetId, Timestamp,
-    Value, ValueId,
+    ApprovalState, Assumption, AssumptionId, AuditId, AuditRecord, ChatMessage, Direction,
+    DirectionId, Experiment, ExperimentId, ExperimentStatus, LifecycleStatus, MessageId,
+    MessageRole, Observation, ObservationId, ProcessChangeId, ProposedProcessChange, Reflection,
+    ReflectionId, Target, TargetId, Timestamp, Value, ValueId,
 };
 use rusqlite::{Connection, OptionalExtension, params};
 
@@ -103,6 +103,15 @@ CREATE TABLE IF NOT EXISTS audit_log (
 ) STRICT;
 
 CREATE INDEX IF NOT EXISTS idx_audit_at ON audit_log(at_ms);
+
+CREATE TABLE IF NOT EXISTS messages (
+    id    TEXT PRIMARY KEY,
+    role  TEXT NOT NULL,
+    body  TEXT NOT NULL,
+    at_ms INTEGER NOT NULL
+) STRICT;
+
+CREATE INDEX IF NOT EXISTS idx_messages_at ON messages(at_ms);
 ";
 
 /// A SQLite-backed store implementing the persistence ports.
@@ -779,6 +788,7 @@ impl MemoryStore for SqliteStore {
             reflections: all_reflections(&conn)?,
             process_changes: all_process_changes(&conn)?,
             audit: all_audit(&conn)?,
+            messages: all_messages(&conn)?,
         })
     }
 
@@ -797,6 +807,7 @@ impl MemoryStore for SqliteStore {
             "directions",
             "\"values\"",
             "audit_log",
+            "messages",
         ] {
             tx.execute(&format!("DELETE FROM {table}"), [])
                 .map_err(backend)?;
@@ -852,6 +863,60 @@ impl AuditLog for SqliteStore {
         }
         Ok(records)
     }
+}
+
+impl ChatRepository for SqliteStore {
+    fn append(&self, message: &ChatMessage) -> Result<(), RepositoryError> {
+        let conn = self.lock()?;
+        conn.execute(
+            "INSERT OR REPLACE INTO messages (id, role, body, at_ms) VALUES (?1, ?2, ?3, ?4)",
+            params![
+                id_text(message.id().value()),
+                message.role().name(),
+                message.text(),
+                message.at().unix_millis()
+            ],
+        )
+        .map_err(backend)?;
+        Ok(())
+    }
+
+    fn list(&self) -> Result<Vec<ChatMessage>, RepositoryError> {
+        let conn = self.lock()?;
+        all_messages(&conn)
+    }
+}
+
+fn all_messages(conn: &Connection) -> Result<Vec<ChatMessage>, RepositoryError> {
+    let mut stmt = conn
+        .prepare("SELECT id, role, body, at_ms FROM messages ORDER BY at_ms, id")
+        .map_err(backend)?;
+    let rows = stmt
+        .query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, i64>(3)?,
+            ))
+        })
+        .map_err(backend)?;
+    let mut out = Vec::new();
+    for row in rows {
+        let (id, role, body, at_ms) = row.map_err(backend)?;
+        let role = MessageRole::from_name(&role)
+            .ok_or_else(|| RepositoryError::Corrupt(format!("unknown message role {role:?}")))?;
+        out.push(
+            ChatMessage::new(
+                MessageId::new(parse_id(&id)?),
+                role,
+                &body,
+                Timestamp::from_unix_millis(at_ms),
+            )
+            .map_err(corrupt)?,
+        );
+    }
+    Ok(out)
 }
 
 /// Renders a `u128` identifier as the decimal `TEXT` used for storage.

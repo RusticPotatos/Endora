@@ -56,6 +56,11 @@ fn main() -> ExitCode {
 fn route(args: &[&str]) -> Option<Action> {
     match args {
         ["health"] => Some(Action::Get("/health".to_owned())),
+        ["chat"] => Some(Action::Get("/v1/chat".to_owned())),
+        ["chat", message] => Some(Action::Post(
+            "/v1/chat".to_owned(),
+            json!({ "message": message }),
+        )),
         ["value", "create", name] => Some(Action::Post(
             "/v1/values".to_owned(),
             json!({ "name": name }),
@@ -200,6 +205,8 @@ fn print_usage() {
         "\nUsage: endora <command>\n\n\
          Commands:\n  \
            health                                 check the node is up\n  \
+           chat \"<message>\"                       talk to the butler (proposes; you confirm)\n  \
+           chat                                   show the conversation so far\n  \
            value create <name>                    create a value (a North Star's why)\n  \
            value list                             list your values\n  \
            value delete <id>                      delete a value (no North Stars may serve it)\n  \
@@ -258,6 +265,18 @@ mod tests {
                 json!({ "title": "Be healthier" })
             ))
         );
+    }
+
+    #[test]
+    fn routes_chat() {
+        assert_eq!(
+            route(&["chat", "I want to run more"]),
+            Some(Action::Post(
+                "/v1/chat".to_owned(),
+                json!({ "message": "I want to run more" })
+            ))
+        );
+        assert_eq!(route(&["chat"]), Some(Action::Get("/v1/chat".to_owned())));
     }
 
     #[test]

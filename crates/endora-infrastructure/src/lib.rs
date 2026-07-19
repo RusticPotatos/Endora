@@ -8,11 +8,13 @@
 
 #![forbid(unsafe_code)]
 
+pub mod butler;
 pub mod clock;
 pub mod ids;
 pub mod model;
 pub mod sqlite;
 
+pub use butler::{LlmButler, ScriptedButler};
 pub use clock::SystemClock;
 pub use ids::RandomIdSource;
 pub use model::OpenAiCompatibleProposer;

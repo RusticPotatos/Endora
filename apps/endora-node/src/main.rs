@@ -13,7 +13,9 @@ mod api;
 use std::sync::Arc;
 
 use api::AppState;
-use endora_infrastructure::{OpenAiCompatibleProposer, RandomIdSource, SqliteStore, SystemClock};
+use endora_infrastructure::{
+    LlmButler, OpenAiCompatibleProposer, RandomIdSource, SqliteStore, SystemClock,
+};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -34,6 +36,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             model_url.clone(),
             model.clone(),
         )),
+        // The butler tries the model and falls back to a scripted brain, so the
+        // conversation works even with no model available.
+        Arc::new(LlmButler::new(model_url.clone(), model.clone())),
     );
 
     println!("{}", endora_application::platform_identity());
