@@ -45,6 +45,16 @@ run-node: ## Run the authoritative node (HTTP server; ENDORA_ADDR/ENDORA_DB to c
 run-cli: ## Run the CLI client (pass args via ARGS="...", e.g. ARGS="health")
 	$(CARGO) run --bin endora -- $(ARGS)
 
+.PHONY: demo
+demo: ## Run the full learning loop against a throwaway node (release build)
+	@$(CARGO) build --release -q
+	@db=$$(mktemp -t endora-demo.XXXXXX); port=8799; \
+	ENDORA_DB=$$db ENDORA_ADDR=127.0.0.1:$$port ./target/release/endora-node >/dev/null 2>&1 & \
+	node=$$!; \
+	trap 'kill $$node 2>/dev/null; rm -f $$db' EXIT; \
+	for i in $$(seq 1 30); do curl -fsS http://127.0.0.1:$$port/health >/dev/null 2>&1 && break; sleep 0.2; done; \
+	ENDORA=./target/release/endora ENDORA_URL=http://127.0.0.1:$$port ./scripts/demo.sh
+
 .PHONY: docker-build
 docker-build: ## Build the node container image (tag: endora-node)
 	docker build -t endora-node .
