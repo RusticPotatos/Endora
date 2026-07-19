@@ -32,6 +32,14 @@ tagged release.
 
 ### Changed
 
+- **Renamed the second-tier concept `Goal` → `Target`**
+  ([ADR 0013](docs/adr/0013-rename-goal-to-target.md)): a North Star's children are
+  now **targets** (a concrete, measurable outcome), not goals. This is a
+  **breaking protocol change** — `/v1/directions/{id}/goals` → `…/targets`,
+  `/v1/goals/{id}/…` → `/v1/targets/{id}/…`, and the `goal_id` field → `target_id`
+  — with the CLI (`target …`) and web console updated to match. Existing databases
+  migrate automatically on open (the `goals` table and `goal_id` columns are
+  renamed in place, no data loss).
 - The `experiments` table gains a nullable `review_by_ms` column, added to
   existing databases by an automatic forward migration on open.
 - `make docker-run` now publishes the node on loopback only

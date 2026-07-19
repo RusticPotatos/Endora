@@ -18,7 +18,7 @@ or model yet. The next milestone is **v1.0**.
 > actually enforced in code — not just documented.**
 
 v1.0 is a real, usable, honestly-guaranteed release — not a general autonomous
-agent. It ships the full learning loop for a single goal, driven from the CLI,
+agent. It ships the full learning loop for a single target, driven from the CLI,
 with a local model proposing and deterministic policy authorizing.
 
 ## Scope decisions for v1.0
@@ -26,9 +26,9 @@ with a local model proposing and deterministic policy authorizing.
 These were chosen deliberately. Where a decision is architectural it is promoted
 to an ADR during the work (numbers below are the intended slots).
 
-### 1. The slice: the full learning loop, one goal
+### 1. The slice: the full learning loop, one target
 
-v1.0 implements the whole loop for a single user goal:
+v1.0 implements the whole loop for a single user target:
 
 ```text
 Direction → Assumption → Experiment → Observation → Reflection
@@ -36,7 +36,7 @@ Direction → Assumption → Experiment → Observation → Reflection
 ```
 
 This exercises every layer and every core guarantee end-to-end. It touches the
-**Direction & Goals**, **Experiments & Learning**, and **Reflection** bounded
+**Direction & Targets**, **Experiments & Learning**, and **Reflection** bounded
 contexts, plus the cross-cutting **Policy & Consent**, **Memory**, and
 **Audit & Accountability** contexts. Detailed entities/APIs are designed *with*
 this slice — recorded in **ADR 0006 (first vertical slice)** — not invented
@@ -76,7 +76,7 @@ not a v1.0 blocker. This is the fastest path to a genuinely usable release.
 Each item lists what "done for v1.0" means. None of these put HTTP, storage, or
 model concepts into the Domain layer.
 
-1. **Slice definition & domain modeling** — model the goal/assumption/experiment/
+1. **Slice definition & domain modeling** — model the target/assumption/experiment/
    observation/reflection concepts in `endora-domain` (pure), test-first.
    → ADR 0006.
 2. **Persistence** — SQLite behind application-defined ports, in a new
@@ -130,7 +130,7 @@ providers; MCP; microservices; event sourcing. These remain post-1.0.
 
 ## v1.0 exit criteria
 
-- [ ] Full learning loop works for one goal, driven from the CLI.
+- [ ] Full learning loop works for one target, driven from the CLI.
 - [ ] A local open-weights model proposes; deterministic policy authorizes.
 - [ ] No model output reaches a consequential action without policy approval
       (tested).

@@ -17,9 +17,9 @@ pub mod usecases;
 
 pub use error::AppError;
 pub use ports::{
-    AssumptionRepository, AuditLog, Clock, DirectionRepository, ExperimentRepository,
-    GoalRepository, IdSource, MemorySnapshot, MemoryStore, ObservationRepository,
-    ProcessChangeRepository, ProposalError, Proposer, ReflectionRepository, RepositoryError,
+    AssumptionRepository, AuditLog, Clock, DirectionRepository, ExperimentRepository, IdSource,
+    MemorySnapshot, MemoryStore, ObservationRepository, ProcessChangeRepository, ProposalError,
+    Proposer, ReflectionRepository, RepositoryError, TargetRepository,
 };
 pub use usecases::{ActivityItem, ActivityKind};
 

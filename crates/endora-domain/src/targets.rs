@@ -1,13 +1,13 @@
-//! Direction & Goals context.
+//! Direction & Targets context.
 //!
-//! The user's stated [`Direction`] (their North Star context), the [`Goal`]s
-//! pursued under it, and the [`Assumption`]s a goal rests on. These are
+//! The user's stated [`Direction`] (their North Star context), the [`Target`]s
+//! pursued under it, and the [`Assumption`]s a target rests on. These are
 //! user-owned: the domain validates and holds them but never invents them.
 
 use crate::error::{DomainError, require_non_empty};
-use crate::ids::{AssumptionId, DirectionId, GoalId};
+use crate::ids::{AssumptionId, DirectionId, TargetId};
 
-/// The user's stated direction — the North Star context a goal serves.
+/// The user's stated direction — the North Star context a target serves.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Direction {
     id: DirectionId,
@@ -39,19 +39,19 @@ impl Direction {
 
 /// A single intentional objective pursued under a [`Direction`].
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Goal {
-    id: GoalId,
+pub struct Target {
+    id: TargetId,
     direction: DirectionId,
     statement: String,
 }
 
-impl Goal {
-    /// Creates a goal under a direction.
+impl Target {
+    /// Creates a target under a direction.
     ///
     /// # Errors
     /// [`DomainError::EmptyField`] if `statement` is blank.
-    pub fn new(id: GoalId, direction: DirectionId, statement: &str) -> Result<Self, DomainError> {
-        let statement = require_non_empty("goal.statement", statement)?;
+    pub fn new(id: TargetId, direction: DirectionId, statement: &str) -> Result<Self, DomainError> {
+        let statement = require_non_empty("target.statement", statement)?;
         Ok(Self {
             id,
             direction,
@@ -59,43 +59,43 @@ impl Goal {
         })
     }
 
-    /// The goal's identifier.
+    /// The target's identifier.
     #[must_use]
-    pub const fn id(&self) -> GoalId {
+    pub const fn id(&self) -> TargetId {
         self.id
     }
 
-    /// The direction this goal serves.
+    /// The direction this target serves.
     #[must_use]
     pub const fn direction(&self) -> DirectionId {
         self.direction
     }
 
-    /// The goal statement.
+    /// The target statement.
     #[must_use]
     pub fn statement(&self) -> &str {
         &self.statement
     }
 }
 
-/// A belief a [`Goal`] rests on, made explicit so it can be tested.
+/// A belief a [`Target`] rests on, made explicit so it can be tested.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Assumption {
     id: AssumptionId,
-    goal: GoalId,
+    target: TargetId,
     statement: String,
 }
 
 impl Assumption {
-    /// Creates an assumption tied to a goal.
+    /// Creates an assumption tied to a target.
     ///
     /// # Errors
     /// [`DomainError::EmptyField`] if `statement` is blank.
-    pub fn new(id: AssumptionId, goal: GoalId, statement: &str) -> Result<Self, DomainError> {
+    pub fn new(id: AssumptionId, target: TargetId, statement: &str) -> Result<Self, DomainError> {
         let statement = require_non_empty("assumption.statement", statement)?;
         Ok(Self {
             id,
-            goal,
+            target,
             statement,
         })
     }
@@ -106,10 +106,10 @@ impl Assumption {
         self.id
     }
 
-    /// The goal this assumption belongs to.
+    /// The target this assumption belongs to.
     #[must_use]
-    pub const fn goal(&self) -> GoalId {
-        self.goal
+    pub const fn target(&self) -> TargetId {
+        self.target
     }
 
     /// The assumption statement.
@@ -121,9 +121,9 @@ impl Assumption {
 
 #[cfg(test)]
 mod tests {
-    use super::{Assumption, Direction, Goal};
+    use super::{Assumption, Direction, Target};
     use crate::error::DomainError;
-    use crate::ids::{AssumptionId, DirectionId, GoalId};
+    use crate::ids::{AssumptionId, DirectionId, TargetId};
 
     #[test]
     fn direction_requires_a_title() {
@@ -142,26 +142,30 @@ mod tests {
     }
 
     #[test]
-    fn goal_links_to_its_direction() {
-        let goal = Goal::new(GoalId::new(2), DirectionId::new(1), "Run a 5k").unwrap();
-        assert_eq!(goal.direction(), DirectionId::new(1));
-        assert_eq!(goal.statement(), "Run a 5k");
+    fn target_links_to_its_direction() {
+        let target = Target::new(TargetId::new(2), DirectionId::new(1), "Run a 5k").unwrap();
+        assert_eq!(target.direction(), DirectionId::new(1));
+        assert_eq!(target.statement(), "Run a 5k");
     }
 
     #[test]
-    fn goal_rejects_empty_statement() {
+    fn target_rejects_empty_statement() {
         assert_eq!(
-            Goal::new(GoalId::new(2), DirectionId::new(1), ""),
+            Target::new(TargetId::new(2), DirectionId::new(1), ""),
             Err(DomainError::EmptyField {
-                field: "goal.statement"
+                field: "target.statement"
             })
         );
     }
 
     #[test]
-    fn assumption_links_to_its_goal() {
-        let a =
-            Assumption::new(AssumptionId::new(3), GoalId::new(2), "Mornings are freest").unwrap();
-        assert_eq!(a.goal(), GoalId::new(2));
+    fn assumption_links_to_its_target() {
+        let a = Assumption::new(
+            AssumptionId::new(3),
+            TargetId::new(2),
+            "Mornings are freest",
+        )
+        .unwrap();
+        assert_eq!(a.target(), TargetId::new(2));
     }
 }

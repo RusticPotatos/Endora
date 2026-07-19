@@ -7,7 +7,7 @@
 
 /// Declares an opaque, strongly-typed identifier newtype over `u128`.
 ///
-/// Distinct id types (e.g. [`GoalId`] vs [`ExperimentId`]) cannot be mixed up,
+/// Distinct id types (e.g. [`TargetId`] vs [`ExperimentId`]) cannot be mixed up,
 /// which is the point: the compiler rejects passing one where another is meant.
 macro_rules! id_type {
     ($name:ident, $what:literal) => {
@@ -32,7 +32,7 @@ macro_rules! id_type {
 }
 
 id_type!(DirectionId, "direction");
-id_type!(GoalId, "goal");
+id_type!(TargetId, "target");
 id_type!(AssumptionId, "assumption");
 id_type!(ExperimentId, "experiment");
 id_type!(ObservationId, "observation");
@@ -62,11 +62,11 @@ impl Timestamp {
 
 #[cfg(test)]
 mod tests {
-    use super::{GoalId, Timestamp};
+    use super::{TargetId, Timestamp};
 
     #[test]
     fn id_round_trips_its_value() {
-        assert_eq!(GoalId::new(42).value(), 42);
+        assert_eq!(TargetId::new(42).value(), 42);
     }
 
     #[test]

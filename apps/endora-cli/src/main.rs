@@ -59,18 +59,20 @@ fn route(args: &[&str]) -> Option<Action> {
             json!({ "title": title }),
         )),
         ["direction", "list"] => Some(Action::Get("/v1/directions".to_owned())),
-        ["goal", "create", direction, statement] => Some(Action::Post(
-            format!("/v1/directions/{direction}/goals"),
+        ["target", "create", direction, statement] => Some(Action::Post(
+            format!("/v1/directions/{direction}/targets"),
             json!({ "statement": statement }),
         )),
-        ["goal", "list", direction] => {
-            Some(Action::Get(format!("/v1/directions/{direction}/goals")))
+        ["target", "list", direction] => {
+            Some(Action::Get(format!("/v1/directions/{direction}/targets")))
         }
-        ["assumption", "create", goal, statement] => Some(Action::Post(
-            format!("/v1/goals/{goal}/assumptions"),
+        ["assumption", "create", target, statement] => Some(Action::Post(
+            format!("/v1/targets/{target}/assumptions"),
             json!({ "statement": statement }),
         )),
-        ["assumption", "list", goal] => Some(Action::Get(format!("/v1/goals/{goal}/assumptions"))),
+        ["assumption", "list", target] => {
+            Some(Action::Get(format!("/v1/targets/{target}/assumptions")))
+        }
         ["experiment", "propose", assumption, hypothesis] => Some(Action::Post(
             format!("/v1/assumptions/{assumption}/experiments"),
             json!({ "hypothesis": hypothesis }),
@@ -98,14 +100,16 @@ fn route(args: &[&str]) -> Option<Action> {
         ["observation", "list", experiment] => Some(Action::Get(format!(
             "/v1/experiments/{experiment}/observations"
         ))),
-        ["reflection", "create", goal, summary, evidence] => {
+        ["reflection", "create", target, summary, evidence] => {
             let evidence: Vec<&str> = evidence.split(',').filter(|s| !s.is_empty()).collect();
             Some(Action::Post(
-                format!("/v1/goals/{goal}/reflections"),
+                format!("/v1/targets/{target}/reflections"),
                 json!({ "summary": summary, "evidence": evidence }),
             ))
         }
-        ["reflection", "list", goal] => Some(Action::Get(format!("/v1/goals/{goal}/reflections"))),
+        ["reflection", "list", target] => {
+            Some(Action::Get(format!("/v1/targets/{target}/reflections")))
+        }
         ["process-change", "propose", reflection, description] => Some(Action::Post(
             format!("/v1/reflections/{reflection}/process-changes"),
             json!({ "description": description }),
@@ -171,10 +175,10 @@ fn print_usage() {
            health                                 check the node is up\n  \
            direction create <title>               create a direction\n  \
            direction list                         list your directions\n  \
-           goal create <direction-id> <statement> add a goal to a direction\n  \
-           goal list <direction-id>               list a direction's goals\n  \
-           assumption create <goal-id> <text>     add an assumption to a goal\n  \
-           assumption list <goal-id>              list a goal's assumptions\n  \
+           target create <direction-id> <statement> add a target to a direction\n  \
+           target list <direction-id>               list a direction's targets\n  \
+           assumption create <target-id> <text>     add an assumption to a target\n  \
+           assumption list <target-id>              list a target's assumptions\n  \
            experiment propose <assumption-id> <h> propose an experiment\n  \
            experiment list <assumption-id>        list an assumption's experiments\n  \
            experiment start <experiment-id>       start a proposed experiment\n  \
@@ -183,8 +187,8 @@ fn print_usage() {
            reviews due                            list experiments due for review\n  \
            observation record <experiment-id> <n> record an observation\n  \
            observation list <experiment-id>       list an experiment's observations\n  \
-           reflection create <goal-id> <summary> <obs-ids>  reflect (obs-ids: comma-separated)\n  \
-           reflection list <goal-id>              list a goal's reflections\n  \
+           reflection create <target-id> <summary> <obs-ids>  reflect (obs-ids: comma-separated)\n  \
+           reflection list <target-id>              list a target's reflections\n  \
            process-change propose <reflection-id> <desc>  propose a process change\n  \
            process-change list <reflection-id>    list a reflection's proposed changes\n  \
            process-change draft <reflection-id>   let the model draft a change (pending)\n  \
@@ -230,17 +234,17 @@ mod tests {
     }
 
     #[test]
-    fn routes_goal_create_and_list() {
+    fn routes_target_create_and_list() {
         assert_eq!(
-            route(&["goal", "create", "42", "Run a 5k"]),
+            route(&["target", "create", "42", "Run a 5k"]),
             Some(Action::Post(
-                "/v1/directions/42/goals".to_owned(),
+                "/v1/directions/42/targets".to_owned(),
                 json!({ "statement": "Run a 5k" })
             ))
         );
         assert_eq!(
-            route(&["goal", "list", "42"]),
-            Some(Action::Get("/v1/directions/42/goals".to_owned()))
+            route(&["target", "list", "42"]),
+            Some(Action::Get("/v1/directions/42/targets".to_owned()))
         );
     }
 
@@ -249,13 +253,13 @@ mod tests {
         assert_eq!(
             route(&["assumption", "create", "7", "Mornings are freest"]),
             Some(Action::Post(
-                "/v1/goals/7/assumptions".to_owned(),
+                "/v1/targets/7/assumptions".to_owned(),
                 json!({ "statement": "Mornings are freest" })
             ))
         );
         assert_eq!(
             route(&["assumption", "list", "7"]),
-            Some(Action::Get("/v1/goals/7/assumptions".to_owned()))
+            Some(Action::Get("/v1/targets/7/assumptions".to_owned()))
         );
     }
 
@@ -321,13 +325,13 @@ mod tests {
         assert_eq!(
             route(&["reflection", "create", "3", "mornings worked", "10,11"]),
             Some(Action::Post(
-                "/v1/goals/3/reflections".to_owned(),
+                "/v1/targets/3/reflections".to_owned(),
                 json!({ "summary": "mornings worked", "evidence": ["10", "11"] })
             ))
         );
         assert_eq!(
             route(&["reflection", "list", "3"]),
-            Some(Action::Get("/v1/goals/3/reflections".to_owned()))
+            Some(Action::Get("/v1/targets/3/reflections".to_owned()))
         );
     }
 
@@ -408,6 +412,6 @@ mod tests {
     #[test]
     fn unknown_command_is_none() {
         assert_eq!(route(&["nope"]), None);
-        assert_eq!(route(&["goal", "create"]), None);
+        assert_eq!(route(&["target", "create"]), None);
     }
 }
