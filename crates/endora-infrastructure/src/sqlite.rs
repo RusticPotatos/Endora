@@ -10,7 +10,8 @@ use std::sync::Mutex;
 
 use endora_application::{
     AssumptionRepository, AuditLog, DirectionRepository, ExperimentRepository, GoalRepository,
-    ObservationRepository, ProcessChangeRepository, ReflectionRepository, RepositoryError,
+    MemorySnapshot, MemoryStore, ObservationRepository, ProcessChangeRepository,
+    ReflectionRepository, RepositoryError,
 };
 use endora_domain::{
     ApprovalState, Assumption, AssumptionId, AuditId, AuditRecord, Direction, DirectionId,
@@ -559,6 +560,44 @@ impl ProcessChangeRepository for SqliteStore {
     }
 }
 
+impl MemoryStore for SqliteStore {
+    fn export(&self) -> Result<MemorySnapshot, RepositoryError> {
+        let conn = self.lock()?;
+        Ok(MemorySnapshot {
+            directions: all_directions(&conn)?,
+            goals: all_goals(&conn)?,
+            assumptions: all_assumptions(&conn)?,
+            experiments: all_experiments(&conn)?,
+            observations: all_observations(&conn)?,
+            reflections: all_reflections(&conn)?,
+            process_changes: all_process_changes(&conn)?,
+            audit: all_audit(&conn)?,
+        })
+    }
+
+    fn purge(&self) -> Result<(), RepositoryError> {
+        let mut conn = self.lock()?;
+        let tx = conn.transaction().map_err(backend)?;
+        // Delete children before parents so foreign keys stay satisfied.
+        for table in [
+            "reflection_evidence",
+            "process_changes",
+            "reflections",
+            "observations",
+            "experiments",
+            "assumptions",
+            "goals",
+            "directions",
+            "audit_log",
+        ] {
+            tx.execute(&format!("DELETE FROM {table}"), [])
+                .map_err(backend)?;
+        }
+        tx.commit().map_err(backend)?;
+        Ok(())
+    }
+}
+
 impl AuditLog for SqliteStore {
     fn append(&self, record: &AuditRecord) -> Result<(), RepositoryError> {
         let conn = self.lock()?;
@@ -616,6 +655,227 @@ fn id_text(value: u128) -> String {
 fn parse_id(text: &str) -> Result<u128, RepositoryError> {
     text.parse::<u128>()
         .map_err(|e| RepositoryError::Corrupt(format!("invalid stored id {text:?}: {e}")))
+}
+
+fn all_directions(conn: &Connection) -> Result<Vec<Direction>, RepositoryError> {
+    let mut stmt = conn
+        .prepare("SELECT id, title FROM directions ORDER BY id")
+        .map_err(backend)?;
+    let rows = stmt
+        .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
+        .map_err(backend)?;
+    let mut out = Vec::new();
+    for row in rows {
+        let (id, title) = row.map_err(backend)?;
+        out.push(Direction::new(DirectionId::new(parse_id(&id)?), &title).map_err(corrupt)?);
+    }
+    Ok(out)
+}
+
+fn all_goals(conn: &Connection) -> Result<Vec<Goal>, RepositoryError> {
+    let mut stmt = conn
+        .prepare("SELECT id, direction_id, statement FROM goals ORDER BY id")
+        .map_err(backend)?;
+    let rows = stmt
+        .query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+            ))
+        })
+        .map_err(backend)?;
+    let mut out = Vec::new();
+    for row in rows {
+        let (id, direction, statement) = row.map_err(backend)?;
+        let goal = Goal::new(
+            GoalId::new(parse_id(&id)?),
+            DirectionId::new(parse_id(&direction)?),
+            &statement,
+        )
+        .map_err(corrupt)?;
+        out.push(goal);
+    }
+    Ok(out)
+}
+
+fn all_assumptions(conn: &Connection) -> Result<Vec<Assumption>, RepositoryError> {
+    let mut stmt = conn
+        .prepare("SELECT id, goal_id, statement FROM assumptions ORDER BY id")
+        .map_err(backend)?;
+    let rows = stmt
+        .query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+            ))
+        })
+        .map_err(backend)?;
+    let mut out = Vec::new();
+    for row in rows {
+        let (id, goal, statement) = row.map_err(backend)?;
+        out.push(
+            Assumption::new(
+                AssumptionId::new(parse_id(&id)?),
+                GoalId::new(parse_id(&goal)?),
+                &statement,
+            )
+            .map_err(corrupt)?,
+        );
+    }
+    Ok(out)
+}
+
+fn all_experiments(conn: &Connection) -> Result<Vec<Experiment>, RepositoryError> {
+    let mut stmt = conn
+        .prepare("SELECT id, assumption_id, hypothesis, status FROM experiments ORDER BY id")
+        .map_err(backend)?;
+    let rows = stmt
+        .query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, String>(3)?,
+            ))
+        })
+        .map_err(backend)?;
+    let mut out = Vec::new();
+    for row in rows {
+        let (id, assumption, hypothesis, status) = row.map_err(backend)?;
+        out.push(
+            Experiment::from_parts(
+                ExperimentId::new(parse_id(&id)?),
+                AssumptionId::new(parse_id(&assumption)?),
+                &hypothesis,
+                parse_status(&status)?,
+            )
+            .map_err(corrupt)?,
+        );
+    }
+    Ok(out)
+}
+
+fn all_observations(conn: &Connection) -> Result<Vec<Observation>, RepositoryError> {
+    let mut stmt = conn
+        .prepare("SELECT id, experiment_id, note, at_ms FROM observations ORDER BY at_ms, id")
+        .map_err(backend)?;
+    let rows = stmt
+        .query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, i64>(3)?,
+            ))
+        })
+        .map_err(backend)?;
+    let mut out = Vec::new();
+    for row in rows {
+        let (id, experiment, note, at_ms) = row.map_err(backend)?;
+        out.push(
+            Observation::record(
+                ObservationId::new(parse_id(&id)?),
+                ExperimentId::new(parse_id(&experiment)?),
+                &note,
+                Timestamp::from_unix_millis(at_ms),
+            )
+            .map_err(corrupt)?,
+        );
+    }
+    Ok(out)
+}
+
+fn all_reflections(conn: &Connection) -> Result<Vec<Reflection>, RepositoryError> {
+    let rows: Vec<(String, String, String)> = {
+        let mut stmt = conn
+            .prepare("SELECT id, goal_id, summary FROM reflections ORDER BY id")
+            .map_err(backend)?;
+        stmt.query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+            ))
+        })
+        .map_err(backend)?
+        .collect::<Result<_, _>>()
+        .map_err(backend)?
+    };
+    let mut out = Vec::new();
+    for (id, goal, summary) in rows {
+        let reflection_id = ReflectionId::new(parse_id(&id)?);
+        let evidence = evidence_for(conn, reflection_id)?;
+        out.push(
+            Reflection::new(
+                reflection_id,
+                GoalId::new(parse_id(&goal)?),
+                &summary,
+                evidence,
+            )
+            .map_err(corrupt)?,
+        );
+    }
+    Ok(out)
+}
+
+fn all_process_changes(conn: &Connection) -> Result<Vec<ProposedProcessChange>, RepositoryError> {
+    let mut stmt = conn
+        .prepare("SELECT id, reflection_id, description, approval FROM process_changes ORDER BY id")
+        .map_err(backend)?;
+    let rows = stmt
+        .query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, String>(3)?,
+            ))
+        })
+        .map_err(backend)?;
+    let mut out = Vec::new();
+    for row in rows {
+        let (id, reflection, description, approval) = row.map_err(backend)?;
+        out.push(
+            ProposedProcessChange::from_parts(
+                ProcessChangeId::new(parse_id(&id)?),
+                ReflectionId::new(parse_id(&reflection)?),
+                &description,
+                parse_approval(&approval)?,
+            )
+            .map_err(corrupt)?,
+        );
+    }
+    Ok(out)
+}
+
+fn all_audit(conn: &Connection) -> Result<Vec<AuditRecord>, RepositoryError> {
+    let mut stmt = conn
+        .prepare("SELECT id, at_ms, summary FROM audit_log ORDER BY at_ms DESC, id DESC")
+        .map_err(backend)?;
+    let rows = stmt
+        .query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, i64>(1)?,
+                r.get::<_, String>(2)?,
+            ))
+        })
+        .map_err(backend)?;
+    let mut out = Vec::new();
+    for row in rows {
+        let (id, at_ms, summary) = row.map_err(backend)?;
+        out.push(
+            AuditRecord::new(
+                AuditId::new(parse_id(&id)?),
+                Timestamp::from_unix_millis(at_ms),
+                &summary,
+            )
+            .map_err(corrupt)?,
+        );
+    }
+    Ok(out)
 }
 
 /// Loads a reflection's evidence observation ids, in stored order.
@@ -959,6 +1219,75 @@ mod tests {
             changes.list_for_reflection(reflection).unwrap(),
             vec![loaded]
         );
+    }
+
+    #[test]
+    fn export_captures_everything_and_purge_clears_it() {
+        use endora_application::{
+            AssumptionRepository, AuditLog, ExperimentRepository, MemoryStore,
+            ObservationRepository, ProcessChangeRepository, ReflectionRepository,
+        };
+        use endora_domain::{
+            Assumption, AssumptionId, AuditId, AuditRecord, Experiment, ExperimentId, GoalId,
+            Observation, ObservationId, ProcessChangeId, ProposedProcessChange, Reflection,
+            ReflectionId, Timestamp,
+        };
+
+        let store = store();
+        // Seed one of every entity.
+        let direction = DirectionId::new(1);
+        (&store as &dyn DirectionRepository)
+            .save(&Direction::new(direction, "Be healthier").unwrap())
+            .unwrap();
+        let goal = GoalId::new(2);
+        (&store as &dyn GoalRepository)
+            .save(&Goal::new(goal, direction, "Run a 5k").unwrap())
+            .unwrap();
+        let assumption = AssumptionId::new(3);
+        (&store as &dyn AssumptionRepository)
+            .save(&Assumption::new(assumption, goal, "Mornings").unwrap())
+            .unwrap();
+        let experiment = ExperimentId::new(4);
+        (&store as &dyn ExperimentRepository)
+            .save(&Experiment::propose(experiment, assumption, "Try").unwrap())
+            .unwrap();
+        let obs = ObservationId::new(5);
+        (&store as &dyn ObservationRepository)
+            .save(
+                &Observation::record(obs, experiment, "n", Timestamp::from_unix_millis(1)).unwrap(),
+            )
+            .unwrap();
+        let reflection = ReflectionId::new(6);
+        (&store as &dyn ReflectionRepository)
+            .save(&Reflection::new(reflection, goal, "worked", vec![obs]).unwrap())
+            .unwrap();
+        (&store as &dyn ProcessChangeRepository)
+            .save(
+                &ProposedProcessChange::propose(ProcessChangeId::new(7), reflection, "Do it")
+                    .unwrap(),
+            )
+            .unwrap();
+        (&store as &dyn AuditLog)
+            .append(
+                &AuditRecord::new(AuditId::new(8), Timestamp::from_unix_millis(9), "noted")
+                    .unwrap(),
+            )
+            .unwrap();
+
+        let snapshot = (&store as &dyn MemoryStore).export().unwrap();
+        assert_eq!(snapshot.directions.len(), 1);
+        assert_eq!(snapshot.goals.len(), 1);
+        assert_eq!(snapshot.assumptions.len(), 1);
+        assert_eq!(snapshot.experiments.len(), 1);
+        assert_eq!(snapshot.observations.len(), 1);
+        assert_eq!(snapshot.reflections.len(), 1);
+        assert_eq!(snapshot.reflections[0].evidence(), &[obs]);
+        assert_eq!(snapshot.process_changes.len(), 1);
+        assert_eq!(snapshot.audit.len(), 1);
+
+        (&store as &dyn MemoryStore).purge().unwrap();
+        let empty = (&store as &dyn MemoryStore).export().unwrap();
+        assert_eq!(empty, endora_application::MemorySnapshot::default());
     }
 
     #[test]
