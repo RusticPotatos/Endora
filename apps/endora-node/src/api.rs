@@ -14,7 +14,7 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use endora_application::{AppError, RepositoryError, usecases};
-use endora_domain::{Direction, DirectionId, Goal};
+use endora_domain::{Assumption, Direction, DirectionId, Goal, GoalId};
 use endora_infrastructure::{RandomIdSource, SqliteStore};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -36,6 +36,10 @@ pub fn app(state: AppState) -> Router {
         .route(
             "/v1/directions/{id}/goals",
             post(create_goal).get(list_goals),
+        )
+        .route(
+            "/v1/goals/{id}/assumptions",
+            post(create_assumption).get(list_assumptions),
         )
         .with_state(state)
 }
@@ -129,6 +133,61 @@ async fn list_goals(
     Ok(Json(goals.iter().map(GoalResponse::from).collect()))
 }
 
+#[derive(Deserialize)]
+struct CreateAssumptionRequest {
+    statement: String,
+}
+
+#[derive(Serialize)]
+struct AssumptionResponse {
+    id: String,
+    goal_id: String,
+    statement: String,
+}
+
+impl From<&Assumption> for AssumptionResponse {
+    fn from(a: &Assumption) -> Self {
+        Self {
+            id: a.id().value().to_string(),
+            goal_id: a.goal().value().to_string(),
+            statement: a.statement().to_owned(),
+        }
+    }
+}
+
+async fn create_assumption(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(req): Json<CreateAssumptionRequest>,
+) -> Result<Json<AssumptionResponse>, ApiError> {
+    let goal = parse_goal_id(&id)?;
+    let store = state.store.clone();
+    let ids = state.ids.clone();
+    let assumption = blocking(move || {
+        usecases::create_assumption(
+            store.as_ref(),
+            store.as_ref(),
+            ids.as_ref(),
+            goal,
+            &req.statement,
+        )
+    })
+    .await?;
+    Ok(Json(AssumptionResponse::from(&assumption)))
+}
+
+async fn list_assumptions(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<Vec<AssumptionResponse>>, ApiError> {
+    let goal = parse_goal_id(&id)?;
+    let store = state.store.clone();
+    let assumptions = blocking(move || usecases::list_assumptions(store.as_ref(), goal)).await?;
+    Ok(Json(
+        assumptions.iter().map(AssumptionResponse::from).collect(),
+    ))
+}
+
 /// Parses a path id into a [`DirectionId`]; a malformed id can name no
 /// direction, so it is reported as not found.
 fn parse_direction_id(id: &str) -> Result<DirectionId, ApiError> {
@@ -137,6 +196,13 @@ fn parse_direction_id(id: &str) -> Result<DirectionId, ApiError> {
             entity: "direction",
         })
     })
+}
+
+/// Parses a path id into a [`GoalId`]; a malformed id can name no goal.
+fn parse_goal_id(id: &str) -> Result<GoalId, ApiError> {
+    id.parse::<u128>()
+        .map(GoalId::new)
+        .map_err(|_| ApiError(AppError::NotFound { entity: "goal" }))
 }
 
 /// Runs blocking use-case work on the blocking thread pool, mapping a task
@@ -239,6 +305,63 @@ mod tests {
         let listed = json_body(res).await;
         assert_eq!(listed.as_array().unwrap().len(), 1);
         assert_eq!(listed[0]["statement"], "Run a 5k");
+    }
+
+    #[tokio::test]
+    async fn assumption_under_a_goal_round_trips() {
+        let app = app(test_state());
+
+        let res = app
+            .clone()
+            .oneshot(post("/v1/directions", r#"{"title":"Be healthier"}"#))
+            .await
+            .unwrap();
+        let dir_id = json_body(res).await["id"].as_str().unwrap().to_owned();
+
+        let res = app
+            .clone()
+            .oneshot(post(
+                &format!("/v1/directions/{dir_id}/goals"),
+                r#"{"statement":"Run a 5k"}"#,
+            ))
+            .await
+            .unwrap();
+        let goal_id = json_body(res).await["id"].as_str().unwrap().to_owned();
+
+        let assumptions_uri = format!("/v1/goals/{goal_id}/assumptions");
+        let res = app
+            .clone()
+            .oneshot(post(
+                &assumptions_uri,
+                r#"{"statement":"Mornings are freest"}"#,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(&assumptions_uri)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let listed = json_body(res).await;
+        assert_eq!(listed.as_array().unwrap().len(), 1);
+        assert_eq!(listed[0]["statement"], "Mornings are freest");
+    }
+
+    #[tokio::test]
+    async fn assumption_for_missing_goal_is_404() {
+        let res = app(test_state())
+            .oneshot(post("/v1/goals/999/assumptions", r#"{"statement":"x"}"#))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]

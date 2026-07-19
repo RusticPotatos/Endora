@@ -7,7 +7,7 @@
 
 use core::fmt;
 
-use endora_domain::{AuditRecord, Direction, DirectionId, Goal, GoalId, Timestamp};
+use endora_domain::{Assumption, AuditRecord, Direction, DirectionId, Goal, GoalId, Timestamp};
 
 /// A failure from a storage backend behind a repository port.
 ///
@@ -67,6 +67,21 @@ pub trait GoalRepository {
     /// # Errors
     /// [`RepositoryError`] if the backend fails or stored data is corrupt.
     fn list_for_direction(&self, direction: DirectionId) -> Result<Vec<Goal>, RepositoryError>;
+}
+
+/// Persists and retrieves [`Assumption`]s.
+pub trait AssumptionRepository {
+    /// Inserts an assumption, or replaces the existing one with the same id.
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if the backend fails.
+    fn save(&self, assumption: &Assumption) -> Result<(), RepositoryError>;
+
+    /// Lists the assumptions belonging to a goal, in a stable order.
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if the backend fails or stored data is corrupt.
+    fn list_for_goal(&self, goal: GoalId) -> Result<Vec<Assumption>, RepositoryError>;
 }
 
 /// Supplies the current time to use cases.
