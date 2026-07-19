@@ -107,6 +107,10 @@ fn route(args: &[&str]) -> Option<Action> {
         ["process-change", "list", reflection] => Some(Action::Get(format!(
             "/v1/reflections/{reflection}/process-changes"
         ))),
+        ["process-change", "draft", reflection] => Some(Action::Post(
+            format!("/v1/reflections/{reflection}/process-changes/draft"),
+            json!({}),
+        )),
         ["process-change", "approve", id] => Some(Action::Post(
             format!("/v1/process-changes/{id}/approve"),
             json!({}),
@@ -167,6 +171,7 @@ fn print_usage() {
            reflection list <goal-id>              list a goal's reflections\n  \
            process-change propose <reflection-id> <desc>  propose a process change\n  \
            process-change list <reflection-id>    list a reflection's proposed changes\n  \
+           process-change draft <reflection-id>   let the model draft a change (pending)\n  \
            process-change approve <id>            approve a proposed change\n  \
            process-change reject <id>             reject a proposed change\n  \
            process-change decide <id> <actor>     run policy on a change (audited)\n  \
@@ -295,6 +300,17 @@ mod tests {
             route(&["process-change", "approve", "7"]),
             Some(Action::Post(
                 "/v1/process-changes/7/approve".to_owned(),
+                json!({})
+            ))
+        );
+    }
+
+    #[test]
+    fn routes_process_change_draft() {
+        assert_eq!(
+            route(&["process-change", "draft", "6"]),
+            Some(Action::Post(
+                "/v1/reflections/6/process-changes/draft".to_owned(),
                 json!({})
             ))
         );

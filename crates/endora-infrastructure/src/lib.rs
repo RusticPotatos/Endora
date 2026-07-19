@@ -10,8 +10,10 @@
 
 pub mod clock;
 pub mod ids;
+pub mod model;
 pub mod sqlite;
 
 pub use clock::SystemClock;
 pub use ids::RandomIdSource;
+pub use model::OpenAiCompatibleProposer;
 pub use sqlite::SqliteStore;

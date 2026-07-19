@@ -14,7 +14,8 @@ use endora_domain::{
 use crate::error::AppError;
 use crate::ports::{
     AssumptionRepository, AuditLog, Clock, DirectionRepository, ExperimentRepository,
-    GoalRepository, IdSource, ObservationRepository, ProcessChangeRepository, ReflectionRepository,
+    GoalRepository, IdSource, ObservationRepository, ProcessChangeRepository, Proposer,
+    ReflectionRepository,
 };
 
 /// Creates and stores a new [`Direction`].
@@ -264,6 +265,43 @@ pub fn propose_process_change(
     Ok(change)
 }
 
+/// Uses a reasoning model to *draft* a process change from an existing
+/// reflection, then stores it as a pending proposal.
+///
+/// The model is a reasoning component, not an authority: its output becomes an
+/// ordinary [`ProposedProcessChange`] in the `Pending` state, which still needs
+/// human approval and passes through the deterministic policy boundary like any
+/// other. See `docs/adr/0005-models-propose-policy-authorizes.md`.
+///
+/// # Errors
+/// [`AppError::NotFound`] if the reflection does not exist, [`AppError::Model`]
+/// if the model is unavailable or returns nothing usable, [`AppError::Domain`]
+/// if the drafted text is empty, or [`AppError::Repository`] on failure.
+pub fn draft_process_change(
+    reflections: &impl ReflectionRepository,
+    changes: &impl ProcessChangeRepository,
+    ids: &impl IdSource,
+    proposer: &dyn Proposer,
+    reflection: ReflectionId,
+) -> Result<ProposedProcessChange, AppError> {
+    let Some(reflection_record) = reflections.get(reflection)? else {
+        return Err(AppError::NotFound {
+            entity: "reflection",
+        });
+    };
+    let description = proposer.propose_process_change(
+        reflection_record.summary(),
+        reflection_record.evidence().len(),
+    )?;
+    let change = ProposedProcessChange::propose(
+        ProcessChangeId::new(ids.new_id()),
+        reflection,
+        &description,
+    )?;
+    changes.save(&change)?;
+    Ok(change)
+}
+
 /// Lists the proposed changes from a reflection, in a stable order.
 ///
 /// # Errors
@@ -381,6 +419,7 @@ fn describe(decision: PolicyDecision) -> &'static str {
 
 #[cfg(test)]
 mod tests {
+    use super::draft_process_change;
     use super::{
         approve_process_change, conclude_experiment, create_assumption, create_direction,
         create_goal, create_reflection, decide_process_change, decide_stored_process_change,
@@ -391,8 +430,8 @@ mod tests {
     use crate::error::AppError;
     use crate::ports::{
         AssumptionRepository, AuditLog, Clock, DirectionRepository, ExperimentRepository,
-        GoalRepository, IdSource, ObservationRepository, ProcessChangeRepository,
-        ReflectionRepository, RepositoryError,
+        GoalRepository, IdSource, ObservationRepository, ProcessChangeRepository, ProposalError,
+        Proposer, ReflectionRepository, RepositoryError,
     };
     use endora_domain::{
         ApprovalState, Assumption, AssumptionId, AuditRecord, AutonomyLevel, Direction,
@@ -1013,5 +1052,60 @@ mod tests {
                 entity: "process change"
             }
         );
+    }
+
+    /// A proposer that returns a canned line, or a failure, for tests.
+    struct FakeProposer(Result<String, ProposalError>);
+
+    impl Proposer for FakeProposer {
+        fn propose_process_change(
+            &self,
+            _summary: &str,
+            _evidence_count: usize,
+        ) -> Result<String, ProposalError> {
+            self.0.clone()
+        }
+    }
+
+    #[test]
+    fn drafting_stores_a_pending_change_from_the_model() {
+        let store = FakeStore::default();
+        let ids = SeqIds::default();
+        let reflection = seed_reflection(&store, &ids);
+        let proposer = FakeProposer(Ok("Default runs to mornings".to_owned()));
+
+        let change = draft_process_change(&store, &store, &ids, &proposer, reflection).unwrap();
+        assert_eq!(change.approval(), ApprovalState::Pending);
+        assert_eq!(change.description(), "Default runs to mornings");
+        // The drafted proposal is an ordinary pending change awaiting approval.
+        assert_eq!(
+            list_process_changes(&store, reflection).unwrap(),
+            vec![change]
+        );
+    }
+
+    #[test]
+    fn drafting_against_a_missing_reflection_is_not_found() {
+        let store = FakeStore::default();
+        let ids = SeqIds::default();
+        let proposer = FakeProposer(Ok("x".to_owned()));
+        let err = draft_process_change(&store, &store, &ids, &proposer, ReflectionId::new(1))
+            .unwrap_err();
+        assert_eq!(
+            err,
+            AppError::NotFound {
+                entity: "reflection"
+            }
+        );
+    }
+
+    #[test]
+    fn an_unavailable_model_is_a_model_error() {
+        let store = FakeStore::default();
+        let ids = SeqIds::default();
+        let reflection = seed_reflection(&store, &ids);
+        let proposer = FakeProposer(Err(ProposalError::Unavailable("no server".to_owned())));
+        let err = draft_process_change(&store, &store, &ids, &proposer, reflection).unwrap_err();
+        assert!(matches!(err, AppError::Model { .. }));
     }
 }
