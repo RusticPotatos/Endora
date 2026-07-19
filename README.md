@@ -121,6 +121,18 @@ curl -s -X POST localhost:8787/v1/directions \
   -H 'content-type: application/json' -d '{"title":"Be healthier"}'
 ```
 
+### Using the CLI
+
+With the node running, the `endora` CLI (a thin client) talks to it:
+
+```bash
+make run-cli ARGS="health"     # or run the binary directly:
+endora direction create "Be healthier"
+endora goal create <direction-id> "Run a 5k"
+endora goal list <direction-id>
+# override the node URL with ENDORA_URL (default http://127.0.0.1:8787)
+```
+
 The node currently serves the first vertical slice (Direction & Goals). More of
 the learning loop, the policy boundary, and the model adapter follow — see the
 [Roadmap](docs/roadmap.md).
