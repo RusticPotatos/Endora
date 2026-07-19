@@ -348,6 +348,33 @@ pub struct ButlerReply {
     pub proposals: Vec<ButlerProposal>,
 }
 
+/// A brief of one North Star, for grounding the butler's conversation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NorthStarBrief {
+    /// The North Star's id (so the butler can propose a target under it).
+    pub id: String,
+    /// Its title.
+    pub title: String,
+    /// Its lifecycle status.
+    pub status: String,
+    /// The value it serves, if filed.
+    pub value: Option<String>,
+    /// Whether it has an active target yet.
+    pub has_active_target: bool,
+}
+
+/// A snapshot of the person's current life the butler is given each turn, so the
+/// conversation is grounded in what actually exists rather than starting cold.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ButlerContext {
+    /// The person's value names.
+    pub values: Vec<String>,
+    /// The person's North Stars.
+    pub north_stars: Vec<NorthStarBrief>,
+    /// What currently needs attention (headlines).
+    pub attention: Vec<String>,
+}
+
 /// The butler brain: given the conversation so far, produce a reply and any
 /// proposed actions.
 ///
@@ -356,8 +383,9 @@ pub struct ButlerReply {
 /// or a model-backed one (`docs/adr/0014-the-butler-conversation-values-attention.md`).
 pub trait Butler {
     /// Responds to the conversation so far (the last message is the newest),
-    /// given the preferences already learned about the person, so it need not
-    /// re-ask what it already knows.
+    /// given the preferences already learned and a snapshot of the person's
+    /// current life ([`ButlerContext`]) so it can speak about what actually
+    /// exists and propose the next concrete step.
     ///
     /// # Errors
     /// [`ProposalError`] if a backing model is unreachable or returns nothing.
@@ -365,6 +393,7 @@ pub trait Butler {
         &self,
         history: &[ChatMessage],
         preferences: &[Preference],
+        context: &ButlerContext,
     ) -> Result<ButlerReply, ProposalError>;
 }
 

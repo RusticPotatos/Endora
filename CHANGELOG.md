@@ -9,6 +9,13 @@ tagged release.
 
 ### Added
 
+- **The butler is grounded in your life (1.0 integration)**: each turn the butler
+  is handed a `ButlerContext` — your values, your North Stars (with status, the
+  value each serves, and whether it has a target yet), and what needs attention —
+  so it speaks about what actually exists and proposes the next concrete step,
+  including a **target under an existing North Star** (a new `create_target`
+  proposal). Verified live: the butler referred to an existing North Star by name.
+  (Cutting the `1.0.0` release remains a human decision.)
 - **Voice & character (0.9)** ([ADR 0017](docs/adr/0017-persona-and-voice.md)):
   the butler's prompt now **mirrors the person's register** — matching warmth and
   formality — with the golden-rule floor (reflect kindness upward, never hostility

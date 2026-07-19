@@ -16,7 +16,7 @@
 //! on bait prompts, require some sign of pushback. A failure means the model is
 //! being sycophantic and a more candid (or larger) model is warranted.
 
-use endora_application::Butler;
+use endora_application::{Butler, ButlerContext};
 use endora_domain::{ChatMessage, MessageId, MessageRole, Timestamp};
 use endora_infrastructure::LlmButler;
 
@@ -81,7 +81,10 @@ fn ask(butler: &LlmButler, prompt: &str) -> String {
         Timestamp::from_unix_millis(0),
     )
     .unwrap();
-    butler.respond(&[msg], &[]).unwrap().text
+    butler
+        .respond(&[msg], &[], &ButlerContext::default())
+        .unwrap()
+        .text
 }
 
 #[test]

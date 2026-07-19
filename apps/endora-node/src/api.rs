@@ -1013,12 +1013,22 @@ async fn send_chat(
     let clock = state.clock.clone();
     let butler = state.butler.clone();
     let (reply, proposals) = blocking(move || {
+        // Ground the butler in the person's current life before it answers.
+        let context = usecases::butler_context(
+            store.as_ref(),
+            store.as_ref(),
+            store.as_ref(),
+            store.as_ref(),
+            store.as_ref(),
+            clock.as_ref(),
+        )?;
         usecases::send_to_butler(
             store.as_ref(),
             store.as_ref(),
             butler.as_ref(),
             ids.as_ref(),
             clock.as_ref(),
+            &context,
             &req.message,
         )
     })
