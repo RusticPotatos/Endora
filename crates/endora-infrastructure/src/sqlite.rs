@@ -10,12 +10,12 @@ use std::sync::Mutex;
 
 use endora_application::{
     AssumptionRepository, AuditLog, DirectionRepository, ExperimentRepository, GoalRepository,
-    ObservationRepository, ReflectionRepository, RepositoryError,
+    ObservationRepository, ProcessChangeRepository, ReflectionRepository, RepositoryError,
 };
 use endora_domain::{
-    Assumption, AssumptionId, AuditId, AuditRecord, Direction, DirectionId, Experiment,
-    ExperimentId, ExperimentStatus, Goal, GoalId, Observation, ObservationId, Reflection,
-    ReflectionId, Timestamp,
+    ApprovalState, Assumption, AssumptionId, AuditId, AuditRecord, Direction, DirectionId,
+    Experiment, ExperimentId, ExperimentStatus, Goal, GoalId, Observation, ObservationId,
+    ProcessChangeId, ProposedProcessChange, Reflection, ReflectionId, Timestamp,
 };
 use rusqlite::{Connection, OptionalExtension, params};
 
@@ -74,6 +74,16 @@ CREATE TABLE IF NOT EXISTS reflection_evidence (
     observation_id TEXT NOT NULL REFERENCES observations(id),
     PRIMARY KEY (reflection_id, ordinal)
 ) STRICT;
+
+CREATE TABLE IF NOT EXISTS process_changes (
+    id            TEXT PRIMARY KEY,
+    reflection_id TEXT NOT NULL REFERENCES reflections(id),
+    description   TEXT NOT NULL,
+    approval      TEXT NOT NULL
+) STRICT;
+
+CREATE INDEX IF NOT EXISTS idx_process_changes_reflection
+    ON process_changes(reflection_id);
 
 CREATE TABLE IF NOT EXISTS audit_log (
     id      TEXT PRIMARY KEY,
@@ -471,6 +481,84 @@ impl ReflectionRepository for SqliteStore {
     }
 }
 
+impl ProcessChangeRepository for SqliteStore {
+    fn save(&self, change: &ProposedProcessChange) -> Result<(), RepositoryError> {
+        let conn = self.lock()?;
+        conn.execute(
+            "INSERT OR REPLACE INTO process_changes (id, reflection_id, description, approval) \
+             VALUES (?1, ?2, ?3, ?4)",
+            params![
+                id_text(change.id().value()),
+                id_text(change.reflection().value()),
+                change.description(),
+                change.approval().name()
+            ],
+        )
+        .map_err(backend)?;
+        Ok(())
+    }
+
+    fn get(&self, id: ProcessChangeId) -> Result<Option<ProposedProcessChange>, RepositoryError> {
+        let conn = self.lock()?;
+        let row: Option<(String, String, String)> = conn
+            .query_row(
+                "SELECT reflection_id, description, approval FROM process_changes WHERE id = ?1",
+                params![id_text(id.value())],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .optional()
+            .map_err(backend)?;
+        let Some((reflection_id, description, approval)) = row else {
+            return Ok(None);
+        };
+        let reflection = ReflectionId::new(parse_id(&reflection_id)?);
+        let change = ProposedProcessChange::from_parts(
+            id,
+            reflection,
+            &description,
+            parse_approval(&approval)?,
+        )
+        .map_err(corrupt)?;
+        Ok(Some(change))
+    }
+
+    fn list_for_reflection(
+        &self,
+        reflection: ReflectionId,
+    ) -> Result<Vec<ProposedProcessChange>, RepositoryError> {
+        let conn = self.lock()?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, description, approval FROM process_changes \
+                 WHERE reflection_id = ?1 ORDER BY id",
+            )
+            .map_err(backend)?;
+        let rows = stmt
+            .query_map(params![id_text(reflection.value())], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            })
+            .map_err(backend)?;
+
+        let mut changes = Vec::new();
+        for row in rows {
+            let (id, description, approval) = row.map_err(backend)?;
+            let change = ProposedProcessChange::from_parts(
+                ProcessChangeId::new(parse_id(&id)?),
+                reflection,
+                &description,
+                parse_approval(&approval)?,
+            )
+            .map_err(corrupt)?;
+            changes.push(change);
+        }
+        Ok(changes)
+    }
+}
+
 impl AuditLog for SqliteStore {
     fn append(&self, record: &AuditRecord) -> Result<(), RepositoryError> {
         let conn = self.lock()?;
@@ -557,6 +645,12 @@ fn evidence_for(
 fn parse_status(text: &str) -> Result<ExperimentStatus, RepositoryError> {
     ExperimentStatus::from_name(text)
         .ok_or_else(|| RepositoryError::Corrupt(format!("unknown experiment status {text:?}")))
+}
+
+/// Parses a stored approval state, or reports corruption.
+fn parse_approval(text: &str) -> Result<ApprovalState, RepositoryError> {
+    ApprovalState::from_name(text)
+        .ok_or_else(|| RepositoryError::Corrupt(format!("unknown approval state {text:?}")))
 }
 
 /// Maps any backend error into a [`RepositoryError::Backend`].
@@ -798,6 +892,73 @@ mod tests {
             Some(r.clone())
         );
         assert_eq!(reflections.list_for_goal(goal).unwrap(), vec![r]);
+    }
+
+    #[test]
+    fn process_change_approval_survives_a_reload() {
+        use endora_application::{ProcessChangeRepository, ReflectionRepository};
+        use endora_domain::{
+            GoalId, ObservationId, ProcessChangeId, ProposedProcessChange, Reflection, ReflectionId,
+        };
+
+        let store = store();
+        let directions: &dyn DirectionRepository = &store;
+        let goals: &dyn GoalRepository = &store;
+        let reflections: &dyn ReflectionRepository = &store;
+        let changes: &dyn ProcessChangeRepository = &store;
+
+        // Reflection with no evidence FKs (evidence table is empty) still needs a
+        // real observation? No — Reflection::new requires >=1 evidence id, but the
+        // reflection_evidence FK requires the observation to exist. Build a full
+        // chain so the evidence id is valid.
+        let direction = DirectionId::new(1);
+        directions
+            .save(&Direction::new(direction, "Be healthier").unwrap())
+            .unwrap();
+        let goal = GoalId::new(2);
+        goals
+            .save(&Goal::new(goal, direction, "Run a 5k").unwrap())
+            .unwrap();
+
+        use endora_application::{
+            AssumptionRepository, ExperimentRepository, ObservationRepository,
+        };
+        use endora_domain::{
+            Assumption, AssumptionId, Experiment, ExperimentId, Observation, Timestamp,
+        };
+        let assumption = AssumptionId::new(3);
+        (&store as &dyn AssumptionRepository)
+            .save(&Assumption::new(assumption, goal, "Mornings").unwrap())
+            .unwrap();
+        let experiment = ExperimentId::new(4);
+        (&store as &dyn ExperimentRepository)
+            .save(&Experiment::propose(experiment, assumption, "Try").unwrap())
+            .unwrap();
+        let obs = ObservationId::new(5);
+        (&store as &dyn ObservationRepository)
+            .save(
+                &Observation::record(obs, experiment, "n", Timestamp::from_unix_millis(1)).unwrap(),
+            )
+            .unwrap();
+
+        let reflection = ReflectionId::new(6);
+        reflections
+            .save(&Reflection::new(reflection, goal, "worked", vec![obs]).unwrap())
+            .unwrap();
+
+        // Save an approved change; propose() alone could not rebuild this state.
+        let mut change =
+            ProposedProcessChange::propose(ProcessChangeId::new(7), reflection, "Do mornings")
+                .unwrap();
+        change.approve().unwrap();
+        changes.save(&change).unwrap();
+
+        let loaded = changes.get(ProcessChangeId::new(7)).unwrap().unwrap();
+        assert!(loaded.is_approved());
+        assert_eq!(
+            changes.list_for_reflection(reflection).unwrap(),
+            vec![loaded]
+        );
     }
 
     #[test]

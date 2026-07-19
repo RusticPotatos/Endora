@@ -100,6 +100,21 @@ fn route(args: &[&str]) -> Option<Action> {
             ))
         }
         ["reflection", "list", goal] => Some(Action::Get(format!("/v1/goals/{goal}/reflections"))),
+        ["process-change", "propose", reflection, description] => Some(Action::Post(
+            format!("/v1/reflections/{reflection}/process-changes"),
+            json!({ "description": description }),
+        )),
+        ["process-change", "list", reflection] => Some(Action::Get(format!(
+            "/v1/reflections/{reflection}/process-changes"
+        ))),
+        ["process-change", "approve", id] => Some(Action::Post(
+            format!("/v1/process-changes/{id}/approve"),
+            json!({}),
+        )),
+        ["process-change", "reject", id] => Some(Action::Post(
+            format!("/v1/process-changes/{id}/reject"),
+            json!({}),
+        )),
         _ => None,
     }
 }
@@ -143,7 +158,11 @@ fn print_usage() {
            observation record <experiment-id> <n> record an observation\n  \
            observation list <experiment-id>       list an experiment's observations\n  \
            reflection create <goal-id> <summary> <obs-ids>  reflect (obs-ids: comma-separated)\n  \
-           reflection list <goal-id>              list a goal's reflections\n\n\
+           reflection list <goal-id>              list a goal's reflections\n  \
+           process-change propose <reflection-id> <desc>  propose a process change\n  \
+           process-change list <reflection-id>    list a reflection's proposed changes\n  \
+           process-change approve <id>            approve a proposed change\n  \
+           process-change reject <id>             reject a proposed change\n\n\
          Environment:\n  \
            ENDORA_URL   node base URL (default http://127.0.0.1:8787)"
     );
@@ -252,6 +271,24 @@ mod tests {
         assert_eq!(
             route(&["reflection", "list", "3"]),
             Some(Action::Get("/v1/goals/3/reflections".to_owned()))
+        );
+    }
+
+    #[test]
+    fn routes_process_change_commands() {
+        assert_eq!(
+            route(&["process-change", "propose", "6", "Default to mornings"]),
+            Some(Action::Post(
+                "/v1/reflections/6/process-changes".to_owned(),
+                json!({ "description": "Default to mornings" })
+            ))
+        );
+        assert_eq!(
+            route(&["process-change", "approve", "7"]),
+            Some(Action::Post(
+                "/v1/process-changes/7/approve".to_owned(),
+                json!({})
+            ))
         );
     }
 
