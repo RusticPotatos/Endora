@@ -2,8 +2,7 @@
 
 ## Status
 
-Proposed — **working draft, kept local** while the direction is being decided.
-Not to be published until adopted.
+Accepted (2026).
 
 ## Context
 
