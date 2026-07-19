@@ -60,6 +60,30 @@ impl AutonomyLevel {
     pub const fn permits_action(self) -> bool {
         !matches!(self, Self::Observe)
     }
+
+    /// A stable, lowercase name for the level, for interfaces and storage. The
+    /// round trip with [`from_name`](Self::from_name) is part of the contract.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Observe => "observe",
+            Self::Suggest => "suggest",
+            Self::ConfirmEachAction => "confirm_each_action",
+            Self::ActWithinPolicy => "act_within_policy",
+        }
+    }
+
+    /// Parses a level from its [`name`](Self::name), or `None` if unrecognized.
+    #[must_use]
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "observe" => Some(Self::Observe),
+            "suggest" => Some(Self::Suggest),
+            "confirm_each_action" => Some(Self::ConfirmEachAction),
+            "act_within_policy" => Some(Self::ActWithinPolicy),
+            _ => None,
+        }
+    }
 }
 
 impl PartialOrd for AutonomyLevel {
@@ -92,6 +116,15 @@ mod tests {
         assert!(Suggest.permits_action());
         assert!(ConfirmEachAction.permits_action());
         assert!(ActWithinPolicy.permits_action());
+    }
+
+    #[test]
+    fn level_names_round_trip() {
+        use super::AutonomyLevel;
+        for level in [Observe, Suggest, ConfirmEachAction, ActWithinPolicy] {
+            assert_eq!(AutonomyLevel::from_name(level.name()), Some(level));
+        }
+        assert_eq!(AutonomyLevel::from_name("bogus"), None);
     }
 
     #[test]
