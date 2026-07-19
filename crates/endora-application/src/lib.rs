@@ -11,9 +11,12 @@
 
 #![forbid(unsafe_code)]
 
+pub mod error;
 pub mod ports;
+pub mod usecases;
 
-pub use ports::{DirectionRepository, GoalRepository, RepositoryError};
+pub use error::AppError;
+pub use ports::{Clock, DirectionRepository, GoalRepository, IdSource, RepositoryError};
 
 use endora_domain::AutonomyLevel;
 
