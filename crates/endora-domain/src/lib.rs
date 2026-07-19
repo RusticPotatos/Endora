@@ -35,6 +35,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod audit;
 pub mod autonomy;
 pub mod error;
 pub mod experiments;
@@ -43,13 +44,14 @@ pub mod ids;
 pub mod policy;
 pub mod reflection;
 
+pub use audit::AuditRecord;
 pub use autonomy::AutonomyLevel;
 pub use error::DomainError;
 pub use experiments::{Experiment, ExperimentStatus, Observation};
 pub use goals::{Assumption, Direction, Goal};
 pub use ids::{
-    AssumptionId, DirectionId, ExperimentId, GoalId, ObservationId, ProcessChangeId, ReflectionId,
-    Timestamp,
+    AssumptionId, AuditId, DirectionId, ExperimentId, GoalId, ObservationId, ProcessChangeId,
+    ReflectionId, Timestamp,
 };
 pub use policy::{PolicyDecision, authorize_process_change};
 pub use reflection::{ApprovalState, ProposedProcessChange, Reflection};

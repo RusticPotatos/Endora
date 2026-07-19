@@ -16,7 +16,7 @@ pub mod ports;
 pub mod usecases;
 
 pub use error::AppError;
-pub use ports::{Clock, DirectionRepository, GoalRepository, IdSource, RepositoryError};
+pub use ports::{AuditLog, Clock, DirectionRepository, GoalRepository, IdSource, RepositoryError};
 
 use endora_domain::AutonomyLevel;
 
