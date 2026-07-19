@@ -9,10 +9,12 @@
 use std::sync::Mutex;
 
 use endora_application::{
-    AssumptionRepository, AuditLog, DirectionRepository, GoalRepository, RepositoryError,
+    AssumptionRepository, AuditLog, DirectionRepository, ExperimentRepository, GoalRepository,
+    RepositoryError,
 };
 use endora_domain::{
-    Assumption, AssumptionId, AuditId, AuditRecord, Direction, DirectionId, Goal, GoalId, Timestamp,
+    Assumption, AssumptionId, AuditId, AuditRecord, Direction, DirectionId, Experiment,
+    ExperimentId, ExperimentStatus, Goal, GoalId, Timestamp,
 };
 use rusqlite::{Connection, OptionalExtension, params};
 
@@ -37,6 +39,15 @@ CREATE TABLE IF NOT EXISTS assumptions (
 ) STRICT;
 
 CREATE INDEX IF NOT EXISTS idx_assumptions_goal ON assumptions(goal_id);
+
+CREATE TABLE IF NOT EXISTS experiments (
+    id            TEXT PRIMARY KEY,
+    assumption_id TEXT NOT NULL REFERENCES assumptions(id),
+    hypothesis    TEXT NOT NULL,
+    status        TEXT NOT NULL
+) STRICT;
+
+CREATE INDEX IF NOT EXISTS idx_experiments_assumption ON experiments(assumption_id);
 
 CREATE TABLE IF NOT EXISTS audit_log (
     id      TEXT PRIMARY KEY,
@@ -186,6 +197,24 @@ impl AssumptionRepository for SqliteStore {
         Ok(())
     }
 
+    fn get(&self, id: AssumptionId) -> Result<Option<Assumption>, RepositoryError> {
+        let conn = self.lock()?;
+        let row: Option<(String, String)> = conn
+            .query_row(
+                "SELECT goal_id, statement FROM assumptions WHERE id = ?1",
+                params![id_text(id.value())],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()
+            .map_err(backend)?;
+        let Some((goal_id, statement)) = row else {
+            return Ok(None);
+        };
+        let goal = GoalId::new(parse_id(&goal_id)?);
+        let assumption = Assumption::new(id, goal, &statement).map_err(corrupt)?;
+        Ok(Some(assumption))
+    }
+
     fn list_for_goal(&self, goal: GoalId) -> Result<Vec<Assumption>, RepositoryError> {
         let conn = self.lock()?;
         let mut stmt = conn
@@ -205,6 +234,80 @@ impl AssumptionRepository for SqliteStore {
             assumptions.push(assumption);
         }
         Ok(assumptions)
+    }
+}
+
+impl ExperimentRepository for SqliteStore {
+    fn save(&self, experiment: &Experiment) -> Result<(), RepositoryError> {
+        let conn = self.lock()?;
+        conn.execute(
+            "INSERT OR REPLACE INTO experiments (id, assumption_id, hypothesis, status) \
+             VALUES (?1, ?2, ?3, ?4)",
+            params![
+                id_text(experiment.id().value()),
+                id_text(experiment.assumption().value()),
+                experiment.hypothesis(),
+                experiment.status().name()
+            ],
+        )
+        .map_err(backend)?;
+        Ok(())
+    }
+
+    fn get(&self, id: ExperimentId) -> Result<Option<Experiment>, RepositoryError> {
+        let conn = self.lock()?;
+        let row: Option<(String, String, String)> = conn
+            .query_row(
+                "SELECT assumption_id, hypothesis, status FROM experiments WHERE id = ?1",
+                params![id_text(id.value())],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .optional()
+            .map_err(backend)?;
+        let Some((assumption_id, hypothesis, status)) = row else {
+            return Ok(None);
+        };
+        let assumption = AssumptionId::new(parse_id(&assumption_id)?);
+        let experiment =
+            Experiment::from_parts(id, assumption, &hypothesis, parse_status(&status)?)
+                .map_err(corrupt)?;
+        Ok(Some(experiment))
+    }
+
+    fn list_for_assumption(
+        &self,
+        assumption: AssumptionId,
+    ) -> Result<Vec<Experiment>, RepositoryError> {
+        let conn = self.lock()?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, hypothesis, status FROM experiments \
+                 WHERE assumption_id = ?1 ORDER BY id",
+            )
+            .map_err(backend)?;
+        let rows = stmt
+            .query_map(params![id_text(assumption.value())], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            })
+            .map_err(backend)?;
+
+        let mut experiments = Vec::new();
+        for row in rows {
+            let (id, hypothesis, status) = row.map_err(backend)?;
+            let experiment = Experiment::from_parts(
+                ExperimentId::new(parse_id(&id)?),
+                assumption,
+                &hypothesis,
+                parse_status(&status)?,
+            )
+            .map_err(corrupt)?;
+            experiments.push(experiment);
+        }
+        Ok(experiments)
     }
 }
 
@@ -265,6 +368,12 @@ fn id_text(value: u128) -> String {
 fn parse_id(text: &str) -> Result<u128, RepositoryError> {
     text.parse::<u128>()
         .map_err(|e| RepositoryError::Corrupt(format!("invalid stored id {text:?}: {e}")))
+}
+
+/// Parses a stored experiment status, or reports corruption.
+fn parse_status(text: &str) -> Result<ExperimentStatus, RepositoryError> {
+    ExperimentStatus::from_name(text)
+        .ok_or_else(|| RepositoryError::Corrupt(format!("unknown experiment status {text:?}")))
 }
 
 /// Maps any backend error into a [`RepositoryError::Backend`].
@@ -362,6 +471,45 @@ mod tests {
         assumptions.save(&a).unwrap();
         assert_eq!(assumptions.list_for_goal(goal).unwrap(), vec![a]);
         assert_eq!(assumptions.list_for_goal(GoalId::new(999)).unwrap(), vec![]);
+    }
+
+    #[test]
+    fn experiment_status_survives_a_reload() {
+        use endora_application::{AssumptionRepository, ExperimentRepository};
+        use endora_domain::{
+            Assumption, AssumptionId, Experiment, ExperimentId, ExperimentStatus, GoalId,
+        };
+
+        let store = store();
+        let directions: &dyn DirectionRepository = &store;
+        let goals: &dyn GoalRepository = &store;
+        let assumptions: &dyn AssumptionRepository = &store;
+        let experiments: &dyn ExperimentRepository = &store;
+
+        let direction = DirectionId::new(1);
+        directions
+            .save(&Direction::new(direction, "Be healthier").unwrap())
+            .unwrap();
+        let goal = GoalId::new(2);
+        goals
+            .save(&Goal::new(goal, direction, "Run a 5k").unwrap())
+            .unwrap();
+        let assumption = AssumptionId::new(3);
+        assumptions
+            .save(&Assumption::new(assumption, goal, "Mornings are freest").unwrap())
+            .unwrap();
+
+        // Save a Running experiment; a plain constructor could not rebuild this.
+        let mut e = Experiment::propose(ExperimentId::new(4), assumption, "Try mornings").unwrap();
+        e.start().unwrap();
+        experiments.save(&e).unwrap();
+
+        let loaded = experiments.get(ExperimentId::new(4)).unwrap().unwrap();
+        assert_eq!(loaded.status(), ExperimentStatus::Running);
+        assert_eq!(
+            experiments.list_for_assumption(assumption).unwrap(),
+            vec![loaded]
+        );
     }
 
     #[test]

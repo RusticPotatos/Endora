@@ -70,6 +70,21 @@ fn route(args: &[&str]) -> Option<Action> {
             json!({ "statement": statement }),
         )),
         ["assumption", "list", goal] => Some(Action::Get(format!("/v1/goals/{goal}/assumptions"))),
+        ["experiment", "propose", assumption, hypothesis] => Some(Action::Post(
+            format!("/v1/assumptions/{assumption}/experiments"),
+            json!({ "hypothesis": hypothesis }),
+        )),
+        ["experiment", "list", assumption] => Some(Action::Get(format!(
+            "/v1/assumptions/{assumption}/experiments"
+        ))),
+        ["experiment", "start", id] => Some(Action::Post(
+            format!("/v1/experiments/{id}/start"),
+            json!({}),
+        )),
+        ["experiment", "conclude", id] => Some(Action::Post(
+            format!("/v1/experiments/{id}/conclude"),
+            json!({}),
+        )),
         _ => None,
     }
 }
@@ -105,7 +120,11 @@ fn print_usage() {
            goal create <direction-id> <statement> add a goal to a direction\n  \
            goal list <direction-id>               list a direction's goals\n  \
            assumption create <goal-id> <text>     add an assumption to a goal\n  \
-           assumption list <goal-id>              list a goal's assumptions\n\n\
+           assumption list <goal-id>              list a goal's assumptions\n  \
+           experiment propose <assumption-id> <h> propose an experiment\n  \
+           experiment list <assumption-id>        list an assumption's experiments\n  \
+           experiment start <experiment-id>       start a proposed experiment\n  \
+           experiment conclude <experiment-id>    conclude a running experiment\n\n\
          Environment:\n  \
            ENDORA_URL   node base URL (default http://127.0.0.1:8787)"
     );
@@ -159,6 +178,31 @@ mod tests {
         assert_eq!(
             route(&["assumption", "list", "7"]),
             Some(Action::Get("/v1/goals/7/assumptions".to_owned()))
+        );
+    }
+
+    #[test]
+    fn routes_experiment_commands() {
+        assert_eq!(
+            route(&["experiment", "propose", "5", "Try mornings"]),
+            Some(Action::Post(
+                "/v1/assumptions/5/experiments".to_owned(),
+                json!({ "hypothesis": "Try mornings" })
+            ))
+        );
+        assert_eq!(
+            route(&["experiment", "start", "9"]),
+            Some(Action::Post(
+                "/v1/experiments/9/start".to_owned(),
+                json!({})
+            ))
+        );
+        assert_eq!(
+            route(&["experiment", "conclude", "9"]),
+            Some(Action::Post(
+                "/v1/experiments/9/conclude".to_owned(),
+                json!({})
+            ))
         );
     }
 

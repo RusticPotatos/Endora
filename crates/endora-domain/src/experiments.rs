@@ -19,12 +19,26 @@ pub enum ExperimentStatus {
 }
 
 impl ExperimentStatus {
-    /// A stable, lowercase name for the state (used in error messages).
-    pub(crate) const fn name(self) -> &'static str {
+    /// A stable, lowercase name for the state. Stable enough for storage and
+    /// error messages; the round trip with [`from_name`](Self::from_name) is
+    /// part of the contract.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
         match self {
             Self::Proposed => "proposed",
             Self::Running => "running",
             Self::Concluded => "concluded",
+        }
+    }
+
+    /// Parses a status from its [`name`](Self::name), or `None` if unrecognized.
+    #[must_use]
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "proposed" => Some(Self::Proposed),
+            "running" => Some(Self::Running),
+            "concluded" => Some(Self::Concluded),
+            _ => None,
         }
     }
 }
@@ -54,6 +68,32 @@ impl Experiment {
             assumption,
             hypothesis,
             status: ExperimentStatus::Proposed,
+        })
+    }
+
+    /// Reconstitutes an experiment from persisted parts, including its stored
+    /// `status`.
+    ///
+    /// This is for **storage adapters** loading a previously-saved experiment;
+    /// it restores state rather than running the lifecycle. Prefer [`propose`]
+    /// for new experiments.
+    ///
+    /// [`propose`]: Self::propose
+    ///
+    /// # Errors
+    /// [`DomainError::EmptyField`] if `hypothesis` is blank.
+    pub fn from_parts(
+        id: ExperimentId,
+        assumption: AssumptionId,
+        hypothesis: &str,
+        status: ExperimentStatus,
+    ) -> Result<Self, DomainError> {
+        let hypothesis = require_non_empty("experiment.hypothesis", hypothesis)?;
+        Ok(Self {
+            id,
+            assumption,
+            hypothesis,
+            status,
         })
     }
 
@@ -239,6 +279,30 @@ mod tests {
             .unwrap();
         assert_eq!(o.recorded_at(), at);
         assert_eq!(o.note(), "felt good");
+    }
+
+    #[test]
+    fn status_names_round_trip() {
+        for s in [
+            ExperimentStatus::Proposed,
+            ExperimentStatus::Running,
+            ExperimentStatus::Concluded,
+        ] {
+            assert_eq!(ExperimentStatus::from_name(s.name()), Some(s));
+        }
+        assert_eq!(ExperimentStatus::from_name("bogus"), None);
+    }
+
+    #[test]
+    fn from_parts_restores_a_stored_status() {
+        let e = Experiment::from_parts(
+            ExperimentId::new(1),
+            AssumptionId::new(1),
+            "Morning runs stick",
+            ExperimentStatus::Running,
+        )
+        .unwrap();
+        assert_eq!(e.status(), ExperimentStatus::Running);
     }
 
     #[test]

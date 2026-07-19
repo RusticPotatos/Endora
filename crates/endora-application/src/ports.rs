@@ -7,7 +7,10 @@
 
 use core::fmt;
 
-use endora_domain::{Assumption, AuditRecord, Direction, DirectionId, Goal, GoalId, Timestamp};
+use endora_domain::{
+    Assumption, AssumptionId, AuditRecord, Direction, DirectionId, Experiment, ExperimentId, Goal,
+    GoalId, Timestamp,
+};
 
 /// A failure from a storage backend behind a repository port.
 ///
@@ -77,11 +80,42 @@ pub trait AssumptionRepository {
     /// [`RepositoryError`] if the backend fails.
     fn save(&self, assumption: &Assumption) -> Result<(), RepositoryError>;
 
+    /// Fetches an assumption by id, returning `None` if it does not exist.
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if the backend fails or stored data is corrupt.
+    fn get(&self, id: AssumptionId) -> Result<Option<Assumption>, RepositoryError>;
+
     /// Lists the assumptions belonging to a goal, in a stable order.
     ///
     /// # Errors
     /// [`RepositoryError`] if the backend fails or stored data is corrupt.
     fn list_for_goal(&self, goal: GoalId) -> Result<Vec<Assumption>, RepositoryError>;
+}
+
+/// Persists and retrieves [`Experiment`]s.
+pub trait ExperimentRepository {
+    /// Inserts an experiment, or replaces the existing one with the same id
+    /// (used both to create and to persist lifecycle transitions).
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if the backend fails.
+    fn save(&self, experiment: &Experiment) -> Result<(), RepositoryError>;
+
+    /// Fetches an experiment by id, returning `None` if it does not exist.
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if the backend fails or stored data is corrupt.
+    fn get(&self, id: ExperimentId) -> Result<Option<Experiment>, RepositoryError>;
+
+    /// Lists the experiments testing an assumption, in a stable order.
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if the backend fails or stored data is corrupt.
+    fn list_for_assumption(
+        &self,
+        assumption: AssumptionId,
+    ) -> Result<Vec<Experiment>, RepositoryError>;
 }
 
 /// Supplies the current time to use cases.
