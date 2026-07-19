@@ -74,6 +74,8 @@ cargo test --workspace --all-features
 git diff --check
 ```
 
+Or run all of them at once with **`make ci`**. See the [Makefile](Makefile) for
+every developer task (`make help`); new machines start with `make bootstrap`.
 CI runs the same checks on Linux and macOS.
 
 ## Commit messages
