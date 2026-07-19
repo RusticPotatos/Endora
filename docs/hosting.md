@@ -125,7 +125,30 @@ is the same: **the node is only reachable through something that authenticates.*
   host, or `ENDORA_ADDR=0.0.0.0:8787` reachable from outside) with no proxy. That
   hands full read/write of your data to anyone who finds it.
 
-## 4. Checklist
+## 4. Voice: it can speak, but speaking *to* it needs HTTPS
+
+The web console can read the butler's replies aloud (text-to-speech) and let you
+speak your message (speech-to-text), using the browser's built-in Web Speech API —
+open **💬 Chat**, toggle **🔊 Speak**, and use the **🎤** button.
+
+One browser rule to know: **the microphone only works on a secure page** — HTTPS or
+`localhost`. So:
+
+- **Text-to-speech (it speaks to you)** works everywhere, including plain
+  `http://<host>:8787`.
+- **Speech-to-text (you speak to it)** is **blocked** on a plain-HTTP LAN address.
+  Give the console an HTTPS origin to enable the mic:
+  - **Tailscale (recommended):** `tailscale serve https / http://127.0.0.1:8787`
+    on the node's machine gives it an HTTPS URL on your tailnet — the mic then
+    works, and it's private. (This is the overlay from §3, now with TLS.)
+  - **A TLS reverse proxy** (Caddy/nginx, §3) in front of the node.
+  - **Quick local test:** in Chrome, `chrome://flags/#unsafely-treat-insecure-origin-as-secure`
+    → add `http://<host>:8787` → relaunch. (Dev only; not a real fix.)
+
+Speech recognition also needs a supporting browser (Chrome/Edge) and, in some
+browsers, streams audio to a cloud service — so voice is opt-in, off by default.
+
+## 5. Checklist
 
 - [ ] Node bound to `127.0.0.1` (or a private-overlay IP), never public `0.0.0.0`.
 - [ ] Reached only over a private overlay, or through an authenticating TLS proxy.

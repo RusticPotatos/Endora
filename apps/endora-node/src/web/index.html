@@ -476,15 +476,26 @@ function speak(text) {
   TTS.speak(new SpeechSynthesisUtterance(text));
 }
 function listen() {
-  if (!STT) { flash("Speech recognition isn't available in this browser.", "err"); return; }
+  if (!STT) { flash("Speech recognition isn't available in this browser (try Chrome/Edge).", "err"); return; }
+  if (!window.isSecureContext) {
+    flash("Voice input needs a secure page (HTTPS or localhost). Over plain http the browser blocks the mic — the butler can still speak its replies.", "err");
+    return;
+  }
   const rec = new STT();
   rec.lang = "en-US"; rec.interimResults = false; rec.maxAlternatives = 1;
   rec.onresult = (e) => {
     const input = document.getElementById("chat-input");
     if (input) { input.value = e.results[0][0].transcript; input.focus(); }
   };
-  rec.onerror = () => flash("Couldn't capture speech.", "err");
-  rec.start();
+  rec.onerror = (e) => {
+    const err = e && e.error;
+    if (err === "not-allowed" || err === "service-not-allowed") {
+      flash("The browser blocked the mic. Allow microphone access, and use an HTTPS/localhost page.", "err");
+    } else {
+      flash("Couldn't capture speech" + (err ? " (" + err + ")" : "") + ".", "err");
+    }
+  };
+  try { rec.start(); } catch (_) { flash("Couldn't start voice input.", "err"); }
 }
 
 // The butler chat: the conversation, the last reply's proposals (each
@@ -502,7 +513,11 @@ function viewChat() {
       <button class="primary" data-act="confirm:proposal:${i}">Confirm</button>
       <button data-act="dismiss:proposal:${i}">Dismiss</button></div></div>`).join("");
   const speakBtn = TTS ? `<button class="ghost" data-act="toggle:speak">${SPEAK ? "🔊 Speaking" : "🔇 Speak"}</button>` : "";
-  const micBtn = STT ? `<button data-act="chat:mic" title="speak your message">🎤</button>` : "";
+  const micBtn = STT
+    ? (window.isSecureContext
+        ? `<button data-act="chat:mic" title="speak your message">🎤</button>`
+        : `<button data-act="chat:mic" title="voice input needs HTTPS or localhost">🎤 (needs HTTPS)</button>`)
+    : "";
   return `
     ${crumbs([{ label: "Directions", act: "go:home" }, { label: "Butler" }])}
     <div class="row"><h2 class="grow" style="margin:0;">Butler</h2>${speakBtn}</div>
