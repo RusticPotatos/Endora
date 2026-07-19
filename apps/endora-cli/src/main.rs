@@ -58,6 +58,7 @@ fn route(args: &[&str]) -> Option<Action> {
             "/v1/directions".to_owned(),
             json!({ "title": title }),
         )),
+        ["direction", "list"] => Some(Action::Get("/v1/directions".to_owned())),
         ["goal", "create", direction, statement] => Some(Action::Post(
             format!("/v1/directions/{direction}/goals"),
             json!({ "statement": statement }),
@@ -162,6 +163,7 @@ fn print_usage() {
          Commands:\n  \
            health                                 check the node is up\n  \
            direction create <title>               create a direction\n  \
+           direction list                         list your directions\n  \
            goal create <direction-id> <statement> add a goal to a direction\n  \
            goal list <direction-id>               list a direction's goals\n  \
            assumption create <goal-id> <text>     add an assumption to a goal\n  \
@@ -206,6 +208,14 @@ mod tests {
                 "/v1/directions".to_owned(),
                 json!({ "title": "Be healthier" })
             ))
+        );
+    }
+
+    #[test]
+    fn routes_direction_list() {
+        assert_eq!(
+            route(&["direction", "list"]),
+            Some(Action::Get("/v1/directions".to_owned()))
         );
     }
 

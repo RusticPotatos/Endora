@@ -162,6 +162,11 @@ impl DirectionRepository for SqliteStore {
         let direction = Direction::new(id, &title).map_err(corrupt)?;
         Ok(Some(direction))
     }
+
+    fn list_all(&self) -> Result<Vec<Direction>, RepositoryError> {
+        let conn = self.lock()?;
+        all_directions(&conn)
+    }
 }
 
 impl GoalRepository for SqliteStore {

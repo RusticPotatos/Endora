@@ -88,6 +88,12 @@ pub trait DirectionRepository {
     /// # Errors
     /// [`RepositoryError`] if the backend fails or stored data is corrupt.
     fn get(&self, id: DirectionId) -> Result<Option<Direction>, RepositoryError>;
+
+    /// Lists all directions, in a stable order.
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if the backend fails or stored data is corrupt.
+    fn list_all(&self) -> Result<Vec<Direction>, RepositoryError>;
 }
 
 /// Persists and retrieves [`Goal`]s.
