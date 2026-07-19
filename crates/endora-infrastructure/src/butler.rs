@@ -14,14 +14,18 @@
 //! use cases execute it. The model is never the enforcement boundary.
 
 use endora_application::{Butler, ButlerProposal, ButlerReply, ProposalError};
-use endora_domain::{ChatMessage, MessageRole};
+use endora_domain::{ChatMessage, MessageRole, Preference, PreferenceKind};
 use serde_json::{Value, json};
 
 /// A deterministic, offline butler. Reliable, if simple.
 pub struct ScriptedButler;
 
 impl Butler for ScriptedButler {
-    fn respond(&self, history: &[ChatMessage]) -> Result<ButlerReply, ProposalError> {
+    fn respond(
+        &self,
+        history: &[ChatMessage],
+        _preferences: &[Preference],
+    ) -> Result<ButlerReply, ProposalError> {
         Ok(scripted_reply(history))
     }
 }
@@ -93,8 +97,12 @@ impl LlmButler {
 
     /// Asks the model and parses its reply, or an error the caller can fall back
     /// on.
-    fn try_model(&self, history: &[ChatMessage]) -> Result<ButlerReply, ProposalError> {
-        let body = build_butler_request(&self.model, history);
+    fn try_model(
+        &self,
+        history: &[ChatMessage],
+        preferences: &[Preference],
+    ) -> Result<ButlerReply, ProposalError> {
+        let body = build_butler_request(&self.model, history, preferences);
         let url = format!("{}/chat/completions", self.base_url);
         let mut response = self
             .agent
@@ -116,11 +124,15 @@ impl LlmButler {
 }
 
 impl Butler for LlmButler {
-    fn respond(&self, history: &[ChatMessage]) -> Result<ButlerReply, ProposalError> {
+    fn respond(
+        &self,
+        history: &[ChatMessage],
+        preferences: &[Preference],
+    ) -> Result<ButlerReply, ProposalError> {
         // Never fail the conversation: fall back to the scripted butler if the
         // model is unreachable or unusable.
-        self.try_model(history)
-            .or_else(|_| self.fallback.respond(history))
+        self.try_model(history, preferences)
+            .or_else(|_| self.fallback.respond(history, preferences))
     }
 }
 
@@ -130,15 +142,27 @@ personal-growth assistant. You help the person organize life into values, North 
 Stars, and targets. RULES: Be honest and direct. NEVER be sycophantic — no \
 flattery, no empty or overwhelming praise, no reflexive agreement; disagree when \
 warranted, kindly. You only PROPOSE actions; the person confirms them. Never claim \
-to have done anything. Reply with ONLY a JSON object of the form \
+to have done anything. When the person states a lasting preference, propose to \
+remember it. Reply with ONLY a JSON object of the form \
 {\"reply\":\"<your message>\",\"proposals\":[<zero or more>]} where each proposal \
-is exactly one of {\"kind\":\"create_value\",\"name\":\"...\"} or \
-{\"kind\":\"create_north_star\",\"title\":\"...\"}.";
+is exactly one of {\"kind\":\"create_value\",\"name\":\"...\"}, \
+{\"kind\":\"create_north_star\",\"title\":\"...\"}, or \
+{\"kind\":\"remember_preference\",\"text\":\"...\",\"preference_kind\":\"taste\"}.";
 
-/// Builds the OpenAI-compatible chat request from the conversation. Pure, so it
-/// is unit-tested.
-fn build_butler_request(model: &str, history: &[ChatMessage]) -> Value {
-    let mut messages = vec![json!({ "role": "system", "content": BUTLER_SYSTEM_PROMPT })];
+/// Builds the OpenAI-compatible chat request from the conversation and the
+/// preferences already learned (so the butler need not re-ask). Pure, so it is
+/// unit-tested.
+fn build_butler_request(model: &str, history: &[ChatMessage], preferences: &[Preference]) -> Value {
+    let mut system = BUTLER_SYSTEM_PROMPT.to_owned();
+    if !preferences.is_empty() {
+        system.push_str(
+            "\nYou already know these preferences about the person; honour them and do not re-ask:",
+        );
+        for p in preferences {
+            system.push_str(&format!("\n- ({}) {}", p.kind().name(), p.text()));
+        }
+    }
+    let mut messages = vec![json!({ "role": "system", "content": system })];
     for m in history {
         let role = match m.role() {
             MessageRole::User => "user",
@@ -191,6 +215,13 @@ fn parse_proposal(value: &Value) -> Option<ButlerProposal> {
         "create_north_star" => Some(ButlerProposal::CreateNorthStar {
             title: non_empty(value["title"].as_str()?)?,
         }),
+        "remember_preference" => Some(ButlerProposal::RememberPreference {
+            text: non_empty(value["text"].as_str()?)?,
+            kind: value["preference_kind"]
+                .as_str()
+                .and_then(PreferenceKind::from_name)
+                .unwrap_or(PreferenceKind::Taste),
+        }),
         _ => None,
     }
 }
@@ -231,7 +262,7 @@ mod tests {
     #[test]
     fn scripted_butler_proposes_a_north_star_from_an_aim() {
         let reply = ScriptedButler
-            .respond(&[user("I want to get back into running")])
+            .respond(&[user("I want to get back into running")], &[])
             .unwrap();
         assert_eq!(
             reply.proposals,
@@ -244,7 +275,7 @@ mod tests {
 
     #[test]
     fn request_includes_the_system_prompt_and_conversation() {
-        let body = build_butler_request("qwen3.5:9b", &[user("hello")]);
+        let body = build_butler_request("qwen3.5:9b", &[user("hello")], &[]);
         assert_eq!(body["messages"][0]["role"], "system");
         assert!(
             body["messages"][0]["content"]
@@ -297,7 +328,7 @@ mod tests {
     fn llm_butler_falls_back_when_the_endpoint_is_unreachable() {
         // An unroutable endpoint forces the scripted fallback.
         let butler = LlmButler::new("http://127.0.0.1:1/v1".to_owned(), "none".to_owned());
-        let reply = butler.respond(&[user("I want to run more")]).unwrap();
+        let reply = butler.respond(&[user("I want to run more")], &[]).unwrap();
         assert_eq!(
             reply.proposals,
             vec![ButlerProposal::CreateNorthStar {

@@ -8,16 +8,17 @@
 use endora_domain::{
     Assumption, AssumptionId, AuditId, AuditRecord, AutonomyLevel, ChatMessage, Direction,
     DirectionId, Experiment, ExperimentId, LifecycleStatus, MessageId, MessageRole, Observation,
-    ObservationId, PolicyDecision, ProcessChangeId, ProposedProcessChange, Reflection,
-    ReflectionId, Target, TargetId, Timestamp, Value, ValueId, authorize_process_change,
+    ObservationId, PolicyDecision, Preference, PreferenceId, PreferenceKind, ProcessChangeId,
+    ProposedProcessChange, Reflection, ReflectionId, Target, TargetId, Timestamp, Value, ValueId,
+    authorize_process_change,
 };
 
 use crate::error::AppError;
 use crate::ports::{
     AssumptionRepository, AttentionItem, AttentionKind, AuditLog, Butler, ButlerProposal,
     ChatRepository, Clock, DirectionRepository, ExperimentRepository, IdSource, MemorySnapshot,
-    MemoryStore, ObservationRepository, ProcessChangeRepository, Proposer, ReflectionRepository,
-    Snooze, SnoozeRepository, TargetRepository, ValueRepository,
+    MemoryStore, ObservationRepository, PreferenceRepository, ProcessChangeRepository, Proposer,
+    ReflectionRepository, Snooze, SnoozeRepository, TargetRepository, ValueRepository,
 };
 
 /// Creates and stores a new [`Direction`].
@@ -748,6 +749,7 @@ pub fn recent_activity(
 /// butler brain is unavailable, or [`AppError::Repository`] if persistence fails.
 pub fn send_to_butler(
     chat: &impl ChatRepository,
+    preferences: &impl PreferenceRepository,
     butler: &dyn Butler,
     ids: &impl IdSource,
     clock: &impl Clock,
@@ -762,9 +764,12 @@ pub fn send_to_butler(
     chat.append(&user)?;
 
     let history = chat.list()?;
-    let reply = butler.respond(&history).map_err(|e| AppError::Model {
-        message: e.to_string(),
-    })?;
+    let prefs = preferences.list_all()?;
+    let reply = butler
+        .respond(&history, &prefs)
+        .map_err(|e| AppError::Model {
+            message: e.to_string(),
+        })?;
 
     // A brain that returns nothing usable still owes the person a reply.
     let reply_text = if reply.text.trim().is_empty() {
@@ -788,6 +793,47 @@ pub fn send_to_butler(
 /// [`AppError::Repository`] if the backend fails or stored data is corrupt.
 pub fn chat_history(chat: &impl ChatRepository) -> Result<Vec<ChatMessage>, AppError> {
     Ok(chat.list()?)
+}
+
+/// Records a preference the butler should keep in mind. In this build every
+/// preference is created by explicit confirmation, so it is always a *stated*
+/// preference (the person's own words), never inferred.
+///
+/// # Errors
+/// [`AppError::Domain`] if the text is blank, or [`AppError::Repository`] on
+/// failure.
+pub fn create_preference(
+    preferences: &impl PreferenceRepository,
+    ids: &impl IdSource,
+    clock: &impl Clock,
+    text: &str,
+    kind: PreferenceKind,
+) -> Result<Preference, AppError> {
+    let preference = Preference::new(PreferenceId::new(ids.new_id()), text, kind, clock.now())?;
+    preferences.save(&preference)?;
+    Ok(preference)
+}
+
+/// Lists the preferences the butler has learned, oldest first.
+///
+/// # Errors
+/// [`AppError::Repository`] if the backend fails or stored data is corrupt.
+pub fn list_preferences(
+    preferences: &impl PreferenceRepository,
+) -> Result<Vec<Preference>, AppError> {
+    Ok(preferences.list_all()?)
+}
+
+/// Forgets a preference (memory is correctable and deletable).
+///
+/// # Errors
+/// [`AppError::Repository`] if persistence fails.
+pub fn delete_preference(
+    preferences: &impl PreferenceRepository,
+    id: PreferenceId,
+) -> Result<(), AppError> {
+    preferences.delete(id)?;
+    Ok(())
 }
 
 /// Computes what currently needs the person's attention, most pressing first,
@@ -910,16 +956,17 @@ mod tests {
     use crate::ports::{
         AssumptionRepository, AttentionKind, AuditLog, Butler, ButlerProposal, ButlerReply,
         ChatRepository, Clock, DirectionRepository, ExperimentRepository, IdSource,
-        ObservationRepository, ProcessChangeRepository, ProposalError, Proposer,
-        ReflectionRepository, RepositoryError, Snooze, SnoozeRepository, TargetRepository,
-        ValueRepository,
+        ObservationRepository, PreferenceRepository, ProcessChangeRepository, ProposalError,
+        Proposer, ReflectionRepository, RepositoryError, Snooze, SnoozeRepository,
+        TargetRepository, ValueRepository,
     };
     use endora_domain::LifecycleStatus;
     use endora_domain::{
         ApprovalState, Assumption, AssumptionId, AuditRecord, AutonomyLevel, ChatMessage,
         Direction, DirectionId, Experiment, ExperimentId, ExperimentStatus, MessageRole,
-        Observation, ObservationId, PolicyDecision, ProcessChangeId, ProposedProcessChange,
-        Reflection, ReflectionId, Target, TargetId, Timestamp, Value, ValueId,
+        Observation, ObservationId, PolicyDecision, Preference, PreferenceId, ProcessChangeId,
+        ProposedProcessChange, Reflection, ReflectionId, Target, TargetId, Timestamp, Value,
+        ValueId,
     };
     use std::cell::{Cell, RefCell};
     use std::collections::HashMap;
@@ -929,6 +976,7 @@ mod tests {
     struct FakeStore {
         values: RefCell<HashMap<u128, Value>>,
         messages: RefCell<Vec<ChatMessage>>,
+        preferences: RefCell<Vec<Preference>>,
         snoozes: RefCell<HashMap<(String, String), Snooze>>,
         directions: RefCell<HashMap<u128, Direction>>,
         targets: RefCell<HashMap<u128, Target>>,
@@ -1107,11 +1155,29 @@ mod tests {
         }
     }
 
+    impl PreferenceRepository for FakeStore {
+        fn save(&self, preference: &Preference) -> Result<(), RepositoryError> {
+            self.preferences.borrow_mut().push(preference.clone());
+            Ok(())
+        }
+        fn list_all(&self) -> Result<Vec<Preference>, RepositoryError> {
+            Ok(self.preferences.borrow().clone())
+        }
+        fn delete(&self, id: PreferenceId) -> Result<(), RepositoryError> {
+            self.preferences.borrow_mut().retain(|p| p.id() != id);
+            Ok(())
+        }
+    }
+
     /// A butler that echoes the newest message and always proposes a North Star,
     /// so the act/ask + propose flow can be exercised deterministically.
     struct ScriptedTestButler;
     impl Butler for ScriptedTestButler {
-        fn respond(&self, history: &[ChatMessage]) -> Result<ButlerReply, ProposalError> {
+        fn respond(
+            &self,
+            history: &[ChatMessage],
+            _preferences: &[Preference],
+        ) -> Result<ButlerReply, ProposalError> {
             let last = history.last().map(ChatMessage::text).unwrap_or_default();
             Ok(ButlerReply {
                 text: format!("Shall I set that up? You said: {last}"),
@@ -1406,6 +1472,7 @@ mod tests {
 
         let (reply, proposals) = send_to_butler(
             &store,
+            &store,
             &ScriptedTestButler,
             &ids,
             &clock,
@@ -1473,6 +1540,47 @@ mod tests {
         .unwrap();
         assert_eq!(s.count, 2);
         assert_eq!(s.until.unix_millis(), day + 1 + 2 * day);
+    }
+
+    #[test]
+    fn preferences_are_recorded_deletable_and_passed_to_the_butler() {
+        use super::{create_preference, delete_preference, list_preferences, send_to_butler};
+        use endora_domain::PreferenceKind;
+
+        let store = FakeStore::default();
+        let ids = SeqIds::default();
+        let clock = FixedClock(0);
+        let p = create_preference(
+            &store,
+            &ids,
+            &clock,
+            "prefers mornings",
+            PreferenceKind::Taste,
+        )
+        .unwrap();
+        assert_eq!(list_preferences(&store).unwrap().len(), 1);
+
+        // A butler that reports how many preferences it was handed.
+        struct EchoPrefsButler;
+        impl Butler for EchoPrefsButler {
+            fn respond(
+                &self,
+                _history: &[ChatMessage],
+                preferences: &[Preference],
+            ) -> Result<ButlerReply, ProposalError> {
+                Ok(ButlerReply {
+                    text: format!("I already know {} thing(s) about you", preferences.len()),
+                    proposals: Vec::new(),
+                })
+            }
+        }
+        let (reply, _) =
+            send_to_butler(&store, &store, &EchoPrefsButler, &ids, &clock, "hi").unwrap();
+        assert!(reply.text().contains("1 thing"));
+
+        // Memory is deletable.
+        delete_preference(&store, p.id()).unwrap();
+        assert!(list_preferences(&store).unwrap().is_empty());
     }
 
     #[test]

@@ -42,6 +42,7 @@ pub mod error;
 pub mod experiments;
 pub mod ids;
 pub mod policy;
+pub mod preferences;
 pub mod reflection;
 pub mod targets;
 pub mod values;
@@ -52,10 +53,11 @@ pub use conversation::{ChatMessage, MessageRole};
 pub use error::DomainError;
 pub use experiments::{Experiment, ExperimentStatus, Observation};
 pub use ids::{
-    AssumptionId, AuditId, DirectionId, ExperimentId, MessageId, ObservationId, ProcessChangeId,
-    ReflectionId, TargetId, Timestamp, ValueId,
+    AssumptionId, AuditId, DirectionId, ExperimentId, MessageId, ObservationId, PreferenceId,
+    ProcessChangeId, ReflectionId, TargetId, Timestamp, ValueId,
 };
 pub use policy::{PolicyDecision, authorize_process_change};
+pub use preferences::{Preference, PreferenceKind};
 pub use reflection::{ApprovalState, ProposedProcessChange, Reflection};
 pub use targets::{Assumption, Direction, LifecycleStatus, Target};
 pub use values::Value;

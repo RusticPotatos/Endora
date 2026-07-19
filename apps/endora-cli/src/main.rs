@@ -61,6 +61,12 @@ fn route(args: &[&str]) -> Option<Action> {
             "/v1/chat".to_owned(),
             json!({ "message": message }),
         )),
+        ["preference", "list"] => Some(Action::Get("/v1/preferences".to_owned())),
+        ["preference", "add", text] => Some(Action::Post(
+            "/v1/preferences".to_owned(),
+            json!({ "text": text }),
+        )),
+        ["preference", "delete", id] => Some(Action::Delete(format!("/v1/preferences/{id}"))),
         ["value", "create", name] => Some(Action::Post(
             "/v1/values".to_owned(),
             json!({ "name": name }),
@@ -207,6 +213,9 @@ fn print_usage() {
            health                                 check the node is up\n  \
            chat \"<message>\"                       talk to the butler (proposes; you confirm)\n  \
            chat                                   show the conversation so far\n  \
+           preference list                        what the butler has learned\n  \
+           preference add <text>                  remember a preference\n  \
+           preference delete <id>                 forget a preference\n  \
            value create <name>                    create a value (a North Star's why)\n  \
            value list                             list your values\n  \
            value delete <id>                      delete a value (no North Stars may serve it)\n  \
@@ -277,6 +286,25 @@ mod tests {
             ))
         );
         assert_eq!(route(&["chat"]), Some(Action::Get("/v1/chat".to_owned())));
+    }
+
+    #[test]
+    fn routes_preferences() {
+        assert_eq!(
+            route(&["preference", "add", "I prefer mornings"]),
+            Some(Action::Post(
+                "/v1/preferences".to_owned(),
+                json!({ "text": "I prefer mornings" })
+            ))
+        );
+        assert_eq!(
+            route(&["preference", "list"]),
+            Some(Action::Get("/v1/preferences".to_owned()))
+        );
+        assert_eq!(
+            route(&["preference", "delete", "9"]),
+            Some(Action::Delete("/v1/preferences/9".to_owned()))
+        );
     }
 
     #[test]

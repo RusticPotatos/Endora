@@ -33,6 +33,7 @@ macro_rules! id_type {
 
 id_type!(ValueId, "value");
 id_type!(MessageId, "message");
+id_type!(PreferenceId, "preference");
 id_type!(DirectionId, "direction");
 id_type!(TargetId, "target");
 id_type!(AssumptionId, "assumption");

@@ -9,6 +9,15 @@ tagged release.
 
 ### Added
 
+- **Preferences — the butler learns (finishing 0.7)**
+  ([ADR 0010](docs/adr/0010-autonomy-model.md)): the butler records what it learns
+  about you (taste, or explicit grants of authority) as **visible, correctable,
+  deletable** memory, and feeds it back into its own context so it stops re-asking
+  what it already knows — "learning is the accumulation of preferences." New
+  `/v1/preferences` (create, list, delete), CLI `preference add|list|delete`, a
+  console **Preferences** view, and a `remember_preference` proposal the butler can
+  make (you confirm it). Preferences are part of export and cleared by purge. The
+  local model butler is now live on the NAS via Ollama.
 - **Adaptive attention (0.8)** ([ADR 0016](docs/adr/0016-adaptive-attention.md)):
   the butler surfaces what needs attention — due reviews, North Stars not yet filed
   under a value, and North Stars with no active target — via `GET /v1/attention`,
