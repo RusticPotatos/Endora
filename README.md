@@ -128,11 +128,18 @@ run the propose → approve → policy-decide flow, view the audit trail, and
 export/purge. No separate app to install (see ADR 0009 — node-served UI and
 single-container packaging).
 
-Or in a container (data persists in `./endora-data`):
+Or in a container (data persists in `./endora-data`, published on loopback only):
 
 ```bash
 make docker-build && make docker-run    # → http://localhost:8787
 ```
+
+**Running it always-on and reaching it from your phone:** see
+[docs/hosting.md](docs/hosting.md) — how to keep the node running (systemd /
+container restart) and reach it securely from other devices over a private
+network (e.g. Tailscale) or an authenticating reverse proxy. The `0.x` API is
+unauthenticated, so it must stay on a trusted network — see
+[SECURITY.md](SECURITY.md).
 
 ### See the whole thing in one command
 

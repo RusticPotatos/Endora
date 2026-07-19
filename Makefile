@@ -60,8 +60,11 @@ docker-build: ## Build the node container image (tag: endora-node)
 	docker build -t endora-node .
 
 .PHONY: docker-run
-docker-run: ## Run the node container (maps 8787, persists ./endora-data)
-	docker run --rm -p 8787:8787 -v "$(CURDIR)/endora-data:/data" endora-node
+docker-run: ## Run the node container (loopback-only on 8787, persists ./endora-data)
+	# Bind the published port to loopback: the API is unauthenticated in 0.x, so
+	# it must not be reachable off this machine. See docs/hosting.md to reach it
+	# securely from other devices.
+	docker run --rm -p 127.0.0.1:8787:8787 -v "$(CURDIR)/endora-data:/data" endora-node
 
 .PHONY: watch
 watch: ## Re-run tests on file change (needs cargo-watch)

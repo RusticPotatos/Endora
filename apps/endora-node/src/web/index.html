@@ -70,7 +70,21 @@
   .evi { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); }
   .evi input { width: auto; }
   code.id { font-size: 12px; color: var(--muted); }
-  .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; }
+  .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; word-break: break-word; }
+
+  /* Phone browsers: tighten the frame and stack forms so inputs are never
+     crushed by a button's label. */
+  @media (max-width: 560px) {
+    header { padding: 10px 14px; gap: 8px; }
+    header h1 { font-size: 15px; }
+    main { padding: 14px; }
+    h2 { margin: 18px 0 8px; }
+    /* Input on its own line, full-width button beneath it. */
+    .form { flex-direction: column; align-items: stretch; }
+    .form button { width: 100%; }
+    /* Let any control row wrap rather than overflow. */
+    .row { flex-wrap: wrap; }
+  }
 </style>
 </head>
 <body>

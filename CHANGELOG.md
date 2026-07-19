@@ -9,6 +9,12 @@ tagged release.
 
 ### Added
 
+- **Phone-usable console and a hosting guide** (0.4): the web console gains a
+  mobile breakpoint that stacks forms and tightens the layout so the whole loop
+  is usable at phone widths. New [docs/hosting.md](docs/hosting.md) covers running
+  the node always-on (systemd / container restart), backups, and reaching it
+  securely from other devices over a private overlay (e.g. Tailscale) or an
+  authenticating reverse proxy.
 - **Activity feed and live updates**
   ([ADR 0012](docs/adr/0012-activity-feed-and-change-stream.md)): a newest-first
   timeline of what has happened (`GET /v1/activity`, CLI `activity [limit]`),
@@ -28,6 +34,9 @@ tagged release.
 
 - The `experiments` table gains a nullable `review_by_ms` column, added to
   existing databases by an automatic forward migration on open.
+- `make docker-run` now publishes the node on loopback only
+  (`127.0.0.1:8787:8787`) rather than all interfaces, matching the documented
+  security posture (the `0.x` API is unauthenticated).
 
 ## [0.1.0] - 2026-07-19
 
