@@ -38,12 +38,12 @@ check: ## Type-check the workspace without producing binaries
 	$(CARGO) check $(WORKSPACE_FLAGS)
 
 .PHONY: run-node
-run-node: ## Run the authoritative node (foundation-phase placeholder)
+run-node: ## Run the authoritative node (HTTP server; ENDORA_ADDR/ENDORA_DB to configure)
 	$(CARGO) run --bin endora-node
 
 .PHONY: run-cli
-run-cli: ## Run the CLI client (foundation-phase placeholder)
-	$(CARGO) run --bin endora
+run-cli: ## Run the CLI client (pass args via ARGS="...", e.g. ARGS="health")
+	$(CARGO) run --bin endora -- $(ARGS)
 
 .PHONY: watch
 watch: ## Re-run tests on file change (needs cargo-watch)
