@@ -9,7 +9,7 @@ use core::fmt;
 
 use endora_domain::{
     Assumption, AssumptionId, AuditRecord, Direction, DirectionId, Experiment, ExperimentId, Goal,
-    GoalId, Observation, Timestamp,
+    GoalId, Observation, Reflection, ReflectionId, Timestamp,
 };
 
 /// A failure from a storage backend behind a repository port.
@@ -153,6 +153,28 @@ pub trait Clock {
 pub trait IdSource {
     /// Returns a fresh identifier value, unique within this store's lifetime.
     fn new_id(&self) -> u128;
+}
+
+/// Persists and retrieves [`Reflection`]s (including their evidence).
+pub trait ReflectionRepository {
+    /// Inserts a reflection and its evidence, or replaces the one with the same
+    /// id.
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if the backend fails.
+    fn save(&self, reflection: &Reflection) -> Result<(), RepositoryError>;
+
+    /// Fetches a reflection by id, returning `None` if it does not exist.
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if the backend fails or stored data is corrupt.
+    fn get(&self, id: ReflectionId) -> Result<Option<Reflection>, RepositoryError>;
+
+    /// Lists the reflections for a goal, in a stable order.
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if the backend fails or stored data is corrupt.
+    fn list_for_goal(&self, goal: GoalId) -> Result<Vec<Reflection>, RepositoryError>;
 }
 
 /// Appends to and reads the audit trail.
