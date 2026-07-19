@@ -42,3 +42,12 @@ of an existing record and take the next number.
 | [0006](0006-first-vertical-slice.md) | First vertical slice: the learning loop for one goal | Accepted |
 | [0007](0007-async-web-stack.md) | Async runtime and web stack for the node | Accepted |
 | [0008](0008-local-model-adapter.md) | Local model adapter | Accepted |
+| [0009](0009-node-served-ui-and-single-container.md) | Node-served web UI and single-container packaging | Accepted |
+| [0010](0010-autonomy-model.md) | Autonomy model: the act/ask loop and preferences | Accepted |
+| [0011](0011-review-scheduling-reminders.md) | Review scheduling: the first act of the autonomy model | Accepted |
+| [0012](0012-activity-feed-and-change-stream.md) | Activity feed and a server-sent change stream | Accepted |
+| [0013](0013-rename-goal-to-target.md) | Rename the second-tier concept from Goal to Target | Accepted |
+| [0014](0014-the-butler-conversation-values-attention.md) | The butler: conversational interface, the Values layer, and adaptive attention | Accepted |
+| [0015](0015-identity-and-values-context.md) | The Identity & Values context: a "why" above North Stars | Accepted |
+| [0016](0016-adaptive-attention.md) | Adaptive attention: ranking and deferral-backoff | Accepted |
+| [0017](0017-persona-and-voice.md) | Persona and voice | Accepted |

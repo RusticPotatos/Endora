@@ -1,0 +1,871 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Endora</title>
+<style>
+  :root {
+    --bg: #f5f6f9; --card: #ffffff; --ink: #15161c; --muted: #676b78;
+    --line: #e7e9f0; --accent: #4260e0; --ok: #12805c; --warn: #9a6b00; --bad: #c23b3b;
+    --accent-weak: color-mix(in srgb, var(--accent) 10%, transparent);
+    --shadow: 0 1px 2px rgba(18,20,30,.05), 0 3px 12px rgba(18,20,30,.05);
+    --shadow-lift: 0 2px 6px rgba(18,20,30,.07), 0 12px 30px rgba(18,20,30,.12);
+    --radius: 14px;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #101218; --card: #191b22; --ink: #e9eaf1; --muted: #9699a6;
+      --line: #282b35; --accent: #8098ff; --ok: #4bd08a; --warn: #e0b04a; --bad: #f0776f;
+      --accent-weak: color-mix(in srgb, var(--accent) 18%, transparent);
+      --shadow: 0 1px 2px rgba(0,0,0,.35), 0 4px 16px rgba(0,0,0,.30);
+      --shadow-lift: 0 2px 8px rgba(0,0,0,.4), 0 16px 36px rgba(0,0,0,.5);
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  header {
+    display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+    padding: 12px 20px; border-bottom: 1px solid var(--line);
+    background: color-mix(in srgb, var(--card) 82%, transparent);
+    backdrop-filter: saturate(1.4) blur(10px);
+    position: sticky; top: 0; z-index: 10;
+  }
+  header h1 {
+    font-size: 17px; margin: 0; font-weight: 680; letter-spacing: -.01em;
+    display: flex; align-items: center; gap: 8px;
+  }
+  header h1 .dot {
+    width: 9px; height: 9px; border-radius: 50%; background: var(--accent);
+    box-shadow: 0 0 0 3px var(--accent-weak);
+  }
+  header .spacer { flex: 1; }
+  main { max-width: 900px; margin: 0 auto; padding: 20px; }
+  .crumbs { color: var(--muted); font-size: 13px; margin-bottom: 14px; }
+  .crumbs a { color: var(--accent); cursor: pointer; text-decoration: none; }
+  .crumbs a:hover { text-decoration: underline; }
+  h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 24px 0 10px; font-weight: 650; }
+  .card {
+    background: var(--card); border: 1px solid var(--line); border-radius: var(--radius);
+    padding: 13px 15px; margin-bottom: 9px; box-shadow: var(--shadow);
+    transition: transform .13s ease, box-shadow .13s ease, border-color .13s ease;
+  }
+  .card.click { cursor: pointer; }
+  .card.click:hover { border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); box-shadow: var(--shadow-lift); transform: translateY(-1px); }
+  .ic { display: inline-block; vertical-align: -3px; flex: none; }
+  /* Needs-your-attention card */
+  .attn-card { border-color: color-mix(in srgb, var(--warn) 45%, var(--line)); background: color-mix(in srgb, var(--warn) 6%, var(--card)); }
+  .attn-head { font-weight: 650; font-size: 13px; letter-spacing: .01em; margin-bottom: 6px; color: var(--ink); }
+  .attn-item { display: flex; align-items: center; gap: 8px; padding: 3px 0; }
+  .attn-go { display: inline-flex; align-items: center; gap: 8px; flex: 1; min-width: 0; border-radius: 8px; padding: 5px 7px; margin: -5px -7px; color: var(--ink); }
+  .attn-go[data-act] { cursor: pointer; }
+  .attn-go[data-act]:hover { background: color-mix(in srgb, var(--warn) 14%, transparent); }
+  .attn-go .ic { color: var(--warn); }
+  .attn-go > span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .row { display: flex; align-items: center; gap: 10px; }
+  .grow { flex: 1; min-width: 0; }
+  .title { font-weight: 550; }
+  .sub { color: var(--muted); font-size: 13px; }
+  .pill { font-size: 12px; padding: 2px 9px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); }
+  .pill.proposed, .pill.pending { color: var(--warn); border-color: var(--warn); }
+  .pill.running { color: var(--accent); border-color: var(--accent); }
+  .pill.concluded, .pill.approved, .pill.achieved { color: var(--ok); border-color: var(--ok); }
+  .pill.rejected, .pill.abandoned { color: var(--bad); border-color: var(--bad); }
+  .pill.active { color: var(--accent); border-color: var(--accent); }
+  .pill.archived { color: var(--muted); border-color: var(--line); }
+  input, textarea, select {
+    font: inherit; color: var(--ink); background: var(--bg);
+    border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; width: 100%;
+  }
+  textarea { min-height: 54px; resize: vertical; }
+  button {
+    font: inherit; font-weight: 550; cursor: pointer; border: 1px solid var(--line);
+    background: var(--card); color: var(--ink); border-radius: 10px; padding: 7px 13px;
+    white-space: nowrap; display: inline-flex; align-items: center; gap: 6px;
+    transition: background .12s ease, border-color .12s ease, color .12s ease, box-shadow .12s ease;
+  }
+  button:hover { border-color: color-mix(in srgb, var(--accent) 55%, var(--line)); background: var(--accent-weak); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; box-shadow: 0 1px 2px var(--accent-weak); }
+  button.primary:hover { background: color-mix(in srgb, var(--accent) 88%, #000); border-color: color-mix(in srgb, var(--accent) 88%, #000); }
+  button.ghost { background: transparent; border-color: transparent; color: var(--muted); padding: 7px 10px; }
+  button.ghost:hover { background: var(--accent-weak); color: var(--ink); }
+  button.danger { color: var(--bad); }
+  button.danger:hover { background: color-mix(in srgb, var(--bad) 12%, transparent); border-color: color-mix(in srgb, var(--bad) 40%, var(--line)); color: var(--bad); }
+  button:disabled { opacity: .5; cursor: default; }
+  .form { display: flex; gap: 8px; margin: 8px 0 4px; align-items: flex-start; }
+  .stack { display: flex; flex-direction: column; gap: 6px; }
+  .empty { color: var(--muted); font-style: italic; padding: 6px 2px; }
+  .msg { padding: 10px 14px; border-radius: 8px; margin-bottom: 12px; display: none; }
+  .msg.show { display: block; }
+  .msg.err { background: color-mix(in srgb, var(--bad) 15%, transparent); color: var(--bad); border: 1px solid var(--bad); }
+  .msg.ok { background: color-mix(in srgb, var(--ok) 15%, transparent); color: var(--ok); border: 1px solid var(--ok); }
+  .evi { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); }
+  .evi input { width: auto; }
+  code.id { font-size: 12px; color: var(--muted); }
+  .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; word-break: break-word; }
+  .bubble { max-width: 78%; padding: 8px 12px; border-radius: 12px; line-height: 1.4; white-space: pre-wrap; }
+  .bubble.me { background: var(--accent); color: #fff; border-bottom-right-radius: 4px; }
+  .bubble.butler { background: var(--card); border: 1px solid var(--line); border-bottom-left-radius: 4px; }
+  /* "thinking…" indicator while the butler composes a reply */
+  .bubble.thinking { padding: 12px 14px; }
+  .dots { display: inline-flex; gap: 4px; align-items: center; }
+  .dots i { width: 6px; height: 6px; border-radius: 50%; background: var(--muted); display: inline-block; animation: blink 1.2s infinite ease-in-out both; }
+  .dots i:nth-child(2) { animation-delay: .2s; }
+  .dots i:nth-child(3) { animation-delay: .4s; }
+  @keyframes blink { 0%, 80%, 100% { opacity: .25; } 40% { opacity: 1; } }
+
+  /* Phone browsers: tighten the frame and stack forms so inputs are never
+     crushed by a button's label. */
+  @media (max-width: 560px) {
+    header { padding: 10px 14px; gap: 8px; }
+    header h1 { font-size: 15px; }
+    main { padding: 14px; }
+    h2 { margin: 18px 0 8px; }
+    /* Input on its own line, full-width button beneath it. */
+    .form { flex-direction: column; align-items: stretch; }
+    .form button { width: 100%; }
+    /* Let any control row wrap rather than overflow. */
+    .row { flex-wrap: wrap; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1 id="brand" data-act="go:chat" title="Talk to your butler" style="cursor:pointer"><span class="dot"></span><span>Endora</span></h1>
+  <span class="spacer"></span>
+  <button class="ghost" data-act="go:chat" id="btn-chat"></button>
+  <button class="ghost" data-act="go:home" id="btn-stars"></button>
+  <button class="ghost" data-act="go:prefs" id="btn-prefs"></button>
+  <button class="ghost" data-act="go:audit" id="btn-audit"></button>
+  <button class="ghost" data-act="export" id="btn-export"></button>
+  <button class="ghost danger" data-act="purge" id="btn-purge"></button>
+</header>
+<main>
+  <div id="msg" class="msg"></div>
+  <div id="app"></div>
+</main>
+
+<script>
+"use strict";
+
+let DB = null;                 // latest /v1/export snapshot
+let ACTIVITY = [];             // latest /v1/activity feed (newest first)
+let ATTENTION = [];            // latest /v1/attention items (most pressing first)
+let CHAT_PROPOSALS = [];       // proposals from the butler's last reply
+let NAV = { v: "chat" };       // current view (the butler is the landing page)
+
+const app = document.getElementById("app");
+const msgEl = document.getElementById("msg");
+
+// ---- icons ----------------------------------------------------------------
+// A small monochrome line-icon set (inherits currentColor) so the console reads
+// consistently instead of relying on the browser's emoji rendering.
+const ICONS = {
+  chat: '<path d="M21 11.5a8.4 8.4 0 0 1-12.9 7.1L3 20.5l1.9-4.8A8.4 8.4 0 1 1 21 11.5z"/><path d="M8.5 10.5h7M8.5 13.5h4.5"/>',
+  prefs: '<line x1="4" y1="8" x2="20" y2="8"/><line x1="4" y1="16" x2="20" y2="16"/><circle cx="15" cy="8" r="2.4"/><circle cx="9" cy="16" r="2.4"/>',
+  audit: '<line x1="9" y1="6" x2="20" y2="6"/><line x1="9" y1="12" x2="20" y2="12"/><line x1="9" y1="18" x2="20" y2="18"/><circle cx="4.5" cy="6" r="1.1"/><circle cx="4.5" cy="12" r="1.1"/><circle cx="4.5" cy="18" r="1.1"/>',
+  export: '<path d="M12 3v12M8 11l4 4 4-4"/><path d="M5 20h14"/>',
+  purge: '<path d="M4 7h16M9 7V4h6v3M18 7l-1 13H7L6 7"/><path d="M10 11v6M14 11v6"/>',
+  clock: '<circle cx="12" cy="12" r="8.2"/><path d="M12 8v4.3l2.8 1.7"/>',
+  tag: '<path d="M3.5 12.5V5a1.5 1.5 0 0 1 1.5-1.5h7.5L21 12l-8.5 8.5z"/><circle cx="7.8" cy="7.8" r="1.3"/>',
+  target: '<circle cx="12" cy="12" r="8.2"/><circle cx="12" cy="12" r="3.3"/>',
+  speakerOn: '<path d="M4 9.5v5h3.5L12 18V6L7.5 9.5H4z"/><path d="M15.5 9a4 4 0 0 1 0 6M18 6.5a7.5 7.5 0 0 1 0 11"/>',
+  speakerOff: '<path d="M4 9.5v5h3.5L12 18V6L7.5 9.5H4z"/><line x1="16" y1="9.5" x2="21" y2="14.5"/><line x1="21" y1="9.5" x2="16" y2="14.5"/>',
+  mic: '<rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5.5 11a6.5 6.5 0 0 0 13 0"/><line x1="12" y1="17.5" x2="12" y2="21"/><line x1="9" y1="21" x2="15" y2="21"/>',
+  send: '<path d="M4.5 12h13M11 5.5l6.5 6.5-6.5 6.5"/>',
+  chevron: '<path d="M9 6l6 6-6 6"/>',
+  note: '<path d="M6 3h9l4 4v14H6z"/><path d="M15 3v4h4M9 12h6M9 16h4"/>',
+  scale: '<path d="M12 4v16M7 20h10"/><path d="M4 8h16M4 8l-2.2 5a2.6 2.6 0 0 0 4.4 0zM20 8l-2.2 5a2.6 2.6 0 0 0 4.4 0z"/><path d="M8 5h8"/>',
+  sparkle: '<path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8z"/>',
+};
+function icon(name, size = 17) {
+  const p = ICONS[name];
+  if (!p) return "";
+  return `<svg class="ic" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${p}</svg>`;
+}
+
+// ---- tiny helpers ---------------------------------------------------------
+const esc = (s) => String(s).replace(/[&<>"']/g, (c) =>
+  ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const byId = (list, id) => (list || []).find((x) => x.id === id);
+const shortId = (id) => id.slice(0, 6) + "…";
+
+function flash(text, kind) {
+  msgEl.textContent = text;
+  msgEl.className = "msg show " + (kind || "ok");
+  if (kind === "ok") setTimeout(() => (msgEl.className = "msg"), 2500);
+}
+function clearMsg() { msgEl.className = "msg"; }
+
+async function api(method, path, body) {
+  const res = await fetch(path, {
+    method,
+    headers: body !== undefined ? { "content-type": "application/json" } : {},
+    body: body !== undefined ? JSON.stringify(body) : undefined,
+  });
+  let data = null;
+  try { data = await res.json(); } catch (_) {}
+  if (!res.ok) throw new Error((data && data.error) || ("HTTP " + res.status));
+  return data;
+}
+
+async function reload() {
+  // The export snapshot, the derived activity feed, and what needs attention.
+  const [db, activity, attention] = await Promise.all([
+    api("GET", "/v1/export"),
+    api("GET", "/v1/activity?limit=30"),
+    api("GET", "/v1/attention"),
+  ]);
+  DB = db;
+  ACTIVITY = activity;
+  ATTENTION = attention;
+  render();
+}
+
+// Subscribe to the node's change stream; every "changed" event refreshes the
+// snapshot and feed live. Reconnection is handled by the browser's EventSource.
+function subscribeToActivity() {
+  try {
+    const es = new EventSource("/v1/activity/stream");
+    es.addEventListener("changed", () => { reload().catch(() => {}); });
+  } catch (_) { /* SSE unavailable: the UI still works, just not live. */ }
+}
+
+function go(v, id) { NAV = { v, id }; clearMsg(); render(); }
+
+// Observations reachable under a target (target → assumptions → experiments → obs).
+function observationsForTarget(targetId) {
+  const assumptionIds = DB.assumptions.filter((a) => a.target_id === targetId).map((a) => a.id);
+  const experimentIds = DB.experiments.filter((e) => assumptionIds.includes(e.assumption_id)).map((e) => e.id);
+  return DB.observations.filter((o) => experimentIds.includes(o.experiment_id));
+}
+
+const val = (id) => document.getElementById(id).value.trim();
+
+// ---- lifecycle (North Stars & Targets) ------------------------------------
+let SHOW_ARCHIVED = false;
+const isArchived = (x) => x.status === "archived";
+const visible = (items) => (SHOW_ARCHIVED ? items : items.filter((x) => !isArchived(x)));
+
+// A status pill, shown only when not the default "active".
+function statusPill(item) {
+  return item.status && item.status !== "active"
+    ? ` <span class="pill ${item.status}">${esc(item.status)}</span>` : "";
+}
+
+// The lifecycle control for a North Star ("direction") or "target": one Status
+// dropdown (pick a state to transition to — clearer than a row of look-alike
+// verb buttons), with Delete set apart as the one destructive action.
+function lifecycleRow(noun, item) {
+  const s = item.status || "active";
+  const opt = (v, label) => `<option value="${v}" ${s === v ? "selected" : ""}>${label}</option>`;
+  return `<div class="row" style="gap:8px; margin-top:8px; align-items:center;">
+    <label class="sub" for="st-${noun}-${item.id}">Status</label>
+    <select id="st-${noun}-${item.id}" data-change="status:${noun}:${item.id}" style="width:auto;">
+      ${opt("active", "Active")}${opt("achieved", "Achieved")}${opt("abandoned", "Abandoned")}${opt("archived", "Archived")}
+    </select>
+    <span class="grow"></span>
+    <button class="ghost danger" data-act="delete:${noun}:${item.id}" title="Delete permanently">${icon("purge",15)}<span>Delete</span></button>
+  </div>`;
+}
+
+// A toggle shown when there are archived items to reveal/hide.
+function archivedToggle(items) {
+  const n = items.filter(isArchived).length;
+  if (!n && !SHOW_ARCHIVED) return "";
+  return `<button class="ghost" data-act="toggle:archived" style="margin-top:6px;">${SHOW_ARCHIVED ? "Hide" : "Show"} archived (${n})</button>`;
+}
+
+// An experiment is due for review if a review was scheduled at or before now
+// and it is not already concluded (mirrors the domain's is_review_due).
+const isReviewDue = (e) => e.review_by_ms != null && e.review_by_ms <= Date.now() && e.status !== "concluded";
+function reviewLabel(e) {
+  if (e.review_by_ms == null) return "No review scheduled.";
+  const when = new Date(e.review_by_ms).toLocaleDateString();
+  return isReviewDue(e) ? `${icon("clock", 14)} Review due (${when})` : `Review scheduled for ${when}`;
+}
+
+// ---- views ----------------------------------------------------------------
+function crumbs(parts) {
+  return `<div class="crumbs">` +
+    parts.map((p, i) => i < parts.length - 1
+      ? `<a data-act="${p.act}">${esc(p.label)}</a> › `
+      : `<span>${esc(p.label)}</span>`).join("") +
+    `</div>`;
+}
+
+function listOr(items, emptyText) {
+  return items.length ? items.join("") : `<div class="empty">${esc(emptyText)}</div>`;
+}
+
+// A North Star card, reused across the value groups on the home view.
+function dirCard(d) {
+  return `
+    <div class="card click" data-act="go:direction:${d.id}">
+      <div class="row"><div class="grow"><div class="title">${esc(d.title)}${statusPill(d)}</div>
+      <div class="sub">${DB.targets.filter((g) => g.direction_id === d.id).length} target(s)</div></div>
+      <span class="sub">${icon("chevron",16)}</span></div>
+    </div>`;
+}
+
+// What needs the person's attention, from /v1/attention. Each item can be
+// deferred ("Later") with backoff — snoozing repeatedly asks less often.
+const ATTENTION_ICON = { review_due: "clock", unfiled_north_star: "tag", empty_north_star: "target" };
+// Where clicking an attention item takes you: to the thing that needs the work.
+// Review-due points at the experiment's assumption; the North-Star items point
+// at the North Star itself (to file it under a value, or add a target).
+function attentionAct(a) {
+  if (a.kind === "review_due") {
+    const e = (DB.experiments || []).find((x) => x.id === a.subject);
+    return e ? `go:assumption:${e.assumption_id}` : null;
+  }
+  return `go:direction:${a.subject}`;
+}
+function attentionSection() {
+  if (!ATTENTION.length) return "";
+  const rows = ATTENTION.map((a) => {
+    const act = attentionAct(a);
+    const clickable = act ? `data-act="${act}" role="button" tabindex="0"` : "";
+    return `
+    <div class="attn-item">
+      <span class="attn-go" ${clickable}>${icon(ATTENTION_ICON[a.kind] || "target", 16)}<span>${esc(a.headline)}</span></span>
+      <button class="ghost" data-act="snooze:attention:${a.kind}:${a.subject}" title="ask me later">Later</button>
+    </div>`;
+  }).join("");
+  return `<div class="card attn-card">
+    <div class="attn-head">Needs your attention</div>${rows}</div>`;
+}
+
+function viewHome() {
+  const dueBanner = attentionSection();
+  // North Stars grouped under the value they serve, then the unfiled ones.
+  const groups = (DB.values || []).map((v) => {
+    const ds = visible(DB.directions.filter((d) => d.value_id === v.id));
+    return `
+      <div class="row" style="align-items:baseline; margin-top:16px;">
+        <h3 style="margin:0; flex:1;">${esc(v.name)}</h3>
+        <button class="ghost danger" data-act="delete:value:${v.id}" title="delete value">${icon("purge", 15)}</button>
+      </div>
+      ${ds.length ? ds.map(dirCard).join("") : `<div class="empty">Nothing filed under this value yet.</div>`}`;
+  }).join("");
+  const unfiled = visible(DB.directions.filter((d) => !d.value_id));
+  const unfiledHtml = `
+    <h3 style="margin-top:16px;">${(DB.values || []).length ? "Unfiled" : "North Stars"}</h3>
+    ${listOr(unfiled.map(dirCard), "No North Stars yet. Create one below.")}`;
+  return `
+    ${crumbs([{ label: "Directions" }])}
+    ${dueBanner}
+    <h2>North Stars by value</h2>
+    ${groups}
+    ${unfiledHtml}
+    ${archivedToggle(DB.directions)}
+    <div class="form">
+      <input id="new-direction" placeholder="A North Star…" />
+      <button class="primary" data-act="create:direction">Add North Star</button>
+    </div>
+    <div class="form">
+      <input id="new-value" placeholder="A value it serves (e.g. Health)…" />
+      <button data-act="create:value">Add value</button>
+    </div>
+    <h2>Recent activity</h2>
+    ${activityFeed()}`;
+}
+
+// The live activity feed: newest first, updated in place by the change stream.
+const ACTIVITY_ICON = { observation: "note", decision: "scale" };
+function activityFeed() {
+  if (!ACTIVITY.length) return `<div class="empty">No activity yet.</div>`;
+  return ACTIVITY.map((a) => `
+    <div class="card"><div class="row">
+      <div class="grow"><div class="title">${icon(ACTIVITY_ICON[a.kind] || "note", 15)} ${esc(a.summary)}</div>
+      <div class="sub">${esc(a.kind)}</div></div>
+      <span class="sub">${esc(new Date(a.at_ms).toLocaleString())}</span>
+    </div></div>`).join("");
+}
+
+function viewDirection(id) {
+  const d = byId(DB.directions, id);
+  if (!d) return viewHome();
+  const allTargets = DB.targets.filter((g) => g.direction_id === id);
+  const targets = visible(allTargets).map((g) => `
+    <div class="card click" data-act="go:target:${g.id}">
+      <div class="row"><div class="grow"><div class="title">${esc(g.statement)}${statusPill(g)}</div>
+      <div class="sub">${DB.assumptions.filter((a) => a.target_id === g.id).length} assumption(s) ·
+      ${DB.reflections.filter((r) => r.target_id === g.id).length} reflection(s)</div></div>
+      <span class="sub">${icon("chevron",16)}</span></div>
+      ${lifecycleRow("target", g)}
+    </div>`);
+  const valueOptions = `<option value="">(unfiled)</option>` +
+    (DB.values || []).map((v) => `<option value="${v.id}" ${d.value_id === v.id ? "selected" : ""}>${esc(v.name)}</option>`).join("");
+  return `
+    ${crumbs([{ label: "Directions", act: "go:home" }, { label: d.title }])}
+    <div class="card"><div class="title">${esc(d.title)}${statusPill(d)}</div>
+      <div class="row" style="gap:6px; margin-top:8px; align-items:center;">
+        <span class="sub">Serves value:</span>
+        <select id="val-${d.id}" style="width:auto;">${valueOptions}</select>
+        <button data-act="file:direction:${d.id}">File</button>
+      </div>
+      ${lifecycleRow("direction", d)}</div>
+    <h2>Targets under “${esc(d.title)}”</h2>
+    ${listOr(targets, "No targets yet.")}
+    ${archivedToggle(allTargets)}
+    <div class="form">
+      <input id="new-target" placeholder="A target under this North Star…" />
+      <button class="primary" data-act="create:target:${id}">Add target</button>
+    </div>`;
+}
+
+function viewTarget(id) {
+  const g = byId(DB.targets, id);
+  if (!g) return viewHome();
+  const d = byId(DB.directions, g.direction_id);
+  const assumptions = DB.assumptions.filter((a) => a.target_id === id).map((a) => `
+    <div class="card click" data-act="go:assumption:${a.id}">
+      <div class="row"><div class="grow"><div class="title">${esc(a.statement)}</div>
+      <div class="sub">${DB.experiments.filter((e) => e.assumption_id === a.id).length} experiment(s)</div></div>
+      <span class="sub">${icon("chevron",16)}</span></div>
+    </div>`);
+  const reflections = DB.reflections.filter((r) => r.target_id === id).map((r) => `
+    <div class="card click" data-act="go:reflection:${r.id}">
+      <div class="row"><div class="grow"><div class="title">${esc(r.summary)}</div>
+      <div class="sub">${r.evidence.length} observation(s) cited ·
+      ${DB.process_changes.filter((c) => c.reflection_id === r.id).length} proposed change(s)</div></div>
+      <span class="sub">${icon("chevron",16)}</span></div>
+    </div>`);
+  const obs = observationsForTarget(id);
+  const eviBoxes = obs.length
+    ? obs.map((o) => `<label class="evi"><input type="checkbox" class="evi-box" value="${o.id}" /> ${esc(o.note)}</label>`).join("")
+    : `<div class="sub">Record observations under an experiment first to cite them here.</div>`;
+  return `
+    ${crumbs([{ label: "Directions", act: "go:home" },
+              { label: d ? d.title : "…", act: "go:direction:" + g.direction_id },
+              { label: g.statement }])}
+    <h2>Assumptions</h2>
+    ${listOr(assumptions, "No assumptions yet.")}
+    <div class="form">
+      <input id="new-assumption" placeholder="A belief this target rests on…" />
+      <button class="primary" data-act="create:assumption:${id}">Add assumption</button>
+    </div>
+    <h2>Reflections</h2>
+    ${listOr(reflections, "No reflections yet.")}
+    <div class="card">
+      <div class="stack">
+        <textarea id="new-reflection" placeholder="What the evidence says so far…"></textarea>
+        <div class="sub">Cite evidence:</div>
+        ${eviBoxes}
+        <div><button class="primary" data-act="create:reflection:${id}">Add reflection</button></div>
+      </div>
+    </div>`;
+}
+
+function viewAssumption(id) {
+  const a = byId(DB.assumptions, id);
+  if (!a) return viewHome();
+  const g = byId(DB.targets, a.target_id);
+  const experiments = DB.experiments.filter((e) => e.assumption_id === id).map((e) => {
+    const obs = DB.observations.filter((o) => o.experiment_id === e.id);
+    const obsHtml = obs.map((o) => `<div class="sub mono">• ${esc(o.note)}</div>`).join("");
+    return `
+    <div class="card">
+      <div class="row"><div class="grow"><div class="title">${esc(e.hypothesis)}</div></div>
+        <span class="pill ${e.status}">${e.status}</span></div>
+      <div class="row" style="margin-top:8px; gap:6px;">
+        <button data-act="start:experiment:${e.id}" ${e.status !== "proposed" ? "disabled" : ""}>Start</button>
+        <button data-act="conclude:experiment:${e.id}" ${e.status !== "running" ? "disabled" : ""}>Conclude</button>
+      </div>
+      ${e.status !== "concluded" ? `
+      <div class="row" style="margin-top:8px; gap:6px; align-items:center;">
+        <span class="sub grow">${esc(reviewLabel(e))}</span>
+        <input id="rev-${e.id}" type="number" min="1" value="7" style="width:70px;" title="days from now" />
+        <button data-act="review:experiment:${e.id}">Remind me</button>
+      </div>` : ""}
+      <div style="margin-top:8px;">${obsHtml || '<div class="sub">No observations.</div>'}</div>
+      <div class="form">
+        <input id="obs-${e.id}" placeholder="Record an observation…" />
+        <button data-act="record:observation:${e.id}">Note</button>
+      </div>
+    </div>`;
+  });
+  return `
+    ${crumbs([{ label: "Directions", act: "go:home" },
+              { label: g ? g.statement : "…", act: "go:target:" + a.target_id },
+              { label: a.statement }])}
+    <h2>Experiments testing “${esc(a.statement)}”</h2>
+    ${listOr(experiments, "No experiments yet.")}
+    <div class="form">
+      <input id="new-experiment" placeholder="A small, bounded test…" />
+      <button class="primary" data-act="propose:experiment:${id}">Propose experiment</button>
+    </div>`;
+}
+
+function viewReflection(id) {
+  const r = byId(DB.reflections, id);
+  if (!r) return viewHome();
+  const g = byId(DB.targets, r.target_id);
+  const changes = DB.process_changes.filter((c) => c.reflection_id === id).map((c) => `
+    <div class="card">
+      <div class="row"><div class="grow"><div class="title">${esc(c.description)}</div></div>
+        <span class="pill ${c.approval}">${c.approval}</span></div>
+      <div class="row" style="margin-top:8px; gap:6px; flex-wrap: wrap;">
+        <button data-act="approve:change:${c.id}" ${c.approval !== "pending" ? "disabled" : ""}>Approve</button>
+        <button data-act="reject:change:${c.id}" ${c.approval !== "pending" ? "disabled" : ""}>Reject</button>
+        <span class="grow"></span>
+        <select id="actor-${c.id}" title="actor autonomy level">
+          <option value="act_within_policy">act within policy</option>
+          <option value="confirm_each_action">confirm each action</option>
+          <option value="suggest">suggest</option>
+          <option value="observe">observe</option>
+        </select>
+        <button data-act="decide:change:${c.id}">Run policy</button>
+      </div>
+    </div>`);
+  return `
+    ${crumbs([{ label: "Directions", act: "go:home" },
+              { label: g ? g.statement : "…", act: "go:target:" + r.target_id },
+              { label: "Reflection" }])}
+    <h2>Reflection</h2>
+    <div class="card"><div class="title">${esc(r.summary)}</div>
+      <div class="sub">Cites ${r.evidence.length} observation(s).</div></div>
+    <h2>Proposed process changes</h2>
+    ${listOr(changes, "No proposed changes yet.")}
+    <div class="form">
+      <input id="new-change" placeholder="A process change this reflection suggests…" />
+      <button class="primary" data-act="propose:change:${id}">Propose</button>
+      <button data-act="draft:change:${id}" title="let the local model draft one">${icon("sparkle")}<span>Draft with model</span></button>
+    </div>`;
+}
+
+function viewAudit() {
+  const rows = (DB.audit || []).map((a) => `
+    <div class="card"><div class="sub mono">${new Date(a.at_ms).toLocaleString()}</div>
+      <div>${esc(a.summary)}</div></div>`);
+  return `
+    ${crumbs([{ label: "Directions", act: "go:home" }, { label: "Audit trail" }])}
+    <h2>Audit trail (newest first)</h2>
+    ${listOr(rows, "No decisions recorded yet.")}`;
+}
+
+// ---- voice (browser Web Speech API; opt-in — STT may use a cloud service) ---
+let SPEAK = false;
+const TTS = window.speechSynthesis;
+const STT = window.SpeechRecognition || window.webkitSpeechRecognition;
+function speak(text) {
+  if (!SPEAK || !TTS || !text) return;
+  TTS.cancel();
+  TTS.speak(new SpeechSynthesisUtterance(text));
+}
+function listen() {
+  if (!STT) { flash("Speech recognition isn't available in this browser (try Chrome/Edge).", "err"); return; }
+  if (!window.isSecureContext) {
+    flash("Voice input needs a secure page (HTTPS or localhost). Over plain http the browser blocks the mic — the butler can still speak its replies.", "err");
+    return;
+  }
+  const rec = new STT();
+  rec.lang = "en-US"; rec.interimResults = false; rec.maxAlternatives = 1;
+  rec.onresult = (e) => {
+    const input = document.getElementById("chat-input");
+    if (input) { input.value = e.results[0][0].transcript; input.focus(); }
+  };
+  rec.onerror = (e) => {
+    const err = e && e.error;
+    if (err === "not-allowed" || err === "service-not-allowed") {
+      flash("The browser blocked the mic. Allow microphone access, and use an HTTPS/localhost page.", "err");
+    } else {
+      flash("Couldn't capture speech" + (err ? " (" + err + ")" : "") + ".", "err");
+    }
+  };
+  try { rec.start(); } catch (_) { flash("Couldn't start voice input.", "err"); }
+}
+
+// The butler chat: the conversation, the last reply's proposals (each
+// confirmable), and an input. The butler proposes; you confirm; the normal
+// create endpoints execute — the model never acts on its own.
+function viewChat() {
+  const msgs = (DB.messages || []).map((m) => {
+    const mine = m.role === "user";
+    return `<div class="row" style="justify-content:${mine ? "flex-end" : "flex-start"}; margin:6px 0;">
+      <div class="bubble ${mine ? "me" : "butler"}">${esc(m.text)}</div></div>`;
+  }).join("");
+  const proposals = CHAT_PROPOSALS.map((p, i) => `
+    <div class="card"><div class="row"><div class="grow"><div class="title">${esc(p.label)}</div>
+      <div class="sub">the butler proposes this — you decide</div></div>
+      <button class="primary" data-act="confirm:proposal:${i}">Confirm</button>
+      <button data-act="dismiss:proposal:${i}">Dismiss</button></div></div>`).join("");
+  const speakBtn = TTS
+    ? `<button class="ghost" data-act="toggle:speak" title="read replies aloud">${icon(SPEAK ? "speakerOn" : "speakerOff")}<span>${SPEAK ? "Speaking" : "Speak"}</span></button>`
+    : "";
+  const micBtn = STT
+    ? (window.isSecureContext
+        ? `<button data-act="chat:mic" title="speak your message">${icon("mic")}</button>`
+        : `<button data-act="chat:mic" title="voice input needs HTTPS or localhost">${icon("mic")}<span>needs HTTPS</span></button>`)
+    : "";
+  return `
+    <div class="row"><h2 class="grow" style="margin:0;">Butler</h2>${speakBtn}</div>
+    <div id="chat-thread" style="margin-top:10px;">${msgs || `<div class="empty">Say what you'd like to work on — the butler will help organize it.</div>`}</div>
+    ${proposals}
+    <div class="form">
+      <input id="chat-input" placeholder="Talk to your butler…" />
+      ${micBtn}
+      <button class="primary" data-act="chat:send">${icon("send")}<span>Send</span></button>
+    </div>`;
+}
+
+// What the butler has learned — visible, correctable, deletable memory.
+function viewPrefs() {
+  const rows = (DB.preferences || []).map((p) => `
+    <div class="card"><div class="row">
+      <div class="grow"><div class="title">${esc(p.text)}</div>
+      <div class="sub">${esc(p.kind)}</div></div>
+      <button class="ghost danger" data-act="delete:pref:${p.id}" title="forget this">${icon("purge",15)}</button>
+    </div></div>`);
+  return `
+    ${crumbs([{ label: "Directions", act: "go:home" }, { label: "Preferences" }])}
+    <h2>What the butler knows about you</h2>
+    <div class="sub" style="margin-bottom:10px;">Your own words — the butler honours these and won't re-ask. Correctable and deletable.</div>
+    ${listOr(rows, "Nothing yet. The butler will propose things to remember as you talk — or add one below.")}
+    <div class="form">
+      <input id="new-pref" placeholder="e.g. I prefer mornings…" />
+      <button class="primary" data-act="create:pref">Remember</button>
+    </div>`;
+}
+
+// Append a chat bubble to the thread and keep the newest in view.
+function appendBubble(html, cls, id) {
+  const thread = document.getElementById("chat-thread");
+  if (!thread) return null;
+  const mine = cls.split(" ").includes("me");
+  const wrap = document.createElement("div");
+  wrap.className = "row";
+  wrap.style.cssText = `justify-content:${mine ? "flex-end" : "flex-start"}; margin:6px 0;`;
+  if (id) wrap.id = id;
+  wrap.innerHTML = `<div class="bubble ${cls}">${html}</div>`;
+  thread.appendChild(wrap);
+  wrap.scrollIntoView({ block: "end", behavior: "smooth" });
+  return wrap;
+}
+
+// Send a message to the butler with immediate feedback: the person's message
+// shows at once, a "thinking…" bubble runs while the (local) model works, and
+// the input clears — the round-trip can take a few seconds.
+async function sendChat() {
+  const input = document.getElementById("chat-input");
+  const msg = input ? input.value.trim() : "";
+  if (!msg) return;
+  const thread = document.getElementById("chat-thread");
+  if (thread && thread.querySelector(".empty")) thread.innerHTML = "";
+  input.value = "";
+  appendBubble(esc(msg), "me");
+  appendBubble('<span class="dots"><i></i><i></i><i></i></span>', "butler thinking", "chat-thinking");
+  try {
+    const res = await api("POST", "/v1/chat", { message: msg });
+    CHAT_PROPOSALS = res.proposals || [];
+    speak(res.reply && res.reply.text);
+    await reload();
+    const again = document.getElementById("chat-input");
+    if (again) again.focus();
+  } catch (e) {
+    const t = document.getElementById("chat-thinking");
+    if (t) t.remove();
+    flash("The butler couldn't reply: " + e.message, "err");
+  }
+}
+
+function render() {
+  const v = NAV.v;
+  app.innerHTML =
+      v === "direction" ? viewDirection(NAV.id)
+    : v === "target" ? viewTarget(NAV.id)
+    : v === "assumption" ? viewAssumption(NAV.id)
+    : v === "experiment" ? viewAssumption(NAV.id)
+    : v === "reflection" ? viewReflection(NAV.id)
+    : v === "audit" ? viewAudit()
+    : v === "chat" ? viewChat()
+    : v === "prefs" ? viewPrefs()
+    : viewHome();
+}
+
+// ---- actions (event delegation) -------------------------------------------
+async function dispatch(act) {
+  const [verb, noun, id, arg] = act.split(":");
+  try {
+    if (verb === "go") {
+      if (noun === "home") return go("home");
+      if (noun === "audit") return go("audit");
+      return go(noun, id);
+    }
+    if (verb === "toggle" && noun === "archived") {
+      SHOW_ARCHIVED = !SHOW_ARCHIVED; return render();
+    }
+    if (verb === "status" && (noun === "direction" || noun === "target")) {
+      await api("POST", `/v1/${noun}s/${id}`, { status: arg }); return reload();
+    }
+    if (verb === "delete" && (noun === "direction" || noun === "target")) {
+      if (!confirm(`Delete this ${noun}? This cannot be undone — archive instead to keep it.`)) return;
+      await api("DELETE", `/v1/${noun}s/${id}`); return reload();
+    }
+    if (verb === "create" && noun === "direction") {
+      await api("POST", "/v1/directions", { title: val("new-direction") }); return reload();
+    }
+    if (verb === "create" && noun === "value") {
+      await api("POST", "/v1/values", { name: val("new-value") }); return reload();
+    }
+    if (verb === "delete" && noun === "value") {
+      if (!confirm("Delete this value? North Stars serving it must be re-filed first.")) return;
+      await api("DELETE", `/v1/values/${id}`); return reload();
+    }
+    if (verb === "file" && noun === "direction") {
+      const sel = document.getElementById("val-" + id).value;
+      await api("POST", `/v1/directions/${id}/value`, { value_id: sel || null }); return reload();
+    }
+    if (verb === "chat" && noun === "send") { await sendChat(); return; }
+    if (verb === "chat" && noun === "mic") { listen(); return; }
+    if (verb === "toggle" && noun === "speak") {
+      SPEAK = !SPEAK; if (!SPEAK && TTS) TTS.cancel(); return render();
+    }
+    if (verb === "confirm" && noun === "proposal") {
+      const p = CHAT_PROPOSALS[Number(id)];
+      if (!p) return;
+      if (p.kind === "create_value") await api("POST", "/v1/values", { name: p.name });
+      else if (p.kind === "create_north_star") await api("POST", "/v1/directions", { title: p.title });
+      else if (p.kind === "create_target") await api("POST", `/v1/directions/${p.direction_id}/targets`, { statement: p.statement });
+      else if (p.kind === "remember_preference") await api("POST", "/v1/preferences", { text: p.text, kind: p.preference_kind });
+      CHAT_PROPOSALS.splice(Number(id), 1);
+      flash("Done — added.", "ok");
+      return reload();
+    }
+    if (verb === "dismiss" && noun === "proposal") {
+      CHAT_PROPOSALS.splice(Number(id), 1); return render();
+    }
+    if (verb === "snooze" && noun === "attention") {
+      // data-act = snooze:attention:<kind>:<subject>
+      await api("POST", "/v1/attention/snooze", { kind: id, subject: arg }); return reload();
+    }
+    if (verb === "create" && noun === "pref") {
+      const text = val("new-pref");
+      if (!text) return;
+      await api("POST", "/v1/preferences", { text }); return reload();
+    }
+    if (verb === "delete" && noun === "pref") {
+      await api("DELETE", `/v1/preferences/${id}`); return reload();
+    }
+    if (verb === "create" && noun === "target") {
+      await api("POST", `/v1/directions/${id}/targets`, { statement: val("new-target") }); return reload();
+    }
+    if (verb === "create" && noun === "assumption") {
+      await api("POST", `/v1/targets/${id}/assumptions`, { statement: val("new-assumption") }); return reload();
+    }
+    if (verb === "propose" && noun === "experiment") {
+      await api("POST", `/v1/assumptions/${id}/experiments`, { hypothesis: val("new-experiment") }); return reload();
+    }
+    if (verb === "start" && noun === "experiment") {
+      await api("POST", `/v1/experiments/${id}/start`); return reload();
+    }
+    if (verb === "conclude" && noun === "experiment") {
+      await api("POST", `/v1/experiments/${id}/conclude`); return reload();
+    }
+    if (verb === "review" && noun === "experiment") {
+      const days = parseInt(val("rev-" + id), 10);
+      if (!(days >= 1)) { flash("Enter a number of days (1 or more).", "err"); return; }
+      await api("POST", `/v1/experiments/${id}/review`, { in_days: days }); return reload();
+    }
+    if (verb === "record" && noun === "observation") {
+      await api("POST", `/v1/experiments/${id}/observations`, { note: val("obs-" + id) }); return reload();
+    }
+    if (verb === "create" && noun === "reflection") {
+      const evidence = [...document.querySelectorAll(".evi-box:checked")].map((b) => b.value);
+      await api("POST", `/v1/targets/${id}/reflections`, { summary: val("new-reflection"), evidence }); return reload();
+    }
+    if (verb === "propose" && noun === "change") {
+      await api("POST", `/v1/reflections/${id}/process-changes`, { description: val("new-change") }); return reload();
+    }
+    if (verb === "draft" && noun === "change") {
+      await api("POST", `/v1/reflections/${id}/process-changes/draft`); return reload();
+    }
+    if (verb === "approve" && noun === "change") {
+      await api("POST", `/v1/process-changes/${id}/approve`); return reload();
+    }
+    if (verb === "reject" && noun === "change") {
+      await api("POST", `/v1/process-changes/${id}/reject`); return reload();
+    }
+    if (verb === "decide" && noun === "change") {
+      const actor = document.getElementById("actor-" + id).value;
+      const d = await api("POST", `/v1/process-changes/${id}/decision`, { actor });
+      flash("Policy: " + d.decision.replace(/_/g, " ") + (d.reason ? " — " + d.reason : ""),
+            d.decision === "permit" ? "ok" : "err");
+      return reload();
+    }
+    if (verb === "export") {
+      const data = await api("GET", "/v1/export");
+      const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob); a.download = "endora-export.json"; a.click();
+      return flash("Exported your data.", "ok");
+    }
+    if (verb === "purge") {
+      if (!confirm("Permanently delete ALL of your Endora data? This cannot be undone.")) return;
+      await api("POST", "/v1/memory/purge", { confirm: true });
+      go("home"); return reload();
+    }
+  } catch (e) {
+    flash(e.message || String(e), "err");
+  }
+}
+
+document.body.addEventListener("click", (ev) => {
+  const t = ev.target.closest("[data-act]");
+  if (t) { ev.stopPropagation(); dispatch(t.getAttribute("data-act")); }
+});
+
+// Enter sends the chat message (Shift+Enter is free for a newline if the input
+// ever becomes multi-line).
+document.body.addEventListener("keydown", (ev) => {
+  if (ev.target.id === "chat-input" && ev.key === "Enter" && !ev.shiftKey) {
+    ev.preventDefault(); sendChat();
+  }
+});
+
+// A `<select data-change="verb:noun:id">` applies the chosen value on change,
+// dispatching `verb:noun:id:<value>` (used for the lifecycle Status dropdown).
+document.body.addEventListener("change", (ev) => {
+  const sel = ev.target.closest("select[data-change]");
+  if (sel) dispatch(sel.getAttribute("data-change") + ":" + sel.value);
+});
+
+// Fill the header nav buttons with icon + label (kept out of the markup so the
+// icon set lives in one place).
+function setupHeader(service) {
+  const set = (id, name, label) => {
+    const el = document.getElementById(id);
+    if (el) el.innerHTML = icon(name) + `<span>${label}</span>`;
+  };
+  set("btn-chat", "chat", "Chat");
+  set("btn-stars", "target", "North Stars");
+  set("btn-prefs", "prefs", "Prefs");
+  set("btn-audit", "audit", "Audit");
+  set("btn-export", "export", "Export");
+  set("btn-purge", "purge", "Purge");
+  // Brand: keep "Endora" and, if the health string carries a version, a pill.
+  const ver = (service || "").match(/\b\d+\.\d+\.\d+\b/);
+  const brand = document.getElementById("brand");
+  const label = brand && brand.querySelector("span:last-child");
+  if (label) label.innerHTML = `Endora${ver ? ` <span class="pill" style="font-weight:500">v${ver[0]}</span>` : ""}`;
+}
+
+// ---- boot -----------------------------------------------------------------
+(async function () {
+  try {
+    const health = await api("GET", "/health");
+    setupHeader(health.service);
+    await reload();
+    subscribeToActivity();
+  } catch (e) {
+    app.innerHTML = `<div class="msg show err">Couldn't reach the node: ${esc(e.message)}</div>`;
+  }
+})();
+</script>
+</body>
+</html>

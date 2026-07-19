@@ -1,0 +1,398 @@
+//! Butler brains behind the [`Butler`] port (see
+//! `docs/adr/0014-the-butler-conversation-values-attention.md`).
+//!
+//! Two implementations:
+//! - [`ScriptedButler`] — deterministic and offline; it turns a stated aim into a
+//!   proposed North Star and asks what value it serves. It proves the act/ask +
+//!   propose loop without any model, and is the reliable fallback.
+//! - [`LlmButler`] — model-backed (a local OpenAI-compatible endpoint). It asks
+//!   the model for a candid, non-sycophantic reply plus proposals from a closed
+//!   set, and falls back to the scripted butler if the model is unavailable or
+//!   returns something unusable, so the conversation never breaks.
+//!
+//! Both only ever *propose*: the person confirms each action, and deterministic
+//! use cases execute it. The model is never the enforcement boundary.
+
+use endora_application::{Butler, ButlerContext, ButlerProposal, ButlerReply, ProposalError};
+use endora_domain::{ChatMessage, DirectionId, MessageRole, Preference, PreferenceKind};
+use serde_json::{Value, json};
+
+/// A deterministic, offline butler. Reliable, if simple.
+pub struct ScriptedButler;
+
+impl Butler for ScriptedButler {
+    fn respond(
+        &self,
+        history: &[ChatMessage],
+        _preferences: &[Preference],
+        _context: &ButlerContext,
+    ) -> Result<ButlerReply, ProposalError> {
+        Ok(scripted_reply(history))
+    }
+}
+
+/// Turns the latest user message into a proposed North Star and an ask.
+fn scripted_reply(history: &[ChatMessage]) -> ButlerReply {
+    let last_user = history
+        .iter()
+        .rev()
+        .find(|m| m.role() == MessageRole::User)
+        .map(|m| m.text().trim().to_owned())
+        .unwrap_or_default();
+    if last_user.is_empty() {
+        return ButlerReply {
+            text: "What would you like to work on?".to_owned(),
+            proposals: Vec::new(),
+        };
+    }
+    let aim = strip_lead(&last_user);
+    ButlerReply {
+        text: format!(
+            "Let's make that concrete. What is it in service of — health, community, craft? \
+             I can set \"{aim}\" up as a North Star to build on."
+        ),
+        proposals: vec![ButlerProposal::CreateNorthStar { title: aim }],
+    }
+}
+
+/// Strips a leading intent phrase ("I want to …") to get the bare aim.
+fn strip_lead(text: &str) -> String {
+    let lower = text.to_lowercase();
+    for lead in [
+        "i want to ",
+        "i'd like to ",
+        "i would like to ",
+        "i wanna ",
+        "i need to ",
+        "help me ",
+        "i want ",
+    ] {
+        if let Some(rest) = lower.strip_prefix(lead) {
+            // Preserve the original casing of the remainder.
+            return text[text.len() - rest.len()..].trim().to_owned();
+        }
+    }
+    text.to_owned()
+}
+
+/// A [`Butler`] backed by a local OpenAI-compatible chat endpoint, with the
+/// [`ScriptedButler`] as a fallback so the conversation is always answered.
+pub struct LlmButler {
+    agent: ureq::Agent,
+    base_url: String,
+    model: String,
+    fallback: ScriptedButler,
+}
+
+impl LlmButler {
+    /// Creates a model-backed butler for a local endpoint and model.
+    #[must_use]
+    pub fn new(base_url: String, model: String) -> Self {
+        Self {
+            agent: ureq::Agent::new_with_defaults(),
+            base_url,
+            model,
+            fallback: ScriptedButler,
+        }
+    }
+
+    /// Asks the model and parses its reply, or an error the caller can fall back
+    /// on.
+    fn try_model(
+        &self,
+        history: &[ChatMessage],
+        preferences: &[Preference],
+        context: &ButlerContext,
+    ) -> Result<ButlerReply, ProposalError> {
+        let body = build_butler_request(&self.model, history, preferences, context);
+        let url = format!("{}/chat/completions", self.base_url);
+        let mut response = self
+            .agent
+            .post(&url)
+            .send_json(&body)
+            .map_err(|e| ProposalError::Unavailable(e.to_string()))?;
+        if response.status().as_u16() >= 300 {
+            return Err(ProposalError::Unavailable(format!(
+                "endpoint returned status {}",
+                response.status()
+            )));
+        }
+        let json: Value = response
+            .body_mut()
+            .read_json()
+            .map_err(|e| ProposalError::Unavailable(e.to_string()))?;
+        parse_butler_response(&json)
+    }
+}
+
+impl Butler for LlmButler {
+    fn respond(
+        &self,
+        history: &[ChatMessage],
+        preferences: &[Preference],
+        context: &ButlerContext,
+    ) -> Result<ButlerReply, ProposalError> {
+        // Never fail the conversation: fall back to the scripted butler if the
+        // model is unreachable or unusable.
+        self.try_model(history, preferences, context)
+            .or_else(|_| self.fallback.respond(history, preferences, context))
+    }
+}
+
+/// The persona and hard rules — candid, never sycophantic, proposes only.
+const BUTLER_SYSTEM_PROMPT: &str = "You are Endora's butler: a candid, warm \
+personal-growth assistant. You help the person organize life into values, North \
+Stars, and targets. Mirror the person's register — match their warmth, formality, \
+and politeness — but asymmetrically: reflect kindness upward, and NEVER mirror \
+hostility, rudeness, or contempt downward; stay even and kind. RULES: Be honest \
+and direct. NEVER be sycophantic — no flattery, no empty or overwhelming praise, \
+no reflexive agreement; disagree when warranted, kindly. Matching a warm tone must \
+never soften the truth. You only PROPOSE actions; the person confirms them. Never claim \
+to have done anything. When the person states a lasting preference, propose to \
+remember it. Reply with ONLY a JSON object of the form \
+{\"reply\":\"<your message>\",\"proposals\":[<zero or more>]} where each proposal \
+is exactly one of {\"kind\":\"create_value\",\"name\":\"...\"}, \
+{\"kind\":\"create_north_star\",\"title\":\"...\"}, \
+{\"kind\":\"create_target\",\"direction_id\":\"<id of an existing North Star>\",\"statement\":\"...\"}, \
+or {\"kind\":\"remember_preference\",\"text\":\"...\",\"preference_kind\":\"taste\"}. \
+Ground yourself in the person's current life given below; refer to what exists and \
+propose the next concrete step (only use a direction_id listed there).";
+
+/// Builds the OpenAI-compatible chat request from the conversation and the
+/// preferences already learned (so the butler need not re-ask). Pure, so it is
+/// unit-tested.
+fn build_butler_request(
+    model: &str,
+    history: &[ChatMessage],
+    preferences: &[Preference],
+    context: &ButlerContext,
+) -> Value {
+    let mut system = BUTLER_SYSTEM_PROMPT.to_owned();
+    if !preferences.is_empty() {
+        system.push_str(
+            "\nYou already know these preferences about the person; honour them and do not re-ask:",
+        );
+        for p in preferences {
+            system.push_str(&format!("\n- ({}) {}", p.kind().name(), p.text()));
+        }
+    }
+    // Ground the butler in the person's current life so it speaks about what
+    // exists and proposes the next concrete step.
+    if !context.values.is_empty() {
+        system.push_str(&format!("\nTheir values: {}.", context.values.join(", ")));
+    }
+    if context.north_stars.is_empty() {
+        system.push_str("\nThey have no North Stars yet.");
+    } else {
+        system.push_str("\nTheir North Stars (id | title | status | value | has target):");
+        for n in &context.north_stars {
+            system.push_str(&format!(
+                "\n- {} | {} | {} | {} | {}",
+                n.id,
+                n.title,
+                n.status,
+                n.value.as_deref().unwrap_or("unfiled"),
+                if n.has_active_target { "yes" } else { "no" }
+            ));
+        }
+    }
+    if !context.attention.is_empty() {
+        system.push_str("\nNeeds attention right now:");
+        for a in &context.attention {
+            system.push_str(&format!("\n- {a}"));
+        }
+    }
+    let mut messages = vec![json!({ "role": "system", "content": system })];
+    for m in history {
+        let role = match m.role() {
+            MessageRole::User => "user",
+            MessageRole::Butler => "assistant",
+        };
+        messages.push(json!({ "role": role, "content": m.text() }));
+    }
+    json!({
+        "model": model,
+        "stream": false,
+        "temperature": 0.5,
+        "messages": messages,
+    })
+}
+
+/// Extracts the butler reply from a chat-completions response. Pure.
+fn parse_butler_response(json: &Value) -> Result<ButlerReply, ProposalError> {
+    let content = json["choices"][0]["message"]["content"]
+        .as_str()
+        .ok_or_else(|| ProposalError::Unavailable("unexpected response shape".to_owned()))?;
+    Ok(parse_butler_json(content))
+}
+
+/// Parses the model's message content into a [`ButlerReply`]. If it is not the
+/// expected JSON, the raw text becomes the reply with no proposals — a graceful
+/// degradation rather than a failure.
+fn parse_butler_json(content: &str) -> ButlerReply {
+    let cleaned = strip_code_fence(content.trim());
+    let Ok(value) = serde_json::from_str::<Value>(cleaned) else {
+        return ButlerReply {
+            text: content.trim().to_owned(),
+            proposals: Vec::new(),
+        };
+    };
+    let text = value["reply"].as_str().unwrap_or("").trim().to_owned();
+    let proposals = value["proposals"]
+        .as_array()
+        .map(|arr| arr.iter().filter_map(parse_proposal).collect())
+        .unwrap_or_default();
+    ButlerReply { text, proposals }
+}
+
+/// Maps one JSON proposal object to a [`ButlerProposal`], ignoring unknown kinds
+/// (the person can never have the butler run something outside the closed set).
+fn parse_proposal(value: &Value) -> Option<ButlerProposal> {
+    match value["kind"].as_str()? {
+        "create_value" => Some(ButlerProposal::CreateValue {
+            name: non_empty(value["name"].as_str()?)?,
+        }),
+        "create_north_star" => Some(ButlerProposal::CreateNorthStar {
+            title: non_empty(value["title"].as_str()?)?,
+        }),
+        "create_target" => Some(ButlerProposal::CreateTarget {
+            direction: DirectionId::new(value["direction_id"].as_str()?.parse().ok()?),
+            statement: non_empty(value["statement"].as_str()?)?,
+        }),
+        "remember_preference" => Some(ButlerProposal::RememberPreference {
+            text: non_empty(value["text"].as_str()?)?,
+            kind: value["preference_kind"]
+                .as_str()
+                .and_then(PreferenceKind::from_name)
+                .unwrap_or(PreferenceKind::Taste),
+        }),
+        _ => None,
+    }
+}
+
+fn non_empty(s: &str) -> Option<String> {
+    let t = s.trim();
+    (!t.is_empty()).then(|| t.to_owned())
+}
+
+/// Strips a Markdown ```json … ``` fence if the model wrapped its JSON.
+fn strip_code_fence(s: &str) -> &str {
+    let s = s
+        .strip_prefix("```json")
+        .or_else(|| s.strip_prefix("```"))
+        .unwrap_or(s);
+    s.strip_suffix("```").unwrap_or(s).trim()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        LlmButler, ScriptedButler, build_butler_request, parse_butler_json, parse_butler_response,
+    };
+    use endora_application::{Butler, ButlerContext, ButlerProposal};
+    use endora_domain::{ChatMessage, MessageId, MessageRole, Timestamp};
+    use serde_json::json;
+
+    fn user(text: &str) -> ChatMessage {
+        ChatMessage::new(
+            MessageId::new(1),
+            MessageRole::User,
+            text,
+            Timestamp::from_unix_millis(0),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn scripted_butler_proposes_a_north_star_from_an_aim() {
+        let reply = ScriptedButler
+            .respond(
+                &[user("I want to get back into running")],
+                &[],
+                &ButlerContext::default(),
+            )
+            .unwrap();
+        assert_eq!(
+            reply.proposals,
+            vec![ButlerProposal::CreateNorthStar {
+                title: "get back into running".to_owned()
+            }]
+        );
+        assert!(!reply.text.is_empty());
+    }
+
+    #[test]
+    fn request_includes_the_system_prompt_and_conversation() {
+        let body = build_butler_request(
+            "qwen3.5:9b",
+            &[user("hello")],
+            &[],
+            &ButlerContext::default(),
+        );
+        assert_eq!(body["messages"][0]["role"], "system");
+        assert!(
+            body["messages"][0]["content"]
+                .as_str()
+                .unwrap()
+                .contains("NEVER be sycophantic")
+        );
+        assert_eq!(body["messages"][1]["role"], "user");
+        assert_eq!(body["messages"][1]["content"], "hello");
+    }
+
+    #[test]
+    fn parses_a_json_reply_with_proposals() {
+        let json = json!({
+            "choices": [ { "message": { "content":
+                "{\"reply\":\"What value does this serve?\",\"proposals\":[{\"kind\":\"create_north_star\",\"title\":\"Run a 5k\"}]}"
+            } } ]
+        });
+        let reply = parse_butler_response(&json).unwrap();
+        assert_eq!(reply.text, "What value does this serve?");
+        assert_eq!(
+            reply.proposals,
+            vec![ButlerProposal::CreateNorthStar {
+                title: "Run a 5k".to_owned()
+            }]
+        );
+    }
+
+    #[test]
+    fn non_json_content_degrades_to_a_plain_reply() {
+        let reply = parse_butler_json("Just some prose, no JSON here.");
+        assert_eq!(reply.text, "Just some prose, no JSON here.");
+        assert!(reply.proposals.is_empty());
+    }
+
+    #[test]
+    fn a_code_fenced_reply_is_still_parsed() {
+        let reply = parse_butler_json("```json\n{\"reply\":\"ok\",\"proposals\":[]}\n```");
+        assert_eq!(reply.text, "ok");
+    }
+
+    #[test]
+    fn unknown_proposal_kinds_are_ignored() {
+        let reply =
+            parse_butler_json("{\"reply\":\"hi\",\"proposals\":[{\"kind\":\"launch_missiles\"}]}");
+        assert!(reply.proposals.is_empty());
+    }
+
+    #[test]
+    fn llm_butler_falls_back_when_the_endpoint_is_unreachable() {
+        // An unroutable endpoint forces the scripted fallback.
+        let butler = LlmButler::new("http://127.0.0.1:1/v1".to_owned(), "none".to_owned());
+        let reply = butler
+            .respond(
+                &[user("I want to run more")],
+                &[],
+                &ButlerContext::default(),
+            )
+            .unwrap();
+        assert_eq!(
+            reply.proposals,
+            vec![ButlerProposal::CreateNorthStar {
+                title: "run more".to_owned()
+            }]
+        );
+    }
+}

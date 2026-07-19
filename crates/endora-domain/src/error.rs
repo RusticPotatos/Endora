@@ -7,7 +7,7 @@ use core::fmt;
 pub enum DomainError {
     /// A required text field was empty or contained only whitespace.
     EmptyField {
-        /// Name of the offending field, e.g. `"goal.statement"`.
+        /// Name of the offending field, e.g. `"target.statement"`.
         field: &'static str,
     },
     /// A state transition was not allowed from the current state.

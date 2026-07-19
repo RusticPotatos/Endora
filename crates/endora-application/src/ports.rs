@@ -8,19 +8,21 @@
 use core::fmt;
 
 use endora_domain::{
-    Assumption, AssumptionId, AuditRecord, Direction, DirectionId, Experiment, ExperimentId, Goal,
-    GoalId, Observation, ProcessChangeId, ProposedProcessChange, Reflection, ReflectionId,
-    Timestamp,
+    Assumption, AssumptionId, AuditRecord, ChatMessage, Direction, DirectionId, Experiment,
+    ExperimentId, Observation, Preference, PreferenceId, PreferenceKind, ProcessChangeId,
+    ProposedProcessChange, Reflection, ReflectionId, Target, TargetId, Timestamp, Value, ValueId,
 };
 
 /// A complete snapshot of the user's stored data, for the memory rights of the
 /// constitution: it is what "export" hands back and what "delete" removes.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct MemorySnapshot {
+    /// All values.
+    pub values: Vec<Value>,
     /// All directions.
     pub directions: Vec<Direction>,
-    /// All goals.
-    pub goals: Vec<Goal>,
+    /// All targets.
+    pub targets: Vec<Target>,
     /// All assumptions.
     pub assumptions: Vec<Assumption>,
     /// All experiments.
@@ -33,6 +35,10 @@ pub struct MemorySnapshot {
     pub process_changes: Vec<ProposedProcessChange>,
     /// The full audit trail.
     pub audit: Vec<AuditRecord>,
+    /// The whole conversation with the butler.
+    pub messages: Vec<ChatMessage>,
+    /// The preferences the butler has learned.
+    pub preferences: Vec<Preference>,
 }
 
 /// The user's right to export and delete all of their data (constitution:
@@ -75,7 +81,35 @@ impl fmt::Display for RepositoryError {
 
 impl core::error::Error for RepositoryError {}
 
-/// Persists and retrieves [`Direction`]s.
+/// Persists and retrieves [`Value`]s (the Identity & Values context).
+pub trait ValueRepository {
+    /// Inserts a value, or replaces the existing one with the same id.
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if the backend fails.
+    fn save(&self, value: &Value) -> Result<(), RepositoryError>;
+
+    /// Fetches a value by id, returning `None` if it does not exist.
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if the backend fails or stored data is corrupt.
+    fn get(&self, id: ValueId) -> Result<Option<Value>, RepositoryError>;
+
+    /// Lists all values, in a stable order.
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if the backend fails or stored data is corrupt.
+    fn list_all(&self) -> Result<Vec<Value>, RepositoryError>;
+
+    /// Permanently removes a value. Callers are responsible for ensuring no
+    /// North Star still references it first.
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if the backend fails.
+    fn delete(&self, id: ValueId) -> Result<(), RepositoryError>;
+}
+
+/// Persists and retrieves [`Direction`]s (North Stars).
 pub trait DirectionRepository {
     /// Inserts a direction, or replaces the existing one with the same id.
     ///
@@ -88,27 +122,47 @@ pub trait DirectionRepository {
     /// # Errors
     /// [`RepositoryError`] if the backend fails or stored data is corrupt.
     fn get(&self, id: DirectionId) -> Result<Option<Direction>, RepositoryError>;
-}
 
-/// Persists and retrieves [`Goal`]s.
-pub trait GoalRepository {
-    /// Inserts a goal, or replaces the existing one with the same id.
+    /// Lists all directions, in a stable order.
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if the backend fails or stored data is corrupt.
+    fn list_all(&self) -> Result<Vec<Direction>, RepositoryError>;
+
+    /// Permanently removes a direction. Callers are responsible for ensuring it
+    /// has no dependents first.
     ///
     /// # Errors
     /// [`RepositoryError`] if the backend fails.
-    fn save(&self, goal: &Goal) -> Result<(), RepositoryError>;
+    fn delete(&self, id: DirectionId) -> Result<(), RepositoryError>;
+}
 
-    /// Fetches a goal by id, returning `None` if it does not exist.
+/// Persists and retrieves [`Target`]s.
+pub trait TargetRepository {
+    /// Inserts a target, or replaces the existing one with the same id.
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if the backend fails.
+    fn save(&self, target: &Target) -> Result<(), RepositoryError>;
+
+    /// Fetches a target by id, returning `None` if it does not exist.
     ///
     /// # Errors
     /// [`RepositoryError`] if the backend fails or stored data is corrupt.
-    fn get(&self, id: GoalId) -> Result<Option<Goal>, RepositoryError>;
+    fn get(&self, id: TargetId) -> Result<Option<Target>, RepositoryError>;
 
-    /// Lists the goals belonging to a direction, in a stable order.
+    /// Lists the targets belonging to a direction, in a stable order.
     ///
     /// # Errors
     /// [`RepositoryError`] if the backend fails or stored data is corrupt.
-    fn list_for_direction(&self, direction: DirectionId) -> Result<Vec<Goal>, RepositoryError>;
+    fn list_for_direction(&self, direction: DirectionId) -> Result<Vec<Target>, RepositoryError>;
+
+    /// Permanently removes a target. Callers are responsible for ensuring it has
+    /// no dependents first.
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if the backend fails.
+    fn delete(&self, id: TargetId) -> Result<(), RepositoryError>;
 }
 
 /// Persists and retrieves [`Assumption`]s.
@@ -125,11 +179,11 @@ pub trait AssumptionRepository {
     /// [`RepositoryError`] if the backend fails or stored data is corrupt.
     fn get(&self, id: AssumptionId) -> Result<Option<Assumption>, RepositoryError>;
 
-    /// Lists the assumptions belonging to a goal, in a stable order.
+    /// Lists the assumptions belonging to a target, in a stable order.
     ///
     /// # Errors
     /// [`RepositoryError`] if the backend fails or stored data is corrupt.
-    fn list_for_goal(&self, goal: GoalId) -> Result<Vec<Assumption>, RepositoryError>;
+    fn list_for_target(&self, target: TargetId) -> Result<Vec<Assumption>, RepositoryError>;
 }
 
 /// Persists and retrieves [`Experiment`]s.
@@ -155,6 +209,14 @@ pub trait ExperimentRepository {
         &self,
         assumption: AssumptionId,
     ) -> Result<Vec<Experiment>, RepositoryError>;
+
+    /// Lists experiments whose scheduled review is due as of `now` — a review
+    /// was scheduled for at or before `now` and the experiment is not concluded.
+    /// Ordered by review time, soonest first.
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if the backend fails or stored data is corrupt.
+    fn list_due_reviews(&self, now: Timestamp) -> Result<Vec<Experiment>, RepositoryError>;
 }
 
 /// Persists and retrieves [`Observation`]s.
@@ -173,6 +235,13 @@ pub trait ObservationRepository {
         &self,
         experiment: ExperimentId,
     ) -> Result<Vec<Observation>, RepositoryError>;
+
+    /// Lists the most recently recorded observations across all experiments,
+    /// newest first, up to `limit`. Used to build the activity feed.
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if the backend fails or stored data is corrupt.
+    fn recent(&self, limit: usize) -> Result<Vec<Observation>, RepositoryError>;
 }
 
 /// A failure from a reasoning model behind the [`Proposer`] port.
@@ -214,6 +283,229 @@ pub trait Proposer {
     ) -> Result<String, ProposalError>;
 }
 
+/// A structured action the butler proposes. This is a **closed set**: the butler
+/// can only suggest these, and each maps to an existing use case. The model
+/// *proposes* one; the person *confirms*; deterministic code executes. The model
+/// can never step outside this set or act on its own.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ButlerProposal {
+    /// Create a value (a "why").
+    CreateValue {
+        /// The value's name.
+        name: String,
+    },
+    /// Create a North Star (direction).
+    CreateNorthStar {
+        /// The North Star's title.
+        title: String,
+    },
+    /// Create a target under an existing North Star.
+    CreateTarget {
+        /// The North Star the target belongs to.
+        direction: DirectionId,
+        /// The target statement.
+        statement: String,
+    },
+    /// Remember a preference about the person (so it stops re-asking).
+    RememberPreference {
+        /// The preference text.
+        text: String,
+        /// Whether it is taste or a grant of authority.
+        kind: PreferenceKind,
+    },
+}
+
+impl ButlerProposal {
+    /// A stable, lowercase kind name for the protocol.
+    #[must_use]
+    pub const fn kind(&self) -> &'static str {
+        match self {
+            Self::CreateValue { .. } => "create_value",
+            Self::CreateNorthStar { .. } => "create_north_star",
+            Self::CreateTarget { .. } => "create_target",
+            Self::RememberPreference { .. } => "remember_preference",
+        }
+    }
+
+    /// A human-readable one-line summary of what confirming would do.
+    #[must_use]
+    pub fn label(&self) -> String {
+        match self {
+            Self::CreateValue { name } => format!("Create value: \"{name}\""),
+            Self::CreateNorthStar { title } => format!("Create North Star: \"{title}\""),
+            Self::CreateTarget { statement, .. } => format!("Create target: \"{statement}\""),
+            Self::RememberPreference { text, .. } => format!("Remember: \"{text}\""),
+        }
+    }
+}
+
+/// What the butler says back: a reply, plus any actions it proposes.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ButlerReply {
+    /// The butler's text reply.
+    pub text: String,
+    /// Structured actions it proposes (may be empty). Never auto-executed.
+    pub proposals: Vec<ButlerProposal>,
+}
+
+/// A brief of one North Star, for grounding the butler's conversation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NorthStarBrief {
+    /// The North Star's id (so the butler can propose a target under it).
+    pub id: String,
+    /// Its title.
+    pub title: String,
+    /// Its lifecycle status.
+    pub status: String,
+    /// The value it serves, if filed.
+    pub value: Option<String>,
+    /// Whether it has an active target yet.
+    pub has_active_target: bool,
+}
+
+/// A snapshot of the person's current life the butler is given each turn, so the
+/// conversation is grounded in what actually exists rather than starting cold.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ButlerContext {
+    /// The person's value names.
+    pub values: Vec<String>,
+    /// The person's North Stars.
+    pub north_stars: Vec<NorthStarBrief>,
+    /// What currently needs attention (headlines).
+    pub attention: Vec<String>,
+}
+
+/// The butler brain: given the conversation so far, produce a reply and any
+/// proposed actions.
+///
+/// Like [`Proposer`], this is a reasoning component, not an authority — it only
+/// *proposes*. Infrastructure supplies a scripted implementation (offline/tests)
+/// or a model-backed one (`docs/adr/0014-the-butler-conversation-values-attention.md`).
+pub trait Butler {
+    /// Responds to the conversation so far (the last message is the newest),
+    /// given the preferences already learned and a snapshot of the person's
+    /// current life ([`ButlerContext`]) so it can speak about what actually
+    /// exists and propose the next concrete step.
+    ///
+    /// # Errors
+    /// [`ProposalError`] if a backing model is unreachable or returns nothing.
+    fn respond(
+        &self,
+        history: &[ChatMessage],
+        preferences: &[Preference],
+        context: &ButlerContext,
+    ) -> Result<ButlerReply, ProposalError>;
+}
+
+/// Persists and retrieves [`Preference`]s (what the butler has learned).
+pub trait PreferenceRepository {
+    /// Inserts a preference, or replaces the existing one with the same id.
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if the backend fails.
+    fn save(&self, preference: &Preference) -> Result<(), RepositoryError>;
+
+    /// Lists all preferences, oldest first.
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if the backend fails or stored data is corrupt.
+    fn list_all(&self) -> Result<Vec<Preference>, RepositoryError>;
+
+    /// Permanently removes a preference.
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if the backend fails.
+    fn delete(&self, id: PreferenceId) -> Result<(), RepositoryError>;
+}
+
+/// Persists and retrieves the conversation with the butler.
+pub trait ChatRepository {
+    /// Appends a message to the conversation.
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if the backend fails.
+    fn append(&self, message: &ChatMessage) -> Result<(), RepositoryError>;
+
+    /// Lists the conversation, oldest first.
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if the backend fails or stored data is corrupt.
+    fn list(&self) -> Result<Vec<ChatMessage>, RepositoryError>;
+}
+
+/// The kind of thing needing the person's attention.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AttentionKind {
+    /// An experiment whose scheduled review has arrived.
+    ReviewDue,
+    /// An active North Star not yet filed under a value.
+    UnfiledNorthStar,
+    /// An active North Star with no active target under it.
+    EmptyNorthStar,
+}
+
+impl AttentionKind {
+    /// A stable, lowercase name for the protocol.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::ReviewDue => "review_due",
+            Self::UnfiledNorthStar => "unfiled_north_star",
+            Self::EmptyNorthStar => "empty_north_star",
+        }
+    }
+
+    /// Parses a kind from its [`name`](Self::name), or `None` if unrecognized.
+    #[must_use]
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "review_due" => Some(Self::ReviewDue),
+            "unfiled_north_star" => Some(Self::UnfiledNorthStar),
+            "empty_north_star" => Some(Self::EmptyNorthStar),
+            _ => None,
+        }
+    }
+}
+
+/// One thing the butler would raise, unless snoozed. A read projection, ranked by
+/// the order it is produced (most pressing first).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AttentionItem {
+    /// What kind of attention this is.
+    pub kind: AttentionKind,
+    /// The id of the experiment or North Star it concerns.
+    pub subject: String,
+    /// A human-readable one-line description.
+    pub headline: String,
+}
+
+/// A recorded deferral of an attention item: how many times it has been snoozed,
+/// and the time it stays hidden until. Each snooze roughly doubles the interval,
+/// so a repeatedly-deferred item is raised less and less.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Snooze {
+    /// How many times the item has been snoozed.
+    pub count: u32,
+    /// The item stays hidden until this time.
+    pub until: Timestamp,
+}
+
+/// Persists deferral (snooze) state for attention items, keyed by
+/// `(kind, subject)`.
+pub trait SnoozeRepository {
+    /// The current snooze for an item, if any.
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if the backend fails or stored data is corrupt.
+    fn get(&self, kind: &str, subject: &str) -> Result<Option<Snooze>, RepositoryError>;
+
+    /// Records (or replaces) the snooze for an item.
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if the backend fails.
+    fn set(&self, kind: &str, subject: &str, snooze: Snooze) -> Result<(), RepositoryError>;
+}
+
 /// Supplies the current time to use cases.
 ///
 /// The domain never reads the clock, so time enters through this port. The node
@@ -248,11 +540,11 @@ pub trait ReflectionRepository {
     /// [`RepositoryError`] if the backend fails or stored data is corrupt.
     fn get(&self, id: ReflectionId) -> Result<Option<Reflection>, RepositoryError>;
 
-    /// Lists the reflections for a goal, in a stable order.
+    /// Lists the reflections for a target, in a stable order.
     ///
     /// # Errors
     /// [`RepositoryError`] if the backend fails or stored data is corrupt.
-    fn list_for_goal(&self, goal: GoalId) -> Result<Vec<Reflection>, RepositoryError>;
+    fn list_for_target(&self, target: TargetId) -> Result<Vec<Reflection>, RepositoryError>;
 }
 
 /// Persists and retrieves [`ProposedProcessChange`]s.

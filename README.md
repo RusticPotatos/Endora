@@ -28,7 +28,7 @@ one complete vertical slice at a time. The path to the first release is in the
 ## What Endora helps people do
 
 Define their own values and direction; set long-term North Stars and intermediate
-goals; surface assumptions; form hypotheses; run small experiments; observe
+targets; surface assumptions; form hypotheses; run small experiments; observe
 results; reflect and hold retrospectives; propose process improvements; retain
 useful evidence and memory; and gradually improve over time.
 
@@ -121,11 +121,35 @@ curl -s -X POST localhost:8787/v1/directions \
   -H 'content-type: application/json' -d '{"title":"Be healthier"}'
 ```
 
-Or in a container (data persists in `./endora-data`):
+**Web console:** with the node running, open **http://localhost:8787** in a
+browser. The node serves a self-contained UI for the whole loop — create and
+navigate Direction → Target → Assumption → Experiment → Observation → Reflection,
+run the propose → approve → policy-decide flow, view the audit trail, and
+export/purge. No separate app to install (see ADR 0009 — node-served UI and
+single-container packaging).
+
+Or in a container (data persists in `./endora-data`, published on loopback only):
 
 ```bash
 make docker-build && make docker-run    # → http://localhost:8787
 ```
+
+**Running it always-on and reaching it from your phone:** see
+[docs/hosting.md](docs/hosting.md) — how to keep the node running (systemd /
+container restart) and reach it securely from other devices over a private
+network (e.g. Tailscale) or an authenticating reverse proxy. The `0.x` API is
+unauthenticated, so it must stay on a trusted network — see
+[SECURITY.md](SECURITY.md).
+
+### See the whole thing in one command
+
+```bash
+make demo    # spins up a throwaway node and drives the full learning loop
+```
+
+This runs `scripts/demo.sh`: direction → target → assumption → experiment →
+observation → reflection → proposed change → policy decision → audit → export,
+printing each CLI command and its response.
 
 ### Using the CLI
 
@@ -134,8 +158,8 @@ With the node running, the `endora` CLI (a thin client) talks to it:
 ```bash
 make run-cli ARGS="health"     # or run the binary directly:
 endora direction create "Be healthier"
-endora goal create <direction-id> "Run a 5k"
-endora goal list <direction-id>
+endora target create <direction-id> "Run a 5k"
+endora target list <direction-id>
 # override the node URL with ENDORA_URL (default http://127.0.0.1:8787)
 ```
 
@@ -158,7 +182,7 @@ endora process-change approve <id>            # a human approves
 endora process-change decide <id> act_within_policy   # policy authorizes; audited
 ```
 
-The node serves the whole learning loop (Direction → Goal → Assumption →
+The node serves the whole learning loop (Direction → Target → Assumption →
 Experiment → Observation → Reflection → Proposed process change), with the policy
 boundary and audit trail on consequential decisions — see the
 [Roadmap](docs/roadmap.md) for what remains before a tagged release.

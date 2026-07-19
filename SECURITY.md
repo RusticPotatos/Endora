@@ -28,6 +28,10 @@ private network (e.g. `-p 127.0.0.1:8787:8787`), behind a reverse proxy that add
 authentication if remote access is needed. Authentication is tracked as pre-1.0
 work.
 
+For running the node always-on and reaching it securely from other devices — a
+private overlay network (e.g. Tailscale/WireGuard) or an authenticating reverse
+proxy — see the [hosting guide](docs/hosting.md).
+
 ## Reporting a vulnerability
 
 **Please do not open a public issue for security vulnerabilities**, and please do

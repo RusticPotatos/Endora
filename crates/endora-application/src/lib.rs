@@ -17,10 +17,13 @@ pub mod usecases;
 
 pub use error::AppError;
 pub use ports::{
-    AssumptionRepository, AuditLog, Clock, DirectionRepository, ExperimentRepository,
-    GoalRepository, IdSource, MemorySnapshot, MemoryStore, ObservationRepository,
-    ProcessChangeRepository, ProposalError, Proposer, ReflectionRepository, RepositoryError,
+    AssumptionRepository, AttentionItem, AttentionKind, AuditLog, Butler, ButlerContext,
+    ButlerProposal, ButlerReply, ChatRepository, Clock, DirectionRepository, ExperimentRepository,
+    IdSource, MemorySnapshot, MemoryStore, NorthStarBrief, ObservationRepository,
+    PreferenceRepository, ProcessChangeRepository, ProposalError, Proposer, ReflectionRepository,
+    RepositoryError, Snooze, SnoozeRepository, TargetRepository, ValueRepository,
 };
+pub use usecases::{ActivityItem, ActivityKind};
 
 use endora_domain::AutonomyLevel;
 

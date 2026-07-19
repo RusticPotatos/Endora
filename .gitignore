@@ -51,3 +51,14 @@ secrets/
 # ---- JetBrains (IntelliJ / RustRover) ----
 .idea/
 *.iml
+
+# ---- Local / personal files (NEVER committed) ----
+# Kept in the working tree only: personal seed scripts, exports, and notes.
+# Name personal files with a `.local` marker and they will always be ignored.
+*.local.sh
+*.local.json
+*.local.md
+/my-life.json
+
+# Local-only compose overrides (host-specific; may contain private IPs)
+docker-compose.override.yml
