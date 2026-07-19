@@ -1,0 +1,6 @@
+[toolchain]
+# Track the current stable Rust release. Endora targets the latest stable
+# toolchain and the 2024 edition; see rust-version fields in Cargo.toml for the
+# minimum supported version enforced by the workspace.
+channel = "stable"
+components = ["rustfmt", "clippy"]

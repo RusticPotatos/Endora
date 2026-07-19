@@ -1,0 +1,16 @@
+[package]
+name = "endora-domain"
+description = "Endora domain layer: pure concepts of the platform with no transport, storage, UI, OS, or AI-model dependencies."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+# The domain layer must remain dependency-free. Adding a dependency here is an
+# architectural decision that requires an ADR (see docs/adr/).
+[dependencies]
+
+[lints]
+workspace = true
