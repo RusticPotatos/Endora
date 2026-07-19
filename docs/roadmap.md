@@ -204,10 +204,15 @@ get observed. The most design care goes here.
 
 ### 0.4 — Reachable from where you live
 
-- A **responsive** console usable from a phone browser.
+- A **responsive** console usable from a phone browser. *Delivered*: a mobile
+  breakpoint stacks forms and tightens the frame so the whole loop is usable at
+  phone widths.
 - Docs for running an **always-on** node (home server or a small VPS) and
   reaching it securely — e.g. Tailscale, or a reverse proxy that adds the
   authentication the API still lacks. This delivers "mobile capture" with no sync.
+  *Delivered*: [docs/hosting.md](hosting.md) covers always-on supervision
+  (systemd / container restart), backups, and secure reach over a private overlay
+  or an authenticating proxy; `make docker-run` now binds loopback by default.
 
 ### Beyond
 
