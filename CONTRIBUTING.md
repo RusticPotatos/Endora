@@ -54,7 +54,13 @@ We prefer **test-driven development**. Write tests that define new behavior
 - **Architecture changes require an [ADR](docs/adr/README.md).**
 - **Preserve public API / protocol compatibility** within a major version.
 - **No new dependency without justification.** Adding a dependency (especially in
-  `endora-domain`) needs a clear rationale and, for load-bearing choices, an ADR.
+  `endora-domain`, which stays dependency-free) needs a clear rationale and, for
+  load-bearing choices, an ADR.
+- **Prefer `n-1` for dependencies.** When a dependency is genuinely needed, pin
+  to one release behind the latest (e.g. latest is `0.40` → use `0.39`) rather
+  than the newest release. This avoids brand-new regressions and keeps the MSRV
+  stable. Take the latest only when a specific fix, feature, or **security**
+  patch requires it — and say so in the PR.
 - **Avoid speculative abstractions.** Build what the current slice needs.
 
 ### Code style prefs

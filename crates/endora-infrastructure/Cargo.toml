@@ -11,7 +11,7 @@ authors.workspace = true
 [dependencies]
 endora-domain = { path = "../endora-domain" }
 endora-application = { path = "../endora-application" }
-rusqlite = { version = "0.37", features = ["bundled"] }
+rusqlite = { version = "0.39", features = ["bundled"] }
 
 [lints]
 workspace = true
