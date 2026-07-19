@@ -14,8 +14,8 @@ use endora_domain::{
 use crate::error::AppError;
 use crate::ports::{
     AssumptionRepository, AuditLog, Clock, DirectionRepository, ExperimentRepository,
-    GoalRepository, IdSource, ObservationRepository, ProcessChangeRepository, Proposer,
-    ReflectionRepository,
+    GoalRepository, IdSource, MemorySnapshot, MemoryStore, ObservationRepository,
+    ProcessChangeRepository, Proposer, ReflectionRepository,
 };
 
 /// Creates and stores a new [`Direction`].
@@ -398,6 +398,22 @@ pub fn decide_stored_process_change(
         entity: "process change",
     })?;
     decide_process_change(&change, actor, ids, clock, audit)
+}
+
+/// Exports everything the user has stored (a memory right).
+///
+/// # Errors
+/// [`AppError::Repository`] if the backend fails or stored data is corrupt.
+pub fn export_memory(store: &impl MemoryStore) -> Result<MemorySnapshot, AppError> {
+    Ok(store.export()?)
+}
+
+/// Permanently deletes all of the user's stored data (a memory right).
+///
+/// # Errors
+/// [`AppError::Repository`] if the backend fails.
+pub fn purge_memory(store: &impl MemoryStore) -> Result<(), AppError> {
+    Ok(store.purge()?)
 }
 
 /// Returns the most recent audit records, newest first, up to `limit`.

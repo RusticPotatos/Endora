@@ -13,6 +13,44 @@ use endora_domain::{
     Timestamp,
 };
 
+/// A complete snapshot of the user's stored data, for the memory rights of the
+/// constitution: it is what "export" hands back and what "delete" removes.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct MemorySnapshot {
+    /// All directions.
+    pub directions: Vec<Direction>,
+    /// All goals.
+    pub goals: Vec<Goal>,
+    /// All assumptions.
+    pub assumptions: Vec<Assumption>,
+    /// All experiments.
+    pub experiments: Vec<Experiment>,
+    /// All observations.
+    pub observations: Vec<Observation>,
+    /// All reflections.
+    pub reflections: Vec<Reflection>,
+    /// All proposed process changes.
+    pub process_changes: Vec<ProposedProcessChange>,
+    /// The full audit trail.
+    pub audit: Vec<AuditRecord>,
+}
+
+/// The user's right to export and delete all of their data (constitution:
+/// memory must be exportable and deletable).
+pub trait MemoryStore {
+    /// Collects everything the user has stored into a [`MemorySnapshot`].
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if the backend fails or stored data is corrupt.
+    fn export(&self) -> Result<MemorySnapshot, RepositoryError>;
+
+    /// Permanently deletes all of the user's stored data.
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if the backend fails.
+    fn purge(&self) -> Result<(), RepositoryError>;
+}
+
 /// A failure from a storage backend behind a repository port.
 ///
 /// Deliberately free of any engine-specific type: adapters translate their own

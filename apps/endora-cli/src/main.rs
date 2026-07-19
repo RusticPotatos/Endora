@@ -125,6 +125,11 @@ fn route(args: &[&str]) -> Option<Action> {
         )),
         ["audit"] => Some(Action::Get("/v1/audit".to_owned())),
         ["audit", limit] => Some(Action::Get(format!("/v1/audit?limit={limit}"))),
+        ["export"] => Some(Action::Get("/v1/export".to_owned())),
+        ["purge", "confirm"] => Some(Action::Post(
+            "/v1/memory/purge".to_owned(),
+            json!({ "confirm": true }),
+        )),
         _ => None,
     }
 }
@@ -175,7 +180,9 @@ fn print_usage() {
            process-change approve <id>            approve a proposed change\n  \
            process-change reject <id>             reject a proposed change\n  \
            process-change decide <id> <actor>     run policy on a change (audited)\n  \
-           audit [limit]                          show recent audit records\n\n\
+           audit [limit]                          show recent audit records\n  \
+           export                                 export all your data as JSON\n  \
+           purge confirm                          permanently delete all your data\n\n\
          Environment:\n  \
            ENDORA_URL   node base URL (default http://127.0.0.1:8787)"
     );
@@ -330,6 +337,23 @@ mod tests {
             route(&["audit", "5"]),
             Some(Action::Get("/v1/audit?limit=5".to_owned()))
         );
+    }
+
+    #[test]
+    fn routes_export_and_purge() {
+        assert_eq!(
+            route(&["export"]),
+            Some(Action::Get("/v1/export".to_owned()))
+        );
+        assert_eq!(
+            route(&["purge", "confirm"]),
+            Some(Action::Post(
+                "/v1/memory/purge".to_owned(),
+                json!({ "confirm": true })
+            ))
+        );
+        // A bare `purge` is not a confirmation.
+        assert_eq!(route(&["purge"]), None);
     }
 
     #[test]
