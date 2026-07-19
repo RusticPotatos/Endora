@@ -7,14 +7,14 @@
 
 use endora_domain::{
     Assumption, AssumptionId, AuditId, AuditRecord, AutonomyLevel, Direction, DirectionId,
-    Experiment, ExperimentId, Goal, GoalId, PolicyDecision, ProposedProcessChange,
-    authorize_process_change,
+    Experiment, ExperimentId, Goal, GoalId, Observation, ObservationId, PolicyDecision,
+    ProposedProcessChange, authorize_process_change,
 };
 
 use crate::error::AppError;
 use crate::ports::{
     AssumptionRepository, AuditLog, Clock, DirectionRepository, ExperimentRepository,
-    GoalRepository, IdSource,
+    GoalRepository, IdSource, ObservationRepository,
 };
 
 /// Creates and stores a new [`Direction`].
@@ -163,6 +163,46 @@ pub fn conclude_experiment(
     Ok(experiment)
 }
 
+/// Records an [`Observation`] against an existing experiment, timestamped by the
+/// [`Clock`] port.
+///
+/// # Errors
+/// [`AppError::NotFound`] if the experiment does not exist, [`AppError::Domain`]
+/// if the note is invalid, or [`AppError::Repository`] if persistence fails.
+pub fn record_observation(
+    experiments: &impl ExperimentRepository,
+    observations: &impl ObservationRepository,
+    ids: &impl IdSource,
+    clock: &impl Clock,
+    experiment: ExperimentId,
+    note: &str,
+) -> Result<Observation, AppError> {
+    if experiments.get(experiment)?.is_none() {
+        return Err(AppError::NotFound {
+            entity: "experiment",
+        });
+    }
+    let observation = Observation::record(
+        ObservationId::new(ids.new_id()),
+        experiment,
+        note,
+        clock.now(),
+    )?;
+    observations.save(&observation)?;
+    Ok(observation)
+}
+
+/// Lists the observations recorded for an experiment, oldest first.
+///
+/// # Errors
+/// [`AppError::Repository`] if persistence fails.
+pub fn list_observations(
+    observations: &impl ObservationRepository,
+    experiment: ExperimentId,
+) -> Result<Vec<Observation>, AppError> {
+    Ok(observations.list_for_experiment(experiment)?)
+}
+
 /// Decides whether an actor may enact a proposed process change, and records
 /// the decision to the audit trail.
 ///
@@ -204,17 +244,17 @@ fn describe(decision: PolicyDecision) -> &'static str {
 mod tests {
     use super::{
         conclude_experiment, create_assumption, create_direction, create_goal,
-        decide_process_change, list_assumptions, list_experiments, list_goals, propose_experiment,
-        start_experiment,
+        decide_process_change, list_assumptions, list_experiments, list_goals, list_observations,
+        propose_experiment, record_observation, start_experiment,
     };
     use crate::error::AppError;
     use crate::ports::{
         AssumptionRepository, AuditLog, Clock, DirectionRepository, ExperimentRepository,
-        GoalRepository, IdSource, RepositoryError,
+        GoalRepository, IdSource, ObservationRepository, RepositoryError,
     };
     use endora_domain::{
         Assumption, AssumptionId, AuditRecord, AutonomyLevel, Direction, DirectionId, Experiment,
-        ExperimentId, ExperimentStatus, Goal, GoalId, PolicyDecision, ProcessChangeId,
+        ExperimentId, ExperimentStatus, Goal, GoalId, Observation, PolicyDecision, ProcessChangeId,
         ProposedProcessChange, ReflectionId, Timestamp,
     };
     use std::cell::{Cell, RefCell};
@@ -227,6 +267,30 @@ mod tests {
         goals: RefCell<HashMap<u128, Goal>>,
         assumptions: RefCell<HashMap<u128, Assumption>>,
         experiments: RefCell<HashMap<u128, Experiment>>,
+        observations: RefCell<HashMap<u128, Observation>>,
+    }
+
+    impl ObservationRepository for FakeStore {
+        fn save(&self, observation: &Observation) -> Result<(), RepositoryError> {
+            self.observations
+                .borrow_mut()
+                .insert(observation.id().value(), observation.clone());
+            Ok(())
+        }
+        fn list_for_experiment(
+            &self,
+            experiment: ExperimentId,
+        ) -> Result<Vec<Observation>, RepositoryError> {
+            let mut found: Vec<Observation> = self
+                .observations
+                .borrow()
+                .values()
+                .filter(|o| o.experiment() == experiment)
+                .cloned()
+                .collect();
+            found.sort_by_key(|o| o.id().value());
+            Ok(found)
+        }
     }
 
     impl AssumptionRepository for FakeStore {
@@ -550,6 +614,37 @@ mod tests {
     fn starting_a_missing_experiment_is_not_found() {
         let store = FakeStore::default();
         let err = start_experiment(&store, ExperimentId::new(1)).unwrap_err();
+        assert_eq!(
+            err,
+            AppError::NotFound {
+                entity: "experiment"
+            }
+        );
+    }
+
+    #[test]
+    fn recording_an_observation_timestamps_it_from_the_clock() {
+        let store = FakeStore::default();
+        let ids = SeqIds::default();
+        let clock = FixedClock(1_700_000_000_000);
+        let assumption = seed_assumption(&store, &ids);
+        let e = propose_experiment(&store, &store, &ids, assumption, "Try mornings").unwrap();
+
+        let o = record_observation(&store, &store, &ids, &clock, e.id(), "felt good").unwrap();
+        assert_eq!(
+            o.recorded_at(),
+            Timestamp::from_unix_millis(1_700_000_000_000)
+        );
+        assert_eq!(list_observations(&store, e.id()).unwrap(), vec![o]);
+    }
+
+    #[test]
+    fn recording_against_a_missing_experiment_is_not_found() {
+        let store = FakeStore::default();
+        let ids = SeqIds::default();
+        let clock = FixedClock(0);
+        let err = record_observation(&store, &store, &ids, &clock, ExperimentId::new(1), "x")
+            .unwrap_err();
         assert_eq!(
             err,
             AppError::NotFound {

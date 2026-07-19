@@ -10,11 +10,11 @@ use std::sync::Mutex;
 
 use endora_application::{
     AssumptionRepository, AuditLog, DirectionRepository, ExperimentRepository, GoalRepository,
-    RepositoryError,
+    ObservationRepository, RepositoryError,
 };
 use endora_domain::{
     Assumption, AssumptionId, AuditId, AuditRecord, Direction, DirectionId, Experiment,
-    ExperimentId, ExperimentStatus, Goal, GoalId, Timestamp,
+    ExperimentId, ExperimentStatus, Goal, GoalId, Observation, ObservationId, Timestamp,
 };
 use rusqlite::{Connection, OptionalExtension, params};
 
@@ -48,6 +48,15 @@ CREATE TABLE IF NOT EXISTS experiments (
 ) STRICT;
 
 CREATE INDEX IF NOT EXISTS idx_experiments_assumption ON experiments(assumption_id);
+
+CREATE TABLE IF NOT EXISTS observations (
+    id            TEXT PRIMARY KEY,
+    experiment_id TEXT NOT NULL REFERENCES experiments(id),
+    note          TEXT NOT NULL,
+    at_ms         INTEGER NOT NULL
+) STRICT;
+
+CREATE INDEX IF NOT EXISTS idx_observations_experiment ON observations(experiment_id);
 
 CREATE TABLE IF NOT EXISTS audit_log (
     id      TEXT PRIMARY KEY,
@@ -311,6 +320,60 @@ impl ExperimentRepository for SqliteStore {
     }
 }
 
+impl ObservationRepository for SqliteStore {
+    fn save(&self, observation: &Observation) -> Result<(), RepositoryError> {
+        let conn = self.lock()?;
+        conn.execute(
+            "INSERT OR REPLACE INTO observations (id, experiment_id, note, at_ms) \
+             VALUES (?1, ?2, ?3, ?4)",
+            params![
+                id_text(observation.id().value()),
+                id_text(observation.experiment().value()),
+                observation.note(),
+                observation.recorded_at().unix_millis()
+            ],
+        )
+        .map_err(backend)?;
+        Ok(())
+    }
+
+    fn list_for_experiment(
+        &self,
+        experiment: ExperimentId,
+    ) -> Result<Vec<Observation>, RepositoryError> {
+        let conn = self.lock()?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, note, at_ms FROM observations \
+                 WHERE experiment_id = ?1 ORDER BY at_ms, id",
+            )
+            .map_err(backend)?;
+        let rows = stmt
+            .query_map(params![id_text(experiment.value())], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, i64>(2)?,
+                ))
+            })
+            .map_err(backend)?;
+
+        let mut observations = Vec::new();
+        for row in rows {
+            let (id, note, at_ms) = row.map_err(backend)?;
+            let observation = Observation::record(
+                ObservationId::new(parse_id(&id)?),
+                experiment,
+                &note,
+                Timestamp::from_unix_millis(at_ms),
+            )
+            .map_err(corrupt)?;
+            observations.push(observation);
+        }
+        Ok(observations)
+    }
+}
+
 impl AuditLog for SqliteStore {
     fn append(&self, record: &AuditRecord) -> Result<(), RepositoryError> {
         let conn = self.lock()?;
@@ -509,6 +572,50 @@ mod tests {
         assert_eq!(
             experiments.list_for_assumption(assumption).unwrap(),
             vec![loaded]
+        );
+    }
+
+    #[test]
+    fn observations_round_trip_with_their_timestamp() {
+        use endora_application::{
+            AssumptionRepository, ExperimentRepository, ObservationRepository,
+        };
+        use endora_domain::{
+            Assumption, AssumptionId, Experiment, ExperimentId, GoalId, Observation, ObservationId,
+            Timestamp,
+        };
+
+        let store = store();
+        let directions: &dyn DirectionRepository = &store;
+        let goals: &dyn GoalRepository = &store;
+        let assumptions: &dyn AssumptionRepository = &store;
+        let experiments: &dyn ExperimentRepository = &store;
+        let observations: &dyn ObservationRepository = &store;
+
+        let direction = DirectionId::new(1);
+        directions
+            .save(&Direction::new(direction, "Be healthier").unwrap())
+            .unwrap();
+        let goal = GoalId::new(2);
+        goals
+            .save(&Goal::new(goal, direction, "Run a 5k").unwrap())
+            .unwrap();
+        let assumption = AssumptionId::new(3);
+        assumptions
+            .save(&Assumption::new(assumption, goal, "Mornings are freest").unwrap())
+            .unwrap();
+        let experiment = ExperimentId::new(4);
+        experiments
+            .save(&Experiment::propose(experiment, assumption, "Try mornings").unwrap())
+            .unwrap();
+
+        let at = Timestamp::from_unix_millis(1_700_000_000_123);
+        let o = Observation::record(ObservationId::new(5), experiment, "felt good", at).unwrap();
+        observations.save(&o).unwrap();
+
+        assert_eq!(
+            observations.list_for_experiment(experiment).unwrap(),
+            vec![o]
         );
     }
 

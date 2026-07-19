@@ -13,7 +13,7 @@ mod api;
 use std::sync::Arc;
 
 use api::AppState;
-use endora_infrastructure::{RandomIdSource, SqliteStore};
+use endora_infrastructure::{RandomIdSource, SqliteStore, SystemClock};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -24,6 +24,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let state = AppState {
         store: Arc::new(SqliteStore::open(&db_path)?),
         ids: Arc::new(RandomIdSource),
+        clock: Arc::new(SystemClock),
     };
 
     println!("{}", endora_application::platform_identity());
