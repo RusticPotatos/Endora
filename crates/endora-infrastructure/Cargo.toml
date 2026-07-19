@@ -1,0 +1,17 @@
+[package]
+name = "endora-infrastructure"
+description = "Endora infrastructure layer: adapters implementing application ports, including SQLite-backed persistence (ADR 0004)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+endora-domain = { path = "../endora-domain" }
+endora-application = { path = "../endora-application" }
+rusqlite = { version = "0.39", features = ["bundled"] }
+
+[lints]
+workspace = true
