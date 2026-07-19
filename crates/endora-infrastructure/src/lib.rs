@@ -8,6 +8,8 @@
 
 #![forbid(unsafe_code)]
 
+pub mod ids;
 pub mod sqlite;
 
+pub use ids::RandomIdSource;
 pub use sqlite::SqliteStore;
