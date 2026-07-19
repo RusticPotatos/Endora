@@ -9,6 +9,13 @@ tagged release.
 
 ### Added
 
+- **Built-in self-signed HTTPS** (`ENDORA_TLS=1`): the node can serve HTTPS with a
+  self-signed certificate (persisted next to the database, so the browser warning is
+  accepted once), making the web console a **secure context** — which browsers
+  require for the microphone / voice input. No domain, CA, or reverse proxy needed;
+  set `ENDORA_TLS_SAN` to the host's LAN IP/hostname for a cleaner cert. The console
+  and [hosting guide](docs/hosting.md) explain enabling voice. (Fully local Whisper
+  STT — audio never leaving the host — is the next voice step.)
 - **The butler is grounded in your life (1.0 integration)**: each turn the butler
   is handed a `ButlerContext` — your values, your North Stars (with status, the
   value each serves, and whether it has a target yet), and what needs attention —
