@@ -7,7 +7,7 @@
 
 use core::fmt;
 
-use endora_domain::{Direction, DirectionId, Goal, GoalId};
+use endora_domain::{Direction, DirectionId, Goal, GoalId, Timestamp};
 
 /// A failure from a storage backend behind a repository port.
 ///
@@ -67,4 +67,23 @@ pub trait GoalRepository {
     /// # Errors
     /// [`RepositoryError`] if the backend fails or stored data is corrupt.
     fn list_for_direction(&self, direction: DirectionId) -> Result<Vec<Goal>, RepositoryError>;
+}
+
+/// Supplies the current time to use cases.
+///
+/// The domain never reads the clock, so time enters through this port. The node
+/// wires a real system clock; tests wire a fixed one.
+pub trait Clock {
+    /// The current instant, as a domain [`Timestamp`].
+    fn now(&self) -> Timestamp;
+}
+
+/// Supplies fresh, unique identifier values to use cases.
+///
+/// The domain never generates identifiers, so they enter through this port. Use
+/// cases wrap the raw value in the appropriate typed id. The node wires a random
+/// source; tests wire a deterministic one.
+pub trait IdSource {
+    /// Returns a fresh identifier value, unique within this store's lifetime.
+    fn new_id(&self) -> u128;
 }
