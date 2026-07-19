@@ -43,4 +43,4 @@ of an existing record and take the next number.
 | [0007](0007-async-web-stack.md) | Async runtime and web stack for the node | Accepted |
 | [0008](0008-local-model-adapter.md) | Local model adapter | Accepted |
 | [0009](0009-node-served-ui-and-single-container.md) | Node-served web UI and single-container packaging | Accepted |
-| [0010](0010-autonomy-model.md) | Autonomy model: the act/ask loop and preferences | Proposed |
+| [0010](0010-autonomy-model.md) | Autonomy model: the act/ask loop and preferences | Accepted |
