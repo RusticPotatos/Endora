@@ -21,7 +21,15 @@ services:
     volumes:
       - endora-data:/data
     # The image already defaults ENDORA_ADDR=0.0.0.0:8787 and
-    # ENDORA_DB=/data/endora.db, so no extra config is needed for dev.
+    # ENDORA_DB=/data/endora.db. Point the butler/proposer at an Ollama running
+    # on the host (host.docker.internal → the host gateway). Without a reachable
+    # model the butler simply falls back to its scripted brain, so this is safe
+    # to leave in even where no model is running.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      ENDORA_MODEL_URL: "http://host.docker.internal:11434/v1"
+      ENDORA_MODEL: "llama3.2:3b"
 
 volumes:
   endora-data:
