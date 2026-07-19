@@ -56,11 +56,13 @@ We prefer **test-driven development**. Write tests that define new behavior
 - **No new dependency without justification.** Adding a dependency (especially in
   `endora-domain`, which stays dependency-free) needs a clear rationale and, for
   load-bearing choices, an ADR.
-- **Prefer `n-1` for dependencies.** When a dependency is genuinely needed, pin
-  to one release behind the latest (e.g. latest is `0.40` → use `0.39`) rather
-  than the newest release. This avoids brand-new regressions and keeps the MSRV
-  stable. Take the latest only when a specific fix, feature, or **security**
-  patch requires it — and say so in the PR.
+- **Prefer `n-1` for dependencies (guidance).** When a dependency is genuinely
+  needed, favor one release behind the latest (e.g. latest is `0.40` → use
+  `0.39`). This is a supply-chain precaution: it avoids being the first to adopt
+  a freshly-published, potentially compromised ("poisoned") release before the
+  ecosystem has had time to catch it. It is guidance, not a hard rule — take the
+  latest when a **security** patch (or a needed fix/feature) calls for it, and
+  say so in the PR.
 - **Avoid speculative abstractions.** Build what the current slice needs.
 
 ### Code style prefs
