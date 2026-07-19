@@ -6,12 +6,14 @@
 //! and the use cases stay testable with fakes.
 
 use endora_domain::{
-    AuditId, AuditRecord, AutonomyLevel, Direction, DirectionId, Goal, GoalId, PolicyDecision,
-    ProposedProcessChange, authorize_process_change,
+    Assumption, AssumptionId, AuditId, AuditRecord, AutonomyLevel, Direction, DirectionId, Goal,
+    GoalId, PolicyDecision, ProposedProcessChange, authorize_process_change,
 };
 
 use crate::error::AppError;
-use crate::ports::{AuditLog, Clock, DirectionRepository, GoalRepository, IdSource};
+use crate::ports::{
+    AssumptionRepository, AuditLog, Clock, DirectionRepository, GoalRepository, IdSource,
+};
 
 /// Creates and stores a new [`Direction`].
 ///
@@ -61,6 +63,37 @@ pub fn list_goals(
     Ok(goals.list_for_direction(direction)?)
 }
 
+/// Creates and stores a new [`Assumption`] under an existing goal.
+///
+/// # Errors
+/// [`AppError::NotFound`] if the goal does not exist, [`AppError::Domain`] if
+/// the statement is invalid, or [`AppError::Repository`] if persistence fails.
+pub fn create_assumption(
+    goals: &impl GoalRepository,
+    assumptions: &impl AssumptionRepository,
+    ids: &impl IdSource,
+    goal: GoalId,
+    statement: &str,
+) -> Result<Assumption, AppError> {
+    if goals.get(goal)?.is_none() {
+        return Err(AppError::NotFound { entity: "goal" });
+    }
+    let assumption = Assumption::new(AssumptionId::new(ids.new_id()), goal, statement)?;
+    assumptions.save(&assumption)?;
+    Ok(assumption)
+}
+
+/// Lists the assumptions under a goal, in a stable order.
+///
+/// # Errors
+/// [`AppError::Repository`] if persistence fails.
+pub fn list_assumptions(
+    assumptions: &impl AssumptionRepository,
+    goal: GoalId,
+) -> Result<Vec<Assumption>, AppError> {
+    Ok(assumptions.list_for_goal(goal)?)
+}
+
 /// Decides whether an actor may enact a proposed process change, and records
 /// the decision to the audit trail.
 ///
@@ -100,23 +133,48 @@ fn describe(decision: PolicyDecision) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use super::{create_direction, create_goal, decide_process_change, list_goals};
+    use super::{
+        create_assumption, create_direction, create_goal, decide_process_change, list_assumptions,
+        list_goals,
+    };
     use crate::error::AppError;
     use crate::ports::{
-        AuditLog, Clock, DirectionRepository, GoalRepository, IdSource, RepositoryError,
+        AssumptionRepository, AuditLog, Clock, DirectionRepository, GoalRepository, IdSource,
+        RepositoryError,
     };
     use endora_domain::{
-        AuditRecord, AutonomyLevel, Direction, DirectionId, Goal, GoalId, PolicyDecision,
-        ProcessChangeId, ProposedProcessChange, ReflectionId, Timestamp,
+        Assumption, AuditRecord, AutonomyLevel, Direction, DirectionId, Goal, GoalId,
+        PolicyDecision, ProcessChangeId, ProposedProcessChange, ReflectionId, Timestamp,
     };
     use std::cell::{Cell, RefCell};
     use std::collections::HashMap;
 
-    /// An in-memory store implementing both repository ports, for tests only.
+    /// An in-memory store implementing the repository ports, for tests only.
     #[derive(Default)]
     struct FakeStore {
         directions: RefCell<HashMap<u128, Direction>>,
         goals: RefCell<HashMap<u128, Goal>>,
+        assumptions: RefCell<HashMap<u128, Assumption>>,
+    }
+
+    impl AssumptionRepository for FakeStore {
+        fn save(&self, assumption: &Assumption) -> Result<(), RepositoryError> {
+            self.assumptions
+                .borrow_mut()
+                .insert(assumption.id().value(), assumption.clone());
+            Ok(())
+        }
+        fn list_for_goal(&self, goal: GoalId) -> Result<Vec<Assumption>, RepositoryError> {
+            let mut found: Vec<Assumption> = self
+                .assumptions
+                .borrow()
+                .values()
+                .filter(|a| a.goal() == goal)
+                .cloned()
+                .collect();
+            found.sort_by_key(|a| a.id().value());
+            Ok(found)
+        }
     }
 
     impl DirectionRepository for FakeStore {
@@ -302,5 +360,33 @@ mod tests {
         let ids = SeqIds::default();
         let err = create_direction(&store, &ids, "   ").unwrap_err();
         assert!(matches!(err, AppError::Domain(_)));
+    }
+
+    #[test]
+    fn create_assumption_requires_an_existing_goal() {
+        let store = FakeStore::default();
+        let ids = SeqIds::default();
+        let err = create_assumption(
+            &store,
+            &store,
+            &ids,
+            GoalId::new(404),
+            "Mornings are freest",
+        )
+        .unwrap_err();
+        assert_eq!(err, AppError::NotFound { entity: "goal" });
+    }
+
+    #[test]
+    fn create_assumption_under_a_goal_then_list() {
+        let store = FakeStore::default();
+        let ids = SeqIds::default();
+        let direction = create_direction(&store, &ids, "Be healthier").unwrap();
+        let goal = create_goal(&store, &store, &ids, direction.id(), "Run a 5k").unwrap();
+
+        let a1 = create_assumption(&store, &store, &ids, goal.id(), "Mornings are freest").unwrap();
+        let a2 = create_assumption(&store, &store, &ids, goal.id(), "Rain is rare").unwrap();
+
+        assert_eq!(list_assumptions(&store, goal.id()).unwrap(), vec![a1, a2]);
     }
 }
