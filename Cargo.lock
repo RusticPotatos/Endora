@@ -252,14 +252,14 @@ checksum = "92773504d58c093f6de2459af4af33faa518c13451eb8f2b5698ed3d36e7c813"
 
 [[package]]
 name = "endora-application"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "endora-domain",
 ]
 
 [[package]]
 name = "endora-cli"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "endora-application",
  "serde_json",
@@ -268,11 +268,11 @@ dependencies = [
 
 [[package]]
 name = "endora-domain"
-version = "0.9.0"
+version = "0.10.0"
 
 [[package]]
 name = "endora-infrastructure"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "endora-application",
  "endora-domain",
@@ -284,7 +284,7 @@ dependencies = [
 
 [[package]]
 name = "endora-node"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "axum",
  "axum-server",
