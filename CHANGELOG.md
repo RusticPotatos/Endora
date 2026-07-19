@@ -9,6 +9,15 @@ tagged release.
 
 ### Added
 
+- **Artifact lifecycle (0.5)**: North Stars and Targets gain a lifecycle status —
+  **active / achieved / abandoned / archived** — plus **delete**, across the domain,
+  API, CLI, and console. Set status via `POST /v1/directions/{id}` and
+  `POST /v1/targets/{id}` (`{"status":"achieved"}`); delete via `DELETE` on the same
+  paths (refused while dependents exist — archive instead). CLI: `direction status`,
+  `direction delete`, `target status`, `target delete`. The console shows status
+  pills, per-item lifecycle actions, and hides archived items behind a toggle.
+  Existing databases gain the `status` column (defaulting to `active`) on open.
+
 - **Phone-usable console and a hosting guide** (0.4): the web console gains a
   mobile breakpoint that stacks forms and tightens the layout so the whole loop
   is usable at phone widths. New [docs/hosting.md](docs/hosting.md) covers running

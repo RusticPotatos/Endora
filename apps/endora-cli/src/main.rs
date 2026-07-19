@@ -21,6 +21,8 @@ enum Action {
     Get(String),
     /// A POST of a JSON body against the given path.
     Post(String, Value),
+    /// A DELETE against the given path.
+    Delete(String),
 }
 
 fn main() -> ExitCode {
@@ -59,6 +61,11 @@ fn route(args: &[&str]) -> Option<Action> {
             json!({ "title": title }),
         )),
         ["direction", "list"] => Some(Action::Get("/v1/directions".to_owned())),
+        ["direction", "status", id, status] => Some(Action::Post(
+            format!("/v1/directions/{id}"),
+            json!({ "status": status }),
+        )),
+        ["direction", "delete", id] => Some(Action::Delete(format!("/v1/directions/{id}"))),
         ["target", "create", direction, statement] => Some(Action::Post(
             format!("/v1/directions/{direction}/targets"),
             json!({ "statement": statement }),
@@ -66,6 +73,11 @@ fn route(args: &[&str]) -> Option<Action> {
         ["target", "list", direction] => {
             Some(Action::Get(format!("/v1/directions/{direction}/targets")))
         }
+        ["target", "status", id, status] => Some(Action::Post(
+            format!("/v1/targets/{id}"),
+            json!({ "status": status }),
+        )),
+        ["target", "delete", id] => Some(Action::Delete(format!("/v1/targets/{id}"))),
         ["assumption", "create", target, statement] => Some(Action::Post(
             format!("/v1/targets/{target}/assumptions"),
             json!({ "statement": statement }),
@@ -153,6 +165,7 @@ fn execute(action: &Action) -> Result<ExitCode, client::ClientError> {
     let (status, body) = match action {
         Action::Get(path) => client.get(path)?,
         Action::Post(path, payload) => client.post(path, payload)?,
+        Action::Delete(path) => client.delete(path)?,
     };
     println!("{}", serde_json::to_string_pretty(&body)?);
     if (200..300).contains(&status) {
@@ -175,8 +188,12 @@ fn print_usage() {
            health                                 check the node is up\n  \
            direction create <title>               create a direction\n  \
            direction list                         list your directions\n  \
+           direction status <id> <state>          set state (active|achieved|abandoned|archived)\n  \
+           direction delete <id>                  delete a direction (must have no targets)\n  \
            target create <direction-id> <statement> add a target to a direction\n  \
            target list <direction-id>               list a direction's targets\n  \
+           target status <id> <state>               set state (active|achieved|abandoned|archived)\n  \
+           target delete <id>                       delete a target (must have no assumptions)\n  \
            assumption create <target-id> <text>     add an assumption to a target\n  \
            assumption list <target-id>              list a target's assumptions\n  \
            experiment propose <assumption-id> <h> propose an experiment\n  \
@@ -245,6 +262,32 @@ mod tests {
         assert_eq!(
             route(&["target", "list", "42"]),
             Some(Action::Get("/v1/directions/42/targets".to_owned()))
+        );
+    }
+
+    #[test]
+    fn routes_lifecycle_status_and_delete() {
+        assert_eq!(
+            route(&["target", "status", "7", "achieved"]),
+            Some(Action::Post(
+                "/v1/targets/7".to_owned(),
+                json!({ "status": "achieved" })
+            ))
+        );
+        assert_eq!(
+            route(&["target", "delete", "7"]),
+            Some(Action::Delete("/v1/targets/7".to_owned()))
+        );
+        assert_eq!(
+            route(&["direction", "status", "3", "archived"]),
+            Some(Action::Post(
+                "/v1/directions/3".to_owned(),
+                json!({ "status": "archived" })
+            ))
+        );
+        assert_eq!(
+            route(&["direction", "delete", "3"]),
+            Some(Action::Delete("/v1/directions/3".to_owned()))
         );
     }
 

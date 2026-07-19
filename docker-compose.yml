@@ -1,0 +1,27 @@
+# Simplest dev deployment. Point your Docker context at the target host and
+# Compose builds + runs there — no registry, native to that host's arch:
+#
+#   docker --context nas compose up -d --build     # build + start on the NAS
+#   docker --context nas compose logs -f            # follow logs
+#   docker --context nas compose down               # stop (data volume kept)
+#
+# then open http://<host>:8787
+#
+# Note: the 0.x HTTP API is UNAUTHENTICATED. Publishing 8787 makes it reachable
+# by anything on that host's network — fine for a trusted LAN during dev, but do
+# not port-forward it to the internet. See docs/hosting.md.
+services:
+  node:
+    build: .
+    image: endora-node:latest
+    container_name: endora-node
+    restart: unless-stopped
+    ports:
+      - "8787:8787"
+    volumes:
+      - endora-data:/data
+    # The image already defaults ENDORA_ADDR=0.0.0.0:8787 and
+    # ENDORA_DB=/data/endora.db, so no extra config is needed for dev.
+
+volumes:
+  endora-data:

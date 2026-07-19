@@ -15,21 +15,23 @@ use endora_application::{
 };
 use endora_domain::{
     ApprovalState, Assumption, AssumptionId, AuditId, AuditRecord, Direction, DirectionId,
-    Experiment, ExperimentId, ExperimentStatus, Observation, ObservationId, ProcessChangeId,
-    ProposedProcessChange, Reflection, ReflectionId, Target, TargetId, Timestamp,
+    Experiment, ExperimentId, ExperimentStatus, LifecycleStatus, Observation, ObservationId,
+    ProcessChangeId, ProposedProcessChange, Reflection, ReflectionId, Target, TargetId, Timestamp,
 };
 use rusqlite::{Connection, OptionalExtension, params};
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS directions (
-    id    TEXT PRIMARY KEY,
-    title TEXT NOT NULL
+    id     TEXT PRIMARY KEY,
+    title  TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'active'
 ) STRICT;
 
 CREATE TABLE IF NOT EXISTS targets (
     id           TEXT PRIMARY KEY,
     direction_id TEXT NOT NULL REFERENCES directions(id),
-    statement    TEXT NOT NULL
+    statement    TEXT NOT NULL,
+    status       TEXT NOT NULL DEFAULT 'active'
 ) STRICT;
 
 CREATE INDEX IF NOT EXISTS idx_targets_direction ON targets(direction_id);
@@ -136,6 +138,15 @@ impl SqliteStore {
             "CREATE INDEX IF NOT EXISTS idx_experiments_review ON experiments(review_by_ms);",
         )
         .map_err(backend)?;
+        // Lifecycle status on North Stars and Targets; existing rows default to
+        // 'active'.
+        ensure_column(
+            &conn,
+            "directions",
+            "status",
+            "TEXT NOT NULL DEFAULT 'active'",
+        )?;
+        ensure_column(&conn, "targets", "status", "TEXT NOT NULL DEFAULT 'active'")?;
         Ok(Self {
             conn: Mutex::new(conn),
         })
@@ -152,8 +163,12 @@ impl DirectionRepository for SqliteStore {
     fn save(&self, direction: &Direction) -> Result<(), RepositoryError> {
         let conn = self.lock()?;
         conn.execute(
-            "INSERT OR REPLACE INTO directions (id, title) VALUES (?1, ?2)",
-            params![id_text(direction.id().value()), direction.title()],
+            "INSERT OR REPLACE INTO directions (id, title, status) VALUES (?1, ?2, ?3)",
+            params![
+                id_text(direction.id().value()),
+                direction.title(),
+                direction.status().name()
+            ],
         )
         .map_err(backend)?;
         Ok(())
@@ -161,18 +176,19 @@ impl DirectionRepository for SqliteStore {
 
     fn get(&self, id: DirectionId) -> Result<Option<Direction>, RepositoryError> {
         let conn = self.lock()?;
-        let title: Option<String> = conn
+        let row: Option<(String, String)> = conn
             .query_row(
-                "SELECT title FROM directions WHERE id = ?1",
+                "SELECT title, status FROM directions WHERE id = ?1",
                 params![id_text(id.value())],
-                |row| row.get(0),
+                |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .optional()
             .map_err(backend)?;
-        let Some(title) = title else {
+        let Some((title, status)) = row else {
             return Ok(None);
         };
-        let direction = Direction::new(id, &title).map_err(corrupt)?;
+        let direction =
+            Direction::from_parts(id, &title, parse_lifecycle(&status)?).map_err(corrupt)?;
         Ok(Some(direction))
     }
 
@@ -180,17 +196,29 @@ impl DirectionRepository for SqliteStore {
         let conn = self.lock()?;
         all_directions(&conn)
     }
+
+    fn delete(&self, id: DirectionId) -> Result<(), RepositoryError> {
+        let conn = self.lock()?;
+        conn.execute(
+            "DELETE FROM directions WHERE id = ?1",
+            params![id_text(id.value())],
+        )
+        .map_err(backend)?;
+        Ok(())
+    }
 }
 
 impl TargetRepository for SqliteStore {
     fn save(&self, target: &Target) -> Result<(), RepositoryError> {
         let conn = self.lock()?;
         conn.execute(
-            "INSERT OR REPLACE INTO targets (id, direction_id, statement) VALUES (?1, ?2, ?3)",
+            "INSERT OR REPLACE INTO targets (id, direction_id, statement, status) \
+             VALUES (?1, ?2, ?3, ?4)",
             params![
                 id_text(target.id().value()),
                 id_text(target.direction().value()),
-                target.statement()
+                target.statement(),
+                target.status().name()
             ],
         )
         .map_err(backend)?;
@@ -199,41 +227,63 @@ impl TargetRepository for SqliteStore {
 
     fn get(&self, id: TargetId) -> Result<Option<Target>, RepositoryError> {
         let conn = self.lock()?;
-        let row: Option<(String, String)> = conn
+        let row: Option<(String, String, String)> = conn
             .query_row(
-                "SELECT direction_id, statement FROM targets WHERE id = ?1",
+                "SELECT direction_id, statement, status FROM targets WHERE id = ?1",
                 params![id_text(id.value())],
-                |row| Ok((row.get(0)?, row.get(1)?)),
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
             .optional()
             .map_err(backend)?;
-        let Some((direction_id, statement)) = row else {
+        let Some((direction_id, statement, status)) = row else {
             return Ok(None);
         };
         let direction = DirectionId::new(parse_id(&direction_id)?);
-        let target = Target::new(id, direction, &statement).map_err(corrupt)?;
+        let target = Target::from_parts(id, direction, &statement, parse_lifecycle(&status)?)
+            .map_err(corrupt)?;
         Ok(Some(target))
     }
 
     fn list_for_direction(&self, direction: DirectionId) -> Result<Vec<Target>, RepositoryError> {
         let conn = self.lock()?;
         let mut stmt = conn
-            .prepare("SELECT id, statement FROM targets WHERE direction_id = ?1 ORDER BY id")
+            .prepare(
+                "SELECT id, statement, status FROM targets WHERE direction_id = ?1 ORDER BY id",
+            )
             .map_err(backend)?;
         let rows = stmt
             .query_map(params![id_text(direction.value())], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
             })
             .map_err(backend)?;
 
         let mut targets = Vec::new();
         for row in rows {
-            let (id_text, statement) = row.map_err(backend)?;
-            let target = Target::new(TargetId::new(parse_id(&id_text)?), direction, &statement)
-                .map_err(corrupt)?;
+            let (id_text, statement, status) = row.map_err(backend)?;
+            let target = Target::from_parts(
+                TargetId::new(parse_id(&id_text)?),
+                direction,
+                &statement,
+                parse_lifecycle(&status)?,
+            )
+            .map_err(corrupt)?;
             targets.push(target);
         }
         Ok(targets)
+    }
+
+    fn delete(&self, id: TargetId) -> Result<(), RepositoryError> {
+        let conn = self.lock()?;
+        conn.execute(
+            "DELETE FROM targets WHERE id = ?1",
+            params![id_text(id.value())],
+        )
+        .map_err(backend)?;
+        Ok(())
     }
 }
 
@@ -751,22 +801,7 @@ fn parse_id(text: &str) -> Result<u128, RepositoryError> {
 
 fn all_directions(conn: &Connection) -> Result<Vec<Direction>, RepositoryError> {
     let mut stmt = conn
-        .prepare("SELECT id, title FROM directions ORDER BY id")
-        .map_err(backend)?;
-    let rows = stmt
-        .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
-        .map_err(backend)?;
-    let mut out = Vec::new();
-    for row in rows {
-        let (id, title) = row.map_err(backend)?;
-        out.push(Direction::new(DirectionId::new(parse_id(&id)?), &title).map_err(corrupt)?);
-    }
-    Ok(out)
-}
-
-fn all_targets(conn: &Connection) -> Result<Vec<Target>, RepositoryError> {
-    let mut stmt = conn
-        .prepare("SELECT id, direction_id, statement FROM targets ORDER BY id")
+        .prepare("SELECT id, title, status FROM directions ORDER BY id")
         .map_err(backend)?;
     let rows = stmt
         .query_map([], |r| {
@@ -779,11 +814,41 @@ fn all_targets(conn: &Connection) -> Result<Vec<Target>, RepositoryError> {
         .map_err(backend)?;
     let mut out = Vec::new();
     for row in rows {
-        let (id, direction, statement) = row.map_err(backend)?;
-        let target = Target::new(
+        let (id, title, status) = row.map_err(backend)?;
+        out.push(
+            Direction::from_parts(
+                DirectionId::new(parse_id(&id)?),
+                &title,
+                parse_lifecycle(&status)?,
+            )
+            .map_err(corrupt)?,
+        );
+    }
+    Ok(out)
+}
+
+fn all_targets(conn: &Connection) -> Result<Vec<Target>, RepositoryError> {
+    let mut stmt = conn
+        .prepare("SELECT id, direction_id, statement, status FROM targets ORDER BY id")
+        .map_err(backend)?;
+    let rows = stmt
+        .query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, String>(3)?,
+            ))
+        })
+        .map_err(backend)?;
+    let mut out = Vec::new();
+    for row in rows {
+        let (id, direction, statement, status) = row.map_err(backend)?;
+        let target = Target::from_parts(
             TargetId::new(parse_id(&id)?),
             DirectionId::new(parse_id(&direction)?),
             &statement,
+            parse_lifecycle(&status)?,
         )
         .map_err(corrupt)?;
         out.push(target);
@@ -1018,6 +1083,12 @@ fn evidence_for(
 fn parse_status(text: &str) -> Result<ExperimentStatus, RepositoryError> {
     ExperimentStatus::from_name(text)
         .ok_or_else(|| RepositoryError::Corrupt(format!("unknown experiment status {text:?}")))
+}
+
+/// Parses a stored lifecycle status, or reports corruption.
+fn parse_lifecycle(text: &str) -> Result<LifecycleStatus, RepositoryError> {
+    LifecycleStatus::from_name(text)
+        .ok_or_else(|| RepositoryError::Corrupt(format!("unknown lifecycle status {text:?}")))
 }
 
 /// Parses a stored approval state, or reports corruption.
@@ -1352,6 +1423,44 @@ mod tests {
         let found = assumptions.list_for_target(TargetId::new(2)).unwrap();
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].id(), AssumptionId::new(3));
+    }
+
+    #[test]
+    fn opening_a_pre_lifecycle_database_defaults_status_to_active() {
+        use endora_application::TargetRepository;
+        use endora_domain::{DirectionId, LifecycleStatus, TargetId};
+        use rusqlite::Connection;
+
+        // A database created before the lifecycle `status` column existed.
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE directions (id TEXT PRIMARY KEY, title TEXT NOT NULL) STRICT;
+             CREATE TABLE targets (
+                id           TEXT PRIMARY KEY,
+                direction_id TEXT NOT NULL REFERENCES directions(id),
+                statement    TEXT NOT NULL
+             ) STRICT;
+             INSERT INTO directions VALUES ('1', 'Be healthier');
+             INSERT INTO targets VALUES ('2', '1', 'Run a 5k');",
+        )
+        .unwrap();
+
+        // Opening adds the column and reads existing rows back as active.
+        let store = SqliteStore::from_connection(conn).unwrap();
+        let directions: &dyn DirectionRepository = &store;
+        assert_eq!(
+            directions
+                .get(DirectionId::new(1))
+                .unwrap()
+                .unwrap()
+                .status(),
+            LifecycleStatus::Active
+        );
+        let targets: &dyn TargetRepository = &store;
+        assert_eq!(
+            targets.get(TargetId::new(2)).unwrap().unwrap().status(),
+            LifecycleStatus::Active
+        );
     }
 
     #[test]
