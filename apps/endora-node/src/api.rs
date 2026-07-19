@@ -9,14 +9,15 @@ use std::sync::Arc;
 
 use axum::Json;
 use axum::Router;
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use endora_application::{AppError, RepositoryError, usecases};
 use endora_domain::{
-    Assumption, AssumptionId, Direction, DirectionId, Experiment, ExperimentId, Goal, GoalId,
-    Observation, ObservationId, ProcessChangeId, ProposedProcessChange, Reflection, ReflectionId,
+    Assumption, AssumptionId, AuditRecord, AutonomyLevel, Direction, DirectionId, Experiment,
+    ExperimentId, Goal, GoalId, Observation, ObservationId, PolicyDecision, ProcessChangeId,
+    ProposedProcessChange, Reflection, ReflectionId,
 };
 use endora_infrastructure::{RandomIdSource, SqliteStore, SystemClock};
 use serde::{Deserialize, Serialize};
@@ -72,6 +73,11 @@ pub fn app(state: AppState) -> Router {
             "/v1/process-changes/{id}/reject",
             post(reject_process_change),
         )
+        .route(
+            "/v1/process-changes/{id}/decision",
+            post(decide_process_change),
+        )
+        .route("/v1/audit", get(audit))
         .with_state(state)
 }
 
@@ -499,6 +505,85 @@ async fn reject_process_change(
     Ok(Json(ProcessChangeResponse::from(&change)))
 }
 
+#[derive(Deserialize, Default)]
+struct DecisionRequest {
+    /// The actor's autonomy level; defaults to the most conservative (observe).
+    #[serde(default)]
+    actor: Option<String>,
+}
+
+async fn decide_process_change(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(req): Json<DecisionRequest>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let change_id = parse_process_change_id(&id)?;
+    let actor = match req.actor.as_deref() {
+        None => AutonomyLevel::Observe,
+        Some(name) => AutonomyLevel::from_name(name).ok_or_else(|| {
+            ApiError(AppError::BadRequest {
+                message: format!("unknown actor level {name:?}"),
+            })
+        })?,
+    };
+    let store = state.store.clone();
+    let ids = state.ids.clone();
+    let clock = state.clock.clone();
+    let decision = blocking(move || {
+        usecases::decide_stored_process_change(
+            store.as_ref(),
+            ids.as_ref(),
+            clock.as_ref(),
+            store.as_ref(),
+            change_id,
+            actor,
+        )
+    })
+    .await?;
+    Ok(Json(decision_json(decision)))
+}
+
+/// Renders a policy decision as JSON.
+fn decision_json(decision: PolicyDecision) -> serde_json::Value {
+    match decision {
+        PolicyDecision::Permit => json!({ "decision": "permit" }),
+        PolicyDecision::RequireHumanApproval => json!({ "decision": "require_human_approval" }),
+        PolicyDecision::Deny { reason } => json!({ "decision": "deny", "reason": reason }),
+    }
+}
+
+#[derive(Deserialize)]
+struct AuditQuery {
+    limit: Option<usize>,
+}
+
+#[derive(Serialize)]
+struct AuditResponse {
+    id: String,
+    at_ms: i64,
+    summary: String,
+}
+
+impl From<&AuditRecord> for AuditResponse {
+    fn from(r: &AuditRecord) -> Self {
+        Self {
+            id: r.id().value().to_string(),
+            at_ms: r.at().unix_millis(),
+            summary: r.summary().to_owned(),
+        }
+    }
+}
+
+async fn audit(
+    State(state): State<AppState>,
+    Query(query): Query<AuditQuery>,
+) -> Result<Json<Vec<AuditResponse>>, ApiError> {
+    let limit = query.limit.unwrap_or(50);
+    let store = state.store.clone();
+    let records = blocking(move || usecases::recent_audit(store.as_ref(), limit)).await?;
+    Ok(Json(records.iter().map(AuditResponse::from).collect()))
+}
+
 /// Parses a path id into a [`ReflectionId`]; a malformed id names no reflection.
 fn parse_reflection_id(id: &str) -> Result<ReflectionId, ApiError> {
     id.parse::<u128>().map(ReflectionId::new).map_err(|_| {
@@ -589,6 +674,7 @@ impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let (status, message) = match &self.0 {
             AppError::Domain(e) => (StatusCode::BAD_REQUEST, e.to_string()),
+            AppError::BadRequest { message } => (StatusCode::BAD_REQUEST, message.clone()),
             AppError::NotFound { .. } => (StatusCode::NOT_FOUND, self.0.to_string()),
             // Don't leak backend detail to clients.
             AppError::Repository(_) => (
@@ -978,6 +1064,91 @@ mod tests {
         let res = app
             .clone()
             .oneshot(post(&format!("/v1/process-changes/{cid}/approve"), ""))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn policy_decision_flow_is_audited() {
+        let app = app(test_state());
+        let (gid, oid) = seed_chain(&app).await;
+        let rid = json_body(
+            app.clone()
+                .oneshot(post(
+                    &format!("/v1/goals/{gid}/reflections"),
+                    &format!(r#"{{"summary":"worked","evidence":["{oid}"]}}"#),
+                ))
+                .await
+                .unwrap(),
+        )
+        .await["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let cid = json_body(
+            app.clone()
+                .oneshot(post(
+                    &format!("/v1/reflections/{rid}/process-changes"),
+                    r#"{"description":"Default to mornings"}"#,
+                ))
+                .await
+                .unwrap(),
+        )
+        .await["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+
+        // Unapproved: policy requires human approval, and it's audited.
+        let res = app
+            .clone()
+            .oneshot(post(
+                &format!("/v1/process-changes/{cid}/decision"),
+                r#"{"actor":"act_within_policy"}"#,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        assert_eq!(json_body(res).await["decision"], "require_human_approval");
+
+        // Approve, then decide again: now permitted.
+        app.clone()
+            .oneshot(post(&format!("/v1/process-changes/{cid}/approve"), ""))
+            .await
+            .unwrap();
+        let res = app
+            .clone()
+            .oneshot(post(
+                &format!("/v1/process-changes/{cid}/decision"),
+                r#"{"actor":"act_within_policy"}"#,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(json_body(res).await["decision"], "permit");
+
+        // Both decisions are on the audit trail.
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/audit")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        assert_eq!(json_body(res).await.as_array().unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn an_unknown_actor_level_is_400() {
+        let res = app(test_state())
+            .oneshot(post(
+                "/v1/process-changes/1/decision",
+                r#"{"actor":"emperor"}"#,
+            ))
             .await
             .unwrap();
         assert_eq!(res.status(), StatusCode::BAD_REQUEST);
