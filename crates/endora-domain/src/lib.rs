@@ -23,6 +23,8 @@
 //!   [`ExperimentStatus`], [`Observation`].
 //! - [`reflection`] — the Reflection context: [`Reflection`],
 //!   [`ProposedProcessChange`], [`ApprovalState`].
+//! - [`policy`] — the Policy & Consent boundary: deterministic authorization
+//!   ([`PolicyDecision`], [`authorize_process_change`]).
 //! - [`ids`] — typed identifiers and [`Timestamp`], both supplied by callers.
 //! - [`error`] — [`DomainError`].
 //!
@@ -38,6 +40,7 @@ pub mod error;
 pub mod experiments;
 pub mod goals;
 pub mod ids;
+pub mod policy;
 pub mod reflection;
 
 pub use autonomy::AutonomyLevel;
@@ -48,4 +51,5 @@ pub use ids::{
     AssumptionId, DirectionId, ExperimentId, GoalId, ObservationId, ProcessChangeId, ReflectionId,
     Timestamp,
 };
+pub use policy::{PolicyDecision, authorize_process_change};
 pub use reflection::{ApprovalState, ProposedProcessChange, Reflection};
