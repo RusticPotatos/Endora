@@ -4,7 +4,7 @@ use core::fmt;
 
 use endora_domain::DomainError;
 
-use crate::ports::RepositoryError;
+use crate::ports::{ProposalError, RepositoryError};
 
 /// An error from running a use case.
 ///
@@ -29,6 +29,11 @@ pub enum AppError {
         /// A human-readable explanation.
         message: String,
     },
+    /// A reasoning model was needed but unavailable or unusable.
+    Model {
+        /// A human-readable explanation.
+        message: String,
+    },
 }
 
 impl fmt::Display for AppError {
@@ -38,6 +43,7 @@ impl fmt::Display for AppError {
             Self::Repository(e) => write!(f, "{e}"),
             Self::NotFound { entity } => write!(f, "{entity} not found"),
             Self::BadRequest { message } => write!(f, "{message}"),
+            Self::Model { message } => write!(f, "{message}"),
         }
     }
 }
@@ -53,5 +59,13 @@ impl From<DomainError> for AppError {
 impl From<RepositoryError> for AppError {
     fn from(error: RepositoryError) -> Self {
         Self::Repository(error)
+    }
+}
+
+impl From<ProposalError> for AppError {
+    fn from(error: ProposalError) -> Self {
+        Self::Model {
+            message: error.to_string(),
+        }
     }
 }

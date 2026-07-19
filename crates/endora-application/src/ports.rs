@@ -137,6 +137,45 @@ pub trait ObservationRepository {
     ) -> Result<Vec<Observation>, RepositoryError>;
 }
 
+/// A failure from a reasoning model behind the [`Proposer`] port.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProposalError {
+    /// The model could not be reached, or its response could not be understood.
+    Unavailable(String),
+    /// The model returned an empty proposal.
+    Empty,
+}
+
+impl fmt::Display for ProposalError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Unavailable(msg) => write!(f, "model unavailable: {msg}"),
+            Self::Empty => write!(f, "model returned an empty proposal"),
+        }
+    }
+}
+
+impl core::error::Error for ProposalError {}
+
+/// Produces proposals from a reasoning model (see
+/// `docs/adr/0008-local-model-adapter.md`).
+///
+/// A proposer is a reasoning component, not an authority: whatever it returns is
+/// only *input* to the deterministic policy boundary. The domain never depends
+/// on it; infrastructure implements it (e.g. a local, OpenAI-compatible model).
+pub trait Proposer {
+    /// Proposes a one-line process-change description for a reflection, given
+    /// its summary and how many observations it cites.
+    ///
+    /// # Errors
+    /// [`ProposalError`] if the model is unreachable or returns nothing usable.
+    fn propose_process_change(
+        &self,
+        reflection_summary: &str,
+        evidence_count: usize,
+    ) -> Result<String, ProposalError>;
+}
+
 /// Supplies the current time to use cases.
 ///
 /// The domain never reads the clock, so time enters through this port. The node
