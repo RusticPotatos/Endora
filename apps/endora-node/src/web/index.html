@@ -187,17 +187,20 @@ function statusPill(item) {
     ? ` <span class="pill ${item.status}">${esc(item.status)}</span>` : "";
 }
 
-// The lifecycle action row for a North Star ("direction") or "target": the
-// transitions that aren't the current state, plus a guarded delete.
+// The lifecycle control for a North Star ("direction") or "target": one Status
+// dropdown (pick a state to transition to — clearer than a row of look-alike
+// verb buttons), with Delete set apart as the one destructive action.
 function lifecycleRow(noun, item) {
   const s = item.status || "active";
-  const btn = [];
-  if (s !== "achieved") btn.push(`<button data-act="status:${noun}:${item.id}:achieved">Achieve</button>`);
-  if (s !== "abandoned") btn.push(`<button data-act="status:${noun}:${item.id}:abandoned">Abandon</button>`);
-  if (s !== "archived") btn.push(`<button data-act="status:${noun}:${item.id}:archived">Archive</button>`);
-  if (s !== "active") btn.push(`<button data-act="status:${noun}:${item.id}:active">Reopen</button>`);
-  btn.push(`<button class="danger" data-act="delete:${noun}:${item.id}">Delete</button>`);
-  return `<div class="row" style="gap:6px; flex-wrap:wrap; margin-top:8px;">${btn.join("")}</div>`;
+  const opt = (v, label) => `<option value="${v}" ${s === v ? "selected" : ""}>${label}</option>`;
+  return `<div class="row" style="gap:8px; margin-top:8px; align-items:center;">
+    <label class="sub" for="st-${noun}-${item.id}">Status</label>
+    <select id="st-${noun}-${item.id}" data-change="status:${noun}:${item.id}" style="width:auto;">
+      ${opt("active", "Active")}${opt("achieved", "Achieved")}${opt("abandoned", "Abandoned")}${opt("archived", "Archived")}
+    </select>
+    <span class="grow"></span>
+    <button class="ghost danger" data-act="delete:${noun}:${item.id}" title="Delete permanently">🗑 Delete</button>
+  </div>`;
 }
 
 // A toggle shown when there are archived items to reveal/hide.
@@ -623,6 +626,13 @@ async function dispatch(act) {
 document.body.addEventListener("click", (ev) => {
   const t = ev.target.closest("[data-act]");
   if (t) { ev.stopPropagation(); dispatch(t.getAttribute("data-act")); }
+});
+
+// A `<select data-change="verb:noun:id">` applies the chosen value on change,
+// dispatching `verb:noun:id:<value>` (used for the lifecycle Status dropdown).
+document.body.addEventListener("change", (ev) => {
+  const sel = ev.target.closest("select[data-change]");
+  if (sel) dispatch(sel.getAttribute("data-change") + ":" + sel.value);
 });
 
 // ---- boot -----------------------------------------------------------------
