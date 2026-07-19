@@ -9,7 +9,7 @@ use core::fmt;
 
 use endora_domain::{
     Assumption, AssumptionId, AuditRecord, Direction, DirectionId, Experiment, ExperimentId, Goal,
-    GoalId, Timestamp,
+    GoalId, Observation, Timestamp,
 };
 
 /// A failure from a storage backend behind a repository port.
@@ -116,6 +116,24 @@ pub trait ExperimentRepository {
         &self,
         assumption: AssumptionId,
     ) -> Result<Vec<Experiment>, RepositoryError>;
+}
+
+/// Persists and retrieves [`Observation`]s.
+pub trait ObservationRepository {
+    /// Inserts an observation, or replaces the existing one with the same id.
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if the backend fails.
+    fn save(&self, observation: &Observation) -> Result<(), RepositoryError>;
+
+    /// Lists the observations recorded for an experiment, oldest first.
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if the backend fails or stored data is corrupt.
+    fn list_for_experiment(
+        &self,
+        experiment: ExperimentId,
+    ) -> Result<Vec<Observation>, RepositoryError>;
 }
 
 /// Supplies the current time to use cases.

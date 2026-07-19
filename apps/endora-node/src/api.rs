@@ -16,8 +16,9 @@ use axum::routing::{get, post};
 use endora_application::{AppError, RepositoryError, usecases};
 use endora_domain::{
     Assumption, AssumptionId, Direction, DirectionId, Experiment, ExperimentId, Goal, GoalId,
+    Observation,
 };
-use endora_infrastructure::{RandomIdSource, SqliteStore};
+use endora_infrastructure::{RandomIdSource, SqliteStore, SystemClock};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
@@ -28,6 +29,8 @@ pub struct AppState {
     pub store: Arc<SqliteStore>,
     /// The identifier source.
     pub ids: Arc<RandomIdSource>,
+    /// The system clock.
+    pub clock: Arc<SystemClock>,
 }
 
 /// Builds the router for the node's HTTP API.
@@ -49,6 +52,10 @@ pub fn app(state: AppState) -> Router {
         )
         .route("/v1/experiments/{id}/start", post(start_experiment))
         .route("/v1/experiments/{id}/conclude", post(conclude_experiment))
+        .route(
+            "/v1/experiments/{id}/observations",
+            post(record_observation).get(list_observations),
+        )
         .with_state(state)
 }
 
@@ -276,6 +283,66 @@ async fn conclude_experiment(
     Ok(Json(ExperimentResponse::from(&experiment)))
 }
 
+#[derive(Deserialize)]
+struct RecordObservationRequest {
+    note: String,
+}
+
+#[derive(Serialize)]
+struct ObservationResponse {
+    id: String,
+    experiment_id: String,
+    note: String,
+    recorded_at_ms: i64,
+}
+
+impl From<&Observation> for ObservationResponse {
+    fn from(o: &Observation) -> Self {
+        Self {
+            id: o.id().value().to_string(),
+            experiment_id: o.experiment().value().to_string(),
+            note: o.note().to_owned(),
+            recorded_at_ms: o.recorded_at().unix_millis(),
+        }
+    }
+}
+
+async fn record_observation(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(req): Json<RecordObservationRequest>,
+) -> Result<Json<ObservationResponse>, ApiError> {
+    let experiment = parse_experiment_id(&id)?;
+    let store = state.store.clone();
+    let ids = state.ids.clone();
+    let clock = state.clock.clone();
+    let observation = blocking(move || {
+        usecases::record_observation(
+            store.as_ref(),
+            store.as_ref(),
+            ids.as_ref(),
+            clock.as_ref(),
+            experiment,
+            &req.note,
+        )
+    })
+    .await?;
+    Ok(Json(ObservationResponse::from(&observation)))
+}
+
+async fn list_observations(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<Vec<ObservationResponse>>, ApiError> {
+    let experiment = parse_experiment_id(&id)?;
+    let store = state.store.clone();
+    let observations =
+        blocking(move || usecases::list_observations(store.as_ref(), experiment)).await?;
+    Ok(Json(
+        observations.iter().map(ObservationResponse::from).collect(),
+    ))
+}
+
 /// Parses a path id into a [`DirectionId`]; a malformed id can name no
 /// direction, so it is reported as not found.
 fn parse_direction_id(id: &str) -> Result<DirectionId, ApiError> {
@@ -350,7 +417,7 @@ mod tests {
     use super::{AppState, app};
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
-    use endora_infrastructure::{RandomIdSource, SqliteStore};
+    use endora_infrastructure::{RandomIdSource, SqliteStore, SystemClock};
     use http_body_util::BodyExt;
     use std::sync::Arc;
     use tower::ServiceExt; // for `oneshot`
@@ -359,6 +426,7 @@ mod tests {
         AppState {
             store: Arc::new(SqliteStore::open_in_memory().unwrap()),
             ids: Arc::new(RandomIdSource),
+            clock: Arc::new(SystemClock),
         }
     }
 
@@ -529,6 +597,92 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn observation_recorded_against_an_experiment() {
+        let app = app(test_state());
+        let did = json_body(
+            app.clone()
+                .oneshot(post("/v1/directions", r#"{"title":"Be healthier"}"#))
+                .await
+                .unwrap(),
+        )
+        .await["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let gid = json_body(
+            app.clone()
+                .oneshot(post(
+                    &format!("/v1/directions/{did}/goals"),
+                    r#"{"statement":"Run a 5k"}"#,
+                ))
+                .await
+                .unwrap(),
+        )
+        .await["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let aid = json_body(
+            app.clone()
+                .oneshot(post(
+                    &format!("/v1/goals/{gid}/assumptions"),
+                    r#"{"statement":"Mornings"}"#,
+                ))
+                .await
+                .unwrap(),
+        )
+        .await["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let eid = json_body(
+            app.clone()
+                .oneshot(post(
+                    &format!("/v1/assumptions/{aid}/experiments"),
+                    r#"{"hypothesis":"Try mornings"}"#,
+                ))
+                .await
+                .unwrap(),
+        )
+        .await["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+
+        let obs_uri = format!("/v1/experiments/{eid}/observations");
+        let res = app
+            .clone()
+            .oneshot(post(&obs_uri, r#"{"note":"felt good"}"#))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let created = json_body(res).await;
+        assert_eq!(created["note"], "felt good");
+        assert!(created["recorded_at_ms"].as_i64().unwrap() > 0);
+
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(&obs_uri)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(json_body(res).await.as_array().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn observation_for_missing_experiment_is_404() {
+        let res = app(test_state())
+            .oneshot(post("/v1/experiments/999/observations", r#"{"note":"x"}"#))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]
