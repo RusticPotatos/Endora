@@ -1,0 +1,412 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Endora</title>
+<style>
+  :root {
+    --bg: #f7f7f8; --card: #fff; --ink: #1a1a1f; --muted: #6b6b76;
+    --line: #e3e3e8; --accent: #3a5bd9; --ok: #1c7c46; --warn: #9a6b00; --bad: #b02a2a;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #16161a; --card: #202027; --ink: #ececf1; --muted: #9a9aa6;
+      --line: #2e2e37; --accent: #7f96f0; --ok: #4bd08a; --warn: #e0b04a; --bad: #f0776f;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  }
+  header {
+    display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+    padding: 14px 20px; border-bottom: 1px solid var(--line); background: var(--card);
+  }
+  header h1 { font-size: 17px; margin: 0; font-weight: 650; }
+  header .spacer { flex: 1; }
+  main { max-width: 900px; margin: 0 auto; padding: 20px; }
+  .crumbs { color: var(--muted); font-size: 13px; margin-bottom: 14px; }
+  .crumbs a { color: var(--accent); cursor: pointer; text-decoration: none; }
+  .crumbs a:hover { text-decoration: underline; }
+  h2 { font-size: 15px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin: 22px 0 10px; }
+  .card {
+    background: var(--card); border: 1px solid var(--line); border-radius: 10px;
+    padding: 12px 14px; margin-bottom: 8px;
+  }
+  .card.click { cursor: pointer; }
+  .card.click:hover { border-color: var(--accent); }
+  .row { display: flex; align-items: center; gap: 10px; }
+  .grow { flex: 1; min-width: 0; }
+  .title { font-weight: 550; }
+  .sub { color: var(--muted); font-size: 13px; }
+  .pill { font-size: 12px; padding: 2px 9px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); }
+  .pill.proposed, .pill.pending { color: var(--warn); border-color: var(--warn); }
+  .pill.running { color: var(--accent); border-color: var(--accent); }
+  .pill.concluded, .pill.approved { color: var(--ok); border-color: var(--ok); }
+  .pill.rejected { color: var(--bad); border-color: var(--bad); }
+  input, textarea, select {
+    font: inherit; color: var(--ink); background: var(--bg);
+    border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; width: 100%;
+  }
+  textarea { min-height: 54px; resize: vertical; }
+  button {
+    font: inherit; cursor: pointer; border: 1px solid var(--line); background: var(--card);
+    color: var(--ink); border-radius: 8px; padding: 7px 13px; white-space: nowrap;
+  }
+  button:hover { border-color: var(--accent); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.ghost { background: transparent; }
+  button.danger { color: var(--bad); border-color: var(--bad); }
+  button:disabled { opacity: .5; cursor: default; }
+  .form { display: flex; gap: 8px; margin: 8px 0 4px; align-items: flex-start; }
+  .stack { display: flex; flex-direction: column; gap: 6px; }
+  .empty { color: var(--muted); font-style: italic; padding: 6px 2px; }
+  .msg { padding: 10px 14px; border-radius: 8px; margin-bottom: 12px; display: none; }
+  .msg.show { display: block; }
+  .msg.err { background: color-mix(in srgb, var(--bad) 15%, transparent); color: var(--bad); border: 1px solid var(--bad); }
+  .msg.ok { background: color-mix(in srgb, var(--ok) 15%, transparent); color: var(--ok); border: 1px solid var(--ok); }
+  .evi { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); }
+  .evi input { width: auto; }
+  code.id { font-size: 12px; color: var(--muted); }
+  .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; }
+</style>
+</head>
+<body>
+<header>
+  <h1 id="brand">Endora</h1>
+  <span class="spacer"></span>
+  <button class="ghost" data-act="go:audit">Audit</button>
+  <button class="ghost" data-act="export">Export</button>
+  <button class="ghost danger" data-act="purge">Purge</button>
+</header>
+<main>
+  <div id="msg" class="msg"></div>
+  <div id="app"></div>
+</main>
+
+<script>
+"use strict";
+
+let DB = null;                 // latest /v1/export snapshot
+let NAV = { v: "home" };       // current view
+
+const app = document.getElementById("app");
+const msgEl = document.getElementById("msg");
+
+// ---- tiny helpers ---------------------------------------------------------
+const esc = (s) => String(s).replace(/[&<>"']/g, (c) =>
+  ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const byId = (list, id) => (list || []).find((x) => x.id === id);
+const shortId = (id) => id.slice(0, 6) + "…";
+
+function flash(text, kind) {
+  msgEl.textContent = text;
+  msgEl.className = "msg show " + (kind || "ok");
+  if (kind === "ok") setTimeout(() => (msgEl.className = "msg"), 2500);
+}
+function clearMsg() { msgEl.className = "msg"; }
+
+async function api(method, path, body) {
+  const res = await fetch(path, {
+    method,
+    headers: body !== undefined ? { "content-type": "application/json" } : {},
+    body: body !== undefined ? JSON.stringify(body) : undefined,
+  });
+  let data = null;
+  try { data = await res.json(); } catch (_) {}
+  if (!res.ok) throw new Error((data && data.error) || ("HTTP " + res.status));
+  return data;
+}
+
+async function reload() {
+  DB = await api("GET", "/v1/export");
+  render();
+}
+
+function go(v, id) { NAV = { v, id }; clearMsg(); render(); }
+
+// Observations reachable under a goal (goal → assumptions → experiments → obs).
+function observationsForGoal(goalId) {
+  const assumptionIds = DB.assumptions.filter((a) => a.goal_id === goalId).map((a) => a.id);
+  const experimentIds = DB.experiments.filter((e) => assumptionIds.includes(e.assumption_id)).map((e) => e.id);
+  return DB.observations.filter((o) => experimentIds.includes(o.experiment_id));
+}
+
+const val = (id) => document.getElementById(id).value.trim();
+
+// ---- views ----------------------------------------------------------------
+function crumbs(parts) {
+  return `<div class="crumbs">` +
+    parts.map((p, i) => i < parts.length - 1
+      ? `<a data-act="${p.act}">${esc(p.label)}</a> › `
+      : `<span>${esc(p.label)}</span>`).join("") +
+    `</div>`;
+}
+
+function listOr(items, emptyText) {
+  return items.length ? items.join("") : `<div class="empty">${esc(emptyText)}</div>`;
+}
+
+function viewHome() {
+  const dirs = DB.directions.map((d) => `
+    <div class="card click" data-act="go:direction:${d.id}">
+      <div class="row"><div class="grow"><div class="title">${esc(d.title)}</div>
+      <div class="sub">${DB.goals.filter((g) => g.direction_id === d.id).length} goal(s)</div></div>
+      <span class="sub">→</span></div>
+    </div>`);
+  return `
+    ${crumbs([{ label: "Directions" }])}
+    <h2>Directions</h2>
+    ${listOr(dirs, "No directions yet. Create one below.")}
+    <div class="form">
+      <input id="new-direction" placeholder="A direction / North Star…" />
+      <button class="primary" data-act="create:direction">Add</button>
+    </div>`;
+}
+
+function viewDirection(id) {
+  const d = byId(DB.directions, id);
+  if (!d) return viewHome();
+  const goals = DB.goals.filter((g) => g.direction_id === id).map((g) => `
+    <div class="card click" data-act="go:goal:${g.id}">
+      <div class="row"><div class="grow"><div class="title">${esc(g.statement)}</div>
+      <div class="sub">${DB.assumptions.filter((a) => a.goal_id === g.id).length} assumption(s) ·
+      ${DB.reflections.filter((r) => r.goal_id === g.id).length} reflection(s)</div></div>
+      <span class="sub">→</span></div>
+    </div>`);
+  return `
+    ${crumbs([{ label: "Directions", act: "go:home" }, { label: d.title }])}
+    <h2>Goals under “${esc(d.title)}”</h2>
+    ${listOr(goals, "No goals yet.")}
+    <div class="form">
+      <input id="new-goal" placeholder="A goal under this direction…" />
+      <button class="primary" data-act="create:goal:${id}">Add goal</button>
+    </div>`;
+}
+
+function viewGoal(id) {
+  const g = byId(DB.goals, id);
+  if (!g) return viewHome();
+  const d = byId(DB.directions, g.direction_id);
+  const assumptions = DB.assumptions.filter((a) => a.goal_id === id).map((a) => `
+    <div class="card click" data-act="go:assumption:${a.id}">
+      <div class="row"><div class="grow"><div class="title">${esc(a.statement)}</div>
+      <div class="sub">${DB.experiments.filter((e) => e.assumption_id === a.id).length} experiment(s)</div></div>
+      <span class="sub">→</span></div>
+    </div>`);
+  const reflections = DB.reflections.filter((r) => r.goal_id === id).map((r) => `
+    <div class="card click" data-act="go:reflection:${r.id}">
+      <div class="row"><div class="grow"><div class="title">${esc(r.summary)}</div>
+      <div class="sub">${r.evidence.length} observation(s) cited ·
+      ${DB.process_changes.filter((c) => c.reflection_id === r.id).length} proposed change(s)</div></div>
+      <span class="sub">→</span></div>
+    </div>`);
+  const obs = observationsForGoal(id);
+  const eviBoxes = obs.length
+    ? obs.map((o) => `<label class="evi"><input type="checkbox" class="evi-box" value="${o.id}" /> ${esc(o.note)}</label>`).join("")
+    : `<div class="sub">Record observations under an experiment first to cite them here.</div>`;
+  return `
+    ${crumbs([{ label: "Directions", act: "go:home" },
+              { label: d ? d.title : "…", act: "go:direction:" + g.direction_id },
+              { label: g.statement }])}
+    <h2>Assumptions</h2>
+    ${listOr(assumptions, "No assumptions yet.")}
+    <div class="form">
+      <input id="new-assumption" placeholder="A belief this goal rests on…" />
+      <button class="primary" data-act="create:assumption:${id}">Add assumption</button>
+    </div>
+    <h2>Reflections</h2>
+    ${listOr(reflections, "No reflections yet.")}
+    <div class="card">
+      <div class="stack">
+        <textarea id="new-reflection" placeholder="What the evidence says so far…"></textarea>
+        <div class="sub">Cite evidence:</div>
+        ${eviBoxes}
+        <div><button class="primary" data-act="create:reflection:${id}">Add reflection</button></div>
+      </div>
+    </div>`;
+}
+
+function viewAssumption(id) {
+  const a = byId(DB.assumptions, id);
+  if (!a) return viewHome();
+  const g = byId(DB.goals, a.goal_id);
+  const experiments = DB.experiments.filter((e) => e.assumption_id === id).map((e) => {
+    const obs = DB.observations.filter((o) => o.experiment_id === e.id);
+    const obsHtml = obs.map((o) => `<div class="sub mono">• ${esc(o.note)}</div>`).join("");
+    return `
+    <div class="card">
+      <div class="row"><div class="grow"><div class="title">${esc(e.hypothesis)}</div></div>
+        <span class="pill ${e.status}">${e.status}</span></div>
+      <div class="row" style="margin-top:8px; gap:6px;">
+        <button data-act="start:experiment:${e.id}" ${e.status !== "proposed" ? "disabled" : ""}>Start</button>
+        <button data-act="conclude:experiment:${e.id}" ${e.status !== "running" ? "disabled" : ""}>Conclude</button>
+      </div>
+      <div style="margin-top:8px;">${obsHtml || '<div class="sub">No observations.</div>'}</div>
+      <div class="form">
+        <input id="obs-${e.id}" placeholder="Record an observation…" />
+        <button data-act="record:observation:${e.id}">Note</button>
+      </div>
+    </div>`;
+  });
+  return `
+    ${crumbs([{ label: "Directions", act: "go:home" },
+              { label: g ? g.statement : "…", act: "go:goal:" + a.goal_id },
+              { label: a.statement }])}
+    <h2>Experiments testing “${esc(a.statement)}”</h2>
+    ${listOr(experiments, "No experiments yet.")}
+    <div class="form">
+      <input id="new-experiment" placeholder="A small, bounded test…" />
+      <button class="primary" data-act="propose:experiment:${id}">Propose experiment</button>
+    </div>`;
+}
+
+function viewReflection(id) {
+  const r = byId(DB.reflections, id);
+  if (!r) return viewHome();
+  const g = byId(DB.goals, r.goal_id);
+  const changes = DB.process_changes.filter((c) => c.reflection_id === id).map((c) => `
+    <div class="card">
+      <div class="row"><div class="grow"><div class="title">${esc(c.description)}</div></div>
+        <span class="pill ${c.approval}">${c.approval}</span></div>
+      <div class="row" style="margin-top:8px; gap:6px; flex-wrap: wrap;">
+        <button data-act="approve:change:${c.id}" ${c.approval !== "pending" ? "disabled" : ""}>Approve</button>
+        <button data-act="reject:change:${c.id}" ${c.approval !== "pending" ? "disabled" : ""}>Reject</button>
+        <span class="grow"></span>
+        <select id="actor-${c.id}" title="actor autonomy level">
+          <option value="act_within_policy">act within policy</option>
+          <option value="confirm_each_action">confirm each action</option>
+          <option value="suggest">suggest</option>
+          <option value="observe">observe</option>
+        </select>
+        <button data-act="decide:change:${c.id}">Run policy</button>
+      </div>
+    </div>`);
+  return `
+    ${crumbs([{ label: "Directions", act: "go:home" },
+              { label: g ? g.statement : "…", act: "go:goal:" + r.goal_id },
+              { label: "Reflection" }])}
+    <h2>Reflection</h2>
+    <div class="card"><div class="title">${esc(r.summary)}</div>
+      <div class="sub">Cites ${r.evidence.length} observation(s).</div></div>
+    <h2>Proposed process changes</h2>
+    ${listOr(changes, "No proposed changes yet.")}
+    <div class="form">
+      <input id="new-change" placeholder="A process change this reflection suggests…" />
+      <button class="primary" data-act="propose:change:${id}">Propose</button>
+      <button data-act="draft:change:${id}" title="let the local model draft one">✨ Draft with model</button>
+    </div>`;
+}
+
+function viewAudit() {
+  const rows = (DB.audit || []).map((a) => `
+    <div class="card"><div class="sub mono">${new Date(a.at_ms).toLocaleString()}</div>
+      <div>${esc(a.summary)}</div></div>`);
+  return `
+    ${crumbs([{ label: "Directions", act: "go:home" }, { label: "Audit trail" }])}
+    <h2>Audit trail (newest first)</h2>
+    ${listOr(rows, "No decisions recorded yet.")}`;
+}
+
+function render() {
+  const v = NAV.v;
+  app.innerHTML =
+      v === "direction" ? viewDirection(NAV.id)
+    : v === "goal" ? viewGoal(NAV.id)
+    : v === "assumption" ? viewAssumption(NAV.id)
+    : v === "experiment" ? viewAssumption(NAV.id)
+    : v === "reflection" ? viewReflection(NAV.id)
+    : v === "audit" ? viewAudit()
+    : viewHome();
+}
+
+// ---- actions (event delegation) -------------------------------------------
+async function dispatch(act) {
+  const [verb, noun, id] = act.split(":");
+  try {
+    if (verb === "go") {
+      if (noun === "home") return go("home");
+      if (noun === "audit") return go("audit");
+      return go(noun, id);
+    }
+    if (verb === "create" && noun === "direction") {
+      await api("POST", "/v1/directions", { title: val("new-direction") }); return reload();
+    }
+    if (verb === "create" && noun === "goal") {
+      await api("POST", `/v1/directions/${id}/goals`, { statement: val("new-goal") }); return reload();
+    }
+    if (verb === "create" && noun === "assumption") {
+      await api("POST", `/v1/goals/${id}/assumptions`, { statement: val("new-assumption") }); return reload();
+    }
+    if (verb === "propose" && noun === "experiment") {
+      await api("POST", `/v1/assumptions/${id}/experiments`, { hypothesis: val("new-experiment") }); return reload();
+    }
+    if (verb === "start" && noun === "experiment") {
+      await api("POST", `/v1/experiments/${id}/start`); return reload();
+    }
+    if (verb === "conclude" && noun === "experiment") {
+      await api("POST", `/v1/experiments/${id}/conclude`); return reload();
+    }
+    if (verb === "record" && noun === "observation") {
+      await api("POST", `/v1/experiments/${id}/observations`, { note: val("obs-" + id) }); return reload();
+    }
+    if (verb === "create" && noun === "reflection") {
+      const evidence = [...document.querySelectorAll(".evi-box:checked")].map((b) => b.value);
+      await api("POST", `/v1/goals/${id}/reflections`, { summary: val("new-reflection"), evidence }); return reload();
+    }
+    if (verb === "propose" && noun === "change") {
+      await api("POST", `/v1/reflections/${id}/process-changes`, { description: val("new-change") }); return reload();
+    }
+    if (verb === "draft" && noun === "change") {
+      await api("POST", `/v1/reflections/${id}/process-changes/draft`); return reload();
+    }
+    if (verb === "approve" && noun === "change") {
+      await api("POST", `/v1/process-changes/${id}/approve`); return reload();
+    }
+    if (verb === "reject" && noun === "change") {
+      await api("POST", `/v1/process-changes/${id}/reject`); return reload();
+    }
+    if (verb === "decide" && noun === "change") {
+      const actor = document.getElementById("actor-" + id).value;
+      const d = await api("POST", `/v1/process-changes/${id}/decision`, { actor });
+      flash("Policy: " + d.decision.replace(/_/g, " ") + (d.reason ? " — " + d.reason : ""),
+            d.decision === "permit" ? "ok" : "err");
+      return reload();
+    }
+    if (verb === "export") {
+      const data = await api("GET", "/v1/export");
+      const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob); a.download = "endora-export.json"; a.click();
+      return flash("Exported your data.", "ok");
+    }
+    if (verb === "purge") {
+      if (!confirm("Permanently delete ALL of your Endora data? This cannot be undone.")) return;
+      await api("POST", "/v1/memory/purge", { confirm: true });
+      go("home"); return reload();
+    }
+  } catch (e) {
+    flash(e.message || String(e), "err");
+  }
+}
+
+document.body.addEventListener("click", (ev) => {
+  const t = ev.target.closest("[data-act]");
+  if (t) { ev.stopPropagation(); dispatch(t.getAttribute("data-act")); }
+});
+
+// ---- boot -----------------------------------------------------------------
+(async function () {
+  try {
+    const health = await api("GET", "/health");
+    document.getElementById("brand").textContent = health.service || "Endora";
+    await reload();
+  } catch (e) {
+    app.innerHTML = `<div class="msg show err">Couldn't reach the node: ${esc(e.message)}</div>`;
+  }
+})();
+</script>
+</body>
+</html>

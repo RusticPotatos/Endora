@@ -121,6 +121,13 @@ curl -s -X POST localhost:8787/v1/directions \
   -H 'content-type: application/json' -d '{"title":"Be healthier"}'
 ```
 
+**Web console:** with the node running, open **http://localhost:8787** in a
+browser. The node serves a self-contained UI for the whole loop — create and
+navigate Direction → Goal → Assumption → Experiment → Observation → Reflection,
+run the propose → approve → policy-decide flow, view the audit trail, and
+export/purge. No separate app to install (see ADR 0009 — node-served UI and
+single-container packaging).
+
 Or in a container (data persists in `./endora-data`):
 
 ```bash
