@@ -157,9 +157,9 @@ function subscribeToActivity() {
 
 function go(v, id) { NAV = { v, id }; clearMsg(); render(); }
 
-// Observations reachable under a goal (goal → assumptions → experiments → obs).
-function observationsForGoal(goalId) {
-  const assumptionIds = DB.assumptions.filter((a) => a.goal_id === goalId).map((a) => a.id);
+// Observations reachable under a target (target → assumptions → experiments → obs).
+function observationsForTarget(targetId) {
+  const assumptionIds = DB.assumptions.filter((a) => a.target_id === targetId).map((a) => a.id);
   const experimentIds = DB.experiments.filter((e) => assumptionIds.includes(e.assumption_id)).map((e) => e.id);
   return DB.observations.filter((o) => experimentIds.includes(o.experiment_id));
 }
@@ -192,7 +192,7 @@ function viewHome() {
   const dirs = DB.directions.map((d) => `
     <div class="card click" data-act="go:direction:${d.id}">
       <div class="row"><div class="grow"><div class="title">${esc(d.title)}</div>
-      <div class="sub">${DB.goals.filter((g) => g.direction_id === d.id).length} goal(s)</div></div>
+      <div class="sub">${DB.targets.filter((g) => g.direction_id === d.id).length} target(s)</div></div>
       <span class="sub">→</span></div>
     </div>`);
   const due = DB.experiments.filter(isReviewDue);
@@ -229,41 +229,41 @@ function activityFeed() {
 function viewDirection(id) {
   const d = byId(DB.directions, id);
   if (!d) return viewHome();
-  const goals = DB.goals.filter((g) => g.direction_id === id).map((g) => `
-    <div class="card click" data-act="go:goal:${g.id}">
+  const targets = DB.targets.filter((g) => g.direction_id === id).map((g) => `
+    <div class="card click" data-act="go:target:${g.id}">
       <div class="row"><div class="grow"><div class="title">${esc(g.statement)}</div>
-      <div class="sub">${DB.assumptions.filter((a) => a.goal_id === g.id).length} assumption(s) ·
-      ${DB.reflections.filter((r) => r.goal_id === g.id).length} reflection(s)</div></div>
+      <div class="sub">${DB.assumptions.filter((a) => a.target_id === g.id).length} assumption(s) ·
+      ${DB.reflections.filter((r) => r.target_id === g.id).length} reflection(s)</div></div>
       <span class="sub">→</span></div>
     </div>`);
   return `
     ${crumbs([{ label: "Directions", act: "go:home" }, { label: d.title }])}
-    <h2>Goals under “${esc(d.title)}”</h2>
-    ${listOr(goals, "No goals yet.")}
+    <h2>Targets under “${esc(d.title)}”</h2>
+    ${listOr(targets, "No targets yet.")}
     <div class="form">
-      <input id="new-goal" placeholder="A goal under this direction…" />
-      <button class="primary" data-act="create:goal:${id}">Add goal</button>
+      <input id="new-target" placeholder="A target under this direction…" />
+      <button class="primary" data-act="create:target:${id}">Add target</button>
     </div>`;
 }
 
-function viewGoal(id) {
-  const g = byId(DB.goals, id);
+function viewTarget(id) {
+  const g = byId(DB.targets, id);
   if (!g) return viewHome();
   const d = byId(DB.directions, g.direction_id);
-  const assumptions = DB.assumptions.filter((a) => a.goal_id === id).map((a) => `
+  const assumptions = DB.assumptions.filter((a) => a.target_id === id).map((a) => `
     <div class="card click" data-act="go:assumption:${a.id}">
       <div class="row"><div class="grow"><div class="title">${esc(a.statement)}</div>
       <div class="sub">${DB.experiments.filter((e) => e.assumption_id === a.id).length} experiment(s)</div></div>
       <span class="sub">→</span></div>
     </div>`);
-  const reflections = DB.reflections.filter((r) => r.goal_id === id).map((r) => `
+  const reflections = DB.reflections.filter((r) => r.target_id === id).map((r) => `
     <div class="card click" data-act="go:reflection:${r.id}">
       <div class="row"><div class="grow"><div class="title">${esc(r.summary)}</div>
       <div class="sub">${r.evidence.length} observation(s) cited ·
       ${DB.process_changes.filter((c) => c.reflection_id === r.id).length} proposed change(s)</div></div>
       <span class="sub">→</span></div>
     </div>`);
-  const obs = observationsForGoal(id);
+  const obs = observationsForTarget(id);
   const eviBoxes = obs.length
     ? obs.map((o) => `<label class="evi"><input type="checkbox" class="evi-box" value="${o.id}" /> ${esc(o.note)}</label>`).join("")
     : `<div class="sub">Record observations under an experiment first to cite them here.</div>`;
@@ -274,7 +274,7 @@ function viewGoal(id) {
     <h2>Assumptions</h2>
     ${listOr(assumptions, "No assumptions yet.")}
     <div class="form">
-      <input id="new-assumption" placeholder="A belief this goal rests on…" />
+      <input id="new-assumption" placeholder="A belief this target rests on…" />
       <button class="primary" data-act="create:assumption:${id}">Add assumption</button>
     </div>
     <h2>Reflections</h2>
@@ -292,7 +292,7 @@ function viewGoal(id) {
 function viewAssumption(id) {
   const a = byId(DB.assumptions, id);
   if (!a) return viewHome();
-  const g = byId(DB.goals, a.goal_id);
+  const g = byId(DB.targets, a.target_id);
   const experiments = DB.experiments.filter((e) => e.assumption_id === id).map((e) => {
     const obs = DB.observations.filter((o) => o.experiment_id === e.id);
     const obsHtml = obs.map((o) => `<div class="sub mono">• ${esc(o.note)}</div>`).join("");
@@ -319,7 +319,7 @@ function viewAssumption(id) {
   });
   return `
     ${crumbs([{ label: "Directions", act: "go:home" },
-              { label: g ? g.statement : "…", act: "go:goal:" + a.goal_id },
+              { label: g ? g.statement : "…", act: "go:target:" + a.target_id },
               { label: a.statement }])}
     <h2>Experiments testing “${esc(a.statement)}”</h2>
     ${listOr(experiments, "No experiments yet.")}
@@ -332,7 +332,7 @@ function viewAssumption(id) {
 function viewReflection(id) {
   const r = byId(DB.reflections, id);
   if (!r) return viewHome();
-  const g = byId(DB.goals, r.goal_id);
+  const g = byId(DB.targets, r.target_id);
   const changes = DB.process_changes.filter((c) => c.reflection_id === id).map((c) => `
     <div class="card">
       <div class="row"><div class="grow"><div class="title">${esc(c.description)}</div></div>
@@ -352,7 +352,7 @@ function viewReflection(id) {
     </div>`);
   return `
     ${crumbs([{ label: "Directions", act: "go:home" },
-              { label: g ? g.statement : "…", act: "go:goal:" + r.goal_id },
+              { label: g ? g.statement : "…", act: "go:target:" + r.target_id },
               { label: "Reflection" }])}
     <h2>Reflection</h2>
     <div class="card"><div class="title">${esc(r.summary)}</div>
@@ -380,7 +380,7 @@ function render() {
   const v = NAV.v;
   app.innerHTML =
       v === "direction" ? viewDirection(NAV.id)
-    : v === "goal" ? viewGoal(NAV.id)
+    : v === "target" ? viewTarget(NAV.id)
     : v === "assumption" ? viewAssumption(NAV.id)
     : v === "experiment" ? viewAssumption(NAV.id)
     : v === "reflection" ? viewReflection(NAV.id)
@@ -400,11 +400,11 @@ async function dispatch(act) {
     if (verb === "create" && noun === "direction") {
       await api("POST", "/v1/directions", { title: val("new-direction") }); return reload();
     }
-    if (verb === "create" && noun === "goal") {
-      await api("POST", `/v1/directions/${id}/goals`, { statement: val("new-goal") }); return reload();
+    if (verb === "create" && noun === "target") {
+      await api("POST", `/v1/directions/${id}/targets`, { statement: val("new-target") }); return reload();
     }
     if (verb === "create" && noun === "assumption") {
-      await api("POST", `/v1/goals/${id}/assumptions`, { statement: val("new-assumption") }); return reload();
+      await api("POST", `/v1/targets/${id}/assumptions`, { statement: val("new-assumption") }); return reload();
     }
     if (verb === "propose" && noun === "experiment") {
       await api("POST", `/v1/assumptions/${id}/experiments`, { hypothesis: val("new-experiment") }); return reload();
@@ -425,7 +425,7 @@ async function dispatch(act) {
     }
     if (verb === "create" && noun === "reflection") {
       const evidence = [...document.querySelectorAll(".evi-box:checked")].map((b) => b.value);
-      await api("POST", `/v1/goals/${id}/reflections`, { summary: val("new-reflection"), evidence }); return reload();
+      await api("POST", `/v1/targets/${id}/reflections`, { summary: val("new-reflection"), evidence }); return reload();
     }
     if (verb === "propose" && noun === "change") {
       await api("POST", `/v1/reflections/${id}/process-changes`, { description: val("new-change") }); return reload();

@@ -42,7 +42,7 @@ language. See [domain-map.md](domain-map.md) for what each context owns.
 Contexts do not reach into each other's internals; they collaborate through
 explicit application-layer boundaries.
 
-Planned contexts: Identity & Values, Direction & Goals, Experiments & Learning,
+Planned contexts: Identity & Values, Direction & Targets, Experiments & Learning,
 Reflection, Memory, Policy & Consent, Capabilities, Protection, Audit &
 Accountability.
 

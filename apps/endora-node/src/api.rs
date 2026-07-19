@@ -21,8 +21,8 @@ use endora_application::{
 };
 use endora_domain::{
     Assumption, AssumptionId, AuditRecord, AutonomyLevel, Direction, DirectionId, Experiment,
-    ExperimentId, Goal, GoalId, Observation, ObservationId, PolicyDecision, ProcessChangeId,
-    ProposedProcessChange, Reflection, ReflectionId,
+    ExperimentId, Observation, ObservationId, PolicyDecision, ProcessChangeId,
+    ProposedProcessChange, Reflection, ReflectionId, Target, TargetId,
 };
 use endora_infrastructure::{RandomIdSource, SqliteStore, SystemClock};
 use futures_util::stream::{Stream, unfold};
@@ -79,11 +79,11 @@ pub fn app(state: AppState) -> Router {
             post(create_direction).get(list_directions),
         )
         .route(
-            "/v1/directions/{id}/goals",
-            post(create_goal).get(list_goals),
+            "/v1/directions/{id}/targets",
+            post(create_target).get(list_targets),
         )
         .route(
-            "/v1/goals/{id}/assumptions",
+            "/v1/targets/{id}/assumptions",
             post(create_assumption).get(list_assumptions),
         )
         .route(
@@ -99,7 +99,7 @@ pub fn app(state: AppState) -> Router {
             post(record_observation).get(list_observations),
         )
         .route(
-            "/v1/goals/{id}/reflections",
+            "/v1/targets/{id}/reflections",
             post(create_reflection).get(list_reflections),
         )
         .route(
@@ -179,19 +179,19 @@ impl From<&Direction> for DirectionResponse {
 }
 
 #[derive(Deserialize)]
-struct CreateGoalRequest {
+struct CreateTargetRequest {
     statement: String,
 }
 
 #[derive(Serialize)]
-struct GoalResponse {
+struct TargetResponse {
     id: String,
     direction_id: String,
     statement: String,
 }
 
-impl From<&Goal> for GoalResponse {
-    fn from(g: &Goal) -> Self {
+impl From<&Target> for TargetResponse {
+    fn from(g: &Target) -> Self {
         Self {
             id: g.id().value().to_string(),
             direction_id: g.direction().value().to_string(),
@@ -222,16 +222,16 @@ async fn list_directions(
     ))
 }
 
-async fn create_goal(
+async fn create_target(
     State(state): State<AppState>,
     Path(id): Path<String>,
-    Json(req): Json<CreateGoalRequest>,
-) -> Result<Json<GoalResponse>, ApiError> {
+    Json(req): Json<CreateTargetRequest>,
+) -> Result<Json<TargetResponse>, ApiError> {
     let direction = parse_direction_id(&id)?;
     let store = state.store.clone();
     let ids = state.ids.clone();
-    let goal = blocking(move || {
-        usecases::create_goal(
+    let target = blocking(move || {
+        usecases::create_target(
             store.as_ref(),
             store.as_ref(),
             ids.as_ref(),
@@ -240,17 +240,17 @@ async fn create_goal(
         )
     })
     .await?;
-    Ok(Json(GoalResponse::from(&goal)))
+    Ok(Json(TargetResponse::from(&target)))
 }
 
-async fn list_goals(
+async fn list_targets(
     State(state): State<AppState>,
     Path(id): Path<String>,
-) -> Result<Json<Vec<GoalResponse>>, ApiError> {
+) -> Result<Json<Vec<TargetResponse>>, ApiError> {
     let direction = parse_direction_id(&id)?;
     let store = state.store.clone();
-    let goals = blocking(move || usecases::list_goals(store.as_ref(), direction)).await?;
-    Ok(Json(goals.iter().map(GoalResponse::from).collect()))
+    let targets = blocking(move || usecases::list_targets(store.as_ref(), direction)).await?;
+    Ok(Json(targets.iter().map(TargetResponse::from).collect()))
 }
 
 #[derive(Deserialize)]
@@ -261,7 +261,7 @@ struct CreateAssumptionRequest {
 #[derive(Serialize)]
 struct AssumptionResponse {
     id: String,
-    goal_id: String,
+    target_id: String,
     statement: String,
 }
 
@@ -269,7 +269,7 @@ impl From<&Assumption> for AssumptionResponse {
     fn from(a: &Assumption) -> Self {
         Self {
             id: a.id().value().to_string(),
-            goal_id: a.goal().value().to_string(),
+            target_id: a.target().value().to_string(),
             statement: a.statement().to_owned(),
         }
     }
@@ -280,7 +280,7 @@ async fn create_assumption(
     Path(id): Path<String>,
     Json(req): Json<CreateAssumptionRequest>,
 ) -> Result<Json<AssumptionResponse>, ApiError> {
-    let goal = parse_goal_id(&id)?;
+    let target = parse_target_id(&id)?;
     let store = state.store.clone();
     let ids = state.ids.clone();
     let assumption = blocking(move || {
@@ -288,7 +288,7 @@ async fn create_assumption(
             store.as_ref(),
             store.as_ref(),
             ids.as_ref(),
-            goal,
+            target,
             &req.statement,
         )
     })
@@ -300,9 +300,9 @@ async fn list_assumptions(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<Json<Vec<AssumptionResponse>>, ApiError> {
-    let goal = parse_goal_id(&id)?;
+    let target = parse_target_id(&id)?;
     let store = state.store.clone();
-    let assumptions = blocking(move || usecases::list_assumptions(store.as_ref(), goal)).await?;
+    let assumptions = blocking(move || usecases::list_assumptions(store.as_ref(), target)).await?;
     Ok(Json(
         assumptions.iter().map(AssumptionResponse::from).collect(),
     ))
@@ -497,7 +497,7 @@ struct CreateReflectionRequest {
 #[derive(Serialize)]
 struct ReflectionResponse {
     id: String,
-    goal_id: String,
+    target_id: String,
     summary: String,
     evidence: Vec<String>,
 }
@@ -506,7 +506,7 @@ impl From<&Reflection> for ReflectionResponse {
     fn from(r: &Reflection) -> Self {
         Self {
             id: r.id().value().to_string(),
-            goal_id: r.goal().value().to_string(),
+            target_id: r.target().value().to_string(),
             summary: r.summary().to_owned(),
             evidence: r.evidence().iter().map(|o| o.value().to_string()).collect(),
         }
@@ -518,7 +518,7 @@ async fn create_reflection(
     Path(id): Path<String>,
     Json(req): Json<CreateReflectionRequest>,
 ) -> Result<Json<ReflectionResponse>, ApiError> {
-    let goal = parse_goal_id(&id)?;
+    let target = parse_target_id(&id)?;
     let evidence = parse_evidence(&req.evidence)?;
     let store = state.store.clone();
     let ids = state.ids.clone();
@@ -527,7 +527,7 @@ async fn create_reflection(
             store.as_ref(),
             store.as_ref(),
             ids.as_ref(),
-            goal,
+            target,
             &req.summary,
             evidence,
         )
@@ -540,9 +540,9 @@ async fn list_reflections(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<Json<Vec<ReflectionResponse>>, ApiError> {
-    let goal = parse_goal_id(&id)?;
+    let target = parse_target_id(&id)?;
     let store = state.store.clone();
-    let reflections = blocking(move || usecases::list_reflections(store.as_ref(), goal)).await?;
+    let reflections = blocking(move || usecases::list_reflections(store.as_ref(), target)).await?;
     Ok(Json(
         reflections.iter().map(ReflectionResponse::from).collect(),
     ))
@@ -781,7 +781,7 @@ async fn activity_stream(
 #[derive(Serialize)]
 struct ExportResponse {
     directions: Vec<DirectionResponse>,
-    goals: Vec<GoalResponse>,
+    targets: Vec<TargetResponse>,
     assumptions: Vec<AssumptionResponse>,
     experiments: Vec<ExperimentResponse>,
     observations: Vec<ObservationResponse>,
@@ -794,7 +794,7 @@ impl From<&MemorySnapshot> for ExportResponse {
     fn from(s: &MemorySnapshot) -> Self {
         Self {
             directions: s.directions.iter().map(DirectionResponse::from).collect(),
-            goals: s.goals.iter().map(GoalResponse::from).collect(),
+            targets: s.targets.iter().map(TargetResponse::from).collect(),
             assumptions: s.assumptions.iter().map(AssumptionResponse::from).collect(),
             experiments: s.experiments.iter().map(ExperimentResponse::from).collect(),
             observations: s
@@ -881,11 +881,11 @@ fn parse_direction_id(id: &str) -> Result<DirectionId, ApiError> {
     })
 }
 
-/// Parses a path id into a [`GoalId`]; a malformed id can name no goal.
-fn parse_goal_id(id: &str) -> Result<GoalId, ApiError> {
+/// Parses a path id into a [`TargetId`]; a malformed id can name no target.
+fn parse_target_id(id: &str) -> Result<TargetId, ApiError> {
     id.parse::<u128>()
-        .map(GoalId::new)
-        .map_err(|_| ApiError(AppError::NotFound { entity: "goal" }))
+        .map(TargetId::new)
+        .map_err(|_| ApiError(AppError::NotFound { entity: "target" }))
 }
 
 /// Parses a path id into an [`AssumptionId`]; a malformed id names no assumption.
@@ -1036,7 +1036,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn create_direction_then_goal_then_list() {
+    async fn create_direction_then_target_then_list() {
         let app = app(test_state());
 
         let res = app
@@ -1048,10 +1048,10 @@ mod tests {
         let created = json_body(res).await;
         let dir_id = created["id"].as_str().unwrap().to_owned();
 
-        let goals_uri = format!("/v1/directions/{dir_id}/goals");
+        let targets_uri = format!("/v1/directions/{dir_id}/targets");
         let res = app
             .clone()
-            .oneshot(post(&goals_uri, r#"{"statement":"Run a 5k"}"#))
+            .oneshot(post(&targets_uri, r#"{"statement":"Run a 5k"}"#))
             .await
             .unwrap();
         assert_eq!(res.status(), StatusCode::OK);
@@ -1060,7 +1060,7 @@ mod tests {
             .clone()
             .oneshot(
                 Request::builder()
-                    .uri(&goals_uri)
+                    .uri(&targets_uri)
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -1073,7 +1073,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn assumption_under_a_goal_round_trips() {
+    async fn assumption_under_a_target_round_trips() {
         let app = app(test_state());
 
         let res = app
@@ -1086,14 +1086,14 @@ mod tests {
         let res = app
             .clone()
             .oneshot(post(
-                &format!("/v1/directions/{dir_id}/goals"),
+                &format!("/v1/directions/{dir_id}/targets"),
                 r#"{"statement":"Run a 5k"}"#,
             ))
             .await
             .unwrap();
-        let goal_id = json_body(res).await["id"].as_str().unwrap().to_owned();
+        let target_id = json_body(res).await["id"].as_str().unwrap().to_owned();
 
-        let assumptions_uri = format!("/v1/goals/{goal_id}/assumptions");
+        let assumptions_uri = format!("/v1/targets/{target_id}/assumptions");
         let res = app
             .clone()
             .oneshot(post(
@@ -1124,7 +1124,7 @@ mod tests {
     async fn experiment_lifecycle_over_http() {
         let app = app(test_state());
 
-        // direction -> goal -> assumption
+        // direction -> target -> assumption
         let res = app
             .clone()
             .oneshot(post("/v1/directions", r#"{"title":"Be healthier"}"#))
@@ -1134,7 +1134,7 @@ mod tests {
         let res = app
             .clone()
             .oneshot(post(
-                &format!("/v1/directions/{did}/goals"),
+                &format!("/v1/directions/{did}/targets"),
                 r#"{"statement":"Run a 5k"}"#,
             ))
             .await
@@ -1143,7 +1143,7 @@ mod tests {
         let res = app
             .clone()
             .oneshot(post(
-                &format!("/v1/goals/{gid}/assumptions"),
+                &format!("/v1/targets/{gid}/assumptions"),
                 r#"{"statement":"Mornings are freest"}"#,
             ))
             .await
@@ -1206,7 +1206,7 @@ mod tests {
         let gid = json_body(
             app.clone()
                 .oneshot(post(
-                    &format!("/v1/directions/{did}/goals"),
+                    &format!("/v1/directions/{did}/targets"),
                     r#"{"statement":"Run a 5k"}"#,
                 ))
                 .await
@@ -1219,7 +1219,7 @@ mod tests {
         let aid = json_body(
             app.clone()
                 .oneshot(post(
-                    &format!("/v1/goals/{gid}/assumptions"),
+                    &format!("/v1/targets/{gid}/assumptions"),
                     r#"{"statement":"Mornings"}"#,
                 ))
                 .await
@@ -1276,7 +1276,7 @@ mod tests {
         assert_eq!(res.status(), StatusCode::NOT_FOUND);
     }
 
-    /// Drives the full chain and returns (goal_id, observation_id).
+    /// Drives the full chain and returns (target_id, observation_id).
     async fn seed_chain(app: &axum::Router) -> (String, String) {
         async fn create(app: &axum::Router, uri: &str, body: &str) -> String {
             let res = app.clone().oneshot(post(uri, body)).await.unwrap();
@@ -1285,13 +1285,13 @@ mod tests {
         let did = create(app, "/v1/directions", r#"{"title":"D"}"#).await;
         let gid = create(
             app,
-            &format!("/v1/directions/{did}/goals"),
+            &format!("/v1/directions/{did}/targets"),
             r#"{"statement":"G"}"#,
         )
         .await;
         let aid = create(
             app,
-            &format!("/v1/goals/{gid}/assumptions"),
+            &format!("/v1/targets/{gid}/assumptions"),
             r#"{"statement":"A"}"#,
         )
         .await;
@@ -1318,7 +1318,7 @@ mod tests {
         let body = format!(r#"{{"summary":"mornings worked","evidence":["{oid}"]}}"#);
         let res = app
             .clone()
-            .oneshot(post(&format!("/v1/goals/{gid}/reflections"), &body))
+            .oneshot(post(&format!("/v1/targets/{gid}/reflections"), &body))
             .await
             .unwrap();
         assert_eq!(res.status(), StatusCode::OK);
@@ -1330,7 +1330,7 @@ mod tests {
             .clone()
             .oneshot(
                 Request::builder()
-                    .uri(format!("/v1/goals/{gid}/reflections"))
+                    .uri(format!("/v1/targets/{gid}/reflections"))
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -1414,7 +1414,7 @@ mod tests {
         let body = format!(r#"{{"summary":"worked","evidence":["{oid}"]}}"#);
         let rid = json_body(
             app.clone()
-                .oneshot(post(&format!("/v1/goals/{gid}/reflections"), &body))
+                .oneshot(post(&format!("/v1/targets/{gid}/reflections"), &body))
                 .await
                 .unwrap(),
         )
@@ -1461,7 +1461,7 @@ mod tests {
         let rid = json_body(
             app.clone()
                 .oneshot(post(
-                    &format!("/v1/goals/{gid}/reflections"),
+                    &format!("/v1/targets/{gid}/reflections"),
                     &format!(r#"{{"summary":"worked","evidence":["{oid}"]}}"#),
                 ))
                 .await
@@ -1545,7 +1545,7 @@ mod tests {
             .unwrap();
         assert_eq!(res.status(), StatusCode::OK);
         let export = json_body(res).await;
-        assert_eq!(export["goals"].as_array().unwrap().len(), 1);
+        assert_eq!(export["targets"].as_array().unwrap().len(), 1);
         assert_eq!(export["observations"].as_array().unwrap().len(), 1);
 
         // Purge without confirmation is refused.
@@ -1564,18 +1564,18 @@ mod tests {
             .unwrap();
         assert_eq!(res.status(), StatusCode::OK);
 
-        // The goal's data is gone.
+        // The target's data is gone.
         let res = app
             .clone()
             .oneshot(
                 Request::builder()
-                    .uri(format!("/v1/directions/{gid}/goals"))
+                    .uri(format!("/v1/directions/{gid}/targets"))
                     .body(Body::empty())
                     .unwrap(),
             )
             .await
             .unwrap();
-        // (gid no longer exists, but listing a goal's assumptions is by goal id)
+        // (gid no longer exists, but listing a target's assumptions is by target id)
         let res2 = app
             .clone()
             .oneshot(
@@ -1586,7 +1586,10 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(json_body(res2).await["goals"].as_array().unwrap().len(), 0);
+        assert_eq!(
+            json_body(res2).await["targets"].as_array().unwrap().len(),
+            0
+        );
         assert_eq!(res.status(), StatusCode::OK);
     }
 
@@ -1609,7 +1612,7 @@ mod tests {
         let rid = json_body(
             app.clone()
                 .oneshot(post(
-                    &format!("/v1/goals/{gid}/reflections"),
+                    &format!("/v1/targets/{gid}/reflections"),
                     &format!(r#"{{"summary":"worked","evidence":["{oid}"]}}"#),
                 ))
                 .await
@@ -1663,7 +1666,7 @@ mod tests {
         let res = app
             .clone()
             .oneshot(post(
-                &format!("/v1/goals/{gid}/reflections"),
+                &format!("/v1/targets/{gid}/reflections"),
                 r#"{"summary":"x","evidence":[]}"#,
             ))
             .await
@@ -1672,18 +1675,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn assumption_for_missing_goal_is_404() {
+    async fn assumption_for_missing_target_is_404() {
         let res = app(test_state())
-            .oneshot(post("/v1/goals/999/assumptions", r#"{"statement":"x"}"#))
+            .oneshot(post("/v1/targets/999/assumptions", r#"{"statement":"x"}"#))
             .await
             .unwrap();
         assert_eq!(res.status(), StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]
-    async fn goal_for_missing_direction_is_404() {
+    async fn target_for_missing_direction_is_404() {
         let res = app(test_state())
-            .oneshot(post("/v1/directions/999/goals", r#"{"statement":"x"}"#))
+            .oneshot(post("/v1/directions/999/targets", r#"{"statement":"x"}"#))
             .await
             .unwrap();
         assert_eq!(res.status(), StatusCode::NOT_FOUND);

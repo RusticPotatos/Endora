@@ -46,3 +46,4 @@ of an existing record and take the next number.
 | [0010](0010-autonomy-model.md) | Autonomy model: the act/ask loop and preferences | Accepted |
 | [0011](0011-review-scheduling-reminders.md) | Review scheduling: the first act of the autonomy model | Accepted |
 | [0012](0012-activity-feed-and-change-stream.md) | Activity feed and a server-sent change stream | Accepted |
+| [0013](0013-rename-goal-to-target.md) | Rename the second-tier concept from Goal to Target | Accepted |

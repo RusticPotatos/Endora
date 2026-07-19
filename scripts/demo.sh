@@ -53,7 +53,7 @@ echo "=== Endora demo — the full learning loop ==="
 echo "(node: $ENDORA_URL)"
 
 did=$(capture direction create "Live intentionally")
-gid=$(capture goal create "$did" "Run a 5k")
+gid=$(capture target create "$did" "Run a 5k")
 aid=$(capture assumption create "$gid" "Mornings are freest")
 eid=$(capture experiment propose "$aid" "Try morning runs for two weeks")
 run experiment start "$eid"

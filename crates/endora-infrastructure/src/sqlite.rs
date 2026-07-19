@@ -9,14 +9,14 @@
 use std::sync::Mutex;
 
 use endora_application::{
-    AssumptionRepository, AuditLog, DirectionRepository, ExperimentRepository, GoalRepository,
-    MemorySnapshot, MemoryStore, ObservationRepository, ProcessChangeRepository,
-    ReflectionRepository, RepositoryError,
+    AssumptionRepository, AuditLog, DirectionRepository, ExperimentRepository, MemorySnapshot,
+    MemoryStore, ObservationRepository, ProcessChangeRepository, ReflectionRepository,
+    RepositoryError, TargetRepository,
 };
 use endora_domain::{
     ApprovalState, Assumption, AssumptionId, AuditId, AuditRecord, Direction, DirectionId,
-    Experiment, ExperimentId, ExperimentStatus, Goal, GoalId, Observation, ObservationId,
-    ProcessChangeId, ProposedProcessChange, Reflection, ReflectionId, Timestamp,
+    Experiment, ExperimentId, ExperimentStatus, Observation, ObservationId, ProcessChangeId,
+    ProposedProcessChange, Reflection, ReflectionId, Target, TargetId, Timestamp,
 };
 use rusqlite::{Connection, OptionalExtension, params};
 
@@ -26,21 +26,21 @@ CREATE TABLE IF NOT EXISTS directions (
     title TEXT NOT NULL
 ) STRICT;
 
-CREATE TABLE IF NOT EXISTS goals (
+CREATE TABLE IF NOT EXISTS targets (
     id           TEXT PRIMARY KEY,
     direction_id TEXT NOT NULL REFERENCES directions(id),
     statement    TEXT NOT NULL
 ) STRICT;
 
-CREATE INDEX IF NOT EXISTS idx_goals_direction ON goals(direction_id);
+CREATE INDEX IF NOT EXISTS idx_targets_direction ON targets(direction_id);
 
 CREATE TABLE IF NOT EXISTS assumptions (
     id        TEXT PRIMARY KEY,
-    goal_id   TEXT NOT NULL REFERENCES goals(id),
+    target_id TEXT NOT NULL REFERENCES targets(id),
     statement TEXT NOT NULL
 ) STRICT;
 
-CREATE INDEX IF NOT EXISTS idx_assumptions_goal ON assumptions(goal_id);
+CREATE INDEX IF NOT EXISTS idx_assumptions_target ON assumptions(target_id);
 
 CREATE TABLE IF NOT EXISTS experiments (
     id            TEXT PRIMARY KEY,
@@ -63,11 +63,11 @@ CREATE INDEX IF NOT EXISTS idx_observations_experiment ON observations(experimen
 
 CREATE TABLE IF NOT EXISTS reflections (
     id      TEXT PRIMARY KEY,
-    goal_id TEXT NOT NULL REFERENCES goals(id),
+    target_id TEXT NOT NULL REFERENCES targets(id),
     summary TEXT NOT NULL
 ) STRICT;
 
-CREATE INDEX IF NOT EXISTS idx_reflections_goal ON reflections(goal_id);
+CREATE INDEX IF NOT EXISTS idx_reflections_target ON reflections(target_id);
 
 -- A reflection's evidence, ordered, one row per cited observation.
 CREATE TABLE IF NOT EXISTS reflection_evidence (
@@ -123,6 +123,10 @@ impl SqliteStore {
     fn from_connection(conn: Connection) -> Result<Self, RepositoryError> {
         conn.pragma_update(None, "foreign_keys", "ON")
             .map_err(backend)?;
+        // Rename a pre-rename `goals`/`goal_id` schema to `targets`/`target_id`
+        // *before* creating any tables, so the schema below does not create an
+        // empty `targets` alongside the old data. (Goal was renamed to Target.)
+        migrate_goals_to_targets(&conn)?;
         conn.execute_batch(SCHEMA).map_err(backend)?;
         // Migrations for databases created by an earlier schema version. The
         // review index is created only once the column is guaranteed present,
@@ -178,26 +182,26 @@ impl DirectionRepository for SqliteStore {
     }
 }
 
-impl GoalRepository for SqliteStore {
-    fn save(&self, goal: &Goal) -> Result<(), RepositoryError> {
+impl TargetRepository for SqliteStore {
+    fn save(&self, target: &Target) -> Result<(), RepositoryError> {
         let conn = self.lock()?;
         conn.execute(
-            "INSERT OR REPLACE INTO goals (id, direction_id, statement) VALUES (?1, ?2, ?3)",
+            "INSERT OR REPLACE INTO targets (id, direction_id, statement) VALUES (?1, ?2, ?3)",
             params![
-                id_text(goal.id().value()),
-                id_text(goal.direction().value()),
-                goal.statement()
+                id_text(target.id().value()),
+                id_text(target.direction().value()),
+                target.statement()
             ],
         )
         .map_err(backend)?;
         Ok(())
     }
 
-    fn get(&self, id: GoalId) -> Result<Option<Goal>, RepositoryError> {
+    fn get(&self, id: TargetId) -> Result<Option<Target>, RepositoryError> {
         let conn = self.lock()?;
         let row: Option<(String, String)> = conn
             .query_row(
-                "SELECT direction_id, statement FROM goals WHERE id = ?1",
+                "SELECT direction_id, statement FROM targets WHERE id = ?1",
                 params![id_text(id.value())],
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )
@@ -207,14 +211,14 @@ impl GoalRepository for SqliteStore {
             return Ok(None);
         };
         let direction = DirectionId::new(parse_id(&direction_id)?);
-        let goal = Goal::new(id, direction, &statement).map_err(corrupt)?;
-        Ok(Some(goal))
+        let target = Target::new(id, direction, &statement).map_err(corrupt)?;
+        Ok(Some(target))
     }
 
-    fn list_for_direction(&self, direction: DirectionId) -> Result<Vec<Goal>, RepositoryError> {
+    fn list_for_direction(&self, direction: DirectionId) -> Result<Vec<Target>, RepositoryError> {
         let conn = self.lock()?;
         let mut stmt = conn
-            .prepare("SELECT id, statement FROM goals WHERE direction_id = ?1 ORDER BY id")
+            .prepare("SELECT id, statement FROM targets WHERE direction_id = ?1 ORDER BY id")
             .map_err(backend)?;
         let rows = stmt
             .query_map(params![id_text(direction.value())], |row| {
@@ -222,14 +226,14 @@ impl GoalRepository for SqliteStore {
             })
             .map_err(backend)?;
 
-        let mut goals = Vec::new();
+        let mut targets = Vec::new();
         for row in rows {
             let (id_text, statement) = row.map_err(backend)?;
-            let goal = Goal::new(GoalId::new(parse_id(&id_text)?), direction, &statement)
+            let target = Target::new(TargetId::new(parse_id(&id_text)?), direction, &statement)
                 .map_err(corrupt)?;
-            goals.push(goal);
+            targets.push(target);
         }
-        Ok(goals)
+        Ok(targets)
     }
 }
 
@@ -237,10 +241,10 @@ impl AssumptionRepository for SqliteStore {
     fn save(&self, assumption: &Assumption) -> Result<(), RepositoryError> {
         let conn = self.lock()?;
         conn.execute(
-            "INSERT OR REPLACE INTO assumptions (id, goal_id, statement) VALUES (?1, ?2, ?3)",
+            "INSERT OR REPLACE INTO assumptions (id, target_id, statement) VALUES (?1, ?2, ?3)",
             params![
                 id_text(assumption.id().value()),
-                id_text(assumption.goal().value()),
+                id_text(assumption.target().value()),
                 assumption.statement()
             ],
         )
@@ -252,27 +256,27 @@ impl AssumptionRepository for SqliteStore {
         let conn = self.lock()?;
         let row: Option<(String, String)> = conn
             .query_row(
-                "SELECT goal_id, statement FROM assumptions WHERE id = ?1",
+                "SELECT target_id, statement FROM assumptions WHERE id = ?1",
                 params![id_text(id.value())],
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .optional()
             .map_err(backend)?;
-        let Some((goal_id, statement)) = row else {
+        let Some((target_id, statement)) = row else {
             return Ok(None);
         };
-        let goal = GoalId::new(parse_id(&goal_id)?);
-        let assumption = Assumption::new(id, goal, &statement).map_err(corrupt)?;
+        let target = TargetId::new(parse_id(&target_id)?);
+        let assumption = Assumption::new(id, target, &statement).map_err(corrupt)?;
         Ok(Some(assumption))
     }
 
-    fn list_for_goal(&self, goal: GoalId) -> Result<Vec<Assumption>, RepositoryError> {
+    fn list_for_target(&self, target: TargetId) -> Result<Vec<Assumption>, RepositoryError> {
         let conn = self.lock()?;
         let mut stmt = conn
-            .prepare("SELECT id, statement FROM assumptions WHERE goal_id = ?1 ORDER BY id")
+            .prepare("SELECT id, statement FROM assumptions WHERE target_id = ?1 ORDER BY id")
             .map_err(backend)?;
         let rows = stmt
-            .query_map(params![id_text(goal.value())], |row| {
+            .query_map(params![id_text(target.value())], |row| {
                 Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
             })
             .map_err(backend)?;
@@ -280,7 +284,7 @@ impl AssumptionRepository for SqliteStore {
         let mut assumptions = Vec::new();
         for row in rows {
             let (id, statement) = row.map_err(backend)?;
-            let assumption = Assumption::new(AssumptionId::new(parse_id(&id)?), goal, &statement)
+            let assumption = Assumption::new(AssumptionId::new(parse_id(&id)?), target, &statement)
                 .map_err(corrupt)?;
             assumptions.push(assumption);
         }
@@ -496,10 +500,10 @@ impl ReflectionRepository for SqliteStore {
         let tx = conn.transaction().map_err(backend)?;
         let rid = id_text(reflection.id().value());
         tx.execute(
-            "INSERT OR REPLACE INTO reflections (id, goal_id, summary) VALUES (?1, ?2, ?3)",
+            "INSERT OR REPLACE INTO reflections (id, target_id, summary) VALUES (?1, ?2, ?3)",
             params![
                 rid,
-                id_text(reflection.goal().value()),
+                id_text(reflection.target().value()),
                 reflection.summary()
             ],
         )
@@ -529,28 +533,28 @@ impl ReflectionRepository for SqliteStore {
         let conn = self.lock()?;
         let row: Option<(String, String)> = conn
             .query_row(
-                "SELECT goal_id, summary FROM reflections WHERE id = ?1",
+                "SELECT target_id, summary FROM reflections WHERE id = ?1",
                 params![id_text(id.value())],
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .optional()
             .map_err(backend)?;
-        let Some((goal_id, summary)) = row else {
+        let Some((target_id, summary)) = row else {
             return Ok(None);
         };
         let evidence = evidence_for(&conn, id)?;
-        let goal = GoalId::new(parse_id(&goal_id)?);
-        let reflection = Reflection::new(id, goal, &summary, evidence).map_err(corrupt)?;
+        let target = TargetId::new(parse_id(&target_id)?);
+        let reflection = Reflection::new(id, target, &summary, evidence).map_err(corrupt)?;
         Ok(Some(reflection))
     }
 
-    fn list_for_goal(&self, goal: GoalId) -> Result<Vec<Reflection>, RepositoryError> {
+    fn list_for_target(&self, target: TargetId) -> Result<Vec<Reflection>, RepositoryError> {
         let conn = self.lock()?;
         let mut stmt = conn
-            .prepare("SELECT id, summary FROM reflections WHERE goal_id = ?1 ORDER BY id")
+            .prepare("SELECT id, summary FROM reflections WHERE target_id = ?1 ORDER BY id")
             .map_err(backend)?;
         let rows: Vec<(String, String)> = stmt
-            .query_map(params![id_text(goal.value())], |row| {
+            .query_map(params![id_text(target.value())], |row| {
                 Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
             })
             .map_err(backend)?
@@ -563,7 +567,7 @@ impl ReflectionRepository for SqliteStore {
             let reflection_id = ReflectionId::new(parse_id(&id)?);
             let evidence = evidence_for(&conn, reflection_id)?;
             let reflection =
-                Reflection::new(reflection_id, goal, &summary, evidence).map_err(corrupt)?;
+                Reflection::new(reflection_id, target, &summary, evidence).map_err(corrupt)?;
             reflections.push(reflection);
         }
         Ok(reflections)
@@ -653,7 +657,7 @@ impl MemoryStore for SqliteStore {
         let conn = self.lock()?;
         Ok(MemorySnapshot {
             directions: all_directions(&conn)?,
-            goals: all_goals(&conn)?,
+            targets: all_targets(&conn)?,
             assumptions: all_assumptions(&conn)?,
             experiments: all_experiments(&conn)?,
             observations: all_observations(&conn)?,
@@ -674,7 +678,7 @@ impl MemoryStore for SqliteStore {
             "observations",
             "experiments",
             "assumptions",
-            "goals",
+            "targets",
             "directions",
             "audit_log",
         ] {
@@ -760,9 +764,9 @@ fn all_directions(conn: &Connection) -> Result<Vec<Direction>, RepositoryError> 
     Ok(out)
 }
 
-fn all_goals(conn: &Connection) -> Result<Vec<Goal>, RepositoryError> {
+fn all_targets(conn: &Connection) -> Result<Vec<Target>, RepositoryError> {
     let mut stmt = conn
-        .prepare("SELECT id, direction_id, statement FROM goals ORDER BY id")
+        .prepare("SELECT id, direction_id, statement FROM targets ORDER BY id")
         .map_err(backend)?;
     let rows = stmt
         .query_map([], |r| {
@@ -776,20 +780,20 @@ fn all_goals(conn: &Connection) -> Result<Vec<Goal>, RepositoryError> {
     let mut out = Vec::new();
     for row in rows {
         let (id, direction, statement) = row.map_err(backend)?;
-        let goal = Goal::new(
-            GoalId::new(parse_id(&id)?),
+        let target = Target::new(
+            TargetId::new(parse_id(&id)?),
             DirectionId::new(parse_id(&direction)?),
             &statement,
         )
         .map_err(corrupt)?;
-        out.push(goal);
+        out.push(target);
     }
     Ok(out)
 }
 
 fn all_assumptions(conn: &Connection) -> Result<Vec<Assumption>, RepositoryError> {
     let mut stmt = conn
-        .prepare("SELECT id, goal_id, statement FROM assumptions ORDER BY id")
+        .prepare("SELECT id, target_id, statement FROM assumptions ORDER BY id")
         .map_err(backend)?;
     let rows = stmt
         .query_map([], |r| {
@@ -802,11 +806,11 @@ fn all_assumptions(conn: &Connection) -> Result<Vec<Assumption>, RepositoryError
         .map_err(backend)?;
     let mut out = Vec::new();
     for row in rows {
-        let (id, goal, statement) = row.map_err(backend)?;
+        let (id, target, statement) = row.map_err(backend)?;
         out.push(
             Assumption::new(
                 AssumptionId::new(parse_id(&id)?),
-                GoalId::new(parse_id(&goal)?),
+                TargetId::new(parse_id(&target)?),
                 &statement,
             )
             .map_err(corrupt)?,
@@ -899,7 +903,7 @@ fn all_observations(conn: &Connection) -> Result<Vec<Observation>, RepositoryErr
 fn all_reflections(conn: &Connection) -> Result<Vec<Reflection>, RepositoryError> {
     let rows: Vec<(String, String, String)> = {
         let mut stmt = conn
-            .prepare("SELECT id, goal_id, summary FROM reflections ORDER BY id")
+            .prepare("SELECT id, target_id, summary FROM reflections ORDER BY id")
             .map_err(backend)?;
         stmt.query_map([], |r| {
             Ok((
@@ -913,13 +917,13 @@ fn all_reflections(conn: &Connection) -> Result<Vec<Reflection>, RepositoryError
         .map_err(backend)?
     };
     let mut out = Vec::new();
-    for (id, goal, summary) in rows {
+    for (id, target, summary) in rows {
         let reflection_id = ReflectionId::new(parse_id(&id)?);
         let evidence = evidence_for(conn, reflection_id)?;
         out.push(
             Reflection::new(
                 reflection_id,
-                GoalId::new(parse_id(&goal)?),
+                TargetId::new(parse_id(&target)?),
                 &summary,
                 evidence,
             )
@@ -1049,6 +1053,42 @@ fn ensure_column(
     Ok(())
 }
 
+/// Renames a pre-rename `goals` table and its `goal_id` foreign-key columns to
+/// `targets`/`target_id`.
+///
+/// The domain concept "Goal" was renamed to "Target"; this carries existing
+/// databases across without data loss. A no-op on a fresh database (no `goals`
+/// table) or one already migrated (a `targets` table exists). Renaming the table
+/// updates the foreign keys that reference it; the old-named indexes are dropped
+/// so the schema can recreate them under their new names.
+fn migrate_goals_to_targets(conn: &Connection) -> Result<(), RepositoryError> {
+    if !table_exists(conn, "goals")? || table_exists(conn, "targets")? {
+        return Ok(());
+    }
+    conn.execute_batch(
+        "DROP INDEX IF EXISTS idx_goals_direction;
+         DROP INDEX IF EXISTS idx_assumptions_goal;
+         DROP INDEX IF EXISTS idx_reflections_goal;
+         ALTER TABLE goals RENAME TO targets;
+         ALTER TABLE assumptions RENAME COLUMN goal_id TO target_id;
+         ALTER TABLE reflections RENAME COLUMN goal_id TO target_id;",
+    )
+    .map_err(backend)?;
+    Ok(())
+}
+
+/// Whether a table named `name` exists in the database.
+fn table_exists(conn: &Connection, name: &str) -> Result<bool, RepositoryError> {
+    let count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
+            params![name],
+            |row| row.get(0),
+        )
+        .map_err(backend)?;
+    Ok(count > 0)
+}
+
 /// Maps any backend error into a [`RepositoryError::Backend`].
 fn backend(error: impl core::fmt::Display) -> RepositoryError {
     RepositoryError::Backend(error.to_string())
@@ -1065,8 +1105,8 @@ mod tests {
     // implements several repository traits, so we exercise it through the trait
     // (as real use cases do) rather than calling ambiguous methods directly.
     use super::SqliteStore;
-    use endora_application::{DirectionRepository, GoalRepository};
-    use endora_domain::{Direction, DirectionId, Goal, GoalId};
+    use endora_application::{DirectionRepository, TargetRepository};
+    use endora_domain::{Direction, DirectionId, Target, TargetId};
 
     fn store() -> SqliteStore {
         SqliteStore::open_in_memory().unwrap()
@@ -1103,59 +1143,62 @@ mod tests {
     }
 
     #[test]
-    fn goal_round_trips_and_lists_by_direction() {
+    fn target_round_trips_and_lists_by_direction() {
         let store = store();
         let directions: &dyn DirectionRepository = &store;
-        let goals: &dyn GoalRepository = &store;
+        let targets: &dyn TargetRepository = &store;
         let direction = DirectionId::new(1);
         directions
             .save(&Direction::new(direction, "Be healthier").unwrap())
             .unwrap();
 
-        let g1 = Goal::new(GoalId::new(10), direction, "Run a 5k").unwrap();
-        let g2 = Goal::new(GoalId::new(11), direction, "Sleep 8h").unwrap();
-        goals.save(&g1).unwrap();
-        goals.save(&g2).unwrap();
+        let g1 = Target::new(TargetId::new(10), direction, "Run a 5k").unwrap();
+        let g2 = Target::new(TargetId::new(11), direction, "Sleep 8h").unwrap();
+        targets.save(&g1).unwrap();
+        targets.save(&g2).unwrap();
 
-        assert_eq!(goals.get(GoalId::new(10)).unwrap(), Some(g1.clone()));
-        assert_eq!(goals.list_for_direction(direction).unwrap(), vec![g1, g2]);
+        assert_eq!(targets.get(TargetId::new(10)).unwrap(), Some(g1.clone()));
+        assert_eq!(targets.list_for_direction(direction).unwrap(), vec![g1, g2]);
     }
 
     #[test]
-    fn assumptions_round_trip_and_list_by_goal() {
+    fn assumptions_round_trip_and_list_by_target() {
         use endora_application::AssumptionRepository;
-        use endora_domain::{Assumption, AssumptionId, GoalId};
+        use endora_domain::{Assumption, AssumptionId, TargetId};
 
         let store = store();
         let directions: &dyn DirectionRepository = &store;
-        let goals: &dyn GoalRepository = &store;
+        let targets: &dyn TargetRepository = &store;
         let assumptions: &dyn AssumptionRepository = &store;
 
         let direction = DirectionId::new(1);
         directions
             .save(&Direction::new(direction, "Be healthier").unwrap())
             .unwrap();
-        let goal = GoalId::new(2);
-        goals
-            .save(&Goal::new(goal, direction, "Run a 5k").unwrap())
+        let target = TargetId::new(2);
+        targets
+            .save(&Target::new(target, direction, "Run a 5k").unwrap())
             .unwrap();
 
-        let a = Assumption::new(AssumptionId::new(3), goal, "Mornings are freest").unwrap();
+        let a = Assumption::new(AssumptionId::new(3), target, "Mornings are freest").unwrap();
         assumptions.save(&a).unwrap();
-        assert_eq!(assumptions.list_for_goal(goal).unwrap(), vec![a]);
-        assert_eq!(assumptions.list_for_goal(GoalId::new(999)).unwrap(), vec![]);
+        assert_eq!(assumptions.list_for_target(target).unwrap(), vec![a]);
+        assert_eq!(
+            assumptions.list_for_target(TargetId::new(999)).unwrap(),
+            vec![]
+        );
     }
 
     #[test]
     fn experiment_status_survives_a_reload() {
         use endora_application::{AssumptionRepository, ExperimentRepository};
         use endora_domain::{
-            Assumption, AssumptionId, Experiment, ExperimentId, ExperimentStatus, GoalId,
+            Assumption, AssumptionId, Experiment, ExperimentId, ExperimentStatus, TargetId,
         };
 
         let store = store();
         let directions: &dyn DirectionRepository = &store;
-        let goals: &dyn GoalRepository = &store;
+        let targets: &dyn TargetRepository = &store;
         let assumptions: &dyn AssumptionRepository = &store;
         let experiments: &dyn ExperimentRepository = &store;
 
@@ -1163,13 +1206,13 @@ mod tests {
         directions
             .save(&Direction::new(direction, "Be healthier").unwrap())
             .unwrap();
-        let goal = GoalId::new(2);
-        goals
-            .save(&Goal::new(goal, direction, "Run a 5k").unwrap())
+        let target = TargetId::new(2);
+        targets
+            .save(&Target::new(target, direction, "Run a 5k").unwrap())
             .unwrap();
         let assumption = AssumptionId::new(3);
         assumptions
-            .save(&Assumption::new(assumption, goal, "Mornings are freest").unwrap())
+            .save(&Assumption::new(assumption, target, "Mornings are freest").unwrap())
             .unwrap();
 
         // Save a Running experiment; a plain constructor could not rebuild this.
@@ -1189,24 +1232,24 @@ mod tests {
     fn scheduled_review_round_trips_and_lists_when_due() {
         use endora_application::{AssumptionRepository, ExperimentRepository};
         use endora_domain::{
-            Assumption, AssumptionId, Experiment, ExperimentId, GoalId, Timestamp,
+            Assumption, AssumptionId, Experiment, ExperimentId, TargetId, Timestamp,
         };
 
         let store = store();
         let directions: &dyn DirectionRepository = &store;
-        let goals: &dyn GoalRepository = &store;
+        let targets: &dyn TargetRepository = &store;
         let assumptions: &dyn AssumptionRepository = &store;
         let experiments: &dyn ExperimentRepository = &store;
 
         directions
             .save(&Direction::new(DirectionId::new(1), "Be healthier").unwrap())
             .unwrap();
-        goals
-            .save(&Goal::new(GoalId::new(2), DirectionId::new(1), "Run a 5k").unwrap())
+        targets
+            .save(&Target::new(TargetId::new(2), DirectionId::new(1), "Run a 5k").unwrap())
             .unwrap();
         let assumption = AssumptionId::new(3);
         assumptions
-            .save(&Assumption::new(assumption, GoalId::new(2), "Mornings").unwrap())
+            .save(&Assumption::new(assumption, TargetId::new(2), "Mornings").unwrap())
             .unwrap();
 
         let mut e = Experiment::propose(ExperimentId::new(4), assumption, "Try mornings").unwrap();
@@ -1262,18 +1305,68 @@ mod tests {
     }
 
     #[test]
+    fn opening_a_pre_rename_database_migrates_goals_to_targets() {
+        use endora_application::{AssumptionRepository, TargetRepository};
+        use endora_domain::{AssumptionId, DirectionId, TargetId};
+        use rusqlite::Connection;
+
+        // A database created before Goal was renamed to Target: a `goals` table
+        // and `goal_id` foreign keys, with a direction, a goal, and an assumption.
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE directions (id TEXT PRIMARY KEY, title TEXT NOT NULL) STRICT;
+             CREATE TABLE goals (
+                id           TEXT PRIMARY KEY,
+                direction_id TEXT NOT NULL REFERENCES directions(id),
+                statement    TEXT NOT NULL
+             ) STRICT;
+             CREATE INDEX idx_goals_direction ON goals(direction_id);
+             CREATE TABLE assumptions (
+                id        TEXT PRIMARY KEY,
+                goal_id   TEXT NOT NULL REFERENCES goals(id),
+                statement TEXT NOT NULL
+             ) STRICT;
+             CREATE INDEX idx_assumptions_goal ON assumptions(goal_id);
+             CREATE TABLE reflections (
+                id      TEXT PRIMARY KEY,
+                goal_id TEXT NOT NULL REFERENCES goals(id),
+                summary TEXT NOT NULL
+             ) STRICT;
+             CREATE INDEX idx_reflections_goal ON reflections(goal_id);
+             INSERT INTO directions VALUES ('1', 'Get back into running');
+             INSERT INTO goals VALUES ('2', '1', 'Run a 5k without stopping');
+             INSERT INTO assumptions VALUES ('3', '2', 'Mornings are more sustainable');",
+        )
+        .unwrap();
+
+        // Opening the store migrates the schema and preserves the data under the
+        // new names.
+        let store = SqliteStore::from_connection(conn).unwrap();
+        let targets: &dyn TargetRepository = &store;
+        let loaded = targets.get(TargetId::new(2)).unwrap().unwrap();
+        assert_eq!(loaded.statement(), "Run a 5k without stopping");
+        assert_eq!(loaded.direction(), DirectionId::new(1));
+
+        // The assumption still links to its target through the renamed column.
+        let assumptions: &dyn AssumptionRepository = &store;
+        let found = assumptions.list_for_target(TargetId::new(2)).unwrap();
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].id(), AssumptionId::new(3));
+    }
+
+    #[test]
     fn observations_round_trip_with_their_timestamp() {
         use endora_application::{
             AssumptionRepository, ExperimentRepository, ObservationRepository,
         };
         use endora_domain::{
-            Assumption, AssumptionId, Experiment, ExperimentId, GoalId, Observation, ObservationId,
-            Timestamp,
+            Assumption, AssumptionId, Experiment, ExperimentId, Observation, ObservationId,
+            TargetId, Timestamp,
         };
 
         let store = store();
         let directions: &dyn DirectionRepository = &store;
-        let goals: &dyn GoalRepository = &store;
+        let targets: &dyn TargetRepository = &store;
         let assumptions: &dyn AssumptionRepository = &store;
         let experiments: &dyn ExperimentRepository = &store;
         let observations: &dyn ObservationRepository = &store;
@@ -1282,13 +1375,13 @@ mod tests {
         directions
             .save(&Direction::new(direction, "Be healthier").unwrap())
             .unwrap();
-        let goal = GoalId::new(2);
-        goals
-            .save(&Goal::new(goal, direction, "Run a 5k").unwrap())
+        let target = TargetId::new(2);
+        targets
+            .save(&Target::new(target, direction, "Run a 5k").unwrap())
             .unwrap();
         let assumption = AssumptionId::new(3);
         assumptions
-            .save(&Assumption::new(assumption, goal, "Mornings are freest").unwrap())
+            .save(&Assumption::new(assumption, target, "Mornings are freest").unwrap())
             .unwrap();
         let experiment = ExperimentId::new(4);
         experiments
@@ -1311,13 +1404,13 @@ mod tests {
             AssumptionRepository, ExperimentRepository, ObservationRepository, ReflectionRepository,
         };
         use endora_domain::{
-            Assumption, AssumptionId, Experiment, ExperimentId, GoalId, Observation, ObservationId,
-            Reflection, ReflectionId, Timestamp,
+            Assumption, AssumptionId, Experiment, ExperimentId, Observation, ObservationId,
+            Reflection, ReflectionId, TargetId, Timestamp,
         };
 
         let store = store();
         let directions: &dyn DirectionRepository = &store;
-        let goals: &dyn GoalRepository = &store;
+        let targets: &dyn TargetRepository = &store;
         let assumptions: &dyn AssumptionRepository = &store;
         let experiments: &dyn ExperimentRepository = &store;
         let observations: &dyn ObservationRepository = &store;
@@ -1328,13 +1421,13 @@ mod tests {
         directions
             .save(&Direction::new(direction, "Be healthier").unwrap())
             .unwrap();
-        let goal = GoalId::new(2);
-        goals
-            .save(&Goal::new(goal, direction, "Run a 5k").unwrap())
+        let target = TargetId::new(2);
+        targets
+            .save(&Target::new(target, direction, "Run a 5k").unwrap())
             .unwrap();
         let assumption = AssumptionId::new(3);
         assumptions
-            .save(&Assumption::new(assumption, goal, "Mornings").unwrap())
+            .save(&Assumption::new(assumption, target, "Mornings").unwrap())
             .unwrap();
         let experiment = ExperimentId::new(4);
         experiments
@@ -1352,7 +1445,7 @@ mod tests {
         // Evidence order (11 before 10) must survive the round trip.
         let r = Reflection::new(
             ReflectionId::new(5),
-            goal,
+            target,
             "mornings worked",
             vec![ObservationId::new(11), ObservationId::new(10)],
         )
@@ -1363,19 +1456,20 @@ mod tests {
             reflections.get(ReflectionId::new(5)).unwrap(),
             Some(r.clone())
         );
-        assert_eq!(reflections.list_for_goal(goal).unwrap(), vec![r]);
+        assert_eq!(reflections.list_for_target(target).unwrap(), vec![r]);
     }
 
     #[test]
     fn process_change_approval_survives_a_reload() {
         use endora_application::{ProcessChangeRepository, ReflectionRepository};
         use endora_domain::{
-            GoalId, ObservationId, ProcessChangeId, ProposedProcessChange, Reflection, ReflectionId,
+            ObservationId, ProcessChangeId, ProposedProcessChange, Reflection, ReflectionId,
+            TargetId,
         };
 
         let store = store();
         let directions: &dyn DirectionRepository = &store;
-        let goals: &dyn GoalRepository = &store;
+        let targets: &dyn TargetRepository = &store;
         let reflections: &dyn ReflectionRepository = &store;
         let changes: &dyn ProcessChangeRepository = &store;
 
@@ -1387,9 +1481,9 @@ mod tests {
         directions
             .save(&Direction::new(direction, "Be healthier").unwrap())
             .unwrap();
-        let goal = GoalId::new(2);
-        goals
-            .save(&Goal::new(goal, direction, "Run a 5k").unwrap())
+        let target = TargetId::new(2);
+        targets
+            .save(&Target::new(target, direction, "Run a 5k").unwrap())
             .unwrap();
 
         use endora_application::{
@@ -1400,7 +1494,7 @@ mod tests {
         };
         let assumption = AssumptionId::new(3);
         (&store as &dyn AssumptionRepository)
-            .save(&Assumption::new(assumption, goal, "Mornings").unwrap())
+            .save(&Assumption::new(assumption, target, "Mornings").unwrap())
             .unwrap();
         let experiment = ExperimentId::new(4);
         (&store as &dyn ExperimentRepository)
@@ -1415,7 +1509,7 @@ mod tests {
 
         let reflection = ReflectionId::new(6);
         reflections
-            .save(&Reflection::new(reflection, goal, "worked", vec![obs]).unwrap())
+            .save(&Reflection::new(reflection, target, "worked", vec![obs]).unwrap())
             .unwrap();
 
         // Save an approved change; propose() alone could not rebuild this state.
@@ -1440,9 +1534,9 @@ mod tests {
             ObservationRepository, ProcessChangeRepository, ReflectionRepository,
         };
         use endora_domain::{
-            Assumption, AssumptionId, AuditId, AuditRecord, Experiment, ExperimentId, GoalId,
-            Observation, ObservationId, ProcessChangeId, ProposedProcessChange, Reflection,
-            ReflectionId, Timestamp,
+            Assumption, AssumptionId, AuditId, AuditRecord, Experiment, ExperimentId, Observation,
+            ObservationId, ProcessChangeId, ProposedProcessChange, Reflection, ReflectionId,
+            TargetId, Timestamp,
         };
 
         let store = store();
@@ -1451,13 +1545,13 @@ mod tests {
         (&store as &dyn DirectionRepository)
             .save(&Direction::new(direction, "Be healthier").unwrap())
             .unwrap();
-        let goal = GoalId::new(2);
-        (&store as &dyn GoalRepository)
-            .save(&Goal::new(goal, direction, "Run a 5k").unwrap())
+        let target = TargetId::new(2);
+        (&store as &dyn TargetRepository)
+            .save(&Target::new(target, direction, "Run a 5k").unwrap())
             .unwrap();
         let assumption = AssumptionId::new(3);
         (&store as &dyn AssumptionRepository)
-            .save(&Assumption::new(assumption, goal, "Mornings").unwrap())
+            .save(&Assumption::new(assumption, target, "Mornings").unwrap())
             .unwrap();
         let experiment = ExperimentId::new(4);
         (&store as &dyn ExperimentRepository)
@@ -1471,7 +1565,7 @@ mod tests {
             .unwrap();
         let reflection = ReflectionId::new(6);
         (&store as &dyn ReflectionRepository)
-            .save(&Reflection::new(reflection, goal, "worked", vec![obs]).unwrap())
+            .save(&Reflection::new(reflection, target, "worked", vec![obs]).unwrap())
             .unwrap();
         (&store as &dyn ProcessChangeRepository)
             .save(
@@ -1488,7 +1582,7 @@ mod tests {
 
         let snapshot = (&store as &dyn MemoryStore).export().unwrap();
         assert_eq!(snapshot.directions.len(), 1);
-        assert_eq!(snapshot.goals.len(), 1);
+        assert_eq!(snapshot.targets.len(), 1);
         assert_eq!(snapshot.assumptions.len(), 1);
         assert_eq!(snapshot.experiments.len(), 1);
         assert_eq!(snapshot.observations.len(), 1);

@@ -8,9 +8,9 @@
 use core::fmt;
 
 use endora_domain::{
-    Assumption, AssumptionId, AuditRecord, Direction, DirectionId, Experiment, ExperimentId, Goal,
-    GoalId, Observation, ProcessChangeId, ProposedProcessChange, Reflection, ReflectionId,
-    Timestamp,
+    Assumption, AssumptionId, AuditRecord, Direction, DirectionId, Experiment, ExperimentId,
+    Observation, ProcessChangeId, ProposedProcessChange, Reflection, ReflectionId, Target,
+    TargetId, Timestamp,
 };
 
 /// A complete snapshot of the user's stored data, for the memory rights of the
@@ -19,8 +19,8 @@ use endora_domain::{
 pub struct MemorySnapshot {
     /// All directions.
     pub directions: Vec<Direction>,
-    /// All goals.
-    pub goals: Vec<Goal>,
+    /// All targets.
+    pub targets: Vec<Target>,
     /// All assumptions.
     pub assumptions: Vec<Assumption>,
     /// All experiments.
@@ -96,25 +96,25 @@ pub trait DirectionRepository {
     fn list_all(&self) -> Result<Vec<Direction>, RepositoryError>;
 }
 
-/// Persists and retrieves [`Goal`]s.
-pub trait GoalRepository {
-    /// Inserts a goal, or replaces the existing one with the same id.
+/// Persists and retrieves [`Target`]s.
+pub trait TargetRepository {
+    /// Inserts a target, or replaces the existing one with the same id.
     ///
     /// # Errors
     /// [`RepositoryError`] if the backend fails.
-    fn save(&self, goal: &Goal) -> Result<(), RepositoryError>;
+    fn save(&self, target: &Target) -> Result<(), RepositoryError>;
 
-    /// Fetches a goal by id, returning `None` if it does not exist.
+    /// Fetches a target by id, returning `None` if it does not exist.
     ///
     /// # Errors
     /// [`RepositoryError`] if the backend fails or stored data is corrupt.
-    fn get(&self, id: GoalId) -> Result<Option<Goal>, RepositoryError>;
+    fn get(&self, id: TargetId) -> Result<Option<Target>, RepositoryError>;
 
-    /// Lists the goals belonging to a direction, in a stable order.
+    /// Lists the targets belonging to a direction, in a stable order.
     ///
     /// # Errors
     /// [`RepositoryError`] if the backend fails or stored data is corrupt.
-    fn list_for_direction(&self, direction: DirectionId) -> Result<Vec<Goal>, RepositoryError>;
+    fn list_for_direction(&self, direction: DirectionId) -> Result<Vec<Target>, RepositoryError>;
 }
 
 /// Persists and retrieves [`Assumption`]s.
@@ -131,11 +131,11 @@ pub trait AssumptionRepository {
     /// [`RepositoryError`] if the backend fails or stored data is corrupt.
     fn get(&self, id: AssumptionId) -> Result<Option<Assumption>, RepositoryError>;
 
-    /// Lists the assumptions belonging to a goal, in a stable order.
+    /// Lists the assumptions belonging to a target, in a stable order.
     ///
     /// # Errors
     /// [`RepositoryError`] if the backend fails or stored data is corrupt.
-    fn list_for_goal(&self, goal: GoalId) -> Result<Vec<Assumption>, RepositoryError>;
+    fn list_for_target(&self, target: TargetId) -> Result<Vec<Assumption>, RepositoryError>;
 }
 
 /// Persists and retrieves [`Experiment`]s.
@@ -269,11 +269,11 @@ pub trait ReflectionRepository {
     /// [`RepositoryError`] if the backend fails or stored data is corrupt.
     fn get(&self, id: ReflectionId) -> Result<Option<Reflection>, RepositoryError>;
 
-    /// Lists the reflections for a goal, in a stable order.
+    /// Lists the reflections for a target, in a stable order.
     ///
     /// # Errors
     /// [`RepositoryError`] if the backend fails or stored data is corrupt.
-    fn list_for_goal(&self, goal: GoalId) -> Result<Vec<Reflection>, RepositoryError>;
+    fn list_for_target(&self, target: TargetId) -> Result<Vec<Reflection>, RepositoryError>;
 }
 
 /// Persists and retrieves [`ProposedProcessChange`]s.

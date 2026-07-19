@@ -1,4 +1,4 @@
-//! Use cases for the Direction & Goals slice.
+//! Use cases for the Direction & Targets slice.
 //!
 //! These orchestrate the domain and the ports. They are the seam the interfaces
 //! (node, CLI) call; they hold no transport or storage detail. Identifiers and
@@ -7,16 +7,16 @@
 
 use endora_domain::{
     Assumption, AssumptionId, AuditId, AuditRecord, AutonomyLevel, Direction, DirectionId,
-    Experiment, ExperimentId, Goal, GoalId, Observation, ObservationId, PolicyDecision,
-    ProcessChangeId, ProposedProcessChange, Reflection, ReflectionId, Timestamp,
+    Experiment, ExperimentId, Observation, ObservationId, PolicyDecision, ProcessChangeId,
+    ProposedProcessChange, Reflection, ReflectionId, Target, TargetId, Timestamp,
     authorize_process_change,
 };
 
 use crate::error::AppError;
 use crate::ports::{
-    AssumptionRepository, AuditLog, Clock, DirectionRepository, ExperimentRepository,
-    GoalRepository, IdSource, MemorySnapshot, MemoryStore, ObservationRepository,
-    ProcessChangeRepository, Proposer, ReflectionRepository,
+    AssumptionRepository, AuditLog, Clock, DirectionRepository, ExperimentRepository, IdSource,
+    MemorySnapshot, MemoryStore, ObservationRepository, ProcessChangeRepository, Proposer,
+    ReflectionRepository, TargetRepository,
 };
 
 /// Creates and stores a new [`Direction`].
@@ -34,26 +34,26 @@ pub fn create_direction(
     Ok(direction)
 }
 
-/// Creates and stores a new [`Goal`] under an existing direction.
+/// Creates and stores a new [`Target`] under an existing direction.
 ///
 /// # Errors
 /// [`AppError::NotFound`] if the direction does not exist, [`AppError::Domain`]
 /// if the statement is invalid, or [`AppError::Repository`] if persistence fails.
-pub fn create_goal(
+pub fn create_target(
     directions: &impl DirectionRepository,
-    goals: &impl GoalRepository,
+    targets: &impl TargetRepository,
     ids: &impl IdSource,
     direction: DirectionId,
     statement: &str,
-) -> Result<Goal, AppError> {
+) -> Result<Target, AppError> {
     if directions.get(direction)?.is_none() {
         return Err(AppError::NotFound {
             entity: "direction",
         });
     }
-    let goal = Goal::new(GoalId::new(ids.new_id()), direction, statement)?;
-    goals.save(&goal)?;
-    Ok(goal)
+    let target = Target::new(TargetId::new(ids.new_id()), direction, statement)?;
+    targets.save(&target)?;
+    Ok(target)
 }
 
 /// Lists all directions, in a stable order.
@@ -64,46 +64,46 @@ pub fn list_directions(directions: &impl DirectionRepository) -> Result<Vec<Dire
     Ok(directions.list_all()?)
 }
 
-/// Lists the goals under a direction, in a stable order.
+/// Lists the targets under a direction, in a stable order.
 ///
 /// # Errors
 /// [`AppError::Repository`] if persistence fails.
-pub fn list_goals(
-    goals: &impl GoalRepository,
+pub fn list_targets(
+    targets: &impl TargetRepository,
     direction: DirectionId,
-) -> Result<Vec<Goal>, AppError> {
-    Ok(goals.list_for_direction(direction)?)
+) -> Result<Vec<Target>, AppError> {
+    Ok(targets.list_for_direction(direction)?)
 }
 
-/// Creates and stores a new [`Assumption`] under an existing goal.
+/// Creates and stores a new [`Assumption`] under an existing target.
 ///
 /// # Errors
-/// [`AppError::NotFound`] if the goal does not exist, [`AppError::Domain`] if
+/// [`AppError::NotFound`] if the target does not exist, [`AppError::Domain`] if
 /// the statement is invalid, or [`AppError::Repository`] if persistence fails.
 pub fn create_assumption(
-    goals: &impl GoalRepository,
+    targets: &impl TargetRepository,
     assumptions: &impl AssumptionRepository,
     ids: &impl IdSource,
-    goal: GoalId,
+    target: TargetId,
     statement: &str,
 ) -> Result<Assumption, AppError> {
-    if goals.get(goal)?.is_none() {
-        return Err(AppError::NotFound { entity: "goal" });
+    if targets.get(target)?.is_none() {
+        return Err(AppError::NotFound { entity: "target" });
     }
-    let assumption = Assumption::new(AssumptionId::new(ids.new_id()), goal, statement)?;
+    let assumption = Assumption::new(AssumptionId::new(ids.new_id()), target, statement)?;
     assumptions.save(&assumption)?;
     Ok(assumption)
 }
 
-/// Lists the assumptions under a goal, in a stable order.
+/// Lists the assumptions under a target, in a stable order.
 ///
 /// # Errors
 /// [`AppError::Repository`] if persistence fails.
 pub fn list_assumptions(
     assumptions: &impl AssumptionRepository,
-    goal: GoalId,
+    target: TargetId,
 ) -> Result<Vec<Assumption>, AppError> {
-    Ok(assumptions.list_for_goal(goal)?)
+    Ok(assumptions.list_for_target(target)?)
 }
 
 /// Proposes and stores a new [`Experiment`] under an existing assumption.
@@ -255,37 +255,37 @@ pub fn list_observations(
 }
 
 /// Creates and stores a new [`Reflection`] over one or more observations, under
-/// an existing goal.
+/// an existing target.
 ///
 /// # Errors
-/// [`AppError::NotFound`] if the goal does not exist, [`AppError::Domain`] if the
+/// [`AppError::NotFound`] if the target does not exist, [`AppError::Domain`] if the
 /// summary is blank or no evidence is cited, or [`AppError::Repository`] on
 /// failure.
 pub fn create_reflection(
-    goals: &impl GoalRepository,
+    targets: &impl TargetRepository,
     reflections: &impl ReflectionRepository,
     ids: &impl IdSource,
-    goal: GoalId,
+    target: TargetId,
     summary: &str,
     evidence: Vec<ObservationId>,
 ) -> Result<Reflection, AppError> {
-    if goals.get(goal)?.is_none() {
-        return Err(AppError::NotFound { entity: "goal" });
+    if targets.get(target)?.is_none() {
+        return Err(AppError::NotFound { entity: "target" });
     }
-    let reflection = Reflection::new(ReflectionId::new(ids.new_id()), goal, summary, evidence)?;
+    let reflection = Reflection::new(ReflectionId::new(ids.new_id()), target, summary, evidence)?;
     reflections.save(&reflection)?;
     Ok(reflection)
 }
 
-/// Lists the reflections for a goal, in a stable order.
+/// Lists the reflections for a target, in a stable order.
 ///
 /// # Errors
 /// [`AppError::Repository`] if persistence fails.
 pub fn list_reflections(
     reflections: &impl ReflectionRepository,
-    goal: GoalId,
+    target: TargetId,
 ) -> Result<Vec<Reflection>, AppError> {
-    Ok(reflections.list_for_goal(goal)?)
+    Ok(reflections.list_for_target(target)?)
 }
 
 /// Proposes and stores a new [`ProposedProcessChange`] from an existing
@@ -584,23 +584,23 @@ mod tests {
     use super::draft_process_change;
     use super::{
         approve_process_change, conclude_experiment, create_assumption, create_direction,
-        create_goal, create_reflection, decide_process_change, decide_stored_process_change,
-        list_assumptions, list_due_reviews, list_experiments, list_goals, list_observations,
-        list_process_changes, list_reflections, propose_experiment, propose_process_change,
-        recent_audit, record_observation, reject_process_change, schedule_experiment_review,
-        start_experiment,
+        create_reflection, create_target, decide_process_change, decide_stored_process_change,
+        list_assumptions, list_due_reviews, list_experiments, list_observations,
+        list_process_changes, list_reflections, list_targets, propose_experiment,
+        propose_process_change, recent_audit, record_observation, reject_process_change,
+        schedule_experiment_review, start_experiment,
     };
     use crate::error::AppError;
     use crate::ports::{
-        AssumptionRepository, AuditLog, Clock, DirectionRepository, ExperimentRepository,
-        GoalRepository, IdSource, ObservationRepository, ProcessChangeRepository, ProposalError,
-        Proposer, ReflectionRepository, RepositoryError,
+        AssumptionRepository, AuditLog, Clock, DirectionRepository, ExperimentRepository, IdSource,
+        ObservationRepository, ProcessChangeRepository, ProposalError, Proposer,
+        ReflectionRepository, RepositoryError, TargetRepository,
     };
     use endora_domain::{
         ApprovalState, Assumption, AssumptionId, AuditRecord, AutonomyLevel, Direction,
-        DirectionId, Experiment, ExperimentId, ExperimentStatus, Goal, GoalId, Observation,
-        ObservationId, PolicyDecision, ProcessChangeId, ProposedProcessChange, Reflection,
-        ReflectionId, Timestamp,
+        DirectionId, Experiment, ExperimentId, ExperimentStatus, Observation, ObservationId,
+        PolicyDecision, ProcessChangeId, ProposedProcessChange, Reflection, ReflectionId, Target,
+        TargetId, Timestamp,
     };
     use std::cell::{Cell, RefCell};
     use std::collections::HashMap;
@@ -609,7 +609,7 @@ mod tests {
     #[derive(Default)]
     struct FakeStore {
         directions: RefCell<HashMap<u128, Direction>>,
-        goals: RefCell<HashMap<u128, Goal>>,
+        targets: RefCell<HashMap<u128, Target>>,
         assumptions: RefCell<HashMap<u128, Assumption>>,
         experiments: RefCell<HashMap<u128, Experiment>>,
         observations: RefCell<HashMap<u128, Observation>>,
@@ -656,12 +656,12 @@ mod tests {
         fn get(&self, id: ReflectionId) -> Result<Option<Reflection>, RepositoryError> {
             Ok(self.reflections.borrow().get(&id.value()).cloned())
         }
-        fn list_for_goal(&self, goal: GoalId) -> Result<Vec<Reflection>, RepositoryError> {
+        fn list_for_target(&self, target: TargetId) -> Result<Vec<Reflection>, RepositoryError> {
             let mut found: Vec<Reflection> = self
                 .reflections
                 .borrow()
                 .values()
-                .filter(|r| r.goal() == goal)
+                .filter(|r| r.target() == target)
                 .cloned()
                 .collect();
             found.sort_by_key(|r| r.id().value());
@@ -709,12 +709,12 @@ mod tests {
         fn get(&self, id: AssumptionId) -> Result<Option<Assumption>, RepositoryError> {
             Ok(self.assumptions.borrow().get(&id.value()).cloned())
         }
-        fn list_for_goal(&self, goal: GoalId) -> Result<Vec<Assumption>, RepositoryError> {
+        fn list_for_target(&self, target: TargetId) -> Result<Vec<Assumption>, RepositoryError> {
             let mut found: Vec<Assumption> = self
                 .assumptions
                 .borrow()
                 .values()
-                .filter(|a| a.goal() == goal)
+                .filter(|a| a.target() == target)
                 .cloned()
                 .collect();
             found.sort_by_key(|a| a.id().value());
@@ -776,19 +776,22 @@ mod tests {
         }
     }
 
-    impl GoalRepository for FakeStore {
-        fn save(&self, goal: &Goal) -> Result<(), RepositoryError> {
-            self.goals
+    impl TargetRepository for FakeStore {
+        fn save(&self, target: &Target) -> Result<(), RepositoryError> {
+            self.targets
                 .borrow_mut()
-                .insert(goal.id().value(), goal.clone());
+                .insert(target.id().value(), target.clone());
             Ok(())
         }
-        fn get(&self, id: GoalId) -> Result<Option<Goal>, RepositoryError> {
-            Ok(self.goals.borrow().get(&id.value()).cloned())
+        fn get(&self, id: TargetId) -> Result<Option<Target>, RepositoryError> {
+            Ok(self.targets.borrow().get(&id.value()).cloned())
         }
-        fn list_for_direction(&self, direction: DirectionId) -> Result<Vec<Goal>, RepositoryError> {
-            let mut found: Vec<Goal> = self
-                .goals
+        fn list_for_direction(
+            &self,
+            direction: DirectionId,
+        ) -> Result<Vec<Target>, RepositoryError> {
+            let mut found: Vec<Target> = self
+                .targets
                 .borrow()
                 .values()
                 .filter(|g| g.direction() == direction)
@@ -917,10 +920,11 @@ mod tests {
     }
 
     #[test]
-    fn create_goal_requires_an_existing_direction() {
+    fn create_target_requires_an_existing_direction() {
         let store = FakeStore::default();
         let ids = SeqIds::default();
-        let err = create_goal(&store, &store, &ids, DirectionId::new(999), "Run a 5k").unwrap_err();
+        let err =
+            create_target(&store, &store, &ids, DirectionId::new(999), "Run a 5k").unwrap_err();
         assert_eq!(
             err,
             AppError::NotFound {
@@ -930,15 +934,15 @@ mod tests {
     }
 
     #[test]
-    fn create_goal_under_a_direction_then_list() {
+    fn create_target_under_a_direction_then_list() {
         let store = FakeStore::default();
         let ids = SeqIds::default();
         let direction = create_direction(&store, &ids, "Be healthier").unwrap();
 
-        let g1 = create_goal(&store, &store, &ids, direction.id(), "Run a 5k").unwrap();
-        let g2 = create_goal(&store, &store, &ids, direction.id(), "Sleep 8h").unwrap();
+        let g1 = create_target(&store, &store, &ids, direction.id(), "Run a 5k").unwrap();
+        let g2 = create_target(&store, &store, &ids, direction.id(), "Sleep 8h").unwrap();
 
-        assert_eq!(list_goals(&store, direction.id()).unwrap(), vec![g1, g2]);
+        assert_eq!(list_targets(&store, direction.id()).unwrap(), vec![g1, g2]);
     }
 
     #[test]
@@ -950,38 +954,39 @@ mod tests {
     }
 
     #[test]
-    fn create_assumption_requires_an_existing_goal() {
+    fn create_assumption_requires_an_existing_target() {
         let store = FakeStore::default();
         let ids = SeqIds::default();
         let err = create_assumption(
             &store,
             &store,
             &ids,
-            GoalId::new(404),
+            TargetId::new(404),
             "Mornings are freest",
         )
         .unwrap_err();
-        assert_eq!(err, AppError::NotFound { entity: "goal" });
+        assert_eq!(err, AppError::NotFound { entity: "target" });
     }
 
     #[test]
-    fn create_assumption_under_a_goal_then_list() {
+    fn create_assumption_under_a_target_then_list() {
         let store = FakeStore::default();
         let ids = SeqIds::default();
         let direction = create_direction(&store, &ids, "Be healthier").unwrap();
-        let goal = create_goal(&store, &store, &ids, direction.id(), "Run a 5k").unwrap();
+        let target = create_target(&store, &store, &ids, direction.id(), "Run a 5k").unwrap();
 
-        let a1 = create_assumption(&store, &store, &ids, goal.id(), "Mornings are freest").unwrap();
-        let a2 = create_assumption(&store, &store, &ids, goal.id(), "Rain is rare").unwrap();
+        let a1 =
+            create_assumption(&store, &store, &ids, target.id(), "Mornings are freest").unwrap();
+        let a2 = create_assumption(&store, &store, &ids, target.id(), "Rain is rare").unwrap();
 
-        assert_eq!(list_assumptions(&store, goal.id()).unwrap(), vec![a1, a2]);
+        assert_eq!(list_assumptions(&store, target.id()).unwrap(), vec![a1, a2]);
     }
 
-    /// Builds direction → goal → assumption and returns the assumption id.
+    /// Builds direction → target → assumption and returns the assumption id.
     fn seed_assumption(store: &FakeStore, ids: &SeqIds) -> AssumptionId {
         let direction = create_direction(store, ids, "Be healthier").unwrap();
-        let goal = create_goal(store, store, ids, direction.id(), "Run a 5k").unwrap();
-        create_assumption(store, store, ids, goal.id(), "Mornings are freest")
+        let target = create_target(store, store, ids, direction.id(), "Run a 5k").unwrap();
+        create_assumption(store, store, ids, target.id(), "Mornings are freest")
             .unwrap()
             .id()
     }
@@ -1125,19 +1130,19 @@ mod tests {
     }
 
     #[test]
-    fn create_reflection_requires_an_existing_goal() {
+    fn create_reflection_requires_an_existing_target() {
         let store = FakeStore::default();
         let ids = SeqIds::default();
         let err = create_reflection(
             &store,
             &store,
             &ids,
-            GoalId::new(404),
+            TargetId::new(404),
             "went well",
             vec![ObservationId::new(1)],
         )
         .unwrap_err();
-        assert_eq!(err, AppError::NotFound { entity: "goal" });
+        assert_eq!(err, AppError::NotFound { entity: "target" });
     }
 
     #[test]
@@ -1145,9 +1150,9 @@ mod tests {
         let store = FakeStore::default();
         let ids = SeqIds::default();
         let direction = create_direction(&store, &ids, "Be healthier").unwrap();
-        let goal = create_goal(&store, &store, &ids, direction.id(), "Run a 5k").unwrap();
+        let target = create_target(&store, &store, &ids, direction.id(), "Run a 5k").unwrap();
         let err =
-            create_reflection(&store, &store, &ids, goal.id(), "went well", vec![]).unwrap_err();
+            create_reflection(&store, &store, &ids, target.id(), "went well", vec![]).unwrap_err();
         assert!(matches!(err, AppError::Domain(_)));
     }
 
@@ -1156,28 +1161,28 @@ mod tests {
         let store = FakeStore::default();
         let ids = SeqIds::default();
         let direction = create_direction(&store, &ids, "Be healthier").unwrap();
-        let goal = create_goal(&store, &store, &ids, direction.id(), "Run a 5k").unwrap();
+        let target = create_target(&store, &store, &ids, direction.id(), "Run a 5k").unwrap();
         let r = create_reflection(
             &store,
             &store,
             &ids,
-            goal.id(),
+            target.id(),
             "mornings worked",
             vec![ObservationId::new(1), ObservationId::new(2)],
         )
         .unwrap();
-        assert_eq!(list_reflections(&store, goal.id()).unwrap(), vec![r]);
+        assert_eq!(list_reflections(&store, target.id()).unwrap(), vec![r]);
     }
 
-    /// Builds direction → goal → reflection and returns the reflection id.
+    /// Builds direction → target → reflection and returns the reflection id.
     fn seed_reflection(store: &FakeStore, ids: &SeqIds) -> ReflectionId {
         let direction = create_direction(store, ids, "Be healthier").unwrap();
-        let goal = create_goal(store, store, ids, direction.id(), "Run a 5k").unwrap();
+        let target = create_target(store, store, ids, direction.id(), "Run a 5k").unwrap();
         create_reflection(
             store,
             store,
             ids,
-            goal.id(),
+            target.id(),
             "mornings worked",
             vec![ObservationId::new(1)],
         )

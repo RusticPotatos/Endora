@@ -43,7 +43,7 @@ impl ExperimentStatus {
     }
 }
 
-/// A small, bounded test of an [`Assumption`](crate::goals::Assumption).
+/// A small, bounded test of an [`Assumption`](crate::targets::Assumption).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Experiment {
     id: ExperimentId,

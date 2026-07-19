@@ -2,7 +2,7 @@
 //!
 //! The node is Endora's authoritative backend runtime — the "brain". It serves
 //! the versioned HTTP/JSON protocol that thin clients speak. This build exposes
-//! the first vertical slice (Direction & Goals); the policy boundary, the model
+//! the first vertical slice (Direction & Targets); the policy boundary, the model
 //! adapter, and the rest of the learning loop arrive in later slices (see
 //! `docs/roadmap.md`).
 
