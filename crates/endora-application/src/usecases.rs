@@ -9,14 +9,14 @@ use endora_domain::{
     Assumption, AssumptionId, AuditId, AuditRecord, AutonomyLevel, Direction, DirectionId,
     Experiment, ExperimentId, LifecycleStatus, Observation, ObservationId, PolicyDecision,
     ProcessChangeId, ProposedProcessChange, Reflection, ReflectionId, Target, TargetId, Timestamp,
-    authorize_process_change,
+    Value, ValueId, authorize_process_change,
 };
 
 use crate::error::AppError;
 use crate::ports::{
     AssumptionRepository, AuditLog, Clock, DirectionRepository, ExperimentRepository, IdSource,
     MemorySnapshot, MemoryStore, ObservationRepository, ProcessChangeRepository, Proposer,
-    ReflectionRepository, TargetRepository,
+    ReflectionRepository, TargetRepository, ValueRepository,
 };
 
 /// Creates and stores a new [`Direction`].
@@ -30,6 +30,79 @@ pub fn create_direction(
     title: &str,
 ) -> Result<Direction, AppError> {
     let direction = Direction::new(DirectionId::new(ids.new_id()), title)?;
+    directions.save(&direction)?;
+    Ok(direction)
+}
+
+/// Creates and stores a new [`Value`] (the "why" a North Star serves).
+///
+/// # Errors
+/// [`AppError::Domain`] if the name is invalid, or [`AppError::Repository`] if
+/// persistence fails.
+pub fn create_value(
+    values: &impl ValueRepository,
+    ids: &impl IdSource,
+    name: &str,
+) -> Result<Value, AppError> {
+    let value = Value::new(ValueId::new(ids.new_id()), name)?;
+    values.save(&value)?;
+    Ok(value)
+}
+
+/// Lists all values, in a stable order.
+///
+/// # Errors
+/// [`AppError::Repository`] if persistence fails.
+pub fn list_values(values: &impl ValueRepository) -> Result<Vec<Value>, AppError> {
+    Ok(values.list_all()?)
+}
+
+/// Permanently deletes a value, refusing while any North Star still serves it.
+///
+/// # Errors
+/// [`AppError::NotFound`] if the value does not exist, [`AppError::BadRequest`] if
+/// a North Star still references it, or [`AppError::Repository`] on failure.
+pub fn delete_value(
+    values: &impl ValueRepository,
+    directions: &impl DirectionRepository,
+    id: ValueId,
+) -> Result<(), AppError> {
+    if values.get(id)?.is_none() {
+        return Err(AppError::NotFound { entity: "value" });
+    }
+    if directions.list_all()?.iter().any(|d| d.value() == Some(id)) {
+        return Err(AppError::BadRequest {
+            message: "cannot delete a value while North Stars still serve it; \
+                      re-file those North Stars first"
+                .to_owned(),
+        });
+    }
+    values.delete(id)?;
+    Ok(())
+}
+
+/// Files a North Star under a value (or clears it with `None`).
+///
+/// The person — or the butler, by asking — sets this; it is never inferred.
+///
+/// # Errors
+/// [`AppError::NotFound`] if the direction or the named value does not exist, or
+/// [`AppError::Repository`] if persistence fails.
+pub fn assign_direction_value(
+    directions: &impl DirectionRepository,
+    values: &impl ValueRepository,
+    direction_id: DirectionId,
+    value_id: Option<ValueId>,
+) -> Result<Direction, AppError> {
+    let mut direction = directions.get(direction_id)?.ok_or(AppError::NotFound {
+        entity: "direction",
+    })?;
+    if let Some(v) = value_id {
+        if values.get(v)?.is_none() {
+            return Err(AppError::NotFound { entity: "value" });
+        }
+    }
+    direction.set_value(value_id);
     directions.save(&direction)?;
     Ok(direction)
 }
@@ -674,26 +747,26 @@ fn describe(decision: PolicyDecision) -> &'static str {
 mod tests {
     use super::draft_process_change;
     use super::{
-        approve_process_change, conclude_experiment, create_assumption, create_direction,
-        create_reflection, create_target, decide_process_change, decide_stored_process_change,
-        delete_direction, delete_target, list_assumptions, list_due_reviews, list_experiments,
-        list_observations, list_process_changes, list_reflections, list_targets,
-        propose_experiment, propose_process_change, recent_audit, record_observation,
-        reject_process_change, schedule_experiment_review, set_direction_status, set_target_status,
-        start_experiment,
+        approve_process_change, assign_direction_value, conclude_experiment, create_assumption,
+        create_direction, create_reflection, create_target, create_value, decide_process_change,
+        decide_stored_process_change, delete_direction, delete_target, delete_value,
+        list_assumptions, list_due_reviews, list_experiments, list_observations,
+        list_process_changes, list_reflections, list_targets, list_values, propose_experiment,
+        propose_process_change, recent_audit, record_observation, reject_process_change,
+        schedule_experiment_review, set_direction_status, set_target_status, start_experiment,
     };
     use crate::error::AppError;
     use crate::ports::{
         AssumptionRepository, AuditLog, Clock, DirectionRepository, ExperimentRepository, IdSource,
         ObservationRepository, ProcessChangeRepository, ProposalError, Proposer,
-        ReflectionRepository, RepositoryError, TargetRepository,
+        ReflectionRepository, RepositoryError, TargetRepository, ValueRepository,
     };
     use endora_domain::LifecycleStatus;
     use endora_domain::{
         ApprovalState, Assumption, AssumptionId, AuditRecord, AutonomyLevel, Direction,
         DirectionId, Experiment, ExperimentId, ExperimentStatus, Observation, ObservationId,
         PolicyDecision, ProcessChangeId, ProposedProcessChange, Reflection, ReflectionId, Target,
-        TargetId, Timestamp,
+        TargetId, Timestamp, Value, ValueId,
     };
     use std::cell::{Cell, RefCell};
     use std::collections::HashMap;
@@ -701,6 +774,7 @@ mod tests {
     /// An in-memory store implementing the repository ports, for tests only.
     #[derive(Default)]
     struct FakeStore {
+        values: RefCell<HashMap<u128, Value>>,
         directions: RefCell<HashMap<u128, Direction>>,
         targets: RefCell<HashMap<u128, Target>>,
         assumptions: RefCell<HashMap<u128, Assumption>>,
@@ -849,6 +923,27 @@ mod tests {
                 .collect();
             found.sort_by_key(|e| (e.review_by().map(|t| t.unix_millis()), e.id().value()));
             Ok(found)
+        }
+    }
+
+    impl ValueRepository for FakeStore {
+        fn save(&self, value: &Value) -> Result<(), RepositoryError> {
+            self.values
+                .borrow_mut()
+                .insert(value.id().value(), value.clone());
+            Ok(())
+        }
+        fn get(&self, id: ValueId) -> Result<Option<Value>, RepositoryError> {
+            Ok(self.values.borrow().get(&id.value()).cloned())
+        }
+        fn list_all(&self) -> Result<Vec<Value>, RepositoryError> {
+            let mut found: Vec<Value> = self.values.borrow().values().cloned().collect();
+            found.sort_by_key(|v| v.id().value());
+            Ok(found)
+        }
+        fn delete(&self, id: ValueId) -> Result<(), RepositoryError> {
+            self.values.borrow_mut().remove(&id.value());
+            Ok(())
         }
     }
 
@@ -1104,6 +1199,52 @@ mod tests {
         let archived =
             set_direction_status(&store, direction.id(), LifecycleStatus::Archived).unwrap();
         assert_eq!(archived.status(), LifecycleStatus::Archived);
+    }
+
+    #[test]
+    fn a_north_star_can_be_filed_under_a_value_and_cleared() {
+        let store = FakeStore::default();
+        let ids = SeqIds::default();
+        let value = create_value(&store, &ids, "Health").unwrap();
+        let direction = create_direction(&store, &ids, "Get back into running").unwrap();
+        assert_eq!(direction.value(), None);
+
+        let filed =
+            assign_direction_value(&store, &store, direction.id(), Some(value.id())).unwrap();
+        assert_eq!(filed.value(), Some(value.id()));
+        assert_eq!(list_values(&store).unwrap(), vec![value.clone()]);
+
+        // Unfiling clears the link.
+        let unfiled = assign_direction_value(&store, &store, direction.id(), None).unwrap();
+        assert_eq!(unfiled.value(), None);
+    }
+
+    #[test]
+    fn filing_under_an_unknown_value_is_not_found() {
+        let store = FakeStore::default();
+        let ids = SeqIds::default();
+        let direction = create_direction(&store, &ids, "Get back into running").unwrap();
+        let err = assign_direction_value(&store, &store, direction.id(), Some(ValueId::new(999)))
+            .unwrap_err();
+        assert_eq!(err, AppError::NotFound { entity: "value" });
+    }
+
+    #[test]
+    fn deleting_a_value_in_use_is_refused_then_allowed() {
+        let store = FakeStore::default();
+        let ids = SeqIds::default();
+        let value = create_value(&store, &ids, "Health").unwrap();
+        let direction = create_direction(&store, &ids, "Get back into running").unwrap();
+        assign_direction_value(&store, &store, direction.id(), Some(value.id())).unwrap();
+
+        // Refused while a North Star still serves it.
+        let err = delete_value(&store, &store, value.id()).unwrap_err();
+        assert!(matches!(err, AppError::BadRequest { .. }));
+
+        // Allowed once the North Star is re-filed (unfiled).
+        assign_direction_value(&store, &store, direction.id(), None).unwrap();
+        delete_value(&store, &store, value.id()).unwrap();
+        assert!(list_values(&store).unwrap().is_empty());
     }
 
     #[test]

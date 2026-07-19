@@ -5,7 +5,7 @@
 //! user-owned: the domain validates and holds them but never invents them.
 
 use crate::error::{DomainError, require_non_empty};
-use crate::ids::{AssumptionId, DirectionId, TargetId};
+use crate::ids::{AssumptionId, DirectionId, TargetId, ValueId};
 
 /// The lifecycle state of a [`Direction`] or [`Target`].
 ///
@@ -63,10 +63,13 @@ pub struct Direction {
     id: DirectionId,
     title: String,
     status: LifecycleStatus,
+    /// The [`Value`](crate::values::Value) this North Star serves, if the person
+    /// has filed it under one. `None` means "unfiled".
+    value: Option<ValueId>,
 }
 
 impl Direction {
-    /// Creates an [`Active`](LifecycleStatus::Active) direction.
+    /// Creates an [`Active`](LifecycleStatus::Active), unfiled direction.
     ///
     /// # Errors
     /// [`DomainError::EmptyField`] if `title` is blank.
@@ -76,11 +79,13 @@ impl Direction {
             id,
             title,
             status: LifecycleStatus::Active,
+            value: None,
         })
     }
 
     /// Reconstitutes a direction from persisted parts, including its stored
-    /// lifecycle status. For storage adapters loading a saved direction.
+    /// lifecycle status and value link. For storage adapters loading a saved
+    /// direction.
     ///
     /// # Errors
     /// [`DomainError::EmptyField`] if `title` is blank.
@@ -88,9 +93,15 @@ impl Direction {
         id: DirectionId,
         title: &str,
         status: LifecycleStatus,
+        value: Option<ValueId>,
     ) -> Result<Self, DomainError> {
         let title = require_non_empty("direction.title", title)?;
-        Ok(Self { id, title, status })
+        Ok(Self {
+            id,
+            title,
+            status,
+            value,
+        })
     }
 
     /// The direction's identifier.
@@ -114,6 +125,18 @@ impl Direction {
     /// Sets the lifecycle status (achieve, abandon, archive, or reopen).
     pub const fn set_status(&mut self, status: LifecycleStatus) {
         self.status = status;
+    }
+
+    /// The value this North Star serves, or `None` if unfiled.
+    #[must_use]
+    pub const fn value(&self) -> Option<ValueId> {
+        self.value
+    }
+
+    /// Files this North Star under a value, or clears it with `None`. The person
+    /// (or the butler, by asking) sets this; the system never infers it.
+    pub const fn set_value(&mut self, value: Option<ValueId>) {
+        self.value = value;
     }
 }
 
@@ -272,14 +295,28 @@ mod tests {
     }
 
     #[test]
+    fn a_new_direction_is_unfiled_and_can_be_filed_under_a_value() {
+        use crate::ids::ValueId;
+        let mut d = Direction::new(DirectionId::new(1), "Get back into running").unwrap();
+        assert_eq!(d.value(), None);
+        d.set_value(Some(ValueId::new(7)));
+        assert_eq!(d.value(), Some(ValueId::new(7)));
+        d.set_value(None);
+        assert_eq!(d.value(), None);
+    }
+
+    #[test]
     fn from_parts_restores_a_stored_status() {
+        use crate::ids::ValueId;
         let d = Direction::from_parts(
             DirectionId::new(1),
             "Be healthier",
             LifecycleStatus::Archived,
+            Some(ValueId::new(7)),
         )
         .unwrap();
         assert_eq!(d.status(), LifecycleStatus::Archived);
+        assert_eq!(d.value(), Some(ValueId::new(7)));
         let t = Target::from_parts(
             TargetId::new(2),
             DirectionId::new(1),

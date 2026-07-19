@@ -9,6 +9,14 @@ tagged release.
 
 ### Added
 
+- **Values layer (0.6)** ([ADR 0015](docs/adr/0015-identity-and-values-context.md)):
+  a **`Value`** — the *why* a North Star serves (health, community, craft) — sits
+  above North Stars: **Value → North Star → Target**. A North Star can be filed
+  under a value (assigned by the person, never inferred). New `/v1/values` (create,
+  list, delete) and `POST /v1/directions/{id}/value`; CLI `value create|list|delete`
+  and `direction value <id> <value-id|none>`; the console home groups North Stars by
+  value. Deleting a value in use is refused (re-file first). Existing databases gain
+  a `values` table and a nullable `value_id` on open.
 - **Artifact lifecycle (0.5)**: North Stars and Targets gain a lifecycle status —
   **active / achieved / abandoned / archived** — plus **delete**, across the domain,
   API, CLI, and console. Set status via `POST /v1/directions/{id}` and
