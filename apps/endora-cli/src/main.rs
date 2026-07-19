@@ -115,6 +115,12 @@ fn route(args: &[&str]) -> Option<Action> {
             format!("/v1/process-changes/{id}/reject"),
             json!({}),
         )),
+        ["process-change", "decide", id, actor] => Some(Action::Post(
+            format!("/v1/process-changes/{id}/decision"),
+            json!({ "actor": actor }),
+        )),
+        ["audit"] => Some(Action::Get("/v1/audit".to_owned())),
+        ["audit", limit] => Some(Action::Get(format!("/v1/audit?limit={limit}"))),
         _ => None,
     }
 }
@@ -162,7 +168,9 @@ fn print_usage() {
            process-change propose <reflection-id> <desc>  propose a process change\n  \
            process-change list <reflection-id>    list a reflection's proposed changes\n  \
            process-change approve <id>            approve a proposed change\n  \
-           process-change reject <id>             reject a proposed change\n\n\
+           process-change reject <id>             reject a proposed change\n  \
+           process-change decide <id> <actor>     run policy on a change (audited)\n  \
+           audit [limit]                          show recent audit records\n\n\
          Environment:\n  \
            ENDORA_URL   node base URL (default http://127.0.0.1:8787)"
     );
@@ -289,6 +297,22 @@ mod tests {
                 "/v1/process-changes/7/approve".to_owned(),
                 json!({})
             ))
+        );
+    }
+
+    #[test]
+    fn routes_decision_and_audit() {
+        assert_eq!(
+            route(&["process-change", "decide", "7", "act_within_policy"]),
+            Some(Action::Post(
+                "/v1/process-changes/7/decision".to_owned(),
+                json!({ "actor": "act_within_policy" })
+            ))
+        );
+        assert_eq!(route(&["audit"]), Some(Action::Get("/v1/audit".to_owned())));
+        assert_eq!(
+            route(&["audit", "5"]),
+            Some(Action::Get("/v1/audit?limit=5".to_owned()))
         );
     }
 
