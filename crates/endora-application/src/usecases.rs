@@ -8,13 +8,13 @@
 use endora_domain::{
     Assumption, AssumptionId, AuditId, AuditRecord, AutonomyLevel, Direction, DirectionId,
     Experiment, ExperimentId, Goal, GoalId, Observation, ObservationId, PolicyDecision,
-    ProposedProcessChange, authorize_process_change,
+    ProposedProcessChange, Reflection, ReflectionId, authorize_process_change,
 };
 
 use crate::error::AppError;
 use crate::ports::{
     AssumptionRepository, AuditLog, Clock, DirectionRepository, ExperimentRepository,
-    GoalRepository, IdSource, ObservationRepository,
+    GoalRepository, IdSource, ObservationRepository, ReflectionRepository,
 };
 
 /// Creates and stores a new [`Direction`].
@@ -203,6 +203,40 @@ pub fn list_observations(
     Ok(observations.list_for_experiment(experiment)?)
 }
 
+/// Creates and stores a new [`Reflection`] over one or more observations, under
+/// an existing goal.
+///
+/// # Errors
+/// [`AppError::NotFound`] if the goal does not exist, [`AppError::Domain`] if the
+/// summary is blank or no evidence is cited, or [`AppError::Repository`] on
+/// failure.
+pub fn create_reflection(
+    goals: &impl GoalRepository,
+    reflections: &impl ReflectionRepository,
+    ids: &impl IdSource,
+    goal: GoalId,
+    summary: &str,
+    evidence: Vec<ObservationId>,
+) -> Result<Reflection, AppError> {
+    if goals.get(goal)?.is_none() {
+        return Err(AppError::NotFound { entity: "goal" });
+    }
+    let reflection = Reflection::new(ReflectionId::new(ids.new_id()), goal, summary, evidence)?;
+    reflections.save(&reflection)?;
+    Ok(reflection)
+}
+
+/// Lists the reflections for a goal, in a stable order.
+///
+/// # Errors
+/// [`AppError::Repository`] if persistence fails.
+pub fn list_reflections(
+    reflections: &impl ReflectionRepository,
+    goal: GoalId,
+) -> Result<Vec<Reflection>, AppError> {
+    Ok(reflections.list_for_goal(goal)?)
+}
+
 /// Decides whether an actor may enact a proposed process change, and records
 /// the decision to the audit trail.
 ///
@@ -243,19 +277,19 @@ fn describe(decision: PolicyDecision) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::{
-        conclude_experiment, create_assumption, create_direction, create_goal,
+        conclude_experiment, create_assumption, create_direction, create_goal, create_reflection,
         decide_process_change, list_assumptions, list_experiments, list_goals, list_observations,
-        propose_experiment, record_observation, start_experiment,
+        list_reflections, propose_experiment, record_observation, start_experiment,
     };
     use crate::error::AppError;
     use crate::ports::{
         AssumptionRepository, AuditLog, Clock, DirectionRepository, ExperimentRepository,
-        GoalRepository, IdSource, ObservationRepository, RepositoryError,
+        GoalRepository, IdSource, ObservationRepository, ReflectionRepository, RepositoryError,
     };
     use endora_domain::{
         Assumption, AssumptionId, AuditRecord, AutonomyLevel, Direction, DirectionId, Experiment,
-        ExperimentId, ExperimentStatus, Goal, GoalId, Observation, PolicyDecision, ProcessChangeId,
-        ProposedProcessChange, ReflectionId, Timestamp,
+        ExperimentId, ExperimentStatus, Goal, GoalId, Observation, ObservationId, PolicyDecision,
+        ProcessChangeId, ProposedProcessChange, Reflection, ReflectionId, Timestamp,
     };
     use std::cell::{Cell, RefCell};
     use std::collections::HashMap;
@@ -268,6 +302,30 @@ mod tests {
         assumptions: RefCell<HashMap<u128, Assumption>>,
         experiments: RefCell<HashMap<u128, Experiment>>,
         observations: RefCell<HashMap<u128, Observation>>,
+        reflections: RefCell<HashMap<u128, Reflection>>,
+    }
+
+    impl ReflectionRepository for FakeStore {
+        fn save(&self, reflection: &Reflection) -> Result<(), RepositoryError> {
+            self.reflections
+                .borrow_mut()
+                .insert(reflection.id().value(), reflection.clone());
+            Ok(())
+        }
+        fn get(&self, id: ReflectionId) -> Result<Option<Reflection>, RepositoryError> {
+            Ok(self.reflections.borrow().get(&id.value()).cloned())
+        }
+        fn list_for_goal(&self, goal: GoalId) -> Result<Vec<Reflection>, RepositoryError> {
+            let mut found: Vec<Reflection> = self
+                .reflections
+                .borrow()
+                .values()
+                .filter(|r| r.goal() == goal)
+                .cloned()
+                .collect();
+            found.sort_by_key(|r| r.id().value());
+            Ok(found)
+        }
     }
 
     impl ObservationRepository for FakeStore {
@@ -651,5 +709,50 @@ mod tests {
                 entity: "experiment"
             }
         );
+    }
+
+    #[test]
+    fn create_reflection_requires_an_existing_goal() {
+        let store = FakeStore::default();
+        let ids = SeqIds::default();
+        let err = create_reflection(
+            &store,
+            &store,
+            &ids,
+            GoalId::new(404),
+            "went well",
+            vec![ObservationId::new(1)],
+        )
+        .unwrap_err();
+        assert_eq!(err, AppError::NotFound { entity: "goal" });
+    }
+
+    #[test]
+    fn create_reflection_requires_evidence() {
+        let store = FakeStore::default();
+        let ids = SeqIds::default();
+        let direction = create_direction(&store, &ids, "Be healthier").unwrap();
+        let goal = create_goal(&store, &store, &ids, direction.id(), "Run a 5k").unwrap();
+        let err =
+            create_reflection(&store, &store, &ids, goal.id(), "went well", vec![]).unwrap_err();
+        assert!(matches!(err, AppError::Domain(_)));
+    }
+
+    #[test]
+    fn create_reflection_then_list() {
+        let store = FakeStore::default();
+        let ids = SeqIds::default();
+        let direction = create_direction(&store, &ids, "Be healthier").unwrap();
+        let goal = create_goal(&store, &store, &ids, direction.id(), "Run a 5k").unwrap();
+        let r = create_reflection(
+            &store,
+            &store,
+            &ids,
+            goal.id(),
+            "mornings worked",
+            vec![ObservationId::new(1), ObservationId::new(2)],
+        )
+        .unwrap();
+        assert_eq!(list_reflections(&store, goal.id()).unwrap(), vec![r]);
     }
 }
