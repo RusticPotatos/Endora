@@ -56,6 +56,20 @@ fn main() -> ExitCode {
 fn route(args: &[&str]) -> Option<Action> {
     match args {
         ["health"] => Some(Action::Get("/health".to_owned())),
+        ["value", "create", name] => Some(Action::Post(
+            "/v1/values".to_owned(),
+            json!({ "name": name }),
+        )),
+        ["value", "list"] => Some(Action::Get("/v1/values".to_owned())),
+        ["value", "delete", id] => Some(Action::Delete(format!("/v1/values/{id}"))),
+        ["direction", "value", id, "none"] => Some(Action::Post(
+            format!("/v1/directions/{id}/value"),
+            json!({ "value_id": null }),
+        )),
+        ["direction", "value", id, value_id] => Some(Action::Post(
+            format!("/v1/directions/{id}/value"),
+            json!({ "value_id": value_id }),
+        )),
         ["direction", "create", title] => Some(Action::Post(
             "/v1/directions".to_owned(),
             json!({ "title": title }),
@@ -186,8 +200,12 @@ fn print_usage() {
         "\nUsage: endora <command>\n\n\
          Commands:\n  \
            health                                 check the node is up\n  \
+           value create <name>                    create a value (a North Star's why)\n  \
+           value list                             list your values\n  \
+           value delete <id>                      delete a value (no North Stars may serve it)\n  \
            direction create <title>               create a direction\n  \
            direction list                         list your directions\n  \
+           direction value <id> <value-id|none>   file a North Star under a value (or clear)\n  \
            direction status <id> <state>          set state (active|achieved|abandoned|archived)\n  \
            direction delete <id>                  delete a direction (must have no targets)\n  \
            target create <direction-id> <statement> add a target to a direction\n  \
@@ -238,6 +256,35 @@ mod tests {
             Some(Action::Post(
                 "/v1/directions".to_owned(),
                 json!({ "title": "Be healthier" })
+            ))
+        );
+    }
+
+    #[test]
+    fn routes_values_and_filing() {
+        assert_eq!(
+            route(&["value", "create", "Health"]),
+            Some(Action::Post(
+                "/v1/values".to_owned(),
+                json!({ "name": "Health" })
+            ))
+        );
+        assert_eq!(
+            route(&["value", "delete", "5"]),
+            Some(Action::Delete("/v1/values/5".to_owned()))
+        );
+        assert_eq!(
+            route(&["direction", "value", "3", "5"]),
+            Some(Action::Post(
+                "/v1/directions/3/value".to_owned(),
+                json!({ "value_id": "5" })
+            ))
+        );
+        assert_eq!(
+            route(&["direction", "value", "3", "none"]),
+            Some(Action::Post(
+                "/v1/directions/3/value".to_owned(),
+                json!({ "value_id": null })
             ))
         );
     }

@@ -10,13 +10,15 @@ use core::fmt;
 use endora_domain::{
     Assumption, AssumptionId, AuditRecord, Direction, DirectionId, Experiment, ExperimentId,
     Observation, ProcessChangeId, ProposedProcessChange, Reflection, ReflectionId, Target,
-    TargetId, Timestamp,
+    TargetId, Timestamp, Value, ValueId,
 };
 
 /// A complete snapshot of the user's stored data, for the memory rights of the
 /// constitution: it is what "export" hands back and what "delete" removes.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct MemorySnapshot {
+    /// All values.
+    pub values: Vec<Value>,
     /// All directions.
     pub directions: Vec<Direction>,
     /// All targets.
@@ -75,7 +77,35 @@ impl fmt::Display for RepositoryError {
 
 impl core::error::Error for RepositoryError {}
 
-/// Persists and retrieves [`Direction`]s.
+/// Persists and retrieves [`Value`]s (the Identity & Values context).
+pub trait ValueRepository {
+    /// Inserts a value, or replaces the existing one with the same id.
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if the backend fails.
+    fn save(&self, value: &Value) -> Result<(), RepositoryError>;
+
+    /// Fetches a value by id, returning `None` if it does not exist.
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if the backend fails or stored data is corrupt.
+    fn get(&self, id: ValueId) -> Result<Option<Value>, RepositoryError>;
+
+    /// Lists all values, in a stable order.
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if the backend fails or stored data is corrupt.
+    fn list_all(&self) -> Result<Vec<Value>, RepositoryError>;
+
+    /// Permanently removes a value. Callers are responsible for ensuring no
+    /// North Star still references it first.
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if the backend fails.
+    fn delete(&self, id: ValueId) -> Result<(), RepositoryError>;
+}
+
+/// Persists and retrieves [`Direction`]s (North Stars).
 pub trait DirectionRepository {
     /// Inserts a direction, or replaces the existing one with the same id.
     ///

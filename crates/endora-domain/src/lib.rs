@@ -43,6 +43,7 @@ pub mod ids;
 pub mod policy;
 pub mod reflection;
 pub mod targets;
+pub mod values;
 
 pub use audit::AuditRecord;
 pub use autonomy::AutonomyLevel;
@@ -50,8 +51,9 @@ pub use error::DomainError;
 pub use experiments::{Experiment, ExperimentStatus, Observation};
 pub use ids::{
     AssumptionId, AuditId, DirectionId, ExperimentId, ObservationId, ProcessChangeId, ReflectionId,
-    TargetId, Timestamp,
+    TargetId, Timestamp, ValueId,
 };
 pub use policy::{PolicyDecision, authorize_process_change};
 pub use reflection::{ApprovalState, ProposedProcessChange, Reflection};
 pub use targets::{Assumption, Direction, LifecycleStatus, Target};
+pub use values::Value;

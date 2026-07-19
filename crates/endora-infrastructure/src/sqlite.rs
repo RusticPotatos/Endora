@@ -11,20 +11,27 @@ use std::sync::Mutex;
 use endora_application::{
     AssumptionRepository, AuditLog, DirectionRepository, ExperimentRepository, MemorySnapshot,
     MemoryStore, ObservationRepository, ProcessChangeRepository, ReflectionRepository,
-    RepositoryError, TargetRepository,
+    RepositoryError, TargetRepository, ValueRepository,
 };
 use endora_domain::{
     ApprovalState, Assumption, AssumptionId, AuditId, AuditRecord, Direction, DirectionId,
     Experiment, ExperimentId, ExperimentStatus, LifecycleStatus, Observation, ObservationId,
     ProcessChangeId, ProposedProcessChange, Reflection, ReflectionId, Target, TargetId, Timestamp,
+    Value, ValueId,
 };
 use rusqlite::{Connection, OptionalExtension, params};
 
 const SCHEMA: &str = "
+CREATE TABLE IF NOT EXISTS \"values\" (
+    id   TEXT PRIMARY KEY,
+    name TEXT NOT NULL
+) STRICT;
+
 CREATE TABLE IF NOT EXISTS directions (
-    id     TEXT PRIMARY KEY,
-    title  TEXT NOT NULL,
-    status TEXT NOT NULL DEFAULT 'active'
+    id       TEXT PRIMARY KEY,
+    title    TEXT NOT NULL,
+    status   TEXT NOT NULL DEFAULT 'active',
+    value_id TEXT REFERENCES \"values\"(id)
 ) STRICT;
 
 CREATE TABLE IF NOT EXISTS targets (
@@ -147,6 +154,13 @@ impl SqliteStore {
             "TEXT NOT NULL DEFAULT 'active'",
         )?;
         ensure_column(&conn, "targets", "status", "TEXT NOT NULL DEFAULT 'active'")?;
+        // The Value link on North Stars (nullable; existing rows read back unfiled).
+        ensure_column(
+            &conn,
+            "directions",
+            "value_id",
+            "TEXT REFERENCES \"values\"(id)",
+        )?;
         Ok(Self {
             conn: Mutex::new(conn),
         })
@@ -163,11 +177,13 @@ impl DirectionRepository for SqliteStore {
     fn save(&self, direction: &Direction) -> Result<(), RepositoryError> {
         let conn = self.lock()?;
         conn.execute(
-            "INSERT OR REPLACE INTO directions (id, title, status) VALUES (?1, ?2, ?3)",
+            "INSERT OR REPLACE INTO directions (id, title, status, value_id) \
+             VALUES (?1, ?2, ?3, ?4)",
             params![
                 id_text(direction.id().value()),
                 direction.title(),
-                direction.status().name()
+                direction.status().name(),
+                direction.value().map(|v| id_text(v.value()))
             ],
         )
         .map_err(backend)?;
@@ -176,19 +192,24 @@ impl DirectionRepository for SqliteStore {
 
     fn get(&self, id: DirectionId) -> Result<Option<Direction>, RepositoryError> {
         let conn = self.lock()?;
-        let row: Option<(String, String)> = conn
+        let row: Option<(String, String, Option<String>)> = conn
             .query_row(
-                "SELECT title, status FROM directions WHERE id = ?1",
+                "SELECT title, status, value_id FROM directions WHERE id = ?1",
                 params![id_text(id.value())],
-                |row| Ok((row.get(0)?, row.get(1)?)),
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
             .optional()
             .map_err(backend)?;
-        let Some((title, status)) = row else {
+        let Some((title, status, value_id)) = row else {
             return Ok(None);
         };
-        let direction =
-            Direction::from_parts(id, &title, parse_lifecycle(&status)?).map_err(corrupt)?;
+        let direction = Direction::from_parts(
+            id,
+            &title,
+            parse_lifecycle(&status)?,
+            parse_opt_value(value_id)?,
+        )
+        .map_err(corrupt)?;
         Ok(Some(direction))
     }
 
@@ -201,6 +222,49 @@ impl DirectionRepository for SqliteStore {
         let conn = self.lock()?;
         conn.execute(
             "DELETE FROM directions WHERE id = ?1",
+            params![id_text(id.value())],
+        )
+        .map_err(backend)?;
+        Ok(())
+    }
+}
+
+impl ValueRepository for SqliteStore {
+    fn save(&self, value: &Value) -> Result<(), RepositoryError> {
+        let conn = self.lock()?;
+        conn.execute(
+            "INSERT OR REPLACE INTO \"values\" (id, name) VALUES (?1, ?2)",
+            params![id_text(value.id().value()), value.name()],
+        )
+        .map_err(backend)?;
+        Ok(())
+    }
+
+    fn get(&self, id: ValueId) -> Result<Option<Value>, RepositoryError> {
+        let conn = self.lock()?;
+        let name: Option<String> = conn
+            .query_row(
+                "SELECT name FROM \"values\" WHERE id = ?1",
+                params![id_text(id.value())],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(backend)?;
+        let Some(name) = name else {
+            return Ok(None);
+        };
+        Ok(Some(Value::new(id, &name).map_err(corrupt)?))
+    }
+
+    fn list_all(&self) -> Result<Vec<Value>, RepositoryError> {
+        let conn = self.lock()?;
+        all_values(&conn)
+    }
+
+    fn delete(&self, id: ValueId) -> Result<(), RepositoryError> {
+        let conn = self.lock()?;
+        conn.execute(
+            "DELETE FROM \"values\" WHERE id = ?1",
             params![id_text(id.value())],
         )
         .map_err(backend)?;
@@ -706,6 +770,7 @@ impl MemoryStore for SqliteStore {
     fn export(&self) -> Result<MemorySnapshot, RepositoryError> {
         let conn = self.lock()?;
         Ok(MemorySnapshot {
+            values: all_values(&conn)?,
             directions: all_directions(&conn)?,
             targets: all_targets(&conn)?,
             assumptions: all_assumptions(&conn)?,
@@ -730,6 +795,7 @@ impl MemoryStore for SqliteStore {
             "assumptions",
             "targets",
             "directions",
+            "\"values\"",
             "audit_log",
         ] {
             tx.execute(&format!("DELETE FROM {table}"), [])
@@ -801,7 +867,7 @@ fn parse_id(text: &str) -> Result<u128, RepositoryError> {
 
 fn all_directions(conn: &Connection) -> Result<Vec<Direction>, RepositoryError> {
     let mut stmt = conn
-        .prepare("SELECT id, title, status FROM directions ORDER BY id")
+        .prepare("SELECT id, title, status, value_id FROM directions ORDER BY id")
         .map_err(backend)?;
     let rows = stmt
         .query_map([], |r| {
@@ -809,22 +875,44 @@ fn all_directions(conn: &Connection) -> Result<Vec<Direction>, RepositoryError> 
                 r.get::<_, String>(0)?,
                 r.get::<_, String>(1)?,
                 r.get::<_, String>(2)?,
+                r.get::<_, Option<String>>(3)?,
             ))
         })
         .map_err(backend)?;
     let mut out = Vec::new();
     for row in rows {
-        let (id, title, status) = row.map_err(backend)?;
+        let (id, title, status, value_id) = row.map_err(backend)?;
         out.push(
             Direction::from_parts(
                 DirectionId::new(parse_id(&id)?),
                 &title,
                 parse_lifecycle(&status)?,
+                parse_opt_value(value_id)?,
             )
             .map_err(corrupt)?,
         );
     }
     Ok(out)
+}
+
+fn all_values(conn: &Connection) -> Result<Vec<Value>, RepositoryError> {
+    let mut stmt = conn
+        .prepare("SELECT id, name FROM \"values\" ORDER BY id")
+        .map_err(backend)?;
+    let rows = stmt
+        .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
+        .map_err(backend)?;
+    let mut out = Vec::new();
+    for row in rows {
+        let (id, name) = row.map_err(backend)?;
+        out.push(Value::new(ValueId::new(parse_id(&id)?), &name).map_err(corrupt)?);
+    }
+    Ok(out)
+}
+
+/// Parses an optional stored value id (the North Star's `value_id` column).
+fn parse_opt_value(raw: Option<String>) -> Result<Option<ValueId>, RepositoryError> {
+    raw.map(|s| parse_id(&s).map(ValueId::new)).transpose()
 }
 
 fn all_targets(conn: &Connection) -> Result<Vec<Target>, RepositoryError> {

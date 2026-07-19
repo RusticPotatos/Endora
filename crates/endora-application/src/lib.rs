@@ -19,7 +19,7 @@ pub use error::AppError;
 pub use ports::{
     AssumptionRepository, AuditLog, Clock, DirectionRepository, ExperimentRepository, IdSource,
     MemorySnapshot, MemoryStore, ObservationRepository, ProcessChangeRepository, ProposalError,
-    Proposer, ReflectionRepository, RepositoryError, TargetRepository,
+    Proposer, ReflectionRepository, RepositoryError, TargetRepository, ValueRepository,
 };
 pub use usecases::{ActivityItem, ActivityKind};
 

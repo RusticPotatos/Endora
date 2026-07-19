@@ -22,7 +22,7 @@ use endora_application::{
 use endora_domain::{
     Assumption, AssumptionId, AuditRecord, AutonomyLevel, Direction, DirectionId, Experiment,
     ExperimentId, LifecycleStatus, Observation, ObservationId, PolicyDecision, ProcessChangeId,
-    ProposedProcessChange, Reflection, ReflectionId, Target, TargetId,
+    ProposedProcessChange, Reflection, ReflectionId, Target, TargetId, Value, ValueId,
 };
 use endora_infrastructure::{RandomIdSource, SqliteStore, SystemClock};
 use futures_util::stream::{Stream, unfold};
@@ -74,6 +74,8 @@ pub fn app(state: AppState) -> Router {
     Router::new()
         .route("/", get(index))
         .route("/health", get(health))
+        .route("/v1/values", post(create_value).get(list_values))
+        .route("/v1/values/{id}", axum::routing::delete(delete_value))
         .route(
             "/v1/directions",
             post(create_direction).get(list_directions),
@@ -82,6 +84,7 @@ pub fn app(state: AppState) -> Router {
             "/v1/directions/{id}",
             post(set_direction_status).delete(delete_direction),
         )
+        .route("/v1/directions/{id}/value", post(assign_direction_value))
         .route(
             "/v1/directions/{id}/targets",
             post(create_target).get(list_targets),
@@ -176,6 +179,8 @@ struct DirectionResponse {
     id: String,
     title: String,
     status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    value_id: Option<String>,
 }
 
 impl From<&Direction> for DirectionResponse {
@@ -184,8 +189,81 @@ impl From<&Direction> for DirectionResponse {
             id: d.id().value().to_string(),
             title: d.title().to_owned(),
             status: d.status().name().to_owned(),
+            value_id: d.value().map(|v| v.value().to_string()),
         }
     }
+}
+
+#[derive(Deserialize)]
+struct CreateValueRequest {
+    name: String,
+}
+
+/// Files a North Star under a value: `{"value_id": "123"}`, or `{}`/`null` to
+/// clear.
+#[derive(Deserialize)]
+struct AssignValueRequest {
+    value_id: Option<String>,
+}
+
+#[derive(Serialize)]
+struct ValueResponse {
+    id: String,
+    name: String,
+}
+
+impl From<&Value> for ValueResponse {
+    fn from(v: &Value) -> Self {
+        Self {
+            id: v.id().value().to_string(),
+            name: v.name().to_owned(),
+        }
+    }
+}
+
+async fn create_value(
+    State(state): State<AppState>,
+    Json(req): Json<CreateValueRequest>,
+) -> Result<Json<ValueResponse>, ApiError> {
+    let store = state.store.clone();
+    let ids = state.ids.clone();
+    let value =
+        blocking(move || usecases::create_value(store.as_ref(), ids.as_ref(), &req.name)).await?;
+    Ok(Json(ValueResponse::from(&value)))
+}
+
+async fn list_values(State(state): State<AppState>) -> Result<Json<Vec<ValueResponse>>, ApiError> {
+    let store = state.store.clone();
+    let values = blocking(move || usecases::list_values(store.as_ref())).await?;
+    Ok(Json(values.iter().map(ValueResponse::from).collect()))
+}
+
+async fn delete_value(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let value_id = parse_value_id(&id)?;
+    let store = state.store.clone();
+    blocking(move || usecases::delete_value(store.as_ref(), store.as_ref(), value_id)).await?;
+    Ok(Json(json!({ "deleted": true })))
+}
+
+async fn assign_direction_value(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(req): Json<AssignValueRequest>,
+) -> Result<Json<DirectionResponse>, ApiError> {
+    let direction_id = parse_direction_id(&id)?;
+    let value_id = match req.value_id {
+        Some(raw) => Some(parse_value_id(&raw)?),
+        None => None,
+    };
+    let store = state.store.clone();
+    let direction = blocking(move || {
+        usecases::assign_direction_value(store.as_ref(), store.as_ref(), direction_id, value_id)
+    })
+    .await?;
+    Ok(Json(DirectionResponse::from(&direction)))
 }
 
 #[derive(Deserialize)]
@@ -857,6 +935,7 @@ async fn activity_stream(
 /// The full export of the user's data — the "exportable" memory right.
 #[derive(Serialize)]
 struct ExportResponse {
+    values: Vec<ValueResponse>,
     directions: Vec<DirectionResponse>,
     targets: Vec<TargetResponse>,
     assumptions: Vec<AssumptionResponse>,
@@ -870,6 +949,7 @@ struct ExportResponse {
 impl From<&MemorySnapshot> for ExportResponse {
     fn from(s: &MemorySnapshot) -> Self {
         Self {
+            values: s.values.iter().map(ValueResponse::from).collect(),
             directions: s.directions.iter().map(DirectionResponse::from).collect(),
             targets: s.targets.iter().map(TargetResponse::from).collect(),
             assumptions: s.assumptions.iter().map(AssumptionResponse::from).collect(),
@@ -956,6 +1036,13 @@ fn parse_direction_id(id: &str) -> Result<DirectionId, ApiError> {
             entity: "direction",
         })
     })
+}
+
+/// Parses a path/body id into a [`ValueId`]; a malformed id names no value.
+fn parse_value_id(id: &str) -> Result<ValueId, ApiError> {
+    id.parse::<u128>()
+        .map(ValueId::new)
+        .map_err(|_| ApiError(AppError::NotFound { entity: "value" }))
 }
 
 /// Parses a path id into a [`TargetId`]; a malformed id can name no target.
@@ -1232,6 +1319,71 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn value_files_a_north_star_and_delete_is_guarded() {
+        let app = app(test_state());
+        let vid = json_body(
+            app.clone()
+                .oneshot(post("/v1/values", r#"{"name":"Health"}"#))
+                .await
+                .unwrap(),
+        )
+        .await["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let did = json_body(
+            app.clone()
+                .oneshot(post(
+                    "/v1/directions",
+                    r#"{"title":"Get back into running"}"#,
+                ))
+                .await
+                .unwrap(),
+        )
+        .await["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+
+        // File the North Star under the value.
+        let res = app
+            .clone()
+            .oneshot(post(
+                &format!("/v1/directions/{did}/value"),
+                &format!(r#"{{"value_id":"{vid}"}}"#),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        assert_eq!(json_body(res).await["value_id"], vid);
+
+        // Deleting a value in use is refused.
+        let res = app
+            .clone()
+            .oneshot(del(&format!("/v1/values/{vid}")))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+
+        // Unfile, then delete succeeds.
+        app.clone()
+            .oneshot(post(
+                &format!("/v1/directions/{did}/value"),
+                r#"{"value_id":null}"#,
+            ))
+            .await
+            .unwrap();
+        let res = app
+            .clone()
+            .oneshot(del(&format!("/v1/values/{vid}")))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let listed = json_body(app.clone().oneshot(get("/v1/values")).await.unwrap()).await;
+        assert!(listed.as_array().unwrap().is_empty());
     }
 
     #[tokio::test]

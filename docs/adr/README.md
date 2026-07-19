@@ -48,3 +48,4 @@ of an existing record and take the next number.
 | [0012](0012-activity-feed-and-change-stream.md) | Activity feed and a server-sent change stream | Accepted |
 | [0013](0013-rename-goal-to-target.md) | Rename the second-tier concept from Goal to Target | Accepted |
 | [0014](0014-the-butler-conversation-values-attention.md) | The butler: conversational interface, the Values layer, and adaptive attention | Accepted |
+| [0015](0015-identity-and-values-context.md) | The Identity & Values context: a "why" above North Stars | Accepted |

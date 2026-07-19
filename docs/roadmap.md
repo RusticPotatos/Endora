@@ -243,7 +243,11 @@ the release that carries it is **0.5.0**; tagging is a human decision.)
 - Build the **Identity & Values** context (its own ADR): **Value → North Star →
   Target**. A North Star is filed under the value it serves (health, community,
   craft); the console groups by value and the API/CLI follow. This is the organizing
-  backbone the butler files into.
+  backbone the butler files into. *Delivered*
+  ([ADR 0015](adr/0015-identity-and-values-context.md)): a `Value` aggregate, an
+  optional North Star → Value link (assigned, never inferred), full CRUD across
+  domain/storage/API/CLI, and a console home grouped by value. Existing databases
+  migrate cleanly (a new `values` table + nullable `value_id`).
 
 ### 0.7 — The butler, MVP (chat)
 - A **conversation** surface: a chat endpoint and a console chat panel. The model
