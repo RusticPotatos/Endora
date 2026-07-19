@@ -110,6 +110,13 @@
   .bubble { max-width: 78%; padding: 8px 12px; border-radius: 12px; line-height: 1.4; white-space: pre-wrap; }
   .bubble.me { background: var(--accent); color: #fff; border-bottom-right-radius: 4px; }
   .bubble.butler { background: var(--card); border: 1px solid var(--line); border-bottom-left-radius: 4px; }
+  /* "thinking…" indicator while the butler composes a reply */
+  .bubble.thinking { padding: 12px 14px; }
+  .dots { display: inline-flex; gap: 4px; align-items: center; }
+  .dots i { width: 6px; height: 6px; border-radius: 50%; background: var(--muted); display: inline-block; animation: blink 1.2s infinite ease-in-out both; }
+  .dots i:nth-child(2) { animation-delay: .2s; }
+  .dots i:nth-child(3) { animation-delay: .4s; }
+  @keyframes blink { 0%, 80%, 100% { opacity: .25; } 40% { opacity: 1; } }
 
   /* Phone browsers: tighten the frame and stack forms so inputs are never
      crushed by a button's label. */
@@ -128,9 +135,10 @@
 </head>
 <body>
 <header>
-  <h1 id="brand"><span class="dot"></span><span>Endora</span></h1>
+  <h1 id="brand" data-act="go:chat" title="Talk to your butler" style="cursor:pointer"><span class="dot"></span><span>Endora</span></h1>
   <span class="spacer"></span>
   <button class="ghost" data-act="go:chat" id="btn-chat"></button>
+  <button class="ghost" data-act="go:home" id="btn-stars"></button>
   <button class="ghost" data-act="go:prefs" id="btn-prefs"></button>
   <button class="ghost" data-act="go:audit" id="btn-audit"></button>
   <button class="ghost" data-act="export" id="btn-export"></button>
@@ -148,7 +156,7 @@ let DB = null;                 // latest /v1/export snapshot
 let ACTIVITY = [];             // latest /v1/activity feed (newest first)
 let ATTENTION = [];            // latest /v1/attention items (most pressing first)
 let CHAT_PROPOSALS = [];       // proposals from the butler's last reply
-let NAV = { v: "home" };       // current view
+let NAV = { v: "chat" };       // current view (the butler is the landing page)
 
 const app = document.getElementById("app");
 const msgEl = document.getElementById("msg");
@@ -596,7 +604,6 @@ function viewChat() {
         : `<button data-act="chat:mic" title="voice input needs HTTPS or localhost">${icon("mic")}<span>needs HTTPS</span></button>`)
     : "";
   return `
-    ${crumbs([{ label: "Directions", act: "go:home" }, { label: "Butler" }])}
     <div class="row"><h2 class="grow" style="margin:0;">Butler</h2>${speakBtn}</div>
     <div id="chat-thread" style="margin-top:10px;">${msgs || `<div class="empty">Say what you'd like to work on — the butler will help organize it.</div>`}</div>
     ${proposals}
@@ -624,6 +631,47 @@ function viewPrefs() {
       <input id="new-pref" placeholder="e.g. I prefer mornings…" />
       <button class="primary" data-act="create:pref">Remember</button>
     </div>`;
+}
+
+// Append a chat bubble to the thread and keep the newest in view.
+function appendBubble(html, cls, id) {
+  const thread = document.getElementById("chat-thread");
+  if (!thread) return null;
+  const mine = cls.split(" ").includes("me");
+  const wrap = document.createElement("div");
+  wrap.className = "row";
+  wrap.style.cssText = `justify-content:${mine ? "flex-end" : "flex-start"}; margin:6px 0;`;
+  if (id) wrap.id = id;
+  wrap.innerHTML = `<div class="bubble ${cls}">${html}</div>`;
+  thread.appendChild(wrap);
+  wrap.scrollIntoView({ block: "end", behavior: "smooth" });
+  return wrap;
+}
+
+// Send a message to the butler with immediate feedback: the person's message
+// shows at once, a "thinking…" bubble runs while the (local) model works, and
+// the input clears — the round-trip can take a few seconds.
+async function sendChat() {
+  const input = document.getElementById("chat-input");
+  const msg = input ? input.value.trim() : "";
+  if (!msg) return;
+  const thread = document.getElementById("chat-thread");
+  if (thread && thread.querySelector(".empty")) thread.innerHTML = "";
+  input.value = "";
+  appendBubble(esc(msg), "me");
+  appendBubble('<span class="dots"><i></i><i></i><i></i></span>', "butler thinking", "chat-thinking");
+  try {
+    const res = await api("POST", "/v1/chat", { message: msg });
+    CHAT_PROPOSALS = res.proposals || [];
+    speak(res.reply && res.reply.text);
+    await reload();
+    const again = document.getElementById("chat-input");
+    if (again) again.focus();
+  } catch (e) {
+    const t = document.getElementById("chat-thinking");
+    if (t) t.remove();
+    flash("The butler couldn't reply: " + e.message, "err");
+  }
 }
 
 function render() {
@@ -673,14 +721,7 @@ async function dispatch(act) {
       const sel = document.getElementById("val-" + id).value;
       await api("POST", `/v1/directions/${id}/value`, { value_id: sel || null }); return reload();
     }
-    if (verb === "chat" && noun === "send") {
-      const msg = val("chat-input");
-      if (!msg) return;
-      const res = await api("POST", "/v1/chat", { message: msg });
-      CHAT_PROPOSALS = res.proposals || [];
-      speak(res.reply && res.reply.text);
-      return reload();
-    }
+    if (verb === "chat" && noun === "send") { await sendChat(); return; }
     if (verb === "chat" && noun === "mic") { listen(); return; }
     if (verb === "toggle" && noun === "speak") {
       SPEAK = !SPEAK; if (!SPEAK && TTS) TTS.cancel(); return render();
@@ -779,6 +820,14 @@ document.body.addEventListener("click", (ev) => {
   if (t) { ev.stopPropagation(); dispatch(t.getAttribute("data-act")); }
 });
 
+// Enter sends the chat message (Shift+Enter is free for a newline if the input
+// ever becomes multi-line).
+document.body.addEventListener("keydown", (ev) => {
+  if (ev.target.id === "chat-input" && ev.key === "Enter" && !ev.shiftKey) {
+    ev.preventDefault(); sendChat();
+  }
+});
+
 // A `<select data-change="verb:noun:id">` applies the chosen value on change,
 // dispatching `verb:noun:id:<value>` (used for the lifecycle Status dropdown).
 document.body.addEventListener("change", (ev) => {
@@ -794,6 +843,7 @@ function setupHeader(service) {
     if (el) el.innerHTML = icon(name) + `<span>${label}</span>`;
   };
   set("btn-chat", "chat", "Chat");
+  set("btn-stars", "target", "North Stars");
   set("btn-prefs", "prefs", "Prefs");
   set("btn-audit", "audit", "Audit");
   set("btn-export", "export", "Export");
