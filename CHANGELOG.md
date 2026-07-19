@@ -9,6 +9,15 @@ tagged release.
 
 ### Added
 
+- **Voice & character (0.9)** ([ADR 0017](docs/adr/0017-persona-and-voice.md)):
+  the butler's prompt now **mirrors the person's register** — matching warmth and
+  formality — with the golden-rule floor (reflect kindness upward, never hostility
+  downward), on top of stored style preferences; truthfulness is never softened.
+  **Voice** is browser-native and opt-in: the console reads the butler's replies
+  aloud (`speechSynthesis`) behind a Speak toggle and captures a spoken message
+  (`SpeechRecognition`) from a 🎤 button — no backend change, no dependency, and it
+  hides where the browser lacks the API. Local-first caveat stated: browser speech
+  recognition may use a cloud service, so it stays opt-in.
 - **Anti-sycophancy eval harness (completes 0.7)**
   ([ADR 0014](docs/adr/0014-the-butler-conversation-values-attention.md) §5): an
   opt-in eval (`endora-infrastructure` integration test, `#[ignore]`d so CI needs no

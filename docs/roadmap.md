@@ -291,7 +291,15 @@ the release that carries it is **0.5.0**; tagging is a human decision.)
 ### 0.9 — Voice & character
 - **Personality**: style mirroring with the golden-rule floor (ADR 0014 §4), and the
   candor / anti-sycophancy invariants hardened into evals. **Voice**: STT/TTS as a
-  thin client over the same protocol. Its own ADR for persona + voice.
+  thin client over the same protocol. Its own ADR for persona + voice. *Delivered*
+  ([ADR 0017](adr/0017-persona-and-voice.md)): the butler's system prompt now
+  mirrors the person's register with the golden-rule floor (reflect kindness up,
+  never hostility down), on top of stored style preferences; the anti-sycophancy
+  eval landed in 0.7. **Voice** is browser-native and client-side — the console
+  reads replies aloud (`speechSynthesis`) behind an opt-in toggle and captures
+  spoken messages (`SpeechRecognition`) from a mic button, with no backend change
+  and a stated local-first caveat (browser STT may use a cloud service, so it is
+  opt-in).
 
 ### 1.0 — The butler is the product
 - Everything integrated: the person lives in the conversation, values organize the
