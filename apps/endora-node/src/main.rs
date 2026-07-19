@@ -26,15 +26,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or_else(|_| "http://localhost:11434/v1".to_owned());
     let model = std::env::var("ENDORA_MODEL").unwrap_or_else(|_| "qwen3.5:9b".to_owned());
 
-    let state = AppState {
-        store: Arc::new(SqliteStore::open(&db_path)?),
-        ids: Arc::new(RandomIdSource),
-        clock: Arc::new(SystemClock),
-        proposer: Arc::new(OpenAiCompatibleProposer::new(
+    let state = AppState::new(
+        Arc::new(SqliteStore::open(&db_path)?),
+        Arc::new(RandomIdSource),
+        Arc::new(SystemClock),
+        Arc::new(OpenAiCompatibleProposer::new(
             model_url.clone(),
             model.clone(),
         )),
-    };
+    );
 
     println!("{}", endora_application::platform_identity());
     println!("node listening on http://{addr}  (db: {db_path})");

@@ -192,7 +192,12 @@ a prerequisite.
   not pushed by a background scheduler; live delivery comes next.
 - An **activity feed** (`GET /v1/activity`) recording what happened, and
   **server-sent events** so the console reflects new activity — including due
-  reviews — live.
+  reviews — live. *Delivered*
+  ([ADR 0012](adr/0012-activity-feed-and-change-stream.md)): the feed is a read
+  projection over the persisted, timestamped facts (observations and audited
+  decisions), and `GET /v1/activity/stream` pushes a `changed` signal after every
+  write so the console refreshes live. The feed widens for free as more of the
+  loop gains durable timestamps.
 
 This is the make-or-break mechanic: the loop only closes if experiments actually
 get observed. The most design care goes here.

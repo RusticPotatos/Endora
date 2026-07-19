@@ -131,6 +131,8 @@ fn route(args: &[&str]) -> Option<Action> {
         )),
         ["audit"] => Some(Action::Get("/v1/audit".to_owned())),
         ["audit", limit] => Some(Action::Get(format!("/v1/audit?limit={limit}"))),
+        ["activity"] => Some(Action::Get("/v1/activity".to_owned())),
+        ["activity", limit] => Some(Action::Get(format!("/v1/activity?limit={limit}"))),
         ["export"] => Some(Action::Get("/v1/export".to_owned())),
         ["purge", "confirm"] => Some(Action::Post(
             "/v1/memory/purge".to_owned(),
@@ -190,6 +192,7 @@ fn print_usage() {
            process-change reject <id>             reject a proposed change\n  \
            process-change decide <id> <actor>     run policy on a change (audited)\n  \
            audit [limit]                          show recent audit records\n  \
+           activity [limit]                       show the recent activity feed\n  \
            export                                 export all your data as JSON\n  \
            purge confirm                          permanently delete all your data\n\n\
          Environment:\n  \
@@ -370,6 +373,18 @@ mod tests {
         assert_eq!(
             route(&["audit", "5"]),
             Some(Action::Get("/v1/audit?limit=5".to_owned()))
+        );
+    }
+
+    #[test]
+    fn routes_activity() {
+        assert_eq!(
+            route(&["activity"]),
+            Some(Action::Get("/v1/activity".to_owned()))
+        );
+        assert_eq!(
+            route(&["activity", "20"]),
+            Some(Action::Get("/v1/activity?limit=20".to_owned()))
         );
     }
 

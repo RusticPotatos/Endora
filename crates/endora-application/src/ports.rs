@@ -187,6 +187,13 @@ pub trait ObservationRepository {
         &self,
         experiment: ExperimentId,
     ) -> Result<Vec<Observation>, RepositoryError>;
+
+    /// Lists the most recently recorded observations across all experiments,
+    /// newest first, up to `limit`. Used to build the activity feed.
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if the backend fails or stored data is corrupt.
+    fn recent(&self, limit: usize) -> Result<Vec<Observation>, RepositoryError>;
 }
 
 /// A failure from a reasoning model behind the [`Proposer`] port.

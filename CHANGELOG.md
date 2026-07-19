@@ -9,6 +9,13 @@ tagged release.
 
 ### Added
 
+- **Activity feed and live updates**
+  ([ADR 0012](docs/adr/0012-activity-feed-and-change-stream.md)): a newest-first
+  timeline of what has happened (`GET /v1/activity`, CLI `activity [limit]`),
+  derived from the already-persisted observations and audited decisions. The node
+  also exposes a server-sent change stream (`GET /v1/activity/stream`) that emits a
+  `changed` signal after any successful write; the web console subscribes and
+  refreshes its feed — and due-review banner — live, no reload needed.
 - **Review scheduling** ([ADR 0011](docs/adr/0011-review-scheduling-reminders.md)),
   the first application of the autonomy model
   ([ADR 0010](docs/adr/0010-autonomy-model.md)): an experiment can carry a
