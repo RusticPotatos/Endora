@@ -108,9 +108,22 @@ crates/
   endora-application/     # Application layer — use cases + ports; depends on domain
   endora-infrastructure/  # Infrastructure layer — adapters (SQLite persistence)
 apps/
-  endora-node/            # Authoritative backend runtime (the brain)
+  endora-node/            # Authoritative backend runtime — serves the HTTP/JSON API
   endora-cli/             # Thin, replaceable client
 ```
+
+### Running the node
+
+```bash
+make run-node            # starts on 127.0.0.1:8787 (override: ENDORA_ADDR, ENDORA_DB)
+curl -s localhost:8787/health
+curl -s -X POST localhost:8787/v1/directions \
+  -H 'content-type: application/json' -d '{"title":"Be healthier"}'
+```
+
+The node currently serves the first vertical slice (Direction & Goals). More of
+the learning loop, the policy boundary, and the model adapter follow — see the
+[Roadmap](docs/roadmap.md).
 
 ## Current technology direction
 
