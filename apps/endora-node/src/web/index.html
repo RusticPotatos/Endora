@@ -73,6 +73,9 @@
   .evi input { width: auto; }
   code.id { font-size: 12px; color: var(--muted); }
   .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; word-break: break-word; }
+  .bubble { max-width: 78%; padding: 8px 12px; border-radius: 12px; line-height: 1.4; white-space: pre-wrap; }
+  .bubble.me { background: var(--accent); color: #fff; border-bottom-right-radius: 4px; }
+  .bubble.butler { background: var(--card); border: 1px solid var(--line); border-bottom-left-radius: 4px; }
 
   /* Phone browsers: tighten the frame and stack forms so inputs are never
      crushed by a button's label. */
@@ -93,6 +96,7 @@
 <header>
   <h1 id="brand">Endora</h1>
   <span class="spacer"></span>
+  <button class="ghost" data-act="go:chat">💬 Chat</button>
   <button class="ghost" data-act="go:audit">Audit</button>
   <button class="ghost" data-act="export">Export</button>
   <button class="ghost danger" data-act="purge">Purge</button>
@@ -107,6 +111,7 @@
 
 let DB = null;                 // latest /v1/export snapshot
 let ACTIVITY = [];             // latest /v1/activity feed (newest first)
+let CHAT_PROPOSALS = [];       // proposals from the butler's last reply
 let NAV = { v: "home" };       // current view
 
 const app = document.getElementById("app");
@@ -445,6 +450,31 @@ function viewAudit() {
     ${listOr(rows, "No decisions recorded yet.")}`;
 }
 
+// The butler chat: the conversation, the last reply's proposals (each
+// confirmable), and an input. The butler proposes; you confirm; the normal
+// create endpoints execute — the model never acts on its own.
+function viewChat() {
+  const msgs = (DB.messages || []).map((m) => {
+    const mine = m.role === "user";
+    return `<div class="row" style="justify-content:${mine ? "flex-end" : "flex-start"}; margin:6px 0;">
+      <div class="bubble ${mine ? "me" : "butler"}">${esc(m.text)}</div></div>`;
+  }).join("");
+  const proposals = CHAT_PROPOSALS.map((p, i) => `
+    <div class="card"><div class="row"><div class="grow"><div class="title">${esc(p.label)}</div>
+      <div class="sub">the butler proposes this — you decide</div></div>
+      <button class="primary" data-act="confirm:proposal:${i}">Confirm</button>
+      <button data-act="dismiss:proposal:${i}">Dismiss</button></div></div>`).join("");
+  return `
+    ${crumbs([{ label: "Directions", act: "go:home" }, { label: "Butler" }])}
+    <h2>Butler</h2>
+    <div id="chat-thread">${msgs || `<div class="empty">Say what you'd like to work on — the butler will help organize it.</div>`}</div>
+    ${proposals}
+    <div class="form">
+      <input id="chat-input" placeholder="Talk to your butler…" />
+      <button class="primary" data-act="chat:send">Send</button>
+    </div>`;
+}
+
 function render() {
   const v = NAV.v;
   app.innerHTML =
@@ -454,6 +484,7 @@ function render() {
     : v === "experiment" ? viewAssumption(NAV.id)
     : v === "reflection" ? viewReflection(NAV.id)
     : v === "audit" ? viewAudit()
+    : v === "chat" ? viewChat()
     : viewHome();
 }
 
@@ -489,6 +520,26 @@ async function dispatch(act) {
     if (verb === "file" && noun === "direction") {
       const sel = document.getElementById("val-" + id).value;
       await api("POST", `/v1/directions/${id}/value`, { value_id: sel || null }); return reload();
+    }
+    if (verb === "chat" && noun === "send") {
+      const msg = val("chat-input");
+      if (!msg) return;
+      const res = await api("POST", "/v1/chat", { message: msg });
+      CHAT_PROPOSALS = res.proposals || [];
+      return reload();
+    }
+    if (verb === "confirm" && noun === "proposal") {
+      const p = CHAT_PROPOSALS[Number(id)];
+      if (!p) return;
+      if (p.kind === "create_value") await api("POST", "/v1/values", { name: p.name });
+      else if (p.kind === "create_north_star") await api("POST", "/v1/directions", { title: p.title });
+      else if (p.kind === "create_target") await api("POST", `/v1/directions/${p.direction_id}/targets`, { statement: p.statement });
+      CHAT_PROPOSALS.splice(Number(id), 1);
+      flash("Done — added.", "ok");
+      return reload();
+    }
+    if (verb === "dismiss" && noun === "proposal") {
+      CHAT_PROPOSALS.splice(Number(id), 1); return render();
     }
     if (verb === "create" && noun === "target") {
       await api("POST", `/v1/directions/${id}/targets`, { statement: val("new-target") }); return reload();

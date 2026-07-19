@@ -6,17 +6,18 @@
 //! and the use cases stay testable with fakes.
 
 use endora_domain::{
-    Assumption, AssumptionId, AuditId, AuditRecord, AutonomyLevel, Direction, DirectionId,
-    Experiment, ExperimentId, LifecycleStatus, Observation, ObservationId, PolicyDecision,
-    ProcessChangeId, ProposedProcessChange, Reflection, ReflectionId, Target, TargetId, Timestamp,
-    Value, ValueId, authorize_process_change,
+    Assumption, AssumptionId, AuditId, AuditRecord, AutonomyLevel, ChatMessage, Direction,
+    DirectionId, Experiment, ExperimentId, LifecycleStatus, MessageId, MessageRole, Observation,
+    ObservationId, PolicyDecision, ProcessChangeId, ProposedProcessChange, Reflection,
+    ReflectionId, Target, TargetId, Timestamp, Value, ValueId, authorize_process_change,
 };
 
 use crate::error::AppError;
 use crate::ports::{
-    AssumptionRepository, AuditLog, Clock, DirectionRepository, ExperimentRepository, IdSource,
-    MemorySnapshot, MemoryStore, ObservationRepository, ProcessChangeRepository, Proposer,
-    ReflectionRepository, TargetRepository, ValueRepository,
+    AssumptionRepository, AuditLog, Butler, ButlerProposal, ChatRepository, Clock,
+    DirectionRepository, ExperimentRepository, IdSource, MemorySnapshot, MemoryStore,
+    ObservationRepository, ProcessChangeRepository, Proposer, ReflectionRepository,
+    TargetRepository, ValueRepository,
 };
 
 /// Creates and stores a new [`Direction`].
@@ -734,6 +735,61 @@ pub fn recent_activity(
     Ok(items)
 }
 
+/// Sends a message to the butler and records both turns.
+///
+/// Appends the person's message, asks the [`Butler`] to respond to the full
+/// conversation, records the butler's reply, and returns the reply message and
+/// any [`ButlerProposal`]s. The proposals are *suggestions only* — they are not
+/// executed here; the person confirms each one separately (models propose, the
+/// person authorizes).
+///
+/// # Errors
+/// [`AppError::Domain`] if the message text is blank, [`AppError::Model`] if the
+/// butler brain is unavailable, or [`AppError::Repository`] if persistence fails.
+pub fn send_to_butler(
+    chat: &impl ChatRepository,
+    butler: &dyn Butler,
+    ids: &impl IdSource,
+    clock: &impl Clock,
+    text: &str,
+) -> Result<(ChatMessage, Vec<ButlerProposal>), AppError> {
+    let user = ChatMessage::new(
+        MessageId::new(ids.new_id()),
+        MessageRole::User,
+        text,
+        clock.now(),
+    )?;
+    chat.append(&user)?;
+
+    let history = chat.list()?;
+    let reply = butler.respond(&history).map_err(|e| AppError::Model {
+        message: e.to_string(),
+    })?;
+
+    // A brain that returns nothing usable still owes the person a reply.
+    let reply_text = if reply.text.trim().is_empty() {
+        "I'm not sure how to help with that yet — can you say a bit more?"
+    } else {
+        reply.text.trim()
+    };
+    let butler = ChatMessage::new(
+        MessageId::new(ids.new_id()),
+        MessageRole::Butler,
+        reply_text,
+        clock.now(),
+    )?;
+    chat.append(&butler)?;
+    Ok((butler, reply.proposals))
+}
+
+/// Returns the whole conversation with the butler, oldest first.
+///
+/// # Errors
+/// [`AppError::Repository`] if the backend fails or stored data is corrupt.
+pub fn chat_history(chat: &impl ChatRepository) -> Result<Vec<ChatMessage>, AppError> {
+    Ok(chat.list()?)
+}
+
 /// A short verb phrase for an audit summary.
 fn describe(decision: PolicyDecision) -> &'static str {
     match decision {
@@ -757,16 +813,17 @@ mod tests {
     };
     use crate::error::AppError;
     use crate::ports::{
-        AssumptionRepository, AuditLog, Clock, DirectionRepository, ExperimentRepository, IdSource,
-        ObservationRepository, ProcessChangeRepository, ProposalError, Proposer,
-        ReflectionRepository, RepositoryError, TargetRepository, ValueRepository,
+        AssumptionRepository, AuditLog, Butler, ButlerProposal, ButlerReply, ChatRepository, Clock,
+        DirectionRepository, ExperimentRepository, IdSource, ObservationRepository,
+        ProcessChangeRepository, ProposalError, Proposer, ReflectionRepository, RepositoryError,
+        TargetRepository, ValueRepository,
     };
     use endora_domain::LifecycleStatus;
     use endora_domain::{
-        ApprovalState, Assumption, AssumptionId, AuditRecord, AutonomyLevel, Direction,
-        DirectionId, Experiment, ExperimentId, ExperimentStatus, Observation, ObservationId,
-        PolicyDecision, ProcessChangeId, ProposedProcessChange, Reflection, ReflectionId, Target,
-        TargetId, Timestamp, Value, ValueId,
+        ApprovalState, Assumption, AssumptionId, AuditRecord, AutonomyLevel, ChatMessage,
+        Direction, DirectionId, Experiment, ExperimentId, ExperimentStatus, MessageRole,
+        Observation, ObservationId, PolicyDecision, ProcessChangeId, ProposedProcessChange,
+        Reflection, ReflectionId, Target, TargetId, Timestamp, Value, ValueId,
     };
     use std::cell::{Cell, RefCell};
     use std::collections::HashMap;
@@ -775,6 +832,7 @@ mod tests {
     #[derive(Default)]
     struct FakeStore {
         values: RefCell<HashMap<u128, Value>>,
+        messages: RefCell<Vec<ChatMessage>>,
         directions: RefCell<HashMap<u128, Direction>>,
         targets: RefCell<HashMap<u128, Target>>,
         assumptions: RefCell<HashMap<u128, Assumption>>,
@@ -923,6 +981,31 @@ mod tests {
                 .collect();
             found.sort_by_key(|e| (e.review_by().map(|t| t.unix_millis()), e.id().value()));
             Ok(found)
+        }
+    }
+
+    impl ChatRepository for FakeStore {
+        fn append(&self, message: &ChatMessage) -> Result<(), RepositoryError> {
+            self.messages.borrow_mut().push(message.clone());
+            Ok(())
+        }
+        fn list(&self) -> Result<Vec<ChatMessage>, RepositoryError> {
+            Ok(self.messages.borrow().clone())
+        }
+    }
+
+    /// A butler that echoes the newest message and always proposes a North Star,
+    /// so the act/ask + propose flow can be exercised deterministically.
+    struct ScriptedTestButler;
+    impl Butler for ScriptedTestButler {
+        fn respond(&self, history: &[ChatMessage]) -> Result<ButlerReply, ProposalError> {
+            let last = history.last().map(ChatMessage::text).unwrap_or_default();
+            Ok(ButlerReply {
+                text: format!("Shall I set that up? You said: {last}"),
+                proposals: vec![ButlerProposal::CreateNorthStar {
+                    title: last.to_owned(),
+                }],
+            })
         }
     }
 
@@ -1199,6 +1282,37 @@ mod tests {
         let archived =
             set_direction_status(&store, direction.id(), LifecycleStatus::Archived).unwrap();
         assert_eq!(archived.status(), LifecycleStatus::Archived);
+    }
+
+    #[test]
+    fn sending_to_the_butler_records_both_turns_and_returns_proposals() {
+        use super::{chat_history, send_to_butler};
+        let store = FakeStore::default();
+        let ids = SeqIds::default();
+        let clock = FixedClock(1_000);
+
+        let (reply, proposals) = send_to_butler(
+            &store,
+            &ScriptedTestButler,
+            &ids,
+            &clock,
+            "I want to run more",
+        )
+        .unwrap();
+        assert_eq!(reply.role(), MessageRole::Butler);
+        assert!(reply.text().contains("I want to run more"));
+        assert_eq!(
+            proposals,
+            vec![ButlerProposal::CreateNorthStar {
+                title: "I want to run more".to_owned()
+            }]
+        );
+
+        // Both turns are persisted, oldest first.
+        let history = chat_history(&store).unwrap();
+        assert_eq!(history.len(), 2);
+        assert_eq!(history[0].role(), MessageRole::User);
+        assert_eq!(history[1].role(), MessageRole::Butler);
     }
 
     #[test]

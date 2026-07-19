@@ -256,7 +256,16 @@ the release that carries it is **0.5.0**; tagging is a human decision.)
   **preferences**. Every consequential step still routes **propose → policy
   authorizes → confirm if irreversible**. This is where the AI becomes the driver
   rather than a single drafting call. The **anti-sycophancy eval harness** starts
-  here — the moment the model drives.
+  here — the moment the model drives. *Delivered (MVP)*: a `Butler` port with a
+  closed set of proposable actions; the model **proposes**, the person
+  **confirms**, existing use cases **execute** — the model never acts. Two brains:
+  a deterministic `ScriptedButler` (offline, the reliable fallback) and an
+  `LlmButler` (local OpenAI-compatible model, candid + anti-sycophancy prompt,
+  falling back to scripted). Chat is persisted (and included in export/purge);
+  `POST/GET /v1/chat`, CLI `chat`, and a console chat panel with confirmable
+  proposals. *Still ahead in 0.7*: recording answers as durable **preferences**,
+  richer proposal kinds, and the anti-sycophancy **eval harness** (needs a live
+  model to run).
 
 ### 0.8 — Attention & proactivity
 - **Adaptive attention**: the deferral-backoff ranking (ADR 0014 §3) decides what to

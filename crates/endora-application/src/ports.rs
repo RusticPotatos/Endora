@@ -8,9 +8,9 @@
 use core::fmt;
 
 use endora_domain::{
-    Assumption, AssumptionId, AuditRecord, Direction, DirectionId, Experiment, ExperimentId,
-    Observation, ProcessChangeId, ProposedProcessChange, Reflection, ReflectionId, Target,
-    TargetId, Timestamp, Value, ValueId,
+    Assumption, AssumptionId, AuditRecord, ChatMessage, Direction, DirectionId, Experiment,
+    ExperimentId, Observation, ProcessChangeId, ProposedProcessChange, Reflection, ReflectionId,
+    Target, TargetId, Timestamp, Value, ValueId,
 };
 
 /// A complete snapshot of the user's stored data, for the memory rights of the
@@ -35,6 +35,8 @@ pub struct MemorySnapshot {
     pub process_changes: Vec<ProposedProcessChange>,
     /// The full audit trail.
     pub audit: Vec<AuditRecord>,
+    /// The whole conversation with the butler.
+    pub messages: Vec<ChatMessage>,
 }
 
 /// The user's right to export and delete all of their data (constitution:
@@ -277,6 +279,91 @@ pub trait Proposer {
         reflection_summary: &str,
         evidence_count: usize,
     ) -> Result<String, ProposalError>;
+}
+
+/// A structured action the butler proposes. This is a **closed set**: the butler
+/// can only suggest these, and each maps to an existing use case. The model
+/// *proposes* one; the person *confirms*; deterministic code executes. The model
+/// can never step outside this set or act on its own.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ButlerProposal {
+    /// Create a value (a "why").
+    CreateValue {
+        /// The value's name.
+        name: String,
+    },
+    /// Create a North Star (direction).
+    CreateNorthStar {
+        /// The North Star's title.
+        title: String,
+    },
+    /// Create a target under an existing North Star.
+    CreateTarget {
+        /// The North Star the target belongs to.
+        direction: DirectionId,
+        /// The target statement.
+        statement: String,
+    },
+}
+
+impl ButlerProposal {
+    /// A stable, lowercase kind name for the protocol.
+    #[must_use]
+    pub const fn kind(&self) -> &'static str {
+        match self {
+            Self::CreateValue { .. } => "create_value",
+            Self::CreateNorthStar { .. } => "create_north_star",
+            Self::CreateTarget { .. } => "create_target",
+        }
+    }
+
+    /// A human-readable one-line summary of what confirming would do.
+    #[must_use]
+    pub fn label(&self) -> String {
+        match self {
+            Self::CreateValue { name } => format!("Create value: \"{name}\""),
+            Self::CreateNorthStar { title } => format!("Create North Star: \"{title}\""),
+            Self::CreateTarget { statement, .. } => format!("Create target: \"{statement}\""),
+        }
+    }
+}
+
+/// What the butler says back: a reply, plus any actions it proposes.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ButlerReply {
+    /// The butler's text reply.
+    pub text: String,
+    /// Structured actions it proposes (may be empty). Never auto-executed.
+    pub proposals: Vec<ButlerProposal>,
+}
+
+/// The butler brain: given the conversation so far, produce a reply and any
+/// proposed actions.
+///
+/// Like [`Proposer`], this is a reasoning component, not an authority — it only
+/// *proposes*. Infrastructure supplies a scripted implementation (offline/tests)
+/// or a model-backed one (`docs/adr/0014-the-butler-conversation-values-attention.md`).
+pub trait Butler {
+    /// Responds to the conversation so far (the last message is the newest).
+    ///
+    /// # Errors
+    /// [`ProposalError`] if a backing model is unreachable or returns nothing.
+    fn respond(&self, history: &[ChatMessage]) -> Result<ButlerReply, ProposalError>;
+}
+
+/// Persists and retrieves the conversation with the butler.
+pub trait ChatRepository {
+    /// Appends a message to the conversation.
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if the backend fails.
+    fn append(&self, message: &ChatMessage) -> Result<(), RepositoryError>;
+
+    /// Lists the conversation, oldest first.
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if the backend fails or stored data is corrupt.
+    fn list(&self) -> Result<Vec<ChatMessage>, RepositoryError>;
 }
 
 /// Supplies the current time to use cases.

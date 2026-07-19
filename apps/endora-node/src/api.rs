@@ -17,12 +17,14 @@ use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post};
 use endora_application::{
-    ActivityItem, AppError, MemorySnapshot, Proposer, RepositoryError, usecases,
+    ActivityItem, AppError, Butler, ButlerProposal, MemorySnapshot, Proposer, RepositoryError,
+    usecases,
 };
 use endora_domain::{
-    Assumption, AssumptionId, AuditRecord, AutonomyLevel, Direction, DirectionId, Experiment,
-    ExperimentId, LifecycleStatus, Observation, ObservationId, PolicyDecision, ProcessChangeId,
-    ProposedProcessChange, Reflection, ReflectionId, Target, TargetId, Value, ValueId,
+    Assumption, AssumptionId, AuditRecord, AutonomyLevel, ChatMessage, Direction, DirectionId,
+    Experiment, ExperimentId, LifecycleStatus, Observation, ObservationId, PolicyDecision,
+    ProcessChangeId, ProposedProcessChange, Reflection, ReflectionId, Target, TargetId, Value,
+    ValueId,
 };
 use endora_infrastructure::{RandomIdSource, SqliteStore, SystemClock};
 use futures_util::stream::{Stream, unfold};
@@ -41,6 +43,8 @@ pub struct AppState {
     pub clock: Arc<SystemClock>,
     /// The reasoning model behind the policy boundary.
     pub proposer: Arc<dyn Proposer + Send + Sync>,
+    /// The butler brain (proposes; never acts).
+    pub butler: Arc<dyn Butler + Send + Sync>,
     /// Broadcasts a signal whenever a write succeeds, so activity-stream
     /// subscribers know to refresh. Carries no payload — it is a "something
     /// changed" nudge, and clients re-read the authoritative state.
@@ -55,6 +59,7 @@ impl AppState {
         ids: Arc<RandomIdSource>,
         clock: Arc<SystemClock>,
         proposer: Arc<dyn Proposer + Send + Sync>,
+        butler: Arc<dyn Butler + Send + Sync>,
     ) -> Self {
         // A small buffer is plenty: subscribers coalesce to a single refresh,
         // and a lagged receiver still gets one "changed" signal.
@@ -64,6 +69,7 @@ impl AppState {
             ids,
             clock,
             proposer,
+            butler,
             changes,
         }
     }
@@ -133,6 +139,7 @@ pub fn app(state: AppState) -> Router {
             "/v1/process-changes/{id}/decision",
             post(decide_process_change),
         )
+        .route("/v1/chat", post(send_chat).get(chat_history))
         .route("/v1/audit", get(audit))
         .route("/v1/activity", get(activity))
         .route("/v1/activity/stream", get(activity_stream))
@@ -932,6 +939,90 @@ async fn activity_stream(
     Sse::new(stream).keep_alive(KeepAlive::default())
 }
 
+#[derive(Serialize)]
+struct MessageResponse {
+    id: String,
+    role: String,
+    text: String,
+    at_ms: i64,
+}
+
+impl From<&ChatMessage> for MessageResponse {
+    fn from(m: &ChatMessage) -> Self {
+        Self {
+            id: m.id().value().to_string(),
+            role: m.role().name().to_owned(),
+            text: m.text().to_owned(),
+            at_ms: m.at().unix_millis(),
+        }
+    }
+}
+
+/// Serializes a proposal as `{kind, label, …params}` so the console can render it
+/// and, on confirm, call the matching create endpoint.
+fn proposal_json(p: &ButlerProposal) -> serde_json::Value {
+    let mut base = json!({ "kind": p.kind(), "label": p.label() });
+    let obj = base.as_object_mut().expect("json object");
+    match p {
+        ButlerProposal::CreateValue { name } => {
+            obj.insert("name".to_owned(), json!(name));
+        }
+        ButlerProposal::CreateNorthStar { title } => {
+            obj.insert("title".to_owned(), json!(title));
+        }
+        ButlerProposal::CreateTarget {
+            direction,
+            statement,
+        } => {
+            obj.insert(
+                "direction_id".to_owned(),
+                json!(direction.value().to_string()),
+            );
+            obj.insert("statement".to_owned(), json!(statement));
+        }
+    }
+    base
+}
+
+#[derive(Deserialize)]
+struct ChatRequest {
+    message: String,
+}
+
+/// Sends a message to the butler; returns its reply and any proposed actions.
+async fn send_chat(
+    State(state): State<AppState>,
+    Json(req): Json<ChatRequest>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let store = state.store.clone();
+    let ids = state.ids.clone();
+    let clock = state.clock.clone();
+    let butler = state.butler.clone();
+    let (reply, proposals) = blocking(move || {
+        usecases::send_to_butler(
+            store.as_ref(),
+            butler.as_ref(),
+            ids.as_ref(),
+            clock.as_ref(),
+            &req.message,
+        )
+    })
+    .await?;
+    Ok(Json(json!({
+        "reply": MessageResponse::from(&reply),
+        "proposals": proposals.iter().map(proposal_json).collect::<Vec<_>>(),
+    })))
+}
+
+/// The whole conversation with the butler, oldest first.
+async fn chat_history(
+    State(state): State<AppState>,
+) -> Result<Json<Vec<MessageResponse>>, ApiError> {
+    let store = state.store.clone();
+    let messages = blocking(move || usecases::chat_history(store.as_ref())).await?;
+    Ok(Json(messages.iter().map(MessageResponse::from).collect()))
+}
+
 /// The full export of the user's data — the "exportable" memory right.
 #[derive(Serialize)]
 struct ExportResponse {
@@ -944,6 +1035,7 @@ struct ExportResponse {
     reflections: Vec<ReflectionResponse>,
     process_changes: Vec<ProcessChangeResponse>,
     audit: Vec<AuditResponse>,
+    messages: Vec<MessageResponse>,
 }
 
 impl From<&MemorySnapshot> for ExportResponse {
@@ -966,6 +1058,7 @@ impl From<&MemorySnapshot> for ExportResponse {
                 .map(ProcessChangeResponse::from)
                 .collect(),
             audit: s.audit.iter().map(AuditResponse::from).collect(),
+            messages: s.messages.iter().map(MessageResponse::from).collect(),
         }
     }
 }
@@ -1136,6 +1229,7 @@ mod tests {
             Arc::new(RandomIdSource),
             Arc::new(SystemClock),
             Arc::new(StubProposer),
+            Arc::new(endora_infrastructure::ScriptedButler),
         )
     }
 
@@ -1319,6 +1413,30 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn chat_records_the_exchange_and_returns_proposals() {
+        let app = app(test_state());
+        let res = app
+            .clone()
+            .oneshot(post(
+                "/v1/chat",
+                r#"{"message":"I want to get back into running"}"#,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = json_body(res).await;
+        assert_eq!(body["reply"]["role"], "butler");
+        assert_eq!(body["proposals"][0]["kind"], "create_north_star");
+        assert_eq!(body["proposals"][0]["title"], "get back into running");
+
+        // The history holds both turns.
+        let hist = json_body(app.clone().oneshot(get("/v1/chat")).await.unwrap()).await;
+        assert_eq!(hist.as_array().unwrap().len(), 2);
+        assert_eq!(hist[0]["role"], "user");
+        assert_eq!(hist[1]["role"], "butler");
     }
 
     #[tokio::test]
