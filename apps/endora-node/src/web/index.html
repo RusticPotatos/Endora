@@ -90,6 +90,7 @@
 "use strict";
 
 let DB = null;                 // latest /v1/export snapshot
+let ACTIVITY = [];             // latest /v1/activity feed (newest first)
 let NAV = { v: "home" };       // current view
 
 const app = document.getElementById("app");
@@ -121,8 +122,23 @@ async function api(method, path, body) {
 }
 
 async function reload() {
-  DB = await api("GET", "/v1/export");
+  // The export snapshot and the derived activity feed, in parallel.
+  const [db, activity] = await Promise.all([
+    api("GET", "/v1/export"),
+    api("GET", "/v1/activity?limit=30"),
+  ]);
+  DB = db;
+  ACTIVITY = activity;
   render();
+}
+
+// Subscribe to the node's change stream; every "changed" event refreshes the
+// snapshot and feed live. Reconnection is handled by the browser's EventSource.
+function subscribeToActivity() {
+  try {
+    const es = new EventSource("/v1/activity/stream");
+    es.addEventListener("changed", () => { reload().catch(() => {}); });
+  } catch (_) { /* SSE unavailable: the UI still works, just not live. */ }
 }
 
 function go(v, id) { NAV = { v, id }; clearMsg(); render(); }
@@ -179,7 +195,21 @@ function viewHome() {
     <div class="form">
       <input id="new-direction" placeholder="A direction / North Star…" />
       <button class="primary" data-act="create:direction">Add</button>
-    </div>`;
+    </div>
+    <h2>Recent activity</h2>
+    ${activityFeed()}`;
+}
+
+// The live activity feed: newest first, updated in place by the change stream.
+const ACTIVITY_ICON = { observation: "•", decision: "⚖︎" };
+function activityFeed() {
+  if (!ACTIVITY.length) return `<div class="empty">No activity yet.</div>`;
+  return ACTIVITY.map((a) => `
+    <div class="card"><div class="row">
+      <div class="grow"><div class="title">${ACTIVITY_ICON[a.kind] || "•"} ${esc(a.summary)}</div>
+      <div class="sub">${esc(a.kind)}</div></div>
+      <span class="sub">${esc(new Date(a.at_ms).toLocaleString())}</span>
+    </div></div>`).join("");
 }
 
 function viewDirection(id) {
@@ -430,6 +460,7 @@ document.body.addEventListener("click", (ev) => {
     const health = await api("GET", "/health");
     document.getElementById("brand").textContent = health.service || "Endora";
     await reload();
+    subscribeToActivity();
   } catch (e) {
     app.innerHTML = `<div class="msg show err">Couldn't reach the node: ${esc(e.message)}</div>`;
   }

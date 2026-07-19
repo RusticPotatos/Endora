@@ -453,6 +453,41 @@ impl ObservationRepository for SqliteStore {
         }
         Ok(observations)
     }
+
+    fn recent(&self, limit: usize) -> Result<Vec<Observation>, RepositoryError> {
+        let conn = self.lock()?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, experiment_id, note, at_ms FROM observations \
+                 ORDER BY at_ms DESC, id DESC LIMIT ?1",
+            )
+            .map_err(backend)?;
+        let rows = stmt
+            .query_map(params![limit as i64], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, i64>(3)?,
+                ))
+            })
+            .map_err(backend)?;
+
+        let mut observations = Vec::new();
+        for row in rows {
+            let (id, experiment_id, note, at_ms) = row.map_err(backend)?;
+            observations.push(
+                Observation::record(
+                    ObservationId::new(parse_id(&id)?),
+                    ExperimentId::new(parse_id(&experiment_id)?),
+                    &note,
+                    Timestamp::from_unix_millis(at_ms),
+                )
+                .map_err(corrupt)?,
+            );
+        }
+        Ok(observations)
+    }
 }
 
 impl ReflectionRepository for SqliteStore {

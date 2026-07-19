@@ -21,6 +21,7 @@ pub use ports::{
     GoalRepository, IdSource, MemorySnapshot, MemoryStore, ObservationRepository,
     ProcessChangeRepository, ProposalError, Proposer, ReflectionRepository, RepositoryError,
 };
+pub use usecases::{ActivityItem, ActivityKind};
 
 use endora_domain::AutonomyLevel;
 
