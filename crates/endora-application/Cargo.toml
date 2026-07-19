@@ -1,0 +1,15 @@
+[package]
+name = "endora-application"
+description = "Endora application layer: orchestrates domain concepts into use cases. Depends only on the domain and on abstractions it defines."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+endora-domain = { path = "../endora-domain" }
+
+[lints]
+workspace = true
