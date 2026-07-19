@@ -48,17 +48,18 @@ The **deterministic policy boundary is the load-bearing guarantee** and must be
 fully real and independently tested. Behind it, v1.0 uses a **real local model**,
 not a stub:
 
-- A well-known **open-weights instruct model that runs on consumer hardware**
-  (target: ~7–9B class, quantized, comfortable on 16 GB RAM / Apple Silicon).
-  Strong starting candidates: **Llama 3.1 8B Instruct** or **Qwen2.5 7B
-  Instruct**.
+- **Default: Qwen3.5 9B** (~6.6 GB quantized) — fits 8 GB VRAM / 16 GB Apple
+  Silicon, the sweet spot for the majority-hardware goal.
+- **Lighter fallback: Qwen3.5 4B** (~3.4 GB quantized) for older laptops.
 - Served locally through an **OpenAI-compatible endpoint** (e.g. Ollama or a
-  llama.cpp server), consumed via a **replaceable adapter** so the specific model
-  and runner are never load-bearing. This keeps Endora local-first and
-  privacy-preserving by default; cloud providers remain optional 1.x adapters.
-- The final model pick is confirmed in **ADR 0008 (local model adapter)** after a
-  small eval on the loop's actual prompts (proposing experiments, summarizing
-  observations, drafting reflections).
+  llama.cpp server; MLX builds available on Apple Silicon), consumed via a
+  **replaceable adapter** so the specific model and runner are never load-bearing.
+  This keeps Endora local-first and privacy-preserving by default; larger models
+  (e.g. Qwen3.6 27B) and optional cloud providers are post-1.0 adapters.
+- The final pick and the model's **license compatibility with Apache-2.0** are
+  confirmed in **ADR 0008 (local model adapter)**, after a small eval on the
+  loop's actual prompts (proposing experiments, summarizing observations,
+  drafting reflections).
 
 The model only ever **proposes**. Every consequential effect is gated by
 deterministic policy — see
