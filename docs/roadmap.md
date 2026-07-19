@@ -7,9 +7,16 @@
 
 ## Where we are
 
-Endora is in the **foundation phase**: principles, architecture, and a minimal
-workspace skeleton exist, but there is no protocol, persistence, policy engine,
-or model yet. The next milestone is **v1.0**.
+The foundation is built and **v0.1.0 has shipped**: the full learning loop, the
+deterministic policy boundary, audit, memory rights, a local model proposer, a
+SQLite store, a node-served web console, review scheduling, and a live activity
+feed all exist. Work since 0.1.0 (the console, retention, and reachability
+milestones, plus the Goal→Target rename) sits on `develop`.
+
+The next arc is **the butler** ([ADR 0014](adr/0014-the-butler-conversation-values-attention.md)):
+turning the system from a tree the user operates into an assistant the user talks
+to. That arc — releases **0.5 → 1.0** — is planned in
+[The road to 1.0](#the-road-to-10--the-butler) below.
 
 ## What v1.0 means
 
@@ -214,9 +221,66 @@ get observed. The most design care goes here.
   (systemd / container restart), backups, and secure reach over a private overlay
   or an authenticating proxy; `make docker-run` now binds loopback by default.
 
-### Beyond
+## The road to 1.0 — the butler
+
+The original 1.0 slice (the learning loop, driven from the CLI and console) is
+essentially built and shipping on `develop`. What makes Endora *the product* is the
+**butler** ([ADR 0014](adr/0014-the-butler-conversation-values-attention.md)): you
+talk to it, it organizes your life by your values, and it works the loop for you —
+proposing, never deciding, with the policy boundary intact. These releases integrate
+that one complete vertical slice at a time. (The Goal→Target rename is breaking, so
+the release that carries it is **0.5.0**; tagging is a human decision.)
+
+### 0.5 — Artifacts, complete and correct
+- **Goal → Target rename** ([ADR 0013](adr/0013-rename-goal-to-target.md)) — a
+  breaking rename of the second-tier concept; done, pending release.
+- **Lifecycle**: North Stars and Targets gain states (active / achieved / abandoned
+  / archived) plus archive and delete, across the domain, API, CLI, and console.
+  Today only experiments can "conclude" and nothing else can be finished, dropped,
+  or removed except a global purge — the butler needs to close things out.
+
+### 0.6 — Values: organize by *why*
+- Build the **Identity & Values** context (its own ADR): **Value → North Star →
+  Target**. A North Star is filed under the value it serves (health, community,
+  craft); the console groups by value and the API/CLI follow. This is the organizing
+  backbone the butler files into.
+
+### 0.7 — The butler, MVP (chat)
+- A **conversation** surface: a chat endpoint and a console chat panel. The model
+  runs the **act/ask loop** — you talk, it proposes structure and plans (North
+  Stars, targets, experiments), asks clarifying questions, and records answers as
+  **preferences**. Every consequential step still routes **propose → policy
+  authorizes → confirm if irreversible**. This is where the AI becomes the driver
+  rather than a single drafting call. The **anti-sycophancy eval harness** starts
+  here — the moment the model drives.
+
+### 0.8 — Attention & proactivity
+- **Adaptive attention**: the deferral-backoff ranking (ADR 0014 §3) decides what to
+  raise, with **hybrid triggers** — events (the existing change stream) + scheduled
+  sweeps + conversation. The butler surfaces stale North Stars and due reviews and
+  asks *less* as they are deferred, reprioritizing on new evidence. Its own ADR pins
+  the attention formula. "It comes to you."
+
+### 0.9 — Voice & character
+- **Personality**: style mirroring with the golden-rule floor (ADR 0014 §4), and the
+  candor / anti-sycophancy invariants hardened into evals. **Voice**: STT/TTS as a
+  thin client over the same protocol. Its own ADR for persona + voice.
+
+### 1.0 — The butler is the product
+- Everything integrated: the person lives in the conversation, values organize the
+  structure, attention is proactive and calibrated, and the butler is candid and
+  never sycophantic — all local-first, memory rights intact, policy boundary
+  enforced. 1.0 is redefined around this; the CLI learning loop was an early
+  milestone, now passed.
+
+Cross-cutting, in **every** release: the deterministic **policy boundary** authorizes
+consequential actions, **memory stays visible / correctable / exportable / deletable**,
+and **sycophancy is treated as a defect** measured by evals — never left to the
+model's discretion.
+
+### Beyond 1.0
 
 Native clients, real offline sync (if it is ever justified), and the
 **Capabilities** and **Protection** bounded contexts — *bounded, reversible*
 autonomy executed under the Policy boundary — remain the long arc toward the
-constitution's full vision. Deliberately after the product is usable and trusted.
+constitution's full vision. Deliberately after the butler is usable and trusted.
