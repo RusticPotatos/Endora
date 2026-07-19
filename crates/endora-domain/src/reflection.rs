@@ -80,6 +80,30 @@ pub enum ApprovalState {
     Rejected,
 }
 
+impl ApprovalState {
+    /// A stable, lowercase name for the state, for storage and display. The
+    /// round trip with [`from_name`](Self::from_name) is part of the contract.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::Approved => "approved",
+            Self::Rejected => "rejected",
+        }
+    }
+
+    /// Parses a state from its [`name`](Self::name), or `None` if unrecognized.
+    #[must_use]
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "pending" => Some(Self::Pending),
+            "approved" => Some(Self::Approved),
+            "rejected" => Some(Self::Rejected),
+            _ => None,
+        }
+    }
+}
+
 /// A change a [`Reflection`] proposes to how Endora works.
 ///
 /// It is always *proposed*: it starts [`ApprovalState::Pending`] and only a
@@ -108,6 +132,32 @@ impl ProposedProcessChange {
             reflection,
             description,
             approval: ApprovalState::Pending,
+        })
+    }
+
+    /// Reconstitutes a proposed change from persisted parts, including its
+    /// stored `approval` state.
+    ///
+    /// For **storage adapters** loading a previously-saved change; it restores
+    /// state rather than starting a new proposal. Prefer [`propose`] for new
+    /// proposals.
+    ///
+    /// [`propose`]: Self::propose
+    ///
+    /// # Errors
+    /// [`DomainError::EmptyField`] if `description` is blank.
+    pub fn from_parts(
+        id: ProcessChangeId,
+        reflection: ReflectionId,
+        description: &str,
+        approval: ApprovalState,
+    ) -> Result<Self, DomainError> {
+        let description = require_non_empty("process_change.description", description)?;
+        Ok(Self {
+            id,
+            reflection,
+            description,
+            approval,
         })
     }
 
@@ -240,5 +290,29 @@ mod tests {
         p.reject().unwrap();
         assert_eq!(p.approve(), Err(DomainError::AlreadyDecided));
         assert!(!p.is_approved());
+    }
+
+    #[test]
+    fn approval_state_names_round_trip() {
+        for s in [
+            ApprovalState::Pending,
+            ApprovalState::Approved,
+            ApprovalState::Rejected,
+        ] {
+            assert_eq!(ApprovalState::from_name(s.name()), Some(s));
+        }
+        assert_eq!(ApprovalState::from_name("bogus"), None);
+    }
+
+    #[test]
+    fn from_parts_restores_a_stored_approval() {
+        let p = ProposedProcessChange::from_parts(
+            ProcessChangeId::new(1),
+            ReflectionId::new(1),
+            "Default runs to mornings",
+            ApprovalState::Approved,
+        )
+        .unwrap();
+        assert!(p.is_approved());
     }
 }

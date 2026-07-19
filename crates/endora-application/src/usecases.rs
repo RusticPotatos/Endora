@@ -8,13 +8,13 @@
 use endora_domain::{
     Assumption, AssumptionId, AuditId, AuditRecord, AutonomyLevel, Direction, DirectionId,
     Experiment, ExperimentId, Goal, GoalId, Observation, ObservationId, PolicyDecision,
-    ProposedProcessChange, Reflection, ReflectionId, authorize_process_change,
+    ProcessChangeId, ProposedProcessChange, Reflection, ReflectionId, authorize_process_change,
 };
 
 use crate::error::AppError;
 use crate::ports::{
     AssumptionRepository, AuditLog, Clock, DirectionRepository, ExperimentRepository,
-    GoalRepository, IdSource, ObservationRepository, ReflectionRepository,
+    GoalRepository, IdSource, ObservationRepository, ProcessChangeRepository, ReflectionRepository,
 };
 
 /// Creates and stores a new [`Direction`].
@@ -237,6 +237,79 @@ pub fn list_reflections(
     Ok(reflections.list_for_goal(goal)?)
 }
 
+/// Proposes and stores a new [`ProposedProcessChange`] from an existing
+/// reflection. It starts pending human approval.
+///
+/// # Errors
+/// [`AppError::NotFound`] if the reflection does not exist, [`AppError::Domain`]
+/// if the description is blank, or [`AppError::Repository`] on failure.
+pub fn propose_process_change(
+    reflections: &impl ReflectionRepository,
+    changes: &impl ProcessChangeRepository,
+    ids: &impl IdSource,
+    reflection: ReflectionId,
+    description: &str,
+) -> Result<ProposedProcessChange, AppError> {
+    if reflections.get(reflection)?.is_none() {
+        return Err(AppError::NotFound {
+            entity: "reflection",
+        });
+    }
+    let change = ProposedProcessChange::propose(
+        ProcessChangeId::new(ids.new_id()),
+        reflection,
+        description,
+    )?;
+    changes.save(&change)?;
+    Ok(change)
+}
+
+/// Lists the proposed changes from a reflection, in a stable order.
+///
+/// # Errors
+/// [`AppError::Repository`] if persistence fails.
+pub fn list_process_changes(
+    changes: &impl ProcessChangeRepository,
+    reflection: ReflectionId,
+) -> Result<Vec<ProposedProcessChange>, AppError> {
+    Ok(changes.list_for_reflection(reflection)?)
+}
+
+/// Approves a pending process change (an explicit human decision) and persists
+/// it.
+///
+/// # Errors
+/// [`AppError::NotFound`] if the change does not exist, [`AppError::Domain`] if
+/// it was already decided, or [`AppError::Repository`] on failure.
+pub fn approve_process_change(
+    changes: &impl ProcessChangeRepository,
+    id: ProcessChangeId,
+) -> Result<ProposedProcessChange, AppError> {
+    let mut change = changes.get(id)?.ok_or(AppError::NotFound {
+        entity: "process change",
+    })?;
+    change.approve()?;
+    changes.save(&change)?;
+    Ok(change)
+}
+
+/// Rejects a pending process change and persists it.
+///
+/// # Errors
+/// [`AppError::NotFound`] if the change does not exist, [`AppError::Domain`] if
+/// it was already decided, or [`AppError::Repository`] on failure.
+pub fn reject_process_change(
+    changes: &impl ProcessChangeRepository,
+    id: ProcessChangeId,
+) -> Result<ProposedProcessChange, AppError> {
+    let mut change = changes.get(id)?.ok_or(AppError::NotFound {
+        entity: "process change",
+    })?;
+    change.reject()?;
+    changes.save(&change)?;
+    Ok(change)
+}
+
 /// Decides whether an actor may enact a proposed process change, and records
 /// the decision to the audit trail.
 ///
@@ -277,19 +350,22 @@ fn describe(decision: PolicyDecision) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::{
-        conclude_experiment, create_assumption, create_direction, create_goal, create_reflection,
-        decide_process_change, list_assumptions, list_experiments, list_goals, list_observations,
-        list_reflections, propose_experiment, record_observation, start_experiment,
+        approve_process_change, conclude_experiment, create_assumption, create_direction,
+        create_goal, create_reflection, decide_process_change, list_assumptions, list_experiments,
+        list_goals, list_observations, list_process_changes, list_reflections, propose_experiment,
+        propose_process_change, record_observation, reject_process_change, start_experiment,
     };
     use crate::error::AppError;
     use crate::ports::{
         AssumptionRepository, AuditLog, Clock, DirectionRepository, ExperimentRepository,
-        GoalRepository, IdSource, ObservationRepository, ReflectionRepository, RepositoryError,
+        GoalRepository, IdSource, ObservationRepository, ProcessChangeRepository,
+        ReflectionRepository, RepositoryError,
     };
     use endora_domain::{
-        Assumption, AssumptionId, AuditRecord, AutonomyLevel, Direction, DirectionId, Experiment,
-        ExperimentId, ExperimentStatus, Goal, GoalId, Observation, ObservationId, PolicyDecision,
-        ProcessChangeId, ProposedProcessChange, Reflection, ReflectionId, Timestamp,
+        ApprovalState, Assumption, AssumptionId, AuditRecord, AutonomyLevel, Direction,
+        DirectionId, Experiment, ExperimentId, ExperimentStatus, Goal, GoalId, Observation,
+        ObservationId, PolicyDecision, ProcessChangeId, ProposedProcessChange, Reflection,
+        ReflectionId, Timestamp,
     };
     use std::cell::{Cell, RefCell};
     use std::collections::HashMap;
@@ -303,6 +379,36 @@ mod tests {
         experiments: RefCell<HashMap<u128, Experiment>>,
         observations: RefCell<HashMap<u128, Observation>>,
         reflections: RefCell<HashMap<u128, Reflection>>,
+        changes: RefCell<HashMap<u128, ProposedProcessChange>>,
+    }
+
+    impl ProcessChangeRepository for FakeStore {
+        fn save(&self, change: &ProposedProcessChange) -> Result<(), RepositoryError> {
+            self.changes
+                .borrow_mut()
+                .insert(change.id().value(), change.clone());
+            Ok(())
+        }
+        fn get(
+            &self,
+            id: ProcessChangeId,
+        ) -> Result<Option<ProposedProcessChange>, RepositoryError> {
+            Ok(self.changes.borrow().get(&id.value()).cloned())
+        }
+        fn list_for_reflection(
+            &self,
+            reflection: ReflectionId,
+        ) -> Result<Vec<ProposedProcessChange>, RepositoryError> {
+            let mut found: Vec<ProposedProcessChange> = self
+                .changes
+                .borrow()
+                .values()
+                .filter(|c| c.reflection() == reflection)
+                .cloned()
+                .collect();
+            found.sort_by_key(|c| c.id().value());
+            Ok(found)
+        }
     }
 
     impl ReflectionRepository for FakeStore {
@@ -754,5 +860,79 @@ mod tests {
         )
         .unwrap();
         assert_eq!(list_reflections(&store, goal.id()).unwrap(), vec![r]);
+    }
+
+    /// Builds direction → goal → reflection and returns the reflection id.
+    fn seed_reflection(store: &FakeStore, ids: &SeqIds) -> ReflectionId {
+        let direction = create_direction(store, ids, "Be healthier").unwrap();
+        let goal = create_goal(store, store, ids, direction.id(), "Run a 5k").unwrap();
+        create_reflection(
+            store,
+            store,
+            ids,
+            goal.id(),
+            "mornings worked",
+            vec![ObservationId::new(1)],
+        )
+        .unwrap()
+        .id()
+    }
+
+    #[test]
+    fn propose_process_change_requires_an_existing_reflection() {
+        let store = FakeStore::default();
+        let ids = SeqIds::default();
+        let err =
+            propose_process_change(&store, &store, &ids, ReflectionId::new(404), "Do mornings")
+                .unwrap_err();
+        assert_eq!(
+            err,
+            AppError::NotFound {
+                entity: "reflection"
+            }
+        );
+    }
+
+    #[test]
+    fn process_change_starts_pending_then_is_approved() {
+        let store = FakeStore::default();
+        let ids = SeqIds::default();
+        let reflection = seed_reflection(&store, &ids);
+
+        let c = propose_process_change(&store, &store, &ids, reflection, "Default to mornings")
+            .unwrap();
+        assert_eq!(c.approval(), ApprovalState::Pending);
+
+        let approved = approve_process_change(&store, c.id()).unwrap();
+        assert!(approved.is_approved());
+        assert_eq!(
+            list_process_changes(&store, reflection).unwrap(),
+            vec![approved]
+        );
+    }
+
+    #[test]
+    fn approving_a_rejected_change_is_a_domain_error() {
+        let store = FakeStore::default();
+        let ids = SeqIds::default();
+        let reflection = seed_reflection(&store, &ids);
+        let c = propose_process_change(&store, &store, &ids, reflection, "Default to mornings")
+            .unwrap();
+
+        reject_process_change(&store, c.id()).unwrap();
+        let err = approve_process_change(&store, c.id()).unwrap_err();
+        assert!(matches!(err, AppError::Domain(_)));
+    }
+
+    #[test]
+    fn approving_a_missing_change_is_not_found() {
+        let store = FakeStore::default();
+        let err = approve_process_change(&store, ProcessChangeId::new(1)).unwrap_err();
+        assert_eq!(
+            err,
+            AppError::NotFound {
+                entity: "process change"
+            }
+        );
     }
 }
