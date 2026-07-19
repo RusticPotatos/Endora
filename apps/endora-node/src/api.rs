@@ -11,7 +11,7 @@ use axum::Json;
 use axum::Router;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
-use axum::response::{IntoResponse, Response};
+use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post};
 use endora_application::{AppError, MemorySnapshot, Proposer, RepositoryError, usecases};
 use endora_domain::{
@@ -39,6 +39,7 @@ pub struct AppState {
 /// Builds the router for the node's HTTP API.
 pub fn app(state: AppState) -> Router {
     Router::new()
+        .route("/", get(index))
         .route("/health", get(health))
         .route("/v1/directions", post(create_direction))
         .route(
@@ -87,6 +88,11 @@ pub fn app(state: AppState) -> Router {
         .route("/v1/export", get(export))
         .route("/v1/memory/purge", post(purge))
         .with_state(state)
+}
+
+/// Serves the self-contained web console (embedded in the binary; see ADR 0009).
+async fn index() -> Html<&'static str> {
+    Html(include_str!("web/index.html"))
 }
 
 async fn health() -> Json<serde_json::Value> {
@@ -823,6 +829,23 @@ mod tests {
             .header("content-type", "application/json")
             .body(Body::from(body.to_owned()))
             .unwrap()
+    }
+
+    #[tokio::test]
+    async fn root_serves_the_web_console() {
+        let res = app(test_state())
+            .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let ct = res
+            .headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        assert!(ct.starts_with("text/html"), "content-type was {ct}");
+        let body = res.into_body().collect().await.unwrap().to_bytes();
+        assert!(String::from_utf8_lossy(&body).contains("<title>Endora</title>"));
     }
 
     #[tokio::test]
