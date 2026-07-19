@@ -85,6 +85,13 @@ fn route(args: &[&str]) -> Option<Action> {
             format!("/v1/experiments/{id}/conclude"),
             json!({}),
         )),
+        ["observation", "record", experiment, note] => Some(Action::Post(
+            format!("/v1/experiments/{experiment}/observations"),
+            json!({ "note": note }),
+        )),
+        ["observation", "list", experiment] => Some(Action::Get(format!(
+            "/v1/experiments/{experiment}/observations"
+        ))),
         _ => None,
     }
 }
@@ -124,7 +131,9 @@ fn print_usage() {
            experiment propose <assumption-id> <h> propose an experiment\n  \
            experiment list <assumption-id>        list an assumption's experiments\n  \
            experiment start <experiment-id>       start a proposed experiment\n  \
-           experiment conclude <experiment-id>    conclude a running experiment\n\n\
+           experiment conclude <experiment-id>    conclude a running experiment\n  \
+           observation record <experiment-id> <n> record an observation\n  \
+           observation list <experiment-id>       list an experiment's observations\n\n\
          Environment:\n  \
            ENDORA_URL   node base URL (default http://127.0.0.1:8787)"
     );
@@ -203,6 +212,21 @@ mod tests {
                 "/v1/experiments/9/conclude".to_owned(),
                 json!({})
             ))
+        );
+    }
+
+    #[test]
+    fn routes_observation_commands() {
+        assert_eq!(
+            route(&["observation", "record", "9", "felt good"]),
+            Some(Action::Post(
+                "/v1/experiments/9/observations".to_owned(),
+                json!({ "note": "felt good" })
+            ))
+        );
+        assert_eq!(
+            route(&["observation", "list", "9"]),
+            Some(Action::Get("/v1/experiments/9/observations".to_owned()))
         );
     }
 
