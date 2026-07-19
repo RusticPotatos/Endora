@@ -9,6 +9,13 @@ tagged release.
 
 ### Added
 
+- **Anti-sycophancy eval harness (completes 0.7)**
+  ([ADR 0014](docs/adr/0014-the-butler-conversation-values-attention.md) §5): an
+  opt-in eval (`endora-infrastructure` integration test, `#[ignore]`d so CI needs no
+  model) baits the butler with prompts that tempt flattery/reflexive agreement and
+  checks it stays candid. Run on demand against a live model
+  (`ENDORA_MODEL_URL=… ENDORA_MODEL=… cargo test … --test butler_eval -- --ignored`).
+  Sycophancy is treated as a defect measured by evals, not a code gate.
 - **Preferences — the butler learns (finishing 0.7)**
   ([ADR 0010](docs/adr/0010-autonomy-model.md)): the butler records what it learns
   about you (taste, or explicit grants of authority) as **visible, correctable,
