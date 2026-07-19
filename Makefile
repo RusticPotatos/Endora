@@ -45,6 +45,14 @@ run-node: ## Run the authoritative node (HTTP server; ENDORA_ADDR/ENDORA_DB to c
 run-cli: ## Run the CLI client (pass args via ARGS="...", e.g. ARGS="health")
 	$(CARGO) run --bin endora -- $(ARGS)
 
+.PHONY: docker-build
+docker-build: ## Build the node container image (tag: endora-node)
+	docker build -t endora-node .
+
+.PHONY: docker-run
+docker-run: ## Run the node container (maps 8787, persists ./endora-data)
+	docker run --rm -p 8787:8787 -v "$(CURDIR)/endora-data:/data" endora-node
+
 .PHONY: watch
 watch: ## Re-run tests on file change (needs cargo-watch)
 	@command -v cargo-watch >/dev/null 2>&1 || { \

@@ -33,6 +33,9 @@ secrets/
 *.db-wal
 *.db-shm
 
+# Docker volume mount for local runs (see `make docker-run`).
+/endora-data/
+
 # ---- macOS ----
 .DS_Store
 .AppleDouble
