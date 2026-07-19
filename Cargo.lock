@@ -200,6 +200,8 @@ dependencies = [
  "endora-application",
  "endora-domain",
  "rusqlite",
+ "serde_json",
+ "ureq",
  "uuid",
 ]
 
