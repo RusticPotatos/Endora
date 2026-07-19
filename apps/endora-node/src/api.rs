@@ -16,7 +16,7 @@ use axum::routing::{get, post};
 use endora_application::{AppError, RepositoryError, usecases};
 use endora_domain::{
     Assumption, AssumptionId, Direction, DirectionId, Experiment, ExperimentId, Goal, GoalId,
-    Observation, ObservationId, Reflection,
+    Observation, ObservationId, ProcessChangeId, ProposedProcessChange, Reflection, ReflectionId,
 };
 use endora_infrastructure::{RandomIdSource, SqliteStore, SystemClock};
 use serde::{Deserialize, Serialize};
@@ -59,6 +59,18 @@ pub fn app(state: AppState) -> Router {
         .route(
             "/v1/goals/{id}/reflections",
             post(create_reflection).get(list_reflections),
+        )
+        .route(
+            "/v1/reflections/{id}/process-changes",
+            post(propose_process_change).get(list_process_changes),
+        )
+        .route(
+            "/v1/process-changes/{id}/approve",
+            post(approve_process_change),
+        )
+        .route(
+            "/v1/process-changes/{id}/reject",
+            post(reject_process_change),
         )
         .with_state(state)
 }
@@ -405,6 +417,104 @@ async fn list_reflections(
     Ok(Json(
         reflections.iter().map(ReflectionResponse::from).collect(),
     ))
+}
+
+#[derive(Deserialize)]
+struct ProposeProcessChangeRequest {
+    description: String,
+}
+
+#[derive(Serialize)]
+struct ProcessChangeResponse {
+    id: String,
+    reflection_id: String,
+    description: String,
+    approval: String,
+}
+
+impl From<&ProposedProcessChange> for ProcessChangeResponse {
+    fn from(c: &ProposedProcessChange) -> Self {
+        Self {
+            id: c.id().value().to_string(),
+            reflection_id: c.reflection().value().to_string(),
+            description: c.description().to_owned(),
+            approval: c.approval().name().to_owned(),
+        }
+    }
+}
+
+async fn propose_process_change(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(req): Json<ProposeProcessChangeRequest>,
+) -> Result<Json<ProcessChangeResponse>, ApiError> {
+    let reflection = parse_reflection_id(&id)?;
+    let store = state.store.clone();
+    let ids = state.ids.clone();
+    let change = blocking(move || {
+        usecases::propose_process_change(
+            store.as_ref(),
+            store.as_ref(),
+            ids.as_ref(),
+            reflection,
+            &req.description,
+        )
+    })
+    .await?;
+    Ok(Json(ProcessChangeResponse::from(&change)))
+}
+
+async fn list_process_changes(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<Vec<ProcessChangeResponse>>, ApiError> {
+    let reflection = parse_reflection_id(&id)?;
+    let store = state.store.clone();
+    let changes =
+        blocking(move || usecases::list_process_changes(store.as_ref(), reflection)).await?;
+    Ok(Json(
+        changes.iter().map(ProcessChangeResponse::from).collect(),
+    ))
+}
+
+async fn approve_process_change(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<ProcessChangeResponse>, ApiError> {
+    let change_id = parse_process_change_id(&id)?;
+    let store = state.store.clone();
+    let change =
+        blocking(move || usecases::approve_process_change(store.as_ref(), change_id)).await?;
+    Ok(Json(ProcessChangeResponse::from(&change)))
+}
+
+async fn reject_process_change(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<ProcessChangeResponse>, ApiError> {
+    let change_id = parse_process_change_id(&id)?;
+    let store = state.store.clone();
+    let change =
+        blocking(move || usecases::reject_process_change(store.as_ref(), change_id)).await?;
+    Ok(Json(ProcessChangeResponse::from(&change)))
+}
+
+/// Parses a path id into a [`ReflectionId`]; a malformed id names no reflection.
+fn parse_reflection_id(id: &str) -> Result<ReflectionId, ApiError> {
+    id.parse::<u128>().map(ReflectionId::new).map_err(|_| {
+        ApiError(AppError::NotFound {
+            entity: "reflection",
+        })
+    })
+}
+
+/// Parses a path id into a [`ProcessChangeId`]; a malformed id names no change.
+fn parse_process_change_id(id: &str) -> Result<ProcessChangeId, ApiError> {
+    id.parse::<u128>().map(ProcessChangeId::new).map_err(|_| {
+        ApiError(AppError::NotFound {
+            entity: "process change",
+        })
+    })
 }
 
 /// Parses evidence observation ids from the request body; a malformed id can
@@ -824,6 +934,65 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(json_body(res).await.as_array().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn process_change_propose_approve_over_http() {
+        let app = app(test_state());
+        let (gid, oid) = seed_chain(&app).await;
+        let body = format!(r#"{{"summary":"worked","evidence":["{oid}"]}}"#);
+        let rid = json_body(
+            app.clone()
+                .oneshot(post(&format!("/v1/goals/{gid}/reflections"), &body))
+                .await
+                .unwrap(),
+        )
+        .await["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+
+        // propose -> pending
+        let res = app
+            .clone()
+            .oneshot(post(
+                &format!("/v1/reflections/{rid}/process-changes"),
+                r#"{"description":"Default to mornings"}"#,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let created = json_body(res).await;
+        assert_eq!(created["approval"], "pending");
+        let cid = created["id"].as_str().unwrap().to_owned();
+
+        // approve -> approved
+        let res = app
+            .clone()
+            .oneshot(post(&format!("/v1/process-changes/{cid}/approve"), ""))
+            .await
+            .unwrap();
+        assert_eq!(json_body(res).await["approval"], "approved");
+
+        // approving again is a domain error -> 400
+        let res = app
+            .clone()
+            .oneshot(post(&format!("/v1/process-changes/{cid}/approve"), ""))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn process_change_for_missing_reflection_is_404() {
+        let res = app(test_state())
+            .oneshot(post(
+                "/v1/reflections/999/process-changes",
+                r#"{"description":"x"}"#,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]

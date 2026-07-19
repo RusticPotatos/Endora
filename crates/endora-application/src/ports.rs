@@ -9,7 +9,8 @@ use core::fmt;
 
 use endora_domain::{
     Assumption, AssumptionId, AuditRecord, Direction, DirectionId, Experiment, ExperimentId, Goal,
-    GoalId, Observation, Reflection, ReflectionId, Timestamp,
+    GoalId, Observation, ProcessChangeId, ProposedProcessChange, Reflection, ReflectionId,
+    Timestamp,
 };
 
 /// A failure from a storage backend behind a repository port.
@@ -175,6 +176,31 @@ pub trait ReflectionRepository {
     /// # Errors
     /// [`RepositoryError`] if the backend fails or stored data is corrupt.
     fn list_for_goal(&self, goal: GoalId) -> Result<Vec<Reflection>, RepositoryError>;
+}
+
+/// Persists and retrieves [`ProposedProcessChange`]s.
+pub trait ProcessChangeRepository {
+    /// Inserts a proposed change, or replaces the one with the same id (used to
+    /// create and to persist approval/rejection).
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if the backend fails.
+    fn save(&self, change: &ProposedProcessChange) -> Result<(), RepositoryError>;
+
+    /// Fetches a proposed change by id, returning `None` if it does not exist.
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if the backend fails or stored data is corrupt.
+    fn get(&self, id: ProcessChangeId) -> Result<Option<ProposedProcessChange>, RepositoryError>;
+
+    /// Lists the proposed changes from a reflection, in a stable order.
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if the backend fails or stored data is corrupt.
+    fn list_for_reflection(
+        &self,
+        reflection: ReflectionId,
+    ) -> Result<Vec<ProposedProcessChange>, RepositoryError>;
 }
 
 /// Appends to and reads the audit trail.
