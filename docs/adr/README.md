@@ -39,3 +39,6 @@ of an existing record and take the next number.
 | [0003](0003-http-json-openapi-protocol.md) | HTTP + JSON + OpenAPI application protocol | Accepted |
 | [0004](0004-sqlite-first.md) | SQLite-first persistence | Accepted |
 | [0005](0005-models-propose-policy-authorizes.md) | Models propose; policy authorizes | Accepted |
+| [0006](0006-first-vertical-slice.md) | First vertical slice: the learning loop for one goal | Accepted |
+| [0007](0007-async-web-stack.md) | Async runtime and web stack for the node | Accepted |
+| [0008](0008-local-model-adapter.md) | Local model adapter | Accepted |
