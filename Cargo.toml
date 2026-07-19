@@ -1,0 +1,24 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/endora-domain",
+    "crates/endora-application",
+    "apps/endora-node",
+    "apps/endora-cli",
+]
+
+# Shared metadata inherited by every workspace member via `field.workspace = true`.
+# Keeping this centralized means a single place governs edition, MSRV, and license
+# across the modular monolith.
+[workspace.package]
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.87"
+license = "Apache-2.0"
+repository = "https://github.com/RusticPotatos/Endora"
+authors = ["Endora contributors"]
+
+# Workspace-wide lint posture. CI additionally runs Clippy with `-D warnings`.
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"

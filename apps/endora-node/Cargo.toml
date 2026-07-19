@@ -1,0 +1,19 @@
+[package]
+name = "endora-node"
+description = "Endora node: the authoritative backend runtime (the 'brain'). Foundation-phase placeholder that identifies itself and exits."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "endora-node"
+path = "src/main.rs"
+
+[dependencies]
+endora-application = { path = "../../crates/endora-application" }
+
+[lints]
+workspace = true
