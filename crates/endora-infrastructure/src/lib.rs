@@ -8,8 +8,10 @@
 
 #![forbid(unsafe_code)]
 
+pub mod clock;
 pub mod ids;
 pub mod sqlite;
 
+pub use clock::SystemClock;
 pub use ids::RandomIdSource;
 pub use sqlite::SqliteStore;
