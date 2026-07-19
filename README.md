@@ -104,11 +104,12 @@ See [docs/architecture.md](docs/architecture.md), the
 
 ```text
 crates/
-  endora-domain/       # Domain layer — pure, zero dependencies
-  endora-application/  # Application layer — depends on domain only
+  endora-domain/          # Domain layer — pure, zero dependencies
+  endora-application/     # Application layer — use cases + ports; depends on domain
+  endora-infrastructure/  # Infrastructure layer — adapters (SQLite persistence)
 apps/
-  endora-node/         # Authoritative backend runtime (the brain)
-  endora-cli/          # Thin, replaceable client
+  endora-node/            # Authoritative backend runtime (the brain)
+  endora-cli/             # Thin, replaceable client
 ```
 
 ## Current technology direction
