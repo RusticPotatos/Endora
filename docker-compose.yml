@@ -5,7 +5,14 @@
 #   docker --context nas compose logs -f            # follow logs
 #   docker --context nas compose down               # stop (data volume kept)
 #
-# then open http://<host>:8787
+# Or via the Makefile wrappers (same thing):
+#
+#   make deploy DOCKER_CONTEXT=nas                  # build + start
+#   make deploy-logs DOCKER_CONTEXT=nas             # follow logs
+#   make deploy-down DOCKER_CONTEXT=nas             # stop (data volume kept)
+#
+# then open https://<host>:8787  (ENDORA_TLS is on; accept the self-signed
+# cert once — see docs/hosting.md)
 #
 # Note: the 0.x HTTP API is UNAUTHENTICATED. Publishing 8787 makes it reachable
 # by anything on that host's network — fine for a trusted LAN during dev, but do

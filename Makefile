@@ -9,6 +9,13 @@ CARGO ?= cargo
 # line, e.g. `make test WORKSPACE_FLAGS=--workspace`.
 WORKSPACE_FLAGS ?= --workspace --all-features
 
+# Docker context for the Compose deploy targets. Empty = the local Docker
+# daemon; set to a remote context to build+run there, e.g.
+# `make deploy DOCKER_CONTEXT=nas`. Compose reads docker-compose.yml plus any
+# local docker-compose.override.yml (kept out of git).
+DOCKER_CONTEXT ?=
+COMPOSE = docker $(if $(DOCKER_CONTEXT),--context $(DOCKER_CONTEXT),) compose
+
 .DEFAULT_GOAL := help
 
 ## ----------------------------------------------------------------------------
@@ -65,6 +72,21 @@ docker-run: ## Run the node container (loopback-only on 8787, persists ./endora-
 	# it must not be reachable off this machine. See docs/hosting.md to reach it
 	# securely from other devices.
 	docker run --rm -p 127.0.0.1:8787:8787 -v "$(CURDIR)/endora-data:/data" endora-node
+
+.PHONY: deploy
+deploy: ## Build + start the node via Compose (DOCKER_CONTEXT=nas to target the NAS)
+	# Builds on the target host and starts it detached; data persists in the
+	# named volume. Set DOCKER_CONTEXT to deploy to a remote host over that
+	# context. The 0.x API is unauthenticated — keep it on a trusted network.
+	$(COMPOSE) up -d --build
+
+.PHONY: deploy-logs
+deploy-logs: ## Follow the deployed node's logs (respects DOCKER_CONTEXT)
+	$(COMPOSE) logs -f
+
+.PHONY: deploy-down
+deploy-down: ## Stop the deployed node, keeping its data volume (respects DOCKER_CONTEXT)
+	$(COMPOSE) down
 
 .PHONY: watch
 watch: ## Re-run tests on file change (needs cargo-watch)
