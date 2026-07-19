@@ -7,7 +7,7 @@
 
 use core::fmt;
 
-use endora_domain::{Direction, DirectionId, Goal, GoalId, Timestamp};
+use endora_domain::{AuditRecord, Direction, DirectionId, Goal, GoalId, Timestamp};
 
 /// A failure from a storage backend behind a repository port.
 ///
@@ -86,4 +86,23 @@ pub trait Clock {
 pub trait IdSource {
     /// Returns a fresh identifier value, unique within this store's lifetime.
     fn new_id(&self) -> u128;
+}
+
+/// Appends to and reads the audit trail.
+///
+/// The audit log is append-only from the application's point of view: records
+/// are added, never mutated. It is subject to the same memory rights as other
+/// stored data (visible, exportable, deletable).
+pub trait AuditLog {
+    /// Appends a record to the trail.
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if the backend fails.
+    fn append(&self, record: &AuditRecord) -> Result<(), RepositoryError>;
+
+    /// Returns the most recent records, newest first, up to `limit`.
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if the backend fails or stored data is corrupt.
+    fn recent(&self, limit: usize) -> Result<Vec<AuditRecord>, RepositoryError>;
 }
