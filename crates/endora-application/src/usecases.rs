@@ -55,6 +55,14 @@ pub fn create_goal(
     Ok(goal)
 }
 
+/// Lists all directions, in a stable order.
+///
+/// # Errors
+/// [`AppError::Repository`] if persistence fails.
+pub fn list_directions(directions: &impl DirectionRepository) -> Result<Vec<Direction>, AppError> {
+    Ok(directions.list_all()?)
+}
+
 /// Lists the goals under a direction, in a stable order.
 ///
 /// # Errors
@@ -603,6 +611,11 @@ mod tests {
         }
         fn get(&self, id: DirectionId) -> Result<Option<Direction>, RepositoryError> {
             Ok(self.directions.borrow().get(&id.value()).cloned())
+        }
+        fn list_all(&self) -> Result<Vec<Direction>, RepositoryError> {
+            let mut found: Vec<Direction> = self.directions.borrow().values().cloned().collect();
+            found.sort_by_key(|d| d.id().value());
+            Ok(found)
         }
     }
 
