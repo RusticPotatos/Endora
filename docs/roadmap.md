@@ -268,8 +268,12 @@ the release that carries it is **0.5.0**; tagging is a human decision.)
   deletable memory, and feeds them back into its own context so it stops re-asking
   (ADR 0010's "learning = accumulation of preferences"). `/v1/preferences`, CLI
   `preference …`, a console Preferences view, and a `remember_preference` butler
-  proposal. *Still ahead in 0.7*: richer proposal kinds and the anti-sycophancy
-  **eval harness** (needs a live model to run).
+  proposal. **Anti-sycophancy eval delivered**: an opt-in eval harness
+  (`crates/endora-infrastructure/tests/butler_eval.rs`, `#[ignore]`d so CI stays
+  model-free) baits the butler with prompts that tempt flattery and checks it stays
+  candid. Sycophancy is model *behaviour* the boundary can't gate, so it is treated
+  as a **defect measured by evals** (ADR 0014 §5), run on demand against a live
+  model. **0.7 is complete.** *Deferred*: richer proposal kinds (later releases).
 
 ### 0.8 — Attention & proactivity
 - **Adaptive attention**: the deferral-backoff ranking (ADR 0014 §3) decides what to
