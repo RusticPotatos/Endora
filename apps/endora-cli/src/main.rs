@@ -92,6 +92,14 @@ fn route(args: &[&str]) -> Option<Action> {
         ["observation", "list", experiment] => Some(Action::Get(format!(
             "/v1/experiments/{experiment}/observations"
         ))),
+        ["reflection", "create", goal, summary, evidence] => {
+            let evidence: Vec<&str> = evidence.split(',').filter(|s| !s.is_empty()).collect();
+            Some(Action::Post(
+                format!("/v1/goals/{goal}/reflections"),
+                json!({ "summary": summary, "evidence": evidence }),
+            ))
+        }
+        ["reflection", "list", goal] => Some(Action::Get(format!("/v1/goals/{goal}/reflections"))),
         _ => None,
     }
 }
@@ -133,7 +141,9 @@ fn print_usage() {
            experiment start <experiment-id>       start a proposed experiment\n  \
            experiment conclude <experiment-id>    conclude a running experiment\n  \
            observation record <experiment-id> <n> record an observation\n  \
-           observation list <experiment-id>       list an experiment's observations\n\n\
+           observation list <experiment-id>       list an experiment's observations\n  \
+           reflection create <goal-id> <summary> <obs-ids>  reflect (obs-ids: comma-separated)\n  \
+           reflection list <goal-id>              list a goal's reflections\n\n\
          Environment:\n  \
            ENDORA_URL   node base URL (default http://127.0.0.1:8787)"
     );
@@ -227,6 +237,21 @@ mod tests {
         assert_eq!(
             route(&["observation", "list", "9"]),
             Some(Action::Get("/v1/experiments/9/observations".to_owned()))
+        );
+    }
+
+    #[test]
+    fn routes_reflection_create_splits_evidence() {
+        assert_eq!(
+            route(&["reflection", "create", "3", "mornings worked", "10,11"]),
+            Some(Action::Post(
+                "/v1/goals/3/reflections".to_owned(),
+                json!({ "summary": "mornings worked", "evidence": ["10", "11"] })
+            ))
+        );
+        assert_eq!(
+            route(&["reflection", "list", "3"]),
+            Some(Action::Get("/v1/goals/3/reflections".to_owned()))
         );
     }
 

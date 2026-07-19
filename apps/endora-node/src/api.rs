@@ -16,7 +16,7 @@ use axum::routing::{get, post};
 use endora_application::{AppError, RepositoryError, usecases};
 use endora_domain::{
     Assumption, AssumptionId, Direction, DirectionId, Experiment, ExperimentId, Goal, GoalId,
-    Observation,
+    Observation, ObservationId, Reflection,
 };
 use endora_infrastructure::{RandomIdSource, SqliteStore, SystemClock};
 use serde::{Deserialize, Serialize};
@@ -55,6 +55,10 @@ pub fn app(state: AppState) -> Router {
         .route(
             "/v1/experiments/{id}/observations",
             post(record_observation).get(list_observations),
+        )
+        .route(
+            "/v1/goals/{id}/reflections",
+            post(create_reflection).get(list_reflections),
         )
         .with_state(state)
 }
@@ -341,6 +345,80 @@ async fn list_observations(
     Ok(Json(
         observations.iter().map(ObservationResponse::from).collect(),
     ))
+}
+
+#[derive(Deserialize)]
+struct CreateReflectionRequest {
+    summary: String,
+    evidence: Vec<String>,
+}
+
+#[derive(Serialize)]
+struct ReflectionResponse {
+    id: String,
+    goal_id: String,
+    summary: String,
+    evidence: Vec<String>,
+}
+
+impl From<&Reflection> for ReflectionResponse {
+    fn from(r: &Reflection) -> Self {
+        Self {
+            id: r.id().value().to_string(),
+            goal_id: r.goal().value().to_string(),
+            summary: r.summary().to_owned(),
+            evidence: r.evidence().iter().map(|o| o.value().to_string()).collect(),
+        }
+    }
+}
+
+async fn create_reflection(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(req): Json<CreateReflectionRequest>,
+) -> Result<Json<ReflectionResponse>, ApiError> {
+    let goal = parse_goal_id(&id)?;
+    let evidence = parse_evidence(&req.evidence)?;
+    let store = state.store.clone();
+    let ids = state.ids.clone();
+    let reflection = blocking(move || {
+        usecases::create_reflection(
+            store.as_ref(),
+            store.as_ref(),
+            ids.as_ref(),
+            goal,
+            &req.summary,
+            evidence,
+        )
+    })
+    .await?;
+    Ok(Json(ReflectionResponse::from(&reflection)))
+}
+
+async fn list_reflections(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<Vec<ReflectionResponse>>, ApiError> {
+    let goal = parse_goal_id(&id)?;
+    let store = state.store.clone();
+    let reflections = blocking(move || usecases::list_reflections(store.as_ref(), goal)).await?;
+    Ok(Json(
+        reflections.iter().map(ReflectionResponse::from).collect(),
+    ))
+}
+
+/// Parses evidence observation ids from the request body; a malformed id can
+/// name no observation.
+fn parse_evidence(raw: &[String]) -> Result<Vec<ObservationId>, ApiError> {
+    raw.iter()
+        .map(|s| {
+            s.parse::<u128>().map(ObservationId::new).map_err(|_| {
+                ApiError(AppError::NotFound {
+                    entity: "observation",
+                })
+            })
+        })
+        .collect()
 }
 
 /// Parses a path id into a [`DirectionId`]; a malformed id can name no
@@ -683,6 +761,84 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(res.status(), StatusCode::NOT_FOUND);
+    }
+
+    /// Drives the full chain and returns (goal_id, observation_id).
+    async fn seed_chain(app: &axum::Router) -> (String, String) {
+        async fn create(app: &axum::Router, uri: &str, body: &str) -> String {
+            let res = app.clone().oneshot(post(uri, body)).await.unwrap();
+            json_body(res).await["id"].as_str().unwrap().to_owned()
+        }
+        let did = create(app, "/v1/directions", r#"{"title":"D"}"#).await;
+        let gid = create(
+            app,
+            &format!("/v1/directions/{did}/goals"),
+            r#"{"statement":"G"}"#,
+        )
+        .await;
+        let aid = create(
+            app,
+            &format!("/v1/goals/{gid}/assumptions"),
+            r#"{"statement":"A"}"#,
+        )
+        .await;
+        let eid = create(
+            app,
+            &format!("/v1/assumptions/{aid}/experiments"),
+            r#"{"hypothesis":"H"}"#,
+        )
+        .await;
+        let oid = create(
+            app,
+            &format!("/v1/experiments/{eid}/observations"),
+            r#"{"note":"N"}"#,
+        )
+        .await;
+        (gid, oid)
+    }
+
+    #[tokio::test]
+    async fn reflection_with_evidence_over_http() {
+        let app = app(test_state());
+        let (gid, oid) = seed_chain(&app).await;
+
+        let body = format!(r#"{{"summary":"mornings worked","evidence":["{oid}"]}}"#);
+        let res = app
+            .clone()
+            .oneshot(post(&format!("/v1/goals/{gid}/reflections"), &body))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let created = json_body(res).await;
+        assert_eq!(created["summary"], "mornings worked");
+        assert_eq!(created["evidence"][0], oid);
+
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/v1/goals/{gid}/reflections"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(json_body(res).await.as_array().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn reflection_without_evidence_is_400() {
+        let app = app(test_state());
+        let (gid, _) = seed_chain(&app).await;
+        let res = app
+            .clone()
+            .oneshot(post(
+                &format!("/v1/goals/{gid}/reflections"),
+                r#"{"summary":"x","evidence":[]}"#,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test]

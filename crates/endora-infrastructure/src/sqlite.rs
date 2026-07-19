@@ -10,11 +10,12 @@ use std::sync::Mutex;
 
 use endora_application::{
     AssumptionRepository, AuditLog, DirectionRepository, ExperimentRepository, GoalRepository,
-    ObservationRepository, RepositoryError,
+    ObservationRepository, ReflectionRepository, RepositoryError,
 };
 use endora_domain::{
     Assumption, AssumptionId, AuditId, AuditRecord, Direction, DirectionId, Experiment,
-    ExperimentId, ExperimentStatus, Goal, GoalId, Observation, ObservationId, Timestamp,
+    ExperimentId, ExperimentStatus, Goal, GoalId, Observation, ObservationId, Reflection,
+    ReflectionId, Timestamp,
 };
 use rusqlite::{Connection, OptionalExtension, params};
 
@@ -57,6 +58,22 @@ CREATE TABLE IF NOT EXISTS observations (
 ) STRICT;
 
 CREATE INDEX IF NOT EXISTS idx_observations_experiment ON observations(experiment_id);
+
+CREATE TABLE IF NOT EXISTS reflections (
+    id      TEXT PRIMARY KEY,
+    goal_id TEXT NOT NULL REFERENCES goals(id),
+    summary TEXT NOT NULL
+) STRICT;
+
+CREATE INDEX IF NOT EXISTS idx_reflections_goal ON reflections(goal_id);
+
+-- A reflection's evidence, ordered, one row per cited observation.
+CREATE TABLE IF NOT EXISTS reflection_evidence (
+    reflection_id  TEXT NOT NULL REFERENCES reflections(id),
+    ordinal        INTEGER NOT NULL,
+    observation_id TEXT NOT NULL REFERENCES observations(id),
+    PRIMARY KEY (reflection_id, ordinal)
+) STRICT;
 
 CREATE TABLE IF NOT EXISTS audit_log (
     id      TEXT PRIMARY KEY,
@@ -374,6 +391,86 @@ impl ObservationRepository for SqliteStore {
     }
 }
 
+impl ReflectionRepository for SqliteStore {
+    fn save(&self, reflection: &Reflection) -> Result<(), RepositoryError> {
+        let mut conn = self.lock()?;
+        let tx = conn.transaction().map_err(backend)?;
+        let rid = id_text(reflection.id().value());
+        tx.execute(
+            "INSERT OR REPLACE INTO reflections (id, goal_id, summary) VALUES (?1, ?2, ?3)",
+            params![
+                rid,
+                id_text(reflection.goal().value()),
+                reflection.summary()
+            ],
+        )
+        .map_err(backend)?;
+        tx.execute(
+            "DELETE FROM reflection_evidence WHERE reflection_id = ?1",
+            params![rid],
+        )
+        .map_err(backend)?;
+        for (ordinal, observation) in reflection.evidence().iter().enumerate() {
+            tx.execute(
+                "INSERT INTO reflection_evidence (reflection_id, ordinal, observation_id) \
+                 VALUES (?1, ?2, ?3)",
+                params![
+                    rid,
+                    i64::try_from(ordinal).unwrap_or(i64::MAX),
+                    id_text(observation.value())
+                ],
+            )
+            .map_err(backend)?;
+        }
+        tx.commit().map_err(backend)?;
+        Ok(())
+    }
+
+    fn get(&self, id: ReflectionId) -> Result<Option<Reflection>, RepositoryError> {
+        let conn = self.lock()?;
+        let row: Option<(String, String)> = conn
+            .query_row(
+                "SELECT goal_id, summary FROM reflections WHERE id = ?1",
+                params![id_text(id.value())],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()
+            .map_err(backend)?;
+        let Some((goal_id, summary)) = row else {
+            return Ok(None);
+        };
+        let evidence = evidence_for(&conn, id)?;
+        let goal = GoalId::new(parse_id(&goal_id)?);
+        let reflection = Reflection::new(id, goal, &summary, evidence).map_err(corrupt)?;
+        Ok(Some(reflection))
+    }
+
+    fn list_for_goal(&self, goal: GoalId) -> Result<Vec<Reflection>, RepositoryError> {
+        let conn = self.lock()?;
+        let mut stmt = conn
+            .prepare("SELECT id, summary FROM reflections WHERE goal_id = ?1 ORDER BY id")
+            .map_err(backend)?;
+        let rows: Vec<(String, String)> = stmt
+            .query_map(params![id_text(goal.value())], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .map_err(backend)?
+            .collect::<Result<_, _>>()
+            .map_err(backend)?;
+        drop(stmt);
+
+        let mut reflections = Vec::new();
+        for (id, summary) in rows {
+            let reflection_id = ReflectionId::new(parse_id(&id)?);
+            let evidence = evidence_for(&conn, reflection_id)?;
+            let reflection =
+                Reflection::new(reflection_id, goal, &summary, evidence).map_err(corrupt)?;
+            reflections.push(reflection);
+        }
+        Ok(reflections)
+    }
+}
+
 impl AuditLog for SqliteStore {
     fn append(&self, record: &AuditRecord) -> Result<(), RepositoryError> {
         let conn = self.lock()?;
@@ -431,6 +528,29 @@ fn id_text(value: u128) -> String {
 fn parse_id(text: &str) -> Result<u128, RepositoryError> {
     text.parse::<u128>()
         .map_err(|e| RepositoryError::Corrupt(format!("invalid stored id {text:?}: {e}")))
+}
+
+/// Loads a reflection's evidence observation ids, in stored order.
+fn evidence_for(
+    conn: &Connection,
+    reflection: ReflectionId,
+) -> Result<Vec<ObservationId>, RepositoryError> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT observation_id FROM reflection_evidence \
+             WHERE reflection_id = ?1 ORDER BY ordinal",
+        )
+        .map_err(backend)?;
+    let rows = stmt
+        .query_map(params![id_text(reflection.value())], |row| {
+            row.get::<_, String>(0)
+        })
+        .map_err(backend)?;
+    let mut evidence = Vec::new();
+    for row in rows {
+        evidence.push(ObservationId::new(parse_id(&row.map_err(backend)?)?));
+    }
+    Ok(evidence)
 }
 
 /// Parses a stored experiment status, or reports corruption.
@@ -617,6 +737,67 @@ mod tests {
             observations.list_for_experiment(experiment).unwrap(),
             vec![o]
         );
+    }
+
+    #[test]
+    fn reflection_round_trips_with_ordered_evidence() {
+        use endora_application::{
+            AssumptionRepository, ExperimentRepository, ObservationRepository, ReflectionRepository,
+        };
+        use endora_domain::{
+            Assumption, AssumptionId, Experiment, ExperimentId, GoalId, Observation, ObservationId,
+            Reflection, ReflectionId, Timestamp,
+        };
+
+        let store = store();
+        let directions: &dyn DirectionRepository = &store;
+        let goals: &dyn GoalRepository = &store;
+        let assumptions: &dyn AssumptionRepository = &store;
+        let experiments: &dyn ExperimentRepository = &store;
+        let observations: &dyn ObservationRepository = &store;
+        let reflections: &dyn ReflectionRepository = &store;
+
+        // Build the chain the evidence FKs require.
+        let direction = DirectionId::new(1);
+        directions
+            .save(&Direction::new(direction, "Be healthier").unwrap())
+            .unwrap();
+        let goal = GoalId::new(2);
+        goals
+            .save(&Goal::new(goal, direction, "Run a 5k").unwrap())
+            .unwrap();
+        let assumption = AssumptionId::new(3);
+        assumptions
+            .save(&Assumption::new(assumption, goal, "Mornings").unwrap())
+            .unwrap();
+        let experiment = ExperimentId::new(4);
+        experiments
+            .save(&Experiment::propose(experiment, assumption, "Try mornings").unwrap())
+            .unwrap();
+        let at = Timestamp::from_unix_millis(1);
+        for oid in [10, 11] {
+            observations
+                .save(
+                    &Observation::record(ObservationId::new(oid), experiment, "note", at).unwrap(),
+                )
+                .unwrap();
+        }
+
+        // Evidence order (11 before 10) must survive the round trip.
+        let r = Reflection::new(
+            ReflectionId::new(5),
+            goal,
+            "mornings worked",
+            vec![ObservationId::new(11), ObservationId::new(10)],
+        )
+        .unwrap();
+        reflections.save(&r).unwrap();
+
+        assert_eq!(
+            reflections.get(ReflectionId::new(5)).unwrap(),
+            Some(r.clone())
+        );
+        assert_eq!(reflections.list_for_goal(goal).unwrap(), vec![r]);
     }
 
     #[test]
