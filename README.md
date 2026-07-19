@@ -133,9 +133,29 @@ endora goal list <direction-id>
 # override the node URL with ENDORA_URL (default http://127.0.0.1:8787)
 ```
 
-The node currently serves the first vertical slice (Direction & Goals). More of
-the learning loop, the policy boundary, and the model adapter follow — see the
-[Roadmap](docs/roadmap.md).
+### Optional: a local model that *proposes*
+
+The node can ask a local, open-weights model to **draft** a process change from a
+reflection. The model only ever proposes — its output becomes an ordinary
+*pending* proposal that still needs human approval and passes through the
+deterministic policy boundary like any other. Nothing breaks without it: the
+node runs fine and only the drafting endpoint returns `503`.
+
+```bash
+ollama serve &                       # a local OpenAI-compatible endpoint
+ollama pull qwen3.5:9b               # or qwen3.5:4b on lighter machines
+# point the node at it (defaults shown):
+ENDORA_MODEL_URL=http://localhost:11434/v1 ENDORA_MODEL=qwen3.5:9b make run-node
+
+endora process-change draft <reflection-id>   # model drafts a pending change
+endora process-change approve <id>            # a human approves
+endora process-change decide <id> act_within_policy   # policy authorizes; audited
+```
+
+The node serves the whole learning loop (Direction → Goal → Assumption →
+Experiment → Observation → Reflection → Proposed process change), with the policy
+boundary and audit trail on consequential decisions — see the
+[Roadmap](docs/roadmap.md) for what remains before a tagged release.
 
 ## Current technology direction
 

@@ -13,7 +13,7 @@ use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
-use endora_application::{AppError, RepositoryError, usecases};
+use endora_application::{AppError, Proposer, RepositoryError, usecases};
 use endora_domain::{
     Assumption, AssumptionId, AuditRecord, AutonomyLevel, Direction, DirectionId, Experiment,
     ExperimentId, Goal, GoalId, Observation, ObservationId, PolicyDecision, ProcessChangeId,
@@ -32,6 +32,8 @@ pub struct AppState {
     pub ids: Arc<RandomIdSource>,
     /// The system clock.
     pub clock: Arc<SystemClock>,
+    /// The reasoning model behind the policy boundary.
+    pub proposer: Arc<dyn Proposer + Send + Sync>,
 }
 
 /// Builds the router for the node's HTTP API.
@@ -64,6 +66,10 @@ pub fn app(state: AppState) -> Router {
         .route(
             "/v1/reflections/{id}/process-changes",
             post(propose_process_change).get(list_process_changes),
+        )
+        .route(
+            "/v1/reflections/{id}/process-changes/draft",
+            post(draft_process_change),
         )
         .route(
             "/v1/process-changes/{id}/approve",
@@ -470,6 +476,27 @@ async fn propose_process_change(
     Ok(Json(ProcessChangeResponse::from(&change)))
 }
 
+async fn draft_process_change(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<ProcessChangeResponse>, ApiError> {
+    let reflection = parse_reflection_id(&id)?;
+    let store = state.store.clone();
+    let ids = state.ids.clone();
+    let proposer = state.proposer.clone();
+    let change = blocking(move || {
+        usecases::draft_process_change(
+            store.as_ref(),
+            store.as_ref(),
+            ids.as_ref(),
+            proposer.as_ref(),
+            reflection,
+        )
+    })
+    .await?;
+    Ok(Json(ProcessChangeResponse::from(&change)))
+}
+
 async fn list_process_changes(
     State(state): State<AppState>,
     Path(id): Path<String>,
@@ -676,6 +703,7 @@ impl IntoResponse for ApiError {
             AppError::Domain(e) => (StatusCode::BAD_REQUEST, e.to_string()),
             AppError::BadRequest { message } => (StatusCode::BAD_REQUEST, message.clone()),
             AppError::NotFound { .. } => (StatusCode::NOT_FOUND, self.0.to_string()),
+            AppError::Model { message } => (StatusCode::SERVICE_UNAVAILABLE, message.clone()),
             // Don't leak backend detail to clients.
             AppError::Repository(_) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -696,11 +724,26 @@ mod tests {
     use std::sync::Arc;
     use tower::ServiceExt; // for `oneshot`
 
+    /// A proposer that returns a fixed line, so the draft endpoint can be tested
+    /// without a live model server.
+    struct StubProposer;
+
+    impl endora_application::Proposer for StubProposer {
+        fn propose_process_change(
+            &self,
+            _summary: &str,
+            _evidence_count: usize,
+        ) -> Result<String, endora_application::ProposalError> {
+            Ok("Default runs to mornings".to_owned())
+        }
+    }
+
     fn test_state() -> AppState {
         AppState {
             store: Arc::new(SqliteStore::open_in_memory().unwrap()),
             ids: Arc::new(RandomIdSource),
             clock: Arc::new(SystemClock),
+            proposer: Arc::new(StubProposer),
         }
     }
 
@@ -1152,6 +1195,48 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn model_drafts_a_pending_change_that_still_needs_approval() {
+        let app = app(test_state());
+        let (gid, oid) = seed_chain(&app).await;
+        let rid = json_body(
+            app.clone()
+                .oneshot(post(
+                    &format!("/v1/goals/{gid}/reflections"),
+                    &format!(r#"{{"summary":"worked","evidence":["{oid}"]}}"#),
+                ))
+                .await
+                .unwrap(),
+        )
+        .await["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+
+        // The model drafts a change — but it lands as pending, not approved.
+        let res = app
+            .clone()
+            .oneshot(post(
+                &format!("/v1/reflections/{rid}/process-changes/draft"),
+                "",
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let drafted = json_body(res).await;
+        assert_eq!(drafted["description"], "Default runs to mornings");
+        assert_eq!(drafted["approval"], "pending");
+    }
+
+    #[tokio::test]
+    async fn drafting_for_a_missing_reflection_is_404() {
+        let res = app(test_state())
+            .oneshot(post("/v1/reflections/999/process-changes/draft", ""))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]
