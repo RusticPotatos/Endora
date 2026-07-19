@@ -136,6 +136,15 @@ function observationsForGoal(goalId) {
 
 const val = (id) => document.getElementById(id).value.trim();
 
+// An experiment is due for review if a review was scheduled at or before now
+// and it is not already concluded (mirrors the domain's is_review_due).
+const isReviewDue = (e) => e.review_by_ms != null && e.review_by_ms <= Date.now() && e.status !== "concluded";
+function reviewLabel(e) {
+  if (e.review_by_ms == null) return "No review scheduled.";
+  const when = new Date(e.review_by_ms).toLocaleDateString();
+  return isReviewDue(e) ? `⏰ Review due (${when})` : `Review scheduled for ${when}`;
+}
+
 // ---- views ----------------------------------------------------------------
 function crumbs(parts) {
   return `<div class="crumbs">` +
@@ -156,8 +165,15 @@ function viewHome() {
       <div class="sub">${DB.goals.filter((g) => g.direction_id === d.id).length} goal(s)</div></div>
       <span class="sub">→</span></div>
     </div>`);
+  const due = DB.experiments.filter(isReviewDue);
+  const dueBanner = due.length ? `
+    <div class="card" style="border-color: var(--warn);">
+      <div class="title">⏰ ${due.length} experiment(s) due for review</div>
+      ${due.map((e) => `<div class="sub click" style="cursor:pointer;" data-act="go:assumption:${e.assumption_id}">• ${esc(e.hypothesis)} →</div>`).join("")}
+    </div>` : "";
   return `
     ${crumbs([{ label: "Directions" }])}
+    ${dueBanner}
     <h2>Directions</h2>
     ${listOr(dirs, "No directions yet. Create one below.")}
     <div class="form">
@@ -244,6 +260,12 @@ function viewAssumption(id) {
         <button data-act="start:experiment:${e.id}" ${e.status !== "proposed" ? "disabled" : ""}>Start</button>
         <button data-act="conclude:experiment:${e.id}" ${e.status !== "running" ? "disabled" : ""}>Conclude</button>
       </div>
+      ${e.status !== "concluded" ? `
+      <div class="row" style="margin-top:8px; gap:6px; align-items:center;">
+        <span class="sub grow">${esc(reviewLabel(e))}</span>
+        <input id="rev-${e.id}" type="number" min="1" value="7" style="width:70px;" title="days from now" />
+        <button data-act="review:experiment:${e.id}">Remind me</button>
+      </div>` : ""}
       <div style="margin-top:8px;">${obsHtml || '<div class="sub">No observations.</div>'}</div>
       <div class="form">
         <input id="obs-${e.id}" placeholder="Record an observation…" />
@@ -348,6 +370,11 @@ async function dispatch(act) {
     }
     if (verb === "conclude" && noun === "experiment") {
       await api("POST", `/v1/experiments/${id}/conclude`); return reload();
+    }
+    if (verb === "review" && noun === "experiment") {
+      const days = parseInt(val("rev-" + id), 10);
+      if (!(days >= 1)) { flash("Enter a number of days (1 or more).", "err"); return; }
+      await api("POST", `/v1/experiments/${id}/review`, { in_days: days }); return reload();
     }
     if (verb === "record" && noun === "observation") {
       await api("POST", `/v1/experiments/${id}/observations`, { note: val("obs-" + id) }); return reload();

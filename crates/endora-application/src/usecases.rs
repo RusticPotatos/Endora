@@ -8,7 +8,8 @@
 use endora_domain::{
     Assumption, AssumptionId, AuditId, AuditRecord, AutonomyLevel, Direction, DirectionId,
     Experiment, ExperimentId, Goal, GoalId, Observation, ObservationId, PolicyDecision,
-    ProcessChangeId, ProposedProcessChange, Reflection, ReflectionId, authorize_process_change,
+    ProcessChangeId, ProposedProcessChange, Reflection, ReflectionId, Timestamp,
+    authorize_process_change,
 };
 
 use crate::error::AppError;
@@ -170,6 +171,47 @@ pub fn conclude_experiment(
     experiment.conclude()?;
     experiments.save(&experiment)?;
     Ok(experiment)
+}
+
+/// Number of milliseconds in a day, for scheduling reviews some days out.
+const MILLIS_PER_DAY: i64 = 24 * 60 * 60 * 1_000;
+
+/// Schedules a reminder to review an experiment `in_days` from now, using the
+/// [`Clock`] port for the current time.
+///
+/// This only sets a reminder; it changes no lifecycle state and takes no action
+/// on its own (see `docs/adr/0010-autonomy-model.md`).
+///
+/// # Errors
+/// [`AppError::NotFound`] if the experiment does not exist, or
+/// [`AppError::Repository`] if persistence fails.
+pub fn schedule_experiment_review(
+    experiments: &impl ExperimentRepository,
+    clock: &impl Clock,
+    id: ExperimentId,
+    in_days: u32,
+) -> Result<Experiment, AppError> {
+    let mut experiment = experiments.get(id)?.ok_or(AppError::NotFound {
+        entity: "experiment",
+    })?;
+    let at = Timestamp::from_unix_millis(
+        clock.now().unix_millis() + i64::from(in_days) * MILLIS_PER_DAY,
+    );
+    experiment.schedule_review(at);
+    experiments.save(&experiment)?;
+    Ok(experiment)
+}
+
+/// Lists the experiments whose scheduled review is due as of now, per the
+/// [`Clock`] port. These are surfaced to the person; nothing acts on them.
+///
+/// # Errors
+/// [`AppError::Repository`] if the backend fails or stored data is corrupt.
+pub fn list_due_reviews(
+    experiments: &impl ExperimentRepository,
+    clock: &impl Clock,
+) -> Result<Vec<Experiment>, AppError> {
+    Ok(experiments.list_due_reviews(clock.now())?)
 }
 
 /// Records an [`Observation`] against an existing experiment, timestamped by the
@@ -447,9 +489,10 @@ mod tests {
     use super::{
         approve_process_change, conclude_experiment, create_assumption, create_direction,
         create_goal, create_reflection, decide_process_change, decide_stored_process_change,
-        list_assumptions, list_experiments, list_goals, list_observations, list_process_changes,
-        list_reflections, propose_experiment, propose_process_change, recent_audit,
-        record_observation, reject_process_change, start_experiment,
+        list_assumptions, list_due_reviews, list_experiments, list_goals, list_observations,
+        list_process_changes, list_reflections, propose_experiment, propose_process_change,
+        recent_audit, record_observation, reject_process_change, schedule_experiment_review,
+        start_experiment,
     };
     use crate::error::AppError;
     use crate::ports::{
@@ -598,6 +641,17 @@ mod tests {
                 .cloned()
                 .collect();
             found.sort_by_key(|e| e.id().value());
+            Ok(found)
+        }
+        fn list_due_reviews(&self, now: Timestamp) -> Result<Vec<Experiment>, RepositoryError> {
+            let mut found: Vec<Experiment> = self
+                .experiments
+                .borrow()
+                .values()
+                .filter(|e| e.is_review_due(now))
+                .cloned()
+                .collect();
+            found.sort_by_key(|e| (e.review_by().map(|t| t.unix_millis()), e.id().value()));
             Ok(found)
         }
     }
@@ -862,6 +916,55 @@ mod tests {
             list_experiments(&store, assumption).unwrap(),
             vec![concluded]
         );
+    }
+
+    #[test]
+    fn scheduling_a_review_persists_the_due_time_and_surfaces_it_when_due() {
+        let store = FakeStore::default();
+        let ids = SeqIds::default();
+        let assumption = seed_assumption(&store, &ids);
+        let e = propose_experiment(&store, &store, &ids, assumption, "Try mornings").unwrap();
+
+        // "Now" is day zero; schedule a review 7 days out.
+        let day = 24 * 60 * 60 * 1_000;
+        let scheduled = schedule_experiment_review(&store, &FixedClock(0), e.id(), 7).unwrap();
+        assert_eq!(
+            scheduled.review_by().map(|t| t.unix_millis()),
+            Some(7 * day)
+        );
+
+        // Not yet due at day 3.
+        assert!(
+            list_due_reviews(&store, &FixedClock(3 * day))
+                .unwrap()
+                .is_empty()
+        );
+
+        // Due once the scheduled time arrives.
+        let due = list_due_reviews(&store, &FixedClock(7 * day)).unwrap();
+        assert_eq!(due, vec![scheduled]);
+    }
+
+    #[test]
+    fn a_concluded_experiment_is_not_surfaced_for_review() {
+        let store = FakeStore::default();
+        let ids = SeqIds::default();
+        let assumption = seed_assumption(&store, &ids);
+        let e = propose_experiment(&store, &store, &ids, assumption, "Try mornings").unwrap();
+        schedule_experiment_review(&store, &FixedClock(0), e.id(), 1).unwrap();
+        start_experiment(&store, e.id()).unwrap();
+        conclude_experiment(&store, e.id()).unwrap();
+
+        let far_future = FixedClock(365 * 24 * 60 * 60 * 1_000);
+        assert!(list_due_reviews(&store, &far_future).unwrap().is_empty());
+    }
+
+    #[test]
+    fn scheduling_a_review_for_a_missing_experiment_is_not_found() {
+        let store = FakeStore::default();
+        let err = schedule_experiment_review(&store, &FixedClock(0), ExperimentId::new(1), 3)
+            .unwrap_err();
+        assert!(matches!(err, AppError::NotFound { .. }));
     }
 
     #[test]

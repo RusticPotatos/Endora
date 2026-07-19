@@ -161,6 +161,14 @@ pub trait ExperimentRepository {
         &self,
         assumption: AssumptionId,
     ) -> Result<Vec<Experiment>, RepositoryError>;
+
+    /// Lists experiments whose scheduled review is due as of `now` — a review
+    /// was scheduled for at or before `now` and the experiment is not concluded.
+    /// Ordered by review time, soonest first.
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if the backend fails or stored data is corrupt.
+    fn list_due_reviews(&self, now: Timestamp) -> Result<Vec<Experiment>, RepositoryError>;
 }
 
 /// Persists and retrieves [`Observation`]s.
