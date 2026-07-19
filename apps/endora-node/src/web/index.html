@@ -466,6 +466,27 @@ function viewAudit() {
     ${listOr(rows, "No decisions recorded yet.")}`;
 }
 
+// ---- voice (browser Web Speech API; opt-in — STT may use a cloud service) ---
+let SPEAK = false;
+const TTS = window.speechSynthesis;
+const STT = window.SpeechRecognition || window.webkitSpeechRecognition;
+function speak(text) {
+  if (!SPEAK || !TTS || !text) return;
+  TTS.cancel();
+  TTS.speak(new SpeechSynthesisUtterance(text));
+}
+function listen() {
+  if (!STT) { flash("Speech recognition isn't available in this browser.", "err"); return; }
+  const rec = new STT();
+  rec.lang = "en-US"; rec.interimResults = false; rec.maxAlternatives = 1;
+  rec.onresult = (e) => {
+    const input = document.getElementById("chat-input");
+    if (input) { input.value = e.results[0][0].transcript; input.focus(); }
+  };
+  rec.onerror = () => flash("Couldn't capture speech.", "err");
+  rec.start();
+}
+
 // The butler chat: the conversation, the last reply's proposals (each
 // confirmable), and an input. The butler proposes; you confirm; the normal
 // create endpoints execute — the model never acts on its own.
@@ -480,13 +501,16 @@ function viewChat() {
       <div class="sub">the butler proposes this — you decide</div></div>
       <button class="primary" data-act="confirm:proposal:${i}">Confirm</button>
       <button data-act="dismiss:proposal:${i}">Dismiss</button></div></div>`).join("");
+  const speakBtn = TTS ? `<button class="ghost" data-act="toggle:speak">${SPEAK ? "🔊 Speaking" : "🔇 Speak"}</button>` : "";
+  const micBtn = STT ? `<button data-act="chat:mic" title="speak your message">🎤</button>` : "";
   return `
     ${crumbs([{ label: "Directions", act: "go:home" }, { label: "Butler" }])}
-    <h2>Butler</h2>
-    <div id="chat-thread">${msgs || `<div class="empty">Say what you'd like to work on — the butler will help organize it.</div>`}</div>
+    <div class="row"><h2 class="grow" style="margin:0;">Butler</h2>${speakBtn}</div>
+    <div id="chat-thread" style="margin-top:10px;">${msgs || `<div class="empty">Say what you'd like to work on — the butler will help organize it.</div>`}</div>
     ${proposals}
     <div class="form">
       <input id="chat-input" placeholder="Talk to your butler…" />
+      ${micBtn}
       <button class="primary" data-act="chat:send">Send</button>
     </div>`;
 }
@@ -562,7 +586,12 @@ async function dispatch(act) {
       if (!msg) return;
       const res = await api("POST", "/v1/chat", { message: msg });
       CHAT_PROPOSALS = res.proposals || [];
+      speak(res.reply && res.reply.text);
       return reload();
+    }
+    if (verb === "chat" && noun === "mic") { listen(); return; }
+    if (verb === "toggle" && noun === "speak") {
+      SPEAK = !SPEAK; if (!SPEAK && TTS) TTS.cancel(); return render();
     }
     if (verb === "confirm" && noun === "proposal") {
       const p = CHAT_PROPOSALS[Number(id)];
