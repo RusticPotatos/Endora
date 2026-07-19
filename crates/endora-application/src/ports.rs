@@ -94,6 +94,13 @@ pub trait DirectionRepository {
     /// # Errors
     /// [`RepositoryError`] if the backend fails or stored data is corrupt.
     fn list_all(&self) -> Result<Vec<Direction>, RepositoryError>;
+
+    /// Permanently removes a direction. Callers are responsible for ensuring it
+    /// has no dependents first.
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if the backend fails.
+    fn delete(&self, id: DirectionId) -> Result<(), RepositoryError>;
 }
 
 /// Persists and retrieves [`Target`]s.
@@ -115,6 +122,13 @@ pub trait TargetRepository {
     /// # Errors
     /// [`RepositoryError`] if the backend fails or stored data is corrupt.
     fn list_for_direction(&self, direction: DirectionId) -> Result<Vec<Target>, RepositoryError>;
+
+    /// Permanently removes a target. Callers are responsible for ensuring it has
+    /// no dependents first.
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if the backend fails.
+    fn delete(&self, id: TargetId) -> Result<(), RepositoryError>;
 }
 
 /// Persists and retrieves [`Assumption`]s.

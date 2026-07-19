@@ -44,8 +44,10 @@
   .pill { font-size: 12px; padding: 2px 9px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); }
   .pill.proposed, .pill.pending { color: var(--warn); border-color: var(--warn); }
   .pill.running { color: var(--accent); border-color: var(--accent); }
-  .pill.concluded, .pill.approved { color: var(--ok); border-color: var(--ok); }
-  .pill.rejected { color: var(--bad); border-color: var(--bad); }
+  .pill.concluded, .pill.approved, .pill.achieved { color: var(--ok); border-color: var(--ok); }
+  .pill.rejected, .pill.abandoned { color: var(--bad); border-color: var(--bad); }
+  .pill.active { color: var(--accent); border-color: var(--accent); }
+  .pill.archived { color: var(--muted); border-color: var(--line); }
   input, textarea, select {
     font: inherit; color: var(--ink); background: var(--bg);
     border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; width: 100%;
@@ -166,6 +168,37 @@ function observationsForTarget(targetId) {
 
 const val = (id) => document.getElementById(id).value.trim();
 
+// ---- lifecycle (North Stars & Targets) ------------------------------------
+let SHOW_ARCHIVED = false;
+const isArchived = (x) => x.status === "archived";
+const visible = (items) => (SHOW_ARCHIVED ? items : items.filter((x) => !isArchived(x)));
+
+// A status pill, shown only when not the default "active".
+function statusPill(item) {
+  return item.status && item.status !== "active"
+    ? ` <span class="pill ${item.status}">${esc(item.status)}</span>` : "";
+}
+
+// The lifecycle action row for a North Star ("direction") or "target": the
+// transitions that aren't the current state, plus a guarded delete.
+function lifecycleRow(noun, item) {
+  const s = item.status || "active";
+  const btn = [];
+  if (s !== "achieved") btn.push(`<button data-act="status:${noun}:${item.id}:achieved">Achieve</button>`);
+  if (s !== "abandoned") btn.push(`<button data-act="status:${noun}:${item.id}:abandoned">Abandon</button>`);
+  if (s !== "archived") btn.push(`<button data-act="status:${noun}:${item.id}:archived">Archive</button>`);
+  if (s !== "active") btn.push(`<button data-act="status:${noun}:${item.id}:active">Reopen</button>`);
+  btn.push(`<button class="danger" data-act="delete:${noun}:${item.id}">Delete</button>`);
+  return `<div class="row" style="gap:6px; flex-wrap:wrap; margin-top:8px;">${btn.join("")}</div>`;
+}
+
+// A toggle shown when there are archived items to reveal/hide.
+function archivedToggle(items) {
+  const n = items.filter(isArchived).length;
+  if (!n && !SHOW_ARCHIVED) return "";
+  return `<button class="ghost" data-act="toggle:archived" style="margin-top:6px;">${SHOW_ARCHIVED ? "Hide" : "Show"} archived (${n})</button>`;
+}
+
 // An experiment is due for review if a review was scheduled at or before now
 // and it is not already concluded (mirrors the domain's is_review_due).
 const isReviewDue = (e) => e.review_by_ms != null && e.review_by_ms <= Date.now() && e.status !== "concluded";
@@ -189,9 +222,9 @@ function listOr(items, emptyText) {
 }
 
 function viewHome() {
-  const dirs = DB.directions.map((d) => `
+  const dirs = visible(DB.directions).map((d) => `
     <div class="card click" data-act="go:direction:${d.id}">
-      <div class="row"><div class="grow"><div class="title">${esc(d.title)}</div>
+      <div class="row"><div class="grow"><div class="title">${esc(d.title)}${statusPill(d)}</div>
       <div class="sub">${DB.targets.filter((g) => g.direction_id === d.id).length} target(s)</div></div>
       <span class="sub">→</span></div>
     </div>`);
@@ -206,6 +239,7 @@ function viewHome() {
     ${dueBanner}
     <h2>Directions</h2>
     ${listOr(dirs, "No directions yet. Create one below.")}
+    ${archivedToggle(DB.directions)}
     <div class="form">
       <input id="new-direction" placeholder="A direction / North Star…" />
       <button class="primary" data-act="create:direction">Add</button>
@@ -229,19 +263,24 @@ function activityFeed() {
 function viewDirection(id) {
   const d = byId(DB.directions, id);
   if (!d) return viewHome();
-  const targets = DB.targets.filter((g) => g.direction_id === id).map((g) => `
+  const allTargets = DB.targets.filter((g) => g.direction_id === id);
+  const targets = visible(allTargets).map((g) => `
     <div class="card click" data-act="go:target:${g.id}">
-      <div class="row"><div class="grow"><div class="title">${esc(g.statement)}</div>
+      <div class="row"><div class="grow"><div class="title">${esc(g.statement)}${statusPill(g)}</div>
       <div class="sub">${DB.assumptions.filter((a) => a.target_id === g.id).length} assumption(s) ·
       ${DB.reflections.filter((r) => r.target_id === g.id).length} reflection(s)</div></div>
       <span class="sub">→</span></div>
+      ${lifecycleRow("target", g)}
     </div>`);
   return `
     ${crumbs([{ label: "Directions", act: "go:home" }, { label: d.title }])}
+    <div class="card"><div class="title">${esc(d.title)}${statusPill(d)}</div>
+      ${lifecycleRow("direction", d)}</div>
     <h2>Targets under “${esc(d.title)}”</h2>
     ${listOr(targets, "No targets yet.")}
+    ${archivedToggle(allTargets)}
     <div class="form">
-      <input id="new-target" placeholder="A target under this direction…" />
+      <input id="new-target" placeholder="A target under this North Star…" />
       <button class="primary" data-act="create:target:${id}">Add target</button>
     </div>`;
 }
@@ -390,12 +429,22 @@ function render() {
 
 // ---- actions (event delegation) -------------------------------------------
 async function dispatch(act) {
-  const [verb, noun, id] = act.split(":");
+  const [verb, noun, id, arg] = act.split(":");
   try {
     if (verb === "go") {
       if (noun === "home") return go("home");
       if (noun === "audit") return go("audit");
       return go(noun, id);
+    }
+    if (verb === "toggle" && noun === "archived") {
+      SHOW_ARCHIVED = !SHOW_ARCHIVED; return render();
+    }
+    if (verb === "status" && (noun === "direction" || noun === "target")) {
+      await api("POST", `/v1/${noun}s/${id}`, { status: arg }); return reload();
+    }
+    if (verb === "delete" && (noun === "direction" || noun === "target")) {
+      if (!confirm(`Delete this ${noun}? This cannot be undone — archive instead to keep it.`)) return;
+      await api("DELETE", `/v1/${noun}s/${id}`); return reload();
     }
     if (verb === "create" && noun === "direction") {
       await api("POST", "/v1/directions", { title: val("new-direction") }); return reload();

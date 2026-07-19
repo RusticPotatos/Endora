@@ -52,6 +52,17 @@ impl Client {
         Ok((status, body))
     }
 
+    /// Issues a DELETE and returns the status code and parsed JSON body.
+    ///
+    /// # Errors
+    /// A transport error, or a body that is not JSON.
+    pub fn delete(&self, path: &str) -> Result<(u16, Value), ClientError> {
+        let mut res = self.agent.delete(self.url(path)).call()?;
+        let status = res.status().as_u16();
+        let body = res.body_mut().read_json::<Value>()?;
+        Ok((status, body))
+    }
+
     fn url(&self, path: &str) -> String {
         format!("{}{path}", self.base)
     }

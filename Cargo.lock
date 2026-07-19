@@ -175,14 +175,14 @@ dependencies = [
 
 [[package]]
 name = "endora-application"
-version = "0.1.0"
+version = "0.4.0"
 dependencies = [
  "endora-domain",
 ]
 
 [[package]]
 name = "endora-cli"
-version = "0.1.0"
+version = "0.4.0"
 dependencies = [
  "endora-application",
  "serde_json",
@@ -191,11 +191,11 @@ dependencies = [
 
 [[package]]
 name = "endora-domain"
-version = "0.1.0"
+version = "0.4.0"
 
 [[package]]
 name = "endora-infrastructure"
-version = "0.1.0"
+version = "0.4.0"
 dependencies = [
  "endora-application",
  "endora-domain",
@@ -207,7 +207,7 @@ dependencies = [
 
 [[package]]
 name = "endora-node"
-version = "0.1.0"
+version = "0.4.0"
 dependencies = [
  "axum",
  "endora-application",

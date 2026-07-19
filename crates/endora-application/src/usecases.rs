@@ -7,8 +7,8 @@
 
 use endora_domain::{
     Assumption, AssumptionId, AuditId, AuditRecord, AutonomyLevel, Direction, DirectionId,
-    Experiment, ExperimentId, Observation, ObservationId, PolicyDecision, ProcessChangeId,
-    ProposedProcessChange, Reflection, ReflectionId, Target, TargetId, Timestamp,
+    Experiment, ExperimentId, LifecycleStatus, Observation, ObservationId, PolicyDecision,
+    ProcessChangeId, ProposedProcessChange, Reflection, ReflectionId, Target, TargetId, Timestamp,
     authorize_process_change,
 };
 
@@ -73,6 +73,97 @@ pub fn list_targets(
     direction: DirectionId,
 ) -> Result<Vec<Target>, AppError> {
     Ok(targets.list_for_direction(direction)?)
+}
+
+/// Sets a direction's lifecycle status (achieve, abandon, archive, or reopen).
+///
+/// # Errors
+/// [`AppError::NotFound`] if the direction does not exist, or
+/// [`AppError::Repository`] if persistence fails.
+pub fn set_direction_status(
+    directions: &impl DirectionRepository,
+    id: DirectionId,
+    status: LifecycleStatus,
+) -> Result<Direction, AppError> {
+    let mut direction = directions.get(id)?.ok_or(AppError::NotFound {
+        entity: "direction",
+    })?;
+    direction.set_status(status);
+    directions.save(&direction)?;
+    Ok(direction)
+}
+
+/// Permanently deletes a direction, refusing if any targets still hang off it.
+///
+/// Deletion is irreversible; archiving is the reversible alternative. A direction
+/// with dependents must have them removed (or be archived instead) first.
+///
+/// # Errors
+/// [`AppError::NotFound`] if the direction does not exist, [`AppError::BadRequest`]
+/// if it still has targets, or [`AppError::Repository`] if persistence fails.
+pub fn delete_direction(
+    directions: &impl DirectionRepository,
+    targets: &impl TargetRepository,
+    id: DirectionId,
+) -> Result<(), AppError> {
+    if directions.get(id)?.is_none() {
+        return Err(AppError::NotFound {
+            entity: "direction",
+        });
+    }
+    if !targets.list_for_direction(id)?.is_empty() {
+        return Err(AppError::BadRequest {
+            message: "cannot delete a North Star that still has targets; \
+                      archive it, or remove its targets first"
+                .to_owned(),
+        });
+    }
+    directions.delete(id)?;
+    Ok(())
+}
+
+/// Sets a target's lifecycle status (achieve, abandon, archive, or reopen).
+///
+/// # Errors
+/// [`AppError::NotFound`] if the target does not exist, or
+/// [`AppError::Repository`] if persistence fails.
+pub fn set_target_status(
+    targets: &impl TargetRepository,
+    id: TargetId,
+    status: LifecycleStatus,
+) -> Result<Target, AppError> {
+    let mut target = targets
+        .get(id)?
+        .ok_or(AppError::NotFound { entity: "target" })?;
+    target.set_status(status);
+    targets.save(&target)?;
+    Ok(target)
+}
+
+/// Permanently deletes a target, refusing if any assumptions still hang off it.
+///
+/// Deletion is irreversible; archiving is the reversible alternative.
+///
+/// # Errors
+/// [`AppError::NotFound`] if the target does not exist, [`AppError::BadRequest`]
+/// if it still has assumptions, or [`AppError::Repository`] if persistence fails.
+pub fn delete_target(
+    targets: &impl TargetRepository,
+    assumptions: &impl AssumptionRepository,
+    id: TargetId,
+) -> Result<(), AppError> {
+    if targets.get(id)?.is_none() {
+        return Err(AppError::NotFound { entity: "target" });
+    }
+    if !assumptions.list_for_target(id)?.is_empty() {
+        return Err(AppError::BadRequest {
+            message: "cannot delete a target that still has assumptions; \
+                      archive it, or remove its assumptions first"
+                .to_owned(),
+        });
+    }
+    targets.delete(id)?;
+    Ok(())
 }
 
 /// Creates and stores a new [`Assumption`] under an existing target.
@@ -585,10 +676,11 @@ mod tests {
     use super::{
         approve_process_change, conclude_experiment, create_assumption, create_direction,
         create_reflection, create_target, decide_process_change, decide_stored_process_change,
-        list_assumptions, list_due_reviews, list_experiments, list_observations,
-        list_process_changes, list_reflections, list_targets, propose_experiment,
-        propose_process_change, recent_audit, record_observation, reject_process_change,
-        schedule_experiment_review, start_experiment,
+        delete_direction, delete_target, list_assumptions, list_due_reviews, list_experiments,
+        list_observations, list_process_changes, list_reflections, list_targets,
+        propose_experiment, propose_process_change, recent_audit, record_observation,
+        reject_process_change, schedule_experiment_review, set_direction_status, set_target_status,
+        start_experiment,
     };
     use crate::error::AppError;
     use crate::ports::{
@@ -596,6 +688,7 @@ mod tests {
         ObservationRepository, ProcessChangeRepository, ProposalError, Proposer,
         ReflectionRepository, RepositoryError, TargetRepository,
     };
+    use endora_domain::LifecycleStatus;
     use endora_domain::{
         ApprovalState, Assumption, AssumptionId, AuditRecord, AutonomyLevel, Direction,
         DirectionId, Experiment, ExperimentId, ExperimentStatus, Observation, ObservationId,
@@ -774,6 +867,10 @@ mod tests {
             found.sort_by_key(|d| d.id().value());
             Ok(found)
         }
+        fn delete(&self, id: DirectionId) -> Result<(), RepositoryError> {
+            self.directions.borrow_mut().remove(&id.value());
+            Ok(())
+        }
     }
 
     impl TargetRepository for FakeStore {
@@ -799,6 +896,10 @@ mod tests {
                 .collect();
             found.sort_by_key(|g| g.id().value());
             Ok(found)
+        }
+        fn delete(&self, id: TargetId) -> Result<(), RepositoryError> {
+            self.targets.borrow_mut().remove(&id.value());
+            Ok(())
         }
     }
 
@@ -943,6 +1044,66 @@ mod tests {
         let g2 = create_target(&store, &store, &ids, direction.id(), "Sleep 8h").unwrap();
 
         assert_eq!(list_targets(&store, direction.id()).unwrap(), vec![g1, g2]);
+    }
+
+    #[test]
+    fn target_lifecycle_status_is_set_and_persisted() {
+        let store = FakeStore::default();
+        let ids = SeqIds::default();
+        let direction = create_direction(&store, &ids, "Be healthier").unwrap();
+        let target = create_target(&store, &store, &ids, direction.id(), "Run a 5k").unwrap();
+        assert_eq!(target.status(), LifecycleStatus::Active);
+
+        let achieved = set_target_status(&store, target.id(), LifecycleStatus::Achieved).unwrap();
+        assert_eq!(achieved.status(), LifecycleStatus::Achieved);
+        // Persisted: a re-list reflects the new status.
+        assert_eq!(
+            list_targets(&store, direction.id()).unwrap()[0].status(),
+            LifecycleStatus::Achieved
+        );
+    }
+
+    #[test]
+    fn setting_status_on_a_missing_target_is_not_found() {
+        let store = FakeStore::default();
+        let err =
+            set_target_status(&store, TargetId::new(1), LifecycleStatus::Archived).unwrap_err();
+        assert_eq!(err, AppError::NotFound { entity: "target" });
+    }
+
+    #[test]
+    fn deleting_a_target_with_assumptions_is_refused_then_allowed() {
+        let store = FakeStore::default();
+        let ids = SeqIds::default();
+        let direction = create_direction(&store, &ids, "Be healthier").unwrap();
+        let target = create_target(&store, &store, &ids, direction.id(), "Run a 5k").unwrap();
+        create_assumption(&store, &store, &ids, target.id(), "Mornings are freest").unwrap();
+
+        // Refused while a dependent assumption exists.
+        let err = delete_target(&store, &store, target.id()).unwrap_err();
+        assert!(matches!(err, AppError::BadRequest { .. }));
+
+        // Allowed once it has no assumptions.
+        let a = list_assumptions(&store, target.id()).unwrap()[0].id();
+        store.assumptions.borrow_mut().remove(&a.value());
+        delete_target(&store, &store, target.id()).unwrap();
+        assert!(list_targets(&store, direction.id()).unwrap().is_empty());
+    }
+
+    #[test]
+    fn deleting_a_direction_with_targets_is_refused() {
+        let store = FakeStore::default();
+        let ids = SeqIds::default();
+        let direction = create_direction(&store, &ids, "Be healthier").unwrap();
+        create_target(&store, &store, &ids, direction.id(), "Run a 5k").unwrap();
+
+        let err = delete_direction(&store, &store, direction.id()).unwrap_err();
+        assert!(matches!(err, AppError::BadRequest { .. }));
+
+        // Archiving is the reversible alternative and is always allowed.
+        let archived =
+            set_direction_status(&store, direction.id(), LifecycleStatus::Archived).unwrap();
+        assert_eq!(archived.status(), LifecycleStatus::Archived);
     }
 
     #[test]

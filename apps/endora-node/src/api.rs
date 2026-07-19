@@ -21,7 +21,7 @@ use endora_application::{
 };
 use endora_domain::{
     Assumption, AssumptionId, AuditRecord, AutonomyLevel, Direction, DirectionId, Experiment,
-    ExperimentId, Observation, ObservationId, PolicyDecision, ProcessChangeId,
+    ExperimentId, LifecycleStatus, Observation, ObservationId, PolicyDecision, ProcessChangeId,
     ProposedProcessChange, Reflection, ReflectionId, Target, TargetId,
 };
 use endora_infrastructure::{RandomIdSource, SqliteStore, SystemClock};
@@ -79,8 +79,16 @@ pub fn app(state: AppState) -> Router {
             post(create_direction).get(list_directions),
         )
         .route(
+            "/v1/directions/{id}",
+            post(set_direction_status).delete(delete_direction),
+        )
+        .route(
             "/v1/directions/{id}/targets",
             post(create_target).get(list_targets),
+        )
+        .route(
+            "/v1/targets/{id}",
+            post(set_target_status).delete(delete_target),
         )
         .route(
             "/v1/targets/{id}/assumptions",
@@ -167,6 +175,7 @@ struct CreateDirectionRequest {
 struct DirectionResponse {
     id: String,
     title: String,
+    status: String,
 }
 
 impl From<&Direction> for DirectionResponse {
@@ -174,6 +183,7 @@ impl From<&Direction> for DirectionResponse {
         Self {
             id: d.id().value().to_string(),
             title: d.title().to_owned(),
+            status: d.status().name().to_owned(),
         }
     }
 }
@@ -183,11 +193,18 @@ struct CreateTargetRequest {
     statement: String,
 }
 
+/// A lifecycle transition request: `{"status": "achieved"}`.
+#[derive(Deserialize)]
+struct SetStatusRequest {
+    status: String,
+}
+
 #[derive(Serialize)]
 struct TargetResponse {
     id: String,
     direction_id: String,
     statement: String,
+    status: String,
 }
 
 impl From<&Target> for TargetResponse {
@@ -196,8 +213,20 @@ impl From<&Target> for TargetResponse {
             id: g.id().value().to_string(),
             direction_id: g.direction().value().to_string(),
             statement: g.statement().to_owned(),
+            status: g.status().name().to_owned(),
         }
     }
+}
+
+/// Parses a lifecycle status from the request body, or a 400.
+fn parse_lifecycle_status(raw: &str) -> Result<LifecycleStatus, ApiError> {
+    LifecycleStatus::from_name(raw).ok_or_else(|| {
+        ApiError(AppError::BadRequest {
+            message: format!(
+                "unknown status {raw:?}; expected one of: active, achieved, abandoned, archived"
+            ),
+        })
+    })
 }
 
 async fn create_direction(
@@ -251,6 +280,54 @@ async fn list_targets(
     let store = state.store.clone();
     let targets = blocking(move || usecases::list_targets(store.as_ref(), direction)).await?;
     Ok(Json(targets.iter().map(TargetResponse::from).collect()))
+}
+
+async fn set_direction_status(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(req): Json<SetStatusRequest>,
+) -> Result<Json<DirectionResponse>, ApiError> {
+    let direction_id = parse_direction_id(&id)?;
+    let status = parse_lifecycle_status(&req.status)?;
+    let store = state.store.clone();
+    let direction =
+        blocking(move || usecases::set_direction_status(store.as_ref(), direction_id, status))
+            .await?;
+    Ok(Json(DirectionResponse::from(&direction)))
+}
+
+async fn delete_direction(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let direction_id = parse_direction_id(&id)?;
+    let store = state.store.clone();
+    blocking(move || usecases::delete_direction(store.as_ref(), store.as_ref(), direction_id))
+        .await?;
+    Ok(Json(json!({ "deleted": true })))
+}
+
+async fn set_target_status(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(req): Json<SetStatusRequest>,
+) -> Result<Json<TargetResponse>, ApiError> {
+    let target_id = parse_target_id(&id)?;
+    let status = parse_lifecycle_status(&req.status)?;
+    let store = state.store.clone();
+    let target =
+        blocking(move || usecases::set_target_status(store.as_ref(), target_id, status)).await?;
+    Ok(Json(TargetResponse::from(&target)))
+}
+
+async fn delete_target(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let target_id = parse_target_id(&id)?;
+    let store = state.store.clone();
+    blocking(move || usecases::delete_target(store.as_ref(), store.as_ref(), target_id)).await?;
+    Ok(Json(json!({ "deleted": true })))
 }
 
 #[derive(Deserialize)]
@@ -993,6 +1070,14 @@ mod tests {
         Request::builder().uri(uri).body(Body::empty()).unwrap()
     }
 
+    fn del(uri: &str) -> Request<Body> {
+        Request::builder()
+            .method("DELETE")
+            .uri(uri)
+            .body(Body::empty())
+            .unwrap()
+    }
+
     #[tokio::test]
     async fn root_serves_the_web_console() {
         let res = app(test_state())
@@ -1070,6 +1155,83 @@ mod tests {
         let listed = json_body(res).await;
         assert_eq!(listed.as_array().unwrap().len(), 1);
         assert_eq!(listed[0]["statement"], "Run a 5k");
+        assert_eq!(listed[0]["status"], "active");
+    }
+
+    #[tokio::test]
+    async fn target_status_transitions_then_deletes() {
+        let app = app(test_state());
+        let did = json_body(
+            app.clone()
+                .oneshot(post("/v1/directions", r#"{"title":"Be healthier"}"#))
+                .await
+                .unwrap(),
+        )
+        .await["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let tid = json_body(
+            app.clone()
+                .oneshot(post(
+                    &format!("/v1/directions/{did}/targets"),
+                    r#"{"statement":"Run a 5k"}"#,
+                ))
+                .await
+                .unwrap(),
+        )
+        .await["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+
+        // Achieve it.
+        let res = app
+            .clone()
+            .oneshot(post(
+                &format!("/v1/targets/{tid}"),
+                r#"{"status":"achieved"}"#,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        assert_eq!(json_body(res).await["status"], "achieved");
+
+        // An unknown status is a 400.
+        let res = app
+            .clone()
+            .oneshot(post(&format!("/v1/targets/{tid}"), r#"{"status":"nope"}"#))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+
+        // Delete it (no assumptions) and confirm it's gone.
+        let res = app
+            .clone()
+            .oneshot(del(&format!("/v1/targets/{tid}")))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let listed = json_body(
+            app.clone()
+                .oneshot(get(&format!("/v1/directions/{did}/targets")))
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert!(listed.as_array().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn deleting_a_target_with_assumptions_is_refused() {
+        let app = app(test_state());
+        let (tid, _oid) = seed_chain(&app).await; // target with an assumption under it
+        let res = app
+            .clone()
+            .oneshot(del(&format!("/v1/targets/{tid}")))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test]

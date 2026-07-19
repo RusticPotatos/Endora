@@ -12,7 +12,7 @@ members = [
 # Keeping this centralized means a single place governs edition, MSRV, and license
 # across the modular monolith.
 [workspace.package]
-version = "0.1.0"
+version = "0.4.0"
 edition = "2024"
 rust-version = "1.87"
 license = "Apache-2.0"

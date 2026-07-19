@@ -54,4 +54,4 @@ pub use ids::{
 };
 pub use policy::{PolicyDecision, authorize_process_change};
 pub use reflection::{ApprovalState, ProposedProcessChange, Reflection};
-pub use targets::{Assumption, Direction, Target};
+pub use targets::{Assumption, Direction, LifecycleStatus, Target};
