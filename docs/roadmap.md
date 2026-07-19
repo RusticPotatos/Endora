@@ -145,3 +145,65 @@ providers; MCP; microservices; event sourcing. These remain post-1.0.
 
 This roadmap is mirrored by a **v1.0 milestone** with one issue per workstream.
 The roadmap describes intent; the issues carry the work.
+
+---
+
+## Post-0.1: toward a usable product
+
+> The foundational vertical slice above shipped as the **v0.1.0** tag. The
+> versions below stay in `0.x` until the constitution's full stewardship vision
+> is reached.
+
+v0.1.0 is a CLI against a local HTTP node. The gap to something a *non-author*
+uses daily is **not** more domain features — it is a UI, one-command deployment,
+and a mechanic that pulls people back to observe their experiments. These phases
+target exactly that.
+
+**Deliberately out of this roadmap:** native/mobile apps and offline multi-device
+sync. The node is authoritative and clients are thin, so a responsive web console
+reached from an **always-on** node covers "capture from my phone" without the
+hardest unsolved problem (sync). Native apps are a far-future possibility, not a
+plan.
+
+### 0.2 — A usable product in one container
+
+- The **node serves a self-contained web console at `/`** — same-origin, so no
+  CORS and no separate front-end build. It exercises the whole loop (create/list
+  Direction → … → Reflection), the propose → approve → decide policy flow, the
+  audit trail, and export/purge. Static assets are embedded in the binary, so the
+  container stays self-contained. See [ADR 0009](adr/0009-node-served-ui-and-single-container.md).
+- **Single-container deployment**: `docker compose up` runs the node (UI + API +
+  CLI all in the image) plus an optional local model — the whole system in one
+  command.
+- Small enabler: a `direction list` endpoint/command so buckets are discoverable.
+
+Web-first is deliberate: it is the fastest path to *usable* and works on any
+device with a browser. A native (Swift/SwiftUI) client is a later follow-up, not
+a prerequisite.
+
+### 0.3 — Retention: the loop that pulls you back
+
+- **Scheduled review prompts** — "you said you'd check this experiment in two
+  weeks." A background scheduler in the node reviews state and raises reminders.
+  A reminder is a notification/proposal, never a consequential action, so this is
+  Endora's first *proactive* behavior and is constitutionally safe (it gets its
+  own ADR when built).
+- An **activity feed** (`GET /v1/activity`) recording what happened, and
+  **server-sent events** so the console reflects new activity live.
+
+This is the make-or-break mechanic: the loop only closes if experiments actually
+get observed. The most design care goes here.
+
+### 0.4 — Reachable from where you live
+
+- A **responsive** console usable from a phone browser.
+- Docs for running an **always-on** node (home server or a small VPS) and
+  reaching it securely — e.g. Tailscale, or a reverse proxy that adds the
+  authentication the API still lacks. This delivers "mobile capture" with no sync.
+
+### Beyond
+
+Native clients, real offline sync (if it is ever justified), and the
+**Capabilities** and **Protection** bounded contexts — *bounded, reversible*
+autonomy executed under the Policy boundary — remain the long arc toward the
+constitution's full vision. Deliberately after the product is usable and trusted.
