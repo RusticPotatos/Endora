@@ -1,8 +1,9 @@
-# Working agreements for AI assistants (agents)
+# Working agreements for AI assistants
 
-This file gives AI coding assistants (Codex and others) the core rules for
-working in the Endora repository. `CLAUDE.md` carries the same agreements for
-Claude. Keep both in sync. For the full picture, read [README.md](README.md),
+This is the **canonical** instructions file for AI coding assistants working in
+the Endora repository, following the cross-tool `AGENTS.md` convention.
+`CLAUDE.md` is a symlink to this file, so Claude Code reads the same content —
+edit this file, never a copy. For the full picture, read [README.md](README.md),
 [docs/constitution.md](docs/constitution.md),
 [docs/architecture.md](docs/architecture.md), and
 [CONTRIBUTING.md](CONTRIBUTING.md).
