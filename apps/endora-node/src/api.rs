@@ -5,23 +5,30 @@
 //! logic. Blocking SQLite work runs off the async executor via
 //! [`tokio::task::spawn_blocking`] (see `docs/adr/0007-async-web-stack.md`).
 
+use std::convert::Infallible;
 use std::sync::Arc;
 
 use axum::Json;
 use axum::Router;
-use axum::extract::{Path, Query, State};
-use axum::http::StatusCode;
+use axum::extract::{Path, Query, Request, State};
+use axum::http::{Method, StatusCode};
+use axum::middleware::{Next, from_fn_with_state};
+use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post};
-use endora_application::{AppError, MemorySnapshot, Proposer, RepositoryError, usecases};
+use endora_application::{
+    ActivityItem, AppError, MemorySnapshot, Proposer, RepositoryError, usecases,
+};
 use endora_domain::{
     Assumption, AssumptionId, AuditRecord, AutonomyLevel, Direction, DirectionId, Experiment,
     ExperimentId, Goal, GoalId, Observation, ObservationId, PolicyDecision, ProcessChangeId,
     ProposedProcessChange, Reflection, ReflectionId,
 };
 use endora_infrastructure::{RandomIdSource, SqliteStore, SystemClock};
+use futures_util::stream::{Stream, unfold};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use tokio::sync::broadcast;
 
 /// Shared state handed to every request handler.
 #[derive(Clone)]
@@ -34,6 +41,32 @@ pub struct AppState {
     pub clock: Arc<SystemClock>,
     /// The reasoning model behind the policy boundary.
     pub proposer: Arc<dyn Proposer + Send + Sync>,
+    /// Broadcasts a signal whenever a write succeeds, so activity-stream
+    /// subscribers know to refresh. Carries no payload — it is a "something
+    /// changed" nudge, and clients re-read the authoritative state.
+    pub changes: broadcast::Sender<()>,
+}
+
+impl AppState {
+    /// Creates the shared state, wiring up the change-broadcast channel.
+    #[must_use]
+    pub fn new(
+        store: Arc<SqliteStore>,
+        ids: Arc<RandomIdSource>,
+        clock: Arc<SystemClock>,
+        proposer: Arc<dyn Proposer + Send + Sync>,
+    ) -> Self {
+        // A small buffer is plenty: subscribers coalesce to a single refresh,
+        // and a lagged receiver still gets one "changed" signal.
+        let (changes, _) = broadcast::channel(16);
+        Self {
+            store,
+            ids,
+            clock,
+            proposer,
+            changes,
+        }
+    }
 }
 
 /// Builds the router for the node's HTTP API.
@@ -90,9 +123,30 @@ pub fn app(state: AppState) -> Router {
             post(decide_process_change),
         )
         .route("/v1/audit", get(audit))
+        .route("/v1/activity", get(activity))
+        .route("/v1/activity/stream", get(activity_stream))
         .route("/v1/export", get(export))
         .route("/v1/memory/purge", post(purge))
+        // Notify activity-stream subscribers after any successful write.
+        .layer(from_fn_with_state(state.changes.clone(), notify_on_change))
         .with_state(state)
+}
+
+/// Middleware: after a successful write (any `POST`), send a "changed" signal so
+/// activity-stream subscribers refresh. Reads never notify, so the stream itself
+/// (a `GET`) does not trigger it.
+async fn notify_on_change(
+    State(changes): State<broadcast::Sender<()>>,
+    request: Request,
+    next: Next,
+) -> Response {
+    let is_write = request.method() == Method::POST;
+    let response = next.run(request).await;
+    if is_write && response.status().is_success() {
+        // Ignored on purpose: no subscribers is a normal, benign state.
+        let _ = changes.send(());
+    }
+    response
 }
 
 /// Serves the self-contained web console (embedded in the binary; see ADR 0009).
@@ -674,6 +728,55 @@ async fn audit(
     Ok(Json(records.iter().map(AuditResponse::from).collect()))
 }
 
+#[derive(Serialize)]
+struct ActivityResponse {
+    at_ms: i64,
+    kind: String,
+    summary: String,
+}
+
+impl From<&ActivityItem> for ActivityResponse {
+    fn from(item: &ActivityItem) -> Self {
+        Self {
+            at_ms: item.at().unix_millis(),
+            kind: item.kind().name().to_owned(),
+            summary: item.summary().to_owned(),
+        }
+    }
+}
+
+/// The activity feed: a merged, newest-first timeline of what has happened.
+async fn activity(
+    State(state): State<AppState>,
+    Query(query): Query<AuditQuery>,
+) -> Result<Json<Vec<ActivityResponse>>, ApiError> {
+    let limit = query.limit.unwrap_or(50);
+    let store = state.store.clone();
+    let items =
+        blocking(move || usecases::recent_activity(store.as_ref(), store.as_ref(), limit)).await?;
+    Ok(Json(items.iter().map(ActivityResponse::from).collect()))
+}
+
+/// A server-sent event stream that emits a `changed` event whenever a write
+/// succeeds. Clients re-read `/v1/activity` (and other state) on each event —
+/// the stream carries a nudge, never the data itself.
+async fn activity_stream(
+    State(state): State<AppState>,
+) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
+    let rx = state.changes.subscribe();
+    let stream = unfold(rx, |mut rx| async move {
+        // A closed channel ends the stream; a lag still means "something
+        // changed", so both a value and a lag emit one `changed` event.
+        match rx.recv().await {
+            Ok(()) | Err(broadcast::error::RecvError::Lagged(_)) => {
+                Some((Ok(Event::default().event("changed").data("changed")), rx))
+            }
+            Err(broadcast::error::RecvError::Closed) => None,
+        }
+    });
+    Sse::new(stream).keep_alive(KeepAlive::default())
+}
+
 /// The full export of the user's data — the "exportable" memory right.
 #[derive(Serialize)]
 struct ExportResponse {
@@ -864,12 +967,12 @@ mod tests {
     }
 
     fn test_state() -> AppState {
-        AppState {
-            store: Arc::new(SqliteStore::open_in_memory().unwrap()),
-            ids: Arc::new(RandomIdSource),
-            clock: Arc::new(SystemClock),
-            proposer: Arc::new(StubProposer),
-        }
+        AppState::new(
+            Arc::new(SqliteStore::open_in_memory().unwrap()),
+            Arc::new(RandomIdSource),
+            Arc::new(SystemClock),
+            Arc::new(StubProposer),
+        )
     }
 
     async fn json_body(res: axum::response::Response) -> serde_json::Value {
@@ -884,6 +987,10 @@ mod tests {
             .header("content-type", "application/json")
             .body(Body::from(body.to_owned()))
             .unwrap()
+    }
+
+    fn get(uri: &str) -> Request<Body> {
+        Request::builder().uri(uri).body(Body::empty()).unwrap()
     }
 
     #[tokio::test]
@@ -1230,6 +1337,74 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(json_body(res).await.as_array().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn activity_feed_lists_a_recorded_observation() {
+        let app = app(test_state());
+        seed_chain(&app).await; // records an observation with note "N"
+
+        let res = app.clone().oneshot(get("/v1/activity")).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let feed = json_body(res).await;
+        let items = feed.as_array().unwrap();
+        assert!(
+            items
+                .iter()
+                .any(|i| i["kind"] == "observation" && i["summary"] == "N"),
+            "activity feed should include the recorded observation, got {feed}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_write_notifies_change_subscribers_but_a_read_does_not() {
+        let state = test_state();
+        let mut rx = state.changes.subscribe();
+        let app = app(state);
+
+        // A read must not signal a change.
+        app.clone().oneshot(get("/v1/activity")).await.unwrap();
+        assert!(rx.try_recv().is_err());
+
+        // A successful write signals exactly one change.
+        let res = app
+            .clone()
+            .oneshot(post("/v1/directions", r#"{"title":"D"}"#))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        assert!(rx.try_recv().is_ok());
+    }
+
+    #[tokio::test]
+    async fn a_rejected_write_does_not_notify() {
+        let state = test_state();
+        let mut rx = state.changes.subscribe();
+        let app = app(state);
+
+        // A domain-invalid request (blank title) is a 400 and must not signal.
+        let res = app
+            .clone()
+            .oneshot(post("/v1/directions", r#"{"title":"  "}"#))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn activity_stream_opens_as_an_event_stream() {
+        let res = app(test_state())
+            .oneshot(get("/v1/activity/stream"))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let ct = res
+            .headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or_default();
+        assert!(ct.starts_with("text/event-stream"), "got content-type {ct}");
     }
 
     #[tokio::test]

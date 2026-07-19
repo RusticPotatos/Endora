@@ -474,6 +474,102 @@ pub fn recent_audit(audit: &impl AuditLog, limit: usize) -> Result<Vec<AuditReco
     Ok(audit.recent(limit)?)
 }
 
+/// What kind of thing an [`ActivityItem`] records.
+///
+/// Kept coarse on purpose: the feed groups by the area of the loop, and the
+/// human-readable summary carries the specifics.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ActivityKind {
+    /// An observation was recorded against an experiment.
+    Observation,
+    /// A consequential decision was made and audited (see [`AuditLog`]).
+    Decision,
+}
+
+impl ActivityKind {
+    /// A stable, lowercase name, suitable for the protocol and the UI.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Observation => "observation",
+            Self::Decision => "decision",
+        }
+    }
+}
+
+/// One entry in the activity feed.
+///
+/// This is a **read projection**, not a domain aggregate: it merges the
+/// persisted facts that already carry a time — recorded observations and audited
+/// decisions — into a single "what happened" timeline. Because it is derived, it
+/// stores nothing new and needs no schema of its own.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ActivityItem {
+    at: Timestamp,
+    kind: ActivityKind,
+    summary: String,
+}
+
+impl ActivityItem {
+    /// When the recorded event happened.
+    #[must_use]
+    pub const fn at(&self) -> Timestamp {
+        self.at
+    }
+
+    /// The area of the loop this entry belongs to.
+    #[must_use]
+    pub const fn kind(&self) -> ActivityKind {
+        self.kind
+    }
+
+    /// The human-readable description of what happened.
+    #[must_use]
+    pub fn summary(&self) -> &str {
+        &self.summary
+    }
+}
+
+/// Returns the most recent activity across the learning loop, newest first, up
+/// to `limit` entries.
+///
+/// The feed is a projection over what is already persisted with a timestamp:
+/// recorded observations and audited decisions. As more of the loop gains
+/// durable timestamps, this timeline widens without a protocol change.
+///
+/// # Errors
+/// [`AppError::Repository`] if the backend fails or stored data is corrupt.
+pub fn recent_activity(
+    observations: &impl ObservationRepository,
+    audit: &impl AuditLog,
+    limit: usize,
+) -> Result<Vec<ActivityItem>, AppError> {
+    let mut items = Vec::new();
+    for o in observations.recent(limit)? {
+        items.push(ActivityItem {
+            at: o.recorded_at(),
+            kind: ActivityKind::Observation,
+            summary: o.note().to_owned(),
+        });
+    }
+    for r in audit.recent(limit)? {
+        items.push(ActivityItem {
+            at: r.at(),
+            kind: ActivityKind::Decision,
+            summary: r.summary().to_owned(),
+        });
+    }
+    // Newest first; break ties stably so equal timestamps keep a deterministic
+    // order across calls.
+    items.sort_by(|a, b| {
+        b.at.unix_millis()
+            .cmp(&a.at.unix_millis())
+            .then_with(|| b.summary.cmp(&a.summary))
+    });
+    items.truncate(limit);
+    Ok(items)
+}
+
 /// A short verb phrase for an audit summary.
 fn describe(decision: PolicyDecision) -> &'static str {
     match decision {
@@ -593,6 +689,13 @@ mod tests {
                 .collect();
             found.sort_by_key(|o| o.id().value());
             Ok(found)
+        }
+        fn recent(&self, limit: usize) -> Result<Vec<Observation>, RepositoryError> {
+            let mut all: Vec<Observation> = self.observations.borrow().values().cloned().collect();
+            all.sort_by_key(|o| (o.recorded_at().unix_millis(), o.id().value()));
+            all.reverse();
+            all.truncate(limit);
+            Ok(all)
         }
     }
 
@@ -1161,6 +1264,63 @@ mod tests {
         .unwrap();
         assert_eq!(decision, PolicyDecision::Permit);
         assert_eq!(recent_audit(&audit, 10).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn activity_merges_observations_and_decisions_newest_first() {
+        use super::{ActivityKind, recent_activity};
+        use crate::ports::ObservationRepository;
+        use endora_domain::{AuditId, AuditRecord, ExperimentId, Observation, ObservationId};
+
+        let store = FakeStore::default();
+        let audit = FakeAudit::default();
+
+        // Two observations and one audited decision, at distinct times.
+        ObservationRepository::save(
+            &store,
+            &Observation::record(
+                ObservationId::new(1),
+                ExperimentId::new(9),
+                "ran at 7am",
+                Timestamp::from_unix_millis(100),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        ObservationRepository::save(
+            &store,
+            &Observation::record(
+                ObservationId::new(2),
+                ExperimentId::new(9),
+                "slept in",
+                Timestamp::from_unix_millis(300),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        audit
+            .append(
+                &AuditRecord::new(
+                    AuditId::new(3),
+                    Timestamp::from_unix_millis(200),
+                    "policy permitted change 5",
+                )
+                .unwrap(),
+            )
+            .unwrap();
+
+        // Merged and ordered newest first: 300 (obs), 200 (decision), 100 (obs).
+        let feed = recent_activity(&store, &audit, 10).unwrap();
+        assert_eq!(feed.len(), 3);
+        assert_eq!(feed[0].summary(), "slept in");
+        assert_eq!(feed[0].kind(), ActivityKind::Observation);
+        assert_eq!(feed[1].kind(), ActivityKind::Decision);
+        assert_eq!(feed[2].summary(), "ran at 7am");
+
+        // The limit truncates after the merge, keeping the newest.
+        let top = recent_activity(&store, &audit, 1).unwrap();
+        assert_eq!(top.len(), 1);
+        assert_eq!(top[0].summary(), "slept in");
     }
 
     #[test]
