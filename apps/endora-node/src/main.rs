@@ -9,6 +9,7 @@
 #![forbid(unsafe_code)]
 
 mod api;
+mod tls;
 
 use std::sync::Arc;
 
@@ -42,10 +43,41 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     println!("{}", endora_application::platform_identity());
-    println!("node listening on http://{addr}  (db: {db_path})");
     println!("model: {model} via {model_url}  (drafting is optional; 503 if unavailable)");
 
-    let listener = tokio::net::TcpListener::bind(&addr).await?;
-    axum::serve(listener, api::app(state)).await?;
+    let app = api::app(state);
+
+    // Optional self-signed HTTPS so the console is a secure context (browser voice
+    // needs it). No domain/proxy required; one-time cert warning per browser.
+    if std::env::var("ENDORA_TLS").ok().as_deref() == Some("1") {
+        rustls::crypto::ring::default_provider()
+            .install_default()
+            .ok();
+        let dir = std::path::Path::new(&db_path)
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or_else(|| std::path::Path::new("."))
+            .to_path_buf();
+        let mut sans = vec!["localhost".to_owned(), "127.0.0.1".to_owned()];
+        if let Ok(extra) = std::env::var("ENDORA_TLS_SAN") {
+            sans.extend(
+                extra
+                    .split(',')
+                    .map(|s| s.trim().to_owned())
+                    .filter(|s| !s.is_empty()),
+            );
+        }
+        let (cert_pem, key_pem) = tls::load_or_generate(&dir, &sans)?;
+        let config = axum_server::tls_rustls::RustlsConfig::from_pem(cert_pem, key_pem).await?;
+        let sockaddr: std::net::SocketAddr = addr.parse()?;
+        println!("node listening on https://{addr}  (self-signed TLS; db: {db_path})");
+        axum_server::bind_rustls(sockaddr, config)
+            .serve(app.into_make_service())
+            .await?;
+    } else {
+        println!("node listening on http://{addr}  (db: {db_path})");
+        let listener = tokio::net::TcpListener::bind(&addr).await?;
+        axum::serve(listener, app).await?;
+    }
     Ok(())
 }

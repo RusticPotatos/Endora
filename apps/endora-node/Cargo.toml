@@ -24,6 +24,11 @@ futures-util = "0.3.33"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.150"
 tokio = { version = "1.53.0", features = ["rt-multi-thread", "macros", "net", "sync", "time"] }
+# Optional self-signed HTTPS (ENDORA_TLS=1) so the console is a secure context —
+# needed for browser mic/voice on a LAN address without a domain or proxy.
+axum-server = { version = "0.7.2", features = ["tls-rustls"] }
+rcgen = "0.13.2"
+rustls = { version = "0.23.23", features = ["ring"] }
 
 [lints]
 workspace = true

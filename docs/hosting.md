@@ -138,12 +138,21 @@ One browser rule to know: **the microphone only works on a secure page** — HTT
   `http://<host>:8787`.
 - **Speech-to-text (you speak to it)** is **blocked** on a plain-HTTP LAN address.
   Give the console an HTTPS origin to enable the mic:
-  - **Tailscale (recommended):** `tailscale serve https / http://127.0.0.1:8787`
-    on the node's machine gives it an HTTPS URL on your tailnet — the mic then
-    works, and it's private. (This is the overlay from §3, now with TLS.)
+  - **Built-in self-signed HTTPS (easiest — no domain, proxy, or extra tools):**
+    set **`ENDORA_TLS=1`** on the node (the compose does this by default). It
+    serves HTTPS with a self-signed cert persisted in `/data`, so you accept the
+    browser's "not private" warning **once** per browser, then the mic works. Set
+    `ENDORA_TLS_SAN` to this host's LAN IP/hostname for a cleaner cert (in
+    `docker-compose.override.yml`). Access `https://<host>:8787`.
+  - **Tailscale:** `tailscale serve https / http://127.0.0.1:8787` gives a *trusted*
+    HTTPS URL on your tailnet — no warning at all, and it's private. Best if you
+    already run Tailscale (§3).
   - **A TLS reverse proxy** (Caddy/nginx, §3) in front of the node.
   - **Quick local test:** in Chrome, `chrome://flags/#unsafely-treat-insecure-origin-as-secure`
     → add `http://<host>:8787` → relaunch. (Dev only; not a real fix.)
+
+  A fully **local** speech path (a Whisper model on your host, so audio never
+  leaves the machine) is the privacy-first end state and is the next voice step.
 
 Speech recognition also needs a supporting browser (Chrome/Edge) and, in some
 browsers, streams audio to a cloud service — so voice is opt-in, off by default.
