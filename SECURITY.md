@@ -6,17 +6,27 @@ seriously and appreciate coordinated, responsible disclosure.
 
 ## Supported versions
 
-Endora is **pre-release** and in a foundation phase. There are no stable releases
-yet, and version `0.0.x` carries no security guarantees.
+Endora is **pre-1.0** and in a foundation phase. Only the latest `0.x` release
+and the active branches receive security attention.
 
 | Version | Supported |
 | --- | --- |
-| `main` / `develop` (unreleased) | Best-effort; fixes land on active branches |
-| `0.0.x` (pre-release) | Not supported for production use |
+| latest `0.1.x` | ✅ security fixes |
+| `main` / `develop` | ✅ best-effort; fixes land here first |
+| `< 0.1.0` (pre-release) | ❌ not supported |
 
-Until a `1.0` release, only the latest state of the active branches receives
-security attention. This table will be replaced with a concrete support window
-once releases exist.
+Until a `1.0` release there is no long-term support window; upgrade to the latest
+`0.x` to receive fixes.
+
+## Deployment note (no authentication yet)
+
+Endora's HTTP API is **unauthenticated** in `0.x` — it is designed as a
+local-first, single-user service and binds to `127.0.0.1` by default. **Do not
+expose the node on an untrusted network.** In particular, the container image
+defaults to binding all interfaces (`0.0.0.0`); publish it only on loopback or a
+private network (e.g. `-p 127.0.0.1:8787:8787`), behind a reverse proxy that adds
+authentication if remote access is needed. Authentication is tracked as pre-1.0
+work.
 
 ## Reporting a vulnerability
 
