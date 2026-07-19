@@ -44,11 +44,14 @@ same text protocol. The web console uses the browser's built-in **Web Speech API
 No new dependency, no server-side audio, and it degrades cleanly: where the browser
 lacks the API the controls simply do not appear, and typing still works.
 
-**Local-first caveat, stated plainly:** some browsers' speech recognition streams
-audio to a cloud service (e.g. Chrome). That crosses the local-first line, so the
-voice controls are **off by default and opt-in**, and the caveat is documented.
-A fully local STT/TTS path (a model on the node/host) is possible later behind the
-same client seam.
+**Two caveats, stated plainly.** (1) Some browsers' speech recognition streams audio
+to a cloud service (e.g. Chrome), which crosses the local-first line — so voice is
+**off by default and opt-in**. (2) Browsers only grant microphone access on a
+**secure context** (HTTPS or `localhost`), so speaking *to* it over a plain-HTTP LAN
+address is blocked by the browser; text-to-speech (it speaking to you) is not. The
+console says so, and [docs/hosting.md](../hosting.md) documents giving the console an
+HTTPS origin (e.g. `tailscale serve` or a TLS proxy). A fully local STT/TTS path (a
+model on the node/host) is possible later behind the same client seam.
 
 ## Consequences
 
