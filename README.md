@@ -127,6 +127,16 @@ Or in a container (data persists in `./endora-data`):
 make docker-build && make docker-run    # → http://localhost:8787
 ```
 
+### See the whole thing in one command
+
+```bash
+make demo    # spins up a throwaway node and drives the full learning loop
+```
+
+This runs `scripts/demo.sh`: direction → goal → assumption → experiment →
+observation → reflection → proposed change → policy decision → audit → export,
+printing each CLI command and its response.
+
 ### Using the CLI
 
 With the node running, the `endora` CLI (a thin client) talks to it:
