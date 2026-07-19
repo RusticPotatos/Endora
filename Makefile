@@ -9,6 +9,13 @@ CARGO ?= cargo
 # line, e.g. `make test WORKSPACE_FLAGS=--workspace`.
 WORKSPACE_FLAGS ?= --workspace --all-features
 
+# Docker context for the Compose deploy targets. Empty = the local Docker
+# daemon; set to a remote context to build+run there, e.g.
+# `make deploy DOCKER_CONTEXT=nas`. Compose reads docker-compose.yml plus any
+# local docker-compose.override.yml (kept out of git).
+DOCKER_CONTEXT ?=
+COMPOSE = docker $(if $(DOCKER_CONTEXT),--context $(DOCKER_CONTEXT),) compose
+
 .DEFAULT_GOAL := help
 
 ## ----------------------------------------------------------------------------
@@ -45,13 +52,41 @@ run-node: ## Run the authoritative node (HTTP server; ENDORA_ADDR/ENDORA_DB to c
 run-cli: ## Run the CLI client (pass args via ARGS="...", e.g. ARGS="health")
 	$(CARGO) run --bin endora -- $(ARGS)
 
+.PHONY: demo
+demo: ## Run the full learning loop against a throwaway node (release build)
+	@$(CARGO) build --release -q
+	@db=$$(mktemp -t endora-demo.XXXXXX); port=8799; \
+	ENDORA_DB=$$db ENDORA_ADDR=127.0.0.1:$$port ./target/release/endora-node >/dev/null 2>&1 & \
+	node=$$!; \
+	trap 'kill $$node 2>/dev/null; rm -f $$db' EXIT; \
+	for i in $$(seq 1 30); do curl -fsS http://127.0.0.1:$$port/health >/dev/null 2>&1 && break; sleep 0.2; done; \
+	ENDORA=./target/release/endora ENDORA_URL=http://127.0.0.1:$$port ./scripts/demo.sh
+
 .PHONY: docker-build
 docker-build: ## Build the node container image (tag: endora-node)
 	docker build -t endora-node .
 
 .PHONY: docker-run
-docker-run: ## Run the node container (maps 8787, persists ./endora-data)
-	docker run --rm -p 8787:8787 -v "$(CURDIR)/endora-data:/data" endora-node
+docker-run: ## Run the node container (loopback-only on 8787, persists ./endora-data)
+	# Bind the published port to loopback: the API is unauthenticated in 0.x, so
+	# it must not be reachable off this machine. See docs/hosting.md to reach it
+	# securely from other devices.
+	docker run --rm -p 127.0.0.1:8787:8787 -v "$(CURDIR)/endora-data:/data" endora-node
+
+.PHONY: deploy
+deploy: ## Build + start the node via Compose (DOCKER_CONTEXT=nas to target the NAS)
+	# Builds on the target host and starts it detached; data persists in the
+	# named volume. Set DOCKER_CONTEXT to deploy to a remote host over that
+	# context. The 0.x API is unauthenticated — keep it on a trusted network.
+	$(COMPOSE) up -d --build
+
+.PHONY: deploy-logs
+deploy-logs: ## Follow the deployed node's logs (respects DOCKER_CONTEXT)
+	$(COMPOSE) logs -f
+
+.PHONY: deploy-down
+deploy-down: ## Stop the deployed node, keeping its data volume (respects DOCKER_CONTEXT)
+	$(COMPOSE) down
 
 .PHONY: watch
 watch: ## Re-run tests on file change (needs cargo-watch)

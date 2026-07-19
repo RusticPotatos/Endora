@@ -5,23 +5,32 @@
 //! logic. Blocking SQLite work runs off the async executor via
 //! [`tokio::task::spawn_blocking`] (see `docs/adr/0007-async-web-stack.md`).
 
+use std::convert::Infallible;
 use std::sync::Arc;
 
 use axum::Json;
 use axum::Router;
-use axum::extract::{Path, Query, State};
-use axum::http::StatusCode;
-use axum::response::{IntoResponse, Response};
+use axum::extract::{Path, Query, Request, State};
+use axum::http::{Method, StatusCode};
+use axum::middleware::{Next, from_fn_with_state};
+use axum::response::sse::{Event, KeepAlive, Sse};
+use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post};
-use endora_application::{AppError, MemorySnapshot, Proposer, RepositoryError, usecases};
+use endora_application::{
+    ActivityItem, AppError, AttentionItem, AttentionKind, Butler, ButlerProposal, MemorySnapshot,
+    Proposer, RepositoryError, usecases,
+};
 use endora_domain::{
-    Assumption, AssumptionId, AuditRecord, AutonomyLevel, Direction, DirectionId, Experiment,
-    ExperimentId, Goal, GoalId, Observation, ObservationId, PolicyDecision, ProcessChangeId,
-    ProposedProcessChange, Reflection, ReflectionId,
+    Assumption, AssumptionId, AuditRecord, AutonomyLevel, ChatMessage, Direction, DirectionId,
+    Experiment, ExperimentId, LifecycleStatus, Observation, ObservationId, PolicyDecision,
+    Preference, PreferenceId, PreferenceKind, ProcessChangeId, ProposedProcessChange, Reflection,
+    ReflectionId, Target, TargetId, Value, ValueId,
 };
 use endora_infrastructure::{RandomIdSource, SqliteStore, SystemClock};
+use futures_util::stream::{Stream, unfold};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use tokio::sync::broadcast;
 
 /// Shared state handed to every request handler.
 #[derive(Clone)]
@@ -34,19 +43,64 @@ pub struct AppState {
     pub clock: Arc<SystemClock>,
     /// The reasoning model behind the policy boundary.
     pub proposer: Arc<dyn Proposer + Send + Sync>,
+    /// The butler brain (proposes; never acts).
+    pub butler: Arc<dyn Butler + Send + Sync>,
+    /// Broadcasts a signal whenever a write succeeds, so activity-stream
+    /// subscribers know to refresh. Carries no payload — it is a "something
+    /// changed" nudge, and clients re-read the authoritative state.
+    pub changes: broadcast::Sender<()>,
+}
+
+impl AppState {
+    /// Creates the shared state, wiring up the change-broadcast channel.
+    #[must_use]
+    pub fn new(
+        store: Arc<SqliteStore>,
+        ids: Arc<RandomIdSource>,
+        clock: Arc<SystemClock>,
+        proposer: Arc<dyn Proposer + Send + Sync>,
+        butler: Arc<dyn Butler + Send + Sync>,
+    ) -> Self {
+        // A small buffer is plenty: subscribers coalesce to a single refresh,
+        // and a lagged receiver still gets one "changed" signal.
+        let (changes, _) = broadcast::channel(16);
+        Self {
+            store,
+            ids,
+            clock,
+            proposer,
+            butler,
+            changes,
+        }
+    }
 }
 
 /// Builds the router for the node's HTTP API.
 pub fn app(state: AppState) -> Router {
     Router::new()
+        .route("/", get(index))
         .route("/health", get(health))
-        .route("/v1/directions", post(create_direction))
+        .route("/v1/values", post(create_value).get(list_values))
+        .route("/v1/values/{id}", axum::routing::delete(delete_value))
         .route(
-            "/v1/directions/{id}/goals",
-            post(create_goal).get(list_goals),
+            "/v1/directions",
+            post(create_direction).get(list_directions),
         )
         .route(
-            "/v1/goals/{id}/assumptions",
+            "/v1/directions/{id}",
+            post(set_direction_status).delete(delete_direction),
+        )
+        .route("/v1/directions/{id}/value", post(assign_direction_value))
+        .route(
+            "/v1/directions/{id}/targets",
+            post(create_target).get(list_targets),
+        )
+        .route(
+            "/v1/targets/{id}",
+            post(set_target_status).delete(delete_target),
+        )
+        .route(
+            "/v1/targets/{id}/assumptions",
             post(create_assumption).get(list_assumptions),
         )
         .route(
@@ -55,12 +109,14 @@ pub fn app(state: AppState) -> Router {
         )
         .route("/v1/experiments/{id}/start", post(start_experiment))
         .route("/v1/experiments/{id}/conclude", post(conclude_experiment))
+        .route("/v1/experiments/{id}/review", post(schedule_review))
+        .route("/v1/reviews/due", get(due_reviews))
         .route(
             "/v1/experiments/{id}/observations",
             post(record_observation).get(list_observations),
         )
         .route(
-            "/v1/goals/{id}/reflections",
+            "/v1/targets/{id}/reflections",
             post(create_reflection).get(list_reflections),
         )
         .route(
@@ -83,10 +139,47 @@ pub fn app(state: AppState) -> Router {
             "/v1/process-changes/{id}/decision",
             post(decide_process_change),
         )
+        .route("/v1/chat", post(send_chat).get(chat_history))
+        .route(
+            "/v1/preferences",
+            post(create_preference).get(list_preferences),
+        )
+        .route(
+            "/v1/preferences/{id}",
+            axum::routing::delete(delete_preference),
+        )
+        .route("/v1/attention", get(attention))
+        .route("/v1/attention/snooze", post(snooze_attention))
         .route("/v1/audit", get(audit))
+        .route("/v1/activity", get(activity))
+        .route("/v1/activity/stream", get(activity_stream))
         .route("/v1/export", get(export))
         .route("/v1/memory/purge", post(purge))
+        // Notify activity-stream subscribers after any successful write.
+        .layer(from_fn_with_state(state.changes.clone(), notify_on_change))
         .with_state(state)
+}
+
+/// Middleware: after a successful write (any `POST`), send a "changed" signal so
+/// activity-stream subscribers refresh. Reads never notify, so the stream itself
+/// (a `GET`) does not trigger it.
+async fn notify_on_change(
+    State(changes): State<broadcast::Sender<()>>,
+    request: Request,
+    next: Next,
+) -> Response {
+    let is_write = request.method() == Method::POST;
+    let response = next.run(request).await;
+    if is_write && response.status().is_success() {
+        // Ignored on purpose: no subscribers is a normal, benign state.
+        let _ = changes.send(());
+    }
+    response
+}
+
+/// Serves the self-contained web console (embedded in the binary; see ADR 0009).
+async fn index() -> Html<&'static str> {
+    Html(include_str!("web/index.html"))
 }
 
 async fn health() -> Json<serde_json::Value> {
@@ -102,6 +195,9 @@ struct CreateDirectionRequest {
 struct DirectionResponse {
     id: String,
     title: String,
+    status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    value_id: Option<String>,
 }
 
 impl From<&Direction> for DirectionResponse {
@@ -109,30 +205,123 @@ impl From<&Direction> for DirectionResponse {
         Self {
             id: d.id().value().to_string(),
             title: d.title().to_owned(),
+            status: d.status().name().to_owned(),
+            value_id: d.value().map(|v| v.value().to_string()),
         }
     }
 }
 
 #[derive(Deserialize)]
-struct CreateGoalRequest {
-    statement: String,
+struct CreateValueRequest {
+    name: String,
+}
+
+/// Files a North Star under a value: `{"value_id": "123"}`, or `{}`/`null` to
+/// clear.
+#[derive(Deserialize)]
+struct AssignValueRequest {
+    value_id: Option<String>,
 }
 
 #[derive(Serialize)]
-struct GoalResponse {
+struct ValueResponse {
     id: String,
-    direction_id: String,
+    name: String,
+}
+
+impl From<&Value> for ValueResponse {
+    fn from(v: &Value) -> Self {
+        Self {
+            id: v.id().value().to_string(),
+            name: v.name().to_owned(),
+        }
+    }
+}
+
+async fn create_value(
+    State(state): State<AppState>,
+    Json(req): Json<CreateValueRequest>,
+) -> Result<Json<ValueResponse>, ApiError> {
+    let store = state.store.clone();
+    let ids = state.ids.clone();
+    let value =
+        blocking(move || usecases::create_value(store.as_ref(), ids.as_ref(), &req.name)).await?;
+    Ok(Json(ValueResponse::from(&value)))
+}
+
+async fn list_values(State(state): State<AppState>) -> Result<Json<Vec<ValueResponse>>, ApiError> {
+    let store = state.store.clone();
+    let values = blocking(move || usecases::list_values(store.as_ref())).await?;
+    Ok(Json(values.iter().map(ValueResponse::from).collect()))
+}
+
+async fn delete_value(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let value_id = parse_value_id(&id)?;
+    let store = state.store.clone();
+    blocking(move || usecases::delete_value(store.as_ref(), store.as_ref(), value_id)).await?;
+    Ok(Json(json!({ "deleted": true })))
+}
+
+async fn assign_direction_value(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(req): Json<AssignValueRequest>,
+) -> Result<Json<DirectionResponse>, ApiError> {
+    let direction_id = parse_direction_id(&id)?;
+    let value_id = match req.value_id {
+        Some(raw) => Some(parse_value_id(&raw)?),
+        None => None,
+    };
+    let store = state.store.clone();
+    let direction = blocking(move || {
+        usecases::assign_direction_value(store.as_ref(), store.as_ref(), direction_id, value_id)
+    })
+    .await?;
+    Ok(Json(DirectionResponse::from(&direction)))
+}
+
+#[derive(Deserialize)]
+struct CreateTargetRequest {
     statement: String,
 }
 
-impl From<&Goal> for GoalResponse {
-    fn from(g: &Goal) -> Self {
+/// A lifecycle transition request: `{"status": "achieved"}`.
+#[derive(Deserialize)]
+struct SetStatusRequest {
+    status: String,
+}
+
+#[derive(Serialize)]
+struct TargetResponse {
+    id: String,
+    direction_id: String,
+    statement: String,
+    status: String,
+}
+
+impl From<&Target> for TargetResponse {
+    fn from(g: &Target) -> Self {
         Self {
             id: g.id().value().to_string(),
             direction_id: g.direction().value().to_string(),
             statement: g.statement().to_owned(),
+            status: g.status().name().to_owned(),
         }
     }
+}
+
+/// Parses a lifecycle status from the request body, or a 400.
+fn parse_lifecycle_status(raw: &str) -> Result<LifecycleStatus, ApiError> {
+    LifecycleStatus::from_name(raw).ok_or_else(|| {
+        ApiError(AppError::BadRequest {
+            message: format!(
+                "unknown status {raw:?}; expected one of: active, achieved, abandoned, archived"
+            ),
+        })
+    })
 }
 
 async fn create_direction(
@@ -147,16 +336,26 @@ async fn create_direction(
     Ok(Json(DirectionResponse::from(&direction)))
 }
 
-async fn create_goal(
+async fn list_directions(
+    State(state): State<AppState>,
+) -> Result<Json<Vec<DirectionResponse>>, ApiError> {
+    let store = state.store.clone();
+    let directions = blocking(move || usecases::list_directions(store.as_ref())).await?;
+    Ok(Json(
+        directions.iter().map(DirectionResponse::from).collect(),
+    ))
+}
+
+async fn create_target(
     State(state): State<AppState>,
     Path(id): Path<String>,
-    Json(req): Json<CreateGoalRequest>,
-) -> Result<Json<GoalResponse>, ApiError> {
+    Json(req): Json<CreateTargetRequest>,
+) -> Result<Json<TargetResponse>, ApiError> {
     let direction = parse_direction_id(&id)?;
     let store = state.store.clone();
     let ids = state.ids.clone();
-    let goal = blocking(move || {
-        usecases::create_goal(
+    let target = blocking(move || {
+        usecases::create_target(
             store.as_ref(),
             store.as_ref(),
             ids.as_ref(),
@@ -165,17 +364,65 @@ async fn create_goal(
         )
     })
     .await?;
-    Ok(Json(GoalResponse::from(&goal)))
+    Ok(Json(TargetResponse::from(&target)))
 }
 
-async fn list_goals(
+async fn list_targets(
     State(state): State<AppState>,
     Path(id): Path<String>,
-) -> Result<Json<Vec<GoalResponse>>, ApiError> {
+) -> Result<Json<Vec<TargetResponse>>, ApiError> {
     let direction = parse_direction_id(&id)?;
     let store = state.store.clone();
-    let goals = blocking(move || usecases::list_goals(store.as_ref(), direction)).await?;
-    Ok(Json(goals.iter().map(GoalResponse::from).collect()))
+    let targets = blocking(move || usecases::list_targets(store.as_ref(), direction)).await?;
+    Ok(Json(targets.iter().map(TargetResponse::from).collect()))
+}
+
+async fn set_direction_status(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(req): Json<SetStatusRequest>,
+) -> Result<Json<DirectionResponse>, ApiError> {
+    let direction_id = parse_direction_id(&id)?;
+    let status = parse_lifecycle_status(&req.status)?;
+    let store = state.store.clone();
+    let direction =
+        blocking(move || usecases::set_direction_status(store.as_ref(), direction_id, status))
+            .await?;
+    Ok(Json(DirectionResponse::from(&direction)))
+}
+
+async fn delete_direction(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let direction_id = parse_direction_id(&id)?;
+    let store = state.store.clone();
+    blocking(move || usecases::delete_direction(store.as_ref(), store.as_ref(), direction_id))
+        .await?;
+    Ok(Json(json!({ "deleted": true })))
+}
+
+async fn set_target_status(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(req): Json<SetStatusRequest>,
+) -> Result<Json<TargetResponse>, ApiError> {
+    let target_id = parse_target_id(&id)?;
+    let status = parse_lifecycle_status(&req.status)?;
+    let store = state.store.clone();
+    let target =
+        blocking(move || usecases::set_target_status(store.as_ref(), target_id, status)).await?;
+    Ok(Json(TargetResponse::from(&target)))
+}
+
+async fn delete_target(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let target_id = parse_target_id(&id)?;
+    let store = state.store.clone();
+    blocking(move || usecases::delete_target(store.as_ref(), store.as_ref(), target_id)).await?;
+    Ok(Json(json!({ "deleted": true })))
 }
 
 #[derive(Deserialize)]
@@ -186,7 +433,7 @@ struct CreateAssumptionRequest {
 #[derive(Serialize)]
 struct AssumptionResponse {
     id: String,
-    goal_id: String,
+    target_id: String,
     statement: String,
 }
 
@@ -194,7 +441,7 @@ impl From<&Assumption> for AssumptionResponse {
     fn from(a: &Assumption) -> Self {
         Self {
             id: a.id().value().to_string(),
-            goal_id: a.goal().value().to_string(),
+            target_id: a.target().value().to_string(),
             statement: a.statement().to_owned(),
         }
     }
@@ -205,7 +452,7 @@ async fn create_assumption(
     Path(id): Path<String>,
     Json(req): Json<CreateAssumptionRequest>,
 ) -> Result<Json<AssumptionResponse>, ApiError> {
-    let goal = parse_goal_id(&id)?;
+    let target = parse_target_id(&id)?;
     let store = state.store.clone();
     let ids = state.ids.clone();
     let assumption = blocking(move || {
@@ -213,7 +460,7 @@ async fn create_assumption(
             store.as_ref(),
             store.as_ref(),
             ids.as_ref(),
-            goal,
+            target,
             &req.statement,
         )
     })
@@ -225,9 +472,9 @@ async fn list_assumptions(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<Json<Vec<AssumptionResponse>>, ApiError> {
-    let goal = parse_goal_id(&id)?;
+    let target = parse_target_id(&id)?;
     let store = state.store.clone();
-    let assumptions = blocking(move || usecases::list_assumptions(store.as_ref(), goal)).await?;
+    let assumptions = blocking(move || usecases::list_assumptions(store.as_ref(), target)).await?;
     Ok(Json(
         assumptions.iter().map(AssumptionResponse::from).collect(),
     ))
@@ -244,6 +491,8 @@ struct ExperimentResponse {
     assumption_id: String,
     hypothesis: String,
     status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    review_by_ms: Option<i64>,
 }
 
 impl From<&Experiment> for ExperimentResponse {
@@ -253,6 +502,7 @@ impl From<&Experiment> for ExperimentResponse {
             assumption_id: e.assumption().value().to_string(),
             hypothesis: e.hypothesis().to_owned(),
             status: e.status().name().to_owned(),
+            review_by_ms: e.review_by().map(|t| t.unix_millis()),
         }
     }
 }
@@ -311,6 +561,43 @@ async fn conclude_experiment(
     let experiment =
         blocking(move || usecases::conclude_experiment(store.as_ref(), experiment_id)).await?;
     Ok(Json(ExperimentResponse::from(&experiment)))
+}
+
+#[derive(Deserialize)]
+struct ScheduleReviewRequest {
+    in_days: u32,
+}
+
+async fn schedule_review(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(req): Json<ScheduleReviewRequest>,
+) -> Result<Json<ExperimentResponse>, ApiError> {
+    let experiment_id = parse_experiment_id(&id)?;
+    let store = state.store.clone();
+    let clock = state.clock.clone();
+    let experiment = blocking(move || {
+        usecases::schedule_experiment_review(
+            store.as_ref(),
+            clock.as_ref(),
+            experiment_id,
+            req.in_days,
+        )
+    })
+    .await?;
+    Ok(Json(ExperimentResponse::from(&experiment)))
+}
+
+async fn due_reviews(
+    State(state): State<AppState>,
+) -> Result<Json<Vec<ExperimentResponse>>, ApiError> {
+    let store = state.store.clone();
+    let clock = state.clock.clone();
+    let experiments =
+        blocking(move || usecases::list_due_reviews(store.as_ref(), clock.as_ref())).await?;
+    Ok(Json(
+        experiments.iter().map(ExperimentResponse::from).collect(),
+    ))
 }
 
 #[derive(Deserialize)]
@@ -382,7 +669,7 @@ struct CreateReflectionRequest {
 #[derive(Serialize)]
 struct ReflectionResponse {
     id: String,
-    goal_id: String,
+    target_id: String,
     summary: String,
     evidence: Vec<String>,
 }
@@ -391,7 +678,7 @@ impl From<&Reflection> for ReflectionResponse {
     fn from(r: &Reflection) -> Self {
         Self {
             id: r.id().value().to_string(),
-            goal_id: r.goal().value().to_string(),
+            target_id: r.target().value().to_string(),
             summary: r.summary().to_owned(),
             evidence: r.evidence().iter().map(|o| o.value().to_string()).collect(),
         }
@@ -403,7 +690,7 @@ async fn create_reflection(
     Path(id): Path<String>,
     Json(req): Json<CreateReflectionRequest>,
 ) -> Result<Json<ReflectionResponse>, ApiError> {
-    let goal = parse_goal_id(&id)?;
+    let target = parse_target_id(&id)?;
     let evidence = parse_evidence(&req.evidence)?;
     let store = state.store.clone();
     let ids = state.ids.clone();
@@ -412,7 +699,7 @@ async fn create_reflection(
             store.as_ref(),
             store.as_ref(),
             ids.as_ref(),
-            goal,
+            target,
             &req.summary,
             evidence,
         )
@@ -425,9 +712,9 @@ async fn list_reflections(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<Json<Vec<ReflectionResponse>>, ApiError> {
-    let goal = parse_goal_id(&id)?;
+    let target = parse_target_id(&id)?;
     let store = state.store.clone();
-    let reflections = blocking(move || usecases::list_reflections(store.as_ref(), goal)).await?;
+    let reflections = blocking(move || usecases::list_reflections(store.as_ref(), target)).await?;
     Ok(Json(
         reflections.iter().map(ReflectionResponse::from).collect(),
     ))
@@ -613,24 +900,316 @@ async fn audit(
     Ok(Json(records.iter().map(AuditResponse::from).collect()))
 }
 
+#[derive(Serialize)]
+struct ActivityResponse {
+    at_ms: i64,
+    kind: String,
+    summary: String,
+}
+
+impl From<&ActivityItem> for ActivityResponse {
+    fn from(item: &ActivityItem) -> Self {
+        Self {
+            at_ms: item.at().unix_millis(),
+            kind: item.kind().name().to_owned(),
+            summary: item.summary().to_owned(),
+        }
+    }
+}
+
+/// The activity feed: a merged, newest-first timeline of what has happened.
+async fn activity(
+    State(state): State<AppState>,
+    Query(query): Query<AuditQuery>,
+) -> Result<Json<Vec<ActivityResponse>>, ApiError> {
+    let limit = query.limit.unwrap_or(50);
+    let store = state.store.clone();
+    let items =
+        blocking(move || usecases::recent_activity(store.as_ref(), store.as_ref(), limit)).await?;
+    Ok(Json(items.iter().map(ActivityResponse::from).collect()))
+}
+
+/// A server-sent event stream that emits a `changed` event whenever a write
+/// succeeds. Clients re-read `/v1/activity` (and other state) on each event —
+/// the stream carries a nudge, never the data itself.
+async fn activity_stream(
+    State(state): State<AppState>,
+) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
+    let rx = state.changes.subscribe();
+    let stream = unfold(rx, |mut rx| async move {
+        // A closed channel ends the stream; a lag still means "something
+        // changed", so both a value and a lag emit one `changed` event.
+        match rx.recv().await {
+            Ok(()) | Err(broadcast::error::RecvError::Lagged(_)) => {
+                Some((Ok(Event::default().event("changed").data("changed")), rx))
+            }
+            Err(broadcast::error::RecvError::Closed) => None,
+        }
+    });
+    Sse::new(stream).keep_alive(KeepAlive::default())
+}
+
+#[derive(Serialize)]
+struct MessageResponse {
+    id: String,
+    role: String,
+    text: String,
+    at_ms: i64,
+}
+
+impl From<&ChatMessage> for MessageResponse {
+    fn from(m: &ChatMessage) -> Self {
+        Self {
+            id: m.id().value().to_string(),
+            role: m.role().name().to_owned(),
+            text: m.text().to_owned(),
+            at_ms: m.at().unix_millis(),
+        }
+    }
+}
+
+/// Serializes a proposal as `{kind, label, …params}` so the console can render it
+/// and, on confirm, call the matching create endpoint.
+fn proposal_json(p: &ButlerProposal) -> serde_json::Value {
+    let mut base = json!({ "kind": p.kind(), "label": p.label() });
+    let obj = base.as_object_mut().expect("json object");
+    match p {
+        ButlerProposal::CreateValue { name } => {
+            obj.insert("name".to_owned(), json!(name));
+        }
+        ButlerProposal::CreateNorthStar { title } => {
+            obj.insert("title".to_owned(), json!(title));
+        }
+        ButlerProposal::CreateTarget {
+            direction,
+            statement,
+        } => {
+            obj.insert(
+                "direction_id".to_owned(),
+                json!(direction.value().to_string()),
+            );
+            obj.insert("statement".to_owned(), json!(statement));
+        }
+        ButlerProposal::RememberPreference { text, kind } => {
+            obj.insert("text".to_owned(), json!(text));
+            obj.insert("preference_kind".to_owned(), json!(kind.name()));
+        }
+    }
+    base
+}
+
+#[derive(Deserialize)]
+struct ChatRequest {
+    message: String,
+}
+
+/// Sends a message to the butler; returns its reply and any proposed actions.
+async fn send_chat(
+    State(state): State<AppState>,
+    Json(req): Json<ChatRequest>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let store = state.store.clone();
+    let ids = state.ids.clone();
+    let clock = state.clock.clone();
+    let butler = state.butler.clone();
+    let (reply, proposals) = blocking(move || {
+        // Ground the butler in the person's current life before it answers.
+        let context = usecases::butler_context(
+            store.as_ref(),
+            store.as_ref(),
+            store.as_ref(),
+            store.as_ref(),
+            store.as_ref(),
+            clock.as_ref(),
+        )?;
+        usecases::send_to_butler(
+            store.as_ref(),
+            store.as_ref(),
+            butler.as_ref(),
+            ids.as_ref(),
+            clock.as_ref(),
+            &context,
+            &req.message,
+        )
+    })
+    .await?;
+    Ok(Json(json!({
+        "reply": MessageResponse::from(&reply),
+        "proposals": proposals.iter().map(proposal_json).collect::<Vec<_>>(),
+    })))
+}
+
+/// The whole conversation with the butler, oldest first.
+async fn chat_history(
+    State(state): State<AppState>,
+) -> Result<Json<Vec<MessageResponse>>, ApiError> {
+    let store = state.store.clone();
+    let messages = blocking(move || usecases::chat_history(store.as_ref())).await?;
+    Ok(Json(messages.iter().map(MessageResponse::from).collect()))
+}
+
+#[derive(Serialize)]
+struct PreferenceResponse {
+    id: String,
+    text: String,
+    kind: String,
+    at_ms: i64,
+}
+
+impl From<&Preference> for PreferenceResponse {
+    fn from(p: &Preference) -> Self {
+        Self {
+            id: p.id().value().to_string(),
+            text: p.text().to_owned(),
+            kind: p.kind().name().to_owned(),
+            at_ms: p.at().unix_millis(),
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct CreatePreferenceRequest {
+    text: String,
+    #[serde(default)]
+    kind: Option<String>,
+}
+
+async fn create_preference(
+    State(state): State<AppState>,
+    Json(req): Json<CreatePreferenceRequest>,
+) -> Result<Json<PreferenceResponse>, ApiError> {
+    let kind = match req.kind.as_deref() {
+        Some(k) => PreferenceKind::from_name(k).ok_or_else(|| {
+            ApiError(AppError::BadRequest {
+                message: format!("unknown preference kind {k:?}; expected taste or authority"),
+            })
+        })?,
+        None => PreferenceKind::Taste,
+    };
+    let store = state.store.clone();
+    let ids = state.ids.clone();
+    let clock = state.clock.clone();
+    let preference = blocking(move || {
+        usecases::create_preference(
+            store.as_ref(),
+            ids.as_ref(),
+            clock.as_ref(),
+            &req.text,
+            kind,
+        )
+    })
+    .await?;
+    Ok(Json(PreferenceResponse::from(&preference)))
+}
+
+async fn list_preferences(
+    State(state): State<AppState>,
+) -> Result<Json<Vec<PreferenceResponse>>, ApiError> {
+    let store = state.store.clone();
+    let prefs = blocking(move || usecases::list_preferences(store.as_ref())).await?;
+    Ok(Json(prefs.iter().map(PreferenceResponse::from).collect()))
+}
+
+async fn delete_preference(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let pref_id = id.parse::<u128>().map(PreferenceId::new).map_err(|_| {
+        ApiError(AppError::NotFound {
+            entity: "preference",
+        })
+    })?;
+    let store = state.store.clone();
+    blocking(move || usecases::delete_preference(store.as_ref(), pref_id)).await?;
+    Ok(Json(json!({ "deleted": true })))
+}
+
+#[derive(Serialize)]
+struct AttentionResponse {
+    kind: String,
+    subject: String,
+    headline: String,
+}
+
+impl From<&AttentionItem> for AttentionResponse {
+    fn from(i: &AttentionItem) -> Self {
+        Self {
+            kind: i.kind.name().to_owned(),
+            subject: i.subject.clone(),
+            headline: i.headline.clone(),
+        }
+    }
+}
+
+/// What currently needs the person's attention (snoozed items suppressed).
+async fn attention(
+    State(state): State<AppState>,
+) -> Result<Json<Vec<AttentionResponse>>, ApiError> {
+    let store = state.store.clone();
+    let clock = state.clock.clone();
+    let items = blocking(move || {
+        usecases::attention(
+            store.as_ref(),
+            store.as_ref(),
+            store.as_ref(),
+            store.as_ref(),
+            clock.as_ref(),
+        )
+    })
+    .await?;
+    Ok(Json(items.iter().map(AttentionResponse::from).collect()))
+}
+
+#[derive(Deserialize)]
+struct SnoozeRequest {
+    kind: String,
+    subject: String,
+}
+
+/// Snoozes an attention item ("not now"), with exponential backoff.
+async fn snooze_attention(
+    State(state): State<AppState>,
+    Json(req): Json<SnoozeRequest>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let kind = AttentionKind::from_name(&req.kind).ok_or_else(|| {
+        ApiError(AppError::BadRequest {
+            message: format!("unknown attention kind {:?}", req.kind),
+        })
+    })?;
+    let store = state.store.clone();
+    let clock = state.clock.clone();
+    let snooze = blocking(move || {
+        usecases::snooze_attention(store.as_ref(), clock.as_ref(), kind, &req.subject)
+    })
+    .await?;
+    Ok(Json(json!({
+        "count": snooze.count,
+        "snoozed_until_ms": snooze.until.unix_millis(),
+    })))
+}
+
 /// The full export of the user's data — the "exportable" memory right.
 #[derive(Serialize)]
 struct ExportResponse {
+    values: Vec<ValueResponse>,
     directions: Vec<DirectionResponse>,
-    goals: Vec<GoalResponse>,
+    targets: Vec<TargetResponse>,
     assumptions: Vec<AssumptionResponse>,
     experiments: Vec<ExperimentResponse>,
     observations: Vec<ObservationResponse>,
     reflections: Vec<ReflectionResponse>,
     process_changes: Vec<ProcessChangeResponse>,
     audit: Vec<AuditResponse>,
+    messages: Vec<MessageResponse>,
+    preferences: Vec<PreferenceResponse>,
 }
 
 impl From<&MemorySnapshot> for ExportResponse {
     fn from(s: &MemorySnapshot) -> Self {
         Self {
+            values: s.values.iter().map(ValueResponse::from).collect(),
             directions: s.directions.iter().map(DirectionResponse::from).collect(),
-            goals: s.goals.iter().map(GoalResponse::from).collect(),
+            targets: s.targets.iter().map(TargetResponse::from).collect(),
             assumptions: s.assumptions.iter().map(AssumptionResponse::from).collect(),
             experiments: s.experiments.iter().map(ExperimentResponse::from).collect(),
             observations: s
@@ -645,6 +1224,8 @@ impl From<&MemorySnapshot> for ExportResponse {
                 .map(ProcessChangeResponse::from)
                 .collect(),
             audit: s.audit.iter().map(AuditResponse::from).collect(),
+            messages: s.messages.iter().map(MessageResponse::from).collect(),
+            preferences: s.preferences.iter().map(PreferenceResponse::from).collect(),
         }
     }
 }
@@ -717,11 +1298,18 @@ fn parse_direction_id(id: &str) -> Result<DirectionId, ApiError> {
     })
 }
 
-/// Parses a path id into a [`GoalId`]; a malformed id can name no goal.
-fn parse_goal_id(id: &str) -> Result<GoalId, ApiError> {
+/// Parses a path/body id into a [`ValueId`]; a malformed id names no value.
+fn parse_value_id(id: &str) -> Result<ValueId, ApiError> {
     id.parse::<u128>()
-        .map(GoalId::new)
-        .map_err(|_| ApiError(AppError::NotFound { entity: "goal" }))
+        .map(ValueId::new)
+        .map_err(|_| ApiError(AppError::NotFound { entity: "value" }))
+}
+
+/// Parses a path id into a [`TargetId`]; a malformed id can name no target.
+fn parse_target_id(id: &str) -> Result<TargetId, ApiError> {
+    id.parse::<u128>()
+        .map(TargetId::new)
+        .map_err(|_| ApiError(AppError::NotFound { entity: "target" }))
 }
 
 /// Parses a path id into an [`AssumptionId`]; a malformed id names no assumption.
@@ -803,12 +1391,13 @@ mod tests {
     }
 
     fn test_state() -> AppState {
-        AppState {
-            store: Arc::new(SqliteStore::open_in_memory().unwrap()),
-            ids: Arc::new(RandomIdSource),
-            clock: Arc::new(SystemClock),
-            proposer: Arc::new(StubProposer),
-        }
+        AppState::new(
+            Arc::new(SqliteStore::open_in_memory().unwrap()),
+            Arc::new(RandomIdSource),
+            Arc::new(SystemClock),
+            Arc::new(StubProposer),
+            Arc::new(endora_infrastructure::ScriptedButler),
+        )
     }
 
     async fn json_body(res: axum::response::Response) -> serde_json::Value {
@@ -825,8 +1414,62 @@ mod tests {
             .unwrap()
     }
 
+    fn get(uri: &str) -> Request<Body> {
+        Request::builder().uri(uri).body(Body::empty()).unwrap()
+    }
+
+    fn del(uri: &str) -> Request<Body> {
+        Request::builder()
+            .method("DELETE")
+            .uri(uri)
+            .body(Body::empty())
+            .unwrap()
+    }
+
     #[tokio::test]
-    async fn create_direction_then_goal_then_list() {
+    async fn root_serves_the_web_console() {
+        let res = app(test_state())
+            .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let ct = res
+            .headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        assert!(ct.starts_with("text/html"), "content-type was {ct}");
+        let body = res.into_body().collect().await.unwrap().to_bytes();
+        assert!(String::from_utf8_lossy(&body).contains("<title>Endora</title>"));
+    }
+
+    #[tokio::test]
+    async fn directions_can_be_listed() {
+        let app = app(test_state());
+        app.clone()
+            .oneshot(post("/v1/directions", r#"{"title":"Be healthier"}"#))
+            .await
+            .unwrap();
+        app.clone()
+            .oneshot(post("/v1/directions", r#"{"title":"Learn guitar"}"#))
+            .await
+            .unwrap();
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/directions")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        assert_eq!(json_body(res).await.as_array().unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn create_direction_then_target_then_list() {
         let app = app(test_state());
 
         let res = app
@@ -838,10 +1481,10 @@ mod tests {
         let created = json_body(res).await;
         let dir_id = created["id"].as_str().unwrap().to_owned();
 
-        let goals_uri = format!("/v1/directions/{dir_id}/goals");
+        let targets_uri = format!("/v1/directions/{dir_id}/targets");
         let res = app
             .clone()
-            .oneshot(post(&goals_uri, r#"{"statement":"Run a 5k"}"#))
+            .oneshot(post(&targets_uri, r#"{"statement":"Run a 5k"}"#))
             .await
             .unwrap();
         assert_eq!(res.status(), StatusCode::OK);
@@ -850,7 +1493,7 @@ mod tests {
             .clone()
             .oneshot(
                 Request::builder()
-                    .uri(&goals_uri)
+                    .uri(&targets_uri)
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -860,10 +1503,250 @@ mod tests {
         let listed = json_body(res).await;
         assert_eq!(listed.as_array().unwrap().len(), 1);
         assert_eq!(listed[0]["statement"], "Run a 5k");
+        assert_eq!(listed[0]["status"], "active");
     }
 
     #[tokio::test]
-    async fn assumption_under_a_goal_round_trips() {
+    async fn target_status_transitions_then_deletes() {
+        let app = app(test_state());
+        let did = json_body(
+            app.clone()
+                .oneshot(post("/v1/directions", r#"{"title":"Be healthier"}"#))
+                .await
+                .unwrap(),
+        )
+        .await["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let tid = json_body(
+            app.clone()
+                .oneshot(post(
+                    &format!("/v1/directions/{did}/targets"),
+                    r#"{"statement":"Run a 5k"}"#,
+                ))
+                .await
+                .unwrap(),
+        )
+        .await["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+
+        // Achieve it.
+        let res = app
+            .clone()
+            .oneshot(post(
+                &format!("/v1/targets/{tid}"),
+                r#"{"status":"achieved"}"#,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        assert_eq!(json_body(res).await["status"], "achieved");
+
+        // An unknown status is a 400.
+        let res = app
+            .clone()
+            .oneshot(post(&format!("/v1/targets/{tid}"), r#"{"status":"nope"}"#))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+
+        // Delete it (no assumptions) and confirm it's gone.
+        let res = app
+            .clone()
+            .oneshot(del(&format!("/v1/targets/{tid}")))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let listed = json_body(
+            app.clone()
+                .oneshot(get(&format!("/v1/directions/{did}/targets")))
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert!(listed.as_array().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn deleting_a_target_with_assumptions_is_refused() {
+        let app = app(test_state());
+        let (tid, _oid) = seed_chain(&app).await; // target with an assumption under it
+        let res = app
+            .clone()
+            .oneshot(del(&format!("/v1/targets/{tid}")))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn attention_lists_north_star_items_and_snooze_hides_one() {
+        let app = app(test_state());
+        let did = json_body(
+            app.clone()
+                .oneshot(post(
+                    "/v1/directions",
+                    r#"{"title":"Get back into running"}"#,
+                ))
+                .await
+                .unwrap(),
+        )
+        .await["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+
+        // Unfiled + empty North Star → two attention items.
+        let items = json_body(app.clone().oneshot(get("/v1/attention")).await.unwrap()).await;
+        let kinds: Vec<String> = items
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|i| i["kind"].as_str().unwrap().to_owned())
+            .collect();
+        assert!(kinds.contains(&"unfiled_north_star".to_owned()));
+        assert!(kinds.contains(&"empty_north_star".to_owned()));
+
+        // Snooze the unfiled item; it disappears, the other remains.
+        let body = format!(r#"{{"kind":"unfiled_north_star","subject":"{did}"}}"#);
+        let res = app
+            .clone()
+            .oneshot(post("/v1/attention/snooze", &body))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let after = json_body(app.clone().oneshot(get("/v1/attention")).await.unwrap()).await;
+        let kinds2: Vec<String> = after
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|i| i["kind"].as_str().unwrap().to_owned())
+            .collect();
+        assert!(!kinds2.contains(&"unfiled_north_star".to_owned()));
+        assert!(kinds2.contains(&"empty_north_star".to_owned()));
+    }
+
+    #[tokio::test]
+    async fn preferences_round_trip_and_are_deletable() {
+        let app = app(test_state());
+        let res = app
+            .clone()
+            .oneshot(post("/v1/preferences", r#"{"text":"I prefer mornings"}"#))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let created = json_body(res).await;
+        assert_eq!(created["text"], "I prefer mornings");
+        assert_eq!(created["kind"], "taste");
+        let pid = created["id"].as_str().unwrap().to_owned();
+
+        let listed = json_body(app.clone().oneshot(get("/v1/preferences")).await.unwrap()).await;
+        assert_eq!(listed.as_array().unwrap().len(), 1);
+
+        let res = app
+            .clone()
+            .oneshot(del(&format!("/v1/preferences/{pid}")))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let after = json_body(app.clone().oneshot(get("/v1/preferences")).await.unwrap()).await;
+        assert!(after.as_array().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn chat_records_the_exchange_and_returns_proposals() {
+        let app = app(test_state());
+        let res = app
+            .clone()
+            .oneshot(post(
+                "/v1/chat",
+                r#"{"message":"I want to get back into running"}"#,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = json_body(res).await;
+        assert_eq!(body["reply"]["role"], "butler");
+        assert_eq!(body["proposals"][0]["kind"], "create_north_star");
+        assert_eq!(body["proposals"][0]["title"], "get back into running");
+
+        // The history holds both turns.
+        let hist = json_body(app.clone().oneshot(get("/v1/chat")).await.unwrap()).await;
+        assert_eq!(hist.as_array().unwrap().len(), 2);
+        assert_eq!(hist[0]["role"], "user");
+        assert_eq!(hist[1]["role"], "butler");
+    }
+
+    #[tokio::test]
+    async fn value_files_a_north_star_and_delete_is_guarded() {
+        let app = app(test_state());
+        let vid = json_body(
+            app.clone()
+                .oneshot(post("/v1/values", r#"{"name":"Health"}"#))
+                .await
+                .unwrap(),
+        )
+        .await["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let did = json_body(
+            app.clone()
+                .oneshot(post(
+                    "/v1/directions",
+                    r#"{"title":"Get back into running"}"#,
+                ))
+                .await
+                .unwrap(),
+        )
+        .await["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+
+        // File the North Star under the value.
+        let res = app
+            .clone()
+            .oneshot(post(
+                &format!("/v1/directions/{did}/value"),
+                &format!(r#"{{"value_id":"{vid}"}}"#),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        assert_eq!(json_body(res).await["value_id"], vid);
+
+        // Deleting a value in use is refused.
+        let res = app
+            .clone()
+            .oneshot(del(&format!("/v1/values/{vid}")))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+
+        // Unfile, then delete succeeds.
+        app.clone()
+            .oneshot(post(
+                &format!("/v1/directions/{did}/value"),
+                r#"{"value_id":null}"#,
+            ))
+            .await
+            .unwrap();
+        let res = app
+            .clone()
+            .oneshot(del(&format!("/v1/values/{vid}")))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let listed = json_body(app.clone().oneshot(get("/v1/values")).await.unwrap()).await;
+        assert!(listed.as_array().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn assumption_under_a_target_round_trips() {
         let app = app(test_state());
 
         let res = app
@@ -876,14 +1759,14 @@ mod tests {
         let res = app
             .clone()
             .oneshot(post(
-                &format!("/v1/directions/{dir_id}/goals"),
+                &format!("/v1/directions/{dir_id}/targets"),
                 r#"{"statement":"Run a 5k"}"#,
             ))
             .await
             .unwrap();
-        let goal_id = json_body(res).await["id"].as_str().unwrap().to_owned();
+        let target_id = json_body(res).await["id"].as_str().unwrap().to_owned();
 
-        let assumptions_uri = format!("/v1/goals/{goal_id}/assumptions");
+        let assumptions_uri = format!("/v1/targets/{target_id}/assumptions");
         let res = app
             .clone()
             .oneshot(post(
@@ -914,7 +1797,7 @@ mod tests {
     async fn experiment_lifecycle_over_http() {
         let app = app(test_state());
 
-        // direction -> goal -> assumption
+        // direction -> target -> assumption
         let res = app
             .clone()
             .oneshot(post("/v1/directions", r#"{"title":"Be healthier"}"#))
@@ -924,7 +1807,7 @@ mod tests {
         let res = app
             .clone()
             .oneshot(post(
-                &format!("/v1/directions/{did}/goals"),
+                &format!("/v1/directions/{did}/targets"),
                 r#"{"statement":"Run a 5k"}"#,
             ))
             .await
@@ -933,7 +1816,7 @@ mod tests {
         let res = app
             .clone()
             .oneshot(post(
-                &format!("/v1/goals/{gid}/assumptions"),
+                &format!("/v1/targets/{gid}/assumptions"),
                 r#"{"statement":"Mornings are freest"}"#,
             ))
             .await
@@ -996,7 +1879,7 @@ mod tests {
         let gid = json_body(
             app.clone()
                 .oneshot(post(
-                    &format!("/v1/directions/{did}/goals"),
+                    &format!("/v1/directions/{did}/targets"),
                     r#"{"statement":"Run a 5k"}"#,
                 ))
                 .await
@@ -1009,7 +1892,7 @@ mod tests {
         let aid = json_body(
             app.clone()
                 .oneshot(post(
-                    &format!("/v1/goals/{gid}/assumptions"),
+                    &format!("/v1/targets/{gid}/assumptions"),
                     r#"{"statement":"Mornings"}"#,
                 ))
                 .await
@@ -1066,7 +1949,7 @@ mod tests {
         assert_eq!(res.status(), StatusCode::NOT_FOUND);
     }
 
-    /// Drives the full chain and returns (goal_id, observation_id).
+    /// Drives the full chain and returns (target_id, observation_id).
     async fn seed_chain(app: &axum::Router) -> (String, String) {
         async fn create(app: &axum::Router, uri: &str, body: &str) -> String {
             let res = app.clone().oneshot(post(uri, body)).await.unwrap();
@@ -1075,13 +1958,13 @@ mod tests {
         let did = create(app, "/v1/directions", r#"{"title":"D"}"#).await;
         let gid = create(
             app,
-            &format!("/v1/directions/{did}/goals"),
+            &format!("/v1/directions/{did}/targets"),
             r#"{"statement":"G"}"#,
         )
         .await;
         let aid = create(
             app,
-            &format!("/v1/goals/{gid}/assumptions"),
+            &format!("/v1/targets/{gid}/assumptions"),
             r#"{"statement":"A"}"#,
         )
         .await;
@@ -1108,7 +1991,7 @@ mod tests {
         let body = format!(r#"{{"summary":"mornings worked","evidence":["{oid}"]}}"#);
         let res = app
             .clone()
-            .oneshot(post(&format!("/v1/goals/{gid}/reflections"), &body))
+            .oneshot(post(&format!("/v1/targets/{gid}/reflections"), &body))
             .await
             .unwrap();
         assert_eq!(res.status(), StatusCode::OK);
@@ -1120,7 +2003,7 @@ mod tests {
             .clone()
             .oneshot(
                 Request::builder()
-                    .uri(format!("/v1/goals/{gid}/reflections"))
+                    .uri(format!("/v1/targets/{gid}/reflections"))
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -1130,13 +2013,81 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn activity_feed_lists_a_recorded_observation() {
+        let app = app(test_state());
+        seed_chain(&app).await; // records an observation with note "N"
+
+        let res = app.clone().oneshot(get("/v1/activity")).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let feed = json_body(res).await;
+        let items = feed.as_array().unwrap();
+        assert!(
+            items
+                .iter()
+                .any(|i| i["kind"] == "observation" && i["summary"] == "N"),
+            "activity feed should include the recorded observation, got {feed}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_write_notifies_change_subscribers_but_a_read_does_not() {
+        let state = test_state();
+        let mut rx = state.changes.subscribe();
+        let app = app(state);
+
+        // A read must not signal a change.
+        app.clone().oneshot(get("/v1/activity")).await.unwrap();
+        assert!(rx.try_recv().is_err());
+
+        // A successful write signals exactly one change.
+        let res = app
+            .clone()
+            .oneshot(post("/v1/directions", r#"{"title":"D"}"#))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        assert!(rx.try_recv().is_ok());
+    }
+
+    #[tokio::test]
+    async fn a_rejected_write_does_not_notify() {
+        let state = test_state();
+        let mut rx = state.changes.subscribe();
+        let app = app(state);
+
+        // A domain-invalid request (blank title) is a 400 and must not signal.
+        let res = app
+            .clone()
+            .oneshot(post("/v1/directions", r#"{"title":"  "}"#))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn activity_stream_opens_as_an_event_stream() {
+        let res = app(test_state())
+            .oneshot(get("/v1/activity/stream"))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let ct = res
+            .headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or_default();
+        assert!(ct.starts_with("text/event-stream"), "got content-type {ct}");
+    }
+
+    #[tokio::test]
     async fn process_change_propose_approve_over_http() {
         let app = app(test_state());
         let (gid, oid) = seed_chain(&app).await;
         let body = format!(r#"{{"summary":"worked","evidence":["{oid}"]}}"#);
         let rid = json_body(
             app.clone()
-                .oneshot(post(&format!("/v1/goals/{gid}/reflections"), &body))
+                .oneshot(post(&format!("/v1/targets/{gid}/reflections"), &body))
                 .await
                 .unwrap(),
         )
@@ -1183,7 +2134,7 @@ mod tests {
         let rid = json_body(
             app.clone()
                 .oneshot(post(
-                    &format!("/v1/goals/{gid}/reflections"),
+                    &format!("/v1/targets/{gid}/reflections"),
                     &format!(r#"{{"summary":"worked","evidence":["{oid}"]}}"#),
                 ))
                 .await
@@ -1267,7 +2218,7 @@ mod tests {
             .unwrap();
         assert_eq!(res.status(), StatusCode::OK);
         let export = json_body(res).await;
-        assert_eq!(export["goals"].as_array().unwrap().len(), 1);
+        assert_eq!(export["targets"].as_array().unwrap().len(), 1);
         assert_eq!(export["observations"].as_array().unwrap().len(), 1);
 
         // Purge without confirmation is refused.
@@ -1286,18 +2237,18 @@ mod tests {
             .unwrap();
         assert_eq!(res.status(), StatusCode::OK);
 
-        // The goal's data is gone.
+        // The target's data is gone.
         let res = app
             .clone()
             .oneshot(
                 Request::builder()
-                    .uri(format!("/v1/directions/{gid}/goals"))
+                    .uri(format!("/v1/directions/{gid}/targets"))
                     .body(Body::empty())
                     .unwrap(),
             )
             .await
             .unwrap();
-        // (gid no longer exists, but listing a goal's assumptions is by goal id)
+        // (gid no longer exists, but listing a target's assumptions is by target id)
         let res2 = app
             .clone()
             .oneshot(
@@ -1308,7 +2259,10 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(json_body(res2).await["goals"].as_array().unwrap().len(), 0);
+        assert_eq!(
+            json_body(res2).await["targets"].as_array().unwrap().len(),
+            0
+        );
         assert_eq!(res.status(), StatusCode::OK);
     }
 
@@ -1331,7 +2285,7 @@ mod tests {
         let rid = json_body(
             app.clone()
                 .oneshot(post(
-                    &format!("/v1/goals/{gid}/reflections"),
+                    &format!("/v1/targets/{gid}/reflections"),
                     &format!(r#"{{"summary":"worked","evidence":["{oid}"]}}"#),
                 ))
                 .await
@@ -1385,7 +2339,7 @@ mod tests {
         let res = app
             .clone()
             .oneshot(post(
-                &format!("/v1/goals/{gid}/reflections"),
+                &format!("/v1/targets/{gid}/reflections"),
                 r#"{"summary":"x","evidence":[]}"#,
             ))
             .await
@@ -1394,18 +2348,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn assumption_for_missing_goal_is_404() {
+    async fn assumption_for_missing_target_is_404() {
         let res = app(test_state())
-            .oneshot(post("/v1/goals/999/assumptions", r#"{"statement":"x"}"#))
+            .oneshot(post("/v1/targets/999/assumptions", r#"{"statement":"x"}"#))
             .await
             .unwrap();
         assert_eq!(res.status(), StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]
-    async fn goal_for_missing_direction_is_404() {
+    async fn target_for_missing_direction_is_404() {
         let res = app(test_state())
-            .oneshot(post("/v1/directions/999/goals", r#"{"statement":"x"}"#))
+            .oneshot(post("/v1/directions/999/targets", r#"{"statement":"x"}"#))
             .await
             .unwrap();
         assert_eq!(res.status(), StatusCode::NOT_FOUND);

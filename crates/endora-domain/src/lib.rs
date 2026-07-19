@@ -17,7 +17,7 @@
 //!
 //! - [`autonomy`] — how much authority a component has before a human is
 //!   involved ([`AutonomyLevel`]).
-//! - [`goals`] — the Direction & Goals context: [`Direction`], [`Goal`],
+//! - [`targets`] — the Direction & Targets context: [`Direction`], [`Target`],
 //!   [`Assumption`].
 //! - [`experiments`] — the Experiments & Learning context: [`Experiment`],
 //!   [`ExperimentStatus`], [`Observation`].
@@ -29,7 +29,7 @@
 //! - [`error`] — [`DomainError`].
 //!
 //! Together these model the first vertical slice — the learning loop for a
-//! single goal (see `docs/adr/0006-first-vertical-slice.md`). Identifiers and
+//! single target (see `docs/adr/0006-first-vertical-slice.md`). Identifiers and
 //! time are always supplied by outer layers, so the domain is fully
 //! deterministic and testable.
 
@@ -37,21 +37,27 @@
 
 pub mod audit;
 pub mod autonomy;
+pub mod conversation;
 pub mod error;
 pub mod experiments;
-pub mod goals;
 pub mod ids;
 pub mod policy;
+pub mod preferences;
 pub mod reflection;
+pub mod targets;
+pub mod values;
 
 pub use audit::AuditRecord;
 pub use autonomy::AutonomyLevel;
+pub use conversation::{ChatMessage, MessageRole};
 pub use error::DomainError;
 pub use experiments::{Experiment, ExperimentStatus, Observation};
-pub use goals::{Assumption, Direction, Goal};
 pub use ids::{
-    AssumptionId, AuditId, DirectionId, ExperimentId, GoalId, ObservationId, ProcessChangeId,
-    ReflectionId, Timestamp,
+    AssumptionId, AuditId, DirectionId, ExperimentId, MessageId, ObservationId, PreferenceId,
+    ProcessChangeId, ReflectionId, TargetId, Timestamp, ValueId,
 };
 pub use policy::{PolicyDecision, authorize_process_change};
+pub use preferences::{Preference, PreferenceKind};
 pub use reflection::{ApprovalState, ProposedProcessChange, Reflection};
+pub use targets::{Assumption, Direction, LifecycleStatus, Target};
+pub use values::Value;

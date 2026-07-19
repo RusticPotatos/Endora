@@ -43,13 +43,15 @@ impl ExperimentStatus {
     }
 }
 
-/// A small, bounded test of an [`Assumption`](crate::goals::Assumption).
+/// A small, bounded test of an [`Assumption`](crate::targets::Assumption).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Experiment {
     id: ExperimentId,
     assumption: AssumptionId,
     hypothesis: String,
     status: ExperimentStatus,
+    /// When the person asked to be reminded to review this experiment, if ever.
+    review_by: Option<Timestamp>,
 }
 
 impl Experiment {
@@ -68,6 +70,7 @@ impl Experiment {
             assumption,
             hypothesis,
             status: ExperimentStatus::Proposed,
+            review_by: None,
         })
     }
 
@@ -87,6 +90,7 @@ impl Experiment {
         assumption: AssumptionId,
         hypothesis: &str,
         status: ExperimentStatus,
+        review_by: Option<Timestamp>,
     ) -> Result<Self, DomainError> {
         let hypothesis = require_non_empty("experiment.hypothesis", hypothesis)?;
         Ok(Self {
@@ -94,6 +98,7 @@ impl Experiment {
             assumption,
             hypothesis,
             status,
+            review_by,
         })
     }
 
@@ -151,6 +156,28 @@ impl Experiment {
         }
         self.status = ExperimentStatus::Concluded;
         Ok(())
+    }
+
+    /// When a review of this experiment is due, if the person scheduled one.
+    #[must_use]
+    pub const fn review_by(&self) -> Option<Timestamp> {
+        self.review_by
+    }
+
+    /// Schedules (or reschedules) a reminder to review this experiment at `at`.
+    ///
+    /// This is a *reminder* only — it changes no lifecycle state and takes no
+    /// action; see `docs/adr/0010-autonomy-model.md`.
+    pub const fn schedule_review(&mut self, at: Timestamp) {
+        self.review_by = Some(at);
+    }
+
+    /// Whether a review is due as of `now`: a review was scheduled for a time at
+    /// or before `now`, and the experiment is not already concluded.
+    #[must_use]
+    pub fn is_review_due(&self, now: Timestamp) -> bool {
+        matches!(self.review_by, Some(at) if at <= now)
+            && self.status != ExperimentStatus::Concluded
     }
 }
 
@@ -300,9 +327,29 @@ mod tests {
             AssumptionId::new(1),
             "Morning runs stick",
             ExperimentStatus::Running,
+            None,
         )
         .unwrap();
         assert_eq!(e.status(), ExperimentStatus::Running);
+    }
+
+    #[test]
+    fn a_review_is_due_once_its_time_passes() {
+        let mut e = proposed();
+        assert!(!e.is_review_due(Timestamp::from_unix_millis(1_000)));
+        e.schedule_review(Timestamp::from_unix_millis(500));
+        assert!(!e.is_review_due(Timestamp::from_unix_millis(400))); // not yet
+        assert!(e.is_review_due(Timestamp::from_unix_millis(500))); // due
+        assert!(e.is_review_due(Timestamp::from_unix_millis(1_000))); // still due
+    }
+
+    #[test]
+    fn a_concluded_experiment_is_never_due_for_review() {
+        let mut e = proposed();
+        e.schedule_review(Timestamp::from_unix_millis(100));
+        e.start().unwrap();
+        e.conclude().unwrap();
+        assert!(!e.is_review_due(Timestamp::from_unix_millis(1_000)));
     }
 
     #[test]

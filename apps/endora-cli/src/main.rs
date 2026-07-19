@@ -21,6 +21,8 @@ enum Action {
     Get(String),
     /// A POST of a JSON body against the given path.
     Post(String, Value),
+    /// A DELETE against the given path.
+    Delete(String),
 }
 
 fn main() -> ExitCode {
@@ -54,22 +56,60 @@ fn main() -> ExitCode {
 fn route(args: &[&str]) -> Option<Action> {
     match args {
         ["health"] => Some(Action::Get("/health".to_owned())),
+        ["chat"] => Some(Action::Get("/v1/chat".to_owned())),
+        ["chat", message] => Some(Action::Post(
+            "/v1/chat".to_owned(),
+            json!({ "message": message }),
+        )),
+        ["preference", "list"] => Some(Action::Get("/v1/preferences".to_owned())),
+        ["preference", "add", text] => Some(Action::Post(
+            "/v1/preferences".to_owned(),
+            json!({ "text": text }),
+        )),
+        ["preference", "delete", id] => Some(Action::Delete(format!("/v1/preferences/{id}"))),
+        ["value", "create", name] => Some(Action::Post(
+            "/v1/values".to_owned(),
+            json!({ "name": name }),
+        )),
+        ["value", "list"] => Some(Action::Get("/v1/values".to_owned())),
+        ["value", "delete", id] => Some(Action::Delete(format!("/v1/values/{id}"))),
+        ["direction", "value", id, "none"] => Some(Action::Post(
+            format!("/v1/directions/{id}/value"),
+            json!({ "value_id": null }),
+        )),
+        ["direction", "value", id, value_id] => Some(Action::Post(
+            format!("/v1/directions/{id}/value"),
+            json!({ "value_id": value_id }),
+        )),
         ["direction", "create", title] => Some(Action::Post(
             "/v1/directions".to_owned(),
             json!({ "title": title }),
         )),
-        ["goal", "create", direction, statement] => Some(Action::Post(
-            format!("/v1/directions/{direction}/goals"),
+        ["direction", "list"] => Some(Action::Get("/v1/directions".to_owned())),
+        ["direction", "status", id, status] => Some(Action::Post(
+            format!("/v1/directions/{id}"),
+            json!({ "status": status }),
+        )),
+        ["direction", "delete", id] => Some(Action::Delete(format!("/v1/directions/{id}"))),
+        ["target", "create", direction, statement] => Some(Action::Post(
+            format!("/v1/directions/{direction}/targets"),
             json!({ "statement": statement }),
         )),
-        ["goal", "list", direction] => {
-            Some(Action::Get(format!("/v1/directions/{direction}/goals")))
+        ["target", "list", direction] => {
+            Some(Action::Get(format!("/v1/directions/{direction}/targets")))
         }
-        ["assumption", "create", goal, statement] => Some(Action::Post(
-            format!("/v1/goals/{goal}/assumptions"),
+        ["target", "status", id, status] => Some(Action::Post(
+            format!("/v1/targets/{id}"),
+            json!({ "status": status }),
+        )),
+        ["target", "delete", id] => Some(Action::Delete(format!("/v1/targets/{id}"))),
+        ["assumption", "create", target, statement] => Some(Action::Post(
+            format!("/v1/targets/{target}/assumptions"),
             json!({ "statement": statement }),
         )),
-        ["assumption", "list", goal] => Some(Action::Get(format!("/v1/goals/{goal}/assumptions"))),
+        ["assumption", "list", target] => {
+            Some(Action::Get(format!("/v1/targets/{target}/assumptions")))
+        }
         ["experiment", "propose", assumption, hypothesis] => Some(Action::Post(
             format!("/v1/assumptions/{assumption}/experiments"),
             json!({ "hypothesis": hypothesis }),
@@ -85,6 +125,11 @@ fn route(args: &[&str]) -> Option<Action> {
             format!("/v1/experiments/{id}/conclude"),
             json!({}),
         )),
+        ["experiment", "review", id, days] => Some(Action::Post(
+            format!("/v1/experiments/{id}/review"),
+            json!({ "in_days": days.parse::<u32>().ok()? }),
+        )),
+        ["reviews", "due"] => Some(Action::Get("/v1/reviews/due".to_owned())),
         ["observation", "record", experiment, note] => Some(Action::Post(
             format!("/v1/experiments/{experiment}/observations"),
             json!({ "note": note }),
@@ -92,14 +137,16 @@ fn route(args: &[&str]) -> Option<Action> {
         ["observation", "list", experiment] => Some(Action::Get(format!(
             "/v1/experiments/{experiment}/observations"
         ))),
-        ["reflection", "create", goal, summary, evidence] => {
+        ["reflection", "create", target, summary, evidence] => {
             let evidence: Vec<&str> = evidence.split(',').filter(|s| !s.is_empty()).collect();
             Some(Action::Post(
-                format!("/v1/goals/{goal}/reflections"),
+                format!("/v1/targets/{target}/reflections"),
                 json!({ "summary": summary, "evidence": evidence }),
             ))
         }
-        ["reflection", "list", goal] => Some(Action::Get(format!("/v1/goals/{goal}/reflections"))),
+        ["reflection", "list", target] => {
+            Some(Action::Get(format!("/v1/targets/{target}/reflections")))
+        }
         ["process-change", "propose", reflection, description] => Some(Action::Post(
             format!("/v1/reflections/{reflection}/process-changes"),
             json!({ "description": description }),
@@ -125,6 +172,8 @@ fn route(args: &[&str]) -> Option<Action> {
         )),
         ["audit"] => Some(Action::Get("/v1/audit".to_owned())),
         ["audit", limit] => Some(Action::Get(format!("/v1/audit?limit={limit}"))),
+        ["activity"] => Some(Action::Get("/v1/activity".to_owned())),
+        ["activity", limit] => Some(Action::Get(format!("/v1/activity?limit={limit}"))),
         ["export"] => Some(Action::Get("/v1/export".to_owned())),
         ["purge", "confirm"] => Some(Action::Post(
             "/v1/memory/purge".to_owned(),
@@ -141,6 +190,7 @@ fn execute(action: &Action) -> Result<ExitCode, client::ClientError> {
     let (status, body) = match action {
         Action::Get(path) => client.get(path)?,
         Action::Post(path, payload) => client.post(path, payload)?,
+        Action::Delete(path) => client.delete(path)?,
     };
     println!("{}", serde_json::to_string_pretty(&body)?);
     if (200..300).contains(&status) {
@@ -161,19 +211,35 @@ fn print_usage() {
         "\nUsage: endora <command>\n\n\
          Commands:\n  \
            health                                 check the node is up\n  \
+           chat \"<message>\"                       talk to the butler (proposes; you confirm)\n  \
+           chat                                   show the conversation so far\n  \
+           preference list                        what the butler has learned\n  \
+           preference add <text>                  remember a preference\n  \
+           preference delete <id>                 forget a preference\n  \
+           value create <name>                    create a value (a North Star's why)\n  \
+           value list                             list your values\n  \
+           value delete <id>                      delete a value (no North Stars may serve it)\n  \
            direction create <title>               create a direction\n  \
-           goal create <direction-id> <statement> add a goal to a direction\n  \
-           goal list <direction-id>               list a direction's goals\n  \
-           assumption create <goal-id> <text>     add an assumption to a goal\n  \
-           assumption list <goal-id>              list a goal's assumptions\n  \
+           direction list                         list your directions\n  \
+           direction value <id> <value-id|none>   file a North Star under a value (or clear)\n  \
+           direction status <id> <state>          set state (active|achieved|abandoned|archived)\n  \
+           direction delete <id>                  delete a direction (must have no targets)\n  \
+           target create <direction-id> <statement> add a target to a direction\n  \
+           target list <direction-id>               list a direction's targets\n  \
+           target status <id> <state>               set state (active|achieved|abandoned|archived)\n  \
+           target delete <id>                       delete a target (must have no assumptions)\n  \
+           assumption create <target-id> <text>     add an assumption to a target\n  \
+           assumption list <target-id>              list a target's assumptions\n  \
            experiment propose <assumption-id> <h> propose an experiment\n  \
            experiment list <assumption-id>        list an assumption's experiments\n  \
            experiment start <experiment-id>       start a proposed experiment\n  \
            experiment conclude <experiment-id>    conclude a running experiment\n  \
+           experiment review <experiment-id> <days>  remind me to review it in N days\n  \
+           reviews due                            list experiments due for review\n  \
            observation record <experiment-id> <n> record an observation\n  \
            observation list <experiment-id>       list an experiment's observations\n  \
-           reflection create <goal-id> <summary> <obs-ids>  reflect (obs-ids: comma-separated)\n  \
-           reflection list <goal-id>              list a goal's reflections\n  \
+           reflection create <target-id> <summary> <obs-ids>  reflect (obs-ids: comma-separated)\n  \
+           reflection list <target-id>              list a target's reflections\n  \
            process-change propose <reflection-id> <desc>  propose a process change\n  \
            process-change list <reflection-id>    list a reflection's proposed changes\n  \
            process-change draft <reflection-id>   let the model draft a change (pending)\n  \
@@ -181,6 +247,7 @@ fn print_usage() {
            process-change reject <id>             reject a proposed change\n  \
            process-change decide <id> <actor>     run policy on a change (audited)\n  \
            audit [limit]                          show recent audit records\n  \
+           activity [limit]                       show the recent activity feed\n  \
            export                                 export all your data as JSON\n  \
            purge confirm                          permanently delete all your data\n\n\
          Environment:\n  \
@@ -210,17 +277,111 @@ mod tests {
     }
 
     #[test]
-    fn routes_goal_create_and_list() {
+    fn routes_chat() {
         assert_eq!(
-            route(&["goal", "create", "42", "Run a 5k"]),
+            route(&["chat", "I want to run more"]),
             Some(Action::Post(
-                "/v1/directions/42/goals".to_owned(),
+                "/v1/chat".to_owned(),
+                json!({ "message": "I want to run more" })
+            ))
+        );
+        assert_eq!(route(&["chat"]), Some(Action::Get("/v1/chat".to_owned())));
+    }
+
+    #[test]
+    fn routes_preferences() {
+        assert_eq!(
+            route(&["preference", "add", "I prefer mornings"]),
+            Some(Action::Post(
+                "/v1/preferences".to_owned(),
+                json!({ "text": "I prefer mornings" })
+            ))
+        );
+        assert_eq!(
+            route(&["preference", "list"]),
+            Some(Action::Get("/v1/preferences".to_owned()))
+        );
+        assert_eq!(
+            route(&["preference", "delete", "9"]),
+            Some(Action::Delete("/v1/preferences/9".to_owned()))
+        );
+    }
+
+    #[test]
+    fn routes_values_and_filing() {
+        assert_eq!(
+            route(&["value", "create", "Health"]),
+            Some(Action::Post(
+                "/v1/values".to_owned(),
+                json!({ "name": "Health" })
+            ))
+        );
+        assert_eq!(
+            route(&["value", "delete", "5"]),
+            Some(Action::Delete("/v1/values/5".to_owned()))
+        );
+        assert_eq!(
+            route(&["direction", "value", "3", "5"]),
+            Some(Action::Post(
+                "/v1/directions/3/value".to_owned(),
+                json!({ "value_id": "5" })
+            ))
+        );
+        assert_eq!(
+            route(&["direction", "value", "3", "none"]),
+            Some(Action::Post(
+                "/v1/directions/3/value".to_owned(),
+                json!({ "value_id": null })
+            ))
+        );
+    }
+
+    #[test]
+    fn routes_direction_list() {
+        assert_eq!(
+            route(&["direction", "list"]),
+            Some(Action::Get("/v1/directions".to_owned()))
+        );
+    }
+
+    #[test]
+    fn routes_target_create_and_list() {
+        assert_eq!(
+            route(&["target", "create", "42", "Run a 5k"]),
+            Some(Action::Post(
+                "/v1/directions/42/targets".to_owned(),
                 json!({ "statement": "Run a 5k" })
             ))
         );
         assert_eq!(
-            route(&["goal", "list", "42"]),
-            Some(Action::Get("/v1/directions/42/goals".to_owned()))
+            route(&["target", "list", "42"]),
+            Some(Action::Get("/v1/directions/42/targets".to_owned()))
+        );
+    }
+
+    #[test]
+    fn routes_lifecycle_status_and_delete() {
+        assert_eq!(
+            route(&["target", "status", "7", "achieved"]),
+            Some(Action::Post(
+                "/v1/targets/7".to_owned(),
+                json!({ "status": "achieved" })
+            ))
+        );
+        assert_eq!(
+            route(&["target", "delete", "7"]),
+            Some(Action::Delete("/v1/targets/7".to_owned()))
+        );
+        assert_eq!(
+            route(&["direction", "status", "3", "archived"]),
+            Some(Action::Post(
+                "/v1/directions/3".to_owned(),
+                json!({ "status": "archived" })
+            ))
+        );
+        assert_eq!(
+            route(&["direction", "delete", "3"]),
+            Some(Action::Delete("/v1/directions/3".to_owned()))
         );
     }
 
@@ -229,13 +390,13 @@ mod tests {
         assert_eq!(
             route(&["assumption", "create", "7", "Mornings are freest"]),
             Some(Action::Post(
-                "/v1/goals/7/assumptions".to_owned(),
+                "/v1/targets/7/assumptions".to_owned(),
                 json!({ "statement": "Mornings are freest" })
             ))
         );
         assert_eq!(
             route(&["assumption", "list", "7"]),
-            Some(Action::Get("/v1/goals/7/assumptions".to_owned()))
+            Some(Action::Get("/v1/targets/7/assumptions".to_owned()))
         );
     }
 
@@ -265,6 +426,23 @@ mod tests {
     }
 
     #[test]
+    fn routes_review_commands() {
+        assert_eq!(
+            route(&["experiment", "review", "9", "7"]),
+            Some(Action::Post(
+                "/v1/experiments/9/review".to_owned(),
+                json!({ "in_days": 7 })
+            ))
+        );
+        // A non-numeric day count is not a valid review command.
+        assert_eq!(route(&["experiment", "review", "9", "soon"]), None);
+        assert_eq!(
+            route(&["reviews", "due"]),
+            Some(Action::Get("/v1/reviews/due".to_owned()))
+        );
+    }
+
+    #[test]
     fn routes_observation_commands() {
         assert_eq!(
             route(&["observation", "record", "9", "felt good"]),
@@ -284,13 +462,13 @@ mod tests {
         assert_eq!(
             route(&["reflection", "create", "3", "mornings worked", "10,11"]),
             Some(Action::Post(
-                "/v1/goals/3/reflections".to_owned(),
+                "/v1/targets/3/reflections".to_owned(),
                 json!({ "summary": "mornings worked", "evidence": ["10", "11"] })
             ))
         );
         assert_eq!(
             route(&["reflection", "list", "3"]),
-            Some(Action::Get("/v1/goals/3/reflections".to_owned()))
+            Some(Action::Get("/v1/targets/3/reflections".to_owned()))
         );
     }
 
@@ -340,6 +518,18 @@ mod tests {
     }
 
     #[test]
+    fn routes_activity() {
+        assert_eq!(
+            route(&["activity"]),
+            Some(Action::Get("/v1/activity".to_owned()))
+        );
+        assert_eq!(
+            route(&["activity", "20"]),
+            Some(Action::Get("/v1/activity?limit=20".to_owned()))
+        );
+    }
+
+    #[test]
     fn routes_export_and_purge() {
         assert_eq!(
             route(&["export"]),
@@ -359,6 +549,6 @@ mod tests {
     #[test]
     fn unknown_command_is_none() {
         assert_eq!(route(&["nope"]), None);
-        assert_eq!(route(&["goal", "create"]), None);
+        assert_eq!(route(&["target", "create"]), None);
     }
 }

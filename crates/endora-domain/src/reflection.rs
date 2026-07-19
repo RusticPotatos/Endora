@@ -6,13 +6,13 @@
 //! autonomy is final and process changes require human approval.
 
 use crate::error::{DomainError, require_non_empty};
-use crate::ids::{GoalId, ObservationId, ProcessChangeId, ReflectionId};
+use crate::ids::{ObservationId, ProcessChangeId, ReflectionId, TargetId};
 
-/// A retrospective over observed evidence for a goal.
+/// A retrospective over observed evidence for a target.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Reflection {
     id: ReflectionId,
-    goal: GoalId,
+    target: TargetId,
     summary: String,
     evidence: Vec<ObservationId>,
 }
@@ -28,7 +28,7 @@ impl Reflection {
     /// - [`DomainError::ReflectionWithoutEvidence`] if `evidence` is empty.
     pub fn new(
         id: ReflectionId,
-        goal: GoalId,
+        target: TargetId,
         summary: &str,
         evidence: Vec<ObservationId>,
     ) -> Result<Self, DomainError> {
@@ -38,7 +38,7 @@ impl Reflection {
         }
         Ok(Self {
             id,
-            goal,
+            target,
             summary,
             evidence,
         })
@@ -50,10 +50,10 @@ impl Reflection {
         self.id
     }
 
-    /// The goal this reflection is about.
+    /// The target this reflection is about.
     #[must_use]
-    pub const fn goal(&self) -> GoalId {
-        self.goal
+    pub const fn target(&self) -> TargetId {
+        self.target
     }
 
     /// The reflection summary.
@@ -220,12 +220,12 @@ impl ProposedProcessChange {
 mod tests {
     use super::{ApprovalState, ProposedProcessChange, Reflection};
     use crate::error::DomainError;
-    use crate::ids::{GoalId, ObservationId, ProcessChangeId, ReflectionId};
+    use crate::ids::{ObservationId, ProcessChangeId, ReflectionId, TargetId};
 
     #[test]
     fn reflection_requires_evidence() {
         assert_eq!(
-            Reflection::new(ReflectionId::new(1), GoalId::new(1), "went well", vec![]),
+            Reflection::new(ReflectionId::new(1), TargetId::new(1), "went well", vec![]),
             Err(DomainError::ReflectionWithoutEvidence)
         );
     }
@@ -235,7 +235,7 @@ mod tests {
         assert_eq!(
             Reflection::new(
                 ReflectionId::new(1),
-                GoalId::new(1),
+                TargetId::new(1),
                 "   ",
                 vec![ObservationId::new(1)]
             ),
@@ -249,7 +249,7 @@ mod tests {
     fn reflection_keeps_its_evidence() {
         let r = Reflection::new(
             ReflectionId::new(1),
-            GoalId::new(1),
+            TargetId::new(1),
             "mornings worked",
             vec![ObservationId::new(1), ObservationId::new(2)],
         )

@@ -15,11 +15,16 @@ Owns who the user is *to themselves*: their stated values and the principles
 they want to live by. The source of the user's own definition of a good life.
 Nothing here is inferred silently; values are user-owned and user-editable.
 
-## Direction & Goals
+A **`Value`** is the *why* a North Star serves (health, community, craft); North
+Stars are filed under a value (**Value → North Star → Target**), assigned by the
+person, never inferred (see
+[ADR 0015](adr/0015-identity-and-values-context.md)).
 
-Owns long-term **North Stars**, intermediate goals, and concrete targets, and
-the relationships between them. Turns values into direction the rest of the
-system can reference.
+## Direction & Targets
+
+Owns long-term **North Stars** (directions) and the concrete **targets** beneath
+them, and the relationships between them. Turns values into direction the rest of
+the system can reference.
 
 ## Experiments & Learning
 
@@ -72,7 +77,7 @@ surveillance.
 ## Relationships (high level)
 
 ```text
-Identity & Values ──▶ Direction & Goals ──▶ Experiments & Learning
+Identity & Values ──▶ Direction & Targets ──▶ Experiments & Learning
                                                      │
                                                      ▼
                                                 Reflection
