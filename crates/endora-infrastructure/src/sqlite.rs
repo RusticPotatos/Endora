@@ -8,8 +8,8 @@
 
 use std::sync::Mutex;
 
-use endora_application::{DirectionRepository, GoalRepository, RepositoryError};
-use endora_domain::{Direction, DirectionId, Goal, GoalId};
+use endora_application::{AuditLog, DirectionRepository, GoalRepository, RepositoryError};
+use endora_domain::{AuditId, AuditRecord, Direction, DirectionId, Goal, GoalId, Timestamp};
 use rusqlite::{Connection, OptionalExtension, params};
 
 const SCHEMA: &str = "
@@ -25,6 +25,14 @@ CREATE TABLE IF NOT EXISTS goals (
 ) STRICT;
 
 CREATE INDEX IF NOT EXISTS idx_goals_direction ON goals(direction_id);
+
+CREATE TABLE IF NOT EXISTS audit_log (
+    id      TEXT PRIMARY KEY,
+    at_ms   INTEGER NOT NULL,
+    summary TEXT NOT NULL
+) STRICT;
+
+CREATE INDEX IF NOT EXISTS idx_audit_at ON audit_log(at_ms);
 ";
 
 /// A SQLite-backed store implementing the persistence ports.
@@ -151,6 +159,54 @@ impl GoalRepository for SqliteStore {
     }
 }
 
+impl AuditLog for SqliteStore {
+    fn append(&self, record: &AuditRecord) -> Result<(), RepositoryError> {
+        let conn = self.lock()?;
+        conn.execute(
+            "INSERT INTO audit_log (id, at_ms, summary) VALUES (?1, ?2, ?3)",
+            params![
+                id_text(record.id().value()),
+                record.at().unix_millis(),
+                record.summary()
+            ],
+        )
+        .map_err(backend)?;
+        Ok(())
+    }
+
+    fn recent(&self, limit: usize) -> Result<Vec<AuditRecord>, RepositoryError> {
+        let conn = self.lock()?;
+        let limit = i64::try_from(limit).unwrap_or(i64::MAX);
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, at_ms, summary FROM audit_log ORDER BY at_ms DESC, id DESC LIMIT ?1",
+            )
+            .map_err(backend)?;
+        let rows = stmt
+            .query_map(params![limit], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            })
+            .map_err(backend)?;
+
+        let mut records = Vec::new();
+        for row in rows {
+            let (id, at_ms, summary) = row.map_err(backend)?;
+            let record = AuditRecord::new(
+                AuditId::new(parse_id(&id)?),
+                Timestamp::from_unix_millis(at_ms),
+                &summary,
+            )
+            .map_err(corrupt)?;
+            records.push(record);
+        }
+        Ok(records)
+    }
+}
+
 /// Renders a `u128` identifier as the decimal `TEXT` used for storage.
 fn id_text(value: u128) -> String {
     value.to_string()
@@ -232,6 +288,29 @@ mod tests {
 
         assert_eq!(goals.get(GoalId::new(10)).unwrap(), Some(g1.clone()));
         assert_eq!(goals.list_for_direction(direction).unwrap(), vec![g1, g2]);
+    }
+
+    #[test]
+    fn audit_records_append_and_read_newest_first() {
+        use endora_application::AuditLog;
+        use endora_domain::{AuditId, AuditRecord, Timestamp};
+
+        let store = store();
+        let log: &dyn AuditLog = &store;
+        log.append(
+            &AuditRecord::new(AuditId::new(1), Timestamp::from_unix_millis(100), "first").unwrap(),
+        )
+        .unwrap();
+        log.append(
+            &AuditRecord::new(AuditId::new(2), Timestamp::from_unix_millis(200), "second").unwrap(),
+        )
+        .unwrap();
+
+        let recent = log.recent(10).unwrap();
+        assert_eq!(recent.len(), 2);
+        assert_eq!(recent[0].summary(), "second");
+        assert_eq!(recent[1].summary(), "first");
+        assert_eq!(log.recent(1).unwrap().len(), 1);
     }
 
     #[test]

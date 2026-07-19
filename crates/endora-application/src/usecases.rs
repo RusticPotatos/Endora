@@ -5,10 +5,13 @@
 //! time come from the [`IdSource`] and [`Clock`] ports, so the domain stays pure
 //! and the use cases stay testable with fakes.
 
-use endora_domain::{Direction, DirectionId, Goal, GoalId};
+use endora_domain::{
+    AuditId, AuditRecord, AutonomyLevel, Direction, DirectionId, Goal, GoalId, PolicyDecision,
+    ProposedProcessChange, authorize_process_change,
+};
 
 use crate::error::AppError;
-use crate::ports::{DirectionRepository, GoalRepository, IdSource};
+use crate::ports::{AuditLog, Clock, DirectionRepository, GoalRepository, IdSource};
 
 /// Creates and stores a new [`Direction`].
 ///
@@ -58,12 +61,54 @@ pub fn list_goals(
     Ok(goals.list_for_direction(direction)?)
 }
 
+/// Decides whether an actor may enact a proposed process change, and records
+/// the decision to the audit trail.
+///
+/// The decision itself is made by the deterministic domain policy
+/// ([`authorize_process_change`]); this use case is the seam that ties that
+/// decision to accountability — every consequential decision is audited.
+///
+/// # Errors
+/// [`AppError::Domain`] if the audit summary is somehow invalid, or
+/// [`AppError::Repository`] if writing the audit record fails.
+pub fn decide_process_change(
+    change: &ProposedProcessChange,
+    actor: AutonomyLevel,
+    ids: &impl IdSource,
+    clock: &impl Clock,
+    audit: &impl AuditLog,
+) -> Result<PolicyDecision, AppError> {
+    let decision = authorize_process_change(change, actor);
+    let summary = format!(
+        "policy {} enacting process change {} (actor: {actor:?})",
+        describe(decision),
+        change.id().value(),
+    );
+    let record = AuditRecord::new(AuditId::new(ids.new_id()), clock.now(), &summary)?;
+    audit.append(&record)?;
+    Ok(decision)
+}
+
+/// A short verb phrase for an audit summary.
+fn describe(decision: PolicyDecision) -> &'static str {
+    match decision {
+        PolicyDecision::Permit => "permitted",
+        PolicyDecision::RequireHumanApproval => "requires human approval before",
+        PolicyDecision::Deny { .. } => "denied",
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{create_direction, create_goal, list_goals};
+    use super::{create_direction, create_goal, decide_process_change, list_goals};
     use crate::error::AppError;
-    use crate::ports::{DirectionRepository, GoalRepository, IdSource, RepositoryError};
-    use endora_domain::{Direction, DirectionId, Goal, GoalId};
+    use crate::ports::{
+        AuditLog, Clock, DirectionRepository, GoalRepository, IdSource, RepositoryError,
+    };
+    use endora_domain::{
+        AuditRecord, AutonomyLevel, Direction, DirectionId, Goal, GoalId, PolicyDecision,
+        ProcessChangeId, ProposedProcessChange, ReflectionId, Timestamp,
+    };
     use std::cell::{Cell, RefCell};
     use std::collections::HashMap;
 
@@ -121,6 +166,101 @@ mod tests {
             self.next.set(id);
             id
         }
+    }
+
+    /// A clock fixed at a chosen instant.
+    struct FixedClock(i64);
+
+    impl Clock for FixedClock {
+        fn now(&self) -> Timestamp {
+            Timestamp::from_unix_millis(self.0)
+        }
+    }
+
+    /// An in-memory audit log.
+    #[derive(Default)]
+    struct FakeAudit {
+        records: RefCell<Vec<AuditRecord>>,
+    }
+
+    impl AuditLog for FakeAudit {
+        fn append(&self, record: &AuditRecord) -> Result<(), RepositoryError> {
+            self.records.borrow_mut().push(record.clone());
+            Ok(())
+        }
+        fn recent(&self, limit: usize) -> Result<Vec<AuditRecord>, RepositoryError> {
+            let all = self.records.borrow();
+            Ok(all.iter().rev().take(limit).cloned().collect())
+        }
+    }
+
+    fn approved_change() -> ProposedProcessChange {
+        let mut p = ProposedProcessChange::propose(
+            ProcessChangeId::new(7),
+            ReflectionId::new(1),
+            "Default runs to mornings",
+        )
+        .unwrap();
+        p.approve().unwrap();
+        p
+    }
+
+    #[test]
+    fn deciding_a_process_change_records_the_decision() {
+        let ids = SeqIds::default();
+        let clock = FixedClock(1_700_000_000_000);
+        let audit = FakeAudit::default();
+
+        let decision = decide_process_change(
+            &approved_change(),
+            AutonomyLevel::ActWithinPolicy,
+            &ids,
+            &clock,
+            &audit,
+        )
+        .unwrap();
+
+        assert_eq!(decision, PolicyDecision::Permit);
+        let records = audit.records.borrow();
+        assert_eq!(records.len(), 1);
+        assert_eq!(
+            records[0].at(),
+            Timestamp::from_unix_millis(1_700_000_000_000)
+        );
+        assert!(records[0].summary().contains("permitted"));
+        assert!(records[0].summary().contains("process change 7"));
+    }
+
+    #[test]
+    fn an_unapproved_change_is_audited_as_requiring_approval() {
+        let ids = SeqIds::default();
+        let clock = FixedClock(0);
+        let audit = FakeAudit::default();
+        let mut change = approved_change();
+        // A fresh (unapproved) proposal:
+        change = ProposedProcessChange::propose(
+            change.id(),
+            ReflectionId::new(1),
+            "Default runs to mornings",
+        )
+        .unwrap();
+
+        let decision = decide_process_change(
+            &change,
+            AutonomyLevel::ActWithinPolicy,
+            &ids,
+            &clock,
+            &audit,
+        )
+        .unwrap();
+
+        assert_eq!(decision, PolicyDecision::RequireHumanApproval);
+        assert_eq!(audit.recent(10).unwrap().len(), 1);
+        assert!(
+            audit.recent(1).unwrap()[0]
+                .summary()
+                .contains("requires human approval")
+        );
     }
 
     #[test]

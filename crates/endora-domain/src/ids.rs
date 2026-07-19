@@ -38,6 +38,7 @@ id_type!(ExperimentId, "experiment");
 id_type!(ObservationId, "observation");
 id_type!(ReflectionId, "reflection");
 id_type!(ProcessChangeId, "proposed process change");
+id_type!(AuditId, "audit record");
 
 /// A point in time, as milliseconds since the Unix epoch, **supplied by the
 /// caller**. The domain never reads the system clock, so its behavior stays
