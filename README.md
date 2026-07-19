@@ -17,7 +17,8 @@ deterministic policy code controls permission and execution.
 principles, architecture, and a minimal Rust workspace skeleton. **Endora is not
 yet a general autonomous agent** and does not yet expose an application protocol
 or product features. Interfaces, schemas, and internals will change. Work grows
-one complete vertical slice at a time.
+one complete vertical slice at a time. The path to the first release is in the
+[Roadmap](docs/roadmap.md).
 
 ## North Star
 
