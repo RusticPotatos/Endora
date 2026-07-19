@@ -1,6 +1,6 @@
 [package]
 name = "endora-node"
-description = "Endora node: the authoritative backend runtime (the 'brain'). Foundation-phase placeholder that identifies itself and exits."
+description = "Endora node: the authoritative backend runtime (the 'brain'). Serves the versioned HTTP/JSON protocol."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -13,7 +13,17 @@ name = "endora-node"
 path = "src/main.rs"
 
 [dependencies]
+axum = "0.8.9"
 endora-application = { path = "../../crates/endora-application" }
+endora-domain = { path = "../../crates/endora-domain" }
+endora-infrastructure = { path = "../../crates/endora-infrastructure" }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.150"
+tokio = { version = "1.53.0", features = ["rt-multi-thread", "macros", "net"] }
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+http-body-util = "0.1.4"
+tower = { version = "0.5.3", features = ["util"] }
