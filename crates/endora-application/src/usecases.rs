@@ -902,30 +902,45 @@ pub fn send_to_butler_streaming(
     // and it only fires when the model requested nothing, so a correct model-driven
     // tool use (e.g. a specific city it named) is left untouched.
     if let Some(skill) = follow_up_intent(text, &history).filter(|_| !model_requested_skill) {
-        let cleared = capabilities
-            .available()
-            .into_iter()
-            .find(|c| c.id == skill)
-            .is_some_and(|s| s.configured && s.autonomous);
-        if let (true, Some(location)) = (cleared, known_location(&prefs)) {
+        let spec = capabilities.available().into_iter().find(|c| c.id == skill);
+        let cleared = spec.as_ref().is_some_and(|s| s.configured && s.autonomous);
+        let outcome = if cleared {
+            // Usable: run it with the person's home location. Without a location we
+            // can't (the model's own reply then stands).
+            known_location(&prefs).map(|location| {
+                match capabilities.run(skill, &json_location(&location)) {
+                    Ok(out) => {
+                        activity.push(format!("Used the {skill} skill"));
+                        format!(
+                            "You used the '{skill}' skill for {location} and it returned:\n{out}\n\
+                             Relay this to the person — share the specifics in your own words, \
+                             and add nothing that isn't here."
+                        )
+                    }
+                    Err(e) => {
+                        activity.push(format!("Tried the {skill} skill, but it failed"));
+                        format!(
+                            "You tried the '{skill}' skill but it failed: {e}. Tell the person \
+                             plainly you couldn't get it — do not make up an answer."
+                        )
+                    }
+                }
+            })
+        } else {
+            // The person clearly asked for something factual, but the skill that
+            // would answer it is off or not set up. Ground the butler in that fact
+            // so it says so honestly instead of inventing an answer.
+            activity.push(format!("Couldn't check {skill} — it's off or not set up"));
+            Some(format!(
+                "The person asked about something the '{skill}' skill would answer, but it is \
+                 turned off or not set up, so you could NOT check it. Tell them plainly you \
+                 can't right now — do NOT invent an answer — and mention they can turn it on \
+                 under Skills."
+            ))
+        };
+        if let Some(result) = outcome {
             let mut ctx = context.clone();
-            match capabilities.run(skill, &json_location(&location)) {
-                Ok(out) => {
-                    activity.push(format!("Used the {skill} skill"));
-                    ctx.tool_result = Some(format!(
-                        "You used the '{skill}' skill for {location} and it returned:\n{out}\n\
-                         Relay this to the person — share the specifics in your own words, and \
-                         add nothing that isn't here."
-                    ));
-                }
-                Err(e) => {
-                    activity.push(format!("Tried the {skill} skill, but it failed"));
-                    ctx.tool_result = Some(format!(
-                        "You tried the '{skill}' skill but it failed: {e}. Tell the person \
-                         plainly you couldn't get it — do not make up an answer."
-                    ));
-                }
-            }
+            ctx.tool_result = Some(result);
             if let Ok(synth) = butler.respond(&history, &prefs, &ctx) {
                 reply = synth;
             }
@@ -2537,6 +2552,78 @@ mod tests {
         assert!(reply.text().contains("council meets tonight"));
         assert!(!reply.text().contains("festival"));
         assert!(activity.iter().any(|a| a.contains("news")));
+    }
+
+    #[test]
+    fn a_factual_ask_for_a_disabled_skill_gets_honest_closure_not_a_fabrication() {
+        use super::{create_preference, send_to_butler};
+
+        struct FabricatingButler;
+        impl Butler for FabricatingButler {
+            fn respond(
+                &self,
+                _h: &[ChatMessage],
+                _p: &[Preference],
+                context: &ButlerContext,
+            ) -> Result<ButlerReply, ProposalError> {
+                if let Some(result) = &context.tool_result {
+                    return Ok(ButlerReply {
+                        text: format!("Honestly — {result}"),
+                        ..ButlerReply::default()
+                    });
+                }
+                Ok(ButlerReply {
+                    text: "There's a big festival downtown this weekend.".to_owned(),
+                    ..ButlerReply::default()
+                })
+            }
+        }
+
+        // News exists but is turned OFF (configured=false); it must never run.
+        struct OffNews;
+        impl CapabilityRunner for OffNews {
+            fn available(&self) -> Vec<crate::ports::CapabilitySpec> {
+                vec![crate::ports::CapabilitySpec {
+                    id: "news".to_owned(),
+                    description: "headlines".to_owned(),
+                    configured: false,
+                    autonomous: true,
+                }]
+            }
+            fn run(&self, _id: &str, _input_json: &str) -> Result<String, String> {
+                panic!("a disabled skill must never run");
+            }
+        }
+
+        let store = FakeStore::default();
+        let ids = SeqIds::default();
+        let clock = FixedClock(1_000);
+        create_preference(
+            &store,
+            &ids,
+            &clock,
+            "Based in: 10001",
+            PreferenceKind::Taste,
+        )
+        .unwrap();
+
+        let (reply, _s, activity) = send_to_butler(
+            &store,
+            &store,
+            &store,
+            &store,
+            &OffNews,
+            &FabricatingButler,
+            &ids,
+            &clock,
+            &ButlerContext::default(),
+            "what's in the news?",
+        )
+        .unwrap();
+
+        // No fabricated festival; the butler was grounded in "it's off".
+        assert!(!reply.text().contains("festival"));
+        assert!(activity.iter().any(|a| a.contains("Couldn't check news")));
     }
 
     #[test]
