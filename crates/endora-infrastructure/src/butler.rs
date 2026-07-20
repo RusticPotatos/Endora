@@ -366,6 +366,12 @@ fn build_butler_request(
         "stream": false,
         "temperature": 0.5,
         "messages": messages,
+        // Constrain the model to emit a well-formed JSON object (Ollama honours
+        // the OpenAI-style response_format; the prompt already says "JSON"). This
+        // grammar-constrains decoding so the envelope can't come out truncated or
+        // wrapped in prose — the defensive parser is then just a belt-and-braces
+        // fallback for endpoints that ignore this field.
+        "response_format": { "type": "json_object" },
     })
 }
 
