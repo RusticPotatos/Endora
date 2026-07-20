@@ -139,6 +139,7 @@
   <span class="spacer"></span>
   <button class="ghost" data-act="go:chat" id="btn-chat"></button>
   <button class="ghost" data-act="go:home" id="btn-stars"></button>
+  <button class="ghost" data-act="go:suggestions" id="btn-suggestions"></button>
   <button class="ghost" data-act="go:prefs" id="btn-prefs"></button>
   <button class="ghost" data-act="go:audit" id="btn-audit"></button>
   <button class="ghost" data-act="export" id="btn-export"></button>
@@ -156,6 +157,7 @@ let DB = null;                 // latest /v1/export snapshot
 let ACTIVITY = [];             // latest /v1/activity feed (newest first)
 let ATTENTION = [];            // latest /v1/attention items (most pressing first)
 let CHAT_PROPOSALS = [];       // proposals from the butler's last reply
+let SUGGESTIONS = [];          // pending suggestions (the butler's durable proposal inbox)
 let CHAT_STREAMING = false;    // true while a reply is streaming in (guards live-render)
 let NAV = { v: "chat" };       // current view (the butler is the landing page)
 
@@ -182,6 +184,7 @@ const ICONS = {
   note: '<path d="M6 3h9l4 4v14H6z"/><path d="M15 3v4h4M9 12h6M9 16h4"/>',
   scale: '<path d="M12 4v16M7 20h10"/><path d="M4 8h16M4 8l-2.2 5a2.6 2.6 0 0 0 4.4 0zM20 8l-2.2 5a2.6 2.6 0 0 0 4.4 0z"/><path d="M8 5h8"/>',
   sparkle: '<path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8z"/>',
+  inbox: '<path d="M4 13l2-8h12l2 8v6H4z"/><path d="M4 13h4l1.5 2.5h5L16 13h4"/>',
 };
 function icon(name, size = 17) {
   const p = ICONS[name];
@@ -215,15 +218,18 @@ async function api(method, path, body) {
 }
 
 async function reload() {
-  // The export snapshot, the derived activity feed, and what needs attention.
-  const [db, activity, attention] = await Promise.all([
+  // The export snapshot, the derived activity feed, what needs attention, and the
+  // pending suggestions inbox (proposals the butler made, waiting to be applied).
+  const [db, activity, attention, suggestions] = await Promise.all([
     api("GET", "/v1/export"),
     api("GET", "/v1/activity?limit=30"),
     api("GET", "/v1/attention"),
+    api("GET", "/v1/suggestions?status=pending"),
   ]);
   DB = db;
   ACTIVITY = activity;
   ATTENTION = attention;
+  SUGGESTIONS = suggestions;
   render();
 }
 
@@ -646,6 +652,24 @@ function viewPrefs() {
     </div>`;
 }
 
+// The butler's proposal inbox: everything it has suggested from your chats,
+// waiting to be applied to your profile or dismissed — durable, not lost when the
+// conversation moves on. Applying runs the deterministic create (you authorize).
+function viewSuggestions() {
+  const cards = (SUGGESTIONS || []).map((s) => `
+    <div class="card"><div class="row">
+      <div class="grow"><div class="title">${esc(s.label)}</div>
+      <div class="sub">the butler proposed this — you decide</div></div>
+      <button class="primary" data-act="apply:suggestion:${s.id}">Apply</button>
+      <button class="ghost" data-act="dismiss:suggestion:${s.id}">Dismiss</button>
+    </div></div>`);
+  return `
+    ${crumbs([{ label: "Directions", act: "go:home" }, { label: "Inbox" }])}
+    <h2>Suggestions from your conversations</h2>
+    <div class="sub" style="margin-bottom:10px;">Things the butler picked up while you talked. Apply one and it becomes part of your profile; dismiss what doesn't fit. Nothing is added without your say-so.</div>
+    ${listOr(cards, "Nothing waiting. As you chat, the butler's proposals collect here.")}`;
+}
+
 // Append a chat bubble to the thread and keep the newest in view.
 function appendBubble(html, cls, id) {
   const thread = document.getElementById("chat-thread");
@@ -729,6 +753,7 @@ async function sendChat() {
 }
 
 function render() {
+  updateInboxBadge();
   const v = NAV.v;
   app.innerHTML =
       v === "direction" ? viewDirection(NAV.id)
@@ -738,8 +763,17 @@ function render() {
     : v === "reflection" ? viewReflection(NAV.id)
     : v === "audit" ? viewAudit()
     : v === "chat" ? viewChat()
+    : v === "suggestions" ? viewSuggestions()
     : v === "prefs" ? viewPrefs()
     : viewHome();
+}
+
+// Show the pending-suggestion count on the Inbox nav button.
+function updateInboxBadge() {
+  const btn = document.getElementById("btn-suggestions");
+  if (!btn) return;
+  const n = (SUGGESTIONS || []).length;
+  btn.innerHTML = icon("inbox") + `<span>Inbox${n ? ` <span class="pill" style="color:var(--accent);border-color:var(--accent)">${n}</span>` : ""}</span>`;
 }
 
 // ---- actions (event delegation) -------------------------------------------
@@ -783,16 +817,28 @@ async function dispatch(act) {
     if (verb === "confirm" && noun === "proposal") {
       const p = CHAT_PROPOSALS[Number(id)];
       if (!p) return;
-      if (p.kind === "create_value") await api("POST", "/v1/values", { name: p.name });
-      else if (p.kind === "create_north_star") await api("POST", "/v1/directions", { title: p.title });
-      else if (p.kind === "create_target") await api("POST", `/v1/directions/${p.direction_id}/targets`, { statement: p.statement });
-      else if (p.kind === "remember_preference") await api("POST", "/v1/preferences", { text: p.text, kind: p.preference_kind });
+      // Suggestions are persisted; applying runs the deterministic create
+      // server-side (and resolves a North Star named in a target).
+      try { await api("POST", `/v1/suggestions/${p.id}/apply`); flash("Done — added.", "ok"); }
+      catch (e) { flash("Couldn't add that: " + e.message, "err"); }
       CHAT_PROPOSALS.splice(Number(id), 1);
-      flash("Done — added.", "ok");
       return reload();
     }
     if (verb === "dismiss" && noun === "proposal") {
-      CHAT_PROPOSALS.splice(Number(id), 1); return render();
+      const p = CHAT_PROPOSALS[Number(id)];
+      if (p && p.id) { try { await api("POST", `/v1/suggestions/${p.id}/dismiss`); } catch (_) {} }
+      CHAT_PROPOSALS.splice(Number(id), 1);
+      return reload();
+    }
+    // Apply / dismiss a suggestion from the inbox, by its id.
+    if (verb === "apply" && noun === "suggestion") {
+      try { await api("POST", `/v1/suggestions/${id}/apply`); flash("Done — added.", "ok"); }
+      catch (e) { flash("Couldn't add that: " + e.message, "err"); }
+      return reload();
+    }
+    if (verb === "dismiss" && noun === "suggestion") {
+      try { await api("POST", `/v1/suggestions/${id}/dismiss`); } catch (_) {}
+      return reload();
     }
     if (verb === "snooze" && noun === "attention") {
       // data-act = snooze:attention:<kind>:<subject>
@@ -898,6 +944,7 @@ function setupHeader(service) {
   };
   set("btn-chat", "chat", "Chat");
   set("btn-stars", "target", "North Stars");
+  set("btn-suggestions", "inbox", "Inbox");
   set("btn-prefs", "prefs", "Prefs");
   set("btn-audit", "audit", "Audit");
   set("btn-export", "export", "Export");

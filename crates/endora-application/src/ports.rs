@@ -9,8 +9,9 @@ use core::fmt;
 
 use endora_domain::{
     Assumption, AssumptionId, AuditRecord, ChatMessage, Direction, DirectionId, Experiment,
-    ExperimentId, Observation, Preference, PreferenceId, PreferenceKind, ProcessChangeId,
-    ProposedProcessChange, Reflection, ReflectionId, Target, TargetId, Timestamp, Value, ValueId,
+    ExperimentId, MessageId, Observation, Preference, PreferenceId, PreferenceKind,
+    ProcessChangeId, ProposedProcessChange, Reflection, ReflectionId, SuggestionId, Target,
+    TargetId, Timestamp, Value, ValueId,
 };
 
 /// A complete snapshot of the user's stored data, for the memory rights of the
@@ -39,6 +40,8 @@ pub struct MemorySnapshot {
     pub messages: Vec<ChatMessage>,
     /// The preferences the butler has learned.
     pub preferences: Vec<Preference>,
+    /// The butler's persisted suggestions (pending, applied, and dismissed).
+    pub suggestions: Vec<Suggestion>,
 }
 
 /// The user's right to export and delete all of their data (constitution:
@@ -301,8 +304,11 @@ pub enum ButlerProposal {
     },
     /// Create a target under an existing North Star.
     CreateTarget {
-        /// The North Star the target belongs to.
-        direction: DirectionId,
+        /// How the butler referred to the North Star — a real direction id, or a
+        /// title/name (small models often give the name). Resolved to a concrete
+        /// North Star when the suggestion is applied, not at parse time, so the
+        /// proposal is never silently dropped.
+        direction_ref: String,
         /// The target statement.
         statement: String,
     },
@@ -353,6 +359,83 @@ pub struct ButlerReply {
     pub text: String,
     /// Structured actions it proposes (may be empty). Never auto-executed.
     pub proposals: Vec<ButlerProposal>,
+}
+
+/// Where a persisted [`Suggestion`] is in its life: proposed and waiting, applied
+/// to the person's memory, or dismissed. A suggestion is a butler proposal made
+/// durable — it survives reloads and accumulates, so chat learnings are not lost
+/// when the conversation moves on (ADR 0019 §"persistent suggestions").
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SuggestionStatus {
+    /// Proposed and awaiting the person's decision.
+    Pending,
+    /// Applied — the underlying create ran and it is now part of memory.
+    Applied,
+    /// Dismissed by the person.
+    Dismissed,
+}
+
+impl SuggestionStatus {
+    /// The stable string form used for storage and the protocol.
+    #[must_use]
+    pub fn name(&self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::Applied => "applied",
+            Self::Dismissed => "dismissed",
+        }
+    }
+
+    /// Parses the stable string form, if recognised.
+    #[must_use]
+    pub fn from_name(s: &str) -> Option<Self> {
+        match s {
+            "pending" => Some(Self::Pending),
+            "applied" => Some(Self::Applied),
+            "dismissed" => Some(Self::Dismissed),
+            _ => None,
+        }
+    }
+}
+
+/// A butler proposal made durable: the conversation's learnings persisted as an
+/// event the person can apply or dismiss at any time (not only in the moment).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Suggestion {
+    /// This suggestion's id.
+    pub id: SuggestionId,
+    /// The proposed action (from the closed set the butler may propose).
+    pub proposal: ButlerProposal,
+    /// Its current state.
+    pub status: SuggestionStatus,
+    /// The butler message it came from, if known.
+    pub from_message: Option<MessageId>,
+    /// When it was proposed.
+    pub created_at: Timestamp,
+    /// When it was applied or dismissed, if it has been.
+    pub decided_at: Option<Timestamp>,
+}
+
+/// Persists the butler's [`Suggestion`]s so they outlive a single reply.
+pub trait SuggestionRepository {
+    /// Inserts a suggestion, or replaces the existing one with the same id
+    /// (used both to create and to record an apply/dismiss decision).
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if the backend fails.
+    fn save(&self, suggestion: &Suggestion) -> Result<(), RepositoryError>;
+
+    /// Fetches a suggestion by id, returning `None` if it does not exist.
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if the backend fails or stored data is corrupt.
+    fn get(&self, id: SuggestionId) -> Result<Option<Suggestion>, RepositoryError>;
+
+    /// Lists suggestions, newest first, optionally filtered by status.
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if the backend fails or stored data is corrupt.
+    fn list(&self, status: Option<SuggestionStatus>) -> Result<Vec<Suggestion>, RepositoryError>;
 }
 
 /// A brief of one North Star, for grounding the butler's conversation.

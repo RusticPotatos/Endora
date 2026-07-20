@@ -14,7 +14,7 @@
 //! use cases execute it. The model is never the enforcement boundary.
 
 use endora_application::{Butler, ButlerContext, ButlerProposal, ButlerReply, ProposalError};
-use endora_domain::{ChatMessage, DirectionId, MessageRole, Preference, PreferenceKind};
+use endora_domain::{ChatMessage, MessageRole, Preference, PreferenceKind};
 use serde_json::{Value, json};
 
 /// A deterministic, offline butler. Reliable, if simple.
@@ -453,7 +453,10 @@ fn parse_proposal(value: &Value) -> Option<ButlerProposal> {
             title: non_empty(value["title"].as_str()?)?,
         }),
         "create_target" => Some(ButlerProposal::CreateTarget {
-            direction: DirectionId::new(value["direction_id"].as_str()?.parse().ok()?),
+            // Keep the model's reference (id or name) verbatim; it is resolved to a
+            // real North Star when the suggestion is applied, so a name never drops
+            // the proposal on the floor.
+            direction_ref: non_empty(value["direction_id"].as_str()?)?,
             statement: non_empty(value["statement"].as_str()?)?,
         }),
         "remember_preference" => Some(ButlerProposal::RememberPreference {

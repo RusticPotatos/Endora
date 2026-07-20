@@ -54,7 +54,7 @@ pub use error::DomainError;
 pub use experiments::{Experiment, ExperimentStatus, Observation};
 pub use ids::{
     AssumptionId, AuditId, DirectionId, ExperimentId, MessageId, ObservationId, PreferenceId,
-    ProcessChangeId, ReflectionId, TargetId, Timestamp, ValueId,
+    ProcessChangeId, ReflectionId, SuggestionId, TargetId, Timestamp, ValueId,
 };
 pub use policy::{PolicyDecision, authorize_process_change};
 pub use preferences::{Preference, PreferenceKind};
