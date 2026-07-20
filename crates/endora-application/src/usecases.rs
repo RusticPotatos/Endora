@@ -757,6 +757,42 @@ pub fn send_to_butler(
     context: &ButlerContext,
     text: &str,
 ) -> Result<(ChatMessage, Vec<ButlerProposal>), AppError> {
+    // Non-streaming is just streaming with the tokens discarded.
+    send_to_butler_streaming(
+        chat,
+        preferences,
+        butler,
+        ids,
+        clock,
+        context,
+        text,
+        &mut |_| {},
+    )
+}
+
+/// Like [`send_to_butler`], but streams the reply's prose to `on_token` as the
+/// butler produces it (for a live, token-by-token chat). The person's message is
+/// persisted **before** the butler is called, and the butler's reply is persisted
+/// once complete — so the exchange survives a reload even if the stream is
+/// interrupted mid-way (the last stored message is then still the person's).
+///
+/// # Errors
+/// [`AppError::Model`] if the butler fails, or [`AppError::Repository`] on a
+/// backend failure.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "explicit dependencies, no hidden state"
+)]
+pub fn send_to_butler_streaming(
+    chat: &impl ChatRepository,
+    preferences: &impl PreferenceRepository,
+    butler: &dyn Butler,
+    ids: &impl IdSource,
+    clock: &impl Clock,
+    context: &ButlerContext,
+    text: &str,
+    on_token: &mut dyn FnMut(&str),
+) -> Result<(ChatMessage, Vec<ButlerProposal>), AppError> {
     let user = ChatMessage::new(
         MessageId::new(ids.new_id()),
         MessageRole::User,
@@ -768,7 +804,7 @@ pub fn send_to_butler(
     let history = chat.list()?;
     let prefs = preferences.list_all()?;
     let reply = butler
-        .respond(&history, &prefs, context)
+        .respond_streaming(&history, &prefs, context, on_token)
         .map_err(|e| AppError::Model {
             message: e.to_string(),
         })?;

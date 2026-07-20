@@ -9,6 +9,19 @@ tagged release.
 
 ### Added
 
+- **The butler's reply streams in live, token-by-token**
+  ([ADR 0018](docs/adr/0018-streaming-chat-responses.md)): a new
+  `POST /v1/chat/stream` (Server-Sent Events) streams the reply's prose as the model
+  produces it, so the console grows the butler's bubble word-by-word instead of
+  waiting for the whole thing — the big difference in *feel* between a spinner and a
+  live agent. The structured proposals still arrive at the end and are still
+  confirmed by you (the model never acts). Built on the existing `ureq` client
+  bridged to an async SSE response (no new dependency) and the unchanged JSON
+  envelope (so the candid, jargon-free persona is untouched); the model streams
+  `stream: true` and the node incrementally extracts the growing reply. The
+  non-streaming `POST /v1/chat` remains for the CLI and as a fallback. Your message
+  is still persisted before the model is called, so an interrupted stream never
+  loses the turn.
 - **Built-in self-signed HTTPS** (`ENDORA_TLS=1`): the node can serve HTTPS with a
   self-signed certificate (persisted next to the database, so the browser warning is
   accepted once), making the web console a **secure context** — which browsers

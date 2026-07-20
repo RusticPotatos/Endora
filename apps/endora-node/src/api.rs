@@ -140,6 +140,7 @@ pub fn app(state: AppState) -> Router {
             post(decide_process_change),
         )
         .route("/v1/chat", post(send_chat).get(chat_history))
+        .route("/v1/chat/stream", post(stream_chat))
         .route(
             "/v1/preferences",
             post(create_preference).get(list_preferences),
@@ -1037,6 +1038,84 @@ async fn send_chat(
         "reply": MessageResponse::from(&reply),
         "proposals": proposals.iter().map(proposal_json).collect::<Vec<_>>(),
     })))
+}
+
+/// Streams the butler's reply token-by-token as Server-Sent Events, for a live
+/// chat. Each event's `data` is a JSON object with a `type`:
+/// - `{"type":"token","text":"…"}` — the next piece of the reply's prose;
+/// - `{"type":"done","reply":{…},"proposals":[…]}` — the persisted reply + cards;
+/// - `{"type":"error","message":"…"}` — the exchange failed.
+///
+/// The person's message is persisted before the butler is called (as in the
+/// non-streaming path), and the reply is persisted when complete — so a dropped
+/// connection never loses the turn. The blocking model call runs on a worker
+/// thread and feeds tokens through a channel to this async stream.
+async fn stream_chat(
+    State(state): State<AppState>,
+    Json(req): Json<ChatRequest>,
+) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
+    let store = state.store.clone();
+    let ids = state.ids.clone();
+    let clock = state.clock.clone();
+    let butler = state.butler.clone();
+    let changes = state.changes.clone();
+    let message = req.message;
+
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Event>();
+
+    tokio::task::spawn_blocking(move || {
+        let event = |v: serde_json::Value| Event::default().data(v.to_string());
+        let context = match usecases::butler_context(
+            store.as_ref(),
+            store.as_ref(),
+            store.as_ref(),
+            store.as_ref(),
+            store.as_ref(),
+            clock.as_ref(),
+        ) {
+            Ok(c) => c,
+            Err(e) => {
+                let _ = tx.send(event(json!({ "type": "error", "message": e.to_string() })));
+                return;
+            }
+        };
+        // Scope the token closure so its borrow of `tx` ends before the `done`
+        // send below.
+        let result = {
+            let mut on_token = |chunk: &str| {
+                let _ = tx.send(event(json!({ "type": "token", "text": chunk })));
+            };
+            usecases::send_to_butler_streaming(
+                store.as_ref(),
+                store.as_ref(),
+                butler.as_ref(),
+                ids.as_ref(),
+                clock.as_ref(),
+                &context,
+                &message,
+                &mut on_token,
+            )
+        };
+        match result {
+            Ok((reply, proposals)) => {
+                // A successful write nudges the change stream, like other writes.
+                let _ = changes.send(());
+                let _ = tx.send(event(json!({
+                    "type": "done",
+                    "reply": MessageResponse::from(&reply),
+                    "proposals": proposals.iter().map(proposal_json).collect::<Vec<_>>(),
+                })));
+            }
+            Err(e) => {
+                let _ = tx.send(event(json!({ "type": "error", "message": e.to_string() })));
+            }
+        }
+    });
+
+    let stream = unfold(rx, |mut rx| async move {
+        rx.recv().await.map(|ev| (Ok(ev), rx))
+    });
+    Sse::new(stream).keep_alive(KeepAlive::default())
 }
 
 /// The whole conversation with the butler, oldest first.

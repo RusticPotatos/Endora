@@ -402,6 +402,31 @@ pub trait Butler {
         preferences: &[Preference],
         context: &ButlerContext,
     ) -> Result<ButlerReply, ProposalError>;
+
+    /// Like [`respond`](Self::respond), but streams the reply's prose to
+    /// `on_token` as it is produced (each call receives the *next* chunk of
+    /// text), returning the complete [`ButlerReply`] — including proposals — at
+    /// the end. Enables a live, token-by-token chat.
+    ///
+    /// The default implementation is non-streaming: it computes the whole reply
+    /// and emits it in one chunk, so any [`Butler`] works with a streaming
+    /// caller. A model-backed butler overrides this to stream for real.
+    ///
+    /// # Errors
+    /// [`ProposalError`] if a backing model is unreachable or returns nothing.
+    fn respond_streaming(
+        &self,
+        history: &[ChatMessage],
+        preferences: &[Preference],
+        context: &ButlerContext,
+        on_token: &mut dyn FnMut(&str),
+    ) -> Result<ButlerReply, ProposalError> {
+        let reply = self.respond(history, preferences, context)?;
+        if !reply.text.is_empty() {
+            on_token(&reply.text);
+        }
+        Ok(reply)
+    }
 }
 
 /// Persists and retrieves [`Preference`]s (what the butler has learned).
