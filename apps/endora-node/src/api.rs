@@ -19,8 +19,8 @@ use axum::routing::{get, post};
 use endora_application::{
     ActivityItem, AppError, AttentionItem, AttentionKind, AutonomyEnvelope,
     AutonomyEnvelopeRepository, Butler, ButlerProposal, CapabilityConfigRepository,
-    CheckinSchedule, MemorySnapshot, Proposer, RepositoryError, Suggestion, SuggestionStatus,
-    usecases,
+    CheckinSchedule, EventLog, MemorySnapshot, Proposer, RepositoryError, Suggestion,
+    SuggestionStatus, usecases,
 };
 use endora_domain::{
     Assumption, AssumptionId, AuditRecord, AutonomyLevel, Belief, BeliefId, ChatMessage, Direction,
@@ -945,8 +945,10 @@ async fn activity(
 ) -> Result<Json<Vec<ActivityResponse>>, ApiError> {
     let limit = query.limit.unwrap_or(50);
     let store = state.store.clone();
-    let items =
-        blocking(move || usecases::recent_activity(store.as_ref(), store.as_ref(), limit)).await?;
+    let items = blocking(move || {
+        usecases::recent_activity(store.as_ref(), store.as_ref(), store.as_ref(), limit)
+    })
+    .await?;
     Ok(Json(items.iter().map(ActivityResponse::from).collect()))
 }
 
@@ -1031,6 +1033,13 @@ fn suggestion_json(s: &Suggestion) -> serde_json::Value {
 /// (ADR 0021) and their autonomy envelope (ADR 0022). Reading config is
 /// best-effort: on failure it falls back to defaults, so a glitch never breaks the
 /// butler.
+/// Records one line to the butler's action log (best-effort — transparency, not
+/// the critical path, so a failure never breaks the turn).
+fn record_event(store: &SqliteStore, clock: &SystemClock, summary: &str) {
+    use endora_application::Clock;
+    let _ = store.record(clock.now(), summary);
+}
+
 fn build_runner(
     store: &SqliteStore,
     capabilities: Arc<Vec<Arc<dyn Capability>>>,
@@ -1068,7 +1077,7 @@ async fn send_chat(
             &runner,
             clock.as_ref(),
         )?;
-        usecases::send_to_butler(
+        let out = usecases::send_to_butler(
             store.as_ref(),
             store.as_ref(),
             store.as_ref(),
@@ -1079,7 +1088,13 @@ async fn send_chat(
             clock.as_ref(),
             &context,
             &req.message,
-        )
+        )?;
+        // Persist what the butler did/learned this turn to its action log, so the
+        // activity view is a durable record, not just an in-page note.
+        for item in &out.2 {
+            record_event(store.as_ref(), clock.as_ref(), item);
+        }
+        Ok(out)
     })
     .await?;
     Ok(Json(json!({
@@ -1154,6 +1169,10 @@ async fn stream_chat(
         };
         match result {
             Ok((reply, suggestions, activity)) => {
+                // Persist the turn's actions/learnings to the butler's action log.
+                for item in &activity {
+                    record_event(store.as_ref(), clock.as_ref(), item);
+                }
                 // A successful write nudges the change stream, like other writes.
                 let _ = changes.send(());
                 let _ = tx.send(event(json!({
@@ -1405,11 +1424,21 @@ async fn set_capability_enabled(
         }));
     }
     let store = state.store.clone();
+    let clock = state.clock.clone();
     let (cap_id, enabled) = (id.clone(), req.enabled);
     blocking(move || {
         store
             .set_enabled(&cap_id, enabled)
-            .map_err(AppError::Repository)
+            .map_err(AppError::Repository)?;
+        record_event(
+            store.as_ref(),
+            clock.as_ref(),
+            &format!(
+                "Turned the {cap_id} skill {}",
+                if enabled { "on" } else { "off" }
+            ),
+        );
+        Ok(())
     })
     .await?;
     let _ = state.changes.send(());
@@ -1448,8 +1477,27 @@ async fn set_autonomy(
         auto_consequential: req.auto_consequential,
     };
     let store = state.store.clone();
+    let clock = state.clock.clone();
     blocking(move || {
-        AutonomyEnvelopeRepository::set(store.as_ref(), &envelope).map_err(AppError::Repository)
+        AutonomyEnvelopeRepository::set(store.as_ref(), &envelope).map_err(AppError::Repository)?;
+        record_event(
+            store.as_ref(),
+            clock.as_ref(),
+            &format!(
+                "Adjusted autonomy: read-only skills {}, consequential actions {}",
+                if envelope.auto_external {
+                    "on their own"
+                } else {
+                    "ask first"
+                },
+                if envelope.auto_consequential {
+                    "on their own"
+                } else {
+                    "ask first"
+                },
+            ),
+        );
+        Ok(())
     })
     .await?;
     let _ = state.changes.send(());
@@ -1517,13 +1565,21 @@ pub fn spawn_heartbeat(state: AppState) {
                     &runner,
                     clock.as_ref(),
                 )?;
-                usecases::run_due_checkin(
+                let posted = usecases::run_due_checkin(
                     store.as_ref(),
                     store.as_ref(),
                     ids.as_ref(),
                     clock.as_ref(),
                     &context,
-                )
+                )?;
+                if posted.is_some() {
+                    record_event(
+                        store.as_ref(),
+                        clock.as_ref(),
+                        "Reached out with a check-in",
+                    );
+                }
+                Ok::<_, AppError>(posted)
             })
             .await;
             if let Ok(Ok(Some(_))) = posted {

@@ -435,7 +435,7 @@ function viewHome() {
 }
 
 // The live activity feed: newest first, updated in place by the change stream.
-const ACTIVITY_ICON = { observation: "note", decision: "scale" };
+const ACTIVITY_ICON = { observation: "note", decision: "scale", action: "sparkle" };
 function activityFeed() {
   if (!ACTIVITY.length) return `<div class="empty">No activity yet.</div>`;
   return ACTIVITY.map((a) => `

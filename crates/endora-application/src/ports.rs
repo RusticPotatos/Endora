@@ -626,6 +626,10 @@ pub struct ButlerContext {
     /// A result the butler just got back from a capability it used this turn —
     /// set only on the synthesis pass, so it can answer using real data.
     pub tool_result: Option<String>,
+    /// The current date and time (human-readable), so the butler always knows what
+    /// day it is rather than guessing or leaking a placeholder. Cheap local truth —
+    /// grounded every turn, unlike weather/news which need a skill.
+    pub now: String,
 }
 
 /// A capability the butler asked to use this turn (parsed from its reply). The
@@ -902,4 +906,32 @@ pub trait AuditLog {
     /// # Errors
     /// [`RepositoryError`] if the backend fails or stored data is corrupt.
     fn recent(&self, limit: usize) -> Result<Vec<AuditRecord>, RepositoryError>;
+}
+
+/// One entry in the butler's own event log: something it did or learned, or a
+/// setting the person changed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ActivityEvent {
+    /// When it happened.
+    pub at: Timestamp,
+    /// A plain-language line ("Used the weather skill", "Turned news off").
+    pub summary: String,
+}
+
+/// The butler's **action log** (ADR 0012's activity feed, widened): a durable,
+/// append-only record of what the butler did and learned each turn, and the
+/// person's setting changes — so the activity view shows the butler's actions and
+/// system events, not just policy decisions and experiment observations.
+pub trait EventLog {
+    /// Records one event at the given time.
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if the backend fails.
+    fn record(&self, at: Timestamp, summary: &str) -> Result<(), RepositoryError>;
+
+    /// Returns the most recent events, newest first, up to `limit`.
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if the backend fails or stored data is corrupt.
+    fn recent(&self, limit: usize) -> Result<Vec<ActivityEvent>, RepositoryError>;
 }
