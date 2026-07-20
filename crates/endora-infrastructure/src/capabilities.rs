@@ -84,6 +84,8 @@ pub fn default_capabilities() -> Vec<Arc<dyn Capability>> {
     vec![
         Arc::new(WeatherCapability),
         Arc::new(WebFetchCapability),
+        Arc::new(KnowledgeCapability),
+        Arc::new(WebAnswersCapability),
         Arc::new(LocalNewsCapability),
         Arc::new(ImageReviewCapability::from_env()),
         Arc::new(LocalEventsCapability),
@@ -513,6 +515,160 @@ fn decode_xml_entities(s: &str) -> String {
         .replace("&apos;", "'")
 }
 
+// ---- Knowledge lookup (real; Wikipedia, no API key) ------------------------
+
+struct KnowledgeCapability;
+
+impl Capability for KnowledgeCapability {
+    fn info(&self) -> CapabilityInfo {
+        CapabilityInfo {
+            id: "knowledge",
+            name: "Knowledge lookup",
+            description: "Look up factual, encyclopedic knowledge about a topic, person, or place (Wikipedia).",
+            category: "information",
+            reaches_external: true,
+            autonomy: AutonomyLevel::ActWithinPolicy,
+            configured: true,
+            needs: "",
+        }
+    }
+
+    fn invoke(&self, input: &Value) -> Result<Value, CapabilityError> {
+        let q = str_field(input, "query").or_else(|_| str_field(input, "topic"))?;
+        // Find the best-matching article title, then fetch its summary.
+        let search = http_get_text_ua(
+            &format!(
+                "https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch={}&srlimit=1&format=json",
+                urlencode(q)
+            ),
+            WIKI_UA,
+            128 * 1024,
+        )?;
+        let search: Value = serde_json::from_str(&search)
+            .map_err(|e| CapabilityError::Unavailable(e.to_string()))?;
+        let Some(title) = search["query"]["search"]
+            .get(0)
+            .and_then(|s| s["title"].as_str())
+        else {
+            return Ok(json!({ "query": q, "found": false, "extract": "" }));
+        };
+        let summary = http_get_text_ua(
+            &format!(
+                "https://en.wikipedia.org/api/rest_v1/page/summary/{}",
+                urlencode(title)
+            ),
+            WIKI_UA,
+            128 * 1024,
+        )?;
+        let summary: Value = serde_json::from_str(&summary)
+            .map_err(|e| CapabilityError::Unavailable(e.to_string()))?;
+        Ok(json!({
+            "query": q,
+            "found": true,
+            "title": summary["title"].as_str().unwrap_or(title),
+            "extract": summary["extract"].as_str().unwrap_or(""),
+            "url": summary["content_urls"]["desktop"]["page"].as_str().unwrap_or(""),
+        }))
+    }
+
+    fn summarize(&self, o: &Value) -> String {
+        let extract = o["extract"].as_str().unwrap_or("");
+        if extract.is_empty() {
+            return format!(
+                "I couldn't find an encyclopedia entry for '{}'.",
+                o["query"].as_str().unwrap_or("that")
+            );
+        }
+        let title = o["title"].as_str().unwrap_or("");
+        format!("{title}: {extract}")
+    }
+}
+
+const WIKI_UA: &str = "Endora personal butler (github.com/RusticPotatos/Endora)";
+
+// ---- Web answers (real; DuckDuckGo Instant Answer, no API key) --------------
+
+struct WebAnswersCapability;
+
+impl Capability for WebAnswersCapability {
+    fn info(&self) -> CapabilityInfo {
+        CapabilityInfo {
+            id: "web_search",
+            name: "Web answers",
+            description: "Get a quick answer or definition from the web for a question (DuckDuckGo).",
+            category: "information",
+            reaches_external: true,
+            autonomy: AutonomyLevel::ActWithinPolicy,
+            configured: true,
+            needs: "",
+        }
+    }
+
+    fn invoke(&self, input: &Value) -> Result<Value, CapabilityError> {
+        let q = str_field(input, "query").or_else(|_| str_field(input, "question"))?;
+        let body = http_get_text(
+            &format!(
+                "https://api.duckduckgo.com/?q={}&format=json&no_html=1&skip_disambig=1",
+                urlencode(q)
+            ),
+            256 * 1024,
+        )?;
+        let data: Value =
+            serde_json::from_str(&body).map_err(|e| CapabilityError::Unavailable(e.to_string()))?;
+        // Prefer a direct answer/abstract; else surface a few related topics.
+        let answer = first_non_empty(&[
+            data["Answer"].as_str(),
+            data["AbstractText"].as_str(),
+            data["Definition"].as_str(),
+        ]);
+        let related: Vec<String> = data["RelatedTopics"]
+            .as_array()
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|t| t["Text"].as_str())
+                    .filter(|s| !s.is_empty())
+                    .take(4)
+                    .map(str::to_owned)
+                    .collect()
+            })
+            .unwrap_or_default();
+        Ok(json!({
+            "query": q,
+            "answer": answer,
+            "source": data["AbstractURL"].as_str().unwrap_or(""),
+            "related": related,
+        }))
+    }
+
+    fn summarize(&self, o: &Value) -> String {
+        let query = o["query"].as_str().unwrap_or("that");
+        if let Some(answer) = o["answer"].as_str().filter(|s| !s.is_empty()) {
+            return answer.to_owned();
+        }
+        let related: Vec<&str> = o["related"]
+            .as_array()
+            .map(|a| a.iter().filter_map(Value::as_str).collect())
+            .unwrap_or_default();
+        if related.is_empty() {
+            return format!(
+                "I didn't find a direct answer for '{query}'. It may need a more specific search."
+            );
+        }
+        format!("Here's what I found for '{query}': {}", related.join("; "))
+    }
+}
+
+/// The first of several optional strings that is present and non-empty.
+fn first_non_empty(candidates: &[Option<&str>]) -> String {
+    candidates
+        .iter()
+        .flatten()
+        .map(|s| s.trim())
+        .find(|s| !s.is_empty())
+        .unwrap_or("")
+        .to_owned()
+}
+
 // ---- Image review (local vision model via Ollama; env-gated) ---------------
 
 struct ImageReviewCapability {
@@ -920,6 +1076,38 @@ mod tests {
     fn news_without_a_place_or_query_is_bad_input() {
         let err = LocalNewsCapability.invoke(&json!({})).unwrap_err();
         assert!(matches!(err, CapabilityError::BadInput(_)));
+    }
+
+    #[test]
+    fn knowledge_summarize_reads_the_extract_or_says_nothing_found() {
+        let hit = json!({ "query": "Ada Lovelace", "found": true, "title": "Ada Lovelace",
+            "extract": "Ada Lovelace was an English mathematician." });
+        assert_eq!(
+            KnowledgeCapability.summarize(&hit),
+            "Ada Lovelace: Ada Lovelace was an English mathematician."
+        );
+        let miss = json!({ "query": "asdfqwer", "found": false, "extract": "" });
+        assert!(
+            KnowledgeCapability
+                .summarize(&miss)
+                .contains("couldn't find")
+        );
+    }
+
+    #[test]
+    fn web_answers_prefers_a_direct_answer_then_related() {
+        let direct = json!({ "query": "capital of France", "answer": "Paris", "related": [] });
+        assert_eq!(WebAnswersCapability.summarize(&direct), "Paris");
+        let related = json!({ "query": "rust lang", "answer": "",
+            "related": ["Rust is a systems language", "Memory safety without GC"] });
+        let s = WebAnswersCapability.summarize(&related);
+        assert!(s.contains("Rust is a systems language"));
+        let empty = json!({ "query": "zzz", "answer": "", "related": [] });
+        assert!(
+            WebAnswersCapability
+                .summarize(&empty)
+                .contains("didn't find")
+        );
     }
 
     #[test]
