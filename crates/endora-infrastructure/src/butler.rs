@@ -402,7 +402,10 @@ fn build_butler_request(
     }
     if let Some(result) = &context.tool_result {
         system.push_str(&format!(
-            "\nSKILL RESULT (answer the person naturally using this; set \"use\":null): {result}"
+            "\nSKILL RESULT — real data you just fetched. In your \"reply\", tell the person what \
+             it actually says: share the specifics (list the headlines, give the numbers and \
+             details) in your own warm words. Do NOT just say you found something or checked — \
+             actually relay it. Add nothing that isn't here, and set \"use\":null.\n{result}"
         ));
     }
     let mut messages = vec![json!({ "role": "system", "content": system })];
