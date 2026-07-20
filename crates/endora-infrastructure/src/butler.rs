@@ -84,12 +84,22 @@ pub struct LlmButler {
     fallback: ScriptedButler,
 }
 
+/// How long to wait for the whole model round-trip before giving up and using
+/// the scripted fallback. Bounds the chat: a slow or stuck model can never hang
+/// the conversation "forever" — the person always gets a reply. Generous enough
+/// for a healthy local model (GPU replies land in a few seconds); it only trips
+/// when something is wrong (e.g. inference stuck on CPU).
+const BUTLER_MODEL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(90);
+
 impl LlmButler {
     /// Creates a model-backed butler for a local endpoint and model.
     #[must_use]
     pub fn new(base_url: String, model: String) -> Self {
         Self {
-            agent: ureq::Agent::new_with_defaults(),
+            agent: ureq::Agent::config_builder()
+                .timeout_global(Some(BUTLER_MODEL_TIMEOUT))
+                .build()
+                .into(),
             base_url,
             model,
             fallback: ScriptedButler,
