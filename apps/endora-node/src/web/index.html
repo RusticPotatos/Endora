@@ -759,15 +759,19 @@ function viewSuggestions() {
 // others are declared and waiting on setup (a key, a model, a data source).
 function viewSkills() {
   const card = (c) => {
-    const ready = c.configured;
     const ext = c.reaches_external;
+    const enabled = c.enabled !== false;
+    const status = c.usable
+      ? `<span class="pill concluded">On</span>`
+      : (!enabled ? `<span class="pill">Off</span>` : `<span class="pill">Needs setup</span>`);
     return `
       <div class="card"><div class="row">
         <div class="grow">
-          <div class="title">${esc(c.name)} ${ready ? `<span class="pill concluded">Ready</span>` : `<span class="pill">Needs setup</span>`}${ext ? ` <span class="pill">leaves device</span>` : ""}</div>
+          <div class="title">${esc(c.name)} ${status}${ext ? ` <span class="pill">leaves device</span>` : ""}</div>
           <div class="sub">${esc(c.description)}</div>
-          ${ready ? "" : `<div class="sub" style="margin-top:4px;">Needs: ${esc(c.needs)}</div>`}
+          ${(enabled && !c.configured) ? `<div class="sub" style="margin-top:4px;">Needs: ${esc(c.needs)}</div>` : ""}
         </div>
+        <button class="ghost" data-act="skill:enable:${c.id}:${enabled ? "0" : "1"}">${enabled ? "Turn off" : "Turn on"}</button>
       </div></div>`;
   };
   return `
@@ -1021,6 +1025,13 @@ async function dispatch(act) {
     }
     if (verb === "dismiss" && noun === "suggestion") {
       try { await api("POST", `/v1/suggestions/${id}/dismiss`); } catch (_) {}
+      return reload();
+    }
+    // Turn a skill on or off (ADR 0021). `id` is the capability id; `arg` is 1/0.
+    if (verb === "skill" && noun === "enable") {
+      const enabled = arg === "1";
+      try { await api("POST", `/v1/capabilities/${id}/enable`, { enabled }); }
+      catch (e) { flash("Couldn't change that skill: " + e.message, "err"); }
       return reload();
     }
     // Review Endora's understanding: affirm (raises confidence) or correct (drops it).

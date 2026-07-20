@@ -11,11 +11,11 @@ use std::sync::Mutex;
 use serde_json::{Value as JsonValue, json};
 
 use endora_application::{
-    AssumptionRepository, AuditLog, BeliefRepository, ButlerProposal, ChatRepository,
-    CheckinRepository, CheckinSchedule, DirectionRepository, ExperimentRepository, MemorySnapshot,
-    MemoryStore, ObservationRepository, PreferenceRepository, ProcessChangeRepository,
-    ReflectionRepository, RepositoryError, Snooze, SnoozeRepository, Suggestion,
-    SuggestionRepository, SuggestionStatus, TargetRepository, ValueRepository,
+    AssumptionRepository, AuditLog, BeliefRepository, ButlerProposal, CapabilityConfigRepository,
+    ChatRepository, CheckinRepository, CheckinSchedule, DirectionRepository, ExperimentRepository,
+    MemorySnapshot, MemoryStore, ObservationRepository, PreferenceRepository,
+    ProcessChangeRepository, ReflectionRepository, RepositoryError, Snooze, SnoozeRepository,
+    Suggestion, SuggestionRepository, SuggestionStatus, TargetRepository, ValueRepository,
 };
 use endora_domain::{
     ApprovalState, Assumption, AssumptionId, AuditId, AuditRecord, Belief, BeliefId, BeliefKind,
@@ -156,6 +156,10 @@ CREATE TABLE IF NOT EXISTS beliefs (
     created_ms       INTEGER NOT NULL,
     last_affirmed_ms INTEGER NOT NULL,
     status           TEXT NOT NULL
+) STRICT;
+CREATE TABLE IF NOT EXISTS capability_config (
+    id      TEXT PRIMARY KEY,
+    enabled INTEGER NOT NULL
 ) STRICT;
 ";
 
@@ -1100,6 +1104,31 @@ impl CheckinRepository for SqliteStore {
                 schedule.interval_ms,
                 schedule.next_at.unix_millis()
             ],
+        )
+        .map_err(backend)?;
+        Ok(())
+    }
+}
+
+impl CapabilityConfigRepository for SqliteStore {
+    fn enabled_overrides(&self) -> Result<Vec<(String, bool)>, RepositoryError> {
+        let conn = self.lock()?;
+        let mut stmt = conn
+            .prepare("SELECT id, enabled FROM capability_config")
+            .map_err(backend)?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)? != 0))
+            })
+            .map_err(backend)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(backend)
+    }
+
+    fn set_enabled(&self, id: &str, enabled: bool) -> Result<(), RepositoryError> {
+        let conn = self.lock()?;
+        conn.execute(
+            "INSERT OR REPLACE INTO capability_config (id, enabled) VALUES (?1, ?2)",
+            params![id, i64::from(enabled)],
         )
         .map_err(backend)?;
         Ok(())
@@ -2274,6 +2303,28 @@ mod tests {
         assert_eq!(recent[0].summary(), "second");
         assert_eq!(recent[1].summary(), "first");
         assert_eq!(log.recent(1).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn capability_enable_overrides_round_trip() {
+        use endora_application::CapabilityConfigRepository;
+        let store = store();
+        let repo: &dyn CapabilityConfigRepository = &store;
+
+        // No overrides to start.
+        assert!(repo.enabled_overrides().unwrap().is_empty());
+
+        // Set two, then flip one; the store keeps the latest per id.
+        repo.set_enabled("weather", true).unwrap();
+        repo.set_enabled("flights", false).unwrap();
+        repo.set_enabled("weather", false).unwrap();
+
+        let mut got = repo.enabled_overrides().unwrap();
+        got.sort();
+        assert_eq!(
+            got,
+            vec![("flights".to_owned(), false), ("weather".to_owned(), false)]
+        );
     }
 
     #[test]

@@ -534,6 +534,24 @@ pub trait CheckinRepository {
     fn set(&self, schedule: &CheckinSchedule) -> Result<(), RepositoryError>;
 }
 
+/// Persists per-capability configuration the person controls from the Skills view
+/// (ADR 0021). This first slice stores only the **enabled** flag; only overrides
+/// are stored — a capability with no row keeps its built-in default (enabled).
+pub trait CapabilityConfigRepository {
+    /// The stored enabled/disabled overrides, as `(id, enabled)` pairs. Ids not
+    /// present here have never been toggled and use their default.
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if the backend fails.
+    fn enabled_overrides(&self) -> Result<Vec<(String, bool)>, RepositoryError>;
+
+    /// Sets whether a capability is enabled (upsert by id).
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if the backend fails.
+    fn set_enabled(&self, id: &str, enabled: bool) -> Result<(), RepositoryError>;
+}
+
 /// A brief of one North Star, for grounding the butler's conversation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NorthStarBrief {
