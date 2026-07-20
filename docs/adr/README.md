@@ -51,3 +51,5 @@ of an existing record and take the next number.
 | [0015](0015-identity-and-values-context.md) | The Identity & Values context: a "why" above North Stars | Accepted |
 | [0016](0016-adaptive-attention.md) | Adaptive attention: ranking and deferral-backoff | Accepted |
 | [0017](0017-persona-and-voice.md) | Persona and voice | Accepted |
+| [0018](0018-streaming-chat-responses.md) | Streaming chat responses | Accepted |
+| [0019](0019-proactive-self-improving-butler.md) | The proactive, self-improving butler: heartbeat, check-ins, capabilities, hospitality | Accepted |
