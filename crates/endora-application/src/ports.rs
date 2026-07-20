@@ -330,11 +330,18 @@ impl ButlerProposal {
     /// A human-readable one-line summary of what confirming would do.
     #[must_use]
     pub fn label(&self) -> String {
+        // Natural, action-oriented phrasing — the confirm card shouldn't recite
+        // the internal taxonomy (value / North Star / target) at the person; that
+        // vocabulary lives in the profile views, not the conversation.
         match self {
-            Self::CreateValue { name } => format!("Create value: \"{name}\""),
-            Self::CreateNorthStar { title } => format!("Create North Star: \"{title}\""),
-            Self::CreateTarget { statement, .. } => format!("Create target: \"{statement}\""),
-            Self::RememberPreference { text, .. } => format!("Remember: \"{text}\""),
+            Self::CreateValue { name } => format!("Note that this matters to you: \"{name}\""),
+            Self::CreateNorthStar { title } => {
+                format!("Keep this as something you're working toward: \"{title}\"")
+            }
+            Self::CreateTarget { statement, .. } => {
+                format!("Add a concrete next step: \"{statement}\"")
+            }
+            Self::RememberPreference { text, .. } => format!("Remember this about you: \"{text}\""),
         }
     }
 }

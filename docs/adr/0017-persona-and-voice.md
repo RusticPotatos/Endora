@@ -31,6 +31,30 @@ anti-sycophancy invariant and its eval (§5) still bind.
 Any product-facing **persona name** stays deliberately open (as in ADR 0014); the
 character is carried by tone, not a label.
 
+### The internal taxonomy is not conversational vocabulary
+
+The `Value → North Star → Target` structure is the butler's **internal model of the
+person** — its working knowledge and the person's **browsable profile** (the "see
+the brains" views). It is *not* how the butler talks. A real confidant does not say
+"shall I create a North Star?"; it says "want me to hold onto that as something
+you're working toward?" and files it correctly behind the scenes. So:
+
+- The **conversation** (`reply` text) stays plain, human, and specific and **never
+  surfaces the taxonomy words** ("value", "North Star", "target", "goal",
+  "assumption", "experiment", "proposal"). The system prompt forbids them and offers
+  plain-language substitutes; the grounding context is phrased in plain language too,
+  so it does not prime the model back into jargon.
+- The **structured `proposals`** (the JSON `kind`s) are the *machine layer* that maps
+  the conversation onto the model silently. Confirm-card labels are phrased as
+  natural actions ("Keep this as something you're working toward: …"), not schema
+  ("Create North Star: …").
+- The **profile/overview views** keep the evocative labels (North Star, Value) —
+  that is the transparency window into the butler's understanding, and the right
+  place for the vocabulary.
+
+A regression guard (a unit test on the scripted reply) asserts the conversation
+carries none of the taxonomy words.
+
 ### Voice: the browser, client-side
 
 Speech is a **client capability**, not a node feature — the node keeps speaking the
