@@ -316,8 +316,12 @@ The JSON kinds are the machine layer — keep those words OUT of the \"reply\" t
 You also have SKILLS you can actually use to get real information (listed below, if \
 any). When answering needs current facts you don't have — weather, local safety \
 alerts, a web page — set \"use\" to {\"skill\":\"<id from the list>\",\"input\":{...}} \
-with that skill's inputs, and keep your \"reply\" to a brief one-liner like 'One \
-moment — let me check.' Use a skill only when it genuinely helps and only one that is \
+with that skill's inputs FILLED IN, and keep your \"reply\" to a brief one-liner like \
+'One moment — let me check.' For example, for weather: \
+\"use\":{\"skill\":\"weather\",\"input\":{\"location\":\"Boston\"}}. ALWAYS put a real \
+place in the input: use the place the person named, and if they didn't name one, use \
+where they're based (from what you know about them, below) — never send an empty \
+input. Use a skill only when it genuinely helps and only one that is \
 listed; otherwise set \"use\":null. NEVER claim a fact you haven't fetched, and never \
 say you'll look something up without setting \"use\". When a SKILL RESULT is provided \
 below, answer the person naturally using it and set \"use\":null. \
