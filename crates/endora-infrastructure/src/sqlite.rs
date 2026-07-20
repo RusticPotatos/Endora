@@ -11,11 +11,12 @@ use std::sync::Mutex;
 use serde_json::{Value as JsonValue, json};
 
 use endora_application::{
-    AssumptionRepository, AuditLog, BeliefRepository, ButlerProposal, CapabilityConfigRepository,
-    ChatRepository, CheckinRepository, CheckinSchedule, DirectionRepository, ExperimentRepository,
-    MemorySnapshot, MemoryStore, ObservationRepository, PreferenceRepository,
-    ProcessChangeRepository, ReflectionRepository, RepositoryError, Snooze, SnoozeRepository,
-    Suggestion, SuggestionRepository, SuggestionStatus, TargetRepository, ValueRepository,
+    AssumptionRepository, AuditLog, AutonomyEnvelope, AutonomyEnvelopeRepository, BeliefRepository,
+    ButlerProposal, CapabilityConfigRepository, ChatRepository, CheckinRepository, CheckinSchedule,
+    DirectionRepository, ExperimentRepository, MemorySnapshot, MemoryStore, ObservationRepository,
+    PreferenceRepository, ProcessChangeRepository, ReflectionRepository, RepositoryError, Snooze,
+    SnoozeRepository, Suggestion, SuggestionRepository, SuggestionStatus, TargetRepository,
+    ValueRepository,
 };
 use endora_domain::{
     ApprovalState, Assumption, AssumptionId, AuditId, AuditRecord, Belief, BeliefId, BeliefKind,
@@ -160,6 +161,11 @@ CREATE TABLE IF NOT EXISTS beliefs (
 CREATE TABLE IF NOT EXISTS capability_config (
     id      TEXT PRIMARY KEY,
     enabled INTEGER NOT NULL
+) STRICT;
+CREATE TABLE IF NOT EXISTS autonomy_envelope (
+    id               INTEGER PRIMARY KEY CHECK (id = 0),
+    auto_external    INTEGER NOT NULL,
+    auto_consequential INTEGER NOT NULL
 ) STRICT;
 ";
 
@@ -1103,6 +1109,39 @@ impl CheckinRepository for SqliteStore {
                 i64::from(schedule.enabled),
                 schedule.interval_ms,
                 schedule.next_at.unix_millis()
+            ],
+        )
+        .map_err(backend)?;
+        Ok(())
+    }
+}
+
+impl AutonomyEnvelopeRepository for SqliteStore {
+    fn get(&self) -> Result<AutonomyEnvelope, RepositoryError> {
+        let conn = self.lock()?;
+        conn.query_row(
+            "SELECT auto_external, auto_consequential FROM autonomy_envelope WHERE id = 0",
+            [],
+            |r| {
+                Ok(AutonomyEnvelope {
+                    auto_external: r.get::<_, i64>(0)? != 0,
+                    auto_consequential: r.get::<_, i64>(1)? != 0,
+                })
+            },
+        )
+        .optional()
+        .map_err(backend)
+        .map(Option::unwrap_or_default)
+    }
+
+    fn set(&self, envelope: &AutonomyEnvelope) -> Result<(), RepositoryError> {
+        let conn = self.lock()?;
+        conn.execute(
+            "INSERT OR REPLACE INTO autonomy_envelope (id, auto_external, auto_consequential) \
+             VALUES (0, ?1, ?2)",
+            params![
+                i64::from(envelope.auto_external),
+                i64::from(envelope.auto_consequential)
             ],
         )
         .map_err(backend)?;
@@ -2303,6 +2342,23 @@ mod tests {
         assert_eq!(recent[0].summary(), "second");
         assert_eq!(recent[1].summary(), "first");
         assert_eq!(log.recent(1).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn autonomy_envelope_defaults_then_round_trips() {
+        use endora_application::{AutonomyEnvelope, AutonomyEnvelopeRepository};
+        let store = store();
+        let repo: &dyn AutonomyEnvelopeRepository = &store;
+
+        // Unset ⇒ the default posture (external ok, consequential no).
+        assert_eq!(repo.get().unwrap(), AutonomyEnvelope::default());
+
+        let widened = AutonomyEnvelope {
+            auto_external: false,
+            auto_consequential: true,
+        };
+        repo.set(&widened).unwrap();
+        assert_eq!(repo.get().unwrap(), widened);
     }
 
     #[test]

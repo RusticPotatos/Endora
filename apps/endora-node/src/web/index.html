@@ -193,6 +193,7 @@ let CHAT_PROPOSALS = [];       // proposals from the butler's last reply
 let SUGGESTIONS = [];          // pending suggestions (the butler's durable proposal inbox)
 let CHECKIN = { enabled: false, interval_ms: 0 }; // proactive check-in cadence
 let CAPS = [];                 // the butler's capabilities/skills (modules)
+let AUTONOMY = { auto_external: true, auto_consequential: false }; // the autonomy envelope (ADR 0022)
 let UNDERSTANDING = [];        // Endora's beliefs about the person (the home surface)
 let LAST_ACTIVITY = [];        // what Endora did behind the scenes on the last turn
 let LAST_ACTIVITY_MSG = null;  // the butler message id that activity belongs to
@@ -262,13 +263,14 @@ async function api(method, path, body) {
 async function reload() {
   // The export snapshot, the derived activity feed, what needs attention, and the
   // pending suggestions inbox (proposals the butler made, waiting to be applied).
-  const [db, activity, attention, suggestions, checkin, caps] = await Promise.all([
+  const [db, activity, attention, suggestions, checkin, caps, autonomy] = await Promise.all([
     api("GET", "/v1/export"),
     api("GET", "/v1/activity?limit=30"),
     api("GET", "/v1/attention"),
     api("GET", "/v1/suggestions?status=pending"),
     api("GET", "/v1/checkin"),
     api("GET", "/v1/capabilities"),
+    api("GET", "/v1/autonomy"),
   ]);
   DB = db;
   ACTIVITY = activity;
@@ -276,6 +278,7 @@ async function reload() {
   SUGGESTIONS = suggestions;
   CHECKIN = checkin;
   CAPS = caps;
+  AUTONOMY = autonomy;
   try { UNDERSTANDING = await api("GET", "/v1/understanding"); } catch (_) { UNDERSTANDING = []; }
   render();
 }
@@ -774,10 +777,25 @@ function viewSkills() {
         <button class="ghost" data-act="skill:enable:${c.id}:${enabled ? "0" : "1"}">${enabled ? "Turn off" : "Turn on"}</button>
       </div></div>`;
   };
+  const env = AUTONOMY || {};
+  const toggle = (on, act, label, sub) => `
+    <div class="row" style="align-items:flex-start;gap:10px;margin-top:8px;">
+      <div class="grow"><div class="title" style="font-weight:500;">${label}</div><div class="sub">${sub}</div></div>
+      <button class="${on ? "primary" : "ghost"}" data-act="${act}:${on ? "0" : "1"}">${on ? "On" : "Off"}</button>
+    </div>`;
+  const envelope = `
+    <div class="card">
+      <div class="title">How independently should Endora act?</div>
+      <div class="sub" style="margin:4px 0 2px;">Endora acts on its own inside the boundary you set here, and asks you at its edges. You can widen or narrow it any time.</div>
+      ${toggle(env.auto_external !== false, "autonomy:external", "Use read-only skills on its own", "Check weather, news, safety alerts and web pages without asking. (Recommended)")}
+      ${toggle(env.auto_consequential === true, "autonomy:consequential", "Take consequential actions on its own", "Let it carry out actions that normally need your confirmation — spending, sending, or things that can't be undone. Off is safer; turn on only if you're sure.")}
+    </div>`;
   return `
     ${crumbs([{ label: "Home", act: "go:home" }, { label: "Skills" }])}
     <h2>What Endora can do</h2>
-    <div class="sub" style="margin-bottom:10px;">Modules the butler can use on your behalf — each shows whether it leaves your device and what it needs. Consequential ones always ask you first.</div>
+    <div class="sub" style="margin-bottom:10px;">Modules the butler can use on your behalf — each shows whether it leaves your device and what it needs.</div>
+    ${envelope}
+    <h3 style="margin-top:18px;">Skills</h3>
     ${listOr((CAPS || []).map(card), "No skills registered.")}`;
 }
 
@@ -1032,6 +1050,15 @@ async function dispatch(act) {
       const enabled = arg === "1";
       try { await api("POST", `/v1/capabilities/${id}/enable`, { enabled }); }
       catch (e) { flash("Couldn't change that skill: " + e.message, "err"); }
+      return reload();
+    }
+    // Widen/narrow the autonomy envelope (ADR 0022). `noun` is the lever; `id` is 1/0.
+    if (verb === "autonomy") {
+      const env = Object.assign({ auto_external: true, auto_consequential: false }, AUTONOMY || {});
+      if (noun === "external") env.auto_external = id === "1";
+      if (noun === "consequential") env.auto_consequential = id === "1";
+      try { await api("POST", "/v1/autonomy", env); }
+      catch (e) { flash("Couldn't change that: " + e.message, "err"); }
       return reload();
     }
     // Review Endora's understanding: affirm (raises confidence) or correct (drops it).

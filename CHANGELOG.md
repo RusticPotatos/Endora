@@ -33,6 +33,14 @@ tagged release.
 
 ### Added
 
+- **The autonomy envelope — how independently Endora acts** (first slice of
+  [ADR 0022](docs/adr/0022-autonomy-envelope-and-self-authored-capabilities.md)): a
+  control in the Skills view sets the boundary the butler acts *within* — it acts on
+  its own inside it and asks you at the edges. Two levers today: use read-only skills
+  on its own (default on), and take consequential actions on its own (default off,
+  the safe posture). A deterministic classifier — never the model — decides whether a
+  given action may run, from the skill's declared autonomy and reach. Defaults
+  preserve the established behaviour; new `GET`/`POST /v1/autonomy`.
 - **Manage your skills — turn capabilities on and off** (first slice of
   [ADR 0021](docs/adr/0021-capability-catalog-and-mcp-host.md)): the Skills view is
   now a catalog you control — each skill shows **On / Off / Needs setup**, and a
