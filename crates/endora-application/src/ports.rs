@@ -534,6 +534,46 @@ pub trait CheckinRepository {
     fn set(&self, schedule: &CheckinSchedule) -> Result<(), RepositoryError>;
 }
 
+/// The person's **autonomy envelope** (ADR 0022): the deterministic boundary the
+/// butler acts independently *within*. Widening it grants more independence; the
+/// policy layer — never the model — still enforces the edges. This first slice has
+/// two coarse levers; finer axes (spend vs. privacy, per-domain) come later.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AutonomyEnvelope {
+    /// May the butler use read-only skills that **leave the device** (weather,
+    /// news, a web page) on its own? Default yes.
+    pub auto_external: bool,
+    /// May it take **confirm-required** (consequential) actions on its own, rather
+    /// than surfacing them for approval? Default no — the safe posture.
+    pub auto_consequential: bool,
+}
+
+impl Default for AutonomyEnvelope {
+    fn default() -> Self {
+        // Preserves the established behaviour: read-only skills act on their own,
+        // consequential ones ask (ADR 0010).
+        Self {
+            auto_external: true,
+            auto_consequential: false,
+        }
+    }
+}
+
+/// Persists the person's [`AutonomyEnvelope`] (ADR 0022).
+pub trait AutonomyEnvelopeRepository {
+    /// The stored envelope, or the default if never set.
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if the backend fails.
+    fn get(&self) -> Result<AutonomyEnvelope, RepositoryError>;
+
+    /// Stores the envelope (replacing any previous one).
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if the backend fails.
+    fn set(&self, envelope: &AutonomyEnvelope) -> Result<(), RepositoryError>;
+}
+
 /// Persists per-capability configuration the person controls from the Skills view
 /// (ADR 0021). This first slice stores only the **enabled** flag; only overrides
 /// are stored — a capability with no row keeps its built-in default (enabled).
