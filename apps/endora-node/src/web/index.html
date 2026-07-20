@@ -43,6 +43,26 @@
     width: 9px; height: 9px; border-radius: 50%; background: var(--accent);
     box-shadow: 0 0 0 3px var(--accent-weak);
   }
+  /* One clean menu instead of a cluttered nav row. */
+  #menu-btn { position: relative; }
+  #menu-btn.has-badge::after {
+    content: ""; position: absolute; top: 5px; right: 6px; width: 7px; height: 7px;
+    border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 2px var(--card);
+  }
+  .menu {
+    position: absolute; right: 16px; top: 54px; z-index: 20; min-width: 210px;
+    background: var(--card); border: 1px solid var(--line); border-radius: 12px;
+    box-shadow: var(--shadow-lift); padding: 6px; display: flex; flex-direction: column; gap: 1px;
+  }
+  .menu[hidden] { display: none; }
+  .menu button {
+    justify-content: flex-start; width: 100%; border: none; background: transparent;
+    border-radius: 8px; color: var(--ink); font-weight: 500; padding: 9px 11px;
+  }
+  .menu button:hover { background: var(--accent-weak); }
+  .menu button.danger { color: var(--bad); }
+  .menu .divider { height: 1px; background: var(--line); margin: 5px 8px; }
+  .menu .menu-count { margin-left: auto; color: var(--accent); font-size: 12px; font-weight: 600; }
   header .spacer { flex: 1; }
   main { max-width: 900px; margin: 0 auto; padding: 20px; }
   .crumbs { color: var(--muted); font-size: 13px; margin-bottom: 14px; }
@@ -152,13 +172,8 @@
 <header>
   <h1 id="brand" data-act="go:chat" title="Talk to your butler" style="cursor:pointer"><span class="dot"></span><span>Endora</span></h1>
   <span class="spacer"></span>
-  <button class="ghost" data-act="go:chat" id="btn-chat"></button>
-  <button class="ghost" data-act="go:home" id="btn-stars"></button>
-  <button class="ghost" data-act="go:suggestions" id="btn-suggestions"></button>
-  <button class="ghost" data-act="go:prefs" id="btn-prefs"></button>
-  <button class="ghost" data-act="go:audit" id="btn-audit"></button>
-  <button class="ghost" data-act="export" id="btn-export"></button>
-  <button class="ghost danger" data-act="purge" id="btn-purge"></button>
+  <button class="ghost" id="menu-btn" data-act="toggle:menu" title="Menu" aria-label="Menu"></button>
+  <nav id="menu" class="menu" hidden></nav>
 </header>
 <main>
   <div id="msg" class="msg"></div>
@@ -174,6 +189,7 @@ let ATTENTION = [];            // latest /v1/attention items (most pressing firs
 let CHAT_PROPOSALS = [];       // proposals from the butler's last reply
 let SUGGESTIONS = [];          // pending suggestions (the butler's durable proposal inbox)
 let CHECKIN = { enabled: false, interval_ms: 0 }; // proactive check-in cadence
+let CAPS = [];                 // the butler's capabilities/skills (modules)
 let CHAT_STREAMING = false;    // true while a reply is streaming in (guards live-render)
 let NAV = { v: "chat" };       // current view (the butler is the landing page)
 
@@ -201,6 +217,9 @@ const ICONS = {
   scale: '<path d="M12 4v16M7 20h10"/><path d="M4 8h16M4 8l-2.2 5a2.6 2.6 0 0 0 4.4 0zM20 8l-2.2 5a2.6 2.6 0 0 0 4.4 0z"/><path d="M8 5h8"/>',
   sparkle: '<path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8z"/>',
   inbox: '<path d="M4 13l2-8h12l2 8v6H4z"/><path d="M4 13h4l1.5 2.5h5L16 13h4"/>',
+  menu: '<line x1="4" y1="7" x2="20" y2="7"/><line x1="4" y1="12" x2="20" y2="12"/><line x1="4" y1="17" x2="20" y2="17"/>',
+  skills: '<path d="M12 3l2.5 5 5.5.8-4 3.9 1 5.5-5-2.6-5 2.6 1-5.5-4-3.9 5.5-.8z"/>',
+  gear: '<circle cx="12" cy="12" r="3.2"/><path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M18.4 5.6l-2.1 2.1M7.7 16.3l-2.1 2.1"/>',
 };
 function icon(name, size = 17) {
   const p = ICONS[name];
@@ -236,18 +255,20 @@ async function api(method, path, body) {
 async function reload() {
   // The export snapshot, the derived activity feed, what needs attention, and the
   // pending suggestions inbox (proposals the butler made, waiting to be applied).
-  const [db, activity, attention, suggestions, checkin] = await Promise.all([
+  const [db, activity, attention, suggestions, checkin, caps] = await Promise.all([
     api("GET", "/v1/export"),
     api("GET", "/v1/activity?limit=30"),
     api("GET", "/v1/attention"),
     api("GET", "/v1/suggestions?status=pending"),
     api("GET", "/v1/checkin"),
+    api("GET", "/v1/capabilities"),
   ]);
   DB = db;
   ACTIVITY = activity;
   ATTENTION = attention;
   SUGGESTIONS = suggestions;
   CHECKIN = checkin;
+  CAPS = caps;
   render();
 }
 
@@ -262,7 +283,7 @@ function subscribeToActivity() {
   } catch (_) { /* SSE unavailable: the UI still works, just not live. */ }
 }
 
-function go(v, id) { NAV = { v, id }; clearMsg(); render(); }
+function go(v, id) { NAV = { v, id }; clearMsg(); closeMenu(); render(); }
 
 // Observations reachable under a target (target → assumptions → experiments → obs).
 function observationsForTarget(targetId) {
@@ -381,18 +402,18 @@ function viewHome() {
   }).join("");
   const unfiled = visible(DB.directions.filter((d) => !d.value_id));
   const unfiledHtml = `
-    <h3 style="margin-top:16px;">${(DB.values || []).length ? "Unfiled" : "North Stars"}</h3>
-    ${listOr(unfiled.map(dirCard), "No North Stars yet. Create one below.")}`;
+    <h3 style="margin-top:16px;">${(DB.values || []).length ? "Unfiled" : "Goals"}</h3>
+    ${listOr(unfiled.map(dirCard), "No goals yet. Create one below.")}`;
   return `
     ${crumbs([{ label: "Directions" }])}
     ${dueBanner}
-    <h2>North Stars by value</h2>
+    <h2>Goals by value</h2>
     ${groups}
     ${unfiledHtml}
     ${archivedToggle(DB.directions)}
     <div class="form">
-      <input id="new-direction" placeholder="A North Star…" />
-      <button class="primary" data-act="create:direction">Add North Star</button>
+      <input id="new-direction" placeholder="A goal…" />
+      <button class="primary" data-act="create:direction">Add goal</button>
     </div>
     <div class="form">
       <input id="new-value" placeholder="A value it serves (e.g. Health)…" />
@@ -429,7 +450,7 @@ function viewDirection(id) {
   const valueOptions = `<option value="">(unfiled)</option>` +
     (DB.values || []).map((v) => `<option value="${v.id}" ${d.value_id === v.id ? "selected" : ""}>${esc(v.name)}</option>`).join("");
   return `
-    ${crumbs([{ label: "Directions", act: "go:home" }, { label: d.title }])}
+    ${crumbs([{ label: "Home", act: "go:home" }, { label: d.title }])}
     <div class="card"><div class="title">${esc(d.title)}${statusPill(d)}</div>
       <div class="row" style="gap:6px; margin-top:8px; align-items:center;">
         <span class="sub">Serves value:</span>
@@ -441,7 +462,7 @@ function viewDirection(id) {
     ${listOr(targets, "No targets yet.")}
     ${archivedToggle(allTargets)}
     <div class="form">
-      <input id="new-target" placeholder="A target under this North Star…" />
+      <input id="new-target" placeholder="A target under this goal…" />
       <button class="primary" data-act="create:target:${id}">Add target</button>
     </div>`;
 }
@@ -468,7 +489,7 @@ function viewTarget(id) {
     ? obs.map((o) => `<label class="evi"><input type="checkbox" class="evi-box" value="${o.id}" /> ${esc(o.note)}</label>`).join("")
     : `<div class="sub">Record observations under an experiment first to cite them here.</div>`;
   return `
-    ${crumbs([{ label: "Directions", act: "go:home" },
+    ${crumbs([{ label: "Home", act: "go:home" },
               { label: d ? d.title : "…", act: "go:direction:" + g.direction_id },
               { label: g.statement }])}
     <h2>Assumptions</h2>
@@ -518,7 +539,7 @@ function viewAssumption(id) {
     </div>`;
   });
   return `
-    ${crumbs([{ label: "Directions", act: "go:home" },
+    ${crumbs([{ label: "Home", act: "go:home" },
               { label: g ? g.statement : "…", act: "go:target:" + a.target_id },
               { label: a.statement }])}
     <h2>Experiments testing “${esc(a.statement)}”</h2>
@@ -551,7 +572,7 @@ function viewReflection(id) {
       </div>
     </div>`);
   return `
-    ${crumbs([{ label: "Directions", act: "go:home" },
+    ${crumbs([{ label: "Home", act: "go:home" },
               { label: g ? g.statement : "…", act: "go:target:" + r.target_id },
               { label: "Reflection" }])}
     <h2>Reflection</h2>
@@ -571,7 +592,7 @@ function viewAudit() {
     <div class="card"><div class="sub mono">${new Date(a.at_ms).toLocaleString()}</div>
       <div>${esc(a.summary)}</div></div>`);
   return `
-    ${crumbs([{ label: "Directions", act: "go:home" }, { label: "Audit trail" }])}
+    ${crumbs([{ label: "Home", act: "go:home" }, { label: "Audit trail" }])}
     <h2>Audit trail (newest first)</h2>
     ${listOr(rows, "No decisions recorded yet.")}`;
 }
@@ -580,10 +601,25 @@ function viewAudit() {
 let SPEAK = false;
 const TTS = window.speechSynthesis;
 const STT = window.SpeechRecognition || window.webkitSpeechRecognition;
+// iOS Safari only lets speech start after a user gesture unlocks it; speaking a
+// silent utterance the moment the person taps "Speak" unlocks it for the later,
+// async replies. (This is best-effort — a fully reliable mobile voice is the
+// local Kokoro TTS path.)
+function unlockSpeech() {
+  if (!TTS) return;
+  try {
+    const u = new SpeechSynthesisUtterance(" ");
+    u.volume = 0;
+    TTS.speak(u);
+  } catch (_) {}
+}
 function speak(text) {
   if (!SPEAK || !TTS || !text) return;
   TTS.cancel();
-  TTS.speak(new SpeechSynthesisUtterance(text));
+  const u = new SpeechSynthesisUtterance(text);
+  TTS.speak(u);
+  // iOS sometimes pauses the queue; a nudge keeps it going.
+  if (TTS.paused) TTS.resume();
 }
 function listen() {
   if (!STT) { flash("Speech recognition isn't available in this browser (try Chrome/Edge).", "err"); return; }
@@ -676,7 +712,7 @@ function viewPrefs() {
       <button class="ghost danger" data-act="delete:pref:${p.id}" title="forget this">${icon("purge",15)}</button>
     </div></div>`);
   return `
-    ${crumbs([{ label: "Directions", act: "go:home" }, { label: "Preferences" }])}
+    ${crumbs([{ label: "Home", act: "go:home" }, { label: "Preferences" }])}
     <h2>What the butler knows about you</h2>
     <div class="sub" style="margin-bottom:10px;">Your own words — the butler honours these and won't re-ask. Correctable and deletable.</div>
     ${listOr(rows, "Nothing yet. The butler will propose things to remember as you talk — or add one below.")}
@@ -698,10 +734,32 @@ function viewSuggestions() {
       <button class="ghost" data-act="dismiss:suggestion:${s.id}">Dismiss</button>
     </div></div>`);
   return `
-    ${crumbs([{ label: "Directions", act: "go:home" }, { label: "Inbox" }])}
+    ${crumbs([{ label: "Home", act: "go:home" }, { label: "Inbox" }])}
     <h2>Suggestions from your conversations</h2>
     <div class="sub" style="margin-bottom:10px;">Things the butler picked up while you talked. Apply one and it becomes part of your profile; dismiss what doesn't fit. Nothing is added without your say-so.</div>
     ${listOr(cards, "Nothing waiting. As you chat, the butler's proposals collect here.")}`;
+}
+
+// The butler's skills — the modules it can reach for. Ready ones work now;
+// others are declared and waiting on setup (a key, a model, a data source).
+function viewSkills() {
+  const card = (c) => {
+    const ready = c.configured;
+    const ext = c.reaches_external;
+    return `
+      <div class="card"><div class="row">
+        <div class="grow">
+          <div class="title">${esc(c.name)} ${ready ? `<span class="pill concluded">Ready</span>` : `<span class="pill">Needs setup</span>`}${ext ? ` <span class="pill">leaves device</span>` : ""}</div>
+          <div class="sub">${esc(c.description)}</div>
+          ${ready ? "" : `<div class="sub" style="margin-top:4px;">Needs: ${esc(c.needs)}</div>`}
+        </div>
+      </div></div>`;
+  };
+  return `
+    ${crumbs([{ label: "Home", act: "go:home" }, { label: "Skills" }])}
+    <h2>What Endora can do</h2>
+    <div class="sub" style="margin-bottom:10px;">Modules the butler can use on your behalf — each shows whether it leaves your device and what it needs. Consequential ones always ask you first.</div>
+    ${listOr((CAPS || []).map(card), "No skills registered.")}`;
 }
 
 // Append a chat bubble to the thread and keep the newest in view.
@@ -799,16 +857,19 @@ function render() {
     : v === "audit" ? viewAudit()
     : v === "chat" ? viewChat()
     : v === "suggestions" ? viewSuggestions()
+    : v === "skills" ? viewSkills()
     : v === "prefs" ? viewPrefs()
     : viewHome();
 }
 
 // Show the pending-suggestion count on the Inbox nav button.
 function updateInboxBadge() {
-  const btn = document.getElementById("btn-suggestions");
-  if (!btn) return;
   const n = (SUGGESTIONS || []).length;
-  btn.innerHTML = icon("inbox") + `<span>Inbox${n ? ` <span class="pill" style="color:var(--accent);border-color:var(--accent)">${n}</span>` : ""}</span>`;
+  // A subtle dot on the menu button when the inbox has something.
+  const btn = document.getElementById("menu-btn");
+  if (btn) btn.classList.toggle("has-badge", n > 0);
+  const count = document.getElementById("menu-inbox-count");
+  if (count) count.textContent = n ? String(n) : "";
 }
 
 // ---- actions (event delegation) -------------------------------------------
@@ -837,7 +898,7 @@ async function dispatch(act) {
       await api("POST", "/v1/values", { name: val("new-value") }); return reload();
     }
     if (verb === "delete" && noun === "value") {
-      if (!confirm("Delete this value? North Stars serving it must be re-filed first.")) return;
+      if (!confirm("Delete this value? Goals serving it must be re-filed first.")) return;
       await api("DELETE", `/v1/values/${id}`); return reload();
     }
     if (verb === "file" && noun === "direction") {
@@ -847,7 +908,14 @@ async function dispatch(act) {
     if (verb === "chat" && noun === "send") { await sendChat(); return; }
     if (verb === "chat" && noun === "mic") { listen(); return; }
     if (verb === "toggle" && noun === "speak") {
-      SPEAK = !SPEAK; if (!SPEAK && TTS) TTS.cancel(); return render();
+      SPEAK = !SPEAK;
+      if (SPEAK) unlockSpeech(); else if (TTS) TTS.cancel();
+      return render();
+    }
+    if (verb === "toggle" && noun === "menu") {
+      const m = document.getElementById("menu");
+      if (m) m.hidden = !m.hidden;
+      return;
     }
     if (verb === "confirm" && noun === "proposal") {
       const p = CHAT_PROPOSALS[Number(id)];
@@ -942,6 +1010,7 @@ async function dispatch(act) {
       return reload();
     }
     if (verb === "export") {
+      closeMenu();
       const data = await api("GET", "/v1/export");
       const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
       const a = document.createElement("a");
@@ -949,6 +1018,7 @@ async function dispatch(act) {
       return flash("Exported your data.", "ok");
     }
     if (verb === "purge") {
+      closeMenu();
       if (!confirm("Permanently delete ALL of your Endora data? This cannot be undone.")) return;
       await api("POST", "/v1/memory/purge", { confirm: true });
       go("home"); return reload();
@@ -960,7 +1030,9 @@ async function dispatch(act) {
 
 document.body.addEventListener("click", (ev) => {
   const t = ev.target.closest("[data-act]");
-  if (t) { ev.stopPropagation(); dispatch(t.getAttribute("data-act")); }
+  if (t) { ev.stopPropagation(); dispatch(t.getAttribute("data-act")); return; }
+  // A click anywhere else closes the menu.
+  if (!ev.target.closest("#menu")) closeMenu();
 });
 
 // Enter sends the chat message (Shift+Enter is free for a newline if the input
@@ -1003,25 +1075,36 @@ document.body.addEventListener("change", (ev) => {
   if (sel) dispatch(sel.getAttribute("data-change") + ":" + sel.value);
 });
 
-// Fill the header nav buttons with icon + label (kept out of the markup so the
-// icon set lives in one place).
+// Build the header: a single menu button, and the menu it opens. Everything
+// beyond the butler chat lives in here, so the main surface stays clean.
 function setupHeader(service) {
-  const set = (id, name, label) => {
-    const el = document.getElementById(id);
-    if (el) el.innerHTML = icon(name) + `<span>${label}</span>`;
-  };
-  set("btn-chat", "chat", "Chat");
-  set("btn-stars", "target", "North Stars");
-  set("btn-suggestions", "inbox", "Inbox");
-  set("btn-prefs", "prefs", "Prefs");
-  set("btn-audit", "audit", "Audit");
-  set("btn-export", "export", "Export");
-  set("btn-purge", "purge", "Purge");
+  const menuBtn = document.getElementById("menu-btn");
+  if (menuBtn) menuBtn.innerHTML = icon("menu");
+  const item = (act, name, label, extra = "", cls = "") =>
+    `<button class="${cls}" data-act="${act}">${icon(name)}<span>${label}</span>${extra}</button>`;
+  const menu = document.getElementById("menu");
+  if (menu) {
+    menu.innerHTML =
+      item("go:chat", "chat", "Talk to Endora") +
+      item("go:home", "target", "Goals") +
+      item("go:suggestions", "inbox", "Inbox", `<span class="menu-count" id="menu-inbox-count"></span>`) +
+      item("go:skills", "skills", "Skills") +
+      item("go:prefs", "prefs", "What Endora knows") +
+      `<div class="divider"></div>` +
+      item("go:audit", "audit", "Activity & audit") +
+      item("export", "export", "Export my data") +
+      item("purge", "purge", "Delete everything", "", "danger");
+  }
   // Brand: keep "Endora" and, if the health string carries a version, a pill.
   const ver = (service || "").match(/\b\d+\.\d+\.\d+\b/);
   const brand = document.getElementById("brand");
   const label = brand && brand.querySelector("span:last-child");
   if (label) label.innerHTML = `Endora${ver ? ` <span class="pill" style="font-weight:500">v${ver[0]}</span>` : ""}`;
+}
+
+function closeMenu() {
+  const m = document.getElementById("menu");
+  if (m) m.hidden = true;
 }
 
 // ---- boot -----------------------------------------------------------------
