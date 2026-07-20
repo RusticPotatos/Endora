@@ -156,6 +156,7 @@ let DB = null;                 // latest /v1/export snapshot
 let ACTIVITY = [];             // latest /v1/activity feed (newest first)
 let ATTENTION = [];            // latest /v1/attention items (most pressing first)
 let CHAT_PROPOSALS = [];       // proposals from the butler's last reply
+let CHAT_STREAMING = false;    // true while a reply is streaming in (guards live-render)
 let NAV = { v: "chat" };       // current view (the butler is the landing page)
 
 const app = document.getElementById("app");
@@ -231,7 +232,9 @@ async function reload() {
 function subscribeToActivity() {
   try {
     const es = new EventSource("/v1/activity/stream");
-    es.addEventListener("changed", () => { reload().catch(() => {}); });
+    // While a reply is streaming in, don't let a change-event reload wipe the
+    // live bubble mid-stream; sendChat reloads to the true state when it ends.
+    es.addEventListener("changed", () => { if (!CHAT_STREAMING) reload().catch(() => {}); });
   } catch (_) { /* SSE unavailable: the UI still works, just not live. */ }
 }
 
@@ -658,9 +661,11 @@ function appendBubble(html, cls, id) {
   return wrap;
 }
 
-// Send a message to the butler with immediate feedback: the person's message
-// shows at once, a "thinking…" bubble runs while the (local) model works, and
-// the input clears — the round-trip can take a few seconds.
+// Send a message to the butler and stream the reply token-by-token (SSE): the
+// person's message shows at once, then the butler's bubble grows live as the
+// model produces prose, and proposals arrive with the final "done" event. On the
+// server the message is persisted first and the reply when complete, so a reload
+// always reflects the true state (that's why we just reload() at the end).
 async function sendChat() {
   const input = document.getElementById("chat-input");
   const msg = input ? input.value.trim() : "";
@@ -668,20 +673,56 @@ async function sendChat() {
   const thread = document.getElementById("chat-thread");
   if (thread && thread.querySelector(".empty")) thread.innerHTML = "";
   input.value = "";
-  // Optimistic echo so it feels instant; on the next render viewChat derives the
-  // thinking indicator from persisted state, which survives reloads.
   appendBubble(esc(msg), "me");
-  appendBubble('<span class="dots"><i></i><i></i><i></i></span>', "butler thinking", "chat-thinking");
+  // A butler bubble that starts as a "thinking" indicator and grows with tokens.
+  const live = appendBubble('<span class="dots"><i></i><i></i><i></i></span>', "butler", "chat-live");
+  const body = live && live.querySelector(".bubble");
+  let acc = "";
+  CHAT_STREAMING = true;
   try {
-    const res = await api("POST", "/v1/chat", { message: msg });
-    CHAT_PROPOSALS = res.proposals || [];
-    speak(res.reply && res.reply.text);
+    const res = await fetch("/v1/chat/stream", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ message: msg }),
+    });
+    if (!res.ok || !res.body) throw new Error("stream unavailable");
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = "";
+    let finished = false;
+    while (!finished) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      // SSE frames are separated by a blank line; each carries a `data:` JSON.
+      let sep;
+      while ((sep = buf.indexOf("\n\n")) >= 0) {
+        const frame = buf.slice(0, sep);
+        buf = buf.slice(sep + 2);
+        const dataLine = frame.split("\n").find((l) => l.startsWith("data:"));
+        if (!dataLine) continue;
+        let ev;
+        try { ev = JSON.parse(dataLine.slice(5).trim()); } catch (_) { continue; }
+        if (ev.type === "token") {
+          acc += ev.text;
+          if (body) body.textContent = acc;
+          if (live) live.scrollIntoView({ block: "end" });
+        } else if (ev.type === "done") {
+          CHAT_PROPOSALS = ev.proposals || [];
+          speak(ev.reply && ev.reply.text);
+          finished = true;
+        } else if (ev.type === "error") {
+          throw new Error(ev.message || "the butler couldn't reply");
+        }
+      }
+    }
   } catch (e) {
-    // The message was already persisted server-side; reload shows the true state
-    // (the reply if it landed, or the pending indicator if it's still owed).
-    flash("Couldn't reach the butler just now — your message was saved.", "err");
+    // Don't re-send (the server may have already saved the turn) — just reload
+    // to the true persisted state below.
+    flash("The butler's reply was interrupted — your message was saved.", "err");
   } finally {
-    await reload();
+    CHAT_STREAMING = false;
+    try { await reload(); } catch (_) {}
     const again = document.getElementById("chat-input");
     if (again) again.focus();
   }

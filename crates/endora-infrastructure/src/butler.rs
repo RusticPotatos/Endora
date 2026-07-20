@@ -133,6 +133,111 @@ impl LlmButler {
             .map_err(|e| ProposalError::Unavailable(e.to_string()))?;
         parse_butler_response(&json)
     }
+
+    /// Streams the model's reply: sends `stream: true`, reads the server-sent
+    /// delta chunks, and calls `on_token` with each new piece of the *prose*
+    /// reply (the internal JSON envelope is never streamed to the caller — only
+    /// the growing `reply` string is). Returns the fully-parsed reply
+    /// (authoritative text + proposals) once the stream ends.
+    fn try_model_streaming(
+        &self,
+        history: &[ChatMessage],
+        preferences: &[Preference],
+        context: &ButlerContext,
+        on_token: &mut dyn FnMut(&str),
+    ) -> Result<ButlerReply, ProposalError> {
+        let mut body = build_butler_request(&self.model, history, preferences, context);
+        body["stream"] = Value::Bool(true);
+        let url = format!("{}/chat/completions", self.base_url);
+        let response = self
+            .agent
+            .post(&url)
+            .send_json(&body)
+            .map_err(|e| ProposalError::Unavailable(e.to_string()))?;
+        if response.status().as_u16() >= 300 {
+            return Err(ProposalError::Unavailable(format!(
+                "endpoint returned status {}",
+                response.status()
+            )));
+        }
+        let reader = std::io::BufReader::new(response.into_body().into_reader());
+        let mut raw = String::new(); // the accumulated JSON envelope from the model
+        let mut emitted = 0usize; // bytes of prose preview already handed to on_token
+        for line in std::io::BufRead::lines(reader) {
+            // A mid-stream read error (e.g. the timeout) still leaves us whatever
+            // prose already arrived; parse and return that rather than failing.
+            let Ok(line) = line else { break };
+            let Some(data) = line.strip_prefix("data: ") else {
+                continue;
+            };
+            if data.trim() == "[DONE]" {
+                break;
+            }
+            let Ok(chunk) = serde_json::from_str::<Value>(data) else {
+                continue;
+            };
+            if let Some(delta) = chunk["choices"][0]["delta"]["content"].as_str() {
+                raw.push_str(delta);
+                let preview = extract_reply_preview(&raw);
+                if preview.len() > emitted {
+                    on_token(&preview[emitted..]);
+                    emitted = preview.len();
+                }
+            }
+        }
+        if raw.trim().is_empty() {
+            return Err(ProposalError::Unavailable("empty stream".to_owned()));
+        }
+        // The authoritative reply (text + proposals) comes from a full parse of
+        // the accumulated envelope; the streamed prose was a live preview.
+        Ok(parse_butler_json(&raw))
+    }
+}
+
+/// Reads the current value of the `"reply"` string out of a partial JSON
+/// envelope (the model streams `{"reply":"…","proposals":[…]}`). Unescapes as it
+/// goes and stops before any incomplete trailing escape, so the returned prose
+/// only ever grows — a caller can emit the newly-appended suffix each time.
+fn extract_reply_preview(raw: &str) -> String {
+    let Some(key) = raw.find("\"reply\"") else {
+        return String::new();
+    };
+    // The opening quote of the value is the first quote after the key.
+    let after = &raw[key + "\"reply\"".len()..];
+    let Some(open) = after.find('"') else {
+        return String::new();
+    };
+    let mut out = String::new();
+    let mut chars = after[open + 1..].chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '"' => break, // closing quote — reply string complete
+            '\\' => match chars.next() {
+                Some('n') => out.push('\n'),
+                Some('t') => out.push('\t'),
+                Some('r') => out.push('\r'),
+                Some('"') => out.push('"'),
+                Some('\\') => out.push('\\'),
+                Some('/') => out.push('/'),
+                Some('u') => {
+                    let hex: String = (&mut chars).take(4).collect();
+                    if hex.len() < 4 {
+                        break; // incomplete \uXXXX — wait for more to arrive
+                    }
+                    if let Some(ch) = u32::from_str_radix(&hex, 16).ok().and_then(char::from_u32) {
+                        out.push(ch);
+                    }
+                }
+                Some(other) => {
+                    out.push('\\');
+                    out.push(other);
+                }
+                None => break, // dangling backslash at the stream edge — wait
+            },
+            _ => out.push(c),
+        }
+    }
+    out
 }
 
 impl Butler for LlmButler {
@@ -146,6 +251,22 @@ impl Butler for LlmButler {
         // model is unreachable or unusable.
         self.try_model(history, preferences, context)
             .or_else(|_| self.fallback.respond(history, preferences, context))
+    }
+
+    fn respond_streaming(
+        &self,
+        history: &[ChatMessage],
+        preferences: &[Preference],
+        context: &ButlerContext,
+        on_token: &mut dyn FnMut(&str),
+    ) -> Result<ButlerReply, ProposalError> {
+        // Stream from the model; if it is unreachable or unusable, fall back to
+        // the scripted butler (the default streaming impl emits it in one chunk).
+        self.try_model_streaming(history, preferences, context, on_token)
+            .or_else(|_| {
+                self.fallback
+                    .respond_streaming(history, preferences, context, on_token)
+            })
     }
 }
 
@@ -315,7 +436,8 @@ fn strip_code_fence(s: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::{
-        LlmButler, ScriptedButler, build_butler_request, parse_butler_json, parse_butler_response,
+        LlmButler, ScriptedButler, build_butler_request, extract_reply_preview, parse_butler_json,
+        parse_butler_response,
     };
     use endora_application::{Butler, ButlerContext, ButlerProposal};
     use endora_domain::{ChatMessage, MessageId, MessageRole, Timestamp};
@@ -443,5 +565,61 @@ mod tests {
                 title: "run more".to_owned()
             }]
         );
+    }
+
+    #[test]
+    fn llm_butler_streaming_falls_back_and_emits_the_reply() {
+        // With no reachable model, streaming falls back to the scripted butler,
+        // which emits its whole reply in one chunk.
+        let butler = LlmButler::new("http://127.0.0.1:1/v1".to_owned(), "none".to_owned());
+        let mut streamed = String::new();
+        let reply = butler
+            .respond_streaming(
+                &[user("I want to get back into running")],
+                &[],
+                &ButlerContext::default(),
+                &mut |chunk| streamed.push_str(chunk),
+            )
+            .unwrap();
+        assert!(!reply.text.is_empty());
+        assert_eq!(
+            streamed, reply.text,
+            "streamed prose should equal the reply"
+        );
+    }
+
+    #[test]
+    fn extract_reply_preview_grows_monotonically_as_json_arrives() {
+        // Simulate the envelope arriving a few characters at a time; each preview
+        // must extend the previous (never shrink or diverge).
+        let full = "{\"reply\":\"Good — what's driving that?\",\"proposals\":[]}";
+        let mut last = String::new();
+        for end in 1..=full.len() {
+            if !full.is_char_boundary(end) {
+                continue;
+            }
+            let preview = extract_reply_preview(&full[..end]);
+            assert!(
+                preview.starts_with(&last) || last.starts_with(&preview),
+                "preview diverged: {last:?} -> {preview:?}"
+            );
+            if preview.len() >= last.len() {
+                last = preview;
+            }
+        }
+        assert_eq!(last, "Good — what's driving that?");
+    }
+
+    #[test]
+    fn extract_reply_preview_handles_escapes_and_incomplete_tails() {
+        assert_eq!(extract_reply_preview("{\"reply\":\"a\\nb\"}"), "a\nb");
+        assert_eq!(
+            extract_reply_preview("{\"reply\":\"quote \\\"x\""),
+            "quote \"x"
+        );
+        // A dangling backslash at the stream edge is held back until completed.
+        assert_eq!(extract_reply_preview("{\"reply\":\"hi\\"), "hi");
+        // Nothing yet.
+        assert_eq!(extract_reply_preview("{\"repl"), "");
     }
 }
