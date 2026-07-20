@@ -11,12 +11,12 @@ use std::sync::Mutex;
 use serde_json::{Value as JsonValue, json};
 
 use endora_application::{
-    AssumptionRepository, AuditLog, AutonomyEnvelope, AutonomyEnvelopeRepository, BeliefRepository,
-    ButlerProposal, CapabilityConfigRepository, ChatRepository, CheckinRepository, CheckinSchedule,
-    DirectionRepository, ExperimentRepository, MemorySnapshot, MemoryStore, ObservationRepository,
-    PreferenceRepository, ProcessChangeRepository, ReflectionRepository, RepositoryError, Snooze,
-    SnoozeRepository, Suggestion, SuggestionRepository, SuggestionStatus, TargetRepository,
-    ValueRepository,
+    ActivityEvent, AssumptionRepository, AuditLog, AutonomyEnvelope, AutonomyEnvelopeRepository,
+    BeliefRepository, ButlerProposal, CapabilityConfigRepository, ChatRepository,
+    CheckinRepository, CheckinSchedule, DirectionRepository, EventLog, ExperimentRepository,
+    MemorySnapshot, MemoryStore, ObservationRepository, PreferenceRepository,
+    ProcessChangeRepository, ReflectionRepository, RepositoryError, Snooze, SnoozeRepository,
+    Suggestion, SuggestionRepository, SuggestionStatus, TargetRepository, ValueRepository,
 };
 use endora_domain::{
     ApprovalState, Assumption, AssumptionId, AuditId, AuditRecord, Belief, BeliefId, BeliefKind,
@@ -166,6 +166,11 @@ CREATE TABLE IF NOT EXISTS autonomy_envelope (
     id               INTEGER PRIMARY KEY CHECK (id = 0),
     auto_external    INTEGER NOT NULL,
     auto_consequential INTEGER NOT NULL
+) STRICT;
+CREATE TABLE IF NOT EXISTS events (
+    id      INTEGER PRIMARY KEY AUTOINCREMENT,
+    at_ms   INTEGER NOT NULL,
+    summary TEXT NOT NULL
 ) STRICT;
 ";
 
@@ -871,6 +876,9 @@ impl MemoryStore for SqliteStore {
             "suggestions",
             "checkin",
             "beliefs",
+            "events",
+            "capability_config",
+            "autonomy_envelope",
         ] {
             tx.execute(&format!("DELETE FROM {table}"), [])
                 .map_err(backend)?;
@@ -1113,6 +1121,34 @@ impl CheckinRepository for SqliteStore {
         )
         .map_err(backend)?;
         Ok(())
+    }
+}
+
+impl EventLog for SqliteStore {
+    fn record(&self, at: Timestamp, summary: &str) -> Result<(), RepositoryError> {
+        let conn = self.lock()?;
+        conn.execute(
+            "INSERT INTO events (at_ms, summary) VALUES (?1, ?2)",
+            params![at.unix_millis(), summary],
+        )
+        .map_err(backend)?;
+        Ok(())
+    }
+
+    fn recent(&self, limit: usize) -> Result<Vec<ActivityEvent>, RepositoryError> {
+        let conn = self.lock()?;
+        let mut stmt = conn
+            .prepare("SELECT at_ms, summary FROM events ORDER BY id DESC LIMIT ?1")
+            .map_err(backend)?;
+        let rows = stmt
+            .query_map([limit as i64], |r| {
+                Ok(ActivityEvent {
+                    at: Timestamp::from_unix_millis(r.get::<_, i64>(0)?),
+                    summary: r.get::<_, String>(1)?,
+                })
+            })
+            .map_err(backend)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(backend)
     }
 }
 
@@ -2341,6 +2377,24 @@ mod tests {
         assert_eq!(recent.len(), 2);
         assert_eq!(recent[0].summary(), "second");
         assert_eq!(recent[1].summary(), "first");
+        assert_eq!(log.recent(1).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn events_append_and_read_newest_first() {
+        use endora_application::EventLog;
+        use endora_domain::Timestamp;
+        let store = store();
+        let log: &dyn EventLog = &store;
+        log.record(Timestamp::from_unix_millis(100), "Used the weather skill")
+            .unwrap();
+        log.record(Timestamp::from_unix_millis(200), "Turned news off")
+            .unwrap();
+
+        let recent = log.recent(10).unwrap();
+        assert_eq!(recent.len(), 2);
+        assert_eq!(recent[0].summary, "Turned news off");
+        assert_eq!(recent[1].summary, "Used the weather skill");
         assert_eq!(log.recent(1).unwrap().len(), 1);
     }
 
