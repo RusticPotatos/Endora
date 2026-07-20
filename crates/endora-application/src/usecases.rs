@@ -844,7 +844,10 @@ pub fn send_to_butler_streaming(
                 match capabilities.run(id, &used.input_json) {
                     Ok(out) => {
                         activity.push(format!("Used the {id} skill"));
-                        format!("You used the '{id}' skill and it returned: {out}")
+                        format!(
+                            "You used the '{id}' skill and it returned:\n{out}\n\
+                             Relay this to the person — share the specifics in your own words."
+                        )
                     }
                     Err(e) => {
                         activity.push(format!("Tried the {id} skill, but it failed"));
@@ -910,8 +913,9 @@ pub fn send_to_butler_streaming(
                 Ok(out) => {
                     activity.push(format!("Used the {skill} skill"));
                     ctx.tool_result = Some(format!(
-                        "You used the '{skill}' skill for {location} and it returned: {out}. \
-                         Answer using ONLY this — do not add facts that aren't here."
+                        "You used the '{skill}' skill for {location} and it returned:\n{out}\n\
+                         Relay this to the person — share the specifics in your own words, and \
+                         add nothing that isn't here."
                     ));
                 }
                 Err(e) => {
