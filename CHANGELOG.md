@@ -33,6 +33,12 @@ tagged release.
 
 ### Added
 
+- **No fabricated facts — a deterministic net for factual asks**: when you clearly
+  ask something factual (weather, news, active safety alerts) and the small local
+  model reaches for no skill at all, Endora now runs the matching skill itself — with
+  your saved home location — and answers from that real result, instead of letting the
+  model make something up. It only fires when the model requested nothing, so a correct
+  model-driven tool call (e.g. a specific city you named) is left untouched.
 - **Local news skill + honest closure**: a new **Local news** skill (Google News
   RSS, no key) fetches real headlines for a place or topic, so "what's in the news"
   is answered from actual sources instead of guessed. And the interventions loop now
