@@ -943,7 +943,21 @@ document.body.addEventListener("click", (ev) => {
 // Enter sends the chat message (Shift+Enter is free for a newline if the input
 // ever becomes multi-line).
 document.body.addEventListener("keydown", (ev) => {
-  if (ev.target.id === "chat-input" && ev.key === "Enter" && !ev.shiftKey) {
+  if (ev.target.id === "chat-input" && ev.key === "Enter" && !ev.shiftKey && !ev.isComposing) {
+    ev.preventDefault(); sendChat();
+  }
+});
+
+// iOS/software keyboards often don't fire a keydown for Return on a textarea, so
+// the desktop handler above never sees it. Catch the line-break input on touch
+// devices and send instead (a hardware Shift+Enter on desktop is a `pointer:fine`
+// device, so it still inserts a newline).
+document.body.addEventListener("beforeinput", (ev) => {
+  if (
+    ev.target.id === "chat-input" &&
+    ev.inputType === "insertLineBreak" &&
+    window.matchMedia("(pointer: coarse)").matches
+  ) {
     ev.preventDefault(); sendChat();
   }
 });
