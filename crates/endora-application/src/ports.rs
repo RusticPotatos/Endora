@@ -381,6 +381,10 @@ pub struct ButlerReply {
     /// Beliefs it formed about the person this turn (may be empty). Understanding,
     /// not actions — stored directly, then reviewable/correctable.
     pub beliefs: Vec<FormedBelief>,
+    /// A skill it wants to use this turn (may be none). The policy layer decides
+    /// whether to run it; on a read-only skill the butler then answers with the
+    /// result.
+    pub capability_use: Option<CapabilityUse>,
 }
 
 /// Persists the person's [`Belief`]s — Endora's living understanding of them.
@@ -558,6 +562,47 @@ pub struct ButlerContext {
     /// What Endora already understands about the person (its active beliefs), so
     /// the butler builds on and refines them rather than re-forming duplicates.
     pub understanding: Vec<String>,
+    /// The skills the butler can actually use right now (id + one-line what),
+    /// so it reaches for a real capability instead of only talking about it.
+    pub capabilities: Vec<String>,
+    /// A result the butler just got back from a capability it used this turn —
+    /// set only on the synthesis pass, so it can answer using real data.
+    pub tool_result: Option<String>,
+}
+
+/// A capability the butler asked to use this turn (parsed from its reply). The
+/// policy layer decides whether to run it; the model never executes directly.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CapabilityUse {
+    /// The capability id, e.g. `"weather"`.
+    pub capability: String,
+    /// The JSON input for it, as a string.
+    pub input_json: String,
+}
+
+/// What a capability the butler could use looks like to the application layer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CapabilitySpec {
+    /// Stable id, e.g. `"weather"`.
+    pub id: String,
+    /// One-line description of what it does.
+    pub description: String,
+    /// Ready to use (vs awaiting setup).
+    pub configured: bool,
+    /// May it run on its own (read-only/low-stakes), or must the person authorize?
+    pub autonomous: bool,
+}
+
+/// Runs the butler's skills. The application asks this port to execute a
+/// capability the butler proposed, keeping the model out of the execution path
+/// (models propose, policy authorizes, capabilities execute — ADRs 0019/0020).
+pub trait CapabilityRunner {
+    /// The skills currently available (for grounding the butler).
+    fn available(&self) -> Vec<CapabilitySpec>;
+
+    /// Runs a capability with JSON input, returning its JSON output or an error
+    /// message. Only ever called for capabilities the policy layer has cleared.
+    fn run(&self, id: &str, input_json: &str) -> Result<String, String>;
 }
 
 /// The butler brain: given the conversation so far, produce a reply and any

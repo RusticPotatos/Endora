@@ -801,7 +801,6 @@ function viewUnderstanding() {
       </div></div>`).join("");
     return `<h3 style="margin-top:16px;">${BELIEF_KIND_LABEL[k] || k}</h3>${rows}`;
   }).join("");
-  const attn = attentionSection();
   // A gentle one-line setup for basic context (location) so skills like weather
   // and the guard dog have somewhere to start. Stored as a preference, which the
   // butler already reads — no separate onboarding.
@@ -819,7 +818,6 @@ function viewUnderstanding() {
     <h2>What Endora understands about you</h2>
     <div class="sub" style="margin-bottom:10px;">Endora forms these from your conversations — the evidence and how sure it is are shown. Correct anything that's off; it learns from that.</div>
     ${setup}
-    ${attn}
     ${groups || `<div class="empty">Nothing yet. Talk with Endora and it will start to understand you — you'll see it here.</div>`}
     <div class="sub" style="margin-top:24px;"><a data-act="go:goals" style="color:var(--accent);cursor:pointer">Goals ›</a> — optional, if you like to track them explicitly.</div>`;
 }
