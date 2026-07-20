@@ -66,6 +66,14 @@ pub trait Capability: Send + Sync {
     /// # Errors
     /// [`CapabilityError`] if the input is bad or the capability is unavailable.
     fn invoke(&self, input: &Value) -> Result<Value, CapabilityError>;
+
+    /// Renders a result into short, human-readable text for the butler to answer
+    /// from. Small local models relay a clean sentence far better than raw JSON,
+    /// so each skill that the butler speaks from overrides this. The default is
+    /// the JSON itself (fine for programmatic consumers / the Skills UI).
+    fn summarize(&self, output: &Value) -> String {
+        output.to_string()
+    }
 }
 
 /// Builds the default set of capabilities the node offers. Read-only information
@@ -259,6 +267,28 @@ impl Capability for WeatherCapability {
             "warning": if severe { format!("Heads-up: {condition} expected — take care.") } else { String::new() },
         }))
     }
+
+    fn summarize(&self, o: &Value) -> String {
+        let place = o["place"]
+            .as_str()
+            .filter(|s| !s.is_empty())
+            .unwrap_or("there");
+        let cond = o["condition"].as_str().unwrap_or("");
+        let mut s = format!("Weather for {place}: {cond}");
+        if let Some(t) = o["temperature_c"].as_f64() {
+            s.push_str(&format!(", {t:.0}°C"));
+        }
+        if let Some(f) = o["feels_like_c"].as_f64() {
+            s.push_str(&format!(" (feels like {f:.0}°C)"));
+        }
+        if let (Some(hi), Some(lo)) = (o["high_c"].as_f64(), o["low_c"].as_f64()) {
+            s.push_str(&format!("; high {hi:.0}°C, low {lo:.0}°C today"));
+        }
+        if let Some(w) = o["warning"].as_str().filter(|w| !w.is_empty()) {
+            s.push_str(&format!(". {w}"));
+        }
+        s
+    }
 }
 
 fn weather_condition(code: i64) -> &'static str {
@@ -386,15 +416,20 @@ impl Capability for LocalNewsCapability {
     }
 
     fn invoke(&self, input: &Value) -> Result<Value, CapabilityError> {
-        // Prefer an explicit {query}; else build one from {location} ("Charlotte
-        // NC news"). One of the two is required — without it we can't search, and
-        // the butler is told to say so rather than invent headlines.
+        // Prefer an explicit {query}; else build one from {location}. A bare ZIP or
+        // raw coordinates make a poor news search, so resolve the location to a
+        // place name first ("28277" → "Charlotte, NC news"). One of query/location
+        // is required — without it we say so rather than invent headlines.
         let query = match input.get("query").and_then(Value::as_str) {
             Some(q) if !q.trim().is_empty() => q.trim().to_owned(),
             _ => {
-                let place = str_field(input, "location").map_err(|_| {
+                let raw = str_field(input, "location").map_err(|_| {
                     CapabilityError::BadInput("missing 'location' or 'query'".to_owned())
                 })?;
+                let place = match resolve_point(input) {
+                    Ok((_, _, p)) if !p.is_empty() => p,
+                    _ => raw.to_owned(),
+                };
                 format!("{place} news")
             }
         };
@@ -414,6 +449,24 @@ impl Capability for LocalNewsCapability {
                 ""
             },
         }))
+    }
+
+    fn summarize(&self, o: &Value) -> String {
+        let query = o["query"].as_str().unwrap_or("that");
+        let headlines: Vec<&str> = o["headlines"]
+            .as_array()
+            .map(|a| a.iter().filter_map(Value::as_str).collect())
+            .unwrap_or_default();
+        if headlines.is_empty() {
+            return format!("No recent news headlines were found for {query}.");
+        }
+        let list = headlines
+            .iter()
+            .enumerate()
+            .map(|(i, h)| format!("{}. {h}", i + 1))
+            .collect::<Vec<_>>()
+            .join("\n");
+        format!("Recent news headlines for {query}:\n{list}")
     }
 }
 
@@ -615,6 +668,33 @@ impl Capability for SafetyAlertsCapability {
             "note": if alerts.is_empty() { "No active alerts (or outside US coverage)." } else { "" },
         }))
     }
+
+    fn summarize(&self, o: &Value) -> String {
+        let place = o["place"]
+            .as_str()
+            .filter(|s| !s.is_empty())
+            .unwrap_or("there");
+        let alerts: Vec<String> = o["alerts"]
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .filter_map(|x| {
+                        let event = x["event"].as_str()?;
+                        let sev = x["severity"].as_str().unwrap_or("");
+                        Some(if sev.is_empty() {
+                            event.to_owned()
+                        } else {
+                            format!("{event} ({sev})")
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        if alerts.is_empty() {
+            return format!("No active safety alerts for {place} right now.");
+        }
+        format!("Active safety alerts for {place}: {}.", alerts.join("; "))
+    }
 }
 
 scaffold!(
@@ -673,7 +753,9 @@ impl endora_application::CapabilityRunner for RegistryRunner {
             .or_else(|_| Ok::<Value, serde_json::Error>(json!({})))
             .unwrap_or_else(|_| json!({}));
         let out = cap.invoke(&input).map_err(|e| e.to_string())?;
-        Ok(out.to_string())
+        // Hand the butler readable text, not raw JSON — small models relay it far
+        // more reliably (and won't miss headlines buried in a JSON array).
+        Ok(cap.summarize(&out))
     }
 }
 
@@ -733,6 +815,27 @@ mod tests {
     fn news_without_a_place_or_query_is_bad_input() {
         let err = LocalNewsCapability.invoke(&json!({})).unwrap_err();
         assert!(matches!(err, CapabilityError::BadInput(_)));
+    }
+
+    #[test]
+    fn news_summarize_gives_a_readable_numbered_list() {
+        let out = json!({
+            "query": "Charlotte news",
+            "count": 2,
+            "headlines": ["Council meets tonight", "Road closures downtown"],
+            "note": "",
+        });
+        let text = LocalNewsCapability.summarize(&out);
+        assert!(text.contains("Charlotte news"));
+        assert!(text.contains("1. Council meets tonight"));
+        assert!(text.contains("2. Road closures downtown"));
+        // Empty results read as a plain "none found", never as raw JSON.
+        let empty = json!({ "query": "Nowhere news", "count": 0, "headlines": [] });
+        assert!(
+            LocalNewsCapability
+                .summarize(&empty)
+                .contains("No recent news")
+        );
     }
 
     #[test]
