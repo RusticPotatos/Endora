@@ -16,9 +16,9 @@ use endora_domain::{
 use crate::error::AppError;
 use crate::ports::{
     AssumptionRepository, AttentionItem, AttentionKind, AuditLog, BeliefRepository, Butler,
-    ButlerContext, ButlerProposal, CapabilityRunner, ChatRepository, CheckinRepository,
-    CheckinSchedule, Clock, DirectionRepository, ExperimentRepository, IdSource, MemorySnapshot,
-    MemoryStore, NorthStarBrief, ObservationRepository, PreferenceRepository,
+    ButlerContext, ButlerProposal, ButlerReply, CapabilityRunner, ChatRepository,
+    CheckinRepository, CheckinSchedule, Clock, DirectionRepository, ExperimentRepository, IdSource,
+    MemorySnapshot, MemoryStore, NorthStarBrief, ObservationRepository, PreferenceRepository,
     ProcessChangeRepository, Proposer, ReflectionRepository, Snooze, SnoozeRepository, Suggestion,
     SuggestionRepository, SuggestionStatus, TargetRepository, ValueRepository,
 };
@@ -904,11 +904,12 @@ pub fn send_to_butler_streaming(
     if let Some(skill) = follow_up_intent(text, &history).filter(|_| !model_requested_skill) {
         let spec = capabilities.available().into_iter().find(|c| c.id == skill);
         let cleared = spec.as_ref().is_some_and(|s| s.configured && s.autonomous);
-        let outcome = if cleared {
-            // Usable: run it with the person's home location. Without a location we
-            // can't (the model's own reply then stands).
-            known_location(&prefs).map(|location| {
-                match capabilities.run(skill, &json_location(&location)) {
+        if cleared {
+            // Usable: run it with the person's home location, then have the butler
+            // answer from the real result. Without a location we can't (the model's
+            // own reply then stands).
+            if let Some(location) = known_location(&prefs) {
+                let result = match capabilities.run(skill, &json_location(&location)) {
                     Ok(out) => {
                         activity.push(format!("Used the {skill} skill"));
                         format!(
@@ -924,26 +925,27 @@ pub fn send_to_butler_streaming(
                              plainly you couldn't get it — do not make up an answer."
                         )
                     }
+                };
+                let mut ctx = context.clone();
+                ctx.tool_result = Some(result);
+                if let Ok(synth) = butler.respond(&history, &prefs, &ctx) {
+                    reply = synth;
                 }
-            })
+            }
         } else {
             // The person clearly asked for something factual, but the skill that
-            // would answer it is off or not set up. Ground the butler in that fact
-            // so it says so honestly instead of inventing an answer.
+            // would answer it is off, not set up, or outside the autonomy envelope.
+            // The model has proven it will fabricate here even when told not to, so
+            // we do NOT ask it — we set an honest reply deterministically. This makes
+            // inventing a fact structurally impossible in the can't-serve case.
             activity.push(format!("Couldn't check {skill} — it's off or not set up"));
-            Some(format!(
-                "The person asked about something the '{skill}' skill would answer, but it is \
-                 turned off or not set up, so you could NOT check it. Tell them plainly you \
-                 can't right now — do NOT invent an answer — and mention they can turn it on \
-                 under Skills."
-            ))
-        };
-        if let Some(result) = outcome {
-            let mut ctx = context.clone();
-            ctx.tool_result = Some(result);
-            if let Ok(synth) = butler.respond(&history, &prefs, &ctx) {
-                reply = synth;
-            }
+            reply = ButlerReply {
+                text: "I can't check that for you right now — the skill I'd use is turned off \
+                       or not set up. You can manage what I'm allowed to do on my own under \
+                       Skills."
+                    .to_owned(),
+                ..ButlerReply::default()
+            };
         }
     }
 
