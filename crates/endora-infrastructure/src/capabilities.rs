@@ -151,6 +151,11 @@ fn resolve_point(input: &Value) -> Result<(f64, f64, String), CapabilityError> {
         return Ok((lat, lon, place));
     }
     let q = str_field(input, "location")?;
+    // A bare US ZIP ("28277") — common when the person types their postcode — is
+    // not resolvable by the place-name geocoder, so use a keyless ZIP lookup.
+    if let Some(point) = resolve_us_zip(q)? {
+        return Ok(point);
+    }
     let geo = http_get_text(
         &format!(
             "https://geocoding-api.open-meteo.com/v1/search?name={}&count=1&language=en&format=json",
@@ -176,6 +181,37 @@ fn resolve_point(input: &Value) -> Result<(f64, f64, String), CapabilityError> {
     ))
 }
 
+/// If `q` is a 5-digit US ZIP, resolve it to `(lat, lon, "City, ST")` via the
+/// keyless zippopotam.us service. Returns `Ok(None)` when `q` isn't a ZIP so the
+/// caller falls through to the place-name geocoder.
+fn resolve_us_zip(q: &str) -> Result<Option<(f64, f64, String)>, CapabilityError> {
+    let zip = q.trim();
+    if zip.len() != 5 || !zip.bytes().all(|b| b.is_ascii_digit()) {
+        return Ok(None);
+    }
+    let body = http_get_text(&format!("https://api.zippopotam.us/us/{zip}"), 16 * 1024)?;
+    let data: Value =
+        serde_json::from_str(&body).map_err(|e| CapabilityError::Unavailable(e.to_string()))?;
+    let place = data["places"]
+        .get(0)
+        .ok_or_else(|| CapabilityError::BadInput(format!("couldn't find the ZIP code '{zip}'")))?;
+    // zippopotam returns latitude/longitude as strings.
+    let lat = place["latitude"].as_str().and_then(|s| s.parse().ok());
+    let lon = place["longitude"].as_str().and_then(|s| s.parse().ok());
+    let (Some(lat), Some(lon)) = (lat, lon) else {
+        return Ok(None);
+    };
+    let city = place["place name"].as_str().unwrap_or("");
+    let state = place["state abbreviation"].as_str().unwrap_or("");
+    Ok(Some((
+        lat,
+        lon,
+        format!("{city}, {state}")
+            .trim_matches([',', ' '])
+            .to_owned(),
+    )))
+}
+
 // ---- Weather (real; Open-Meteo, no API key) --------------------------------
 
 struct WeatherCapability;
@@ -195,46 +231,8 @@ impl Capability for WeatherCapability {
     }
 
     fn invoke(&self, input: &Value) -> Result<Value, CapabilityError> {
-        // Accept {location:"..."} (geocoded) or {lat, lon}.
-        let (lat, lon, place) = if let (Some(lat), Some(lon)) = (
-            input.get("lat").and_then(Value::as_f64),
-            input.get("lon").and_then(Value::as_f64),
-        ) {
-            (
-                lat,
-                lon,
-                input
-                    .get("location")
-                    .and_then(Value::as_str)
-                    .unwrap_or("")
-                    .to_owned(),
-            )
-        } else {
-            let q = str_field(input, "location")?;
-            let geo = http_get_text(
-                &format!(
-                    "https://geocoding-api.open-meteo.com/v1/search?name={}&count=1&language=en&format=json",
-                    urlencode(q)
-                ),
-                64 * 1024,
-            )?;
-            let geo: Value = serde_json::from_str(&geo)
-                .map_err(|e| CapabilityError::Unavailable(e.to_string()))?;
-            let first = geo["results"].get(0).ok_or_else(|| {
-                CapabilityError::BadInput(format!("couldn't find a place called '{q}'"))
-            })?;
-            let lat = first["latitude"].as_f64().unwrap_or_default();
-            let lon = first["longitude"].as_f64().unwrap_or_default();
-            let name = first["name"].as_str().unwrap_or(q);
-            let country = first["country"].as_str().unwrap_or("");
-            (
-                lat,
-                lon,
-                format!("{name}, {country}")
-                    .trim_end_matches(", ")
-                    .to_owned(),
-            )
-        };
+        // Accept {location:"..."} (a place name or US ZIP) or {lat, lon}.
+        let (lat, lon, place) = resolve_point(input)?;
 
         let body = http_get_text(
             &format!(
@@ -603,6 +601,16 @@ mod tests {
     fn a_scaffold_reports_unavailable_with_a_reason() {
         let err = FlightSearchCapability.invoke(&json!({})).unwrap_err();
         assert!(matches!(err, CapabilityError::Unavailable(_)));
+    }
+
+    #[test]
+    fn zip_detector_ignores_non_zip_input_without_a_network_call() {
+        // Non-5-digit or non-numeric input must fall through (Ok(None)), so a place
+        // name never triggers the ZIP lookup.
+        assert!(resolve_us_zip("Charlotte").unwrap().is_none());
+        assert!(resolve_us_zip("2827").unwrap().is_none());
+        assert!(resolve_us_zip("abcde").unwrap().is_none());
+        assert!(resolve_us_zip("Boston, MA").unwrap().is_none());
     }
 
     #[test]
