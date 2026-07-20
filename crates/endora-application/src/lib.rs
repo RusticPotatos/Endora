@@ -17,10 +17,10 @@ pub mod usecases;
 
 pub use error::AppError;
 pub use ports::{
-    AssumptionRepository, AttentionItem, AttentionKind, AuditLog, AutonomyEnvelope,
+    ActivityEvent, AssumptionRepository, AttentionItem, AttentionKind, AuditLog, AutonomyEnvelope,
     AutonomyEnvelopeRepository, BeliefRepository, Butler, ButlerContext, ButlerProposal,
     ButlerReply, CapabilityConfigRepository, CapabilityRunner, CapabilitySpec, CapabilityUse,
-    ChatRepository, CheckinRepository, CheckinSchedule, Clock, DirectionRepository,
+    ChatRepository, CheckinRepository, CheckinSchedule, Clock, DirectionRepository, EventLog,
     ExperimentRepository, FormedBelief, IdSource, MemorySnapshot, MemoryStore, NorthStarBrief,
     ObservationRepository, PreferenceRepository, ProcessChangeRepository, ProposalError, Proposer,
     ReflectionRepository, RepositoryError, Snooze, SnoozeRepository, Suggestion,

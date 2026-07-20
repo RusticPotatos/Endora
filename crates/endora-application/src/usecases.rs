@@ -17,10 +17,11 @@ use crate::error::AppError;
 use crate::ports::{
     AssumptionRepository, AttentionItem, AttentionKind, AuditLog, BeliefRepository, Butler,
     ButlerContext, ButlerProposal, ButlerReply, CapabilityRunner, ChatRepository,
-    CheckinRepository, CheckinSchedule, Clock, DirectionRepository, ExperimentRepository, IdSource,
-    MemorySnapshot, MemoryStore, NorthStarBrief, ObservationRepository, PreferenceRepository,
-    ProcessChangeRepository, Proposer, ReflectionRepository, Snooze, SnoozeRepository, Suggestion,
-    SuggestionRepository, SuggestionStatus, TargetRepository, ValueRepository,
+    CheckinRepository, CheckinSchedule, Clock, DirectionRepository, EventLog, ExperimentRepository,
+    IdSource, MemorySnapshot, MemoryStore, NorthStarBrief, ObservationRepository,
+    PreferenceRepository, ProcessChangeRepository, Proposer, ReflectionRepository, Snooze,
+    SnoozeRepository, Suggestion, SuggestionRepository, SuggestionStatus, TargetRepository,
+    ValueRepository,
 };
 
 /// Creates and stores a new [`Direction`].
@@ -652,6 +653,9 @@ pub enum ActivityKind {
     Observation,
     /// A consequential decision was made and audited (see [`AuditLog`]).
     Decision,
+    /// Something the butler did or learned this turn, or a setting the person
+    /// changed — the butler's own action log (see [`EventLog`]).
+    Action,
 }
 
 impl ActivityKind {
@@ -661,6 +665,7 @@ impl ActivityKind {
         match self {
             Self::Observation => "observation",
             Self::Decision => "decision",
+            Self::Action => "action",
         }
     }
 }
@@ -710,6 +715,7 @@ impl ActivityItem {
 pub fn recent_activity(
     observations: &impl ObservationRepository,
     audit: &impl AuditLog,
+    events: &impl EventLog,
     limit: usize,
 ) -> Result<Vec<ActivityItem>, AppError> {
     let mut items = Vec::new();
@@ -725,6 +731,13 @@ pub fn recent_activity(
             at: r.at(),
             kind: ActivityKind::Decision,
             summary: r.summary().to_owned(),
+        });
+    }
+    for e in events.recent(limit)? {
+        items.push(ActivityItem {
+            at: e.at,
+            kind: ActivityKind::Action,
+            summary: e.summary,
         });
     }
     // Newest first; break ties stably so equal timestamps keep a deterministic
@@ -1119,6 +1132,38 @@ fn follow_up_intent(text: &str, history: &[ChatMessage]) -> Option<&'static str>
         .find_map(|m| route_intent(m.text()))
 }
 
+/// Formats a Unix-millisecond timestamp as `"Weekday, YYYY-MM-DD HH:MM UTC"` — no
+/// date dependency, using the standard civil-from-days algorithm. UTC for now; a
+/// later refinement can localise from the person's known location.
+fn format_datetime_utc(ms: i64) -> String {
+    let day = ms.div_euclid(86_400_000);
+    let secs = ms.rem_euclid(86_400_000) / 1000;
+    let (hh, mm) = (secs / 3600, (secs % 3600) / 60);
+    // Weekday: Unix day 0 (1970-01-01) was a Thursday.
+    const DOW: [&str; 7] = [
+        "Sunday",
+        "Monday",
+        "Tuesday",
+        "Wednesday",
+        "Thursday",
+        "Friday",
+        "Saturday",
+    ];
+    let dow = DOW[(day.rem_euclid(7) + 4).rem_euclid(7) as usize];
+    // Civil date from days since epoch (Howard Hinnant's algorithm).
+    let z = day + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = y + i64::from(m <= 2);
+    format!("{dow}, {year:04}-{m:02}-{d:02} {hh:02}:{mm:02} UTC")
+}
+
 /// The person's stated home location, if they've set one (the location setup
 /// stores it as a preference like "Based in: Charlotte"). Used to answer local
 /// asks without pestering them for a place each time.
@@ -1481,6 +1526,7 @@ pub fn butler_context(
         understanding,
         capabilities: skills,
         tool_result: None,
+        now: format_datetime_utc(clock.now().unix_millis()),
     })
 }
 
@@ -1645,7 +1691,7 @@ mod tests {
     use crate::ports::{
         AssumptionRepository, AttentionKind, AuditLog, BeliefRepository, Butler, ButlerContext,
         ButlerProposal, ButlerReply, CapabilityRunner, ChatRepository, CheckinRepository,
-        CheckinSchedule, Clock, DirectionRepository, ExperimentRepository, IdSource,
+        CheckinSchedule, Clock, DirectionRepository, EventLog, ExperimentRepository, IdSource,
         ObservationRepository, PreferenceRepository, ProcessChangeRepository, ProposalError,
         Proposer, ReflectionRepository, RepositoryError, Snooze, SnoozeRepository, Suggestion,
         SuggestionRepository, SuggestionStatus, TargetRepository, ValueRepository,
@@ -2068,6 +2114,29 @@ mod tests {
         }
     }
 
+    /// An in-memory event log (the butler's action log).
+    #[derive(Default)]
+    struct FakeEvents {
+        rows: RefCell<Vec<crate::ports::ActivityEvent>>,
+    }
+
+    impl EventLog for FakeEvents {
+        fn record(&self, at: Timestamp, summary: &str) -> Result<(), RepositoryError> {
+            self.rows.borrow_mut().push(crate::ports::ActivityEvent {
+                at,
+                summary: summary.to_owned(),
+            });
+            Ok(())
+        }
+        fn recent(
+            &self,
+            limit: usize,
+        ) -> Result<Vec<crate::ports::ActivityEvent>, RepositoryError> {
+            let all = self.rows.borrow();
+            Ok(all.iter().rev().take(limit).cloned().collect())
+        }
+    }
+
     fn approved_change() -> ProposedProcessChange {
         let mut p = ProposedProcessChange::propose(
             ProcessChangeId::new(7),
@@ -2414,6 +2483,18 @@ mod tests {
         // The butler's own reply stands; nothing was run.
         assert!(reply.text().contains("can't check flights"));
         assert!(activity.iter().all(|a| !a.contains("Used")));
+    }
+
+    #[test]
+    fn datetime_formats_a_known_timestamp() {
+        use super::format_datetime_utc;
+        // 1_700_000_000_000 ms = Tue 2023-11-14 22:13 UTC.
+        assert_eq!(
+            format_datetime_utc(1_700_000_000_000),
+            "Tuesday, 2023-11-14 22:13 UTC"
+        );
+        // Unix epoch itself.
+        assert_eq!(format_datetime_utc(0), "Thursday, 1970-01-01 00:00 UTC");
     }
 
     #[test]
@@ -3331,18 +3412,26 @@ mod tests {
             )
             .unwrap();
 
-        // Merged and ordered newest first: 300 (obs), 200 (decision), 100 (obs).
-        let feed = recent_activity(&store, &audit, 10).unwrap();
-        assert_eq!(feed.len(), 3);
-        assert_eq!(feed[0].summary(), "slept in");
-        assert_eq!(feed[0].kind(), ActivityKind::Observation);
-        assert_eq!(feed[1].kind(), ActivityKind::Decision);
-        assert_eq!(feed[2].summary(), "ran at 7am");
+        let events = FakeEvents::default();
+        events
+            .record(Timestamp::from_unix_millis(400), "Used the weather skill")
+            .unwrap();
+
+        // Merged and ordered newest first: 400 (action), 300 (obs), 200 (decision),
+        // 100 (obs).
+        let feed = recent_activity(&store, &audit, &events, 10).unwrap();
+        assert_eq!(feed.len(), 4);
+        assert_eq!(feed[0].summary(), "Used the weather skill");
+        assert_eq!(feed[0].kind(), ActivityKind::Action);
+        assert_eq!(feed[1].summary(), "slept in");
+        assert_eq!(feed[1].kind(), ActivityKind::Observation);
+        assert_eq!(feed[2].kind(), ActivityKind::Decision);
+        assert_eq!(feed[3].summary(), "ran at 7am");
 
         // The limit truncates after the merge, keeping the newest.
-        let top = recent_activity(&store, &audit, 1).unwrap();
+        let top = recent_activity(&store, &audit, &events, 1).unwrap();
         assert_eq!(top.len(), 1);
-        assert_eq!(top[0].summary(), "slept in");
+        assert_eq!(top[0].summary(), "Used the weather skill");
     }
 
     #[test]
