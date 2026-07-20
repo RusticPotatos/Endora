@@ -152,6 +152,9 @@
     padding: 6px 4px; max-height: 40vh; overflow-y: auto; outline: none; line-height: 1.5;
   }
   .composer-actions { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 6px; }
+  /* "what Endora did" note under the latest reply */
+  .activity { font-size: 12px; color: var(--muted); font-style: italic; margin: 2px 4px 10px; display: flex; align-items: center; gap: 6px; opacity: .85; }
+  .activity .ic { color: var(--accent); opacity: .8; }
 
   /* Phone browsers: tighten the frame and stack forms so inputs are never
      crushed by a button's label. */
@@ -191,6 +194,9 @@ let SUGGESTIONS = [];          // pending suggestions (the butler's durable prop
 let CHECKIN = { enabled: false, interval_ms: 0 }; // proactive check-in cadence
 let CAPS = [];                 // the butler's capabilities/skills (modules)
 let UNDERSTANDING = [];        // Endora's beliefs about the person (the home surface)
+let LAST_ACTIVITY = [];        // what Endora did behind the scenes on the last turn
+let LAST_ACTIVITY_MSG = null;  // the butler message id that activity belongs to
+let SHOW_ACTIVITY = localStorage.getItem("endora.showActivity") !== "0"; // default on
 let CHAT_STREAMING = false;    // true while a reply is streaming in (guards live-render)
 let NAV = { v: "chat" };       // current view (the butler is the landing page)
 
@@ -665,6 +671,13 @@ function viewChat() {
     ? `<div class="row" style="justify-content:flex-start; margin:6px 0;" id="chat-pending">
          <div class="bubble butler thinking"><span class="dots"><i></i><i></i><i></i></span></div></div>`
     : "";
+  // A subtle note of what Endora did behind the scenes on the latest turn —
+  // learnings and inbox additions — so you can see what the conversation changed.
+  const last = list[list.length - 1];
+  const showActivity = SHOW_ACTIVITY && LAST_ACTIVITY.length && last && last.role === "butler" && last.id === LAST_ACTIVITY_MSG;
+  const activity = showActivity
+    ? `<div class="activity">${icon("sparkle", 13)} ${LAST_ACTIVITY.map(esc).join(" · ")}</div>`
+    : "";
   const proposals = CHAT_PROPOSALS.map((p, i) => `
     <div class="card"><div class="row"><div class="grow"><div class="title">${esc(p.label)}</div>
       <div class="sub">the butler proposes this — you decide</div></div>
@@ -692,7 +705,7 @@ function viewChat() {
   return `
     <div class="chat">
       ${checkinControl}
-      <div id="chat-thread" class="chat-thread">${(msgs || `<div class="empty">Say what you'd like to work on — the butler will help organize it.</div>`) + pending}</div>
+      <div id="chat-thread" class="chat-thread">${(msgs || `<div class="empty">Say what you'd like to work on — the butler will help organize it.</div>`) + pending + activity}</div>
       ${awaiting ? "" : proposals}
       <div class="composer">
         <textarea id="chat-input" rows="1" placeholder="Talk to your butler…"></textarea>
@@ -789,9 +802,23 @@ function viewUnderstanding() {
     return `<h3 style="margin-top:16px;">${BELIEF_KIND_LABEL[k] || k}</h3>${rows}`;
   }).join("");
   const attn = attentionSection();
+  // A gentle one-line setup for basic context (location) so skills like weather
+  // and the guard dog have somewhere to start. Stored as a preference, which the
+  // butler already reads — no separate onboarding.
+  const knowsLocation = (DB.preferences || []).some((p) => /^\s*based in\b/i.test(p.text));
+  const setup = knowsLocation ? "" : `
+    <div class="card" style="border-color: color-mix(in srgb, var(--accent) 40%, var(--line));">
+      <div class="title">${icon("target", 15)} Where are you based?</div>
+      <div class="sub" style="margin:4px 0 8px;">So Endora can be useful about weather, local events, and keeping an eye out for you. Just a city is fine.</div>
+      <div class="form">
+        <input id="setup-location" placeholder="e.g. Boston, MA" />
+        <button class="primary" data-act="setlocation">Save</button>
+      </div>
+    </div>`;
   return `
     <h2>What Endora understands about you</h2>
     <div class="sub" style="margin-bottom:10px;">Endora forms these from your conversations — the evidence and how sure it is are shown. Correct anything that's off; it learns from that.</div>
+    ${setup}
     ${attn}
     ${groups || `<div class="empty">Nothing yet. Talk with Endora and it will start to understand you — you'll see it here.</div>`}
     <div class="sub" style="margin-top:24px;"><a data-act="go:goals" style="color:var(--accent);cursor:pointer">Goals ›</a> — optional, if you like to track them explicitly.</div>`;
@@ -861,6 +888,8 @@ async function sendChat() {
           if (live) live.scrollIntoView({ block: "end" });
         } else if (ev.type === "done") {
           CHAT_PROPOSALS = ev.proposals || [];
+          LAST_ACTIVITY = ev.activity || [];
+          LAST_ACTIVITY_MSG = ev.reply && ev.reply.id;
           speak(ev.reply && ev.reply.text);
           finished = true;
         } else if (ev.type === "error") {
@@ -907,6 +936,8 @@ function updateInboxBadge() {
   if (btn) btn.classList.toggle("has-badge", n > 0);
   const count = document.getElementById("menu-inbox-count");
   if (count) count.textContent = n ? String(n) : "";
+  const act = document.getElementById("menu-activity-state");
+  if (act) act.textContent = SHOW_ACTIVITY ? "on" : "off";
 }
 
 // ---- actions (event delegation) -------------------------------------------
@@ -953,6 +984,20 @@ async function dispatch(act) {
       const m = document.getElementById("menu");
       if (m) m.hidden = !m.hidden;
       return;
+    }
+    if (verb === "toggle" && noun === "activity") {
+      SHOW_ACTIVITY = !SHOW_ACTIVITY;
+      localStorage.setItem("endora.showActivity", SHOW_ACTIVITY ? "1" : "0");
+      closeMenu();
+      return render();
+    }
+    // Save the person's home location as a preference the butler reads for context.
+    if (verb === "setlocation") {
+      const where = val("setup-location");
+      if (!where) return;
+      await api("POST", "/v1/preferences", { text: `Based in: ${where}` });
+      flash("Got it — Endora knows where you're based.", "ok");
+      return reload();
     }
     if (verb === "confirm" && noun === "proposal") {
       const p = CHAT_PROPOSALS[Number(id)];
@@ -1137,6 +1182,7 @@ function setupHeader(service) {
       item("go:skills", "skills", "Skills") +
       item("go:goals", "target", "Goals") +
       item("go:prefs", "prefs", "Your preferences") +
+      item("toggle:activity", "sparkle", `Show Endora's actions <span class="menu-count" id="menu-activity-state"></span>`) +
       `<div class="divider"></div>` +
       item("go:audit", "audit", "Activity & audit") +
       item("export", "export", "Export my data") +

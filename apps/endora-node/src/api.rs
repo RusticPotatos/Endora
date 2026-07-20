@@ -1037,7 +1037,7 @@ async fn send_chat(
     let ids = state.ids.clone();
     let clock = state.clock.clone();
     let butler = state.butler.clone();
-    let (reply, suggestions) = blocking(move || {
+    let (reply, suggestions, activity) = blocking(move || {
         // Ground the butler in the person's current life before it answers.
         let context = usecases::butler_context(
             store.as_ref(),
@@ -1064,6 +1064,7 @@ async fn send_chat(
     Ok(Json(json!({
         "reply": MessageResponse::from(&reply),
         "proposals": suggestions.iter().map(suggestion_json).collect::<Vec<_>>(),
+        "activity": activity,
     })))
 }
 
@@ -1127,13 +1128,14 @@ async fn stream_chat(
             )
         };
         match result {
-            Ok((reply, suggestions)) => {
+            Ok((reply, suggestions, activity)) => {
                 // A successful write nudges the change stream, like other writes.
                 let _ = changes.send(());
                 let _ = tx.send(event(json!({
                     "type": "done",
                     "reply": MessageResponse::from(&reply),
                     "proposals": suggestions.iter().map(suggestion_json).collect::<Vec<_>>(),
+                    "activity": activity,
                 })));
             }
             Err(e) => {

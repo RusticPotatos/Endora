@@ -763,7 +763,7 @@ pub fn send_to_butler(
     clock: &impl Clock,
     context: &ButlerContext,
     text: &str,
-) -> Result<(ChatMessage, Vec<Suggestion>), AppError> {
+) -> Result<(ChatMessage, Vec<Suggestion>, Vec<String>), AppError> {
     // Non-streaming is just streaming with the tokens discarded.
     send_to_butler_streaming(
         chat,
@@ -803,7 +803,7 @@ pub fn send_to_butler_streaming(
     context: &ButlerContext,
     text: &str,
     on_token: &mut dyn FnMut(&str),
-) -> Result<(ChatMessage, Vec<Suggestion>), AppError> {
+) -> Result<(ChatMessage, Vec<Suggestion>, Vec<String>), AppError> {
     let user = ChatMessage::new(
         MessageId::new(ids.new_id()),
         MessageRole::User,
@@ -834,6 +834,11 @@ pub fn send_to_butler_streaming(
     )?;
     chat.append(&butler)?;
 
+    // `activity` is a plain-language record of what Endora did behind the scenes
+    // this turn — its learnings and the suggestions it noted — so the person can
+    // see what the conversation actually changed (transparency + debugging).
+    let mut activity: Vec<String> = Vec::new();
+
     // Persist the proposals as durable, pending suggestions tied to this reply,
     // so the conversation's learnings survive a reload and can be applied later —
     // not lost the moment the chat moves on (ADR 0019).
@@ -847,6 +852,10 @@ pub fn send_to_butler_streaming(
             created_at: clock.now(),
             decided_at: None,
         };
+        activity.push(format!(
+            "Added to your inbox — {}",
+            suggestion.proposal.label()
+        ));
         suggestions.save(&suggestion)?;
         saved.push(suggestion);
     }
@@ -863,10 +872,12 @@ pub fn send_to_butler_streaming(
             .find(|b| normalized(b.statement()) == key)
             .cloned()
         {
+            activity.push(format!("Grew more sure that {}", prior.statement()));
             prior.affirm(clock.now());
             beliefs.save(&prior)?;
             continue;
         }
+        activity.push(format!("Learned that {}", formed.statement.trim()));
         let belief = Belief::new(
             BeliefId::new(ids.new_id()),
             &formed.statement,
@@ -878,7 +889,7 @@ pub fn send_to_butler_streaming(
         beliefs.save(&belief)?;
     }
 
-    Ok((butler, saved))
+    Ok((butler, saved, activity))
 }
 
 /// Normalizes a belief statement for duplicate detection: lowercase, collapse
@@ -1958,7 +1969,7 @@ mod tests {
         let ids = SeqIds::default();
         let clock = FixedClock(1_000);
 
-        let (reply, suggestions) = send_to_butler(
+        let (reply, suggestions, _activity) = send_to_butler(
             &store,
             &store,
             &store,
@@ -2264,7 +2275,7 @@ mod tests {
                 })
             }
         }
-        let (reply, _) = send_to_butler(
+        let (reply, _, _) = send_to_butler(
             &store,
             &store,
             &store,
