@@ -26,7 +26,9 @@ use endora_domain::{
     Preference, PreferenceId, PreferenceKind, ProcessChangeId, ProposedProcessChange, Reflection,
     ReflectionId, SuggestionId, Target, TargetId, Value, ValueId,
 };
-use endora_infrastructure::{RandomIdSource, SqliteStore, SystemClock};
+use endora_infrastructure::{
+    Capability, CapabilityError, RandomIdSource, SqliteStore, SystemClock,
+};
 use futures_util::stream::{Stream, unfold};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -49,6 +51,9 @@ pub struct AppState {
     /// subscribers know to refresh. Carries no payload — it is a "something
     /// changed" nudge, and clients re-read the authoritative state.
     pub changes: broadcast::Sender<()>,
+    /// The butler's skills (weather, web, …) — declared modules the butler can
+    /// reach for, each gated by its autonomy level (ADR 0019).
+    pub capabilities: Arc<Vec<Arc<dyn Capability>>>,
 }
 
 impl AppState {
@@ -71,6 +76,7 @@ impl AppState {
             proposer,
             butler,
             changes,
+            capabilities: Arc::new(endora_infrastructure::default_capabilities()),
         }
     }
 }
@@ -145,6 +151,8 @@ pub fn app(state: AppState) -> Router {
         .route("/v1/suggestions/{id}/apply", post(apply_suggestion))
         .route("/v1/suggestions/{id}/dismiss", post(dismiss_suggestion))
         .route("/v1/checkin", get(get_checkin).post(set_checkin))
+        .route("/v1/capabilities", get(list_capabilities))
+        .route("/v1/capabilities/{id}/invoke", post(invoke_capability))
         .route(
             "/v1/preferences",
             post(create_preference).get(list_preferences),
@@ -1250,6 +1258,65 @@ async fn set_checkin(
     })
     .await?;
     Ok(Json(schedule.into()))
+}
+
+fn capability_json(info: &endora_infrastructure::CapabilityInfo) -> serde_json::Value {
+    json!({
+        "id": info.id,
+        "name": info.name,
+        "description": info.description,
+        "category": info.category,
+        "reaches_external": info.reaches_external,
+        "autonomy": info.autonomy.name(),
+        "configured": info.configured,
+        "needs": info.needs,
+    })
+}
+
+/// Lists the butler's skills (capabilities/modules) and their status.
+async fn list_capabilities(State(state): State<AppState>) -> Json<Vec<serde_json::Value>> {
+    Json(
+        state
+            .capabilities
+            .iter()
+            .map(|c| capability_json(&c.info()))
+            .collect(),
+    )
+}
+
+/// Invokes a capability by id with a JSON body. Read-only skills run directly;
+/// this is the `act` path of the autonomy model. (Consequential skills will be
+/// routed through propose→confirm as they are wired.)
+async fn invoke_capability(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(input): Json<serde_json::Value>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let Some(cap) = state
+        .capabilities
+        .iter()
+        .find(|c| c.info().id == id)
+        .cloned()
+    else {
+        return Err(ApiError(AppError::NotFound {
+            entity: "capability",
+        }));
+    };
+    let result = tokio::task::spawn_blocking(move || cap.invoke(&input))
+        .await
+        .map_err(|_| {
+            ApiError(AppError::Repository(RepositoryError::Backend(
+                "worker task failed".to_owned(),
+            )))
+        })?;
+    match result {
+        Ok(value) => Ok(Json(json!({ "ok": true, "result": value }))),
+        Err(CapabilityError::BadInput(m)) => Err(ApiError(AppError::BadRequest { message: m })),
+        Err(CapabilityError::Unavailable(m)) => {
+            // Not an error the person did wrong — report it as a soft result.
+            Ok(Json(json!({ "ok": false, "unavailable": m })))
+        }
+    }
 }
 
 /// Spawns the butler's **heartbeat**: a background loop that periodically checks
