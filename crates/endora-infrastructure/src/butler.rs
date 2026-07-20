@@ -13,8 +13,10 @@
 //! Both only ever *propose*: the person confirms each action, and deterministic
 //! use cases execute it. The model is never the enforcement boundary.
 
-use endora_application::{Butler, ButlerContext, ButlerProposal, ButlerReply, ProposalError};
-use endora_domain::{ChatMessage, MessageRole, Preference, PreferenceKind};
+use endora_application::{
+    Butler, ButlerContext, ButlerProposal, ButlerReply, FormedBelief, ProposalError,
+};
+use endora_domain::{BeliefKind, ChatMessage, Confidence, MessageRole, Preference, PreferenceKind};
 use serde_json::{Value, json};
 
 /// A deterministic, offline butler. Reliable, if simple.
@@ -42,7 +44,7 @@ fn scripted_reply(history: &[ChatMessage]) -> ButlerReply {
     if last_user.is_empty() {
         return ButlerReply {
             text: "What would you like to work on?".to_owned(),
-            proposals: Vec::new(),
+            ..ButlerReply::default()
         };
     }
     let aim = strip_lead(&last_user);
@@ -52,6 +54,7 @@ fn scripted_reply(history: &[ChatMessage]) -> ButlerReply {
              Want me to hold onto \"{aim}\" as something you're working toward?"
         ),
         proposals: vec![ButlerProposal::CreateNorthStar { title: aim }],
+        ..ButlerReply::default()
     }
 }
 
@@ -277,33 +280,39 @@ impl Butler for LlmButler {
 /// browsable profile, NOT conversational vocabulary. The butler talks like a
 /// real person; the structured `proposals` (the JSON `kind`s) are the machine
 /// layer that maps the conversation onto that model silently.
-const BUTLER_SYSTEM_PROMPT: &str = "You are Endora's butler: a candid, warm \
-confidant who helps the person grow. Behind the scenes you keep an organized model \
-of their life — what they care about, what they're working toward, and the concrete \
-steps beneath it — and you quietly propose updates to it. But that model is YOUR \
-scaffolding and their private profile to browse; it is NOT how you talk. In \
-conversation, sound like a real person: natural, specific, human. NEVER say the \
-app's internal words — 'value', 'North Star', 'target', 'goal', 'assumption', \
-'experiment', 'proposal' — in your reply. Say them in plain language instead: \
-'what's driving this', 'something you're working toward', 'a concrete next step', \
-'want me to hold onto that'. Mirror the person's register — match their warmth, \
+const BUTLER_SYSTEM_PROMPT: &str = "You are Endora: a candid, warm personal \
+intelligence — a thoughtful butler. Your PRIMARY job is to UNDERSTAND the person: \
+what they are really trying to achieve or experience (their intent), what they \
+value, what motivates or frustrates them, their patterns. You do the thinking so \
+they don't have to; you are not a goal tracker or task manager. Each turn, notice \
+what the conversation reveals and form 'understanding' — beliefs about them, each \
+with the evidence behind it and how sure you are. Intent matters more than any \
+goal: a goal is one changeable expression of a slow-changing intent. When it helps, \
+gently offer a small, concrete next step or suggestion, sized to how sure you are \
+(more uncertain → smaller, or just ask). \
+In conversation, sound like a real person: natural, specific, human. NEVER say \
+internal words like 'intent', 'belief', 'confidence', 'value', 'goal', 'proposal' in \
+your reply — speak plainly. Mirror the person's register — match their warmth, \
 formality, and politeness — but asymmetrically: reflect kindness upward, and NEVER \
 mirror hostility, rudeness, or contempt downward; stay even and kind. Be honest and \
 direct. NEVER be sycophantic — no flattery, no empty or overwhelming praise, no \
 reflexive agreement; disagree when warranted, kindly. A warm tone must never soften \
-the truth. You only PROPOSE the structured updates; the person confirms them, and \
-you never claim to have done anything. When the person states a lasting preference, \
-offer to remember it. Reply with ONLY a JSON object of the form \
-{\"reply\":\"<your natural-language message>\",\"proposals\":[<zero or more>]} where \
-each proposal is exactly one of {\"kind\":\"create_value\",\"name\":\"...\"}, \
+the truth. You only PROPOSE actions; the person authorizes them; you never claim to \
+have done anything. \
+Reply with ONLY a JSON object of the form {\"reply\":\"<your natural-language \
+message>\",\"understanding\":[<zero or more beliefs>],\"proposals\":[<zero or more>]}. \
+Each understanding item is {\"statement\":\"<what you now believe, plainly>\",\
+\"kind\":\"intent|value|preference|pattern|motivation|frustration|stressor|relationship|other\",\
+\"confidence\":\"low|medium|high\",\"evidence\":\"<what they said that supports it>\"}. \
+Only include understanding you actually have evidence for; [] is fine. Each proposal \
+is exactly one of {\"kind\":\"create_value\",\"name\":\"...\"}, \
 {\"kind\":\"create_north_star\",\"title\":\"...\"}, \
 {\"kind\":\"create_target\",\"direction_id\":\"<id of an existing item below>\",\"statement\":\"...\"}, \
 or {\"kind\":\"remember_preference\",\"text\":\"...\",\"preference_kind\":\"taste\"}. \
-The JSON kinds are the machine layer — keep those taxonomy words OUT of the \"reply\" \
-text. Your ENTIRE response must be that single JSON object and nothing else: no \
-prose before it, no prose after it, no repetition of it, no code fences. Ground \
-yourself in the person's life below; refer to what exists in plain language and \
-offer the next concrete step (only use a direction_id listed there).";
+The JSON kinds are the machine layer — keep those words OUT of the \"reply\" text. \
+Your ENTIRE response must be that single JSON object and nothing else: no prose \
+before or after it, no repetition, no code fences. Ground yourself in what you \
+already understand about the person, below.";
 
 /// Builds the OpenAI-compatible chat request from the conversation and the
 /// preferences already learned (so the butler need not re-ask). Pure, so it is
@@ -398,7 +407,7 @@ fn parse_butler_json(content: &str) -> ButlerReply {
         // No JSON envelope anywhere — treat the prose itself as the reply.
         return ButlerReply {
             text: content.trim().to_owned(),
-            proposals: Vec::new(),
+            ..ButlerReply::default()
         };
     };
     let text = value["reply"].as_str().unwrap_or("").trim().to_owned();
@@ -406,7 +415,28 @@ fn parse_butler_json(content: &str) -> ButlerReply {
         .as_array()
         .map(|arr| arr.iter().filter_map(parse_proposal).collect())
         .unwrap_or_default();
-    ButlerReply { text, proposals }
+    let beliefs = value["understanding"]
+        .as_array()
+        .map(|arr| arr.iter().filter_map(parse_belief).collect())
+        .unwrap_or_default();
+    ButlerReply {
+        text,
+        proposals,
+        beliefs,
+    }
+}
+
+/// Maps one JSON understanding item to a [`FormedBelief`], skipping malformed
+/// ones. Understanding is soft: an unknown kind/confidence degrades rather than
+/// dropping the belief.
+fn parse_belief(value: &Value) -> Option<FormedBelief> {
+    let statement = non_empty(value["statement"].as_str()?)?;
+    Some(FormedBelief {
+        statement,
+        kind: BeliefKind::from_name(value["kind"].as_str().unwrap_or("other")),
+        confidence: Confidence::from_name(value["confidence"].as_str().unwrap_or("low")),
+        evidence: value["evidence"].as_str().unwrap_or("").trim().to_owned(),
+    })
 }
 
 /// Returns the first balanced `{…}` object found in `s`, honouring string

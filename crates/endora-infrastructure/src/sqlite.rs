@@ -11,18 +11,18 @@ use std::sync::Mutex;
 use serde_json::{Value as JsonValue, json};
 
 use endora_application::{
-    AssumptionRepository, AuditLog, ButlerProposal, ChatRepository, CheckinRepository,
-    CheckinSchedule, DirectionRepository, ExperimentRepository, MemorySnapshot, MemoryStore,
-    ObservationRepository, PreferenceRepository, ProcessChangeRepository, ReflectionRepository,
-    RepositoryError, Snooze, SnoozeRepository, Suggestion, SuggestionRepository, SuggestionStatus,
-    TargetRepository, ValueRepository,
+    AssumptionRepository, AuditLog, BeliefRepository, ButlerProposal, ChatRepository,
+    CheckinRepository, CheckinSchedule, DirectionRepository, ExperimentRepository, MemorySnapshot,
+    MemoryStore, ObservationRepository, PreferenceRepository, ProcessChangeRepository,
+    ReflectionRepository, RepositoryError, Snooze, SnoozeRepository, Suggestion,
+    SuggestionRepository, SuggestionStatus, TargetRepository, ValueRepository,
 };
 use endora_domain::{
-    ApprovalState, Assumption, AssumptionId, AuditId, AuditRecord, ChatMessage, Direction,
-    DirectionId, Experiment, ExperimentId, ExperimentStatus, LifecycleStatus, MessageId,
-    MessageRole, Observation, ObservationId, Preference, PreferenceId, PreferenceKind,
-    ProcessChangeId, ProposedProcessChange, Reflection, ReflectionId, SuggestionId, Target,
-    TargetId, Timestamp, Value, ValueId,
+    ApprovalState, Assumption, AssumptionId, AuditId, AuditRecord, Belief, BeliefId, BeliefKind,
+    BeliefStatus, ChatMessage, Confidence, Direction, DirectionId, Experiment, ExperimentId,
+    ExperimentStatus, LifecycleStatus, MessageId, MessageRole, Observation, ObservationId,
+    Preference, PreferenceId, PreferenceKind, ProcessChangeId, ProposedProcessChange, Reflection,
+    ReflectionId, SuggestionId, Target, TargetId, Timestamp, Value, ValueId,
 };
 use rusqlite::{Connection, OptionalExtension, params};
 
@@ -146,6 +146,16 @@ CREATE TABLE IF NOT EXISTS checkin (
     enabled     INTEGER NOT NULL,
     interval_ms INTEGER NOT NULL,
     next_at_ms  INTEGER NOT NULL
+) STRICT;
+CREATE TABLE IF NOT EXISTS beliefs (
+    id               TEXT PRIMARY KEY,
+    statement        TEXT NOT NULL,
+    kind             TEXT NOT NULL,
+    confidence       TEXT NOT NULL,
+    evidence         TEXT NOT NULL,
+    created_ms       INTEGER NOT NULL,
+    last_affirmed_ms INTEGER NOT NULL,
+    status           TEXT NOT NULL
 ) STRICT;
 ";
 
@@ -826,6 +836,7 @@ impl MemoryStore for SqliteStore {
             messages: all_messages(&conn)?,
             preferences: all_preferences(&conn)?,
             suggestions: all_suggestions(&conn, None)?,
+            beliefs: all_beliefs(&conn)?,
         })
     }
 
@@ -849,6 +860,7 @@ impl MemoryStore for SqliteStore {
             "preferences",
             "suggestions",
             "checkin",
+            "beliefs",
         ] {
             tx.execute(&format!("DELETE FROM {table}"), [])
                 .map_err(backend)?;
@@ -1092,6 +1104,78 @@ impl CheckinRepository for SqliteStore {
         .map_err(backend)?;
         Ok(())
     }
+}
+
+impl BeliefRepository for SqliteStore {
+    fn save(&self, belief: &Belief) -> Result<(), RepositoryError> {
+        let conn = self.lock()?;
+        conn.execute(
+            "INSERT OR REPLACE INTO beliefs \
+             (id, statement, kind, confidence, evidence, created_ms, last_affirmed_ms, status) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![
+                id_text(belief.id().value()),
+                belief.statement(),
+                belief.kind().name(),
+                belief.confidence().name(),
+                belief.evidence(),
+                belief.created_at().unix_millis(),
+                belief.last_affirmed_at().unix_millis(),
+                belief.status().name(),
+            ],
+        )
+        .map_err(backend)?;
+        Ok(())
+    }
+
+    fn get(&self, id: BeliefId) -> Result<Option<Belief>, RepositoryError> {
+        let conn = self.lock()?;
+        Ok(all_beliefs(&conn)?.into_iter().find(|b| b.id() == id))
+    }
+
+    fn list(&self) -> Result<Vec<Belief>, RepositoryError> {
+        let conn = self.lock()?;
+        all_beliefs(&conn)
+    }
+}
+
+fn all_beliefs(conn: &Connection) -> Result<Vec<Belief>, RepositoryError> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, statement, kind, confidence, evidence, created_ms, last_affirmed_ms, status \
+             FROM beliefs ORDER BY last_affirmed_ms DESC, rowid DESC",
+        )
+        .map_err(backend)?;
+    let rows = stmt
+        .query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, String>(3)?,
+                r.get::<_, String>(4)?,
+                r.get::<_, i64>(5)?,
+                r.get::<_, i64>(6)?,
+                r.get::<_, String>(7)?,
+            ))
+        })
+        .map_err(backend)?;
+    let mut out = Vec::new();
+    for row in rows {
+        let (id, statement, kind, confidence, evidence, created_ms, affirmed_ms, status) =
+            row.map_err(backend)?;
+        out.push(Belief::from_parts(
+            BeliefId::new(parse_id(&id)?),
+            statement,
+            BeliefKind::from_name(&kind),
+            Confidence::from_name(&confidence),
+            evidence,
+            Timestamp::from_unix_millis(created_ms),
+            Timestamp::from_unix_millis(affirmed_ms),
+            BeliefStatus::from_name(&status),
+        ));
+    }
+    Ok(out)
 }
 
 /// Serializes a proposal to its stored `(kind, payload-json)` form.

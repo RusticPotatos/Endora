@@ -190,6 +190,7 @@ let CHAT_PROPOSALS = [];       // proposals from the butler's last reply
 let SUGGESTIONS = [];          // pending suggestions (the butler's durable proposal inbox)
 let CHECKIN = { enabled: false, interval_ms: 0 }; // proactive check-in cadence
 let CAPS = [];                 // the butler's capabilities/skills (modules)
+let UNDERSTANDING = [];        // Endora's beliefs about the person (the home surface)
 let CHAT_STREAMING = false;    // true while a reply is streaming in (guards live-render)
 let NAV = { v: "chat" };       // current view (the butler is the landing page)
 
@@ -269,6 +270,7 @@ async function reload() {
   SUGGESTIONS = suggestions;
   CHECKIN = checkin;
   CAPS = caps;
+  try { UNDERSTANDING = await api("GET", "/v1/understanding"); } catch (_) { UNDERSTANDING = []; }
   render();
 }
 
@@ -762,6 +764,39 @@ function viewSkills() {
     ${listOr((CAPS || []).map(card), "No skills registered.")}`;
 }
 
+// The home surface: what Endora currently understands about you. Not a task list —
+// beliefs it has formed (with the evidence and how sure it is), which you can
+// affirm or correct. This is the point of the product (ADR 0020).
+const BELIEF_KIND_LABEL = {
+  intent: "What you're really after", value: "What you value", preference: "Preferences",
+  pattern: "Patterns", motivation: "What drives you", frustration: "Frustrations",
+  stressor: "Stressors", relationship: "People who matter", other: "Other",
+};
+const BELIEF_KIND_ORDER = ["intent","value","motivation","pattern","preference","frustration","stressor","relationship","other"];
+function viewUnderstanding() {
+  const byKind = {};
+  for (const b of (UNDERSTANDING || [])) (byKind[b.kind] = byKind[b.kind] || []).push(b);
+  const groups = BELIEF_KIND_ORDER.filter(k => byKind[k]).map((k) => {
+    const rows = byKind[k].map((b) => `
+      <div class="card"><div class="row">
+        <div class="grow">
+          <div class="title">${esc(b.statement)} <span class="pill ${b.confidence === "high" ? "active" : b.confidence === "low" ? "pending" : ""}">${b.confidence} confidence</span></div>
+          ${b.evidence ? `<div class="sub">because ${esc(b.evidence)}</div>` : ""}
+        </div>
+        <button class="ghost" data-act="affirm:belief:${b.id}" title="that's right">That's right</button>
+        <button class="ghost" data-act="correct:belief:${b.id}" title="not quite">Not quite</button>
+      </div></div>`).join("");
+    return `<h3 style="margin-top:16px;">${BELIEF_KIND_LABEL[k] || k}</h3>${rows}`;
+  }).join("");
+  const attn = attentionSection();
+  return `
+    <h2>What Endora understands about you</h2>
+    <div class="sub" style="margin-bottom:10px;">Endora forms these from your conversations — the evidence and how sure it is are shown. Correct anything that's off; it learns from that.</div>
+    ${attn}
+    ${groups || `<div class="empty">Nothing yet. Talk with Endora and it will start to understand you — you'll see it here.</div>`}
+    <div class="sub" style="margin-top:24px;"><a data-act="go:goals" style="color:var(--accent);cursor:pointer">Goals ›</a> — optional, if you like to track them explicitly.</div>`;
+}
+
 // Append a chat bubble to the thread and keep the newest in view.
 function appendBubble(html, cls, id) {
   const thread = document.getElementById("chat-thread");
@@ -859,7 +894,9 @@ function render() {
     : v === "suggestions" ? viewSuggestions()
     : v === "skills" ? viewSkills()
     : v === "prefs" ? viewPrefs()
-    : viewHome();
+    : v === "goals" ? viewHome()
+    : v === "understanding" ? viewUnderstanding()
+    : viewUnderstanding();
 }
 
 // Show the pending-suggestion count on the Inbox nav button.
@@ -941,6 +978,15 @@ async function dispatch(act) {
     }
     if (verb === "dismiss" && noun === "suggestion") {
       try { await api("POST", `/v1/suggestions/${id}/dismiss`); } catch (_) {}
+      return reload();
+    }
+    // Review Endora's understanding: affirm (raises confidence) or correct (drops it).
+    if (verb === "affirm" && noun === "belief") {
+      try { await api("POST", `/v1/understanding/${id}/affirm`); } catch (_) {}
+      return reload();
+    }
+    if (verb === "correct" && noun === "belief") {
+      try { await api("POST", `/v1/understanding/${id}/correct`); } catch (_) {}
       return reload();
     }
     // Set the proactive check-in cadence (noun is "off" or an interval in ms).
@@ -1086,10 +1132,11 @@ function setupHeader(service) {
   if (menu) {
     menu.innerHTML =
       item("go:chat", "chat", "Talk to Endora") +
-      item("go:home", "target", "Goals") +
+      item("go:home", "sparkle", "Understanding") +
       item("go:suggestions", "inbox", "Inbox", `<span class="menu-count" id="menu-inbox-count"></span>`) +
       item("go:skills", "skills", "Skills") +
-      item("go:prefs", "prefs", "What Endora knows") +
+      item("go:goals", "target", "Goals") +
+      item("go:prefs", "prefs", "Your preferences") +
       `<div class="divider"></div>` +
       item("go:audit", "audit", "Activity & audit") +
       item("export", "export", "Export my data") +

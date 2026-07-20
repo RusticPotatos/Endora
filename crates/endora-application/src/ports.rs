@@ -8,10 +8,10 @@
 use core::fmt;
 
 use endora_domain::{
-    Assumption, AssumptionId, AuditRecord, ChatMessage, Direction, DirectionId, Experiment,
-    ExperimentId, MessageId, Observation, Preference, PreferenceId, PreferenceKind,
-    ProcessChangeId, ProposedProcessChange, Reflection, ReflectionId, SuggestionId, Target,
-    TargetId, Timestamp, Value, ValueId,
+    Assumption, AssumptionId, AuditRecord, Belief, BeliefId, BeliefKind, ChatMessage, Confidence,
+    Direction, DirectionId, Experiment, ExperimentId, MessageId, Observation, Preference,
+    PreferenceId, PreferenceKind, ProcessChangeId, ProposedProcessChange, Reflection, ReflectionId,
+    SuggestionId, Target, TargetId, Timestamp, Value, ValueId,
 };
 
 /// A complete snapshot of the user's stored data, for the memory rights of the
@@ -42,6 +42,8 @@ pub struct MemorySnapshot {
     pub preferences: Vec<Preference>,
     /// The butler's persisted suggestions (pending, applied, and dismissed).
     pub suggestions: Vec<Suggestion>,
+    /// Endora's understanding of the person — the beliefs it holds.
+    pub beliefs: Vec<Belief>,
 }
 
 /// The user's right to export and delete all of their data (constitution:
@@ -352,13 +354,54 @@ impl ButlerProposal {
     }
 }
 
-/// What the butler says back: a reply, plus any actions it proposes.
+/// A belief the butler has formed about the person this turn — understanding,
+/// not an action. Stored directly (Endora owns its own model); the person reviews
+/// and corrects it (ADR 0020). Distinct from a [`ButlerProposal`], which the
+/// person must authorize.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FormedBelief {
+    /// What is believed, in plain language.
+    pub statement: String,
+    /// What sort of belief it is.
+    pub kind: BeliefKind,
+    /// How sure the butler is.
+    pub confidence: Confidence,
+    /// What in the conversation supports it.
+    pub evidence: String,
+}
+
+/// What the butler says back: a reply, any actions it proposes, and any
+/// understanding it formed.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ButlerReply {
     /// The butler's text reply.
     pub text: String,
     /// Structured actions it proposes (may be empty). Never auto-executed.
     pub proposals: Vec<ButlerProposal>,
+    /// Beliefs it formed about the person this turn (may be empty). Understanding,
+    /// not actions — stored directly, then reviewable/correctable.
+    pub beliefs: Vec<FormedBelief>,
+}
+
+/// Persists the person's [`Belief`]s — Endora's living understanding of them.
+pub trait BeliefRepository {
+    /// Inserts a belief, or replaces the one with the same id (create + update).
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if the backend fails.
+    fn save(&self, belief: &Belief) -> Result<(), RepositoryError>;
+
+    /// Fetches a belief by id, `None` if absent.
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if the backend fails or stored data is corrupt.
+    fn get(&self, id: BeliefId) -> Result<Option<Belief>, RepositoryError>;
+
+    /// Lists all beliefs, most-recently-affirmed first.
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if the backend fails or stored data is corrupt.
+    fn list(&self) -> Result<Vec<Belief>, RepositoryError>;
 }
 
 /// Where a persisted [`Suggestion`] is in its life: proposed and waiting, applied

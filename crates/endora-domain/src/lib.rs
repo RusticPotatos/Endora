@@ -37,6 +37,7 @@
 
 pub mod audit;
 pub mod autonomy;
+pub mod beliefs;
 pub mod conversation;
 pub mod error;
 pub mod experiments;
@@ -49,12 +50,13 @@ pub mod values;
 
 pub use audit::AuditRecord;
 pub use autonomy::AutonomyLevel;
+pub use beliefs::{Belief, BeliefKind, BeliefStatus, Confidence};
 pub use conversation::{ChatMessage, MessageRole};
 pub use error::DomainError;
 pub use experiments::{Experiment, ExperimentStatus, Observation};
 pub use ids::{
-    AssumptionId, AuditId, DirectionId, ExperimentId, MessageId, ObservationId, PreferenceId,
-    ProcessChangeId, ReflectionId, SuggestionId, TargetId, Timestamp, ValueId,
+    AssumptionId, AuditId, BeliefId, DirectionId, ExperimentId, MessageId, ObservationId,
+    PreferenceId, ProcessChangeId, ReflectionId, SuggestionId, TargetId, Timestamp, ValueId,
 };
 pub use policy::{PolicyDecision, authorize_process_change};
 pub use preferences::{Preference, PreferenceKind};
