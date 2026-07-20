@@ -9,6 +9,17 @@ tagged release.
 
 ### Added
 
+- **Capabilities — the butler's skills** (third slice of
+  [ADR 0019](docs/adr/0019-proactive-self-improving-butler.md)): pluggable modules the
+  butler can reach for, each declaring what it does, its **autonomy level** (act vs
+  ask), whether it **leaves the device**, and whether it's **configured**. Working
+  today (no keys): **Weather** (current + today + a severe-weather heads-up),
+  **Web browsing** (fetch a page, read its text), and a **Guard dog** (active
+  public-safety alerts via the US National Weather Service). Declared and awaiting
+  setup: image review (local vision model), local events, flight search, location
+  tracking, incident scanner — each shown with what it needs, not silently missing.
+  New `GET /v1/capabilities` and `POST /v1/capabilities/{id}/invoke`; a **Skills**
+  view in the console. (The registry is the substrate an MCP host adapter plugs into.)
 - **The butler reaches out — proactive check-ins** (second slice of
   [ADR 0019](docs/adr/0019-proactive-self-improving-butler.md)): the node now runs a
   **heartbeat**, and on a cadence you choose (a **Check-ins** control in the chat —
