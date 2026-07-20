@@ -27,7 +27,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // node runs without it and only the drafting endpoint returns 503.
     let model_url = std::env::var("ENDORA_MODEL_URL")
         .unwrap_or_else(|_| "http://localhost:11434/v1".to_owned());
-    let model = std::env::var("ENDORA_MODEL").unwrap_or_else(|_| "qwen3.5:9b".to_owned());
+    let model = std::env::var("ENDORA_MODEL").unwrap_or_else(|_| "qwen2.5:7b".to_owned());
 
     let state = AppState::new(
         Arc::new(SqliteStore::open(&db_path)?),
