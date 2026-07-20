@@ -15,10 +15,17 @@ COPY . .
 # so a normal source change is seconds instead of a full-workspace rebuild. The
 # binary is copied OUT of the cache-mounted target within the same step, since a
 # cache mount is not part of the image layer.
+#
+# `touch` the sources first: BuildKit's COPY normalizes file mtimes to a constant,
+# so a changed source can end up OLDER than the cached target/ artifacts and
+# cargo's mtime check skips recompiling it — serving a stale binary. Bumping the
+# mtimes forces cargo to re-fingerprint; it still recompiles only crates whose
+# content actually changed, so incremental builds stay fast.
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     --mount=type=cache,target=/app/target,sharing=locked \
-    cargo build --release -p endora-node \
+    find . \( -name '*.rs' -o -name '*.toml' -o -name '*.lock' \) -exec touch {} + \
+    && cargo build --release -p endora-node \
     && cp target/release/endora-node /endora-node
 
 # --- runtime stage ---------------------------------------------------------
