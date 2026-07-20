@@ -17,9 +17,10 @@ use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post};
 use endora_application::{
-    ActivityItem, AppError, AttentionItem, AttentionKind, Butler, ButlerProposal,
-    CapabilityConfigRepository, CheckinSchedule, MemorySnapshot, Proposer, RepositoryError,
-    Suggestion, SuggestionStatus, usecases,
+    ActivityItem, AppError, AttentionItem, AttentionKind, AutonomyEnvelope,
+    AutonomyEnvelopeRepository, Butler, ButlerProposal, CapabilityConfigRepository,
+    CheckinSchedule, MemorySnapshot, Proposer, RepositoryError, Suggestion, SuggestionStatus,
+    usecases,
 };
 use endora_domain::{
     Assumption, AssumptionId, AuditRecord, AutonomyLevel, Belief, BeliefId, ChatMessage, Direction,
@@ -159,6 +160,7 @@ pub fn app(state: AppState) -> Router {
         .route("/v1/capabilities", get(list_capabilities))
         .route("/v1/capabilities/{id}/invoke", post(invoke_capability))
         .route("/v1/capabilities/{id}/enable", post(set_capability_enabled))
+        .route("/v1/autonomy", get(get_autonomy).post(set_autonomy))
         .route(
             "/v1/preferences",
             post(create_preference).get(list_preferences),
@@ -1026,18 +1028,16 @@ fn suggestion_json(s: &Suggestion) -> serde_json::Value {
 }
 
 /// Builds a capability runner that honours the person's enable/disable choices
-/// (ADR 0021). Reading the overrides is best-effort: if it fails, the runner falls
-/// back to every skill at its default, so a config glitch never breaks the butler.
+/// (ADR 0021) and their autonomy envelope (ADR 0022). Reading config is
+/// best-effort: on failure it falls back to defaults, so a glitch never breaks the
+/// butler.
 fn build_runner(
     store: &SqliteStore,
     capabilities: Arc<Vec<Arc<dyn Capability>>>,
 ) -> endora_infrastructure::RegistryRunner {
-    match store.enabled_overrides() {
-        Ok(overrides) => {
-            endora_infrastructure::RegistryRunner::with_overrides(capabilities, overrides)
-        }
-        Err(_) => endora_infrastructure::RegistryRunner::new(capabilities),
-    }
+    let overrides = store.enabled_overrides().unwrap_or_default();
+    let envelope = AutonomyEnvelopeRepository::get(store).unwrap_or_default();
+    endora_infrastructure::RegistryRunner::with_config(capabilities, overrides, envelope)
 }
 
 #[derive(Deserialize)]
@@ -1414,6 +1414,46 @@ async fn set_capability_enabled(
     .await?;
     let _ = state.changes.send(());
     Ok(Json(json!({ "id": id, "enabled": req.enabled })))
+}
+
+fn envelope_json(e: &AutonomyEnvelope) -> serde_json::Value {
+    json!({ "auto_external": e.auto_external, "auto_consequential": e.auto_consequential })
+}
+
+/// Returns the person's autonomy envelope — the boundary the butler acts within
+/// (ADR 0022).
+async fn get_autonomy(State(state): State<AppState>) -> Result<Json<serde_json::Value>, ApiError> {
+    let store = state.store.clone();
+    let envelope = blocking(move || {
+        AutonomyEnvelopeRepository::get(store.as_ref()).map_err(AppError::Repository)
+    })
+    .await?;
+    Ok(Json(envelope_json(&envelope)))
+}
+
+#[derive(Deserialize)]
+struct AutonomyRequest {
+    auto_external: bool,
+    auto_consequential: bool,
+}
+
+/// Sets the autonomy envelope (ADR 0022). Widening it grants the butler more
+/// independence; the deterministic policy layer still enforces the edges.
+async fn set_autonomy(
+    State(state): State<AppState>,
+    Json(req): Json<AutonomyRequest>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let envelope = AutonomyEnvelope {
+        auto_external: req.auto_external,
+        auto_consequential: req.auto_consequential,
+    };
+    let store = state.store.clone();
+    blocking(move || {
+        AutonomyEnvelopeRepository::set(store.as_ref(), &envelope).map_err(AppError::Repository)
+    })
+    .await?;
+    let _ = state.changes.send(());
+    Ok(Json(envelope_json(&envelope)))
 }
 
 /// Invokes a capability by id with a JSON body. Read-only skills run directly;
