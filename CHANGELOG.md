@@ -9,6 +9,15 @@ tagged release.
 
 ### Added
 
+- **The butler reaches out — proactive check-ins** (second slice of
+  [ADR 0019](docs/adr/0019-proactive-self-improving-butler.md)): the node now runs a
+  **heartbeat**, and on a cadence you choose (a **Check-ins** control in the chat —
+  off by default, or every couple of minutes / hourly / daily) the butler posts a
+  proactive opening message grounded in what needs attention and what you're working
+  toward, always asking how it can serve you better — the self-improvement loop, in
+  conversation. It only ever posts a *message*; anything consequential still goes
+  through propose→confirm (the autonomy model). New `GET/POST /v1/checkin`; the
+  cadence is cleared by purge.
 - **Chat learnings persist — a suggestion inbox** (first slice of
   [ADR 0019](docs/adr/0019-proactive-self-improving-butler.md)): the butler's
   proposals used to vanish on reload unless you confirmed them in the moment. Now

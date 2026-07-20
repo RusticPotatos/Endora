@@ -18,11 +18,11 @@ pub mod usecases;
 pub use error::AppError;
 pub use ports::{
     AssumptionRepository, AttentionItem, AttentionKind, AuditLog, Butler, ButlerContext,
-    ButlerProposal, ButlerReply, ChatRepository, Clock, DirectionRepository, ExperimentRepository,
-    IdSource, MemorySnapshot, MemoryStore, NorthStarBrief, ObservationRepository,
-    PreferenceRepository, ProcessChangeRepository, ProposalError, Proposer, ReflectionRepository,
-    RepositoryError, Snooze, SnoozeRepository, Suggestion, SuggestionRepository, SuggestionStatus,
-    TargetRepository, ValueRepository,
+    ButlerProposal, ButlerReply, ChatRepository, CheckinRepository, CheckinSchedule, Clock,
+    DirectionRepository, ExperimentRepository, IdSource, MemorySnapshot, MemoryStore,
+    NorthStarBrief, ObservationRepository, PreferenceRepository, ProcessChangeRepository,
+    ProposalError, Proposer, ReflectionRepository, RepositoryError, Snooze, SnoozeRepository,
+    Suggestion, SuggestionRepository, SuggestionStatus, TargetRepository, ValueRepository,
 };
 pub use usecases::{ActivityItem, ActivityKind};
 
