@@ -834,6 +834,7 @@ pub fn send_to_butler_streaming(
     // ran, failed, needs setup, needs confirmation, or unknown — the butler ALWAYS
     // answers again with that outcome, so it never dead-ends on a "one moment"
     // placeholder and never invents a result it didn't fetch.
+    let model_requested_skill = reply.capability_use.is_some();
     if let Some(used) = reply.capability_use.take() {
         let id = &used.capability;
         let spec = capabilities.available().into_iter().find(|c| &c.id == id);
@@ -887,6 +888,43 @@ pub fn send_to_butler_streaming(
         // fails, the first reply still stands.
         if let Ok(synth) = butler.respond(&history, &prefs, &ctx) {
             reply = synth;
+        }
+    }
+
+    // Deterministic net against fabrication: if the person clearly asked something
+    // factual (weather, news, active safety alerts) and the model reached for NO
+    // skill at all, it would be answering from imagination. So run the matching
+    // skill ourselves — with their known home location — and let the butler answer
+    // from that real result instead. Policy still gates it (configured + read-only),
+    // and it only fires when the model requested nothing, so a correct model-driven
+    // tool use (e.g. a specific city it named) is left untouched.
+    if let Some(skill) = route_intent(text).filter(|_| !model_requested_skill) {
+        let cleared = capabilities
+            .available()
+            .into_iter()
+            .find(|c| c.id == skill)
+            .is_some_and(|s| s.configured && s.autonomous);
+        if let (true, Some(location)) = (cleared, known_location(&prefs)) {
+            let mut ctx = context.clone();
+            match capabilities.run(skill, &json_location(&location)) {
+                Ok(out) => {
+                    activity.push(format!("Used the {skill} skill"));
+                    ctx.tool_result = Some(format!(
+                        "You used the '{skill}' skill for {location} and it returned: {out}. \
+                         Answer using ONLY this — do not add facts that aren't here."
+                    ));
+                }
+                Err(e) => {
+                    activity.push(format!("Tried the {skill} skill, but it failed"));
+                    ctx.tool_result = Some(format!(
+                        "You tried the '{skill}' skill but it failed: {e}. Tell the person \
+                         plainly you couldn't get it — do not make up an answer."
+                    ));
+                }
+            }
+            if let Ok(synth) = butler.respond(&history, &prefs, &ctx) {
+                reply = synth;
+            }
         }
     }
 
@@ -991,6 +1029,66 @@ fn similar(a: &str, b: &str) -> bool {
     let inter = ka.iter().filter(|w| kb.contains(w)).count();
     let union = ka.len() + kb.iter().filter(|w| !ka.contains(w)).count();
     inter as f64 / union as f64 >= 0.6
+}
+
+/// Maps a clear factual request to the skill that should answer it, so the butler
+/// is grounded in real data rather than left to invent one. Deliberately narrow —
+/// only the requests where answering from memory would be a fabrication (weather,
+/// news, active safety alerts). Returns the capability id, or `None` to leave the
+/// turn to ordinary conversation.
+fn route_intent(text: &str) -> Option<&'static str> {
+    let t = text.to_lowercase();
+    let has = |needles: &[&str]| needles.iter().any(|n| t.contains(n));
+    // Safety first: an "is it safe / any warnings" ask is about active alerts.
+    if has(&[
+        "safety alert",
+        "safety warning",
+        "severe weather",
+        "any warnings",
+        "is it safe",
+    ]) {
+        return Some("safety_alerts");
+    }
+    if has(&["news", "headline", "headlines"]) {
+        return Some("news");
+    }
+    if has(&[
+        "weather",
+        "forecast",
+        "temperature",
+        "how hot",
+        "how cold",
+        "raining",
+    ]) {
+        return Some("weather");
+    }
+    None
+}
+
+/// The person's stated home location, if they've set one (the location setup
+/// stores it as a preference like "Based in: Charlotte"). Used to answer local
+/// asks without pestering them for a place each time.
+fn known_location(preferences: &[Preference]) -> Option<String> {
+    for p in preferences {
+        let t = p.text().trim();
+        let lower = t.to_lowercase();
+        if let Some(rest) = lower.strip_prefix("based in") {
+            let start = t.len() - rest.len();
+            let loc = t[start..].trim_start_matches([':', ' ']).trim();
+            if !loc.is_empty() {
+                return Some(loc.to_owned());
+            }
+        }
+    }
+    None
+}
+
+/// Builds a `{"location":"..."}` JSON input for a capability, escaping the value
+/// so a place name with quotes can't break the JSON. Kept here (no serde in the
+/// application layer) since the shape is trivial and fixed.
+fn json_location(location: &str) -> String {
+    let escaped = location.replace('\\', "\\\\").replace('"', "\\\"");
+    format!("{{\"location\":\"{escaped}\"}}")
 }
 
 /// Endora's living understanding of the person — its active beliefs, most
@@ -1502,9 +1600,9 @@ mod tests {
     use endora_domain::{
         ApprovalState, Assumption, AssumptionId, AuditRecord, AutonomyLevel, ChatMessage,
         Direction, DirectionId, Experiment, ExperimentId, ExperimentStatus, MessageRole,
-        Observation, ObservationId, PolicyDecision, Preference, PreferenceId, ProcessChangeId,
-        ProposedProcessChange, Reflection, ReflectionId, SuggestionId, Target, TargetId, Timestamp,
-        Value, ValueId,
+        Observation, ObservationId, PolicyDecision, Preference, PreferenceId, PreferenceKind,
+        ProcessChangeId, ProposedProcessChange, Reflection, ReflectionId, SuggestionId, Target,
+        TargetId, Timestamp, Value, ValueId,
     };
     use endora_domain::{Belief, BeliefId};
     use std::cell::{Cell, RefCell};
@@ -2262,6 +2360,117 @@ mod tests {
         // The butler's own reply stands; nothing was run.
         assert!(reply.text().contains("can't check flights"));
         assert!(activity.iter().all(|a| !a.contains("Used")));
+    }
+
+    #[test]
+    fn intent_routing_and_location_helpers() {
+        use super::{json_location, known_location, route_intent};
+        assert_eq!(
+            route_intent("how about what's in the news locally?"),
+            Some("news")
+        );
+        assert_eq!(route_intent("what's the weather today"), Some("weather"));
+        assert_eq!(
+            route_intent("is it safe outside right now"),
+            Some("safety_alerts")
+        );
+        assert_eq!(route_intent("let's talk about my week"), None);
+
+        let t = Timestamp::from_unix_millis(0);
+        let prefs = vec![
+            Preference::new(PreferenceId::new(1), "Likes tea", PreferenceKind::Taste, t).unwrap(),
+            Preference::new(
+                PreferenceId::new(2),
+                "Based in: 28277",
+                PreferenceKind::Taste,
+                t,
+            )
+            .unwrap(),
+        ];
+        assert_eq!(known_location(&prefs).as_deref(), Some("28277"));
+        assert_eq!(known_location(&[]), None);
+
+        assert_eq!(json_location("Charlotte"), "{\"location\":\"Charlotte\"}");
+        // A value with a quote is escaped so the JSON stays well-formed.
+        assert_eq!(json_location("a\"b"), "{\"location\":\"a\\\"b\"}");
+    }
+
+    #[test]
+    fn a_factual_ask_the_model_ignores_is_still_answered_from_a_skill() {
+        use super::{create_preference, send_to_butler};
+
+        // A butler that never reaches for a skill and would happily answer the news
+        // question from imagination — exactly the fabrication we must prevent.
+        struct FabricatingButler;
+        impl Butler for FabricatingButler {
+            fn respond(
+                &self,
+                _h: &[ChatMessage],
+                _p: &[Preference],
+                context: &ButlerContext,
+            ) -> Result<ButlerReply, ProposalError> {
+                if let Some(result) = &context.tool_result {
+                    return Ok(ButlerReply {
+                        text: format!("Here's the latest — {result}"),
+                        ..ButlerReply::default()
+                    });
+                }
+                Ok(ButlerReply {
+                    text: "There's a big festival downtown this weekend.".to_owned(),
+                    ..ButlerReply::default()
+                })
+            }
+        }
+
+        struct NewsSkill;
+        impl CapabilityRunner for NewsSkill {
+            fn available(&self) -> Vec<crate::ports::CapabilitySpec> {
+                vec![crate::ports::CapabilitySpec {
+                    id: "news".to_owned(),
+                    description: "headlines".to_owned(),
+                    configured: true,
+                    autonomous: true,
+                }]
+            }
+            fn run(&self, id: &str, input_json: &str) -> Result<String, String> {
+                assert_eq!(id, "news");
+                assert!(input_json.contains("28277"));
+                Ok("headline: council meets tonight".to_owned())
+            }
+        }
+
+        let store = FakeStore::default();
+        let ids = SeqIds::default();
+        let clock = FixedClock(1_000);
+        // The person has told Endora where they're based.
+        create_preference(
+            &store,
+            &ids,
+            &clock,
+            "Based in: 28277",
+            PreferenceKind::Taste,
+        )
+        .unwrap();
+
+        let (reply, _s, activity) = send_to_butler(
+            &store,
+            &store,
+            &store,
+            &store,
+            &NewsSkill,
+            &FabricatingButler,
+            &ids,
+            &clock,
+            &ButlerContext::default(),
+            "what's in the news?",
+        )
+        .unwrap();
+
+        // The net ran the news skill and the answer came from its result — the
+        // model's imagined "festival" was replaced.
+        assert!(reply.text().contains("council meets tonight"));
+        assert!(!reply.text().contains("festival"));
+        assert!(activity.iter().any(|a| a.contains("news")));
     }
 
     #[test]
