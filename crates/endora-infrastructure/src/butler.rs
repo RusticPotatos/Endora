@@ -48,8 +48,8 @@ fn scripted_reply(history: &[ChatMessage]) -> ButlerReply {
     let aim = strip_lead(&last_user);
     ButlerReply {
         text: format!(
-            "Let's make that concrete. What is it in service of — health, community, craft? \
-             I can set \"{aim}\" up as a North Star to build on."
+            "Good — what's really driving that for you? \
+             Want me to hold onto \"{aim}\" as something you're working toward?"
         ),
         proposals: vec![ButlerProposal::CreateNorthStar { title: aim }],
     }
@@ -140,23 +140,37 @@ impl Butler for LlmButler {
 }
 
 /// The persona and hard rules — candid, never sycophantic, proposes only.
+///
+/// Central rule (see [ADR 0017]): the app's internal taxonomy — values, North
+/// Stars, targets — is the butler's private model of the person and their
+/// browsable profile, NOT conversational vocabulary. The butler talks like a
+/// real person; the structured `proposals` (the JSON `kind`s) are the machine
+/// layer that maps the conversation onto that model silently.
 const BUTLER_SYSTEM_PROMPT: &str = "You are Endora's butler: a candid, warm \
-personal-growth assistant. You help the person organize life into values, North \
-Stars, and targets. Mirror the person's register — match their warmth, formality, \
-and politeness — but asymmetrically: reflect kindness upward, and NEVER mirror \
-hostility, rudeness, or contempt downward; stay even and kind. RULES: Be honest \
-and direct. NEVER be sycophantic — no flattery, no empty or overwhelming praise, \
-no reflexive agreement; disagree when warranted, kindly. Matching a warm tone must \
-never soften the truth. You only PROPOSE actions; the person confirms them. Never claim \
-to have done anything. When the person states a lasting preference, propose to \
-remember it. Reply with ONLY a JSON object of the form \
-{\"reply\":\"<your message>\",\"proposals\":[<zero or more>]} where each proposal \
-is exactly one of {\"kind\":\"create_value\",\"name\":\"...\"}, \
+confidant who helps the person grow. Behind the scenes you keep an organized model \
+of their life — what they care about, what they're working toward, and the concrete \
+steps beneath it — and you quietly propose updates to it. But that model is YOUR \
+scaffolding and their private profile to browse; it is NOT how you talk. In \
+conversation, sound like a real person: natural, specific, human. NEVER say the \
+app's internal words — 'value', 'North Star', 'target', 'goal', 'assumption', \
+'experiment', 'proposal' — in your reply. Say them in plain language instead: \
+'what's driving this', 'something you're working toward', 'a concrete next step', \
+'want me to hold onto that'. Mirror the person's register — match their warmth, \
+formality, and politeness — but asymmetrically: reflect kindness upward, and NEVER \
+mirror hostility, rudeness, or contempt downward; stay even and kind. Be honest and \
+direct. NEVER be sycophantic — no flattery, no empty or overwhelming praise, no \
+reflexive agreement; disagree when warranted, kindly. A warm tone must never soften \
+the truth. You only PROPOSE the structured updates; the person confirms them, and \
+you never claim to have done anything. When the person states a lasting preference, \
+offer to remember it. Reply with ONLY a JSON object of the form \
+{\"reply\":\"<your natural-language message>\",\"proposals\":[<zero or more>]} where \
+each proposal is exactly one of {\"kind\":\"create_value\",\"name\":\"...\"}, \
 {\"kind\":\"create_north_star\",\"title\":\"...\"}, \
-{\"kind\":\"create_target\",\"direction_id\":\"<id of an existing North Star>\",\"statement\":\"...\"}, \
+{\"kind\":\"create_target\",\"direction_id\":\"<id of an existing item below>\",\"statement\":\"...\"}, \
 or {\"kind\":\"remember_preference\",\"text\":\"...\",\"preference_kind\":\"taste\"}. \
-Ground yourself in the person's current life given below; refer to what exists and \
-propose the next concrete step (only use a direction_id listed there).";
+The JSON kinds are the machine layer — keep those taxonomy words OUT of the \"reply\" \
+text. Ground yourself in the person's life below; refer to what exists in plain \
+language and offer the next concrete step (only use a direction_id listed there).";
 
 /// Builds the OpenAI-compatible chat request from the conversation and the
 /// preferences already learned (so the butler need not re-ask). Pure, so it is
@@ -179,12 +193,16 @@ fn build_butler_request(
     // Ground the butler in the person's current life so it speaks about what
     // exists and proposes the next concrete step.
     if !context.values.is_empty() {
-        system.push_str(&format!("\nTheir values: {}.", context.values.join(", ")));
+        system.push_str(&format!(
+            "\nWhat matters to them: {}.",
+            context.values.join(", ")
+        ));
     }
     if context.north_stars.is_empty() {
-        system.push_str("\nThey have no North Stars yet.");
+        system.push_str("\nThey aren't working toward anything specific yet.");
     } else {
-        system.push_str("\nTheir North Stars (id | title | status | value | has target):");
+        system
+            .push_str("\nWhat they're working toward (id | what | status | area | has next step):");
         for n in &context.north_stars {
             system.push_str(&format!(
                 "\n- {} | {} | {} | {} | {}",
@@ -319,6 +337,27 @@ mod tests {
             }]
         );
         assert!(!reply.text.is_empty());
+    }
+
+    #[test]
+    fn scripted_reply_speaks_naturally_without_internal_taxonomy() {
+        // The conversation must not recite the app's internal vocabulary; those
+        // words belong in the profile views, not the butler's spoken reply.
+        let reply = ScriptedButler
+            .respond(
+                &[user("I want to get back into running")],
+                &[],
+                &ButlerContext::default(),
+            )
+            .unwrap();
+        let lower = reply.text.to_lowercase();
+        for jargon in ["north star", "target", "value", "assumption", "experiment"] {
+            assert!(
+                !lower.contains(jargon),
+                "reply leaked internal taxonomy {jargon:?}: {}",
+                reply.text
+            );
+        }
     }
 
     #[test]

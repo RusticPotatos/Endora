@@ -106,6 +106,14 @@ tagged release.
 
 ### Changed
 
+- **The butler talks like a person, not a schema** ([ADR 0017](docs/adr/0017-persona-and-voice.md)):
+  the `Value → North Star → Target` structure is the butler's *internal model* of you
+  and your browsable profile — not conversational vocabulary. The system prompt now
+  forbids the taxonomy words ("value", "North Star", "target", "goal", …) in the
+  butler's spoken reply and grounds it in plain language; confirm-card labels read as
+  natural actions ("Keep this as something you're working toward: …") rather than
+  schema ("Create North Star: …"). The structured overview keeps the evocative labels
+  as the transparency window. A unit test guards the conversation against jargon.
 - **Renamed the second-tier concept `Goal` → `Target`**
   ([ADR 0013](docs/adr/0013-rename-goal-to-target.md)): a North Star's children are
   now **targets** (a concrete, measurable outcome), not goals. This is a
