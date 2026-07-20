@@ -16,11 +16,11 @@ use endora_domain::{
 use crate::error::AppError;
 use crate::ports::{
     AssumptionRepository, AttentionItem, AttentionKind, AuditLog, BeliefRepository, Butler,
-    ButlerContext, ButlerProposal, ChatRepository, CheckinRepository, CheckinSchedule, Clock,
-    DirectionRepository, ExperimentRepository, IdSource, MemorySnapshot, MemoryStore,
-    NorthStarBrief, ObservationRepository, PreferenceRepository, ProcessChangeRepository, Proposer,
-    ReflectionRepository, Snooze, SnoozeRepository, Suggestion, SuggestionRepository,
-    SuggestionStatus, TargetRepository, ValueRepository,
+    ButlerContext, ButlerProposal, CapabilityRunner, ChatRepository, CheckinRepository,
+    CheckinSchedule, Clock, DirectionRepository, ExperimentRepository, IdSource, MemorySnapshot,
+    MemoryStore, NorthStarBrief, ObservationRepository, PreferenceRepository,
+    ProcessChangeRepository, Proposer, ReflectionRepository, Snooze, SnoozeRepository, Suggestion,
+    SuggestionRepository, SuggestionStatus, TargetRepository, ValueRepository,
 };
 
 /// Creates and stores a new [`Direction`].
@@ -758,6 +758,7 @@ pub fn send_to_butler(
     preferences: &impl PreferenceRepository,
     suggestions: &impl SuggestionRepository,
     beliefs: &impl BeliefRepository,
+    capabilities: &dyn CapabilityRunner,
     butler: &dyn Butler,
     ids: &impl IdSource,
     clock: &impl Clock,
@@ -770,6 +771,7 @@ pub fn send_to_butler(
         preferences,
         suggestions,
         beliefs,
+        capabilities,
         butler,
         ids,
         clock,
@@ -797,6 +799,7 @@ pub fn send_to_butler_streaming(
     preferences: &impl PreferenceRepository,
     suggestions: &impl SuggestionRepository,
     beliefs: &impl BeliefRepository,
+    capabilities: &dyn CapabilityRunner,
     butler: &dyn Butler,
     ids: &impl IdSource,
     clock: &impl Clock,
@@ -814,11 +817,49 @@ pub fn send_to_butler_streaming(
 
     let history = chat.list()?;
     let prefs = preferences.list_all()?;
-    let reply = butler
+    let mut reply = butler
         .respond_streaming(&history, &prefs, context, on_token)
         .map_err(|e| AppError::Model {
             message: e.to_string(),
         })?;
+
+    // `activity` is a plain-language record of what Endora did behind the scenes
+    // this turn — skills used, learnings, suggestions — so the person can see what
+    // the conversation actually changed (transparency + debugging).
+    let mut activity: Vec<String> = Vec::new();
+
+    // Interventions: if the butler asked to use a skill and it is cleared to run on
+    // its own (configured + read-only/autonomous), run it and let the butler answer
+    // with the real result. The model proposes; the policy check here authorizes;
+    // the capability executes (ADRs 0019/0020). One tool round per turn.
+    if let Some(used) = reply.capability_use.take() {
+        let spec = capabilities
+            .available()
+            .into_iter()
+            .find(|c| c.id == used.capability);
+        if spec.is_some_and(|s| s.configured && s.autonomous) {
+            let outcome = match capabilities.run(&used.capability, &used.input_json) {
+                Ok(out) => format!(
+                    "You used the '{}' skill and it returned: {out}",
+                    used.capability
+                ),
+                Err(e) => format!(
+                    "You tried the '{}' skill but it failed: {e}",
+                    used.capability
+                ),
+            };
+            activity.push(format!("Used the {} skill", used.capability));
+            let mut ctx = context.clone();
+            ctx.tool_result = Some(outcome);
+            // Synthesize a natural answer from the result (a second, non-streamed
+            // pass). If it fails, the first reply still stands.
+            if let Ok(synth) = butler.respond(&history, &prefs, &ctx) {
+                reply = synth;
+            }
+        }
+        // If not cleared to run (unconfigured or consequential), the butler's reply
+        // stands — it should have said it can't yet, or offered it as a choice.
+    }
 
     // A brain that returns nothing usable still owes the person a reply.
     let reply_text = if reply.text.trim().is_empty() {
@@ -833,11 +874,6 @@ pub fn send_to_butler_streaming(
         clock.now(),
     )?;
     chat.append(&butler)?;
-
-    // `activity` is a plain-language record of what Endora did behind the scenes
-    // this turn — its learnings and the suggestions it noted — so the person can
-    // see what the conversation actually changed (transparency + debugging).
-    let mut activity: Vec<String> = Vec::new();
 
     // Persist the proposals as durable, pending suggestions tied to this reply,
     // so the conversation's learnings survive a reload and can be applied later —
@@ -866,10 +902,9 @@ pub fn send_to_butler_streaming(
     // belief (raising confidence) rather than storing a near-duplicate.
     let existing = beliefs.list()?;
     for formed in reply.beliefs {
-        let key = normalized(&formed.statement);
         if let Some(mut prior) = existing
             .iter()
-            .find(|b| normalized(b.statement()) == key)
+            .find(|b| similar(b.statement(), &formed.statement))
             .cloned()
         {
             activity.push(format!("Grew more sure that {}", prior.statement()));
@@ -901,6 +936,32 @@ fn normalized(s: &str) -> String {
         .join(" ")
         .trim_end_matches(['.', '!', '?', ',', ';', ':'])
         .to_owned()
+}
+
+/// Content words of a statement (drops short/common words), for fuzzy matching.
+fn keywords(s: &str) -> Vec<String> {
+    const STOP: &[&str] = &[
+        "you", "your", "are", "the", "and", "for", "that", "this", "with", "have", "was", "its",
+        "but", "not", "can", "want", "like",
+    ];
+    normalized(s)
+        .split_whitespace()
+        .filter(|w| w.len() > 2 && !STOP.contains(w))
+        .map(str::to_owned)
+        .collect()
+}
+
+/// Whether two belief statements are effectively the same (a paraphrase), by
+/// keyword overlap — so "you want information about your surroundings" and
+/// "you're looking for information about your surroundings" are one belief.
+fn similar(a: &str, b: &str) -> bool {
+    let (ka, kb) = (keywords(a), keywords(b));
+    if ka.is_empty() || kb.is_empty() {
+        return normalized(a) == normalized(b);
+    }
+    let inter = ka.iter().filter(|w| kb.contains(w)).count();
+    let union = ka.len() + kb.iter().filter(|w| !ka.contains(w)).count();
+    inter as f64 / union as f64 >= 0.6
 }
 
 /// Endora's living understanding of the person — its active beliefs, most
@@ -1174,6 +1235,10 @@ fn checkin_text(context: &ButlerContext) -> String {
 ///
 /// # Errors
 /// [`AppError::Repository`] if the backend fails or stored data is corrupt.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "explicit dependencies, no hidden state"
+)]
 pub fn butler_context(
     values: &impl ValueRepository,
     directions: &impl DirectionRepository,
@@ -1181,6 +1246,7 @@ pub fn butler_context(
     experiments: &impl ExperimentRepository,
     snoozes: &impl SnoozeRepository,
     beliefs: &impl BeliefRepository,
+    capabilities: &dyn CapabilityRunner,
     clock: &impl Clock,
 ) -> Result<ButlerContext, AppError> {
     let value_list = values.list_all()?;
@@ -1219,11 +1285,21 @@ pub fn butler_context(
             )
         })
         .collect();
+    // Ground the butler in the skills it can actually reach right now (configured
+    // ones only), so it uses a real capability instead of only talking about it.
+    let skills = capabilities
+        .available()
+        .into_iter()
+        .filter(|c| c.configured)
+        .map(|c| format!("{} — {}", c.id, c.description))
+        .collect();
     Ok(ButlerContext {
         values: value_list.iter().map(|v| v.name().to_owned()).collect(),
         north_stars,
         attention,
         understanding,
+        capabilities: skills,
+        tool_result: None,
     })
 }
 
@@ -1387,10 +1463,10 @@ mod tests {
     use crate::error::AppError;
     use crate::ports::{
         AssumptionRepository, AttentionKind, AuditLog, BeliefRepository, Butler, ButlerContext,
-        ButlerProposal, ButlerReply, ChatRepository, CheckinRepository, CheckinSchedule, Clock,
-        DirectionRepository, ExperimentRepository, IdSource, ObservationRepository,
-        PreferenceRepository, ProcessChangeRepository, ProposalError, Proposer,
-        ReflectionRepository, RepositoryError, Snooze, SnoozeRepository, Suggestion,
+        ButlerProposal, ButlerReply, CapabilityRunner, ChatRepository, CheckinRepository,
+        CheckinSchedule, Clock, DirectionRepository, ExperimentRepository, IdSource,
+        ObservationRepository, PreferenceRepository, ProcessChangeRepository, ProposalError,
+        Proposer, ReflectionRepository, RepositoryError, Snooze, SnoozeRepository, Suggestion,
         SuggestionRepository, SuggestionStatus, TargetRepository, ValueRepository,
     };
     use endora_domain::LifecycleStatus;
@@ -1406,6 +1482,18 @@ mod tests {
     use std::collections::HashMap;
 
     /// An in-memory store implementing the repository ports, for tests only.
+    /// A capability runner with no skills — the default for tests that don't
+    /// exercise the interventions loop (the butler never proposes a `use`).
+    struct NoCapabilities;
+    impl CapabilityRunner for NoCapabilities {
+        fn available(&self) -> Vec<crate::ports::CapabilitySpec> {
+            Vec::new()
+        }
+        fn run(&self, _id: &str, _input_json: &str) -> Result<String, String> {
+            Err("no capabilities".to_owned())
+        }
+    }
+
     #[derive(Default)]
     struct FakeStore {
         values: RefCell<HashMap<u128, Value>>,
@@ -1974,6 +2062,7 @@ mod tests {
             &store,
             &store,
             &store,
+            &NoCapabilities,
             &ScriptedTestButler,
             &ids,
             &clock,
@@ -2006,6 +2095,144 @@ mod tests {
         assert_eq!(history.len(), 2);
         assert_eq!(history[0].role(), MessageRole::User);
         assert_eq!(history[1].role(), MessageRole::Butler);
+    }
+
+    #[test]
+    fn a_cleared_skill_runs_and_the_butler_answers_with_its_result() {
+        use super::send_to_butler;
+
+        // A butler that first asks to use the "weather" skill, then (once a skill
+        // result is in the context) answers using it. This is the propose → policy
+        // authorizes → execute → synthesize loop the use case drives.
+        struct ToolButler;
+        impl Butler for ToolButler {
+            fn respond(
+                &self,
+                _h: &[ChatMessage],
+                _p: &[Preference],
+                context: &ButlerContext,
+            ) -> Result<ButlerReply, ProposalError> {
+                if let Some(result) = &context.tool_result {
+                    // Synthesis pass: answer using the real result.
+                    return Ok(ButlerReply {
+                        text: format!("Here's what I found — {result}"),
+                        ..ButlerReply::default()
+                    });
+                }
+                // First pass: brief reply + a skill request.
+                Ok(ButlerReply {
+                    text: "One moment — checking.".to_owned(),
+                    capability_use: Some(crate::ports::CapabilityUse {
+                        capability: "weather".to_owned(),
+                        input_json: "{\"location\":\"Charlotte\"}".to_owned(),
+                    }),
+                    ..ButlerReply::default()
+                })
+            }
+        }
+
+        // A runner offering one cleared (configured + autonomous) skill.
+        struct OneSkill;
+        impl CapabilityRunner for OneSkill {
+            fn available(&self) -> Vec<crate::ports::CapabilitySpec> {
+                vec![crate::ports::CapabilitySpec {
+                    id: "weather".to_owned(),
+                    description: "current conditions".to_owned(),
+                    configured: true,
+                    autonomous: true,
+                }]
+            }
+            fn run(&self, id: &str, input_json: &str) -> Result<String, String> {
+                assert_eq!(id, "weather");
+                assert!(input_json.contains("Charlotte"));
+                Ok("sunny, 30C".to_owned())
+            }
+        }
+
+        let store = FakeStore::default();
+        let ids = SeqIds::default();
+        let clock = FixedClock(1_000);
+        let (reply, _suggestions, activity) = send_to_butler(
+            &store,
+            &store,
+            &store,
+            &store,
+            &OneSkill,
+            &ToolButler,
+            &ids,
+            &clock,
+            &ButlerContext::default(),
+            "what's the weather in Charlotte?",
+        )
+        .unwrap();
+
+        // The persisted reply is the synthesis (using the skill result), not the
+        // brief "one moment" placeholder.
+        assert!(reply.text().contains("sunny, 30C"));
+        // And the skill use is recorded in the turn's activity.
+        assert!(activity.iter().any(|a| a.contains("weather")));
+    }
+
+    #[test]
+    fn an_unconfigured_skill_is_not_run_and_the_first_reply_stands() {
+        use super::send_to_butler;
+
+        struct ToolButler;
+        impl Butler for ToolButler {
+            fn respond(
+                &self,
+                _h: &[ChatMessage],
+                _p: &[Preference],
+                _c: &ButlerContext,
+            ) -> Result<ButlerReply, ProposalError> {
+                Ok(ButlerReply {
+                    text: "I can't check flights yet.".to_owned(),
+                    capability_use: Some(crate::ports::CapabilityUse {
+                        capability: "flights".to_owned(),
+                        input_json: "{}".to_owned(),
+                    }),
+                    ..ButlerReply::default()
+                })
+            }
+        }
+
+        // "flights" is present but must confirm (not autonomous): the policy layer
+        // must refuse to auto-run it.
+        struct GatedSkill;
+        impl CapabilityRunner for GatedSkill {
+            fn available(&self) -> Vec<crate::ports::CapabilitySpec> {
+                vec![crate::ports::CapabilitySpec {
+                    id: "flights".to_owned(),
+                    description: "find flights".to_owned(),
+                    configured: false,
+                    autonomous: false,
+                }]
+            }
+            fn run(&self, _id: &str, _input_json: &str) -> Result<String, String> {
+                panic!("a gated skill must never be auto-run");
+            }
+        }
+
+        let store = FakeStore::default();
+        let ids = SeqIds::default();
+        let clock = FixedClock(1_000);
+        let (reply, _s, activity) = send_to_butler(
+            &store,
+            &store,
+            &store,
+            &store,
+            &GatedSkill,
+            &ToolButler,
+            &ids,
+            &clock,
+            &ButlerContext::default(),
+            "book me a flight",
+        )
+        .unwrap();
+
+        // The butler's own reply stands; nothing was run.
+        assert!(reply.text().contains("can't check flights"));
+        assert!(activity.iter().all(|a| !a.contains("Used")));
     }
 
     #[test]
@@ -2091,6 +2318,7 @@ mod tests {
             &store,
             &store,
             &store,
+            &NoCapabilities,
             &BeliefButler,
             &ids,
             &clock,
@@ -2280,6 +2508,7 @@ mod tests {
             &store,
             &store,
             &store,
+            &NoCapabilities,
             &EchoPrefsButler,
             &ids,
             &clock,

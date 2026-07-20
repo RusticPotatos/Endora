@@ -300,7 +300,8 @@ reflexive agreement; disagree when warranted, kindly. A warm tone must never sof
 the truth. You only PROPOSE actions; the person authorizes them; you never claim to \
 have done anything. \
 Reply with ONLY a JSON object of the form {\"reply\":\"<your natural-language \
-message>\",\"understanding\":[<zero or more beliefs>],\"proposals\":[<zero or more>]}. \
+message>\",\"understanding\":[<zero or more beliefs>],\"proposals\":[<zero or more>],\
+\"use\":<null, or one skill to use now>}. \
 Each understanding item is {\"statement\":\"<what you now believe, addressing them as \
 'you', e.g. 'you want more energy to travel' or 'you find mornings hard'>\",\
 \"kind\":\"intent|value|preference|pattern|motivation|frustration|stressor|relationship|other\",\
@@ -312,6 +313,14 @@ is exactly one of {\"kind\":\"create_value\",\"name\":\"...\"}, \
 {\"kind\":\"create_target\",\"direction_id\":\"<id of an existing item below>\",\"statement\":\"...\"}, \
 or {\"kind\":\"remember_preference\",\"text\":\"...\",\"preference_kind\":\"taste\"}. \
 The JSON kinds are the machine layer — keep those words OUT of the \"reply\" text. \
+You also have SKILLS you can actually use to get real information (listed below, if \
+any). When answering needs current facts you don't have — weather, local safety \
+alerts, a web page — set \"use\" to {\"skill\":\"<id from the list>\",\"input\":{...}} \
+with that skill's inputs, and keep your \"reply\" to a brief one-liner like 'One \
+moment — let me check.' Use a skill only when it genuinely helps and only one that is \
+listed; otherwise set \"use\":null. NEVER claim a fact you haven't fetched, and never \
+say you'll look something up without setting \"use\". When a SKILL RESULT is provided \
+below, answer the person naturally using it and set \"use\":null. \
 Your ENTIRE response must be that single JSON object and nothing else: no prose \
 before or after it, no repetition, no code fences. Ground yourself in what you \
 already understand about the person, below.";
@@ -376,6 +385,22 @@ fn build_butler_request(
             system.push_str(&format!("\n- {u}"));
         }
     }
+    if context.capabilities.is_empty() {
+        system.push_str("\nYou have no skills available right now; set \"use\":null.");
+    } else {
+        system.push_str(
+            "\nSkills you can use right now (id — what it does); set \"use\" to one of these \
+             ids when it helps:",
+        );
+        for c in &context.capabilities {
+            system.push_str(&format!("\n- {c}"));
+        }
+    }
+    if let Some(result) = &context.tool_result {
+        system.push_str(&format!(
+            "\nSKILL RESULT (answer the person naturally using this; set \"use\":null): {result}"
+        ));
+    }
     let mut messages = vec![json!({ "role": "system", "content": system })];
     for m in history {
         let role = match m.role() {
@@ -433,11 +458,26 @@ fn parse_butler_json(content: &str) -> ButlerReply {
         .as_array()
         .map(|arr| arr.iter().filter_map(parse_belief).collect())
         .unwrap_or_default();
+    let capability_use = parse_capability_use(&value["use"]);
     ButlerReply {
         text,
         proposals,
         beliefs,
+        capability_use,
     }
+}
+
+/// Parses the optional `"use"` field into a [`CapabilityUse`]. Tolerant: accepts
+/// `null`/missing (no skill), and reads the input object as a JSON string. The
+/// policy layer still decides whether the named skill may actually run.
+fn parse_capability_use(value: &Value) -> Option<endora_application::CapabilityUse> {
+    let skill = non_empty(value["skill"].as_str()?)?;
+    // The input may be an object, or absent — default to an empty object.
+    let input = value.get("input").cloned().unwrap_or_else(|| json!({}));
+    Some(endora_application::CapabilityUse {
+        capability: skill,
+        input_json: input.to_string(),
+    })
 }
 
 /// Maps one JSON understanding item to a [`FormedBelief`], skipping malformed

@@ -16,7 +16,9 @@ pub mod model;
 pub mod sqlite;
 
 pub use butler::{LlmButler, ScriptedButler};
-pub use capabilities::{Capability, CapabilityError, CapabilityInfo, default_capabilities};
+pub use capabilities::{
+    Capability, CapabilityError, CapabilityInfo, RegistryRunner, default_capabilities,
+};
 pub use clock::SystemClock;
 pub use ids::RandomIdSource;
 pub use model::OpenAiCompatibleProposer;
