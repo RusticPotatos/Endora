@@ -18,13 +18,13 @@ use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post};
 use endora_application::{
     ActivityItem, AppError, AttentionItem, AttentionKind, Butler, ButlerProposal, MemorySnapshot,
-    Proposer, RepositoryError, usecases,
+    Proposer, RepositoryError, Suggestion, SuggestionStatus, usecases,
 };
 use endora_domain::{
     Assumption, AssumptionId, AuditRecord, AutonomyLevel, ChatMessage, Direction, DirectionId,
     Experiment, ExperimentId, LifecycleStatus, Observation, ObservationId, PolicyDecision,
     Preference, PreferenceId, PreferenceKind, ProcessChangeId, ProposedProcessChange, Reflection,
-    ReflectionId, Target, TargetId, Value, ValueId,
+    ReflectionId, SuggestionId, Target, TargetId, Value, ValueId,
 };
 use endora_infrastructure::{RandomIdSource, SqliteStore, SystemClock};
 use futures_util::stream::{Stream, unfold};
@@ -141,6 +141,9 @@ pub fn app(state: AppState) -> Router {
         )
         .route("/v1/chat", post(send_chat).get(chat_history))
         .route("/v1/chat/stream", post(stream_chat))
+        .route("/v1/suggestions", get(list_suggestions))
+        .route("/v1/suggestions/{id}/apply", post(apply_suggestion))
+        .route("/v1/suggestions/{id}/dismiss", post(dismiss_suggestion))
         .route(
             "/v1/preferences",
             post(create_preference).get(list_preferences),
@@ -982,13 +985,10 @@ fn proposal_json(p: &ButlerProposal) -> serde_json::Value {
             obj.insert("title".to_owned(), json!(title));
         }
         ButlerProposal::CreateTarget {
-            direction,
+            direction_ref,
             statement,
         } => {
-            obj.insert(
-                "direction_id".to_owned(),
-                json!(direction.value().to_string()),
-            );
+            obj.insert("direction_id".to_owned(), json!(direction_ref));
             obj.insert("statement".to_owned(), json!(statement));
         }
         ButlerProposal::RememberPreference { text, kind } => {
@@ -997,6 +997,17 @@ fn proposal_json(p: &ButlerProposal) -> serde_json::Value {
         }
     }
     base
+}
+
+/// Serializes a persisted [`Suggestion`] as its proposal plus `id` and `status`,
+/// so the console can render it and apply/dismiss it by id.
+fn suggestion_json(s: &Suggestion) -> serde_json::Value {
+    let mut v = proposal_json(&s.proposal);
+    if let Some(obj) = v.as_object_mut() {
+        obj.insert("id".to_owned(), json!(s.id.value().to_string()));
+        obj.insert("status".to_owned(), json!(s.status.name()));
+    }
+    v
 }
 
 #[derive(Deserialize)]
@@ -1013,7 +1024,7 @@ async fn send_chat(
     let ids = state.ids.clone();
     let clock = state.clock.clone();
     let butler = state.butler.clone();
-    let (reply, proposals) = blocking(move || {
+    let (reply, suggestions) = blocking(move || {
         // Ground the butler in the person's current life before it answers.
         let context = usecases::butler_context(
             store.as_ref(),
@@ -1026,6 +1037,7 @@ async fn send_chat(
         usecases::send_to_butler(
             store.as_ref(),
             store.as_ref(),
+            store.as_ref(),
             butler.as_ref(),
             ids.as_ref(),
             clock.as_ref(),
@@ -1036,7 +1048,7 @@ async fn send_chat(
     .await?;
     Ok(Json(json!({
         "reply": MessageResponse::from(&reply),
-        "proposals": proposals.iter().map(proposal_json).collect::<Vec<_>>(),
+        "proposals": suggestions.iter().map(suggestion_json).collect::<Vec<_>>(),
     })))
 }
 
@@ -1088,6 +1100,7 @@ async fn stream_chat(
             usecases::send_to_butler_streaming(
                 store.as_ref(),
                 store.as_ref(),
+                store.as_ref(),
                 butler.as_ref(),
                 ids.as_ref(),
                 clock.as_ref(),
@@ -1097,13 +1110,13 @@ async fn stream_chat(
             )
         };
         match result {
-            Ok((reply, proposals)) => {
+            Ok((reply, suggestions)) => {
                 // A successful write nudges the change stream, like other writes.
                 let _ = changes.send(());
                 let _ = tx.send(event(json!({
                     "type": "done",
                     "reply": MessageResponse::from(&reply),
-                    "proposals": proposals.iter().map(proposal_json).collect::<Vec<_>>(),
+                    "proposals": suggestions.iter().map(suggestion_json).collect::<Vec<_>>(),
                 })));
             }
             Err(e) => {
@@ -1125,6 +1138,70 @@ async fn chat_history(
     let store = state.store.clone();
     let messages = blocking(move || usecases::chat_history(store.as_ref())).await?;
     Ok(Json(messages.iter().map(MessageResponse::from).collect()))
+}
+
+#[derive(Deserialize)]
+struct SuggestionsQuery {
+    /// Optional filter: `pending`, `applied`, or `dismissed`.
+    status: Option<String>,
+}
+
+/// The butler's persisted suggestions, newest first. `?status=pending` gives the
+/// inbox — proposals waiting to be applied.
+async fn list_suggestions(
+    State(state): State<AppState>,
+    Query(q): Query<SuggestionsQuery>,
+) -> Result<Json<Vec<serde_json::Value>>, ApiError> {
+    let store = state.store.clone();
+    let status = q.status.as_deref().and_then(SuggestionStatus::from_name);
+    let items = blocking(move || usecases::list_suggestions(store.as_ref(), status)).await?;
+    Ok(Json(items.iter().map(suggestion_json).collect()))
+}
+
+fn parse_suggestion_id(id: &str) -> Result<SuggestionId, ApiError> {
+    id.parse::<u128>().map(SuggestionId::new).map_err(|_| {
+        ApiError(AppError::NotFound {
+            entity: "suggestion",
+        })
+    })
+}
+
+/// Applies a pending suggestion — runs the deterministic create it stands for and
+/// records it applied. The human-authorized step (the butler only proposed it).
+async fn apply_suggestion(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let sid = parse_suggestion_id(&id)?;
+    let store = state.store.clone();
+    let ids = state.ids.clone();
+    let clock = state.clock.clone();
+    let suggestion = blocking(move || {
+        usecases::apply_suggestion(
+            store.as_ref(),
+            store.as_ref(),
+            store.as_ref(),
+            store.as_ref(),
+            store.as_ref(),
+            ids.as_ref(),
+            clock.as_ref(),
+            sid,
+        )
+    })
+    .await?;
+    Ok(Json(suggestion_json(&suggestion)))
+}
+
+/// Dismisses a pending suggestion (records the decision; nothing is created).
+async fn dismiss_suggestion(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let sid = parse_suggestion_id(&id)?;
+    let store = state.store.clone();
+    let clock = state.clock.clone();
+    blocking(move || usecases::dismiss_suggestion(store.as_ref(), clock.as_ref(), sid)).await?;
+    Ok(Json(json!({ "dismissed": true })))
 }
 
 #[derive(Serialize)]
@@ -1281,6 +1358,7 @@ struct ExportResponse {
     audit: Vec<AuditResponse>,
     messages: Vec<MessageResponse>,
     preferences: Vec<PreferenceResponse>,
+    suggestions: Vec<serde_json::Value>,
 }
 
 impl From<&MemorySnapshot> for ExportResponse {
@@ -1305,6 +1383,7 @@ impl From<&MemorySnapshot> for ExportResponse {
             audit: s.audit.iter().map(AuditResponse::from).collect(),
             messages: s.messages.iter().map(MessageResponse::from).collect(),
             preferences: s.preferences.iter().map(PreferenceResponse::from).collect(),
+            suggestions: s.suggestions.iter().map(suggestion_json).collect(),
         }
     }
 }

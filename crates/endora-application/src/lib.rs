@@ -21,7 +21,8 @@ pub use ports::{
     ButlerProposal, ButlerReply, ChatRepository, Clock, DirectionRepository, ExperimentRepository,
     IdSource, MemorySnapshot, MemoryStore, NorthStarBrief, ObservationRepository,
     PreferenceRepository, ProcessChangeRepository, ProposalError, Proposer, ReflectionRepository,
-    RepositoryError, Snooze, SnoozeRepository, TargetRepository, ValueRepository,
+    RepositoryError, Snooze, SnoozeRepository, Suggestion, SuggestionRepository, SuggestionStatus,
+    TargetRepository, ValueRepository,
 };
 pub use usecases::{ActivityItem, ActivityKind};
 

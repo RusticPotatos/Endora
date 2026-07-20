@@ -9,8 +9,8 @@ use endora_domain::{
     Assumption, AssumptionId, AuditId, AuditRecord, AutonomyLevel, ChatMessage, Direction,
     DirectionId, Experiment, ExperimentId, LifecycleStatus, MessageId, MessageRole, Observation,
     ObservationId, PolicyDecision, Preference, PreferenceId, PreferenceKind, ProcessChangeId,
-    ProposedProcessChange, Reflection, ReflectionId, Target, TargetId, Timestamp, Value, ValueId,
-    authorize_process_change,
+    ProposedProcessChange, Reflection, ReflectionId, SuggestionId, Target, TargetId, Timestamp,
+    Value, ValueId, authorize_process_change,
 };
 
 use crate::error::AppError;
@@ -18,8 +18,8 @@ use crate::ports::{
     AssumptionRepository, AttentionItem, AttentionKind, AuditLog, Butler, ButlerContext,
     ButlerProposal, ChatRepository, Clock, DirectionRepository, ExperimentRepository, IdSource,
     MemorySnapshot, MemoryStore, NorthStarBrief, ObservationRepository, PreferenceRepository,
-    ProcessChangeRepository, Proposer, ReflectionRepository, Snooze, SnoozeRepository,
-    TargetRepository, ValueRepository,
+    ProcessChangeRepository, Proposer, ReflectionRepository, Snooze, SnoozeRepository, Suggestion,
+    SuggestionRepository, SuggestionStatus, TargetRepository, ValueRepository,
 };
 
 /// Creates and stores a new [`Direction`].
@@ -748,19 +748,25 @@ pub fn recent_activity(
 /// # Errors
 /// [`AppError::Domain`] if the message text is blank, [`AppError::Model`] if the
 /// butler brain is unavailable, or [`AppError::Repository`] if persistence fails.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "explicit dependencies, no hidden state"
+)]
 pub fn send_to_butler(
     chat: &impl ChatRepository,
     preferences: &impl PreferenceRepository,
+    suggestions: &impl SuggestionRepository,
     butler: &dyn Butler,
     ids: &impl IdSource,
     clock: &impl Clock,
     context: &ButlerContext,
     text: &str,
-) -> Result<(ChatMessage, Vec<ButlerProposal>), AppError> {
+) -> Result<(ChatMessage, Vec<Suggestion>), AppError> {
     // Non-streaming is just streaming with the tokens discarded.
     send_to_butler_streaming(
         chat,
         preferences,
+        suggestions,
         butler,
         ids,
         clock,
@@ -786,13 +792,14 @@ pub fn send_to_butler(
 pub fn send_to_butler_streaming(
     chat: &impl ChatRepository,
     preferences: &impl PreferenceRepository,
+    suggestions: &impl SuggestionRepository,
     butler: &dyn Butler,
     ids: &impl IdSource,
     clock: &impl Clock,
     context: &ButlerContext,
     text: &str,
     on_token: &mut dyn FnMut(&str),
-) -> Result<(ChatMessage, Vec<ButlerProposal>), AppError> {
+) -> Result<(ChatMessage, Vec<Suggestion>), AppError> {
     let user = ChatMessage::new(
         MessageId::new(ids.new_id()),
         MessageRole::User,
@@ -822,7 +829,134 @@ pub fn send_to_butler_streaming(
         clock.now(),
     )?;
     chat.append(&butler)?;
-    Ok((butler, reply.proposals))
+
+    // Persist the proposals as durable, pending suggestions tied to this reply,
+    // so the conversation's learnings survive a reload and can be applied later —
+    // not lost the moment the chat moves on (ADR 0019).
+    let mut saved = Vec::with_capacity(reply.proposals.len());
+    for proposal in reply.proposals {
+        let suggestion = Suggestion {
+            id: SuggestionId::new(ids.new_id()),
+            proposal,
+            status: SuggestionStatus::Pending,
+            from_message: Some(butler.id()),
+            created_at: clock.now(),
+            decided_at: None,
+        };
+        suggestions.save(&suggestion)?;
+        saved.push(suggestion);
+    }
+    Ok((butler, saved))
+}
+
+/// Lists the butler's persisted suggestions, newest first, optionally filtered by
+/// status (e.g. only the pending ones for an inbox).
+///
+/// # Errors
+/// [`AppError::Repository`] if the backend fails or stored data is corrupt.
+pub fn list_suggestions(
+    suggestions: &impl SuggestionRepository,
+    status: Option<SuggestionStatus>,
+) -> Result<Vec<Suggestion>, AppError> {
+    Ok(suggestions.list(status)?)
+}
+
+/// Dismisses a pending suggestion (records the decision; nothing is created).
+///
+/// # Errors
+/// [`AppError::NotFound`] if it does not exist, or [`AppError::Repository`].
+pub fn dismiss_suggestion(
+    suggestions: &impl SuggestionRepository,
+    clock: &impl Clock,
+    id: SuggestionId,
+) -> Result<(), AppError> {
+    let mut suggestion = suggestions.get(id)?.ok_or(AppError::NotFound {
+        entity: "suggestion",
+    })?;
+    suggestion.status = SuggestionStatus::Dismissed;
+    suggestion.decided_at = Some(clock.now());
+    suggestions.save(&suggestion)?;
+    Ok(())
+}
+
+/// Applies a pending suggestion: runs the deterministic create it stands for and
+/// records that it was applied. This is the human-authorized step — the butler
+/// only ever *proposed* it. Returns the resolved [`Suggestion`].
+///
+/// For a target, the North Star reference the butler gave (an id, or a name) is
+/// resolved here: an exact id if it exists, else a case-insensitive title match
+/// against an existing North Star. If it cannot be resolved, the suggestion is
+/// left pending and an error is returned so the caller can explain why.
+///
+/// # Errors
+/// [`AppError::NotFound`] if the suggestion (or a referenced North Star) is
+/// missing, [`AppError::Domain`] on invalid content, or [`AppError::Repository`].
+#[expect(
+    clippy::too_many_arguments,
+    reason = "explicit dependencies, no hidden state"
+)]
+pub fn apply_suggestion(
+    suggestions: &impl SuggestionRepository,
+    values: &impl ValueRepository,
+    directions: &impl DirectionRepository,
+    targets: &impl TargetRepository,
+    preferences: &impl PreferenceRepository,
+    ids: &impl IdSource,
+    clock: &impl Clock,
+    id: SuggestionId,
+) -> Result<Suggestion, AppError> {
+    let mut suggestion = suggestions.get(id)?.ok_or(AppError::NotFound {
+        entity: "suggestion",
+    })?;
+
+    match &suggestion.proposal {
+        ButlerProposal::CreateValue { name } => {
+            create_value(values, ids, name)?;
+        }
+        ButlerProposal::CreateNorthStar { title } => {
+            create_direction(directions, ids, title)?;
+        }
+        ButlerProposal::CreateTarget {
+            direction_ref,
+            statement,
+        } => {
+            let direction = resolve_direction(directions, direction_ref)?;
+            create_target(directions, targets, ids, direction, statement)?;
+        }
+        ButlerProposal::RememberPreference { text, kind } => {
+            create_preference(preferences, ids, clock, text, *kind)?;
+        }
+    }
+
+    suggestion.status = SuggestionStatus::Applied;
+    suggestion.decided_at = Some(clock.now());
+    suggestions.save(&suggestion)?;
+    Ok(suggestion)
+}
+
+/// Resolves a North Star reference (an id, or a name the model used) to a real
+/// [`DirectionId`]: an exact id that exists, else a case-insensitive title match.
+fn resolve_direction(
+    directions: &impl DirectionRepository,
+    reference: &str,
+) -> Result<DirectionId, AppError> {
+    // An exact, existing id wins.
+    if let Ok(raw) = reference.parse::<u128>() {
+        let id = DirectionId::new(raw);
+        if directions.get(id)?.is_some() {
+            return Ok(id);
+        }
+    }
+    // Otherwise match the name (the common case — the model gives a title).
+    let wanted = reference.trim().to_lowercase();
+    directions
+        .list_all()?
+        .into_iter()
+        .find(|d| d.title().trim().to_lowercase() == wanted)
+        .map(|d| d.id())
+        .ok_or(AppError::NotFound {
+            entity: "direction",
+        })
 }
 
 /// Returns the whole conversation with the butler, oldest first.
@@ -1041,16 +1175,16 @@ mod tests {
         AssumptionRepository, AttentionKind, AuditLog, Butler, ButlerContext, ButlerProposal,
         ButlerReply, ChatRepository, Clock, DirectionRepository, ExperimentRepository, IdSource,
         ObservationRepository, PreferenceRepository, ProcessChangeRepository, ProposalError,
-        Proposer, ReflectionRepository, RepositoryError, Snooze, SnoozeRepository,
-        TargetRepository, ValueRepository,
+        Proposer, ReflectionRepository, RepositoryError, Snooze, SnoozeRepository, Suggestion,
+        SuggestionRepository, SuggestionStatus, TargetRepository, ValueRepository,
     };
     use endora_domain::LifecycleStatus;
     use endora_domain::{
         ApprovalState, Assumption, AssumptionId, AuditRecord, AutonomyLevel, ChatMessage,
         Direction, DirectionId, Experiment, ExperimentId, ExperimentStatus, MessageRole,
         Observation, ObservationId, PolicyDecision, Preference, PreferenceId, ProcessChangeId,
-        ProposedProcessChange, Reflection, ReflectionId, Target, TargetId, Timestamp, Value,
-        ValueId,
+        ProposedProcessChange, Reflection, ReflectionId, SuggestionId, Target, TargetId, Timestamp,
+        Value, ValueId,
     };
     use std::cell::{Cell, RefCell};
     use std::collections::HashMap;
@@ -1069,6 +1203,39 @@ mod tests {
         observations: RefCell<HashMap<u128, Observation>>,
         reflections: RefCell<HashMap<u128, Reflection>>,
         changes: RefCell<HashMap<u128, ProposedProcessChange>>,
+        suggestions: RefCell<Vec<Suggestion>>,
+    }
+
+    impl SuggestionRepository for FakeStore {
+        fn save(&self, s: &Suggestion) -> Result<(), RepositoryError> {
+            let mut v = self.suggestions.borrow_mut();
+            if let Some(existing) = v.iter_mut().find(|e| e.id == s.id) {
+                *existing = s.clone();
+            } else {
+                v.push(s.clone());
+            }
+            Ok(())
+        }
+        fn get(&self, id: SuggestionId) -> Result<Option<Suggestion>, RepositoryError> {
+            Ok(self
+                .suggestions
+                .borrow()
+                .iter()
+                .find(|s| s.id == id)
+                .cloned())
+        }
+        fn list(
+            &self,
+            status: Option<SuggestionStatus>,
+        ) -> Result<Vec<Suggestion>, RepositoryError> {
+            Ok(self
+                .suggestions
+                .borrow()
+                .iter()
+                .filter(|s| status.is_none_or(|w| s.status == w))
+                .cloned()
+                .collect())
+        }
     }
 
     impl ProcessChangeRepository for FakeStore {
@@ -1555,7 +1722,8 @@ mod tests {
         let ids = SeqIds::default();
         let clock = FixedClock(1_000);
 
-        let (reply, proposals) = send_to_butler(
+        let (reply, suggestions) = send_to_butler(
+            &store,
             &store,
             &store,
             &ScriptedTestButler,
@@ -1567,11 +1735,22 @@ mod tests {
         .unwrap();
         assert_eq!(reply.role(), MessageRole::Butler);
         assert!(reply.text().contains("I want to run more"));
+        // The proposal is persisted as a pending suggestion tied to the reply.
+        assert_eq!(suggestions.len(), 1);
+        assert_eq!(suggestions[0].status, SuggestionStatus::Pending);
         assert_eq!(
-            proposals,
-            vec![ButlerProposal::CreateNorthStar {
+            suggestions[0].proposal,
+            ButlerProposal::CreateNorthStar {
                 title: "I want to run more".to_owned()
-            }]
+            }
+        );
+        assert_eq!(suggestions[0].from_message, Some(reply.id()));
+        // And it is durable — listable afterwards.
+        assert_eq!(
+            super::list_suggestions(&store, Some(SuggestionStatus::Pending))
+                .unwrap()
+                .len(),
+            1
         );
 
         // Both turns are persisted, oldest first.
@@ -1579,6 +1758,85 @@ mod tests {
         assert_eq!(history.len(), 2);
         assert_eq!(history[0].role(), MessageRole::User);
         assert_eq!(history[1].role(), MessageRole::Butler);
+    }
+
+    #[test]
+    fn applying_a_target_suggestion_resolves_the_north_star_by_name() {
+        use super::{apply_suggestion, create_direction, dismiss_suggestion};
+        let store = FakeStore::default();
+        let ids = SeqIds::default();
+        let clock = FixedClock(1_000);
+
+        // An existing North Star, and a target suggestion that refers to it by
+        // *name* (as a small model would), not by id.
+        let ns = create_direction(&store, &ids, "Get back into running").unwrap();
+        let target_sugg = Suggestion {
+            id: SuggestionId::new(ids.new_id()),
+            proposal: ButlerProposal::CreateTarget {
+                direction_ref: "get back into running".to_owned(),
+                statement: "Run 3x a week".to_owned(),
+            },
+            status: SuggestionStatus::Pending,
+            from_message: None,
+            created_at: clock.now(),
+            decided_at: None,
+        };
+        SuggestionRepository::save(&store, &target_sugg).unwrap();
+
+        // Applying it resolves the name to the real North Star and creates the
+        // target under it.
+        let applied = apply_suggestion(
+            &store,
+            &store,
+            &store,
+            &store,
+            &store,
+            &ids,
+            &clock,
+            target_sugg.id,
+        )
+        .unwrap();
+        assert_eq!(applied.status, SuggestionStatus::Applied);
+        let targets = store.list_for_direction(ns.id()).unwrap();
+        assert_eq!(targets.len(), 1);
+        assert_eq!(targets[0].statement(), "Run 3x a week");
+
+        // A suggestion that names a North Star that doesn't exist stays pending.
+        let orphan = Suggestion {
+            id: SuggestionId::new(ids.new_id()),
+            proposal: ButlerProposal::CreateTarget {
+                direction_ref: "Nonexistent star".to_owned(),
+                statement: "x".to_owned(),
+            },
+            status: SuggestionStatus::Pending,
+            from_message: None,
+            created_at: clock.now(),
+            decided_at: None,
+        };
+        SuggestionRepository::save(&store, &orphan).unwrap();
+        assert!(
+            apply_suggestion(
+                &store, &store, &store, &store, &store, &ids, &clock, orphan.id
+            )
+            .is_err()
+        );
+        assert_eq!(
+            SuggestionRepository::get(&store, orphan.id)
+                .unwrap()
+                .unwrap()
+                .status,
+            SuggestionStatus::Pending
+        );
+
+        // And dismiss records the decision.
+        dismiss_suggestion(&store, &clock, orphan.id).unwrap();
+        assert_eq!(
+            SuggestionRepository::get(&store, orphan.id)
+                .unwrap()
+                .unwrap()
+                .status,
+            SuggestionStatus::Dismissed
+        );
     }
 
     #[test]
@@ -1662,6 +1920,7 @@ mod tests {
             }
         }
         let (reply, _) = send_to_butler(
+            &store,
             &store,
             &store,
             &EchoPrefsButler,

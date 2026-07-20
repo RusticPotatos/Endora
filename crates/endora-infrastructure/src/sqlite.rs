@@ -8,18 +8,20 @@
 
 use std::sync::Mutex;
 
+use serde_json::{Value as JsonValue, json};
+
 use endora_application::{
-    AssumptionRepository, AuditLog, ChatRepository, DirectionRepository, ExperimentRepository,
-    MemorySnapshot, MemoryStore, ObservationRepository, PreferenceRepository,
+    AssumptionRepository, AuditLog, ButlerProposal, ChatRepository, DirectionRepository,
+    ExperimentRepository, MemorySnapshot, MemoryStore, ObservationRepository, PreferenceRepository,
     ProcessChangeRepository, ReflectionRepository, RepositoryError, Snooze, SnoozeRepository,
-    TargetRepository, ValueRepository,
+    Suggestion, SuggestionRepository, SuggestionStatus, TargetRepository, ValueRepository,
 };
 use endora_domain::{
     ApprovalState, Assumption, AssumptionId, AuditId, AuditRecord, ChatMessage, Direction,
     DirectionId, Experiment, ExperimentId, ExperimentStatus, LifecycleStatus, MessageId,
     MessageRole, Observation, ObservationId, Preference, PreferenceId, PreferenceKind,
-    ProcessChangeId, ProposedProcessChange, Reflection, ReflectionId, Target, TargetId, Timestamp,
-    Value, ValueId,
+    ProcessChangeId, ProposedProcessChange, Reflection, ReflectionId, SuggestionId, Target,
+    TargetId, Timestamp, Value, ValueId,
 };
 use rusqlite::{Connection, OptionalExtension, params};
 
@@ -128,6 +130,15 @@ CREATE TABLE IF NOT EXISTS preferences (
     body  TEXT NOT NULL,
     kind  TEXT NOT NULL,
     at_ms INTEGER NOT NULL
+) STRICT;
+CREATE TABLE IF NOT EXISTS suggestions (
+    id           TEXT PRIMARY KEY,
+    kind         TEXT NOT NULL,
+    payload      TEXT NOT NULL,
+    status       TEXT NOT NULL,
+    from_message TEXT,
+    created_ms   INTEGER NOT NULL,
+    decided_ms   INTEGER
 ) STRICT;
 ";
 
@@ -807,6 +818,7 @@ impl MemoryStore for SqliteStore {
             audit: all_audit(&conn)?,
             messages: all_messages(&conn)?,
             preferences: all_preferences(&conn)?,
+            suggestions: all_suggestions(&conn, None)?,
         })
     }
 
@@ -828,6 +840,7 @@ impl MemoryStore for SqliteStore {
             "messages",
             "attention_snoozes",
             "preferences",
+            "suggestions",
         ] {
             tx.execute(&format!("DELETE FROM {table}"), [])
                 .map_err(backend)?;
@@ -1001,6 +1014,142 @@ fn all_preferences(conn: &Connection) -> Result<Vec<Preference>, RepositoryError
             )
             .map_err(corrupt)?,
         );
+    }
+    Ok(out)
+}
+
+impl SuggestionRepository for SqliteStore {
+    fn save(&self, suggestion: &Suggestion) -> Result<(), RepositoryError> {
+        let (kind, payload) = proposal_to_row(&suggestion.proposal);
+        let conn = self.lock()?;
+        conn.execute(
+            "INSERT OR REPLACE INTO suggestions \
+             (id, kind, payload, status, from_message, created_ms, decided_ms) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                id_text(suggestion.id.value()),
+                kind,
+                payload,
+                suggestion.status.name(),
+                suggestion.from_message.map(|m| id_text(m.value())),
+                suggestion.created_at.unix_millis(),
+                suggestion.decided_at.map(Timestamp::unix_millis),
+            ],
+        )
+        .map_err(backend)?;
+        Ok(())
+    }
+
+    fn get(&self, id: SuggestionId) -> Result<Option<Suggestion>, RepositoryError> {
+        let conn = self.lock()?;
+        let mut found = all_suggestions(&conn, None)?;
+        Ok(found.drain(..).find(|s| s.id == id))
+    }
+
+    fn list(&self, status: Option<SuggestionStatus>) -> Result<Vec<Suggestion>, RepositoryError> {
+        let conn = self.lock()?;
+        all_suggestions(&conn, status)
+    }
+}
+
+/// Serializes a proposal to its stored `(kind, payload-json)` form.
+fn proposal_to_row(p: &ButlerProposal) -> (&'static str, String) {
+    match p {
+        ButlerProposal::CreateValue { name } => {
+            ("create_value", json!({ "name": name }).to_string())
+        }
+        ButlerProposal::CreateNorthStar { title } => {
+            ("create_north_star", json!({ "title": title }).to_string())
+        }
+        ButlerProposal::CreateTarget {
+            direction_ref,
+            statement,
+        } => (
+            "create_target",
+            json!({ "direction_ref": direction_ref, "statement": statement }).to_string(),
+        ),
+        ButlerProposal::RememberPreference { text, kind } => (
+            "remember_preference",
+            json!({ "text": text, "preference_kind": kind.name() }).to_string(),
+        ),
+    }
+}
+
+/// Reconstructs a proposal from its stored `(kind, payload-json)` form.
+fn row_to_proposal(kind: &str, payload: &str) -> Result<ButlerProposal, RepositoryError> {
+    let v: JsonValue = serde_json::from_str(payload)
+        .map_err(|e| RepositoryError::Corrupt(format!("bad suggestion payload: {e}")))?;
+    let s = |k: &str| {
+        v.get(k)
+            .and_then(JsonValue::as_str)
+            .unwrap_or_default()
+            .to_owned()
+    };
+    match kind {
+        "create_value" => Ok(ButlerProposal::CreateValue { name: s("name") }),
+        "create_north_star" => Ok(ButlerProposal::CreateNorthStar { title: s("title") }),
+        "create_target" => Ok(ButlerProposal::CreateTarget {
+            direction_ref: s("direction_ref"),
+            statement: s("statement"),
+        }),
+        "remember_preference" => Ok(ButlerProposal::RememberPreference {
+            text: s("text"),
+            kind: PreferenceKind::from_name(&s("preference_kind")).unwrap_or(PreferenceKind::Taste),
+        }),
+        other => Err(RepositoryError::Corrupt(format!(
+            "unknown suggestion kind {other:?}"
+        ))),
+    }
+}
+
+fn all_suggestions(
+    conn: &Connection,
+    status: Option<SuggestionStatus>,
+) -> Result<Vec<Suggestion>, RepositoryError> {
+    // Newest first; rowid breaks same-millisecond ties.
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, kind, payload, status, from_message, created_ms, decided_ms \
+             FROM suggestions ORDER BY created_ms DESC, rowid DESC",
+        )
+        .map_err(backend)?;
+    let rows = stmt
+        .query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, String>(3)?,
+                r.get::<_, Option<String>>(4)?,
+                r.get::<_, i64>(5)?,
+                r.get::<_, Option<i64>>(6)?,
+            ))
+        })
+        .map_err(backend)?;
+    let mut out = Vec::new();
+    for row in rows {
+        let (id, kind, payload, status_s, from_message, created_ms, decided_ms) =
+            row.map_err(backend)?;
+        let st = SuggestionStatus::from_name(&status_s).ok_or_else(|| {
+            RepositoryError::Corrupt(format!("unknown suggestion status {status_s:?}"))
+        })?;
+        if let Some(want) = status {
+            if st != want {
+                continue;
+            }
+        }
+        let from_message = match from_message {
+            Some(m) => Some(MessageId::new(parse_id(&m)?)),
+            None => None,
+        };
+        out.push(Suggestion {
+            id: SuggestionId::new(parse_id(&id)?),
+            proposal: row_to_proposal(&kind, &payload)?,
+            status: st,
+            from_message,
+            created_at: Timestamp::from_unix_millis(created_ms),
+            decided_at: decided_ms.map(Timestamp::from_unix_millis),
+        });
     }
     Ok(out)
 }

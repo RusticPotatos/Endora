@@ -9,6 +9,18 @@ tagged release.
 
 ### Added
 
+- **Chat learnings persist — a suggestion inbox** (first slice of
+  [ADR 0019](docs/adr/0019-proactive-self-improving-butler.md)): the butler's
+  proposals used to vanish on reload unless you confirmed them in the moment. Now
+  every proposal is saved as a durable **suggestion** tied to the reply it came
+  from, and collects in an **Inbox** (new `GET /v1/suggestions`, with a count on the
+  nav) where you can **Apply** or **Dismiss** it any time — applying runs the same
+  deterministic create, so it flows into your North Stars / targets / preferences
+  (you authorize; the butler only proposed). Suggestions are part of export and
+  cleared by purge. **Targets now attach correctly**: the North Star a target names
+  is resolved when applied — by id, or by matching the name to an existing North
+  Star — instead of the proposal being silently dropped when the model gave a name
+  rather than an id (`POST /v1/suggestions/{id}/apply|dismiss`).
 - **The butler's reply streams in live, token-by-token**
   ([ADR 0018](docs/adr/0018-streaming-chat-responses.md)): a new
   `POST /v1/chat/stream` (Server-Sent Events) streams the reply's prose as the model
