@@ -119,6 +119,63 @@ fn str_field<'a>(input: &'a Value, key: &str) -> Result<&'a str, CapabilityError
         .ok_or_else(|| CapabilityError::BadInput(format!("missing '{key}'")))
 }
 
+/// GET with an explicit `User-Agent` (some APIs, e.g. the US NWS, require one).
+fn http_get_text_ua(url: &str, ua: &str, max_bytes: usize) -> Result<String, CapabilityError> {
+    use std::io::Read;
+    let mut resp = agent()
+        .get(url)
+        .header("User-Agent", ua)
+        .call()
+        .map_err(|e| CapabilityError::Unavailable(e.to_string()))?;
+    let mut buf = Vec::new();
+    resp.body_mut()
+        .as_reader()
+        .take(max_bytes as u64)
+        .read_to_end(&mut buf)
+        .map_err(|e| CapabilityError::Unavailable(e.to_string()))?;
+    Ok(String::from_utf8_lossy(&buf).into_owned())
+}
+
+/// Resolves `{lat, lon}` or `{location}` from an input to a `(lat, lon, place)`,
+/// geocoding a place name via Open-Meteo (no key). Shared by the location skills.
+fn resolve_point(input: &Value) -> Result<(f64, f64, String), CapabilityError> {
+    if let (Some(lat), Some(lon)) = (
+        input.get("lat").and_then(Value::as_f64),
+        input.get("lon").and_then(Value::as_f64),
+    ) {
+        let place = input
+            .get("location")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_owned();
+        return Ok((lat, lon, place));
+    }
+    let q = str_field(input, "location")?;
+    let geo = http_get_text(
+        &format!(
+            "https://geocoding-api.open-meteo.com/v1/search?name={}&count=1&language=en&format=json",
+            urlencode(q)
+        ),
+        64 * 1024,
+    )?;
+    let geo: Value =
+        serde_json::from_str(&geo).map_err(|e| CapabilityError::Unavailable(e.to_string()))?;
+    let first = geo["results"]
+        .get(0)
+        .ok_or_else(|| CapabilityError::BadInput(format!("couldn't find a place called '{q}'")))?;
+    let lat = first["latitude"].as_f64().unwrap_or_default();
+    let lon = first["longitude"].as_f64().unwrap_or_default();
+    let name = first["name"].as_str().unwrap_or(q);
+    let country = first["country"].as_str().unwrap_or("");
+    Ok((
+        lat,
+        lon,
+        format!("{name}, {country}")
+            .trim_end_matches(", ")
+            .to_owned(),
+    ))
+}
+
 // ---- Weather (real; Open-Meteo, no API key) --------------------------------
 
 struct WeatherCapability;
@@ -415,16 +472,59 @@ scaffold!(
     AutonomyLevel::ConfirmEachAction,
     "your opt-in and a location source (kept private to you)"
 );
-scaffold!(
-    SafetyAlertsCapability,
-    "safety_alerts",
-    "Guard dog",
-    "Watch for things worth warning you about — severe weather, travel advisories, hazards nearby.",
-    "safety",
-    true,
-    AutonomyLevel::ActWithinPolicy,
-    "safety/advisory data sources to watch"
-);
+/// The "guard dog": active public-safety alerts near a place. Real for the US via
+/// the National Weather Service (no key); elsewhere it reports no coverage.
+struct SafetyAlertsCapability;
+
+impl Capability for SafetyAlertsCapability {
+    fn info(&self) -> CapabilityInfo {
+        CapabilityInfo {
+            id: "safety_alerts",
+            name: "Guard dog",
+            description: "Active safety alerts near you — severe weather and public warnings (US National Weather Service).",
+            category: "safety",
+            reaches_external: true,
+            autonomy: AutonomyLevel::ActWithinPolicy,
+            configured: true,
+            needs: "",
+        }
+    }
+
+    fn invoke(&self, input: &Value) -> Result<Value, CapabilityError> {
+        let (lat, lon, place) = resolve_point(input)?;
+        let body = http_get_text_ua(
+            &format!("https://api.weather.gov/alerts/active?point={lat:.4},{lon:.4}"),
+            "Endora personal butler (github.com/RusticPotatos/Endora)",
+            256 * 1024,
+        )?;
+        let data: Value =
+            serde_json::from_str(&body).map_err(|e| CapabilityError::Unavailable(e.to_string()))?;
+        let alerts: Vec<Value> = data["features"]
+            .as_array()
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|f| {
+                        let p = &f["properties"];
+                        Some(json!({
+                            "event": p["event"].as_str()?,
+                            "severity": p["severity"].as_str().unwrap_or("Unknown"),
+                            "headline": p["headline"].as_str().unwrap_or(""),
+                            "area": p["areaDesc"].as_str().unwrap_or(""),
+                        }))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        Ok(json!({
+            "place": place,
+            "count": alerts.len(),
+            "all_clear": alerts.is_empty(),
+            "alerts": alerts,
+            "note": if alerts.is_empty() { "No active alerts (or outside US coverage)." } else { "" },
+        }))
+    }
+}
+
 scaffold!(
     IncidentScannerCapability,
     "incident_scanner",
