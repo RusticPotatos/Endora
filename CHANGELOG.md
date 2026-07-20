@@ -33,6 +33,13 @@ tagged release.
 
 ### Added
 
+- **Local news skill + honest closure**: a new **Local news** skill (Google News
+  RSS, no key) fetches real headlines for a place or topic, so "what's in the news"
+  is answered from actual sources instead of guessed. And the interventions loop now
+  gives **honest closure** in every case — if a skill ran, failed, needs setup, needs
+  your OK, or doesn't exist, the butler always answers with that outcome (told to say
+  plainly it couldn't rather than invent a result), so it never hangs on "One moment…"
+  or claims it checked something it didn't.
 - **The butler actually uses its skills — interventions**: when answering needs
   current facts it doesn't have (weather, local safety alerts, a web page), the butler
   now **uses a skill and answers with the real result** instead of only saying it will.

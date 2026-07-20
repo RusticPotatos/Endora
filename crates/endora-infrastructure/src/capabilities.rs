@@ -76,6 +76,7 @@ pub fn default_capabilities() -> Vec<Arc<dyn Capability>> {
     vec![
         Arc::new(WeatherCapability),
         Arc::new(WebFetchCapability),
+        Arc::new(LocalNewsCapability),
         Arc::new(ImageReviewCapability::from_env()),
         Arc::new(LocalEventsCapability),
         Arc::new(FlightSearchCapability),
@@ -366,6 +367,99 @@ fn strip_html(html: &str) -> String {
     out.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
+// ---- Local news (real; Google News RSS, no API key) ------------------------
+
+struct LocalNewsCapability;
+
+impl Capability for LocalNewsCapability {
+    fn info(&self) -> CapabilityInfo {
+        CapabilityInfo {
+            id: "news",
+            name: "Local news",
+            description: "Recent news headlines for a place or topic — so answers about the news are real, not guessed.",
+            category: "information",
+            reaches_external: true,
+            autonomy: AutonomyLevel::ActWithinPolicy,
+            configured: true,
+            needs: "",
+        }
+    }
+
+    fn invoke(&self, input: &Value) -> Result<Value, CapabilityError> {
+        // Prefer an explicit {query}; else build one from {location} ("Charlotte
+        // NC news"). One of the two is required — without it we can't search, and
+        // the butler is told to say so rather than invent headlines.
+        let query = match input.get("query").and_then(Value::as_str) {
+            Some(q) if !q.trim().is_empty() => q.trim().to_owned(),
+            _ => {
+                let place = str_field(input, "location").map_err(|_| {
+                    CapabilityError::BadInput("missing 'location' or 'query'".to_owned())
+                })?;
+                format!("{place} news")
+            }
+        };
+        let url = format!(
+            "https://news.google.com/rss/search?q={}&hl=en-US&gl=US&ceid=US:en",
+            urlencode(&query)
+        );
+        let xml = http_get_text(&url, 256 * 1024)?;
+        let headlines = extract_rss_titles(&xml, 6);
+        Ok(json!({
+            "query": query,
+            "count": headlines.len(),
+            "headlines": headlines,
+            "note": if headlines.is_empty() {
+                "No recent headlines found for that search."
+            } else {
+                ""
+            },
+        }))
+    }
+}
+
+/// Extracts up to `max` `<item><title>` headlines from an RSS feed, decoding the
+/// common XML entities. Small and tolerant — good enough for Google News RSS.
+fn extract_rss_titles(xml: &str, max: usize) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut rest = xml;
+    while let Some(start) = rest.find("<item>") {
+        rest = &rest[start + "<item>".len()..];
+        let item = match rest.find("</item>") {
+            Some(end) => &rest[..end],
+            None => rest,
+        };
+        if let Some(title) = between(item, "<title>", "</title>") {
+            let title = decode_xml_entities(strip_cdata(&title).trim());
+            if !title.is_empty() {
+                out.push(title);
+            }
+        }
+        if out.len() >= max {
+            break;
+        }
+    }
+    out
+}
+
+/// Unwraps a `<![CDATA[…]]>` wrapper if present, returning the inner text.
+fn strip_cdata(s: &str) -> String {
+    let t = s.trim();
+    t.strip_prefix("<![CDATA[")
+        .and_then(|r| r.strip_suffix("]]>"))
+        .unwrap_or(t)
+        .to_owned()
+}
+
+/// Decodes the handful of XML entities that show up in RSS titles.
+fn decode_xml_entities(s: &str) -> String {
+    s.replace("&amp;", "&")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&#39;", "'")
+        .replace("&apos;", "'")
+}
+
 // ---- Image review (local vision model via Ollama; env-gated) ---------------
 
 struct ImageReviewCapability {
@@ -618,6 +712,26 @@ mod tests {
         let err = WebFetchCapability
             .invoke(&json!({ "url": "file:///etc/passwd" }))
             .unwrap_err();
+        assert!(matches!(err, CapabilityError::BadInput(_)));
+    }
+
+    #[test]
+    fn rss_titles_are_extracted_and_decoded() {
+        let xml = "<rss><channel>\
+            <item><title>Storms hit Charlotte &amp; the region</title><link>a</link></item>\
+            <item><title><![CDATA[City council votes tonight]]></title></item>\
+            <item><title>Third &#39;big&#39; story</title></item>\
+            </channel></rss>";
+        let titles = extract_rss_titles(xml, 6);
+        assert_eq!(titles.len(), 3);
+        assert_eq!(titles[0], "Storms hit Charlotte & the region");
+        assert_eq!(titles[1], "City council votes tonight");
+        assert_eq!(titles[2], "Third 'big' story");
+    }
+
+    #[test]
+    fn news_without_a_place_or_query_is_bad_input() {
+        let err = LocalNewsCapability.invoke(&json!({})).unwrap_err();
         assert!(matches!(err, CapabilityError::BadInput(_)));
     }
 

@@ -828,37 +828,66 @@ pub fn send_to_butler_streaming(
     // the conversation actually changed (transparency + debugging).
     let mut activity: Vec<String> = Vec::new();
 
-    // Interventions: if the butler asked to use a skill and it is cleared to run on
-    // its own (configured + read-only/autonomous), run it and let the butler answer
-    // with the real result. The model proposes; the policy check here authorizes;
-    // the capability executes (ADRs 0019/0020). One tool round per turn.
+    // Interventions: if the butler asked to use a skill, the policy check here
+    // decides what happens (the model proposes; policy authorizes; the capability
+    // executes — ADRs 0019/0020). One tool round per turn. Whatever the outcome —
+    // ran, failed, needs setup, needs confirmation, or unknown — the butler ALWAYS
+    // answers again with that outcome, so it never dead-ends on a "one moment"
+    // placeholder and never invents a result it didn't fetch.
     if let Some(used) = reply.capability_use.take() {
-        let spec = capabilities
-            .available()
-            .into_iter()
-            .find(|c| c.id == used.capability);
-        if spec.is_some_and(|s| s.configured && s.autonomous) {
-            let outcome = match capabilities.run(&used.capability, &used.input_json) {
-                Ok(out) => format!(
-                    "You used the '{}' skill and it returned: {out}",
-                    used.capability
-                ),
-                Err(e) => format!(
-                    "You tried the '{}' skill but it failed: {e}",
-                    used.capability
-                ),
-            };
-            activity.push(format!("Used the {} skill", used.capability));
-            let mut ctx = context.clone();
-            ctx.tool_result = Some(outcome);
-            // Synthesize a natural answer from the result (a second, non-streamed
-            // pass). If it fails, the first reply still stands.
-            if let Ok(synth) = butler.respond(&history, &prefs, &ctx) {
-                reply = synth;
+        let id = &used.capability;
+        let spec = capabilities.available().into_iter().find(|c| &c.id == id);
+        let outcome = match spec {
+            // Cleared to run on its own (configured + read-only/low-stakes).
+            Some(s) if s.configured && s.autonomous => {
+                match capabilities.run(id, &used.input_json) {
+                    Ok(out) => {
+                        activity.push(format!("Used the {id} skill"));
+                        format!("You used the '{id}' skill and it returned: {out}")
+                    }
+                    Err(e) => {
+                        activity.push(format!("Tried the {id} skill, but it failed"));
+                        format!(
+                            "You tried the '{id}' skill but it failed: {e}. Tell the person \
+                             plainly you couldn't get it — do not make up an answer."
+                        )
+                    }
+                }
             }
+            // Present, but awaiting setup — cannot be used yet.
+            Some(s) if !s.configured => {
+                activity.push(format!("The {id} skill isn't set up yet"));
+                format!(
+                    "The '{id}' skill isn't set up yet, so you could NOT check it. Tell the \
+                     person plainly you can't do that yet — do not invent a result — and offer \
+                     something you can actually do."
+                )
+            }
+            // Configured but consequential — must be confirmed, never auto-run.
+            Some(_) => {
+                activity.push(format!("The {id} skill needs your OK first"));
+                format!(
+                    "The '{id}' skill needs the person's go-ahead before it runs. Ask them if \
+                     they'd like you to — don't claim you've done it."
+                )
+            }
+            // No such skill.
+            None => {
+                activity.push(format!("No {id} skill is available"));
+                format!(
+                    "There is no '{id}' skill available, so you could NOT do that. Tell the \
+                     person plainly you can't yet — do not invent a result — and offer what you \
+                     can do instead."
+                )
+            }
+        };
+        let mut ctx = context.clone();
+        ctx.tool_result = Some(outcome);
+        // Answer again using the real outcome (a second, non-streamed pass). If it
+        // fails, the first reply still stands.
+        if let Ok(synth) = butler.respond(&history, &prefs, &ctx) {
+            reply = synth;
         }
-        // If not cleared to run (unconfigured or consequential), the butler's reply
-        // stands — it should have said it can't yet, or offered it as a choice.
     }
 
     // A brain that returns nothing usable still owes the person a reply.
