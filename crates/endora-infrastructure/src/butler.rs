@@ -322,9 +322,13 @@ with that skill's inputs FILLED IN, and keep your \"reply\" to a brief one-liner
 place in the input: use the place the person named, and if they didn't name one, use \
 where they're based (from what you know about them, below) — never send an empty \
 input. Use a skill only when it genuinely helps and only one that is \
-listed; otherwise set \"use\":null. NEVER claim a fact you haven't fetched, and never \
-say you'll look something up without setting \"use\". When a SKILL RESULT is provided \
-below, answer the person naturally using it and set \"use\":null. \
+listed; otherwise set \"use\":null. You do NOT know live facts — the current weather, \
+today's news, prices, or the time — from your own memory. If asked one (including a \
+follow-up like 'right now?') and there is no SKILL RESULT for it below, you MUST use \
+the matching skill; NEVER state a temperature, headline, or other live fact you did \
+not just fetch, and NEVER say you'll look something up without setting \"use\". When a \
+SKILL RESULT is provided below, answer the person naturally using it and set \
+\"use\":null. \
 Your ENTIRE response must be that single JSON object and nothing else: no prose \
 before or after it, no repetition, no code fences. Ground yourself in what you \
 already understand about the person, below.";

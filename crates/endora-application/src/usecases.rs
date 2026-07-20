@@ -901,7 +901,7 @@ pub fn send_to_butler_streaming(
     // from that real result instead. Policy still gates it (configured + read-only),
     // and it only fires when the model requested nothing, so a correct model-driven
     // tool use (e.g. a specific city it named) is left untouched.
-    if let Some(skill) = route_intent(text).filter(|_| !model_requested_skill) {
+    if let Some(skill) = follow_up_intent(text, &history).filter(|_| !model_requested_skill) {
         let cleared = capabilities
             .available()
             .into_iter()
@@ -1067,6 +1067,39 @@ fn route_intent(text: &str) -> Option<&'static str> {
         return Some("weather");
     }
     None
+}
+
+/// Like [`route_intent`], but also catches a **deictic follow-up** — "right now?",
+/// "currently?", "what about now" — by reusing the intent of the person's previous
+/// message. So a follow-up to a weather/news answer re-runs the skill instead of
+/// letting the model invent a fresh number. `history` ends with the current message.
+fn follow_up_intent(text: &str, history: &[ChatMessage]) -> Option<&'static str> {
+    if let Some(skill) = route_intent(text) {
+        return Some(skill);
+    }
+    let t = text.to_lowercase();
+    let deictic = [
+        "right now",
+        "currently",
+        "at the moment",
+        "what about now",
+        "how about now",
+        "and now",
+    ]
+    .iter()
+    .any(|p| t.contains(p))
+        || matches!(t.trim(), "now" | "now?");
+    if !deictic {
+        return None;
+    }
+    // Reuse the intent of the most recent earlier user message (skip the current
+    // one, which is the last entry).
+    history
+        .iter()
+        .rev()
+        .skip(1)
+        .filter(|m| m.role() == MessageRole::User)
+        .find_map(|m| route_intent(m.text()))
 }
 
 /// The person's stated home location, if they've set one (the location setup
@@ -1603,7 +1636,7 @@ mod tests {
     use endora_domain::LifecycleStatus;
     use endora_domain::{
         ApprovalState, Assumption, AssumptionId, AuditRecord, AutonomyLevel, ChatMessage,
-        Direction, DirectionId, Experiment, ExperimentId, ExperimentStatus, MessageRole,
+        Direction, DirectionId, Experiment, ExperimentId, ExperimentStatus, MessageId, MessageRole,
         Observation, ObservationId, PolicyDecision, Preference, PreferenceId, PreferenceKind,
         ProcessChangeId, ProposedProcessChange, Reflection, ReflectionId, SuggestionId, Target,
         TargetId, Timestamp, Value, ValueId,
@@ -2397,6 +2430,35 @@ mod tests {
         assert_eq!(json_location("New York"), "{\"location\":\"New York\"}");
         // A value with a quote is escaped so the JSON stays well-formed.
         assert_eq!(json_location("a\"b"), "{\"location\":\"a\\\"b\"}");
+    }
+
+    #[test]
+    fn a_deictic_follow_up_reuses_the_previous_intent() {
+        use super::follow_up_intent;
+        let msg = |role, text: &str| {
+            ChatMessage::new(
+                MessageId::new(1),
+                role,
+                text,
+                Timestamp::from_unix_millis(0),
+            )
+            .unwrap()
+        };
+        // "Right now?" on its own has no intent...
+        assert_eq!(follow_up_intent("Right now?", &[]), None);
+        // ...but after a weather question, it re-runs weather.
+        let history = vec![
+            msg(MessageRole::User, "what's the weather today"),
+            msg(MessageRole::Butler, "It's clear and warm."),
+            msg(MessageRole::User, "Right now?"),
+        ];
+        assert_eq!(follow_up_intent("Right now?", &history), Some("weather"));
+        // A non-deictic follow-up is left alone (no false trigger).
+        let h2 = vec![
+            msg(MessageRole::User, "what's the weather today"),
+            msg(MessageRole::User, "ok what should I cook"),
+        ];
+        assert_eq!(follow_up_intent("ok what should I cook", &h2), None);
     }
 
     #[test]
