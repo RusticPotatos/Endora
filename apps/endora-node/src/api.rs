@@ -1045,6 +1045,7 @@ async fn send_chat(
             store.as_ref(),
             store.as_ref(),
             store.as_ref(),
+            store.as_ref(),
             clock.as_ref(),
         )?;
         usecases::send_to_butler(
@@ -1092,6 +1093,7 @@ async fn stream_chat(
     tokio::task::spawn_blocking(move || {
         let event = |v: serde_json::Value| Event::default().data(v.to_string());
         let context = match usecases::butler_context(
+            store.as_ref(),
             store.as_ref(),
             store.as_ref(),
             store.as_ref(),
@@ -1389,6 +1391,7 @@ pub fn spawn_heartbeat(state: AppState) {
             let clock = state.clock.clone();
             let posted = tokio::task::spawn_blocking(move || {
                 let context = usecases::butler_context(
+                    store.as_ref(),
                     store.as_ref(),
                     store.as_ref(),
                     store.as_ref(),

@@ -7,6 +7,29 @@ tagged release.
 
 ## [Unreleased]
 
+### Changed
+
+- **Direction reset — intent-first understanding** (canonical:
+  [docs/direction-reset.md](docs/direction-reset.md); decision:
+  [ADR 0020](docs/adr/0020-intent-first-understanding-loop.md)): Endora had drifted into
+  a goal tracker; it is now an **autonomous personal intelligence** whose job is to
+  **understand intent**. It maintains a living **Understanding** — beliefs about you
+  (intent, values, patterns, motivations, frustrations…), each with the **evidence**
+  behind it and a **confidence**, formed by Endora itself and **reviewable/correctable**
+  by you (no per-item confirmation). The **home screen** is now "what Endora understands
+  about you," beliefs grouped by kind with *That's right / Not quite*; **goals are
+  demoted to optional**. The butler is grounded in what it already understands (builds on
+  it, avoids duplicates) and phrases beliefs in second person; check-ins draw on
+  understanding. New `GET /v1/understanding` and affirm/correct; beliefs are in
+  export/purge. *Interventions* (actions sized to confidence) are the next layer.
+
+### Faster builds
+
+- The container build now uses **BuildKit cache mounts** for the cargo registry and
+  `target/`, so deploys do an **incremental** compile (only changed crates) instead of
+  rebuilding every dependency each time — a normal change goes from minutes to seconds
+  after the first (cache-priming) build.
+
 ### Added
 
 - **Capabilities — the butler's skills** (third slice of
