@@ -300,8 +300,10 @@ each proposal is exactly one of {\"kind\":\"create_value\",\"name\":\"...\"}, \
 {\"kind\":\"create_target\",\"direction_id\":\"<id of an existing item below>\",\"statement\":\"...\"}, \
 or {\"kind\":\"remember_preference\",\"text\":\"...\",\"preference_kind\":\"taste\"}. \
 The JSON kinds are the machine layer — keep those taxonomy words OUT of the \"reply\" \
-text. Ground yourself in the person's life below; refer to what exists in plain \
-language and offer the next concrete step (only use a direction_id listed there).";
+text. Your ENTIRE response must be that single JSON object and nothing else: no \
+prose before it, no prose after it, no repetition of it, no code fences. Ground \
+yourself in the person's life below; refer to what exists in plain language and \
+offer the next concrete step (only use a direction_id listed there).";
 
 /// Builds the OpenAI-compatible chat request from the conversation and the
 /// preferences already learned (so the butler need not re-ask). Pure, so it is
@@ -375,12 +377,19 @@ fn parse_butler_response(json: &Value) -> Result<ButlerReply, ProposalError> {
     Ok(parse_butler_json(content))
 }
 
-/// Parses the model's message content into a [`ButlerReply`]. If it is not the
-/// expected JSON, the raw text becomes the reply with no proposals — a graceful
-/// degradation rather than a failure.
+/// Parses the model's message content into a [`ButlerReply`]. Small models don't
+/// always obey "output ONLY JSON" — they may wrap it in a code fence or emit prose
+/// *around* the JSON envelope. So: try a strict parse, else extract the first
+/// balanced `{…}` object and parse that (dropping any surrounding prose so the raw
+/// envelope never leaks into the reply). Only if there is no parseable object at
+/// all does the plain text become the reply.
 fn parse_butler_json(content: &str) -> ButlerReply {
     let cleaned = strip_code_fence(content.trim());
-    let Ok(value) = serde_json::from_str::<Value>(cleaned) else {
+    let value = serde_json::from_str::<Value>(cleaned).ok().or_else(|| {
+        extract_json_object(cleaned).and_then(|obj| serde_json::from_str::<Value>(&obj).ok())
+    });
+    let Some(value) = value else {
+        // No JSON envelope anywhere — treat the prose itself as the reply.
         return ButlerReply {
             text: content.trim().to_owned(),
             proposals: Vec::new(),
@@ -392,6 +401,39 @@ fn parse_butler_json(content: &str) -> ButlerReply {
         .map(|arr| arr.iter().filter_map(parse_proposal).collect())
         .unwrap_or_default();
     ButlerReply { text, proposals }
+}
+
+/// Returns the first balanced `{…}` object found in `s`, honouring string
+/// literals so braces inside strings don't miscount. Used to salvage the JSON
+/// envelope when the model wraps it in prose.
+fn extract_json_object(s: &str) -> Option<String> {
+    let start = s.find('{')?;
+    let mut depth = 0i32;
+    let mut in_str = false;
+    let mut escaped = false;
+    for (i, c) in s[start..].char_indices() {
+        if in_str {
+            match c {
+                _ if escaped => escaped = false,
+                '\\' => escaped = true,
+                '"' => in_str = false,
+                _ => {}
+            }
+        } else {
+            match c {
+                '"' => in_str = true,
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return Some(s[start..start + i + c.len_utf8()].to_owned());
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    None
 }
 
 /// Maps one JSON proposal object to a [`ButlerProposal`], ignoring unknown kinds
@@ -436,8 +478,8 @@ fn strip_code_fence(s: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::{
-        LlmButler, ScriptedButler, build_butler_request, extract_reply_preview, parse_butler_json,
-        parse_butler_response,
+        LlmButler, ScriptedButler, build_butler_request, extract_json_object,
+        extract_reply_preview, parse_butler_json, parse_butler_response,
     };
     use endora_application::{Butler, ButlerContext, ButlerProposal};
     use endora_domain::{ChatMessage, MessageId, MessageRole, Timestamp};
@@ -539,6 +581,38 @@ mod tests {
     fn a_code_fenced_reply_is_still_parsed() {
         let reply = parse_butler_json("```json\n{\"reply\":\"ok\",\"proposals\":[]}\n```");
         assert_eq!(reply.text, "ok");
+    }
+
+    #[test]
+    fn prose_wrapped_json_does_not_leak_the_envelope() {
+        // A small model sometimes writes its prose AND then the JSON envelope.
+        // We must show only the reply field, never the raw JSON, and still get
+        // the proposals.
+        let raw = "So it sounds like mornings suit you.\n\n\
+             {\"reply\":\"So it sounds like mornings suit you.\",\
+             \"proposals\":[{\"kind\":\"create_north_star\",\"title\":\"Morning runs\"}]}";
+        let reply = parse_butler_json(raw);
+        assert_eq!(reply.text, "So it sounds like mornings suit you.");
+        assert_eq!(
+            reply.proposals,
+            vec![ButlerProposal::CreateNorthStar {
+                title: "Morning runs".to_owned()
+            }]
+        );
+        assert!(
+            !reply.text.contains('{'),
+            "the JSON envelope leaked: {}",
+            reply.text
+        );
+    }
+
+    #[test]
+    fn extract_json_object_ignores_braces_inside_strings() {
+        assert_eq!(
+            extract_json_object("noise {\"reply\":\"has } brace\"} tail"),
+            Some("{\"reply\":\"has } brace\"}".to_owned())
+        );
+        assert_eq!(extract_json_object("no object here"), None);
     }
 
     #[test]
