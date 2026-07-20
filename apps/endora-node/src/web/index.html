@@ -173,6 +173,7 @@ let ACTIVITY = [];             // latest /v1/activity feed (newest first)
 let ATTENTION = [];            // latest /v1/attention items (most pressing first)
 let CHAT_PROPOSALS = [];       // proposals from the butler's last reply
 let SUGGESTIONS = [];          // pending suggestions (the butler's durable proposal inbox)
+let CHECKIN = { enabled: false, interval_ms: 0 }; // proactive check-in cadence
 let CHAT_STREAMING = false;    // true while a reply is streaming in (guards live-render)
 let NAV = { v: "chat" };       // current view (the butler is the landing page)
 
@@ -235,16 +236,18 @@ async function api(method, path, body) {
 async function reload() {
   // The export snapshot, the derived activity feed, what needs attention, and the
   // pending suggestions inbox (proposals the butler made, waiting to be applied).
-  const [db, activity, attention, suggestions] = await Promise.all([
+  const [db, activity, attention, suggestions, checkin] = await Promise.all([
     api("GET", "/v1/export"),
     api("GET", "/v1/activity?limit=30"),
     api("GET", "/v1/attention"),
     api("GET", "/v1/suggestions?status=pending"),
+    api("GET", "/v1/checkin"),
   ]);
   DB = db;
   ACTIVITY = activity;
   ATTENTION = attention;
   SUGGESTIONS = suggestions;
+  CHECKIN = checkin;
   render();
 }
 
@@ -637,8 +640,20 @@ function viewChat() {
         ? `<button data-act="chat:mic" title="speak your message">${icon("mic")}</button>`
         : `<button data-act="chat:mic" title="voice input needs HTTPS or localhost">${icon("mic")}<span>needs HTTPS</span></button>`)
     : "";
+  const cadence = CHECKIN.enabled ? String(CHECKIN.interval_ms) : "off";
+  const checkinControl = `
+    <div class="row" style="justify-content:flex-end; gap:8px; margin-bottom:8px;" title="how often the butler reaches out to you on its own">
+      <span class="sub">${icon("clock", 15)} Check-ins</span>
+      <select id="checkin-cadence" data-change="checkin" style="width:auto;">
+        <option value="off" ${cadence === "off" ? "selected" : ""}>Off</option>
+        <option value="120000" ${cadence === "120000" ? "selected" : ""}>Every 2 min</option>
+        <option value="3600000" ${cadence === "3600000" ? "selected" : ""}>Hourly</option>
+        <option value="86400000" ${cadence === "86400000" ? "selected" : ""}>Daily</option>
+      </select>
+    </div>`;
   return `
     <div class="chat">
+      ${checkinControl}
       <div id="chat-thread" class="chat-thread">${(msgs || `<div class="empty">Say what you'd like to work on — the butler will help organize it.</div>`) + pending}</div>
       ${awaiting ? "" : proposals}
       <div class="composer">
@@ -858,6 +873,14 @@ async function dispatch(act) {
     }
     if (verb === "dismiss" && noun === "suggestion") {
       try { await api("POST", `/v1/suggestions/${id}/dismiss`); } catch (_) {}
+      return reload();
+    }
+    // Set the proactive check-in cadence (noun is "off" or an interval in ms).
+    if (verb === "checkin") {
+      const enabled = noun !== "off";
+      const interval_ms = enabled ? Number(noun) : (CHECKIN.interval_ms || 86400000);
+      await api("POST", "/v1/checkin", { enabled, interval_ms });
+      flash(enabled ? "The butler will check in with you." : "Check-ins off.", "ok");
       return reload();
     }
     if (verb === "snooze" && noun === "attention") {

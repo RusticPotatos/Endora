@@ -438,6 +438,55 @@ pub trait SuggestionRepository {
     fn list(&self, status: Option<SuggestionStatus>) -> Result<Vec<Suggestion>, RepositoryError>;
 }
 
+/// The person's cadence for proactive **check-ins** — the butler reaching out on
+/// its own (ADR 0019 §heartbeat/check-ins). The person owns it: whether it is on,
+/// how often, and when the next one is due. Interval-based for now; time-of-day
+/// windows ("mornings") are a later refinement.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CheckinSchedule {
+    /// Whether proactive check-ins are on. Off by default — the butler never
+    /// reaches out uninvited until the person turns it on.
+    pub enabled: bool,
+    /// How long between check-ins, in milliseconds.
+    pub interval_ms: i64,
+    /// When the next check-in is due.
+    pub next_at: Timestamp,
+}
+
+impl CheckinSchedule {
+    /// The default: **off**, with a daily cadence ready if the person enables it.
+    #[must_use]
+    pub fn disabled_default(now: Timestamp) -> Self {
+        let day_ms = 24 * 60 * 60 * 1_000;
+        Self {
+            enabled: false,
+            interval_ms: day_ms,
+            next_at: Timestamp::from_unix_millis(now.unix_millis() + day_ms),
+        }
+    }
+
+    /// Whether a check-in is due now (enabled and past its next time).
+    #[must_use]
+    pub fn is_due(&self, now: Timestamp) -> bool {
+        self.enabled && now.unix_millis() >= self.next_at.unix_millis()
+    }
+}
+
+/// Persists the single [`CheckinSchedule`].
+pub trait CheckinRepository {
+    /// Returns the stored schedule, or `None` if never set.
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if the backend fails or stored data is corrupt.
+    fn get(&self) -> Result<Option<CheckinSchedule>, RepositoryError>;
+
+    /// Stores the schedule (replacing any previous one).
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if the backend fails.
+    fn set(&self, schedule: &CheckinSchedule) -> Result<(), RepositoryError>;
+}
+
 /// A brief of one North Star, for grounding the butler's conversation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NorthStarBrief {

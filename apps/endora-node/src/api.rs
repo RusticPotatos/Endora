@@ -17,8 +17,8 @@ use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post};
 use endora_application::{
-    ActivityItem, AppError, AttentionItem, AttentionKind, Butler, ButlerProposal, MemorySnapshot,
-    Proposer, RepositoryError, Suggestion, SuggestionStatus, usecases,
+    ActivityItem, AppError, AttentionItem, AttentionKind, Butler, ButlerProposal, CheckinSchedule,
+    MemorySnapshot, Proposer, RepositoryError, Suggestion, SuggestionStatus, usecases,
 };
 use endora_domain::{
     Assumption, AssumptionId, AuditRecord, AutonomyLevel, ChatMessage, Direction, DirectionId,
@@ -144,6 +144,7 @@ pub fn app(state: AppState) -> Router {
         .route("/v1/suggestions", get(list_suggestions))
         .route("/v1/suggestions/{id}/apply", post(apply_suggestion))
         .route("/v1/suggestions/{id}/dismiss", post(dismiss_suggestion))
+        .route("/v1/checkin", get(get_checkin).post(set_checkin))
         .route(
             "/v1/preferences",
             post(create_preference).get(list_preferences),
@@ -1202,6 +1203,91 @@ async fn dismiss_suggestion(
     let clock = state.clock.clone();
     blocking(move || usecases::dismiss_suggestion(store.as_ref(), clock.as_ref(), sid)).await?;
     Ok(Json(json!({ "dismissed": true })))
+}
+
+/// The person's proactive check-in cadence.
+#[derive(Serialize)]
+struct CheckinResponse {
+    enabled: bool,
+    interval_ms: i64,
+    next_at_ms: i64,
+}
+
+impl From<CheckinSchedule> for CheckinResponse {
+    fn from(s: CheckinSchedule) -> Self {
+        Self {
+            enabled: s.enabled,
+            interval_ms: s.interval_ms,
+            next_at_ms: s.next_at.unix_millis(),
+        }
+    }
+}
+
+async fn get_checkin(State(state): State<AppState>) -> Result<Json<CheckinResponse>, ApiError> {
+    let store = state.store.clone();
+    let clock = state.clock.clone();
+    let schedule =
+        blocking(move || usecases::checkin_schedule(store.as_ref(), clock.as_ref())).await?;
+    Ok(Json(schedule.into()))
+}
+
+#[derive(Deserialize)]
+struct SetCheckinRequest {
+    enabled: bool,
+    interval_ms: i64,
+}
+
+/// Sets the check-in cadence (on/off + interval). Enabling schedules the next one
+/// an interval from now, so it is not an instant ping.
+async fn set_checkin(
+    State(state): State<AppState>,
+    Json(req): Json<SetCheckinRequest>,
+) -> Result<Json<CheckinResponse>, ApiError> {
+    let store = state.store.clone();
+    let clock = state.clock.clone();
+    let schedule = blocking(move || {
+        usecases::set_checkin_schedule(store.as_ref(), clock.as_ref(), req.enabled, req.interval_ms)
+    })
+    .await?;
+    Ok(Json(schedule.into()))
+}
+
+/// Spawns the butler's **heartbeat**: a background loop that periodically checks
+/// whether a proactive check-in is due (per the person's cadence) and, if so, has
+/// the butler post one. Only messages — nothing consequential — so it stays on the
+/// safe side of the autonomy model (ADR 0010/0019). The blocking store work runs
+/// on a worker thread; a posted check-in nudges the change stream.
+pub fn spawn_heartbeat(state: AppState) {
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(std::time::Duration::from_secs(30));
+        loop {
+            ticker.tick().await;
+            let store = state.store.clone();
+            let ids = state.ids.clone();
+            let clock = state.clock.clone();
+            let posted = tokio::task::spawn_blocking(move || {
+                let context = usecases::butler_context(
+                    store.as_ref(),
+                    store.as_ref(),
+                    store.as_ref(),
+                    store.as_ref(),
+                    store.as_ref(),
+                    clock.as_ref(),
+                )?;
+                usecases::run_due_checkin(
+                    store.as_ref(),
+                    store.as_ref(),
+                    ids.as_ref(),
+                    clock.as_ref(),
+                    &context,
+                )
+            })
+            .await;
+            if let Ok(Ok(Some(_))) = posted {
+                let _ = state.changes.send(());
+            }
+        }
+    });
 }
 
 #[derive(Serialize)]

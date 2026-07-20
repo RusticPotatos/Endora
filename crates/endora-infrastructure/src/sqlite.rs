@@ -11,10 +11,11 @@ use std::sync::Mutex;
 use serde_json::{Value as JsonValue, json};
 
 use endora_application::{
-    AssumptionRepository, AuditLog, ButlerProposal, ChatRepository, DirectionRepository,
-    ExperimentRepository, MemorySnapshot, MemoryStore, ObservationRepository, PreferenceRepository,
-    ProcessChangeRepository, ReflectionRepository, RepositoryError, Snooze, SnoozeRepository,
-    Suggestion, SuggestionRepository, SuggestionStatus, TargetRepository, ValueRepository,
+    AssumptionRepository, AuditLog, ButlerProposal, ChatRepository, CheckinRepository,
+    CheckinSchedule, DirectionRepository, ExperimentRepository, MemorySnapshot, MemoryStore,
+    ObservationRepository, PreferenceRepository, ProcessChangeRepository, ReflectionRepository,
+    RepositoryError, Snooze, SnoozeRepository, Suggestion, SuggestionRepository, SuggestionStatus,
+    TargetRepository, ValueRepository,
 };
 use endora_domain::{
     ApprovalState, Assumption, AssumptionId, AuditId, AuditRecord, ChatMessage, Direction,
@@ -139,6 +140,12 @@ CREATE TABLE IF NOT EXISTS suggestions (
     from_message TEXT,
     created_ms   INTEGER NOT NULL,
     decided_ms   INTEGER
+) STRICT;
+CREATE TABLE IF NOT EXISTS checkin (
+    id          INTEGER PRIMARY KEY CHECK (id = 0),
+    enabled     INTEGER NOT NULL,
+    interval_ms INTEGER NOT NULL,
+    next_at_ms  INTEGER NOT NULL
 ) STRICT;
 ";
 
@@ -841,6 +848,7 @@ impl MemoryStore for SqliteStore {
             "attention_snoozes",
             "preferences",
             "suggestions",
+            "checkin",
         ] {
             tx.execute(&format!("DELETE FROM {table}"), [])
                 .map_err(backend)?;
@@ -1049,6 +1057,40 @@ impl SuggestionRepository for SqliteStore {
     fn list(&self, status: Option<SuggestionStatus>) -> Result<Vec<Suggestion>, RepositoryError> {
         let conn = self.lock()?;
         all_suggestions(&conn, status)
+    }
+}
+
+impl CheckinRepository for SqliteStore {
+    fn get(&self) -> Result<Option<CheckinSchedule>, RepositoryError> {
+        let conn = self.lock()?;
+        conn.query_row(
+            "SELECT enabled, interval_ms, next_at_ms FROM checkin WHERE id = 0",
+            [],
+            |r| {
+                Ok(CheckinSchedule {
+                    enabled: r.get::<_, i64>(0)? != 0,
+                    interval_ms: r.get::<_, i64>(1)?,
+                    next_at: Timestamp::from_unix_millis(r.get::<_, i64>(2)?),
+                })
+            },
+        )
+        .optional()
+        .map_err(backend)
+    }
+
+    fn set(&self, schedule: &CheckinSchedule) -> Result<(), RepositoryError> {
+        let conn = self.lock()?;
+        conn.execute(
+            "INSERT OR REPLACE INTO checkin (id, enabled, interval_ms, next_at_ms) \
+             VALUES (0, ?1, ?2, ?3)",
+            params![
+                i64::from(schedule.enabled),
+                schedule.interval_ms,
+                schedule.next_at.unix_millis()
+            ],
+        )
+        .map_err(backend)?;
+        Ok(())
     }
 }
 

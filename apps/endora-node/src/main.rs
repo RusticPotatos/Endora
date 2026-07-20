@@ -45,6 +45,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("{}", endora_application::platform_identity());
     println!("model: {model} via {model_url}  (drafting is optional; 503 if unavailable)");
 
+    // The butler's heartbeat: proactive check-ins on the person's cadence (off
+    // until they enable it). Runs for the life of the process.
+    api::spawn_heartbeat(state.clone());
+
     let app = api::app(state);
 
     // Optional self-signed HTTPS so the console is a secure context (browser voice

@@ -16,10 +16,11 @@ use endora_domain::{
 use crate::error::AppError;
 use crate::ports::{
     AssumptionRepository, AttentionItem, AttentionKind, AuditLog, Butler, ButlerContext,
-    ButlerProposal, ChatRepository, Clock, DirectionRepository, ExperimentRepository, IdSource,
-    MemorySnapshot, MemoryStore, NorthStarBrief, ObservationRepository, PreferenceRepository,
-    ProcessChangeRepository, Proposer, ReflectionRepository, Snooze, SnoozeRepository, Suggestion,
-    SuggestionRepository, SuggestionStatus, TargetRepository, ValueRepository,
+    ButlerProposal, ChatRepository, CheckinRepository, CheckinSchedule, Clock, DirectionRepository,
+    ExperimentRepository, IdSource, MemorySnapshot, MemoryStore, NorthStarBrief,
+    ObservationRepository, PreferenceRepository, ProcessChangeRepository, Proposer,
+    ReflectionRepository, Snooze, SnoozeRepository, Suggestion, SuggestionRepository,
+    SuggestionStatus, TargetRepository, ValueRepository,
 };
 
 /// Creates and stores a new [`Direction`].
@@ -967,6 +968,105 @@ pub fn chat_history(chat: &impl ChatRepository) -> Result<Vec<ChatMessage>, AppE
     Ok(chat.list()?)
 }
 
+/// Returns the person's proactive check-in schedule, defaulting to **off**.
+///
+/// # Errors
+/// [`AppError::Repository`] if the backend fails or stored data is corrupt.
+pub fn checkin_schedule(
+    checkins: &impl CheckinRepository,
+    clock: &impl Clock,
+) -> Result<CheckinSchedule, AppError> {
+    Ok(checkins
+        .get()?
+        .unwrap_or_else(|| CheckinSchedule::disabled_default(clock.now())))
+}
+
+/// Sets the check-in cadence. Enabling (or changing the interval) schedules the
+/// next check-in one interval from now, so turning it on is not an instant ping.
+///
+/// # Errors
+/// [`AppError::BadRequest`] if the interval is not positive, or [`AppError::Repository`].
+pub fn set_checkin_schedule(
+    checkins: &impl CheckinRepository,
+    clock: &impl Clock,
+    enabled: bool,
+    interval_ms: i64,
+) -> Result<CheckinSchedule, AppError> {
+    if interval_ms <= 0 {
+        return Err(AppError::BadRequest {
+            message: "check-in interval must be positive".to_owned(),
+        });
+    }
+    let now = clock.now();
+    let schedule = CheckinSchedule {
+        enabled,
+        interval_ms,
+        next_at: Timestamp::from_unix_millis(now.unix_millis() + interval_ms),
+    };
+    checkins.set(&schedule)?;
+    Ok(schedule)
+}
+
+/// If a check-in is due, has the butler **reach out**: append a proactive opening
+/// message (grounded in what needs attention and what the person is working
+/// toward) and advance the schedule. Called by the node's heartbeat. Returns the
+/// message if one was posted, or `None` if nothing was due.
+///
+/// This is an `act` on the low-stakes end of the autonomy model (ADR 0010): a
+/// message, never a consequential action — those still go through propose→confirm.
+///
+/// # Errors
+/// [`AppError::Repository`] if the backend fails, or [`AppError::Domain`] if the
+/// generated message is somehow invalid.
+pub fn run_due_checkin(
+    chat: &impl ChatRepository,
+    checkins: &impl CheckinRepository,
+    ids: &impl IdSource,
+    clock: &impl Clock,
+    context: &ButlerContext,
+) -> Result<Option<ChatMessage>, AppError> {
+    let now = clock.now();
+    let Some(mut schedule) = checkins.get()? else {
+        return Ok(None);
+    };
+    if !schedule.is_due(now) {
+        return Ok(None);
+    }
+    // Advance first, so a slow write can't double-post on the next tick.
+    schedule.next_at = Timestamp::from_unix_millis(now.unix_millis() + schedule.interval_ms);
+    checkins.set(&schedule)?;
+
+    let message = ChatMessage::new(
+        MessageId::new(ids.new_id()),
+        MessageRole::Butler,
+        &checkin_text(context),
+        now,
+    )?;
+    chat.append(&message)?;
+    Ok(Some(message))
+}
+
+/// Composes a proactive check-in, grounded in the person's life and always asking
+/// how the butler can serve them better (the self-improvement loop, in dialogue).
+fn checkin_text(context: &ButlerContext) -> String {
+    let focus = "Is there anything you'd like me to focus on more, or do differently?";
+    if let Some(item) = context.attention.first() {
+        return format!(
+            "A moment when you have one — I noticed {item}. Want to look at it together? {focus}"
+        );
+    }
+    if let Some(ns) = context.north_stars.first() {
+        return format!(
+            "Checking in — how is \"{}\" coming along? {focus}",
+            ns.title
+        );
+    }
+    format!(
+        "Good to see you. What would you like to work on — and {}",
+        focus.to_lowercase()
+    )
+}
+
 /// Assembles the [`ButlerContext`] — a snapshot of the person's current life
 /// (values, North Stars with status/value/whether they have a target, and what
 /// needs attention) — so the butler's conversation is grounded in what exists.
@@ -1173,9 +1273,10 @@ mod tests {
     use crate::error::AppError;
     use crate::ports::{
         AssumptionRepository, AttentionKind, AuditLog, Butler, ButlerContext, ButlerProposal,
-        ButlerReply, ChatRepository, Clock, DirectionRepository, ExperimentRepository, IdSource,
-        ObservationRepository, PreferenceRepository, ProcessChangeRepository, ProposalError,
-        Proposer, ReflectionRepository, RepositoryError, Snooze, SnoozeRepository, Suggestion,
+        ButlerReply, ChatRepository, CheckinRepository, CheckinSchedule, Clock,
+        DirectionRepository, ExperimentRepository, IdSource, ObservationRepository,
+        PreferenceRepository, ProcessChangeRepository, ProposalError, Proposer,
+        ReflectionRepository, RepositoryError, Snooze, SnoozeRepository, Suggestion,
         SuggestionRepository, SuggestionStatus, TargetRepository, ValueRepository,
     };
     use endora_domain::LifecycleStatus;
@@ -1204,6 +1305,17 @@ mod tests {
         reflections: RefCell<HashMap<u128, Reflection>>,
         changes: RefCell<HashMap<u128, ProposedProcessChange>>,
         suggestions: RefCell<Vec<Suggestion>>,
+        checkin: RefCell<Option<CheckinSchedule>>,
+    }
+
+    impl CheckinRepository for FakeStore {
+        fn get(&self) -> Result<Option<CheckinSchedule>, RepositoryError> {
+            Ok(*self.checkin.borrow())
+        }
+        fn set(&self, schedule: &CheckinSchedule) -> Result<(), RepositoryError> {
+            *self.checkin.borrow_mut() = Some(*schedule);
+            Ok(())
+        }
     }
 
     impl SuggestionRepository for FakeStore {
@@ -1758,6 +1870,55 @@ mod tests {
         assert_eq!(history.len(), 2);
         assert_eq!(history[0].role(), MessageRole::User);
         assert_eq!(history[1].role(), MessageRole::Butler);
+    }
+
+    #[test]
+    fn checkin_runs_when_due_posts_a_message_and_advances_the_schedule() {
+        use super::{chat_history, run_due_checkin, set_checkin_schedule};
+        let store = FakeStore::default();
+        let ids = SeqIds::default();
+        let ctx = ButlerContext::default();
+
+        // Off by default: nothing posts.
+        assert!(
+            run_due_checkin(&store, &store, &ids, &FixedClock(1_000), &ctx)
+                .unwrap()
+                .is_none()
+        );
+
+        // Enable with a 60s interval; next check-in is one interval out.
+        let sched = set_checkin_schedule(&store, &FixedClock(1_000), true, 60_000).unwrap();
+        assert!(sched.enabled);
+        assert_eq!(sched.next_at.unix_millis(), 61_000);
+
+        // Before it is due: still nothing.
+        assert!(
+            run_due_checkin(&store, &store, &ids, &FixedClock(30_000), &ctx)
+                .unwrap()
+                .is_none()
+        );
+
+        // At/after the due time: the butler reaches out, and the schedule advances.
+        let posted = run_due_checkin(&store, &store, &ids, &FixedClock(61_000), &ctx).unwrap();
+        let msg = posted.expect("a check-in should have posted");
+        assert_eq!(msg.role(), MessageRole::Butler);
+        assert!(!msg.text().is_empty());
+        assert_eq!(chat_history(&store).unwrap().len(), 1);
+        assert_eq!(
+            CheckinRepository::get(&store)
+                .unwrap()
+                .unwrap()
+                .next_at
+                .unix_millis(),
+            121_000
+        );
+
+        // It does not double-post on the very next tick.
+        assert!(
+            run_due_checkin(&store, &store, &ids, &FixedClock(61_500), &ctx)
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]
