@@ -32,6 +32,15 @@ tagged release.
 
 ### Added
 
+- **See what Endora does — activity in the chat**: after each turn the chat shows a
+  subtle note of what happened behind the scenes ("Learned that you find mornings
+  hard", "Added to your inbox — …", "Grew more sure that …") — closure on a
+  conversation and a window for debugging. Toggle it from the menu ("Show Endora's
+  actions"). The chat responses now include an `activity` list.
+- **A gentle "where are you based?" setup**: when Endora doesn't know your location,
+  the home screen offers a one-line prompt; it's stored as a preference the butler
+  already reads, so skills like weather and the guard dog have a starting point — no
+  separate onboarding.
 - **Capabilities — the butler's skills** (third slice of
   [ADR 0019](docs/adr/0019-proactive-self-improving-butler.md)): pluggable modules the
   butler can reach for, each declaring what it does, its **autonomy level** (act vs
