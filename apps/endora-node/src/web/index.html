@@ -118,6 +118,21 @@
   .dots i:nth-child(3) { animation-delay: .4s; }
   @keyframes blink { 0%, 80%, 100% { opacity: .25; } 40% { opacity: 1; } }
 
+  /* Chat: a focused column so bubbles and the composer share one width. */
+  .chat { max-width: 680px; margin: 0 auto; }
+  .chat-thread { display: flex; flex-direction: column; margin-bottom: 12px; }
+  .chat-thread .row { flex-wrap: nowrap; }
+  /* Composer: a card holding an auto-growing textarea and a button row beneath. */
+  .composer {
+    border: 1px solid var(--line); border-radius: var(--radius); background: var(--card);
+    box-shadow: var(--shadow); padding: 8px 10px 10px; position: sticky; bottom: 12px;
+  }
+  .composer textarea {
+    border: none; background: transparent; box-shadow: none; resize: none; width: 100%;
+    padding: 6px 4px; max-height: 40vh; overflow-y: auto; outline: none; line-height: 1.5;
+  }
+  .composer-actions { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 6px; }
+
   /* Phone browsers: tighten the frame and stack forms so inputs are never
      crushed by a button's label. */
   @media (max-width: 560px) {
@@ -623,13 +638,17 @@ function viewChat() {
         : `<button data-act="chat:mic" title="voice input needs HTTPS or localhost">${icon("mic")}<span>needs HTTPS</span></button>`)
     : "";
   return `
-    <div class="row"><h2 class="grow" style="margin:0;">Butler</h2>${speakBtn}</div>
-    <div id="chat-thread" style="margin-top:10px;">${(msgs || `<div class="empty">Say what you'd like to work on — the butler will help organize it.</div>`) + pending}</div>
-    ${awaiting ? "" : proposals}
-    <div class="form">
-      <input id="chat-input" placeholder="Talk to your butler…" />
-      ${micBtn}
-      <button class="primary" data-act="chat:send">${icon("send")}<span>Send</span></button>
+    <div class="chat">
+      <div id="chat-thread" class="chat-thread">${(msgs || `<div class="empty">Say what you'd like to work on — the butler will help organize it.</div>`) + pending}</div>
+      ${awaiting ? "" : proposals}
+      <div class="composer">
+        <textarea id="chat-input" rows="1" placeholder="Talk to your butler…"></textarea>
+        <div class="composer-actions">
+          ${speakBtn || "<span></span>"}
+          ${micBtn || "<span></span>"}
+          <button class="primary" data-act="chat:send">${icon("send")}<span>Send</span></button>
+        </div>
+      </div>
     </div>`;
 }
 
@@ -697,6 +716,7 @@ async function sendChat() {
   const thread = document.getElementById("chat-thread");
   if (thread && thread.querySelector(".empty")) thread.innerHTML = "";
   input.value = "";
+  growInput(input);
   appendBubble(esc(msg), "me");
   // A butler bubble that starts as a "thinking" indicator and grows with tokens.
   const live = appendBubble('<span class="dots"><i></i><i></i><i></i></span>', "butler", "chat-live");
@@ -926,6 +946,17 @@ document.body.addEventListener("keydown", (ev) => {
   if (ev.target.id === "chat-input" && ev.key === "Enter" && !ev.shiftKey) {
     ev.preventDefault(); sendChat();
   }
+});
+
+// Auto-grow the chat textarea as it wraps, so long messages expand instead of
+// scrolling within one line.
+function growInput(el) {
+  if (!el) return;
+  el.style.height = "auto";
+  el.style.height = Math.min(el.scrollHeight, window.innerHeight * 0.4) + "px";
+}
+document.body.addEventListener("input", (ev) => {
+  if (ev.target.id === "chat-input") growInput(ev.target);
 });
 
 // A `<select data-change="verb:noun:id">` applies the chosen value on change,
