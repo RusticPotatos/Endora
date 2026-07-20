@@ -536,6 +536,55 @@ scaffold!(
     "a public incident/emergency feed for your area"
 );
 
+// ---- Application-facing runner ---------------------------------------------
+
+/// Adapts the concrete capability registry to the application's
+/// [`CapabilityRunner`] port, so the butler use case can list and run skills
+/// without depending on this crate. A capability is "autonomous" (may run on its
+/// own this turn) exactly when its autonomy is [`AutonomyLevel::ActWithinPolicy`]
+/// — read-only, low-stakes. Anything that must confirm stays gated.
+pub struct RegistryRunner {
+    capabilities: Arc<Vec<Arc<dyn Capability>>>,
+}
+
+impl RegistryRunner {
+    /// Wraps a shared capability registry.
+    #[must_use]
+    pub fn new(capabilities: Arc<Vec<Arc<dyn Capability>>>) -> Self {
+        Self { capabilities }
+    }
+}
+
+impl endora_application::CapabilityRunner for RegistryRunner {
+    fn available(&self) -> Vec<endora_application::CapabilitySpec> {
+        self.capabilities
+            .iter()
+            .map(|c| {
+                let info = c.info();
+                endora_application::CapabilitySpec {
+                    id: info.id.to_owned(),
+                    description: info.description.to_owned(),
+                    configured: info.configured,
+                    autonomous: matches!(info.autonomy, AutonomyLevel::ActWithinPolicy),
+                }
+            })
+            .collect()
+    }
+
+    fn run(&self, id: &str, input_json: &str) -> Result<String, String> {
+        let cap = self
+            .capabilities
+            .iter()
+            .find(|c| c.info().id == id)
+            .ok_or_else(|| format!("no such skill '{id}'"))?;
+        let input: Value = serde_json::from_str(input_json.trim())
+            .or_else(|_| Ok::<Value, serde_json::Error>(json!({})))
+            .unwrap_or_else(|_| json!({}));
+        let out = cap.invoke(&input).map_err(|e| e.to_string())?;
+        Ok(out.to_string())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

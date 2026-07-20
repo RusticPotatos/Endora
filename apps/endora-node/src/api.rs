@@ -1037,7 +1037,9 @@ async fn send_chat(
     let ids = state.ids.clone();
     let clock = state.clock.clone();
     let butler = state.butler.clone();
+    let capabilities = state.capabilities.clone();
     let (reply, suggestions, activity) = blocking(move || {
+        let runner = endora_infrastructure::RegistryRunner::new(capabilities);
         // Ground the butler in the person's current life before it answers.
         let context = usecases::butler_context(
             store.as_ref(),
@@ -1046,6 +1048,7 @@ async fn send_chat(
             store.as_ref(),
             store.as_ref(),
             store.as_ref(),
+            &runner,
             clock.as_ref(),
         )?;
         usecases::send_to_butler(
@@ -1053,6 +1056,7 @@ async fn send_chat(
             store.as_ref(),
             store.as_ref(),
             store.as_ref(),
+            &runner,
             butler.as_ref(),
             ids.as_ref(),
             clock.as_ref(),
@@ -1087,11 +1091,13 @@ async fn stream_chat(
     let clock = state.clock.clone();
     let butler = state.butler.clone();
     let changes = state.changes.clone();
+    let capabilities = state.capabilities.clone();
     let message = req.message;
 
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Event>();
 
     tokio::task::spawn_blocking(move || {
+        let runner = endora_infrastructure::RegistryRunner::new(capabilities);
         let event = |v: serde_json::Value| Event::default().data(v.to_string());
         let context = match usecases::butler_context(
             store.as_ref(),
@@ -1100,6 +1106,7 @@ async fn stream_chat(
             store.as_ref(),
             store.as_ref(),
             store.as_ref(),
+            &runner,
             clock.as_ref(),
         ) {
             Ok(c) => c,
@@ -1119,6 +1126,7 @@ async fn stream_chat(
                 store.as_ref(),
                 store.as_ref(),
                 store.as_ref(),
+                &runner,
                 butler.as_ref(),
                 ids.as_ref(),
                 clock.as_ref(),
@@ -1391,7 +1399,9 @@ pub fn spawn_heartbeat(state: AppState) {
             let store = state.store.clone();
             let ids = state.ids.clone();
             let clock = state.clock.clone();
+            let capabilities = state.capabilities.clone();
             let posted = tokio::task::spawn_blocking(move || {
+                let runner = endora_infrastructure::RegistryRunner::new(capabilities);
                 let context = usecases::butler_context(
                     store.as_ref(),
                     store.as_ref(),
@@ -1399,6 +1409,7 @@ pub fn spawn_heartbeat(state: AppState) {
                     store.as_ref(),
                     store.as_ref(),
                     store.as_ref(),
+                    &runner,
                     clock.as_ref(),
                 )?;
                 usecases::run_due_checkin(

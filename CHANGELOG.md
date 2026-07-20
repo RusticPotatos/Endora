@@ -21,7 +21,8 @@ tagged release.
   demoted to optional**. The butler is grounded in what it already understands (builds on
   it, avoids duplicates) and phrases beliefs in second person; check-ins draw on
   understanding. New `GET /v1/understanding` and affirm/correct; beliefs are in
-  export/purge. *Interventions* (actions sized to confidence) are the next layer.
+  export/purge. *Interventions* (the butler acting on that understanding by using its
+  skills) now land as the next layer — see Added.
 
 ### Faster builds
 
@@ -32,6 +33,17 @@ tagged release.
 
 ### Added
 
+- **The butler actually uses its skills — interventions**: when answering needs
+  current facts it doesn't have (weather, local safety alerts, a web page), the butler
+  now **uses a skill and answers with the real result** instead of only saying it will.
+  The model *proposes* a skill (`use`); a deterministic policy check authorizes it —
+  only a **configured, read-only** skill runs on its own, anything consequential (e.g.
+  flights) stays gated for you to confirm — then the skill executes and the butler
+  answers using what came back (one tool round per turn). If it isn't cleared or the
+  model asks for nothing, the reply is unchanged, so nothing regresses. The turn's
+  activity notes which skill was used. This is the *interventions* layer promised by
+  the direction reset ([ADR 0020](docs/adr/0020-intent-first-understanding-loop.md)),
+  built on the capability registry ([ADR 0019](docs/adr/0019-proactive-self-improving-butler.md)).
 - **See what Endora does — activity in the chat**: after each turn the chat shows a
   subtle note of what happened behind the scenes ("Learned that you find mornings
   hard", "Added to your inbox — …", "Grew more sure that …") — closure on a
