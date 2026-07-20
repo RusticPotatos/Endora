@@ -104,6 +104,17 @@ tagged release.
   `GET /v1/reviews/due`; CLI `experiment review <id> <days>` and `reviews due`;
   and a web-console "Remind me" control plus a due-review banner on the home view.
 
+### Fixed
+
+- **Chat could hang "forever" and lose its place on reload.** The butler's call
+  to the local model had no timeout, so a slow/stuck model (e.g. inference on CPU)
+  left the "thinking…" indicator spinning indefinitely, and reloading dropped the
+  client-only indicator so you couldn't tell if a reply was still coming. Now the
+  model round-trip is bounded (90s) and always falls back to the scripted reply, so
+  a reply is always persisted; and the thinking indicator is **derived from stored
+  state** (shown whenever your message is the newest one), so it survives reloads
+  and reflects reality. Your message is still saved before the model is called.
+
 ### Changed
 
 - **The butler talks like a person, not a schema** ([ADR 0017](docs/adr/0017-persona-and-voice.md)):

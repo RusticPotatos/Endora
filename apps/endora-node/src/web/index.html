@@ -585,11 +585,21 @@ function listen() {
 // confirmable), and an input. The butler proposes; you confirm; the normal
 // create endpoints execute — the model never acts on its own.
 function viewChat() {
-  const msgs = (DB.messages || []).map((m) => {
+  const list = DB.messages || [];
+  const msgs = list.map((m) => {
     const mine = m.role === "user";
     return `<div class="row" style="justify-content:${mine ? "flex-end" : "flex-start"}; margin:6px 0;">
       <div class="bubble ${mine ? "me" : "butler"}">${esc(m.text)}</div></div>`;
   }).join("");
+  // Derived from persisted state, so it survives a reload: if the newest message
+  // is yours, the butler still owes a reply — show the thinking indicator. (The
+  // reply is always appended within the node's model timeout, so this can't
+  // hang forever.)
+  const awaiting = list.length > 0 && list[list.length - 1].role === "user";
+  const pending = awaiting
+    ? `<div class="row" style="justify-content:flex-start; margin:6px 0;" id="chat-pending">
+         <div class="bubble butler thinking"><span class="dots"><i></i><i></i><i></i></span></div></div>`
+    : "";
   const proposals = CHAT_PROPOSALS.map((p, i) => `
     <div class="card"><div class="row"><div class="grow"><div class="title">${esc(p.label)}</div>
       <div class="sub">the butler proposes this — you decide</div></div>
@@ -605,8 +615,8 @@ function viewChat() {
     : "";
   return `
     <div class="row"><h2 class="grow" style="margin:0;">Butler</h2>${speakBtn}</div>
-    <div id="chat-thread" style="margin-top:10px;">${msgs || `<div class="empty">Say what you'd like to work on — the butler will help organize it.</div>`}</div>
-    ${proposals}
+    <div id="chat-thread" style="margin-top:10px;">${(msgs || `<div class="empty">Say what you'd like to work on — the butler will help organize it.</div>`) + pending}</div>
+    ${awaiting ? "" : proposals}
     <div class="form">
       <input id="chat-input" placeholder="Talk to your butler…" />
       ${micBtn}
@@ -658,19 +668,22 @@ async function sendChat() {
   const thread = document.getElementById("chat-thread");
   if (thread && thread.querySelector(".empty")) thread.innerHTML = "";
   input.value = "";
+  // Optimistic echo so it feels instant; on the next render viewChat derives the
+  // thinking indicator from persisted state, which survives reloads.
   appendBubble(esc(msg), "me");
   appendBubble('<span class="dots"><i></i><i></i><i></i></span>', "butler thinking", "chat-thinking");
   try {
     const res = await api("POST", "/v1/chat", { message: msg });
     CHAT_PROPOSALS = res.proposals || [];
     speak(res.reply && res.reply.text);
+  } catch (e) {
+    // The message was already persisted server-side; reload shows the true state
+    // (the reply if it landed, or the pending indicator if it's still owed).
+    flash("Couldn't reach the butler just now — your message was saved.", "err");
+  } finally {
     await reload();
     const again = document.getElementById("chat-input");
     if (again) again.focus();
-  } catch (e) {
-    const t = document.getElementById("chat-thinking");
-    if (t) t.remove();
-    flash("The butler couldn't reply: " + e.message, "err");
   }
 }
 
