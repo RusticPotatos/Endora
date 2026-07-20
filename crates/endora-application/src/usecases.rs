@@ -853,7 +853,20 @@ pub fn send_to_butler_streaming(
 
     // Store the understanding the butler formed this turn. These are Endora's own
     // beliefs (not actions) — kept directly, then reviewable/correctable (ADR 0020).
+    // If the butler restated something Endora already believes, affirm the existing
+    // belief (raising confidence) rather than storing a near-duplicate.
+    let existing = beliefs.list()?;
     for formed in reply.beliefs {
+        let key = normalized(&formed.statement);
+        if let Some(mut prior) = existing
+            .iter()
+            .find(|b| normalized(b.statement()) == key)
+            .cloned()
+        {
+            prior.affirm(clock.now());
+            beliefs.save(&prior)?;
+            continue;
+        }
         let belief = Belief::new(
             BeliefId::new(ids.new_id()),
             &formed.statement,
@@ -866,6 +879,17 @@ pub fn send_to_butler_streaming(
     }
 
     Ok((butler, saved))
+}
+
+/// Normalizes a belief statement for duplicate detection: lowercase, collapse
+/// whitespace, drop trailing punctuation.
+fn normalized(s: &str) -> String {
+    s.to_lowercase()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .trim_end_matches(['.', '!', '?', ',', ';', ':'])
+        .to_owned()
 }
 
 /// Endora's living understanding of the person — its active beliefs, most
@@ -1111,15 +1135,20 @@ pub fn run_due_checkin(
 /// how the butler can serve them better (the self-improvement loop, in dialogue).
 fn checkin_text(context: &ButlerContext) -> String {
     let focus = "Is there anything you'd like me to focus on more, or do differently?";
+    // Lead with understanding — the check-in is grounded in what Endora knows of
+    // the person, not a task list. Stored beliefs already read "you …".
+    if let Some(u) = context.understanding.first() {
+        // Strip the leading "[kind] " tag and trailing " (… confidence)".
+        let plain = u
+            .split_once("] ")
+            .map_or(u.as_str(), |(_, rest)| rest)
+            .rsplit_once(" (")
+            .map_or(u.as_str(), |(head, _)| head);
+        return format!("Checking in. I've had the sense that {plain}. {focus}");
+    }
     if let Some(item) = context.attention.first() {
         return format!(
             "A moment when you have one — I noticed {item}. Want to look at it together? {focus}"
-        );
-    }
-    if let Some(ns) = context.north_stars.first() {
-        return format!(
-            "Checking in — how is \"{}\" coming along? {focus}",
-            ns.title
         );
     }
     format!(
@@ -1140,6 +1169,7 @@ pub fn butler_context(
     targets: &impl TargetRepository,
     experiments: &impl ExperimentRepository,
     snoozes: &impl SnoozeRepository,
+    beliefs: &impl BeliefRepository,
     clock: &impl Clock,
 ) -> Result<ButlerContext, AppError> {
     let value_list = values.list_all()?;
@@ -1167,10 +1197,22 @@ pub fn butler_context(
         .into_iter()
         .map(|i| i.headline)
         .collect();
+    let understanding = understanding(beliefs)?
+        .into_iter()
+        .map(|b| {
+            format!(
+                "[{}] {} ({} confidence)",
+                b.kind().name(),
+                b.statement(),
+                b.confidence().name()
+            )
+        })
+        .collect();
     Ok(ButlerContext {
         values: value_list.iter().map(|v| v.name().to_owned()).collect(),
         north_stars,
         attention,
+        understanding,
     })
 }
 

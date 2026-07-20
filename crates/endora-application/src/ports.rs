@@ -555,6 +555,9 @@ pub struct ButlerContext {
     pub north_stars: Vec<NorthStarBrief>,
     /// What currently needs attention (headlines).
     pub attention: Vec<String>,
+    /// What Endora already understands about the person (its active beliefs), so
+    /// the butler builds on and refines them rather than re-forming duplicates.
+    pub understanding: Vec<String>,
 }
 
 /// The butler brain: given the conversation so far, produce a reply and any

@@ -301,10 +301,12 @@ the truth. You only PROPOSE actions; the person authorizes them; you never claim
 have done anything. \
 Reply with ONLY a JSON object of the form {\"reply\":\"<your natural-language \
 message>\",\"understanding\":[<zero or more beliefs>],\"proposals\":[<zero or more>]}. \
-Each understanding item is {\"statement\":\"<what you now believe, plainly>\",\
+Each understanding item is {\"statement\":\"<what you now believe, addressing them as \
+'you', e.g. 'you want more energy to travel' or 'you find mornings hard'>\",\
 \"kind\":\"intent|value|preference|pattern|motivation|frustration|stressor|relationship|other\",\
 \"confidence\":\"low|medium|high\",\"evidence\":\"<what they said that supports it>\"}. \
-Only include understanding you actually have evidence for; [] is fine. Each proposal \
+Only include NEW or changed understanding you have real evidence for; [] is fine, and \
+do not repeat what you already understand (listed below). Each proposal \
 is exactly one of {\"kind\":\"create_value\",\"name\":\"...\"}, \
 {\"kind\":\"create_north_star\",\"title\":\"...\"}, \
 {\"kind\":\"create_target\",\"direction_id\":\"<id of an existing item below>\",\"statement\":\"...\"}, \
@@ -360,6 +362,18 @@ fn build_butler_request(
         system.push_str("\nNeeds attention right now:");
         for a in &context.attention {
             system.push_str(&format!("\n- {a}"));
+        }
+    }
+    if context.understanding.is_empty() {
+        system
+            .push_str("\nYou don't understand this person well yet — pay attention and start to.");
+    } else {
+        system.push_str(
+            "\nWhat you already understand about this person (build on and refine this; only \
+             add NEW or changed understanding, don't repeat what's here):",
+        );
+        for u in &context.understanding {
+            system.push_str(&format!("\n- {u}"));
         }
     }
     let mut messages = vec![json!({ "role": "system", "content": system })];
