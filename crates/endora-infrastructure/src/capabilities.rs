@@ -719,34 +719,58 @@ pub struct RegistryRunner {
     capabilities: Arc<Vec<Arc<dyn Capability>>>,
     /// Per-capability enabled overrides (id → enabled). Missing = default enabled.
     enabled: std::collections::HashMap<String, bool>,
+    /// The person's autonomy envelope — the boundary the butler acts within.
+    envelope: endora_application::AutonomyEnvelope,
 }
 
 impl RegistryRunner {
-    /// Wraps a shared capability registry with every skill at its default (enabled).
+    /// Wraps a shared capability registry at its defaults (every skill enabled, the
+    /// default autonomy envelope).
     #[must_use]
     pub fn new(capabilities: Arc<Vec<Arc<dyn Capability>>>) -> Self {
         Self {
             capabilities,
             enabled: std::collections::HashMap::new(),
+            envelope: endora_application::AutonomyEnvelope::default(),
         }
     }
 
-    /// Wraps the registry, applying the person's enabled/disabled overrides (ADR
-    /// 0021). A disabled skill reports as not-usable and never runs.
+    /// Wraps the registry, applying the person's enable/disable overrides (ADR 0021)
+    /// and their autonomy envelope (ADR 0022). A disabled skill never runs; the
+    /// envelope decides which kinds of action may run without confirmation.
     #[must_use]
-    pub fn with_overrides(
+    pub fn with_config(
         capabilities: Arc<Vec<Arc<dyn Capability>>>,
         overrides: Vec<(String, bool)>,
+        envelope: endora_application::AutonomyEnvelope,
     ) -> Self {
         Self {
             capabilities,
             enabled: overrides.into_iter().collect(),
+            envelope,
         }
     }
 
     /// Whether a capability is enabled (its override, or its built-in default).
     fn is_enabled(&self, id: &str) -> bool {
         self.enabled.get(id).copied().unwrap_or(true)
+    }
+}
+
+/// The deterministic classifier at the heart of the autonomy envelope (ADR 0022):
+/// given a skill's declared autonomy and reach, and the person's envelope, may it
+/// run on its own this turn? Never consults the model — the boundary is policy.
+fn may_run_autonomously(info: &CapabilityInfo, env: &endora_application::AutonomyEnvelope) -> bool {
+    match info.autonomy {
+        // Observe-only skills never act.
+        AutonomyLevel::Observe => false,
+        // Read-only / low-stakes: autonomous, unless it leaves the device and the
+        // person has narrowed the envelope to keep on-device actions in-hand.
+        AutonomyLevel::ActWithinPolicy => !info.reaches_external || env.auto_external,
+        // Consequential (propose-and-approve, or per-action confirm): only
+        // autonomous if the person has widened the envelope to allow it; otherwise
+        // it surfaces for confirmation (the default).
+        AutonomyLevel::Suggest | AutonomyLevel::ConfirmEachAction => env.auto_consequential,
     }
 }
 
@@ -761,7 +785,7 @@ impl endora_application::CapabilityRunner for RegistryRunner {
                     description: info.description.to_owned(),
                     // Usable only if it's both set up AND enabled by the person.
                     configured: info.configured && self.is_enabled(info.id),
-                    autonomous: matches!(info.autonomy, AutonomyLevel::ActWithinPolicy),
+                    autonomous: may_run_autonomously(&info, &self.envelope),
                 }
             })
             .collect()
@@ -789,6 +813,60 @@ impl endora_application::CapabilityRunner for RegistryRunner {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_envelope_classifier_gates_by_autonomy_and_reach() {
+        use endora_application::AutonomyEnvelope;
+        let info = |autonomy, reaches_external| CapabilityInfo {
+            id: "x",
+            name: "X",
+            description: "",
+            category: "",
+            reaches_external,
+            autonomy,
+            configured: true,
+            needs: "",
+        };
+        let default_env = AutonomyEnvelope::default(); // external ok, consequential no
+
+        // Read-only local: always autonomous.
+        assert!(may_run_autonomously(
+            &info(AutonomyLevel::ActWithinPolicy, false),
+            &default_env
+        ));
+        // Read-only external: autonomous by default...
+        assert!(may_run_autonomously(
+            &info(AutonomyLevel::ActWithinPolicy, true),
+            &default_env
+        ));
+        // ...but not if the person narrows the envelope.
+        let no_external = AutonomyEnvelope {
+            auto_external: false,
+            auto_consequential: false,
+        };
+        assert!(!may_run_autonomously(
+            &info(AutonomyLevel::ActWithinPolicy, true),
+            &no_external
+        ));
+        // Consequential: confirm by default, autonomous only when widened.
+        assert!(!may_run_autonomously(
+            &info(AutonomyLevel::ConfirmEachAction, true),
+            &default_env
+        ));
+        let widened = AutonomyEnvelope {
+            auto_external: true,
+            auto_consequential: true,
+        };
+        assert!(may_run_autonomously(
+            &info(AutonomyLevel::ConfirmEachAction, true),
+            &widened
+        ));
+        // Observe never acts, even fully widened.
+        assert!(!may_run_autonomously(
+            &info(AutonomyLevel::Observe, false),
+            &widened
+        ));
+    }
 
     #[test]
     fn registry_has_modules_with_stable_ids() {
