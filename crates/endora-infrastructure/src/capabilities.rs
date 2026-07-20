@@ -717,13 +717,36 @@ scaffold!(
 /// — read-only, low-stakes. Anything that must confirm stays gated.
 pub struct RegistryRunner {
     capabilities: Arc<Vec<Arc<dyn Capability>>>,
+    /// Per-capability enabled overrides (id → enabled). Missing = default enabled.
+    enabled: std::collections::HashMap<String, bool>,
 }
 
 impl RegistryRunner {
-    /// Wraps a shared capability registry.
+    /// Wraps a shared capability registry with every skill at its default (enabled).
     #[must_use]
     pub fn new(capabilities: Arc<Vec<Arc<dyn Capability>>>) -> Self {
-        Self { capabilities }
+        Self {
+            capabilities,
+            enabled: std::collections::HashMap::new(),
+        }
+    }
+
+    /// Wraps the registry, applying the person's enabled/disabled overrides (ADR
+    /// 0021). A disabled skill reports as not-usable and never runs.
+    #[must_use]
+    pub fn with_overrides(
+        capabilities: Arc<Vec<Arc<dyn Capability>>>,
+        overrides: Vec<(String, bool)>,
+    ) -> Self {
+        Self {
+            capabilities,
+            enabled: overrides.into_iter().collect(),
+        }
+    }
+
+    /// Whether a capability is enabled (its override, or its built-in default).
+    fn is_enabled(&self, id: &str) -> bool {
+        self.enabled.get(id).copied().unwrap_or(true)
     }
 }
 
@@ -736,7 +759,8 @@ impl endora_application::CapabilityRunner for RegistryRunner {
                 endora_application::CapabilitySpec {
                     id: info.id.to_owned(),
                     description: info.description.to_owned(),
-                    configured: info.configured,
+                    // Usable only if it's both set up AND enabled by the person.
+                    configured: info.configured && self.is_enabled(info.id),
                     autonomous: matches!(info.autonomy, AutonomyLevel::ActWithinPolicy),
                 }
             })
@@ -744,6 +768,9 @@ impl endora_application::CapabilityRunner for RegistryRunner {
     }
 
     fn run(&self, id: &str, input_json: &str) -> Result<String, String> {
+        if !self.is_enabled(id) {
+            return Err(format!("the '{id}' skill is turned off"));
+        }
         let cap = self
             .capabilities
             .iter()

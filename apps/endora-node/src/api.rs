@@ -17,8 +17,9 @@ use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post};
 use endora_application::{
-    ActivityItem, AppError, AttentionItem, AttentionKind, Butler, ButlerProposal, CheckinSchedule,
-    MemorySnapshot, Proposer, RepositoryError, Suggestion, SuggestionStatus, usecases,
+    ActivityItem, AppError, AttentionItem, AttentionKind, Butler, ButlerProposal,
+    CapabilityConfigRepository, CheckinSchedule, MemorySnapshot, Proposer, RepositoryError,
+    Suggestion, SuggestionStatus, usecases,
 };
 use endora_domain::{
     Assumption, AssumptionId, AuditRecord, AutonomyLevel, Belief, BeliefId, ChatMessage, Direction,
@@ -157,6 +158,7 @@ pub fn app(state: AppState) -> Router {
         .route("/v1/understanding/{id}/correct", post(correct_belief))
         .route("/v1/capabilities", get(list_capabilities))
         .route("/v1/capabilities/{id}/invoke", post(invoke_capability))
+        .route("/v1/capabilities/{id}/enable", post(set_capability_enabled))
         .route(
             "/v1/preferences",
             post(create_preference).get(list_preferences),
@@ -1023,6 +1025,21 @@ fn suggestion_json(s: &Suggestion) -> serde_json::Value {
     v
 }
 
+/// Builds a capability runner that honours the person's enable/disable choices
+/// (ADR 0021). Reading the overrides is best-effort: if it fails, the runner falls
+/// back to every skill at its default, so a config glitch never breaks the butler.
+fn build_runner(
+    store: &SqliteStore,
+    capabilities: Arc<Vec<Arc<dyn Capability>>>,
+) -> endora_infrastructure::RegistryRunner {
+    match store.enabled_overrides() {
+        Ok(overrides) => {
+            endora_infrastructure::RegistryRunner::with_overrides(capabilities, overrides)
+        }
+        Err(_) => endora_infrastructure::RegistryRunner::new(capabilities),
+    }
+}
+
 #[derive(Deserialize)]
 struct ChatRequest {
     message: String,
@@ -1039,7 +1056,7 @@ async fn send_chat(
     let butler = state.butler.clone();
     let capabilities = state.capabilities.clone();
     let (reply, suggestions, activity) = blocking(move || {
-        let runner = endora_infrastructure::RegistryRunner::new(capabilities);
+        let runner = build_runner(store.as_ref(), capabilities);
         // Ground the butler in the person's current life before it answers.
         let context = usecases::butler_context(
             store.as_ref(),
@@ -1097,7 +1114,7 @@ async fn stream_chat(
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Event>();
 
     tokio::task::spawn_blocking(move || {
-        let runner = endora_infrastructure::RegistryRunner::new(capabilities);
+        let runner = build_runner(store.as_ref(), capabilities);
         let event = |v: serde_json::Value| Event::default().data(v.to_string());
         let context = match usecases::butler_context(
             store.as_ref(),
@@ -1327,7 +1344,10 @@ async fn correct_belief(
     Ok(Json(json!({ "corrected": true })))
 }
 
-fn capability_json(info: &endora_infrastructure::CapabilityInfo) -> serde_json::Value {
+fn capability_json(
+    info: &endora_infrastructure::CapabilityInfo,
+    enabled: bool,
+) -> serde_json::Value {
     json!({
         "id": info.id,
         "name": info.name,
@@ -1335,20 +1355,65 @@ fn capability_json(info: &endora_infrastructure::CapabilityInfo) -> serde_json::
         "category": info.category,
         "reaches_external": info.reaches_external,
         "autonomy": info.autonomy.name(),
+        // `configured` = set up (intrinsic); `enabled` = the person's on/off switch;
+        // a skill is usable only when both are true (ADR 0021).
         "configured": info.configured,
+        "enabled": enabled,
+        "usable": info.configured && enabled,
         "needs": info.needs,
     })
 }
 
-/// Lists the butler's skills (capabilities/modules) and their status.
+/// Lists the butler's skills (capabilities/modules), their status, and whether the
+/// person has each turned on.
 async fn list_capabilities(State(state): State<AppState>) -> Json<Vec<serde_json::Value>> {
+    let enabled: std::collections::HashMap<String, bool> = state
+        .store
+        .enabled_overrides()
+        .unwrap_or_default()
+        .into_iter()
+        .collect();
     Json(
         state
             .capabilities
             .iter()
-            .map(|c| capability_json(&c.info()))
+            .map(|c| {
+                let info = c.info();
+                let on = enabled.get(info.id).copied().unwrap_or(true);
+                capability_json(&info, on)
+            })
             .collect(),
     )
+}
+
+#[derive(Deserialize)]
+struct EnableRequest {
+    enabled: bool,
+}
+
+/// Turns a capability on or off for the person (ADR 0021). Validated against the
+/// registry so only real skill ids are stored; nudges the change stream so open
+/// consoles refresh.
+async fn set_capability_enabled(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(req): Json<EnableRequest>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    if !state.capabilities.iter().any(|c| c.info().id == id) {
+        return Err(ApiError(AppError::NotFound {
+            entity: "capability",
+        }));
+    }
+    let store = state.store.clone();
+    let (cap_id, enabled) = (id.clone(), req.enabled);
+    blocking(move || {
+        store
+            .set_enabled(&cap_id, enabled)
+            .map_err(AppError::Repository)
+    })
+    .await?;
+    let _ = state.changes.send(());
+    Ok(Json(json!({ "id": id, "enabled": req.enabled })))
 }
 
 /// Invokes a capability by id with a JSON body. Read-only skills run directly;
@@ -1401,7 +1466,7 @@ pub fn spawn_heartbeat(state: AppState) {
             let clock = state.clock.clone();
             let capabilities = state.capabilities.clone();
             let posted = tokio::task::spawn_blocking(move || {
-                let runner = endora_infrastructure::RegistryRunner::new(capabilities);
+                let runner = build_runner(store.as_ref(), capabilities);
                 let context = usecases::butler_context(
                     store.as_ref(),
                     store.as_ref(),

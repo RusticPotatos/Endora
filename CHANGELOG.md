@@ -33,6 +33,13 @@ tagged release.
 
 ### Added
 
+- **Manage your skills — turn capabilities on and off** (first slice of
+  [ADR 0021](docs/adr/0021-capability-catalog-and-mcp-host.md)): the Skills view is
+  now a catalog you control — each skill shows **On / Off / Needs setup**, and a
+  toggle turns it on or off. Choices persist (a `capability_config` store) and are
+  enforced everywhere: a skill you turn off reports as not usable and never runs,
+  even if the butler reaches for it. New `POST /v1/capabilities/{id}/enable`, and
+  `GET /v1/capabilities` now reports `enabled`/`usable` alongside `configured`.
 - **No fabricated facts — a deterministic net for factual asks**: when you clearly
   ask something factual (weather, news, active safety alerts) and the small local
   model reaches for no skill at all, Endora now runs the matching skill itself — with
