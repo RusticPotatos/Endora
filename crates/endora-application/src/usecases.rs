@@ -6,19 +6,19 @@
 //! and the use cases stay testable with fakes.
 
 use endora_domain::{
-    Assumption, AssumptionId, AuditId, AuditRecord, AutonomyLevel, ChatMessage, Direction,
-    DirectionId, Experiment, ExperimentId, LifecycleStatus, MessageId, MessageRole, Observation,
-    ObservationId, PolicyDecision, Preference, PreferenceId, PreferenceKind, ProcessChangeId,
-    ProposedProcessChange, Reflection, ReflectionId, SuggestionId, Target, TargetId, Timestamp,
-    Value, ValueId, authorize_process_change,
+    Assumption, AssumptionId, AuditId, AuditRecord, AutonomyLevel, Belief, BeliefId, ChatMessage,
+    Direction, DirectionId, Experiment, ExperimentId, LifecycleStatus, MessageId, MessageRole,
+    Observation, ObservationId, PolicyDecision, Preference, PreferenceId, PreferenceKind,
+    ProcessChangeId, ProposedProcessChange, Reflection, ReflectionId, SuggestionId, Target,
+    TargetId, Timestamp, Value, ValueId, authorize_process_change,
 };
 
 use crate::error::AppError;
 use crate::ports::{
-    AssumptionRepository, AttentionItem, AttentionKind, AuditLog, Butler, ButlerContext,
-    ButlerProposal, ChatRepository, CheckinRepository, CheckinSchedule, Clock, DirectionRepository,
-    ExperimentRepository, IdSource, MemorySnapshot, MemoryStore, NorthStarBrief,
-    ObservationRepository, PreferenceRepository, ProcessChangeRepository, Proposer,
+    AssumptionRepository, AttentionItem, AttentionKind, AuditLog, BeliefRepository, Butler,
+    ButlerContext, ButlerProposal, ChatRepository, CheckinRepository, CheckinSchedule, Clock,
+    DirectionRepository, ExperimentRepository, IdSource, MemorySnapshot, MemoryStore,
+    NorthStarBrief, ObservationRepository, PreferenceRepository, ProcessChangeRepository, Proposer,
     ReflectionRepository, Snooze, SnoozeRepository, Suggestion, SuggestionRepository,
     SuggestionStatus, TargetRepository, ValueRepository,
 };
@@ -757,6 +757,7 @@ pub fn send_to_butler(
     chat: &impl ChatRepository,
     preferences: &impl PreferenceRepository,
     suggestions: &impl SuggestionRepository,
+    beliefs: &impl BeliefRepository,
     butler: &dyn Butler,
     ids: &impl IdSource,
     clock: &impl Clock,
@@ -768,6 +769,7 @@ pub fn send_to_butler(
         chat,
         preferences,
         suggestions,
+        beliefs,
         butler,
         ids,
         clock,
@@ -794,6 +796,7 @@ pub fn send_to_butler_streaming(
     chat: &impl ChatRepository,
     preferences: &impl PreferenceRepository,
     suggestions: &impl SuggestionRepository,
+    beliefs: &impl BeliefRepository,
     butler: &dyn Butler,
     ids: &impl IdSource,
     clock: &impl Clock,
@@ -847,7 +850,65 @@ pub fn send_to_butler_streaming(
         suggestions.save(&suggestion)?;
         saved.push(suggestion);
     }
+
+    // Store the understanding the butler formed this turn. These are Endora's own
+    // beliefs (not actions) — kept directly, then reviewable/correctable (ADR 0020).
+    for formed in reply.beliefs {
+        let belief = Belief::new(
+            BeliefId::new(ids.new_id()),
+            &formed.statement,
+            formed.kind,
+            formed.confidence,
+            &formed.evidence,
+            clock.now(),
+        )?;
+        beliefs.save(&belief)?;
+    }
+
     Ok((butler, saved))
+}
+
+/// Endora's living understanding of the person — its active beliefs, most
+/// recently affirmed first. Corrected beliefs are omitted.
+///
+/// # Errors
+/// [`AppError::Repository`] if the backend fails or stored data is corrupt.
+pub fn understanding(beliefs: &impl BeliefRepository) -> Result<Vec<Belief>, AppError> {
+    Ok(beliefs
+        .list()?
+        .into_iter()
+        .filter(|b| b.status() == endora_domain::BeliefStatus::Active)
+        .collect())
+}
+
+/// The person confirms a belief is right: raise its confidence.
+///
+/// # Errors
+/// [`AppError::NotFound`] if it does not exist, or [`AppError::Repository`].
+pub fn affirm_belief(
+    beliefs: &impl BeliefRepository,
+    clock: &impl Clock,
+    id: BeliefId,
+) -> Result<Belief, AppError> {
+    let mut belief = beliefs
+        .get(id)?
+        .ok_or(AppError::NotFound { entity: "belief" })?;
+    belief.affirm(clock.now());
+    beliefs.save(&belief)?;
+    Ok(belief)
+}
+
+/// The person says a belief is wrong: mark it corrected (drops out of understanding).
+///
+/// # Errors
+/// [`AppError::NotFound`] if it does not exist, or [`AppError::Repository`].
+pub fn correct_belief(beliefs: &impl BeliefRepository, id: BeliefId) -> Result<(), AppError> {
+    let mut belief = beliefs
+        .get(id)?
+        .ok_or(AppError::NotFound { entity: "belief" })?;
+    belief.correct();
+    beliefs.save(&belief)?;
+    Ok(())
 }
 
 /// Lists the butler's persisted suggestions, newest first, optionally filtered by
@@ -1272,8 +1333,8 @@ mod tests {
     };
     use crate::error::AppError;
     use crate::ports::{
-        AssumptionRepository, AttentionKind, AuditLog, Butler, ButlerContext, ButlerProposal,
-        ButlerReply, ChatRepository, CheckinRepository, CheckinSchedule, Clock,
+        AssumptionRepository, AttentionKind, AuditLog, BeliefRepository, Butler, ButlerContext,
+        ButlerProposal, ButlerReply, ChatRepository, CheckinRepository, CheckinSchedule, Clock,
         DirectionRepository, ExperimentRepository, IdSource, ObservationRepository,
         PreferenceRepository, ProcessChangeRepository, ProposalError, Proposer,
         ReflectionRepository, RepositoryError, Snooze, SnoozeRepository, Suggestion,
@@ -1287,6 +1348,7 @@ mod tests {
         ProposedProcessChange, Reflection, ReflectionId, SuggestionId, Target, TargetId, Timestamp,
         Value, ValueId,
     };
+    use endora_domain::{Belief, BeliefId};
     use std::cell::{Cell, RefCell};
     use std::collections::HashMap;
 
@@ -1306,6 +1368,25 @@ mod tests {
         changes: RefCell<HashMap<u128, ProposedProcessChange>>,
         suggestions: RefCell<Vec<Suggestion>>,
         checkin: RefCell<Option<CheckinSchedule>>,
+        beliefs: RefCell<Vec<Belief>>,
+    }
+
+    impl BeliefRepository for FakeStore {
+        fn save(&self, b: &Belief) -> Result<(), RepositoryError> {
+            let mut v = self.beliefs.borrow_mut();
+            if let Some(e) = v.iter_mut().find(|e| e.id() == b.id()) {
+                *e = b.clone();
+            } else {
+                v.push(b.clone());
+            }
+            Ok(())
+        }
+        fn get(&self, id: BeliefId) -> Result<Option<Belief>, RepositoryError> {
+            Ok(self.beliefs.borrow().iter().find(|b| b.id() == id).cloned())
+        }
+        fn list(&self) -> Result<Vec<Belief>, RepositoryError> {
+            Ok(self.beliefs.borrow().clone())
+        }
     }
 
     impl CheckinRepository for FakeStore {
@@ -1548,6 +1629,7 @@ mod tests {
                 proposals: vec![ButlerProposal::CreateNorthStar {
                     title: last.to_owned(),
                 }],
+                ..ButlerReply::default()
             })
         }
     }
@@ -1838,6 +1920,7 @@ mod tests {
             &store,
             &store,
             &store,
+            &store,
             &ScriptedTestButler,
             &ids,
             &clock,
@@ -1919,6 +2002,65 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
+    }
+
+    #[test]
+    fn butler_forms_understanding_that_is_reviewable_and_correctable() {
+        use super::{affirm_belief, correct_belief, send_to_butler, understanding};
+        use endora_domain::{BeliefKind, Confidence};
+
+        struct BeliefButler;
+        impl Butler for BeliefButler {
+            fn respond(
+                &self,
+                _h: &[ChatMessage],
+                _p: &[endora_domain::Preference],
+                _c: &ButlerContext,
+            ) -> Result<ButlerReply, ProposalError> {
+                Ok(ButlerReply {
+                    text: "Travel seems to matter to you.".to_owned(),
+                    beliefs: vec![crate::ports::FormedBelief {
+                        statement: "wants energy to travel".to_owned(),
+                        kind: BeliefKind::Intent,
+                        confidence: Confidence::Low,
+                        evidence: "mentioned wanting to travel".to_owned(),
+                    }],
+                    ..ButlerReply::default()
+                })
+            }
+        }
+
+        let store = FakeStore::default();
+        let ids = SeqIds::default();
+        let clock = FixedClock(1_000);
+        send_to_butler(
+            &store,
+            &store,
+            &store,
+            &store,
+            &BeliefButler,
+            &ids,
+            &clock,
+            &ButlerContext::default(),
+            "I'd love to see more of the world",
+        )
+        .unwrap();
+
+        // The butler formed understanding, stored directly (no confirm step).
+        let u = understanding(&store).unwrap();
+        assert_eq!(u.len(), 1);
+        assert_eq!(u[0].statement(), "wants energy to travel");
+        assert_eq!(u[0].confidence(), Confidence::Low);
+
+        // Affirming raises confidence; correcting drops it from understanding.
+        let id = u[0].id();
+        affirm_belief(&store, &clock, id).unwrap();
+        assert_eq!(
+            understanding(&store).unwrap()[0].confidence(),
+            Confidence::Medium
+        );
+        correct_belief(&store, id).unwrap();
+        assert!(understanding(&store).unwrap().is_empty());
     }
 
     #[test]
@@ -2076,11 +2218,12 @@ mod tests {
             ) -> Result<ButlerReply, ProposalError> {
                 Ok(ButlerReply {
                     text: format!("I already know {} thing(s) about you", preferences.len()),
-                    proposals: Vec::new(),
+                    ..ButlerReply::default()
                 })
             }
         }
         let (reply, _) = send_to_butler(
+            &store,
             &store,
             &store,
             &store,

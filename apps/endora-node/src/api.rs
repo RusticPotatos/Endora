@@ -21,10 +21,11 @@ use endora_application::{
     MemorySnapshot, Proposer, RepositoryError, Suggestion, SuggestionStatus, usecases,
 };
 use endora_domain::{
-    Assumption, AssumptionId, AuditRecord, AutonomyLevel, ChatMessage, Direction, DirectionId,
-    Experiment, ExperimentId, LifecycleStatus, Observation, ObservationId, PolicyDecision,
-    Preference, PreferenceId, PreferenceKind, ProcessChangeId, ProposedProcessChange, Reflection,
-    ReflectionId, SuggestionId, Target, TargetId, Value, ValueId,
+    Assumption, AssumptionId, AuditRecord, AutonomyLevel, Belief, BeliefId, ChatMessage, Direction,
+    DirectionId, Experiment, ExperimentId, LifecycleStatus, Observation, ObservationId,
+    PolicyDecision, Preference, PreferenceId, PreferenceKind, ProcessChangeId,
+    ProposedProcessChange, Reflection, ReflectionId, SuggestionId, Target, TargetId, Value,
+    ValueId,
 };
 use endora_infrastructure::{
     Capability, CapabilityError, RandomIdSource, SqliteStore, SystemClock,
@@ -151,6 +152,9 @@ pub fn app(state: AppState) -> Router {
         .route("/v1/suggestions/{id}/apply", post(apply_suggestion))
         .route("/v1/suggestions/{id}/dismiss", post(dismiss_suggestion))
         .route("/v1/checkin", get(get_checkin).post(set_checkin))
+        .route("/v1/understanding", get(list_understanding))
+        .route("/v1/understanding/{id}/affirm", post(affirm_belief))
+        .route("/v1/understanding/{id}/correct", post(correct_belief))
         .route("/v1/capabilities", get(list_capabilities))
         .route("/v1/capabilities/{id}/invoke", post(invoke_capability))
         .route(
@@ -1047,6 +1051,7 @@ async fn send_chat(
             store.as_ref(),
             store.as_ref(),
             store.as_ref(),
+            store.as_ref(),
             butler.as_ref(),
             ids.as_ref(),
             clock.as_ref(),
@@ -1107,6 +1112,7 @@ async fn stream_chat(
                 let _ = tx.send(event(json!({ "type": "token", "text": chunk })));
             };
             usecases::send_to_butler_streaming(
+                store.as_ref(),
                 store.as_ref(),
                 store.as_ref(),
                 store.as_ref(),
@@ -1258,6 +1264,55 @@ async fn set_checkin(
     })
     .await?;
     Ok(Json(schedule.into()))
+}
+
+fn belief_json(b: &Belief) -> serde_json::Value {
+    json!({
+        "id": b.id().value().to_string(),
+        "statement": b.statement(),
+        "kind": b.kind().name(),
+        "confidence": b.confidence().name(),
+        "evidence": b.evidence(),
+        "last_affirmed_ms": b.last_affirmed_at().unix_millis(),
+    })
+}
+
+/// Endora's understanding of the person — the active beliefs it holds.
+async fn list_understanding(
+    State(state): State<AppState>,
+) -> Result<Json<Vec<serde_json::Value>>, ApiError> {
+    let store = state.store.clone();
+    let items = blocking(move || usecases::understanding(store.as_ref())).await?;
+    Ok(Json(items.iter().map(belief_json).collect()))
+}
+
+fn parse_belief_id(id: &str) -> Result<BeliefId, ApiError> {
+    id.parse::<u128>()
+        .map(BeliefId::new)
+        .map_err(|_| ApiError(AppError::NotFound { entity: "belief" }))
+}
+
+/// The person confirms a belief is right — raise its confidence.
+async fn affirm_belief(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let bid = parse_belief_id(&id)?;
+    let store = state.store.clone();
+    let clock = state.clock.clone();
+    let b = blocking(move || usecases::affirm_belief(store.as_ref(), clock.as_ref(), bid)).await?;
+    Ok(Json(belief_json(&b)))
+}
+
+/// The person says a belief is wrong — drop it from understanding.
+async fn correct_belief(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let bid = parse_belief_id(&id)?;
+    let store = state.store.clone();
+    blocking(move || usecases::correct_belief(store.as_ref(), bid)).await?;
+    Ok(Json(json!({ "corrected": true })))
 }
 
 fn capability_json(info: &endora_infrastructure::CapabilityInfo) -> serde_json::Value {
@@ -1512,6 +1567,7 @@ struct ExportResponse {
     messages: Vec<MessageResponse>,
     preferences: Vec<PreferenceResponse>,
     suggestions: Vec<serde_json::Value>,
+    beliefs: Vec<serde_json::Value>,
 }
 
 impl From<&MemorySnapshot> for ExportResponse {
@@ -1537,6 +1593,7 @@ impl From<&MemorySnapshot> for ExportResponse {
             messages: s.messages.iter().map(MessageResponse::from).collect(),
             preferences: s.preferences.iter().map(PreferenceResponse::from).collect(),
             suggestions: s.suggestions.iter().map(suggestion_json).collect(),
+            beliefs: s.beliefs.iter().map(belief_json).collect(),
         }
     }
 }
