@@ -1,37 +1,17 @@
-//! # Endora domain layer
+//! # Endora domain facade (transitional)
 //!
-//! This crate holds the **Domain** layer of the Endora modular monolith. It
-//! contains only pure concepts and rules of the platform. By construction it
-//! has no dependencies and must never depend on:
+//! Under the Responsibility-Oriented reorg (ADR 0026) the domain models moved
+//! into their bounded-context crates under `domains/`: the aims + learning loop
+//! (values, targets, experiments, reflection, policy) into `endora-direction`,
+//! beliefs and preferences into `endora-understanding`, the chat model into
+//! `endora-conversation`, the audit record into `endora-platform`, and the
+//! autonomy envelope into `endora-capabilities`. Shared primitives (typed ids,
+//! `Timestamp`, `DomainError`, `AutonomyLevel`) live in `endora-kernel`.
 //!
-//! - HTTP, transports, or serialization formats
-//! - databases or storage engines
-//! - AI vendors or model-specific concepts
-//! - user-interface frameworks
-//! - operating-system integrations (including the system clock)
-//!
-//! Higher layers (Application, Infrastructure, Interface) depend inward on this
-//! crate; this crate depends on nothing. See `docs/architecture.md`.
-//!
-//! ## What lives here
-//!
-//! - [`autonomy`] — how much authority a component has before a human is
-//!   involved ([`AutonomyLevel`]).
-//! - [`targets`] — the Direction & Targets context: [`Direction`], [`Target`],
-//!   [`Assumption`].
-//! - [`experiments`] — the Experiments & Learning context: [`Experiment`],
-//!   [`ExperimentStatus`], [`Observation`].
-//! - [`reflection`] — the Reflection context: [`Reflection`],
-//!   [`ProposedProcessChange`], [`ApprovalState`].
-//! - [`policy`] — the Policy & Consent boundary: deterministic authorization
-//!   ([`PolicyDecision`], [`authorize_process_change`]).
-//! - [`ids`] — typed identifiers and [`Timestamp`], both supplied by callers.
-//! - [`error`] — [`DomainError`].
-//!
-//! Together these model the first vertical slice — the learning loop for a
-//! single target (see `docs/adr/0006-first-vertical-slice.md`). Identifiers and
-//! time are always supplied by outer layers, so the domain is fully
-//! deterministic and testable.
+//! This crate now only **re-exports** those types so existing `endora_domain::…`
+//! paths keep working while callers are repointed; it holds no models of its own
+//! and is slated for removal. New code should depend on the context crates and
+//! the kernel directly. See `docs/architecture.md`.
 
 #![forbid(unsafe_code)]
 
