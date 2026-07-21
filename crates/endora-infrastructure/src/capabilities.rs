@@ -123,6 +123,7 @@ pub fn default_capabilities() -> Vec<Arc<dyn Capability>> {
         Arc::new(LocationLogCapability),
         Arc::new(SafetyAlertsCapability),
         Arc::new(IncidentScannerCapability),
+        Arc::new(HomeAssistantCapability),
     ]
 }
 
@@ -1374,6 +1375,136 @@ scaffold!(
     "a public incident/emergency feed for your area"
 );
 
+// ---- Home Assistant (read-only; learn the home's routines) -----------------
+
+const HA_SETTINGS: &[SettingSpec] = &[
+    SettingSpec {
+        key: "url",
+        label: "Home Assistant URL (e.g. http://homeassistant.local:8123)",
+        secret: false,
+    },
+    SettingSpec {
+        key: "token",
+        label: "Long-lived access token",
+        secret: true,
+    },
+];
+
+/// Reads Home Assistant state so the butler can learn the home's routines (lights,
+/// presence, sensors). Read-only and reversible — it observes, it does not actuate;
+/// controlling devices/scripts is a separate, confirm-gated capability (ADR 0024).
+struct HomeAssistantCapability;
+
+impl Capability for HomeAssistantCapability {
+    fn info(&self) -> CapabilityInfo {
+        CapabilityInfo {
+            id: "home_assistant",
+            name: "Home Assistant",
+            description: "Read your home's state — lights, presence, sensors — to learn your routines.",
+            category: "presence",
+            reaches_external: true,
+            reversible: true,
+            autonomy: AutonomyLevel::ActWithinPolicy,
+            configured: true,
+            needs: "your Home Assistant URL and a long-lived access token",
+            settings: HA_SETTINGS,
+        }
+    }
+
+    fn invoke(
+        &self,
+        input: &Value,
+        settings: &CapabilitySettings,
+    ) -> Result<Value, CapabilityError> {
+        let base = settings
+            .get("url")
+            .map(|s| s.trim().trim_end_matches('/'))
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| {
+                CapabilityError::Unavailable(
+                    "set the Home Assistant URL in this skill's settings".to_owned(),
+                )
+            })?;
+        let token = settings
+            .get("token")
+            .map(String::as_str)
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| {
+                CapabilityError::Unavailable(
+                    "set a Home Assistant access token in this skill's settings".to_owned(),
+                )
+            })?;
+        // Optional {domain} filter (e.g. "light", "person", "sensor", "media_player").
+        let domain = input.get("domain").and_then(Value::as_str).unwrap_or("");
+        // HA is the person's own local service — direct agent (not proxied/guarded).
+        use std::io::Read;
+        let mut resp = agent()
+            .get(&format!("{base}/api/states"))
+            .header("Authorization", &format!("Bearer {token}"))
+            .call()
+            .map_err(|e| CapabilityError::Unavailable(e.to_string()))?;
+        let mut buf = Vec::new();
+        resp.body_mut()
+            .as_reader()
+            .take(1024 * 1024)
+            .read_to_end(&mut buf)
+            .map_err(|e| CapabilityError::Unavailable(e.to_string()))?;
+        let states: Value = serde_json::from_str(&String::from_utf8_lossy(&buf))
+            .map_err(|e| CapabilityError::Unavailable(e.to_string()))?;
+        let entities: Vec<Value> = states
+            .as_array()
+            .map(|arr| {
+                arr.iter()
+                    .filter(|e| {
+                        domain.is_empty()
+                            || e["entity_id"]
+                                .as_str()
+                                .is_some_and(|id| id.starts_with(&format!("{domain}.")))
+                    })
+                    .filter_map(|e| {
+                        let id = e["entity_id"].as_str()?;
+                        let name = e["attributes"]["friendly_name"].as_str().unwrap_or(id);
+                        Some(json!({
+                            "entity": id,
+                            "name": name,
+                            "state": e["state"].as_str().unwrap_or("?"),
+                            "changed": e["last_changed"].as_str().unwrap_or(""),
+                        }))
+                    })
+                    .take(60)
+                    .collect()
+            })
+            .unwrap_or_default();
+        Ok(json!({ "domain": domain, "count": entities.len(), "entities": entities }))
+    }
+
+    fn summarize(&self, o: &Value) -> String {
+        let entities: Vec<&Value> = o["entities"]
+            .as_array()
+            .map(|a| a.iter().collect())
+            .unwrap_or_default();
+        if entities.is_empty() {
+            return "No matching Home Assistant entities found.".to_owned();
+        }
+        let list = entities
+            .iter()
+            .take(30)
+            .map(|e| {
+                format!(
+                    "{}: {}",
+                    e["name"].as_str().unwrap_or("?"),
+                    e["state"].as_str().unwrap_or("?")
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("; ");
+        format!(
+            "Home state ({} entities): {list}",
+            o["count"].as_i64().unwrap_or(0)
+        )
+    }
+}
+
 // ---- Application-facing runner ---------------------------------------------
 
 /// Adapts the concrete capability registry to the application's
@@ -1813,6 +1944,24 @@ mod tests {
                 .summarize(&empty)
                 .contains("didn't find")
         );
+    }
+
+    #[test]
+    fn home_assistant_needs_config_and_summarizes_state() {
+        // Without url/token it's unavailable (never reaches the home).
+        assert!(
+            HomeAssistantCapability
+                .invoke(&json!({}), &CapabilitySettings::new())
+                .is_err()
+        );
+        // Summary reads entities as name: state.
+        let out = json!({ "domain": "light", "count": 2, "entities": [
+            { "entity": "light.kitchen", "name": "Kitchen", "state": "on" },
+            { "entity": "light.desk", "name": "Desk", "state": "off" },
+        ] });
+        let s = HomeAssistantCapability.summarize(&out);
+        assert!(s.contains("Kitchen: on"));
+        assert!(s.contains("Desk: off"));
     }
 
     #[test]
