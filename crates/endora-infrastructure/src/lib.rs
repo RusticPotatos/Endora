@@ -9,18 +9,19 @@
 #![forbid(unsafe_code)]
 
 pub mod butler;
-pub mod capabilities;
 pub mod clock;
 pub mod ids;
 pub mod model;
 pub mod sqlite;
 
 pub use butler::{LlmButler, ScriptedButler, ask_deep_model};
-pub use capabilities::{
+// The capabilities context owns the skills, runner, and egress guard (ADR 0026);
+// re-exported so `endora_infrastructure::{RegistryRunner, …}` paths are unchanged.
+pub use clock::SystemClock;
+pub use endora_capabilities::{
     Capability, CapabilityError, CapabilityInfo, CapabilitySettings, RegistryRunner, SettingSpec,
     default_capabilities, redact_pii_in_value, scan_outbound_secret,
 };
-pub use clock::SystemClock;
 pub use ids::RandomIdSource;
 pub use model::OpenAiCompatibleProposer;
 pub use sqlite::SqliteStore;

@@ -19,16 +19,20 @@ pub use error::AppError;
 // The audit trail and event log live in the platform context now (ADR 0026);
 // re-exported so `endora_application::{AuditLog, EventLog, ActivityEvent}` hold.
 pub use endora_platform::{ActivityEvent, AuditLog, EventLog};
+// The capabilities ports live in the capabilities context (ADR 0026); re-exported
+// so their `endora_application::…` paths are unchanged.
+pub use endora_capabilities::{
+    AutonomyEnvelope, AutonomyEnvelopeRepository, CapabilityConfigRepository, CapabilityRunner,
+    CapabilitySettingsRepository, CapabilitySpec, CapabilityUse, DeepModel, DeepModelRepository,
+};
 pub use ports::{
-    AssumptionRepository, AttentionItem, AttentionKind, AutonomyEnvelope,
-    AutonomyEnvelopeRepository, BeliefRepository, BriefSchedule, BriefScheduleRepository, Butler,
-    ButlerContext, ButlerProposal, ButlerReply, CapabilityConfigRepository, CapabilityRunner,
-    CapabilitySettingsRepository, CapabilitySpec, CapabilityUse, ChatRepository, CheckinRepository,
-    CheckinSchedule, Clock, DeepModel, DeepModelRepository, DirectionRepository,
-    ExperimentRepository, FormedBelief, IdSource, MemorySnapshot, MemoryStore, NorthStarBrief,
-    ObservationRepository, PreferenceRepository, ProcessChangeRepository, ProposalError, Proposer,
-    ReflectionRepository, RepositoryError, Snooze, SnoozeRepository, Suggestion,
-    SuggestionRepository, SuggestionStatus, TargetRepository, ValueRepository,
+    AssumptionRepository, AttentionItem, AttentionKind, BeliefRepository, BriefSchedule,
+    BriefScheduleRepository, Butler, ButlerContext, ButlerProposal, ButlerReply, ChatRepository,
+    CheckinRepository, CheckinSchedule, Clock, DirectionRepository, ExperimentRepository,
+    FormedBelief, IdSource, MemorySnapshot, MemoryStore, NorthStarBrief, ObservationRepository,
+    PreferenceRepository, ProcessChangeRepository, ProposalError, Proposer, ReflectionRepository,
+    RepositoryError, Snooze, SnoozeRepository, Suggestion, SuggestionRepository, SuggestionStatus,
+    TargetRepository, ValueRepository,
 };
 pub use usecases::{ActivityItem, ActivityKind};
 
