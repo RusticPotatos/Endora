@@ -9,7 +9,6 @@ members = [
     "domains/direction",
     "domains/conversation",
     "domains/scheduling",
-    "crates/endora-domain",
     "crates/endora-application",
     "crates/endora-infrastructure",
     "app/node",

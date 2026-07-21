@@ -5,13 +5,18 @@
 //! time come from the [`IdSource`] and [`Clock`] ports, so the domain stays pure
 //! and the use cases stay testable with fakes.
 
-use endora_domain::{
-    Assumption, AssumptionId, AuditId, AuditRecord, AutonomyLevel, Belief, BeliefId, ChatMessage,
-    Direction, DirectionId, Experiment, ExperimentId, LifecycleStatus, MessageId, MessageRole,
-    Observation, ObservationId, PolicyDecision, Preference, PreferenceId, PreferenceKind,
-    ProcessChangeId, ProposedProcessChange, Reflection, ReflectionId, SuggestionId, Target,
-    TargetId, Timestamp, Value, ValueId, authorize_process_change,
+use endora_conversation::{ChatMessage, MessageRole};
+use endora_direction::{
+    Assumption, Direction, Experiment, LifecycleStatus, Observation, PolicyDecision,
+    ProposedProcessChange, Reflection, Target, Value, authorize_process_change,
 };
+use endora_kernel::AutonomyLevel;
+use endora_kernel::ids::{
+    AssumptionId, AuditId, BeliefId, DirectionId, ExperimentId, MessageId, ObservationId,
+    PreferenceId, ProcessChangeId, ReflectionId, SuggestionId, TargetId, Timestamp, ValueId,
+};
+use endora_platform::AuditRecord;
+use endora_understanding::{Belief, Preference, PreferenceKind};
 
 use endora_capabilities::CapabilityRunner;
 use endora_conversation::ChatRepository;
@@ -1225,7 +1230,7 @@ pub fn understanding(beliefs: &impl BeliefRepository) -> Result<Vec<Belief>, App
     Ok(beliefs
         .list()?
         .into_iter()
-        .filter(|b| b.status() == endora_domain::BeliefStatus::Active)
+        .filter(|b| b.status() == crate::BeliefStatus::Active)
         .collect())
 }
 
@@ -1852,27 +1857,27 @@ mod tests {
         propose_process_change, recent_audit, record_observation, reject_process_change,
         schedule_experiment_review, set_direction_status, set_target_status, start_experiment,
     };
+    use crate::LifecycleStatus;
     use crate::error::AppError;
     use crate::ports::{
         AttentionKind, Butler, ButlerContext, ButlerProposal, ButlerReply, Clock, IdSource,
         ProposalError, Proposer, RepositoryError, Snooze, SnoozeRepository, Suggestion,
         SuggestionRepository, SuggestionStatus,
     };
-    use endora_capabilities::CapabilityRunner;
-    use endora_conversation::ChatRepository;
-    use endora_direction::{
-        AssumptionRepository, DirectionRepository, ExperimentRepository, ObservationRepository,
-        ProcessChangeRepository, ReflectionRepository, TargetRepository, ValueRepository,
-    };
-    use endora_domain::LifecycleStatus;
-    use endora_domain::{
+    use crate::{
         ApprovalState, Assumption, AssumptionId, AuditRecord, AutonomyLevel, ChatMessage,
         Direction, DirectionId, Experiment, ExperimentId, ExperimentStatus, MessageId, MessageRole,
         Observation, ObservationId, PolicyDecision, Preference, PreferenceId, PreferenceKind,
         ProcessChangeId, ProposedProcessChange, Reflection, ReflectionId, SuggestionId, Target,
         TargetId, Timestamp, Value, ValueId,
     };
-    use endora_domain::{Belief, BeliefId};
+    use crate::{Belief, BeliefId};
+    use endora_capabilities::CapabilityRunner;
+    use endora_conversation::ChatRepository;
+    use endora_direction::{
+        AssumptionRepository, DirectionRepository, ExperimentRepository, ObservationRepository,
+        ProcessChangeRepository, ReflectionRepository, TargetRepository, ValueRepository,
+    };
     use endora_platform::{AuditLog, EventLog};
     use endora_scheduling::{CheckinRepository, CheckinSchedule};
     use endora_understanding::{BeliefRepository, PreferenceRepository};
@@ -3012,14 +3017,14 @@ mod tests {
     #[test]
     fn butler_forms_understanding_that_is_reviewable_and_correctable() {
         use super::{affirm_belief, correct_belief, send_to_butler, understanding};
-        use endora_domain::{BeliefKind, Confidence};
+        use crate::{BeliefKind, Confidence};
 
         struct BeliefButler;
         impl Butler for BeliefButler {
             fn respond(
                 &self,
                 _h: &[ChatMessage],
-                _p: &[endora_domain::Preference],
+                _p: &[crate::Preference],
                 _c: &ButlerContext,
             ) -> Result<ButlerReply, ProposalError> {
                 Ok(ButlerReply {
@@ -3198,7 +3203,7 @@ mod tests {
     #[test]
     fn preferences_are_recorded_deletable_and_passed_to_the_butler() {
         use super::{create_preference, delete_preference, list_preferences, send_to_butler};
-        use endora_domain::PreferenceKind;
+        use crate::PreferenceKind;
 
         let store = FakeStore::default();
         let ids = SeqIds::default();
@@ -3623,8 +3628,8 @@ mod tests {
     #[test]
     fn activity_merges_observations_and_decisions_newest_first() {
         use super::{ActivityKind, recent_activity};
+        use crate::{AuditId, AuditRecord, ExperimentId, Observation, ObservationId};
         use endora_direction::ObservationRepository;
-        use endora_domain::{AuditId, AuditRecord, ExperimentId, Observation, ObservationId};
 
         let store = FakeStore::default();
         let audit = FakeAudit::default();
