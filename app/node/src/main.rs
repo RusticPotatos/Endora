@@ -15,8 +15,10 @@ use std::sync::Arc;
 
 use api::AppState;
 use endora_application::Butler;
+use endora_capabilities::ConfigStore;
 use endora_infrastructure::{
-    LlmButler, MixtureButler, OpenAiCompatibleProposer, RandomIdSource, SqliteStore, SystemClock,
+    ConfigurableButler, LlmButler, MixtureButler, OpenAiCompatibleProposer, RandomIdSource,
+    SqliteStore, SystemClock,
 };
 
 #[tokio::main]
@@ -37,7 +39,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // brain, so the conversation works even with no model available.
     let router_model = std::env::var("ENDORA_ROUTER_MODEL").ok();
     let synth_model = std::env::var("ENDORA_SYNTH_MODEL").ok();
-    let butler: Arc<dyn Butler + Send + Sync> = match (router_model, synth_model) {
+    let fallback: Arc<dyn Butler + Send + Sync> = match (router_model, synth_model) {
         (Some(router), Some(synth)) => {
             println!("butler: mixture — router={router}, synth={synth} via {model_url}");
             Arc::new(MixtureButler::new(
@@ -51,8 +53,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
+    // A model configuration saved from the console overrides the environment at
+    // runtime (ADR 0027): the butler reads it each turn and rebuilds when it
+    // changes, falling back to the environment brain above when nothing is stored.
+    let store = Arc::new(SqliteStore::open(&db_path)?);
+    let model_config = Arc::new(ConfigStore::new(store.db()));
+    let butler: Arc<dyn Butler + Send + Sync> =
+        Arc::new(ConfigurableButler::new(model_config, fallback));
+
     let state = AppState::new(
-        Arc::new(SqliteStore::open(&db_path)?),
+        store,
         Arc::new(RandomIdSource),
         Arc::new(SystemClock),
         Arc::new(OpenAiCompatibleProposer::new(
