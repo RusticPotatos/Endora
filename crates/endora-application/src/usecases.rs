@@ -828,6 +828,19 @@ pub fn send_to_butler_streaming(
     )?;
     chat.append(&user)?;
 
+    // A "morning brief" is more than one skill call, so a single model turn can't
+    // deliver it (it just promises to "fetch…"). Route brief requests straight to
+    // the brief engine, which runs weather + safety + news together and posts a
+    // complete brief. If there's nothing to brief (no home location / no ready
+    // skills), fall through to the model so it can ask or point to setup.
+    if is_brief_request(text) {
+        if let Some((message, activity)) = daily_brief(chat, preferences, capabilities, ids, clock)?
+        {
+            on_token(message.text());
+            return Ok((message, Vec::new(), activity));
+        }
+    }
+
     let history = chat.list()?;
     let prefs = preferences.list_all()?;
     let mut reply = butler
@@ -876,8 +889,8 @@ pub fn send_to_butler_streaming(
                 activity.push(format!("The {id} skill isn't set up yet"));
                 format!(
                     "The '{id}' skill isn't set up yet, so you could NOT check it. Tell the \
-                     person plainly you can't do that yet — do not invent a result — and offer \
-                     something you can actually do."
+                     person plainly you can't do that yet — do not invent a result — and point \
+                     them to set it up under Skills (they add its key/settings there)."
                 )
             }
             // Configured but consequential — must be confirmed, never auto-run.
@@ -1097,6 +1110,26 @@ fn route_intent(text: &str) -> Option<&'static str> {
         return Some("weather");
     }
     None
+}
+
+/// Whether the message is asking for a daily/morning **brief** — a rundown of the
+/// day (weather, safety, news) rather than a single fact. Deliberately specific, so
+/// an ordinary "what's the news" still goes through the normal skill path.
+fn is_brief_request(text: &str) -> bool {
+    let t = text.to_lowercase();
+    [
+        "morning brief",
+        "daily brief",
+        "my brief",
+        "brief me on",
+        "brief me for",
+        "give me a brief",
+        "give me my brief",
+        "the rundown",
+        "morning rundown",
+    ]
+    .iter()
+    .any(|p| t.contains(p))
 }
 
 /// Like [`route_intent`], but also catches a **deictic follow-up** — "right now?",
@@ -2667,6 +2700,18 @@ mod tests {
         assert_eq!(json_location("Charlotte"), "{\"location\":\"Charlotte\"}");
         // A value with a quote is escaped so the JSON stays well-formed.
         assert_eq!(json_location("a\"b"), "{\"location\":\"a\\\"b\"}");
+    }
+
+    #[test]
+    fn brief_requests_are_recognized_but_plain_questions_are_not() {
+        use super::is_brief_request;
+        assert!(is_brief_request("Give me my morning brief"));
+        assert!(is_brief_request("brief me on today"));
+        assert!(is_brief_request("what's my daily brief?"));
+        // Ordinary single-fact questions are NOT briefs.
+        assert!(!is_brief_request("what's the news"));
+        assert!(!is_brief_request("what's the weather"));
+        assert!(!is_brief_request("tell me about the debrief meeting")); // no brief-trigger words
     }
 
     #[test]
