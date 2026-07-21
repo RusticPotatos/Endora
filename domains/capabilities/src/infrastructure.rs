@@ -13,7 +13,8 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use endora_domain::AutonomyLevel;
+use crate::application::CapabilityRunner;
+use endora_kernel::AutonomyLevel;
 use serde_json::{Value, json};
 
 /// One setting a capability needs to work (a key, a model name, a URL). Declared
@@ -1545,7 +1546,7 @@ pub struct RegistryRunner {
     /// Per-capability enabled overrides (id → enabled). Missing = default enabled.
     enabled: std::collections::HashMap<String, bool>,
     /// The person's autonomy envelope — the boundary the butler acts within.
-    envelope: endora_application::AutonomyEnvelope,
+    envelope: crate::application::AutonomyEnvelope,
     /// Per-capability settings (id → key/value), for skills that need config.
     settings: std::collections::HashMap<String, CapabilitySettings>,
 }
@@ -1558,7 +1559,7 @@ impl RegistryRunner {
         Self {
             capabilities,
             enabled: std::collections::HashMap::new(),
-            envelope: endora_application::AutonomyEnvelope::default(),
+            envelope: crate::application::AutonomyEnvelope::default(),
             settings: std::collections::HashMap::new(),
         }
     }
@@ -1571,7 +1572,7 @@ impl RegistryRunner {
     pub fn with_config(
         capabilities: Arc<Vec<Arc<dyn Capability>>>,
         overrides: Vec<(String, bool)>,
-        envelope: endora_application::AutonomyEnvelope,
+        envelope: crate::application::AutonomyEnvelope,
         settings: std::collections::HashMap<String, CapabilitySettings>,
     ) -> Self {
         Self {
@@ -1603,7 +1604,7 @@ fn settings_complete(info: &CapabilityInfo, settings: &CapabilitySettings) -> bo
 /// The deterministic classifier at the heart of the autonomy envelope (ADR 0022):
 /// given a skill's declared autonomy and reach, and the person's envelope, may it
 /// run on its own this turn? Never consults the model — the boundary is policy.
-fn may_run_autonomously(info: &CapabilityInfo, env: &endora_application::AutonomyEnvelope) -> bool {
+fn may_run_autonomously(info: &CapabilityInfo, env: &crate::application::AutonomyEnvelope) -> bool {
     // The un-undoable is NEVER run on its own, whatever the envelope says (ADR 0024).
     // Irreversible actions only ever happen via an explicit, confirmed request.
     if !info.reversible {
@@ -1622,13 +1623,13 @@ fn may_run_autonomously(info: &CapabilityInfo, env: &endora_application::Autonom
     }
 }
 
-impl endora_application::CapabilityRunner for RegistryRunner {
-    fn available(&self) -> Vec<endora_application::CapabilitySpec> {
+impl CapabilityRunner for RegistryRunner {
+    fn available(&self) -> Vec<crate::application::CapabilitySpec> {
         self.capabilities
             .iter()
             .map(|c| {
                 let info = c.info();
-                endora_application::CapabilitySpec {
+                crate::application::CapabilitySpec {
                     id: info.id.to_owned(),
                     description: info.description.to_owned(),
                     // Usable only if the code is ready, the person has it enabled, AND
@@ -1683,7 +1684,7 @@ mod tests {
 
     #[test]
     fn the_envelope_classifier_gates_by_autonomy_and_reach() {
-        use endora_application::AutonomyEnvelope;
+        use crate::application::AutonomyEnvelope;
         let info = |autonomy, reaches_external| CapabilityInfo {
             id: "x",
             name: "X",
