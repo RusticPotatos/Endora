@@ -14,6 +14,7 @@ use endora_domain::{
 };
 
 use endora_capabilities::CapabilityRunner;
+use endora_conversation::ChatRepository;
 use endora_direction::{
     AssumptionRepository, DirectionRepository, ExperimentRepository, ObservationRepository,
     ProcessChangeRepository, ReflectionRepository, TargetRepository, ValueRepository,
@@ -24,9 +25,9 @@ use endora_understanding::{BeliefRepository, PreferenceRepository};
 use crate::error::AppError;
 use crate::ports::{
     AttentionItem, AttentionKind, BriefSchedule, BriefScheduleRepository, Butler, ButlerContext,
-    ButlerProposal, ButlerReply, ChatRepository, CheckinRepository, CheckinSchedule, Clock,
-    IdSource, MemorySnapshot, MemoryStore, NorthStarBrief, Proposer, Snooze, SnoozeRepository,
-    Suggestion, SuggestionRepository, SuggestionStatus,
+    ButlerProposal, ButlerReply, CheckinRepository, CheckinSchedule, Clock, IdSource,
+    MemorySnapshot, MemoryStore, NorthStarBrief, Proposer, Snooze, SnoozeRepository, Suggestion,
+    SuggestionRepository, SuggestionStatus,
 };
 
 /// Creates and stores a new [`Direction`].
@@ -1850,12 +1851,12 @@ mod tests {
     };
     use crate::error::AppError;
     use crate::ports::{
-        AttentionKind, Butler, ButlerContext, ButlerProposal, ButlerReply, ChatRepository,
-        CheckinRepository, CheckinSchedule, Clock, IdSource, ProposalError, Proposer,
-        RepositoryError, Snooze, SnoozeRepository, Suggestion, SuggestionRepository,
-        SuggestionStatus,
+        AttentionKind, Butler, ButlerContext, ButlerProposal, ButlerReply, CheckinRepository,
+        CheckinSchedule, Clock, IdSource, ProposalError, Proposer, RepositoryError, Snooze,
+        SnoozeRepository, Suggestion, SuggestionRepository, SuggestionStatus,
     };
     use endora_capabilities::CapabilityRunner;
+    use endora_conversation::ChatRepository;
     use endora_direction::{
         AssumptionRepository, DirectionRepository, ExperimentRepository, ObservationRepository,
         ProcessChangeRepository, ReflectionRepository, TargetRepository, ValueRepository,

@@ -36,14 +36,13 @@
 #![forbid(unsafe_code)]
 
 pub mod autonomy;
-pub mod conversation;
 pub mod error;
 pub mod ids;
 
 // `AuditRecord` moved to the platform context (ADR 0026); re-exported so
 // `endora_domain::AuditRecord` paths are unchanged during the migration.
 pub use autonomy::AutonomyLevel;
-pub use conversation::{ChatMessage, MessageRole};
+pub use endora_conversation::{ChatMessage, MessageRole};
 pub use endora_platform::AuditRecord;
 // Beliefs and preferences moved to the understanding context (ADR 0026);
 // the aims + learning loop (values, targets, experiments, reflection, policy)
