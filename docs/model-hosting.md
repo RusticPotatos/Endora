@@ -89,6 +89,33 @@ ollama pull moondream          # optional, for the Image review skill
 Keep Ollama a **separate** service from Endora (do not co-bundle) — that's what keeps
 the two loosely coupled and each highly cohesive. Endora only needs the URL.
 
+## Optional: private egress (proxy / VPN)
+
+Endora's external *skills* (weather, news, search, web fetch) reach the internet;
+the model, your data, and reasoning stay local. If you want those outbound requests
+to leave via a proxy or VPN — to hide your home IP from the providers — set:
+
+```yaml
+# docker-compose.yml
+ENDORA_EGRESS_PROXY: "socks5://my-egress-proxy:1080"   # or http://host:port
+```
+
+Only **external skill** traffic is proxied; the local model call is never routed
+through it, and if the proxy is down only external skills fail — the app keeps
+running.
+
+**Deliberately decoupled.** This is a proxy *URL*, not `network_mode:
+"service:<vpn>"`. Binding a container's whole network namespace to a VPN container
+tightly couples their lifecycles: a VPN restart drops the container's networking and
+DNS. The proxy-URL approach keeps Endora on its own network and merely *points* at an
+egress proxy — loose coupling, graceful degradation.
+
+Use a proxy **dedicated to this**, not a shared P2P/torrent VPN path. A small
+HTTP/SOCKS proxy container, Tor (`socks5://tor:9050`), or a separate egress VPN all
+work. (This is the *network* half of privacy; the *content* half — not putting
+personal details into the queries themselves — is handled separately by the egress
+guard, [ADR 0023](adr/0023-egress-guard-and-data-loss-tripwire.md).)
+
 ## Security note
 
 An OpenAI-compatible server like Ollama typically listens on `:11434` **without

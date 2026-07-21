@@ -124,6 +124,8 @@ pub fn default_capabilities() -> Vec<Arc<dyn Capability>> {
 
 // ---- helpers ---------------------------------------------------------------
 
+/// A **direct** HTTP agent — no egress proxy. Used for trusted internal calls (the
+/// local vision model), which must never be routed through a VPN/proxy.
 fn agent() -> ureq::Agent {
     ureq::Agent::config_builder()
         .timeout_global(Some(Duration::from_secs(15)))
@@ -131,10 +133,35 @@ fn agent() -> ureq::Agent {
         .into()
 }
 
+/// The configured egress proxy, if any. `ENDORA_EGRESS_PROXY` is an `http://`,
+/// `https://`, or `socks5://` URL (trusted deployment config). See
+/// [`external_agent`].
+fn egress_proxy() -> Option<ureq::Proxy> {
+    let url = std::env::var("ENDORA_EGRESS_PROXY").ok()?;
+    let url = url.trim();
+    if url.is_empty() {
+        return None;
+    }
+    ureq::Proxy::new(url).ok()
+}
+
+/// An agent for **external** skill egress. If an egress proxy is configured,
+/// outbound skill requests route through it — so you can send them via a VPN's
+/// proxy (e.g. gluetun's HTTP proxy) **without** binding Endora's network to the VPN
+/// container (ADR 0023). Loosely coupled: if the proxy is down, only external skills
+/// fail; the app keeps running.
+fn external_agent() -> ureq::Agent {
+    let mut builder = ureq::Agent::config_builder().timeout_global(Some(Duration::from_secs(15)));
+    if let Some(proxy) = egress_proxy() {
+        builder = builder.proxy(Some(proxy));
+    }
+    builder.build().into()
+}
+
 /// GETs a URL and returns the body as text (size-capped), for the info skills.
 fn http_get_text(url: &str, max_bytes: usize) -> Result<String, CapabilityError> {
     use std::io::Read;
-    let mut resp = agent()
+    let mut resp = external_agent()
         .get(url)
         .call()
         .map_err(|e| CapabilityError::Unavailable(e.to_string()))?;
@@ -159,7 +186,7 @@ fn str_field<'a>(input: &'a Value, key: &str) -> Result<&'a str, CapabilityError
 /// GET with an explicit `User-Agent` (some APIs, e.g. the US NWS, require one).
 fn http_get_text_ua(url: &str, ua: &str, max_bytes: usize) -> Result<String, CapabilityError> {
     use std::io::Read;
-    let mut resp = agent()
+    let mut resp = external_agent()
         .get(url)
         .header("User-Agent", ua)
         .call()
@@ -374,11 +401,14 @@ fn guarded_get_text(url: &str, max_bytes: usize) -> Result<String, CapabilityErr
 /// Guarded byte fetch with manual, re-guarded redirect following (bounded).
 fn guarded_get_bytes(url: &str, max_bytes: usize) -> Result<Vec<u8>, CapabilityError> {
     use std::io::Read;
-    let no_redirect = ureq::Agent::config_builder()
+    // No auto-redirects (we re-guard each hop), and honour the egress proxy.
+    let mut builder = ureq::Agent::config_builder()
         .timeout_global(Some(Duration::from_secs(15)))
-        .max_redirects(0)
-        .build();
-    let no_redirect: ureq::Agent = no_redirect.into();
+        .max_redirects(0);
+    if let Some(proxy) = egress_proxy() {
+        builder = builder.proxy(Some(proxy));
+    }
+    let no_redirect: ureq::Agent = builder.build().into();
     let mut current = url.to_owned();
     for _ in 0..6 {
         guard_egress(&current)?;

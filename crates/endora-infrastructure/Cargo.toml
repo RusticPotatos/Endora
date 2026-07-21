@@ -13,7 +13,7 @@ endora-domain = { path = "../endora-domain" }
 endora-application = { path = "../endora-application" }
 rusqlite = { version = "0.39", features = ["bundled"] }
 uuid = { version = "1.24.0", features = ["v4"] }
-ureq = { version = "3.3", features = ["json"] }
+ureq = { version = "3.3", features = ["json", "socks-proxy"] }
 serde_json = "1.0.150"
 
 [lints]
