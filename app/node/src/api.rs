@@ -19,8 +19,8 @@ use axum::routing::{get, post};
 use endora_application::{
     ActivityItem, AppError, AttentionItem, AttentionKind, AutonomyEnvelope,
     AutonomyEnvelopeRepository, BriefSchedule, Butler, ButlerProposal, CapabilityConfigRepository,
-    CapabilitySettingsRepository, CheckinSchedule, DeepModelRepository, EventLog, MemorySnapshot,
-    Proposer, RepositoryError, Suggestion, SuggestionStatus, usecases,
+    CapabilitySettingsRepository, CheckinSchedule, DeepModelRepository, MemorySnapshot, Proposer,
+    RepositoryError, Suggestion, SuggestionStatus, usecases,
 };
 use endora_domain::{
     Assumption, AssumptionId, AuditRecord, AutonomyLevel, Belief, BeliefId, ChatMessage, Direction,
@@ -53,6 +53,10 @@ pub struct AppState {
     pub direction: Arc<endora_direction::DirectionStore>,
     /// The capabilities context's config store (settings/config/envelope/deep-model).
     pub config: Arc<endora_capabilities::ConfigStore>,
+    /// The platform context's audit trail store.
+    pub audit: Arc<endora_platform::AuditStore>,
+    /// The platform context's event-log store.
+    pub events: Arc<endora_platform::EventStore>,
     /// The identifier source.
     pub ids: Arc<RandomIdSource>,
     /// The system clock.
@@ -89,6 +93,8 @@ impl AppState {
         let understanding = Arc::new(endora_understanding::UnderstandingStore::new(store.db()));
         let direction = Arc::new(endora_direction::DirectionStore::new(store.db()));
         let config = Arc::new(endora_capabilities::ConfigStore::new(store.db()));
+        let audit = Arc::new(endora_platform::AuditStore::new(store.db()));
+        let events = Arc::new(endora_platform::EventStore::new(store.db()));
         Self {
             store,
             chat,
@@ -96,6 +102,8 @@ impl AppState {
             understanding,
             direction,
             config,
+            audit,
+            events,
             ids,
             clock,
             proposer,
@@ -896,7 +904,7 @@ async fn decide_process_change(
             })
         })?,
     };
-    let store = state.store.clone();
+    let audit = state.audit.clone();
     let dirs = state.direction.clone();
     let ids = state.ids.clone();
     let clock = state.clock.clone();
@@ -905,7 +913,7 @@ async fn decide_process_change(
             dirs.as_ref(),
             ids.as_ref(),
             clock.as_ref(),
-            store.as_ref(),
+            audit.as_ref(),
             change_id,
             actor,
         )
@@ -950,8 +958,8 @@ async fn audit(
     Query(query): Query<AuditQuery>,
 ) -> Result<Json<Vec<AuditResponse>>, ApiError> {
     let limit = query.limit.unwrap_or(50);
-    let store = state.store.clone();
-    let records = blocking(move || usecases::recent_audit(store.as_ref(), limit)).await?;
+    let audit = state.audit.clone();
+    let records = blocking(move || usecases::recent_audit(audit.as_ref(), limit)).await?;
     Ok(Json(records.iter().map(AuditResponse::from).collect()))
 }
 
@@ -978,10 +986,11 @@ async fn activity(
     Query(query): Query<AuditQuery>,
 ) -> Result<Json<Vec<ActivityResponse>>, ApiError> {
     let limit = query.limit.unwrap_or(50);
-    let store = state.store.clone();
+    let audit = state.audit.clone();
+    let events = state.events.clone();
     let dirs = state.direction.clone();
     let items = blocking(move || {
-        usecases::recent_activity(dirs.as_ref(), store.as_ref(), store.as_ref(), limit)
+        usecases::recent_activity(dirs.as_ref(), audit.as_ref(), events.as_ref(), limit)
     })
     .await?;
     Ok(Json(items.iter().map(ActivityResponse::from).collect()))
@@ -1070,9 +1079,9 @@ fn suggestion_json(s: &Suggestion) -> serde_json::Value {
 /// butler.
 /// Records one line to the butler's action log (best-effort — transparency, not
 /// the critical path, so a failure never breaks the turn).
-fn record_event(store: &SqliteStore, clock: &SystemClock, summary: &str) {
-    use endora_application::Clock;
-    let _ = store.record(clock.now(), summary);
+fn record_event(events: &endora_platform::EventStore, clock: &SystemClock, summary: &str) {
+    use endora_application::{Clock, EventLog};
+    let _ = events.record(clock.now(), summary);
 }
 
 fn build_runner(
@@ -1116,6 +1125,7 @@ async fn send_chat(
     let chat = state.chat.clone();
     let understanding = state.understanding.clone();
     let config = state.config.clone();
+    let events = state.events.clone();
     let ids = state.ids.clone();
     let clock = state.clock.clone();
     let butler = state.butler.clone();
@@ -1148,7 +1158,7 @@ async fn send_chat(
         // Persist what the butler did/learned this turn to its action log, so the
         // activity view is a durable record, not just an in-page note.
         for item in &out.2 {
-            record_event(store.as_ref(), clock.as_ref(), item);
+            record_event(events.as_ref(), clock.as_ref(), item);
         }
         Ok(out)
     })
@@ -1165,10 +1175,10 @@ async fn send_chat(
 /// (ADRs 0024/0025). Returns the posted message, or a note if there's nothing to
 /// brief (no home location, or no ready skills).
 async fn brief(State(state): State<AppState>) -> Result<Json<serde_json::Value>, ApiError> {
-    let store = state.store.clone();
     let chat = state.chat.clone();
     let understanding = state.understanding.clone();
     let config = state.config.clone();
+    let events = state.events.clone();
     let ids = state.ids.clone();
     let clock = state.clock.clone();
     let capabilities = state.capabilities.clone();
@@ -1183,9 +1193,9 @@ async fn brief(State(state): State<AppState>) -> Result<Json<serde_json::Value>,
         )?;
         if let Some((_, activity)) = &out {
             for item in activity {
-                record_event(store.as_ref(), clock.as_ref(), item);
+                record_event(events.as_ref(), clock.as_ref(), item);
             }
-            record_event(store.as_ref(), clock.as_ref(), "Prepared your daily brief");
+            record_event(events.as_ref(), clock.as_ref(), "Prepared your daily brief");
         }
         Ok::<_, AppError>(out)
     })
@@ -1220,6 +1230,7 @@ async fn stream_chat(
     let chat = state.chat.clone();
     let understanding = state.understanding.clone();
     let config = state.config.clone();
+    let events = state.events.clone();
     let ids = state.ids.clone();
     let clock = state.clock.clone();
     let butler = state.butler.clone();
@@ -1272,7 +1283,7 @@ async fn stream_chat(
             Ok((reply, suggestions, activity)) => {
                 // Persist the turn's actions/learnings to the butler's action log.
                 for item in &activity {
-                    record_event(store.as_ref(), clock.as_ref(), item);
+                    record_event(events.as_ref(), clock.as_ref(), item);
                 }
                 // A successful write nudges the change stream, like other writes.
                 let _ = changes.send(());
@@ -1562,7 +1573,7 @@ async fn set_capability_settings(
         .into_iter()
         .filter(|(k, _)| allowed.contains(k.as_str()))
         .collect();
-    let store = state.store.clone();
+    let events = state.events.clone();
     let config = state.config.clone();
     let clock = state.clock.clone();
     let cap_id = id.clone();
@@ -1573,7 +1584,7 @@ async fn set_capability_settings(
                 .map_err(AppError::Repository)?;
         }
         record_event(
-            store.as_ref(),
+            events.as_ref(),
             clock.as_ref(),
             &format!("Updated settings for the {cap_id} skill"),
         );
@@ -1602,7 +1613,7 @@ async fn set_capability_enabled(
             entity: "capability",
         }));
     }
-    let store = state.store.clone();
+    let events = state.events.clone();
     let config = state.config.clone();
     let clock = state.clock.clone();
     let (cap_id, enabled) = (id.clone(), req.enabled);
@@ -1611,7 +1622,7 @@ async fn set_capability_enabled(
             .set_enabled(&cap_id, enabled)
             .map_err(AppError::Repository)?;
         record_event(
-            store.as_ref(),
+            events.as_ref(),
             clock.as_ref(),
             &format!(
                 "Turned the {cap_id} skill {}",
@@ -1657,13 +1668,13 @@ async fn set_autonomy(
         auto_consequential: req.auto_consequential,
     };
     let config = state.config.clone();
-    let store = state.store.clone();
+    let events = state.events.clone();
     let clock = state.clock.clone();
     blocking(move || {
         AutonomyEnvelopeRepository::set(config.as_ref(), &envelope)
             .map_err(AppError::Repository)?;
         record_event(
-            store.as_ref(),
+            events.as_ref(),
             clock.as_ref(),
             &format!(
                 "Adjusted autonomy: read-only skills {}, consequential actions {}",
@@ -1723,7 +1734,7 @@ async fn set_deep_model(
     Json(req): Json<DeepModelRequest>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let config = state.config.clone();
-    let store = state.store.clone();
+    let events = state.events.clone();
     let clock = state.clock.clone();
     blocking(move || {
         let existing = DeepModelRepository::get(config.as_ref())
@@ -1742,7 +1753,7 @@ async fn set_deep_model(
             },
         )
         .map_err(AppError::Repository)?;
-        record_event(store.as_ref(), clock.as_ref(), "Configured the deep model");
+        record_event(events.as_ref(), clock.as_ref(), "Configured the deep model");
         Ok::<_, AppError>(())
     })
     .await?;
@@ -1762,9 +1773,9 @@ async fn deep_ask(
     State(state): State<AppState>,
     Json(req): Json<DeepAskRequest>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let store = state.store.clone();
     let chat = state.chat.clone();
     let config = state.config.clone();
+    let events = state.events.clone();
     let ids = state.ids.clone();
     let clock = state.clock.clone();
     let question = req.question;
@@ -1788,7 +1799,7 @@ async fn deep_ask(
         endora_infrastructure::redact_pii_in_value(&mut v);
         let safe_question = v.as_str().unwrap_or(&question).to_owned();
         // Record the person's question, then the deep answer.
-        record_event(store.as_ref(), clock.as_ref(), "Asked the deep model");
+        record_event(events.as_ref(), clock.as_ref(), "Asked the deep model");
         match endora_infrastructure::ask_deep_model(
             &cfg.url,
             &cfg.model,
@@ -1915,6 +1926,7 @@ pub fn spawn_heartbeat(state: AppState) {
         loop {
             ticker.tick().await;
             let store = state.store.clone();
+            let events = state.events.clone();
             let dirs = state.direction.clone();
             let chat = state.chat.clone();
             let schedules = state.schedules.clone();
@@ -1944,7 +1956,7 @@ pub fn spawn_heartbeat(state: AppState) {
                 )?;
                 if posted.is_some() {
                     record_event(
-                        store.as_ref(),
+                        events.as_ref(),
                         clock.as_ref(),
                         "Reached out with a check-in",
                     );
@@ -1960,9 +1972,9 @@ pub fn spawn_heartbeat(state: AppState) {
                 )?;
                 if let Some((_, activity)) = &briefed {
                     for item in activity {
-                        record_event(store.as_ref(), clock.as_ref(), item);
+                        record_event(events.as_ref(), clock.as_ref(), item);
                     }
-                    record_event(store.as_ref(), clock.as_ref(), "Prepared your daily brief");
+                    record_event(events.as_ref(), clock.as_ref(), "Prepared your daily brief");
                 }
                 Ok::<_, AppError>(posted.is_some() || briefed.is_some())
             })
