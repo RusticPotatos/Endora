@@ -767,15 +767,28 @@ function viewSkills() {
     const status = c.usable
       ? `<span class="pill concluded">On</span>`
       : (!enabled ? `<span class="pill">Off</span>` : `<span class="pill">Needs setup</span>`);
+    // A settings form for skills that need configuring (a model, a key, a URL).
+    const settingsForm = (c.settings && c.settings.length) ? `
+      <div style="margin-top:8px;border-top:1px solid var(--line);padding-top:8px;">
+        ${c.settings.map((s) => `
+          <div class="form" style="margin-bottom:6px;align-items:center;">
+            <label class="sub" style="min-width:130px;">${esc(s.label)}${s.set ? ` <span class="pill concluded">set</span>` : ""}</label>
+            <input id="setting-${c.id}-${s.key}" type="${s.secret ? "password" : "text"}" placeholder="${s.set ? "•••••• (unchanged)" : (s.secret ? "enter a value" : "")}" autocomplete="off" />
+          </div>`).join("")}
+        <button class="primary" data-act="skillcfg:${c.id}">Save settings</button>
+      </div>` : "";
     return `
-      <div class="card"><div class="row">
-        <div class="grow">
-          <div class="title">${esc(c.name)} ${status}${ext ? ` <span class="pill">leaves device</span>` : ""}</div>
-          <div class="sub">${esc(c.description)}</div>
-          ${(enabled && !c.configured) ? `<div class="sub" style="margin-top:4px;">Needs: ${esc(c.needs)}</div>` : ""}
+      <div class="card">
+        <div class="row">
+          <div class="grow">
+            <div class="title">${esc(c.name)} ${status}${ext ? ` <span class="pill">leaves device</span>` : ""}</div>
+            <div class="sub">${esc(c.description)}</div>
+            ${(enabled && !c.configured) ? `<div class="sub" style="margin-top:4px;">Needs: ${esc(c.needs)}</div>` : ""}
+          </div>
+          <button class="ghost" data-act="skill:enable:${c.id}:${enabled ? "0" : "1"}">${enabled ? "Turn off" : "Turn on"}</button>
         </div>
-        <button class="ghost" data-act="skill:enable:${c.id}:${enabled ? "0" : "1"}">${enabled ? "Turn off" : "Turn on"}</button>
-      </div></div>`;
+        ${settingsForm}
+      </div>`;
   };
   const env = AUTONOMY || {};
   const toggle = (on, act, label, sub) => `
@@ -1050,6 +1063,20 @@ async function dispatch(act) {
       const enabled = arg === "1";
       try { await api("POST", `/v1/capabilities/${id}/enable`, { enabled }); }
       catch (e) { flash("Couldn't change that skill: " + e.message, "err"); }
+      return reload();
+    }
+    // Save a skill's settings (ADR 0021). Only non-empty fields are sent, so a
+    // blank secret leaves the stored value unchanged.
+    if (verb === "skillcfg") {
+      const cap = (CAPS || []).find((c) => c.id === noun);
+      if (!cap) return;
+      const settings = {};
+      for (const s of (cap.settings || [])) {
+        const el = document.getElementById(`setting-${noun}-${s.key}`);
+        if (el && el.value.trim()) settings[s.key] = el.value.trim();
+      }
+      try { await api("POST", `/v1/capabilities/${noun}/config`, { settings }); flash("Saved.", "ok"); }
+      catch (e) { flash("Couldn't save settings: " + e.message, "err"); }
       return reload();
     }
     // Widen/narrow the autonomy envelope (ADR 0022). `noun` is the lever; `id` is 1/0.

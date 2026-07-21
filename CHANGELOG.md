@@ -33,6 +33,18 @@ tagged release.
 
 ### Added
 
+- **Configure your skills — settings & secrets** (second slice of
+  [ADR 0021](docs/adr/0021-capability-catalog-and-mcp-host.md)): skills that need
+  setup now declare their settings (a model, a key, a URL) and the Skills view
+  renders a form for each. `configured` is computed — a skill is usable only once
+  every required setting has a value (and it's enabled). Secrets are stored
+  server-side and never echoed back. As the first real user: **Image review** is now
+  a working skill — set its vision model (e.g. `moondream`, already on the box) and
+  it describes an image via the local model. New `POST /v1/capabilities/{id}/config`;
+  settings are covered by delete-all.
+- **Two general-knowledge skills** — **Knowledge lookup** (Wikipedia) and **Web
+  answers** (DuckDuckGo), both keyless, so the butler can look things up instead of
+  only fetching a URL you hand it.
 - **The autonomy envelope — how independently Endora acts** (first slice of
   [ADR 0022](docs/adr/0022-autonomy-envelope-and-self-authored-capabilities.md)): a
   control in the Skills view sets the boundary the butler acts *within* — it acts on
