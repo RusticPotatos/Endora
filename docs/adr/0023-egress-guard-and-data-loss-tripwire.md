@@ -50,13 +50,22 @@ Introduce an **egress guard** the outbound path routes through, built in slices.
   (weather, news, …) keep their normal fetch to constant, trusted hosts, and the
   internal model calls are untouched.
 
+### Slice 2 (built): the outbound content tripwire
+
+- Before an **external** skill runs, its input is scanned for **high-confidence
+  secrets** — private-key blocks and well-known credential shapes (AWS `AKIA…`,
+  `sk-…`/`sk-ant-…` API keys, GitHub `ghp_…`, Slack `xox…`, Stripe `sk_live_…`,
+  Google `AIza…`, JWTs). If one is found the request is **refused** (fail closed),
+  so the butler can't be steered into leaking a key in a query. The scanner is
+  deliberately precise (known shapes only) to avoid blocking legitimate requests;
+  broader PII detection is a later refinement.
+
 ### Later slices (declared, not built here)
 
 - **Per-capability host allowlist** enforced at one choke point.
-- **Outbound content tripwire**: scan skill inputs for obvious secrets (API keys,
-  long tokens) and optionally PII before they leave; block or confirm.
-- **Egress logging** to the existing action feed (`EventLog`), so the person can see
-  exactly what left and where.
+- Broader **PII** detection in the tripwire (cards, national IDs) with block/confirm.
+- **Egress logging** to the action feed (`EventLog`) recording exactly what left and
+  where (the coarse "used the X skill" is already recorded there today).
 
 ### Invariant
 
