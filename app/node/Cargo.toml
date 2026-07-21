@@ -18,6 +18,7 @@ endora-application = { path = "../../crates/endora-application" }
 endora-domain = { path = "../../crates/endora-domain" }
 endora-infrastructure = { path = "../../crates/endora-infrastructure" }
 endora-conversation = { path = "../../domains/conversation" }
+endora-scheduling = { path = "../../domains/scheduling" }
 # Already in the tree transitively (via axum/tokio); declared directly to adapt
 # a broadcast channel into the SSE response stream. Enabling the stream helpers
 # pulls one additional crate from the same futures project (futures-macro).
