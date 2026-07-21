@@ -343,6 +343,7 @@ dependencies = [
  "endora-conversation",
  "endora-domain",
  "endora-infrastructure",
+ "endora-scheduling",
  "futures-util",
  "http-body-util",
  "rcgen",
@@ -375,6 +376,8 @@ name = "endora-scheduling"
 version = "0.11.0"
 dependencies = [
  "endora-kernel",
+ "endora-persistence",
+ "rusqlite",
 ]
 
 [[package]]
