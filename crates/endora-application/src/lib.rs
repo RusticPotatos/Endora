@@ -28,6 +28,11 @@ pub use endora_capabilities::{
 // The chat repository lives in the conversation context (ADR 0026); re-exported
 // so `endora_application::ChatRepository` is unchanged.
 pub use endora_conversation::ChatRepository;
+// The schedules live in the scheduling context (ADR 0026); re-exported so their
+// `endora_application::…` paths are unchanged.
+pub use endora_scheduling::{
+    BriefSchedule, BriefScheduleRepository, CheckinRepository, CheckinSchedule,
+};
 // Belief/preference repositories live in the understanding context (ADR 0026);
 // re-exported so their `endora_application::…` paths are unchanged.
 pub use endora_understanding::{BeliefRepository, PreferenceRepository};
@@ -38,10 +43,9 @@ pub use endora_direction::{
     ProcessChangeRepository, ReflectionRepository, TargetRepository, ValueRepository,
 };
 pub use ports::{
-    AttentionItem, AttentionKind, BriefSchedule, BriefScheduleRepository, Butler, ButlerContext,
-    ButlerProposal, ButlerReply, CheckinRepository, CheckinSchedule, Clock, FormedBelief, IdSource,
-    MemorySnapshot, MemoryStore, NorthStarBrief, ProposalError, Proposer, RepositoryError, Snooze,
-    SnoozeRepository, Suggestion, SuggestionRepository, SuggestionStatus,
+    AttentionItem, AttentionKind, Butler, ButlerContext, ButlerProposal, ButlerReply, Clock,
+    FormedBelief, IdSource, MemorySnapshot, MemoryStore, NorthStarBrief, ProposalError, Proposer,
+    RepositoryError, Snooze, SnoozeRepository, Suggestion, SuggestionRepository, SuggestionStatus,
 };
 pub use usecases::{ActivityItem, ActivityKind};
 
