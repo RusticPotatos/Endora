@@ -1,4 +1,4 @@
-# 0026 — Package by bounded context (app / domains / shared)
+# 0026 — Responsibility-Oriented Clean Architecture (app / domains / shared)
 
 ## Status
 
@@ -26,8 +26,15 @@ and is kept. Only the **packaging** changes.
 
 ## Decision
 
-Organize the workspace **by bounded context**, mirroring the convention proven
-in a sibling project:
+We call this structure **Responsibility-Oriented Clean Architecture (ROCA)**: the
+application is organized around top-level *responsibilities*, and each
+responsibility owns its own interface, application logic, domain model, and
+infrastructure — minimizing cross-cutting concerns and making ownership explicit.
+It keeps Clean Architecture's inward-pointing layers, but makes *responsibility*,
+not *layer*, the primary axis of the codebase.
+
+Concretely, organize the workspace **by responsibility (bounded context)**,
+mirroring the convention proven in a sibling project:
 
 ```
 app/        composition root(s) — the node binary, the CLI
