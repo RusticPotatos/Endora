@@ -199,6 +199,7 @@ let SUGGESTIONS = [];          // pending suggestions (the butler's durable prop
 let CHECKIN = { enabled: false, interval_ms: 0 }; // proactive check-in cadence
 let CAPS = [];                 // the butler's capabilities/skills (modules)
 let AUTONOMY = { auto_external: true, auto_consequential: false }; // the autonomy envelope (ADR 0022)
+let BRIEF_SCHED = { enabled: false, hour_utc: 12 }; // daily-brief schedule
 let UNDERSTANDING = [];        // Endora's beliefs about the person (the home surface)
 let LAST_ACTIVITY = [];        // what Endora did behind the scenes on the last turn
 let LAST_ACTIVITY_MSG = null;  // the butler message id that activity belongs to
@@ -277,6 +278,7 @@ async function reload() {
     api("GET", "/v1/capabilities"),
     api("GET", "/v1/autonomy"),
   ]);
+  try { BRIEF_SCHED = await api("GET", "/v1/brief/schedule"); } catch (_) {}
   DB = db;
   ACTIVITY = activity;
   ATTENTION = attention;
@@ -739,9 +741,23 @@ function viewChat() {
         : `<button data-act="chat:mic" title="voice input needs HTTPS or localhost">${icon("mic")}<span>needs HTTPS</span></button>`)
     : "";
   const cadence = CHECKIN.enabled ? String(CHECKIN.interval_ms) : "off";
+  // Daily-brief time: options in the person's LOCAL hours; saved as UTC.
+  const tzOff = new Date().getTimezoneOffset() / 60; // minutes behind UTC → hours
+  const localHour = BRIEF_SCHED.enabled ? ((BRIEF_SCHED.hour_utc - tzOff) % 24 + 24) % 24 : -1;
+  const hourOpts = Array.from({ length: 24 }, (_, h) => {
+    const ampm = h < 12 ? "AM" : "PM"; const h12 = (h % 12) || 12;
+    return `<option value="${h}" ${h === localHour ? "selected" : ""}>${h12}:00 ${ampm}</option>`;
+  }).join("");
+  const briefControl = `
+      <span class="sub">${icon("sparkle", 15)} Daily brief</span>
+      <select id="brief-time" data-change="briefsched" style="width:auto;">
+        <option value="off" ${!BRIEF_SCHED.enabled ? "selected" : ""}>Off</option>
+        ${hourOpts}
+      </select>`;
   const checkinControl = `
-    <div class="row" style="justify-content:flex-end; gap:8px; margin-bottom:8px;">
+    <div class="row" style="justify-content:flex-end; gap:8px; margin-bottom:8px; flex-wrap:wrap;">
       <button class="ghost" data-act="brief" title="a weather / safety / news brief for where you're based">${icon("sparkle", 15)} Brief me</button>
+      ${briefControl}
       <span class="sub">${icon("clock", 15)} Check-ins</span>
       <select id="checkin-cadence" data-change="checkin" style="width:auto;">
         <option value="off" ${cadence === "off" ? "selected" : ""}>Off</option>
@@ -1215,6 +1231,15 @@ async function dispatch(act) {
       const interval_ms = enabled ? Number(noun) : (CHECKIN.interval_ms || 86400000);
       await api("POST", "/v1/checkin", { enabled, interval_ms });
       flash(enabled ? "The butler will check in with you." : "Check-ins off.", "ok");
+      return reload();
+    }
+    // Daily-brief schedule: `noun` is "off" or a LOCAL hour; convert to UTC.
+    if (verb === "briefsched") {
+      const enabled = noun !== "off";
+      const tzOff = new Date().getTimezoneOffset() / 60;
+      const hour_utc = enabled ? ((Number(noun) + tzOff) % 24 + 24) % 24 : (BRIEF_SCHED.hour_utc || 12);
+      await api("POST", "/v1/brief/schedule", { enabled, hour_utc });
+      flash(enabled ? "The butler will bring you a daily brief." : "Daily brief off.", "ok");
       return reload();
     }
     if (verb === "snooze" && noun === "attention") {

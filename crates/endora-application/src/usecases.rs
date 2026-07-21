@@ -15,13 +15,13 @@ use endora_domain::{
 
 use crate::error::AppError;
 use crate::ports::{
-    AssumptionRepository, AttentionItem, AttentionKind, AuditLog, BeliefRepository, Butler,
-    ButlerContext, ButlerProposal, ButlerReply, CapabilityRunner, ChatRepository,
-    CheckinRepository, CheckinSchedule, Clock, DirectionRepository, EventLog, ExperimentRepository,
-    IdSource, MemorySnapshot, MemoryStore, NorthStarBrief, ObservationRepository,
-    PreferenceRepository, ProcessChangeRepository, Proposer, ReflectionRepository, Snooze,
-    SnoozeRepository, Suggestion, SuggestionRepository, SuggestionStatus, TargetRepository,
-    ValueRepository,
+    AssumptionRepository, AttentionItem, AttentionKind, AuditLog, BeliefRepository, BriefSchedule,
+    BriefScheduleRepository, Butler, ButlerContext, ButlerProposal, ButlerReply, CapabilityRunner,
+    ChatRepository, CheckinRepository, CheckinSchedule, Clock, DirectionRepository, EventLog,
+    ExperimentRepository, IdSource, MemorySnapshot, MemoryStore, NorthStarBrief,
+    ObservationRepository, PreferenceRepository, ProcessChangeRepository, Proposer,
+    ReflectionRepository, Snooze, SnoozeRepository, Suggestion, SuggestionRepository,
+    SuggestionStatus, TargetRepository, ValueRepository,
 };
 
 /// Creates and stores a new [`Direction`].
@@ -1488,6 +1488,65 @@ pub fn daily_brief(
     Ok(Some((message, activity)))
 }
 
+/// Returns the daily-brief schedule, defaulting to **off**.
+///
+/// # Errors
+/// [`AppError::Repository`] if the backend fails.
+pub fn brief_schedule(briefs: &impl BriefScheduleRepository) -> Result<BriefSchedule, AppError> {
+    Ok(briefs
+        .get()?
+        .unwrap_or_else(BriefSchedule::disabled_default))
+}
+
+/// Turns the daily brief on/off and sets the UTC hour it prepares at.
+///
+/// # Errors
+/// [`AppError::Repository`] if the backend fails.
+pub fn set_brief_schedule(
+    briefs: &impl BriefScheduleRepository,
+    enabled: bool,
+    hour_utc: u8,
+) -> Result<BriefSchedule, AppError> {
+    let current = briefs
+        .get()?
+        .unwrap_or_else(BriefSchedule::disabled_default);
+    let schedule = BriefSchedule {
+        enabled,
+        hour_utc: hour_utc.min(23),
+        // Keep last_at so toggling doesn't re-fire the same day.
+        last_at: current.last_at,
+    };
+    briefs.set(&schedule)?;
+    Ok(schedule)
+}
+
+/// If a daily brief is **due** (enabled, the hour matches, none prepared today),
+/// prepares one via [`daily_brief`] and records that it fired. Called by the
+/// heartbeat. Returns the posted brief + activity, or `None`.
+///
+/// # Errors
+/// [`AppError::Repository`] if the backend fails.
+pub fn run_due_brief(
+    chat: &impl ChatRepository,
+    preferences: &impl PreferenceRepository,
+    briefs: &impl BriefScheduleRepository,
+    capabilities: &dyn CapabilityRunner,
+    ids: &impl IdSource,
+    clock: &impl Clock,
+) -> Result<Option<(ChatMessage, Vec<String>)>, AppError> {
+    let now = clock.now();
+    let Some(mut schedule) = briefs.get()? else {
+        return Ok(None);
+    };
+    if !schedule.is_due(now) {
+        return Ok(None);
+    }
+    // Mark fired first, so a slow compose can't double-post on the next tick.
+    schedule.last_at = now;
+    briefs.set(&schedule)?;
+    daily_brief(chat, preferences, capabilities, ids, clock)
+}
+
 /// Composes a proactive check-in, grounded in the person's life and always asking
 /// how the butler can serve them better (the self-improvement loop, in dialogue).
 fn checkin_text(context: &ButlerContext) -> String {
@@ -2766,6 +2825,34 @@ mod tests {
         // No fabricated festival; the butler was grounded in "it's off".
         assert!(!reply.text().contains("festival"));
         assert!(activity.iter().any(|a| a.contains("Couldn't check news")));
+    }
+
+    #[test]
+    fn brief_is_due_only_at_its_hour_once_per_day() {
+        use crate::ports::BriefSchedule;
+        let at = |d: i64, h: i64| Timestamp::from_unix_millis(d * 86_400_000 + h * 3_600_000);
+        let day = 20_000; // a realistic day, so "since epoch" is far in the past
+        let s = BriefSchedule {
+            enabled: true,
+            hour_utc: 12,
+            last_at: Timestamp::from_unix_millis(0),
+        };
+        assert!(!s.is_due(at(day, 11))); // wrong hour
+        assert!(s.is_due(at(day, 12))); // right hour, long since last
+        // Just fired today ⇒ not due again the same day...
+        let fired = BriefSchedule {
+            last_at: at(day, 12),
+            ..s
+        };
+        assert!(!fired.is_due(at(day, 12)));
+        // ...but due again the next day.
+        assert!(fired.is_due(at(day + 1, 12)));
+        // Disabled is never due.
+        let off = BriefSchedule {
+            enabled: false,
+            ..s
+        };
+        assert!(!off.is_due(at(day, 12)));
     }
 
     #[test]
