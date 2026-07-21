@@ -14,7 +14,7 @@ pub mod ids;
 pub mod model;
 pub mod sqlite;
 
-pub use butler::{LlmButler, ScriptedButler, ask_deep_model};
+pub use butler::{LlmButler, MixtureButler, ScriptedButler, ask_deep_model};
 // The capabilities context owns the skills, runner, and egress guard (ADR 0026);
 // re-exported so `endora_infrastructure::{RegistryRunner, …}` paths are unchanged.
 pub use clock::SystemClock;
