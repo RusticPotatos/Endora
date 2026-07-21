@@ -10,6 +10,8 @@
 
 pub mod application;
 pub mod domain;
+pub mod infrastructure;
 
 pub use application::ChatRepository;
 pub use domain::{ChatMessage, MessageRole};
+pub use infrastructure::{ChatStore, migrate};

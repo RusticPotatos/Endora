@@ -40,8 +40,11 @@ use tokio::sync::broadcast;
 /// Shared state handed to every request handler.
 #[derive(Clone)]
 pub struct AppState {
-    /// The persistence adapter (implements the repository ports).
+    /// The persistence adapter (implements the repository ports not yet moved to
+    /// their bounded context — ADR 0026).
     pub store: Arc<SqliteStore>,
+    /// The conversation context's chat repository, over the shared connection.
+    pub chat: Arc<endora_conversation::ChatStore>,
     /// The identifier source.
     pub ids: Arc<RandomIdSource>,
     /// The system clock.
@@ -72,8 +75,11 @@ impl AppState {
         // A small buffer is plenty: subscribers coalesce to a single refresh,
         // and a lagged receiver still gets one "changed" signal.
         let (changes, _) = broadcast::channel(16);
+        // Context stores share the one connection the store opened (ADR 0026).
+        let chat = Arc::new(endora_conversation::ChatStore::new(store.db()));
         Self {
             store,
+            chat,
             ids,
             clock,
             proposer,
@@ -1088,6 +1094,7 @@ async fn send_chat(
     Json(req): Json<ChatRequest>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let store = state.store.clone();
+    let chat = state.chat.clone();
     let ids = state.ids.clone();
     let clock = state.clock.clone();
     let butler = state.butler.clone();
@@ -1106,7 +1113,7 @@ async fn send_chat(
             clock.as_ref(),
         )?;
         let out = usecases::send_to_butler(
-            store.as_ref(),
+            chat.as_ref(),
             store.as_ref(),
             store.as_ref(),
             store.as_ref(),
@@ -1138,13 +1145,14 @@ async fn send_chat(
 /// brief (no home location, or no ready skills).
 async fn brief(State(state): State<AppState>) -> Result<Json<serde_json::Value>, ApiError> {
     let store = state.store.clone();
+    let chat = state.chat.clone();
     let ids = state.ids.clone();
     let clock = state.clock.clone();
     let capabilities = state.capabilities.clone();
     let result = blocking(move || {
         let runner = build_runner(store.as_ref(), capabilities);
         let out = usecases::daily_brief(
-            store.as_ref(),
+            chat.as_ref(),
             store.as_ref(),
             &runner,
             ids.as_ref(),
@@ -1185,6 +1193,7 @@ async fn stream_chat(
     Json(req): Json<ChatRequest>,
 ) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
     let store = state.store.clone();
+    let chat = state.chat.clone();
     let ids = state.ids.clone();
     let clock = state.clock.clone();
     let butler = state.butler.clone();
@@ -1220,7 +1229,7 @@ async fn stream_chat(
                 let _ = tx.send(event(json!({ "type": "token", "text": chunk })));
             };
             usecases::send_to_butler_streaming(
-                store.as_ref(),
+                chat.as_ref(),
                 store.as_ref(),
                 store.as_ref(),
                 store.as_ref(),
@@ -1264,8 +1273,8 @@ async fn stream_chat(
 async fn chat_history(
     State(state): State<AppState>,
 ) -> Result<Json<Vec<MessageResponse>>, ApiError> {
-    let store = state.store.clone();
-    let messages = blocking(move || usecases::chat_history(store.as_ref())).await?;
+    let chat = state.chat.clone();
+    let messages = blocking(move || usecases::chat_history(chat.as_ref())).await?;
     Ok(Json(messages.iter().map(MessageResponse::from).collect()))
 }
 
@@ -1715,6 +1724,7 @@ async fn deep_ask(
     Json(req): Json<DeepAskRequest>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let store = state.store.clone();
+    let chat = state.chat.clone();
     let ids = state.ids.clone();
     let clock = state.clock.clone();
     let question = req.question;
@@ -1747,7 +1757,7 @@ async fn deep_ask(
         ) {
             Ok(answer) => {
                 let msg = usecases::post_butler_message(
-                    store.as_ref(),
+                    chat.as_ref(),
                     ids.as_ref(),
                     clock.as_ref(),
                     &answer,
@@ -1862,6 +1872,7 @@ pub fn spawn_heartbeat(state: AppState) {
         loop {
             ticker.tick().await;
             let store = state.store.clone();
+            let chat = state.chat.clone();
             let ids = state.ids.clone();
             let clock = state.clock.clone();
             let capabilities = state.capabilities.clone();
@@ -1878,7 +1889,7 @@ pub fn spawn_heartbeat(state: AppState) {
                     clock.as_ref(),
                 )?;
                 let posted = usecases::run_due_checkin(
-                    store.as_ref(),
+                    chat.as_ref(),
                     store.as_ref(),
                     ids.as_ref(),
                     clock.as_ref(),
@@ -1893,7 +1904,7 @@ pub fn spawn_heartbeat(state: AppState) {
                 }
                 // A daily brief, if one is due (reversible skills only).
                 let briefed = usecases::run_due_brief(
-                    store.as_ref(),
+                    chat.as_ref(),
                     store.as_ref(),
                     store.as_ref(),
                     &runner,

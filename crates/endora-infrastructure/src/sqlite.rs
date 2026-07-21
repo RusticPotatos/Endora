@@ -13,9 +13,9 @@ use serde_json::{Value as JsonValue, json};
 use endora_application::{
     ActivityEvent, AssumptionRepository, AuditLog, AutonomyEnvelope, AutonomyEnvelopeRepository,
     BeliefRepository, BriefSchedule, BriefScheduleRepository, ButlerProposal,
-    CapabilityConfigRepository, CapabilitySettingsRepository, ChatRepository, CheckinRepository,
-    CheckinSchedule, DeepModel, DeepModelRepository, DirectionRepository, EventLog,
-    ExperimentRepository, MemorySnapshot, MemoryStore, ObservationRepository, PreferenceRepository,
+    CapabilityConfigRepository, CapabilitySettingsRepository, CheckinRepository, CheckinSchedule,
+    DeepModel, DeepModelRepository, DirectionRepository, EventLog, ExperimentRepository,
+    MemorySnapshot, MemoryStore, ObservationRepository, PreferenceRepository,
     ProcessChangeRepository, ReflectionRepository, RepositoryError, Snooze, SnoozeRepository,
     Suggestion, SuggestionRepository, SuggestionStatus, TargetRepository, ValueRepository,
 };
@@ -1006,27 +1006,8 @@ impl SnoozeRepository for SqliteStore {
     }
 }
 
-impl ChatRepository for SqliteStore {
-    fn append(&self, message: &ChatMessage) -> Result<(), RepositoryError> {
-        let conn = self.lock()?;
-        conn.execute(
-            "INSERT OR REPLACE INTO messages (id, role, body, at_ms) VALUES (?1, ?2, ?3, ?4)",
-            params![
-                id_text(message.id().value()),
-                message.role().name(),
-                message.text(),
-                message.at().unix_millis()
-            ],
-        )
-        .map_err(backend)?;
-        Ok(())
-    }
-
-    fn list(&self) -> Result<Vec<ChatMessage>, RepositoryError> {
-        let conn = self.lock()?;
-        all_messages(&conn)
-    }
-}
+// ChatRepository is implemented by the conversation context's ChatStore over the
+// shared Db now (ADR 0026). `all_messages` remains here for MemoryStore's export.
 
 impl PreferenceRepository for SqliteStore {
     fn save(&self, preference: &Preference) -> Result<(), RepositoryError> {

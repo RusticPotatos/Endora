@@ -293,6 +293,8 @@ name = "endora-conversation"
 version = "0.11.0"
 dependencies = [
  "endora-kernel",
+ "endora-persistence",
+ "rusqlite",
 ]
 
 [[package]]
@@ -338,6 +340,7 @@ dependencies = [
  "axum",
  "axum-server",
  "endora-application",
+ "endora-conversation",
  "endora-domain",
  "endora-infrastructure",
  "futures-util",
