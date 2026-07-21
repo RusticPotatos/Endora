@@ -1,248 +1,102 @@
 # Endora
 
-**An open platform for continuous growth.**
+A local-first AI butler. It runs on **your** hardware, learns who you are over time,
+and does useful things — weather, news, research, home context — while the model and
+your data stay on your machine.
 
-Endora is a local-first, open-source personal intelligence platform intended to
-help people live intentionally through reflection, experimentation, stewardship,
-and continuous improvement.
+No cloud account. No surveillance. The language model *proposes*; deterministic policy
+decides what actually happens — and it never does anything irreversible on its own.
 
-The authoritative backend acts as the brain. Applications are replaceable clients
-that communicate through a stable, versioned protocol. AI models are reasoning
-components, not sources of authority: models may *propose* actions, but
-deterministic policy code controls permission and execution.
+## Why
 
-## Project status
+- **Local AI.** The model runs on your box via Ollama (or any OpenAI-compatible
+  server). Your conversation, memory, and data never leave it.
+- **Normal hardware.** A 7B model on a consumer GPU is plenty — tested on an NVIDIA
+  RTX A2000 12 GB with `qwen2.5:7b`. CPU works too, just slower.
+- **You own it.** Everything is on disk, exportable and deletable. No accounts, no
+  ads, no lock-in.
+- **Safe by construction.** Skills sit behind a deterministic policy layer and an
+  egress guard. It can research and draft on its own; it can't send, spend, or delete
+  anything without you.
 
-**Foundation phase.** This repository currently establishes the project's
-principles, architecture, and a minimal Rust workspace skeleton. **Endora is not
-yet a general autonomous agent** and does not yet expose an application protocol
-or product features. Interfaces, schemas, and internals will change. Work grows
-one complete vertical slice at a time. The path to the first release is in the
-[Roadmap](docs/roadmap.md).
+## What it does
 
-## North Star
+- Chats naturally and builds a correctable **understanding** of you — beliefs with the
+  evidence behind them, not a hidden profile.
+- Uses real **skills** when it needs facts: weather, local news, active safety alerts,
+  web search, Wikipedia, fetch a page, describe an image (local vision model), and read
+  Home Assistant state to learn your routines. Keyless where possible; the rest you
+  configure with a key or token, stored locally.
+- **Proactive:** optional check-ins and a **daily brief** (weather / safety / news for
+  where you're based).
+- **Private egress:** an SSRF guard, an outbound secret tripwire, query minimization,
+  and an optional proxy — so it can't be tricked into leaking data or reaching into
+  your LAN.
 
-> **Help people build lives worth remembering without taking control of those
-> lives away from them.**
+## Quick start
 
-## What Endora helps people do
+Bring your own model — any OpenAI-compatible endpoint (Ollama, LM Studio, llama.cpp,
+vLLM):
 
-Define their own values and direction; set long-term North Stars and intermediate
-targets; surface assumptions; form hypotheses; run small experiments; observe
-results; reflect and hold retrospectives; propose process improvements; retain
-useful evidence and memory; and gradually improve over time.
+```bash
+ollama pull qwen2.5:7b
+make run-node                 # http://localhost:8787
+```
 
-The system may learn *how* to serve a user better. It may **not** autonomously
-redefine *what serving the user means*.
+Open **http://localhost:8787** — the node serves the whole UI; there's no separate app
+to install. Or run it in a container (data persists in `./endora-data`):
 
-## The initial learning loop
+```bash
+make docker-build && make docker-run
+```
+
+- **Model recommendations, hardware guidance, tested setups, and private-egress /
+  proxy notes:** [docs/model-hosting.md](docs/model-hosting.md).
+- **Always-on and reaching it from your phone:** [docs/hosting.md](docs/hosting.md).
+  The `0.x` API is unauthenticated, so keep it on a trusted network — see
+  [SECURITY.md](SECURITY.md).
+
+## The safety model
+
+- **Models propose; policy authorizes.** The model is never the enforcement boundary.
+- **Reversibility first.** It acts on its own only within reversible bounds — read,
+  research, draft. Anything irreversible or outbound — send, spend, edit, delete — is
+  blocked until you confirm. Some things can't be undone; it treats them that way.
+- **Your data stays home** and is exportable and deletable; egress is guarded and
+  minimized.
+
+Full principles: [Constitution](docs/constitution.md). Every design decision is
+recorded as an [ADR](docs/adr/README.md).
+
+## How it's built
+
+Rust, a domain-first modular monolith. One authoritative backend (the **node**) holds
+all state and authority; clients are thin. The model sits *behind* the policy boundary.
 
 ```text
-Direction
-    ↓
-Assumption
-    ↓
-Experiment
-    ↓
-Observation
-    ↓
-Reflection
-    ↓
-Proposed process change
-    ↓
-Human approval
+clients ──HTTP/JSON──▶ endora-node ──▶ policy boundary ──▶ skills / local SQLite
+                       Domain → Application → Infrastructure → Interface
 ```
-
-## Foundational principles
-
-- Human autonomy remains final. The user owns their purpose, values, goals,
-  memories, and their definition of a good life.
-- Consequential actions require explicit authority.
-- Prefer reversible and proportionate actions.
-- State uncertainty, evidence, inference, and assumptions clearly.
-- Learn from repeated evidence rather than isolated interactions.
-- Improve processes more readily than values.
-- Memory must be visible, correctable, exportable, and deletable.
-- No hidden objectives. No engagement optimization. No dependency manipulation.
-- No surveillance business model. No advertising-driven incentives.
-- No direct model access to privileged capabilities. The language model is never
-  the final enforcement boundary.
-- Operate locally where practical; cloud services stay optional and replaceable.
-- The person is not a productivity machine. Rest, joy, relationships, meaning,
-  community, and changing direction are legitimate parts of life.
-
-These are defined in full in the [Constitution](docs/constitution.md).
-
-## High-level architecture
-
-Endora is a **domain-first modular monolith**. A single authoritative backend —
-the **node** — holds all state and authority. Clients are thin and replaceable
-and talk to the node through a stable, versioned protocol. AI models sit *behind*
-a deterministic policy boundary.
 
 ```text
- clients (CLI now; native, web, … later)
-        │  stable, versioned protocol (HTTP + JSON, OpenAPI, SSE)
-        ▼
- endora-node  ── the authoritative brain
-        │  Interface → Application → Domain
-        │  Infrastructure → Application/Domain abstractions
-        ▼
- deterministic policy boundary → capabilities → local storage
+crates/  endora-domain (pure)   endora-application (use cases + ports)   endora-infrastructure (SQLite, skills, model)
+apps/    endora-node (backend + web UI)   endora-cli (thin client)
 ```
 
-Each bounded context is layered Domain → Application → Infrastructure →
-Interface, with dependencies pointing inward. The Domain layer depends on no
-HTTP, database, AI vendor, UI framework, OS integration, or model-specific
-concept.
+See [docs/architecture.md](docs/architecture.md). There's also a CLI (`make run-cli
+ARGS="health"`).
 
-See [docs/architecture.md](docs/architecture.md), the
-[domain map](docs/domain-map.md), and the
-[Architecture Decision Records](docs/adr/README.md).
+## Status
 
-### Current code map
+A working personal project, developed against a home server. It runs the butler, the
+skills, the autonomy envelope, and the egress guard described above. Interfaces still
+change and there's no tagged release yet — build one complete slice at a time.
 
-```text
-crates/
-  endora-domain/          # Domain layer — pure, zero dependencies
-  endora-application/     # Application layer — use cases + ports; depends on domain
-  endora-infrastructure/  # Infrastructure layer — adapters (SQLite persistence)
-apps/
-  endora-node/            # Authoritative backend runtime — serves the HTTP/JSON API
-  endora-cli/             # Thin, replaceable client
-```
+## Contributing & license
 
-### Running the node
+Read [CONTRIBUTING.md](CONTRIBUTING.md), the [Code of Conduct](CODE_OF_CONDUCT.md), and
+[SECURITY.md](SECURITY.md). **AI-assisted contributions must be flagged as such** in the
+PR. Contributors branch from `develop`.
 
-```bash
-make run-node            # starts on 127.0.0.1:8787 (override: ENDORA_ADDR, ENDORA_DB)
-curl -s localhost:8787/health
-curl -s -X POST localhost:8787/v1/directions \
-  -H 'content-type: application/json' -d '{"title":"Be healthier"}'
-```
-
-**Web console:** with the node running, open **http://localhost:8787** in a
-browser. The node serves a self-contained UI for the whole loop — create and
-navigate Direction → Target → Assumption → Experiment → Observation → Reflection,
-run the propose → approve → policy-decide flow, view the audit trail, and
-export/purge. No separate app to install (see ADR 0009 — node-served UI and
-single-container packaging).
-
-Or in a container (data persists in `./endora-data`, published on loopback only):
-
-```bash
-make docker-build && make docker-run    # → http://localhost:8787
-```
-
-**Running it always-on and reaching it from your phone:** see
-[docs/hosting.md](docs/hosting.md) — how to keep the node running (systemd /
-container restart) and reach it securely from other devices over a private
-network (e.g. Tailscale) or an authenticating reverse proxy. The `0.x` API is
-unauthenticated, so it must stay on a trusted network — see
-[SECURITY.md](SECURITY.md).
-
-### See the whole thing in one command
-
-```bash
-make demo    # spins up a throwaway node and drives the full learning loop
-```
-
-This runs `scripts/demo.sh`: direction → target → assumption → experiment →
-observation → reflection → proposed change → policy decision → audit → export,
-printing each CLI command and its response.
-
-### Using the CLI
-
-With the node running, the `endora` CLI (a thin client) talks to it:
-
-```bash
-make run-cli ARGS="health"     # or run the binary directly:
-endora direction create "Be healthier"
-endora target create <direction-id> "Run a 5k"
-endora target list <direction-id>
-# override the node URL with ENDORA_URL (default http://127.0.0.1:8787)
-```
-
-### Optional: a local model that *proposes*
-
-The node can ask a local, open-weights model to **draft** a process change from a
-reflection. The model only ever proposes — its output becomes an ordinary
-*pending* proposal that still needs human approval and passes through the
-deterministic policy boundary like any other. Nothing breaks without it: the
-node runs fine and only the drafting endpoint returns `503`.
-
-```bash
-ollama serve &                       # a local OpenAI-compatible endpoint
-ollama pull qwen2.5:7b               # a smaller model works on lighter machines
-# point the node at it (defaults shown):
-ENDORA_MODEL_URL=http://localhost:11434/v1 ENDORA_MODEL=qwen2.5:7b make run-node
-
-endora process-change draft <reflection-id>   # model drafts a pending change
-endora process-change approve <id>            # a human approves
-endora process-change decide <id> act_within_policy   # policy authorizes; audited
-```
-
-Endora is **model-agnostic** — you host the model; Endora just needs the URL.
-For model recommendations, hardware guidance, and tested setups, see
-[docs/model-hosting.md](docs/model-hosting.md).
-
-The node serves the whole learning loop (Direction → Target → Assumption →
-Experiment → Observation → Reflection → Proposed process change), with the policy
-boundary and audit trail on consequential decisions — see the
-[Roadmap](docs/roadmap.md) for what remains before a tagged release.
-
-## Current technology direction
-
-This is the *intended* direction, not a finished stack. Dependencies are added
-only when a real vertical slice needs them.
-
-- **Authoritative core:** Rust (stable, 2024 edition), running natively on macOS
-  and Linux (incl. Ubuntu Server) and in Docker.
-- **Persistence:** SQLite first, behind application-defined ports.
-- **Protocol:** HTTP + JSON, described by OpenAPI, with server-sent events for
-  simple live updates.
-- **First client:** Swift + SwiftUI (iOS and macOS). Possible later: Android
-  (Kotlin/Jetpack Compose), an optional web UI, and CLI/accessibility clients.
-- **AI integrations:** local or cloud providers behind replaceable adapters;
-  OpenAI-compatible APIs where practical; Anthropic via a separate adapter.
-  Python workers only where a specific model/speech/vision/research dependency
-  requires Python.
-
-## Non-goals
-
-- Not a general autonomous agent (in this phase).
-- No microservices; no Kubernetes; no gRPC; no event sourcing at this stage.
-- MCP is **not** the application protocol (it may later expose capabilities to
-  external AI systems).
-- No surveillance, advertising, or engagement-optimization business model.
-- No direct model access to privileged capabilities.
-- Not built to require high-end or specialized hardware.
-
-## Branching model
-
-```text
-main      → stable public branch
-develop   → integration branch
-init/*, feat/*, fix/*, …  → topic branches, taken from develop
-```
-
-Contributors branch from `develop`. See
-[CONTRIBUTING.md](CONTRIBUTING.md).
-
-## Contributing
-
-Endora is in its foundation stage. The most valuable contributions right now are
-discussion, refinement of the architecture and principles, and small, focused
-improvements. Please open an issue before large changes, and read
-[CONTRIBUTING.md](CONTRIBUTING.md), the
-[Code of Conduct](CODE_OF_CONDUCT.md), and [GOVERNANCE.md](GOVERNANCE.md).
-
-Security issues: see [SECURITY.md](SECURITY.md) — please report privately.
-
-**AI-assisted contributions must be clearly flagged as such** in the pull
-request. See [CONTRIBUTING.md](CONTRIBUTING.md#ai-assisted-contributions).
-
-## License
-
-Licensed under the [Apache License 2.0](LICENSE). Copyright 2026 Endora
-contributors. See [NOTICE](NOTICE).
+Licensed under [Apache-2.0](LICENSE). Copyright 2026 Endora contributors. See
+[NOTICE](NOTICE).
