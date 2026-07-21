@@ -173,14 +173,18 @@ node runs fine and only the drafting endpoint returns `503`.
 
 ```bash
 ollama serve &                       # a local OpenAI-compatible endpoint
-ollama pull qwen3.5:9b               # or qwen3.5:4b on lighter machines
+ollama pull qwen2.5:7b               # a smaller model works on lighter machines
 # point the node at it (defaults shown):
-ENDORA_MODEL_URL=http://localhost:11434/v1 ENDORA_MODEL=qwen3.5:9b make run-node
+ENDORA_MODEL_URL=http://localhost:11434/v1 ENDORA_MODEL=qwen2.5:7b make run-node
 
 endora process-change draft <reflection-id>   # model drafts a pending change
 endora process-change approve <id>            # a human approves
 endora process-change decide <id> act_within_policy   # policy authorizes; audited
 ```
+
+Endora is **model-agnostic** — you host the model; Endora just needs the URL.
+For model recommendations, hardware guidance, and tested setups, see
+[docs/model-hosting.md](docs/model-hosting.md).
 
 The node serves the whole learning loop (Direction → Target → Assumption →
 Experiment → Observation → Reflection → Proposed process change), with the policy
