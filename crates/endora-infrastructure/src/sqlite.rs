@@ -12,11 +12,12 @@ use serde_json::{Value as JsonValue, json};
 
 use endora_application::{
     ActivityEvent, AssumptionRepository, AuditLog, AutonomyEnvelope, AutonomyEnvelopeRepository,
-    BeliefRepository, ButlerProposal, CapabilityConfigRepository, CapabilitySettingsRepository,
-    ChatRepository, CheckinRepository, CheckinSchedule, DirectionRepository, EventLog,
-    ExperimentRepository, MemorySnapshot, MemoryStore, ObservationRepository, PreferenceRepository,
-    ProcessChangeRepository, ReflectionRepository, RepositoryError, Snooze, SnoozeRepository,
-    Suggestion, SuggestionRepository, SuggestionStatus, TargetRepository, ValueRepository,
+    BeliefRepository, BriefSchedule, BriefScheduleRepository, ButlerProposal,
+    CapabilityConfigRepository, CapabilitySettingsRepository, ChatRepository, CheckinRepository,
+    CheckinSchedule, DirectionRepository, EventLog, ExperimentRepository, MemorySnapshot,
+    MemoryStore, ObservationRepository, PreferenceRepository, ProcessChangeRepository,
+    ReflectionRepository, RepositoryError, Snooze, SnoozeRepository, Suggestion,
+    SuggestionRepository, SuggestionStatus, TargetRepository, ValueRepository,
 };
 use endora_domain::{
     ApprovalState, Assumption, AssumptionId, AuditId, AuditRecord, Belief, BeliefId, BeliefKind,
@@ -172,6 +173,12 @@ CREATE TABLE IF NOT EXISTS autonomy_envelope (
     id               INTEGER PRIMARY KEY CHECK (id = 0),
     auto_external    INTEGER NOT NULL,
     auto_consequential INTEGER NOT NULL
+) STRICT;
+CREATE TABLE IF NOT EXISTS brief_schedule (
+    id        INTEGER PRIMARY KEY CHECK (id = 0),
+    enabled   INTEGER NOT NULL,
+    hour_utc  INTEGER NOT NULL,
+    last_ms   INTEGER NOT NULL
 ) STRICT;
 CREATE TABLE IF NOT EXISTS events (
     id      INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -886,6 +893,7 @@ impl MemoryStore for SqliteStore {
             "capability_config",
             "capability_settings",
             "autonomy_envelope",
+            "brief_schedule",
         ] {
             tx.execute(&format!("DELETE FROM {table}"), [])
                 .map_err(backend)?;
@@ -1156,6 +1164,40 @@ impl EventLog for SqliteStore {
             })
             .map_err(backend)?;
         rows.collect::<Result<Vec<_>, _>>().map_err(backend)
+    }
+}
+
+impl BriefScheduleRepository for SqliteStore {
+    fn get(&self) -> Result<Option<BriefSchedule>, RepositoryError> {
+        let conn = self.lock()?;
+        conn.query_row(
+            "SELECT enabled, hour_utc, last_ms FROM brief_schedule WHERE id = 0",
+            [],
+            |r| {
+                Ok(BriefSchedule {
+                    enabled: r.get::<_, i64>(0)? != 0,
+                    hour_utc: r.get::<_, i64>(1)? as u8,
+                    last_at: Timestamp::from_unix_millis(r.get::<_, i64>(2)?),
+                })
+            },
+        )
+        .optional()
+        .map_err(backend)
+    }
+
+    fn set(&self, schedule: &BriefSchedule) -> Result<(), RepositoryError> {
+        let conn = self.lock()?;
+        conn.execute(
+            "INSERT OR REPLACE INTO brief_schedule (id, enabled, hour_utc, last_ms) \
+             VALUES (0, ?1, ?2, ?3)",
+            params![
+                i64::from(schedule.enabled),
+                i64::from(schedule.hour_utc),
+                schedule.last_at.unix_millis()
+            ],
+        )
+        .map_err(backend)?;
+        Ok(())
     }
 }
 

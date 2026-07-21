@@ -18,7 +18,7 @@ use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post};
 use endora_application::{
     ActivityItem, AppError, AttentionItem, AttentionKind, AutonomyEnvelope,
-    AutonomyEnvelopeRepository, Butler, ButlerProposal, CapabilityConfigRepository,
+    AutonomyEnvelopeRepository, BriefSchedule, Butler, ButlerProposal, CapabilityConfigRepository,
     CapabilitySettingsRepository, CheckinSchedule, EventLog, MemorySnapshot, Proposer,
     RepositoryError, Suggestion, SuggestionStatus, usecases,
 };
@@ -166,6 +166,10 @@ pub fn app(state: AppState) -> Router {
         )
         .route("/v1/autonomy", get(get_autonomy).post(set_autonomy))
         .route("/v1/brief", post(brief))
+        .route(
+            "/v1/brief/schedule",
+            get(get_brief_schedule).post(set_brief_schedule),
+        )
         .route(
             "/v1/preferences",
             post(create_preference).get(list_preferences),
@@ -1633,6 +1637,39 @@ async fn set_autonomy(
     Ok(Json(envelope_json(&envelope)))
 }
 
+fn brief_schedule_json(s: &BriefSchedule) -> serde_json::Value {
+    json!({ "enabled": s.enabled, "hour_utc": s.hour_utc })
+}
+
+/// The daily-brief schedule (when the butler prepares a brief on its own).
+async fn get_brief_schedule(
+    State(state): State<AppState>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let store = state.store.clone();
+    let s = blocking(move || usecases::brief_schedule(store.as_ref())).await?;
+    Ok(Json(brief_schedule_json(&s)))
+}
+
+#[derive(Deserialize)]
+struct BriefScheduleRequest {
+    enabled: bool,
+    hour_utc: u8,
+}
+
+/// Sets the daily-brief schedule. `hour_utc` is the UTC hour (the console converts
+/// the person's local hour). Only ever prepares a brief from reversible skills.
+async fn set_brief_schedule(
+    State(state): State<AppState>,
+    Json(req): Json<BriefScheduleRequest>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let store = state.store.clone();
+    let s =
+        blocking(move || usecases::set_brief_schedule(store.as_ref(), req.enabled, req.hour_utc))
+            .await?;
+    let _ = state.changes.send(());
+    Ok(Json(brief_schedule_json(&s)))
+}
+
 /// Invokes a capability by id with a JSON body. Read-only skills run directly;
 /// this is the `act` path of the autonomy model. (Consequential skills will be
 /// routed through propose→confirm as they are wired.)
@@ -1724,10 +1761,25 @@ pub fn spawn_heartbeat(state: AppState) {
                         "Reached out with a check-in",
                     );
                 }
-                Ok::<_, AppError>(posted)
+                // A daily brief, if one is due (reversible skills only).
+                let briefed = usecases::run_due_brief(
+                    store.as_ref(),
+                    store.as_ref(),
+                    store.as_ref(),
+                    &runner,
+                    ids.as_ref(),
+                    clock.as_ref(),
+                )?;
+                if let Some((_, activity)) = &briefed {
+                    for item in activity {
+                        record_event(store.as_ref(), clock.as_ref(), item);
+                    }
+                    record_event(store.as_ref(), clock.as_ref(), "Prepared your daily brief");
+                }
+                Ok::<_, AppError>(posted.is_some() || briefed.is_some())
             })
             .await;
-            if let Ok(Ok(Some(_))) = posted {
+            if let Ok(Ok(true)) = posted {
                 let _ = state.changes.send(());
             }
         }
