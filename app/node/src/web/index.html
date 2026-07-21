@@ -156,6 +156,18 @@
   /* "what Endora did" note under the latest reply */
   .activity { font-size: 12px; color: var(--muted); font-style: italic; margin: 2px 4px 10px; display: flex; align-items: center; gap: 6px; opacity: .85; }
   .activity .ic { color: var(--accent); opacity: .8; }
+  /* live action trail (Claude-Code-style): a collapsible list of what the butler
+     is doing this turn — router → skill → result — shown while it works. */
+  details.steps { font-size: 12px; color: var(--muted); background: var(--card, rgba(127,127,127,.06)); border: 1px solid rgba(127,127,127,.16); border-radius: 10px; padding: 4px 10px; max-width: 82%; }
+  details.steps > summary { cursor: pointer; list-style: none; display: flex; align-items: center; gap: 7px; padding: 3px 0; font-weight: 500; color: var(--muted); }
+  details.steps > summary::-webkit-details-marker { display: none; }
+  details.steps > summary::after { content: "▸"; margin-left: auto; opacity: .5; transition: transform .15s; }
+  details.steps[open] > summary::after { transform: rotate(90deg); }
+  .step-list { display: flex; flex-direction: column; gap: 3px; padding: 4px 0 6px; }
+  .step-row { display: flex; align-items: center; gap: 7px; }
+  .step-row .sdone { color: #22a06b; } .step-row .sfail { color: #d9534f; } .step-row .sblock { color: var(--muted); opacity: .8; }
+  .sspin { width: 11px; height: 11px; border: 2px solid rgba(127,127,127,.35); border-top-color: var(--accent); border-radius: 50%; display: inline-block; animation: sspin .7s linear infinite; }
+  @keyframes sspin { to { transform: rotate(360deg); } }
   /* push-to-talk: a prominent hold-to-talk control that pulses while held */
   button.ptt { padding: 8px 14px; font-weight: 600; border-radius: 999px; touch-action: none; user-select: none; -webkit-user-select: none; }
   button.recording { background: var(--accent); color: #fff; border-color: var(--accent); animation: ptt-pulse 1s ease-in-out infinite; transform: scale(1.04); }
@@ -206,6 +218,7 @@ let MODEL_CONFIG = { configured: false, key_set: false, base_url: "", mixture: f
 let UNDERSTANDING = [];        // Endora's beliefs about the person (the home surface)
 let LAST_ACTIVITY = [];        // what Endora did behind the scenes on the last turn
 let LAST_ACTIVITY_MSG = null;  // the butler message id that activity belongs to
+let STEP_LIST = [];            // the live action trail for the turn currently streaming
 let SHOW_ACTIVITY = localStorage.getItem("endora.showActivity") !== "0"; // default on
 let CHAT_STREAMING = false;    // true while a reply is streaming in (guards live-render)
 let NAV = { v: "chat" };       // current view (the butler is the landing page)
@@ -1092,6 +1105,24 @@ function scrollBubbleIntoView(el) {
   el.scrollIntoView({ block: "end", behavior: "smooth" });
 }
 
+// Render the live action trail into its panel. Collapsible via native <details>:
+// open while working, collapsed to a one-line summary once the turn finishes.
+const STEP_ICON = { running: '<span class="sspin"></span>', done: '<span class="sdone">✓</span>',
+  failed: '<span class="sfail">✕</span>', blocked: '<span class="sblock">⊘</span>' };
+function renderSteps(wrap, steps, running) {
+  if (!wrap) return;
+  if (!steps.length) { wrap.innerHTML = ""; wrap.style.display = "none"; return; }
+  wrap.style.display = "";
+  const rows = steps.map((s) =>
+    `<div class="step-row">${STEP_ICON[s.status] || ""}<span>${esc(s.label)}</span></div>`).join("");
+  const n = steps.length;
+  const head = running ? "Working…" : `${n} action${n > 1 ? "s" : ""}`;
+  const lead = running ? '<span class="sspin"></span>' : icon("sparkle", 13);
+  wrap.innerHTML =
+    `<details class="steps" ${running ? "open" : ""}><summary>${lead} ${head}</summary>` +
+    `<div class="step-list">${rows}</div></details>`;
+}
+
 // Send a message to the butler and stream the reply token-by-token (SSE): the
 // person's message shows at once, then the butler's bubble grows live as the
 // model produces prose, and proposals arrive with the final "done" event. On the
@@ -1106,6 +1137,14 @@ async function sendChat() {
   input.value = "";
   growInput(input);
   appendBubble(esc(msg), "me");
+  // A live action trail sits just above the reply bubble; it fills in as the
+  // butler routes to skills, and collapses to a summary when the turn ends.
+  STEP_LIST = [];
+  const thread0 = document.getElementById("chat-thread");
+  const stepsWrap = document.createElement("div");
+  stepsWrap.className = "row";
+  stepsWrap.style.cssText = "justify-content:flex-start; margin:6px 0; display:none;";
+  if (thread0) thread0.appendChild(stepsWrap);
   // A butler bubble that starts as a "thinking" indicator and grows with tokens.
   const live = appendBubble('<span class="dots"><i></i><i></i><i></i></span>', "butler", "chat-live");
   const body = live && live.querySelector(".bubble");
@@ -1139,10 +1178,24 @@ async function sendChat() {
           acc += ev.text;
           if (body) body.textContent = acc;
           if (live) scrollBubbleIntoView(live);
+        } else if (ev.type === "step") {
+          if (ev.status === "running") {
+            STEP_LIST.push({ skill: ev.skill, label: ev.label, status: "running" });
+          } else {
+            // Terminal: finalize the last still-running step, else record it fresh
+            // (a "blocked" step arrives with no prior "running").
+            let i = STEP_LIST.length - 1;
+            while (i >= 0 && STEP_LIST[i].status !== "running") i--;
+            if (i >= 0) STEP_LIST[i].status = ev.status;
+            else STEP_LIST.push({ skill: ev.skill, label: ev.label, status: ev.status });
+          }
+          renderSteps(stepsWrap, STEP_LIST, true);
+          if (live) scrollBubbleIntoView(live);
         } else if (ev.type === "done") {
           CHAT_PROPOSALS = ev.proposals || [];
           LAST_ACTIVITY = ev.activity || [];
           LAST_ACTIVITY_MSG = ev.reply && ev.reply.id;
+          renderSteps(stepsWrap, STEP_LIST, false); // collapse to a summary
           speak(ev.reply && ev.reply.text);
           finished = true;
         } else if (ev.type === "error") {

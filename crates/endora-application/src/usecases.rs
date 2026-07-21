@@ -792,7 +792,7 @@ pub fn send_to_butler(
     context: &ButlerContext,
     text: &str,
 ) -> Result<(ChatMessage, Vec<Suggestion>, Vec<String>), AppError> {
-    // Non-streaming is just streaming with the tokens discarded.
+    // Non-streaming is just streaming with the tokens and steps discarded.
     send_to_butler_streaming(
         chat,
         preferences,
@@ -805,7 +805,50 @@ pub fn send_to_butler(
         context,
         text,
         &mut |_| {},
+        &mut |_| {},
     )
+}
+
+/// Where a [`ButlerStep`] is in its lifecycle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StepStatus {
+    /// The skill is running right now.
+    Running,
+    /// The skill returned a result.
+    Done,
+    /// The skill ran but failed to produce a result.
+    Failed,
+    /// The skill couldn't run — off, not set up, or it needs confirmation.
+    Blocked,
+}
+
+impl StepStatus {
+    /// A stable lowercase tag for the wire/UI.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Running => "running",
+            Self::Done => "done",
+            Self::Failed => "failed",
+            Self::Blocked => "blocked",
+        }
+    }
+}
+
+/// One live step in the butler's agentic loop, surfaced to the UI as it works —
+/// a Claude-Code-style expandable action trail, kept distinct from the reply
+/// prose (which streams separately as tokens). Steps are emitted sequentially:
+/// a skill's [`StepStatus::Running`] is always followed by its terminal
+/// [`Done`](StepStatus::Done)/[`Failed`](StepStatus::Failed); a
+/// [`Blocked`](StepStatus::Blocked) step is terminal on its own.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ButlerStep {
+    /// The capability id this step concerns (e.g. `weather`).
+    pub skill: String,
+    /// Where the step is in its lifecycle.
+    pub status: StepStatus,
+    /// A short, present-tense label ("Checking the weather").
+    pub label: String,
 }
 
 /// Like [`send_to_butler`], but streams the reply's prose to `on_token` as the
@@ -833,6 +876,7 @@ pub fn send_to_butler_streaming(
     context: &ButlerContext,
     text: &str,
     on_token: &mut dyn FnMut(&str),
+    on_step: &mut dyn FnMut(ButlerStep),
 ) -> Result<(ChatMessage, Vec<Suggestion>, Vec<String>), AppError> {
     let user = ChatMessage::new(
         MessageId::new(ids.new_id()),
@@ -884,13 +928,28 @@ pub fn send_to_butler_streaming(
         if spec.as_ref().is_some_and(|s| s.configured && s.autonomous) {
             // Cleared to run on its own (configured + reversible/read-only). Show the
             // step as it happens, then feed the result back for the next round.
-            on_token(&format!("· {}…\n", progress_label(&id)));
+            let label = progress_label(&id);
+            on_step(ButlerStep {
+                skill: id.clone(),
+                status: StepStatus::Running,
+                label: label.clone(),
+            });
             match capabilities.run(&id, &used.input_json) {
                 Ok(out) => {
+                    on_step(ButlerStep {
+                        skill: id.clone(),
+                        status: StepStatus::Done,
+                        label,
+                    });
                     activity.push(format!("Used the {id} skill"));
                     gathered.push(format!("- {id}: {out}"));
                 }
                 Err(e) => {
+                    on_step(ButlerStep {
+                        skill: id.clone(),
+                        status: StepStatus::Failed,
+                        label,
+                    });
                     activity.push(format!("Tried the {id} skill, but it failed"));
                     gathered.push(format!("- {id}: failed ({e}) — do not invent a result"));
                 }
@@ -908,6 +967,11 @@ pub fn send_to_butler_streaming(
                 }
                 None => format!("- {id}: no such skill — can't do that yet"),
             };
+            on_step(ButlerStep {
+                skill: id.clone(),
+                status: StepStatus::Blocked,
+                label: progress_label(&id),
+            });
             activity.push(format!(
                 "Couldn't use {id} (off, not set up, or needs confirming)"
             ));
@@ -939,10 +1003,20 @@ pub fn send_to_butler_streaming(
                 })
             };
             if let Some((where_, input_json)) = run_input {
-                on_token(&format!("· {}…\n", progress_label(skill)));
+                let label = progress_label(skill);
+                on_step(ButlerStep {
+                    skill: skill.to_owned(),
+                    status: StepStatus::Running,
+                    label: label.clone(),
+                });
                 match capabilities.run(skill, &input_json) {
                     Ok(out) => {
                         // Success: let the model relay the real result in its voice.
+                        on_step(ButlerStep {
+                            skill: skill.to_owned(),
+                            status: StepStatus::Done,
+                            label,
+                        });
                         activity.push(format!("Used the {skill} skill"));
                         let mut ctx = context.clone();
                         ctx.tool_result = Some(format!(
@@ -959,6 +1033,11 @@ pub fn send_to_butler_streaming(
                         // bluffs ("I don't have access") or denies the skill even
                         // when told the plain truth. Set an honest reply in code so a
                         // failed check can never become a fabricated or evasive one.
+                        on_step(ButlerStep {
+                            skill: skill.to_owned(),
+                            status: StepStatus::Failed,
+                            label,
+                        });
                         activity.push(format!("Tried the {skill} skill, but it failed"));
                         reply = ButlerReply {
                             text: "I tried to check that for you just now, but the skill I use \
@@ -977,6 +1056,11 @@ pub fn send_to_butler_streaming(
             // The model has proven it will fabricate here even when told not to, so
             // we do NOT ask it — we set an honest reply deterministically. This makes
             // inventing a fact structurally impossible in the can't-serve case.
+            on_step(ButlerStep {
+                skill: skill.to_owned(),
+                status: StepStatus::Blocked,
+                label: progress_label(skill),
+            });
             activity.push(format!("Couldn't check {skill} — it's off or not set up"));
             reply = ButlerReply {
                 text: "I can't check that for you right now — the skill I'd use is turned off \
