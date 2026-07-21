@@ -14,8 +14,8 @@
 //! "stated"; the inference path (which would enforce "never infer authority")
 //! is future work and is why the kind is recorded now.
 
-use crate::error::{DomainError, require_non_empty};
-use crate::ids::{PreferenceId, Timestamp};
+use endora_kernel::error::{DomainError, require_non_empty};
+use endora_kernel::ids::{PreferenceId, Timestamp};
 
 /// The kinds of preference from the autonomy model.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -106,8 +106,8 @@ impl Preference {
 #[cfg(test)]
 mod tests {
     use super::{Preference, PreferenceKind};
-    use crate::error::DomainError;
-    use crate::ids::{PreferenceId, Timestamp};
+    use endora_kernel::error::DomainError;
+    use endora_kernel::ids::{PreferenceId, Timestamp};
 
     #[test]
     fn kind_names_round_trip() {
