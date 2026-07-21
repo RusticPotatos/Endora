@@ -286,6 +286,7 @@ version = "0.11.0"
 dependencies = [
  "endora-application",
  "endora-domain",
+ "endora-persistence",
  "rusqlite",
  "serde_json",
  "ureq",
@@ -313,6 +314,14 @@ dependencies = [
  "serde_json",
  "tokio",
  "tower",
+]
+
+[[package]]
+name = "endora-persistence"
+version = "0.11.0"
+dependencies = [
+ "endora-kernel",
+ "rusqlite",
 ]
 
 [[package]]
