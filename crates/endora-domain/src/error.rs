@@ -5,4 +5,3 @@
 //! are unchanged. See `docs/adr/0026-package-by-bounded-context.md`.
 
 pub use endora_kernel::error::DomainError;
-pub(crate) use endora_kernel::error::require_non_empty;

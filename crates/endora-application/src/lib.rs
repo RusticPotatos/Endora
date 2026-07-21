@@ -25,6 +25,9 @@ pub use endora_capabilities::{
     AutonomyEnvelope, AutonomyEnvelopeRepository, CapabilityConfigRepository, CapabilityRunner,
     CapabilitySettingsRepository, CapabilitySpec, CapabilityUse, DeepModel, DeepModelRepository,
 };
+// The chat repository lives in the conversation context (ADR 0026); re-exported
+// so `endora_application::ChatRepository` is unchanged.
+pub use endora_conversation::ChatRepository;
 // Belief/preference repositories live in the understanding context (ADR 0026);
 // re-exported so their `endora_application::…` paths are unchanged.
 pub use endora_understanding::{BeliefRepository, PreferenceRepository};
@@ -36,9 +39,9 @@ pub use endora_direction::{
 };
 pub use ports::{
     AttentionItem, AttentionKind, BriefSchedule, BriefScheduleRepository, Butler, ButlerContext,
-    ButlerProposal, ButlerReply, ChatRepository, CheckinRepository, CheckinSchedule, Clock,
-    FormedBelief, IdSource, MemorySnapshot, MemoryStore, NorthStarBrief, ProposalError, Proposer,
-    RepositoryError, Snooze, SnoozeRepository, Suggestion, SuggestionRepository, SuggestionStatus,
+    ButlerProposal, ButlerReply, CheckinRepository, CheckinSchedule, Clock, FormedBelief, IdSource,
+    MemorySnapshot, MemoryStore, NorthStarBrief, ProposalError, Proposer, RepositoryError, Snooze,
+    SnoozeRepository, Suggestion, SuggestionRepository, SuggestionStatus,
 };
 pub use usecases::{ActivityItem, ActivityKind};
 
