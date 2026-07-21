@@ -41,6 +41,31 @@ impl fmt::Display for DomainError {
 
 impl core::error::Error for DomainError {}
 
+/// A failure from a storage backend behind a repository port.
+///
+/// Deliberately free of any engine-specific type: adapters translate their own
+/// errors (driver, I/O, corrupt rows) into these variants so the application and
+/// domains stay independent of the backend. Lives in the kernel because it is
+/// the shared vocabulary of persistence failure across every context.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RepositoryError {
+    /// The backend itself failed (connection, I/O, driver error, lock).
+    Backend(String),
+    /// Stored data could not be reconstituted into a valid domain value.
+    Corrupt(String),
+}
+
+impl fmt::Display for RepositoryError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Backend(msg) => write!(f, "storage backend error: {msg}"),
+            Self::Corrupt(msg) => write!(f, "corrupt stored data: {msg}"),
+        }
+    }
+}
+
+impl core::error::Error for RepositoryError {}
+
 /// Trims `value` and returns it as an owned `String`, or an
 /// [`DomainError::EmptyField`] if it is blank. Shared by the entity
 /// constructors so "must not be empty" is enforced in exactly one place.
