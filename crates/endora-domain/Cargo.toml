@@ -18,6 +18,7 @@ endora-kernel = { path = "../../shared/kernel" }
 # until callers are repointed. Removed when the old crates are deleted (ADR 0026).
 endora-platform = { path = "../../domains/platform" }
 endora-understanding = { path = "../../domains/understanding" }
+endora-direction = { path = "../../domains/direction" }
 
 [lints]
 workspace = true

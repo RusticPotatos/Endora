@@ -14,17 +14,19 @@ use endora_domain::{
 };
 
 use endora_capabilities::CapabilityRunner;
+use endora_direction::{
+    AssumptionRepository, DirectionRepository, ExperimentRepository, ObservationRepository,
+    ProcessChangeRepository, ReflectionRepository, TargetRepository, ValueRepository,
+};
 use endora_platform::{AuditLog, EventLog};
 use endora_understanding::{BeliefRepository, PreferenceRepository};
 
 use crate::error::AppError;
 use crate::ports::{
-    AssumptionRepository, AttentionItem, AttentionKind, BriefSchedule, BriefScheduleRepository,
-    Butler, ButlerContext, ButlerProposal, ButlerReply, ChatRepository, CheckinRepository,
-    CheckinSchedule, Clock, DirectionRepository, ExperimentRepository, IdSource, MemorySnapshot,
-    MemoryStore, NorthStarBrief, ObservationRepository, ProcessChangeRepository, Proposer,
-    ReflectionRepository, Snooze, SnoozeRepository, Suggestion, SuggestionRepository,
-    SuggestionStatus, TargetRepository, ValueRepository,
+    AttentionItem, AttentionKind, BriefSchedule, BriefScheduleRepository, Butler, ButlerContext,
+    ButlerProposal, ButlerReply, ChatRepository, CheckinRepository, CheckinSchedule, Clock,
+    IdSource, MemorySnapshot, MemoryStore, NorthStarBrief, Proposer, Snooze, SnoozeRepository,
+    Suggestion, SuggestionRepository, SuggestionStatus,
 };
 
 /// Creates and stores a new [`Direction`].
@@ -1848,13 +1850,16 @@ mod tests {
     };
     use crate::error::AppError;
     use crate::ports::{
-        AssumptionRepository, AttentionKind, Butler, ButlerContext, ButlerProposal, ButlerReply,
-        ChatRepository, CheckinRepository, CheckinSchedule, Clock, DirectionRepository,
-        ExperimentRepository, IdSource, ObservationRepository, ProcessChangeRepository,
-        ProposalError, Proposer, ReflectionRepository, RepositoryError, Snooze, SnoozeRepository,
-        Suggestion, SuggestionRepository, SuggestionStatus, TargetRepository, ValueRepository,
+        AttentionKind, Butler, ButlerContext, ButlerProposal, ButlerReply, ChatRepository,
+        CheckinRepository, CheckinSchedule, Clock, IdSource, ProposalError, Proposer,
+        RepositoryError, Snooze, SnoozeRepository, Suggestion, SuggestionRepository,
+        SuggestionStatus,
     };
     use endora_capabilities::CapabilityRunner;
+    use endora_direction::{
+        AssumptionRepository, DirectionRepository, ExperimentRepository, ObservationRepository,
+        ProcessChangeRepository, ReflectionRepository, TargetRepository, ValueRepository,
+    };
     use endora_domain::LifecycleStatus;
     use endora_domain::{
         ApprovalState, Assumption, AssumptionId, AuditRecord, AutonomyLevel, ChatMessage,
@@ -3613,7 +3618,7 @@ mod tests {
     #[test]
     fn activity_merges_observations_and_decisions_newest_first() {
         use super::{ActivityKind, recent_activity};
-        use crate::ports::ObservationRepository;
+        use endora_direction::ObservationRepository;
         use endora_domain::{AuditId, AuditRecord, ExperimentId, Observation, ObservationId};
 
         let store = FakeStore::default();

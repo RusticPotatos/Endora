@@ -5,8 +5,8 @@
 //! human must approve it. This encodes the constitution's rule that human
 //! autonomy is final and process changes require human approval.
 
-use crate::error::{DomainError, require_non_empty};
-use crate::ids::{ObservationId, ProcessChangeId, ReflectionId, TargetId};
+use endora_kernel::error::{DomainError, require_non_empty};
+use endora_kernel::ids::{ObservationId, ProcessChangeId, ReflectionId, TargetId};
 
 /// A retrospective over observed evidence for a target.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -219,8 +219,8 @@ impl ProposedProcessChange {
 #[cfg(test)]
 mod tests {
     use super::{ApprovalState, ProposedProcessChange, Reflection};
-    use crate::error::DomainError;
-    use crate::ids::{ObservationId, ProcessChangeId, ReflectionId, TargetId};
+    use endora_kernel::error::DomainError;
+    use endora_kernel::ids::{ObservationId, ProcessChangeId, ReflectionId, TargetId};
 
     #[test]
     fn reflection_requires_evidence() {
