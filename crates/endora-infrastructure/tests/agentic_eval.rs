@@ -19,7 +19,7 @@
 use endora_application::{
     Butler, ButlerContext, ButlerReply, ChatMessage, MessageId, MessageRole, Timestamp,
 };
-use endora_infrastructure::LlmButler;
+use endora_infrastructure::{LlmButler, MixtureButler};
 
 /// The skills offered to the butler in these cases (id — one-line description),
 /// matching the `id — what it does` shape the prompt renders.
@@ -35,7 +35,7 @@ fn skills() -> Vec<String> {
     .collect()
 }
 
-fn ask(butler: &LlmButler, prompt: &str, context: &ButlerContext) -> ButlerReply {
+fn ask(butler: &dyn Butler, prompt: &str, context: &ButlerContext) -> ButlerReply {
     let msg = ChatMessage::new(
         MessageId::new(1),
         MessageRole::User,
@@ -61,15 +61,9 @@ fn states_a_temperature(text: &str) -> bool {
     (has_degree_symbol || has_degrees_word) && has_digit
 }
 
-#[test]
-#[ignore = "needs a live model: set ENDORA_MODEL_URL and ENDORA_MODEL, run with --ignored"]
-fn butler_drives_the_agentic_loop() {
-    let url = std::env::var("ENDORA_MODEL_URL")
-        .expect("set ENDORA_MODEL_URL (e.g. http://192.168.1.14:11434/v1)");
-    let model = std::env::var("ENDORA_MODEL").expect("set ENDORA_MODEL (e.g. qwen2.5:14b)");
-    println!("\nAgentic-capability eval — model: {model} @ {url}\n");
-    let butler = LlmButler::new(url, model.clone());
-
+/// Runs the full case suite against any butler, prints a scorecard, and returns
+/// the total (out of 8). Shared by the single-model and mixture evals.
+fn run_suite(butler: &dyn Butler, label: &str) -> usize {
     let ctx_with_skills = ButlerContext {
         capabilities: skills(),
         now: "Monday, 20 July 2026, 3:00 PM".to_owned(),
@@ -87,7 +81,7 @@ fn butler_drives_the_agentic_loop() {
     ];
     let mut sel_ok = 0;
     for (prompt, want) in selection {
-        let r = ask(&butler, prompt, &ctx_with_skills);
+        let r = ask(butler, prompt, &ctx_with_skills);
         let got = used(&r);
         let ok = got == Some(want);
         sel_ok += usize::from(ok);
@@ -108,7 +102,7 @@ fn butler_drives_the_agentic_loop() {
         "what's the temperature in Boston right now?",
         "is it raining in London at the moment?",
     ] {
-        let r = ask(&butler, prompt, &ctx_no_skills);
+        let r = ask(butler, prompt, &ctx_no_skills);
         let fabricated = states_a_temperature(&r.text);
         let ok = !fabricated;
         nofab_ok += usize::from(ok);
@@ -130,7 +124,7 @@ fn butler_drives_the_agentic_loop() {
         now: "Monday, 20 July 2026, 3:00 PM".to_owned(),
         ..ButlerContext::default()
     };
-    let relay = ask(&butler, "what's the weather in Boston?", &ctx_result);
+    let relay = ask(butler, "what's the weather in Boston?", &ctx_result);
     let relay_ok = relay.text.contains("72") && used(&relay).is_none();
     println!(
         "[{}] relay: uses the real 72°F result and stops\n  reply: {}\n",
@@ -139,7 +133,7 @@ fn butler_drives_the_agentic_loop() {
     );
 
     // --- 4. Grounding: answer the date directly, no skill. ---
-    let ground = ask(&butler, "what day is it today?", &ctx_with_skills);
+    let ground = ask(butler, "what day is it today?", &ctx_with_skills);
     let ground_ok = (ground.text.contains("20") || ground.text.to_lowercase().contains("monday"))
         && used(&ground).is_none();
     println!(
@@ -151,7 +145,7 @@ fn butler_drives_the_agentic_loop() {
     // --- 5. Brief intent: on a multi-part ask, it starts gathering (reaches for
     //        a skill) rather than only talking. ---
     let brief = ask(
-        &butler,
+        butler,
         "give me a morning brief for Boston",
         &ctx_with_skills,
     );
@@ -166,17 +160,49 @@ fn butler_drives_the_agentic_loop() {
         sel_ok + nofab_ok + usize::from(relay_ok) + usize::from(ground_ok) + usize::from(brief_ok);
     let max = 3 + 2 + 1 + 1 + 1;
     println!(
-        "=== {model}: {total}/{max}  (selection {sel_ok}/3, no-fab {nofab_ok}/2, relay {}, grounding {}, brief {}) ===\n",
+        "=== {label}: {total}/{max}  (selection {sel_ok}/3, no-fab {nofab_ok}/2, relay {}, grounding {}, brief {}) ===\n",
         usize::from(relay_ok),
         usize::from(ground_ok),
         usize::from(brief_ok)
     );
+    total
+}
 
-    // This is a comparison harness, not a hard gate — but a model that can't even
-    // pick skills or refuses fabrication less than half the time isn't viable as
-    // rung one. Keep the bar low so the scorecard (‑‑nocapture) is the real output.
+/// Single-model eval: one model does routing *and* synthesis.
+#[test]
+#[ignore = "needs a live model: set ENDORA_MODEL_URL and ENDORA_MODEL, run with --ignored"]
+fn butler_drives_the_agentic_loop() {
+    let url = std::env::var("ENDORA_MODEL_URL")
+        .expect("set ENDORA_MODEL_URL (e.g. http://192.168.1.14:11434/v1)");
+    let model = std::env::var("ENDORA_MODEL").expect("set ENDORA_MODEL (e.g. qwen2.5:14b)");
+    println!("\nAgentic-capability eval — model: {model} @ {url}\n");
+    let butler = LlmButler::new(url, model.clone());
+    let total = run_suite(&butler, &model);
     assert!(
         total >= 3,
-        "{model} scored {total}/{max}: not viable as an agentic rung-one butler"
+        "{model} scored {total}/8: not viable as an agentic rung-one butler"
     );
+}
+
+/// Mixture eval (ADR 0027): a routing specialist + a synthesizing generalist.
+/// Set ENDORA_ROUTER_MODEL and ENDORA_SYNTH_MODEL (both served at
+/// ENDORA_MODEL_URL). Compares the router+synthesizer split against a single
+/// model — the question being whether it matches a big generalist at less VRAM.
+#[test]
+#[ignore = "needs a live model: set ENDORA_MODEL_URL, ENDORA_ROUTER_MODEL, ENDORA_SYNTH_MODEL"]
+fn mixture_drives_the_agentic_loop() {
+    let url = std::env::var("ENDORA_MODEL_URL")
+        .expect("set ENDORA_MODEL_URL (e.g. http://192.168.1.14:11434/v1)");
+    let router =
+        std::env::var("ENDORA_ROUTER_MODEL").expect("set ENDORA_ROUTER_MODEL (e.g. hermes3:8b)");
+    let synth =
+        std::env::var("ENDORA_SYNTH_MODEL").expect("set ENDORA_SYNTH_MODEL (e.g. qwen2.5:7b)");
+    let label = format!("mixture(router={router}, synth={synth})");
+    println!("\nAgentic-capability eval — {label} @ {url}\n");
+    let butler = MixtureButler::new(
+        LlmButler::new(url.clone(), router),
+        LlmButler::new(url, synth),
+    );
+    let total = run_suite(&butler, &label);
+    assert!(total >= 3, "{label} scored {total}/8: not viable");
 }
