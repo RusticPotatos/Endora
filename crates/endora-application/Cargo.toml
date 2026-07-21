@@ -9,6 +9,7 @@ repository.workspace = true
 authors.workspace = true
 
 [dependencies]
+endora-kernel = { path = "../../shared/kernel" }
 endora-domain = { path = "../endora-domain" }
 
 [lints]
