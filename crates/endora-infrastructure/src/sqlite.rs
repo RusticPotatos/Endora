@@ -11,10 +11,8 @@ use endora_persistence::Db;
 use serde_json::{Value as JsonValue, json};
 
 use endora_application::{
-    ActivityEvent, AuditLog, AutonomyEnvelope, AutonomyEnvelopeRepository, ButlerProposal,
-    CapabilityConfigRepository, CapabilitySettingsRepository, DeepModel, DeepModelRepository,
-    EventLog, MemorySnapshot, MemoryStore, RepositoryError, Snooze, SnoozeRepository, Suggestion,
-    SuggestionRepository, SuggestionStatus,
+    ActivityEvent, AuditLog, ButlerProposal, EventLog, MemorySnapshot, MemoryStore,
+    RepositoryError, Snooze, SnoozeRepository, Suggestion, SuggestionRepository, SuggestionStatus,
 };
 use endora_domain::{
     ApprovalState, Assumption, AssumptionId, AuditId, AuditRecord, Belief, BeliefId, BeliefKind,
@@ -518,127 +516,9 @@ impl EventLog for SqliteStore {
     }
 }
 
-impl DeepModelRepository for SqliteStore {
-    fn get(&self) -> Result<Option<DeepModel>, RepositoryError> {
-        let conn = self.lock()?;
-        conn.query_row(
-            "SELECT url, model, api_key FROM deep_model WHERE id = 0",
-            [],
-            |r| {
-                Ok(DeepModel {
-                    url: r.get(0)?,
-                    model: r.get(1)?,
-                    api_key: r.get(2)?,
-                })
-            },
-        )
-        .optional()
-        .map_err(backend)
-    }
-
-    fn set(&self, model: &DeepModel) -> Result<(), RepositoryError> {
-        let conn = self.lock()?;
-        conn.execute(
-            "INSERT OR REPLACE INTO deep_model (id, url, model, api_key) VALUES (0, ?1, ?2, ?3)",
-            params![model.url, model.model, model.api_key],
-        )
-        .map_err(backend)?;
-        Ok(())
-    }
-}
-
-impl AutonomyEnvelopeRepository for SqliteStore {
-    fn get(&self) -> Result<AutonomyEnvelope, RepositoryError> {
-        let conn = self.lock()?;
-        conn.query_row(
-            "SELECT auto_external, auto_consequential FROM autonomy_envelope WHERE id = 0",
-            [],
-            |r| {
-                Ok(AutonomyEnvelope {
-                    auto_external: r.get::<_, i64>(0)? != 0,
-                    auto_consequential: r.get::<_, i64>(1)? != 0,
-                })
-            },
-        )
-        .optional()
-        .map_err(backend)
-        .map(Option::unwrap_or_default)
-    }
-
-    fn set(&self, envelope: &AutonomyEnvelope) -> Result<(), RepositoryError> {
-        let conn = self.lock()?;
-        conn.execute(
-            "INSERT OR REPLACE INTO autonomy_envelope (id, auto_external, auto_consequential) \
-             VALUES (0, ?1, ?2)",
-            params![
-                i64::from(envelope.auto_external),
-                i64::from(envelope.auto_consequential)
-            ],
-        )
-        .map_err(backend)?;
-        Ok(())
-    }
-}
-
-impl CapabilitySettingsRepository for SqliteStore {
-    fn all_settings(&self) -> Result<Vec<(String, String, String)>, RepositoryError> {
-        let conn = self.lock()?;
-        let mut stmt = conn
-            .prepare("SELECT capability_id, key, value FROM capability_settings")
-            .map_err(backend)?;
-        let rows = stmt
-            .query_map([], |r| {
-                Ok((
-                    r.get::<_, String>(0)?,
-                    r.get::<_, String>(1)?,
-                    r.get::<_, String>(2)?,
-                ))
-            })
-            .map_err(backend)?;
-        rows.collect::<Result<Vec<_>, _>>().map_err(backend)
-    }
-
-    fn set_setting(
-        &self,
-        capability_id: &str,
-        key: &str,
-        value: &str,
-    ) -> Result<(), RepositoryError> {
-        let conn = self.lock()?;
-        conn.execute(
-            "INSERT OR REPLACE INTO capability_settings (capability_id, key, value) \
-             VALUES (?1, ?2, ?3)",
-            params![capability_id, key, value],
-        )
-        .map_err(backend)?;
-        Ok(())
-    }
-}
-
-impl CapabilityConfigRepository for SqliteStore {
-    fn enabled_overrides(&self) -> Result<Vec<(String, bool)>, RepositoryError> {
-        let conn = self.lock()?;
-        let mut stmt = conn
-            .prepare("SELECT id, enabled FROM capability_config")
-            .map_err(backend)?;
-        let rows = stmt
-            .query_map([], |r| {
-                Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)? != 0))
-            })
-            .map_err(backend)?;
-        rows.collect::<Result<Vec<_>, _>>().map_err(backend)
-    }
-
-    fn set_enabled(&self, id: &str, enabled: bool) -> Result<(), RepositoryError> {
-        let conn = self.lock()?;
-        conn.execute(
-            "INSERT OR REPLACE INTO capability_config (id, enabled) VALUES (?1, ?2)",
-            params![id, i64::from(enabled)],
-        )
-        .map_err(backend)?;
-        Ok(())
-    }
-}
+// The capabilities config repositories (settings, config, autonomy envelope,
+// deep model) are implemented by the capabilities context's ConfigStore over
+// the shared Db now (ADR 0026).
 
 // BeliefRepository is implemented by the understanding context's
 // UnderstandingStore over the shared Db now (ADR 0026); `all_beliefs` stays here
@@ -1230,6 +1110,7 @@ mod tests {
     // (as real use cases do) rather than calling ambiguous methods directly.
     use super::SqliteStore;
     use endora_application::{DirectionRepository, TargetRepository};
+    use endora_capabilities::ConfigStore;
     use endora_direction::DirectionStore;
     use endora_domain::{Direction, DirectionId, Target, TargetId};
 
@@ -1240,6 +1121,11 @@ mod tests {
     /// The direction repositories over the store's shared connection (ADR 0026).
     fn dir_repos(store: &SqliteStore) -> DirectionStore {
         DirectionStore::new(store.db())
+    }
+
+    /// The capabilities config repositories over the store's shared connection.
+    fn cfg_store(store: &SqliteStore) -> ConfigStore {
+        ConfigStore::new(store.db())
     }
 
     #[test]
@@ -1816,7 +1702,8 @@ mod tests {
     fn capability_settings_round_trip_and_upsert() {
         use endora_application::CapabilitySettingsRepository;
         let store = store();
-        let repo: &dyn CapabilitySettingsRepository = &store;
+        let cfg = cfg_store(&store);
+        let repo: &dyn CapabilitySettingsRepository = &cfg;
         assert!(repo.all_settings().unwrap().is_empty());
         repo.set_setting("image_review", "model", "moondream")
             .unwrap();
@@ -1854,7 +1741,8 @@ mod tests {
     fn deep_model_config_round_trips() {
         use endora_application::{DeepModel, DeepModelRepository};
         let store = store();
-        let repo: &dyn DeepModelRepository = &store;
+        let cfg = cfg_store(&store);
+        let repo: &dyn DeepModelRepository = &cfg;
         assert!(repo.get().unwrap().is_none());
         let cfg = DeepModel {
             url: "https://api.x.com/v1".to_owned(),
@@ -1869,7 +1757,8 @@ mod tests {
     fn autonomy_envelope_defaults_then_round_trips() {
         use endora_application::{AutonomyEnvelope, AutonomyEnvelopeRepository};
         let store = store();
-        let repo: &dyn AutonomyEnvelopeRepository = &store;
+        let cfg = cfg_store(&store);
+        let repo: &dyn AutonomyEnvelopeRepository = &cfg;
 
         // Unset ⇒ the default posture (external ok, consequential no).
         assert_eq!(repo.get().unwrap(), AutonomyEnvelope::default());
@@ -1886,7 +1775,8 @@ mod tests {
     fn capability_enable_overrides_round_trip() {
         use endora_application::CapabilityConfigRepository;
         let store = store();
-        let repo: &dyn CapabilityConfigRepository = &store;
+        let cfg = cfg_store(&store);
+        let repo: &dyn CapabilityConfigRepository = &cfg;
 
         // No overrides to start.
         assert!(repo.enabled_overrides().unwrap().is_empty());
