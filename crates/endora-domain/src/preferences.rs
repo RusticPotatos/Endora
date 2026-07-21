@@ -17,7 +17,7 @@
 use crate::error::{DomainError, require_non_empty};
 use crate::ids::{PreferenceId, Timestamp};
 
-/// The two kinds of preference from the autonomy model.
+/// The kinds of preference from the autonomy model.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PreferenceKind {
     /// Taste/style — a default within already-permitted, reversible space. May
@@ -26,6 +26,9 @@ pub enum PreferenceKind {
     /// A grant of authority — expands what the butler may do on its own. Only
     /// ever explicitly stated by the person, never inferred.
     Authority,
+    /// A factual bit of context about the person — where they're based, their
+    /// timezone. Not a taste and not a grant of power; it just grounds the butler.
+    Context,
 }
 
 impl PreferenceKind {
@@ -35,6 +38,7 @@ impl PreferenceKind {
         match self {
             Self::Taste => "taste",
             Self::Authority => "authority",
+            Self::Context => "context",
         }
     }
 
@@ -44,6 +48,7 @@ impl PreferenceKind {
         match name {
             "taste" => Some(Self::Taste),
             "authority" => Some(Self::Authority),
+            "context" => Some(Self::Context),
             _ => None,
         }
     }
