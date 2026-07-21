@@ -1,0 +1,17 @@
+[package]
+name = "endora-capabilities"
+description = "Capabilities context: the butler's skills, the runner/policy gate, egress guard, and their configuration"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+endora-kernel = { path = "../../shared/kernel" }
+ureq = { version = "3.3", features = ["json", "socks-proxy"] }
+serde_json = "1.0.150"
+
+[lints]
+workspace = true
