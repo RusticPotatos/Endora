@@ -12,11 +12,11 @@ use serde_json::{Value as JsonValue, json};
 
 use endora_application::{
     ActivityEvent, AssumptionRepository, AuditLog, AutonomyEnvelope, AutonomyEnvelopeRepository,
-    BeliefRepository, ButlerProposal, CapabilityConfigRepository, CapabilitySettingsRepository,
-    DeepModel, DeepModelRepository, DirectionRepository, EventLog, ExperimentRepository,
-    MemorySnapshot, MemoryStore, ObservationRepository, PreferenceRepository,
-    ProcessChangeRepository, ReflectionRepository, RepositoryError, Snooze, SnoozeRepository,
-    Suggestion, SuggestionRepository, SuggestionStatus, TargetRepository, ValueRepository,
+    ButlerProposal, CapabilityConfigRepository, CapabilitySettingsRepository, DeepModel,
+    DeepModelRepository, DirectionRepository, EventLog, ExperimentRepository, MemorySnapshot,
+    MemoryStore, ObservationRepository, ProcessChangeRepository, ReflectionRepository,
+    RepositoryError, Snooze, SnoozeRepository, Suggestion, SuggestionRepository, SuggestionStatus,
+    TargetRepository, ValueRepository,
 };
 use endora_domain::{
     ApprovalState, Assumption, AssumptionId, AuditId, AuditRecord, Belief, BeliefId, BeliefKind,
@@ -1008,37 +1008,9 @@ impl SnoozeRepository for SqliteStore {
 // ChatRepository is implemented by the conversation context's ChatStore over the
 // shared Db now (ADR 0026). `all_messages` remains here for MemoryStore's export.
 
-impl PreferenceRepository for SqliteStore {
-    fn save(&self, preference: &Preference) -> Result<(), RepositoryError> {
-        let conn = self.lock()?;
-        conn.execute(
-            "INSERT OR REPLACE INTO preferences (id, body, kind, at_ms) VALUES (?1, ?2, ?3, ?4)",
-            params![
-                id_text(preference.id().value()),
-                preference.text(),
-                preference.kind().name(),
-                preference.at().unix_millis()
-            ],
-        )
-        .map_err(backend)?;
-        Ok(())
-    }
-
-    fn list_all(&self) -> Result<Vec<Preference>, RepositoryError> {
-        let conn = self.lock()?;
-        all_preferences(&conn)
-    }
-
-    fn delete(&self, id: PreferenceId) -> Result<(), RepositoryError> {
-        let conn = self.lock()?;
-        conn.execute(
-            "DELETE FROM preferences WHERE id = ?1",
-            params![id_text(id.value())],
-        )
-        .map_err(backend)?;
-        Ok(())
-    }
-}
+// PreferenceRepository is implemented by the understanding context's
+// UnderstandingStore over the shared Db now (ADR 0026); `all_preferences` stays
+// here for MemoryStore's export.
 
 fn all_preferences(conn: &Connection) -> Result<Vec<Preference>, RepositoryError> {
     let mut stmt = conn
@@ -1259,38 +1231,9 @@ impl CapabilityConfigRepository for SqliteStore {
     }
 }
 
-impl BeliefRepository for SqliteStore {
-    fn save(&self, belief: &Belief) -> Result<(), RepositoryError> {
-        let conn = self.lock()?;
-        conn.execute(
-            "INSERT OR REPLACE INTO beliefs \
-             (id, statement, kind, confidence, evidence, created_ms, last_affirmed_ms, status) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-            params![
-                id_text(belief.id().value()),
-                belief.statement(),
-                belief.kind().name(),
-                belief.confidence().name(),
-                belief.evidence(),
-                belief.created_at().unix_millis(),
-                belief.last_affirmed_at().unix_millis(),
-                belief.status().name(),
-            ],
-        )
-        .map_err(backend)?;
-        Ok(())
-    }
-
-    fn get(&self, id: BeliefId) -> Result<Option<Belief>, RepositoryError> {
-        let conn = self.lock()?;
-        Ok(all_beliefs(&conn)?.into_iter().find(|b| b.id() == id))
-    }
-
-    fn list(&self) -> Result<Vec<Belief>, RepositoryError> {
-        let conn = self.lock()?;
-        all_beliefs(&conn)
-    }
-}
+// BeliefRepository is implemented by the understanding context's
+// UnderstandingStore over the shared Db now (ADR 0026); `all_beliefs` stays here
+// for MemoryStore's export.
 
 fn all_beliefs(conn: &Connection) -> Result<Vec<Belief>, RepositoryError> {
     let mut stmt = conn
