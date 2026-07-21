@@ -19,6 +19,7 @@ endora-kernel = { path = "../../shared/kernel" }
 endora-platform = { path = "../../domains/platform" }
 endora-understanding = { path = "../../domains/understanding" }
 endora-direction = { path = "../../domains/direction" }
+endora-conversation = { path = "../../domains/conversation" }
 
 [lints]
 workspace = true

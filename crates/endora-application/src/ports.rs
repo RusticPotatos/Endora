@@ -482,20 +482,8 @@ pub trait Butler {
 // PreferenceRepository moved to the understanding context (ADR 0026);
 // re-exported from `endora_application` (see lib.rs) so existing paths hold.
 
-/// Persists and retrieves the conversation with the butler.
-pub trait ChatRepository {
-    /// Appends a message to the conversation.
-    ///
-    /// # Errors
-    /// [`RepositoryError`] if the backend fails.
-    fn append(&self, message: &ChatMessage) -> Result<(), RepositoryError>;
-
-    /// Lists the conversation, oldest first.
-    ///
-    /// # Errors
-    /// [`RepositoryError`] if the backend fails or stored data is corrupt.
-    fn list(&self) -> Result<Vec<ChatMessage>, RepositoryError>;
-}
+// ChatRepository moved to the conversation context (ADR 0026); re-exported from
+// `endora_application` (see lib.rs) so existing paths hold.
 
 /// The kind of thing needing the person's attention.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
