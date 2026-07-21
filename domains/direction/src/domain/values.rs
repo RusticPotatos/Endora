@@ -1,13 +1,13 @@
 //! Identity & Values context.
 //!
 //! A [`Value`] is a durable theme the person cares about — health, community,
-//! craft — that a [`Direction`](crate::targets::Direction) (North Star) serves. It
+//! craft — that a [`Direction`](crate::domain::targets::Direction) (North Star) serves. It
 //! is the *why* above the North Star. Like everything in the domain it is
 //! user-owned: the system may ask what a North Star is *for*, but never invents
 //! the value itself.
 
-use crate::error::{DomainError, require_non_empty};
-use crate::ids::ValueId;
+use endora_kernel::error::{DomainError, require_non_empty};
+use endora_kernel::ids::ValueId;
 
 /// A durable theme the person cares about; the "why" a North Star serves.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -42,8 +42,8 @@ impl Value {
 #[cfg(test)]
 mod tests {
     use super::Value;
-    use crate::error::DomainError;
-    use crate::ids::ValueId;
+    use endora_kernel::error::DomainError;
+    use endora_kernel::ids::ValueId;
 
     #[test]
     fn value_requires_a_name() {

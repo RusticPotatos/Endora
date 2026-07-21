@@ -4,8 +4,8 @@
 //! pursued under it, and the [`Assumption`]s a target rests on. These are
 //! user-owned: the domain validates and holds them but never invents them.
 
-use crate::error::{DomainError, require_non_empty};
-use crate::ids::{AssumptionId, DirectionId, TargetId, ValueId};
+use endora_kernel::error::{DomainError, require_non_empty};
+use endora_kernel::ids::{AssumptionId, DirectionId, TargetId, ValueId};
 
 /// The lifecycle state of a [`Direction`] or [`Target`].
 ///
@@ -63,7 +63,7 @@ pub struct Direction {
     id: DirectionId,
     title: String,
     status: LifecycleStatus,
-    /// The [`Value`](crate::values::Value) this North Star serves, if the person
+    /// The [`Value`](crate::domain::values::Value) this North Star serves, if the person
     /// has filed it under one. `None` means "unfiled".
     value: Option<ValueId>,
 }
@@ -258,8 +258,8 @@ impl Assumption {
 #[cfg(test)]
 mod tests {
     use super::{Assumption, Direction, LifecycleStatus, Target};
-    use crate::error::DomainError;
-    use crate::ids::{AssumptionId, DirectionId, TargetId};
+    use endora_kernel::error::DomainError;
+    use endora_kernel::ids::{AssumptionId, DirectionId, TargetId};
 
     #[test]
     fn a_new_direction_and_target_start_active() {
@@ -296,7 +296,7 @@ mod tests {
 
     #[test]
     fn a_new_direction_is_unfiled_and_can_be_filed_under_a_value() {
-        use crate::ids::ValueId;
+        use endora_kernel::ids::ValueId;
         let mut d = Direction::new(DirectionId::new(1), "Get back into running").unwrap();
         assert_eq!(d.value(), None);
         d.set_value(Some(ValueId::new(7)));
@@ -307,7 +307,7 @@ mod tests {
 
     #[test]
     fn from_parts_restores_a_stored_status() {
-        use crate::ids::ValueId;
+        use endora_kernel::ids::ValueId;
         let d = Direction::from_parts(
             DirectionId::new(1),
             "Be healthier",
