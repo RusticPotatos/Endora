@@ -1611,6 +1611,15 @@ async fn invoke_capability(
             entity: "capability",
         }));
     };
+    // Data-loss tripwire: don't send a device-leaving request that carries a secret
+    // (ADR 0023), on the explicit-invoke path too.
+    if cap.info().reaches_external {
+        if let Some(kind) = endora_infrastructure::scan_outbound_secret(&input.to_string()) {
+            return Err(ApiError(AppError::BadRequest {
+                message: format!("refusing to send this out — it looks like it contains {kind}"),
+            }));
+        }
+    }
     let store = state.store.clone();
     let result = tokio::task::spawn_blocking(move || {
         let settings = settings_map(store.as_ref()).remove(&id).unwrap_or_default();
