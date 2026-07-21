@@ -266,6 +266,7 @@ dependencies = [
  "endora-domain",
  "endora-kernel",
  "endora-platform",
+ "endora-scheduling",
  "endora-understanding",
 ]
 
@@ -364,6 +365,13 @@ dependencies = [
  "endora-kernel",
  "endora-persistence",
  "rusqlite",
+]
+
+[[package]]
+name = "endora-scheduling"
+version = "0.11.0"
+dependencies = [
+ "endora-kernel",
 ]
 
 [[package]]

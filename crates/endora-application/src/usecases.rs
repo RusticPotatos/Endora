@@ -22,12 +22,15 @@ use endora_direction::{
 use endora_platform::{AuditLog, EventLog};
 use endora_understanding::{BeliefRepository, PreferenceRepository};
 
+use endora_scheduling::{
+    BriefSchedule, BriefScheduleRepository, CheckinRepository, CheckinSchedule,
+};
+
 use crate::error::AppError;
 use crate::ports::{
-    AttentionItem, AttentionKind, BriefSchedule, BriefScheduleRepository, Butler, ButlerContext,
-    ButlerProposal, ButlerReply, CheckinRepository, CheckinSchedule, Clock, IdSource,
-    MemorySnapshot, MemoryStore, NorthStarBrief, Proposer, Snooze, SnoozeRepository, Suggestion,
-    SuggestionRepository, SuggestionStatus,
+    AttentionItem, AttentionKind, Butler, ButlerContext, ButlerProposal, ButlerReply, Clock,
+    IdSource, MemorySnapshot, MemoryStore, NorthStarBrief, Proposer, Snooze, SnoozeRepository,
+    Suggestion, SuggestionRepository, SuggestionStatus,
 };
 
 /// Creates and stores a new [`Direction`].
@@ -1851,9 +1854,9 @@ mod tests {
     };
     use crate::error::AppError;
     use crate::ports::{
-        AttentionKind, Butler, ButlerContext, ButlerProposal, ButlerReply, CheckinRepository,
-        CheckinSchedule, Clock, IdSource, ProposalError, Proposer, RepositoryError, Snooze,
-        SnoozeRepository, Suggestion, SuggestionRepository, SuggestionStatus,
+        AttentionKind, Butler, ButlerContext, ButlerProposal, ButlerReply, Clock, IdSource,
+        ProposalError, Proposer, RepositoryError, Snooze, SnoozeRepository, Suggestion,
+        SuggestionRepository, SuggestionStatus,
     };
     use endora_capabilities::CapabilityRunner;
     use endora_conversation::ChatRepository;
@@ -1871,6 +1874,7 @@ mod tests {
     };
     use endora_domain::{Belief, BeliefId};
     use endora_platform::{AuditLog, EventLog};
+    use endora_scheduling::{CheckinRepository, CheckinSchedule};
     use endora_understanding::{BeliefRepository, PreferenceRepository};
     use std::cell::{Cell, RefCell};
     use std::collections::HashMap;
@@ -2884,7 +2888,7 @@ mod tests {
 
     #[test]
     fn brief_is_due_only_at_its_hour_once_per_day() {
-        use crate::ports::BriefSchedule;
+        use endora_scheduling::BriefSchedule;
         let at = |d: i64, h: i64| Timestamp::from_unix_millis(d * 86_400_000 + h * 3_600_000);
         let day = 20_000; // a realistic day, so "since epoch" is far in the past
         let s = BriefSchedule {
