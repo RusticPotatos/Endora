@@ -1488,6 +1488,27 @@ pub fn daily_brief(
     Ok(Some((message, activity)))
 }
 
+/// Posts a butler message to the chat (used by out-of-band paths like the deep-model
+/// answer). Returns the persisted message.
+///
+/// # Errors
+/// [`AppError::Domain`] if the text is blank, or [`AppError::Repository`] on failure.
+pub fn post_butler_message(
+    chat: &impl ChatRepository,
+    ids: &impl IdSource,
+    clock: &impl Clock,
+    text: &str,
+) -> Result<ChatMessage, AppError> {
+    let message = ChatMessage::new(
+        MessageId::new(ids.new_id()),
+        MessageRole::Butler,
+        text,
+        clock.now(),
+    )?;
+    chat.append(&message)?;
+    Ok(message)
+}
+
 /// Returns the daily-brief schedule, defaulting to **off**.
 ///
 /// # Errors
