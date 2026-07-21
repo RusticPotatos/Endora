@@ -557,6 +557,35 @@ impl BriefSchedule {
     }
 }
 
+/// An optional **deep model** — a bigger/cloud AI the person configures for hard
+/// questions the local model can't handle well (like a phone escalating to a bigger
+/// brain). Off unless configured. The key is a secret, stored server-side and never
+/// returned to a client.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct DeepModel {
+    /// OpenAI-compatible base URL (`.../v1`).
+    pub url: String,
+    /// Model name to request.
+    pub model: String,
+    /// API key sent as a bearer token (empty for keyless/local endpoints).
+    pub api_key: String,
+}
+
+/// Persists the single [`DeepModel`] configuration.
+pub trait DeepModelRepository {
+    /// Returns the configured deep model, or `None` if unset.
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if the backend fails.
+    fn get(&self) -> Result<Option<DeepModel>, RepositoryError>;
+
+    /// Stores the deep model configuration.
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if the backend fails.
+    fn set(&self, model: &DeepModel) -> Result<(), RepositoryError>;
+}
+
 /// Persists the single [`BriefSchedule`].
 pub trait BriefScheduleRepository {
     /// Returns the stored schedule, or `None` if never set.

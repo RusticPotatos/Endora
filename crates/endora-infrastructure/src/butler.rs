@@ -360,6 +360,50 @@ Your ENTIRE response must be that single JSON object and nothing else: no prose 
 before or after it, no repetition, no code fences. Ground yourself in what you \
 already understand about the person, below.";
 
+/// Asks a **deep model** (a bigger/cloud OpenAI-compatible endpoint) a single
+/// question directly, returning its answer. Used for the explicit "ask a bigger
+/// brain" escalation (the person opts in per question; the local model handles the
+/// everyday). The `api_key`, if non-empty, is sent as a bearer token.
+///
+/// # Errors
+/// A message string if the endpoint is unreachable or returns an error.
+pub fn ask_deep_model(
+    base_url: &str,
+    model: &str,
+    api_key: &str,
+    question: &str,
+) -> Result<String, String> {
+    let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .timeout_global(Some(std::time::Duration::from_secs(120)))
+        .build()
+        .into();
+    let mut req = agent.post(&url).header("Content-Type", "application/json");
+    if !api_key.is_empty() {
+        req = req.header("Authorization", &format!("Bearer {api_key}"));
+    }
+    let body = json!({
+        "model": model,
+        "messages": [{ "role": "user", "content": question }],
+        "stream": false,
+    });
+    let mut response = req.send_json(&body).map_err(|e| e.to_string())?;
+    if response.status().as_u16() >= 300 {
+        return Err(format!("deep model returned status {}", response.status()));
+    }
+    let json: Value = response.body_mut().read_json().map_err(|e| e.to_string())?;
+    let answer = json["choices"][0]["message"]["content"]
+        .as_str()
+        .unwrap_or("")
+        .trim()
+        .to_owned();
+    if answer.is_empty() {
+        Err("the deep model returned an empty answer".to_owned())
+    } else {
+        Ok(answer)
+    }
+}
+
 /// Builds the OpenAI-compatible chat request from the conversation and the
 /// preferences already learned (so the butler need not re-ask). Pure, so it is
 /// unit-tested.

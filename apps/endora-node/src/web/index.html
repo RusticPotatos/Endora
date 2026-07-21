@@ -200,6 +200,7 @@ let CHECKIN = { enabled: false, interval_ms: 0 }; // proactive check-in cadence
 let CAPS = [];                 // the butler's capabilities/skills (modules)
 let AUTONOMY = { auto_external: true, auto_consequential: false }; // the autonomy envelope (ADR 0022)
 let BRIEF_SCHED = { enabled: false, hour_utc: 12 }; // daily-brief schedule
+let DEEP_MODEL = { configured: false, key_set: false, url: "", model: "" }; // optional bigger AI
 let UNDERSTANDING = [];        // Endora's beliefs about the person (the home surface)
 let LAST_ACTIVITY = [];        // what Endora did behind the scenes on the last turn
 let LAST_ACTIVITY_MSG = null;  // the butler message id that activity belongs to
@@ -279,6 +280,7 @@ async function reload() {
     api("GET", "/v1/autonomy"),
   ]);
   try { BRIEF_SCHED = await api("GET", "/v1/brief/schedule"); } catch (_) {}
+  try { DEEP_MODEL = await api("GET", "/v1/deep-model"); } catch (_) {}
   DB = db;
   ACTIVITY = activity;
   ATTENTION = attention;
@@ -775,7 +777,8 @@ function viewChat() {
         <textarea id="chat-input" rows="1" placeholder="Talk to your butler…"></textarea>
         <div class="composer-actions">
           ${speakBtn || "<span></span>"}
-          ${micBtn || "<span></span>"}
+          ${micBtn || ""}
+          ${DEEP_MODEL.configured ? `<button class="ghost" data-act="deepask" title="send this question to your bigger model">${icon("sparkle", 15)} Ask deep</button>` : ""}
           <button class="primary" data-act="chat:send">${icon("send")}<span>Send</span></button>
         </div>
       </div>
@@ -796,6 +799,14 @@ function viewSettings() {
       ${row(SPEAK, "toggle:speak", "Read replies aloud", TTS ? "" : "not supported in this browser")}
       ${row(PTT_HAPTIC, "toggle:haptic", "Vibrate on push-to-talk", "haptic cue on Android; iOS ignores it")}
       ${row(SHOW_ACTIVITY, "toggle:activity", "Show Endora's actions", "a note of what it did each turn")}
+    </div>
+    <h3 style="margin-top:18px;">Deep model — a bigger AI for hard questions</h3>
+    <div class="sub" style="margin:2px 0 8px;">Optional. Everyday stays on your local model; you escalate a question when you want a bigger brain. It leaves your device, so it's opt-in per question and passes the same egress guard.</div>
+    <div class="card" style="display:flex;flex-direction:column;gap:8px;">
+      <div class="form"><label class="sub" style="min-width:70px;">Endpoint</label><input id="deep-url" placeholder="https://api.provider.com/v1" value="${esc(DEEP_MODEL.url || "")}" /></div>
+      <div class="form"><label class="sub" style="min-width:70px;">Model</label><input id="deep-model" placeholder="e.g. gpt-4o, claude-sonnet-5" value="${esc(DEEP_MODEL.model || "")}" /></div>
+      <div class="form"><label class="sub" style="min-width:70px;">API key</label><input id="deep-key" type="password" autocomplete="off" placeholder="${DEEP_MODEL.key_set ? "•••••• (unchanged)" : "stored securely, never shown"}" /></div>
+      <div class="row" style="justify-content:flex-end;"><button class="primary" data-act="deepsave">Save deep model</button></div>
     </div>
     <div class="sub" style="margin-top:12px;">How boldly Endora acts on its own is under <a data-act="go:skills" style="color:var(--accent);cursor:pointer">Skills</a>. Private egress (proxy/VPN) is set in deployment config.</div>`;
 }
@@ -1205,6 +1216,30 @@ async function dispatch(act) {
       }
       try { await api("POST", `/v1/capabilities/${noun}/config`, { settings }); flash("Saved.", "ok"); }
       catch (e) { flash("Couldn't save settings: " + e.message, "err"); }
+      return reload();
+    }
+    // Save the deep-model config. A blank key keeps the stored one.
+    if (verb === "deepsave") {
+      const url = (document.getElementById("deep-url") || {}).value || "";
+      const model = (document.getElementById("deep-model") || {}).value || "";
+      const key = (document.getElementById("deep-key") || {}).value || "";
+      const body = { url: url.trim(), model: model.trim() };
+      if (key.trim()) body.api_key = key.trim();
+      try { await api("POST", "/v1/deep-model", body); flash("Deep model saved.", "ok"); }
+      catch (e) { flash("Couldn't save: " + e.message, "err"); }
+      return reload();
+    }
+    // Escalate the typed question to the deep model.
+    if (verb === "deepask") {
+      const input = document.getElementById("chat-input");
+      const q = input && input.value.trim();
+      if (!q) { flash("Type a question first, then ask the bigger model.", "err"); return; }
+      if (input) input.value = "";
+      appendBubble(esc(q), "me");
+      try {
+        const r = await api("POST", "/v1/deep-ask", { question: q });
+        if (r && r.answered === false) flash(r.note || "No deep model configured.", "err");
+      } catch (e) { flash("Deep model: " + e.message, "err"); }
       return reload();
     }
     // Widen/narrow the autonomy envelope (ADR 0022). `noun` is the lever; `id` is 1/0.

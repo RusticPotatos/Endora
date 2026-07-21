@@ -19,8 +19,8 @@ use axum::routing::{get, post};
 use endora_application::{
     ActivityItem, AppError, AttentionItem, AttentionKind, AutonomyEnvelope,
     AutonomyEnvelopeRepository, BriefSchedule, Butler, ButlerProposal, CapabilityConfigRepository,
-    CapabilitySettingsRepository, CheckinSchedule, EventLog, MemorySnapshot, Proposer,
-    RepositoryError, Suggestion, SuggestionStatus, usecases,
+    CapabilitySettingsRepository, CheckinSchedule, DeepModelRepository, EventLog, MemorySnapshot,
+    Proposer, RepositoryError, Suggestion, SuggestionStatus, usecases,
 };
 use endora_domain::{
     Assumption, AssumptionId, AuditRecord, AutonomyLevel, Belief, BeliefId, ChatMessage, Direction,
@@ -170,6 +170,8 @@ pub fn app(state: AppState) -> Router {
             "/v1/brief/schedule",
             get(get_brief_schedule).post(set_brief_schedule),
         )
+        .route("/v1/deep-model", get(get_deep_model).post(set_deep_model))
+        .route("/v1/deep-ask", post(deep_ask))
         .route(
             "/v1/preferences",
             post(create_preference).get(list_preferences),
@@ -1639,6 +1641,134 @@ async fn set_autonomy(
 
 fn brief_schedule_json(s: &BriefSchedule) -> serde_json::Value {
     json!({ "enabled": s.enabled, "hour_utc": s.hour_utc })
+}
+
+/// The deep-model config (a bigger AI for hard questions). The key is NEVER
+/// returned — only whether one is set.
+async fn get_deep_model(
+    State(state): State<AppState>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let store = state.store.clone();
+    let cfg =
+        blocking(move || DeepModelRepository::get(store.as_ref()).map_err(AppError::Repository))
+            .await?
+            .unwrap_or_default();
+    Ok(Json(json!({
+        "url": cfg.url,
+        "model": cfg.model,
+        "configured": !cfg.url.is_empty() && !cfg.model.is_empty(),
+        "key_set": !cfg.api_key.is_empty(),
+    })))
+}
+
+#[derive(Deserialize)]
+struct DeepModelRequest {
+    url: String,
+    model: String,
+    #[serde(default)]
+    api_key: Option<String>,
+}
+
+/// Configures the deep model. A blank/omitted `api_key` keeps any existing key, so
+/// the secret is never round-tripped through the client.
+async fn set_deep_model(
+    State(state): State<AppState>,
+    Json(req): Json<DeepModelRequest>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let store = state.store.clone();
+    let clock = state.clock.clone();
+    blocking(move || {
+        let existing = DeepModelRepository::get(store.as_ref())
+            .map_err(AppError::Repository)?
+            .unwrap_or_default();
+        let api_key = match req.api_key {
+            Some(k) if !k.trim().is_empty() => k.trim().to_owned(),
+            _ => existing.api_key, // keep the stored key when none is supplied
+        };
+        DeepModelRepository::set(
+            store.as_ref(),
+            &endora_application::DeepModel {
+                url: req.url.trim().to_owned(),
+                model: req.model.trim().to_owned(),
+                api_key,
+            },
+        )
+        .map_err(AppError::Repository)?;
+        record_event(store.as_ref(), clock.as_ref(), "Configured the deep model");
+        Ok::<_, AppError>(())
+    })
+    .await?;
+    let _ = state.changes.send(());
+    Ok(Json(json!({ "ok": true })))
+}
+
+#[derive(Deserialize)]
+struct DeepAskRequest {
+    question: String,
+}
+
+/// Escalates one question to the configured deep model and posts its answer to the
+/// chat. The person opts in per question (the everyday stays local). The outbound
+/// question passes the egress guard — a secret blocks it, PII is redacted (ADR 0023).
+async fn deep_ask(
+    State(state): State<AppState>,
+    Json(req): Json<DeepAskRequest>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let store = state.store.clone();
+    let ids = state.ids.clone();
+    let clock = state.clock.clone();
+    let question = req.question;
+    let posted = blocking(move || {
+        let Some(cfg) = DeepModelRepository::get(store.as_ref()).map_err(AppError::Repository)?
+        else {
+            return Ok::<_, AppError>(None);
+        };
+        if cfg.url.is_empty() || cfg.model.is_empty() {
+            return Ok(None);
+        }
+        // Egress guard on the outbound question (it leaves the device to the deep model).
+        if let Some(kind) = endora_infrastructure::scan_outbound_secret(&question) {
+            return Err(AppError::BadRequest {
+                message: format!(
+                    "won't send that to the deep model — it looks like it contains {kind}"
+                ),
+            });
+        }
+        let mut v = serde_json::Value::String(question.clone());
+        endora_infrastructure::redact_pii_in_value(&mut v);
+        let safe_question = v.as_str().unwrap_or(&question).to_owned();
+        // Record the person's question, then the deep answer.
+        record_event(store.as_ref(), clock.as_ref(), "Asked the deep model");
+        match endora_infrastructure::ask_deep_model(
+            &cfg.url,
+            &cfg.model,
+            &cfg.api_key,
+            &safe_question,
+        ) {
+            Ok(answer) => {
+                let msg = usecases::post_butler_message(
+                    store.as_ref(),
+                    ids.as_ref(),
+                    clock.as_ref(),
+                    &answer,
+                )?;
+                Ok(Some(msg))
+            }
+            Err(e) => Err(AppError::BadRequest {
+                message: format!("the deep model couldn't answer: {e}"),
+            }),
+        }
+    })
+    .await?;
+    let _ = state.changes.send(());
+    match posted {
+        Some(msg) => Ok(Json(
+            json!({ "answered": true, "message": MessageResponse::from(&msg) }),
+        )),
+        None => Ok(Json(
+            json!({ "answered": false, "note": "Configure a deep model in Settings first." }),
+        )),
+    }
 }
 
 /// The daily-brief schedule (when the butler prepares a brief on its own).

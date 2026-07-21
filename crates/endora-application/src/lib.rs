@@ -21,11 +21,11 @@ pub use ports::{
     AutonomyEnvelopeRepository, BeliefRepository, BriefSchedule, BriefScheduleRepository, Butler,
     ButlerContext, ButlerProposal, ButlerReply, CapabilityConfigRepository, CapabilityRunner,
     CapabilitySettingsRepository, CapabilitySpec, CapabilityUse, ChatRepository, CheckinRepository,
-    CheckinSchedule, Clock, DirectionRepository, EventLog, ExperimentRepository, FormedBelief,
-    IdSource, MemorySnapshot, MemoryStore, NorthStarBrief, ObservationRepository,
-    PreferenceRepository, ProcessChangeRepository, ProposalError, Proposer, ReflectionRepository,
-    RepositoryError, Snooze, SnoozeRepository, Suggestion, SuggestionRepository, SuggestionStatus,
-    TargetRepository, ValueRepository,
+    CheckinSchedule, Clock, DeepModel, DeepModelRepository, DirectionRepository, EventLog,
+    ExperimentRepository, FormedBelief, IdSource, MemorySnapshot, MemoryStore, NorthStarBrief,
+    ObservationRepository, PreferenceRepository, ProcessChangeRepository, ProposalError, Proposer,
+    ReflectionRepository, RepositoryError, Snooze, SnoozeRepository, Suggestion,
+    SuggestionRepository, SuggestionStatus, TargetRepository, ValueRepository,
 };
 pub use usecases::{ActivityItem, ActivityKind};
 
