@@ -270,6 +270,79 @@ fn host_and_port(url: &str) -> Option<(String, u16)> {
     }
 }
 
+/// The data-loss tripwire (ADR 0023): scans text about to leave the machine (an
+/// external skill's input) for **high-confidence secrets**, so the butler can't be
+/// steered into leaking a key or private key in a query. Deliberately precise —
+/// only well-known credential shapes — to avoid blocking legitimate requests.
+/// Returns a short label of what was found, or `None` if the text looks clean.
+fn scan_outbound_secret(text: &str) -> Option<&'static str> {
+    if text.contains("PRIVATE KEY-----") {
+        return Some("a private key");
+    }
+    text.split(|c: char| {
+        c.is_whitespace()
+            || matches!(
+                c,
+                '"' | '\'' | '<' | '>' | '(' | ')' | '{' | '}' | '[' | ']' | ',' | ';' | '\\'
+            )
+    })
+    .find_map(classify_secret_token)
+}
+
+/// Classifies a single token as a known credential shape, or `None`.
+fn classify_secret_token(t: &str) -> Option<&'static str> {
+    let n = t.len();
+    // Tail after a prefix is credential-like (alnum plus `_`/`-`).
+    let tail_ok = |prefix: &str, min: usize| {
+        t.len() >= min
+            && t.starts_with(prefix)
+            && t[prefix.len()..]
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    };
+    // AWS access key id: AKIA + 16 uppercase/digits.
+    if n == 20
+        && t.starts_with("AKIA")
+        && t[4..]
+            .chars()
+            .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit())
+    {
+        return Some("an AWS access key");
+    }
+    if tail_ok("sk-ant-", 24) || tail_ok("sk-", 20) {
+        return Some("an API key");
+    }
+    if tail_ok("github_pat_", 22)
+        || tail_ok("ghp_", 20)
+        || tail_ok("gho_", 20)
+        || tail_ok("ghs_", 20)
+    {
+        return Some("a GitHub token");
+    }
+    if (t.starts_with("xoxb-") || t.starts_with("xoxp-") || t.starts_with("xoxa-")) && n >= 24 {
+        return Some("a Slack token");
+    }
+    if (t.starts_with("sk_live_") || t.starts_with("rk_live_")) && n >= 20 {
+        return Some("a Stripe key");
+    }
+    if n == 39 && t.starts_with("AIza") {
+        return Some("a Google API key");
+    }
+    // JWT: three base64url segments separated by dots.
+    if t.starts_with("eyJ") {
+        let parts: Vec<&str> = t.split('.').collect();
+        let is_b64url = |c: char| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '=';
+        if parts.len() == 3
+            && parts
+                .iter()
+                .all(|p| p.len() >= 8 && p.chars().all(is_b64url))
+        {
+            return Some("a token (JWT)");
+        }
+    }
+    None
+}
+
 /// Like [`http_get_text`], but guards the URL against SSRF and follows redirects
 /// manually, re-guarding each hop (ADR 0023). For model/person-provided URLs.
 fn guarded_get_text(url: &str, max_bytes: usize) -> Result<String, CapabilityError> {
@@ -1298,6 +1371,15 @@ impl endora_application::CapabilityRunner for RegistryRunner {
             .iter()
             .find(|c| c.info().id == id)
             .ok_or_else(|| format!("no such skill '{id}'"))?;
+        // Data-loss tripwire: for a skill that leaves the device, refuse to send a
+        // request that appears to carry a secret (ADR 0023). Fail closed.
+        if cap.info().reaches_external {
+            if let Some(kind) = scan_outbound_secret(input_json) {
+                return Err(format!(
+                    "refusing to send this to '{id}' — the request looks like it contains {kind}"
+                ));
+            }
+        }
         let input: Value = serde_json::from_str(input_json.trim())
             .or_else(|_| Ok::<Value, serde_json::Error>(json!({})))
             .unwrap_or_else(|_| json!({}));
@@ -1395,6 +1477,38 @@ mod tests {
         assert!(resolve_us_zip("2827").unwrap().is_none());
         assert!(resolve_us_zip("abcde").unwrap().is_none());
         assert!(resolve_us_zip("Boston, MA").unwrap().is_none());
+    }
+
+    #[test]
+    fn outbound_tripwire_flags_secrets_but_not_ordinary_text() {
+        // Ordinary queries and URLs are NOT flagged (no false positives).
+        assert_eq!(
+            scan_outbound_secret("what's the weather in Charlotte"),
+            None
+        );
+        assert_eq!(
+            scan_outbound_secret("https://example.com/articles/2026/summer-festival"),
+            None
+        );
+        assert_eq!(scan_outbound_secret("{\"location\":\"28277\"}"), None);
+        // Known credential shapes ARE flagged.
+        assert_eq!(
+            scan_outbound_secret("{\"q\":\"my key is sk-abcdefabcdefabcdefabcdef\"}"),
+            Some("an API key")
+        );
+        assert_eq!(
+            scan_outbound_secret("AKIAIOSFODNN7EXAMPLE and more"),
+            Some("an AWS access key")
+        );
+        assert_eq!(
+            scan_outbound_secret("ghp_1234567890abcdefghijklmnopqrstuv"),
+            Some("a GitHub token")
+        );
+        assert!(scan_outbound_secret("-----BEGIN RSA PRIVATE KEY-----").is_some());
+        assert_eq!(
+            scan_outbound_secret("token eyJhbGciOi.eyJzdWIiOi.SflKxwRJSM"),
+            Some("a token (JWT)")
+        );
     }
 
     #[test]
