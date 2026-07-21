@@ -940,27 +940,35 @@ pub fn send_to_butler_streaming(
             };
             if let Some((where_, input_json)) = run_input {
                 on_token(&format!("· {}…\n", progress_label(skill)));
-                let result = match capabilities.run(skill, &input_json) {
+                match capabilities.run(skill, &input_json) {
                     Ok(out) => {
+                        // Success: let the model relay the real result in its voice.
                         activity.push(format!("Used the {skill} skill"));
-                        format!(
+                        let mut ctx = context.clone();
+                        ctx.tool_result = Some(format!(
                             "You used the '{skill}' skill for {where_} and it returned:\n{out}\n\
                              Relay this to the person — share the specifics in your own words, \
                              and add nothing that isn't here."
-                        )
+                        ));
+                        if let Ok(synth) = butler.respond(&history, &prefs, &ctx) {
+                            reply = synth;
+                        }
                     }
-                    Err(e) => {
+                    Err(_) => {
+                        // Failure: do NOT ask the model to relay it — the weak model
+                        // bluffs ("I don't have access") or denies the skill even
+                        // when told the plain truth. Set an honest reply in code so a
+                        // failed check can never become a fabricated or evasive one.
                         activity.push(format!("Tried the {skill} skill, but it failed"));
-                        format!(
-                            "You tried the '{skill}' skill but it failed: {e}. Tell the person \
-                             plainly you couldn't get it — do not make up an answer."
-                        )
+                        reply = ButlerReply {
+                            text: "I tried to check that for you just now, but the skill I use \
+                                 couldn't reach it — so I don't have a real answer for you \
+                                 rather than guess one. It may need its settings sorted under \
+                                 Skills."
+                                .to_owned(),
+                            ..ButlerReply::default()
+                        };
                     }
-                };
-                let mut ctx = context.clone();
-                ctx.tool_result = Some(result);
-                if let Ok(synth) = butler.respond(&history, &prefs, &ctx) {
-                    reply = synth;
                 }
             }
         } else {
