@@ -20,12 +20,19 @@ edit this file, never a copy. For the full picture, read [README.md](README.md),
 
 ## Architecture rules
 
-- Endora is a **domain-first modular monolith**. Respect the layering
-  Domain → Application → Infrastructure → Interface, with dependencies pointing
-  inward.
-- **No UI or infrastructure concerns in the Domain layer** — no HTTP, database,
-  AI vendor, UI framework, OS, or model-specific code there. `endora-domain` has
-  zero dependencies; keep it that way.
+- Endora follows **Responsibility-Oriented Clean Architecture (ROCA)** — a
+  domain-first modular monolith organized **by responsibility**, not by layer
+  (ADR 0026). The workspace is `app/` (composition roots), `domains/` (one crate
+  per bounded context: `platform`, `capabilities`, `understanding`, `direction`,
+  `conversation`, `scheduling`), and `shared/` (`kernel`, `persistence`).
+- **Each context owns its own `domain` / `application` / `infrastructure`**
+  (and, over HTTP, its interface), with dependencies pointing inward. A context's
+  `domain` module imports only `shared/kernel`; keep it pure (no HTTP, database,
+  AI vendor, UI, OS, or model-specific code). Cross-context calls go
+  application→application/ports only — the dependency graph stays acyclic.
+- `shared/` is for genuinely cross-cutting code only; the thin **orchestration
+  layer** (currently `endora-application`) holds the butler-turn contract and the
+  use cases that compose several contexts.
 - **No premature microservices**, and no speculative abstractions. Build what the
   current vertical slice needs; prefer a complete slice over broad shallow
   scaffolding.
