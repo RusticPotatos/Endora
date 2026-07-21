@@ -11,8 +11,8 @@ use endora_persistence::Db;
 use serde_json::{Value as JsonValue, json};
 
 use endora_application::{
-    ActivityEvent, AuditLog, ButlerProposal, EventLog, MemorySnapshot, MemoryStore,
-    RepositoryError, Snooze, SnoozeRepository, Suggestion, SuggestionRepository, SuggestionStatus,
+    ButlerProposal, MemorySnapshot, MemoryStore, RepositoryError, Snooze, SnoozeRepository,
+    Suggestion, SuggestionRepository, SuggestionStatus,
 };
 use endora_domain::{
     ApprovalState, Assumption, AssumptionId, AuditId, AuditRecord, Belief, BeliefId, BeliefKind,
@@ -330,53 +330,8 @@ impl MemoryStore for SqliteStore {
     }
 }
 
-impl AuditLog for SqliteStore {
-    fn append(&self, record: &AuditRecord) -> Result<(), RepositoryError> {
-        let conn = self.lock()?;
-        conn.execute(
-            "INSERT INTO audit_log (id, at_ms, summary) VALUES (?1, ?2, ?3)",
-            params![
-                id_text(record.id().value()),
-                record.at().unix_millis(),
-                record.summary()
-            ],
-        )
-        .map_err(backend)?;
-        Ok(())
-    }
-
-    fn recent(&self, limit: usize) -> Result<Vec<AuditRecord>, RepositoryError> {
-        let conn = self.lock()?;
-        let limit = i64::try_from(limit).unwrap_or(i64::MAX);
-        let mut stmt = conn
-            .prepare(
-                "SELECT id, at_ms, summary FROM audit_log ORDER BY at_ms DESC, id DESC LIMIT ?1",
-            )
-            .map_err(backend)?;
-        let rows = stmt
-            .query_map(params![limit], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, i64>(1)?,
-                    row.get::<_, String>(2)?,
-                ))
-            })
-            .map_err(backend)?;
-
-        let mut records = Vec::new();
-        for row in rows {
-            let (id, at_ms, summary) = row.map_err(backend)?;
-            let record = AuditRecord::new(
-                AuditId::new(parse_id(&id)?),
-                Timestamp::from_unix_millis(at_ms),
-                &summary,
-            )
-            .map_err(corrupt)?;
-            records.push(record);
-        }
-        Ok(records)
-    }
-}
+// AuditLog and EventLog are implemented by the platform context's AuditStore and
+// EventStore over the shared Db now (ADR 0026); `all_audit` stays for MemoryStore.
 
 impl SnoozeRepository for SqliteStore {
     fn get(&self, kind: &str, subject: &str) -> Result<Option<Snooze>, RepositoryError> {
@@ -487,34 +442,6 @@ impl SuggestionRepository for SqliteStore {
 
 // CheckinRepository and BriefScheduleRepository are implemented by the scheduling
 // context's ScheduleStore over the shared Db now (ADR 0026).
-
-impl EventLog for SqliteStore {
-    fn record(&self, at: Timestamp, summary: &str) -> Result<(), RepositoryError> {
-        let conn = self.lock()?;
-        conn.execute(
-            "INSERT INTO events (at_ms, summary) VALUES (?1, ?2)",
-            params![at.unix_millis(), summary],
-        )
-        .map_err(backend)?;
-        Ok(())
-    }
-
-    fn recent(&self, limit: usize) -> Result<Vec<ActivityEvent>, RepositoryError> {
-        let conn = self.lock()?;
-        let mut stmt = conn
-            .prepare("SELECT at_ms, summary FROM events ORDER BY id DESC LIMIT ?1")
-            .map_err(backend)?;
-        let rows = stmt
-            .query_map([limit as i64], |r| {
-                Ok(ActivityEvent {
-                    at: Timestamp::from_unix_millis(r.get::<_, i64>(0)?),
-                    summary: r.get::<_, String>(1)?,
-                })
-            })
-            .map_err(backend)?;
-        rows.collect::<Result<Vec<_>, _>>().map_err(backend)
-    }
-}
 
 // The capabilities config repositories (settings, config, autonomy envelope,
 // deep model) are implemented by the capabilities context's ConfigStore over
@@ -1128,6 +1055,16 @@ mod tests {
         ConfigStore::new(store.db())
     }
 
+    /// The platform audit trail over the store's shared connection (ADR 0026).
+    fn audit_store(store: &SqliteStore) -> endora_platform::AuditStore {
+        endora_platform::AuditStore::new(store.db())
+    }
+
+    /// The platform event log over the store's shared connection (ADR 0026).
+    fn event_store(store: &SqliteStore) -> endora_platform::EventStore {
+        endora_platform::EventStore::new(store.db())
+    }
+
     #[test]
     fn direction_round_trips() {
         let store = store();
@@ -1651,7 +1588,7 @@ mod tests {
                     .unwrap(),
             )
             .unwrap();
-        (&store as &dyn AuditLog)
+        (&audit_store(&store) as &dyn AuditLog)
             .append(
                 &AuditRecord::new(AuditId::new(8), Timestamp::from_unix_millis(9), "noted")
                     .unwrap(),
@@ -1681,7 +1618,8 @@ mod tests {
 
         let store = store();
 
-        let log: &dyn AuditLog = &store;
+        let aud = audit_store(&store);
+        let log: &dyn AuditLog = &aud;
         log.append(
             &AuditRecord::new(AuditId::new(1), Timestamp::from_unix_millis(100), "first").unwrap(),
         )
@@ -1724,7 +1662,8 @@ mod tests {
         use endora_application::EventLog;
         use endora_domain::Timestamp;
         let store = store();
-        let log: &dyn EventLog = &store;
+        let evt = event_store(&store);
+        let log: &dyn EventLog = &evt;
         log.record(Timestamp::from_unix_millis(100), "Used the weather skill")
             .unwrap();
         log.record(Timestamp::from_unix_millis(200), "Turned news off")
