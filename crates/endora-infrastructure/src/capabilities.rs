@@ -275,7 +275,7 @@ fn host_and_port(url: &str) -> Option<(String, u16)> {
 /// steered into leaking a key or private key in a query. Deliberately precise —
 /// only well-known credential shapes — to avoid blocking legitimate requests.
 /// Returns a short label of what was found, or `None` if the text looks clean.
-fn scan_outbound_secret(text: &str) -> Option<&'static str> {
+pub fn scan_outbound_secret(text: &str) -> Option<&'static str> {
     if text.contains("PRIVATE KEY-----") {
         return Some("a private key");
     }
