@@ -926,16 +926,25 @@ pub fn send_to_butler_streaming(
         let spec = capabilities.available().into_iter().find(|c| c.id == skill);
         let cleared = spec.as_ref().is_some_and(|s| s.configured && s.autonomous);
         if cleared {
-            // Usable: run it with the person's home location, then have the butler
-            // answer from the real result. Without a location we can't (the model's
-            // own reply then stands).
-            if let Some(location) = known_location(&prefs) {
+            // Build the skill's input: the home skill reads from its own settings
+            // (no location), while weather/news/safety need the person's home
+            // location. Only a *location* skill with no known location is skipped
+            // (the model's own reply then stands).
+            let run_input = if skill == "home_assistant" {
+                Some(("your home".to_owned(), "{}".to_owned()))
+            } else {
+                known_location(&prefs).map(|loc| {
+                    let json = json_location(&loc);
+                    (loc, json)
+                })
+            };
+            if let Some((where_, input_json)) = run_input {
                 on_token(&format!("· {}…\n", progress_label(skill)));
-                let result = match capabilities.run(skill, &json_location(&location)) {
+                let result = match capabilities.run(skill, &input_json) {
                     Ok(out) => {
                         activity.push(format!("Used the {skill} skill"));
                         format!(
-                            "You used the '{skill}' skill for {location} and it returned:\n{out}\n\
+                            "You used the '{skill}' skill for {where_} and it returned:\n{out}\n\
                              Relay this to the person — share the specifics in your own words, \
                              and add nothing that isn't here."
                         )
@@ -1086,7 +1095,37 @@ fn similar(a: &str, b: &str) -> bool {
 fn route_intent(text: &str) -> Option<&'static str> {
     let t = text.to_lowercase();
     let has = |needles: &[&str]| needles.iter().any(|n| t.contains(n));
-    // Safety first: an "is it safe / any warnings" ask is about active alerts.
+    // Home first (and before weather, so "temperature inside" isn't read as
+    // outdoor weather): a question about the person's own home devices/state maps
+    // to the home skill, which reads from its own settings (no location needed).
+    // Without this, a model that fails to route a home ask will invent a home
+    // state ("the lights were off at 2:30 PM") — this makes that impossible.
+    if has(&[
+        "my lights",
+        "the lights",
+        "lights on",
+        "lights off",
+        "my door",
+        "front door",
+        "back door",
+        "the garage",
+        "my garage",
+        "thermostat",
+        "temperature inside",
+        "inside temperature",
+        "my home",
+        "at home",
+        "my house",
+        "anyone home",
+        "who's home",
+        "who is home",
+        "my sensors",
+        "home sensors",
+        "my smart home",
+    ]) {
+        return Some("home_assistant");
+    }
+    // Safety next: an "is it safe / any warnings" ask is about active alerts.
     if has(&[
         "safety alert",
         "safety warning",
@@ -2710,6 +2749,31 @@ mod tests {
         assert_eq!(progress_label("safety_alerts"), "Checking safety alerts");
         // An unknown skill still gets a sensible, generic label.
         assert_eq!(progress_label("calendar"), "Using the calendar skill");
+    }
+
+    #[test]
+    fn home_asks_route_to_the_home_skill() {
+        use super::route_intent;
+        // Home questions the model may punt on must still route to home_assistant,
+        // so the net checks the home instead of the model inventing a state.
+        assert_eq!(
+            route_intent("are my lights on right now?"),
+            Some("home_assistant")
+        );
+        assert_eq!(
+            route_intent("is my front door locked?"),
+            Some("home_assistant")
+        );
+        assert_eq!(
+            route_intent("what's the temperature inside my house?"),
+            Some("home_assistant")
+        );
+        assert_eq!(route_intent("is anyone home?"), Some("home_assistant"));
+        // Outdoor weather still routes to weather, not the home skill.
+        assert_eq!(
+            route_intent("what's the weather in Boston?"),
+            Some("weather")
+        );
     }
 
     #[test]

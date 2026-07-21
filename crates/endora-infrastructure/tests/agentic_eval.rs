@@ -24,12 +24,18 @@ use endora_infrastructure::{LlmButler, MixtureButler};
 /// The skills offered to the butler in these cases (id — one-line description),
 /// matching the `id — what it does` shape the prompt renders.
 fn skills() -> Vec<String> {
+    // The real configured skill set on the live deployment (and their real
+    // descriptions), so routing is tested under the same choice pressure — more
+    // options + vaguer descriptions is where the live router derailed.
     [
-        "weather — current weather conditions for a place",
-        "news — today's local news headlines for a place",
-        "safety_alerts — active safety/weather alerts for a place",
-        "web_search — search the web for an answer",
-        "home_assistant — read your home's state: lights, doors, sensors, presence",
+        "weather — Current conditions and today's forecast for a place",
+        "web_fetch — Fetch a web page and read its text — for research",
+        "knowledge — Look up factual, encyclopedic knowledge about a topic",
+        "web_search — Get a quick answer or definition from the web for a question",
+        "news — Recent news headlines for a place or topic",
+        "image_review — Describe or answer questions about an image",
+        "safety_alerts — Active safety alerts near you — severe weather and warnings",
+        "home_assistant — Read your home's state — lights, presence, sensors",
     ]
     .iter()
     .map(|s| (*s).to_owned())
@@ -45,6 +51,39 @@ fn ask(butler: &dyn Butler, prompt: &str, context: &ButlerContext) -> ButlerRepl
     )
     .unwrap();
     butler.respond(&[msg], &[], context).unwrap_or_default()
+}
+
+/// Like [`ask`], but with a prior conversation in front of the prompt — so the
+/// eval can reproduce loop-level failures where history distracts the router.
+fn ask_with_history(
+    butler: &dyn Butler,
+    prior: &[(MessageRole, &str)],
+    prompt: &str,
+    context: &ButlerContext,
+) -> ButlerReply {
+    let mut history: Vec<ChatMessage> = prior
+        .iter()
+        .enumerate()
+        .map(|(i, (role, text))| {
+            ChatMessage::new(
+                MessageId::new(i as u128 + 1),
+                *role,
+                text,
+                Timestamp::from_unix_millis(i as i64),
+            )
+            .unwrap()
+        })
+        .collect();
+    history.push(
+        ChatMessage::new(
+            MessageId::new(999),
+            MessageRole::User,
+            prompt,
+            Timestamp::from_unix_millis(999),
+        )
+        .unwrap(),
+    );
+    butler.respond(&history, &[], context).unwrap_or_default()
 }
 
 /// The capability id the butler reached for this turn, if any.
@@ -246,19 +285,45 @@ fn run_level_2(butler: &dyn Butler, label: &str) -> (usize, usize) {
         casual.text.trim()
     );
 
+    // 2.6 History robustness (reproduces the live failure): a home ask must still
+    //     route to home_assistant even after a distracting conversation. In the
+    //     live session this is where the router derailed to `weather`.
+    let prior = [
+        (MessageRole::User, "just an ear, any good jokes?"),
+        (
+            MessageRole::Butler,
+            "Why did the tomato turn red? Because it saw the salad dressing!",
+        ),
+        (MessageRole::User, "hell yea those are good"),
+        (
+            MessageRole::Butler,
+            "Glad to hear it! Have a great day, sir!",
+        ),
+    ];
+    let lights_hist = ask_with_history(butler, &prior, "are my lights on right now?", &ctx);
+    let hist_ok = used(&lights_hist) == Some("home_assistant");
+    println!(
+        "[{}] history-robust: home ask survives a distracting chat\n  used={:?} reply: {}\n",
+        if hist_ok { "PASS" } else { "FAIL" },
+        used(&lights_hist),
+        lights_hist.text.trim()
+    );
+
     let total = usize::from(invoke_ok)
         + usize::from(antideny_ok)
         + usize::from(antibluff_ok)
         + usize::from(lang_ok)
-        + usize::from(casual_ok);
-    let max = 5;
+        + usize::from(casual_ok)
+        + usize::from(hist_ok);
+    let max = 6;
     println!(
-        "=== L2 {label}: {total}/{max}  (invoke {}, anti-deny {}, anti-bluff {}, language {}, conversational {}) ===\n",
+        "=== L2 {label}: {total}/{max}  (invoke {}, anti-deny {}, anti-bluff {}, language {}, conversational {}, history {}) ===\n",
         usize::from(invoke_ok),
         usize::from(antideny_ok),
         usize::from(antibluff_ok),
         usize::from(lang_ok),
-        usize::from(casual_ok)
+        usize::from(casual_ok),
+        usize::from(hist_ok)
     );
     (total, max)
 }
