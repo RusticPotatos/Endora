@@ -14,9 +14,11 @@
 //! use cases execute it. The model is never the enforcement boundary.
 
 use endora_application::{
+    BeliefKind, ChatMessage, Confidence, MessageRole, Preference, PreferenceKind,
+};
+use endora_application::{
     Butler, ButlerContext, ButlerProposal, ButlerReply, FormedBelief, ProposalError,
 };
-use endora_domain::{BeliefKind, ChatMessage, Confidence, MessageRole, Preference, PreferenceKind};
 use serde_json::{Value, json};
 
 /// A deterministic, offline butler. Reliable, if simple.
@@ -666,7 +668,7 @@ mod tests {
         extract_reply_preview, parse_butler_json, parse_butler_response,
     };
     use endora_application::{Butler, ButlerContext, ButlerProposal};
-    use endora_domain::{ChatMessage, MessageId, MessageRole, Timestamp};
+    use endora_application::{ChatMessage, MessageId, MessageRole, Timestamp};
     use serde_json::json;
 
     fn user(text: &str) -> ChatMessage {

@@ -8,11 +8,14 @@
 use core::fmt;
 
 use endora_capabilities::CapabilityUse;
-use endora_domain::{
-    Assumption, AuditRecord, Belief, BeliefKind, ChatMessage, Confidence, Direction, Experiment,
-    MessageId, Observation, Preference, PreferenceKind, ProposedProcessChange, Reflection,
-    SuggestionId, Target, Timestamp, Value,
+use endora_conversation::ChatMessage;
+use endora_direction::{
+    Assumption, Direction, Experiment, Observation, ProposedProcessChange, Reflection, Target,
+    Value,
 };
+use endora_kernel::ids::{MessageId, SuggestionId, Timestamp};
+use endora_platform::AuditRecord;
+use endora_understanding::{Belief, BeliefKind, Confidence, Preference, PreferenceKind};
 
 /// A complete snapshot of the user's stored data, for the memory rights of the
 /// constitution: it is what "export" hands back and what "delete" removes.

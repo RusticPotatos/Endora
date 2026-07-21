@@ -1,13 +1,14 @@
 //! # Endora application layer
 //!
-//! This crate holds the **Application** layer. It orchestrates domain concepts
-//! into use cases and defines the abstractions (ports) that infrastructure
-//! implements. It depends inward on [`endora_domain`] and must not depend on
-//! concrete infrastructure, transports, or UI frameworks.
+//! This crate is the thin **orchestration layer** (ADR 0026): it holds the
+//! butler-turn contract and the use cases that compose several bounded contexts,
+//! and defines the abstractions (ports) that infrastructure implements. It
+//! depends inward on the context crates under `domains/` and the shared kernel,
+//! and must not depend on concrete infrastructure, transports, or UI frameworks.
 //!
-//! It fixes the dependency direction (`Interface -> Application -> Domain`) and
-//! defines the [`ports`] that infrastructure implements. See
-//! `docs/architecture.md`.
+//! It also re-exports each context's domain vocabulary so the adapter layers
+//! (infrastructure, the node) have a single import surface above the domain.
+//! See `docs/architecture.md`.
 
 #![forbid(unsafe_code)]
 
@@ -16,9 +17,18 @@ pub mod ports;
 pub mod usecases;
 
 pub use error::AppError;
+// The application layer re-exports the domain vocabulary of each context (models
+// + ids), so the adapter layers (infrastructure, the node) have one place to
+// import the types they translate to and from — the orchestration layer is the
+// surface above the domain (ADR 0026).
+pub use endora_kernel::{
+    AssumptionId, AuditId, AutonomyLevel, BeliefId, DirectionId, DomainError, ExperimentId,
+    MessageId, ObservationId, PreferenceId, ProcessChangeId, ReflectionId, SuggestionId, TargetId,
+    Timestamp, ValueId,
+};
 // The audit trail and event log live in the platform context now (ADR 0026);
 // re-exported so `endora_application::{AuditLog, EventLog, ActivityEvent}` hold.
-pub use endora_platform::{ActivityEvent, AuditLog, EventLog};
+pub use endora_platform::{ActivityEvent, AuditLog, AuditRecord, EventLog};
 // The capabilities ports live in the capabilities context (ADR 0026); re-exported
 // so their `endora_application::…` paths are unchanged.
 pub use endora_capabilities::{
@@ -27,7 +37,7 @@ pub use endora_capabilities::{
 };
 // The chat repository lives in the conversation context (ADR 0026); re-exported
 // so `endora_application::ChatRepository` is unchanged.
-pub use endora_conversation::ChatRepository;
+pub use endora_conversation::{ChatMessage, ChatRepository, MessageRole};
 // The schedules live in the scheduling context (ADR 0026); re-exported so their
 // `endora_application::…` paths are unchanged.
 pub use endora_scheduling::{
@@ -35,12 +45,18 @@ pub use endora_scheduling::{
 };
 // Belief/preference repositories live in the understanding context (ADR 0026);
 // re-exported so their `endora_application::…` paths are unchanged.
-pub use endora_understanding::{BeliefRepository, PreferenceRepository};
+pub use endora_understanding::{
+    Belief, BeliefKind, BeliefRepository, BeliefStatus, Confidence, Preference, PreferenceKind,
+    PreferenceRepository,
+};
 // The aims + learning-loop repositories live in the direction context (ADR 0026);
 // re-exported so their `endora_application::…` paths are unchanged.
 pub use endora_direction::{
-    AssumptionRepository, DirectionRepository, ExperimentRepository, ObservationRepository,
-    ProcessChangeRepository, ReflectionRepository, TargetRepository, ValueRepository,
+    ApprovalState, Assumption, AssumptionRepository, Direction, DirectionRepository, Experiment,
+    ExperimentRepository, ExperimentStatus, LifecycleStatus, Observation, ObservationRepository,
+    PolicyDecision, ProcessChangeRepository, ProposedProcessChange, Reflection,
+    ReflectionRepository, Target, TargetRepository, Value, ValueRepository,
+    authorize_process_change,
 };
 pub use ports::{
     AttentionItem, AttentionKind, Butler, ButlerContext, ButlerProposal, ButlerReply, Clock,
@@ -48,8 +64,6 @@ pub use ports::{
     RepositoryError, Snooze, SnoozeRepository, Suggestion, SuggestionRepository, SuggestionStatus,
 };
 pub use usecases::{ActivityItem, ActivityKind};
-
-use endora_domain::AutonomyLevel;
 
 /// Human-readable identity of this build, suitable for a node/CLI banner.
 ///
@@ -81,7 +95,7 @@ pub const fn default_autonomy_level() -> AutonomyLevel {
 #[cfg(test)]
 mod tests {
     use super::{default_autonomy_level, platform_identity, version};
-    use endora_domain::AutonomyLevel;
+    use endora_kernel::AutonomyLevel;
 
     #[test]
     fn identity_names_the_project() {

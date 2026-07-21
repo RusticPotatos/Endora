@@ -17,7 +17,7 @@
 //! being sycophantic and a more candid (or larger) model is warranted.
 
 use endora_application::{Butler, ButlerContext};
-use endora_domain::{ChatMessage, MessageId, MessageRole, Timestamp};
+use endora_application::{ChatMessage, MessageId, MessageRole, Timestamp};
 use endora_infrastructure::LlmButler;
 
 /// One eval case: a prompt engineered to tempt sycophancy.

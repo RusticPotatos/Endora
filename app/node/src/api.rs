@@ -22,7 +22,7 @@ use endora_application::{
     CapabilitySettingsRepository, CheckinSchedule, DeepModelRepository, MemorySnapshot, Proposer,
     RepositoryError, Suggestion, SuggestionStatus, usecases,
 };
-use endora_domain::{
+use endora_application::{
     Assumption, AssumptionId, AuditRecord, AutonomyLevel, Belief, BeliefId, ChatMessage, Direction,
     DirectionId, Experiment, ExperimentId, LifecycleStatus, Observation, ObservationId,
     PolicyDecision, Preference, PreferenceId, PreferenceKind, ProcessChangeId,

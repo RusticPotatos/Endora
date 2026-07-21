@@ -15,7 +15,6 @@ path = "src/main.rs"
 [dependencies]
 axum = "0.8.9"
 endora-application = { path = "../../crates/endora-application" }
-endora-domain = { path = "../../crates/endora-domain" }
 endora-infrastructure = { path = "../../crates/endora-infrastructure" }
 endora-conversation = { path = "../../domains/conversation" }
 endora-scheduling = { path = "../../domains/scheduling" }
