@@ -11,6 +11,7 @@ authors.workspace = true
 [dependencies]
 endora-kernel = { path = "../../shared/kernel" }
 endora-domain = { path = "../endora-domain" }
+endora-platform = { path = "../../domains/platform" }
 
 [lints]
 workspace = true

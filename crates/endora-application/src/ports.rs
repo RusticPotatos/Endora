@@ -960,49 +960,6 @@ pub trait ProcessChangeRepository {
     ) -> Result<Vec<ProposedProcessChange>, RepositoryError>;
 }
 
-/// Appends to and reads the audit trail.
-///
-/// The audit log is append-only from the application's point of view: records
-/// are added, never mutated. It is subject to the same memory rights as other
-/// stored data (visible, exportable, deletable).
-pub trait AuditLog {
-    /// Appends a record to the trail.
-    ///
-    /// # Errors
-    /// [`RepositoryError`] if the backend fails.
-    fn append(&self, record: &AuditRecord) -> Result<(), RepositoryError>;
-
-    /// Returns the most recent records, newest first, up to `limit`.
-    ///
-    /// # Errors
-    /// [`RepositoryError`] if the backend fails or stored data is corrupt.
-    fn recent(&self, limit: usize) -> Result<Vec<AuditRecord>, RepositoryError>;
-}
-
-/// One entry in the butler's own event log: something it did or learned, or a
-/// setting the person changed.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ActivityEvent {
-    /// When it happened.
-    pub at: Timestamp,
-    /// A plain-language line ("Used the weather skill", "Turned news off").
-    pub summary: String,
-}
-
-/// The butler's **action log** (ADR 0012's activity feed, widened): a durable,
-/// append-only record of what the butler did and learned each turn, and the
-/// person's setting changes — so the activity view shows the butler's actions and
-/// system events, not just policy decisions and experiment observations.
-pub trait EventLog {
-    /// Records one event at the given time.
-    ///
-    /// # Errors
-    /// [`RepositoryError`] if the backend fails.
-    fn record(&self, at: Timestamp, summary: &str) -> Result<(), RepositoryError>;
-
-    /// Returns the most recent events, newest first, up to `limit`.
-    ///
-    /// # Errors
-    /// [`RepositoryError`] if the backend fails or stored data is corrupt.
-    fn recent(&self, limit: usize) -> Result<Vec<ActivityEvent>, RepositoryError>;
-}
+// The audit trail and the butler's event log — `AuditLog`, `EventLog`, and
+// `ActivityEvent` — now belong to the platform context (ADR 0026). They are
+// re-exported from `endora_application` (see lib.rs) so existing paths hold.

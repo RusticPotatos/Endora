@@ -16,12 +16,15 @@ pub mod ports;
 pub mod usecases;
 
 pub use error::AppError;
+// The audit trail and event log live in the platform context now (ADR 0026);
+// re-exported so `endora_application::{AuditLog, EventLog, ActivityEvent}` hold.
+pub use endora_platform::{ActivityEvent, AuditLog, EventLog};
 pub use ports::{
-    ActivityEvent, AssumptionRepository, AttentionItem, AttentionKind, AuditLog, AutonomyEnvelope,
+    AssumptionRepository, AttentionItem, AttentionKind, AutonomyEnvelope,
     AutonomyEnvelopeRepository, BeliefRepository, BriefSchedule, BriefScheduleRepository, Butler,
     ButlerContext, ButlerProposal, ButlerReply, CapabilityConfigRepository, CapabilityRunner,
     CapabilitySettingsRepository, CapabilitySpec, CapabilityUse, ChatRepository, CheckinRepository,
-    CheckinSchedule, Clock, DeepModel, DeepModelRepository, DirectionRepository, EventLog,
+    CheckinSchedule, Clock, DeepModel, DeepModelRepository, DirectionRepository,
     ExperimentRepository, FormedBelief, IdSource, MemorySnapshot, MemoryStore, NorthStarBrief,
     ObservationRepository, PreferenceRepository, ProcessChangeRepository, ProposalError, Proposer,
     ReflectionRepository, RepositoryError, Snooze, SnoozeRepository, Suggestion,

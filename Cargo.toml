@@ -3,6 +3,7 @@ resolver = "3"
 members = [
     "shared/kernel",
     "shared/persistence",
+    "domains/platform",
     "crates/endora-domain",
     "crates/endora-application",
     "crates/endora-infrastructure",
