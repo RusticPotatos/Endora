@@ -580,17 +580,23 @@ fn resolve_point(input: &Value) -> Result<(f64, f64, String), CapabilityError> {
     if let Some(point) = resolve_us_zip(q)? {
         return Ok(point);
     }
-    let geo = http_get_text(
-        &format!(
-            "https://geocoding-api.open-meteo.com/v1/search?name={}&count=1&language=en&format=json",
-            urlencode(q)
-        ),
-        64 * 1024,
-    )?;
-    let geo: Value =
-        serde_json::from_str(&geo).map_err(|e| CapabilityError::Unavailable(e.to_string()))?;
-    let first = geo["results"]
-        .get(0)
+    // The Open-Meteo geocoder wants a bare city name — it returns nothing for
+    // "Charlotte NC" or "Charlotte, NC". So try the full query, then simpler forms
+    // (before a comma, and without a trailing US state abbreviation).
+    let first = geocode_candidates(q)
+        .into_iter()
+        .find_map(|cand| {
+            let geo = http_get_text(
+                &format!(
+                    "https://geocoding-api.open-meteo.com/v1/search?name={}&count=1&language=en&format=json",
+                    urlencode(&cand)
+                ),
+                64 * 1024,
+            )
+            .ok()?;
+            let geo: Value = serde_json::from_str(&geo).ok()?;
+            geo["results"].get(0).cloned()
+        })
         .ok_or_else(|| CapabilityError::BadInput(format!("couldn't find a place called '{q}'")))?;
     let lat = first["latitude"].as_f64().unwrap_or_default();
     let lon = first["longitude"].as_f64().unwrap_or_default();
@@ -603,6 +609,28 @@ fn resolve_point(input: &Value) -> Result<(f64, f64, String), CapabilityError> {
             .trim_end_matches(", ")
             .to_owned(),
     ))
+}
+
+/// Progressively simpler place-name queries for the geocoder: the full string, the
+/// part before a comma, and the same without a trailing 2-letter US state (so
+/// "Charlotte NC" / "Charlotte, NC" both fall back to "Charlotte").
+fn geocode_candidates(q: &str) -> Vec<String> {
+    let mut out = vec![q.trim().to_owned()];
+    let before_comma = q.split(',').next().unwrap_or(q).trim();
+    let toks: Vec<&str> = before_comma.split_whitespace().collect();
+    let simplified = if toks.len() >= 2
+        && toks
+            .last()
+            .is_some_and(|t| t.len() == 2 && t.chars().all(|c| c.is_ascii_uppercase()))
+    {
+        toks[..toks.len() - 1].join(" ")
+    } else {
+        before_comma.to_owned()
+    };
+    if !simplified.is_empty() && !out.contains(&simplified) {
+        out.push(simplified);
+    }
+    out
 }
 
 /// If `q` is a 5-digit US ZIP, resolve it to `(lat, lon, "City, ST")` via the
@@ -1740,6 +1768,20 @@ mod tests {
             .invoke(&json!({}), &CapabilitySettings::new())
             .unwrap_err();
         assert!(matches!(err, CapabilityError::Unavailable(_)));
+    }
+
+    #[test]
+    fn geocode_candidates_simplify_city_state() {
+        assert_eq!(
+            geocode_candidates("Charlotte NC"),
+            vec!["Charlotte NC", "Charlotte"]
+        );
+        assert_eq!(
+            geocode_candidates("Charlotte, NC"),
+            vec!["Charlotte, NC", "Charlotte"]
+        );
+        assert_eq!(geocode_candidates("Boston"), vec!["Boston"]);
+        assert_eq!(geocode_candidates("San Francisco"), vec!["San Francisco"]);
     }
 
     #[test]
