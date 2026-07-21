@@ -11,12 +11,10 @@ use endora_persistence::Db;
 use serde_json::{Value as JsonValue, json};
 
 use endora_application::{
-    ActivityEvent, AssumptionRepository, AuditLog, AutonomyEnvelope, AutonomyEnvelopeRepository,
-    ButlerProposal, CapabilityConfigRepository, CapabilitySettingsRepository, DeepModel,
-    DeepModelRepository, DirectionRepository, EventLog, ExperimentRepository, MemorySnapshot,
-    MemoryStore, ObservationRepository, ProcessChangeRepository, ReflectionRepository,
-    RepositoryError, Snooze, SnoozeRepository, Suggestion, SuggestionRepository, SuggestionStatus,
-    TargetRepository, ValueRepository,
+    ActivityEvent, AuditLog, AutonomyEnvelope, AutonomyEnvelopeRepository, ButlerProposal,
+    CapabilityConfigRepository, CapabilitySettingsRepository, DeepModel, DeepModelRepository,
+    EventLog, MemorySnapshot, MemoryStore, RepositoryError, Snooze, SnoozeRepository, Suggestion,
+    SuggestionRepository, SuggestionStatus,
 };
 use endora_domain::{
     ApprovalState, Assumption, AssumptionId, AuditId, AuditRecord, Belief, BeliefId, BeliefKind,
@@ -274,598 +272,9 @@ impl SqliteStore {
     }
 }
 
-impl DirectionRepository for SqliteStore {
-    fn save(&self, direction: &Direction) -> Result<(), RepositoryError> {
-        let conn = self.lock()?;
-        conn.execute(
-            "INSERT OR REPLACE INTO directions (id, title, status, value_id) \
-             VALUES (?1, ?2, ?3, ?4)",
-            params![
-                id_text(direction.id().value()),
-                direction.title(),
-                direction.status().name(),
-                direction.value().map(|v| id_text(v.value()))
-            ],
-        )
-        .map_err(backend)?;
-        Ok(())
-    }
-
-    fn get(&self, id: DirectionId) -> Result<Option<Direction>, RepositoryError> {
-        let conn = self.lock()?;
-        let row: Option<(String, String, Option<String>)> = conn
-            .query_row(
-                "SELECT title, status, value_id FROM directions WHERE id = ?1",
-                params![id_text(id.value())],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-            )
-            .optional()
-            .map_err(backend)?;
-        let Some((title, status, value_id)) = row else {
-            return Ok(None);
-        };
-        let direction = Direction::from_parts(
-            id,
-            &title,
-            parse_lifecycle(&status)?,
-            parse_opt_value(value_id)?,
-        )
-        .map_err(corrupt)?;
-        Ok(Some(direction))
-    }
-
-    fn list_all(&self) -> Result<Vec<Direction>, RepositoryError> {
-        let conn = self.lock()?;
-        all_directions(&conn)
-    }
-
-    fn delete(&self, id: DirectionId) -> Result<(), RepositoryError> {
-        let conn = self.lock()?;
-        conn.execute(
-            "DELETE FROM directions WHERE id = ?1",
-            params![id_text(id.value())],
-        )
-        .map_err(backend)?;
-        Ok(())
-    }
-}
-
-impl ValueRepository for SqliteStore {
-    fn save(&self, value: &Value) -> Result<(), RepositoryError> {
-        let conn = self.lock()?;
-        conn.execute(
-            "INSERT OR REPLACE INTO \"values\" (id, name) VALUES (?1, ?2)",
-            params![id_text(value.id().value()), value.name()],
-        )
-        .map_err(backend)?;
-        Ok(())
-    }
-
-    fn get(&self, id: ValueId) -> Result<Option<Value>, RepositoryError> {
-        let conn = self.lock()?;
-        let name: Option<String> = conn
-            .query_row(
-                "SELECT name FROM \"values\" WHERE id = ?1",
-                params![id_text(id.value())],
-                |row| row.get(0),
-            )
-            .optional()
-            .map_err(backend)?;
-        let Some(name) = name else {
-            return Ok(None);
-        };
-        Ok(Some(Value::new(id, &name).map_err(corrupt)?))
-    }
-
-    fn list_all(&self) -> Result<Vec<Value>, RepositoryError> {
-        let conn = self.lock()?;
-        all_values(&conn)
-    }
-
-    fn delete(&self, id: ValueId) -> Result<(), RepositoryError> {
-        let conn = self.lock()?;
-        conn.execute(
-            "DELETE FROM \"values\" WHERE id = ?1",
-            params![id_text(id.value())],
-        )
-        .map_err(backend)?;
-        Ok(())
-    }
-}
-
-impl TargetRepository for SqliteStore {
-    fn save(&self, target: &Target) -> Result<(), RepositoryError> {
-        let conn = self.lock()?;
-        conn.execute(
-            "INSERT OR REPLACE INTO targets (id, direction_id, statement, status) \
-             VALUES (?1, ?2, ?3, ?4)",
-            params![
-                id_text(target.id().value()),
-                id_text(target.direction().value()),
-                target.statement(),
-                target.status().name()
-            ],
-        )
-        .map_err(backend)?;
-        Ok(())
-    }
-
-    fn get(&self, id: TargetId) -> Result<Option<Target>, RepositoryError> {
-        let conn = self.lock()?;
-        let row: Option<(String, String, String)> = conn
-            .query_row(
-                "SELECT direction_id, statement, status FROM targets WHERE id = ?1",
-                params![id_text(id.value())],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-            )
-            .optional()
-            .map_err(backend)?;
-        let Some((direction_id, statement, status)) = row else {
-            return Ok(None);
-        };
-        let direction = DirectionId::new(parse_id(&direction_id)?);
-        let target = Target::from_parts(id, direction, &statement, parse_lifecycle(&status)?)
-            .map_err(corrupt)?;
-        Ok(Some(target))
-    }
-
-    fn list_for_direction(&self, direction: DirectionId) -> Result<Vec<Target>, RepositoryError> {
-        let conn = self.lock()?;
-        let mut stmt = conn
-            .prepare(
-                "SELECT id, statement, status FROM targets WHERE direction_id = ?1 ORDER BY id",
-            )
-            .map_err(backend)?;
-        let rows = stmt
-            .query_map(params![id_text(direction.value())], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
-                ))
-            })
-            .map_err(backend)?;
-
-        let mut targets = Vec::new();
-        for row in rows {
-            let (id_text, statement, status) = row.map_err(backend)?;
-            let target = Target::from_parts(
-                TargetId::new(parse_id(&id_text)?),
-                direction,
-                &statement,
-                parse_lifecycle(&status)?,
-            )
-            .map_err(corrupt)?;
-            targets.push(target);
-        }
-        Ok(targets)
-    }
-
-    fn delete(&self, id: TargetId) -> Result<(), RepositoryError> {
-        let conn = self.lock()?;
-        conn.execute(
-            "DELETE FROM targets WHERE id = ?1",
-            params![id_text(id.value())],
-        )
-        .map_err(backend)?;
-        Ok(())
-    }
-}
-
-impl AssumptionRepository for SqliteStore {
-    fn save(&self, assumption: &Assumption) -> Result<(), RepositoryError> {
-        let conn = self.lock()?;
-        conn.execute(
-            "INSERT OR REPLACE INTO assumptions (id, target_id, statement) VALUES (?1, ?2, ?3)",
-            params![
-                id_text(assumption.id().value()),
-                id_text(assumption.target().value()),
-                assumption.statement()
-            ],
-        )
-        .map_err(backend)?;
-        Ok(())
-    }
-
-    fn get(&self, id: AssumptionId) -> Result<Option<Assumption>, RepositoryError> {
-        let conn = self.lock()?;
-        let row: Option<(String, String)> = conn
-            .query_row(
-                "SELECT target_id, statement FROM assumptions WHERE id = ?1",
-                params![id_text(id.value())],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
-            .optional()
-            .map_err(backend)?;
-        let Some((target_id, statement)) = row else {
-            return Ok(None);
-        };
-        let target = TargetId::new(parse_id(&target_id)?);
-        let assumption = Assumption::new(id, target, &statement).map_err(corrupt)?;
-        Ok(Some(assumption))
-    }
-
-    fn list_for_target(&self, target: TargetId) -> Result<Vec<Assumption>, RepositoryError> {
-        let conn = self.lock()?;
-        let mut stmt = conn
-            .prepare("SELECT id, statement FROM assumptions WHERE target_id = ?1 ORDER BY id")
-            .map_err(backend)?;
-        let rows = stmt
-            .query_map(params![id_text(target.value())], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-            })
-            .map_err(backend)?;
-
-        let mut assumptions = Vec::new();
-        for row in rows {
-            let (id, statement) = row.map_err(backend)?;
-            let assumption = Assumption::new(AssumptionId::new(parse_id(&id)?), target, &statement)
-                .map_err(corrupt)?;
-            assumptions.push(assumption);
-        }
-        Ok(assumptions)
-    }
-}
-
-impl ExperimentRepository for SqliteStore {
-    fn save(&self, experiment: &Experiment) -> Result<(), RepositoryError> {
-        let conn = self.lock()?;
-        conn.execute(
-            "INSERT OR REPLACE INTO experiments (id, assumption_id, hypothesis, status, review_by_ms) \
-             VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![
-                id_text(experiment.id().value()),
-                id_text(experiment.assumption().value()),
-                experiment.hypothesis(),
-                experiment.status().name(),
-                experiment.review_by().map(|t| t.unix_millis())
-            ],
-        )
-        .map_err(backend)?;
-        Ok(())
-    }
-
-    fn get(&self, id: ExperimentId) -> Result<Option<Experiment>, RepositoryError> {
-        let conn = self.lock()?;
-        let row: Option<(String, String, String, Option<i64>)> = conn
-            .query_row(
-                "SELECT assumption_id, hypothesis, status, review_by_ms FROM experiments WHERE id = ?1",
-                params![id_text(id.value())],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
-            )
-            .optional()
-            .map_err(backend)?;
-        let Some((assumption_id, hypothesis, status, review_by_ms)) = row else {
-            return Ok(None);
-        };
-        let assumption = AssumptionId::new(parse_id(&assumption_id)?);
-        Ok(Some(build_experiment(
-            id,
-            assumption,
-            &hypothesis,
-            &status,
-            review_by_ms,
-        )?))
-    }
-
-    fn list_for_assumption(
-        &self,
-        assumption: AssumptionId,
-    ) -> Result<Vec<Experiment>, RepositoryError> {
-        let conn = self.lock()?;
-        let mut stmt = conn
-            .prepare(
-                "SELECT id, hypothesis, status, review_by_ms FROM experiments \
-                 WHERE assumption_id = ?1 ORDER BY id",
-            )
-            .map_err(backend)?;
-        let rows = stmt
-            .query_map(params![id_text(assumption.value())], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
-                    row.get::<_, Option<i64>>(3)?,
-                ))
-            })
-            .map_err(backend)?;
-
-        let mut experiments = Vec::new();
-        for row in rows {
-            let (id, hypothesis, status, review_by_ms) = row.map_err(backend)?;
-            experiments.push(build_experiment(
-                ExperimentId::new(parse_id(&id)?),
-                assumption,
-                &hypothesis,
-                &status,
-                review_by_ms,
-            )?);
-        }
-        Ok(experiments)
-    }
-
-    fn list_due_reviews(&self, now: Timestamp) -> Result<Vec<Experiment>, RepositoryError> {
-        let conn = self.lock()?;
-        let mut stmt = conn
-            .prepare(
-                "SELECT id, assumption_id, hypothesis, status, review_by_ms FROM experiments \
-                 WHERE review_by_ms IS NOT NULL AND review_by_ms <= ?1 AND status != 'concluded' \
-                 ORDER BY review_by_ms, id",
-            )
-            .map_err(backend)?;
-        let rows = stmt
-            .query_map(params![now.unix_millis()], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
-                    row.get::<_, String>(3)?,
-                    row.get::<_, Option<i64>>(4)?,
-                ))
-            })
-            .map_err(backend)?;
-
-        let mut experiments = Vec::new();
-        for row in rows {
-            let (id, assumption_id, hypothesis, status, review_by_ms) = row.map_err(backend)?;
-            experiments.push(build_experiment(
-                ExperimentId::new(parse_id(&id)?),
-                AssumptionId::new(parse_id(&assumption_id)?),
-                &hypothesis,
-                &status,
-                review_by_ms,
-            )?);
-        }
-        Ok(experiments)
-    }
-}
-
-impl ObservationRepository for SqliteStore {
-    fn save(&self, observation: &Observation) -> Result<(), RepositoryError> {
-        let conn = self.lock()?;
-        conn.execute(
-            "INSERT OR REPLACE INTO observations (id, experiment_id, note, at_ms) \
-             VALUES (?1, ?2, ?3, ?4)",
-            params![
-                id_text(observation.id().value()),
-                id_text(observation.experiment().value()),
-                observation.note(),
-                observation.recorded_at().unix_millis()
-            ],
-        )
-        .map_err(backend)?;
-        Ok(())
-    }
-
-    fn list_for_experiment(
-        &self,
-        experiment: ExperimentId,
-    ) -> Result<Vec<Observation>, RepositoryError> {
-        let conn = self.lock()?;
-        let mut stmt = conn
-            .prepare(
-                "SELECT id, note, at_ms FROM observations \
-                 WHERE experiment_id = ?1 ORDER BY at_ms, id",
-            )
-            .map_err(backend)?;
-        let rows = stmt
-            .query_map(params![id_text(experiment.value())], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, i64>(2)?,
-                ))
-            })
-            .map_err(backend)?;
-
-        let mut observations = Vec::new();
-        for row in rows {
-            let (id, note, at_ms) = row.map_err(backend)?;
-            let observation = Observation::record(
-                ObservationId::new(parse_id(&id)?),
-                experiment,
-                &note,
-                Timestamp::from_unix_millis(at_ms),
-            )
-            .map_err(corrupt)?;
-            observations.push(observation);
-        }
-        Ok(observations)
-    }
-
-    fn recent(&self, limit: usize) -> Result<Vec<Observation>, RepositoryError> {
-        let conn = self.lock()?;
-        let mut stmt = conn
-            .prepare(
-                "SELECT id, experiment_id, note, at_ms FROM observations \
-                 ORDER BY at_ms DESC, id DESC LIMIT ?1",
-            )
-            .map_err(backend)?;
-        let rows = stmt
-            .query_map(params![limit as i64], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
-                    row.get::<_, i64>(3)?,
-                ))
-            })
-            .map_err(backend)?;
-
-        let mut observations = Vec::new();
-        for row in rows {
-            let (id, experiment_id, note, at_ms) = row.map_err(backend)?;
-            observations.push(
-                Observation::record(
-                    ObservationId::new(parse_id(&id)?),
-                    ExperimentId::new(parse_id(&experiment_id)?),
-                    &note,
-                    Timestamp::from_unix_millis(at_ms),
-                )
-                .map_err(corrupt)?,
-            );
-        }
-        Ok(observations)
-    }
-}
-
-impl ReflectionRepository for SqliteStore {
-    fn save(&self, reflection: &Reflection) -> Result<(), RepositoryError> {
-        let mut conn = self.lock()?;
-        let tx = conn.transaction().map_err(backend)?;
-        let rid = id_text(reflection.id().value());
-        tx.execute(
-            "INSERT OR REPLACE INTO reflections (id, target_id, summary) VALUES (?1, ?2, ?3)",
-            params![
-                rid,
-                id_text(reflection.target().value()),
-                reflection.summary()
-            ],
-        )
-        .map_err(backend)?;
-        tx.execute(
-            "DELETE FROM reflection_evidence WHERE reflection_id = ?1",
-            params![rid],
-        )
-        .map_err(backend)?;
-        for (ordinal, observation) in reflection.evidence().iter().enumerate() {
-            tx.execute(
-                "INSERT INTO reflection_evidence (reflection_id, ordinal, observation_id) \
-                 VALUES (?1, ?2, ?3)",
-                params![
-                    rid,
-                    i64::try_from(ordinal).unwrap_or(i64::MAX),
-                    id_text(observation.value())
-                ],
-            )
-            .map_err(backend)?;
-        }
-        tx.commit().map_err(backend)?;
-        Ok(())
-    }
-
-    fn get(&self, id: ReflectionId) -> Result<Option<Reflection>, RepositoryError> {
-        let conn = self.lock()?;
-        let row: Option<(String, String)> = conn
-            .query_row(
-                "SELECT target_id, summary FROM reflections WHERE id = ?1",
-                params![id_text(id.value())],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
-            .optional()
-            .map_err(backend)?;
-        let Some((target_id, summary)) = row else {
-            return Ok(None);
-        };
-        let evidence = evidence_for(&conn, id)?;
-        let target = TargetId::new(parse_id(&target_id)?);
-        let reflection = Reflection::new(id, target, &summary, evidence).map_err(corrupt)?;
-        Ok(Some(reflection))
-    }
-
-    fn list_for_target(&self, target: TargetId) -> Result<Vec<Reflection>, RepositoryError> {
-        let conn = self.lock()?;
-        let mut stmt = conn
-            .prepare("SELECT id, summary FROM reflections WHERE target_id = ?1 ORDER BY id")
-            .map_err(backend)?;
-        let rows: Vec<(String, String)> = stmt
-            .query_map(params![id_text(target.value())], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-            })
-            .map_err(backend)?
-            .collect::<Result<_, _>>()
-            .map_err(backend)?;
-        drop(stmt);
-
-        let mut reflections = Vec::new();
-        for (id, summary) in rows {
-            let reflection_id = ReflectionId::new(parse_id(&id)?);
-            let evidence = evidence_for(&conn, reflection_id)?;
-            let reflection =
-                Reflection::new(reflection_id, target, &summary, evidence).map_err(corrupt)?;
-            reflections.push(reflection);
-        }
-        Ok(reflections)
-    }
-}
-
-impl ProcessChangeRepository for SqliteStore {
-    fn save(&self, change: &ProposedProcessChange) -> Result<(), RepositoryError> {
-        let conn = self.lock()?;
-        conn.execute(
-            "INSERT OR REPLACE INTO process_changes (id, reflection_id, description, approval) \
-             VALUES (?1, ?2, ?3, ?4)",
-            params![
-                id_text(change.id().value()),
-                id_text(change.reflection().value()),
-                change.description(),
-                change.approval().name()
-            ],
-        )
-        .map_err(backend)?;
-        Ok(())
-    }
-
-    fn get(&self, id: ProcessChangeId) -> Result<Option<ProposedProcessChange>, RepositoryError> {
-        let conn = self.lock()?;
-        let row: Option<(String, String, String)> = conn
-            .query_row(
-                "SELECT reflection_id, description, approval FROM process_changes WHERE id = ?1",
-                params![id_text(id.value())],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-            )
-            .optional()
-            .map_err(backend)?;
-        let Some((reflection_id, description, approval)) = row else {
-            return Ok(None);
-        };
-        let reflection = ReflectionId::new(parse_id(&reflection_id)?);
-        let change = ProposedProcessChange::from_parts(
-            id,
-            reflection,
-            &description,
-            parse_approval(&approval)?,
-        )
-        .map_err(corrupt)?;
-        Ok(Some(change))
-    }
-
-    fn list_for_reflection(
-        &self,
-        reflection: ReflectionId,
-    ) -> Result<Vec<ProposedProcessChange>, RepositoryError> {
-        let conn = self.lock()?;
-        let mut stmt = conn
-            .prepare(
-                "SELECT id, description, approval FROM process_changes \
-                 WHERE reflection_id = ?1 ORDER BY id",
-            )
-            .map_err(backend)?;
-        let rows = stmt
-            .query_map(params![id_text(reflection.value())], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
-                ))
-            })
-            .map_err(backend)?;
-
-        let mut changes = Vec::new();
-        for row in rows {
-            let (id, description, approval) = row.map_err(backend)?;
-            let change = ProposedProcessChange::from_parts(
-                ProcessChangeId::new(parse_id(&id)?),
-                reflection,
-                &description,
-                parse_approval(&approval)?,
-            )
-            .map_err(corrupt)?;
-            changes.push(change);
-        }
-        Ok(changes)
-    }
-}
+// The eight direction repositories are implemented by the direction context's
+// DirectionStore over the shared Db now (ADR 0026); the all_*/parse_* helpers
+// below remain for MemoryStore's export.
 
 impl MemoryStore for SqliteStore {
     fn export(&self) -> Result<MemorySnapshot, RepositoryError> {
@@ -1821,16 +1230,23 @@ mod tests {
     // (as real use cases do) rather than calling ambiguous methods directly.
     use super::SqliteStore;
     use endora_application::{DirectionRepository, TargetRepository};
+    use endora_direction::DirectionStore;
     use endora_domain::{Direction, DirectionId, Target, TargetId};
 
     fn store() -> SqliteStore {
         SqliteStore::open_in_memory().unwrap()
     }
 
+    /// The direction repositories over the store's shared connection (ADR 0026).
+    fn dir_repos(store: &SqliteStore) -> DirectionStore {
+        DirectionStore::new(store.db())
+    }
+
     #[test]
     fn direction_round_trips() {
         let store = store();
-        let repo: &dyn DirectionRepository = &store;
+        let dir = dir_repos(&store);
+        let repo: &dyn DirectionRepository = &dir;
         let direction = Direction::new(DirectionId::new(1), "Be healthier").unwrap();
         repo.save(&direction).unwrap();
         assert_eq!(repo.get(DirectionId::new(1)).unwrap(), Some(direction));
@@ -1839,14 +1255,16 @@ mod tests {
     #[test]
     fn missing_direction_is_none() {
         let store = store();
-        let repo: &dyn DirectionRepository = &store;
+        let dir = dir_repos(&store);
+        let repo: &dyn DirectionRepository = &dir;
         assert_eq!(repo.get(DirectionId::new(99)).unwrap(), None);
     }
 
     #[test]
     fn save_replaces_existing_direction() {
         let store = store();
-        let repo: &dyn DirectionRepository = &store;
+        let dir = dir_repos(&store);
+        let repo: &dyn DirectionRepository = &dir;
         repo.save(&Direction::new(DirectionId::new(1), "First").unwrap())
             .unwrap();
         repo.save(&Direction::new(DirectionId::new(1), "Second").unwrap())
@@ -1860,8 +1278,9 @@ mod tests {
     #[test]
     fn target_round_trips_and_lists_by_direction() {
         let store = store();
-        let directions: &dyn DirectionRepository = &store;
-        let targets: &dyn TargetRepository = &store;
+        let dir = dir_repos(&store);
+        let directions: &dyn DirectionRepository = &dir;
+        let targets: &dyn TargetRepository = &dir;
         let direction = DirectionId::new(1);
         directions
             .save(&Direction::new(direction, "Be healthier").unwrap())
@@ -1882,9 +1301,11 @@ mod tests {
         use endora_domain::{Assumption, AssumptionId, TargetId};
 
         let store = store();
-        let directions: &dyn DirectionRepository = &store;
-        let targets: &dyn TargetRepository = &store;
-        let assumptions: &dyn AssumptionRepository = &store;
+
+        let dir = dir_repos(&store);
+        let directions: &dyn DirectionRepository = &dir;
+        let targets: &dyn TargetRepository = &dir;
+        let assumptions: &dyn AssumptionRepository = &dir;
 
         let direction = DirectionId::new(1);
         directions
@@ -1912,10 +1333,12 @@ mod tests {
         };
 
         let store = store();
-        let directions: &dyn DirectionRepository = &store;
-        let targets: &dyn TargetRepository = &store;
-        let assumptions: &dyn AssumptionRepository = &store;
-        let experiments: &dyn ExperimentRepository = &store;
+
+        let dir = dir_repos(&store);
+        let directions: &dyn DirectionRepository = &dir;
+        let targets: &dyn TargetRepository = &dir;
+        let assumptions: &dyn AssumptionRepository = &dir;
+        let experiments: &dyn ExperimentRepository = &dir;
 
         let direction = DirectionId::new(1);
         directions
@@ -1951,10 +1374,12 @@ mod tests {
         };
 
         let store = store();
-        let directions: &dyn DirectionRepository = &store;
-        let targets: &dyn TargetRepository = &store;
-        let assumptions: &dyn AssumptionRepository = &store;
-        let experiments: &dyn ExperimentRepository = &store;
+
+        let dir = dir_repos(&store);
+        let directions: &dyn DirectionRepository = &dir;
+        let targets: &dyn TargetRepository = &dir;
+        let assumptions: &dyn AssumptionRepository = &dir;
+        let experiments: &dyn ExperimentRepository = &dir;
 
         directions
             .save(&Direction::new(DirectionId::new(1), "Be healthier").unwrap())
@@ -2015,7 +1440,8 @@ mod tests {
         // with no review scheduled.
         let store =
             SqliteStore::from_db(endora_persistence::Db::from_connection(conn).unwrap()).unwrap();
-        let experiments: &dyn ExperimentRepository = &store;
+        let dir = dir_repos(&store);
+        let experiments: &dyn ExperimentRepository = &dir;
         let loaded = experiments.get(ExperimentId::new(4)).unwrap().unwrap();
         assert_eq!(loaded.review_by(), None);
     }
@@ -2059,13 +1485,14 @@ mod tests {
         // new names.
         let store =
             SqliteStore::from_db(endora_persistence::Db::from_connection(conn).unwrap()).unwrap();
-        let targets: &dyn TargetRepository = &store;
+        let dir = dir_repos(&store);
+        let targets: &dyn TargetRepository = &dir;
         let loaded = targets.get(TargetId::new(2)).unwrap().unwrap();
         assert_eq!(loaded.statement(), "Run a 5k without stopping");
         assert_eq!(loaded.direction(), DirectionId::new(1));
 
         // The assumption still links to its target through the renamed column.
-        let assumptions: &dyn AssumptionRepository = &store;
+        let assumptions: &dyn AssumptionRepository = &dir;
         let found = assumptions.list_for_target(TargetId::new(2)).unwrap();
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].id(), AssumptionId::new(3));
@@ -2094,7 +1521,8 @@ mod tests {
         // Opening adds the column and reads existing rows back as active.
         let store =
             SqliteStore::from_db(endora_persistence::Db::from_connection(conn).unwrap()).unwrap();
-        let directions: &dyn DirectionRepository = &store;
+        let dir = dir_repos(&store);
+        let directions: &dyn DirectionRepository = &dir;
         assert_eq!(
             directions
                 .get(DirectionId::new(1))
@@ -2103,7 +1531,7 @@ mod tests {
                 .status(),
             LifecycleStatus::Active
         );
-        let targets: &dyn TargetRepository = &store;
+        let targets: &dyn TargetRepository = &dir;
         assert_eq!(
             targets.get(TargetId::new(2)).unwrap().unwrap().status(),
             LifecycleStatus::Active
@@ -2121,11 +1549,13 @@ mod tests {
         };
 
         let store = store();
-        let directions: &dyn DirectionRepository = &store;
-        let targets: &dyn TargetRepository = &store;
-        let assumptions: &dyn AssumptionRepository = &store;
-        let experiments: &dyn ExperimentRepository = &store;
-        let observations: &dyn ObservationRepository = &store;
+
+        let dir = dir_repos(&store);
+        let directions: &dyn DirectionRepository = &dir;
+        let targets: &dyn TargetRepository = &dir;
+        let assumptions: &dyn AssumptionRepository = &dir;
+        let experiments: &dyn ExperimentRepository = &dir;
+        let observations: &dyn ObservationRepository = &dir;
 
         let direction = DirectionId::new(1);
         directions
@@ -2165,12 +1595,14 @@ mod tests {
         };
 
         let store = store();
-        let directions: &dyn DirectionRepository = &store;
-        let targets: &dyn TargetRepository = &store;
-        let assumptions: &dyn AssumptionRepository = &store;
-        let experiments: &dyn ExperimentRepository = &store;
-        let observations: &dyn ObservationRepository = &store;
-        let reflections: &dyn ReflectionRepository = &store;
+
+        let dir = dir_repos(&store);
+        let directions: &dyn DirectionRepository = &dir;
+        let targets: &dyn TargetRepository = &dir;
+        let assumptions: &dyn AssumptionRepository = &dir;
+        let experiments: &dyn ExperimentRepository = &dir;
+        let observations: &dyn ObservationRepository = &dir;
+        let reflections: &dyn ReflectionRepository = &dir;
 
         // Build the chain the evidence FKs require.
         let direction = DirectionId::new(1);
@@ -2224,10 +1656,12 @@ mod tests {
         };
 
         let store = store();
-        let directions: &dyn DirectionRepository = &store;
-        let targets: &dyn TargetRepository = &store;
-        let reflections: &dyn ReflectionRepository = &store;
-        let changes: &dyn ProcessChangeRepository = &store;
+
+        let dir = dir_repos(&store);
+        let directions: &dyn DirectionRepository = &dir;
+        let targets: &dyn TargetRepository = &dir;
+        let reflections: &dyn ReflectionRepository = &dir;
+        let changes: &dyn ProcessChangeRepository = &dir;
 
         // Reflection with no evidence FKs (evidence table is empty) still needs a
         // real observation? No — Reflection::new requires >=1 evidence id, but the
@@ -2249,15 +1683,15 @@ mod tests {
             Assumption, AssumptionId, Experiment, ExperimentId, Observation, Timestamp,
         };
         let assumption = AssumptionId::new(3);
-        (&store as &dyn AssumptionRepository)
+        (&dir as &dyn AssumptionRepository)
             .save(&Assumption::new(assumption, target, "Mornings").unwrap())
             .unwrap();
         let experiment = ExperimentId::new(4);
-        (&store as &dyn ExperimentRepository)
+        (&dir as &dyn ExperimentRepository)
             .save(&Experiment::propose(experiment, assumption, "Try").unwrap())
             .unwrap();
         let obs = ObservationId::new(5);
-        (&store as &dyn ObservationRepository)
+        (&dir as &dyn ObservationRepository)
             .save(
                 &Observation::record(obs, experiment, "n", Timestamp::from_unix_millis(1)).unwrap(),
             )
@@ -2296,34 +1730,36 @@ mod tests {
         };
 
         let store = store();
+
+        let dir = dir_repos(&store);
         // Seed one of every entity.
         let direction = DirectionId::new(1);
-        (&store as &dyn DirectionRepository)
+        (&dir as &dyn DirectionRepository)
             .save(&Direction::new(direction, "Be healthier").unwrap())
             .unwrap();
         let target = TargetId::new(2);
-        (&store as &dyn TargetRepository)
+        (&dir as &dyn TargetRepository)
             .save(&Target::new(target, direction, "Run a 5k").unwrap())
             .unwrap();
         let assumption = AssumptionId::new(3);
-        (&store as &dyn AssumptionRepository)
+        (&dir as &dyn AssumptionRepository)
             .save(&Assumption::new(assumption, target, "Mornings").unwrap())
             .unwrap();
         let experiment = ExperimentId::new(4);
-        (&store as &dyn ExperimentRepository)
+        (&dir as &dyn ExperimentRepository)
             .save(&Experiment::propose(experiment, assumption, "Try").unwrap())
             .unwrap();
         let obs = ObservationId::new(5);
-        (&store as &dyn ObservationRepository)
+        (&dir as &dyn ObservationRepository)
             .save(
                 &Observation::record(obs, experiment, "n", Timestamp::from_unix_millis(1)).unwrap(),
             )
             .unwrap();
         let reflection = ReflectionId::new(6);
-        (&store as &dyn ReflectionRepository)
+        (&dir as &dyn ReflectionRepository)
             .save(&Reflection::new(reflection, target, "worked", vec![obs]).unwrap())
             .unwrap();
-        (&store as &dyn ProcessChangeRepository)
+        (&dir as &dyn ProcessChangeRepository)
             .save(
                 &ProposedProcessChange::propose(ProcessChangeId::new(7), reflection, "Do it")
                     .unwrap(),
@@ -2358,6 +1794,7 @@ mod tests {
         use endora_domain::{AuditId, AuditRecord, Timestamp};
 
         let store = store();
+
         let log: &dyn AuditLog = &store;
         log.append(
             &AuditRecord::new(AuditId::new(1), Timestamp::from_unix_millis(100), "first").unwrap(),
@@ -2470,7 +1907,8 @@ mod tests {
     #[test]
     fn a_large_u128_id_survives_storage() {
         let store = store();
-        let repo: &dyn DirectionRepository = &store;
+        let dir = dir_repos(&store);
+        let repo: &dyn DirectionRepository = &dir;
         let big = u128::MAX;
         repo.save(&Direction::new(DirectionId::new(big), "Edge").unwrap())
             .unwrap();

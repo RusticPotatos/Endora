@@ -49,6 +49,8 @@ pub struct AppState {
     pub schedules: Arc<endora_scheduling::ScheduleStore>,
     /// The understanding context's belief + preference repositories.
     pub understanding: Arc<endora_understanding::UnderstandingStore>,
+    /// The direction context's eight repositories (values/targets/experiments/…).
+    pub direction: Arc<endora_direction::DirectionStore>,
     /// The identifier source.
     pub ids: Arc<RandomIdSource>,
     /// The system clock.
@@ -83,11 +85,13 @@ impl AppState {
         let chat = Arc::new(endora_conversation::ChatStore::new(store.db()));
         let schedules = Arc::new(endora_scheduling::ScheduleStore::new(store.db()));
         let understanding = Arc::new(endora_understanding::UnderstandingStore::new(store.db()));
+        let direction = Arc::new(endora_direction::DirectionStore::new(store.db()));
         Self {
             store,
             chat,
             schedules,
             understanding,
+            direction,
             ids,
             clock,
             proposer,
@@ -288,16 +292,16 @@ async fn create_value(
     State(state): State<AppState>,
     Json(req): Json<CreateValueRequest>,
 ) -> Result<Json<ValueResponse>, ApiError> {
-    let store = state.store.clone();
+    let dirs = state.direction.clone();
     let ids = state.ids.clone();
     let value =
-        blocking(move || usecases::create_value(store.as_ref(), ids.as_ref(), &req.name)).await?;
+        blocking(move || usecases::create_value(dirs.as_ref(), ids.as_ref(), &req.name)).await?;
     Ok(Json(ValueResponse::from(&value)))
 }
 
 async fn list_values(State(state): State<AppState>) -> Result<Json<Vec<ValueResponse>>, ApiError> {
-    let store = state.store.clone();
-    let values = blocking(move || usecases::list_values(store.as_ref())).await?;
+    let dirs = state.direction.clone();
+    let values = blocking(move || usecases::list_values(dirs.as_ref())).await?;
     Ok(Json(values.iter().map(ValueResponse::from).collect()))
 }
 
@@ -306,8 +310,8 @@ async fn delete_value(
     Path(id): Path<String>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let value_id = parse_value_id(&id)?;
-    let store = state.store.clone();
-    blocking(move || usecases::delete_value(store.as_ref(), store.as_ref(), value_id)).await?;
+    let dirs = state.direction.clone();
+    blocking(move || usecases::delete_value(dirs.as_ref(), dirs.as_ref(), value_id)).await?;
     Ok(Json(json!({ "deleted": true })))
 }
 
@@ -321,9 +325,9 @@ async fn assign_direction_value(
         Some(raw) => Some(parse_value_id(&raw)?),
         None => None,
     };
-    let store = state.store.clone();
+    let dirs = state.direction.clone();
     let direction = blocking(move || {
-        usecases::assign_direction_value(store.as_ref(), store.as_ref(), direction_id, value_id)
+        usecases::assign_direction_value(dirs.as_ref(), dirs.as_ref(), direction_id, value_id)
     })
     .await?;
     Ok(Json(DirectionResponse::from(&direction)))
@@ -374,10 +378,10 @@ async fn create_direction(
     State(state): State<AppState>,
     Json(req): Json<CreateDirectionRequest>,
 ) -> Result<Json<DirectionResponse>, ApiError> {
-    let store = state.store.clone();
+    let dirs = state.direction.clone();
     let ids = state.ids.clone();
     let direction =
-        blocking(move || usecases::create_direction(store.as_ref(), ids.as_ref(), &req.title))
+        blocking(move || usecases::create_direction(dirs.as_ref(), ids.as_ref(), &req.title))
             .await?;
     Ok(Json(DirectionResponse::from(&direction)))
 }
@@ -385,8 +389,8 @@ async fn create_direction(
 async fn list_directions(
     State(state): State<AppState>,
 ) -> Result<Json<Vec<DirectionResponse>>, ApiError> {
-    let store = state.store.clone();
-    let directions = blocking(move || usecases::list_directions(store.as_ref())).await?;
+    let dirs = state.direction.clone();
+    let directions = blocking(move || usecases::list_directions(dirs.as_ref())).await?;
     Ok(Json(
         directions.iter().map(DirectionResponse::from).collect(),
     ))
@@ -398,12 +402,12 @@ async fn create_target(
     Json(req): Json<CreateTargetRequest>,
 ) -> Result<Json<TargetResponse>, ApiError> {
     let direction = parse_direction_id(&id)?;
-    let store = state.store.clone();
+    let dirs = state.direction.clone();
     let ids = state.ids.clone();
     let target = blocking(move || {
         usecases::create_target(
-            store.as_ref(),
-            store.as_ref(),
+            dirs.as_ref(),
+            dirs.as_ref(),
             ids.as_ref(),
             direction,
             &req.statement,
@@ -418,8 +422,8 @@ async fn list_targets(
     Path(id): Path<String>,
 ) -> Result<Json<Vec<TargetResponse>>, ApiError> {
     let direction = parse_direction_id(&id)?;
-    let store = state.store.clone();
-    let targets = blocking(move || usecases::list_targets(store.as_ref(), direction)).await?;
+    let dirs = state.direction.clone();
+    let targets = blocking(move || usecases::list_targets(dirs.as_ref(), direction)).await?;
     Ok(Json(targets.iter().map(TargetResponse::from).collect()))
 }
 
@@ -430,9 +434,9 @@ async fn set_direction_status(
 ) -> Result<Json<DirectionResponse>, ApiError> {
     let direction_id = parse_direction_id(&id)?;
     let status = parse_lifecycle_status(&req.status)?;
-    let store = state.store.clone();
+    let dirs = state.direction.clone();
     let direction =
-        blocking(move || usecases::set_direction_status(store.as_ref(), direction_id, status))
+        blocking(move || usecases::set_direction_status(dirs.as_ref(), direction_id, status))
             .await?;
     Ok(Json(DirectionResponse::from(&direction)))
 }
@@ -442,8 +446,8 @@ async fn delete_direction(
     Path(id): Path<String>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let direction_id = parse_direction_id(&id)?;
-    let store = state.store.clone();
-    blocking(move || usecases::delete_direction(store.as_ref(), store.as_ref(), direction_id))
+    let dirs = state.direction.clone();
+    blocking(move || usecases::delete_direction(dirs.as_ref(), dirs.as_ref(), direction_id))
         .await?;
     Ok(Json(json!({ "deleted": true })))
 }
@@ -455,9 +459,9 @@ async fn set_target_status(
 ) -> Result<Json<TargetResponse>, ApiError> {
     let target_id = parse_target_id(&id)?;
     let status = parse_lifecycle_status(&req.status)?;
-    let store = state.store.clone();
+    let dirs = state.direction.clone();
     let target =
-        blocking(move || usecases::set_target_status(store.as_ref(), target_id, status)).await?;
+        blocking(move || usecases::set_target_status(dirs.as_ref(), target_id, status)).await?;
     Ok(Json(TargetResponse::from(&target)))
 }
 
@@ -466,8 +470,8 @@ async fn delete_target(
     Path(id): Path<String>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let target_id = parse_target_id(&id)?;
-    let store = state.store.clone();
-    blocking(move || usecases::delete_target(store.as_ref(), store.as_ref(), target_id)).await?;
+    let dirs = state.direction.clone();
+    blocking(move || usecases::delete_target(dirs.as_ref(), dirs.as_ref(), target_id)).await?;
     Ok(Json(json!({ "deleted": true })))
 }
 
@@ -499,12 +503,12 @@ async fn create_assumption(
     Json(req): Json<CreateAssumptionRequest>,
 ) -> Result<Json<AssumptionResponse>, ApiError> {
     let target = parse_target_id(&id)?;
-    let store = state.store.clone();
+    let dirs = state.direction.clone();
     let ids = state.ids.clone();
     let assumption = blocking(move || {
         usecases::create_assumption(
-            store.as_ref(),
-            store.as_ref(),
+            dirs.as_ref(),
+            dirs.as_ref(),
             ids.as_ref(),
             target,
             &req.statement,
@@ -519,8 +523,8 @@ async fn list_assumptions(
     Path(id): Path<String>,
 ) -> Result<Json<Vec<AssumptionResponse>>, ApiError> {
     let target = parse_target_id(&id)?;
-    let store = state.store.clone();
-    let assumptions = blocking(move || usecases::list_assumptions(store.as_ref(), target)).await?;
+    let dirs = state.direction.clone();
+    let assumptions = blocking(move || usecases::list_assumptions(dirs.as_ref(), target)).await?;
     Ok(Json(
         assumptions.iter().map(AssumptionResponse::from).collect(),
     ))
@@ -559,12 +563,12 @@ async fn propose_experiment(
     Json(req): Json<CreateExperimentRequest>,
 ) -> Result<Json<ExperimentResponse>, ApiError> {
     let assumption = parse_assumption_id(&id)?;
-    let store = state.store.clone();
+    let dirs = state.direction.clone();
     let ids = state.ids.clone();
     let experiment = blocking(move || {
         usecases::propose_experiment(
-            store.as_ref(),
-            store.as_ref(),
+            dirs.as_ref(),
+            dirs.as_ref(),
             ids.as_ref(),
             assumption,
             &req.hypothesis,
@@ -579,9 +583,9 @@ async fn list_experiments(
     Path(id): Path<String>,
 ) -> Result<Json<Vec<ExperimentResponse>>, ApiError> {
     let assumption = parse_assumption_id(&id)?;
-    let store = state.store.clone();
+    let dirs = state.direction.clone();
     let experiments =
-        blocking(move || usecases::list_experiments(store.as_ref(), assumption)).await?;
+        blocking(move || usecases::list_experiments(dirs.as_ref(), assumption)).await?;
     Ok(Json(
         experiments.iter().map(ExperimentResponse::from).collect(),
     ))
@@ -592,9 +596,9 @@ async fn start_experiment(
     Path(id): Path<String>,
 ) -> Result<Json<ExperimentResponse>, ApiError> {
     let experiment_id = parse_experiment_id(&id)?;
-    let store = state.store.clone();
+    let dirs = state.direction.clone();
     let experiment =
-        blocking(move || usecases::start_experiment(store.as_ref(), experiment_id)).await?;
+        blocking(move || usecases::start_experiment(dirs.as_ref(), experiment_id)).await?;
     Ok(Json(ExperimentResponse::from(&experiment)))
 }
 
@@ -603,9 +607,9 @@ async fn conclude_experiment(
     Path(id): Path<String>,
 ) -> Result<Json<ExperimentResponse>, ApiError> {
     let experiment_id = parse_experiment_id(&id)?;
-    let store = state.store.clone();
+    let dirs = state.direction.clone();
     let experiment =
-        blocking(move || usecases::conclude_experiment(store.as_ref(), experiment_id)).await?;
+        blocking(move || usecases::conclude_experiment(dirs.as_ref(), experiment_id)).await?;
     Ok(Json(ExperimentResponse::from(&experiment)))
 }
 
@@ -620,11 +624,11 @@ async fn schedule_review(
     Json(req): Json<ScheduleReviewRequest>,
 ) -> Result<Json<ExperimentResponse>, ApiError> {
     let experiment_id = parse_experiment_id(&id)?;
-    let store = state.store.clone();
+    let dirs = state.direction.clone();
     let clock = state.clock.clone();
     let experiment = blocking(move || {
         usecases::schedule_experiment_review(
-            store.as_ref(),
+            dirs.as_ref(),
             clock.as_ref(),
             experiment_id,
             req.in_days,
@@ -637,10 +641,10 @@ async fn schedule_review(
 async fn due_reviews(
     State(state): State<AppState>,
 ) -> Result<Json<Vec<ExperimentResponse>>, ApiError> {
-    let store = state.store.clone();
+    let dirs = state.direction.clone();
     let clock = state.clock.clone();
     let experiments =
-        blocking(move || usecases::list_due_reviews(store.as_ref(), clock.as_ref())).await?;
+        blocking(move || usecases::list_due_reviews(dirs.as_ref(), clock.as_ref())).await?;
     Ok(Json(
         experiments.iter().map(ExperimentResponse::from).collect(),
     ))
@@ -676,13 +680,13 @@ async fn record_observation(
     Json(req): Json<RecordObservationRequest>,
 ) -> Result<Json<ObservationResponse>, ApiError> {
     let experiment = parse_experiment_id(&id)?;
-    let store = state.store.clone();
+    let dirs = state.direction.clone();
     let ids = state.ids.clone();
     let clock = state.clock.clone();
     let observation = blocking(move || {
         usecases::record_observation(
-            store.as_ref(),
-            store.as_ref(),
+            dirs.as_ref(),
+            dirs.as_ref(),
             ids.as_ref(),
             clock.as_ref(),
             experiment,
@@ -698,9 +702,9 @@ async fn list_observations(
     Path(id): Path<String>,
 ) -> Result<Json<Vec<ObservationResponse>>, ApiError> {
     let experiment = parse_experiment_id(&id)?;
-    let store = state.store.clone();
+    let dirs = state.direction.clone();
     let observations =
-        blocking(move || usecases::list_observations(store.as_ref(), experiment)).await?;
+        blocking(move || usecases::list_observations(dirs.as_ref(), experiment)).await?;
     Ok(Json(
         observations.iter().map(ObservationResponse::from).collect(),
     ))
@@ -738,12 +742,12 @@ async fn create_reflection(
 ) -> Result<Json<ReflectionResponse>, ApiError> {
     let target = parse_target_id(&id)?;
     let evidence = parse_evidence(&req.evidence)?;
-    let store = state.store.clone();
+    let dirs = state.direction.clone();
     let ids = state.ids.clone();
     let reflection = blocking(move || {
         usecases::create_reflection(
-            store.as_ref(),
-            store.as_ref(),
+            dirs.as_ref(),
+            dirs.as_ref(),
             ids.as_ref(),
             target,
             &req.summary,
@@ -759,8 +763,8 @@ async fn list_reflections(
     Path(id): Path<String>,
 ) -> Result<Json<Vec<ReflectionResponse>>, ApiError> {
     let target = parse_target_id(&id)?;
-    let store = state.store.clone();
-    let reflections = blocking(move || usecases::list_reflections(store.as_ref(), target)).await?;
+    let dirs = state.direction.clone();
+    let reflections = blocking(move || usecases::list_reflections(dirs.as_ref(), target)).await?;
     Ok(Json(
         reflections.iter().map(ReflectionResponse::from).collect(),
     ))
@@ -796,12 +800,12 @@ async fn propose_process_change(
     Json(req): Json<ProposeProcessChangeRequest>,
 ) -> Result<Json<ProcessChangeResponse>, ApiError> {
     let reflection = parse_reflection_id(&id)?;
-    let store = state.store.clone();
+    let dirs = state.direction.clone();
     let ids = state.ids.clone();
     let change = blocking(move || {
         usecases::propose_process_change(
-            store.as_ref(),
-            store.as_ref(),
+            dirs.as_ref(),
+            dirs.as_ref(),
             ids.as_ref(),
             reflection,
             &req.description,
@@ -816,13 +820,13 @@ async fn draft_process_change(
     Path(id): Path<String>,
 ) -> Result<Json<ProcessChangeResponse>, ApiError> {
     let reflection = parse_reflection_id(&id)?;
-    let store = state.store.clone();
+    let dirs = state.direction.clone();
     let ids = state.ids.clone();
     let proposer = state.proposer.clone();
     let change = blocking(move || {
         usecases::draft_process_change(
-            store.as_ref(),
-            store.as_ref(),
+            dirs.as_ref(),
+            dirs.as_ref(),
             ids.as_ref(),
             proposer.as_ref(),
             reflection,
@@ -837,9 +841,9 @@ async fn list_process_changes(
     Path(id): Path<String>,
 ) -> Result<Json<Vec<ProcessChangeResponse>>, ApiError> {
     let reflection = parse_reflection_id(&id)?;
-    let store = state.store.clone();
+    let dirs = state.direction.clone();
     let changes =
-        blocking(move || usecases::list_process_changes(store.as_ref(), reflection)).await?;
+        blocking(move || usecases::list_process_changes(dirs.as_ref(), reflection)).await?;
     Ok(Json(
         changes.iter().map(ProcessChangeResponse::from).collect(),
     ))
@@ -850,9 +854,9 @@ async fn approve_process_change(
     Path(id): Path<String>,
 ) -> Result<Json<ProcessChangeResponse>, ApiError> {
     let change_id = parse_process_change_id(&id)?;
-    let store = state.store.clone();
+    let dirs = state.direction.clone();
     let change =
-        blocking(move || usecases::approve_process_change(store.as_ref(), change_id)).await?;
+        blocking(move || usecases::approve_process_change(dirs.as_ref(), change_id)).await?;
     Ok(Json(ProcessChangeResponse::from(&change)))
 }
 
@@ -861,9 +865,9 @@ async fn reject_process_change(
     Path(id): Path<String>,
 ) -> Result<Json<ProcessChangeResponse>, ApiError> {
     let change_id = parse_process_change_id(&id)?;
-    let store = state.store.clone();
+    let dirs = state.direction.clone();
     let change =
-        blocking(move || usecases::reject_process_change(store.as_ref(), change_id)).await?;
+        blocking(move || usecases::reject_process_change(dirs.as_ref(), change_id)).await?;
     Ok(Json(ProcessChangeResponse::from(&change)))
 }
 
@@ -889,11 +893,12 @@ async fn decide_process_change(
         })?,
     };
     let store = state.store.clone();
+    let dirs = state.direction.clone();
     let ids = state.ids.clone();
     let clock = state.clock.clone();
     let decision = blocking(move || {
         usecases::decide_stored_process_change(
-            store.as_ref(),
+            dirs.as_ref(),
             ids.as_ref(),
             clock.as_ref(),
             store.as_ref(),
@@ -970,8 +975,9 @@ async fn activity(
 ) -> Result<Json<Vec<ActivityResponse>>, ApiError> {
     let limit = query.limit.unwrap_or(50);
     let store = state.store.clone();
+    let dirs = state.direction.clone();
     let items = blocking(move || {
-        usecases::recent_activity(store.as_ref(), store.as_ref(), store.as_ref(), limit)
+        usecases::recent_activity(dirs.as_ref(), store.as_ref(), store.as_ref(), limit)
     })
     .await?;
     Ok(Json(items.iter().map(ActivityResponse::from).collect()))
@@ -1102,6 +1108,7 @@ async fn send_chat(
     Json(req): Json<ChatRequest>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let store = state.store.clone();
+    let dirs = state.direction.clone();
     let chat = state.chat.clone();
     let understanding = state.understanding.clone();
     let ids = state.ids.clone();
@@ -1112,10 +1119,10 @@ async fn send_chat(
         let runner = build_runner(store.as_ref(), capabilities);
         // Ground the butler in the person's current life before it answers.
         let context = usecases::butler_context(
-            store.as_ref(),
-            store.as_ref(),
-            store.as_ref(),
-            store.as_ref(),
+            dirs.as_ref(),
+            dirs.as_ref(),
+            dirs.as_ref(),
+            dirs.as_ref(),
             store.as_ref(),
             understanding.as_ref(),
             &runner,
@@ -1203,6 +1210,7 @@ async fn stream_chat(
     Json(req): Json<ChatRequest>,
 ) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
     let store = state.store.clone();
+    let dirs = state.direction.clone();
     let chat = state.chat.clone();
     let understanding = state.understanding.clone();
     let ids = state.ids.clone();
@@ -1218,10 +1226,10 @@ async fn stream_chat(
         let runner = build_runner(store.as_ref(), capabilities);
         let event = |v: serde_json::Value| Event::default().data(v.to_string());
         let context = match usecases::butler_context(
-            store.as_ref(),
-            store.as_ref(),
-            store.as_ref(),
-            store.as_ref(),
+            dirs.as_ref(),
+            dirs.as_ref(),
+            dirs.as_ref(),
+            dirs.as_ref(),
             store.as_ref(),
             understanding.as_ref(),
             &runner,
@@ -1323,15 +1331,16 @@ async fn apply_suggestion(
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let sid = parse_suggestion_id(&id)?;
     let store = state.store.clone();
+    let dirs = state.direction.clone();
     let understanding = state.understanding.clone();
     let ids = state.ids.clone();
     let clock = state.clock.clone();
     let suggestion = blocking(move || {
         usecases::apply_suggestion(
             store.as_ref(),
-            store.as_ref(),
-            store.as_ref(),
-            store.as_ref(),
+            dirs.as_ref(),
+            dirs.as_ref(),
+            dirs.as_ref(),
             understanding.as_ref(),
             ids.as_ref(),
             clock.as_ref(),
@@ -1891,6 +1900,7 @@ pub fn spawn_heartbeat(state: AppState) {
         loop {
             ticker.tick().await;
             let store = state.store.clone();
+            let dirs = state.direction.clone();
             let chat = state.chat.clone();
             let schedules = state.schedules.clone();
             let understanding = state.understanding.clone();
@@ -1900,10 +1910,10 @@ pub fn spawn_heartbeat(state: AppState) {
             let posted = tokio::task::spawn_blocking(move || {
                 let runner = build_runner(store.as_ref(), capabilities);
                 let context = usecases::butler_context(
-                    store.as_ref(),
-                    store.as_ref(),
-                    store.as_ref(),
-                    store.as_ref(),
+                    dirs.as_ref(),
+                    dirs.as_ref(),
+                    dirs.as_ref(),
+                    dirs.as_ref(),
                     store.as_ref(),
                     understanding.as_ref(),
                     &runner,
@@ -2048,12 +2058,13 @@ async fn attention(
     State(state): State<AppState>,
 ) -> Result<Json<Vec<AttentionResponse>>, ApiError> {
     let store = state.store.clone();
+    let dirs = state.direction.clone();
     let clock = state.clock.clone();
     let items = blocking(move || {
         usecases::attention(
-            store.as_ref(),
-            store.as_ref(),
-            store.as_ref(),
+            dirs.as_ref(),
+            dirs.as_ref(),
+            dirs.as_ref(),
             store.as_ref(),
             clock.as_ref(),
         )
