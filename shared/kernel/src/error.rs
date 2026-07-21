@@ -66,6 +66,67 @@ impl fmt::Display for RepositoryError {
 
 impl core::error::Error for RepositoryError {}
 
+/// An error from running a use case.
+///
+/// Use cases fail either because the input violated a domain rule, because the
+/// storage backend failed, or because a referenced entity was not found. This is
+/// the single error type at the application boundary that interfaces (the node,
+/// the CLI) map to their own representations. It lives in the kernel so every
+/// context's use cases return the same type without a cross-context dependency.
+///
+/// Errors that originate outside the kernel (e.g. a model/proposer failure)
+/// convert into [`AppError::Model`] via `From` impls defined in the crate that
+/// owns the source error.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AppError {
+    /// The input violated a domain invariant.
+    Domain(DomainError),
+    /// The storage backend failed, or stored data was corrupt.
+    Repository(RepositoryError),
+    /// A referenced entity does not exist.
+    NotFound {
+        /// What kind of entity was missing, e.g. `"direction"`.
+        entity: &'static str,
+    },
+    /// The request was malformed in a way the domain does not model (e.g. an
+    /// unrecognized enum value supplied by an interface).
+    BadRequest {
+        /// A human-readable explanation.
+        message: String,
+    },
+    /// A reasoning model was needed but unavailable or unusable.
+    Model {
+        /// A human-readable explanation.
+        message: String,
+    },
+}
+
+impl fmt::Display for AppError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Domain(e) => write!(f, "{e}"),
+            Self::Repository(e) => write!(f, "{e}"),
+            Self::NotFound { entity } => write!(f, "{entity} not found"),
+            Self::BadRequest { message } => write!(f, "{message}"),
+            Self::Model { message } => write!(f, "{message}"),
+        }
+    }
+}
+
+impl core::error::Error for AppError {}
+
+impl From<DomainError> for AppError {
+    fn from(error: DomainError) -> Self {
+        Self::Domain(error)
+    }
+}
+
+impl From<RepositoryError> for AppError {
+    fn from(error: RepositoryError) -> Self {
+        Self::Repository(error)
+    }
+}
+
 /// Trims `value` and returns it as an owned `String`, or an
 /// [`DomainError::EmptyField`] if it is blank. Shared by the entity
 /// constructors so "must not be empty" is enforced in exactly one place.

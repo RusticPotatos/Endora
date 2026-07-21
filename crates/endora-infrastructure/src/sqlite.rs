@@ -2155,7 +2155,8 @@ mod tests {
 
         // Opening the store must add the column and read the legacy row back
         // with no review scheduled.
-        let store = SqliteStore::from_db(endora_persistence::Db::from_connection(conn).unwrap()).unwrap();
+        let store =
+            SqliteStore::from_db(endora_persistence::Db::from_connection(conn).unwrap()).unwrap();
         let experiments: &dyn ExperimentRepository = &store;
         let loaded = experiments.get(ExperimentId::new(4)).unwrap().unwrap();
         assert_eq!(loaded.review_by(), None);
@@ -2198,7 +2199,8 @@ mod tests {
 
         // Opening the store migrates the schema and preserves the data under the
         // new names.
-        let store = SqliteStore::from_db(endora_persistence::Db::from_connection(conn).unwrap()).unwrap();
+        let store =
+            SqliteStore::from_db(endora_persistence::Db::from_connection(conn).unwrap()).unwrap();
         let targets: &dyn TargetRepository = &store;
         let loaded = targets.get(TargetId::new(2)).unwrap().unwrap();
         assert_eq!(loaded.statement(), "Run a 5k without stopping");
@@ -2232,7 +2234,8 @@ mod tests {
         .unwrap();
 
         // Opening adds the column and reads existing rows back as active.
-        let store = SqliteStore::from_db(endora_persistence::Db::from_connection(conn).unwrap()).unwrap();
+        let store =
+            SqliteStore::from_db(endora_persistence::Db::from_connection(conn).unwrap()).unwrap();
         let directions: &dyn DirectionRepository = &store;
         assert_eq!(
             directions
