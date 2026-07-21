@@ -11,6 +11,8 @@
 
 pub mod application;
 pub mod domain;
+pub mod infrastructure;
 
 pub use application::{BriefScheduleRepository, CheckinRepository};
 pub use domain::{BriefSchedule, CheckinSchedule};
+pub use infrastructure::{ScheduleStore, migrate};

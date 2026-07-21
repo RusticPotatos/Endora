@@ -45,6 +45,8 @@ pub struct AppState {
     pub store: Arc<SqliteStore>,
     /// The conversation context's chat repository, over the shared connection.
     pub chat: Arc<endora_conversation::ChatStore>,
+    /// The scheduling context's schedule repositories, over the shared connection.
+    pub schedules: Arc<endora_scheduling::ScheduleStore>,
     /// The identifier source.
     pub ids: Arc<RandomIdSource>,
     /// The system clock.
@@ -77,9 +79,11 @@ impl AppState {
         let (changes, _) = broadcast::channel(16);
         // Context stores share the one connection the store opened (ADR 0026).
         let chat = Arc::new(endora_conversation::ChatStore::new(store.db()));
+        let schedules = Arc::new(endora_scheduling::ScheduleStore::new(store.db()));
         Self {
             store,
             chat,
+            schedules,
             ids,
             clock,
             proposer,
@@ -1361,10 +1365,10 @@ impl From<CheckinSchedule> for CheckinResponse {
 }
 
 async fn get_checkin(State(state): State<AppState>) -> Result<Json<CheckinResponse>, ApiError> {
-    let store = state.store.clone();
+    let schedules = state.schedules.clone();
     let clock = state.clock.clone();
     let schedule =
-        blocking(move || usecases::checkin_schedule(store.as_ref(), clock.as_ref())).await?;
+        blocking(move || usecases::checkin_schedule(schedules.as_ref(), clock.as_ref())).await?;
     Ok(Json(schedule.into()))
 }
 
@@ -1380,10 +1384,15 @@ async fn set_checkin(
     State(state): State<AppState>,
     Json(req): Json<SetCheckinRequest>,
 ) -> Result<Json<CheckinResponse>, ApiError> {
-    let store = state.store.clone();
+    let schedules = state.schedules.clone();
     let clock = state.clock.clone();
     let schedule = blocking(move || {
-        usecases::set_checkin_schedule(store.as_ref(), clock.as_ref(), req.enabled, req.interval_ms)
+        usecases::set_checkin_schedule(
+            schedules.as_ref(),
+            clock.as_ref(),
+            req.enabled,
+            req.interval_ms,
+        )
     })
     .await?;
     Ok(Json(schedule.into()))
@@ -1785,8 +1794,8 @@ async fn deep_ask(
 async fn get_brief_schedule(
     State(state): State<AppState>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let store = state.store.clone();
-    let s = blocking(move || usecases::brief_schedule(store.as_ref())).await?;
+    let schedules = state.schedules.clone();
+    let s = blocking(move || usecases::brief_schedule(schedules.as_ref())).await?;
     Ok(Json(brief_schedule_json(&s)))
 }
 
@@ -1802,10 +1811,11 @@ async fn set_brief_schedule(
     State(state): State<AppState>,
     Json(req): Json<BriefScheduleRequest>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let store = state.store.clone();
-    let s =
-        blocking(move || usecases::set_brief_schedule(store.as_ref(), req.enabled, req.hour_utc))
-            .await?;
+    let schedules = state.schedules.clone();
+    let s = blocking(move || {
+        usecases::set_brief_schedule(schedules.as_ref(), req.enabled, req.hour_utc)
+    })
+    .await?;
     let _ = state.changes.send(());
     Ok(Json(brief_schedule_json(&s)))
 }
@@ -1873,6 +1883,7 @@ pub fn spawn_heartbeat(state: AppState) {
             ticker.tick().await;
             let store = state.store.clone();
             let chat = state.chat.clone();
+            let schedules = state.schedules.clone();
             let ids = state.ids.clone();
             let clock = state.clock.clone();
             let capabilities = state.capabilities.clone();
@@ -1890,7 +1901,7 @@ pub fn spawn_heartbeat(state: AppState) {
                 )?;
                 let posted = usecases::run_due_checkin(
                     chat.as_ref(),
-                    store.as_ref(),
+                    schedules.as_ref(),
                     ids.as_ref(),
                     clock.as_ref(),
                     &context,
@@ -1906,7 +1917,7 @@ pub fn spawn_heartbeat(state: AppState) {
                 let briefed = usecases::run_due_brief(
                     chat.as_ref(),
                     store.as_ref(),
-                    store.as_ref(),
+                    schedules.as_ref(),
                     &runner,
                     ids.as_ref(),
                     clock.as_ref(),
