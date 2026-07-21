@@ -723,10 +723,12 @@ function viewChat() {
 
 // What the butler has learned — visible, correctable, deletable memory.
 function viewPrefs() {
+  // Friendly labels — the internal kind names ("taste") mean nothing to a person.
+  const KIND_LABEL = { taste: "preference", authority: "permission", context: "context" };
   const rows = (DB.preferences || []).map((p) => `
     <div class="card"><div class="row">
       <div class="grow"><div class="title">${esc(p.text)}</div>
-      <div class="sub">${esc(p.kind)}</div></div>
+      <div class="sub">${esc(KIND_LABEL[p.kind] || p.kind)}</div></div>
       <button class="ghost danger" data-act="delete:pref:${p.id}" title="forget this">${icon("purge",15)}</button>
     </div></div>`);
   return `
@@ -1028,7 +1030,7 @@ async function dispatch(act) {
     if (verb === "setlocation") {
       const where = val("setup-location");
       if (!where) return;
-      await api("POST", "/v1/preferences", { text: `Based in: ${where}` });
+      await api("POST", "/v1/preferences", { text: `Based in: ${where}`, kind: "context" });
       flash("Got it — Endora knows where you're based.", "ok");
       return reload();
     }

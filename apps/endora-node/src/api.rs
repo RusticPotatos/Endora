@@ -1724,7 +1724,9 @@ async fn create_preference(
     let kind = match req.kind.as_deref() {
         Some(k) => PreferenceKind::from_name(k).ok_or_else(|| {
             ApiError(AppError::BadRequest {
-                message: format!("unknown preference kind {k:?}; expected taste or authority"),
+                message: format!(
+                    "unknown preference kind {k:?}; expected taste, authority, or context"
+                ),
             })
         })?,
         None => PreferenceKind::Taste,
