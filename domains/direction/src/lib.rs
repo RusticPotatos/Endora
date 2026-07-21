@@ -15,6 +15,7 @@
 
 pub mod application;
 pub mod domain;
+pub mod infrastructure;
 
 pub use application::{
     AssumptionRepository, DirectionRepository, ExperimentRepository, ObservationRepository,
@@ -25,3 +26,4 @@ pub use domain::{
     Observation, PolicyDecision, ProposedProcessChange, Reflection, Target, Value,
     authorize_process_change,
 };
+pub use infrastructure::{DirectionStore, migrate};

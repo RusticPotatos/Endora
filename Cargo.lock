@@ -302,6 +302,8 @@ name = "endora-direction"
 version = "0.11.0"
 dependencies = [
  "endora-kernel",
+ "endora-persistence",
+ "rusqlite",
 ]
 
 [[package]]
@@ -321,6 +323,7 @@ version = "0.11.0"
 dependencies = [
  "endora-application",
  "endora-capabilities",
+ "endora-direction",
  "endora-domain",
  "endora-persistence",
  "rusqlite",
@@ -341,6 +344,7 @@ dependencies = [
  "axum-server",
  "endora-application",
  "endora-conversation",
+ "endora-direction",
  "endora-domain",
  "endora-infrastructure",
  "endora-scheduling",
