@@ -309,21 +309,58 @@ fn run_level_2(butler: &dyn Butler, label: &str) -> (usize, usize) {
         lights_hist.text.trim()
     );
 
+    // 2.7 Synth faithful-relay on SUCCESS (the qwen-7b synthesis tail): given a
+    //     real home result, the synthesizer must relay its *specifics*, in
+    //     English (no CJK bleed), without denying access or asking to check
+    //     again. This is the synthesis pass — where the weak synth would leak
+    //     Chinese or bluff even though the data is right there.
+    let ctx_home_result = ButlerContext {
+        capabilities: skills(),
+        tool_result: Some(
+            "You used the 'home_assistant' skill for your home and it returned: \
+             living-room lights ON, front door LOCKED, thermostat 68°F. Relay this to the \
+             person in your own words; add nothing that isn't here."
+                .to_owned(),
+        ),
+        now: "Monday, 20 July 2026, 3:00 PM".to_owned(),
+        ..ButlerContext::default()
+    };
+    let home_relay = ask(butler, "are my lights on right now?", &ctx_home_result);
+    let hr = home_relay.text.to_lowercase();
+    let relays_specifics =
+        home_relay.text.contains("68") || hr.contains("locked") || hr.contains("living");
+    let synth_denies = hr.contains("don't have")
+        || hr.contains("do not have")
+        || hr.contains("can't access")
+        || hr.contains("cannot access")
+        || hr.contains("no access");
+    let synth_relay_ok = relays_specifics
+        && !has_cjk(&home_relay.text)
+        && !synth_denies
+        && used(&home_relay).is_none();
+    println!(
+        "[{}] synth-relay: relays the real home result, in English, no bluff\n  reply: {}\n",
+        if synth_relay_ok { "PASS" } else { "FAIL" },
+        home_relay.text.trim()
+    );
+
     let total = usize::from(invoke_ok)
         + usize::from(antideny_ok)
         + usize::from(antibluff_ok)
         + usize::from(lang_ok)
         + usize::from(casual_ok)
-        + usize::from(hist_ok);
-    let max = 6;
+        + usize::from(hist_ok)
+        + usize::from(synth_relay_ok);
+    let max = 7;
     println!(
-        "=== L2 {label}: {total}/{max}  (invoke {}, anti-deny {}, anti-bluff {}, language {}, conversational {}, history {}) ===\n",
+        "=== L2 {label}: {total}/{max}  (invoke {}, anti-deny {}, anti-bluff {}, language {}, conversational {}, history {}, synth-relay {}) ===\n",
         usize::from(invoke_ok),
         usize::from(antideny_ok),
         usize::from(antibluff_ok),
         usize::from(lang_ok),
         usize::from(casual_ok),
-        usize::from(hist_ok)
+        usize::from(hist_ok),
+        usize::from(synth_relay_ok)
     );
     (total, max)
 }
