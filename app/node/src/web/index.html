@@ -201,6 +201,8 @@ let CAPS = [];                 // the butler's capabilities/skills (modules)
 let AUTONOMY = { auto_external: true, auto_consequential: false }; // the autonomy envelope (ADR 0022)
 let BRIEF_SCHED = { enabled: false, hour_utc: 12 }; // daily-brief schedule
 let DEEP_MODEL = { configured: false, key_set: false, url: "", model: "" }; // optional bigger AI
+let MODEL_CONFIG = { configured: false, key_set: false, base_url: "", mixture: false,
+  single: {}, router: {}, synth: {} }; // the butler's own models, editable at runtime (ADR 0027)
 let UNDERSTANDING = [];        // Endora's beliefs about the person (the home surface)
 let LAST_ACTIVITY = [];        // what Endora did behind the scenes on the last turn
 let LAST_ACTIVITY_MSG = null;  // the butler message id that activity belongs to
@@ -281,6 +283,7 @@ async function reload() {
   ]);
   try { BRIEF_SCHED = await api("GET", "/v1/brief/schedule"); } catch (_) {}
   try { DEEP_MODEL = await api("GET", "/v1/deep-model"); } catch (_) {}
+  try { MODEL_CONFIG = await api("GET", "/v1/model-config"); } catch (_) {}
   DB = db;
   ACTIVITY = activity;
   ATTENTION = attention;
@@ -785,6 +788,113 @@ function viewChat() {
     </div>`;
 }
 
+// Provider presets for the butler models. Each fills the endpoint + example
+// model names + author-recommended sampling (router cold for reliable skill
+// selection, synthesizer warmer for natural prose). top_k / repeat_penalty are
+// Ollama-only extensions, so cloud presets leave them blank (strict OpenAI
+// endpoints reject them). Anthropic runs via OpenRouter — Endora speaks OpenAI.
+const MODEL_PRESETS = {
+  ollama: { label: "Ollama (local)", base_url: "http://host.docker.internal:11434/v1", key: false,
+    single: { model: "qwen2.5:7b",  temperature: 0.5, top_p: 0.8, top_k: 20, repeat_penalty: 1.05 },
+    router: { model: "hermes3:8b",  temperature: 0.1, top_p: 0.9, top_k: 20, repeat_penalty: 1.05 },
+    synth:  { model: "qwen2.5:7b",  temperature: 0.6, top_p: 0.8, top_k: 20, repeat_penalty: 1.05 } },
+  openai: { label: "OpenAI", base_url: "https://api.openai.com/v1", key: true,
+    single: { model: "gpt-4o-mini", temperature: 0.5 },
+    router: { model: "gpt-4o-mini", temperature: 0.1 },
+    synth:  { model: "gpt-4o",      temperature: 0.6 } },
+  openrouter: { label: "OpenRouter", base_url: "https://openrouter.ai/api/v1", key: true,
+    single: { model: "anthropic/claude-sonnet-5",   temperature: 0.5 },
+    router: { model: "anthropic/claude-3.5-haiku",  temperature: 0.1 },
+    synth:  { model: "anthropic/claude-sonnet-5",   temperature: 0.6 } },
+  anthropic: { label: "Anthropic (via OpenRouter)", base_url: "https://openrouter.ai/api/v1", key: true,
+    single: { model: "anthropic/claude-sonnet-5",   temperature: 0.5 },
+    router: { model: "anthropic/claude-3.5-haiku",  temperature: 0.1 },
+    synth:  { model: "anthropic/claude-sonnet-5",   temperature: 0.6 } },
+  groq: { label: "Groq", base_url: "https://api.groq.com/openai/v1", key: true,
+    single: { model: "llama-3.3-70b-versatile", temperature: 0.5 },
+    router: { model: "llama-3.3-70b-versatile", temperature: 0.1 },
+    synth:  { model: "llama-3.3-70b-versatile", temperature: 0.6 } },
+};
+
+// Show the single-model or router+synth fields as the mixture toggle flips,
+// without a re-render (so typed-but-unsaved values survive).
+function toggleMixture(on) {
+  const single = document.getElementById("m-single");
+  const mix = document.getElementById("m-mixslots");
+  if (single) single.style.display = on ? "none" : "block";
+  if (mix) mix.style.display = on ? "block" : "none";
+}
+
+// Fill the Models form from a preset (leaves the API-key field untouched).
+function applyModelPreset(name) {
+  const p = MODEL_PRESETS[name];
+  if (!p) return;
+  const set = (id, v) => { const el = document.getElementById(id); if (el) el.value = (v === undefined || v === null) ? "" : v; };
+  set("m-base", p.base_url);
+  for (const slot of ["single", "router", "synth"]) {
+    const s = p[slot] || {};
+    set(`m-${slot}-model`, s.model);
+    set(`m-${slot}-temperature`, s.temperature);
+    set(`m-${slot}-top_p`, s.top_p);
+    set(`m-${slot}-top_k`, s.top_k);
+    set(`m-${slot}-repeat_penalty`, s.repeat_penalty);
+  }
+}
+
+// One model "slot": the model name plus its (optional) sampling knobs. Blank
+// sampling = use the endpoint's own default.
+function modelSlotFields(prefix, slot) {
+  const nv = (x) => (x === undefined || x === null) ? "" : x;
+  const num = (key, label, ph) => `<label class="sub" style="min-width:0;">${label}
+    <input id="m-${prefix}-${key}" type="number" step="0.05" min="0" placeholder="${ph}" value="${nv(slot[key])}" style="width:74px;" /></label>`;
+  return `
+    <div class="form"><label class="sub" style="min-width:70px;">Model</label>
+      <input id="m-${prefix}-model" placeholder="e.g. qwen2.5:7b" value="${esc(slot.model || "")}" /></div>
+    <div class="row" style="gap:10px;flex-wrap:wrap;font-size:12px;">
+      ${num("temperature", "temp", "0.5")}
+      ${num("top_p", "top_p", "default")}
+      ${num("top_k", "top_k", "off")}
+      ${num("repeat_penalty", "repeat", "off")}
+    </div>`;
+}
+
+// The butler's own models — endpoint, single vs. mixture, per-slot sampling —
+// editable at runtime (ADR 0027). Saved config overrides the deployment env.
+function modelsSection() {
+  const mc = MODEL_CONFIG || {};
+  const options = Object.entries(MODEL_PRESETS)
+    .map(([k, v]) => `<option value="${k}">${esc(v.label)}</option>`).join("");
+  const mixture = !!mc.mixture;
+  return `
+    <h3 style="margin-top:22px;">Models — the butler's own brain</h3>
+    <div class="sub" style="margin:2px 0 8px;">Runs locally by default. Point it anywhere OpenAI-compatible (Ollama, OpenAI, OpenRouter, Groq). Changes apply on your next message — no restart. ${mc.configured ? "" : "Currently using the deployment's configured model."}</div>
+    <div class="card" style="display:flex;flex-direction:column;gap:10px;">
+      <div class="form"><label class="sub" style="min-width:70px;">Preset</label>
+        <select id="m-preset" onchange="applyModelPreset(this.value)">
+          <option value="">Choose a provider…</option>${options}
+        </select></div>
+      <div class="form"><label class="sub" style="min-width:70px;">Endpoint</label>
+        <input id="m-base" placeholder="http://host.docker.internal:11434/v1" value="${esc(mc.base_url || "")}" /></div>
+      <div class="form"><label class="sub" style="min-width:70px;">API key</label>
+        <input id="m-key" type="password" autocomplete="off" placeholder="${mc.key_set ? "•••••• (unchanged)" : "only for cloud providers; stored securely, never shown"}" /></div>
+      <label class="sub" style="display:flex;align-items:center;gap:8px;cursor:pointer;margin:2px 0;">
+        <input id="m-mix" type="checkbox" ${mixture ? "checked" : ""} onchange="toggleMixture(this.checked)" />
+        Mixture — a router picks skills, a synthesizer writes the reply</label>
+      <div class="sub" style="margin:-4px 0 4px;font-size:12px;">Off = one model does both. The mixture out-routes a single model at less VRAM.</div>
+      <div id="m-single" style="display:${mixture ? "none" : "block"};">
+        <div class="sub" style="margin:4px 0;">Single model</div>
+        ${modelSlotFields("single", mc.single || {})}
+      </div>
+      <div id="m-mixslots" style="display:${mixture ? "block" : "none"};flex-direction:column;gap:8px;">
+        <div class="sub" style="margin:4px 0;">Router — cold, tool-tuned; picks the skill</div>
+        ${modelSlotFields("router", mc.router || {})}
+        <div class="sub" style="margin:8px 0 4px;">Synthesizer — warmer generalist; writes the reply</div>
+        ${modelSlotFields("synth", mc.synth || {})}
+      </div>
+      <div class="row" style="justify-content:flex-end;"><button class="primary" data-act="modelsave">Save models</button></div>
+    </div>`;
+}
+
 // One home for app settings — so they aren't scattered across pages.
 function viewSettings() {
   const row = (on, act, label, note) => `
@@ -800,7 +910,8 @@ function viewSettings() {
       ${row(PTT_HAPTIC, "toggle:haptic", "Vibrate on push-to-talk", "haptic cue on Android; iOS ignores it")}
       ${row(SHOW_ACTIVITY, "toggle:activity", "Show Endora's actions", "a note of what it did each turn")}
     </div>
-    <h3 style="margin-top:18px;">Deep model — a bigger AI for hard questions</h3>
+    ${modelsSection()}
+    <h3 style="margin-top:22px;">Deep model — a bigger AI for hard questions</h3>
     <div class="sub" style="margin:2px 0 8px;">Optional. Everyday stays on your local model; you escalate a question when you want a bigger brain. It leaves your device, so it's opt-in per question and passes the same egress guard.</div>
     <div class="card" style="display:flex;flex-direction:column;gap:8px;">
       <div class="form"><label class="sub" style="min-width:70px;">Endpoint</label><input id="deep-url" placeholder="https://api.provider.com/v1" value="${esc(DEEP_MODEL.url || "")}" /></div>
@@ -1216,6 +1327,30 @@ async function dispatch(act) {
       }
       try { await api("POST", `/v1/capabilities/${noun}/config`, { settings }); flash("Saved.", "ok"); }
       catch (e) { flash("Couldn't save settings: " + e.message, "err"); }
+      return reload();
+    }
+    // Save the butler models. A blank key keeps the stored one; blank sampling
+    // fields mean "use the endpoint default". Applies on the next message.
+    if (verb === "modelsave") {
+      const val = (id) => (document.getElementById(id) || {}).value;
+      const numOrNull = (id) => { const v = val(id); return (v === undefined || String(v).trim() === "") ? null : Number(v); };
+      const intOrNull = (id) => { const v = numOrNull(id); return v === null ? null : Math.round(v); };
+      const slot = (p) => ({
+        model: (val(`m-${p}-model`) || "").trim(),
+        temperature: numOrNull(`m-${p}-temperature`),
+        top_p: numOrNull(`m-${p}-top_p`),
+        top_k: intOrNull(`m-${p}-top_k`),
+        repeat_penalty: numOrNull(`m-${p}-repeat_penalty`),
+      });
+      const body = {
+        base_url: (val("m-base") || "").trim(),
+        mixture: !!(document.getElementById("m-mix") || {}).checked,
+        single: slot("single"), router: slot("router"), synth: slot("synth"),
+      };
+      const key = (val("m-key") || "").trim();
+      if (key) body.api_key = key;
+      try { await api("POST", "/v1/model-config", body); flash("Models saved — active on your next message.", "ok"); }
+      catch (e) { flash("Couldn't save models: " + e.message, "err"); }
       return reload();
     }
     // Save the deep-model config. A blank key keeps the stored one.

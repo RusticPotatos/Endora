@@ -18,9 +18,10 @@ use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post};
 use endora_application::{
     ActivityItem, AppError, AttentionItem, AttentionKind, AutonomyEnvelope,
-    AutonomyEnvelopeRepository, BriefSchedule, Butler, ButlerProposal, CapabilityConfigRepository,
-    CapabilitySettingsRepository, CheckinSchedule, DeepModelRepository, MemorySnapshot, Proposer,
-    RepositoryError, Suggestion, SuggestionStatus, usecases,
+    AutonomyEnvelopeRepository, BriefSchedule, Butler, ButlerModelConfig,
+    ButlerModelConfigRepository, ButlerProposal, CapabilityConfigRepository,
+    CapabilitySettingsRepository, CheckinSchedule, DeepModelRepository, MemorySnapshot, ModelSlot,
+    Proposer, RepositoryError, Sampling, Suggestion, SuggestionStatus, usecases,
 };
 use endora_application::{
     Assumption, AssumptionId, AuditRecord, AutonomyLevel, Belief, BeliefId, ChatMessage, Direction,
@@ -201,6 +202,10 @@ pub fn app(state: AppState) -> Router {
             get(get_brief_schedule).post(set_brief_schedule),
         )
         .route("/v1/deep-model", get(get_deep_model).post(set_deep_model))
+        .route(
+            "/v1/model-config",
+            get(get_model_config).post(set_model_config),
+        )
         .route("/v1/deep-ask", post(deep_ask))
         .route(
             "/v1/preferences",
@@ -1754,6 +1759,128 @@ async fn set_deep_model(
         )
         .map_err(AppError::Repository)?;
         record_event(events.as_ref(), clock.as_ref(), "Configured the deep model");
+        Ok::<_, AppError>(())
+    })
+    .await?;
+    let _ = state.changes.send(());
+    Ok(Json(json!({ "ok": true })))
+}
+
+/// Renders one model slot for the console (sampling params flattened; `null`
+/// means "use the endpoint default").
+fn slot_json(slot: &ModelSlot) -> serde_json::Value {
+    json!({
+        "model": slot.model,
+        "temperature": slot.sampling.temperature,
+        "top_p": slot.sampling.top_p,
+        "top_k": slot.sampling.top_k,
+        "repeat_penalty": slot.sampling.repeat_penalty,
+    })
+}
+
+/// The butler model configuration (ADR 0027), editable from the console. The API
+/// key is NEVER returned — only whether one is set.
+async fn get_model_config(
+    State(state): State<AppState>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let config = state.config.clone();
+    let cfg = blocking(move || {
+        ButlerModelConfigRepository::get(config.as_ref()).map_err(AppError::Repository)
+    })
+    .await?
+    .unwrap_or_default();
+    let configured = !cfg.base_url.is_empty()
+        && if cfg.mixture {
+            !cfg.router.model.is_empty() && !cfg.synth.model.is_empty()
+        } else {
+            !cfg.single.model.is_empty()
+        };
+    Ok(Json(json!({
+        "base_url": cfg.base_url,
+        "mixture": cfg.mixture,
+        "key_set": !cfg.api_key.is_empty(),
+        "configured": configured,
+        "single": slot_json(&cfg.single),
+        "router": slot_json(&cfg.router),
+        "synth": slot_json(&cfg.synth),
+    })))
+}
+
+#[derive(Deserialize, Default)]
+struct SlotRequest {
+    #[serde(default)]
+    model: String,
+    #[serde(default)]
+    temperature: Option<f64>,
+    #[serde(default)]
+    top_p: Option<f64>,
+    #[serde(default)]
+    top_k: Option<u32>,
+    #[serde(default)]
+    repeat_penalty: Option<f64>,
+}
+
+impl SlotRequest {
+    fn into_slot(self) -> ModelSlot {
+        ModelSlot {
+            model: self.model.trim().to_owned(),
+            sampling: Sampling {
+                temperature: self.temperature,
+                top_p: self.top_p,
+                top_k: self.top_k,
+                repeat_penalty: self.repeat_penalty,
+            },
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct ModelConfigRequest {
+    #[serde(default)]
+    base_url: String,
+    #[serde(default)]
+    mixture: bool,
+    #[serde(default)]
+    api_key: Option<String>,
+    #[serde(default)]
+    single: SlotRequest,
+    #[serde(default)]
+    router: SlotRequest,
+    #[serde(default)]
+    synth: SlotRequest,
+}
+
+/// Saves the butler model configuration. A blank/omitted `api_key` keeps any
+/// existing key, so the secret is never round-tripped through the client. The
+/// change takes effect on the next turn — the [`ConfigurableButler`] rereads it.
+async fn set_model_config(
+    State(state): State<AppState>,
+    Json(req): Json<ModelConfigRequest>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let config = state.config.clone();
+    let events = state.events.clone();
+    let clock = state.clock.clone();
+    blocking(move || {
+        let existing = ButlerModelConfigRepository::get(config.as_ref())
+            .map_err(AppError::Repository)?
+            .unwrap_or_default();
+        let api_key = match req.api_key {
+            Some(k) if !k.trim().is_empty() => k.trim().to_owned(),
+            _ => existing.api_key, // keep the stored key when none is supplied
+        };
+        ButlerModelConfigRepository::set(
+            config.as_ref(),
+            &ButlerModelConfig {
+                base_url: req.base_url.trim().to_owned(),
+                api_key,
+                mixture: req.mixture,
+                single: req.single.into_slot(),
+                router: req.router.into_slot(),
+                synth: req.synth.into_slot(),
+            },
+        )
+        .map_err(AppError::Repository)?;
+        record_event(events.as_ref(), clock.as_ref(), "Updated the butler models");
         Ok::<_, AppError>(())
     })
     .await?;

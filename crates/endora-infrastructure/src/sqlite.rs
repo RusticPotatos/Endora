@@ -181,6 +181,27 @@ CREATE TABLE IF NOT EXISTS deep_model (
     model   TEXT NOT NULL,
     api_key TEXT NOT NULL
 ) STRICT;
+CREATE TABLE IF NOT EXISTS butler_model_config (
+    id            INTEGER PRIMARY KEY CHECK (id = 0),
+    base_url      TEXT NOT NULL,
+    api_key       TEXT NOT NULL,
+    mixture       INTEGER NOT NULL,
+    single_model  TEXT NOT NULL,
+    single_temp   REAL,
+    single_top_p  REAL,
+    single_top_k  INTEGER,
+    single_repeat REAL,
+    router_model  TEXT NOT NULL,
+    router_temp   REAL,
+    router_top_p  REAL,
+    router_top_k  INTEGER,
+    router_repeat REAL,
+    synth_model   TEXT NOT NULL,
+    synth_temp    REAL,
+    synth_top_p   REAL,
+    synth_top_k   INTEGER,
+    synth_repeat  REAL
+) STRICT;
 CREATE TABLE IF NOT EXISTS events (
     id      INTEGER PRIMARY KEY AUTOINCREMENT,
     at_ms   INTEGER NOT NULL,
@@ -1690,6 +1711,42 @@ mod tests {
         };
         repo.set(&cfg).unwrap();
         assert_eq!(repo.get().unwrap(), Some(cfg));
+    }
+
+    #[test]
+    fn butler_model_config_round_trips() {
+        use endora_application::{
+            ButlerModelConfig, ButlerModelConfigRepository, ModelSlot, Sampling,
+        };
+        let store = store();
+        let cfg_store = cfg_store(&store);
+        let repo: &dyn ButlerModelConfigRepository = &cfg_store;
+        assert!(repo.get().unwrap().is_none());
+        let config = ButlerModelConfig {
+            base_url: "https://openrouter.ai/api/v1".to_owned(),
+            api_key: "secret".to_owned(),
+            mixture: true,
+            single: ModelSlot::default(),
+            router: ModelSlot {
+                model: "anthropic/claude-3.5-haiku".to_owned(),
+                sampling: Sampling {
+                    temperature: Some(0.1),
+                    top_p: None,
+                    top_k: Some(20),
+                    repeat_penalty: None,
+                },
+            },
+            synth: ModelSlot {
+                model: "anthropic/claude-sonnet-5".to_owned(),
+                sampling: Sampling {
+                    temperature: Some(0.6),
+                    ..Sampling::default()
+                },
+            },
+        };
+        repo.set(&config).unwrap();
+        // Every field, including the nullable sampling knobs, round-trips exactly.
+        assert_eq!(repo.get().unwrap(), Some(config));
     }
 
     #[test]
