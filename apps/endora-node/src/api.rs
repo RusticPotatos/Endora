@@ -165,6 +165,7 @@ pub fn app(state: AppState) -> Router {
             post(set_capability_settings),
         )
         .route("/v1/autonomy", get(get_autonomy).post(set_autonomy))
+        .route("/v1/brief", post(brief))
         .route(
             "/v1/preferences",
             post(create_preference).get(list_preferences),
@@ -1123,6 +1124,44 @@ async fn send_chat(
         "proposals": suggestions.iter().map(suggestion_json).collect::<Vec<_>>(),
         "activity": activity,
     })))
+}
+
+/// Composes and posts a daily briefing (weather / safety / news for the person's
+/// home location) — an act of service using only reversible, autonomous skills
+/// (ADRs 0024/0025). Returns the posted message, or a note if there's nothing to
+/// brief (no home location, or no ready skills).
+async fn brief(State(state): State<AppState>) -> Result<Json<serde_json::Value>, ApiError> {
+    let store = state.store.clone();
+    let ids = state.ids.clone();
+    let clock = state.clock.clone();
+    let capabilities = state.capabilities.clone();
+    let result = blocking(move || {
+        let runner = build_runner(store.as_ref(), capabilities);
+        let out = usecases::daily_brief(
+            store.as_ref(),
+            store.as_ref(),
+            &runner,
+            ids.as_ref(),
+            clock.as_ref(),
+        )?;
+        if let Some((_, activity)) = &out {
+            for item in activity {
+                record_event(store.as_ref(), clock.as_ref(), item);
+            }
+            record_event(store.as_ref(), clock.as_ref(), "Prepared your daily brief");
+        }
+        Ok::<_, AppError>(out)
+    })
+    .await?;
+    let _ = state.changes.send(());
+    match result {
+        Some((msg, _)) => Ok(Json(
+            json!({ "briefed": true, "message": MessageResponse::from(&msg) }),
+        )),
+        None => Ok(Json(
+            json!({ "briefed": false, "note": "Set your home location, and enable weather/news/safety, to get a brief." }),
+        )),
+    }
 }
 
 /// Streams the butler's reply token-by-token as Server-Sent Events, for a live

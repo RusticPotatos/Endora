@@ -1429,6 +1429,65 @@ pub fn run_due_checkin(
     Ok(Some(message))
 }
 
+/// Composes a **daily briefing** — an act of service (ADR 0025): it runs the
+/// reversible information skills (weather, active safety alerts, local news) for the
+/// person's home location and posts a single, grounded briefing to the chat. Uses
+/// ONLY skills that are configured *and* cleared to run autonomously (reversible,
+/// read-only), so a briefing never does anything consequential (ADR 0024). Returns
+/// the posted message and a plain-language activity trail, or `None` if there's no
+/// home location set or nothing to report.
+///
+/// # Errors
+/// [`AppError::Repository`] on a backend failure.
+pub fn daily_brief(
+    chat: &impl ChatRepository,
+    preferences: &impl PreferenceRepository,
+    capabilities: &dyn CapabilityRunner,
+    ids: &impl IdSource,
+    clock: &impl Clock,
+) -> Result<Option<(ChatMessage, Vec<String>)>, AppError> {
+    let prefs = preferences.list_all()?;
+    let Some(location) = known_location(&prefs) else {
+        return Ok(None);
+    };
+    let input = json_location(&location);
+    let available = capabilities.available();
+    let mut sections: Vec<String> = Vec::new();
+    let mut activity: Vec<String> = Vec::new();
+    // Each is run only if it's usable AND cleared to act on its own (reversible).
+    for (id, label) in [
+        ("weather", "Weather"),
+        ("safety_alerts", "Safety"),
+        ("news", "News"),
+    ] {
+        let cleared = available
+            .iter()
+            .any(|c| c.id == id && c.configured && c.autonomous);
+        if !cleared {
+            continue;
+        }
+        if let Ok(out) = capabilities.run(id, &input) {
+            sections.push(format!("{label} — {out}"));
+            activity.push(format!("Used the {id} skill for your brief"));
+        }
+    }
+    if sections.is_empty() {
+        return Ok(None);
+    }
+    let text = format!(
+        "Here's your brief for {location}:\n\n{}",
+        sections.join("\n\n")
+    );
+    let message = ChatMessage::new(
+        MessageId::new(ids.new_id()),
+        MessageRole::Butler,
+        &text,
+        clock.now(),
+    )?;
+    chat.append(&message)?;
+    Ok(Some((message, activity)))
+}
+
 /// Composes a proactive check-in, grounded in the person's life and always asking
 /// how the butler can serve them better (the self-improvement loop, in dialogue).
 fn checkin_text(context: &ButlerContext) -> String {
@@ -2707,6 +2766,52 @@ mod tests {
         // No fabricated festival; the butler was grounded in "it's off".
         assert!(!reply.text().contains("festival"));
         assert!(activity.iter().any(|a| a.contains("Couldn't check news")));
+    }
+
+    #[test]
+    fn daily_brief_composes_from_reversible_skills_and_needs_a_location() {
+        use super::{create_preference, daily_brief};
+
+        struct BriefSkills;
+        impl CapabilityRunner for BriefSkills {
+            fn available(&self) -> Vec<crate::ports::CapabilitySpec> {
+                vec![crate::ports::CapabilitySpec {
+                    id: "weather".to_owned(),
+                    description: "w".to_owned(),
+                    configured: true,
+                    autonomous: true,
+                }]
+            }
+            fn run(&self, id: &str, input_json: &str) -> Result<String, String> {
+                assert_eq!(id, "weather");
+                assert!(input_json.contains("28277"));
+                Ok("clear, 25C".to_owned())
+            }
+        }
+
+        let store = FakeStore::default();
+        let ids = SeqIds::default();
+        let clock = FixedClock(1_000);
+        // No home location yet ⇒ nothing to brief.
+        assert!(
+            daily_brief(&store, &store, &BriefSkills, &ids, &clock)
+                .unwrap()
+                .is_none()
+        );
+        // With a location, the brief is composed from the (reversible) weather skill.
+        create_preference(
+            &store,
+            &ids,
+            &clock,
+            "Based in: 28277",
+            PreferenceKind::Context,
+        )
+        .unwrap();
+        let (msg, activity) = daily_brief(&store, &store, &BriefSkills, &ids, &clock)
+            .unwrap()
+            .unwrap();
+        assert!(msg.text().contains("Weather — clear, 25C"));
+        assert!(activity.iter().any(|a| a.contains("weather")));
     }
 
     #[test]

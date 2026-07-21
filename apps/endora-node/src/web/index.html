@@ -740,7 +740,8 @@ function viewChat() {
     : "";
   const cadence = CHECKIN.enabled ? String(CHECKIN.interval_ms) : "off";
   const checkinControl = `
-    <div class="row" style="justify-content:flex-end; gap:8px; margin-bottom:8px;" title="how often the butler reaches out to you on its own">
+    <div class="row" style="justify-content:flex-end; gap:8px; margin-bottom:8px;">
+      <button class="ghost" data-act="brief" title="a weather / safety / news brief for where you're based">${icon("sparkle", 15)} Brief me</button>
       <span class="sub">${icon("clock", 15)} Check-ins</span>
       <select id="checkin-cadence" data-change="checkin" style="width:auto;">
         <option value="off" ${cadence === "off" ? "selected" : ""}>Off</option>
@@ -1096,6 +1097,13 @@ async function dispatch(act) {
     }
     if (verb === "chat" && noun === "send") { await sendChat(); return; }
     if (verb === "chat" && noun === "mic") { listen(); return; }
+    if (verb === "brief") {
+      try {
+        const r = await api("POST", "/v1/brief");
+        if (r && r.briefed === false) flash(r.note || "Nothing to brief yet.", "err");
+      } catch (e) { flash("Couldn't prepare a brief: " + e.message, "err"); }
+      return reload();
+    }
     if (verb === "toggle" && noun === "speak") {
       SPEAK = !SPEAK;
       localStorage.setItem("endora.speak", SPEAK ? "1" : "0");
