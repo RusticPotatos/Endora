@@ -35,7 +35,6 @@
 
 #![forbid(unsafe_code)]
 
-pub mod audit;
 pub mod autonomy;
 pub mod beliefs;
 pub mod conversation;
@@ -48,10 +47,12 @@ pub mod reflection;
 pub mod targets;
 pub mod values;
 
-pub use audit::AuditRecord;
+// `AuditRecord` moved to the platform context (ADR 0026); re-exported so
+// `endora_domain::AuditRecord` paths are unchanged during the migration.
 pub use autonomy::AutonomyLevel;
 pub use beliefs::{Belief, BeliefKind, BeliefStatus, Confidence};
 pub use conversation::{ChatMessage, MessageRole};
+pub use endora_platform::AuditRecord;
 pub use error::DomainError;
 pub use experiments::{Experiment, ExperimentStatus, Observation};
 pub use ids::{
