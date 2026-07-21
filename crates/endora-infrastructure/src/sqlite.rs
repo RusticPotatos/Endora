@@ -12,8 +12,7 @@ use serde_json::{Value as JsonValue, json};
 
 use endora_application::{
     ActivityEvent, AssumptionRepository, AuditLog, AutonomyEnvelope, AutonomyEnvelopeRepository,
-    BeliefRepository, BriefSchedule, BriefScheduleRepository, ButlerProposal,
-    CapabilityConfigRepository, CapabilitySettingsRepository, CheckinRepository, CheckinSchedule,
+    BeliefRepository, ButlerProposal, CapabilityConfigRepository, CapabilitySettingsRepository,
     DeepModel, DeepModelRepository, DirectionRepository, EventLog, ExperimentRepository,
     MemorySnapshot, MemoryStore, ObservationRepository, PreferenceRepository,
     ProcessChangeRepository, ReflectionRepository, RepositoryError, Snooze, SnoozeRepository,
@@ -1107,39 +1106,8 @@ impl SuggestionRepository for SqliteStore {
     }
 }
 
-impl CheckinRepository for SqliteStore {
-    fn get(&self) -> Result<Option<CheckinSchedule>, RepositoryError> {
-        let conn = self.lock()?;
-        conn.query_row(
-            "SELECT enabled, interval_ms, next_at_ms FROM checkin WHERE id = 0",
-            [],
-            |r| {
-                Ok(CheckinSchedule {
-                    enabled: r.get::<_, i64>(0)? != 0,
-                    interval_ms: r.get::<_, i64>(1)?,
-                    next_at: Timestamp::from_unix_millis(r.get::<_, i64>(2)?),
-                })
-            },
-        )
-        .optional()
-        .map_err(backend)
-    }
-
-    fn set(&self, schedule: &CheckinSchedule) -> Result<(), RepositoryError> {
-        let conn = self.lock()?;
-        conn.execute(
-            "INSERT OR REPLACE INTO checkin (id, enabled, interval_ms, next_at_ms) \
-             VALUES (0, ?1, ?2, ?3)",
-            params![
-                i64::from(schedule.enabled),
-                schedule.interval_ms,
-                schedule.next_at.unix_millis()
-            ],
-        )
-        .map_err(backend)?;
-        Ok(())
-    }
-}
+// CheckinRepository and BriefScheduleRepository are implemented by the scheduling
+// context's ScheduleStore over the shared Db now (ADR 0026).
 
 impl EventLog for SqliteStore {
     fn record(&self, at: Timestamp, summary: &str) -> Result<(), RepositoryError> {
@@ -1192,40 +1160,6 @@ impl DeepModelRepository for SqliteStore {
         conn.execute(
             "INSERT OR REPLACE INTO deep_model (id, url, model, api_key) VALUES (0, ?1, ?2, ?3)",
             params![model.url, model.model, model.api_key],
-        )
-        .map_err(backend)?;
-        Ok(())
-    }
-}
-
-impl BriefScheduleRepository for SqliteStore {
-    fn get(&self) -> Result<Option<BriefSchedule>, RepositoryError> {
-        let conn = self.lock()?;
-        conn.query_row(
-            "SELECT enabled, hour_utc, last_ms FROM brief_schedule WHERE id = 0",
-            [],
-            |r| {
-                Ok(BriefSchedule {
-                    enabled: r.get::<_, i64>(0)? != 0,
-                    hour_utc: r.get::<_, i64>(1)? as u8,
-                    last_at: Timestamp::from_unix_millis(r.get::<_, i64>(2)?),
-                })
-            },
-        )
-        .optional()
-        .map_err(backend)
-    }
-
-    fn set(&self, schedule: &BriefSchedule) -> Result<(), RepositoryError> {
-        let conn = self.lock()?;
-        conn.execute(
-            "INSERT OR REPLACE INTO brief_schedule (id, enabled, hour_utc, last_ms) \
-             VALUES (0, ?1, ?2, ?3)",
-            params![
-                i64::from(schedule.enabled),
-                i64::from(schedule.hour_utc),
-                schedule.last_at.unix_millis()
-            ],
         )
         .map_err(backend)?;
         Ok(())
