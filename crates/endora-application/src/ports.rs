@@ -519,6 +519,59 @@ impl CheckinSchedule {
     }
 }
 
+/// The person's **daily brief** schedule — the butler preparing a weather/safety/news
+/// brief on its own each day at a chosen hour (ADRs 0024/0025). Off by default. The
+/// hour is stored in **UTC** (the console converts the person's local hour when they
+/// set it), which keeps the server-side scheduler timezone-free.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BriefSchedule {
+    /// Whether the daily brief is on.
+    pub enabled: bool,
+    /// The UTC hour (0–23) to prepare the brief.
+    pub hour_utc: u8,
+    /// When a brief was last prepared (so it fires once per day).
+    pub last_at: Timestamp,
+}
+
+impl BriefSchedule {
+    /// The default: **off**, at 07:00 local-ish (12:00 UTC) if the person enables it.
+    #[must_use]
+    pub const fn disabled_default() -> Self {
+        Self {
+            enabled: false,
+            hour_utc: 12,
+            last_at: Timestamp::from_unix_millis(0),
+        }
+    }
+
+    /// Whether a brief is due: enabled, the current UTC hour matches, and one hasn't
+    /// been prepared in the last ~20 hours (so it fires once per day, not every tick).
+    #[must_use]
+    pub fn is_due(&self, now: Timestamp) -> bool {
+        if !self.enabled {
+            return false;
+        }
+        let hour = (now.unix_millis().div_euclid(3_600_000) % 24) as u8;
+        let since = now.unix_millis() - self.last_at.unix_millis();
+        hour == self.hour_utc && since >= 20 * 60 * 60 * 1_000
+    }
+}
+
+/// Persists the single [`BriefSchedule`].
+pub trait BriefScheduleRepository {
+    /// Returns the stored schedule, or `None` if never set.
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if the backend fails.
+    fn get(&self) -> Result<Option<BriefSchedule>, RepositoryError>;
+
+    /// Stores the schedule (replacing any previous one).
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if the backend fails.
+    fn set(&self, schedule: &BriefSchedule) -> Result<(), RepositoryError>;
+}
+
 /// Persists the single [`CheckinSchedule`].
 pub trait CheckinRepository {
     /// Returns the stored schedule, or `None` if never set.
