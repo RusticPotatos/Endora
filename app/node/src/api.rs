@@ -47,6 +47,8 @@ pub struct AppState {
     pub chat: Arc<endora_conversation::ChatStore>,
     /// The scheduling context's schedule repositories, over the shared connection.
     pub schedules: Arc<endora_scheduling::ScheduleStore>,
+    /// The understanding context's belief + preference repositories.
+    pub understanding: Arc<endora_understanding::UnderstandingStore>,
     /// The identifier source.
     pub ids: Arc<RandomIdSource>,
     /// The system clock.
@@ -80,10 +82,12 @@ impl AppState {
         // Context stores share the one connection the store opened (ADR 0026).
         let chat = Arc::new(endora_conversation::ChatStore::new(store.db()));
         let schedules = Arc::new(endora_scheduling::ScheduleStore::new(store.db()));
+        let understanding = Arc::new(endora_understanding::UnderstandingStore::new(store.db()));
         Self {
             store,
             chat,
             schedules,
+            understanding,
             ids,
             clock,
             proposer,
@@ -1099,6 +1103,7 @@ async fn send_chat(
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let store = state.store.clone();
     let chat = state.chat.clone();
+    let understanding = state.understanding.clone();
     let ids = state.ids.clone();
     let clock = state.clock.clone();
     let butler = state.butler.clone();
@@ -1112,15 +1117,15 @@ async fn send_chat(
             store.as_ref(),
             store.as_ref(),
             store.as_ref(),
-            store.as_ref(),
+            understanding.as_ref(),
             &runner,
             clock.as_ref(),
         )?;
         let out = usecases::send_to_butler(
             chat.as_ref(),
+            understanding.as_ref(),
             store.as_ref(),
-            store.as_ref(),
-            store.as_ref(),
+            understanding.as_ref(),
             &runner,
             butler.as_ref(),
             ids.as_ref(),
@@ -1150,6 +1155,7 @@ async fn send_chat(
 async fn brief(State(state): State<AppState>) -> Result<Json<serde_json::Value>, ApiError> {
     let store = state.store.clone();
     let chat = state.chat.clone();
+    let understanding = state.understanding.clone();
     let ids = state.ids.clone();
     let clock = state.clock.clone();
     let capabilities = state.capabilities.clone();
@@ -1157,7 +1163,7 @@ async fn brief(State(state): State<AppState>) -> Result<Json<serde_json::Value>,
         let runner = build_runner(store.as_ref(), capabilities);
         let out = usecases::daily_brief(
             chat.as_ref(),
-            store.as_ref(),
+            understanding.as_ref(),
             &runner,
             ids.as_ref(),
             clock.as_ref(),
@@ -1198,6 +1204,7 @@ async fn stream_chat(
 ) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
     let store = state.store.clone();
     let chat = state.chat.clone();
+    let understanding = state.understanding.clone();
     let ids = state.ids.clone();
     let clock = state.clock.clone();
     let butler = state.butler.clone();
@@ -1216,7 +1223,7 @@ async fn stream_chat(
             store.as_ref(),
             store.as_ref(),
             store.as_ref(),
-            store.as_ref(),
+            understanding.as_ref(),
             &runner,
             clock.as_ref(),
         ) {
@@ -1234,9 +1241,9 @@ async fn stream_chat(
             };
             usecases::send_to_butler_streaming(
                 chat.as_ref(),
+                understanding.as_ref(),
                 store.as_ref(),
-                store.as_ref(),
-                store.as_ref(),
+                understanding.as_ref(),
                 &runner,
                 butler.as_ref(),
                 ids.as_ref(),
@@ -1316,6 +1323,7 @@ async fn apply_suggestion(
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let sid = parse_suggestion_id(&id)?;
     let store = state.store.clone();
+    let understanding = state.understanding.clone();
     let ids = state.ids.clone();
     let clock = state.clock.clone();
     let suggestion = blocking(move || {
@@ -1324,7 +1332,7 @@ async fn apply_suggestion(
             store.as_ref(),
             store.as_ref(),
             store.as_ref(),
-            store.as_ref(),
+            understanding.as_ref(),
             ids.as_ref(),
             clock.as_ref(),
             sid,
@@ -1413,8 +1421,8 @@ fn belief_json(b: &Belief) -> serde_json::Value {
 async fn list_understanding(
     State(state): State<AppState>,
 ) -> Result<Json<Vec<serde_json::Value>>, ApiError> {
-    let store = state.store.clone();
-    let items = blocking(move || usecases::understanding(store.as_ref())).await?;
+    let understanding = state.understanding.clone();
+    let items = blocking(move || usecases::understanding(understanding.as_ref())).await?;
     Ok(Json(items.iter().map(belief_json).collect()))
 }
 
@@ -1430,9 +1438,10 @@ async fn affirm_belief(
     Path(id): Path<String>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let bid = parse_belief_id(&id)?;
-    let store = state.store.clone();
+    let understanding = state.understanding.clone();
     let clock = state.clock.clone();
-    let b = blocking(move || usecases::affirm_belief(store.as_ref(), clock.as_ref(), bid)).await?;
+    let b = blocking(move || usecases::affirm_belief(understanding.as_ref(), clock.as_ref(), bid))
+        .await?;
     Ok(Json(belief_json(&b)))
 }
 
@@ -1442,8 +1451,8 @@ async fn correct_belief(
     Path(id): Path<String>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let bid = parse_belief_id(&id)?;
-    let store = state.store.clone();
-    blocking(move || usecases::correct_belief(store.as_ref(), bid)).await?;
+    let understanding = state.understanding.clone();
+    blocking(move || usecases::correct_belief(understanding.as_ref(), bid)).await?;
     Ok(Json(json!({ "corrected": true })))
 }
 
@@ -1884,6 +1893,7 @@ pub fn spawn_heartbeat(state: AppState) {
             let store = state.store.clone();
             let chat = state.chat.clone();
             let schedules = state.schedules.clone();
+            let understanding = state.understanding.clone();
             let ids = state.ids.clone();
             let clock = state.clock.clone();
             let capabilities = state.capabilities.clone();
@@ -1895,7 +1905,7 @@ pub fn spawn_heartbeat(state: AppState) {
                     store.as_ref(),
                     store.as_ref(),
                     store.as_ref(),
-                    store.as_ref(),
+                    understanding.as_ref(),
                     &runner,
                     clock.as_ref(),
                 )?;
@@ -1916,7 +1926,7 @@ pub fn spawn_heartbeat(state: AppState) {
                 // A daily brief, if one is due (reversible skills only).
                 let briefed = usecases::run_due_brief(
                     chat.as_ref(),
-                    store.as_ref(),
+                    understanding.as_ref(),
                     schedules.as_ref(),
                     &runner,
                     ids.as_ref(),
@@ -1978,12 +1988,12 @@ async fn create_preference(
         })?,
         None => PreferenceKind::Taste,
     };
-    let store = state.store.clone();
+    let understanding = state.understanding.clone();
     let ids = state.ids.clone();
     let clock = state.clock.clone();
     let preference = blocking(move || {
         usecases::create_preference(
-            store.as_ref(),
+            understanding.as_ref(),
             ids.as_ref(),
             clock.as_ref(),
             &req.text,
@@ -1997,8 +2007,8 @@ async fn create_preference(
 async fn list_preferences(
     State(state): State<AppState>,
 ) -> Result<Json<Vec<PreferenceResponse>>, ApiError> {
-    let store = state.store.clone();
-    let prefs = blocking(move || usecases::list_preferences(store.as_ref())).await?;
+    let understanding = state.understanding.clone();
+    let prefs = blocking(move || usecases::list_preferences(understanding.as_ref())).await?;
     Ok(Json(prefs.iter().map(PreferenceResponse::from).collect()))
 }
 
@@ -2011,8 +2021,8 @@ async fn delete_preference(
             entity: "preference",
         })
     })?;
-    let store = state.store.clone();
-    blocking(move || usecases::delete_preference(store.as_ref(), pref_id)).await?;
+    let understanding = state.understanding.clone();
+    blocking(move || usecases::delete_preference(understanding.as_ref(), pref_id)).await?;
     Ok(Json(json!({ "deleted": true })))
 }
 
