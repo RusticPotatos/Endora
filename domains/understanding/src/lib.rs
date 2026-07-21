@@ -15,6 +15,8 @@
 
 pub mod application;
 pub mod domain;
+pub mod infrastructure;
 
 pub use application::{BeliefRepository, PreferenceRepository};
 pub use domain::{Belief, BeliefKind, BeliefStatus, Confidence, Preference, PreferenceKind};
+pub use infrastructure::{UnderstandingStore, migrate};
