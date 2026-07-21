@@ -14,10 +14,10 @@ use endora_application::{
     ActivityEvent, AssumptionRepository, AuditLog, AutonomyEnvelope, AutonomyEnvelopeRepository,
     BeliefRepository, BriefSchedule, BriefScheduleRepository, ButlerProposal,
     CapabilityConfigRepository, CapabilitySettingsRepository, ChatRepository, CheckinRepository,
-    CheckinSchedule, DirectionRepository, EventLog, ExperimentRepository, MemorySnapshot,
-    MemoryStore, ObservationRepository, PreferenceRepository, ProcessChangeRepository,
-    ReflectionRepository, RepositoryError, Snooze, SnoozeRepository, Suggestion,
-    SuggestionRepository, SuggestionStatus, TargetRepository, ValueRepository,
+    CheckinSchedule, DeepModel, DeepModelRepository, DirectionRepository, EventLog,
+    ExperimentRepository, MemorySnapshot, MemoryStore, ObservationRepository, PreferenceRepository,
+    ProcessChangeRepository, ReflectionRepository, RepositoryError, Snooze, SnoozeRepository,
+    Suggestion, SuggestionRepository, SuggestionStatus, TargetRepository, ValueRepository,
 };
 use endora_domain::{
     ApprovalState, Assumption, AssumptionId, AuditId, AuditRecord, Belief, BeliefId, BeliefKind,
@@ -179,6 +179,12 @@ CREATE TABLE IF NOT EXISTS brief_schedule (
     enabled   INTEGER NOT NULL,
     hour_utc  INTEGER NOT NULL,
     last_ms   INTEGER NOT NULL
+) STRICT;
+CREATE TABLE IF NOT EXISTS deep_model (
+    id      INTEGER PRIMARY KEY CHECK (id = 0),
+    url     TEXT NOT NULL,
+    model   TEXT NOT NULL,
+    api_key TEXT NOT NULL
 ) STRICT;
 CREATE TABLE IF NOT EXISTS events (
     id      INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -894,6 +900,7 @@ impl MemoryStore for SqliteStore {
             "capability_settings",
             "autonomy_envelope",
             "brief_schedule",
+            "deep_model",
         ] {
             tx.execute(&format!("DELETE FROM {table}"), [])
                 .map_err(backend)?;
@@ -1164,6 +1171,35 @@ impl EventLog for SqliteStore {
             })
             .map_err(backend)?;
         rows.collect::<Result<Vec<_>, _>>().map_err(backend)
+    }
+}
+
+impl DeepModelRepository for SqliteStore {
+    fn get(&self) -> Result<Option<DeepModel>, RepositoryError> {
+        let conn = self.lock()?;
+        conn.query_row(
+            "SELECT url, model, api_key FROM deep_model WHERE id = 0",
+            [],
+            |r| {
+                Ok(DeepModel {
+                    url: r.get(0)?,
+                    model: r.get(1)?,
+                    api_key: r.get(2)?,
+                })
+            },
+        )
+        .optional()
+        .map_err(backend)
+    }
+
+    fn set(&self, model: &DeepModel) -> Result<(), RepositoryError> {
+        let conn = self.lock()?;
+        conn.execute(
+            "INSERT OR REPLACE INTO deep_model (id, url, model, api_key) VALUES (0, ?1, ?2, ?3)",
+            params![model.url, model.model, model.api_key],
+        )
+        .map_err(backend)?;
+        Ok(())
     }
 }
 
@@ -2500,6 +2536,21 @@ mod tests {
         assert_eq!(recent[0].summary, "Turned news off");
         assert_eq!(recent[1].summary, "Used the weather skill");
         assert_eq!(log.recent(1).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn deep_model_config_round_trips() {
+        use endora_application::{DeepModel, DeepModelRepository};
+        let store = store();
+        let repo: &dyn DeepModelRepository = &store;
+        assert!(repo.get().unwrap().is_none());
+        let cfg = DeepModel {
+            url: "https://api.x.com/v1".to_owned(),
+            model: "big-1".to_owned(),
+            api_key: "secret".to_owned(),
+        };
+        repo.set(&cfg).unwrap();
+        assert_eq!(repo.get().unwrap(), Some(cfg));
     }
 
     #[test]
