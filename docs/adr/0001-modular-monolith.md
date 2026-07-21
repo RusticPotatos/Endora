@@ -2,7 +2,9 @@
 
 ## Status
 
-Accepted (2026).
+Accepted (2026). Refined by [0026](0026-package-by-bounded-context.md), which
+realizes the "organize by bounded context" intent below as the concrete
+`app / domains / shared` workspace layout.
 
 ## Context
 
