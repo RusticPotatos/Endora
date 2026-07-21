@@ -12,8 +12,8 @@ members = [
     "crates/endora-domain",
     "crates/endora-application",
     "crates/endora-infrastructure",
-    "apps/endora-node",
-    "apps/endora-cli",
+    "app/node",
+    "app/cli",
 ]
 
 # Shared metadata inherited by every workspace member via `field.workspace = true`.
