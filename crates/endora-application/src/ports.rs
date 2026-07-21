@@ -574,6 +574,28 @@ pub trait AutonomyEnvelopeRepository {
     fn set(&self, envelope: &AutonomyEnvelope) -> Result<(), RepositoryError>;
 }
 
+/// Persists per-capability **settings** — the values a skill needs to run (a model
+/// name, an API key, a URL), keyed by capability id then setting key (ADR 0021).
+/// Secrets live only here and are never echoed back to clients.
+pub trait CapabilitySettingsRepository {
+    /// All stored settings, as `(capability_id, key, value)` triples.
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if the backend fails.
+    fn all_settings(&self) -> Result<Vec<(String, String, String)>, RepositoryError>;
+
+    /// Sets one setting value for a capability (upsert).
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if the backend fails.
+    fn set_setting(
+        &self,
+        capability_id: &str,
+        key: &str,
+        value: &str,
+    ) -> Result<(), RepositoryError>;
+}
+
 /// Persists per-capability configuration the person controls from the Skills view
 /// (ADR 0021). This first slice stores only the **enabled** flag; only overrides
 /// are stored — a capability with no row keeps its built-in default (enabled).

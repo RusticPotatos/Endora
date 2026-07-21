@@ -17,7 +17,8 @@ pub mod sqlite;
 
 pub use butler::{LlmButler, ScriptedButler};
 pub use capabilities::{
-    Capability, CapabilityError, CapabilityInfo, RegistryRunner, default_capabilities,
+    Capability, CapabilityError, CapabilityInfo, CapabilitySettings, RegistryRunner, SettingSpec,
+    default_capabilities,
 };
 pub use clock::SystemClock;
 pub use ids::RandomIdSource;
