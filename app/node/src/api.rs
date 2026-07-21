@@ -1270,6 +1270,17 @@ async fn stream_chat(
             let mut on_token = |chunk: &str| {
                 let _ = tx.send(event(json!({ "type": "token", "text": chunk })));
             };
+            // Structured action steps (router → skill → result), surfaced live so
+            // the console can show an expandable trail of what the butler is doing,
+            // separate from the reply prose.
+            let mut on_step = |step: usecases::ButlerStep| {
+                let _ = tx.send(event(json!({
+                    "type": "step",
+                    "skill": step.skill,
+                    "status": step.status.as_str(),
+                    "label": step.label,
+                })));
+            };
             usecases::send_to_butler_streaming(
                 chat.as_ref(),
                 understanding.as_ref(),
@@ -1282,6 +1293,7 @@ async fn stream_chat(
                 &context,
                 &message,
                 &mut on_token,
+                &mut on_step,
             )
         };
         match result {
