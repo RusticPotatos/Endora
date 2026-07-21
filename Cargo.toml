@@ -5,6 +5,7 @@ members = [
     "shared/persistence",
     "domains/platform",
     "domains/capabilities",
+    "domains/understanding",
     "crates/endora-domain",
     "crates/endora-application",
     "crates/endora-infrastructure",

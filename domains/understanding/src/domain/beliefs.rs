@@ -8,8 +8,8 @@
 //! the person **reviews and corrects** them; they can be **affirmed** (raising
 //! confidence) or left to **expire**. Nothing is assumed permanently.
 
-use crate::error::{DomainError, require_non_empty};
-use crate::ids::{BeliefId, Timestamp};
+use endora_kernel::error::{DomainError, require_non_empty};
+use endora_kernel::ids::{BeliefId, Timestamp};
 
 /// What sort of thing a belief is about. Intent is the most important — it changes
 /// slowly and is what Endora is really trying to model (goals are a fast-changing
@@ -267,8 +267,8 @@ impl Belief {
 #[cfg(test)]
 mod tests {
     use super::{Belief, BeliefKind, BeliefStatus, Confidence};
-    use crate::error::DomainError;
-    use crate::ids::{BeliefId, Timestamp};
+    use endora_kernel::error::DomainError;
+    use endora_kernel::ids::{BeliefId, Timestamp};
 
     #[test]
     fn forms_and_keeps_fields() {
