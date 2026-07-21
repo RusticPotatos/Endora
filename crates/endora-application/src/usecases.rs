@@ -13,17 +13,17 @@ use endora_domain::{
     TargetId, Timestamp, Value, ValueId, authorize_process_change,
 };
 
+use endora_capabilities::CapabilityRunner;
 use endora_platform::{AuditLog, EventLog};
 
 use crate::error::AppError;
 use crate::ports::{
     AssumptionRepository, AttentionItem, AttentionKind, BeliefRepository, BriefSchedule,
-    BriefScheduleRepository, Butler, ButlerContext, ButlerProposal, ButlerReply, CapabilityRunner,
-    ChatRepository, CheckinRepository, CheckinSchedule, Clock, DirectionRepository,
-    ExperimentRepository, IdSource, MemorySnapshot, MemoryStore, NorthStarBrief,
-    ObservationRepository, PreferenceRepository, ProcessChangeRepository, Proposer,
-    ReflectionRepository, Snooze, SnoozeRepository, Suggestion, SuggestionRepository,
-    SuggestionStatus, TargetRepository, ValueRepository,
+    BriefScheduleRepository, Butler, ButlerContext, ButlerProposal, ButlerReply, ChatRepository,
+    CheckinRepository, CheckinSchedule, Clock, DirectionRepository, ExperimentRepository, IdSource,
+    MemorySnapshot, MemoryStore, NorthStarBrief, ObservationRepository, PreferenceRepository,
+    ProcessChangeRepository, Proposer, ReflectionRepository, Snooze, SnoozeRepository, Suggestion,
+    SuggestionRepository, SuggestionStatus, TargetRepository, ValueRepository,
 };
 
 /// Creates and stores a new [`Direction`].
@@ -1848,12 +1848,13 @@ mod tests {
     use crate::error::AppError;
     use crate::ports::{
         AssumptionRepository, AttentionKind, BeliefRepository, Butler, ButlerContext,
-        ButlerProposal, ButlerReply, CapabilityRunner, ChatRepository, CheckinRepository,
-        CheckinSchedule, Clock, DirectionRepository, ExperimentRepository, IdSource,
-        ObservationRepository, PreferenceRepository, ProcessChangeRepository, ProposalError,
-        Proposer, ReflectionRepository, RepositoryError, Snooze, SnoozeRepository, Suggestion,
+        ButlerProposal, ButlerReply, ChatRepository, CheckinRepository, CheckinSchedule, Clock,
+        DirectionRepository, ExperimentRepository, IdSource, ObservationRepository,
+        PreferenceRepository, ProcessChangeRepository, ProposalError, Proposer,
+        ReflectionRepository, RepositoryError, Snooze, SnoozeRepository, Suggestion,
         SuggestionRepository, SuggestionStatus, TargetRepository, ValueRepository,
     };
+    use endora_capabilities::CapabilityRunner;
     use endora_domain::LifecycleStatus;
     use endora_domain::{
         ApprovalState, Assumption, AssumptionId, AuditRecord, AutonomyLevel, ChatMessage,
@@ -1872,7 +1873,7 @@ mod tests {
     /// exercise the interventions loop (the butler never proposes a `use`).
     struct NoCapabilities;
     impl CapabilityRunner for NoCapabilities {
-        fn available(&self) -> Vec<crate::ports::CapabilitySpec> {
+        fn available(&self) -> Vec<endora_capabilities::CapabilitySpec> {
             Vec::new()
         }
         fn run(&self, _id: &str, _input_json: &str) -> Result<String, String> {
@@ -2528,7 +2529,7 @@ mod tests {
                 // First pass: brief reply + a skill request.
                 Ok(ButlerReply {
                     text: "One moment — checking.".to_owned(),
-                    capability_use: Some(crate::ports::CapabilityUse {
+                    capability_use: Some(endora_capabilities::CapabilityUse {
                         capability: "weather".to_owned(),
                         input_json: "{\"location\":\"Charlotte\"}".to_owned(),
                     }),
@@ -2540,8 +2541,8 @@ mod tests {
         // A runner offering one cleared (configured + autonomous) skill.
         struct OneSkill;
         impl CapabilityRunner for OneSkill {
-            fn available(&self) -> Vec<crate::ports::CapabilitySpec> {
-                vec![crate::ports::CapabilitySpec {
+            fn available(&self) -> Vec<endora_capabilities::CapabilitySpec> {
+                vec![endora_capabilities::CapabilitySpec {
                     id: "weather".to_owned(),
                     description: "current conditions".to_owned(),
                     configured: true,
@@ -2593,7 +2594,7 @@ mod tests {
             ) -> Result<ButlerReply, ProposalError> {
                 Ok(ButlerReply {
                     text: "I can't check flights yet.".to_owned(),
-                    capability_use: Some(crate::ports::CapabilityUse {
+                    capability_use: Some(endora_capabilities::CapabilityUse {
                         capability: "flights".to_owned(),
                         input_json: "{}".to_owned(),
                     }),
@@ -2606,8 +2607,8 @@ mod tests {
         // must refuse to auto-run it.
         struct GatedSkill;
         impl CapabilityRunner for GatedSkill {
-            fn available(&self) -> Vec<crate::ports::CapabilitySpec> {
-                vec![crate::ports::CapabilitySpec {
+            fn available(&self) -> Vec<endora_capabilities::CapabilitySpec> {
+                vec![endora_capabilities::CapabilitySpec {
                     id: "flights".to_owned(),
                     description: "find flights".to_owned(),
                     configured: false,
@@ -2753,8 +2754,8 @@ mod tests {
 
         struct NewsSkill;
         impl CapabilityRunner for NewsSkill {
-            fn available(&self) -> Vec<crate::ports::CapabilitySpec> {
-                vec![crate::ports::CapabilitySpec {
+            fn available(&self) -> Vec<endora_capabilities::CapabilitySpec> {
+                vec![endora_capabilities::CapabilitySpec {
                     id: "news".to_owned(),
                     description: "headlines".to_owned(),
                     configured: true,
@@ -2830,8 +2831,8 @@ mod tests {
         // News exists but is turned OFF (configured=false); it must never run.
         struct OffNews;
         impl CapabilityRunner for OffNews {
-            fn available(&self) -> Vec<crate::ports::CapabilitySpec> {
-                vec![crate::ports::CapabilitySpec {
+            fn available(&self) -> Vec<endora_capabilities::CapabilitySpec> {
+                vec![endora_capabilities::CapabilitySpec {
                     id: "news".to_owned(),
                     description: "headlines".to_owned(),
                     configured: false,
@@ -2908,8 +2909,8 @@ mod tests {
 
         struct BriefSkills;
         impl CapabilityRunner for BriefSkills {
-            fn available(&self) -> Vec<crate::ports::CapabilitySpec> {
-                vec![crate::ports::CapabilitySpec {
+            fn available(&self) -> Vec<endora_capabilities::CapabilitySpec> {
+                vec![endora_capabilities::CapabilitySpec {
                     id: "weather".to_owned(),
                     description: "w".to_owned(),
                     configured: true,
