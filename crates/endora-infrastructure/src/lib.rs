@@ -9,12 +9,17 @@
 #![forbid(unsafe_code)]
 
 pub mod butler;
+pub mod capabilities;
 pub mod clock;
 pub mod ids;
 pub mod model;
 pub mod sqlite;
 
-pub use butler::{LlmButler, ScriptedButler};
+pub use butler::{LlmButler, ScriptedButler, ask_deep_model};
+pub use capabilities::{
+    Capability, CapabilityError, CapabilityInfo, CapabilitySettings, RegistryRunner, SettingSpec,
+    default_capabilities, redact_pii_in_value, scan_outbound_secret,
+};
 pub use clock::SystemClock;
 pub use ids::RandomIdSource;
 pub use model::OpenAiCompatibleProposer;

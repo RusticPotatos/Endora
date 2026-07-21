@@ -27,7 +27,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // node runs without it and only the drafting endpoint returns 503.
     let model_url = std::env::var("ENDORA_MODEL_URL")
         .unwrap_or_else(|_| "http://localhost:11434/v1".to_owned());
-    let model = std::env::var("ENDORA_MODEL").unwrap_or_else(|_| "qwen3.5:9b".to_owned());
+    let model = std::env::var("ENDORA_MODEL").unwrap_or_else(|_| "qwen2.5:7b".to_owned());
 
     let state = AppState::new(
         Arc::new(SqliteStore::open(&db_path)?),
@@ -44,6 +44,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("{}", endora_application::platform_identity());
     println!("model: {model} via {model_url}  (drafting is optional; 503 if unavailable)");
+
+    // The butler's heartbeat: proactive check-ins on the person's cadence (off
+    // until they enable it). Runs for the life of the process.
+    api::spawn_heartbeat(state.clone());
 
     let app = api::app(state);
 

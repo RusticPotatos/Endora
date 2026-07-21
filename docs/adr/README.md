@@ -51,3 +51,11 @@ of an existing record and take the next number.
 | [0015](0015-identity-and-values-context.md) | The Identity & Values context: a "why" above North Stars | Accepted |
 | [0016](0016-adaptive-attention.md) | Adaptive attention: ranking and deferral-backoff | Accepted |
 | [0017](0017-persona-and-voice.md) | Persona and voice | Accepted |
+| [0018](0018-streaming-chat-responses.md) | Streaming chat responses | Accepted |
+| [0019](0019-proactive-self-improving-butler.md) | The proactive, self-improving butler: heartbeat, check-ins, capabilities, hospitality | Accepted |
+| [0020](0020-intent-first-understanding-loop.md) | Intent-first: the autonomous understanding loop (direction reset) | Accepted |
+| [0021](0021-capability-catalog-and-mcp-host.md) | The capability catalog: configuration, enablement, and an MCP host | Accepted |
+| [0022](0022-autonomy-envelope-and-self-authored-capabilities.md) | The autonomy envelope and self-authored capabilities | Accepted |
+| [0023](0023-egress-guard-and-data-loss-tripwire.md) | The egress guard: SSRF protection and a data-loss tripwire | Accepted |
+| [0024](0024-reversibility-aware-autonomy-and-the-nightly-loop.md) | Reversibility-aware autonomy and the nightly self-improvement loop | Accepted |
+| [0025](0025-hospitality-and-the-evolving-persona.md) | Hospitality and the evolving persona | Accepted |

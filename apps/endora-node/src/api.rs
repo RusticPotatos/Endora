@@ -17,16 +17,21 @@ use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post};
 use endora_application::{
-    ActivityItem, AppError, AttentionItem, AttentionKind, Butler, ButlerProposal, MemorySnapshot,
-    Proposer, RepositoryError, usecases,
+    ActivityItem, AppError, AttentionItem, AttentionKind, AutonomyEnvelope,
+    AutonomyEnvelopeRepository, BriefSchedule, Butler, ButlerProposal, CapabilityConfigRepository,
+    CapabilitySettingsRepository, CheckinSchedule, DeepModelRepository, EventLog, MemorySnapshot,
+    Proposer, RepositoryError, Suggestion, SuggestionStatus, usecases,
 };
 use endora_domain::{
-    Assumption, AssumptionId, AuditRecord, AutonomyLevel, ChatMessage, Direction, DirectionId,
-    Experiment, ExperimentId, LifecycleStatus, Observation, ObservationId, PolicyDecision,
-    Preference, PreferenceId, PreferenceKind, ProcessChangeId, ProposedProcessChange, Reflection,
-    ReflectionId, Target, TargetId, Value, ValueId,
+    Assumption, AssumptionId, AuditRecord, AutonomyLevel, Belief, BeliefId, ChatMessage, Direction,
+    DirectionId, Experiment, ExperimentId, LifecycleStatus, Observation, ObservationId,
+    PolicyDecision, Preference, PreferenceId, PreferenceKind, ProcessChangeId,
+    ProposedProcessChange, Reflection, ReflectionId, SuggestionId, Target, TargetId, Value,
+    ValueId,
 };
-use endora_infrastructure::{RandomIdSource, SqliteStore, SystemClock};
+use endora_infrastructure::{
+    Capability, CapabilityError, RandomIdSource, SqliteStore, SystemClock,
+};
 use futures_util::stream::{Stream, unfold};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -49,6 +54,9 @@ pub struct AppState {
     /// subscribers know to refresh. Carries no payload — it is a "something
     /// changed" nudge, and clients re-read the authoritative state.
     pub changes: broadcast::Sender<()>,
+    /// The butler's skills (weather, web, …) — declared modules the butler can
+    /// reach for, each gated by its autonomy level (ADR 0019).
+    pub capabilities: Arc<Vec<Arc<dyn Capability>>>,
 }
 
 impl AppState {
@@ -71,6 +79,7 @@ impl AppState {
             proposer,
             butler,
             changes,
+            capabilities: Arc::new(endora_infrastructure::default_capabilities()),
         }
     }
 }
@@ -140,6 +149,29 @@ pub fn app(state: AppState) -> Router {
             post(decide_process_change),
         )
         .route("/v1/chat", post(send_chat).get(chat_history))
+        .route("/v1/chat/stream", post(stream_chat))
+        .route("/v1/suggestions", get(list_suggestions))
+        .route("/v1/suggestions/{id}/apply", post(apply_suggestion))
+        .route("/v1/suggestions/{id}/dismiss", post(dismiss_suggestion))
+        .route("/v1/checkin", get(get_checkin).post(set_checkin))
+        .route("/v1/understanding", get(list_understanding))
+        .route("/v1/understanding/{id}/affirm", post(affirm_belief))
+        .route("/v1/understanding/{id}/correct", post(correct_belief))
+        .route("/v1/capabilities", get(list_capabilities))
+        .route("/v1/capabilities/{id}/invoke", post(invoke_capability))
+        .route("/v1/capabilities/{id}/enable", post(set_capability_enabled))
+        .route(
+            "/v1/capabilities/{id}/config",
+            post(set_capability_settings),
+        )
+        .route("/v1/autonomy", get(get_autonomy).post(set_autonomy))
+        .route("/v1/brief", post(brief))
+        .route(
+            "/v1/brief/schedule",
+            get(get_brief_schedule).post(set_brief_schedule),
+        )
+        .route("/v1/deep-model", get(get_deep_model).post(set_deep_model))
+        .route("/v1/deep-ask", post(deep_ask))
         .route(
             "/v1/preferences",
             post(create_preference).get(list_preferences),
@@ -924,8 +956,10 @@ async fn activity(
 ) -> Result<Json<Vec<ActivityResponse>>, ApiError> {
     let limit = query.limit.unwrap_or(50);
     let store = state.store.clone();
-    let items =
-        blocking(move || usecases::recent_activity(store.as_ref(), store.as_ref(), limit)).await?;
+    let items = blocking(move || {
+        usecases::recent_activity(store.as_ref(), store.as_ref(), store.as_ref(), limit)
+    })
+    .await?;
     Ok(Json(items.iter().map(ActivityResponse::from).collect()))
 }
 
@@ -981,13 +1015,10 @@ fn proposal_json(p: &ButlerProposal) -> serde_json::Value {
             obj.insert("title".to_owned(), json!(title));
         }
         ButlerProposal::CreateTarget {
-            direction,
+            direction_ref,
             statement,
         } => {
-            obj.insert(
-                "direction_id".to_owned(),
-                json!(direction.value().to_string()),
-            );
+            obj.insert("direction_id".to_owned(), json!(direction_ref));
             obj.insert("statement".to_owned(), json!(statement));
         }
         ButlerProposal::RememberPreference { text, kind } => {
@@ -996,6 +1027,54 @@ fn proposal_json(p: &ButlerProposal) -> serde_json::Value {
         }
     }
     base
+}
+
+/// Serializes a persisted [`Suggestion`] as its proposal plus `id` and `status`,
+/// so the console can render it and apply/dismiss it by id.
+fn suggestion_json(s: &Suggestion) -> serde_json::Value {
+    let mut v = proposal_json(&s.proposal);
+    if let Some(obj) = v.as_object_mut() {
+        obj.insert("id".to_owned(), json!(s.id.value().to_string()));
+        obj.insert("status".to_owned(), json!(s.status.name()));
+    }
+    v
+}
+
+/// Builds a capability runner that honours the person's enable/disable choices
+/// (ADR 0021) and their autonomy envelope (ADR 0022). Reading config is
+/// best-effort: on failure it falls back to defaults, so a glitch never breaks the
+/// butler.
+/// Records one line to the butler's action log (best-effort — transparency, not
+/// the critical path, so a failure never breaks the turn).
+fn record_event(store: &SqliteStore, clock: &SystemClock, summary: &str) {
+    use endora_application::Clock;
+    let _ = store.record(clock.now(), summary);
+}
+
+fn build_runner(
+    store: &SqliteStore,
+    capabilities: Arc<Vec<Arc<dyn Capability>>>,
+) -> endora_infrastructure::RegistryRunner {
+    let overrides = store.enabled_overrides().unwrap_or_default();
+    let envelope = AutonomyEnvelopeRepository::get(store).unwrap_or_default();
+    endora_infrastructure::RegistryRunner::with_config(
+        capabilities,
+        overrides,
+        envelope,
+        settings_map(store),
+    )
+}
+
+/// Loads all capability settings, grouped by capability id, for the runner.
+fn settings_map(
+    store: &SqliteStore,
+) -> std::collections::HashMap<String, endora_infrastructure::CapabilitySettings> {
+    let mut map: std::collections::HashMap<String, endora_infrastructure::CapabilitySettings> =
+        std::collections::HashMap::new();
+    for (id, key, value) in store.all_settings().unwrap_or_default() {
+        map.entry(id).or_default().insert(key, value);
+    }
+    map
 }
 
 #[derive(Deserialize)]
@@ -1012,7 +1091,9 @@ async fn send_chat(
     let ids = state.ids.clone();
     let clock = state.clock.clone();
     let butler = state.butler.clone();
-    let (reply, proposals) = blocking(move || {
+    let capabilities = state.capabilities.clone();
+    let (reply, suggestions, activity) = blocking(move || {
+        let runner = build_runner(store.as_ref(), capabilities);
         // Ground the butler in the person's current life before it answers.
         let context = usecases::butler_context(
             store.as_ref(),
@@ -1020,23 +1101,163 @@ async fn send_chat(
             store.as_ref(),
             store.as_ref(),
             store.as_ref(),
+            store.as_ref(),
+            &runner,
             clock.as_ref(),
         )?;
-        usecases::send_to_butler(
+        let out = usecases::send_to_butler(
             store.as_ref(),
             store.as_ref(),
+            store.as_ref(),
+            store.as_ref(),
+            &runner,
             butler.as_ref(),
             ids.as_ref(),
             clock.as_ref(),
             &context,
             &req.message,
-        )
+        )?;
+        // Persist what the butler did/learned this turn to its action log, so the
+        // activity view is a durable record, not just an in-page note.
+        for item in &out.2 {
+            record_event(store.as_ref(), clock.as_ref(), item);
+        }
+        Ok(out)
     })
     .await?;
     Ok(Json(json!({
         "reply": MessageResponse::from(&reply),
-        "proposals": proposals.iter().map(proposal_json).collect::<Vec<_>>(),
+        "proposals": suggestions.iter().map(suggestion_json).collect::<Vec<_>>(),
+        "activity": activity,
     })))
+}
+
+/// Composes and posts a daily briefing (weather / safety / news for the person's
+/// home location) — an act of service using only reversible, autonomous skills
+/// (ADRs 0024/0025). Returns the posted message, or a note if there's nothing to
+/// brief (no home location, or no ready skills).
+async fn brief(State(state): State<AppState>) -> Result<Json<serde_json::Value>, ApiError> {
+    let store = state.store.clone();
+    let ids = state.ids.clone();
+    let clock = state.clock.clone();
+    let capabilities = state.capabilities.clone();
+    let result = blocking(move || {
+        let runner = build_runner(store.as_ref(), capabilities);
+        let out = usecases::daily_brief(
+            store.as_ref(),
+            store.as_ref(),
+            &runner,
+            ids.as_ref(),
+            clock.as_ref(),
+        )?;
+        if let Some((_, activity)) = &out {
+            for item in activity {
+                record_event(store.as_ref(), clock.as_ref(), item);
+            }
+            record_event(store.as_ref(), clock.as_ref(), "Prepared your daily brief");
+        }
+        Ok::<_, AppError>(out)
+    })
+    .await?;
+    let _ = state.changes.send(());
+    match result {
+        Some((msg, _)) => Ok(Json(
+            json!({ "briefed": true, "message": MessageResponse::from(&msg) }),
+        )),
+        None => Ok(Json(
+            json!({ "briefed": false, "note": "Set your home location, and enable weather/news/safety, to get a brief." }),
+        )),
+    }
+}
+
+/// Streams the butler's reply token-by-token as Server-Sent Events, for a live
+/// chat. Each event's `data` is a JSON object with a `type`:
+/// - `{"type":"token","text":"…"}` — the next piece of the reply's prose;
+/// - `{"type":"done","reply":{…},"proposals":[…]}` — the persisted reply + cards;
+/// - `{"type":"error","message":"…"}` — the exchange failed.
+///
+/// The person's message is persisted before the butler is called (as in the
+/// non-streaming path), and the reply is persisted when complete — so a dropped
+/// connection never loses the turn. The blocking model call runs on a worker
+/// thread and feeds tokens through a channel to this async stream.
+async fn stream_chat(
+    State(state): State<AppState>,
+    Json(req): Json<ChatRequest>,
+) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
+    let store = state.store.clone();
+    let ids = state.ids.clone();
+    let clock = state.clock.clone();
+    let butler = state.butler.clone();
+    let changes = state.changes.clone();
+    let capabilities = state.capabilities.clone();
+    let message = req.message;
+
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Event>();
+
+    tokio::task::spawn_blocking(move || {
+        let runner = build_runner(store.as_ref(), capabilities);
+        let event = |v: serde_json::Value| Event::default().data(v.to_string());
+        let context = match usecases::butler_context(
+            store.as_ref(),
+            store.as_ref(),
+            store.as_ref(),
+            store.as_ref(),
+            store.as_ref(),
+            store.as_ref(),
+            &runner,
+            clock.as_ref(),
+        ) {
+            Ok(c) => c,
+            Err(e) => {
+                let _ = tx.send(event(json!({ "type": "error", "message": e.to_string() })));
+                return;
+            }
+        };
+        // Scope the token closure so its borrow of `tx` ends before the `done`
+        // send below.
+        let result = {
+            let mut on_token = |chunk: &str| {
+                let _ = tx.send(event(json!({ "type": "token", "text": chunk })));
+            };
+            usecases::send_to_butler_streaming(
+                store.as_ref(),
+                store.as_ref(),
+                store.as_ref(),
+                store.as_ref(),
+                &runner,
+                butler.as_ref(),
+                ids.as_ref(),
+                clock.as_ref(),
+                &context,
+                &message,
+                &mut on_token,
+            )
+        };
+        match result {
+            Ok((reply, suggestions, activity)) => {
+                // Persist the turn's actions/learnings to the butler's action log.
+                for item in &activity {
+                    record_event(store.as_ref(), clock.as_ref(), item);
+                }
+                // A successful write nudges the change stream, like other writes.
+                let _ = changes.send(());
+                let _ = tx.send(event(json!({
+                    "type": "done",
+                    "reply": MessageResponse::from(&reply),
+                    "proposals": suggestions.iter().map(suggestion_json).collect::<Vec<_>>(),
+                    "activity": activity,
+                })));
+            }
+            Err(e) => {
+                let _ = tx.send(event(json!({ "type": "error", "message": e.to_string() })));
+            }
+        }
+    });
+
+    let stream = unfold(rx, |mut rx| async move {
+        rx.recv().await.map(|ev| (Ok(ev), rx))
+    });
+    Sse::new(stream).keep_alive(KeepAlive::default())
 }
 
 /// The whole conversation with the butler, oldest first.
@@ -1046,6 +1267,653 @@ async fn chat_history(
     let store = state.store.clone();
     let messages = blocking(move || usecases::chat_history(store.as_ref())).await?;
     Ok(Json(messages.iter().map(MessageResponse::from).collect()))
+}
+
+#[derive(Deserialize)]
+struct SuggestionsQuery {
+    /// Optional filter: `pending`, `applied`, or `dismissed`.
+    status: Option<String>,
+}
+
+/// The butler's persisted suggestions, newest first. `?status=pending` gives the
+/// inbox — proposals waiting to be applied.
+async fn list_suggestions(
+    State(state): State<AppState>,
+    Query(q): Query<SuggestionsQuery>,
+) -> Result<Json<Vec<serde_json::Value>>, ApiError> {
+    let store = state.store.clone();
+    let status = q.status.as_deref().and_then(SuggestionStatus::from_name);
+    let items = blocking(move || usecases::list_suggestions(store.as_ref(), status)).await?;
+    Ok(Json(items.iter().map(suggestion_json).collect()))
+}
+
+fn parse_suggestion_id(id: &str) -> Result<SuggestionId, ApiError> {
+    id.parse::<u128>().map(SuggestionId::new).map_err(|_| {
+        ApiError(AppError::NotFound {
+            entity: "suggestion",
+        })
+    })
+}
+
+/// Applies a pending suggestion — runs the deterministic create it stands for and
+/// records it applied. The human-authorized step (the butler only proposed it).
+async fn apply_suggestion(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let sid = parse_suggestion_id(&id)?;
+    let store = state.store.clone();
+    let ids = state.ids.clone();
+    let clock = state.clock.clone();
+    let suggestion = blocking(move || {
+        usecases::apply_suggestion(
+            store.as_ref(),
+            store.as_ref(),
+            store.as_ref(),
+            store.as_ref(),
+            store.as_ref(),
+            ids.as_ref(),
+            clock.as_ref(),
+            sid,
+        )
+    })
+    .await?;
+    Ok(Json(suggestion_json(&suggestion)))
+}
+
+/// Dismisses a pending suggestion (records the decision; nothing is created).
+async fn dismiss_suggestion(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let sid = parse_suggestion_id(&id)?;
+    let store = state.store.clone();
+    let clock = state.clock.clone();
+    blocking(move || usecases::dismiss_suggestion(store.as_ref(), clock.as_ref(), sid)).await?;
+    Ok(Json(json!({ "dismissed": true })))
+}
+
+/// The person's proactive check-in cadence.
+#[derive(Serialize)]
+struct CheckinResponse {
+    enabled: bool,
+    interval_ms: i64,
+    next_at_ms: i64,
+}
+
+impl From<CheckinSchedule> for CheckinResponse {
+    fn from(s: CheckinSchedule) -> Self {
+        Self {
+            enabled: s.enabled,
+            interval_ms: s.interval_ms,
+            next_at_ms: s.next_at.unix_millis(),
+        }
+    }
+}
+
+async fn get_checkin(State(state): State<AppState>) -> Result<Json<CheckinResponse>, ApiError> {
+    let store = state.store.clone();
+    let clock = state.clock.clone();
+    let schedule =
+        blocking(move || usecases::checkin_schedule(store.as_ref(), clock.as_ref())).await?;
+    Ok(Json(schedule.into()))
+}
+
+#[derive(Deserialize)]
+struct SetCheckinRequest {
+    enabled: bool,
+    interval_ms: i64,
+}
+
+/// Sets the check-in cadence (on/off + interval). Enabling schedules the next one
+/// an interval from now, so it is not an instant ping.
+async fn set_checkin(
+    State(state): State<AppState>,
+    Json(req): Json<SetCheckinRequest>,
+) -> Result<Json<CheckinResponse>, ApiError> {
+    let store = state.store.clone();
+    let clock = state.clock.clone();
+    let schedule = blocking(move || {
+        usecases::set_checkin_schedule(store.as_ref(), clock.as_ref(), req.enabled, req.interval_ms)
+    })
+    .await?;
+    Ok(Json(schedule.into()))
+}
+
+fn belief_json(b: &Belief) -> serde_json::Value {
+    json!({
+        "id": b.id().value().to_string(),
+        "statement": b.statement(),
+        "kind": b.kind().name(),
+        "confidence": b.confidence().name(),
+        "evidence": b.evidence(),
+        "last_affirmed_ms": b.last_affirmed_at().unix_millis(),
+    })
+}
+
+/// Endora's understanding of the person — the active beliefs it holds.
+async fn list_understanding(
+    State(state): State<AppState>,
+) -> Result<Json<Vec<serde_json::Value>>, ApiError> {
+    let store = state.store.clone();
+    let items = blocking(move || usecases::understanding(store.as_ref())).await?;
+    Ok(Json(items.iter().map(belief_json).collect()))
+}
+
+fn parse_belief_id(id: &str) -> Result<BeliefId, ApiError> {
+    id.parse::<u128>()
+        .map(BeliefId::new)
+        .map_err(|_| ApiError(AppError::NotFound { entity: "belief" }))
+}
+
+/// The person confirms a belief is right — raise its confidence.
+async fn affirm_belief(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let bid = parse_belief_id(&id)?;
+    let store = state.store.clone();
+    let clock = state.clock.clone();
+    let b = blocking(move || usecases::affirm_belief(store.as_ref(), clock.as_ref(), bid)).await?;
+    Ok(Json(belief_json(&b)))
+}
+
+/// The person says a belief is wrong — drop it from understanding.
+async fn correct_belief(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let bid = parse_belief_id(&id)?;
+    let store = state.store.clone();
+    blocking(move || usecases::correct_belief(store.as_ref(), bid)).await?;
+    Ok(Json(json!({ "corrected": true })))
+}
+
+fn capability_json(
+    info: &endora_infrastructure::CapabilityInfo,
+    enabled: bool,
+    settings: &endora_infrastructure::CapabilitySettings,
+) -> serde_json::Value {
+    // The settings schema, each flagged whether it's been set — but NEVER the value
+    // (secrets stay server-side).
+    let settings_schema: Vec<serde_json::Value> = info
+        .settings
+        .iter()
+        .map(|s| {
+            json!({
+                "key": s.key,
+                "label": s.label,
+                "secret": s.secret,
+                "set": settings.get(s.key).is_some_and(|v| !v.trim().is_empty()),
+            })
+        })
+        .collect();
+    let settings_complete = info
+        .settings
+        .iter()
+        .all(|s| settings.get(s.key).is_some_and(|v| !v.trim().is_empty()));
+    json!({
+        "id": info.id,
+        "name": info.name,
+        "description": info.description,
+        "category": info.category,
+        "reaches_external": info.reaches_external,
+        "reversible": info.reversible,
+        "autonomy": info.autonomy.name(),
+        // `configured` = code ready + settings filled; `enabled` = the person's on/off
+        // switch; a skill is usable only when both hold (ADR 0021).
+        "configured": info.configured && settings_complete,
+        "enabled": enabled,
+        "usable": info.configured && settings_complete && enabled,
+        "needs": info.needs,
+        "settings": settings_schema,
+    })
+}
+
+/// Lists the butler's skills (capabilities/modules), their status, and whether the
+/// person has each turned on.
+async fn list_capabilities(State(state): State<AppState>) -> Json<Vec<serde_json::Value>> {
+    let enabled: std::collections::HashMap<String, bool> = state
+        .store
+        .enabled_overrides()
+        .unwrap_or_default()
+        .into_iter()
+        .collect();
+    let settings = settings_map(state.store.as_ref());
+    let empty = endora_infrastructure::CapabilitySettings::new();
+    Json(
+        state
+            .capabilities
+            .iter()
+            .map(|c| {
+                let info = c.info();
+                let on = enabled.get(info.id).copied().unwrap_or(true);
+                capability_json(&info, on, settings.get(info.id).unwrap_or(&empty))
+            })
+            .collect(),
+    )
+}
+
+#[derive(Deserialize)]
+struct SettingsRequest {
+    settings: std::collections::HashMap<String, String>,
+}
+
+/// Sets one or more settings for a capability (ADR 0021). Validated against the
+/// registry and its declared setting keys, so only known keys are stored.
+async fn set_capability_settings(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(req): Json<SettingsRequest>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let Some(cap) = state.capabilities.iter().find(|c| c.info().id == id) else {
+        return Err(ApiError(AppError::NotFound {
+            entity: "capability",
+        }));
+    };
+    let allowed: std::collections::HashSet<&str> =
+        cap.info().settings.iter().map(|s| s.key).collect();
+    // Keep only keys this capability actually declares.
+    let to_set: Vec<(String, String)> = req
+        .settings
+        .into_iter()
+        .filter(|(k, _)| allowed.contains(k.as_str()))
+        .collect();
+    let store = state.store.clone();
+    let clock = state.clock.clone();
+    let cap_id = id.clone();
+    blocking(move || {
+        for (k, v) in &to_set {
+            store
+                .set_setting(&cap_id, k, v)
+                .map_err(AppError::Repository)?;
+        }
+        record_event(
+            store.as_ref(),
+            clock.as_ref(),
+            &format!("Updated settings for the {cap_id} skill"),
+        );
+        Ok::<_, AppError>(())
+    })
+    .await?;
+    let _ = state.changes.send(());
+    Ok(Json(json!({ "id": id, "ok": true })))
+}
+
+#[derive(Deserialize)]
+struct EnableRequest {
+    enabled: bool,
+}
+
+/// Turns a capability on or off for the person (ADR 0021). Validated against the
+/// registry so only real skill ids are stored; nudges the change stream so open
+/// consoles refresh.
+async fn set_capability_enabled(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(req): Json<EnableRequest>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    if !state.capabilities.iter().any(|c| c.info().id == id) {
+        return Err(ApiError(AppError::NotFound {
+            entity: "capability",
+        }));
+    }
+    let store = state.store.clone();
+    let clock = state.clock.clone();
+    let (cap_id, enabled) = (id.clone(), req.enabled);
+    blocking(move || {
+        store
+            .set_enabled(&cap_id, enabled)
+            .map_err(AppError::Repository)?;
+        record_event(
+            store.as_ref(),
+            clock.as_ref(),
+            &format!(
+                "Turned the {cap_id} skill {}",
+                if enabled { "on" } else { "off" }
+            ),
+        );
+        Ok(())
+    })
+    .await?;
+    let _ = state.changes.send(());
+    Ok(Json(json!({ "id": id, "enabled": req.enabled })))
+}
+
+fn envelope_json(e: &AutonomyEnvelope) -> serde_json::Value {
+    json!({ "auto_external": e.auto_external, "auto_consequential": e.auto_consequential })
+}
+
+/// Returns the person's autonomy envelope — the boundary the butler acts within
+/// (ADR 0022).
+async fn get_autonomy(State(state): State<AppState>) -> Result<Json<serde_json::Value>, ApiError> {
+    let store = state.store.clone();
+    let envelope = blocking(move || {
+        AutonomyEnvelopeRepository::get(store.as_ref()).map_err(AppError::Repository)
+    })
+    .await?;
+    Ok(Json(envelope_json(&envelope)))
+}
+
+#[derive(Deserialize)]
+struct AutonomyRequest {
+    auto_external: bool,
+    auto_consequential: bool,
+}
+
+/// Sets the autonomy envelope (ADR 0022). Widening it grants the butler more
+/// independence; the deterministic policy layer still enforces the edges.
+async fn set_autonomy(
+    State(state): State<AppState>,
+    Json(req): Json<AutonomyRequest>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let envelope = AutonomyEnvelope {
+        auto_external: req.auto_external,
+        auto_consequential: req.auto_consequential,
+    };
+    let store = state.store.clone();
+    let clock = state.clock.clone();
+    blocking(move || {
+        AutonomyEnvelopeRepository::set(store.as_ref(), &envelope).map_err(AppError::Repository)?;
+        record_event(
+            store.as_ref(),
+            clock.as_ref(),
+            &format!(
+                "Adjusted autonomy: read-only skills {}, consequential actions {}",
+                if envelope.auto_external {
+                    "on their own"
+                } else {
+                    "ask first"
+                },
+                if envelope.auto_consequential {
+                    "on their own"
+                } else {
+                    "ask first"
+                },
+            ),
+        );
+        Ok(())
+    })
+    .await?;
+    let _ = state.changes.send(());
+    Ok(Json(envelope_json(&envelope)))
+}
+
+fn brief_schedule_json(s: &BriefSchedule) -> serde_json::Value {
+    json!({ "enabled": s.enabled, "hour_utc": s.hour_utc })
+}
+
+/// The deep-model config (a bigger AI for hard questions). The key is NEVER
+/// returned — only whether one is set.
+async fn get_deep_model(
+    State(state): State<AppState>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let store = state.store.clone();
+    let cfg =
+        blocking(move || DeepModelRepository::get(store.as_ref()).map_err(AppError::Repository))
+            .await?
+            .unwrap_or_default();
+    Ok(Json(json!({
+        "url": cfg.url,
+        "model": cfg.model,
+        "configured": !cfg.url.is_empty() && !cfg.model.is_empty(),
+        "key_set": !cfg.api_key.is_empty(),
+    })))
+}
+
+#[derive(Deserialize)]
+struct DeepModelRequest {
+    url: String,
+    model: String,
+    #[serde(default)]
+    api_key: Option<String>,
+}
+
+/// Configures the deep model. A blank/omitted `api_key` keeps any existing key, so
+/// the secret is never round-tripped through the client.
+async fn set_deep_model(
+    State(state): State<AppState>,
+    Json(req): Json<DeepModelRequest>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let store = state.store.clone();
+    let clock = state.clock.clone();
+    blocking(move || {
+        let existing = DeepModelRepository::get(store.as_ref())
+            .map_err(AppError::Repository)?
+            .unwrap_or_default();
+        let api_key = match req.api_key {
+            Some(k) if !k.trim().is_empty() => k.trim().to_owned(),
+            _ => existing.api_key, // keep the stored key when none is supplied
+        };
+        DeepModelRepository::set(
+            store.as_ref(),
+            &endora_application::DeepModel {
+                url: req.url.trim().to_owned(),
+                model: req.model.trim().to_owned(),
+                api_key,
+            },
+        )
+        .map_err(AppError::Repository)?;
+        record_event(store.as_ref(), clock.as_ref(), "Configured the deep model");
+        Ok::<_, AppError>(())
+    })
+    .await?;
+    let _ = state.changes.send(());
+    Ok(Json(json!({ "ok": true })))
+}
+
+#[derive(Deserialize)]
+struct DeepAskRequest {
+    question: String,
+}
+
+/// Escalates one question to the configured deep model and posts its answer to the
+/// chat. The person opts in per question (the everyday stays local). The outbound
+/// question passes the egress guard — a secret blocks it, PII is redacted (ADR 0023).
+async fn deep_ask(
+    State(state): State<AppState>,
+    Json(req): Json<DeepAskRequest>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let store = state.store.clone();
+    let ids = state.ids.clone();
+    let clock = state.clock.clone();
+    let question = req.question;
+    let posted = blocking(move || {
+        let Some(cfg) = DeepModelRepository::get(store.as_ref()).map_err(AppError::Repository)?
+        else {
+            return Ok::<_, AppError>(None);
+        };
+        if cfg.url.is_empty() || cfg.model.is_empty() {
+            return Ok(None);
+        }
+        // Egress guard on the outbound question (it leaves the device to the deep model).
+        if let Some(kind) = endora_infrastructure::scan_outbound_secret(&question) {
+            return Err(AppError::BadRequest {
+                message: format!(
+                    "won't send that to the deep model — it looks like it contains {kind}"
+                ),
+            });
+        }
+        let mut v = serde_json::Value::String(question.clone());
+        endora_infrastructure::redact_pii_in_value(&mut v);
+        let safe_question = v.as_str().unwrap_or(&question).to_owned();
+        // Record the person's question, then the deep answer.
+        record_event(store.as_ref(), clock.as_ref(), "Asked the deep model");
+        match endora_infrastructure::ask_deep_model(
+            &cfg.url,
+            &cfg.model,
+            &cfg.api_key,
+            &safe_question,
+        ) {
+            Ok(answer) => {
+                let msg = usecases::post_butler_message(
+                    store.as_ref(),
+                    ids.as_ref(),
+                    clock.as_ref(),
+                    &answer,
+                )?;
+                Ok(Some(msg))
+            }
+            Err(e) => Err(AppError::BadRequest {
+                message: format!("the deep model couldn't answer: {e}"),
+            }),
+        }
+    })
+    .await?;
+    let _ = state.changes.send(());
+    match posted {
+        Some(msg) => Ok(Json(
+            json!({ "answered": true, "message": MessageResponse::from(&msg) }),
+        )),
+        None => Ok(Json(
+            json!({ "answered": false, "note": "Configure a deep model in Settings first." }),
+        )),
+    }
+}
+
+/// The daily-brief schedule (when the butler prepares a brief on its own).
+async fn get_brief_schedule(
+    State(state): State<AppState>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let store = state.store.clone();
+    let s = blocking(move || usecases::brief_schedule(store.as_ref())).await?;
+    Ok(Json(brief_schedule_json(&s)))
+}
+
+#[derive(Deserialize)]
+struct BriefScheduleRequest {
+    enabled: bool,
+    hour_utc: u8,
+}
+
+/// Sets the daily-brief schedule. `hour_utc` is the UTC hour (the console converts
+/// the person's local hour). Only ever prepares a brief from reversible skills.
+async fn set_brief_schedule(
+    State(state): State<AppState>,
+    Json(req): Json<BriefScheduleRequest>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let store = state.store.clone();
+    let s =
+        blocking(move || usecases::set_brief_schedule(store.as_ref(), req.enabled, req.hour_utc))
+            .await?;
+    let _ = state.changes.send(());
+    Ok(Json(brief_schedule_json(&s)))
+}
+
+/// Invokes a capability by id with a JSON body. Read-only skills run directly;
+/// this is the `act` path of the autonomy model. (Consequential skills will be
+/// routed through propose→confirm as they are wired.)
+async fn invoke_capability(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(input): Json<serde_json::Value>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let Some(cap) = state
+        .capabilities
+        .iter()
+        .find(|c| c.info().id == id)
+        .cloned()
+    else {
+        return Err(ApiError(AppError::NotFound {
+            entity: "capability",
+        }));
+    };
+    // Data-loss tripwire + query minimization (ADR 0023), on the explicit-invoke
+    // path too: refuse a request carrying a secret, and redact personal identifiers
+    // before it leaves.
+    let mut input = input;
+    if cap.info().reaches_external {
+        if let Some(kind) = endora_infrastructure::scan_outbound_secret(&input.to_string()) {
+            return Err(ApiError(AppError::BadRequest {
+                message: format!("refusing to send this out — it looks like it contains {kind}"),
+            }));
+        }
+        endora_infrastructure::redact_pii_in_value(&mut input);
+    }
+    let store = state.store.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        let settings = settings_map(store.as_ref()).remove(&id).unwrap_or_default();
+        cap.invoke(&input, &settings)
+    })
+    .await
+    .map_err(|_| {
+        ApiError(AppError::Repository(RepositoryError::Backend(
+            "worker task failed".to_owned(),
+        )))
+    })?;
+    match result {
+        Ok(value) => Ok(Json(json!({ "ok": true, "result": value }))),
+        Err(CapabilityError::BadInput(m)) => Err(ApiError(AppError::BadRequest { message: m })),
+        Err(CapabilityError::Unavailable(m)) => {
+            // Not an error the person did wrong — report it as a soft result.
+            Ok(Json(json!({ "ok": false, "unavailable": m })))
+        }
+    }
+}
+
+/// Spawns the butler's **heartbeat**: a background loop that periodically checks
+/// whether a proactive check-in is due (per the person's cadence) and, if so, has
+/// the butler post one. Only messages — nothing consequential — so it stays on the
+/// safe side of the autonomy model (ADR 0010/0019). The blocking store work runs
+/// on a worker thread; a posted check-in nudges the change stream.
+pub fn spawn_heartbeat(state: AppState) {
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(std::time::Duration::from_secs(30));
+        loop {
+            ticker.tick().await;
+            let store = state.store.clone();
+            let ids = state.ids.clone();
+            let clock = state.clock.clone();
+            let capabilities = state.capabilities.clone();
+            let posted = tokio::task::spawn_blocking(move || {
+                let runner = build_runner(store.as_ref(), capabilities);
+                let context = usecases::butler_context(
+                    store.as_ref(),
+                    store.as_ref(),
+                    store.as_ref(),
+                    store.as_ref(),
+                    store.as_ref(),
+                    store.as_ref(),
+                    &runner,
+                    clock.as_ref(),
+                )?;
+                let posted = usecases::run_due_checkin(
+                    store.as_ref(),
+                    store.as_ref(),
+                    ids.as_ref(),
+                    clock.as_ref(),
+                    &context,
+                )?;
+                if posted.is_some() {
+                    record_event(
+                        store.as_ref(),
+                        clock.as_ref(),
+                        "Reached out with a check-in",
+                    );
+                }
+                // A daily brief, if one is due (reversible skills only).
+                let briefed = usecases::run_due_brief(
+                    store.as_ref(),
+                    store.as_ref(),
+                    store.as_ref(),
+                    &runner,
+                    ids.as_ref(),
+                    clock.as_ref(),
+                )?;
+                if let Some((_, activity)) = &briefed {
+                    for item in activity {
+                        record_event(store.as_ref(), clock.as_ref(), item);
+                    }
+                    record_event(store.as_ref(), clock.as_ref(), "Prepared your daily brief");
+                }
+                Ok::<_, AppError>(posted.is_some() || briefed.is_some())
+            })
+            .await;
+            if let Ok(Ok(true)) = posted {
+                let _ = state.changes.send(());
+            }
+        }
+    });
 }
 
 #[derive(Serialize)]
@@ -1081,7 +1949,9 @@ async fn create_preference(
     let kind = match req.kind.as_deref() {
         Some(k) => PreferenceKind::from_name(k).ok_or_else(|| {
             ApiError(AppError::BadRequest {
-                message: format!("unknown preference kind {k:?}; expected taste or authority"),
+                message: format!(
+                    "unknown preference kind {k:?}; expected taste, authority, or context"
+                ),
             })
         })?,
         None => PreferenceKind::Taste,
@@ -1202,6 +2072,8 @@ struct ExportResponse {
     audit: Vec<AuditResponse>,
     messages: Vec<MessageResponse>,
     preferences: Vec<PreferenceResponse>,
+    suggestions: Vec<serde_json::Value>,
+    beliefs: Vec<serde_json::Value>,
 }
 
 impl From<&MemorySnapshot> for ExportResponse {
@@ -1226,6 +2098,8 @@ impl From<&MemorySnapshot> for ExportResponse {
             audit: s.audit.iter().map(AuditResponse::from).collect(),
             messages: s.messages.iter().map(MessageResponse::from).collect(),
             preferences: s.preferences.iter().map(PreferenceResponse::from).collect(),
+            suggestions: s.suggestions.iter().map(suggestion_json).collect(),
+            beliefs: s.beliefs.iter().map(belief_json).collect(),
         }
     }
 }

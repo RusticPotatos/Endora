@@ -8,18 +8,23 @@
 
 use std::sync::Mutex;
 
+use serde_json::{Value as JsonValue, json};
+
 use endora_application::{
-    AssumptionRepository, AuditLog, ChatRepository, DirectionRepository, ExperimentRepository,
-    MemorySnapshot, MemoryStore, ObservationRepository, PreferenceRepository,
+    ActivityEvent, AssumptionRepository, AuditLog, AutonomyEnvelope, AutonomyEnvelopeRepository,
+    BeliefRepository, BriefSchedule, BriefScheduleRepository, ButlerProposal,
+    CapabilityConfigRepository, CapabilitySettingsRepository, ChatRepository, CheckinRepository,
+    CheckinSchedule, DeepModel, DeepModelRepository, DirectionRepository, EventLog,
+    ExperimentRepository, MemorySnapshot, MemoryStore, ObservationRepository, PreferenceRepository,
     ProcessChangeRepository, ReflectionRepository, RepositoryError, Snooze, SnoozeRepository,
-    TargetRepository, ValueRepository,
+    Suggestion, SuggestionRepository, SuggestionStatus, TargetRepository, ValueRepository,
 };
 use endora_domain::{
-    ApprovalState, Assumption, AssumptionId, AuditId, AuditRecord, ChatMessage, Direction,
-    DirectionId, Experiment, ExperimentId, ExperimentStatus, LifecycleStatus, MessageId,
-    MessageRole, Observation, ObservationId, Preference, PreferenceId, PreferenceKind,
-    ProcessChangeId, ProposedProcessChange, Reflection, ReflectionId, Target, TargetId, Timestamp,
-    Value, ValueId,
+    ApprovalState, Assumption, AssumptionId, AuditId, AuditRecord, Belief, BeliefId, BeliefKind,
+    BeliefStatus, ChatMessage, Confidence, Direction, DirectionId, Experiment, ExperimentId,
+    ExperimentStatus, LifecycleStatus, MessageId, MessageRole, Observation, ObservationId,
+    Preference, PreferenceId, PreferenceKind, ProcessChangeId, ProposedProcessChange, Reflection,
+    ReflectionId, SuggestionId, Target, TargetId, Timestamp, Value, ValueId,
 };
 use rusqlite::{Connection, OptionalExtension, params};
 
@@ -128,6 +133,63 @@ CREATE TABLE IF NOT EXISTS preferences (
     body  TEXT NOT NULL,
     kind  TEXT NOT NULL,
     at_ms INTEGER NOT NULL
+) STRICT;
+CREATE TABLE IF NOT EXISTS suggestions (
+    id           TEXT PRIMARY KEY,
+    kind         TEXT NOT NULL,
+    payload      TEXT NOT NULL,
+    status       TEXT NOT NULL,
+    from_message TEXT,
+    created_ms   INTEGER NOT NULL,
+    decided_ms   INTEGER
+) STRICT;
+CREATE TABLE IF NOT EXISTS checkin (
+    id          INTEGER PRIMARY KEY CHECK (id = 0),
+    enabled     INTEGER NOT NULL,
+    interval_ms INTEGER NOT NULL,
+    next_at_ms  INTEGER NOT NULL
+) STRICT;
+CREATE TABLE IF NOT EXISTS beliefs (
+    id               TEXT PRIMARY KEY,
+    statement        TEXT NOT NULL,
+    kind             TEXT NOT NULL,
+    confidence       TEXT NOT NULL,
+    evidence         TEXT NOT NULL,
+    created_ms       INTEGER NOT NULL,
+    last_affirmed_ms INTEGER NOT NULL,
+    status           TEXT NOT NULL
+) STRICT;
+CREATE TABLE IF NOT EXISTS capability_config (
+    id      TEXT PRIMARY KEY,
+    enabled INTEGER NOT NULL
+) STRICT;
+CREATE TABLE IF NOT EXISTS capability_settings (
+    capability_id TEXT NOT NULL,
+    key           TEXT NOT NULL,
+    value         TEXT NOT NULL,
+    PRIMARY KEY (capability_id, key)
+) STRICT;
+CREATE TABLE IF NOT EXISTS autonomy_envelope (
+    id               INTEGER PRIMARY KEY CHECK (id = 0),
+    auto_external    INTEGER NOT NULL,
+    auto_consequential INTEGER NOT NULL
+) STRICT;
+CREATE TABLE IF NOT EXISTS brief_schedule (
+    id        INTEGER PRIMARY KEY CHECK (id = 0),
+    enabled   INTEGER NOT NULL,
+    hour_utc  INTEGER NOT NULL,
+    last_ms   INTEGER NOT NULL
+) STRICT;
+CREATE TABLE IF NOT EXISTS deep_model (
+    id      INTEGER PRIMARY KEY CHECK (id = 0),
+    url     TEXT NOT NULL,
+    model   TEXT NOT NULL,
+    api_key TEXT NOT NULL
+) STRICT;
+CREATE TABLE IF NOT EXISTS events (
+    id      INTEGER PRIMARY KEY AUTOINCREMENT,
+    at_ms   INTEGER NOT NULL,
+    summary TEXT NOT NULL
 ) STRICT;
 ";
 
@@ -807,6 +869,8 @@ impl MemoryStore for SqliteStore {
             audit: all_audit(&conn)?,
             messages: all_messages(&conn)?,
             preferences: all_preferences(&conn)?,
+            suggestions: all_suggestions(&conn, None)?,
+            beliefs: all_beliefs(&conn)?,
         })
     }
 
@@ -828,6 +892,15 @@ impl MemoryStore for SqliteStore {
             "messages",
             "attention_snoozes",
             "preferences",
+            "suggestions",
+            "checkin",
+            "beliefs",
+            "events",
+            "capability_config",
+            "capability_settings",
+            "autonomy_envelope",
+            "brief_schedule",
+            "deep_model",
         ] {
             tx.execute(&format!("DELETE FROM {table}"), [])
                 .map_err(backend)?;
@@ -1001,6 +1074,432 @@ fn all_preferences(conn: &Connection) -> Result<Vec<Preference>, RepositoryError
             )
             .map_err(corrupt)?,
         );
+    }
+    Ok(out)
+}
+
+impl SuggestionRepository for SqliteStore {
+    fn save(&self, suggestion: &Suggestion) -> Result<(), RepositoryError> {
+        let (kind, payload) = proposal_to_row(&suggestion.proposal);
+        let conn = self.lock()?;
+        conn.execute(
+            "INSERT OR REPLACE INTO suggestions \
+             (id, kind, payload, status, from_message, created_ms, decided_ms) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                id_text(suggestion.id.value()),
+                kind,
+                payload,
+                suggestion.status.name(),
+                suggestion.from_message.map(|m| id_text(m.value())),
+                suggestion.created_at.unix_millis(),
+                suggestion.decided_at.map(Timestamp::unix_millis),
+            ],
+        )
+        .map_err(backend)?;
+        Ok(())
+    }
+
+    fn get(&self, id: SuggestionId) -> Result<Option<Suggestion>, RepositoryError> {
+        let conn = self.lock()?;
+        let mut found = all_suggestions(&conn, None)?;
+        Ok(found.drain(..).find(|s| s.id == id))
+    }
+
+    fn list(&self, status: Option<SuggestionStatus>) -> Result<Vec<Suggestion>, RepositoryError> {
+        let conn = self.lock()?;
+        all_suggestions(&conn, status)
+    }
+}
+
+impl CheckinRepository for SqliteStore {
+    fn get(&self) -> Result<Option<CheckinSchedule>, RepositoryError> {
+        let conn = self.lock()?;
+        conn.query_row(
+            "SELECT enabled, interval_ms, next_at_ms FROM checkin WHERE id = 0",
+            [],
+            |r| {
+                Ok(CheckinSchedule {
+                    enabled: r.get::<_, i64>(0)? != 0,
+                    interval_ms: r.get::<_, i64>(1)?,
+                    next_at: Timestamp::from_unix_millis(r.get::<_, i64>(2)?),
+                })
+            },
+        )
+        .optional()
+        .map_err(backend)
+    }
+
+    fn set(&self, schedule: &CheckinSchedule) -> Result<(), RepositoryError> {
+        let conn = self.lock()?;
+        conn.execute(
+            "INSERT OR REPLACE INTO checkin (id, enabled, interval_ms, next_at_ms) \
+             VALUES (0, ?1, ?2, ?3)",
+            params![
+                i64::from(schedule.enabled),
+                schedule.interval_ms,
+                schedule.next_at.unix_millis()
+            ],
+        )
+        .map_err(backend)?;
+        Ok(())
+    }
+}
+
+impl EventLog for SqliteStore {
+    fn record(&self, at: Timestamp, summary: &str) -> Result<(), RepositoryError> {
+        let conn = self.lock()?;
+        conn.execute(
+            "INSERT INTO events (at_ms, summary) VALUES (?1, ?2)",
+            params![at.unix_millis(), summary],
+        )
+        .map_err(backend)?;
+        Ok(())
+    }
+
+    fn recent(&self, limit: usize) -> Result<Vec<ActivityEvent>, RepositoryError> {
+        let conn = self.lock()?;
+        let mut stmt = conn
+            .prepare("SELECT at_ms, summary FROM events ORDER BY id DESC LIMIT ?1")
+            .map_err(backend)?;
+        let rows = stmt
+            .query_map([limit as i64], |r| {
+                Ok(ActivityEvent {
+                    at: Timestamp::from_unix_millis(r.get::<_, i64>(0)?),
+                    summary: r.get::<_, String>(1)?,
+                })
+            })
+            .map_err(backend)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(backend)
+    }
+}
+
+impl DeepModelRepository for SqliteStore {
+    fn get(&self) -> Result<Option<DeepModel>, RepositoryError> {
+        let conn = self.lock()?;
+        conn.query_row(
+            "SELECT url, model, api_key FROM deep_model WHERE id = 0",
+            [],
+            |r| {
+                Ok(DeepModel {
+                    url: r.get(0)?,
+                    model: r.get(1)?,
+                    api_key: r.get(2)?,
+                })
+            },
+        )
+        .optional()
+        .map_err(backend)
+    }
+
+    fn set(&self, model: &DeepModel) -> Result<(), RepositoryError> {
+        let conn = self.lock()?;
+        conn.execute(
+            "INSERT OR REPLACE INTO deep_model (id, url, model, api_key) VALUES (0, ?1, ?2, ?3)",
+            params![model.url, model.model, model.api_key],
+        )
+        .map_err(backend)?;
+        Ok(())
+    }
+}
+
+impl BriefScheduleRepository for SqliteStore {
+    fn get(&self) -> Result<Option<BriefSchedule>, RepositoryError> {
+        let conn = self.lock()?;
+        conn.query_row(
+            "SELECT enabled, hour_utc, last_ms FROM brief_schedule WHERE id = 0",
+            [],
+            |r| {
+                Ok(BriefSchedule {
+                    enabled: r.get::<_, i64>(0)? != 0,
+                    hour_utc: r.get::<_, i64>(1)? as u8,
+                    last_at: Timestamp::from_unix_millis(r.get::<_, i64>(2)?),
+                })
+            },
+        )
+        .optional()
+        .map_err(backend)
+    }
+
+    fn set(&self, schedule: &BriefSchedule) -> Result<(), RepositoryError> {
+        let conn = self.lock()?;
+        conn.execute(
+            "INSERT OR REPLACE INTO brief_schedule (id, enabled, hour_utc, last_ms) \
+             VALUES (0, ?1, ?2, ?3)",
+            params![
+                i64::from(schedule.enabled),
+                i64::from(schedule.hour_utc),
+                schedule.last_at.unix_millis()
+            ],
+        )
+        .map_err(backend)?;
+        Ok(())
+    }
+}
+
+impl AutonomyEnvelopeRepository for SqliteStore {
+    fn get(&self) -> Result<AutonomyEnvelope, RepositoryError> {
+        let conn = self.lock()?;
+        conn.query_row(
+            "SELECT auto_external, auto_consequential FROM autonomy_envelope WHERE id = 0",
+            [],
+            |r| {
+                Ok(AutonomyEnvelope {
+                    auto_external: r.get::<_, i64>(0)? != 0,
+                    auto_consequential: r.get::<_, i64>(1)? != 0,
+                })
+            },
+        )
+        .optional()
+        .map_err(backend)
+        .map(Option::unwrap_or_default)
+    }
+
+    fn set(&self, envelope: &AutonomyEnvelope) -> Result<(), RepositoryError> {
+        let conn = self.lock()?;
+        conn.execute(
+            "INSERT OR REPLACE INTO autonomy_envelope (id, auto_external, auto_consequential) \
+             VALUES (0, ?1, ?2)",
+            params![
+                i64::from(envelope.auto_external),
+                i64::from(envelope.auto_consequential)
+            ],
+        )
+        .map_err(backend)?;
+        Ok(())
+    }
+}
+
+impl CapabilitySettingsRepository for SqliteStore {
+    fn all_settings(&self) -> Result<Vec<(String, String, String)>, RepositoryError> {
+        let conn = self.lock()?;
+        let mut stmt = conn
+            .prepare("SELECT capability_id, key, value FROM capability_settings")
+            .map_err(backend)?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                ))
+            })
+            .map_err(backend)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(backend)
+    }
+
+    fn set_setting(
+        &self,
+        capability_id: &str,
+        key: &str,
+        value: &str,
+    ) -> Result<(), RepositoryError> {
+        let conn = self.lock()?;
+        conn.execute(
+            "INSERT OR REPLACE INTO capability_settings (capability_id, key, value) \
+             VALUES (?1, ?2, ?3)",
+            params![capability_id, key, value],
+        )
+        .map_err(backend)?;
+        Ok(())
+    }
+}
+
+impl CapabilityConfigRepository for SqliteStore {
+    fn enabled_overrides(&self) -> Result<Vec<(String, bool)>, RepositoryError> {
+        let conn = self.lock()?;
+        let mut stmt = conn
+            .prepare("SELECT id, enabled FROM capability_config")
+            .map_err(backend)?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)? != 0))
+            })
+            .map_err(backend)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(backend)
+    }
+
+    fn set_enabled(&self, id: &str, enabled: bool) -> Result<(), RepositoryError> {
+        let conn = self.lock()?;
+        conn.execute(
+            "INSERT OR REPLACE INTO capability_config (id, enabled) VALUES (?1, ?2)",
+            params![id, i64::from(enabled)],
+        )
+        .map_err(backend)?;
+        Ok(())
+    }
+}
+
+impl BeliefRepository for SqliteStore {
+    fn save(&self, belief: &Belief) -> Result<(), RepositoryError> {
+        let conn = self.lock()?;
+        conn.execute(
+            "INSERT OR REPLACE INTO beliefs \
+             (id, statement, kind, confidence, evidence, created_ms, last_affirmed_ms, status) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![
+                id_text(belief.id().value()),
+                belief.statement(),
+                belief.kind().name(),
+                belief.confidence().name(),
+                belief.evidence(),
+                belief.created_at().unix_millis(),
+                belief.last_affirmed_at().unix_millis(),
+                belief.status().name(),
+            ],
+        )
+        .map_err(backend)?;
+        Ok(())
+    }
+
+    fn get(&self, id: BeliefId) -> Result<Option<Belief>, RepositoryError> {
+        let conn = self.lock()?;
+        Ok(all_beliefs(&conn)?.into_iter().find(|b| b.id() == id))
+    }
+
+    fn list(&self) -> Result<Vec<Belief>, RepositoryError> {
+        let conn = self.lock()?;
+        all_beliefs(&conn)
+    }
+}
+
+fn all_beliefs(conn: &Connection) -> Result<Vec<Belief>, RepositoryError> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, statement, kind, confidence, evidence, created_ms, last_affirmed_ms, status \
+             FROM beliefs ORDER BY last_affirmed_ms DESC, rowid DESC",
+        )
+        .map_err(backend)?;
+    let rows = stmt
+        .query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, String>(3)?,
+                r.get::<_, String>(4)?,
+                r.get::<_, i64>(5)?,
+                r.get::<_, i64>(6)?,
+                r.get::<_, String>(7)?,
+            ))
+        })
+        .map_err(backend)?;
+    let mut out = Vec::new();
+    for row in rows {
+        let (id, statement, kind, confidence, evidence, created_ms, affirmed_ms, status) =
+            row.map_err(backend)?;
+        out.push(Belief::from_parts(
+            BeliefId::new(parse_id(&id)?),
+            statement,
+            BeliefKind::from_name(&kind),
+            Confidence::from_name(&confidence),
+            evidence,
+            Timestamp::from_unix_millis(created_ms),
+            Timestamp::from_unix_millis(affirmed_ms),
+            BeliefStatus::from_name(&status),
+        ));
+    }
+    Ok(out)
+}
+
+/// Serializes a proposal to its stored `(kind, payload-json)` form.
+fn proposal_to_row(p: &ButlerProposal) -> (&'static str, String) {
+    match p {
+        ButlerProposal::CreateValue { name } => {
+            ("create_value", json!({ "name": name }).to_string())
+        }
+        ButlerProposal::CreateNorthStar { title } => {
+            ("create_north_star", json!({ "title": title }).to_string())
+        }
+        ButlerProposal::CreateTarget {
+            direction_ref,
+            statement,
+        } => (
+            "create_target",
+            json!({ "direction_ref": direction_ref, "statement": statement }).to_string(),
+        ),
+        ButlerProposal::RememberPreference { text, kind } => (
+            "remember_preference",
+            json!({ "text": text, "preference_kind": kind.name() }).to_string(),
+        ),
+    }
+}
+
+/// Reconstructs a proposal from its stored `(kind, payload-json)` form.
+fn row_to_proposal(kind: &str, payload: &str) -> Result<ButlerProposal, RepositoryError> {
+    let v: JsonValue = serde_json::from_str(payload)
+        .map_err(|e| RepositoryError::Corrupt(format!("bad suggestion payload: {e}")))?;
+    let s = |k: &str| {
+        v.get(k)
+            .and_then(JsonValue::as_str)
+            .unwrap_or_default()
+            .to_owned()
+    };
+    match kind {
+        "create_value" => Ok(ButlerProposal::CreateValue { name: s("name") }),
+        "create_north_star" => Ok(ButlerProposal::CreateNorthStar { title: s("title") }),
+        "create_target" => Ok(ButlerProposal::CreateTarget {
+            direction_ref: s("direction_ref"),
+            statement: s("statement"),
+        }),
+        "remember_preference" => Ok(ButlerProposal::RememberPreference {
+            text: s("text"),
+            kind: PreferenceKind::from_name(&s("preference_kind")).unwrap_or(PreferenceKind::Taste),
+        }),
+        other => Err(RepositoryError::Corrupt(format!(
+            "unknown suggestion kind {other:?}"
+        ))),
+    }
+}
+
+fn all_suggestions(
+    conn: &Connection,
+    status: Option<SuggestionStatus>,
+) -> Result<Vec<Suggestion>, RepositoryError> {
+    // Newest first; rowid breaks same-millisecond ties.
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, kind, payload, status, from_message, created_ms, decided_ms \
+             FROM suggestions ORDER BY created_ms DESC, rowid DESC",
+        )
+        .map_err(backend)?;
+    let rows = stmt
+        .query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, String>(3)?,
+                r.get::<_, Option<String>>(4)?,
+                r.get::<_, i64>(5)?,
+                r.get::<_, Option<i64>>(6)?,
+            ))
+        })
+        .map_err(backend)?;
+    let mut out = Vec::new();
+    for row in rows {
+        let (id, kind, payload, status_s, from_message, created_ms, decided_ms) =
+            row.map_err(backend)?;
+        let st = SuggestionStatus::from_name(&status_s).ok_or_else(|| {
+            RepositoryError::Corrupt(format!("unknown suggestion status {status_s:?}"))
+        })?;
+        if let Some(want) = status {
+            if st != want {
+                continue;
+            }
+        }
+        let from_message = match from_message {
+            Some(m) => Some(MessageId::new(parse_id(&m)?)),
+            None => None,
+        };
+        out.push(Suggestion {
+            id: SuggestionId::new(parse_id(&id)?),
+            proposal: row_to_proposal(&kind, &payload)?,
+            status: st,
+            from_message,
+            created_at: Timestamp::from_unix_millis(created_ms),
+            decided_at: decided_ms.map(Timestamp::from_unix_millis),
+        });
     }
     Ok(out)
 }
@@ -1999,6 +2498,98 @@ mod tests {
         assert_eq!(recent[0].summary(), "second");
         assert_eq!(recent[1].summary(), "first");
         assert_eq!(log.recent(1).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn capability_settings_round_trip_and_upsert() {
+        use endora_application::CapabilitySettingsRepository;
+        let store = store();
+        let repo: &dyn CapabilitySettingsRepository = &store;
+        assert!(repo.all_settings().unwrap().is_empty());
+        repo.set_setting("image_review", "model", "moondream")
+            .unwrap();
+        repo.set_setting("image_review", "model", "llava").unwrap(); // upsert
+        let all = repo.all_settings().unwrap();
+        assert_eq!(
+            all,
+            vec![(
+                "image_review".to_owned(),
+                "model".to_owned(),
+                "llava".to_owned()
+            )]
+        );
+    }
+
+    #[test]
+    fn events_append_and_read_newest_first() {
+        use endora_application::EventLog;
+        use endora_domain::Timestamp;
+        let store = store();
+        let log: &dyn EventLog = &store;
+        log.record(Timestamp::from_unix_millis(100), "Used the weather skill")
+            .unwrap();
+        log.record(Timestamp::from_unix_millis(200), "Turned news off")
+            .unwrap();
+
+        let recent = log.recent(10).unwrap();
+        assert_eq!(recent.len(), 2);
+        assert_eq!(recent[0].summary, "Turned news off");
+        assert_eq!(recent[1].summary, "Used the weather skill");
+        assert_eq!(log.recent(1).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn deep_model_config_round_trips() {
+        use endora_application::{DeepModel, DeepModelRepository};
+        let store = store();
+        let repo: &dyn DeepModelRepository = &store;
+        assert!(repo.get().unwrap().is_none());
+        let cfg = DeepModel {
+            url: "https://api.x.com/v1".to_owned(),
+            model: "big-1".to_owned(),
+            api_key: "secret".to_owned(),
+        };
+        repo.set(&cfg).unwrap();
+        assert_eq!(repo.get().unwrap(), Some(cfg));
+    }
+
+    #[test]
+    fn autonomy_envelope_defaults_then_round_trips() {
+        use endora_application::{AutonomyEnvelope, AutonomyEnvelopeRepository};
+        let store = store();
+        let repo: &dyn AutonomyEnvelopeRepository = &store;
+
+        // Unset ⇒ the default posture (external ok, consequential no).
+        assert_eq!(repo.get().unwrap(), AutonomyEnvelope::default());
+
+        let widened = AutonomyEnvelope {
+            auto_external: false,
+            auto_consequential: true,
+        };
+        repo.set(&widened).unwrap();
+        assert_eq!(repo.get().unwrap(), widened);
+    }
+
+    #[test]
+    fn capability_enable_overrides_round_trip() {
+        use endora_application::CapabilityConfigRepository;
+        let store = store();
+        let repo: &dyn CapabilityConfigRepository = &store;
+
+        // No overrides to start.
+        assert!(repo.enabled_overrides().unwrap().is_empty());
+
+        // Set two, then flip one; the store keeps the latest per id.
+        repo.set_enabled("weather", true).unwrap();
+        repo.set_enabled("flights", false).unwrap();
+        repo.set_enabled("weather", false).unwrap();
+
+        let mut got = repo.enabled_overrides().unwrap();
+        got.sort();
+        assert_eq!(
+            got,
+            vec![("flights".to_owned(), false), ("weather".to_owned(), false)]
+        );
     }
 
     #[test]

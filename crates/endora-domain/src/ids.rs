@@ -40,6 +40,8 @@ id_type!(AssumptionId, "assumption");
 id_type!(ExperimentId, "experiment");
 id_type!(ObservationId, "observation");
 id_type!(ReflectionId, "reflection");
+id_type!(SuggestionId, "suggestion");
+id_type!(BeliefId, "belief");
 id_type!(ProcessChangeId, "proposed process change");
 id_type!(AuditId, "audit record");
 

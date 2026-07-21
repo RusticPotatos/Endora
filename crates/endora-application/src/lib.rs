@@ -17,11 +17,15 @@ pub mod usecases;
 
 pub use error::AppError;
 pub use ports::{
-    AssumptionRepository, AttentionItem, AttentionKind, AuditLog, Butler, ButlerContext,
-    ButlerProposal, ButlerReply, ChatRepository, Clock, DirectionRepository, ExperimentRepository,
-    IdSource, MemorySnapshot, MemoryStore, NorthStarBrief, ObservationRepository,
-    PreferenceRepository, ProcessChangeRepository, ProposalError, Proposer, ReflectionRepository,
-    RepositoryError, Snooze, SnoozeRepository, TargetRepository, ValueRepository,
+    ActivityEvent, AssumptionRepository, AttentionItem, AttentionKind, AuditLog, AutonomyEnvelope,
+    AutonomyEnvelopeRepository, BeliefRepository, BriefSchedule, BriefScheduleRepository, Butler,
+    ButlerContext, ButlerProposal, ButlerReply, CapabilityConfigRepository, CapabilityRunner,
+    CapabilitySettingsRepository, CapabilitySpec, CapabilityUse, ChatRepository, CheckinRepository,
+    CheckinSchedule, Clock, DeepModel, DeepModelRepository, DirectionRepository, EventLog,
+    ExperimentRepository, FormedBelief, IdSource, MemorySnapshot, MemoryStore, NorthStarBrief,
+    ObservationRepository, PreferenceRepository, ProcessChangeRepository, ProposalError, Proposer,
+    ReflectionRepository, RepositoryError, Snooze, SnoozeRepository, Suggestion,
+    SuggestionRepository, SuggestionStatus, TargetRepository, ValueRepository,
 };
 pub use usecases::{ActivityItem, ActivityKind};
 
