@@ -18,7 +18,7 @@ pub mod ids;
 pub mod traits;
 
 pub use autonomy::AutonomyLevel;
-pub use error::{DomainError, RepositoryError};
+pub use error::{AppError, DomainError, RepositoryError};
 pub use ids::{
     AssumptionId, AuditId, BeliefId, DirectionId, ExperimentId, MessageId, ObservationId,
     PreferenceId, ProcessChangeId, ReflectionId, SuggestionId, TargetId, Timestamp, ValueId,
