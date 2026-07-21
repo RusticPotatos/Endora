@@ -42,6 +42,15 @@ services:
       # host, fall back to a small model like llama3.2:3b (weaker, more prone to
       # fabricating — the deterministic guardrails still hold, but quality drops).
       ENDORA_MODEL: "qwen2.5:7b"
+      # Optional private egress: route *external* skill traffic (weather, news,
+      # search, web fetch) through a proxy of your choice, WITHOUT binding Endora's
+      # network to another container (no `network_mode: service:...`; that tight
+      # coupling means a proxy/VPN blip takes the app down). Accepts http(s):// or
+      # socks5://. The local model call is never proxied.
+      #   Use a proxy dedicated to this — NOT a shared P2P/torrent VPN path. A small
+      #   HTTP/SOCKS proxy container, Tor (socks5://tor:9050), or a separate egress
+      #   VPN are all fine.
+      # ENDORA_EGRESS_PROXY: "socks5://my-egress-proxy:1080"
       # Self-signed HTTPS so the console is a secure context — required for the
       # browser microphone/voice on a LAN address with no domain or proxy. The
       # cert persists in /data (accept the browser warning once). Set
