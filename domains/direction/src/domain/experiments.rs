@@ -4,8 +4,8 @@
 //! a deliberate lifecycle, and evidence gathered while it runs is captured as
 //! [`Observation`]s.
 
-use crate::error::{DomainError, require_non_empty};
-use crate::ids::{AssumptionId, ExperimentId, ObservationId, Timestamp};
+use endora_kernel::error::{DomainError, require_non_empty};
+use endora_kernel::ids::{AssumptionId, ExperimentId, ObservationId, Timestamp};
 
 /// The lifecycle state of an [`Experiment`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -43,7 +43,7 @@ impl ExperimentStatus {
     }
 }
 
-/// A small, bounded test of an [`Assumption`](crate::targets::Assumption).
+/// A small, bounded test of an [`Assumption`](crate::domain::targets::Assumption).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Experiment {
     id: ExperimentId,
@@ -238,8 +238,8 @@ impl Observation {
 #[cfg(test)]
 mod tests {
     use super::{Experiment, ExperimentStatus, Observation};
-    use crate::error::DomainError;
-    use crate::ids::{AssumptionId, ExperimentId, ObservationId, Timestamp};
+    use endora_kernel::error::DomainError;
+    use endora_kernel::ids::{AssumptionId, ExperimentId, ObservationId, Timestamp};
 
     fn proposed() -> Experiment {
         Experiment::propose(

@@ -9,8 +9,8 @@
 //! only ever *input*. Whether a consequential action takes effect is decided
 //! here, deterministically, and can be tested and audited.
 
-use crate::autonomy::AutonomyLevel;
-use crate::reflection::ProposedProcessChange;
+use crate::domain::reflection::ProposedProcessChange;
+use endora_kernel::autonomy::AutonomyLevel;
 
 /// The outcome of a deterministic authorization decision.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -67,9 +67,11 @@ pub fn authorize_process_change(
 #[cfg(test)]
 mod tests {
     use super::{PolicyDecision, authorize_process_change};
-    use crate::autonomy::AutonomyLevel::{ActWithinPolicy, ConfirmEachAction, Observe, Suggest};
-    use crate::ids::{ProcessChangeId, ReflectionId};
-    use crate::reflection::ProposedProcessChange;
+    use crate::domain::reflection::ProposedProcessChange;
+    use endora_kernel::autonomy::AutonomyLevel::{
+        ActWithinPolicy, ConfirmEachAction, Observe, Suggest,
+    };
+    use endora_kernel::ids::{ProcessChangeId, ReflectionId};
 
     fn proposal() -> ProposedProcessChange {
         ProposedProcessChange::propose(

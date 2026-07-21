@@ -38,12 +38,7 @@
 pub mod autonomy;
 pub mod conversation;
 pub mod error;
-pub mod experiments;
 pub mod ids;
-pub mod policy;
-pub mod reflection;
-pub mod targets;
-pub mod values;
 
 // `AuditRecord` moved to the platform context (ADR 0026); re-exported so
 // `endora_domain::AuditRecord` paths are unchanged during the migration.
@@ -51,17 +46,19 @@ pub use autonomy::AutonomyLevel;
 pub use conversation::{ChatMessage, MessageRole};
 pub use endora_platform::AuditRecord;
 // Beliefs and preferences moved to the understanding context (ADR 0026);
-// re-exported so existing `endora_domain::…` paths are unchanged.
+// the aims + learning loop (values, targets, experiments, reflection, policy)
+// moved to the direction context. Both re-exported so existing `endora_domain::…`
+// paths are unchanged.
+pub use endora_direction::{
+    ApprovalState, Assumption, Direction, Experiment, ExperimentStatus, LifecycleStatus,
+    Observation, PolicyDecision, ProposedProcessChange, Reflection, Target, Value,
+    authorize_process_change,
+};
 pub use endora_understanding::{
     Belief, BeliefKind, BeliefStatus, Confidence, Preference, PreferenceKind,
 };
 pub use error::DomainError;
-pub use experiments::{Experiment, ExperimentStatus, Observation};
 pub use ids::{
     AssumptionId, AuditId, BeliefId, DirectionId, ExperimentId, MessageId, ObservationId,
     PreferenceId, ProcessChangeId, ReflectionId, SuggestionId, TargetId, Timestamp, ValueId,
 };
-pub use policy::{PolicyDecision, authorize_process_change};
-pub use reflection::{ApprovalState, ProposedProcessChange, Reflection};
-pub use targets::{Assumption, Direction, LifecycleStatus, Target};
-pub use values::Value;
