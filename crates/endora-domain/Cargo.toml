@@ -17,6 +17,7 @@ endora-kernel = { path = "../../shared/kernel" }
 # re-exported here so existing `endora_domain::AuditRecord` paths keep working
 # until callers are repointed. Removed when the old crates are deleted (ADR 0026).
 endora-platform = { path = "../../domains/platform" }
+endora-understanding = { path = "../../domains/understanding" }
 
 [lints]
 workspace = true

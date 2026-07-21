@@ -9,10 +9,10 @@ use core::fmt;
 
 use endora_capabilities::CapabilityUse;
 use endora_domain::{
-    Assumption, AssumptionId, AuditRecord, Belief, BeliefId, BeliefKind, ChatMessage, Confidence,
-    Direction, DirectionId, Experiment, ExperimentId, MessageId, Observation, Preference,
-    PreferenceId, PreferenceKind, ProcessChangeId, ProposedProcessChange, Reflection, ReflectionId,
-    SuggestionId, Target, TargetId, Timestamp, Value, ValueId,
+    Assumption, AssumptionId, AuditRecord, Belief, BeliefKind, ChatMessage, Confidence, Direction,
+    DirectionId, Experiment, ExperimentId, MessageId, Observation, Preference, PreferenceKind,
+    ProcessChangeId, ProposedProcessChange, Reflection, ReflectionId, SuggestionId, Target,
+    TargetId, Timestamp, Value, ValueId,
 };
 
 /// A complete snapshot of the user's stored data, for the memory rights of the
@@ -369,26 +369,8 @@ pub struct ButlerReply {
     pub capability_use: Option<CapabilityUse>,
 }
 
-/// Persists the person's [`Belief`]s — Endora's living understanding of them.
-pub trait BeliefRepository {
-    /// Inserts a belief, or replaces the one with the same id (create + update).
-    ///
-    /// # Errors
-    /// [`RepositoryError`] if the backend fails.
-    fn save(&self, belief: &Belief) -> Result<(), RepositoryError>;
-
-    /// Fetches a belief by id, `None` if absent.
-    ///
-    /// # Errors
-    /// [`RepositoryError`] if the backend fails or stored data is corrupt.
-    fn get(&self, id: BeliefId) -> Result<Option<Belief>, RepositoryError>;
-
-    /// Lists all beliefs, most-recently-affirmed first.
-    ///
-    /// # Errors
-    /// [`RepositoryError`] if the backend fails or stored data is corrupt.
-    fn list(&self) -> Result<Vec<Belief>, RepositoryError>;
-}
+// BeliefRepository moved to the understanding context (ADR 0026); re-exported
+// from `endora_application` (see lib.rs) so existing paths hold.
 
 /// Where a persisted [`Suggestion`] is in its life: proposed and waiting, applied
 /// to the person's memory, or dismissed. A suggestion is a butler proposal made
@@ -661,26 +643,8 @@ pub trait Butler {
     }
 }
 
-/// Persists and retrieves [`Preference`]s (what the butler has learned).
-pub trait PreferenceRepository {
-    /// Inserts a preference, or replaces the existing one with the same id.
-    ///
-    /// # Errors
-    /// [`RepositoryError`] if the backend fails.
-    fn save(&self, preference: &Preference) -> Result<(), RepositoryError>;
-
-    /// Lists all preferences, oldest first.
-    ///
-    /// # Errors
-    /// [`RepositoryError`] if the backend fails or stored data is corrupt.
-    fn list_all(&self) -> Result<Vec<Preference>, RepositoryError>;
-
-    /// Permanently removes a preference.
-    ///
-    /// # Errors
-    /// [`RepositoryError`] if the backend fails.
-    fn delete(&self, id: PreferenceId) -> Result<(), RepositoryError>;
-}
+// PreferenceRepository moved to the understanding context (ADR 0026);
+// re-exported from `endora_application` (see lib.rs) so existing paths hold.
 
 /// Persists and retrieves the conversation with the butler.
 pub trait ChatRepository {

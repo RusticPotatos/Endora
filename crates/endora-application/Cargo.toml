@@ -13,6 +13,7 @@ endora-kernel = { path = "../../shared/kernel" }
 endora-domain = { path = "../endora-domain" }
 endora-platform = { path = "../../domains/platform" }
 endora-capabilities = { path = "../../domains/capabilities" }
+endora-understanding = { path = "../../domains/understanding" }
 
 [lints]
 workspace = true

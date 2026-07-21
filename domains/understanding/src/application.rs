@@ -1,0 +1,50 @@
+//! Understanding application layer — repository ports for beliefs and preferences.
+
+use endora_kernel::RepositoryError;
+use endora_kernel::ids::{BeliefId, PreferenceId};
+
+use crate::domain::{Belief, Preference};
+
+/// Persists and retrieves [`Belief`]s — what the butler currently understands
+/// about the person.
+pub trait BeliefRepository {
+    /// Inserts a belief, or replaces the one with the same id (create + update).
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if the backend fails.
+    fn save(&self, belief: &Belief) -> Result<(), RepositoryError>;
+
+    /// Fetches a belief by id, `None` if absent.
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if the backend fails or stored data is corrupt.
+    fn get(&self, id: BeliefId) -> Result<Option<Belief>, RepositoryError>;
+
+    /// Lists all beliefs, most-recently-affirmed first.
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if the backend fails or stored data is corrupt.
+    fn list(&self) -> Result<Vec<Belief>, RepositoryError>;
+}
+
+/// Persists and retrieves [`Preference`]s — durable things the person wants the
+/// butler to keep in mind.
+pub trait PreferenceRepository {
+    /// Inserts a preference, or replaces the existing one with the same id.
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if the backend fails.
+    fn save(&self, preference: &Preference) -> Result<(), RepositoryError>;
+
+    /// Lists all preferences, oldest first.
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if the backend fails or stored data is corrupt.
+    fn list_all(&self) -> Result<Vec<Preference>, RepositoryError>;
+
+    /// Permanently removes a preference.
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if the backend fails.
+    fn delete(&self, id: PreferenceId) -> Result<(), RepositoryError>;
+}
