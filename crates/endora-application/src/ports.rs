@@ -62,29 +62,10 @@ pub trait MemoryStore {
     fn purge(&self) -> Result<(), RepositoryError>;
 }
 
-/// A failure from a storage backend behind a repository port.
-///
-/// Deliberately free of any engine-specific type: adapters translate their own
-/// errors (driver, I/O, corrupt rows) into these variants so the application
-/// stays independent of the backend.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum RepositoryError {
-    /// The backend itself failed (connection, I/O, driver error, lock).
-    Backend(String),
-    /// Stored data could not be reconstituted into a valid domain value.
-    Corrupt(String),
-}
-
-impl fmt::Display for RepositoryError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Backend(msg) => write!(f, "storage backend error: {msg}"),
-            Self::Corrupt(msg) => write!(f, "corrupt stored data: {msg}"),
-        }
-    }
-}
-
-impl core::error::Error for RepositoryError {}
+// `RepositoryError` is the shared persistence-failure vocabulary; it lives in the
+// kernel so the shared `Db` handle and every context's repositories speak it. See
+// ADR 0026. Re-exported here so `ports::RepositoryError` paths are unchanged.
+pub use endora_kernel::RepositoryError;
 
 /// Persists and retrieves [`Value`]s (the Identity & Values context).
 pub trait ValueRepository {

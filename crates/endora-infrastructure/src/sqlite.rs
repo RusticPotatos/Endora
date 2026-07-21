@@ -6,7 +6,7 @@
 //! read. The store is synchronous; when the async node uses it, calls run on a
 //! blocking thread (see `docs/adr/0007-async-web-stack.md`).
 
-use std::sync::Mutex;
+use endora_persistence::Db;
 
 use serde_json::{Value as JsonValue, json};
 
@@ -193,9 +193,16 @@ CREATE TABLE IF NOT EXISTS events (
 ) STRICT;
 ";
 
-/// A SQLite-backed store implementing the persistence ports.
+/// A SQLite-backed store implementing the persistence ports over the shared
+/// [`Db`] handle.
+///
+/// Repositories not yet moved to their own bounded context still live here
+/// during the Responsibility-Oriented reorg (ADR 0026). Because it holds the
+/// shared `Db`, any context repository built over the same handle shares this
+/// one connection — the composition root uses [`from_db`](Self::from_db) and
+/// [`db`](Self::db) to wire them together.
 pub struct SqliteStore {
-    conn: Mutex<Connection>,
+    db: Db,
 }
 
 impl SqliteStore {
@@ -204,8 +211,7 @@ impl SqliteStore {
     /// # Errors
     /// [`RepositoryError::Backend`] if the database cannot be opened or migrated.
     pub fn open(path: &str) -> Result<Self, RepositoryError> {
-        let conn = Connection::open(path).map_err(backend)?;
-        Self::from_connection(conn)
+        Self::from_db(Db::open(path)?)
     }
 
     /// Opens a private in-memory store, mainly for tests.
@@ -213,51 +219,59 @@ impl SqliteStore {
     /// # Errors
     /// [`RepositoryError::Backend`] if the database cannot be created or migrated.
     pub fn open_in_memory() -> Result<Self, RepositoryError> {
-        let conn = Connection::open_in_memory().map_err(backend)?;
-        Self::from_connection(conn)
+        Self::from_db(Db::open_in_memory()?)
     }
 
-    fn from_connection(conn: Connection) -> Result<Self, RepositoryError> {
-        conn.pragma_update(None, "foreign_keys", "ON")
+    /// Builds a store over an existing shared [`Db`], applying its schema. The
+    /// composition root uses this to share one connection across contexts.
+    ///
+    /// # Errors
+    /// [`RepositoryError::Backend`] if the schema cannot be applied.
+    pub fn from_db(db: Db) -> Result<Self, RepositoryError> {
+        {
+            let conn = db.lock()?;
+            // Rename a pre-rename `goals`/`goal_id` schema to `targets`/`target_id`
+            // *before* creating any tables, so the schema below does not create an
+            // empty `targets` alongside the old data. (Goal was renamed to Target.)
+            migrate_goals_to_targets(&conn)?;
+            conn.execute_batch(SCHEMA).map_err(backend)?;
+            // Migrations for databases created by an earlier schema version. The
+            // review index is created only once the column is guaranteed present,
+            // so opening a pre-review database does not fail on the missing column.
+            ensure_column(&conn, "experiments", "review_by_ms", "INTEGER")?;
+            conn.execute_batch(
+                "CREATE INDEX IF NOT EXISTS idx_experiments_review ON experiments(review_by_ms);",
+            )
             .map_err(backend)?;
-        // Rename a pre-rename `goals`/`goal_id` schema to `targets`/`target_id`
-        // *before* creating any tables, so the schema below does not create an
-        // empty `targets` alongside the old data. (Goal was renamed to Target.)
-        migrate_goals_to_targets(&conn)?;
-        conn.execute_batch(SCHEMA).map_err(backend)?;
-        // Migrations for databases created by an earlier schema version. The
-        // review index is created only once the column is guaranteed present,
-        // so opening a pre-review database does not fail on the missing column.
-        ensure_column(&conn, "experiments", "review_by_ms", "INTEGER")?;
-        conn.execute_batch(
-            "CREATE INDEX IF NOT EXISTS idx_experiments_review ON experiments(review_by_ms);",
-        )
-        .map_err(backend)?;
-        // Lifecycle status on North Stars and Targets; existing rows default to
-        // 'active'.
-        ensure_column(
-            &conn,
-            "directions",
-            "status",
-            "TEXT NOT NULL DEFAULT 'active'",
-        )?;
-        ensure_column(&conn, "targets", "status", "TEXT NOT NULL DEFAULT 'active'")?;
-        // The Value link on North Stars (nullable; existing rows read back unfiled).
-        ensure_column(
-            &conn,
-            "directions",
-            "value_id",
-            "TEXT REFERENCES \"values\"(id)",
-        )?;
-        Ok(Self {
-            conn: Mutex::new(conn),
-        })
+            // Lifecycle status on North Stars and Targets; existing rows default to
+            // 'active'.
+            ensure_column(
+                &conn,
+                "directions",
+                "status",
+                "TEXT NOT NULL DEFAULT 'active'",
+            )?;
+            ensure_column(&conn, "targets", "status", "TEXT NOT NULL DEFAULT 'active'")?;
+            // The Value link on North Stars (nullable; existing rows read back unfiled).
+            ensure_column(
+                &conn,
+                "directions",
+                "value_id",
+                "TEXT REFERENCES \"values\"(id)",
+            )?;
+        }
+        Ok(Self { db })
+    }
+
+    /// The shared connection handle, for building sibling context repositories
+    /// over the same underlying connection.
+    #[must_use]
+    pub fn db(&self) -> Db {
+        self.db.clone()
     }
 
     fn lock(&self) -> Result<std::sync::MutexGuard<'_, Connection>, RepositoryError> {
-        self.conn
-            .lock()
-            .map_err(|_| RepositoryError::Backend("connection lock poisoned".to_owned()))
+        self.db.lock()
     }
 }
 
@@ -2141,7 +2155,7 @@ mod tests {
 
         // Opening the store must add the column and read the legacy row back
         // with no review scheduled.
-        let store = SqliteStore::from_connection(conn).unwrap();
+        let store = SqliteStore::from_db(endora_persistence::Db::from_connection(conn).unwrap()).unwrap();
         let experiments: &dyn ExperimentRepository = &store;
         let loaded = experiments.get(ExperimentId::new(4)).unwrap().unwrap();
         assert_eq!(loaded.review_by(), None);
@@ -2184,7 +2198,7 @@ mod tests {
 
         // Opening the store migrates the schema and preserves the data under the
         // new names.
-        let store = SqliteStore::from_connection(conn).unwrap();
+        let store = SqliteStore::from_db(endora_persistence::Db::from_connection(conn).unwrap()).unwrap();
         let targets: &dyn TargetRepository = &store;
         let loaded = targets.get(TargetId::new(2)).unwrap().unwrap();
         assert_eq!(loaded.statement(), "Run a 5k without stopping");
@@ -2218,7 +2232,7 @@ mod tests {
         .unwrap();
 
         // Opening adds the column and reads existing rows back as active.
-        let store = SqliteStore::from_connection(conn).unwrap();
+        let store = SqliteStore::from_db(endora_persistence::Db::from_connection(conn).unwrap()).unwrap();
         let directions: &dyn DirectionRepository = &store;
         assert_eq!(
             directions
