@@ -32,8 +32,9 @@ pub use endora_platform::{ActivityEvent, AuditLog, AuditRecord, EventLog};
 // The capabilities ports live in the capabilities context (ADR 0026); re-exported
 // so their `endora_application::…` paths are unchanged.
 pub use endora_capabilities::{
-    AutonomyEnvelope, AutonomyEnvelopeRepository, CapabilityConfigRepository, CapabilityRunner,
-    CapabilitySettingsRepository, CapabilitySpec, CapabilityUse, DeepModel, DeepModelRepository,
+    AutonomyEnvelope, AutonomyEnvelopeRepository, ButlerModelConfig, ButlerModelConfigRepository,
+    CapabilityConfigRepository, CapabilityRunner, CapabilitySettingsRepository, CapabilitySpec,
+    CapabilityUse, DeepModel, DeepModelRepository, ModelSlot, Sampling,
 };
 // The chat repository lives in the conversation context (ADR 0026); re-exported
 // so `endora_application::ChatRepository` is unchanged.
