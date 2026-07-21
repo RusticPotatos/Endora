@@ -16,6 +16,23 @@ use std::time::Duration;
 use endora_domain::AutonomyLevel;
 use serde_json::{Value, json};
 
+/// One setting a capability needs to work (a key, a model name, a URL). Declared
+/// in metadata so the console can render a form and the policy layer can tell
+/// whether the skill is ready (ADR 0021).
+#[derive(Debug, Clone, Copy)]
+pub struct SettingSpec {
+    /// Stable key the value is stored under, e.g. `"model"` or `"api_key"`.
+    pub key: &'static str,
+    /// Human label for the form field.
+    pub label: &'static str,
+    /// Whether the value is a secret (never echoed back to the client).
+    pub secret: bool,
+}
+
+/// A capability's stored settings, keyed by [`SettingSpec::key`]. Passed to
+/// `invoke` so a skill reads its configuration (model, key, …) at run time.
+pub type CapabilitySettings = std::collections::BTreeMap<String, String>;
+
 /// Static metadata describing a capability to the person and the policy layer.
 #[derive(Debug, Clone)]
 pub struct CapabilityInfo {
@@ -31,10 +48,14 @@ pub struct CapabilityInfo {
     pub reaches_external: bool,
     /// May it act on its own (read-only/low-stakes), or must it ask first?
     pub autonomy: AutonomyLevel,
-    /// Ready to use, or waiting on setup (an API key, a model, a data source).
+    /// Whether the code is ready in principle (ignoring settings). Effective
+    /// readiness also requires every [`Self::settings`] to have a value.
     pub configured: bool,
     /// If not configured, a short note on what it needs.
     pub needs: &'static str,
+    /// The settings this capability needs to run (empty for keyless skills). A
+    /// skill is usable only once all of these have values.
+    pub settings: &'static [SettingSpec],
 }
 
 /// Why a capability call failed.
@@ -61,11 +82,16 @@ pub trait Capability: Send + Sync {
     /// Static description of this capability.
     fn info(&self) -> CapabilityInfo;
 
-    /// Runs the capability with JSON `input`, returning a JSON result.
+    /// Runs the capability with JSON `input` and its configured `settings`,
+    /// returning a JSON result. Keyless skills ignore `settings`.
     ///
     /// # Errors
     /// [`CapabilityError`] if the input is bad or the capability is unavailable.
-    fn invoke(&self, input: &Value) -> Result<Value, CapabilityError>;
+    fn invoke(
+        &self,
+        input: &Value,
+        settings: &CapabilitySettings,
+    ) -> Result<Value, CapabilityError>;
 
     /// Renders a result into short, human-readable text for the butler to answer
     /// from. Small local models relay a clean sentence far better than raw JSON,
@@ -145,6 +171,66 @@ fn http_get_text_ua(url: &str, ua: &str, max_bytes: usize) -> Result<String, Cap
         .read_to_end(&mut buf)
         .map_err(|e| CapabilityError::Unavailable(e.to_string()))?;
     Ok(String::from_utf8_lossy(&buf).into_owned())
+}
+
+/// Fetches raw bytes from a URL (size-capped) — for binary content like images.
+fn http_get_bytes(url: &str, max_bytes: usize) -> Result<Vec<u8>, CapabilityError> {
+    use std::io::Read;
+    let mut resp = agent()
+        .get(url)
+        .call()
+        .map_err(|e| CapabilityError::Unavailable(e.to_string()))?;
+    let mut buf = Vec::new();
+    resp.body_mut()
+        .as_reader()
+        .take(max_bytes as u64)
+        .read_to_end(&mut buf)
+        .map_err(|e| CapabilityError::Unavailable(e.to_string()))?;
+    Ok(buf)
+}
+
+/// POSTs a JSON body and returns the response as text (size-capped).
+fn http_post_json(url: &str, body: &Value, max_bytes: usize) -> Result<String, CapabilityError> {
+    use std::io::Read;
+    let mut resp = agent()
+        .post(url)
+        .send_json(body)
+        .map_err(|e| CapabilityError::Unavailable(e.to_string()))?;
+    let mut buf = Vec::new();
+    resp.body_mut()
+        .as_reader()
+        .take(max_bytes as u64)
+        .read_to_end(&mut buf)
+        .map_err(|e| CapabilityError::Unavailable(e.to_string()))?;
+    Ok(String::from_utf8_lossy(&buf).into_owned())
+}
+
+/// Standard base64 encoding (no dependency) — for embedding image bytes in a JSON
+/// request to a local vision model.
+fn base64_encode(bytes: &[u8]) -> String {
+    const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let b = [
+            chunk[0],
+            *chunk.get(1).unwrap_or(&0),
+            *chunk.get(2).unwrap_or(&0),
+        ];
+        let n = (u32::from(b[0]) << 16) | (u32::from(b[1]) << 8) | u32::from(b[2]);
+        out.push(T[(n >> 18 & 63) as usize] as char);
+        out.push(T[(n >> 12 & 63) as usize] as char);
+        out.push(if chunk.len() > 1 {
+            T[(n >> 6 & 63) as usize] as char
+        } else {
+            '='
+        });
+        out.push(if chunk.len() > 2 {
+            T[(n & 63) as usize] as char
+        } else {
+            '='
+        });
+    }
+    out
 }
 
 /// Resolves `{lat, lon}` or `{location}` from an input to a `(lat, lon, place)`,
@@ -238,10 +324,15 @@ impl Capability for WeatherCapability {
             autonomy: AutonomyLevel::ActWithinPolicy,
             configured: true,
             needs: "",
+            settings: &[],
         }
     }
 
-    fn invoke(&self, input: &Value) -> Result<Value, CapabilityError> {
+    fn invoke(
+        &self,
+        input: &Value,
+        _settings: &CapabilitySettings,
+    ) -> Result<Value, CapabilityError> {
         // Accept {location:"..."} (a place name or US ZIP) or {lat, lon}.
         let (lat, lon, place) = resolve_point(input)?;
 
@@ -336,10 +427,15 @@ impl Capability for WebFetchCapability {
             autonomy: AutonomyLevel::ActWithinPolicy,
             configured: true,
             needs: "",
+            settings: &[],
         }
     }
 
-    fn invoke(&self, input: &Value) -> Result<Value, CapabilityError> {
+    fn invoke(
+        &self,
+        input: &Value,
+        _settings: &CapabilitySettings,
+    ) -> Result<Value, CapabilityError> {
         let url = str_field(input, "url")?;
         if !(url.starts_with("http://") || url.starts_with("https://")) {
             return Err(CapabilityError::BadInput("url must be http(s)".to_owned()));
@@ -414,10 +510,15 @@ impl Capability for LocalNewsCapability {
             autonomy: AutonomyLevel::ActWithinPolicy,
             configured: true,
             needs: "",
+            settings: &[],
         }
     }
 
-    fn invoke(&self, input: &Value) -> Result<Value, CapabilityError> {
+    fn invoke(
+        &self,
+        input: &Value,
+        _settings: &CapabilitySettings,
+    ) -> Result<Value, CapabilityError> {
         // Prefer an explicit {query}; else build one from {location}. A bare ZIP or
         // raw coordinates make a poor news search, so resolve the location to a
         // place name first ("10001" → "New York, NY news"). One of query/location
@@ -530,10 +631,15 @@ impl Capability for KnowledgeCapability {
             autonomy: AutonomyLevel::ActWithinPolicy,
             configured: true,
             needs: "",
+            settings: &[],
         }
     }
 
-    fn invoke(&self, input: &Value) -> Result<Value, CapabilityError> {
+    fn invoke(
+        &self,
+        input: &Value,
+        _settings: &CapabilitySettings,
+    ) -> Result<Value, CapabilityError> {
         let q = str_field(input, "query").or_else(|_| str_field(input, "topic"))?;
         // Find the best-matching article title, then fetch its summary.
         let search = http_get_text_ua(
@@ -601,10 +707,15 @@ impl Capability for WebAnswersCapability {
             autonomy: AutonomyLevel::ActWithinPolicy,
             configured: true,
             needs: "",
+            settings: &[],
         }
     }
 
-    fn invoke(&self, input: &Value) -> Result<Value, CapabilityError> {
+    fn invoke(
+        &self,
+        input: &Value,
+        _settings: &CapabilitySettings,
+    ) -> Result<Value, CapabilityError> {
         let q = str_field(input, "query").or_else(|_| str_field(input, "question"))?;
         let body = http_get_text(
             &format!(
@@ -672,18 +783,30 @@ fn first_non_empty(candidates: &[Option<&str>]) -> String {
 // ---- Image review (local vision model via Ollama; env-gated) ---------------
 
 struct ImageReviewCapability {
-    model: Option<String>,
+    /// Base URL of the local Ollama (native API), e.g. `http://host:11434`.
+    ollama_base: String,
 }
 
 impl ImageReviewCapability {
     fn from_env() -> Self {
-        Self {
-            model: std::env::var("ENDORA_VISION_MODEL")
-                .ok()
-                .filter(|s| !s.is_empty()),
-        }
+        // Reuse the butler's model endpoint; the native /api lives at the base, so
+        // strip the OpenAI-compat `/v1` suffix.
+        let base = std::env::var("ENDORA_MODEL_URL")
+            .unwrap_or_else(|_| "http://localhost:11434/v1".to_owned());
+        let base = base
+            .trim_end_matches('/')
+            .trim_end_matches("/v1")
+            .trim_end_matches('/')
+            .to_owned();
+        Self { ollama_base: base }
     }
 }
+
+const IMAGE_MODEL_SETTING: &[SettingSpec] = &[SettingSpec {
+    key: "model",
+    label: "Vision model (a pulled Ollama model, e.g. moondream or llava)",
+    secret: false,
+}];
 
 impl Capability for ImageReviewCapability {
     fn info(&self) -> CapabilityInfo {
@@ -694,22 +817,59 @@ impl Capability for ImageReviewCapability {
             category: "media",
             reaches_external: false,
             autonomy: AutonomyLevel::ActWithinPolicy,
-            configured: self.model.is_some(),
-            needs: "set ENDORA_VISION_MODEL to a pulled vision model (e.g. llava, llama3.2-vision)",
+            // Code is ready; it becomes usable once the `model` setting is filled.
+            configured: true,
+            needs: "set the vision model (e.g. moondream) in this skill's settings",
+            settings: IMAGE_MODEL_SETTING,
         }
     }
 
-    fn invoke(&self, _input: &Value) -> Result<Value, CapabilityError> {
-        let Some(_model) = &self.model else {
-            return Err(CapabilityError::Unavailable(
-                "no vision model configured (set ENDORA_VISION_MODEL and pull e.g. llama3.2-vision)".to_owned(),
+    fn invoke(
+        &self,
+        input: &Value,
+        settings: &CapabilitySettings,
+    ) -> Result<Value, CapabilityError> {
+        let model = settings
+            .get("model")
+            .map(String::as_str)
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| {
+                CapabilityError::Unavailable(
+                    "no vision model set — configure 'model' (e.g. moondream) in this skill's settings".to_owned(),
+                )
+            })?;
+        let question = input
+            .get("question")
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty())
+            .unwrap_or("Describe this image in detail.");
+        // Accept a URL to fetch, or already-encoded base64.
+        let image_b64 = if let Some(url) = input.get("image_url").and_then(Value::as_str) {
+            base64_encode(&http_get_bytes(url, 8 * 1024 * 1024)?)
+        } else if let Some(b64) = input.get("image_base64").and_then(Value::as_str) {
+            b64.to_owned()
+        } else {
+            return Err(CapabilityError::BadInput(
+                "provide 'image_url' or 'image_base64'".to_owned(),
             ));
         };
-        // Wiring the local vision call is the next step; the module is declared and
-        // gated so it appears as an enable-able skill rather than a silent gap.
-        Err(CapabilityError::Unavailable(
-            "image review is configured but the vision call is not wired yet".to_owned(),
-        ))
+        let body = http_post_json(
+            &format!("{}/api/generate", self.ollama_base),
+            &json!({ "model": model, "prompt": question, "images": [image_b64], "stream": false }),
+            256 * 1024,
+        )?;
+        let v: Value =
+            serde_json::from_str(&body).map_err(|e| CapabilityError::Unavailable(e.to_string()))?;
+        Ok(json!({ "description": v["response"].as_str().unwrap_or("").trim() }))
+    }
+
+    fn summarize(&self, o: &Value) -> String {
+        let d = o["description"].as_str().unwrap_or("").trim();
+        if d.is_empty() {
+            "I couldn't make out anything from that image.".to_owned()
+        } else {
+            d.to_owned()
+        }
     }
 }
 
@@ -731,9 +891,14 @@ macro_rules! scaffold {
                     autonomy: $auto,
                     configured: false,
                     needs: $needs,
+                    settings: &[],
                 }
             }
-            fn invoke(&self, _input: &Value) -> Result<Value, CapabilityError> {
+            fn invoke(
+                &self,
+                _input: &Value,
+                _settings: &CapabilitySettings,
+            ) -> Result<Value, CapabilityError> {
                 Err(CapabilityError::Unavailable(format!(
                     "{} needs setup: {}",
                     $name, $needs
@@ -788,10 +953,15 @@ impl Capability for SafetyAlertsCapability {
             autonomy: AutonomyLevel::ActWithinPolicy,
             configured: true,
             needs: "",
+            settings: &[],
         }
     }
 
-    fn invoke(&self, input: &Value) -> Result<Value, CapabilityError> {
+    fn invoke(
+        &self,
+        input: &Value,
+        _settings: &CapabilitySettings,
+    ) -> Result<Value, CapabilityError> {
         let (lat, lon, place) = resolve_point(input)?;
         let body = http_get_text_ua(
             &format!("https://api.weather.gov/alerts/active?point={lat:.4},{lon:.4}"),
@@ -877,33 +1047,39 @@ pub struct RegistryRunner {
     enabled: std::collections::HashMap<String, bool>,
     /// The person's autonomy envelope — the boundary the butler acts within.
     envelope: endora_application::AutonomyEnvelope,
+    /// Per-capability settings (id → key/value), for skills that need config.
+    settings: std::collections::HashMap<String, CapabilitySettings>,
 }
 
 impl RegistryRunner {
     /// Wraps a shared capability registry at its defaults (every skill enabled, the
-    /// default autonomy envelope).
+    /// default autonomy envelope, no settings).
     #[must_use]
     pub fn new(capabilities: Arc<Vec<Arc<dyn Capability>>>) -> Self {
         Self {
             capabilities,
             enabled: std::collections::HashMap::new(),
             envelope: endora_application::AutonomyEnvelope::default(),
+            settings: std::collections::HashMap::new(),
         }
     }
 
-    /// Wraps the registry, applying the person's enable/disable overrides (ADR 0021)
-    /// and their autonomy envelope (ADR 0022). A disabled skill never runs; the
-    /// envelope decides which kinds of action may run without confirmation.
+    /// Wraps the registry, applying the person's enable/disable overrides (ADR 0021),
+    /// their autonomy envelope (ADR 0022), and per-capability settings (ADR 0021). A
+    /// disabled skill never runs; the envelope decides which kinds of action may run
+    /// without confirmation; settings make a configurable skill usable.
     #[must_use]
     pub fn with_config(
         capabilities: Arc<Vec<Arc<dyn Capability>>>,
         overrides: Vec<(String, bool)>,
         envelope: endora_application::AutonomyEnvelope,
+        settings: std::collections::HashMap<String, CapabilitySettings>,
     ) -> Self {
         Self {
             capabilities,
             enabled: overrides.into_iter().collect(),
             envelope,
+            settings,
         }
     }
 
@@ -911,6 +1087,18 @@ impl RegistryRunner {
     fn is_enabled(&self, id: &str) -> bool {
         self.enabled.get(id).copied().unwrap_or(true)
     }
+
+    /// The stored settings for a capability (empty if none set).
+    fn settings_for(&self, id: &str) -> CapabilitySettings {
+        self.settings.get(id).cloned().unwrap_or_default()
+    }
+}
+
+/// Whether every setting a capability declares has a value — i.e. it is set up.
+fn settings_complete(info: &CapabilityInfo, settings: &CapabilitySettings) -> bool {
+    info.settings
+        .iter()
+        .all(|s| settings.get(s.key).is_some_and(|v| !v.trim().is_empty()))
 }
 
 /// The deterministic classifier at the heart of the autonomy envelope (ADR 0022):
@@ -939,8 +1127,11 @@ impl endora_application::CapabilityRunner for RegistryRunner {
                 endora_application::CapabilitySpec {
                     id: info.id.to_owned(),
                     description: info.description.to_owned(),
-                    // Usable only if it's both set up AND enabled by the person.
-                    configured: info.configured && self.is_enabled(info.id),
+                    // Usable only if the code is ready, the person has it enabled, AND
+                    // every required setting has a value (ADR 0021).
+                    configured: info.configured
+                        && self.is_enabled(info.id)
+                        && settings_complete(&info, &self.settings_for(info.id)),
                     autonomous: may_run_autonomously(&info, &self.envelope),
                 }
             })
@@ -959,7 +1150,9 @@ impl endora_application::CapabilityRunner for RegistryRunner {
         let input: Value = serde_json::from_str(input_json.trim())
             .or_else(|_| Ok::<Value, serde_json::Error>(json!({})))
             .unwrap_or_else(|_| json!({}));
-        let out = cap.invoke(&input).map_err(|e| e.to_string())?;
+        let out = cap
+            .invoke(&input, &self.settings_for(id))
+            .map_err(|e| e.to_string())?;
         // Hand the butler readable text, not raw JSON — small models relay it far
         // more reliably (and won't miss headlines buried in a JSON array).
         Ok(cap.summarize(&out))
@@ -982,6 +1175,7 @@ mod tests {
             autonomy,
             configured: true,
             needs: "",
+            settings: &[],
         };
         let default_env = AutonomyEnvelope::default(); // external ok, consequential no
 
@@ -1036,7 +1230,9 @@ mod tests {
 
     #[test]
     fn a_scaffold_reports_unavailable_with_a_reason() {
-        let err = FlightSearchCapability.invoke(&json!({})).unwrap_err();
+        let err = FlightSearchCapability
+            .invoke(&json!({}), &CapabilitySettings::new())
+            .unwrap_err();
         assert!(matches!(err, CapabilityError::Unavailable(_)));
     }
 
@@ -1053,7 +1249,10 @@ mod tests {
     #[test]
     fn web_fetch_rejects_non_http() {
         let err = WebFetchCapability
-            .invoke(&json!({ "url": "file:///etc/passwd" }))
+            .invoke(
+                &json!({ "url": "file:///etc/passwd" }),
+                &CapabilitySettings::new(),
+            )
             .unwrap_err();
         assert!(matches!(err, CapabilityError::BadInput(_)));
     }
@@ -1074,7 +1273,9 @@ mod tests {
 
     #[test]
     fn news_without_a_place_or_query_is_bad_input() {
-        let err = LocalNewsCapability.invoke(&json!({})).unwrap_err();
+        let err = LocalNewsCapability
+            .invoke(&json!({}), &CapabilitySettings::new())
+            .unwrap_err();
         assert!(matches!(err, CapabilityError::BadInput(_)));
     }
 
@@ -1138,9 +1339,37 @@ mod tests {
     }
 
     #[test]
-    fn image_review_is_unconfigured_without_a_model() {
-        let cap = ImageReviewCapability { model: None };
-        assert!(!cap.info().configured);
-        assert!(cap.invoke(&json!({})).is_err());
+    fn image_review_declares_a_model_setting_and_needs_it() {
+        let cap = ImageReviewCapability {
+            ollama_base: "http://localhost:11434".to_owned(),
+        };
+        // It declares a required "model" setting...
+        assert_eq!(cap.info().settings.len(), 1);
+        assert_eq!(cap.info().settings[0].key, "model");
+        // ...and without it, running fails (never reaches the vision call).
+        assert!(
+            cap.invoke(
+                &json!({ "image_url": "http://x/y.png" }),
+                &CapabilitySettings::new()
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn settings_complete_requires_every_declared_setting() {
+        let cap = ImageReviewCapability {
+            ollama_base: "http://localhost:11434".to_owned(),
+        };
+        let info = cap.info();
+        assert!(!settings_complete(&info, &CapabilitySettings::new()));
+        let mut s = CapabilitySettings::new();
+        s.insert("model".to_owned(), "moondream".to_owned());
+        assert!(settings_complete(&info, &s));
+        // A keyless skill is always complete.
+        assert!(settings_complete(
+            &WeatherCapability.info(),
+            &CapabilitySettings::new()
+        ));
     }
 }

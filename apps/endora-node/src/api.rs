@@ -19,8 +19,8 @@ use axum::routing::{get, post};
 use endora_application::{
     ActivityItem, AppError, AttentionItem, AttentionKind, AutonomyEnvelope,
     AutonomyEnvelopeRepository, Butler, ButlerProposal, CapabilityConfigRepository,
-    CheckinSchedule, EventLog, MemorySnapshot, Proposer, RepositoryError, Suggestion,
-    SuggestionStatus, usecases,
+    CapabilitySettingsRepository, CheckinSchedule, EventLog, MemorySnapshot, Proposer,
+    RepositoryError, Suggestion, SuggestionStatus, usecases,
 };
 use endora_domain::{
     Assumption, AssumptionId, AuditRecord, AutonomyLevel, Belief, BeliefId, ChatMessage, Direction,
@@ -160,6 +160,10 @@ pub fn app(state: AppState) -> Router {
         .route("/v1/capabilities", get(list_capabilities))
         .route("/v1/capabilities/{id}/invoke", post(invoke_capability))
         .route("/v1/capabilities/{id}/enable", post(set_capability_enabled))
+        .route(
+            "/v1/capabilities/{id}/config",
+            post(set_capability_settings),
+        )
         .route("/v1/autonomy", get(get_autonomy).post(set_autonomy))
         .route(
             "/v1/preferences",
@@ -1046,7 +1050,24 @@ fn build_runner(
 ) -> endora_infrastructure::RegistryRunner {
     let overrides = store.enabled_overrides().unwrap_or_default();
     let envelope = AutonomyEnvelopeRepository::get(store).unwrap_or_default();
-    endora_infrastructure::RegistryRunner::with_config(capabilities, overrides, envelope)
+    endora_infrastructure::RegistryRunner::with_config(
+        capabilities,
+        overrides,
+        envelope,
+        settings_map(store),
+    )
+}
+
+/// Loads all capability settings, grouped by capability id, for the runner.
+fn settings_map(
+    store: &SqliteStore,
+) -> std::collections::HashMap<String, endora_infrastructure::CapabilitySettings> {
+    let mut map: std::collections::HashMap<String, endora_infrastructure::CapabilitySettings> =
+        std::collections::HashMap::new();
+    for (id, key, value) in store.all_settings().unwrap_or_default() {
+        map.entry(id).or_default().insert(key, value);
+    }
+    map
 }
 
 #[derive(Deserialize)]
@@ -1366,7 +1387,26 @@ async fn correct_belief(
 fn capability_json(
     info: &endora_infrastructure::CapabilityInfo,
     enabled: bool,
+    settings: &endora_infrastructure::CapabilitySettings,
 ) -> serde_json::Value {
+    // The settings schema, each flagged whether it's been set — but NEVER the value
+    // (secrets stay server-side).
+    let settings_schema: Vec<serde_json::Value> = info
+        .settings
+        .iter()
+        .map(|s| {
+            json!({
+                "key": s.key,
+                "label": s.label,
+                "secret": s.secret,
+                "set": settings.get(s.key).is_some_and(|v| !v.trim().is_empty()),
+            })
+        })
+        .collect();
+    let settings_complete = info
+        .settings
+        .iter()
+        .all(|s| settings.get(s.key).is_some_and(|v| !v.trim().is_empty()));
     json!({
         "id": info.id,
         "name": info.name,
@@ -1374,12 +1414,13 @@ fn capability_json(
         "category": info.category,
         "reaches_external": info.reaches_external,
         "autonomy": info.autonomy.name(),
-        // `configured` = set up (intrinsic); `enabled` = the person's on/off switch;
-        // a skill is usable only when both are true (ADR 0021).
-        "configured": info.configured,
+        // `configured` = code ready + settings filled; `enabled` = the person's on/off
+        // switch; a skill is usable only when both hold (ADR 0021).
+        "configured": info.configured && settings_complete,
         "enabled": enabled,
-        "usable": info.configured && enabled,
+        "usable": info.configured && settings_complete && enabled,
         "needs": info.needs,
+        "settings": settings_schema,
     })
 }
 
@@ -1392,6 +1433,8 @@ async fn list_capabilities(State(state): State<AppState>) -> Json<Vec<serde_json
         .unwrap_or_default()
         .into_iter()
         .collect();
+    let settings = settings_map(state.store.as_ref());
+    let empty = endora_infrastructure::CapabilitySettings::new();
     Json(
         state
             .capabilities
@@ -1399,10 +1442,56 @@ async fn list_capabilities(State(state): State<AppState>) -> Json<Vec<serde_json
             .map(|c| {
                 let info = c.info();
                 let on = enabled.get(info.id).copied().unwrap_or(true);
-                capability_json(&info, on)
+                capability_json(&info, on, settings.get(info.id).unwrap_or(&empty))
             })
             .collect(),
     )
+}
+
+#[derive(Deserialize)]
+struct SettingsRequest {
+    settings: std::collections::HashMap<String, String>,
+}
+
+/// Sets one or more settings for a capability (ADR 0021). Validated against the
+/// registry and its declared setting keys, so only known keys are stored.
+async fn set_capability_settings(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(req): Json<SettingsRequest>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let Some(cap) = state.capabilities.iter().find(|c| c.info().id == id) else {
+        return Err(ApiError(AppError::NotFound {
+            entity: "capability",
+        }));
+    };
+    let allowed: std::collections::HashSet<&str> =
+        cap.info().settings.iter().map(|s| s.key).collect();
+    // Keep only keys this capability actually declares.
+    let to_set: Vec<(String, String)> = req
+        .settings
+        .into_iter()
+        .filter(|(k, _)| allowed.contains(k.as_str()))
+        .collect();
+    let store = state.store.clone();
+    let clock = state.clock.clone();
+    let cap_id = id.clone();
+    blocking(move || {
+        for (k, v) in &to_set {
+            store
+                .set_setting(&cap_id, k, v)
+                .map_err(AppError::Repository)?;
+        }
+        record_event(
+            store.as_ref(),
+            clock.as_ref(),
+            &format!("Updated settings for the {cap_id} skill"),
+        );
+        Ok::<_, AppError>(())
+    })
+    .await?;
+    let _ = state.changes.send(());
+    Ok(Json(json!({ "id": id, "ok": true })))
 }
 
 #[derive(Deserialize)]
@@ -1522,13 +1611,17 @@ async fn invoke_capability(
             entity: "capability",
         }));
     };
-    let result = tokio::task::spawn_blocking(move || cap.invoke(&input))
-        .await
-        .map_err(|_| {
-            ApiError(AppError::Repository(RepositoryError::Backend(
-                "worker task failed".to_owned(),
-            )))
-        })?;
+    let store = state.store.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        let settings = settings_map(store.as_ref()).remove(&id).unwrap_or_default();
+        cap.invoke(&input, &settings)
+    })
+    .await
+    .map_err(|_| {
+        ApiError(AppError::Repository(RepositoryError::Backend(
+            "worker task failed".to_owned(),
+        )))
+    })?;
     match result {
         Ok(value) => Ok(Json(json!({ "ok": true, "result": value }))),
         Err(CapabilityError::BadInput(m)) => Err(ApiError(AppError::BadRequest { message: m })),

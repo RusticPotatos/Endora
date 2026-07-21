@@ -12,9 +12,9 @@ use serde_json::{Value as JsonValue, json};
 
 use endora_application::{
     ActivityEvent, AssumptionRepository, AuditLog, AutonomyEnvelope, AutonomyEnvelopeRepository,
-    BeliefRepository, ButlerProposal, CapabilityConfigRepository, ChatRepository,
-    CheckinRepository, CheckinSchedule, DirectionRepository, EventLog, ExperimentRepository,
-    MemorySnapshot, MemoryStore, ObservationRepository, PreferenceRepository,
+    BeliefRepository, ButlerProposal, CapabilityConfigRepository, CapabilitySettingsRepository,
+    ChatRepository, CheckinRepository, CheckinSchedule, DirectionRepository, EventLog,
+    ExperimentRepository, MemorySnapshot, MemoryStore, ObservationRepository, PreferenceRepository,
     ProcessChangeRepository, ReflectionRepository, RepositoryError, Snooze, SnoozeRepository,
     Suggestion, SuggestionRepository, SuggestionStatus, TargetRepository, ValueRepository,
 };
@@ -161,6 +161,12 @@ CREATE TABLE IF NOT EXISTS beliefs (
 CREATE TABLE IF NOT EXISTS capability_config (
     id      TEXT PRIMARY KEY,
     enabled INTEGER NOT NULL
+) STRICT;
+CREATE TABLE IF NOT EXISTS capability_settings (
+    capability_id TEXT NOT NULL,
+    key           TEXT NOT NULL,
+    value         TEXT NOT NULL,
+    PRIMARY KEY (capability_id, key)
 ) STRICT;
 CREATE TABLE IF NOT EXISTS autonomy_envelope (
     id               INTEGER PRIMARY KEY CHECK (id = 0),
@@ -878,6 +884,7 @@ impl MemoryStore for SqliteStore {
             "beliefs",
             "events",
             "capability_config",
+            "capability_settings",
             "autonomy_envelope",
         ] {
             tx.execute(&format!("DELETE FROM {table}"), [])
@@ -1179,6 +1186,41 @@ impl AutonomyEnvelopeRepository for SqliteStore {
                 i64::from(envelope.auto_external),
                 i64::from(envelope.auto_consequential)
             ],
+        )
+        .map_err(backend)?;
+        Ok(())
+    }
+}
+
+impl CapabilitySettingsRepository for SqliteStore {
+    fn all_settings(&self) -> Result<Vec<(String, String, String)>, RepositoryError> {
+        let conn = self.lock()?;
+        let mut stmt = conn
+            .prepare("SELECT capability_id, key, value FROM capability_settings")
+            .map_err(backend)?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                ))
+            })
+            .map_err(backend)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(backend)
+    }
+
+    fn set_setting(
+        &self,
+        capability_id: &str,
+        key: &str,
+        value: &str,
+    ) -> Result<(), RepositoryError> {
+        let conn = self.lock()?;
+        conn.execute(
+            "INSERT OR REPLACE INTO capability_settings (capability_id, key, value) \
+             VALUES (?1, ?2, ?3)",
+            params![capability_id, key, value],
         )
         .map_err(backend)?;
         Ok(())
@@ -2378,6 +2420,26 @@ mod tests {
         assert_eq!(recent[0].summary(), "second");
         assert_eq!(recent[1].summary(), "first");
         assert_eq!(log.recent(1).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn capability_settings_round_trip_and_upsert() {
+        use endora_application::CapabilitySettingsRepository;
+        let store = store();
+        let repo: &dyn CapabilitySettingsRepository = &store;
+        assert!(repo.all_settings().unwrap().is_empty());
+        repo.set_setting("image_review", "model", "moondream")
+            .unwrap();
+        repo.set_setting("image_review", "model", "llava").unwrap(); // upsert
+        let all = repo.all_settings().unwrap();
+        assert_eq!(
+            all,
+            vec![(
+                "image_review".to_owned(),
+                "model".to_owned(),
+                "llava".to_owned()
+            )]
+        );
     }
 
     #[test]
