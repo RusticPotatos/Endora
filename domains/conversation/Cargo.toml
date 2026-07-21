@@ -1,0 +1,15 @@
+[package]
+name = "endora-conversation"
+description = "Conversation context: the chat model and the conversation repository"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+endora-kernel = { path = "../../shared/kernel" }
+
+[lints]
+workspace = true

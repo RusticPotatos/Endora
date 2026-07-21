@@ -7,8 +7,8 @@
 //! butler never acts from a message; it proposes, and deterministic code
 //! authorized by the person executes.
 
-use crate::error::{DomainError, require_non_empty};
-use crate::ids::{MessageId, Timestamp};
+use endora_kernel::error::{DomainError, require_non_empty};
+use endora_kernel::ids::{MessageId, Timestamp};
 
 /// Who authored a [`ChatMessage`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -92,8 +92,8 @@ impl ChatMessage {
 #[cfg(test)]
 mod tests {
     use super::{ChatMessage, MessageRole};
-    use crate::error::DomainError;
-    use crate::ids::{MessageId, Timestamp};
+    use endora_kernel::error::DomainError;
+    use endora_kernel::ids::{MessageId, Timestamp};
 
     #[test]
     fn role_names_round_trip() {

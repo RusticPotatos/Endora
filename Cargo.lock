@@ -261,6 +261,7 @@ name = "endora-application"
 version = "0.11.0"
 dependencies = [
  "endora-capabilities",
+ "endora-conversation",
  "endora-direction",
  "endora-domain",
  "endora-kernel",
@@ -287,6 +288,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "endora-conversation"
+version = "0.11.0"
+dependencies = [
+ "endora-kernel",
+]
+
+[[package]]
 name = "endora-direction"
 version = "0.11.0"
 dependencies = [
@@ -297,6 +305,7 @@ dependencies = [
 name = "endora-domain"
 version = "0.11.0"
 dependencies = [
+ "endora-conversation",
  "endora-direction",
  "endora-kernel",
  "endora-platform",
