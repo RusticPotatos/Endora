@@ -828,95 +828,76 @@ pub fn send_to_butler_streaming(
     )?;
     chat.append(&user)?;
 
-    // A "morning brief" is more than one skill call, so a single model turn can't
-    // deliver it (it just promises to "fetch…"). Route brief requests straight to
-    // the brief engine, which runs weather + safety + news together and posts a
-    // complete brief. If there's nothing to brief (no home location / no ready
-    // skills), fall through to the model so it can ask or point to setup.
-    if is_brief_request(text) {
-        if let Some((message, activity)) = daily_brief(chat, preferences, capabilities, ids, clock)?
-        {
-            on_token(message.text());
-            return Ok((message, Vec::new(), activity));
-        }
-    }
-
     let history = chat.list()?;
     let prefs = preferences.list_all()?;
-    let mut reply = butler
-        .respond_streaming(&history, &prefs, context, on_token)
-        .map_err(|e| AppError::Model {
-            message: e.to_string(),
-        })?;
 
-    // `activity` is a plain-language record of what Endora did behind the scenes
-    // this turn — skills used, learnings, suggestions — so the person can see what
-    // the conversation actually changed (transparency + debugging).
+    // `activity` — a plain-language record of what the butler did this turn.
     let mut activity: Vec<String> = Vec::new();
 
-    // Interventions: if the butler asked to use a skill, the policy check here
-    // decides what happens (the model proposes; policy authorizes; the capability
-    // executes — ADRs 0019/0020). One tool round per turn. Whatever the outcome —
-    // ran, failed, needs setup, needs confirmation, or unknown — the butler ALWAYS
-    // answers again with that outcome, so it never dead-ends on a "one moment"
-    // placeholder and never invents a result it didn't fetch.
-    let model_requested_skill = reply.capability_use.is_some();
-    if let Some(used) = reply.capability_use.take() {
-        let id = &used.capability;
-        let spec = capabilities.available().into_iter().find(|c| &c.id == id);
-        let outcome = match spec {
-            // Cleared to run on its own (configured + read-only/low-stakes).
-            Some(s) if s.configured && s.autonomous => {
-                match capabilities.run(id, &used.input_json) {
-                    Ok(out) => {
-                        activity.push(format!("Used the {id} skill"));
-                        format!(
-                            "You used the '{id}' skill and it returned:\n{out}\n\
-                             Relay this to the person — share the specifics in your own words."
-                        )
-                    }
-                    Err(e) => {
-                        activity.push(format!("Tried the {id} skill, but it failed"));
-                        format!(
-                            "You tried the '{id}' skill but it failed: {e}. Tell the person \
-                             plainly you couldn't get it — do not make up an answer."
-                        )
-                    }
+    // AGENTIC LOOP (ADR 0019): the butler plans and uses SEVERAL reversible skills
+    // across steps to fully serve the request — gather weather, then news, then
+    // whatever else it needs — showing each step as it works. The model proposes
+    // each skill; policy authorizes (reversible + autonomous only, ADR 0024); the
+    // capability runs; its result feeds the next step. Bounded so it always ends,
+    // and it NEVER runs anything irreversible on its own.
+    const MAX_TOOL_ROUNDS: usize = 6;
+    let mut gathered: Vec<String> = Vec::new();
+    let mut model_requested_skill = false;
+    let mut reply = ButlerReply::default();
+    for round in 0..=MAX_TOOL_ROUNDS {
+        let mut ctx = context.clone();
+        if !gathered.is_empty() {
+            ctx.tool_result = Some(format!(
+                "Results you've gathered this turn — use another skill if you still need \
+                 more, otherwise give your complete answer using ALL of these:\n{}",
+                gathered.join("\n")
+            ));
+        }
+        reply = butler
+            .respond(&history, &prefs, &ctx)
+            .map_err(|e| AppError::Model {
+                message: e.to_string(),
+            })?;
+        let Some(used) = reply.capability_use.take() else {
+            break; // the butler has what it needs and is ready to answer
+        };
+        model_requested_skill = true;
+        if round == MAX_TOOL_ROUNDS {
+            break; // safety bound — answer with whatever was gathered
+        }
+        let id = used.capability.clone();
+        let spec = capabilities.available().into_iter().find(|c| c.id == id);
+        if spec.as_ref().is_some_and(|s| s.configured && s.autonomous) {
+            // Cleared to run on its own (configured + reversible/read-only). Show the
+            // step as it happens, then feed the result back for the next round.
+            on_token(&format!("· {}…\n", progress_label(&id)));
+            match capabilities.run(&id, &used.input_json) {
+                Ok(out) => {
+                    activity.push(format!("Used the {id} skill"));
+                    gathered.push(format!("- {id}: {out}"));
+                }
+                Err(e) => {
+                    activity.push(format!("Tried the {id} skill, but it failed"));
+                    gathered.push(format!("- {id}: failed ({e}) — do not invent a result"));
                 }
             }
-            // Present, but awaiting setup — cannot be used yet.
-            Some(s) if !s.configured => {
-                activity.push(format!("The {id} skill isn't set up yet"));
-                format!(
-                    "The '{id}' skill isn't set up yet, so you could NOT check it. Tell the \
-                     person plainly you can't do that yet — do not invent a result — and point \
-                     them to set it up under Skills (they add its key/settings there)."
-                )
-            }
-            // Configured but consequential — must be confirmed, never auto-run.
-            Some(_) => {
-                activity.push(format!("The {id} skill needs your OK first"));
-                format!(
-                    "The '{id}' skill needs the person's go-ahead before it runs. Ask them if \
-                     they'd like you to — don't claim you've done it."
-                )
-            }
-            // No such skill.
-            None => {
-                activity.push(format!("No {id} skill is available"));
-                format!(
-                    "There is no '{id}' skill available, so you could NOT do that. Tell the \
-                     person plainly you can't yet — do not invent a result — and offer what you \
-                     can do instead."
-                )
-            }
-        };
-        let mut ctx = context.clone();
-        ctx.tool_result = Some(outcome);
-        // Answer again using the real outcome (a second, non-streamed pass). If it
-        // fails, the first reply still stands.
-        if let Ok(synth) = butler.respond(&history, &prefs, &ctx) {
-            reply = synth;
+        } else {
+            // Off / awaiting setup / consequential — record it so the butler answers
+            // honestly and points to setup, rather than faking it or dead-ending.
+            let note = match spec {
+                Some(s) if !s.configured => format!(
+                    "- {id}: not set up — can't use it; tell them plainly and point them to set \
+                     it up under Skills"
+                ),
+                Some(_) => {
+                    format!("- {id}: consequential — needs their go-ahead; ask, don't do it")
+                }
+                None => format!("- {id}: no such skill — can't do that yet"),
+            };
+            activity.push(format!(
+                "Couldn't use {id} (off, not set up, or needs confirming)"
+            ));
+            gathered.push(note);
         }
     }
 
@@ -935,6 +916,7 @@ pub fn send_to_butler_streaming(
             // answer from the real result. Without a location we can't (the model's
             // own reply then stands).
             if let Some(location) = known_location(&prefs) {
+                on_token(&format!("· {}…\n", progress_label(skill)));
                 let result = match capabilities.run(skill, &json_location(&location)) {
                     Ok(out) => {
                         activity.push(format!("Used the {skill} skill"));
@@ -981,6 +963,10 @@ pub fn send_to_butler_streaming(
     } else {
         reply.text.trim()
     };
+    // Stream the final answer (the agentic loop ran the model non-streamed so it
+    // could decide between steps). The progress lines above already showed the work;
+    // this delivers the finished reply after them.
+    on_token(reply_text);
     let butler = ChatMessage::new(
         MessageId::new(ids.new_id()),
         MessageRole::Butler,
@@ -1112,24 +1098,22 @@ fn route_intent(text: &str) -> Option<&'static str> {
     None
 }
 
-/// Whether the message is asking for a daily/morning **brief** — a rundown of the
-/// day (weather, safety, news) rather than a single fact. Deliberately specific, so
-/// an ordinary "what's the news" still goes through the normal skill path.
-fn is_brief_request(text: &str) -> bool {
-    let t = text.to_lowercase();
-    [
-        "morning brief",
-        "daily brief",
-        "my brief",
-        "brief me on",
-        "brief me for",
-        "give me a brief",
-        "give me my brief",
-        "the rundown",
-        "morning rundown",
-    ]
-    .iter()
-    .any(|p| t.contains(p))
+/// A short, human present-tense label for a skill in progress — what the butler
+/// shows while it works a step ("· Checking the weather…"), so the person can see
+/// it moving toward the goal rather than sitting on a silent "one moment".
+fn progress_label(id: &str) -> String {
+    match id {
+        "weather" => "Checking the weather",
+        "news" | "local_news" => "Checking the news",
+        "safety_alerts" => "Checking safety alerts",
+        "web_search" | "web_answers" => "Searching the web",
+        "web_fetch" => "Reading the page",
+        "knowledge" => "Looking that up",
+        "home_assistant" => "Checking your home",
+        "image_review" => "Looking at the image",
+        other => return format!("Using the {other} skill"),
+    }
+    .to_owned()
 }
 
 /// Like [`route_intent`], but also catches a **deictic follow-up** — "right now?",
@@ -2703,15 +2687,12 @@ mod tests {
     }
 
     #[test]
-    fn brief_requests_are_recognized_but_plain_questions_are_not() {
-        use super::is_brief_request;
-        assert!(is_brief_request("Give me my morning brief"));
-        assert!(is_brief_request("brief me on today"));
-        assert!(is_brief_request("what's my daily brief?"));
-        // Ordinary single-fact questions are NOT briefs.
-        assert!(!is_brief_request("what's the news"));
-        assert!(!is_brief_request("what's the weather"));
-        assert!(!is_brief_request("tell me about the debrief meeting")); // no brief-trigger words
+    fn progress_labels_read_as_present_tense_steps() {
+        use super::progress_label;
+        assert_eq!(progress_label("weather"), "Checking the weather");
+        assert_eq!(progress_label("safety_alerts"), "Checking safety alerts");
+        // An unknown skill still gets a sensible, generic label.
+        assert_eq!(progress_label("calendar"), "Using the calendar skill");
     }
 
     #[test]
