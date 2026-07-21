@@ -867,7 +867,7 @@ function viewSkills() {
   return `
     ${crumbs([{ label: "Home", act: "go:home" }, { label: "Skills" }])}
     <h2>What Endora can do</h2>
-    
+
     ${envelope}
     <h3 style="margin-top:18px;">Skills</h3>
     ${listOr((CAPS || []).map(card), "No skills registered.")}`;
@@ -921,7 +921,7 @@ function viewUnderstanding() {
   const setup = locationSetup + addressSetup;
   return `
     <h2>What Endora understands about you</h2>
-    
+
     ${setup}
     ${groups || `<div class="empty">Nothing yet. Talk with Endora and it will start to understand you — you'll see it here.</div>`}
     <div class="sub" style="margin-top:24px;"><a data-act="go:goals" style="color:var(--accent);cursor:pointer">Goals ›</a> — optional, if you like to track them explicitly.</div>`;
