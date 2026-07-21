@@ -46,6 +46,10 @@ pub struct CapabilityInfo {
     pub category: &'static str,
     /// Whether invoking it sends data outside this machine.
     pub reaches_external: bool,
+    /// Whether its effect can be undone (read-only, a draft, a deletable log) vs.
+    /// permanent (sending, spending, editing/deleting external state). The autonomy
+    /// classifier NEVER runs an irreversible skill on its own (ADR 0024).
+    pub reversible: bool,
     /// May it act on its own (read-only/low-stakes), or must it ask first?
     pub autonomy: AutonomyLevel,
     /// Whether the code is ready in principle (ignoring settings). Effective
@@ -643,6 +647,7 @@ impl Capability for WeatherCapability {
             description: "Current conditions and today's forecast for a place, with a heads-up on severe weather.",
             category: "information",
             reaches_external: true,
+            reversible: true,
             autonomy: AutonomyLevel::ActWithinPolicy,
             configured: true,
             needs: "",
@@ -746,6 +751,7 @@ impl Capability for WebFetchCapability {
             description: "Fetch a web page and read its text — for research and briefings.",
             category: "information",
             reaches_external: true,
+            reversible: true,
             autonomy: AutonomyLevel::ActWithinPolicy,
             configured: true,
             needs: "",
@@ -830,6 +836,7 @@ impl Capability for LocalNewsCapability {
             description: "Recent news headlines for a place or topic — so answers about the news are real, not guessed.",
             category: "information",
             reaches_external: true,
+            reversible: true,
             autonomy: AutonomyLevel::ActWithinPolicy,
             configured: true,
             needs: "",
@@ -951,6 +958,7 @@ impl Capability for KnowledgeCapability {
             description: "Look up factual, encyclopedic knowledge about a topic, person, or place (Wikipedia).",
             category: "information",
             reaches_external: true,
+            reversible: true,
             autonomy: AutonomyLevel::ActWithinPolicy,
             configured: true,
             needs: "",
@@ -1027,6 +1035,7 @@ impl Capability for WebAnswersCapability {
             description: "Get a quick answer or definition from the web for a question (DuckDuckGo).",
             category: "information",
             reaches_external: true,
+            reversible: true,
             autonomy: AutonomyLevel::ActWithinPolicy,
             configured: true,
             needs: "",
@@ -1139,6 +1148,7 @@ impl Capability for ImageReviewCapability {
             description: "Describe or answer questions about an image, using a local vision model.",
             category: "media",
             reaches_external: false,
+            reversible: true,
             autonomy: AutonomyLevel::ActWithinPolicy,
             // Code is ready; it becomes usable once the `model` setting is filled.
             configured: true,
@@ -1202,7 +1212,7 @@ impl Capability for ImageReviewCapability {
 /// A skill that is declared with its full metadata but awaits a data source or
 /// key. It appears in the registry as "needs setup" rather than being missing.
 macro_rules! scaffold {
-    ($ty:ident, $id:literal, $name:literal, $desc:literal, $cat:literal, $external:literal, $auto:expr, $needs:literal) => {
+    ($ty:ident, $id:literal, $name:literal, $desc:literal, $cat:literal, $external:literal, $reversible:literal, $auto:expr, $needs:literal) => {
         struct $ty;
         impl Capability for $ty {
             fn info(&self) -> CapabilityInfo {
@@ -1212,6 +1222,7 @@ macro_rules! scaffold {
                     description: $desc,
                     category: $cat,
                     reaches_external: $external,
+                    reversible: $reversible,
                     autonomy: $auto,
                     configured: false,
                     needs: $needs,
@@ -1239,6 +1250,7 @@ scaffold!(
     "What's on near you — concerts, markets, community happenings.",
     "information",
     true,
+    true, // reversible: read-only lookup
     AutonomyLevel::ActWithinPolicy,
     "an events data source / API key"
 );
@@ -1249,6 +1261,7 @@ scaffold!(
     "Find and compare flights for a trip.",
     "travel",
     true,
+    false, // irreversible: booking spends money and can't be undone
     AutonomyLevel::ConfirmEachAction,
     "a flights API key (booking stays a human decision)"
 );
@@ -1259,6 +1272,7 @@ scaffold!(
     "Keep a private log of where you are while travelling, so the butler has context.",
     "presence",
     false,
+    true, // reversible: a private log you can delete
     AutonomyLevel::ConfirmEachAction,
     "your opt-in and a location source (kept private to you)"
 );
@@ -1274,6 +1288,7 @@ impl Capability for SafetyAlertsCapability {
             description: "Active safety alerts near you — severe weather and public warnings (US National Weather Service).",
             category: "safety",
             reaches_external: true,
+            reversible: true,
             autonomy: AutonomyLevel::ActWithinPolicy,
             configured: true,
             needs: "",
@@ -1354,6 +1369,7 @@ scaffold!(
     "Surface public emergency/incident alerts nearby (fire, rescue, major incidents).",
     "safety",
     true,
+    true, // reversible: read-only lookup
     AutonomyLevel::ActWithinPolicy,
     "a public incident/emergency feed for your area"
 );
@@ -1429,6 +1445,11 @@ fn settings_complete(info: &CapabilityInfo, settings: &CapabilitySettings) -> bo
 /// given a skill's declared autonomy and reach, and the person's envelope, may it
 /// run on its own this turn? Never consults the model — the boundary is policy.
 fn may_run_autonomously(info: &CapabilityInfo, env: &endora_application::AutonomyEnvelope) -> bool {
+    // The un-undoable is NEVER run on its own, whatever the envelope says (ADR 0024).
+    // Irreversible actions only ever happen via an explicit, confirmed request.
+    if !info.reversible {
+        return false;
+    }
     match info.autonomy {
         // Observe-only skills never act.
         AutonomyLevel::Observe => false,
@@ -1510,6 +1531,7 @@ mod tests {
             description: "",
             category: "",
             reaches_external,
+            reversible: true,
             autonomy,
             configured: true,
             needs: "",
@@ -1554,6 +1576,21 @@ mod tests {
             &info(AutonomyLevel::Observe, false),
             &widened
         ));
+
+        // The un-undoable is NEVER autonomous, even fully widened (ADR 0024).
+        let irreversible = CapabilityInfo {
+            id: "book",
+            name: "Book",
+            description: "",
+            category: "",
+            reaches_external: true,
+            reversible: false,
+            autonomy: AutonomyLevel::ConfirmEachAction,
+            configured: true,
+            needs: "",
+            settings: &[],
+        };
+        assert!(!may_run_autonomously(&irreversible, &widened));
     }
 
     #[test]
