@@ -56,3 +56,4 @@ of an existing record and take the next number.
 | [0020](0020-intent-first-understanding-loop.md) | Intent-first: the autonomous understanding loop (direction reset) | Accepted |
 | [0021](0021-capability-catalog-and-mcp-host.md) | The capability catalog: configuration, enablement, and an MCP host | Accepted |
 | [0022](0022-autonomy-envelope-and-self-authored-capabilities.md) | The autonomy envelope and self-authored capabilities | Accepted |
+| [0023](0023-egress-guard-and-data-loss-tripwire.md) | The egress guard: SSRF protection and a data-loss tripwire | Accepted |

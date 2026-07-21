@@ -173,23 +173,169 @@ fn http_get_text_ua(url: &str, ua: &str, max_bytes: usize) -> Result<String, Cap
     Ok(String::from_utf8_lossy(&buf).into_owned())
 }
 
-/// Fetches raw bytes from a URL (size-capped) — for binary content like images.
-/// Sends a browser-ish User-Agent, since many image hosts reject requests without
-/// one (returning an HTML error page a vision model then can't load).
-fn http_get_bytes(url: &str, max_bytes: usize) -> Result<Vec<u8>, CapabilityError> {
+// ---- Egress guard (SSRF protection for model/person-provided URLs) ----------
+
+/// Rejects a URL whose host is, or resolves to, a non-public address — closing the
+/// SSRF hole where a model-provided URL could reach the internal network or a cloud
+/// metadata endpoint (ADR 0023). Only for **arbitrary** URLs; the trusted internal
+/// model calls and constant-host API skills do not use this.
+fn guard_egress(url: &str) -> Result<(), CapabilityError> {
+    let (host, port) = host_and_port(url)
+        .ok_or_else(|| CapabilityError::BadInput(format!("couldn't parse URL host: {url}")))?;
+    let deny = |ip: &std::net::IpAddr| {
+        // Anything that isn't a normal public address is refused.
+        match ip {
+            std::net::IpAddr::V4(v4) => {
+                v4.is_loopback()
+                    || v4.is_private()
+                    || v4.is_link_local()
+                    || v4.is_unspecified()
+                    || v4.is_broadcast()
+                    || v4.is_multicast()
+                    || v4.is_documentation()
+                    // Carrier-grade NAT 100.64.0.0/10.
+                    || (v4.octets()[0] == 100 && (v4.octets()[1] & 0xc0) == 0x40)
+            }
+            std::net::IpAddr::V6(v6) => {
+                v6.is_loopback()
+                    || v6.is_unspecified()
+                    || v6.is_multicast()
+                    // Unique-local fc00::/7 and link-local fe80::/10.
+                    || (v6.segments()[0] & 0xfe00) == 0xfc00
+                    || (v6.segments()[0] & 0xffc0) == 0xfe80
+            }
+        }
+    };
+    let blocked = |ip: std::net::IpAddr| {
+        if deny(&ip) {
+            Err(CapabilityError::BadInput(format!(
+                "refusing to fetch a private/internal address ({ip})"
+            )))
+        } else {
+            Ok(())
+        }
+    };
+    // A literal IP is checked directly; a hostname is resolved first (so a name that
+    // points at an internal IP is caught too).
+    if let Ok(ip) = host.parse::<std::net::IpAddr>() {
+        return blocked(ip);
+    }
+    use std::net::ToSocketAddrs;
+    let addrs = (host.as_str(), port)
+        .to_socket_addrs()
+        .map_err(|e| CapabilityError::Unavailable(format!("couldn't resolve {host}: {e}")))?;
+    let mut any = false;
+    for a in addrs {
+        any = true;
+        blocked(a.ip())?;
+    }
+    if any {
+        Ok(())
+    } else {
+        Err(CapabilityError::Unavailable(format!(
+            "couldn't resolve {host}"
+        )))
+    }
+}
+
+/// Extracts `(host, port)` from an http(s) URL, without a URL dependency. Strips
+/// userinfo, handles IPv6 literals `[..]`, and defaults the port by scheme.
+fn host_and_port(url: &str) -> Option<(String, u16)> {
+    let scheme_end = url.find("://")?;
+    let scheme = &url[..scheme_end];
+    let default_port = match scheme {
+        "http" => 80,
+        "https" => 443,
+        _ => return None,
+    };
+    let after = &url[scheme_end + 3..];
+    let authority = after.split(['/', '?', '#']).next()?;
+    // Strip any userinfo ("user:pass@host").
+    let authority = authority.rsplit('@').next()?;
+    if let Some(rest) = authority.strip_prefix('[') {
+        // IPv6 literal: [addr] or [addr]:port.
+        let end = rest.find(']')?;
+        let host = rest[..end].to_owned();
+        let port = rest[end + 1..]
+            .strip_prefix(':')
+            .and_then(|p| p.parse().ok())
+            .unwrap_or(default_port);
+        return Some((host, port));
+    }
+    match authority.rsplit_once(':') {
+        Some((host, port)) if !host.is_empty() => {
+            Some((host.to_owned(), port.parse().unwrap_or(default_port)))
+        }
+        _ => Some((authority.to_owned(), default_port)),
+    }
+}
+
+/// Like [`http_get_text`], but guards the URL against SSRF and follows redirects
+/// manually, re-guarding each hop (ADR 0023). For model/person-provided URLs.
+fn guarded_get_text(url: &str, max_bytes: usize) -> Result<String, CapabilityError> {
+    let bytes = guarded_get_bytes(url, max_bytes)?;
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
+}
+
+/// Guarded byte fetch with manual, re-guarded redirect following (bounded).
+fn guarded_get_bytes(url: &str, max_bytes: usize) -> Result<Vec<u8>, CapabilityError> {
     use std::io::Read;
-    let mut resp = agent()
-        .get(url)
-        .header("User-Agent", "Mozilla/5.0 (Endora personal butler)")
-        .call()
-        .map_err(|e| CapabilityError::Unavailable(e.to_string()))?;
-    let mut buf = Vec::new();
-    resp.body_mut()
-        .as_reader()
-        .take(max_bytes as u64)
-        .read_to_end(&mut buf)
-        .map_err(|e| CapabilityError::Unavailable(e.to_string()))?;
-    Ok(buf)
+    let no_redirect = ureq::Agent::config_builder()
+        .timeout_global(Some(Duration::from_secs(15)))
+        .max_redirects(0)
+        .build();
+    let no_redirect: ureq::Agent = no_redirect.into();
+    let mut current = url.to_owned();
+    for _ in 0..6 {
+        guard_egress(&current)?;
+        let mut resp = no_redirect
+            .get(&current)
+            .header("User-Agent", "Mozilla/5.0 (Endora personal butler)")
+            .call()
+            .map_err(|e| CapabilityError::Unavailable(e.to_string()))?;
+        let status = resp.status().as_u16();
+        if (300..400).contains(&status) {
+            let location = resp
+                .headers()
+                .get("location")
+                .and_then(|v| v.to_str().ok())
+                .ok_or_else(|| {
+                    CapabilityError::Unavailable("redirect without location".to_owned())
+                })?
+                .to_owned();
+            current = resolve_redirect(&current, &location);
+            continue;
+        }
+        let mut buf = Vec::new();
+        resp.body_mut()
+            .as_reader()
+            .take(max_bytes as u64)
+            .read_to_end(&mut buf)
+            .map_err(|e| CapabilityError::Unavailable(e.to_string()))?;
+        return Ok(buf);
+    }
+    Err(CapabilityError::Unavailable(
+        "too many redirects".to_owned(),
+    ))
+}
+
+/// Resolves a redirect `Location` (absolute or root-relative) against the URL it
+/// came from. Root-relative and same-scheme cases are enough for our fetches.
+fn resolve_redirect(base: &str, location: &str) -> String {
+    if location.starts_with("http://") || location.starts_with("https://") {
+        return location.to_owned();
+    }
+    // Root-relative: keep scheme://host[:port], swap the path.
+    if let Some(scheme_end) = base.find("://") {
+        let after = &base[scheme_end + 3..];
+        let authority_len = after.find('/').unwrap_or(after.len());
+        let origin = &base[..scheme_end + 3 + authority_len];
+        if location.starts_with('/') {
+            return format!("{origin}{location}");
+        }
+        return format!("{origin}/{location}");
+    }
+    location.to_owned()
 }
 
 /// POSTs a JSON body and returns the response as text (size-capped).
@@ -443,7 +589,8 @@ impl Capability for WebFetchCapability {
         if !(url.starts_with("http://") || url.starts_with("https://")) {
             return Err(CapabilityError::BadInput("url must be http(s)".to_owned()));
         }
-        let html = http_get_text(url, 512 * 1024)?;
+        // Guard against SSRF: a model-provided URL must not reach internal hosts.
+        let html = guarded_get_text(url, 512 * 1024)?;
         let title = between(&html, "<title>", "</title>").unwrap_or_default();
         let text = strip_html(&html);
         let excerpt: String = text.chars().take(2_000).collect();
@@ -848,7 +995,8 @@ impl Capability for ImageReviewCapability {
             .unwrap_or("Describe this image in detail.");
         // Accept a URL to fetch, or already-encoded base64.
         let image_b64 = if let Some(url) = input.get("image_url").and_then(Value::as_str) {
-            base64_encode(&http_get_bytes(url, 8 * 1024 * 1024)?)
+            // Guard against SSRF on a model/person-provided image URL.
+            base64_encode(&guarded_get_bytes(url, 8 * 1024 * 1024)?)
         } else if let Some(b64) = input.get("image_base64").and_then(Value::as_str) {
             b64.to_owned()
         } else {
@@ -1247,6 +1395,64 @@ mod tests {
         assert!(resolve_us_zip("2827").unwrap().is_none());
         assert!(resolve_us_zip("abcde").unwrap().is_none());
         assert!(resolve_us_zip("Boston, MA").unwrap().is_none());
+    }
+
+    #[test]
+    fn egress_guard_blocks_internal_ip_literals() {
+        // Loopback, RFC1918, link-local (incl. cloud metadata), and IPv6 loopback.
+        for url in [
+            "http://127.0.0.1/x",
+            "http://192.168.1.14:8787/data",
+            "http://10.0.0.5/",
+            "http://169.254.169.254/latest/meta-data",
+            "https://[::1]/",
+            "http://[fd00::1]/",
+        ] {
+            assert!(
+                matches!(guard_egress(url), Err(CapabilityError::BadInput(_))),
+                "should have blocked {url}"
+            );
+        }
+        // A non-http scheme is refused too.
+        assert!(guard_egress("ftp://8.8.8.8/").is_err());
+    }
+
+    #[test]
+    fn egress_guard_allows_public_ip_literals() {
+        assert!(guard_egress("https://8.8.8.8/").is_ok());
+        assert!(guard_egress("http://1.1.1.1:8080/x").is_ok());
+    }
+
+    #[test]
+    fn host_and_port_parses_forms() {
+        assert_eq!(
+            host_and_port("https://example.com/path"),
+            Some(("example.com".to_owned(), 443))
+        );
+        assert_eq!(
+            host_and_port("http://example.com:8080/x?y=1"),
+            Some(("example.com".to_owned(), 8080))
+        );
+        assert_eq!(
+            host_and_port("http://user:pass@10.0.0.1/x"),
+            Some(("10.0.0.1".to_owned(), 80))
+        );
+        assert_eq!(
+            host_and_port("https://[::1]:9000/"),
+            Some(("::1".to_owned(), 9000))
+        );
+    }
+
+    #[test]
+    fn redirect_resolution_handles_absolute_and_relative() {
+        assert_eq!(
+            resolve_redirect("https://a.com/x", "https://b.com/y"),
+            "https://b.com/y"
+        );
+        assert_eq!(
+            resolve_redirect("https://a.com/x/y", "/z"),
+            "https://a.com/z"
+        );
     }
 
     #[test]
