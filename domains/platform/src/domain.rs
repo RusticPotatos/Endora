@@ -1,15 +1,15 @@
-//! Audit & Accountability context.
-//!
-//! An [`AuditRecord`] is a durable, human-readable note that a consequential
-//! decision or action happened — what happened and when. The constitution
-//! requires that consequential decisions be auditable; these records exist to
-//! protect the user, not to surveil them, and are subject to the same memory
-//! rights as any other stored data.
+//! Platform domain model — the audit record.
 
-use crate::error::{DomainError, require_non_empty};
-use crate::ids::{AuditId, Timestamp};
+use endora_kernel::error::{DomainError, require_non_empty};
+use endora_kernel::ids::{AuditId, Timestamp};
 
 /// A single entry in the audit trail.
+///
+/// A durable, human-readable note that a consequential decision or action
+/// happened — what happened and when. The constitution requires that
+/// consequential decisions be auditable; these records exist to protect the
+/// user, not to surveil them, and are subject to the same memory rights as any
+/// other stored data.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AuditRecord {
     id: AuditId,
@@ -49,8 +49,8 @@ impl AuditRecord {
 #[cfg(test)]
 mod tests {
     use super::AuditRecord;
-    use crate::error::DomainError;
-    use crate::ids::{AuditId, Timestamp};
+    use endora_kernel::error::DomainError;
+    use endora_kernel::ids::{AuditId, Timestamp};
 
     #[test]
     fn record_keeps_its_fields() {

@@ -13,11 +13,13 @@ use endora_domain::{
     TargetId, Timestamp, Value, ValueId, authorize_process_change,
 };
 
+use endora_platform::{AuditLog, EventLog};
+
 use crate::error::AppError;
 use crate::ports::{
-    AssumptionRepository, AttentionItem, AttentionKind, AuditLog, BeliefRepository, BriefSchedule,
+    AssumptionRepository, AttentionItem, AttentionKind, BeliefRepository, BriefSchedule,
     BriefScheduleRepository, Butler, ButlerContext, ButlerProposal, ButlerReply, CapabilityRunner,
-    ChatRepository, CheckinRepository, CheckinSchedule, Clock, DirectionRepository, EventLog,
+    ChatRepository, CheckinRepository, CheckinSchedule, Clock, DirectionRepository,
     ExperimentRepository, IdSource, MemorySnapshot, MemoryStore, NorthStarBrief,
     ObservationRepository, PreferenceRepository, ProcessChangeRepository, Proposer,
     ReflectionRepository, Snooze, SnoozeRepository, Suggestion, SuggestionRepository,
@@ -639,9 +641,9 @@ pub fn purge_memory(store: &impl MemoryStore) -> Result<(), AppError> {
 ///
 /// # Errors
 /// [`AppError::Repository`] if the backend fails.
-pub fn recent_audit(audit: &impl AuditLog, limit: usize) -> Result<Vec<AuditRecord>, AppError> {
-    Ok(audit.recent(limit)?)
-}
+// `recent_audit` moved to the platform context (ADR 0026); re-exported so
+// `usecases::recent_audit` paths are unchanged during the migration.
+pub use endora_platform::recent_audit;
 
 /// What kind of thing an [`ActivityItem`] records.
 ///
@@ -1845,9 +1847,9 @@ mod tests {
     };
     use crate::error::AppError;
     use crate::ports::{
-        AssumptionRepository, AttentionKind, AuditLog, BeliefRepository, Butler, ButlerContext,
+        AssumptionRepository, AttentionKind, BeliefRepository, Butler, ButlerContext,
         ButlerProposal, ButlerReply, CapabilityRunner, ChatRepository, CheckinRepository,
-        CheckinSchedule, Clock, DirectionRepository, EventLog, ExperimentRepository, IdSource,
+        CheckinSchedule, Clock, DirectionRepository, ExperimentRepository, IdSource,
         ObservationRepository, PreferenceRepository, ProcessChangeRepository, ProposalError,
         Proposer, ReflectionRepository, RepositoryError, Snooze, SnoozeRepository, Suggestion,
         SuggestionRepository, SuggestionStatus, TargetRepository, ValueRepository,
@@ -1861,6 +1863,7 @@ mod tests {
         TargetId, Timestamp, Value, ValueId,
     };
     use endora_domain::{Belief, BeliefId};
+    use endora_platform::{AuditLog, EventLog};
     use std::cell::{Cell, RefCell};
     use std::collections::HashMap;
 
@@ -2273,21 +2276,18 @@ mod tests {
     /// An in-memory event log (the butler's action log).
     #[derive(Default)]
     struct FakeEvents {
-        rows: RefCell<Vec<crate::ports::ActivityEvent>>,
+        rows: RefCell<Vec<crate::ActivityEvent>>,
     }
 
     impl EventLog for FakeEvents {
         fn record(&self, at: Timestamp, summary: &str) -> Result<(), RepositoryError> {
-            self.rows.borrow_mut().push(crate::ports::ActivityEvent {
+            self.rows.borrow_mut().push(crate::ActivityEvent {
                 at,
                 summary: summary.to_owned(),
             });
             Ok(())
         }
-        fn recent(
-            &self,
-            limit: usize,
-        ) -> Result<Vec<crate::ports::ActivityEvent>, RepositoryError> {
+        fn recent(&self, limit: usize) -> Result<Vec<crate::ActivityEvent>, RepositoryError> {
             let all = self.rows.borrow();
             Ok(all.iter().rev().take(limit).cloned().collect())
         }

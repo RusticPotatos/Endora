@@ -74,8 +74,29 @@ impl Db {
     }
 }
 
-/// Maps a `rusqlite` error into a shared [`RepositoryError::Backend`].
+/// Maps any backend failure into a shared [`RepositoryError::Backend`].
 #[must_use]
-pub fn backend(error: rusqlite::Error) -> RepositoryError {
+pub fn backend(error: impl core::fmt::Display) -> RepositoryError {
     RepositoryError::Backend(error.to_string())
+}
+
+/// Maps a data-reconstruction failure into a shared [`RepositoryError::Corrupt`].
+#[must_use]
+pub fn corrupt(error: impl core::fmt::Display) -> RepositoryError {
+    RepositoryError::Corrupt(error.to_string())
+}
+
+/// Renders a `u128` identifier as its stored text form.
+#[must_use]
+pub fn id_text(value: u128) -> String {
+    value.to_string()
+}
+
+/// Parses a stored id back into a `u128`, or [`RepositoryError::Corrupt`].
+///
+/// # Errors
+/// [`RepositoryError::Corrupt`] if the text is not a valid `u128`.
+pub fn parse_id(text: &str) -> Result<u128, RepositoryError> {
+    text.parse::<u128>()
+        .map_err(|e| RepositoryError::Corrupt(format!("invalid stored id {text:?}: {e}")))
 }

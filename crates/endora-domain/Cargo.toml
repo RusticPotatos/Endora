@@ -13,6 +13,10 @@ authors.workspace = true
 # architectural decision that requires an ADR (see docs/adr/).
 [dependencies]
 endora-kernel = { path = "../../shared/kernel" }
+# Temporary migration shim: AuditRecord now lives in the platform context and is
+# re-exported here so existing `endora_domain::AuditRecord` paths keep working
+# until callers are repointed. Removed when the old crates are deleted (ADR 0026).
+endora-platform = { path = "../../domains/platform" }
 
 [lints]
 workspace = true
