@@ -51,6 +51,8 @@ pub struct AppState {
     pub understanding: Arc<endora_understanding::UnderstandingStore>,
     /// The direction context's eight repositories (values/targets/experiments/…).
     pub direction: Arc<endora_direction::DirectionStore>,
+    /// The capabilities context's config store (settings/config/envelope/deep-model).
+    pub config: Arc<endora_capabilities::ConfigStore>,
     /// The identifier source.
     pub ids: Arc<RandomIdSource>,
     /// The system clock.
@@ -86,12 +88,14 @@ impl AppState {
         let schedules = Arc::new(endora_scheduling::ScheduleStore::new(store.db()));
         let understanding = Arc::new(endora_understanding::UnderstandingStore::new(store.db()));
         let direction = Arc::new(endora_direction::DirectionStore::new(store.db()));
+        let config = Arc::new(endora_capabilities::ConfigStore::new(store.db()));
         Self {
             store,
             chat,
             schedules,
             understanding,
             direction,
+            config,
             ids,
             clock,
             proposer,
@@ -1072,26 +1076,26 @@ fn record_event(store: &SqliteStore, clock: &SystemClock, summary: &str) {
 }
 
 fn build_runner(
-    store: &SqliteStore,
+    config: &endora_capabilities::ConfigStore,
     capabilities: Arc<Vec<Arc<dyn Capability>>>,
 ) -> endora_infrastructure::RegistryRunner {
-    let overrides = store.enabled_overrides().unwrap_or_default();
-    let envelope = AutonomyEnvelopeRepository::get(store).unwrap_or_default();
+    let overrides = config.enabled_overrides().unwrap_or_default();
+    let envelope = AutonomyEnvelopeRepository::get(config).unwrap_or_default();
     endora_infrastructure::RegistryRunner::with_config(
         capabilities,
         overrides,
         envelope,
-        settings_map(store),
+        settings_map(config),
     )
 }
 
 /// Loads all capability settings, grouped by capability id, for the runner.
 fn settings_map(
-    store: &SqliteStore,
+    config: &endora_capabilities::ConfigStore,
 ) -> std::collections::HashMap<String, endora_infrastructure::CapabilitySettings> {
     let mut map: std::collections::HashMap<String, endora_infrastructure::CapabilitySettings> =
         std::collections::HashMap::new();
-    for (id, key, value) in store.all_settings().unwrap_or_default() {
+    for (id, key, value) in config.all_settings().unwrap_or_default() {
         map.entry(id).or_default().insert(key, value);
     }
     map
@@ -1111,12 +1115,13 @@ async fn send_chat(
     let dirs = state.direction.clone();
     let chat = state.chat.clone();
     let understanding = state.understanding.clone();
+    let config = state.config.clone();
     let ids = state.ids.clone();
     let clock = state.clock.clone();
     let butler = state.butler.clone();
     let capabilities = state.capabilities.clone();
     let (reply, suggestions, activity) = blocking(move || {
-        let runner = build_runner(store.as_ref(), capabilities);
+        let runner = build_runner(config.as_ref(), capabilities);
         // Ground the butler in the person's current life before it answers.
         let context = usecases::butler_context(
             dirs.as_ref(),
@@ -1163,11 +1168,12 @@ async fn brief(State(state): State<AppState>) -> Result<Json<serde_json::Value>,
     let store = state.store.clone();
     let chat = state.chat.clone();
     let understanding = state.understanding.clone();
+    let config = state.config.clone();
     let ids = state.ids.clone();
     let clock = state.clock.clone();
     let capabilities = state.capabilities.clone();
     let result = blocking(move || {
-        let runner = build_runner(store.as_ref(), capabilities);
+        let runner = build_runner(config.as_ref(), capabilities);
         let out = usecases::daily_brief(
             chat.as_ref(),
             understanding.as_ref(),
@@ -1213,6 +1219,7 @@ async fn stream_chat(
     let dirs = state.direction.clone();
     let chat = state.chat.clone();
     let understanding = state.understanding.clone();
+    let config = state.config.clone();
     let ids = state.ids.clone();
     let clock = state.clock.clone();
     let butler = state.butler.clone();
@@ -1223,7 +1230,7 @@ async fn stream_chat(
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Event>();
 
     tokio::task::spawn_blocking(move || {
-        let runner = build_runner(store.as_ref(), capabilities);
+        let runner = build_runner(config.as_ref(), capabilities);
         let event = |v: serde_json::Value| Event::default().data(v.to_string());
         let context = match usecases::butler_context(
             dirs.as_ref(),
@@ -1510,12 +1517,12 @@ fn capability_json(
 /// person has each turned on.
 async fn list_capabilities(State(state): State<AppState>) -> Json<Vec<serde_json::Value>> {
     let enabled: std::collections::HashMap<String, bool> = state
-        .store
+        .config
         .enabled_overrides()
         .unwrap_or_default()
         .into_iter()
         .collect();
-    let settings = settings_map(state.store.as_ref());
+    let settings = settings_map(state.config.as_ref());
     let empty = endora_infrastructure::CapabilitySettings::new();
     Json(
         state
@@ -1556,11 +1563,12 @@ async fn set_capability_settings(
         .filter(|(k, _)| allowed.contains(k.as_str()))
         .collect();
     let store = state.store.clone();
+    let config = state.config.clone();
     let clock = state.clock.clone();
     let cap_id = id.clone();
     blocking(move || {
         for (k, v) in &to_set {
-            store
+            config
                 .set_setting(&cap_id, k, v)
                 .map_err(AppError::Repository)?;
         }
@@ -1595,10 +1603,11 @@ async fn set_capability_enabled(
         }));
     }
     let store = state.store.clone();
+    let config = state.config.clone();
     let clock = state.clock.clone();
     let (cap_id, enabled) = (id.clone(), req.enabled);
     blocking(move || {
-        store
+        config
             .set_enabled(&cap_id, enabled)
             .map_err(AppError::Repository)?;
         record_event(
@@ -1623,9 +1632,9 @@ fn envelope_json(e: &AutonomyEnvelope) -> serde_json::Value {
 /// Returns the person's autonomy envelope — the boundary the butler acts within
 /// (ADR 0022).
 async fn get_autonomy(State(state): State<AppState>) -> Result<Json<serde_json::Value>, ApiError> {
-    let store = state.store.clone();
+    let config = state.config.clone();
     let envelope = blocking(move || {
-        AutonomyEnvelopeRepository::get(store.as_ref()).map_err(AppError::Repository)
+        AutonomyEnvelopeRepository::get(config.as_ref()).map_err(AppError::Repository)
     })
     .await?;
     Ok(Json(envelope_json(&envelope)))
@@ -1647,10 +1656,12 @@ async fn set_autonomy(
         auto_external: req.auto_external,
         auto_consequential: req.auto_consequential,
     };
+    let config = state.config.clone();
     let store = state.store.clone();
     let clock = state.clock.clone();
     blocking(move || {
-        AutonomyEnvelopeRepository::set(store.as_ref(), &envelope).map_err(AppError::Repository)?;
+        AutonomyEnvelopeRepository::set(config.as_ref(), &envelope)
+            .map_err(AppError::Repository)?;
         record_event(
             store.as_ref(),
             clock.as_ref(),
@@ -1684,9 +1695,9 @@ fn brief_schedule_json(s: &BriefSchedule) -> serde_json::Value {
 async fn get_deep_model(
     State(state): State<AppState>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let store = state.store.clone();
+    let config = state.config.clone();
     let cfg =
-        blocking(move || DeepModelRepository::get(store.as_ref()).map_err(AppError::Repository))
+        blocking(move || DeepModelRepository::get(config.as_ref()).map_err(AppError::Repository))
             .await?
             .unwrap_or_default();
     Ok(Json(json!({
@@ -1711,10 +1722,11 @@ async fn set_deep_model(
     State(state): State<AppState>,
     Json(req): Json<DeepModelRequest>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
+    let config = state.config.clone();
     let store = state.store.clone();
     let clock = state.clock.clone();
     blocking(move || {
-        let existing = DeepModelRepository::get(store.as_ref())
+        let existing = DeepModelRepository::get(config.as_ref())
             .map_err(AppError::Repository)?
             .unwrap_or_default();
         let api_key = match req.api_key {
@@ -1722,7 +1734,7 @@ async fn set_deep_model(
             _ => existing.api_key, // keep the stored key when none is supplied
         };
         DeepModelRepository::set(
-            store.as_ref(),
+            config.as_ref(),
             &endora_application::DeepModel {
                 url: req.url.trim().to_owned(),
                 model: req.model.trim().to_owned(),
@@ -1752,11 +1764,12 @@ async fn deep_ask(
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let store = state.store.clone();
     let chat = state.chat.clone();
+    let config = state.config.clone();
     let ids = state.ids.clone();
     let clock = state.clock.clone();
     let question = req.question;
     let posted = blocking(move || {
-        let Some(cfg) = DeepModelRepository::get(store.as_ref()).map_err(AppError::Repository)?
+        let Some(cfg) = DeepModelRepository::get(config.as_ref()).map_err(AppError::Repository)?
         else {
             return Ok::<_, AppError>(None);
         };
@@ -1868,9 +1881,11 @@ async fn invoke_capability(
         }
         endora_infrastructure::redact_pii_in_value(&mut input);
     }
-    let store = state.store.clone();
+    let config = state.config.clone();
     let result = tokio::task::spawn_blocking(move || {
-        let settings = settings_map(store.as_ref()).remove(&id).unwrap_or_default();
+        let settings = settings_map(config.as_ref())
+            .remove(&id)
+            .unwrap_or_default();
         cap.invoke(&input, &settings)
     })
     .await
@@ -1904,11 +1919,12 @@ pub fn spawn_heartbeat(state: AppState) {
             let chat = state.chat.clone();
             let schedules = state.schedules.clone();
             let understanding = state.understanding.clone();
+            let config = state.config.clone();
             let ids = state.ids.clone();
             let clock = state.clock.clone();
             let capabilities = state.capabilities.clone();
             let posted = tokio::task::spawn_blocking(move || {
-                let runner = build_runner(store.as_ref(), capabilities);
+                let runner = build_runner(config.as_ref(), capabilities);
                 let context = usecases::butler_context(
                     dirs.as_ref(),
                     dirs.as_ref(),
