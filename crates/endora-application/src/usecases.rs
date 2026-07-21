@@ -15,15 +15,16 @@ use endora_domain::{
 
 use endora_capabilities::CapabilityRunner;
 use endora_platform::{AuditLog, EventLog};
+use endora_understanding::{BeliefRepository, PreferenceRepository};
 
 use crate::error::AppError;
 use crate::ports::{
-    AssumptionRepository, AttentionItem, AttentionKind, BeliefRepository, BriefSchedule,
-    BriefScheduleRepository, Butler, ButlerContext, ButlerProposal, ButlerReply, ChatRepository,
-    CheckinRepository, CheckinSchedule, Clock, DirectionRepository, ExperimentRepository, IdSource,
-    MemorySnapshot, MemoryStore, NorthStarBrief, ObservationRepository, PreferenceRepository,
-    ProcessChangeRepository, Proposer, ReflectionRepository, Snooze, SnoozeRepository, Suggestion,
-    SuggestionRepository, SuggestionStatus, TargetRepository, ValueRepository,
+    AssumptionRepository, AttentionItem, AttentionKind, BriefSchedule, BriefScheduleRepository,
+    Butler, ButlerContext, ButlerProposal, ButlerReply, ChatRepository, CheckinRepository,
+    CheckinSchedule, Clock, DirectionRepository, ExperimentRepository, IdSource, MemorySnapshot,
+    MemoryStore, NorthStarBrief, ObservationRepository, ProcessChangeRepository, Proposer,
+    ReflectionRepository, Snooze, SnoozeRepository, Suggestion, SuggestionRepository,
+    SuggestionStatus, TargetRepository, ValueRepository,
 };
 
 /// Creates and stores a new [`Direction`].
@@ -1847,12 +1848,11 @@ mod tests {
     };
     use crate::error::AppError;
     use crate::ports::{
-        AssumptionRepository, AttentionKind, BeliefRepository, Butler, ButlerContext,
-        ButlerProposal, ButlerReply, ChatRepository, CheckinRepository, CheckinSchedule, Clock,
-        DirectionRepository, ExperimentRepository, IdSource, ObservationRepository,
-        PreferenceRepository, ProcessChangeRepository, ProposalError, Proposer,
-        ReflectionRepository, RepositoryError, Snooze, SnoozeRepository, Suggestion,
-        SuggestionRepository, SuggestionStatus, TargetRepository, ValueRepository,
+        AssumptionRepository, AttentionKind, Butler, ButlerContext, ButlerProposal, ButlerReply,
+        ChatRepository, CheckinRepository, CheckinSchedule, Clock, DirectionRepository,
+        ExperimentRepository, IdSource, ObservationRepository, ProcessChangeRepository,
+        ProposalError, Proposer, ReflectionRepository, RepositoryError, Snooze, SnoozeRepository,
+        Suggestion, SuggestionRepository, SuggestionStatus, TargetRepository, ValueRepository,
     };
     use endora_capabilities::CapabilityRunner;
     use endora_domain::LifecycleStatus;
@@ -1865,6 +1865,7 @@ mod tests {
     };
     use endora_domain::{Belief, BeliefId};
     use endora_platform::{AuditLog, EventLog};
+    use endora_understanding::{BeliefRepository, PreferenceRepository};
     use std::cell::{Cell, RefCell};
     use std::collections::HashMap;
 
