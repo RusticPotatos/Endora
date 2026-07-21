@@ -275,6 +275,61 @@ impl Butler for LlmButler {
     }
 }
 
+/// A two-model butler (the ADR 0027 mixture experiment): a routing **specialist**
+/// decides which skill to use, and a **generalist** synthesizes the answer once
+/// results are in. The split follows the agentic loop's own structure — a
+/// *gathering* pass (no tool result yet) goes to the router; a *synthesis* pass (a
+/// tool result is present) goes to the synthesizer — so a small tool-tuned model
+/// can do the routing it excels at while a general model handles the prose it
+/// excels at, often at less total VRAM than one large model.
+pub struct MixtureButler {
+    router: LlmButler,
+    synthesizer: LlmButler,
+}
+
+impl MixtureButler {
+    /// Composes a routing specialist and a synthesizing generalist.
+    #[must_use]
+    pub fn new(router: LlmButler, synthesizer: LlmButler) -> Self {
+        Self {
+            router,
+            synthesizer,
+        }
+    }
+
+    /// The brain for this pass: the synthesizer when there's a tool result to
+    /// relay, the router when the butler is still deciding what to do.
+    fn brain(&self, context: &ButlerContext) -> &LlmButler {
+        if context.tool_result.is_some() {
+            &self.synthesizer
+        } else {
+            &self.router
+        }
+    }
+}
+
+impl Butler for MixtureButler {
+    fn respond(
+        &self,
+        history: &[ChatMessage],
+        preferences: &[Preference],
+        context: &ButlerContext,
+    ) -> Result<ButlerReply, ProposalError> {
+        self.brain(context).respond(history, preferences, context)
+    }
+
+    fn respond_streaming(
+        &self,
+        history: &[ChatMessage],
+        preferences: &[Preference],
+        context: &ButlerContext,
+        on_token: &mut dyn FnMut(&str),
+    ) -> Result<ButlerReply, ProposalError> {
+        self.brain(context)
+            .respond_streaming(history, preferences, context, on_token)
+    }
+}
+
 /// The persona and hard rules — candid, never sycophantic, proposes only.
 ///
 /// Central rule (see [ADR 0017]): the app's internal taxonomy — values, North
