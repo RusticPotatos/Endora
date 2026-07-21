@@ -279,11 +279,32 @@ pub fn scan_outbound_secret(text: &str) -> Option<&'static str> {
     if text.contains("PRIVATE KEY-----") {
         return Some("a private key");
     }
+    // Split on whitespace, JSON/markup punctuation, AND URL delimiters, so a secret
+    // embedded in a query string (…?token=sk-…) is isolated as its own token.
     text.split(|c: char| {
         c.is_whitespace()
             || matches!(
                 c,
-                '"' | '\'' | '<' | '>' | '(' | ')' | '{' | '}' | '[' | ']' | ',' | ';' | '\\'
+                '"' | '\''
+                    | '<'
+                    | '>'
+                    | '('
+                    | ')'
+                    | '{'
+                    | '}'
+                    | '['
+                    | ']'
+                    | ','
+                    | ';'
+                    | '\\'
+                    | '='
+                    | '?'
+                    | '&'
+                    | '/'
+                    | ':'
+                    | '#'
+                    | '@'
+                    | '|'
             )
     })
     .find_map(classify_secret_token)
@@ -1505,6 +1526,11 @@ mod tests {
             Some("a GitHub token")
         );
         assert!(scan_outbound_secret("-----BEGIN RSA PRIVATE KEY-----").is_some());
+        // A secret embedded in a URL query string is caught too.
+        assert_eq!(
+            scan_outbound_secret("https://x.com/?token=sk-abcdef1234567890abcdef"),
+            Some("an API key")
+        );
         assert_eq!(
             scan_outbound_secret("token eyJhbGciOi.eyJzdWIiOi.SflKxwRJSM"),
             Some("a token (JWT)")
