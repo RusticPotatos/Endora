@@ -38,10 +38,16 @@ services:
       ENDORA_MODEL_URL: "http://host.docker.internal:11434/v1"
       # A capable instruction model — strong at following directions and emitting
       # clean JSON, which the butler relies on (skill selection, no fabrication,
-      # relaying results). Fits a 12GB GPU comfortably. On a CPU-only or tiny GPU
-      # host, fall back to a small model like llama3.2:3b (weaker, more prone to
-      # fabricating — the deterministic guardrails still hold, but quality drops).
+      # relaying results). Used for the drafting endpoint and as the single-model
+      # butler when the mixture below is not set.
       ENDORA_MODEL: "qwen2.5:7b"
+      # The butler brain (ADR 0027). Set BOTH to run the mixture: a tool-tuned
+      # specialist routes to skills, a generalist writes the reply. The agentic
+      # eval shows this out-routes a single model at less VRAM (hermes3:8b +
+      # qwen2.5:7b scored 8/8, matching a single qwen2.5:14b). Unset both to use
+      # the single ENDORA_MODEL above. Both must be pulled on the Ollama host.
+      ENDORA_ROUTER_MODEL: "hermes3:8b"
+      ENDORA_SYNTH_MODEL: "qwen2.5:7b"
       # Optional private egress: route *external* skill traffic (weather, news,
       # search, web fetch) through a proxy of your choice, WITHOUT binding Endora's
       # network to another container (no `network_mode: service:...`; that tight
