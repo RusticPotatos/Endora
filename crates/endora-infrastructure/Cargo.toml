@@ -9,7 +9,6 @@ repository.workspace = true
 authors.workspace = true
 
 [dependencies]
-endora-domain = { path = "../endora-domain" }
 endora-application = { path = "../endora-application" }
 endora-capabilities = { path = "../../domains/capabilities" }
 rusqlite = { version = "0.39", features = ["bundled"] }

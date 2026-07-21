@@ -11,15 +11,15 @@ use endora_persistence::Db;
 use serde_json::{Value as JsonValue, json};
 
 use endora_application::{
-    ButlerProposal, MemorySnapshot, MemoryStore, RepositoryError, Snooze, SnoozeRepository,
-    Suggestion, SuggestionRepository, SuggestionStatus,
-};
-use endora_domain::{
     ApprovalState, Assumption, AssumptionId, AuditId, AuditRecord, Belief, BeliefId, BeliefKind,
     BeliefStatus, ChatMessage, Confidence, Direction, DirectionId, Experiment, ExperimentId,
     ExperimentStatus, LifecycleStatus, MessageId, MessageRole, Observation, ObservationId,
     Preference, PreferenceId, PreferenceKind, ProcessChangeId, ProposedProcessChange, Reflection,
     ReflectionId, SuggestionId, Target, TargetId, Timestamp, Value, ValueId,
+};
+use endora_application::{
+    ButlerProposal, MemorySnapshot, MemoryStore, RepositoryError, Snooze, SnoozeRepository,
+    Suggestion, SuggestionRepository, SuggestionStatus,
 };
 use rusqlite::{Connection, OptionalExtension, params};
 
@@ -1036,10 +1036,10 @@ mod tests {
     // implements several repository traits, so we exercise it through the trait
     // (as real use cases do) rather than calling ambiguous methods directly.
     use super::SqliteStore;
+    use endora_application::{Direction, DirectionId, Target, TargetId};
     use endora_application::{DirectionRepository, TargetRepository};
     use endora_capabilities::ConfigStore;
     use endora_direction::DirectionStore;
-    use endora_domain::{Direction, DirectionId, Target, TargetId};
 
     fn store() -> SqliteStore {
         SqliteStore::open_in_memory().unwrap()
@@ -1121,7 +1121,7 @@ mod tests {
     #[test]
     fn assumptions_round_trip_and_list_by_target() {
         use endora_application::AssumptionRepository;
-        use endora_domain::{Assumption, AssumptionId, TargetId};
+        use endora_application::{Assumption, AssumptionId, TargetId};
 
         let store = store();
 
@@ -1150,10 +1150,10 @@ mod tests {
 
     #[test]
     fn experiment_status_survives_a_reload() {
-        use endora_application::{AssumptionRepository, ExperimentRepository};
-        use endora_domain::{
+        use endora_application::{
             Assumption, AssumptionId, Experiment, ExperimentId, ExperimentStatus, TargetId,
         };
+        use endora_application::{AssumptionRepository, ExperimentRepository};
 
         let store = store();
 
@@ -1191,10 +1191,10 @@ mod tests {
 
     #[test]
     fn scheduled_review_round_trips_and_lists_when_due() {
-        use endora_application::{AssumptionRepository, ExperimentRepository};
-        use endora_domain::{
+        use endora_application::{
             Assumption, AssumptionId, Experiment, ExperimentId, TargetId, Timestamp,
         };
+        use endora_application::{AssumptionRepository, ExperimentRepository};
 
         let store = store();
 
@@ -1240,8 +1240,8 @@ mod tests {
 
     #[test]
     fn opening_a_pre_review_database_migrates_the_column() {
+        use endora_application::ExperimentId;
         use endora_application::ExperimentRepository;
-        use endora_domain::ExperimentId;
         use rusqlite::Connection;
 
         // Simulate a database created before `review_by_ms` existed: the
@@ -1271,8 +1271,8 @@ mod tests {
 
     #[test]
     fn opening_a_pre_rename_database_migrates_goals_to_targets() {
+        use endora_application::{AssumptionId, DirectionId, TargetId};
         use endora_application::{AssumptionRepository, TargetRepository};
-        use endora_domain::{AssumptionId, DirectionId, TargetId};
         use rusqlite::Connection;
 
         // A database created before Goal was renamed to Target: a `goals` table
@@ -1324,7 +1324,7 @@ mod tests {
     #[test]
     fn opening_a_pre_lifecycle_database_defaults_status_to_active() {
         use endora_application::TargetRepository;
-        use endora_domain::{DirectionId, LifecycleStatus, TargetId};
+        use endora_application::{DirectionId, LifecycleStatus, TargetId};
         use rusqlite::Connection;
 
         // A database created before the lifecycle `status` column existed.
@@ -1364,11 +1364,11 @@ mod tests {
     #[test]
     fn observations_round_trip_with_their_timestamp() {
         use endora_application::{
-            AssumptionRepository, ExperimentRepository, ObservationRepository,
-        };
-        use endora_domain::{
             Assumption, AssumptionId, Experiment, ExperimentId, Observation, ObservationId,
             TargetId, Timestamp,
+        };
+        use endora_application::{
+            AssumptionRepository, ExperimentRepository, ObservationRepository,
         };
 
         let store = store();
@@ -1410,11 +1410,11 @@ mod tests {
     #[test]
     fn reflection_round_trips_with_ordered_evidence() {
         use endora_application::{
-            AssumptionRepository, ExperimentRepository, ObservationRepository, ReflectionRepository,
-        };
-        use endora_domain::{
             Assumption, AssumptionId, Experiment, ExperimentId, Observation, ObservationId,
             Reflection, ReflectionId, TargetId, Timestamp,
+        };
+        use endora_application::{
+            AssumptionRepository, ExperimentRepository, ObservationRepository, ReflectionRepository,
         };
 
         let store = store();
@@ -1472,11 +1472,11 @@ mod tests {
 
     #[test]
     fn process_change_approval_survives_a_reload() {
-        use endora_application::{ProcessChangeRepository, ReflectionRepository};
-        use endora_domain::{
+        use endora_application::{
             ObservationId, ProcessChangeId, ProposedProcessChange, Reflection, ReflectionId,
             TargetId,
         };
+        use endora_application::{ProcessChangeRepository, ReflectionRepository};
 
         let store = store();
 
@@ -1500,10 +1500,10 @@ mod tests {
             .unwrap();
 
         use endora_application::{
-            AssumptionRepository, ExperimentRepository, ObservationRepository,
-        };
-        use endora_domain::{
             Assumption, AssumptionId, Experiment, ExperimentId, Observation, Timestamp,
+        };
+        use endora_application::{
+            AssumptionRepository, ExperimentRepository, ObservationRepository,
         };
         let assumption = AssumptionId::new(3);
         (&dir as &dyn AssumptionRepository)
@@ -1543,13 +1543,13 @@ mod tests {
     #[test]
     fn export_captures_everything_and_purge_clears_it() {
         use endora_application::{
-            AssumptionRepository, AuditLog, ExperimentRepository, MemoryStore,
-            ObservationRepository, ProcessChangeRepository, ReflectionRepository,
-        };
-        use endora_domain::{
             Assumption, AssumptionId, AuditId, AuditRecord, Experiment, ExperimentId, Observation,
             ObservationId, ProcessChangeId, ProposedProcessChange, Reflection, ReflectionId,
             TargetId, Timestamp,
+        };
+        use endora_application::{
+            AssumptionRepository, AuditLog, ExperimentRepository, MemoryStore,
+            ObservationRepository, ProcessChangeRepository, ReflectionRepository,
         };
 
         let store = store();
@@ -1614,7 +1614,7 @@ mod tests {
     #[test]
     fn audit_records_append_and_read_newest_first() {
         use endora_application::AuditLog;
-        use endora_domain::{AuditId, AuditRecord, Timestamp};
+        use endora_application::{AuditId, AuditRecord, Timestamp};
 
         let store = store();
 
@@ -1660,7 +1660,7 @@ mod tests {
     #[test]
     fn events_append_and_read_newest_first() {
         use endora_application::EventLog;
-        use endora_domain::Timestamp;
+        use endora_application::Timestamp;
         let store = store();
         let evt = event_store(&store);
         let log: &dyn EventLog = &evt;

@@ -3,7 +3,7 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use endora_application::Clock;
-use endora_domain::Timestamp;
+use endora_application::Timestamp;
 
 /// A [`Clock`] backed by the operating-system wall clock.
 ///
