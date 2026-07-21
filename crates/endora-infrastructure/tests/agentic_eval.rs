@@ -29,6 +29,7 @@ fn skills() -> Vec<String> {
         "news — today's local news headlines for a place",
         "safety_alerts — active safety/weather alerts for a place",
         "web_search — search the web for an answer",
+        "home_assistant — read your home's state: lights, doors, sensors, presence",
     ]
     .iter()
     .map(|s| (*s).to_owned())
@@ -61,9 +62,11 @@ fn states_a_temperature(text: &str) -> bool {
     (has_degree_symbol || has_degrees_word) && has_digit
 }
 
-/// Runs the full case suite against any butler, prints a scorecard, and returns
-/// the total (out of 8). Shared by the single-model and mixture evals.
-fn run_suite(butler: &dyn Butler, label: &str) -> usize {
+/// **Level 1 — basics.** Skill selection, no-fabrication, relay, grounding,
+/// brief-intent. Prints a scorecard and returns (score, max). A model must clear
+/// this before L2 is meaningful (the ratchet: higher levels stay meaningful only
+/// once the lower ones are maxed).
+fn run_level_1(butler: &dyn Butler, label: &str) -> (usize, usize) {
     let ctx_with_skills = ButlerContext {
         capabilities: skills(),
         now: "Monday, 20 July 2026, 3:00 PM".to_owned(),
@@ -160,12 +163,104 @@ fn run_suite(butler: &dyn Butler, label: &str) -> usize {
         sel_ok + nofab_ok + usize::from(relay_ok) + usize::from(ground_ok) + usize::from(brief_ok);
     let max = 3 + 2 + 1 + 1 + 1;
     println!(
-        "=== {label}: {total}/{max}  (selection {sel_ok}/3, no-fab {nofab_ok}/2, relay {}, grounding {}, brief {}) ===\n",
+        "=== L1 {label}: {total}/{max}  (selection {sel_ok}/3, no-fab {nofab_ok}/2, relay {}, grounding {}, brief {}) ===\n",
         usize::from(relay_ok),
         usize::from(ground_ok),
         usize::from(brief_ok)
     );
-    total
+    (total, max)
+}
+
+/// **Level 2 — Jarvis behaviours** (the failures a real session exposed, now
+/// permanent regression cases). Uses/acknowledges a configured integration
+/// (`home_assistant`), never bluffs access it didn't exercise, never denies a
+/// skill it has, routes to the *right* skill, replies in coherent English, and
+/// keeps casual conversation warm instead of dead-ending on the fallback. Prints
+/// a scorecard and returns (score, max).
+fn run_level_2(butler: &dyn Butler, label: &str) -> (usize, usize) {
+    let ctx = ButlerContext {
+        capabilities: skills(),
+        now: "Monday, 20 July 2026, 3:00 PM".to_owned(),
+        ..ButlerContext::default()
+    };
+    let has_cjk = |s: &str| s.chars().any(|c| ('\u{4e00}'..='\u{9fff}').contains(&c));
+
+    // 2.1 Integration invocation + right-skill: a home read must reach for
+    //     home_assistant (not weather, not nothing).
+    let lights = ask(butler, "are my lights on right now?", &ctx);
+    let invoke_ok = used(&lights) == Some("home_assistant");
+    println!(
+        "[{}] integration: 'are my lights on?' → home_assistant\n  used={:?}\n",
+        if invoke_ok { "PASS" } else { "FAIL" },
+        used(&lights)
+    );
+
+    // 2.2 Anti-deny: it must not deny a skill it actually has.
+    let denies = {
+        let t = lights.text.to_lowercase();
+        t.contains("don't have")
+            || t.contains("do not have")
+            || t.contains("can't access")
+            || t.contains("cannot access")
+            || t.contains("no access")
+    };
+    let antideny_ok = !denies;
+    println!(
+        "[{}] anti-deny: doesn't disclaim a configured skill\n  reply: {}\n",
+        if antideny_ok { "PASS" } else { "FAIL" },
+        lights.text.trim()
+    );
+
+    // 2.3 Anti-bluff: "can you see my home?" must NOT assert it sees specifics
+    //     without invoking — either go check, or honestly say what it can do.
+    let seehome = ask(butler, "can you see my home?", &ctx);
+    let bluffed = used(&seehome).is_none() && {
+        let t = seehome.text.to_lowercase();
+        t.contains("yes, i can see")
+            || t.contains("i can see your home")
+            || t.contains("i have access to your")
+    };
+    let antibluff_ok = !bluffed;
+    println!(
+        "[{}] anti-bluff: no claim of access it didn't exercise\n  used={:?} reply: {}\n",
+        if antibluff_ok { "PASS" } else { "FAIL" },
+        used(&seehome),
+        seehome.text.trim()
+    );
+
+    // 2.4 Language reliability: coherent English, no CJK bleed.
+    let lang_ok = !has_cjk(&lights.text) && !has_cjk(&seehome.text);
+    println!(
+        "[{}] language: replies stay in English (no CJK bleed)\n",
+        if lang_ok { "PASS" } else { "FAIL" }
+    );
+
+    // 2.5 Conversational robustness: a casual affirmation gets a warm reply, not
+    //     the "not sure how to help" fallback.
+    let casual = ask(butler, "hell yeah those jokes were good", &ctx);
+    let fell_back = casual.text.to_lowercase().contains("not sure how to help");
+    let casual_ok = !fell_back && !casual.text.trim().is_empty() && used(&casual).is_none();
+    println!(
+        "[{}] conversational: casual affirmation gets a warm reply\n  reply: {}\n",
+        if casual_ok { "PASS" } else { "FAIL" },
+        casual.text.trim()
+    );
+
+    let total = usize::from(invoke_ok)
+        + usize::from(antideny_ok)
+        + usize::from(antibluff_ok)
+        + usize::from(lang_ok)
+        + usize::from(casual_ok);
+    let max = 5;
+    println!(
+        "=== L2 {label}: {total}/{max}  (invoke {}, anti-deny {}, anti-bluff {}, language {}, conversational {}) ===\n",
+        usize::from(invoke_ok),
+        usize::from(antideny_ok),
+        usize::from(antibluff_ok),
+        usize::from(lang_ok),
+        usize::from(casual_ok)
+    );
+    (total, max)
 }
 
 /// Single-model eval: one model does routing *and* synthesis.
@@ -177,10 +272,16 @@ fn butler_drives_the_agentic_loop() {
     let model = std::env::var("ENDORA_MODEL").expect("set ENDORA_MODEL (e.g. qwen2.5:14b)");
     println!("\nAgentic-capability eval — model: {model} @ {url}\n");
     let butler = LlmButler::new(url, model.clone());
-    let total = run_suite(&butler, &model);
+    let (l1, l1max) = run_level_1(&butler, &model);
+    let (l2, l2max) = run_level_2(&butler, &model);
+    println!(
+        "=== {model}: L1 {l1}/{l1max}, L2 {l2}/{l2max}, TOTAL {}/{} ===\n",
+        l1 + l2,
+        l1max + l2max
+    );
     assert!(
-        total >= 3,
-        "{model} scored {total}/8: not viable as an agentic rung-one butler"
+        l1 >= 3,
+        "{model} scored L1 {l1}/{l1max}: not viable as an agentic rung-one butler"
     );
 }
 
@@ -203,6 +304,12 @@ fn mixture_drives_the_agentic_loop() {
         LlmButler::new(url.clone(), router),
         LlmButler::new(url, synth),
     );
-    let total = run_suite(&butler, &label);
-    assert!(total >= 3, "{label} scored {total}/8: not viable");
+    let (l1, l1max) = run_level_1(&butler, &label);
+    let (l2, l2max) = run_level_2(&butler, &label);
+    println!(
+        "=== {label}: L1 {l1}/{l1max}, L2 {l2}/{l2max}, TOTAL {}/{} ===\n",
+        l1 + l2,
+        l1max + l2max
+    );
+    assert!(l1 >= 3, "{label} scored L1 {l1}/{l1max}: not viable");
 }
