@@ -59,4 +59,4 @@ of an existing record and take the next number.
 | [0023](0023-egress-guard-and-data-loss-tripwire.md) | The egress guard: SSRF protection and a data-loss tripwire | Accepted |
 | [0024](0024-reversibility-aware-autonomy-and-the-nightly-loop.md) | Reversibility-aware autonomy and the nightly self-improvement loop | Accepted |
 | [0025](0025-hospitality-and-the-evolving-persona.md) | Hospitality and the evolving persona | Accepted |
-| [0026](0026-package-by-bounded-context.md) | Package by bounded context (app / domains / shared) | Accepted |
+| [0026](0026-package-by-bounded-context.md) | Responsibility-Oriented Clean Architecture (app / domains / shared) | Accepted |
