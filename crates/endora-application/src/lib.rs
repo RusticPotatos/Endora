@@ -28,13 +28,17 @@ pub use endora_capabilities::{
 // Belief/preference repositories live in the understanding context (ADR 0026);
 // re-exported so their `endora_application::…` paths are unchanged.
 pub use endora_understanding::{BeliefRepository, PreferenceRepository};
+// The aims + learning-loop repositories live in the direction context (ADR 0026);
+// re-exported so their `endora_application::…` paths are unchanged.
+pub use endora_direction::{
+    AssumptionRepository, DirectionRepository, ExperimentRepository, ObservationRepository,
+    ProcessChangeRepository, ReflectionRepository, TargetRepository, ValueRepository,
+};
 pub use ports::{
-    AssumptionRepository, AttentionItem, AttentionKind, BriefSchedule, BriefScheduleRepository,
-    Butler, ButlerContext, ButlerProposal, ButlerReply, ChatRepository, CheckinRepository,
-    CheckinSchedule, Clock, DirectionRepository, ExperimentRepository, FormedBelief, IdSource,
-    MemorySnapshot, MemoryStore, NorthStarBrief, ObservationRepository, ProcessChangeRepository,
-    ProposalError, Proposer, ReflectionRepository, RepositoryError, Snooze, SnoozeRepository,
-    Suggestion, SuggestionRepository, SuggestionStatus, TargetRepository, ValueRepository,
+    AttentionItem, AttentionKind, BriefSchedule, BriefScheduleRepository, Butler, ButlerContext,
+    ButlerProposal, ButlerReply, ChatRepository, CheckinRepository, CheckinSchedule, Clock,
+    FormedBelief, IdSource, MemorySnapshot, MemoryStore, NorthStarBrief, ProposalError, Proposer,
+    RepositoryError, Snooze, SnoozeRepository, Suggestion, SuggestionRepository, SuggestionStatus,
 };
 pub use usecases::{ActivityItem, ActivityKind};
 
