@@ -927,24 +927,10 @@ pub trait SnoozeRepository {
     fn set(&self, kind: &str, subject: &str, snooze: Snooze) -> Result<(), RepositoryError>;
 }
 
-/// Supplies the current time to use cases.
-///
-/// The domain never reads the clock, so time enters through this port. The node
-/// wires a real system clock; tests wire a fixed one.
-pub trait Clock {
-    /// The current instant, as a domain [`Timestamp`].
-    fn now(&self) -> Timestamp;
-}
-
-/// Supplies fresh, unique identifier values to use cases.
-///
-/// The domain never generates identifiers, so they enter through this port. Use
-/// cases wrap the raw value in the appropriate typed id. The node wires a random
-/// source; tests wire a deterministic one.
-pub trait IdSource {
-    /// Returns a fresh identifier value, unique within this store's lifetime.
-    fn new_id(&self) -> u128;
-}
+// `Clock` and `IdSource` are shared-kernel ports (time and identity enter the
+// pure layers through them), re-exported here so `endora_application::{Clock,
+// IdSource}` and `ports::…` paths are unchanged. See ADR 0026.
+pub use endora_kernel::{Clock, IdSource};
 
 /// Persists and retrieves [`Reflection`]s (including their evidence).
 pub trait ReflectionRepository {

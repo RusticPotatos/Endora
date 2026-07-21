@@ -8,9 +8,11 @@ license.workspace = true
 repository.workspace = true
 authors.workspace = true
 
-# The domain layer must remain dependency-free. Adding a dependency here is an
+# The domain layer depends only on the shared kernel (typed ids, time, errors,
+# AutonomyLevel) — itself dependency-free. Any other dependency here is an
 # architectural decision that requires an ADR (see docs/adr/).
 [dependencies]
+endora-kernel = { path = "../../shared/kernel" }
 
 [lints]
 workspace = true
