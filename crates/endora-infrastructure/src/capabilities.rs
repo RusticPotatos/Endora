@@ -174,10 +174,13 @@ fn http_get_text_ua(url: &str, ua: &str, max_bytes: usize) -> Result<String, Cap
 }
 
 /// Fetches raw bytes from a URL (size-capped) — for binary content like images.
+/// Sends a browser-ish User-Agent, since many image hosts reject requests without
+/// one (returning an HTML error page a vision model then can't load).
 fn http_get_bytes(url: &str, max_bytes: usize) -> Result<Vec<u8>, CapabilityError> {
     use std::io::Read;
     let mut resp = agent()
         .get(url)
+        .header("User-Agent", "Mozilla/5.0 (Endora personal butler)")
         .call()
         .map_err(|e| CapabilityError::Unavailable(e.to_string()))?;
     let mut buf = Vec::new();
