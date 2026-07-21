@@ -16,6 +16,7 @@
 pub mod application;
 pub mod domain;
 pub mod infrastructure;
+pub mod store;
 
 pub use application::{
     AutonomyEnvelope, AutonomyEnvelopeRepository, CapabilityConfigRepository, CapabilityRunner,
@@ -25,3 +26,4 @@ pub use infrastructure::{
     Capability, CapabilityError, CapabilityInfo, CapabilitySettings, RegistryRunner, SettingSpec,
     default_capabilities, redact_pii_in_value, scan_outbound_secret,
 };
+pub use store::{ConfigStore, migrate};

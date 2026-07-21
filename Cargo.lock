@@ -275,6 +275,8 @@ name = "endora-capabilities"
 version = "0.11.0"
 dependencies = [
  "endora-kernel",
+ "endora-persistence",
+ "rusqlite",
  "serde_json",
  "ureq",
 ]
@@ -343,6 +345,7 @@ dependencies = [
  "axum",
  "axum-server",
  "endora-application",
+ "endora-capabilities",
  "endora-conversation",
  "endora-direction",
  "endora-domain",
