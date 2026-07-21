@@ -1611,14 +1611,17 @@ async fn invoke_capability(
             entity: "capability",
         }));
     };
-    // Data-loss tripwire: don't send a device-leaving request that carries a secret
-    // (ADR 0023), on the explicit-invoke path too.
+    // Data-loss tripwire + query minimization (ADR 0023), on the explicit-invoke
+    // path too: refuse a request carrying a secret, and redact personal identifiers
+    // before it leaves.
+    let mut input = input;
     if cap.info().reaches_external {
         if let Some(kind) = endora_infrastructure::scan_outbound_secret(&input.to_string()) {
             return Err(ApiError(AppError::BadRequest {
                 message: format!("refusing to send this out — it looks like it contains {kind}"),
             }));
         }
+        endora_infrastructure::redact_pii_in_value(&mut input);
     }
     let store = state.store.clone();
     let result = tokio::task::spawn_blocking(move || {
