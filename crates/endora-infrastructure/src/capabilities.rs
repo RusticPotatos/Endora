@@ -341,7 +341,7 @@ pub fn scan_outbound_secret(text: &str) -> Option<&'static str> {
 /// skill's input before it leaves — so a search doesn't carry a real email address
 /// out. Recurses through the JSON, redacting string values in place. Deliberately
 /// narrow (email addresses) and word-boundaried, so URLs and ordinary text survive.
-fn redact_pii_in_value(v: &mut Value) {
+pub fn redact_pii_in_value(v: &mut Value) {
     match v {
         Value::String(s) => *s = redact_emails_in_text(s),
         Value::Array(a) => a.iter_mut().for_each(redact_pii_in_value),
