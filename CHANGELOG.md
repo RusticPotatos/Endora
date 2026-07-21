@@ -7,6 +7,19 @@ tagged release.
 
 ## [Unreleased]
 
+## [0.11.0] — 2026-07-21
+
+The butler becomes real: it understands you, uses skills to act on real data, guards
+what leaves the machine, and holds a hard line against doing anything it can't undo on
+its own. Highlights — a capability catalog with settings/secrets (weather, news, safety
+alerts, web search, Wikipedia, image review, Home Assistant); the interventions loop
+(it actually uses skills); an autonomy envelope with **reversibility-first** levels
+(never runs the un-undoable on its own); the egress guard (SSRF block, secret tripwire,
+query minimization, optional proxy); date/time awareness and a persistent action log; a
+daily brief; an evolving, grounded persona and hospitality; the model upgraded to
+`qwen2.5:7b`; and a bring-your-own-model hosting guide. See the entries below and
+[ADRs 0019–0025](docs/adr/README.md).
+
 ### Changed
 
 - **Direction reset — intent-first understanding** (canonical:
