@@ -70,17 +70,20 @@ recorded as an [ADR](docs/adr/README.md).
 
 ## How it's built
 
-Rust, a domain-first modular monolith. One authoritative backend (the **node**) holds
-all state and authority; clients are thin. The model sits *behind* the policy boundary.
+Rust, a domain-first modular monolith organized **by responsibility**, not by layer —
+Responsibility-Oriented Clean Architecture (ROCA, [ADR 0026](docs/adr/0026-package-by-bounded-context.md)).
+One authoritative backend (the **node**) holds all state and authority; clients are
+thin. The model sits *behind* the policy boundary.
 
 ```text
-clients ──HTTP/JSON──▶ endora-node ──▶ policy boundary ──▶ skills / local SQLite
-                       Domain → Application → Infrastructure → Interface
+clients ──HTTP/JSON──▶ node ──▶ policy boundary ──▶ skills / local SQLite
 ```
 
 ```text
-crates/  endora-domain (pure)   endora-application (use cases + ports)   endora-infrastructure (SQLite, skills, model)
-apps/    endora-node (backend + web UI)   endora-cli (thin client)
+app/      node (backend + web UI)   cli (thin client)   ← composition roots
+domains/  platform · capabilities · understanding · direction · conversation · scheduling
+          each a crate layered domain / application / infrastructure, inward-pointing
+shared/   kernel (ids, time, errors)   persistence (the shared SQLite handle)
 ```
 
 See [docs/architecture.md](docs/architecture.md). There's also a CLI (`make run-cli

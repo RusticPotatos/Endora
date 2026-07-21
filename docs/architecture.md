@@ -35,19 +35,33 @@ the node only through a stable, versioned protocol.
   must **survive changes in AI models, vendors, frameworks, and client
   technologies.** The protocol — not any UI — is the stable contract.
 
-## Bounded contexts (DDD)
+## Workspace layout — Responsibility-Oriented Clean Architecture (ROCA)
 
-The domain is organized into bounded contexts, each owning its own model and
-language. See [domain-map.md](domain-map.md) for what each context owns.
-Contexts do not reach into each other's internals; they collaborate through
-explicit application-layer boundaries.
+The code is organized **by responsibility**, not by technical layer (ADR 0026).
+Each bounded context is its own crate under `domains/`, owning its full
+Clean-Architecture stack; cross-cutting primitives live in `shared/`; the
+composition roots live in `app/`.
 
-Planned contexts: Identity & Values, Direction & Targets, Experiments & Learning,
-Reflection, Memory, Policy & Consent, Capabilities, Protection, Audit &
-Accountability.
+```text
+app/         node (the authoritative brain) + cli — compose the contexts
+domains/     one crate per bounded context, each layered internally:
+             <context>/src/{domain, application, infrastructure[, interface]}
+  platform         audit trail + the butler's event log
+  capabilities     skills, the policy-gated runner, egress guard, autonomy envelope
+  understanding    beliefs + preferences (what the butler has learned)
+  direction        values, targets, experiments, reflection, policy boundary
+  conversation     the chat model + repository
+  scheduling       check-in + daily-brief cadences
+shared/      kernel (ids, time, errors, AutonomyLevel), persistence (Db handle)
+```
 
-We do **not** create all of these as modules up front. We add a context's code
-when a vertical slice needs it.
+The thin **orchestration layer** (currently `endora-application`) holds the
+butler-turn contract and the use cases that compose several contexts (running a
+turn, applying a suggestion, preparing a brief). Contexts do not reach into each
+other's internals; they collaborate through application-layer ports, and the
+dependency graph is acyclic.
+
+See [domain-map.md](domain-map.md) for what each context owns.
 
 ## Layers within each context
 
@@ -55,9 +69,9 @@ Each bounded context is layered:
 
 | Layer | Responsibility | May depend on |
 | --- | --- | --- |
-| **Domain** | Pure concepts and rules of the context. | Nothing. |
-| **Application** | Use cases; orchestrates the domain; defines ports. | Domain. |
-| **Infrastructure** | Adapters that implement ports (DB, HTTP clients, model providers, OS). | Domain/Application *abstractions*. |
+| **Domain** | Pure concepts and rules of the context. | The shared kernel only. |
+| **Application** | Use cases; orchestrates the domain; defines ports. | Domain; other contexts' ports (for cross-context orchestration). |
+| **Infrastructure** | Adapters that implement ports (DB, HTTP clients, model providers, OS). | Domain/Application *abstractions*; `shared/persistence`. |
 | **Interface** | Delivery: the protocol surface, CLI, client-facing edges. | Application. |
 
 ### Allowed dependency directions
