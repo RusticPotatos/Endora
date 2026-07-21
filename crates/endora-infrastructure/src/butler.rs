@@ -314,7 +314,11 @@ is exactly one of {\"kind\":\"create_value\",\"name\":\"...\"}, \
 or {\"kind\":\"remember_preference\",\"text\":\"...\",\"preference_kind\":\"taste\"}. \
 The JSON kinds are the machine layer — keep those words OUT of the \"reply\" text. \
 You also have SKILLS you can actually use to get real information (listed below, if \
-any). When answering needs current facts you don't have — weather, local safety \
+any). Skills that reach the internet SEND their input to outside services, so keep a \
+skill's input GENERIC and free of personal details — the person's name, health, \
+relationships, or exact address. Reason privately; search for the generic thing (e.g. \
+'cardiologists in New York', not the person's name and condition). \
+When answering needs current facts you don't have — weather, local safety \
 alerts, a web page — set \"use\" to {\"skill\":\"<id from the list>\",\"input\":{...}} \
 with that skill's inputs FILLED IN, and keep your \"reply\" to a brief one-liner like \
 'One moment — let me check.' For example, for weather: \

@@ -337,6 +337,55 @@ pub fn scan_outbound_secret(text: &str) -> Option<&'static str> {
     .find_map(classify_secret_token)
 }
 
+/// Query minimization (ADR 0023): redacts personal identifiers from an external
+/// skill's input before it leaves — so a search doesn't carry a real email address
+/// out. Recurses through the JSON, redacting string values in place. Deliberately
+/// narrow (email addresses) and word-boundaried, so URLs and ordinary text survive.
+fn redact_pii_in_value(v: &mut Value) {
+    match v {
+        Value::String(s) => *s = redact_emails_in_text(s),
+        Value::Array(a) => a.iter_mut().for_each(redact_pii_in_value),
+        Value::Object(o) => o.values_mut().for_each(redact_pii_in_value),
+        _ => {}
+    }
+}
+
+/// Replaces whole-word email addresses in free text with `[redacted-email]`. Splits
+/// on spaces so a bare URL (one word, not an email) is never altered — only a
+/// standalone address in a query is caught.
+fn redact_emails_in_text(text: &str) -> String {
+    text.split(' ')
+        .map(|word| {
+            let core = word.trim_matches(|c: char| {
+                !(c.is_ascii_alphanumeric() || matches!(c, '@' | '.' | '_' | '-' | '+'))
+            });
+            if !core.is_empty() && looks_like_email(core) {
+                word.replace(core, "[redacted-email]")
+            } else {
+                word.to_owned()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Whether a token is a bare email address (and not a URL).
+fn looks_like_email(s: &str) -> bool {
+    if s.contains('/') || s.contains(':') {
+        return false;
+    }
+    let mut parts = s.split('@');
+    let (Some(local), Some(domain), None) = (parts.next(), parts.next(), parts.next()) else {
+        return false;
+    };
+    !local.is_empty()
+        && domain.contains('.')
+        && domain
+            .rsplit('.')
+            .next()
+            .is_some_and(|tld| tld.len() >= 2 && tld.chars().all(|c| c.is_ascii_alphabetic()))
+}
+
 /// Classifies a single token as a known credential shape, or `None`.
 fn classify_secret_token(t: &str) -> Option<&'static str> {
     let n = t.len();
@@ -1431,9 +1480,14 @@ impl endora_application::CapabilityRunner for RegistryRunner {
                 ));
             }
         }
-        let input: Value = serde_json::from_str(input_json.trim())
+        let mut input: Value = serde_json::from_str(input_json.trim())
             .or_else(|_| Ok::<Value, serde_json::Error>(json!({})))
             .unwrap_or_else(|_| json!({}));
+        // Query minimization: strip personal identifiers (email addresses) from a
+        // request before it leaves the device (ADR 0023).
+        if cap.info().reaches_external {
+            redact_pii_in_value(&mut input);
+        }
         let out = cap
             .invoke(&input, &self.settings_for(id))
             .map_err(|e| e.to_string())?;
@@ -1565,6 +1619,40 @@ mod tests {
             scan_outbound_secret("token eyJhbGciOi.eyJzdWIiOi.SflKxwRJSM"),
             Some("a token (JWT)")
         );
+    }
+
+    #[test]
+    fn query_minimization_redacts_emails_but_not_urls_or_plain_text() {
+        // A standalone email in a query is redacted.
+        assert_eq!(
+            redact_emails_in_text("email john.doe@example.com about the trip"),
+            "email [redacted-email] about the trip"
+        );
+        // Trailing punctuation is handled; the rest of the word survives.
+        assert_eq!(
+            redact_emails_in_text("(contact a@b.com)"),
+            "(contact [redacted-email])"
+        );
+        // A URL is one word and not an email — left intact.
+        assert_eq!(
+            redact_emails_in_text("https://site.com/path?x=1"),
+            "https://site.com/path?x=1"
+        );
+        // Ordinary text is untouched.
+        assert_eq!(
+            redact_emails_in_text("weather in New York tomorrow"),
+            "weather in New York tomorrow"
+        );
+        assert!(!looks_like_email("https://a.com/x@y"));
+        assert!(looks_like_email("a@b.co"));
+    }
+
+    #[test]
+    fn query_minimization_walks_json_values() {
+        let mut v = json!({ "query": "reach me at me@x.org", "url": "https://ok.com/" });
+        redact_pii_in_value(&mut v);
+        assert_eq!(v["query"], json!("reach me at [redacted-email]"));
+        assert_eq!(v["url"], json!("https://ok.com/")); // url untouched
     }
 
     #[test]
