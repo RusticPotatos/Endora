@@ -14,8 +14,9 @@ mod tls;
 use std::sync::Arc;
 
 use api::AppState;
+use endora_application::Butler;
 use endora_infrastructure::{
-    LlmButler, OpenAiCompatibleProposer, RandomIdSource, SqliteStore, SystemClock,
+    LlmButler, MixtureButler, OpenAiCompatibleProposer, RandomIdSource, SqliteStore, SystemClock,
 };
 
 #[tokio::main]
@@ -29,6 +30,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or_else(|_| "http://localhost:11434/v1".to_owned());
     let model = std::env::var("ENDORA_MODEL").unwrap_or_else(|_| "qwen2.5:7b".to_owned());
 
+    // The butler brain. If a router + synthesizer are configured (ADR 0027), run
+    // the mixture — a tool-tuned specialist routes to skills, a generalist writes
+    // the reply — which the eval shows out-routes a single model at less VRAM.
+    // Otherwise a single model does both. Either way it falls back to the scripted
+    // brain, so the conversation works even with no model available.
+    let router_model = std::env::var("ENDORA_ROUTER_MODEL").ok();
+    let synth_model = std::env::var("ENDORA_SYNTH_MODEL").ok();
+    let butler: Arc<dyn Butler + Send + Sync> = match (router_model, synth_model) {
+        (Some(router), Some(synth)) => {
+            println!("butler: mixture — router={router}, synth={synth} via {model_url}");
+            Arc::new(MixtureButler::new(
+                LlmButler::new(model_url.clone(), router),
+                LlmButler::new(model_url.clone(), synth),
+            ))
+        }
+        _ => {
+            println!("butler: single model {model} via {model_url}");
+            Arc::new(LlmButler::new(model_url.clone(), model.clone()))
+        }
+    };
+
     let state = AppState::new(
         Arc::new(SqliteStore::open(&db_path)?),
         Arc::new(RandomIdSource),
@@ -37,13 +59,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             model_url.clone(),
             model.clone(),
         )),
-        // The butler tries the model and falls back to a scripted brain, so the
-        // conversation works even with no model available.
-        Arc::new(LlmButler::new(model_url.clone(), model.clone())),
+        butler,
     );
 
     println!("{}", endora_application::platform_identity());
-    println!("model: {model} via {model_url}  (drafting is optional; 503 if unavailable)");
+    println!("drafting model: {model} via {model_url}  (optional; 503 if unavailable)");
 
     // The butler's heartbeat: proactive check-ins on the person's cadence (off
     // until they enable it). Runs for the life of the process.
