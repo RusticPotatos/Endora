@@ -155,8 +155,9 @@
   /* "what Endora did" note under the latest reply */
   .activity { font-size: 12px; color: var(--muted); font-style: italic; margin: 2px 4px 10px; display: flex; align-items: center; gap: 6px; opacity: .85; }
   .activity .ic { color: var(--accent); opacity: .8; }
-  /* push-to-talk: the mic pulses while held */
-  button.recording { background: var(--accent); color: #fff; border-color: var(--accent); animation: ptt-pulse 1s ease-in-out infinite; }
+  /* push-to-talk: a prominent hold-to-talk control that pulses while held */
+  button.ptt { padding: 10px 16px; font-weight: 600; border-radius: 999px; touch-action: none; user-select: none; -webkit-user-select: none; }
+  button.recording { background: var(--accent); color: #fff; border-color: var(--accent); animation: ptt-pulse 1s ease-in-out infinite; transform: scale(1.04); }
   @keyframes ptt-pulse { 0%,100% { opacity: 1; } 50% { opacity: .55; } }
 
   /* Phone browsers: tighten the frame and stack forms so inputs are never
@@ -611,8 +612,9 @@ function viewAudit() {
     ${listOr(rows, "No decisions recorded yet.")}`;
 }
 
-// ---- voice (browser Web Speech API; opt-in — STT may use a cloud service) ---
-let SPEAK = false;
+// ---- voice (browser Web Speech API; STT may use a cloud service) ---
+let SPEAK = localStorage.getItem("endora.speak") !== "0";      // read replies aloud (default on)
+let PTT_HAPTIC = localStorage.getItem("endora.haptic") !== "0"; // buzz on push-to-talk (default on)
 const TTS = window.speechSynthesis;
 const STT = window.SpeechRecognition || window.webkitSpeechRecognition;
 // iOS Safari only lets speech start after a user gesture unlocks it; speaking a
@@ -679,8 +681,11 @@ function startPTT(btn) {
     else if (err && err !== "no-speech" && err !== "aborted") flash("Couldn't capture speech (" + err + ").", "err");
   };
   rec.onend = () => { PTT_REC = null; if (btn) btn.classList.remove("recording"); };
-  try { rec.start(); PTT_REC = rec; if (btn) btn.classList.add("recording"); }
-  catch (_) { PTT_REC = null; flash("Couldn't start voice input.", "err"); }
+  try {
+    rec.start(); PTT_REC = rec;
+    if (btn) btn.classList.add("recording");
+    if (PTT_HAPTIC && navigator.vibrate) navigator.vibrate(25); // haptic cue (Android; iOS Safari ignores)
+  } catch (_) { PTT_REC = null; flash("Couldn't start voice input.", "err"); }
 }
 function stopPTT(andSend) {
   const rec = PTT_REC;
@@ -729,7 +734,7 @@ function viewChat() {
     : "";
   const micBtn = STT
     ? (window.isSecureContext
-        ? `<button data-mic="1" title="hold to talk, release to send">${icon("mic")}</button>`
+        ? `<button class="ptt" data-mic="1" title="hold to talk, release to send">${icon("mic")}<span>Hold to talk</span></button>`
         : `<button data-act="chat:mic" title="voice input needs HTTPS or localhost">${icon("mic")}<span>needs HTTPS</span></button>`)
     : "";
   const cadence = CHECKIN.enabled ? String(CHECKIN.interval_ms) : "off";
@@ -759,6 +764,24 @@ function viewChat() {
     </div>`;
 }
 
+// One home for app settings — so they aren't scattered across pages.
+function viewSettings() {
+  const row = (on, act, label, note) => `
+    <div class="row" style="align-items:flex-start;gap:10px;">
+      <div class="grow"><div class="title" style="font-weight:500;">${label}</div>${note ? `<div class="sub">${note}</div>` : ""}</div>
+      <button class="${on ? "primary" : "ghost"}" data-act="${act}">${on ? "On" : "Off"}</button>
+    </div>`;
+  return `
+    ${crumbs([{ label: "Home", act: "go:home" }, { label: "Settings" }])}
+    <h2>Settings</h2>
+    <div class="card" style="display:flex;flex-direction:column;gap:14px;">
+      ${row(SPEAK, "toggle:speak", "Read replies aloud", TTS ? "" : "not supported in this browser")}
+      ${row(PTT_HAPTIC, "toggle:haptic", "Vibrate on push-to-talk", "haptic cue on Android; iOS ignores it")}
+      ${row(SHOW_ACTIVITY, "toggle:activity", "Show Endora's actions", "a note of what it did each turn")}
+    </div>
+    <div class="sub" style="margin-top:12px;">How boldly Endora acts on its own is under <a data-act="go:skills" style="color:var(--accent);cursor:pointer">Skills</a>. Private egress (proxy/VPN) is set in deployment config.</div>`;
+}
+
 // What the butler has learned — visible, correctable, deletable memory.
 function viewPrefs() {
   // Friendly labels — the internal kind names ("taste") mean nothing to a person.
@@ -772,7 +795,6 @@ function viewPrefs() {
   return `
     ${crumbs([{ label: "Home", act: "go:home" }, { label: "Preferences" }])}
     <h2>What the butler knows about you</h2>
-    <div class="sub" style="margin-bottom:10px;">Your own words — the butler honours these and won't re-ask. Correctable and deletable.</div>
     ${listOr(rows, "Nothing yet. The butler will propose things to remember as you talk — or add one below.")}
     <div class="form">
       <input id="new-pref" placeholder="e.g. I prefer mornings…" />
@@ -794,7 +816,6 @@ function viewSuggestions() {
   return `
     ${crumbs([{ label: "Home", act: "go:home" }, { label: "Inbox" }])}
     <h2>Suggestions from your conversations</h2>
-    <div class="sub" style="margin-bottom:10px;">Things the butler picked up while you talked. Apply one and it becomes part of your profile; dismiss what doesn't fit. Nothing is added without your say-so.</div>
     ${listOr(cards, "Nothing waiting. As you chat, the butler's proposals collect here.")}`;
 }
 
@@ -846,7 +867,7 @@ function viewSkills() {
   return `
     ${crumbs([{ label: "Home", act: "go:home" }, { label: "Skills" }])}
     <h2>What Endora can do</h2>
-    <div class="sub" style="margin-bottom:10px;">Modules the butler can use on your behalf — each shows whether it leaves your device and what it needs.</div>
+    
     ${envelope}
     <h3 style="margin-top:18px;">Skills</h3>
     ${listOr((CAPS || []).map(card), "No skills registered.")}`;
@@ -883,26 +904,24 @@ function viewUnderstanding() {
   const knowsAddress = (DB.preferences || []).some((p) => /^\s*address me as\b/i.test(p.text));
   const locationSetup = knowsLocation ? "" : `
     <div class="card" style="border-color: color-mix(in srgb, var(--accent) 40%, var(--line));">
-      <div class="title">${icon("target", 15)} Where are you based?</div>
-      <div class="sub" style="margin:4px 0 8px;">So Endora can be useful about weather, local events, and keeping an eye out for you. Just a city is fine.</div>
+      <div class="title" style="margin-bottom:8px;">${icon("target", 15)} Where are you based?</div>
       <div class="form">
-        <input id="setup-location" placeholder="e.g. Boston, MA" />
+        <input id="setup-location" placeholder="a city, e.g. Boston, MA" />
         <button class="primary" data-act="setlocation">Save</button>
       </div>
     </div>`;
   const addressSetup = knowsAddress ? "" : `
     <div class="card" style="border-color: color-mix(in srgb, var(--accent) 40%, var(--line));">
-      <div class="title">${icon("sparkle", 15)} What should Endora call you?</div>
-      <div class="sub" style="margin:4px 0 8px;">However you'd like to be addressed — a name, or sir / ma'am. It sets the tone, and you can change it any time.</div>
+      <div class="title" style="margin-bottom:8px;">${icon("sparkle", 15)} What should Endora call you?</div>
       <div class="form">
-        <input id="setup-address" placeholder="e.g. Alex, or sir" />
+        <input id="setup-address" placeholder="a name, or sir / ma'am" />
         <button class="primary" data-act="setaddress">Save</button>
       </div>
     </div>`;
   const setup = locationSetup + addressSetup;
   return `
     <h2>What Endora understands about you</h2>
-    <div class="sub" style="margin-bottom:10px;">Endora forms these from your conversations — the evidence and how sure it is are shown. Correct anything that's off; it learns from that.</div>
+    
     ${setup}
     ${groups || `<div class="empty">Nothing yet. Talk with Endora and it will start to understand you — you'll see it here.</div>`}
     <div class="sub" style="margin-top:24px;"><a data-act="go:goals" style="color:var(--accent);cursor:pointer">Goals ›</a> — optional, if you like to track them explicitly.</div>`;
@@ -919,8 +938,18 @@ function appendBubble(html, cls, id) {
   if (id) wrap.id = id;
   wrap.innerHTML = `<div class="bubble ${cls}">${html}</div>`;
   thread.appendChild(wrap);
-  wrap.scrollIntoView({ block: "end", behavior: "smooth" });
+  scrollBubbleIntoView(wrap);
   return wrap;
+}
+
+// Scroll a chat row fully into view ABOVE the sticky composer (which otherwise
+// overlaps the newest message). Reserves the composer's real height.
+function scrollBubbleIntoView(el) {
+  if (!el) return;
+  const composer = document.querySelector(".composer");
+  const pad = (composer ? composer.offsetHeight : 110) + 28;
+  el.style.scrollMarginBottom = pad + "px";
+  el.scrollIntoView({ block: "end", behavior: "smooth" });
 }
 
 // Send a message to the butler and stream the reply token-by-token (SSE): the
@@ -969,7 +998,7 @@ async function sendChat() {
         if (ev.type === "token") {
           acc += ev.text;
           if (body) body.textContent = acc;
-          if (live) live.scrollIntoView({ block: "end" });
+          if (live) scrollBubbleIntoView(live);
         } else if (ev.type === "done") {
           CHAT_PROPOSALS = ev.proposals || [];
           LAST_ACTIVITY = ev.activity || [];
@@ -1007,9 +1036,16 @@ function render() {
     : v === "suggestions" ? viewSuggestions()
     : v === "skills" ? viewSkills()
     : v === "prefs" ? viewPrefs()
+    : v === "settings" ? viewSettings()
     : v === "goals" ? viewHome()
     : v === "understanding" ? viewUnderstanding()
     : viewUnderstanding();
+  // On the chat, jump to the newest message (kept clear of the sticky composer).
+  if (v === "chat") {
+    const thread = document.getElementById("chat-thread");
+    const last = thread && thread.lastElementChild;
+    if (last) requestAnimationFrame(() => scrollBubbleIntoView(last));
+  }
 }
 
 // Show the pending-suggestion count on the Inbox nav button.
@@ -1061,7 +1097,14 @@ async function dispatch(act) {
     if (verb === "chat" && noun === "mic") { listen(); return; }
     if (verb === "toggle" && noun === "speak") {
       SPEAK = !SPEAK;
+      localStorage.setItem("endora.speak", SPEAK ? "1" : "0");
       if (SPEAK) unlockSpeech(); else if (TTS) TTS.cancel();
+      return render();
+    }
+    if (verb === "toggle" && noun === "haptic") {
+      PTT_HAPTIC = !PTT_HAPTIC;
+      localStorage.setItem("endora.haptic", PTT_HAPTIC ? "1" : "0");
+      if (PTT_HAPTIC && navigator.vibrate) navigator.vibrate(25);
       return render();
     }
     if (verb === "toggle" && noun === "menu") {
@@ -1312,9 +1355,9 @@ function setupHeader(service) {
       item("go:suggestions", "inbox", "Inbox", `<span class="menu-count" id="menu-inbox-count"></span>`) +
       item("go:skills", "skills", "Skills") +
       item("go:goals", "target", "Goals") +
-      item("go:prefs", "prefs", "Your preferences") +
-      item("toggle:activity", "sparkle", `Show Endora's actions <span class="menu-count" id="menu-activity-state"></span>`) +
       `<div class="divider"></div>` +
+      item("go:prefs", "prefs", "Your preferences") +
+      item("go:settings", "prefs", "Settings") +
       item("go:audit", "audit", "Activity & audit") +
       item("export", "export", "Export my data") +
       item("purge", "purge", "Delete everything", "", "danger");
