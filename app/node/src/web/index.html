@@ -997,7 +997,13 @@ function modelsSection() {
       <div class="field"><label>Model</label>
         <input id="deep-model" list="deep-models" placeholder="e.g. gpt-4o, claude-sonnet-5" value="${esc(dm.model || "")}" /></div>
       <div class="row" style="justify-content:flex-end;"><button class="primary" data-act="deepsave">Save deep</button></div>
-    </div>`;
+    </div>
+
+    <h3 style="margin-top:22px;">Auto-tune (experimental)</h3>
+    <div class="sub" style="margin:2px 0 8px;">Scores every model on your local endpoint against the same fitness battery the eval uses, and adopts the best one on its own (ADR 0027). Runs in the background — watch <a data-act="go:audit" style="color:var(--accent);cursor:pointer">Activity</a> for the scores and result. Takes a few minutes and competes with the GPU, so run it when you're not chatting.</div>
+    <div class="card"><div class="row" style="justify-content:flex-end;">
+      <button class="primary" data-act="modeltune">Evaluate &amp; tune</button>
+    </div></div>`;
 }
 
 // One home for app settings — so they aren't scattered across pages.
@@ -1557,6 +1563,12 @@ async function dispatch(act) {
     }
     // Discover the models an endpoint offers, into its picker.
     if (verb === "discover") { await discoverModels(noun); return; }
+    // Kick off the self-improving model layer (background; results go to Activity).
+    if (verb === "modeltune") {
+      try { await api("POST", "/v1/model-layer/run", {}); flash("Evaluating your local models — watch Activity for scores and the result.", "ok"); }
+      catch (e) { flash("Couldn't start the tune: " + e.message, "err"); }
+      return;
+    }
     // Save the butler models. A blank key keeps the stored one; blank sampling
     // fields mean "use the endpoint default". Applies on the next message.
     if (verb === "modelsave") {
