@@ -165,6 +165,11 @@
   .step-list { display: flex; flex-direction: column; gap: 3px; padding: 4px 0 6px; }
   .step-row { display: flex; align-items: center; gap: 7px; }
   .step-row .sdone { color: #22a06b; } .step-row .sfail { color: #d9534f; } .step-row .sblock { color: var(--muted); opacity: .8; }
+  details.step-item > summary { cursor: pointer; list-style: none; }
+  details.step-item > summary::-webkit-details-marker { display: none; }
+  details.step-item > summary .step-more { margin-left: auto; font-size: 11px; color: var(--accent); opacity: .8; }
+  details.step-item[open] > summary .step-more::after { content: " ▾"; }
+  .step-out { margin: 4px 0 6px 18px; padding: 8px 10px; background: rgba(127,127,127,.10); border-radius: 8px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11.5px; line-height: 1.45; white-space: pre-wrap; overflow-x: auto; max-height: 240px; overflow-y: auto; color: var(--fg); }
   .sspin { width: 11px; height: 11px; border: 2px solid rgba(127,127,127,.35); border-top-color: var(--accent); border-radius: 50%; display: inline-block; animation: sspin .7s linear infinite; }
   @keyframes sspin { to { transform: rotate(360deg); } }
   /* push-to-talk: a prominent hold-to-talk control that pulses while held */
@@ -456,9 +461,7 @@ function viewHome() {
     <div class="form">
       <input id="new-value" placeholder="A value it serves (e.g. Health)…" />
       <button data-act="create:value">Add value</button>
-    </div>
-    <h2>Recent activity</h2>
-    ${activityFeed()}`;
+    </div>`;
 }
 
 // The live activity feed: newest first, updated in place by the change stream.
@@ -630,8 +633,10 @@ function viewAudit() {
     <div class="card"><div class="sub mono">${new Date(a.at_ms).toLocaleString()}</div>
       <div>${esc(a.summary)}</div></div>`);
   return `
-    ${crumbs([{ label: "Home", act: "go:home" }, { label: "Audit trail" }])}
-    <h2>Audit trail (newest first)</h2>
+    ${crumbs([{ label: "Home", act: "go:home" }, { label: "Activity" }])}
+    <h2>Recent activity</h2>
+    ${activityFeed()}
+    <h2 style="margin-top:22px;">Audit trail (newest first)</h2>
     ${listOr(rows, "No decisions recorded yet.")}`;
 }
 
@@ -1115,8 +1120,15 @@ function renderSteps(wrap, steps, running) {
   if (!wrap) return;
   if (!steps.length) { wrap.innerHTML = ""; wrap.style.display = "none"; return; }
   wrap.style.display = "";
-  const rows = steps.map((s) =>
-    `<div class="step-row">${STEP_ICON[s.status] || ""}<span>${esc(s.label)}</span></div>`).join("");
+  const rows = steps.map((s) => {
+    const ic = STEP_ICON[s.status] || "";
+    // A step with output is expandable — click to reveal what the skill returned.
+    if (s.output) {
+      return `<details class="step-item"><summary class="step-row">${ic}<span>${esc(s.label)}</span><span class="step-more">details</span></summary>` +
+        `<pre class="step-out">${esc(s.output)}</pre></details>`;
+    }
+    return `<div class="step-row">${ic}<span>${esc(s.label)}</span></div>`;
+  }).join("");
   const n = steps.length;
   const head = running ? "Working…" : `${n} action${n > 1 ? "s" : ""}`;
   const lead = running ? '<span class="sspin"></span>' : icon("sparkle", 13);
@@ -1212,14 +1224,14 @@ async function drainChat() {
           if (live) scrollBubbleIntoView(live);
         } else if (ev.type === "step") {
           if (ev.status === "running") {
-            STEP_LIST.push({ skill: ev.skill, label: ev.label, status: "running" });
+            STEP_LIST.push({ skill: ev.skill, label: ev.label, status: "running", output: null });
           } else {
             // Terminal: finalize the last still-running step, else record it fresh
             // (a "blocked" step arrives with no prior "running").
             let i = STEP_LIST.length - 1;
             while (i >= 0 && STEP_LIST[i].status !== "running") i--;
-            if (i >= 0) STEP_LIST[i].status = ev.status;
-            else STEP_LIST.push({ skill: ev.skill, label: ev.label, status: ev.status });
+            if (i >= 0) { STEP_LIST[i].status = ev.status; STEP_LIST[i].output = ev.output || null; }
+            else STEP_LIST.push({ skill: ev.skill, label: ev.label, status: ev.status, output: ev.output || null });
           }
           renderSteps(stepsWrap, STEP_LIST, true);
           if (live) scrollBubbleIntoView(live);

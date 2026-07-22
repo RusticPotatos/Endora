@@ -849,6 +849,9 @@ pub struct ButlerStep {
     pub status: StepStatus,
     /// A short, present-tense label ("Checking the weather").
     pub label: String,
+    /// The skill's raw result on a terminal step, for the UI to reveal on demand
+    /// (what the butler actually got back). `None` while running or when blocked.
+    pub output: Option<String>,
 }
 
 /// Like [`send_to_butler`], but streams the reply's prose to `on_token` as the
@@ -933,6 +936,7 @@ pub fn send_to_butler_streaming(
                 skill: id.clone(),
                 status: StepStatus::Running,
                 label: label.clone(),
+                output: None,
             });
             match capabilities.run(&id, &used.input_json) {
                 Ok(out) => {
@@ -940,6 +944,7 @@ pub fn send_to_butler_streaming(
                         skill: id.clone(),
                         status: StepStatus::Done,
                         label,
+                        output: Some(out.clone()),
                     });
                     activity.push(format!("Used the {id} skill"));
                     gathered.push(format!("- {id}: {out}"));
@@ -949,6 +954,7 @@ pub fn send_to_butler_streaming(
                         skill: id.clone(),
                         status: StepStatus::Failed,
                         label,
+                        output: Some(format!("failed: {e}")),
                     });
                     activity.push(format!("Tried the {id} skill, but it failed"));
                     gathered.push(format!("- {id}: failed ({e}) — do not invent a result"));
@@ -971,6 +977,7 @@ pub fn send_to_butler_streaming(
                 skill: id.clone(),
                 status: StepStatus::Blocked,
                 label: progress_label(&id),
+                output: None,
             });
             activity.push(format!(
                 "Couldn't use {id} (off, not set up, or needs confirming)"
@@ -1008,6 +1015,7 @@ pub fn send_to_butler_streaming(
                     skill: skill.to_owned(),
                     status: StepStatus::Running,
                     label: label.clone(),
+                    output: None,
                 });
                 match capabilities.run(skill, &input_json) {
                     Ok(out) => {
@@ -1016,6 +1024,7 @@ pub fn send_to_butler_streaming(
                             skill: skill.to_owned(),
                             status: StepStatus::Done,
                             label,
+                            output: Some(out.clone()),
                         });
                         activity.push(format!("Used the {skill} skill"));
                         let mut ctx = context.clone();
@@ -1037,6 +1046,7 @@ pub fn send_to_butler_streaming(
                             skill: skill.to_owned(),
                             status: StepStatus::Failed,
                             label,
+                            output: None,
                         });
                         activity.push(format!("Tried the {skill} skill, but it failed"));
                         reply = ButlerReply {
@@ -1060,6 +1070,7 @@ pub fn send_to_butler_streaming(
                 skill: skill.to_owned(),
                 status: StepStatus::Blocked,
                 label: progress_label(skill),
+                output: None,
             });
             activity.push(format!("Couldn't check {skill} — it's off or not set up"));
             reply = ButlerReply {
