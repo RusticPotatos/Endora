@@ -16,12 +16,14 @@ use axum::middleware::{Next, from_fn_with_state};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post};
+use endora_application::Clock;
 use endora_application::{
     ActivityItem, AppError, AttentionItem, AttentionKind, AutonomyEnvelope,
     AutonomyEnvelopeRepository, BriefSchedule, Butler, ButlerModelConfig,
     ButlerModelConfigRepository, ButlerProposal, CapabilityConfigRepository,
     CapabilitySettingsRepository, CheckinSchedule, DeepModelRepository, MemorySnapshot, ModelSlot,
-    Proposer, RepositoryError, Sampling, Suggestion, SuggestionStatus, usecases,
+    ModelTuneScheduleRepository, Proposer, RepositoryError, Sampling, Suggestion, SuggestionStatus,
+    usecases,
 };
 use endora_application::{
     Assumption, AssumptionId, AuditRecord, AutonomyLevel, Belief, BeliefId, ChatMessage, Direction,
@@ -215,6 +217,10 @@ pub fn app(state: AppState) -> Router {
         )
         .route("/v1/models/discover", post(discover_models))
         .route("/v1/model-layer/run", post(run_model_layer_now))
+        .route(
+            "/v1/model-tune/schedule",
+            get(get_tune_schedule).post(set_tune_schedule),
+        )
         .route("/v1/transcribe", post(transcribe))
         .route("/v1/deep-ask", post(deep_ask))
         .route(
@@ -2071,101 +2077,154 @@ async fn discover_models(
 /// function, and gate-adopt the best **local** one (auto-adopt local, propose
 /// cloud). Slow (it runs the eval per candidate), so it runs detached and records
 /// its progress + result to the activity log; the response returns immediately.
+/// Runs the model layer synchronously (discover local models → evaluate each →
+/// gated adoption), recording progress + the result to the activity log. Slow
+/// (it runs the eval per candidate). Shared by the manual `/v1/model-layer/run`
+/// and the scheduled nightly tune.
+fn run_model_tune(
+    butler: &(dyn Butler + Send + Sync),
+    config: &endora_capabilities::ConfigStore,
+    events: &endora_platform::EventStore,
+    clock: &SystemClock,
+    model_url: &str,
+) {
+    use endora_infrastructure::model_layer::{AdoptionOutcome, ModelCandidate, Scorecard};
+
+    record_event(
+        events,
+        clock,
+        "Model layer: evaluating available local models",
+    );
+    // Discover local models → single-model local candidates (keyless).
+    let ids = endora_infrastructure::list_models(model_url, "").unwrap_or_default();
+    let candidates: Vec<ModelCandidate> = ids
+        .into_iter()
+        .map(|id| ModelCandidate {
+            name: id.clone(),
+            config: ButlerModelConfig {
+                base_url: model_url.to_owned(),
+                api_key: String::new(),
+                mixture: false,
+                single: ModelSlot {
+                    model: id,
+                    sampling: Sampling::default(),
+                },
+                ..ButlerModelConfig::default()
+            },
+        })
+        .collect();
+
+    let mut on_propose = |c: &ModelCandidate, s: &Scorecard, incumbent: usize| {
+        record_event(
+            events,
+            clock,
+            &format!(
+                "Model layer: a cloud model ({}) scored {}/{} vs {} — proposing (needs your ok)",
+                c.name,
+                s.total(),
+                s.max(),
+                incumbent
+            ),
+        );
+    };
+
+    match endora_infrastructure::run_model_layer(butler, candidates, config, &mut on_propose) {
+        Ok((outcome, scored)) => {
+            for sc in &scored {
+                record_event(
+                    events,
+                    clock,
+                    &format!(
+                        "Model eval: {} scored {}/{}",
+                        sc.candidate.name,
+                        sc.score.total(),
+                        sc.score.max()
+                    ),
+                );
+            }
+            let msg = match outcome {
+                AdoptionOutcome::Adopted { name, score } => {
+                    format!("adopted a better local model: {name} ({score}/15)")
+                }
+                AdoptionOutcome::Proposed { name, score } => {
+                    format!("proposes cloud model {name} ({score}/15) — awaiting your ok")
+                }
+                AdoptionOutcome::Kept { incumbent } => {
+                    format!("kept the current model (still best at {incumbent}/15)")
+                }
+            };
+            record_event(events, clock, &format!("Model layer: {msg}"));
+        }
+        Err(e) => record_event(events, clock, &format!("Model layer run failed: {e}")),
+    }
+}
+
+/// The model endpoint the tune discovers local candidates from.
+fn tune_model_url() -> String {
+    std::env::var("ENDORA_MODEL_URL").unwrap_or_else(|_| "http://localhost:11434/v1".to_owned())
+}
+
 async fn run_model_layer_now(
     State(state): State<AppState>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    use endora_infrastructure::model_layer::{AdoptionOutcome, ModelCandidate, Scorecard};
-
     let butler = state.butler.clone();
     let config = state.config.clone();
     let events = state.events.clone();
     let clock = state.clock.clone();
-    let model_url = std::env::var("ENDORA_MODEL_URL")
-        .unwrap_or_else(|_| "http://localhost:11434/v1".to_owned());
-
+    let model_url = tune_model_url();
     tokio::task::spawn_blocking(move || {
-        record_event(
+        run_model_tune(
+            butler.as_ref(),
+            config.as_ref(),
             events.as_ref(),
             clock.as_ref(),
-            "Model layer: evaluating available local models",
+            &model_url,
         );
-        // Discover local models → single-model local candidates (keyless).
-        let ids = endora_infrastructure::list_models(&model_url, "").unwrap_or_default();
-        let candidates: Vec<ModelCandidate> = ids
-            .into_iter()
-            .map(|id| ModelCandidate {
-                name: id.clone(),
-                config: ButlerModelConfig {
-                    base_url: model_url.clone(),
-                    api_key: String::new(),
-                    mixture: false,
-                    single: ModelSlot {
-                        model: id,
-                        sampling: Sampling::default(),
-                    },
-                    ..ButlerModelConfig::default()
-                },
-            })
-            .collect();
-
-        let mut on_propose = |c: &ModelCandidate, s: &Scorecard, incumbent: usize| {
-            record_event(
-                events.as_ref(),
-                clock.as_ref(),
-                &format!(
-                    "Model layer: a cloud model ({}) scored {}/{} vs {} — proposing (needs your ok)",
-                    c.name,
-                    s.total(),
-                    s.max(),
-                    incumbent
-                ),
-            );
-        };
-
-        match endora_infrastructure::run_model_layer(
-            butler.as_ref(),
-            candidates,
-            config.as_ref(),
-            &mut on_propose,
-        ) {
-            Ok((outcome, scored)) => {
-                for sc in &scored {
-                    record_event(
-                        events.as_ref(),
-                        clock.as_ref(),
-                        &format!(
-                            "Model eval: {} scored {}/{}",
-                            sc.candidate.name,
-                            sc.score.total(),
-                            sc.score.max()
-                        ),
-                    );
-                }
-                let msg = match outcome {
-                    AdoptionOutcome::Adopted { name, score } => {
-                        format!("adopted a better local model: {name} ({score}/15)")
-                    }
-                    AdoptionOutcome::Proposed { name, score } => {
-                        format!("proposes cloud model {name} ({score}/15) — awaiting your ok")
-                    }
-                    AdoptionOutcome::Kept { incumbent } => {
-                        format!("kept the current model (still best at {incumbent}/15)")
-                    }
-                };
-                record_event(
-                    events.as_ref(),
-                    clock.as_ref(),
-                    &format!("Model layer: {msg}"),
-                );
-            }
-            Err(e) => record_event(
-                events.as_ref(),
-                clock.as_ref(),
-                &format!("Model layer run failed: {e}"),
-            ),
-        }
     });
     Ok(Json(json!({ "started": true })))
+}
+
+/// The nightly model-tune schedule (ADR 0027) — off by default.
+async fn get_tune_schedule(
+    State(state): State<AppState>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let config = state.config.clone();
+    let s = blocking(move || {
+        ModelTuneScheduleRepository::get(config.as_ref()).map_err(AppError::Repository)
+    })
+    .await?;
+    Ok(Json(
+        json!({ "enabled": s.enabled, "hour_utc": s.hour_utc }),
+    ))
+}
+
+#[derive(Deserialize)]
+struct TuneScheduleRequest {
+    enabled: bool,
+    hour_utc: u8,
+}
+
+async fn set_tune_schedule(
+    State(state): State<AppState>,
+    Json(req): Json<TuneScheduleRequest>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let config = state.config.clone();
+    blocking(move || {
+        let current =
+            ModelTuneScheduleRepository::get(config.as_ref()).map_err(AppError::Repository)?;
+        ModelTuneScheduleRepository::set(
+            config.as_ref(),
+            &endora_application::ModelTuneSchedule {
+                enabled: req.enabled,
+                hour_utc: req.hour_utc.min(23),
+                last_ms: current.last_ms, // keep last-run so toggling doesn't re-fire
+            },
+        )
+        .map_err(AppError::Repository)
+    })
+    .await?;
+    let _ = state.changes.send(());
+    Ok(Json(json!({ "ok": true })))
 }
 
 #[derive(Deserialize)]
@@ -2393,6 +2452,44 @@ pub fn spawn_heartbeat(state: AppState) {
             .await;
             if let Ok(Ok(true)) = posted {
                 let _ = state.changes.send(());
+            }
+
+            // Nightly self-improving model tune (ADR 0027), if scheduled + due.
+            // Marked fired first (so it can't double-run), then run DETACHED and
+            // without the turn lock — it's long and competes on the GPU, which is
+            // why the schedule points at an off-hour.
+            let due = {
+                let config = state.config.clone();
+                let clock = state.clock.clone();
+                tokio::task::spawn_blocking(move || {
+                    let now = clock.now().unix_millis();
+                    match ModelTuneScheduleRepository::get(config.as_ref()) {
+                        Ok(mut s) if s.is_due(now) => {
+                            s.last_ms = now;
+                            let _ = ModelTuneScheduleRepository::set(config.as_ref(), &s);
+                            true
+                        }
+                        _ => false,
+                    }
+                })
+                .await
+                .unwrap_or(false)
+            };
+            if due {
+                let config = state.config.clone();
+                let events = state.events.clone();
+                let clock = state.clock.clone();
+                let butler = state.butler.clone();
+                let model_url = tune_model_url();
+                tokio::task::spawn_blocking(move || {
+                    run_model_tune(
+                        butler.as_ref(),
+                        config.as_ref(),
+                        events.as_ref(),
+                        clock.as_ref(),
+                        &model_url,
+                    );
+                });
             }
         }
     });
