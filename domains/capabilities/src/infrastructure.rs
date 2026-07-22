@@ -14,7 +14,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::application::CapabilityRunner;
-use endora_kernel::AutonomyLevel;
+use endora_kernel::{AutonomyLevel, Decision, Reversibility};
 use serde_json::{Value, json};
 
 /// One setting a capability needs to work (a key, a model name, a URL). Declared
@@ -1641,26 +1641,70 @@ fn settings_complete(info: &CapabilityInfo, settings: &CapabilitySettings) -> bo
         .all(|s| settings.get(s.key).is_some_and(|v| !v.trim().is_empty()))
 }
 
-/// The deterministic classifier at the heart of the autonomy envelope (ADR 0022):
-/// given a skill's declared autonomy and reach, and the person's envelope, may it
-/// run on its own this turn? Never consults the model — the boundary is policy.
-fn may_run_autonomously(info: &CapabilityInfo, env: &crate::application::AutonomyEnvelope) -> bool {
-    // The un-undoable is NEVER run on its own, whatever the envelope says (ADR 0024).
-    // Irreversible actions only ever happen via an explicit, confirmed request.
+/// The **reversibility band** (ADR 0024) a capability's declared metadata places
+/// it in — the primary axis of the autonomy envelope. Derived deterministically
+/// from the metadata, never a model's say-so: a permanent effect is
+/// [`Irreversible`](Reversibility::Irreversible); a pure reader is
+/// [`Observe`](Reversibility::Observe); a low-stakes, undoable effect is
+/// [`Reversible`](Reversibility::Reversible); and a consequential-but-undoable one
+/// is [`OutwardReversible`](Reversibility::OutwardReversible).
+fn reversibility_band(info: &CapabilityInfo) -> Reversibility {
     if !info.reversible {
-        return false;
+        return Reversibility::Irreversible;
     }
     match info.autonomy {
-        // Observe-only skills never act.
-        AutonomyLevel::Observe => false,
+        AutonomyLevel::Observe => Reversibility::Observe,
+        AutonomyLevel::ActWithinPolicy => Reversibility::Reversible,
+        AutonomyLevel::Suggest | AutonomyLevel::ConfirmEachAction => {
+            Reversibility::OutwardReversible
+        }
+    }
+}
+
+/// The deterministic classifier at the heart of the autonomy envelope
+/// (ADR 0022/0024): given a skill's reversibility band, reach, and the person's
+/// envelope, what does policy do — [`Act`](Decision::Act) on its own,
+/// [`Confirm`](Decision::Confirm) first, or [`Block`](Decision::Block) outright?
+/// Never consults the model — the boundary is policy.
+fn classify(info: &CapabilityInfo, env: &crate::application::AutonomyEnvelope) -> Decision {
+    let band = reversibility_band(info);
+    // The un-undoable is refused outright — deny-by-default, whatever the envelope
+    // says (ADR 0024). It is not offered for confirmation: a mistaken confirm is
+    // unrecoverable, so the band stays blocked until the person opens it per
+    // capability (no opener exists yet). The kernel owns this posture.
+    if band.default_decision() == Decision::Block {
+        return Decision::Block;
+    }
+    // Within the reversible bands, autonomy + envelope decide whether it runs on
+    // its own or waits for confirmation.
+    match info.autonomy {
+        // Observe-only skills never act on their own.
+        AutonomyLevel::Observe => Decision::Confirm,
         // Read-only / low-stakes: autonomous, unless it leaves the device and the
         // person has narrowed the envelope to keep on-device actions in-hand.
-        AutonomyLevel::ActWithinPolicy => !info.reaches_external || env.auto_external,
-        // Consequential (propose-and-approve, or per-action confirm): only
-        // autonomous if the person has widened the envelope to allow it; otherwise
-        // it surfaces for confirmation (the default).
-        AutonomyLevel::Suggest | AutonomyLevel::ConfirmEachAction => env.auto_consequential,
+        AutonomyLevel::ActWithinPolicy => {
+            if !info.reaches_external || env.auto_external {
+                Decision::Act
+            } else {
+                Decision::Confirm
+            }
+        }
+        // Consequential but reversible: only autonomous if the person has widened
+        // the envelope to allow it; otherwise it surfaces for confirmation.
+        AutonomyLevel::Suggest | AutonomyLevel::ConfirmEachAction => {
+            if env.auto_consequential {
+                Decision::Act
+            } else {
+                Decision::Confirm
+            }
+        }
     }
+}
+
+/// Whether a skill may run on its own this turn — exactly when the deterministic
+/// [`classify`] verdict is [`Act`](Decision::Act).
+fn may_run_autonomously(info: &CapabilityInfo, env: &crate::application::AutonomyEnvelope) -> bool {
+    classify(info, env) == Decision::Act
 }
 
 impl CapabilityRunner for RegistryRunner {
@@ -1692,6 +1736,16 @@ impl CapabilityRunner for RegistryRunner {
             .iter()
             .find(|c| c.info().id == id)
             .ok_or_else(|| format!("no such skill '{id}'"))?;
+        // Deny-by-default on the irreversible band (ADR 0024): the un-undoable is
+        // blocked outright — never run, even on an explicit request — until the
+        // person opens it per capability. The failure mode is "it refused," never
+        // "it did something permanent." The classifier owns which band is blocked.
+        if classify(&cap.info(), &self.envelope) == Decision::Block {
+            return Err(format!(
+                "the '{id}' skill can't be undone, so Endora won't run it on its own — \
+                 this band stays blocked until you open it"
+            ));
+        }
         // Data-loss tripwire: for a skill that leaves the device, refuse to send a
         // request that appears to carry a secret (ADR 0023). Fail closed.
         if cap.info().reaches_external {
@@ -1791,6 +1845,99 @@ mod tests {
             settings: &[],
         };
         assert!(!may_run_autonomously(&irreversible, &widened));
+    }
+
+    #[test]
+    fn metadata_maps_to_a_reversibility_band() {
+        let info = |reversible, autonomy| CapabilityInfo {
+            id: "x",
+            name: "X",
+            description: "",
+            category: "",
+            reaches_external: true,
+            reversible,
+            autonomy,
+            configured: true,
+            needs: "",
+            settings: &[],
+        };
+        // A permanent effect is the un-undoable, whatever its autonomy level.
+        assert_eq!(
+            reversibility_band(&info(false, AutonomyLevel::ConfirmEachAction)),
+            Reversibility::Irreversible
+        );
+        // A pure reader observes; a low-stakes undoable effect is the experiment
+        // band; a consequential-but-undoable effect is outward-reversible.
+        assert_eq!(
+            reversibility_band(&info(true, AutonomyLevel::Observe)),
+            Reversibility::Observe
+        );
+        assert_eq!(
+            reversibility_band(&info(true, AutonomyLevel::ActWithinPolicy)),
+            Reversibility::Reversible
+        );
+        assert_eq!(
+            reversibility_band(&info(true, AutonomyLevel::ConfirmEachAction)),
+            Reversibility::OutwardReversible
+        );
+    }
+
+    #[test]
+    fn the_classifier_blocks_the_irreversible_rather_than_confirming_it() {
+        use crate::application::AutonomyEnvelope;
+        let irreversible = CapabilityInfo {
+            id: "book",
+            name: "Book",
+            description: "",
+            category: "",
+            reaches_external: true,
+            reversible: false,
+            autonomy: AutonomyLevel::ConfirmEachAction,
+            configured: true,
+            needs: "",
+            settings: &[],
+        };
+        // Blocked outright, not merely confirmed — even fully widened (ADR 0024).
+        let widened = AutonomyEnvelope {
+            auto_external: true,
+            auto_consequential: true,
+        };
+        assert_eq!(classify(&irreversible, &widened), Decision::Block);
+    }
+
+    #[test]
+    fn run_refuses_an_irreversible_skill_deny_by_default() {
+        // A skill whose effect can't be undone must be refused by the execution
+        // path itself, not just excluded from autonomous runs (ADR 0024).
+        struct IrreversibleSkill;
+        impl Capability for IrreversibleSkill {
+            fn info(&self) -> CapabilityInfo {
+                CapabilityInfo {
+                    id: "wire_transfer",
+                    name: "Wire transfer",
+                    description: "",
+                    category: "",
+                    reaches_external: true,
+                    reversible: false,
+                    autonomy: AutonomyLevel::ConfirmEachAction,
+                    configured: true,
+                    needs: "",
+                    settings: &[],
+                }
+            }
+            fn invoke(
+                &self,
+                _input: &Value,
+                _settings: &CapabilitySettings,
+            ) -> Result<Value, CapabilityError> {
+                panic!("an irreversible skill must never be invoked");
+            }
+        }
+        let runner = RegistryRunner::new(Arc::new(vec![
+            Arc::new(IrreversibleSkill) as Arc<dyn Capability>
+        ]));
+        let err = runner.run("wire_transfer", "{}").unwrap_err();
+        assert!(err.contains("can't be undone"), "unexpected error: {err}");
     }
 
     #[test]
