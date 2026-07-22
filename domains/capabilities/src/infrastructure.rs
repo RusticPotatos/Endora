@@ -908,7 +908,9 @@ impl Capability for LocalNewsCapability {
         let items = extract_rss_items(&xml, 6);
         let headlines: Vec<Value> = items
             .iter()
-            .map(|(title, link)| json!({ "title": title, "url": link }))
+            .map(|(title, link, publisher)| {
+                json!({ "title": title, "url": link, "publisher": publisher })
+            })
             .collect();
         Ok(json!({
             "query": query,
@@ -931,10 +933,17 @@ impl Capability for LocalNewsCapability {
                 return Some(format!("{}. {t}", i + 1));
             }
             let title = h["title"].as_str().filter(|s| !s.is_empty())?;
-            match h["url"].as_str().filter(|s| !s.is_empty()) {
-                Some(url) => Some(format!("{}. {title} — {url}", i + 1)),
-                None => Some(format!("{}. {title}", i + 1)),
-            }
+            let publisher = h["publisher"].as_str().filter(|s| !s.is_empty());
+            let url = h["url"].as_str().filter(|s| !s.is_empty());
+            // Cite the outlet + the link when we have them, so the butler relays a
+            // real source rather than guessing one.
+            let src = match (publisher, url) {
+                (Some(p), Some(u)) => format!(" — {p} ({u})"),
+                (Some(p), None) => format!(" — {p}"),
+                (None, Some(u)) => format!(" — {u}"),
+                (None, None) => String::new(),
+            };
+            Some(format!("{}. {title}{src}", i + 1))
         };
         let list: Vec<String> = o["headlines"]
             .as_array()
@@ -952,11 +961,12 @@ impl Capability for LocalNewsCapability {
     }
 }
 
-/// Extracts up to `max` `<item>` headlines from an RSS feed as `(title, link)`,
-/// decoding the common XML entities. The link is the article's **source** (kept
-/// so the butler can cite it, not guess). Small and tolerant — good enough for
-/// Google News RSS.
-fn extract_rss_items(xml: &str, max: usize) -> Vec<(String, String)> {
+/// Extracts up to `max` `<item>` headlines from an RSS feed as `(title, link,
+/// publisher)`, decoding the common XML entities. The link is the article's
+/// **source** and `publisher` the outlet name (Google News RSS carries a
+/// `<source url="…">Publisher</source>`) — both kept so the butler can *cite* a
+/// real source, not guess one. Small and tolerant.
+fn extract_rss_items(xml: &str, max: usize) -> Vec<(String, String, String)> {
     let mut out = Vec::new();
     let mut rest = xml;
     while let Some(start) = rest.find("<item>") {
@@ -971,8 +981,14 @@ fn extract_rss_items(xml: &str, max: usize) -> Vec<(String, String)> {
         let link = between(item, "<link>", "</link>")
             .map(|l| decode_xml_entities(strip_cdata(&l).trim()))
             .unwrap_or_default();
+        // <source url="…">Publisher</source> — take the text after the opening
+        // tag's ">" (skips the url= attribute) up to the closing tag.
+        let publisher = between(item, "<source", "</source>")
+            .and_then(|s| s.split_once('>').map(|(_, name)| name.to_owned()))
+            .map(|n| decode_xml_entities(strip_cdata(n.trim()).trim()))
+            .unwrap_or_default();
         if !title.is_empty() {
-            out.push((title, link));
+            out.push((title, link, publisher));
         }
         if out.len() >= max {
             break;
@@ -1960,9 +1976,10 @@ mod tests {
     }
 
     #[test]
-    fn rss_items_are_extracted_with_titles_and_source_links() {
+    fn rss_items_are_extracted_with_titles_links_and_publisher() {
         let xml = "<rss><channel>\
-            <item><title>Storms hit New York &amp; the region</title><link>https://ex.com/a</link></item>\
+            <item><title>Storms hit New York &amp; the region</title><link>https://ex.com/a</link>\
+              <source url=\"https://www.wcnc.com\">WCNC</source></item>\
             <item><title><![CDATA[City council votes tonight]]></title></item>\
             <item><title>Third &#39;big&#39; story</title></item>\
             </channel></rss>";
@@ -1970,8 +1987,10 @@ mod tests {
         assert_eq!(items.len(), 3);
         assert_eq!(items[0].0, "Storms hit New York & the region");
         assert_eq!(items[0].1, "https://ex.com/a"); // the source link is kept
+        assert_eq!(items[0].2, "WCNC"); // publisher name from <source>
         assert_eq!(items[1].0, "City council votes tonight");
         assert_eq!(items[1].1, ""); // no link in the feed ⇒ empty, not fabricated
+        assert_eq!(items[1].2, ""); // no <source> ⇒ empty, not fabricated
         assert_eq!(items[2].0, "Third 'big' story");
     }
 
