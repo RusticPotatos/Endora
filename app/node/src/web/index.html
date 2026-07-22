@@ -477,7 +477,7 @@ function viewHome() {
     <h3 style="margin-top:16px;">${(DB.values || []).length ? "Unfiled" : "Goals"}</h3>
     ${listOr(unfiled.map(dirCard), "No goals yet. Create one below.")}`;
   return `
-    ${crumbs([{ label: "Directions" }])}
+    ${crumbs([{ label: "Home", act: "go:chat" }, { label: "Goals" }])}
     ${dueBanner}
     <h2>Goals by value</h2>
     ${groups}
@@ -520,7 +520,7 @@ function viewDirection(id) {
   const valueOptions = `<option value="">(unfiled)</option>` +
     (DB.values || []).map((v) => `<option value="${v.id}" ${d.value_id === v.id ? "selected" : ""}>${esc(v.name)}</option>`).join("");
   return `
-    ${crumbs([{ label: "Home", act: "go:home" }, { label: d.title }])}
+    ${crumbs([{ label: "Home", act: "go:chat" }, { label: d.title }])}
     <div class="card"><div class="title">${esc(d.title)}${statusPill(d)}</div>
       <div class="row" style="gap:6px; margin-top:8px; align-items:center;">
         <span class="sub">Serves value:</span>
@@ -559,7 +559,7 @@ function viewTarget(id) {
     ? obs.map((o) => `<label class="evi"><input type="checkbox" class="evi-box" value="${o.id}" /> ${esc(o.note)}</label>`).join("")
     : `<div class="sub">Record observations under an experiment first to cite them here.</div>`;
   return `
-    ${crumbs([{ label: "Home", act: "go:home" },
+    ${crumbs([{ label: "Home", act: "go:chat" },
               { label: d ? d.title : "…", act: "go:direction:" + g.direction_id },
               { label: g.statement }])}
     <h2>Assumptions</h2>
@@ -609,7 +609,7 @@ function viewAssumption(id) {
     </div>`;
   });
   return `
-    ${crumbs([{ label: "Home", act: "go:home" },
+    ${crumbs([{ label: "Home", act: "go:chat" },
               { label: g ? g.statement : "…", act: "go:target:" + a.target_id },
               { label: a.statement }])}
     <h2>Experiments testing “${esc(a.statement)}”</h2>
@@ -642,7 +642,7 @@ function viewReflection(id) {
       </div>
     </div>`);
   return `
-    ${crumbs([{ label: "Home", act: "go:home" },
+    ${crumbs([{ label: "Home", act: "go:chat" },
               { label: g ? g.statement : "…", act: "go:target:" + r.target_id },
               { label: "Reflection" }])}
     <h2>Reflection</h2>
@@ -662,7 +662,7 @@ function viewAudit() {
     <div class="card"><div class="sub mono">${new Date(a.at_ms).toLocaleString()}</div>
       <div>${esc(a.summary)}</div></div>`);
   return `
-    ${crumbs([{ label: "Home", act: "go:home" }, { label: "Activity" }])}
+    ${crumbs([{ label: "Home", act: "go:chat" }, { label: "Activity" }])}
     <h2>Recent activity</h2>
     ${activityFeed()}
     <h2 style="margin-top:22px;">Audit trail (newest first)</h2>
@@ -1014,7 +1014,7 @@ function viewSettings() {
       <button class="${on ? "primary" : "ghost"}" data-act="${act}">${on ? "On" : "Off"}</button>
     </div>`;
   return `
-    ${crumbs([{ label: "Home", act: "go:home" }, { label: "Settings" }])}
+    ${crumbs([{ label: "Home", act: "go:chat" }, { label: "Settings" }])}
     <h2>Settings</h2>
     <div class="card" style="display:flex;flex-direction:column;gap:14px;">
       ${row(SPEAK, "toggle:speak", "Read replies aloud", TTS ? "" : "not supported in this browser")}
@@ -1024,7 +1024,7 @@ function viewSettings() {
     <h3 style="margin-top:22px;">Manage</h3>
     <div class="card nav-list">
       <button class="ghost" data-act="go:prefs">${icon("prefs")}<span>Your preferences</span>${icon("chevron", 15)}</button>
-      <button class="ghost" data-act="go:home">${icon("sparkle")}<span>What Endora understands</span>${icon("chevron", 15)}</button>
+      <button class="ghost" data-act="go:understanding">${icon("sparkle")}<span>What Endora understands</span>${icon("chevron", 15)}</button>
       <button class="ghost" data-act="go:skills">${icon("skills")}<span>Skills</span>${icon("chevron", 15)}</button>
       <button class="ghost" data-act="go:goals">${icon("target")}<span>Goals</span>${icon("chevron", 15)}</button>
       <button class="ghost" data-act="export">${icon("export")}<span>Export my data</span>${icon("chevron", 15)}</button>
@@ -1044,7 +1044,7 @@ function viewPrefs() {
       <button class="ghost danger" data-act="delete:pref:${p.id}" title="forget this">${icon("purge",15)}</button>
     </div></div>`);
   return `
-    ${crumbs([{ label: "Home", act: "go:home" }, { label: "Preferences" }])}
+    ${crumbs([{ label: "Home", act: "go:chat" }, { label: "Preferences" }])}
     <h2>What the butler knows about you</h2>
     ${listOr(rows, "Nothing yet. The butler will propose things to remember as you talk — or add one below.")}
     <div class="form">
@@ -1065,7 +1065,7 @@ function viewSuggestions() {
       <button class="ghost" data-act="dismiss:suggestion:${s.id}">Dismiss</button>
     </div></div>`);
   return `
-    ${crumbs([{ label: "Home", act: "go:home" }, { label: "Inbox" }])}
+    ${crumbs([{ label: "Home", act: "go:chat" }, { label: "Inbox" }])}
     <h2>Suggestions from your conversations</h2>
     ${listOr(cards, "Nothing waiting. As you chat, the butler's proposals collect here.")}`;
 }
@@ -1116,7 +1116,7 @@ function viewSkills() {
       ${toggle(env.auto_consequential === true, "autonomy:consequential", "Take consequential actions on its own", "Let it carry out actions that normally need your confirmation — spending, sending, or things that can't be undone. Off is safer; turn on only if you're sure.")}
     </div>`;
   return `
-    ${crumbs([{ label: "Home", act: "go:home" }, { label: "Skills" }])}
+    ${crumbs([{ label: "Home", act: "go:chat" }, { label: "Skills" }])}
     <h2>What Endora can do</h2>
 
     ${envelope}
