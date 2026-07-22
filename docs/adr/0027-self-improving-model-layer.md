@@ -5,8 +5,14 @@
 Accepted (2026). **Core implemented**: the fitness function and the deterministic
 adoption policy ship in `crates/endora-infrastructure/src/model_layer.rs`
 (`evaluate` → `Scorecard`, `decide_adoption`, `run_model_layer`), over the
-runtime-swappable model config (`ButlerModelConfig`, ADR-linked). **Pending**: the
-scheduled discovery crawl (Hugging Face / leaderboards) and its schedule.
+runtime-swappable model config (`ButlerModelConfig`, ADR-linked). It is
+**runnable end-to-end**, on demand: `POST /v1/model-layer/run` (a console
+"Evaluate & tune" button) discovers the local endpoint's models, scores each, and
+gate-adopts the best local one in the background, logging scores + the decision to
+activity. **Pending**: automating it — a `ModelDiscoverySchedule` driving it from
+the heartbeat on a cadence / off-hours (so it doesn't contend with chat on the
+GPU), and widening discovery beyond the local endpoint to Hugging Face /
+leaderboards.
 
 ## Context
 
