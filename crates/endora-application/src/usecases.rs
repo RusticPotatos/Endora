@@ -1241,6 +1241,28 @@ fn route_intent(text: &str) -> Option<&'static str> {
     if has(&["news", "headline", "headlines"]) {
         return Some("news");
     }
+    // Local events: "what's happening / things to do / events near me". This skill
+    // is a scaffold (no data source yet), so without this the model invents
+    // plausible-but-fake events and even a fake source when asked. Routing it here
+    // sends an events ask down the honest path — the butler says it can't check
+    // events rather than making them up.
+    if has(&[
+        "events",
+        "what's happening",
+        "whats happening",
+        "what is happening",
+        "happening near",
+        "happening today",
+        "happening this weekend",
+        "things to do",
+        "going on near",
+        "anything going on",
+        "concerts near",
+        "shows near",
+        "local events",
+    ]) {
+        return Some("local_events");
+    }
     if has(&[
         "weather",
         "forecast",
@@ -1266,6 +1288,7 @@ fn progress_label(id: &str) -> String {
         "web_fetch" => "Reading the page",
         "knowledge" => "Looking that up",
         "home_assistant" => "Checking your home",
+        "local_events" => "Checking local events",
         "image_review" => "Looking at the image",
         other => return format!("Using the {other} skill"),
     }
@@ -2910,6 +2933,25 @@ mod tests {
         assert_eq!(
             route_intent("what's the weather in Boston?"),
             Some("weather")
+        );
+    }
+
+    #[test]
+    fn events_asks_route_to_the_events_skill() {
+        use super::route_intent;
+        // An events ask must route to local_events (a scaffold) so the net takes
+        // the honest path instead of the model inventing events + a fake source.
+        assert_eq!(
+            route_intent("what events are happening in Charlotte today?"),
+            Some("local_events")
+        );
+        assert_eq!(
+            route_intent("anything going on near me this weekend?"),
+            Some("local_events")
+        );
+        assert_eq!(
+            route_intent("what are some things to do tonight?"),
+            Some("local_events")
         );
     }
 
