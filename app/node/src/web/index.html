@@ -682,6 +682,7 @@ let SPEAK = localStorage.getItem("endora.speak") === "1";      // read replies a
 let PTT_HAPTIC = localStorage.getItem("endora.haptic") !== "0"; // buzz on push-to-talk (default on)
 const TTS = window.speechSynthesis;
 const STT = window.SpeechRecognition || window.webkitSpeechRecognition;
+let STT_AVAILABLE = false; // a Whisper STT server is configured (set from /health)
 // iOS Safari only lets speech start after a user gesture unlocks it; speaking a
 // silent utterance the moment the person taps "Speak" unlocks it for the later,
 // async replies. (This is best-effort — a fully reliable mobile voice is the
@@ -728,7 +729,49 @@ function listen() {
 // Push-to-talk: hold the mic to dictate (interim text fills the box live),
 // release to send. Uses pointer events so it works with mouse and touch.
 let PTT_REC = null;
+let PTT_MEDIA = null; // active Whisper recording { recorder, chunks, stream, btn }
+
+// When a Whisper STT server is configured, record real audio and transcribe it
+// server-side (accurate, works in any browser) instead of the flaky Web Speech
+// API. Falls back to Web Speech when no server is set.
+async function startWhisperPTT(btn) {
+  if (PTT_MEDIA || !navigator.mediaDevices || !window.MediaRecorder) return;
+  if (!window.isSecureContext) { flash("Voice input needs a secure page (HTTPS or localhost).", "err"); return; }
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    const recorder = new MediaRecorder(stream);
+    const chunks = [];
+    recorder.ondataavailable = (e) => { if (e.data && e.data.size) chunks.push(e.data); };
+    recorder.start();
+    PTT_MEDIA = { recorder, chunks, stream, btn };
+    if (btn) btn.classList.add("recording");
+    if (PTT_HAPTIC && navigator.vibrate) navigator.vibrate(25);
+  } catch (_) { flash("Couldn't start the mic — allow microphone access.", "err"); }
+}
+async function stopWhisperPTT(andSend) {
+  const m = PTT_MEDIA; if (!m) return; PTT_MEDIA = null;
+  if (m.btn) m.btn.classList.remove("recording");
+  const done = new Promise((res) => { m.recorder.onstop = res; });
+  try { m.recorder.stop(); } catch (_) {}
+  await done;
+  m.stream.getTracks().forEach((t) => t.stop());
+  if (!andSend) return;
+  const blob = new Blob(m.chunks, { type: m.recorder.mimeType || "audio/webm" });
+  if (!blob.size) return;
+  const input = document.getElementById("chat-input");
+  const ph = input ? input.placeholder : "";
+  if (input) input.placeholder = "Transcribing…";
+  try {
+    const res = await fetch("/v1/transcribe", { method: "POST", headers: { "content-type": "application/octet-stream" }, body: blob });
+    if (!res.ok) throw new Error("transcription failed");
+    const data = await res.json();
+    if (input && data.text) { input.value = data.text; growInput(input); sendChat(); }
+  } catch (e) { flash("Couldn't transcribe that" + (e.message ? " (" + e.message + ")" : "") + ".", "err"); }
+  finally { if (input) input.placeholder = ph || "Talk to your butler…"; }
+}
+
 function startPTT(btn) {
+  if (STT_AVAILABLE) return startWhisperPTT(btn);
   if (!STT) { flash("Speech recognition isn't available in this browser (try Chrome/Edge).", "err"); return; }
   if (!window.isSecureContext) { flash("Voice input needs a secure page (HTTPS or localhost).", "err"); return; }
   if (PTT_REC) return;
@@ -753,6 +796,7 @@ function startPTT(btn) {
   } catch (_) { PTT_REC = null; flash("Couldn't start voice input.", "err"); }
 }
 function stopPTT(andSend) {
+  if (PTT_MEDIA) { stopWhisperPTT(andSend); return; }
   const rec = PTT_REC;
   if (!rec) return;
   try { rec.stop(); } catch (_) {}
@@ -803,7 +847,7 @@ function viewChat() {
   const speakBtn = TTS
     ? `<button class="ghost" data-act="toggle:speak" title="read replies aloud">${icon(SPEAK ? "speakerOn" : "speakerOff")}<span>${SPEAK ? "Speaking" : "Speak"}</span></button>`
     : "";
-  const micBtn = STT
+  const micBtn = (STT || STT_AVAILABLE)
     ? (window.isSecureContext
         ? `<button class="ptt" data-mic="1" title="push to talk, release to send">${icon("mic")}<span>Push to talk</span></button>`
         : `<button data-act="chat:mic" title="voice input needs HTTPS or localhost">${icon("mic")}<span>needs HTTPS</span></button>`)
@@ -1852,6 +1896,7 @@ document.body.addEventListener("change", (ev) => {
 // beyond the butler chat lives in here, so the main surface stays clean.
 function setupHeader(health) {
   const service = (health && health.service) || "";
+  STT_AVAILABLE = !!(health && health.stt); // a Whisper server ⇒ real push-to-talk
   const menuBtn = document.getElementById("menu-btn");
   if (menuBtn) menuBtn.innerHTML = icon("menu");
   const item = (act, name, label, extra = "", cls = "") =>
