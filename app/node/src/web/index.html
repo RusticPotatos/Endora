@@ -1023,10 +1023,10 @@ function viewSettings() {
     </div>
     <h3 style="margin-top:22px;">Manage</h3>
     <div class="card nav-list">
+      <button class="ghost" data-act="go:understanding">${icon("sparkle")}<span>What Endora understands about you</span>${icon("chevron", 15)}</button>
+      <button class="ghost" data-act="go:learning">${icon("target")}<span>What Endora is learning</span>${icon("chevron", 15)}</button>
       <button class="ghost" data-act="go:prefs">${icon("prefs")}<span>Your preferences</span>${icon("chevron", 15)}</button>
-      <button class="ghost" data-act="go:understanding">${icon("sparkle")}<span>What Endora understands</span>${icon("chevron", 15)}</button>
       <button class="ghost" data-act="go:skills">${icon("skills")}<span>Skills</span>${icon("chevron", 15)}</button>
-      <button class="ghost" data-act="go:goals">${icon("target")}<span>Goals</span>${icon("chevron", 15)}</button>
       <button class="ghost" data-act="export">${icon("export")}<span>Export my data</span>${icon("chevron", 15)}</button>
     </div>
     ${modelsSection()}
@@ -1133,6 +1133,30 @@ const BELIEF_KIND_LABEL = {
   stressor: "Stressors", relationship: "People who matter", other: "Other",
 };
 const BELIEF_KIND_ORDER = ["intent","value","motivation","pattern","preference","frustration","stressor","relationship","other"];
+// The learning loop, made visible: what Endora is trying and what it's concluded.
+// Read-mostly on purpose — this is the butler's own work, not a to-do list you
+// manage. The North Star/Goal/Target scaffolding stays internal to the butler.
+function viewLearning() {
+  const trying = (DB.experiments || []).filter((e) => e.status === "running" || e.status === "proposed");
+  const tryingCards = trying.map((e) => `
+    <div class="card"><div class="row">
+      <div class="grow"><div class="title">${esc(e.hypothesis)}</div></div>
+      <span class="pill ${e.status}">${e.status}</span></div></div>`);
+  const learned = (DB.reflections || []).slice().reverse().slice(0, 12).map((r) => `
+    <div class="card"><div class="title">${esc(r.summary)}</div>
+      <div class="sub">weighed ${(r.evidence || []).length} observation(s)</div></div>`);
+  const beliefs = (UNDERSTANDING || []).length;
+  return `
+    ${crumbs([{ label: "Home", act: "go:chat" }, { label: "Learning" }])}
+    <h2>What Endora is learning</h2>
+    <div class="sub" style="margin-bottom:14px;">Endora notices what helps you, tries small things, and reflects on how they went — so it grows more useful over time. This is its work, not a list for you to manage.</div>
+    <h3>What it's trying</h3>
+    ${listOr(tryingCards, "Nothing running yet — Endora proposes small experiments as it gets to know you.")}
+    <h3 style="margin-top:20px;">What it's learned</h3>
+    ${listOr(learned, "No reflections yet.")}
+    <div class="sub" style="margin-top:18px;">It's formed <a data-act="go:understanding" style="color:var(--accent);cursor:pointer">${beliefs} belief${beliefs === 1 ? "" : "s"} about you</a> — review or correct them any time.</div>`;
+}
+
 function viewUnderstanding() {
   const byKind = {};
   for (const b of (UNDERSTANDING || [])) (byKind[b.kind] = byKind[b.kind] || []).push(b);
@@ -1408,6 +1432,7 @@ function render() {
     : v === "prefs" ? viewPrefs()
     : v === "settings" ? viewSettings()
     : v === "goals" ? viewHome()
+    : v === "learning" ? viewLearning()
     : v === "understanding" ? viewUnderstanding()
     : viewUnderstanding();
   // On the chat, jump to the newest message (kept clear of the sticky composer).
