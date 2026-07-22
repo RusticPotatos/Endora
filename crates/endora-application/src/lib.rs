@@ -32,8 +32,10 @@ pub use endora_platform::{ActivityEvent, AuditLog, AuditRecord, EventLog};
 // The capabilities ports live in the capabilities context (ADR 0026); re-exported
 // so their `endora_application::…` paths are unchanged.
 pub use endora_capabilities::{
-    AutonomyEnvelope, AutonomyEnvelopeRepository, CapabilityConfigRepository, CapabilityRunner,
-    CapabilitySettingsRepository, CapabilitySpec, CapabilityUse, DeepModel, DeepModelRepository,
+    AutonomyEnvelope, AutonomyEnvelopeRepository, ButlerModelConfig, ButlerModelConfigRepository,
+    CapabilityConfigRepository, CapabilityRunner, CapabilitySettingsRepository, CapabilitySpec,
+    CapabilityUse, DeepModel, DeepModelRepository, ModelSlot, ModelTuneSchedule,
+    ModelTuneScheduleRepository, Sampling,
 };
 // The chat repository lives in the conversation context (ADR 0026); re-exported
 // so `endora_application::ChatRepository` is unchanged.
@@ -81,6 +83,19 @@ pub fn platform_identity() -> String {
 #[must_use]
 pub fn version() -> &'static str {
     env!("CARGO_PKG_VERSION")
+}
+
+/// A short identifier for *this build* — the git short SHA stamped in at image
+/// build time (`ENDORA_BUILD`), so a client can tell one deploy from the next
+/// even when the version number hasn't changed. `"dev"` for a local run where the
+/// stamp isn't set.
+#[must_use]
+pub fn build_id() -> String {
+    std::env::var("ENDORA_BUILD")
+        .ok()
+        .map(|s| s.trim().to_owned())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "dev".to_owned())
 }
 
 /// The default autonomy level a freshly configured component starts at.

@@ -6,8 +6,9 @@ use endora_persistence::{Db, backend};
 use rusqlite::{OptionalExtension, params};
 
 use crate::application::{
-    AutonomyEnvelope, AutonomyEnvelopeRepository, CapabilityConfigRepository,
-    CapabilitySettingsRepository, DeepModel, DeepModelRepository,
+    AutonomyEnvelope, AutonomyEnvelopeRepository, ButlerModelConfig, ButlerModelConfigRepository,
+    CapabilityConfigRepository, CapabilitySettingsRepository, DeepModel, DeepModelRepository,
+    ModelSlot, ModelTuneSchedule, ModelTuneScheduleRepository, Sampling,
 };
 
 /// Creates the capabilities config tables if absent (idempotent).
@@ -37,6 +38,33 @@ pub fn migrate(db: &Db) -> Result<(), RepositoryError> {
                 url     TEXT NOT NULL,
                 model   TEXT NOT NULL,
                 api_key TEXT NOT NULL
+            ) STRICT;
+            CREATE TABLE IF NOT EXISTS butler_model_config (
+                id            INTEGER PRIMARY KEY CHECK (id = 0),
+                base_url      TEXT NOT NULL,
+                api_key       TEXT NOT NULL,
+                mixture       INTEGER NOT NULL,
+                single_model  TEXT NOT NULL,
+                single_temp   REAL,
+                single_top_p  REAL,
+                single_top_k  INTEGER,
+                single_repeat REAL,
+                router_model  TEXT NOT NULL,
+                router_temp   REAL,
+                router_top_p  REAL,
+                router_top_k  INTEGER,
+                router_repeat REAL,
+                synth_model   TEXT NOT NULL,
+                synth_temp    REAL,
+                synth_top_p   REAL,
+                synth_top_k   INTEGER,
+                synth_repeat  REAL
+            ) STRICT;
+            CREATE TABLE IF NOT EXISTS model_tune_schedule (
+                id       INTEGER PRIMARY KEY CHECK (id = 0),
+                enabled  INTEGER NOT NULL,
+                hour_utc INTEGER NOT NULL,
+                last_ms  INTEGER NOT NULL
             ) STRICT;",
         )
         .map_err(backend)?;
@@ -82,6 +110,126 @@ impl DeepModelRepository for ConfigStore {
             .execute(
                 "INSERT OR REPLACE INTO deep_model (id, url, model, api_key) VALUES (0, ?1, ?2, ?3)",
                 params![model.url, model.model, model.api_key],
+            )
+            .map_err(backend)?;
+        Ok(())
+    }
+}
+
+impl ButlerModelConfigRepository for ConfigStore {
+    fn get(&self) -> Result<Option<ButlerModelConfig>, RepositoryError> {
+        self.db
+            .lock()?
+            .query_row(
+                "SELECT base_url, api_key, mixture, \
+                 single_model, single_temp, single_top_p, single_top_k, single_repeat, \
+                 router_model, router_temp, router_top_p, router_top_k, router_repeat, \
+                 synth_model, synth_temp, synth_top_p, synth_top_k, synth_repeat \
+                 FROM butler_model_config WHERE id = 0",
+                [],
+                |r| {
+                    Ok(ButlerModelConfig {
+                        base_url: r.get(0)?,
+                        api_key: r.get(1)?,
+                        mixture: r.get::<_, i64>(2)? != 0,
+                        single: ModelSlot {
+                            model: r.get(3)?,
+                            sampling: Sampling {
+                                temperature: r.get(4)?,
+                                top_p: r.get(5)?,
+                                top_k: r.get(6)?,
+                                repeat_penalty: r.get(7)?,
+                            },
+                        },
+                        router: ModelSlot {
+                            model: r.get(8)?,
+                            sampling: Sampling {
+                                temperature: r.get(9)?,
+                                top_p: r.get(10)?,
+                                top_k: r.get(11)?,
+                                repeat_penalty: r.get(12)?,
+                            },
+                        },
+                        synth: ModelSlot {
+                            model: r.get(13)?,
+                            sampling: Sampling {
+                                temperature: r.get(14)?,
+                                top_p: r.get(15)?,
+                                top_k: r.get(16)?,
+                                repeat_penalty: r.get(17)?,
+                            },
+                        },
+                    })
+                },
+            )
+            .optional()
+            .map_err(backend)
+    }
+
+    fn set(&self, c: &ButlerModelConfig) -> Result<(), RepositoryError> {
+        self.db
+            .lock()?
+            .execute(
+                "INSERT OR REPLACE INTO butler_model_config (\
+                 id, base_url, api_key, mixture, \
+                 single_model, single_temp, single_top_p, single_top_k, single_repeat, \
+                 router_model, router_temp, router_top_p, router_top_k, router_repeat, \
+                 synth_model, synth_temp, synth_top_p, synth_top_k, synth_repeat) \
+                 VALUES (0, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, \
+                 ?16, ?17, ?18)",
+                params![
+                    c.base_url,
+                    c.api_key,
+                    i64::from(c.mixture),
+                    c.single.model,
+                    c.single.sampling.temperature,
+                    c.single.sampling.top_p,
+                    c.single.sampling.top_k,
+                    c.single.sampling.repeat_penalty,
+                    c.router.model,
+                    c.router.sampling.temperature,
+                    c.router.sampling.top_p,
+                    c.router.sampling.top_k,
+                    c.router.sampling.repeat_penalty,
+                    c.synth.model,
+                    c.synth.sampling.temperature,
+                    c.synth.sampling.top_p,
+                    c.synth.sampling.top_k,
+                    c.synth.sampling.repeat_penalty,
+                ],
+            )
+            .map_err(backend)?;
+        Ok(())
+    }
+}
+
+impl ModelTuneScheduleRepository for ConfigStore {
+    fn get(&self) -> Result<ModelTuneSchedule, RepositoryError> {
+        self.db
+            .lock()?
+            .query_row(
+                "SELECT enabled, hour_utc, last_ms FROM model_tune_schedule WHERE id = 0",
+                [],
+                |r| {
+                    Ok(ModelTuneSchedule {
+                        enabled: r.get::<_, i64>(0)? != 0,
+                        hour_utc: r.get::<_, i64>(1)? as u8,
+                        last_ms: r.get(2)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(backend)
+            .map(|opt| opt.unwrap_or_else(ModelTuneSchedule::disabled_default))
+    }
+
+    fn set(&self, s: &ModelTuneSchedule) -> Result<(), RepositoryError> {
+        self.db
+            .lock()?
+            .execute(
+                "INSERT OR REPLACE INTO model_tune_schedule (id, enabled, hour_utc, last_ms) \
+                 VALUES (0, ?1, ?2, ?3)",
+                params![i64::from(s.enabled), i64::from(s.hour_utc), s.last_ms],
             )
             .map_err(backend)?;
         Ok(())

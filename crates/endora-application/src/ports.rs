@@ -330,6 +330,11 @@ pub struct ButlerContext {
     /// day it is rather than guessing or leaking a placeholder. Cheap local truth —
     /// grounded every turn, unlike weather/news which need a skill.
     pub now: String,
+    /// This turn's FINAL answer is being written (prose for the person), not a
+    /// tool-routing decision. In the mixture (ADR 0027) it routes to the
+    /// *synthesizer* (the generalist), so plain conversation is answered by the
+    /// model that's good at it rather than the tool-tuned router.
+    pub synthesize: bool,
 }
 
 // The capabilities ports — CapabilityUse, CapabilitySpec, CapabilityRunner,
