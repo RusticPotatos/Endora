@@ -1957,12 +1957,10 @@ async fn discover_models(
         }
         let key = match req.api_key {
             Some(k) if !k.trim().is_empty() => k.trim().to_owned(),
-            _ if req.role.as_deref() == Some("deep") => {
-                DeepModelRepository::get(config.as_ref())
-                    .map_err(AppError::Repository)?
-                    .map(|m| m.api_key)
-                    .unwrap_or_default()
-            }
+            _ if req.role.as_deref() == Some("deep") => DeepModelRepository::get(config.as_ref())
+                .map_err(AppError::Repository)?
+                .map(|m| m.api_key)
+                .unwrap_or_default(),
             _ => ButlerModelConfigRepository::get(config.as_ref())
                 .map_err(AppError::Repository)?
                 .map(|c| c.api_key)
