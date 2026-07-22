@@ -186,6 +186,12 @@
   .sampling-row { display: flex; gap: 10px; flex-wrap: wrap; }
   .sampling-row > label { display: flex; flex-direction: column; gap: 3px; font-size: 11px; color: var(--muted); }
   .sampling-row input { width: 68px; }
+  /* A settings navigation list — full-width rows (icon · label · chevron). */
+  .nav-list { display: flex; flex-direction: column; gap: 0; padding: 2px 0; }
+  .nav-list > button { display: flex; align-items: center; gap: 11px; width: 100%; justify-content: flex-start; padding: 12px 6px; background: none; border: none; text-align: left; font-size: 15px; color: var(--fg); cursor: pointer; }
+  .nav-list > button > span { flex: 1; }
+  .nav-list > button:not(:last-child) { border-bottom: 1px solid var(--line); }
+  .nav-list > button:hover { background: rgba(127,127,127,.06); }
   .sspin { width: 11px; height: 11px; border: 2px solid rgba(127,127,127,.35); border-top-color: var(--accent); border-radius: 50%; display: inline-block; animation: sspin .7s linear infinite; }
   @keyframes sspin { to { transform: rotate(360deg); } }
   /* push-to-talk: a prominent hold-to-talk control that pulses while held */
@@ -979,8 +985,16 @@ function viewSettings() {
       ${row(PTT_HAPTIC, "toggle:haptic", "Vibrate on push-to-talk", "haptic cue on Android; iOS ignores it")}
       ${row(SHOW_ACTIVITY, "toggle:activity", "Show Endora's actions", "a note of what it did each turn")}
     </div>
+    <h3 style="margin-top:22px;">Manage</h3>
+    <div class="card nav-list">
+      <button class="ghost" data-act="go:prefs">${icon("prefs")}<span>Your preferences</span>${icon("chevron", 15)}</button>
+      <button class="ghost" data-act="go:home">${icon("sparkle")}<span>What Endora understands</span>${icon("chevron", 15)}</button>
+      <button class="ghost" data-act="go:skills">${icon("skills")}<span>Skills</span>${icon("chevron", 15)}</button>
+      <button class="ghost" data-act="go:goals">${icon("target")}<span>Goals</span>${icon("chevron", 15)}</button>
+      <button class="ghost" data-act="export">${icon("export")}<span>Export my data</span>${icon("chevron", 15)}</button>
+    </div>
     ${modelsSection()}
-    <div class="sub" style="margin-top:14px;">How boldly Endora acts on its own is under <a data-act="go:skills" style="color:var(--accent);cursor:pointer">Skills</a>. Private egress (proxy/VPN) is set in deployment config.</div>`;
+    <div class="sub" style="margin-top:14px;">Private egress (proxy/VPN) is set in deployment config.</div>`;
 }
 
 // What the butler has learned — visible, correctable, deletable memory.
@@ -1712,17 +1726,14 @@ function setupHeader(service) {
     `<button class="${cls}" data-act="${act}">${icon(name)}<span>${label}</span>${extra}</button>`;
   const menu = document.getElementById("menu");
   if (menu) {
+    // A short, focused menu: the everyday destinations. Everything else
+    // (Understanding, Skills, Goals, preferences, export) lives inside Settings.
     menu.innerHTML =
       item("go:chat", "chat", "Talk to Endora") +
-      item("go:home", "sparkle", "Understanding") +
       item("go:suggestions", "inbox", "Inbox", `<span class="menu-count" id="menu-inbox-count"></span>`) +
-      item("go:skills", "skills", "Skills") +
-      item("go:goals", "target", "Goals") +
-      `<div class="divider"></div>` +
-      item("go:prefs", "prefs", "Your preferences") +
       item("go:settings", "prefs", "Settings") +
       item("go:audit", "audit", "Activity & audit") +
-      item("export", "export", "Export my data") +
+      `<div class="divider"></div>` +
       item("purge", "purge", "Delete everything", "", "danger");
   }
   // Brand: keep "Endora" and, if the health string carries a version, a pill.
