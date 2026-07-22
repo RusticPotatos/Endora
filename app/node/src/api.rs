@@ -1288,6 +1288,12 @@ async fn stream_chat(
                     return;
                 }
             };
+            // Collect the turn's steps so they can be PERSISTED with the reply (so a
+            // past answer keeps its expandable actions + Sources after a reload), in
+            // addition to streaming them live.
+            let collected =
+                std::sync::Arc::new(std::sync::Mutex::new(Vec::<serde_json::Value>::new()));
+            let collected_step = collected.clone();
             // Scope the token closure so its borrow of `tx` ends before the `done`
             // send below.
             let result = {
@@ -1298,13 +1304,18 @@ async fn stream_chat(
                 // the console can show an expandable trail of what the butler is doing,
                 // separate from the reply prose.
                 let mut on_step = |step: usecases::ButlerStep| {
-                    let _ = tx.send(event(json!({
-                        "type": "step",
+                    let v = json!({
                         "skill": step.skill,
                         "status": step.status.as_str(),
                         "label": step.label,
                         "output": step.output,
-                    })));
+                    });
+                    if let Ok(mut g) = collected_step.lock() {
+                        g.push(v.clone());
+                    }
+                    let mut e = v;
+                    e["type"] = json!("step");
+                    let _ = tx.send(event(e));
                 };
                 usecases::send_to_butler_streaming(
                     chat.as_ref(),
@@ -1327,6 +1338,13 @@ async fn stream_chat(
                     for item in &activity {
                         record_event(events.as_ref(), clock.as_ref(), item);
                     }
+                    // Persist this reply's action trail (steps + real sources) so it
+                    // survives a reload — the client renders it under the message.
+                    let steps = collected.lock().map(|g| g.clone()).unwrap_or_default();
+                    let sources = sources_from_steps(&steps);
+                    let actions = json!({ "steps": steps, "sources": sources });
+                    let _ =
+                        chat.save_actions(&reply.id().value().to_string(), &actions.to_string());
                     // A successful write nudges the change stream, like other writes.
                     let _ = changes.send(());
                     let _ = tx.send(event(json!({
@@ -1334,6 +1352,7 @@ async fn stream_chat(
                         "reply": MessageResponse::from(&reply),
                         "proposals": suggestions.iter().map(suggestion_json).collect::<Vec<_>>(),
                         "activity": activity,
+                        "actions": actions,
                     })));
                 }
                 Err(e) => {
@@ -1351,13 +1370,60 @@ async fn stream_chat(
     Sse::new(stream).keep_alive(KeepAlive::default())
 }
 
-/// The whole conversation with the butler, oldest first.
+/// Extracts the http(s) URLs a turn's steps returned — the real sources — from
+/// the step outputs, deduped, in order.
+fn sources_from_steps(steps: &[serde_json::Value]) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    for s in steps {
+        let Some(text) = s["output"].as_str() else {
+            continue;
+        };
+        for token in text.split_whitespace() {
+            let Some(idx) = token.find("http") else {
+                continue;
+            };
+            let url = &token[idx..];
+            if url.starts_with("http://") || url.starts_with("https://") {
+                let url = url.trim_end_matches(['.', ',', ';', ':', ')', '"', '\'']);
+                if seen.insert(url.to_owned()) {
+                    out.push(url.to_owned());
+                }
+            }
+        }
+    }
+    out
+}
+
+/// The whole conversation with the butler, oldest first — each butler message
+/// carrying its persisted action trail (steps + sources) when it has one, so the
+/// console can render the expandable actions + Sources for past replies too.
 async fn chat_history(
     State(state): State<AppState>,
-) -> Result<Json<Vec<MessageResponse>>, ApiError> {
+) -> Result<Json<Vec<serde_json::Value>>, ApiError> {
     let chat = state.chat.clone();
-    let messages = blocking(move || usecases::chat_history(chat.as_ref())).await?;
-    Ok(Json(messages.iter().map(MessageResponse::from).collect()))
+    let (messages, actions) = blocking(move || {
+        let msgs = usecases::chat_history(chat.as_ref())?;
+        let acts = chat.all_actions().map_err(AppError::Repository)?;
+        Ok::<_, AppError>((msgs, acts))
+    })
+    .await?;
+    let action_map: std::collections::HashMap<String, serde_json::Value> = actions
+        .into_iter()
+        .filter_map(|(id, json)| serde_json::from_str(&json).ok().map(|v| (id, v)))
+        .collect();
+    let out: Vec<serde_json::Value> = messages
+        .iter()
+        .map(|m| {
+            let r = MessageResponse::from(m);
+            let mut v = serde_json::to_value(&r).unwrap_or_else(|_| json!({}));
+            if let Some(a) = action_map.get(&r.id) {
+                v["actions"] = a.clone();
+            }
+            v
+        })
+        .collect();
+    Ok(Json(out))
 }
 
 #[derive(Deserialize)]
