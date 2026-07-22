@@ -905,6 +905,12 @@ pub fn send_to_butler_streaming(
     let mut gathered: Vec<String> = Vec::new();
     let mut model_requested_skill = false;
     let mut reply = ButlerReply::default();
+    // The context the FINAL answer is produced from. `Some` ⇒ stream the answer
+    // token-by-token from the model (grounded by whatever it gathered); `None` ⇒
+    // the reply is a deterministic honesty string (emitted at once, never the
+    // model's guess). The gathering rounds below run non-streamed and silent —
+    // only steps show — so nothing speculative ever reaches the reply bubble.
+    let mut answer_ctx: Option<ButlerContext> = None;
     for round in 0..=MAX_TOOL_ROUNDS {
         let mut ctx = context.clone();
         if !gathered.is_empty() {
@@ -920,11 +926,13 @@ pub fn send_to_butler_streaming(
                 message: e.to_string(),
             })?;
         let Some(used) = reply.capability_use.take() else {
-            break; // the butler has what it needs and is ready to answer
+            answer_ctx = Some(ctx); // ready to answer — stream from this context
+            break;
         };
         model_requested_skill = true;
         if round == MAX_TOOL_ROUNDS {
-            break; // safety bound — answer with whatever was gathered
+            answer_ctx = Some(ctx); // safety bound — answer with what was gathered
+            break;
         }
         let id = used.capability.clone();
         let spec = capabilities.available().into_iter().find(|c| c.id == id);
@@ -1033,9 +1041,7 @@ pub fn send_to_butler_streaming(
                              Relay this to the person — share the specifics in your own words, \
                              and add nothing that isn't here."
                         ));
-                        if let Ok(synth) = butler.respond(&history, &prefs, &ctx) {
-                            reply = synth;
-                        }
+                        answer_ctx = Some(ctx); // stream the grounded relay to the person
                     }
                     Err(_) => {
                         // Failure: do NOT ask the model to relay it — the weak model
@@ -1049,6 +1055,7 @@ pub fn send_to_butler_streaming(
                             output: None,
                         });
                         activity.push(format!("Tried the {skill} skill, but it failed"));
+                        answer_ctx = None; // deterministic honesty — never the model's guess
                         reply = ButlerReply {
                             text: "I tried to check that for you just now, but the skill I use \
                                  couldn't reach it — so I don't have a real answer for you \
@@ -1073,6 +1080,7 @@ pub fn send_to_butler_streaming(
                 output: None,
             });
             activity.push(format!("Couldn't check {skill} — it's off or not set up"));
+            answer_ctx = None; // deterministic honesty — never the model's guess
             reply = ButlerReply {
                 text: "I can't check that for you right now — the skill I'd use is turned off \
                        or not set up. You can manage what I'm allowed to do on my own under \
@@ -1083,20 +1091,30 @@ pub fn send_to_butler_streaming(
         }
     }
 
+    // Deliver the answer. When it comes from the model (a grounded relay or a
+    // conversational reply), STREAM it token-by-token from `answer_ctx` — the
+    // gathering above was silent, so this is the first prose the person sees, and
+    // it builds up live. A deterministic honesty reply (`answer_ctx == None`) is
+    // emitted at once — the model never gets to stream a guess in that case.
+    let streamed = answer_ctx.is_some();
+    if let Some(ctx) = answer_ctx {
+        reply = butler
+            .respond_streaming(&history, &prefs, &ctx, on_token)
+            .unwrap_or(reply);
+    }
     // A brain that returns nothing usable still owes the person a reply.
     let reply_text = if reply.text.trim().is_empty() {
-        "I'm not sure how to help with that yet — can you say a bit more?"
+        "I'm not sure how to help with that yet — can you say a bit more?".to_owned()
     } else {
-        reply.text.trim()
+        reply.text.trim().to_owned()
     };
-    // Stream the final answer (the agentic loop ran the model non-streamed so it
-    // could decide between steps). The progress lines above already showed the work;
-    // this delivers the finished reply after them.
-    on_token(reply_text);
+    if !streamed {
+        on_token(&reply_text);
+    }
     let butler = ChatMessage::new(
         MessageId::new(ids.new_id()),
         MessageRole::Butler,
-        reply_text,
+        &reply_text,
         clock.now(),
     )?;
     chat.append(&butler)?;
