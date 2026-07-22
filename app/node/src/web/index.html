@@ -170,6 +170,22 @@
   details.step-item > summary .step-more { margin-left: auto; font-size: 11px; color: var(--accent); opacity: .8; }
   details.step-item[open] > summary .step-more::after { content: " ▾"; }
   .step-out { margin: 4px 0 6px 18px; padding: 8px 10px; background: rgba(127,127,127,.10); border-radius: 8px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11.5px; line-height: 1.45; white-space: pre-wrap; overflow-x: auto; max-height: 240px; overflow-y: auto; color: var(--fg); }
+  /* Model configuration cards (Everyday + Deep) — one consistent layout each. */
+  .model-card { display: flex; flex-direction: column; gap: 12px; }
+  .model-role { font-weight: 650; font-size: 15px; }
+  .field { display: flex; flex-direction: column; gap: 5px; }
+  .field > label { font-size: 12px; color: var(--muted); }
+  .field > input, .field > select { width: 100%; box-sizing: border-box; }
+  details.adv > summary { cursor: pointer; color: var(--accent); font-size: 13px; list-style: none; padding: 2px 0; }
+  details.adv > summary::-webkit-details-marker { display: none; }
+  details.adv > summary::before { content: "▸ "; }
+  details.adv[open] > summary::before { content: "▾ "; }
+  .mix-toggle { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: start; gap: 9px; cursor: pointer; margin: 8px 0; }
+  .mix-toggle > input { margin-top: 2px; }
+  .mix-toggle > span { min-width: 0; font-size: 13px; line-height: 1.4; color: var(--muted); overflow-wrap: anywhere; }
+  .sampling-row { display: flex; gap: 10px; flex-wrap: wrap; }
+  .sampling-row > label { display: flex; flex-direction: column; gap: 3px; font-size: 11px; color: var(--muted); }
+  .sampling-row input { width: 68px; }
   .sspin { width: 11px; height: 11px; border: 2px solid rgba(127,127,127,.35); border-top-color: var(--accent); border-radius: 50%; display: inline-block; animation: sspin .7s linear infinite; }
   @keyframes sspin { to { transform: rotate(360deg); } }
   /* push-to-talk: a prominent hold-to-talk control that pulses while held */
@@ -836,13 +852,13 @@ const MODEL_PRESETS = {
     synth:  { model: "llama-3.3-70b-versatile", temperature: 0.6 } },
 };
 
-// Show the single-model or router+synth fields as the mixture toggle flips,
-// without a re-render (so typed-but-unsaved values survive).
+// Show the single-model fields or the router+synth fields as the mixture toggle
+// flips, without a re-render (so typed-but-unsaved values survive).
 function toggleMixture(on) {
-  const single = document.getElementById("m-single");
-  const mix = document.getElementById("m-mixslots");
-  if (single) single.style.display = on ? "none" : "block";
-  if (mix) mix.style.display = on ? "block" : "none";
+  const set = (id, show, mode) => { const el = document.getElementById(id); if (el) el.style.display = show ? (mode || "block") : "none"; };
+  set("m-single", !on, "flex");      // single model name (top of card)
+  set("m-single-adv", !on);          // single model's sampling (in Advanced)
+  set("m-mixslots", on);             // router + synth (in Advanced)
 }
 
 // Fill the Models form from a preset (leaves the API-key field untouched).
@@ -861,57 +877,90 @@ function applyModelPreset(name) {
   }
 }
 
-// One model "slot": the model name plus its (optional) sampling knobs. Blank
-// sampling = use the endpoint's own default.
-function modelSlotFields(prefix, slot) {
-  const nv = (x) => (x === undefined || x === null) ? "" : x;
-  const num = (key, label, ph) => `<label class="sub" style="min-width:0;">${label}
-    <input id="m-${prefix}-${key}" type="number" step="0.05" min="0" placeholder="${ph}" value="${nv(slot[key])}" style="width:74px;" /></label>`;
-  return `
-    <div class="form"><label class="sub" style="min-width:70px;">Model</label>
-      <input id="m-${prefix}-model" placeholder="e.g. qwen2.5:7b" value="${esc(slot.model || "")}" /></div>
-    <div class="row" style="gap:10px;flex-wrap:wrap;font-size:12px;">
-      ${num("temperature", "temp", "0.5")}
-      ${num("top_p", "top_p", "default")}
-      ${num("top_k", "top_k", "off")}
-      ${num("repeat_penalty", "repeat", "off")}
-    </div>`;
+// Fill the Deep-model form from a provider preset (leaves the key untouched).
+function applyDeepPreset(name) {
+  const p = MODEL_PRESETS[name];
+  if (!p) return;
+  const set = (id, v) => { const el = document.getElementById(id); if (el && v != null) el.value = v; };
+  set("deep-url", p.base_url);
+  set("deep-model", (p.single && p.single.model) || "");
 }
 
-// The butler's own models — endpoint, single vs. mixture, per-slot sampling —
-// editable at runtime (ADR 0027). Saved config overrides the deployment env.
+// One model's name field (stacked, full-width).
+function modelName(prefix, slot, ph) {
+  return `<div class="field"><label>Model</label>
+    <input id="m-${prefix}-model" placeholder="${ph}" value="${esc((slot && slot.model) || "")}" /></div>`;
+}
+
+// One model's optional sampling knobs (blank = provider default).
+function samplingRow(prefix, slot) {
+  const nv = (x) => (x === undefined || x === null) ? "" : x;
+  const num = (key, label, ph) => `<label>${label}
+    <input id="m-${prefix}-${key}" type="number" step="0.05" min="0" placeholder="${ph}" value="${nv((slot || {})[key])}" /></label>`;
+  return `<div class="sampling-row">
+    ${num("temperature", "temp", "0.5")}${num("top_p", "top_p", "auto")}${num("top_k", "top_k", "off")}${num("repeat_penalty", "repeat", "off")}
+  </div>`;
+}
+
+// The model configuration — two consistent cards (Everyday + Deep). The everyday
+// brain answers day-to-day (local by default); the deep model is a bigger brain
+// you escalate to per question. Mixture + sampling live under "Advanced" so the
+// common case stays clean (ADR 0027; runtime-swappable, no restart).
 function modelsSection() {
   const mc = MODEL_CONFIG || {};
+  const dm = DEEP_MODEL || {};
   const options = Object.entries(MODEL_PRESETS)
     .map(([k, v]) => `<option value="${k}">${esc(v.label)}</option>`).join("");
-  const mixture = !!mc.mixture;
+  const mix = !!mc.mixture;
   return `
-    <h3 style="margin-top:22px;">Models — the butler's own brain</h3>
-    <div class="sub" style="margin:2px 0 8px;">Runs locally by default. Point it anywhere OpenAI-compatible (Ollama, OpenAI, OpenRouter, Groq). Changes apply on your next message — no restart. ${mc.configured ? "" : "Currently using the deployment's configured model."}</div>
-    <div class="card" style="display:flex;flex-direction:column;gap:10px;">
-      <div class="form"><label class="sub" style="min-width:70px;">Preset</label>
-        <select id="m-preset" onchange="applyModelPreset(this.value)">
-          <option value="">Choose a provider…</option>${options}
-        </select></div>
-      <div class="form"><label class="sub" style="min-width:70px;">Endpoint</label>
+    <h3 style="margin-top:22px;">Models</h3>
+    <div class="sub" style="margin:2px 0 12px;">Your <b>everyday</b> brain answers day-to-day — local by default. The optional <b>deep</b> model is a bigger brain you escalate to per question. Both accept any OpenAI-compatible endpoint; changes apply on your next message.</div>
+
+    <div class="card model-card">
+      <div class="model-role">Everyday${mc.configured ? "" : ` · <span class="sub" style="font-weight:400;">using deployment default</span>`}</div>
+      <div class="field"><label>Provider preset</label>
+        <select id="m-preset" onchange="applyModelPreset(this.value)"><option value="">Choose a provider…</option>${options}</select></div>
+      <div class="field"><label>Endpoint</label>
         <input id="m-base" placeholder="http://host.docker.internal:11434/v1" value="${esc(mc.base_url || "")}" /></div>
-      <div class="form"><label class="sub" style="min-width:70px;">API key</label>
-        <input id="m-key" type="password" autocomplete="off" placeholder="${mc.key_set ? "•••••• (unchanged)" : "only for cloud providers; stored securely, never shown"}" /></div>
-      <label class="sub" style="display:flex;align-items:center;gap:8px;cursor:pointer;margin:2px 0;">
-        <input id="m-mix" type="checkbox" ${mixture ? "checked" : ""} onchange="toggleMixture(this.checked)" />
-        Mixture — a router picks skills, a synthesizer writes the reply</label>
-      <div class="sub" style="margin:-4px 0 4px;font-size:12px;">Off = one model does both. The mixture out-routes a single model at less VRAM.</div>
-      <div id="m-single" style="display:${mixture ? "none" : "block"};">
-        <div class="sub" style="margin:4px 0;">Single model</div>
-        ${modelSlotFields("single", mc.single || {})}
+      <div class="field"><label>API key <span style="opacity:.7;">· cloud only</span></label>
+        <input id="m-key" type="password" autocomplete="off" placeholder="${mc.key_set ? "•••••• (unchanged)" : "stored securely, never shown"}" /></div>
+      <div id="m-single" style="display:${mix ? "none" : "flex"};flex-direction:column;gap:12px;">
+        ${modelName("single", mc.single, "e.g. qwen2.5:7b")}
       </div>
-      <div id="m-mixslots" style="display:${mixture ? "block" : "none"};flex-direction:column;gap:8px;">
-        <div class="sub" style="margin:4px 0;">Router — cold, tool-tuned; picks the skill</div>
-        ${modelSlotFields("router", mc.router || {})}
-        <div class="sub" style="margin:8px 0 4px;">Synthesizer — warmer generalist; writes the reply</div>
-        ${modelSlotFields("synth", mc.synth || {})}
-      </div>
-      <div class="row" style="justify-content:flex-end;"><button class="primary" data-act="modelsave">Save models</button></div>
+      <details class="adv" ${mix ? "open" : ""}>
+        <summary>Advanced — mixture &amp; sampling</summary>
+        <label class="mix-toggle">
+          <input id="m-mix" type="checkbox" ${mix ? "checked" : ""} onchange="toggleMixture(this.checked)" />
+          <span>Use a <b>mixture</b>: a cold, tool-tuned <b>router</b> picks the skill and a warmer <b>synthesizer</b> writes the reply — out-routes a single model at less VRAM.</span>
+        </label>
+        <div id="m-single-adv" style="display:${mix ? "none" : "block"};">
+          <div class="sub" style="margin:2px 0 4px;">Sampling (blank = provider default)</div>
+          ${samplingRow("single", mc.single)}
+        </div>
+        <div id="m-mixslots" style="display:${mix ? "block" : "none"};">
+          <div class="sub" style="margin:8px 0 2px;">Router — cold, picks the skill</div>
+          ${modelName("router", mc.router, "e.g. hermes3:8b")}
+          ${samplingRow("router", mc.router)}
+          <div class="sub" style="margin:10px 0 2px;">Synthesizer — warm, writes the reply</div>
+          ${modelName("synth", mc.synth, "e.g. qwen2.5:7b")}
+          ${samplingRow("synth", mc.synth)}
+        </div>
+      </details>
+      <div class="row" style="justify-content:flex-end;"><button class="primary" data-act="modelsave">Save everyday</button></div>
+    </div>
+
+    <div class="card model-card" style="margin-top:14px;">
+      <div class="model-role">Deep <span class="sub" style="font-weight:400;">· a bigger brain for hard questions</span></div>
+      <div class="sub" style="margin:-4px 0 2px;">Optional, opt-in per question. It leaves your device, so it passes the same egress guard.</div>
+      <div class="field"><label>Provider preset</label>
+        <select id="d-preset" onchange="applyDeepPreset(this.value)"><option value="">Choose a provider…</option>${options}</select></div>
+      <div class="field"><label>Endpoint</label>
+        <input id="deep-url" placeholder="https://api.provider.com/v1" value="${esc(dm.url || "")}" /></div>
+      <div class="field"><label>Model</label>
+        <input id="deep-model" placeholder="e.g. gpt-4o, claude-sonnet-5" value="${esc(dm.model || "")}" /></div>
+      <div class="field"><label>API key</label>
+        <input id="deep-key" type="password" autocomplete="off" placeholder="${dm.key_set ? "•••••• (unchanged)" : "stored securely, never shown"}" /></div>
+      <div class="row" style="justify-content:flex-end;"><button class="primary" data-act="deepsave">Save deep</button></div>
     </div>`;
 }
 
@@ -931,15 +980,7 @@ function viewSettings() {
       ${row(SHOW_ACTIVITY, "toggle:activity", "Show Endora's actions", "a note of what it did each turn")}
     </div>
     ${modelsSection()}
-    <h3 style="margin-top:22px;">Deep model — a bigger AI for hard questions</h3>
-    <div class="sub" style="margin:2px 0 8px;">Optional. Everyday stays on your local model; you escalate a question when you want a bigger brain. It leaves your device, so it's opt-in per question and passes the same egress guard.</div>
-    <div class="card" style="display:flex;flex-direction:column;gap:8px;">
-      <div class="form"><label class="sub" style="min-width:70px;">Endpoint</label><input id="deep-url" placeholder="https://api.provider.com/v1" value="${esc(DEEP_MODEL.url || "")}" /></div>
-      <div class="form"><label class="sub" style="min-width:70px;">Model</label><input id="deep-model" placeholder="e.g. gpt-4o, claude-sonnet-5" value="${esc(DEEP_MODEL.model || "")}" /></div>
-      <div class="form"><label class="sub" style="min-width:70px;">API key</label><input id="deep-key" type="password" autocomplete="off" placeholder="${DEEP_MODEL.key_set ? "•••••• (unchanged)" : "stored securely, never shown"}" /></div>
-      <div class="row" style="justify-content:flex-end;"><button class="primary" data-act="deepsave">Save deep model</button></div>
-    </div>
-    <div class="sub" style="margin-top:12px;">How boldly Endora acts on its own is under <a data-act="go:skills" style="color:var(--accent);cursor:pointer">Skills</a>. Private egress (proxy/VPN) is set in deployment config.</div>`;
+    <div class="sub" style="margin-top:14px;">How boldly Endora acts on its own is under <a data-act="go:skills" style="color:var(--accent);cursor:pointer">Skills</a>. Private egress (proxy/VPN) is set in deployment config.</div>`;
 }
 
 // What the butler has learned — visible, correctable, deletable memory.
