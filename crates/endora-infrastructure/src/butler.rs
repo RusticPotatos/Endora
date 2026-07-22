@@ -324,10 +324,12 @@ impl MixtureButler {
         }
     }
 
-    /// The brain for this pass: the synthesizer when there's a tool result to
-    /// relay, the router when the butler is still deciding what to do.
+    /// The brain for this pass: the synthesizer when writing the final answer (a
+    /// tool result to relay, or `synthesize` set for plain prose), the router only
+    /// while still deciding which skill to use. This keeps conversation on the
+    /// generalist — the tool-tuned router flakes on plain chat.
     fn brain(&self, context: &ButlerContext) -> &LlmButler {
-        if context.tool_result.is_some() {
+        if context.tool_result.is_some() || context.synthesize {
             &self.synthesizer
         } else {
             &self.router
