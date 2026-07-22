@@ -19,7 +19,11 @@
 # not port-forward it to the internet. See docs/hosting.md.
 services:
   node:
-    build: .
+    build:
+      context: .
+      args:
+        # Stamped by `make deploy` (git short SHA); shows in /health + the header.
+        ENDORA_BUILD: "${ENDORA_BUILD:-dev}"
     image: endora-node:latest
     container_name: endora-node
     restart: unless-stopped
