@@ -8,6 +8,18 @@ envelope) and builds on [ADR 0019](0019-proactive-self-improving-butler.md) (the
 proactive butler and its learning loop), [ADR 0020](0020-intent-first-understanding-loop.md)
 (understanding), and [ADR 0005](0005-models-propose-policy-authorizes.md).
 
+**Reversibility bands implemented** (the primary axis): `shared/kernel` owns the
+`Reversibility` band (`Observe` / `Reversible` / `OutwardReversible` /
+`Irreversible`, deny-by-default) and its `Decision` (`Act` / `Confirm` / `Block`),
+with the un-undoable mapping to `Block` — refused outright, not merely confirmed.
+The capabilities classifier derives a band from declared metadata and routes it
+through that decision, and the execution path (`RegistryRunner::run`) blocks the
+irreversible band deny-by-default. **Pending**: a per-capability *opener* to widen
+the irreversible band on the person's explicit say-so, capabilities declaring a
+band *natively* (rather than derived from the `reversible`/`reaches_external`
+bools), surfacing the band + decision in the UI/audit trail, and the **nightly
+self-improvement loop** below.
+
 ## Context
 
 The vision is a butler that works **while the person sleeps** and whenever they want
