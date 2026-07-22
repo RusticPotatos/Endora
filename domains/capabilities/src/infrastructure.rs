@@ -724,15 +724,19 @@ impl Capability for WeatherCapability {
             .filter(|s| !s.is_empty())
             .unwrap_or("there");
         let cond = o["condition"].as_str().unwrap_or("");
+        // Emit BOTH units so the model relays a grounded number instead of doing
+        // its own (error-prone) C↔F conversion — whichever unit the person prefers,
+        // the real value is right here.
+        let cf = |c: f64| format!("{c:.0}°C / {:.0}°F", c * 9.0 / 5.0 + 32.0);
         let mut s = format!("Weather for {place}: {cond}");
         if let Some(t) = o["temperature_c"].as_f64() {
-            s.push_str(&format!(", {t:.0}°C"));
+            s.push_str(&format!(", {}", cf(t)));
         }
         if let Some(f) = o["feels_like_c"].as_f64() {
-            s.push_str(&format!(" (feels like {f:.0}°C)"));
+            s.push_str(&format!(" (feels like {})", cf(f)));
         }
         if let (Some(hi), Some(lo)) = (o["high_c"].as_f64(), o["low_c"].as_f64()) {
-            s.push_str(&format!("; high {hi:.0}°C, low {lo:.0}°C today"));
+            s.push_str(&format!("; high {}, low {} today", cf(hi), cf(lo)));
         }
         if let Some(w) = o["warning"].as_str().filter(|w| !w.is_empty()) {
             s.push_str(&format!(". {w}"));
