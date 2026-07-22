@@ -215,6 +215,7 @@ pub fn app(state: AppState) -> Router {
         )
         .route("/v1/models/discover", post(discover_models))
         .route("/v1/model-layer/run", post(run_model_layer_now))
+        .route("/v1/transcribe", post(transcribe))
         .route("/v1/deep-ask", post(deep_ask))
         .route(
             "/v1/preferences",
@@ -259,12 +260,38 @@ async fn index() -> Html<&'static str> {
 }
 
 async fn health() -> Json<serde_json::Value> {
+    let stt = std::env::var("ENDORA_STT_URL")
+        .ok()
+        .is_some_and(|s| !s.trim().is_empty());
     Json(json!({
         "status": "ok",
         "service": endora_application::platform_identity(),
         "version": endora_application::version(),
         "build": endora_application::build_id(),
+        // Whether a speech-to-text server is configured, so the console can use
+        // real transcription for push-to-talk instead of the browser's flaky one.
+        "stt": stt,
     }))
+}
+
+/// Transcribes a recording (raw audio bytes in the body) via the configured
+/// speech-to-text server (`ENDORA_STT_URL`, OpenAI-compatible). The node proxies
+/// it so the STT host is never exposed to the page; 503 when none is configured.
+async fn transcribe(body: axum::body::Bytes) -> Result<Json<serde_json::Value>, ApiError> {
+    let Some(url) = std::env::var("ENDORA_STT_URL")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+    else {
+        return Err(ApiError(AppError::Model {
+            message: "no speech-to-text server configured".to_owned(),
+        }));
+    };
+    let text = blocking(move || {
+        endora_infrastructure::transcribe_audio(url.trim(), &body)
+            .map_err(|e| AppError::Model { message: e })
+    })
+    .await?;
+    Ok(Json(json!({ "text": text })))
 }
 
 #[derive(Deserialize)]
