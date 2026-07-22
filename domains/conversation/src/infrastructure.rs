@@ -20,6 +20,10 @@ pub fn migrate(db: &Db) -> Result<(), RepositoryError> {
                 role  TEXT NOT NULL,
                 body  TEXT NOT NULL,
                 at_ms INTEGER NOT NULL
+            ) STRICT;
+            CREATE TABLE IF NOT EXISTS message_actions (
+                message_id TEXT PRIMARY KEY,
+                actions    TEXT NOT NULL
             ) STRICT;",
         )
         .map_err(backend)?;
@@ -36,6 +40,47 @@ impl ChatStore {
     #[must_use]
     pub fn new(db: Db) -> Self {
         Self { db }
+    }
+
+    /// Stores a butler message's action trail (the steps it took + the sources it
+    /// cited, as a JSON blob) keyed by the message id — so a past reply keeps its
+    /// expandable actions and Sources after a reload, not just live.
+    ///
+    /// # Errors
+    /// [`RepositoryError::Backend`] if the write fails.
+    pub fn save_actions(
+        &self,
+        message_id: &str,
+        actions_json: &str,
+    ) -> Result<(), RepositoryError> {
+        self.db
+            .lock()?
+            .execute(
+                "INSERT OR REPLACE INTO message_actions (message_id, actions) VALUES (?1, ?2)",
+                params![message_id, actions_json],
+            )
+            .map_err(backend)?;
+        Ok(())
+    }
+
+    /// Returns every stored action trail as `(message_id, actions_json)`, for the
+    /// chat history to attach to its messages.
+    ///
+    /// # Errors
+    /// [`RepositoryError::Backend`] if the read fails.
+    pub fn all_actions(&self) -> Result<Vec<(String, String)>, RepositoryError> {
+        let conn = self.db.lock()?;
+        let mut stmt = conn
+            .prepare("SELECT message_id, actions FROM message_actions")
+            .map_err(backend)?;
+        let rows = stmt
+            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
+            .map_err(backend)?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row.map_err(backend)?);
+        }
+        Ok(out)
     }
 }
 
