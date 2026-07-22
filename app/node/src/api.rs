@@ -128,6 +128,8 @@ impl AppState {
 pub fn app(state: AppState) -> Router {
     Router::new()
         .route("/", get(index))
+        .route("/styles.css", get(console_css))
+        .route("/app.js", get(console_js))
         .route("/health", get(health))
         .route("/v1/values", post(create_value).get(list_values))
         .route("/v1/values/{id}", axum::routing::delete(delete_value))
@@ -260,9 +262,31 @@ async fn notify_on_change(
     response
 }
 
-/// Serves the self-contained web console (embedded in the binary; see ADR 0009).
+/// Serves the web console's HTML shell (embedded in the binary; see ADR 0009).
+/// The styles and script are separate files (`/styles.css`, `/app.js`) so the
+/// console is organized by responsibility, not one giant file — still embedded,
+/// still no build step.
 async fn index() -> Html<&'static str> {
     Html(include_str!("web/index.html"))
+}
+
+/// The console's stylesheet (embedded).
+async fn console_css() -> impl axum::response::IntoResponse {
+    (
+        [(axum::http::header::CONTENT_TYPE, "text/css; charset=utf-8")],
+        include_str!("web/styles.css"),
+    )
+}
+
+/// The console's script (embedded).
+async fn console_js() -> impl axum::response::IntoResponse {
+    (
+        [(
+            axum::http::header::CONTENT_TYPE,
+            "application/javascript; charset=utf-8",
+        )],
+        include_str!("web/app.js"),
+    )
 }
 
 async fn health() -> Json<serde_json::Value> {
