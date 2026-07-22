@@ -206,6 +206,12 @@ CREATE TABLE IF NOT EXISTS butler_model_config (
     synth_top_k   INTEGER,
     synth_repeat  REAL
 ) STRICT;
+CREATE TABLE IF NOT EXISTS model_tune_schedule (
+    id       INTEGER PRIMARY KEY CHECK (id = 0),
+    enabled  INTEGER NOT NULL,
+    hour_utc INTEGER NOT NULL,
+    last_ms  INTEGER NOT NULL
+) STRICT;
 CREATE TABLE IF NOT EXISTS events (
     id      INTEGER PRIMARY KEY AUTOINCREMENT,
     at_ms   INTEGER NOT NULL,
@@ -1715,6 +1721,27 @@ mod tests {
         };
         repo.set(&cfg).unwrap();
         assert_eq!(repo.get().unwrap(), Some(cfg));
+    }
+
+    #[test]
+    fn model_tune_schedule_defaults_off_then_round_trips() {
+        use endora_application::{ModelTuneSchedule, ModelTuneScheduleRepository};
+        let store = store();
+        let cfg = cfg_store(&store);
+        let repo: &dyn ModelTuneScheduleRepository = &cfg;
+        // Unset ⇒ off.
+        assert_eq!(repo.get().unwrap(), ModelTuneSchedule::disabled_default());
+        let sched = ModelTuneSchedule {
+            enabled: true,
+            hour_utc: 3,
+            last_ms: 123,
+        };
+        repo.set(&sched).unwrap();
+        assert_eq!(repo.get().unwrap(), sched);
+        // is_due: on, at hour 3 UTC, and >20h since last run (day 1, hour 3).
+        let hour = 3_600_000_i64;
+        assert!(sched.is_due((24 + 3) * hour)); // hour 3, ~27h since last ⇒ due
+        assert!(!sched.is_due((24 + 4) * hour)); // hour 4 ⇒ wrong hour, not due
     }
 
     #[test]
