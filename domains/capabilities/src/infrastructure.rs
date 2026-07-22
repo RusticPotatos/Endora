@@ -981,7 +981,6 @@ fn extract_rss_items(xml: &str, max: usize) -> Vec<(String, String)> {
     out
 }
 
-
 /// Unwraps a `<![CDATA[…]]>` wrapper if present, returning the inner text.
 fn strip_cdata(s: &str) -> String {
     let t = s.trim();

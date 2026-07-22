@@ -214,6 +214,7 @@ pub fn app(state: AppState) -> Router {
             get(get_model_config).post(set_model_config),
         )
         .route("/v1/models/discover", post(discover_models))
+        .route("/v1/model-layer/run", post(run_model_layer_now))
         .route("/v1/deep-ask", post(deep_ask))
         .route(
             "/v1/preferences",
@@ -1970,6 +1971,108 @@ async fn discover_models(
     })
     .await?;
     Ok(Json(json!({ "models": models })))
+}
+
+/// Kicks off the self-improving model layer (ADR 0027) in the background:
+/// discover the models on the local endpoint, score each with the fitness
+/// function, and gate-adopt the best **local** one (auto-adopt local, propose
+/// cloud). Slow (it runs the eval per candidate), so it runs detached and records
+/// its progress + result to the activity log; the response returns immediately.
+async fn run_model_layer_now(
+    State(state): State<AppState>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    use endora_infrastructure::model_layer::{AdoptionOutcome, ModelCandidate, Scorecard};
+
+    let butler = state.butler.clone();
+    let config = state.config.clone();
+    let events = state.events.clone();
+    let clock = state.clock.clone();
+    let model_url = std::env::var("ENDORA_MODEL_URL")
+        .unwrap_or_else(|_| "http://localhost:11434/v1".to_owned());
+
+    tokio::task::spawn_blocking(move || {
+        record_event(
+            events.as_ref(),
+            clock.as_ref(),
+            "Model layer: evaluating available local models",
+        );
+        // Discover local models → single-model local candidates (keyless).
+        let ids = endora_infrastructure::list_models(&model_url, "").unwrap_or_default();
+        let candidates: Vec<ModelCandidate> = ids
+            .into_iter()
+            .map(|id| ModelCandidate {
+                name: id.clone(),
+                config: ButlerModelConfig {
+                    base_url: model_url.clone(),
+                    api_key: String::new(),
+                    mixture: false,
+                    single: ModelSlot {
+                        model: id,
+                        sampling: Sampling::default(),
+                    },
+                    ..ButlerModelConfig::default()
+                },
+            })
+            .collect();
+
+        let mut on_propose = |c: &ModelCandidate, s: &Scorecard, incumbent: usize| {
+            record_event(
+                events.as_ref(),
+                clock.as_ref(),
+                &format!(
+                    "Model layer: a cloud model ({}) scored {}/{} vs {} — proposing (needs your ok)",
+                    c.name,
+                    s.total(),
+                    s.max(),
+                    incumbent
+                ),
+            );
+        };
+
+        match endora_infrastructure::run_model_layer(
+            butler.as_ref(),
+            candidates,
+            config.as_ref(),
+            &mut on_propose,
+        ) {
+            Ok((outcome, scored)) => {
+                for sc in &scored {
+                    record_event(
+                        events.as_ref(),
+                        clock.as_ref(),
+                        &format!(
+                            "Model eval: {} scored {}/{}",
+                            sc.candidate.name,
+                            sc.score.total(),
+                            sc.score.max()
+                        ),
+                    );
+                }
+                let msg = match outcome {
+                    AdoptionOutcome::Adopted { name, score } => {
+                        format!("adopted a better local model: {name} ({score}/15)")
+                    }
+                    AdoptionOutcome::Proposed { name, score } => {
+                        format!("proposes cloud model {name} ({score}/15) — awaiting your ok")
+                    }
+                    AdoptionOutcome::Kept { incumbent } => {
+                        format!("kept the current model (still best at {incumbent}/15)")
+                    }
+                };
+                record_event(
+                    events.as_ref(),
+                    clock.as_ref(),
+                    &format!("Model layer: {msg}"),
+                );
+            }
+            Err(e) => record_event(
+                events.as_ref(),
+                clock.as_ref(),
+                &format!("Model layer run failed: {e}"),
+            ),
+        }
+    });
+    Ok(Json(json!({ "started": true })))
 }
 
 #[derive(Deserialize)]
