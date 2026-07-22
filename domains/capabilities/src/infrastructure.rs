@@ -905,7 +905,11 @@ impl Capability for LocalNewsCapability {
             urlencode(&query)
         );
         let xml = http_get_text(&url, 256 * 1024)?;
-        let headlines = extract_rss_titles(&xml, 6);
+        let items = extract_rss_items(&xml, 6);
+        let headlines: Vec<Value> = items
+            .iter()
+            .map(|(title, link)| json!({ "title": title, "url": link }))
+            .collect();
         Ok(json!({
             "query": query,
             "count": headlines.len(),
@@ -920,26 +924,39 @@ impl Capability for LocalNewsCapability {
 
     fn summarize(&self, o: &Value) -> String {
         let query = o["query"].as_str().unwrap_or("that");
-        let headlines: Vec<&str> = o["headlines"]
+        // A headline is either a plain string (legacy) or `{title, url}`. Include
+        // the source URL when present so the butler can cite it, not guess it.
+        let render = |i: usize, h: &Value| -> Option<String> {
+            if let Some(t) = h.as_str() {
+                return Some(format!("{}. {t}", i + 1));
+            }
+            let title = h["title"].as_str().filter(|s| !s.is_empty())?;
+            match h["url"].as_str().filter(|s| !s.is_empty()) {
+                Some(url) => Some(format!("{}. {title} — {url}", i + 1)),
+                None => Some(format!("{}. {title}", i + 1)),
+            }
+        };
+        let list: Vec<String> = o["headlines"]
             .as_array()
-            .map(|a| a.iter().filter_map(Value::as_str).collect())
+            .map(|a| {
+                a.iter()
+                    .enumerate()
+                    .filter_map(|(i, h)| render(i, h))
+                    .collect()
+            })
             .unwrap_or_default();
-        if headlines.is_empty() {
+        if list.is_empty() {
             return format!("No recent news headlines were found for {query}.");
         }
-        let list = headlines
-            .iter()
-            .enumerate()
-            .map(|(i, h)| format!("{}. {h}", i + 1))
-            .collect::<Vec<_>>()
-            .join("\n");
-        format!("Recent news headlines for {query}:\n{list}")
+        format!("Recent news headlines for {query}:\n{}", list.join("\n"))
     }
 }
 
-/// Extracts up to `max` `<item><title>` headlines from an RSS feed, decoding the
-/// common XML entities. Small and tolerant — good enough for Google News RSS.
-fn extract_rss_titles(xml: &str, max: usize) -> Vec<String> {
+/// Extracts up to `max` `<item>` headlines from an RSS feed as `(title, link)`,
+/// decoding the common XML entities. The link is the article's **source** (kept
+/// so the butler can cite it, not guess). Small and tolerant — good enough for
+/// Google News RSS.
+fn extract_rss_items(xml: &str, max: usize) -> Vec<(String, String)> {
     let mut out = Vec::new();
     let mut rest = xml;
     while let Some(start) = rest.find("<item>") {
@@ -948,11 +965,14 @@ fn extract_rss_titles(xml: &str, max: usize) -> Vec<String> {
             Some(end) => &rest[..end],
             None => rest,
         };
-        if let Some(title) = between(item, "<title>", "</title>") {
-            let title = decode_xml_entities(strip_cdata(&title).trim());
-            if !title.is_empty() {
-                out.push(title);
-            }
+        let title = between(item, "<title>", "</title>")
+            .map(|t| decode_xml_entities(strip_cdata(&t).trim()))
+            .unwrap_or_default();
+        let link = between(item, "<link>", "</link>")
+            .map(|l| decode_xml_entities(strip_cdata(&l).trim()))
+            .unwrap_or_default();
+        if !title.is_empty() {
+            out.push((title, link));
         }
         if out.len() >= max {
             break;
@@ -960,6 +980,7 @@ fn extract_rss_titles(xml: &str, max: usize) -> Vec<String> {
     }
     out
 }
+
 
 /// Unwraps a `<![CDATA[…]]>` wrapper if present, returning the inner text.
 fn strip_cdata(s: &str) -> String {
@@ -1940,17 +1961,19 @@ mod tests {
     }
 
     #[test]
-    fn rss_titles_are_extracted_and_decoded() {
+    fn rss_items_are_extracted_with_titles_and_source_links() {
         let xml = "<rss><channel>\
-            <item><title>Storms hit New York &amp; the region</title><link>a</link></item>\
+            <item><title>Storms hit New York &amp; the region</title><link>https://ex.com/a</link></item>\
             <item><title><![CDATA[City council votes tonight]]></title></item>\
             <item><title>Third &#39;big&#39; story</title></item>\
             </channel></rss>";
-        let titles = extract_rss_titles(xml, 6);
-        assert_eq!(titles.len(), 3);
-        assert_eq!(titles[0], "Storms hit New York & the region");
-        assert_eq!(titles[1], "City council votes tonight");
-        assert_eq!(titles[2], "Third 'big' story");
+        let items = extract_rss_items(xml, 6);
+        assert_eq!(items.len(), 3);
+        assert_eq!(items[0].0, "Storms hit New York & the region");
+        assert_eq!(items[0].1, "https://ex.com/a"); // the source link is kept
+        assert_eq!(items[1].0, "City council votes tonight");
+        assert_eq!(items[1].1, ""); // no link in the feed ⇒ empty, not fabricated
+        assert_eq!(items[2].0, "Third 'big' story");
     }
 
     #[test]
