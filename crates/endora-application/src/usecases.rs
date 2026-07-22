@@ -1096,7 +1096,7 @@ pub fn send_to_butler_streaming(
     // gathering above was silent, so this is the first prose the person sees, and
     // it builds up live. A deterministic honesty reply (`answer_ctx == None`) is
     // emitted at once — the model never gets to stream a guess in that case.
-    let streamed = answer_ctx.is_some();
+    let mut streamed = answer_ctx.is_some();
     if let Some(mut ctx) = answer_ctx {
         // The final answer is prose for the person — route it to the synthesizer
         // (the generalist), not the tool-tuned router, so plain conversation
@@ -1104,7 +1104,19 @@ pub fn send_to_butler_streaming(
         ctx.synthesize = true;
         reply = butler
             .respond_streaming(&history, &prefs, &ctx, on_token)
-            .unwrap_or(reply);
+            .unwrap_or_else(|_| reply.clone());
+        // A weak local model occasionally streams an empty "reply" field. Rather
+        // than dead-end on the fallback, retry once NON-streamed (more reliable)
+        // and emit that — so the person always gets a real answer.
+        if reply.text.trim().is_empty() {
+            if let Ok(retry) = butler.respond(&history, &prefs, &ctx) {
+                if !retry.text.trim().is_empty() {
+                    on_token(retry.text.trim());
+                    reply = retry;
+                    streamed = true;
+                }
+            }
+        }
     }
     // A brain that returns nothing usable still owes the person a reply.
     let reply_text = if reply.text.trim().is_empty() {
