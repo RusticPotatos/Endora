@@ -1296,6 +1296,7 @@ async fn stream_chat(
                         "skill": step.skill,
                         "status": step.status.as_str(),
                         "label": step.label,
+                        "output": step.output,
                     })));
                 };
                 usecases::send_to_butler_streaming(
