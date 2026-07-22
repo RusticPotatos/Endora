@@ -84,6 +84,58 @@ pub struct ButlerModelConfig {
     pub synth: ModelSlot,
 }
 
+/// A schedule for the self-improving model tune (ADR 0027) — off by default.
+/// When on, the heartbeat runs the local-model evaluation + gated adoption once a
+/// day at `hour_utc`; pick an off-hour so the eval doesn't contend with chat on
+/// the GPU.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModelTuneSchedule {
+    /// Whether the nightly tune is on.
+    pub enabled: bool,
+    /// The UTC hour (0–23) to run it.
+    pub hour_utc: u8,
+    /// When it last ran (so it fires once per day).
+    pub last_ms: i64,
+}
+
+impl ModelTuneSchedule {
+    /// Off, defaulting to 4am UTC — a quiet hour.
+    #[must_use]
+    pub const fn disabled_default() -> Self {
+        Self {
+            enabled: false,
+            hour_utc: 4,
+            last_ms: 0,
+        }
+    }
+
+    /// Whether the tune is due: enabled, the current UTC hour matches, and it
+    /// hasn't run in the last ~20h (so it fires once per day).
+    #[must_use]
+    pub fn is_due(&self, now_ms: i64) -> bool {
+        if !self.enabled {
+            return false;
+        }
+        let hour = (now_ms.div_euclid(3_600_000) % 24) as u8;
+        hour == self.hour_utc && (now_ms - self.last_ms) >= 20 * 60 * 60 * 1_000
+    }
+}
+
+/// Persists the single [`ModelTuneSchedule`].
+pub trait ModelTuneScheduleRepository {
+    /// Returns the schedule, defaulting to off when unset.
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if the backend fails.
+    fn get(&self) -> Result<ModelTuneSchedule, RepositoryError>;
+
+    /// Stores the schedule.
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if the backend fails.
+    fn set(&self, schedule: &ModelTuneSchedule) -> Result<(), RepositoryError>;
+}
+
 /// Persists the single [`ButlerModelConfig`].
 pub trait ButlerModelConfigRepository {
     /// Returns the configured butler models, or `None` if unset (use the

@@ -248,6 +248,7 @@ let BRIEF_SCHED = { enabled: false, hour_utc: 12 }; // daily-brief schedule
 let DEEP_MODEL = { configured: false, key_set: false, url: "", model: "" }; // optional bigger AI
 let MODEL_CONFIG = { configured: false, key_set: false, base_url: "", mixture: false,
   single: {}, router: {}, synth: {} }; // the butler's own models, editable at runtime (ADR 0027)
+let TUNE_SCHED = { enabled: false, hour_utc: 4 }; // nightly self-improving model tune (ADR 0027)
 let UNDERSTANDING = [];        // Endora's beliefs about the person (the home surface)
 let LAST_ACTIVITY = [];        // what Endora did behind the scenes on the last turn
 let LAST_ACTIVITY_MSG = null;  // the butler message id that activity belongs to
@@ -333,6 +334,7 @@ async function reload() {
   try { BRIEF_SCHED = await api("GET", "/v1/brief/schedule"); } catch (_) {}
   try { DEEP_MODEL = await api("GET", "/v1/deep-model"); } catch (_) {}
   try { MODEL_CONFIG = await api("GET", "/v1/model-config"); } catch (_) {}
+  try { TUNE_SCHED = await api("GET", "/v1/model-tune/schedule"); } catch (_) {}
   DB = db;
   // Attach each butler reply's persisted action trail (steps + sources) from the
   // chat endpoint, so past answers keep their expandable actions after a reload.
@@ -1058,10 +1060,19 @@ function modelsSection() {
     </div>
 
     <h3 style="margin-top:22px;">Auto-tune (experimental)</h3>
-    <div class="sub" style="margin:2px 0 8px;">Scores every model on your local endpoint against the same fitness battery the eval uses, and adopts the best one on its own (ADR 0027). Runs in the background — watch <a data-act="go:audit" style="color:var(--accent);cursor:pointer">Activity</a> for the scores and result. Takes a few minutes and competes with the GPU, so run it when you're not chatting.</div>
-    <div class="card"><div class="row" style="justify-content:flex-end;">
-      <button class="primary" data-act="modeltune">Evaluate &amp; tune</button>
-    </div></div>`;
+    <div class="sub" style="margin:2px 0 10px;">Scores every model on your local endpoint against the same fitness battery the eval uses, and adopts the best <b>local</b> one on its own (a cloud winner is only proposed — ADR 0027). Watch <a data-act="go:audit" style="color:var(--accent);cursor:pointer">Activity</a> for the scores and result. It takes a few minutes and competes for the GPU.</div>
+    <div class="card model-card">
+      <label class="mix-toggle">
+        <input id="tune-nightly" type="checkbox" ${TUNE_SCHED.enabled ? "checked" : ""} />
+        <span>Run it <b>automatically overnight</b> and adopt the best local model on its own.</span>
+      </label>
+      <div class="field"><label>Hour to run (UTC)</label>
+        <select id="tune-hour">${Array.from({ length: 24 }, (_, h) => `<option value="${h}" ${h === (TUNE_SCHED.hour_utc ?? 4) ? "selected" : ""}>${String(h).padStart(2, "0")}:00 UTC</option>`).join("")}</select></div>
+      <div class="row" style="justify-content:space-between;align-items:center;">
+        <button class="ghost" data-act="modeltune">Run now</button>
+        <button class="primary" data-act="tunesave">Save schedule</button>
+      </div>
+    </div>`;
 }
 
 // One home for app settings — so they aren't scattered across pages.
@@ -1672,6 +1683,14 @@ async function dispatch(act) {
       try { await api("POST", "/v1/model-layer/run", {}); flash("Evaluating your local models — watch Activity for scores and the result.", "ok"); }
       catch (e) { flash("Couldn't start the tune: " + e.message, "err"); }
       return;
+    }
+    // Save the nightly auto-tune schedule.
+    if (verb === "tunesave") {
+      const enabled = !!(document.getElementById("tune-nightly") || {}).checked;
+      const hour_utc = Number((document.getElementById("tune-hour") || {}).value || 4);
+      try { await api("POST", "/v1/model-tune/schedule", { enabled, hour_utc }); flash(enabled ? "Nightly auto-tune on." : "Nightly auto-tune off.", "ok"); }
+      catch (e) { flash("Couldn't save the schedule: " + e.message, "err"); }
+      return reload();
     }
     // Save the butler models. A blank key keeps the stored one; blank sampling
     // fields mean "use the endpoint default". Applies on the next message.
