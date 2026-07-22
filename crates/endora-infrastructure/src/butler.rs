@@ -604,6 +604,60 @@ pub fn ask_deep_model(
     }
 }
 
+/// Transcribes recorded audio via an OpenAI-compatible speech-to-text endpoint
+/// (`POST {base}/audio/transcriptions`, e.g. a local Whisper server). The node
+/// proxies the browser's recording here so the private STT host is never exposed
+/// to the page. Builds the multipart body by hand (audio + `model=whisper-1`).
+///
+/// # Errors
+/// A message if the endpoint is unreachable or returns an error/empty text.
+pub fn transcribe_audio(base_url: &str, audio: &[u8]) -> Result<String, String> {
+    let boundary = "----endoraSTT7f3a9c2b";
+    let mut body: Vec<u8> = Vec::with_capacity(audio.len() + 256);
+    body.extend_from_slice(
+        format!(
+            "--{boundary}\r\nContent-Disposition: form-data; name=\"model\"\r\n\r\nwhisper-1\r\n"
+        )
+        .as_bytes(),
+    );
+    body.extend_from_slice(
+        format!(
+            "--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; \
+             filename=\"audio.webm\"\r\nContent-Type: audio/webm\r\n\r\n"
+        )
+        .as_bytes(),
+    );
+    body.extend_from_slice(audio);
+    body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
+
+    let url = format!("{}/audio/transcriptions", base_url.trim_end_matches('/'));
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .timeout_global(Some(std::time::Duration::from_secs(60)))
+        .build()
+        .into();
+    let mut response = agent
+        .post(&url)
+        .header(
+            "Content-Type",
+            &format!("multipart/form-data; boundary={boundary}"),
+        )
+        .send(body.as_slice())
+        .map_err(|e| e.to_string())?;
+    if response.status().as_u16() >= 300 {
+        return Err(format!(
+            "transcription returned status {}",
+            response.status()
+        ));
+    }
+    let json: Value = response.body_mut().read_json().map_err(|e| e.to_string())?;
+    let text = json["text"].as_str().unwrap_or("").trim().to_owned();
+    if text.is_empty() {
+        Err("the transcription came back empty".to_owned())
+    } else {
+        Ok(text)
+    }
+}
+
 /// Lists the model ids an OpenAI-compatible endpoint offers (`GET {base}/models`)
 /// — so the console can let the person pick a model after entering the endpoint +
 /// key, instead of typing it. `api_key` is sent as a bearer when non-empty
