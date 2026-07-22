@@ -213,6 +213,7 @@ pub fn app(state: AppState) -> Router {
             "/v1/model-config",
             get(get_model_config).post(set_model_config),
         )
+        .route("/v1/models/discover", post(discover_models))
         .route("/v1/deep-ask", post(deep_ask))
         .route(
             "/v1/preferences",
@@ -257,7 +258,12 @@ async fn index() -> Html<&'static str> {
 }
 
 async fn health() -> Json<serde_json::Value> {
-    Json(json!({ "status": "ok", "service": endora_application::platform_identity() }))
+    Json(json!({
+        "status": "ok",
+        "service": endora_application::platform_identity(),
+        "version": endora_application::version(),
+        "build": endora_application::build_id(),
+    }))
 }
 
 #[derive(Deserialize)]
@@ -1919,6 +1925,53 @@ async fn set_model_config(
     .await?;
     let _ = state.changes.send(());
     Ok(Json(json!({ "ok": true })))
+}
+
+#[derive(Deserialize)]
+struct DiscoverModelsRequest {
+    #[serde(default)]
+    base_url: String,
+    /// The key to use — falls back to the stored key for `role` when blank, so the
+    /// person can discover with the already-saved key without re-entering it.
+    #[serde(default)]
+    api_key: Option<String>,
+    /// Which stored key to fall back to: `deep` or `everyday` (default).
+    #[serde(default)]
+    role: Option<String>,
+}
+
+/// Lists the models an OpenAI-compatible endpoint offers, so the console can
+/// populate a picker after the person enters the endpoint + key. Uses the key in
+/// the request, or the stored key for the role when the field is left blank.
+async fn discover_models(
+    State(state): State<AppState>,
+    Json(req): Json<DiscoverModelsRequest>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let config = state.config.clone();
+    let base = req.base_url.trim().to_owned();
+    let models = blocking(move || {
+        if base.is_empty() {
+            return Err(AppError::Model {
+                message: "enter the endpoint first".to_owned(),
+            });
+        }
+        let key = match req.api_key {
+            Some(k) if !k.trim().is_empty() => k.trim().to_owned(),
+            _ if req.role.as_deref() == Some("deep") => {
+                DeepModelRepository::get(config.as_ref())
+                    .map_err(AppError::Repository)?
+                    .map(|m| m.api_key)
+                    .unwrap_or_default()
+            }
+            _ => ButlerModelConfigRepository::get(config.as_ref())
+                .map_err(AppError::Repository)?
+                .map(|c| c.api_key)
+                .unwrap_or_default(),
+        };
+        endora_infrastructure::list_models(&base, &key).map_err(|e| AppError::Model { message: e })
+    })
+    .await?;
+    Ok(Json(json!({ "models": models })))
 }
 
 #[derive(Deserialize)]
