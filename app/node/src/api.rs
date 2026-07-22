@@ -1680,8 +1680,7 @@ fn capability_json(
         "description": info.description,
         "category": info.category,
         "reaches_external": info.reaches_external,
-        "reversible": info.reversible,
-        "autonomy": info.autonomy.name(),
+        "reversibility": info.reversibility.name(),
         // `configured` = code ready + settings filled; `enabled` = the person's on/off
         // switch; a skill is usable only when both hold (ADR 0021).
         "configured": info.configured && settings_complete,
