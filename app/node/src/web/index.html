@@ -98,7 +98,9 @@
   .pill.active { color: var(--accent); border-color: var(--accent); }
   .pill.archived { color: var(--muted); border-color: var(--line); }
   input, textarea, select {
-    font: inherit; color: var(--ink); background: var(--bg);
+    /* font-size must be >= 16px or iOS Safari auto-zooms into the field on focus
+       (and we refocus the composer after each send), leaving the page zoomed in. */
+    font: inherit; font-size: 16px; color: var(--ink); background: var(--bg);
     border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; width: 100%;
   }
   textarea { min-height: 54px; resize: vertical; }
@@ -192,6 +194,11 @@
   .nav-list > button > span { flex: 1; }
   .nav-list > button:not(:last-child) { border-bottom: 1px solid var(--line); }
   .nav-list > button:hover { background: rgba(127,127,127,.06); }
+  /* Sources: the real links a turn's skills returned, shown under the reply. */
+  .sources { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; max-width: 82%; font-size: 12px; }
+  .sources .src-label { color: var(--muted); font-weight: 600; margin-right: 2px; }
+  .sources a.src-link { color: var(--accent); text-decoration: none; background: rgba(127,127,127,.10); border: 1px solid rgba(127,127,127,.16); border-radius: 999px; padding: 2px 9px; max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .sources a.src-link:hover { text-decoration: underline; }
   .sspin { width: 11px; height: 11px; border: 2px solid rgba(127,127,127,.35); border-top-color: var(--accent); border-radius: 50%; display: inline-block; animation: sspin .7s linear infinite; }
   @keyframes sspin { to { transform: rotate(360deg); } }
   /* push-to-talk: a prominent hold-to-talk control that pulses while held */
@@ -1215,6 +1222,32 @@ function renderSteps(wrap, steps, running) {
     `<div class="step-list">${rows}</div></details>`;
 }
 
+// The http(s) URLs a skill returned — real sources, never guessed. Trailing
+// punctuation is trimmed so a URL at the end of a sentence stays clean.
+function extractUrls(text) {
+  if (!text) return [];
+  return (text.match(/https?:\/\/[^\s"'<>)]+/g) || []).map((u) => u.replace(/[.,;:]+$/, ""));
+}
+
+// Render a "Sources" chip row (deduped) beneath the reply, from the URLs the
+// turn's skills actually returned. Nothing shows when no skill returned a link —
+// so a source list only ever appears when there genuinely was one.
+function renderSources(afterEl, steps) {
+  const seen = new Set();
+  const urls = [];
+  for (const s of steps) for (const u of extractUrls(s.output)) if (!seen.has(u)) { seen.add(u); urls.push(u); }
+  if (!urls.length || !afterEl) return;
+  const host = (u) => { try { return new URL(u).hostname.replace(/^www\./, ""); } catch (_) { return u; } };
+  const links = urls.slice(0, 8)
+    .map((u) => `<a class="src-link" href="${esc(u)}" target="_blank" rel="noopener noreferrer" title="${esc(u)}">${esc(host(u))}</a>`)
+    .join("");
+  const box = document.createElement("div");
+  box.className = "row";
+  box.style.cssText = "justify-content:flex-start; margin:2px 0 10px;";
+  box.innerHTML = `<div class="sources"><span class="src-label">Sources</span>${links}</div>`;
+  afterEl.insertAdjacentElement("afterend", box);
+}
+
 // Send a message to the butler and stream the reply token-by-token (SSE): the
 // person's message shows at once, then the butler's bubble grows live as the
 // model produces prose, and proposals arrive with the final "done" event. On the
@@ -1318,6 +1351,7 @@ async function drainChat() {
           LAST_ACTIVITY = ev.activity || [];
           LAST_ACTIVITY_MSG = ev.reply && ev.reply.id;
           renderSteps(stepsWrap, STEP_LIST, false); // collapse to a summary
+          renderSources(live, STEP_LIST); // real source links beneath the reply
           speak(ev.reply && ev.reply.text);
           finished = true;
         } else if (ev.type === "error") {
