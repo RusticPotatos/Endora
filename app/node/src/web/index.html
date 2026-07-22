@@ -334,6 +334,14 @@ async function reload() {
   try { DEEP_MODEL = await api("GET", "/v1/deep-model"); } catch (_) {}
   try { MODEL_CONFIG = await api("GET", "/v1/model-config"); } catch (_) {}
   DB = db;
+  // Attach each butler reply's persisted action trail (steps + sources) from the
+  // chat endpoint, so past answers keep their expandable actions after a reload.
+  try {
+    const hist = await api("GET", "/v1/chat");
+    const byId = {};
+    for (const m of hist) if (m.actions) byId[m.id] = m.actions;
+    for (const m of (DB.messages || [])) if (byId[m.id]) m.actions = byId[m.id];
+  } catch (_) {}
   ACTIVITY = activity;
   ATTENTION = attention;
   SUGGESTIONS = suggestions;
@@ -762,8 +770,14 @@ function viewChat() {
   const list = DB.messages || [];
   const msgs = list.map((m) => {
     const mine = m.role === "user";
-    return `<div class="row" style="justify-content:${mine ? "flex-end" : "flex-start"}; margin:6px 0;">
+    const bubble = `<div class="row" style="justify-content:${mine ? "flex-end" : "flex-start"}; margin:6px 0;">
       <div class="bubble ${mine ? "me" : "butler"}">${esc(m.text)}</div></div>`;
+    // A butler reply carries its persisted action trail + sources (if any), so
+    // you can expand a PAST answer to see what it did and where it came from.
+    if (!mine && m.actions) {
+      return bubble + stepsHtml(m.actions.steps) + sourcesHtml(m.actions.sources);
+    }
+    return bubble;
   }).join("");
   // Derived from persisted state, so it survives a reload: if the newest message
   // is yours, the butler still owes a reply — show the thinking indicator. (The
@@ -1276,6 +1290,27 @@ function renderSources(afterEl, steps) {
   box.style.cssText = "justify-content:flex-start; margin:2px 0 10px;";
   box.innerHTML = `<div class="sources"><span class="src-label">Sources</span>${links}</div>`;
   afterEl.insertAdjacentElement("afterend", box);
+}
+
+// HTML-string versions for rendering a PAST message's persisted actions in the
+// chat history (collapsed; click to expand). Same look as the live panel.
+function stepsHtml(steps) {
+  if (!steps || !steps.length) return "";
+  const rows = steps.map((s) => {
+    const ic = STEP_ICON[s.status] || "";
+    if (s.output) {
+      return `<details class="step-item"><summary class="step-row">${ic}<span>${esc(s.label)}</span><span class="step-more">details</span></summary><pre class="step-out">${esc(s.output)}</pre></details>`;
+    }
+    return `<div class="step-row">${ic}<span>${esc(s.label)}</span></div>`;
+  }).join("");
+  const n = steps.length;
+  return `<div class="row" style="justify-content:flex-start;margin:2px 0;"><details class="steps"><summary>${icon("sparkle", 13)} ${n} action${n > 1 ? "s" : ""}</summary><div class="step-list">${rows}</div></details></div>`;
+}
+function sourcesHtml(urls) {
+  if (!urls || !urls.length) return "";
+  const host = (u) => { try { return new URL(u).hostname.replace(/^www\./, ""); } catch (_) { return u; } };
+  const links = urls.slice(0, 8).map((u) => `<a class="src-link" href="${esc(u)}" target="_blank" rel="noopener noreferrer" title="${esc(u)}">${esc(host(u))}</a>`).join("");
+  return `<div class="row" style="justify-content:flex-start;margin:2px 0 10px;"><div class="sources"><span class="src-label">Sources</span>${links}</div></div>`;
 }
 
 // Send a message to the butler and stream the reply token-by-token (SSE): the

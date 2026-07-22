@@ -112,6 +112,10 @@ CREATE TABLE IF NOT EXISTS messages (
     body  TEXT NOT NULL,
     at_ms INTEGER NOT NULL
 ) STRICT;
+CREATE TABLE IF NOT EXISTS message_actions (
+    message_id TEXT PRIMARY KEY,
+    actions    TEXT NOT NULL
+) STRICT;
 
 CREATE INDEX IF NOT EXISTS idx_messages_at ON messages(at_ms);
 
