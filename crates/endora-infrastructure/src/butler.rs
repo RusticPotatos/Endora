@@ -604,6 +604,41 @@ pub fn ask_deep_model(
     }
 }
 
+/// Lists the model ids an OpenAI-compatible endpoint offers (`GET {base}/models`)
+/// — so the console can let the person pick a model after entering the endpoint +
+/// key, instead of typing it. `api_key` is sent as a bearer when non-empty
+/// (needed for cloud providers; keyless for local runtimes like Ollama).
+///
+/// # Errors
+/// A message if the endpoint is unreachable or returns an error/unexpected shape.
+pub fn list_models(base_url: &str, api_key: &str) -> Result<Vec<String>, String> {
+    let url = format!("{}/models", base_url.trim_end_matches('/'));
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .timeout_global(Some(std::time::Duration::from_secs(20)))
+        .build()
+        .into();
+    let mut req = agent.get(&url);
+    if !api_key.is_empty() {
+        req = req.header("Authorization", &format!("Bearer {api_key}"));
+    }
+    let mut response = req.call().map_err(|e| e.to_string())?;
+    if response.status().as_u16() >= 300 {
+        return Err(format!("endpoint returned status {}", response.status()));
+    }
+    let json: Value = response.body_mut().read_json().map_err(|e| e.to_string())?;
+    let mut ids: Vec<String> = json["data"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .filter_map(|m| m["id"].as_str().map(str::to_owned))
+                .collect()
+        })
+        .unwrap_or_default();
+    ids.sort();
+    ids.dedup();
+    Ok(ids)
+}
+
 /// Builds the OpenAI-compatible chat request from the conversation and the
 /// preferences already learned (so the butler need not re-ask). Pure, so it is
 /// unit-tested.

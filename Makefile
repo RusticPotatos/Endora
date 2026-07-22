@@ -78,7 +78,9 @@ deploy: ## Build + start the node via Compose (DOCKER_CONTEXT=nas to target the 
 	# Builds on the target host and starts it detached; data persists in the
 	# named volume. Set DOCKER_CONTEXT to deploy to a remote host over that
 	# context. The 0.x API is unauthenticated — keep it on a trusted network.
-	$(COMPOSE) up -d --build
+	# ENDORA_BUILD stamps the deploy's git short SHA into the image, so /health
+	# and the console header show which build is live.
+	ENDORA_BUILD="$$(git rev-parse --short HEAD 2>/dev/null || echo dev)" $(COMPOSE) up -d --build
 
 .PHONY: deploy-logs
 deploy-logs: ## Follow the deployed node's logs (respects DOCKER_CONTEXT)

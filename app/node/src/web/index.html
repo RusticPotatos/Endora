@@ -892,10 +892,29 @@ function applyDeepPreset(name) {
   set("deep-model", (p.single && p.single.model) || "");
 }
 
-// One model's name field (stacked, full-width).
+// One model's name field (stacked, full-width). Backed by the shared "m-models"
+// datalist, so a Discover populates a picker for every everyday slot at once.
 function modelName(prefix, slot, ph) {
   return `<div class="field"><label>Model</label>
-    <input id="m-${prefix}-model" placeholder="${ph}" value="${esc((slot && slot.model) || "")}" /></div>`;
+    <input id="m-${prefix}-model" list="m-models" placeholder="${ph}" value="${esc((slot && slot.model) || "")}" /></div>`;
+}
+
+// Ask the endpoint for its model list and fill the matching datalist. Uses the
+// key typed in the form, or the stored key for the role when that's blank.
+async function discoverModels(role) {
+  const isDeep = role === "deep";
+  const base = ((document.getElementById(isDeep ? "deep-url" : "m-base") || {}).value || "").trim();
+  const key = ((document.getElementById(isDeep ? "deep-key" : "m-key") || {}).value || "").trim();
+  if (!base) { flash("Enter the endpoint first.", "err"); return; }
+  const body = { base_url: base, role };
+  if (key) body.api_key = key;
+  try {
+    const r = await api("POST", "/v1/models/discover", body);
+    const models = r.models || [];
+    const list = document.getElementById(isDeep ? "deep-models" : "m-models");
+    if (list) list.innerHTML = models.map((m) => `<option value="${esc(m)}"></option>`).join("");
+    flash(models.length ? `Found ${models.length} models — tap the Model field to pick.` : "No models returned.", models.length ? "ok" : "err");
+  } catch (e) { flash("Couldn't list models: " + e.message, "err"); }
 }
 
 // One model's optional sampling knobs (blank = provider default).
@@ -930,6 +949,8 @@ function modelsSection() {
         <input id="m-base" placeholder="http://host.docker.internal:11434/v1" value="${esc(mc.base_url || "")}" /></div>
       <div class="field"><label>API key <span style="opacity:.7;">· cloud only</span></label>
         <input id="m-key" type="password" autocomplete="off" placeholder="${mc.key_set ? "•••••• (unchanged)" : "stored securely, never shown"}" /></div>
+      <div><button class="ghost" data-act="discover:everyday" style="font-size:13px;">${icon("sparkle", 14)} Discover models</button></div>
+      <datalist id="m-models"></datalist>
       <div id="m-single" style="display:${mix ? "none" : "flex"};flex-direction:column;gap:12px;">
         ${modelName("single", mc.single, "e.g. qwen2.5:7b")}
       </div>
@@ -962,10 +983,12 @@ function modelsSection() {
         <select id="d-preset" onchange="applyDeepPreset(this.value)"><option value="">Choose a provider…</option>${options}</select></div>
       <div class="field"><label>Endpoint</label>
         <input id="deep-url" placeholder="https://api.provider.com/v1" value="${esc(dm.url || "")}" /></div>
-      <div class="field"><label>Model</label>
-        <input id="deep-model" placeholder="e.g. gpt-4o, claude-sonnet-5" value="${esc(dm.model || "")}" /></div>
       <div class="field"><label>API key</label>
         <input id="deep-key" type="password" autocomplete="off" placeholder="${dm.key_set ? "•••••• (unchanged)" : "stored securely, never shown"}" /></div>
+      <div><button class="ghost" data-act="discover:deep" style="font-size:13px;">${icon("sparkle", 14)} Discover models</button></div>
+      <datalist id="deep-models"></datalist>
+      <div class="field"><label>Model</label>
+        <input id="deep-model" list="deep-models" placeholder="e.g. gpt-4o, claude-sonnet-5" value="${esc(dm.model || "")}" /></div>
       <div class="row" style="justify-content:flex-end;"><button class="primary" data-act="deepsave">Save deep</button></div>
     </div>`;
 }
@@ -1498,6 +1521,8 @@ async function dispatch(act) {
       catch (e) { flash("Couldn't save settings: " + e.message, "err"); }
       return reload();
     }
+    // Discover the models an endpoint offers, into its picker.
+    if (verb === "discover") { await discoverModels(noun); return; }
     // Save the butler models. A blank key keeps the stored one; blank sampling
     // fields mean "use the endpoint default". Applies on the next message.
     if (verb === "modelsave") {
@@ -1719,7 +1744,8 @@ document.body.addEventListener("change", (ev) => {
 
 // Build the header: a single menu button, and the menu it opens. Everything
 // beyond the butler chat lives in here, so the main surface stays clean.
-function setupHeader(service) {
+function setupHeader(health) {
+  const service = (health && health.service) || "";
   const menuBtn = document.getElementById("menu-btn");
   if (menuBtn) menuBtn.innerHTML = icon("menu");
   const item = (act, name, label, extra = "", cls = "") =>
@@ -1736,11 +1762,17 @@ function setupHeader(service) {
       `<div class="divider"></div>` +
       item("purge", "purge", "Delete everything", "", "danger");
   }
-  // Brand: keep "Endora" and, if the health string carries a version, a pill.
-  const ver = (service || "").match(/\b\d+\.\d+\.\d+\b/);
+  // Brand: "Endora" + a version pill. The pill also carries the build id (the
+  // deploy's git SHA) so a refresh visibly changes when a new build is live —
+  // "v0.11.0 · a1b2c3d". Tap the pill to copy the exact build string.
+  const ver = (service.match(/\b\d+\.\d+\.\d+\b/) || [])[0] || (health && health.version);
+  const build = health && health.build && health.build !== "dev" ? health.build : "";
   const brand = document.getElementById("brand");
   const label = brand && brand.querySelector("span:last-child");
-  if (label) label.innerHTML = `Endora${ver ? ` <span class="pill" style="font-weight:500">v${ver[0]}</span>` : ""}`;
+  if (label && ver) {
+    const pill = `v${ver}${build ? ` · ${build}` : ""}`;
+    label.innerHTML = `Endora <span class="pill" style="font-weight:500" title="build ${build || "dev"}">${esc(pill)}</span>`;
+  }
 }
 
 function closeMenu() {
@@ -1752,7 +1784,7 @@ function closeMenu() {
 (async function () {
   try {
     const health = await api("GET", "/health");
-    setupHeader(health.service);
+    setupHeader(health);
     await reload();
     subscribeToActivity();
   } catch (e) {
