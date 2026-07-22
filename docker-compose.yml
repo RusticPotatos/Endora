@@ -19,7 +19,11 @@
 # not port-forward it to the internet. See docs/hosting.md.
 services:
   node:
-    build: .
+    build:
+      context: .
+      args:
+        # Stamped by `make deploy` (git short SHA); shows in /health + the header.
+        ENDORA_BUILD: "${ENDORA_BUILD:-dev}"
     image: endora-node:latest
     container_name: endora-node
     restart: unless-stopped
@@ -36,6 +40,12 @@ services:
       - "host.docker.internal:host-gateway"
     environment:
       ENDORA_MODEL_URL: "http://host.docker.internal:11434/v1"
+      # Optional speech-to-text server (OpenAI-compatible /v1/audio/transcriptions,
+      # e.g. a local Whisper). When set, the console's push-to-talk records audio
+      # and transcribes it here instead of using the browser's flaky Web Speech
+      # API. The node proxies it, so the STT host is never exposed to the page.
+      # Unset to fall back to the browser. host.docker.internal → the host gateway.
+      ENDORA_STT_URL: "http://host.docker.internal:8001/v1"
       # A capable instruction model — strong at following directions and emitting
       # clean JSON, which the butler relies on (skill selection, no fabrication,
       # relaying results). Used for the drafting endpoint and as the single-model
