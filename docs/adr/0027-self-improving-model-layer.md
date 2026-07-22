@@ -2,7 +2,17 @@
 
 ## Status
 
-Proposed (2026).
+Accepted (2026). **Core implemented**: the fitness function and the deterministic
+adoption policy ship in `crates/endora-infrastructure/src/model_layer.rs`
+(`evaluate` → `Scorecard`, `decide_adoption`, `run_model_layer`), over the
+runtime-swappable model config (`ButlerModelConfig`, ADR-linked). It is
+**runnable end-to-end**, on demand: `POST /v1/model-layer/run` (a console
+"Evaluate & tune" button) discovers the local endpoint's models, scores each, and
+gate-adopts the best local one in the background, logging scores + the decision to
+activity. **Pending**: automating it — a `ModelDiscoverySchedule` driving it from
+the heartbeat on a cadence / off-hours (so it doesn't contend with chat on the
+GPU), and widening discovery beyond the local endpoint to Hugging Face /
+leaderboards.
 
 ## Context
 
@@ -12,9 +22,10 @@ consumer hardware (the reference target is an RTX A2000, 12 GB) the choice of
 model is the single biggest lever on how *agentic* the butler can be. Two facts
 make that choice a moving target:
 
-1. **The discriminating axis is measurable.** An agentic eval
-   (`crates/endora-infrastructure/tests/agentic_eval.rs`) scores a model on skill
-   selection, no-fabrication, relay accuracy, grounding, and brief-intent. Early
+1. **The discriminating axis is measurable.** An agentic eval — the fitness
+   function `endora_infrastructure::model_layer::evaluate` (run for a human by
+   `tests/agentic_eval.rs`) — scores a model on skill selection, no-fabrication,
+   relay accuracy, grounding, brief-intent, and the L2 "Jarvis" behaviours. Early
    runs show the safety axes (no-fabrication, relay) hold at every size — the
    deterministic guardrails work — while **skill selection / routing** is what
    scales with capability. That is exactly the axis a *function-calling
@@ -60,14 +71,19 @@ This composes the existing bounded contexts, not new architecture:
 - **scheduling** — the `ModelDiscoverySchedule` fires the loop from the heartbeat.
 - **direction** — each discovery is an experiment; the eval is its observation;
   adopting a model is a process change.
-- **policy** — **models propose; policy authorizes** (ADR 0005). Adoption is
-  gated: a human confirms the swap at first. Because a model swap is reversible,
-  it may later move inside the autonomy envelope (auto-adopt within policy), but
-  never before the person grants that autonomy.
+- **policy** — **models propose; deterministic policy authorizes** (ADR 0005).
+  Adoption is split by class (`decide_adoption`): a better **local** (keyless,
+  self-hosted) model is **auto-adopted** — it is reversible, already available, and
+  no data leaves the device, so it fits the "exhaust local before ranking up"
+  ladder and the layer writes its config directly. A better **cloud** (keyed)
+  model — which leaves the device and costs money — is only **proposed** for the
+  person to confirm, never auto-adopted. The policy prefers a winning local over a
+  higher-scoring cloud (adopt the local, don't propose the cloud), and requires a
+  candidate to *strictly* beat the incumbent (a tie keeps the incumbent).
 
-The eval remains a **proxy** for real quality, so adoption keeps a human in the
-loop until confidence is earned, and any adopted model can be rolled back to the
-previously recorded-best in one step.
+The eval remains a **proxy** for real quality, so a cloud swap keeps a human in
+the loop, and any adopted model can be rolled back to the previously recorded-best
+in one step.
 
 ## Consequences
 

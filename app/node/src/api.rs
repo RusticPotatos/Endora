@@ -16,11 +16,14 @@ use axum::middleware::{Next, from_fn_with_state};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post};
+use endora_application::Clock;
 use endora_application::{
     ActivityItem, AppError, AttentionItem, AttentionKind, AutonomyEnvelope,
-    AutonomyEnvelopeRepository, BriefSchedule, Butler, ButlerProposal, CapabilityConfigRepository,
-    CapabilitySettingsRepository, CheckinSchedule, DeepModelRepository, MemorySnapshot, Proposer,
-    RepositoryError, Suggestion, SuggestionStatus, usecases,
+    AutonomyEnvelopeRepository, BriefSchedule, Butler, ButlerModelConfig,
+    ButlerModelConfigRepository, ButlerProposal, CapabilityConfigRepository,
+    CapabilitySettingsRepository, CheckinSchedule, DeepModelRepository, MemorySnapshot, ModelSlot,
+    ModelTuneScheduleRepository, Proposer, RepositoryError, Sampling, Suggestion, SuggestionStatus,
+    usecases,
 };
 use endora_application::{
     Assumption, AssumptionId, AuditRecord, AutonomyLevel, Belief, BeliefId, ChatMessage, Direction,
@@ -72,6 +75,12 @@ pub struct AppState {
     /// The butler's skills (weather, web, …) — declared modules the butler can
     /// reach for, each gated by its autonomy level (ADR 0019).
     pub capabilities: Arc<Vec<Arc<dyn Capability>>>,
+    /// Serializes butler *turns* (a chat reply, a proactive brief/check-in). The
+    /// agentic loop reads history, calls the model several times, then appends —
+    /// running two at once on one local model both thrashes it and lets turns
+    /// cross-talk (one turn answering with another's context). A single lock makes
+    /// every turn atomic, so a heartbeat brief can't interleave with a chat.
+    pub turn_lock: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl AppState {
@@ -110,6 +119,7 @@ impl AppState {
             butler,
             changes,
             capabilities: Arc::new(endora_infrastructure::default_capabilities()),
+            turn_lock: Arc::new(tokio::sync::Mutex::new(())),
         }
     }
 }
@@ -118,6 +128,8 @@ impl AppState {
 pub fn app(state: AppState) -> Router {
     Router::new()
         .route("/", get(index))
+        .route("/styles.css", get(console_css))
+        .route("/app.js", get(console_js))
         .route("/health", get(health))
         .route("/v1/values", post(create_value).get(list_values))
         .route("/v1/values/{id}", axum::routing::delete(delete_value))
@@ -201,6 +213,17 @@ pub fn app(state: AppState) -> Router {
             get(get_brief_schedule).post(set_brief_schedule),
         )
         .route("/v1/deep-model", get(get_deep_model).post(set_deep_model))
+        .route(
+            "/v1/model-config",
+            get(get_model_config).post(set_model_config),
+        )
+        .route("/v1/models/discover", post(discover_models))
+        .route("/v1/model-layer/run", post(run_model_layer_now))
+        .route(
+            "/v1/model-tune/schedule",
+            get(get_tune_schedule).post(set_tune_schedule),
+        )
+        .route("/v1/transcribe", post(transcribe))
         .route("/v1/deep-ask", post(deep_ask))
         .route(
             "/v1/preferences",
@@ -239,13 +262,66 @@ async fn notify_on_change(
     response
 }
 
-/// Serves the self-contained web console (embedded in the binary; see ADR 0009).
+/// Serves the web console's HTML shell (embedded in the binary; see ADR 0009).
+/// The styles and script are separate files (`/styles.css`, `/app.js`) so the
+/// console is organized by responsibility, not one giant file — still embedded,
+/// still no build step.
 async fn index() -> Html<&'static str> {
     Html(include_str!("web/index.html"))
 }
 
+/// The console's stylesheet (embedded).
+async fn console_css() -> impl axum::response::IntoResponse {
+    (
+        [(axum::http::header::CONTENT_TYPE, "text/css; charset=utf-8")],
+        include_str!("web/styles.css"),
+    )
+}
+
+/// The console's script (embedded).
+async fn console_js() -> impl axum::response::IntoResponse {
+    (
+        [(
+            axum::http::header::CONTENT_TYPE,
+            "application/javascript; charset=utf-8",
+        )],
+        include_str!("web/app.js"),
+    )
+}
+
 async fn health() -> Json<serde_json::Value> {
-    Json(json!({ "status": "ok", "service": endora_application::platform_identity() }))
+    let stt = std::env::var("ENDORA_STT_URL")
+        .ok()
+        .is_some_and(|s| !s.trim().is_empty());
+    Json(json!({
+        "status": "ok",
+        "service": endora_application::platform_identity(),
+        "version": endora_application::version(),
+        "build": endora_application::build_id(),
+        // Whether a speech-to-text server is configured, so the console can use
+        // real transcription for push-to-talk instead of the browser's flaky one.
+        "stt": stt,
+    }))
+}
+
+/// Transcribes a recording (raw audio bytes in the body) via the configured
+/// speech-to-text server (`ENDORA_STT_URL`, OpenAI-compatible). The node proxies
+/// it so the STT host is never exposed to the page; 503 when none is configured.
+async fn transcribe(body: axum::body::Bytes) -> Result<Json<serde_json::Value>, ApiError> {
+    let Some(url) = std::env::var("ENDORA_STT_URL")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+    else {
+        return Err(ApiError(AppError::Model {
+            message: "no speech-to-text server configured".to_owned(),
+        }));
+    };
+    let text = blocking(move || {
+        endora_infrastructure::transcribe_audio(url.trim(), &body)
+            .map_err(|e| AppError::Model { message: e })
+    })
+    .await?;
+    Ok(Json(json!({ "text": text })))
 }
 
 #[derive(Deserialize)]
@@ -1130,6 +1206,8 @@ async fn send_chat(
     let clock = state.clock.clone();
     let butler = state.butler.clone();
     let capabilities = state.capabilities.clone();
+    // Serialize this turn against any other butler turn (chat or heartbeat brief).
+    let _turn = state.turn_lock.clone().lock_owned().await;
     let (reply, suggestions, activity) = blocking(move || {
         let runner = build_runner(config.as_ref(), capabilities);
         // Ground the butler in the person's current life before it answers.
@@ -1182,12 +1260,14 @@ async fn brief(State(state): State<AppState>) -> Result<Json<serde_json::Value>,
     let ids = state.ids.clone();
     let clock = state.clock.clone();
     let capabilities = state.capabilities.clone();
+    let butler = state.butler.clone();
     let result = blocking(move || {
         let runner = build_runner(config.as_ref(), capabilities);
         let out = usecases::daily_brief(
             chat.as_ref(),
             understanding.as_ref(),
             &runner,
+            butler.as_ref(),
             ids.as_ref(),
             clock.as_ref(),
         )?;
@@ -1240,64 +1320,105 @@ async fn stream_chat(
 
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Event>();
 
-    tokio::task::spawn_blocking(move || {
-        let runner = build_runner(config.as_ref(), capabilities);
-        let event = |v: serde_json::Value| Event::default().data(v.to_string());
-        let context = match usecases::butler_context(
-            dirs.as_ref(),
-            dirs.as_ref(),
-            dirs.as_ref(),
-            dirs.as_ref(),
-            store.as_ref(),
-            understanding.as_ref(),
-            &runner,
-            clock.as_ref(),
-        ) {
-            Ok(c) => c,
-            Err(e) => {
-                let _ = tx.send(event(json!({ "type": "error", "message": e.to_string() })));
-                return;
-            }
-        };
-        // Scope the token closure so its borrow of `tx` ends before the `done`
-        // send below.
-        let result = {
-            let mut on_token = |chunk: &str| {
-                let _ = tx.send(event(json!({ "type": "token", "text": chunk })));
-            };
-            usecases::send_to_butler_streaming(
-                chat.as_ref(),
-                understanding.as_ref(),
+    // Serialize this turn against any other butler turn (a concurrent chat, or a
+    // heartbeat brief). The guard is held on the async task across the whole
+    // blocking turn — so a second turn waits here until this one finishes.
+    let turn_lock = state.turn_lock.clone();
+    tokio::task::spawn(async move {
+        let _turn = turn_lock.lock_owned().await;
+        tokio::task::spawn_blocking(move || {
+            let runner = build_runner(config.as_ref(), capabilities);
+            let event = |v: serde_json::Value| Event::default().data(v.to_string());
+            let context = match usecases::butler_context(
+                dirs.as_ref(),
+                dirs.as_ref(),
+                dirs.as_ref(),
+                dirs.as_ref(),
                 store.as_ref(),
                 understanding.as_ref(),
                 &runner,
-                butler.as_ref(),
-                ids.as_ref(),
                 clock.as_ref(),
-                &context,
-                &message,
-                &mut on_token,
-            )
-        };
-        match result {
-            Ok((reply, suggestions, activity)) => {
-                // Persist the turn's actions/learnings to the butler's action log.
-                for item in &activity {
-                    record_event(events.as_ref(), clock.as_ref(), item);
+            ) {
+                Ok(c) => c,
+                Err(e) => {
+                    let _ = tx.send(event(json!({ "type": "error", "message": e.to_string() })));
+                    return;
                 }
-                // A successful write nudges the change stream, like other writes.
-                let _ = changes.send(());
-                let _ = tx.send(event(json!({
-                    "type": "done",
-                    "reply": MessageResponse::from(&reply),
-                    "proposals": suggestions.iter().map(suggestion_json).collect::<Vec<_>>(),
-                    "activity": activity,
-                })));
+            };
+            // Collect the turn's steps so they can be PERSISTED with the reply (so a
+            // past answer keeps its expandable actions + Sources after a reload), in
+            // addition to streaming them live.
+            let collected =
+                std::sync::Arc::new(std::sync::Mutex::new(Vec::<serde_json::Value>::new()));
+            let collected_step = collected.clone();
+            // Scope the token closure so its borrow of `tx` ends before the `done`
+            // send below.
+            let result = {
+                let mut on_token = |chunk: &str| {
+                    let _ = tx.send(event(json!({ "type": "token", "text": chunk })));
+                };
+                // Structured action steps (router → skill → result), surfaced live so
+                // the console can show an expandable trail of what the butler is doing,
+                // separate from the reply prose.
+                let mut on_step = |step: usecases::ButlerStep| {
+                    let v = json!({
+                        "skill": step.skill,
+                        "status": step.status.as_str(),
+                        "label": step.label,
+                        "output": step.output,
+                    });
+                    if let Ok(mut g) = collected_step.lock() {
+                        g.push(v.clone());
+                    }
+                    let mut e = v;
+                    e["type"] = json!("step");
+                    let _ = tx.send(event(e));
+                };
+                usecases::send_to_butler_streaming(
+                    chat.as_ref(),
+                    understanding.as_ref(),
+                    store.as_ref(),
+                    understanding.as_ref(),
+                    &runner,
+                    butler.as_ref(),
+                    ids.as_ref(),
+                    clock.as_ref(),
+                    &context,
+                    &message,
+                    &mut on_token,
+                    &mut on_step,
+                )
+            };
+            match result {
+                Ok((reply, suggestions, activity)) => {
+                    // Persist the turn's actions/learnings to the butler's action log.
+                    for item in &activity {
+                        record_event(events.as_ref(), clock.as_ref(), item);
+                    }
+                    // Persist this reply's action trail (steps + real sources) so it
+                    // survives a reload — the client renders it under the message.
+                    let steps = collected.lock().map(|g| g.clone()).unwrap_or_default();
+                    let sources = sources_from_steps(&steps);
+                    let actions = json!({ "steps": steps, "sources": sources });
+                    let _ =
+                        chat.save_actions(&reply.id().value().to_string(), &actions.to_string());
+                    // A successful write nudges the change stream, like other writes.
+                    let _ = changes.send(());
+                    let _ = tx.send(event(json!({
+                        "type": "done",
+                        "reply": MessageResponse::from(&reply),
+                        "proposals": suggestions.iter().map(suggestion_json).collect::<Vec<_>>(),
+                        "activity": activity,
+                        "actions": actions,
+                    })));
+                }
+                Err(e) => {
+                    let _ = tx.send(event(json!({ "type": "error", "message": e.to_string() })));
+                }
             }
-            Err(e) => {
-                let _ = tx.send(event(json!({ "type": "error", "message": e.to_string() })));
-            }
-        }
+        })
+        .await
+        .ok(); // release the turn lock once the blocking turn completes
     });
 
     let stream = unfold(rx, |mut rx| async move {
@@ -1306,13 +1427,60 @@ async fn stream_chat(
     Sse::new(stream).keep_alive(KeepAlive::default())
 }
 
-/// The whole conversation with the butler, oldest first.
+/// Extracts the http(s) URLs a turn's steps returned — the real sources — from
+/// the step outputs, deduped, in order.
+fn sources_from_steps(steps: &[serde_json::Value]) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    for s in steps {
+        let Some(text) = s["output"].as_str() else {
+            continue;
+        };
+        for token in text.split_whitespace() {
+            let Some(idx) = token.find("http") else {
+                continue;
+            };
+            let url = &token[idx..];
+            if url.starts_with("http://") || url.starts_with("https://") {
+                let url = url.trim_end_matches(['.', ',', ';', ':', ')', '"', '\'']);
+                if seen.insert(url.to_owned()) {
+                    out.push(url.to_owned());
+                }
+            }
+        }
+    }
+    out
+}
+
+/// The whole conversation with the butler, oldest first — each butler message
+/// carrying its persisted action trail (steps + sources) when it has one, so the
+/// console can render the expandable actions + Sources for past replies too.
 async fn chat_history(
     State(state): State<AppState>,
-) -> Result<Json<Vec<MessageResponse>>, ApiError> {
+) -> Result<Json<Vec<serde_json::Value>>, ApiError> {
     let chat = state.chat.clone();
-    let messages = blocking(move || usecases::chat_history(chat.as_ref())).await?;
-    Ok(Json(messages.iter().map(MessageResponse::from).collect()))
+    let (messages, actions) = blocking(move || {
+        let msgs = usecases::chat_history(chat.as_ref())?;
+        let acts = chat.all_actions().map_err(AppError::Repository)?;
+        Ok::<_, AppError>((msgs, acts))
+    })
+    .await?;
+    let action_map: std::collections::HashMap<String, serde_json::Value> = actions
+        .into_iter()
+        .filter_map(|(id, json)| serde_json::from_str(&json).ok().map(|v| (id, v)))
+        .collect();
+    let out: Vec<serde_json::Value> = messages
+        .iter()
+        .map(|m| {
+            let r = MessageResponse::from(m);
+            let mut v = serde_json::to_value(&r).unwrap_or_else(|_| json!({}));
+            if let Some(a) = action_map.get(&r.id) {
+                v["actions"] = a.clone();
+            }
+            v
+        })
+        .collect();
+    Ok(Json(out))
 }
 
 #[derive(Deserialize)]
@@ -1761,6 +1929,328 @@ async fn set_deep_model(
     Ok(Json(json!({ "ok": true })))
 }
 
+/// Renders one model slot for the console (sampling params flattened; `null`
+/// means "use the endpoint default").
+fn slot_json(slot: &ModelSlot) -> serde_json::Value {
+    json!({
+        "model": slot.model,
+        "temperature": slot.sampling.temperature,
+        "top_p": slot.sampling.top_p,
+        "top_k": slot.sampling.top_k,
+        "repeat_penalty": slot.sampling.repeat_penalty,
+    })
+}
+
+/// The butler model configuration (ADR 0027), editable from the console. The API
+/// key is NEVER returned — only whether one is set.
+async fn get_model_config(
+    State(state): State<AppState>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let config = state.config.clone();
+    let cfg = blocking(move || {
+        ButlerModelConfigRepository::get(config.as_ref()).map_err(AppError::Repository)
+    })
+    .await?
+    .unwrap_or_default();
+    let configured = !cfg.base_url.is_empty()
+        && if cfg.mixture {
+            !cfg.router.model.is_empty() && !cfg.synth.model.is_empty()
+        } else {
+            !cfg.single.model.is_empty()
+        };
+    Ok(Json(json!({
+        "base_url": cfg.base_url,
+        "mixture": cfg.mixture,
+        "key_set": !cfg.api_key.is_empty(),
+        "configured": configured,
+        "single": slot_json(&cfg.single),
+        "router": slot_json(&cfg.router),
+        "synth": slot_json(&cfg.synth),
+    })))
+}
+
+#[derive(Deserialize, Default)]
+struct SlotRequest {
+    #[serde(default)]
+    model: String,
+    #[serde(default)]
+    temperature: Option<f64>,
+    #[serde(default)]
+    top_p: Option<f64>,
+    #[serde(default)]
+    top_k: Option<u32>,
+    #[serde(default)]
+    repeat_penalty: Option<f64>,
+}
+
+impl SlotRequest {
+    fn into_slot(self) -> ModelSlot {
+        ModelSlot {
+            model: self.model.trim().to_owned(),
+            sampling: Sampling {
+                temperature: self.temperature,
+                top_p: self.top_p,
+                top_k: self.top_k,
+                repeat_penalty: self.repeat_penalty,
+            },
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct ModelConfigRequest {
+    #[serde(default)]
+    base_url: String,
+    #[serde(default)]
+    mixture: bool,
+    #[serde(default)]
+    api_key: Option<String>,
+    #[serde(default)]
+    single: SlotRequest,
+    #[serde(default)]
+    router: SlotRequest,
+    #[serde(default)]
+    synth: SlotRequest,
+}
+
+/// Saves the butler model configuration. A blank/omitted `api_key` keeps any
+/// existing key, so the secret is never round-tripped through the client. The
+/// change takes effect on the next turn — the [`ConfigurableButler`] rereads it.
+async fn set_model_config(
+    State(state): State<AppState>,
+    Json(req): Json<ModelConfigRequest>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let config = state.config.clone();
+    let events = state.events.clone();
+    let clock = state.clock.clone();
+    blocking(move || {
+        let existing = ButlerModelConfigRepository::get(config.as_ref())
+            .map_err(AppError::Repository)?
+            .unwrap_or_default();
+        let api_key = match req.api_key {
+            Some(k) if !k.trim().is_empty() => k.trim().to_owned(),
+            _ => existing.api_key, // keep the stored key when none is supplied
+        };
+        ButlerModelConfigRepository::set(
+            config.as_ref(),
+            &ButlerModelConfig {
+                base_url: req.base_url.trim().to_owned(),
+                api_key,
+                mixture: req.mixture,
+                single: req.single.into_slot(),
+                router: req.router.into_slot(),
+                synth: req.synth.into_slot(),
+            },
+        )
+        .map_err(AppError::Repository)?;
+        record_event(events.as_ref(), clock.as_ref(), "Updated the butler models");
+        Ok::<_, AppError>(())
+    })
+    .await?;
+    let _ = state.changes.send(());
+    Ok(Json(json!({ "ok": true })))
+}
+
+#[derive(Deserialize)]
+struct DiscoverModelsRequest {
+    #[serde(default)]
+    base_url: String,
+    /// The key to use — falls back to the stored key for `role` when blank, so the
+    /// person can discover with the already-saved key without re-entering it.
+    #[serde(default)]
+    api_key: Option<String>,
+    /// Which stored key to fall back to: `deep` or `everyday` (default).
+    #[serde(default)]
+    role: Option<String>,
+}
+
+/// Lists the models an OpenAI-compatible endpoint offers, so the console can
+/// populate a picker after the person enters the endpoint + key. Uses the key in
+/// the request, or the stored key for the role when the field is left blank.
+async fn discover_models(
+    State(state): State<AppState>,
+    Json(req): Json<DiscoverModelsRequest>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let config = state.config.clone();
+    let base = req.base_url.trim().to_owned();
+    let models = blocking(move || {
+        if base.is_empty() {
+            return Err(AppError::Model {
+                message: "enter the endpoint first".to_owned(),
+            });
+        }
+        let key = match req.api_key {
+            Some(k) if !k.trim().is_empty() => k.trim().to_owned(),
+            _ if req.role.as_deref() == Some("deep") => DeepModelRepository::get(config.as_ref())
+                .map_err(AppError::Repository)?
+                .map(|m| m.api_key)
+                .unwrap_or_default(),
+            _ => ButlerModelConfigRepository::get(config.as_ref())
+                .map_err(AppError::Repository)?
+                .map(|c| c.api_key)
+                .unwrap_or_default(),
+        };
+        endora_infrastructure::list_models(&base, &key).map_err(|e| AppError::Model { message: e })
+    })
+    .await?;
+    Ok(Json(json!({ "models": models })))
+}
+
+/// Kicks off the self-improving model layer (ADR 0027) in the background:
+/// discover the models on the local endpoint, score each with the fitness
+/// function, and gate-adopt the best **local** one (auto-adopt local, propose
+/// cloud). Slow (it runs the eval per candidate), so it runs detached and records
+/// its progress + result to the activity log; the response returns immediately.
+/// Runs the model layer synchronously (discover local models → evaluate each →
+/// gated adoption), recording progress + the result to the activity log. Slow
+/// (it runs the eval per candidate). Shared by the manual `/v1/model-layer/run`
+/// and the scheduled nightly tune.
+fn run_model_tune(
+    butler: &(dyn Butler + Send + Sync),
+    config: &endora_capabilities::ConfigStore,
+    events: &endora_platform::EventStore,
+    clock: &SystemClock,
+    model_url: &str,
+) {
+    use endora_infrastructure::model_layer::{AdoptionOutcome, ModelCandidate, Scorecard};
+
+    record_event(
+        events,
+        clock,
+        "Model layer: evaluating available local models",
+    );
+    // Discover local models → single-model local candidates (keyless).
+    let ids = endora_infrastructure::list_models(model_url, "").unwrap_or_default();
+    let candidates: Vec<ModelCandidate> = ids
+        .into_iter()
+        .map(|id| ModelCandidate {
+            name: id.clone(),
+            config: ButlerModelConfig {
+                base_url: model_url.to_owned(),
+                api_key: String::new(),
+                mixture: false,
+                single: ModelSlot {
+                    model: id,
+                    sampling: Sampling::default(),
+                },
+                ..ButlerModelConfig::default()
+            },
+        })
+        .collect();
+
+    let mut on_propose = |c: &ModelCandidate, s: &Scorecard, incumbent: usize| {
+        record_event(
+            events,
+            clock,
+            &format!(
+                "Model layer: a cloud model ({}) scored {}/{} vs {} — proposing (needs your ok)",
+                c.name,
+                s.total(),
+                s.max(),
+                incumbent
+            ),
+        );
+    };
+
+    match endora_infrastructure::run_model_layer(butler, candidates, config, &mut on_propose) {
+        Ok((outcome, scored)) => {
+            for sc in &scored {
+                record_event(
+                    events,
+                    clock,
+                    &format!(
+                        "Model eval: {} scored {}/{}",
+                        sc.candidate.name,
+                        sc.score.total(),
+                        sc.score.max()
+                    ),
+                );
+            }
+            let msg = match outcome {
+                AdoptionOutcome::Adopted { name, score } => {
+                    format!("adopted a better local model: {name} ({score}/15)")
+                }
+                AdoptionOutcome::Proposed { name, score } => {
+                    format!("proposes cloud model {name} ({score}/15) — awaiting your ok")
+                }
+                AdoptionOutcome::Kept { incumbent } => {
+                    format!("kept the current model (still best at {incumbent}/15)")
+                }
+            };
+            record_event(events, clock, &format!("Model layer: {msg}"));
+        }
+        Err(e) => record_event(events, clock, &format!("Model layer run failed: {e}")),
+    }
+}
+
+/// The model endpoint the tune discovers local candidates from.
+fn tune_model_url() -> String {
+    std::env::var("ENDORA_MODEL_URL").unwrap_or_else(|_| "http://localhost:11434/v1".to_owned())
+}
+
+async fn run_model_layer_now(
+    State(state): State<AppState>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let butler = state.butler.clone();
+    let config = state.config.clone();
+    let events = state.events.clone();
+    let clock = state.clock.clone();
+    let model_url = tune_model_url();
+    tokio::task::spawn_blocking(move || {
+        run_model_tune(
+            butler.as_ref(),
+            config.as_ref(),
+            events.as_ref(),
+            clock.as_ref(),
+            &model_url,
+        );
+    });
+    Ok(Json(json!({ "started": true })))
+}
+
+/// The nightly model-tune schedule (ADR 0027) — off by default.
+async fn get_tune_schedule(
+    State(state): State<AppState>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let config = state.config.clone();
+    let s = blocking(move || {
+        ModelTuneScheduleRepository::get(config.as_ref()).map_err(AppError::Repository)
+    })
+    .await?;
+    Ok(Json(
+        json!({ "enabled": s.enabled, "hour_utc": s.hour_utc }),
+    ))
+}
+
+#[derive(Deserialize)]
+struct TuneScheduleRequest {
+    enabled: bool,
+    hour_utc: u8,
+}
+
+async fn set_tune_schedule(
+    State(state): State<AppState>,
+    Json(req): Json<TuneScheduleRequest>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let config = state.config.clone();
+    blocking(move || {
+        let current =
+            ModelTuneScheduleRepository::get(config.as_ref()).map_err(AppError::Repository)?;
+        ModelTuneScheduleRepository::set(
+            config.as_ref(),
+            &endora_application::ModelTuneSchedule {
+                enabled: req.enabled,
+                hour_utc: req.hour_utc.min(23),
+                last_ms: current.last_ms, // keep last-run so toggling doesn't re-fire
+            },
+        )
+        .map_err(AppError::Repository)
+    })
+    .await?;
+    let _ = state.changes.send(());
+    Ok(Json(json!({ "ok": true })))
+}
+
 #[derive(Deserialize)]
 struct DeepAskRequest {
     question: String,
@@ -1935,6 +2425,10 @@ pub fn spawn_heartbeat(state: AppState) {
             let ids = state.ids.clone();
             let clock = state.clock.clone();
             let capabilities = state.capabilities.clone();
+            let butler = state.butler.clone();
+            // Take the turn lock so a proactive brief/check-in never interleaves
+            // with a chat reply; held across the blocking work below.
+            let _turn = state.turn_lock.clone().lock_owned().await;
             let posted = tokio::task::spawn_blocking(move || {
                 let runner = build_runner(config.as_ref(), capabilities);
                 let context = usecases::butler_context(
@@ -1967,6 +2461,7 @@ pub fn spawn_heartbeat(state: AppState) {
                     understanding.as_ref(),
                     schedules.as_ref(),
                     &runner,
+                    butler.as_ref(),
                     ids.as_ref(),
                     clock.as_ref(),
                 )?;
@@ -1981,6 +2476,44 @@ pub fn spawn_heartbeat(state: AppState) {
             .await;
             if let Ok(Ok(true)) = posted {
                 let _ = state.changes.send(());
+            }
+
+            // Nightly self-improving model tune (ADR 0027), if scheduled + due.
+            // Marked fired first (so it can't double-run), then run DETACHED and
+            // without the turn lock — it's long and competes on the GPU, which is
+            // why the schedule points at an off-hour.
+            let due = {
+                let config = state.config.clone();
+                let clock = state.clock.clone();
+                tokio::task::spawn_blocking(move || {
+                    let now = clock.now().unix_millis();
+                    match ModelTuneScheduleRepository::get(config.as_ref()) {
+                        Ok(mut s) if s.is_due(now) => {
+                            s.last_ms = now;
+                            let _ = ModelTuneScheduleRepository::set(config.as_ref(), &s);
+                            true
+                        }
+                        _ => false,
+                    }
+                })
+                .await
+                .unwrap_or(false)
+            };
+            if due {
+                let config = state.config.clone();
+                let events = state.events.clone();
+                let clock = state.clock.clone();
+                let butler = state.butler.clone();
+                let model_url = tune_model_url();
+                tokio::task::spawn_blocking(move || {
+                    run_model_tune(
+                        butler.as_ref(),
+                        config.as_ref(),
+                        events.as_ref(),
+                        clock.as_ref(),
+                        &model_url,
+                    );
+                });
             }
         }
     });

@@ -112,6 +112,10 @@ CREATE TABLE IF NOT EXISTS messages (
     body  TEXT NOT NULL,
     at_ms INTEGER NOT NULL
 ) STRICT;
+CREATE TABLE IF NOT EXISTS message_actions (
+    message_id TEXT PRIMARY KEY,
+    actions    TEXT NOT NULL
+) STRICT;
 
 CREATE INDEX IF NOT EXISTS idx_messages_at ON messages(at_ms);
 
@@ -180,6 +184,33 @@ CREATE TABLE IF NOT EXISTS deep_model (
     url     TEXT NOT NULL,
     model   TEXT NOT NULL,
     api_key TEXT NOT NULL
+) STRICT;
+CREATE TABLE IF NOT EXISTS butler_model_config (
+    id            INTEGER PRIMARY KEY CHECK (id = 0),
+    base_url      TEXT NOT NULL,
+    api_key       TEXT NOT NULL,
+    mixture       INTEGER NOT NULL,
+    single_model  TEXT NOT NULL,
+    single_temp   REAL,
+    single_top_p  REAL,
+    single_top_k  INTEGER,
+    single_repeat REAL,
+    router_model  TEXT NOT NULL,
+    router_temp   REAL,
+    router_top_p  REAL,
+    router_top_k  INTEGER,
+    router_repeat REAL,
+    synth_model   TEXT NOT NULL,
+    synth_temp    REAL,
+    synth_top_p   REAL,
+    synth_top_k   INTEGER,
+    synth_repeat  REAL
+) STRICT;
+CREATE TABLE IF NOT EXISTS model_tune_schedule (
+    id       INTEGER PRIMARY KEY CHECK (id = 0),
+    enabled  INTEGER NOT NULL,
+    hour_utc INTEGER NOT NULL,
+    last_ms  INTEGER NOT NULL
 ) STRICT;
 CREATE TABLE IF NOT EXISTS events (
     id      INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1690,6 +1721,63 @@ mod tests {
         };
         repo.set(&cfg).unwrap();
         assert_eq!(repo.get().unwrap(), Some(cfg));
+    }
+
+    #[test]
+    fn model_tune_schedule_defaults_off_then_round_trips() {
+        use endora_application::{ModelTuneSchedule, ModelTuneScheduleRepository};
+        let store = store();
+        let cfg = cfg_store(&store);
+        let repo: &dyn ModelTuneScheduleRepository = &cfg;
+        // Unset ⇒ off.
+        assert_eq!(repo.get().unwrap(), ModelTuneSchedule::disabled_default());
+        let sched = ModelTuneSchedule {
+            enabled: true,
+            hour_utc: 3,
+            last_ms: 123,
+        };
+        repo.set(&sched).unwrap();
+        assert_eq!(repo.get().unwrap(), sched);
+        // is_due: on, at hour 3 UTC, and >20h since last run (day 1, hour 3).
+        let hour = 3_600_000_i64;
+        assert!(sched.is_due((24 + 3) * hour)); // hour 3, ~27h since last ⇒ due
+        assert!(!sched.is_due((24 + 4) * hour)); // hour 4 ⇒ wrong hour, not due
+    }
+
+    #[test]
+    fn butler_model_config_round_trips() {
+        use endora_application::{
+            ButlerModelConfig, ButlerModelConfigRepository, ModelSlot, Sampling,
+        };
+        let store = store();
+        let cfg_store = cfg_store(&store);
+        let repo: &dyn ButlerModelConfigRepository = &cfg_store;
+        assert!(repo.get().unwrap().is_none());
+        let config = ButlerModelConfig {
+            base_url: "https://openrouter.ai/api/v1".to_owned(),
+            api_key: "secret".to_owned(),
+            mixture: true,
+            single: ModelSlot::default(),
+            router: ModelSlot {
+                model: "anthropic/claude-3.5-haiku".to_owned(),
+                sampling: Sampling {
+                    temperature: Some(0.1),
+                    top_p: None,
+                    top_k: Some(20),
+                    repeat_penalty: None,
+                },
+            },
+            synth: ModelSlot {
+                model: "anthropic/claude-sonnet-5".to_owned(),
+                sampling: Sampling {
+                    temperature: Some(0.6),
+                    ..Sampling::default()
+                },
+            },
+        };
+        repo.set(&config).unwrap();
+        // Every field, including the nullable sampling knobs, round-trips exactly.
+        assert_eq!(repo.get().unwrap(), Some(config));
     }
 
     #[test]

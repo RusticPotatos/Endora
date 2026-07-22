@@ -792,7 +792,7 @@ pub fn send_to_butler(
     context: &ButlerContext,
     text: &str,
 ) -> Result<(ChatMessage, Vec<Suggestion>, Vec<String>), AppError> {
-    // Non-streaming is just streaming with the tokens discarded.
+    // Non-streaming is just streaming with the tokens and steps discarded.
     send_to_butler_streaming(
         chat,
         preferences,
@@ -805,7 +805,53 @@ pub fn send_to_butler(
         context,
         text,
         &mut |_| {},
+        &mut |_| {},
     )
+}
+
+/// Where a [`ButlerStep`] is in its lifecycle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StepStatus {
+    /// The skill is running right now.
+    Running,
+    /// The skill returned a result.
+    Done,
+    /// The skill ran but failed to produce a result.
+    Failed,
+    /// The skill couldn't run — off, not set up, or it needs confirmation.
+    Blocked,
+}
+
+impl StepStatus {
+    /// A stable lowercase tag for the wire/UI.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Running => "running",
+            Self::Done => "done",
+            Self::Failed => "failed",
+            Self::Blocked => "blocked",
+        }
+    }
+}
+
+/// One live step in the butler's agentic loop, surfaced to the UI as it works —
+/// a Claude-Code-style expandable action trail, kept distinct from the reply
+/// prose (which streams separately as tokens). Steps are emitted sequentially:
+/// a skill's [`StepStatus::Running`] is always followed by its terminal
+/// [`Done`](StepStatus::Done)/[`Failed`](StepStatus::Failed); a
+/// [`Blocked`](StepStatus::Blocked) step is terminal on its own.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ButlerStep {
+    /// The capability id this step concerns (e.g. `weather`).
+    pub skill: String,
+    /// Where the step is in its lifecycle.
+    pub status: StepStatus,
+    /// A short, present-tense label ("Checking the weather").
+    pub label: String,
+    /// The skill's raw result on a terminal step, for the UI to reveal on demand
+    /// (what the butler actually got back). `None` while running or when blocked.
+    pub output: Option<String>,
 }
 
 /// Like [`send_to_butler`], but streams the reply's prose to `on_token` as the
@@ -833,6 +879,7 @@ pub fn send_to_butler_streaming(
     context: &ButlerContext,
     text: &str,
     on_token: &mut dyn FnMut(&str),
+    on_step: &mut dyn FnMut(ButlerStep),
 ) -> Result<(ChatMessage, Vec<Suggestion>, Vec<String>), AppError> {
     let user = ChatMessage::new(
         MessageId::new(ids.new_id()),
@@ -858,6 +905,12 @@ pub fn send_to_butler_streaming(
     let mut gathered: Vec<String> = Vec::new();
     let mut model_requested_skill = false;
     let mut reply = ButlerReply::default();
+    // The context the FINAL answer is produced from. `Some` ⇒ stream the answer
+    // token-by-token from the model (grounded by whatever it gathered); `None` ⇒
+    // the reply is a deterministic honesty string (emitted at once, never the
+    // model's guess). The gathering rounds below run non-streamed and silent —
+    // only steps show — so nothing speculative ever reaches the reply bubble.
+    let mut answer_ctx: Option<ButlerContext> = None;
     for round in 0..=MAX_TOOL_ROUNDS {
         let mut ctx = context.clone();
         if !gathered.is_empty() {
@@ -873,24 +926,44 @@ pub fn send_to_butler_streaming(
                 message: e.to_string(),
             })?;
         let Some(used) = reply.capability_use.take() else {
-            break; // the butler has what it needs and is ready to answer
+            answer_ctx = Some(ctx); // ready to answer — stream from this context
+            break;
         };
         model_requested_skill = true;
         if round == MAX_TOOL_ROUNDS {
-            break; // safety bound — answer with whatever was gathered
+            answer_ctx = Some(ctx); // safety bound — answer with what was gathered
+            break;
         }
         let id = used.capability.clone();
         let spec = capabilities.available().into_iter().find(|c| c.id == id);
         if spec.as_ref().is_some_and(|s| s.configured && s.autonomous) {
             // Cleared to run on its own (configured + reversible/read-only). Show the
             // step as it happens, then feed the result back for the next round.
-            on_token(&format!("· {}…\n", progress_label(&id)));
+            let label = progress_label(&id);
+            on_step(ButlerStep {
+                skill: id.clone(),
+                status: StepStatus::Running,
+                label: label.clone(),
+                output: None,
+            });
             match capabilities.run(&id, &used.input_json) {
                 Ok(out) => {
+                    on_step(ButlerStep {
+                        skill: id.clone(),
+                        status: StepStatus::Done,
+                        label,
+                        output: Some(out.clone()),
+                    });
                     activity.push(format!("Used the {id} skill"));
                     gathered.push(format!("- {id}: {out}"));
                 }
                 Err(e) => {
+                    on_step(ButlerStep {
+                        skill: id.clone(),
+                        status: StepStatus::Failed,
+                        label,
+                        output: Some(format!("failed: {e}")),
+                    });
                     activity.push(format!("Tried the {id} skill, but it failed"));
                     gathered.push(format!("- {id}: failed ({e}) — do not invent a result"));
                 }
@@ -908,6 +981,12 @@ pub fn send_to_butler_streaming(
                 }
                 None => format!("- {id}: no such skill — can't do that yet"),
             };
+            on_step(ButlerStep {
+                skill: id.clone(),
+                status: StepStatus::Blocked,
+                label: progress_label(&id),
+                output: None,
+            });
             activity.push(format!(
                 "Couldn't use {id} (off, not set up, or needs confirming)"
             ));
@@ -939,10 +1018,22 @@ pub fn send_to_butler_streaming(
                 })
             };
             if let Some((where_, input_json)) = run_input {
-                on_token(&format!("· {}…\n", progress_label(skill)));
+                let label = progress_label(skill);
+                on_step(ButlerStep {
+                    skill: skill.to_owned(),
+                    status: StepStatus::Running,
+                    label: label.clone(),
+                    output: None,
+                });
                 match capabilities.run(skill, &input_json) {
                     Ok(out) => {
                         // Success: let the model relay the real result in its voice.
+                        on_step(ButlerStep {
+                            skill: skill.to_owned(),
+                            status: StepStatus::Done,
+                            label,
+                            output: Some(out.clone()),
+                        });
                         activity.push(format!("Used the {skill} skill"));
                         let mut ctx = context.clone();
                         ctx.tool_result = Some(format!(
@@ -950,16 +1041,21 @@ pub fn send_to_butler_streaming(
                              Relay this to the person — share the specifics in your own words, \
                              and add nothing that isn't here."
                         ));
-                        if let Ok(synth) = butler.respond(&history, &prefs, &ctx) {
-                            reply = synth;
-                        }
+                        answer_ctx = Some(ctx); // stream the grounded relay to the person
                     }
                     Err(_) => {
                         // Failure: do NOT ask the model to relay it — the weak model
                         // bluffs ("I don't have access") or denies the skill even
                         // when told the plain truth. Set an honest reply in code so a
                         // failed check can never become a fabricated or evasive one.
+                        on_step(ButlerStep {
+                            skill: skill.to_owned(),
+                            status: StepStatus::Failed,
+                            label,
+                            output: None,
+                        });
                         activity.push(format!("Tried the {skill} skill, but it failed"));
+                        answer_ctx = None; // deterministic honesty — never the model's guess
                         reply = ButlerReply {
                             text: "I tried to check that for you just now, but the skill I use \
                                  couldn't reach it — so I don't have a real answer for you \
@@ -977,7 +1073,14 @@ pub fn send_to_butler_streaming(
             // The model has proven it will fabricate here even when told not to, so
             // we do NOT ask it — we set an honest reply deterministically. This makes
             // inventing a fact structurally impossible in the can't-serve case.
+            on_step(ButlerStep {
+                skill: skill.to_owned(),
+                status: StepStatus::Blocked,
+                label: progress_label(skill),
+                output: None,
+            });
             activity.push(format!("Couldn't check {skill} — it's off or not set up"));
+            answer_ctx = None; // deterministic honesty — never the model's guess
             reply = ButlerReply {
                 text: "I can't check that for you right now — the skill I'd use is turned off \
                        or not set up. You can manage what I'm allowed to do on my own under \
@@ -988,20 +1091,46 @@ pub fn send_to_butler_streaming(
         }
     }
 
+    // Deliver the answer. When it comes from the model (a grounded relay or a
+    // conversational reply), STREAM it token-by-token from `answer_ctx` — the
+    // gathering above was silent, so this is the first prose the person sees, and
+    // it builds up live. A deterministic honesty reply (`answer_ctx == None`) is
+    // emitted at once — the model never gets to stream a guess in that case.
+    let mut streamed = answer_ctx.is_some();
+    if let Some(mut ctx) = answer_ctx {
+        // The final answer is prose for the person — route it to the synthesizer
+        // (the generalist), not the tool-tuned router, so plain conversation
+        // ("good morning") is answered reliably.
+        ctx.synthesize = true;
+        reply = butler
+            .respond_streaming(&history, &prefs, &ctx, on_token)
+            .unwrap_or_else(|_| reply.clone());
+        // A weak local model occasionally streams an empty "reply" field. Rather
+        // than dead-end on the fallback, retry once NON-streamed (more reliable)
+        // and emit that — so the person always gets a real answer.
+        if reply.text.trim().is_empty() {
+            if let Ok(retry) = butler.respond(&history, &prefs, &ctx) {
+                if !retry.text.trim().is_empty() {
+                    on_token(retry.text.trim());
+                    reply = retry;
+                    streamed = true;
+                }
+            }
+        }
+    }
     // A brain that returns nothing usable still owes the person a reply.
     let reply_text = if reply.text.trim().is_empty() {
-        "I'm not sure how to help with that yet — can you say a bit more?"
+        "I'm not sure how to help with that yet — can you say a bit more?".to_owned()
     } else {
-        reply.text.trim()
+        reply.text.trim().to_owned()
     };
-    // Stream the final answer (the agentic loop ran the model non-streamed so it
-    // could decide between steps). The progress lines above already showed the work;
-    // this delivers the finished reply after them.
-    on_token(reply_text);
+    if !streamed {
+        on_token(&reply_text);
+    }
     let butler = ChatMessage::new(
         MessageId::new(ids.new_id()),
         MessageRole::Butler,
-        reply_text,
+        &reply_text,
         clock.now(),
     )?;
     chat.append(&butler)?;
@@ -1146,6 +1275,28 @@ fn route_intent(text: &str) -> Option<&'static str> {
     if has(&["news", "headline", "headlines"]) {
         return Some("news");
     }
+    // Local events: "what's happening / things to do / events near me". This skill
+    // is a scaffold (no data source yet), so without this the model invents
+    // plausible-but-fake events and even a fake source when asked. Routing it here
+    // sends an events ask down the honest path — the butler says it can't check
+    // events rather than making them up.
+    if has(&[
+        "events",
+        "what's happening",
+        "whats happening",
+        "what is happening",
+        "happening near",
+        "happening today",
+        "happening this weekend",
+        "things to do",
+        "going on near",
+        "anything going on",
+        "concerts near",
+        "shows near",
+        "local events",
+    ]) {
+        return Some("local_events");
+    }
     if has(&[
         "weather",
         "forecast",
@@ -1171,6 +1322,7 @@ fn progress_label(id: &str) -> String {
         "web_fetch" => "Reading the page",
         "knowledge" => "Looking that up",
         "home_assistant" => "Checking your home",
+        "local_events" => "Checking local events",
         "image_review" => "Looking at the image",
         other => return format!("Using the {other} skill"),
     }
@@ -1521,6 +1673,7 @@ pub fn daily_brief(
     chat: &impl ChatRepository,
     preferences: &impl PreferenceRepository,
     capabilities: &dyn CapabilityRunner,
+    butler: &dyn Butler,
     ids: &impl IdSource,
     clock: &impl Clock,
 ) -> Result<Option<(ChatMessage, Vec<String>)>, AppError> {
@@ -1532,7 +1685,9 @@ pub fn daily_brief(
     let available = capabilities.available();
     let mut sections: Vec<String> = Vec::new();
     let mut activity: Vec<String> = Vec::new();
-    // Each is run only if it's usable AND cleared to act on its own (reversible).
+    // Gathering is DETERMINISTIC (the anti-fabrication floor): each skill is run
+    // by us — only if usable AND cleared to act on its own (reversible) — so the
+    // brief's facts are real, never invented. The model never gathers here.
     for (id, label) in [
         ("weather", "Weather"),
         ("safety_alerts", "Safety"),
@@ -1552,10 +1707,40 @@ pub fn daily_brief(
     if sections.is_empty() {
         return Ok(None);
     }
-    let text = format!(
+
+    // The deterministic concatenation is the FLOOR — always a valid brief even if
+    // the model is unavailable.
+    let plain = format!(
         "Here's your brief for {location}:\n\n{}",
         sections.join("\n\n")
     );
+    // Synthesis is AGENTIC: hand the real, already-gathered results to the butler
+    // and let it compose a warm, natural brief in its own voice (a faithful
+    // relay — same grounded path the agentic loop uses, so it shares no
+    // fabrication risk: it only relays what we gathered). If the butler is
+    // unavailable or returns nothing usable, the plain floor stands.
+    let ctx = ButlerContext {
+        now: format_datetime_utc(clock.now().unix_millis()),
+        tool_result: Some(format!(
+            "Compose the person's morning brief for {location} from these real results you \
+             just gathered. Write it warmly and naturally in your own words — a short, \
+             flowing brief, not a list of labels. Relay the specifics (the numbers, the \
+             headlines, any alerts) and add NOTHING that isn't here:\n\n{}",
+            sections.join("\n\n")
+        )),
+        ..ButlerContext::default()
+    };
+    let ask = [ChatMessage::new(
+        MessageId::new(ids.new_id()),
+        MessageRole::User,
+        "Give me my morning brief.",
+        clock.now(),
+    )?];
+    let text = match butler.respond(&ask, &prefs, &ctx) {
+        Ok(reply) if !reply.text.trim().is_empty() => reply.text.trim().to_owned(),
+        _ => plain,
+    };
+
     let message = ChatMessage::new(
         MessageId::new(ids.new_id()),
         MessageRole::Butler,
@@ -1630,6 +1815,7 @@ pub fn run_due_brief(
     preferences: &impl PreferenceRepository,
     briefs: &impl BriefScheduleRepository,
     capabilities: &dyn CapabilityRunner,
+    butler: &dyn Butler,
     ids: &impl IdSource,
     clock: &impl Clock,
 ) -> Result<Option<(ChatMessage, Vec<String>)>, AppError> {
@@ -1643,7 +1829,7 @@ pub fn run_due_brief(
     // Mark fired first, so a slow compose can't double-post on the next tick.
     schedule.last_at = now;
     briefs.set(&schedule)?;
-    daily_brief(chat, preferences, capabilities, ids, clock)
+    daily_brief(chat, preferences, capabilities, butler, ids, clock)
 }
 
 /// Composes a proactive check-in, grounded in the person's life and always asking
@@ -1744,6 +1930,7 @@ pub fn butler_context(
         capabilities: skills,
         tool_result: None,
         now: format_datetime_utc(clock.now().unix_millis()),
+        synthesize: false,
     })
 }
 
@@ -2785,6 +2972,25 @@ mod tests {
     }
 
     #[test]
+    fn events_asks_route_to_the_events_skill() {
+        use super::route_intent;
+        // An events ask must route to local_events (a scaffold) so the net takes
+        // the honest path instead of the model inventing events + a fake source.
+        assert_eq!(
+            route_intent("what events are happening in New York today?"),
+            Some("local_events")
+        );
+        assert_eq!(
+            route_intent("anything going on near me this weekend?"),
+            Some("local_events")
+        );
+        assert_eq!(
+            route_intent("what are some things to do tonight?"),
+            Some("local_events")
+        );
+    }
+
+    #[test]
     fn a_deictic_follow_up_reuses_the_previous_intent() {
         use super::follow_up_intent;
         let msg = |role, text: &str| {
@@ -3012,16 +3218,45 @@ mod tests {
             }
         }
 
+        // Agentic synthesis: the butler is handed the *real* gathered results as a
+        // tool_result and relays them in natural prose (no "Weather —" label).
+        struct BriefSynthButler;
+        impl Butler for BriefSynthButler {
+            fn respond(
+                &self,
+                _history: &[ChatMessage],
+                _preferences: &[Preference],
+                context: &ButlerContext,
+            ) -> Result<ButlerReply, ProposalError> {
+                let gathered = context.tool_result.clone().unwrap_or_default();
+                assert!(
+                    gathered.contains("clear, 25C"),
+                    "the brief must hand the real gathered result to the synthesizer"
+                );
+                Ok(ButlerReply {
+                    text: "Good morning! It's clear and 25C where you are.".to_owned(),
+                    ..ButlerReply::default()
+                })
+            }
+        }
+
         let store = FakeStore::default();
         let ids = SeqIds::default();
         let clock = FixedClock(1_000);
-        // No home location yet ⇒ nothing to brief.
+        // No home location yet ⇒ nothing to brief (the butler is never called).
         assert!(
-            daily_brief(&store, &store, &BriefSkills, &ids, &clock)
-                .unwrap()
-                .is_none()
+            daily_brief(
+                &store,
+                &store,
+                &BriefSkills,
+                &BriefSynthButler,
+                &ids,
+                &clock
+            )
+            .unwrap()
+            .is_none()
         );
-        // With a location, the brief is composed from the (reversible) weather skill.
+        // With a location, the brief is gathered deterministically then synthesized.
         create_preference(
             &store,
             &ids,
@@ -3030,11 +3265,39 @@ mod tests {
             PreferenceKind::Context,
         )
         .unwrap();
-        let (msg, activity) = daily_brief(&store, &store, &BriefSkills, &ids, &clock)
+        let (msg, activity) = daily_brief(
+            &store,
+            &store,
+            &BriefSkills,
+            &BriefSynthButler,
+            &ids,
+            &clock,
+        )
+        .unwrap()
+        .unwrap();
+        // Natural synthesis, not the raw label dump — but still the real fact.
+        assert!(msg.text().contains("Good morning"));
+        assert!(msg.text().contains("25C"));
+        assert!(!msg.text().contains("Weather —"));
+        assert!(activity.iter().any(|a| a.contains("weather")));
+
+        // Floor: if the butler is unavailable, the deterministic concatenation
+        // stands — a brief is always produced.
+        struct DeadButler;
+        impl Butler for DeadButler {
+            fn respond(
+                &self,
+                _h: &[ChatMessage],
+                _p: &[Preference],
+                _c: &ButlerContext,
+            ) -> Result<ButlerReply, ProposalError> {
+                Err(ProposalError::Unavailable("down".to_owned()))
+            }
+        }
+        let (floor, _) = daily_brief(&store, &store, &BriefSkills, &DeadButler, &ids, &clock)
             .unwrap()
             .unwrap();
-        assert!(msg.text().contains("Weather — clear, 25C"));
-        assert!(activity.iter().any(|a| a.contains("weather")));
+        assert!(floor.text().contains("Weather — clear, 25C"));
     }
 
     #[test]

@@ -42,6 +42,10 @@ COPY --from=builder /endora-node /usr/local/bin/endora-node
 # local-first database on a volume so it survives container restarts.
 ENV ENDORA_ADDR=0.0.0.0:8787
 ENV ENDORA_DB=/data/endora.db
+# Build identifier (the deploy's git short SHA), surfaced in /health and the
+# console header so a refresh can tell one build from the next.
+ARG ENDORA_BUILD=dev
+ENV ENDORA_BUILD=$ENDORA_BUILD
 VOLUME /data
 EXPOSE 8787
 
