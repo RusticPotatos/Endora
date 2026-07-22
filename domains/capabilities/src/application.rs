@@ -33,6 +33,125 @@ pub trait DeepModelRepository {
     fn set(&self, model: &DeepModel) -> Result<(), RepositoryError>;
 }
 
+/// Sampling parameters for one model call. Every field is optional — a `None`
+/// leaves that knob to the endpoint's own default. `temperature` and `top_p` are
+/// standard OpenAI-compatible fields honoured everywhere; `top_k` and
+/// `repeat_penalty` are non-standard extensions honoured by local runtimes
+/// (Ollama) but rejected by strict cloud endpoints, so providers that need them
+/// off leave them unset. See ADR 0027 — the discovery loop tunes these per slot.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Sampling {
+    /// Randomness. Lower = more deterministic. Router wants this cold (~0.0–0.2)
+    /// for reliable skill selection; the synthesizer wants it warmer for prose.
+    pub temperature: Option<f64>,
+    /// Nucleus sampling cutoff.
+    pub top_p: Option<f64>,
+    /// Top-k cutoff (Ollama/local only).
+    pub top_k: Option<u32>,
+    /// Repetition penalty (Ollama/local only).
+    pub repeat_penalty: Option<f64>,
+}
+
+/// One model "slot": the model name plus its sampling parameters. The base URL
+/// and API key live once on the parent [`ButlerModelConfig`] (all slots share an
+/// endpoint).
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct ModelSlot {
+    /// Model name to request (e.g. `qwen2.5:7b`, `gpt-4o-mini`).
+    pub model: String,
+    /// Sampling parameters for this slot.
+    pub sampling: Sampling,
+}
+
+/// The butler's model configuration, editable at runtime from the console
+/// (ADR 0027). Shared endpoint + key; either a single model or the router +
+/// synthesizer mixture. The key is a secret stored server-side and never
+/// returned to a client. When unset, the node falls back to its environment
+/// configuration.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct ButlerModelConfig {
+    /// OpenAI-compatible base URL (`.../v1`) shared by every slot.
+    pub base_url: String,
+    /// API key sent as a bearer token (empty for keyless/local endpoints).
+    pub api_key: String,
+    /// `true` runs the router + synthesizer mixture; `false` a single model.
+    pub mixture: bool,
+    /// The single-model slot (used when `mixture` is false).
+    pub single: ModelSlot,
+    /// The router slot — a tool-tuned specialist that picks skills.
+    pub router: ModelSlot,
+    /// The synthesizer slot — a generalist that writes the reply.
+    pub synth: ModelSlot,
+}
+
+/// A schedule for the self-improving model tune (ADR 0027) — off by default.
+/// When on, the heartbeat runs the local-model evaluation + gated adoption once a
+/// day at `hour_utc`; pick an off-hour so the eval doesn't contend with chat on
+/// the GPU.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModelTuneSchedule {
+    /// Whether the nightly tune is on.
+    pub enabled: bool,
+    /// The UTC hour (0–23) to run it.
+    pub hour_utc: u8,
+    /// When it last ran (so it fires once per day).
+    pub last_ms: i64,
+}
+
+impl ModelTuneSchedule {
+    /// Off, defaulting to 4am UTC — a quiet hour.
+    #[must_use]
+    pub const fn disabled_default() -> Self {
+        Self {
+            enabled: false,
+            hour_utc: 4,
+            last_ms: 0,
+        }
+    }
+
+    /// Whether the tune is due: enabled, the current UTC hour matches, and it
+    /// hasn't run in the last ~20h (so it fires once per day).
+    #[must_use]
+    pub fn is_due(&self, now_ms: i64) -> bool {
+        if !self.enabled {
+            return false;
+        }
+        let hour = (now_ms.div_euclid(3_600_000) % 24) as u8;
+        hour == self.hour_utc && (now_ms - self.last_ms) >= 20 * 60 * 60 * 1_000
+    }
+}
+
+/// Persists the single [`ModelTuneSchedule`].
+pub trait ModelTuneScheduleRepository {
+    /// Returns the schedule, defaulting to off when unset.
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if the backend fails.
+    fn get(&self) -> Result<ModelTuneSchedule, RepositoryError>;
+
+    /// Stores the schedule.
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if the backend fails.
+    fn set(&self, schedule: &ModelTuneSchedule) -> Result<(), RepositoryError>;
+}
+
+/// Persists the single [`ButlerModelConfig`].
+pub trait ButlerModelConfigRepository {
+    /// Returns the configured butler models, or `None` if unset (use the
+    /// environment configuration).
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if the backend fails.
+    fn get(&self) -> Result<Option<ButlerModelConfig>, RepositoryError>;
+
+    /// Stores the butler model configuration.
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if the backend fails.
+    fn set(&self, config: &ButlerModelConfig) -> Result<(), RepositoryError>;
+}
+
 /// Persists the person's [`AutonomyEnvelope`] (ADR 0022).
 pub trait AutonomyEnvelopeRepository {
     /// The stored envelope, or the default if never set.

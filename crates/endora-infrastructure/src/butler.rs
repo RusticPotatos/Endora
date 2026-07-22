@@ -19,6 +19,9 @@ use endora_application::{
 use endora_application::{
     Butler, ButlerContext, ButlerProposal, ButlerReply, FormedBelief, ProposalError,
 };
+use std::sync::{Arc, Mutex};
+
+use endora_capabilities::{ButlerModelConfig, ButlerModelConfigRepository, ModelSlot, Sampling};
 use serde_json::{Value, json};
 
 /// A deterministic, offline butler. Reliable, if simple.
@@ -86,6 +89,10 @@ pub struct LlmButler {
     agent: ureq::Agent,
     base_url: String,
     model: String,
+    /// Bearer token for the endpoint (empty for keyless/local runtimes).
+    api_key: String,
+    /// Sampling parameters for this model's calls.
+    sampling: Sampling,
     fallback: ScriptedButler,
 }
 
@@ -97,9 +104,22 @@ pub struct LlmButler {
 const BUTLER_MODEL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(90);
 
 impl LlmButler {
-    /// Creates a model-backed butler for a local endpoint and model.
+    /// Creates a model-backed butler for a local, keyless endpoint and model,
+    /// with the historical default sampling (temperature 0.5).
     #[must_use]
     pub fn new(base_url: String, model: String) -> Self {
+        Self::with_config(base_url, model, String::new(), Sampling::default())
+    }
+
+    /// Creates a model-backed butler with an explicit API key and sampling
+    /// parameters (the runtime-configurable path — ADR 0027).
+    #[must_use]
+    pub fn with_config(
+        base_url: String,
+        model: String,
+        api_key: String,
+        sampling: Sampling,
+    ) -> Self {
         Self {
             agent: ureq::Agent::config_builder()
                 .timeout_global(Some(BUTLER_MODEL_TIMEOUT))
@@ -107,6 +127,8 @@ impl LlmButler {
                 .into(),
             base_url,
             model,
+            api_key,
+            sampling,
             fallback: ScriptedButler,
         }
     }
@@ -119,11 +141,13 @@ impl LlmButler {
         preferences: &[Preference],
         context: &ButlerContext,
     ) -> Result<ButlerReply, ProposalError> {
-        let body = build_butler_request(&self.model, history, preferences, context);
+        let body = build_butler_request(&self.model, &self.sampling, history, preferences, context);
         let url = format!("{}/chat/completions", self.base_url);
-        let mut response = self
-            .agent
-            .post(&url)
+        let mut req = self.agent.post(&url);
+        if !self.api_key.is_empty() {
+            req = req.header("Authorization", &format!("Bearer {}", self.api_key));
+        }
+        let mut response = req
             .send_json(&body)
             .map_err(|e| ProposalError::Unavailable(e.to_string()))?;
         if response.status().as_u16() >= 300 {
@@ -151,12 +175,15 @@ impl LlmButler {
         context: &ButlerContext,
         on_token: &mut dyn FnMut(&str),
     ) -> Result<ButlerReply, ProposalError> {
-        let mut body = build_butler_request(&self.model, history, preferences, context);
+        let mut body =
+            build_butler_request(&self.model, &self.sampling, history, preferences, context);
         body["stream"] = Value::Bool(true);
         let url = format!("{}/chat/completions", self.base_url);
-        let response = self
-            .agent
-            .post(&url)
+        let mut req = self.agent.post(&url);
+        if !self.api_key.is_empty() {
+            req = req.header("Authorization", &format!("Bearer {}", self.api_key));
+        }
+        let response = req
             .send_json(&body)
             .map_err(|e| ProposalError::Unavailable(e.to_string()))?;
         if response.status().as_u16() >= 300 {
@@ -297,10 +324,12 @@ impl MixtureButler {
         }
     }
 
-    /// The brain for this pass: the synthesizer when there's a tool result to
-    /// relay, the router when the butler is still deciding what to do.
+    /// The brain for this pass: the synthesizer when writing the final answer (a
+    /// tool result to relay, or `synthesize` set for plain prose), the router only
+    /// while still deciding which skill to use. This keeps conversation on the
+    /// generalist — the tool-tuned router flakes on plain chat.
     fn brain(&self, context: &ButlerContext) -> &LlmButler {
-        if context.tool_result.is_some() {
+        if context.tool_result.is_some() || context.synthesize {
             &self.synthesizer
         } else {
             &self.router
@@ -326,6 +355,116 @@ impl Butler for MixtureButler {
         on_token: &mut dyn FnMut(&str),
     ) -> Result<ButlerReply, ProposalError> {
         self.brain(context)
+            .respond_streaming(history, preferences, context, on_token)
+    }
+}
+
+/// A butler whose model configuration is editable at runtime from the console
+/// (ADR 0027). Each turn it reads the stored [`ButlerModelConfig`]; when one is
+/// set it runs that — a single model or the router+synth mixture, each slot with
+/// its own sampling and a shared bearer key — caching the built brain and
+/// rebuilding only when the config changes. When nothing is stored (or the store
+/// errors) it delegates to `fallback`, the brain built from the environment, so
+/// the conversation always works.
+pub struct ConfigurableButler {
+    repo: Arc<dyn ButlerModelConfigRepository + Send + Sync>,
+    fallback: Arc<dyn Butler + Send + Sync>,
+    cache: Mutex<Option<(ButlerModelConfig, Arc<dyn Butler + Send + Sync>)>>,
+}
+
+impl ConfigurableButler {
+    /// Wraps an environment-built `fallback` with runtime reconfiguration read
+    /// from `repo`.
+    #[must_use]
+    pub fn new(
+        repo: Arc<dyn ButlerModelConfigRepository + Send + Sync>,
+        fallback: Arc<dyn Butler + Send + Sync>,
+    ) -> Self {
+        Self {
+            repo,
+            fallback,
+            cache: Mutex::new(None),
+        }
+    }
+
+    /// Whether a stored config actually names the model(s) it needs — a blank
+    /// config is treated as "unset" so the environment fallback runs.
+    fn is_usable(config: &ButlerModelConfig) -> bool {
+        if config.base_url.trim().is_empty() {
+            return false;
+        }
+        if config.mixture {
+            !config.router.model.trim().is_empty() && !config.synth.model.trim().is_empty()
+        } else {
+            !config.single.model.trim().is_empty()
+        }
+    }
+
+    /// The brain for this turn: the stored config if usable (cached, rebuilt on
+    /// change), else the environment fallback.
+    fn current(&self) -> Arc<dyn Butler + Send + Sync> {
+        let Ok(Some(config)) = self.repo.get() else {
+            return Arc::clone(&self.fallback);
+        };
+        if !Self::is_usable(&config) {
+            return Arc::clone(&self.fallback);
+        }
+        let mut cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some((cached, brain)) = cache.as_ref() {
+            if *cached == config {
+                return Arc::clone(brain);
+            }
+        }
+        let brain = butler_from_config(&config);
+        *cache = Some((config, Arc::clone(&brain)));
+        brain
+    }
+}
+
+/// Builds one [`LlmButler`] slot from a config's shared endpoint + key and the
+/// slot's model and sampling.
+fn slot_butler(config: &ButlerModelConfig, slot: &ModelSlot) -> LlmButler {
+    LlmButler::with_config(
+        config.base_url.clone(),
+        slot.model.clone(),
+        config.api_key.clone(),
+        slot.sampling.clone(),
+    )
+}
+
+/// Builds the brain a [`ButlerModelConfig`] describes — the router+synth mixture
+/// or a single model. Shared by [`ConfigurableButler`] and the model layer (which
+/// builds a candidate's brain to score it, ADR 0027).
+#[must_use]
+pub fn butler_from_config(config: &ButlerModelConfig) -> Arc<dyn Butler + Send + Sync> {
+    if config.mixture {
+        Arc::new(MixtureButler::new(
+            slot_butler(config, &config.router),
+            slot_butler(config, &config.synth),
+        ))
+    } else {
+        Arc::new(slot_butler(config, &config.single))
+    }
+}
+
+impl Butler for ConfigurableButler {
+    fn respond(
+        &self,
+        history: &[ChatMessage],
+        preferences: &[Preference],
+        context: &ButlerContext,
+    ) -> Result<ButlerReply, ProposalError> {
+        self.current().respond(history, preferences, context)
+    }
+
+    fn respond_streaming(
+        &self,
+        history: &[ChatMessage],
+        preferences: &[Preference],
+        context: &ButlerContext,
+        on_token: &mut dyn FnMut(&str),
+    ) -> Result<ButlerReply, ProposalError> {
+        self.current()
             .respond_streaming(history, preferences, context, on_token)
     }
 }
@@ -467,11 +606,101 @@ pub fn ask_deep_model(
     }
 }
 
+/// Transcribes recorded audio via an OpenAI-compatible speech-to-text endpoint
+/// (`POST {base}/audio/transcriptions`, e.g. a local Whisper server). The node
+/// proxies the browser's recording here so the private STT host is never exposed
+/// to the page. Builds the multipart body by hand (audio + `model=whisper-1`).
+///
+/// # Errors
+/// A message if the endpoint is unreachable or returns an error/empty text.
+pub fn transcribe_audio(base_url: &str, audio: &[u8]) -> Result<String, String> {
+    let boundary = "----endoraSTT7f3a9c2b";
+    let mut body: Vec<u8> = Vec::with_capacity(audio.len() + 256);
+    body.extend_from_slice(
+        format!(
+            "--{boundary}\r\nContent-Disposition: form-data; name=\"model\"\r\n\r\nwhisper-1\r\n"
+        )
+        .as_bytes(),
+    );
+    body.extend_from_slice(
+        format!(
+            "--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; \
+             filename=\"audio.webm\"\r\nContent-Type: audio/webm\r\n\r\n"
+        )
+        .as_bytes(),
+    );
+    body.extend_from_slice(audio);
+    body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
+
+    let url = format!("{}/audio/transcriptions", base_url.trim_end_matches('/'));
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .timeout_global(Some(std::time::Duration::from_secs(60)))
+        .build()
+        .into();
+    let mut response = agent
+        .post(&url)
+        .header(
+            "Content-Type",
+            &format!("multipart/form-data; boundary={boundary}"),
+        )
+        .send(body.as_slice())
+        .map_err(|e| e.to_string())?;
+    if response.status().as_u16() >= 300 {
+        return Err(format!(
+            "transcription returned status {}",
+            response.status()
+        ));
+    }
+    let json: Value = response.body_mut().read_json().map_err(|e| e.to_string())?;
+    let text = json["text"].as_str().unwrap_or("").trim().to_owned();
+    if text.is_empty() {
+        Err("the transcription came back empty".to_owned())
+    } else {
+        Ok(text)
+    }
+}
+
+/// Lists the model ids an OpenAI-compatible endpoint offers (`GET {base}/models`)
+/// — so the console can let the person pick a model after entering the endpoint +
+/// key, instead of typing it. `api_key` is sent as a bearer when non-empty
+/// (needed for cloud providers; keyless for local runtimes like Ollama).
+///
+/// # Errors
+/// A message if the endpoint is unreachable or returns an error/unexpected shape.
+pub fn list_models(base_url: &str, api_key: &str) -> Result<Vec<String>, String> {
+    let url = format!("{}/models", base_url.trim_end_matches('/'));
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .timeout_global(Some(std::time::Duration::from_secs(20)))
+        .build()
+        .into();
+    let mut req = agent.get(&url);
+    if !api_key.is_empty() {
+        req = req.header("Authorization", &format!("Bearer {api_key}"));
+    }
+    let mut response = req.call().map_err(|e| e.to_string())?;
+    if response.status().as_u16() >= 300 {
+        return Err(format!("endpoint returned status {}", response.status()));
+    }
+    let json: Value = response.body_mut().read_json().map_err(|e| e.to_string())?;
+    let mut ids: Vec<String> = json["data"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .filter_map(|m| m["id"].as_str().map(str::to_owned))
+                .collect()
+        })
+        .unwrap_or_default();
+    ids.sort();
+    ids.dedup();
+    Ok(ids)
+}
+
 /// Builds the OpenAI-compatible chat request from the conversation and the
 /// preferences already learned (so the butler need not re-ask). Pure, so it is
 /// unit-tested.
 fn build_butler_request(
     model: &str,
+    sampling: &Sampling,
     history: &[ChatMessage],
     preferences: &[Preference],
     context: &ButlerContext,
@@ -557,10 +786,9 @@ fn build_butler_request(
         };
         messages.push(json!({ "role": role, "content": m.text() }));
     }
-    json!({
+    let mut body = json!({
         "model": model,
         "stream": false,
-        "temperature": 0.5,
         "messages": messages,
         // Constrain the model to emit a well-formed JSON object (Ollama honours
         // the OpenAI-style response_format; the prompt already says "JSON"). This
@@ -568,7 +796,34 @@ fn build_butler_request(
         // wrapped in prose — the defensive parser is then just a belt-and-braces
         // fallback for endpoints that ignore this field.
         "response_format": { "type": "json_object" },
-    })
+    });
+    apply_sampling(&mut body, sampling);
+    body
+}
+
+/// Writes sampling parameters onto a chat-completions request body. `temperature`
+/// and `top_p` are standard OpenAI-compatible fields; `top_k` and
+/// `repeat_penalty` are local-runtime extensions (Ollama) only emitted when set,
+/// so a strict cloud endpoint that would reject them stays clean unless the
+/// operator opts in. When no temperature is configured we keep the historical
+/// default (0.5) so existing deployments are unchanged.
+fn apply_sampling(body: &mut Value, sampling: &Sampling) {
+    let Some(obj) = body.as_object_mut() else {
+        return;
+    };
+    obj.insert(
+        "temperature".to_owned(),
+        json!(sampling.temperature.unwrap_or(0.5)),
+    );
+    if let Some(top_p) = sampling.top_p {
+        obj.insert("top_p".to_owned(), json!(top_p));
+    }
+    if let Some(top_k) = sampling.top_k {
+        obj.insert("top_k".to_owned(), json!(top_k));
+    }
+    if let Some(repeat) = sampling.repeat_penalty {
+        obj.insert("repeat_penalty".to_owned(), json!(repeat));
+    }
 }
 
 /// Extracts the butler reply from a chat-completions response. Pure.
@@ -724,6 +979,7 @@ mod tests {
     };
     use endora_application::{Butler, ButlerContext, ButlerProposal};
     use endora_application::{ChatMessage, MessageId, MessageRole, Timestamp};
+    use endora_capabilities::Sampling;
     use serde_json::json;
 
     fn user(text: &str) -> ChatMessage {
@@ -779,6 +1035,7 @@ mod tests {
     fn request_includes_the_system_prompt_and_conversation() {
         let body = build_butler_request(
             "qwen3.5:9b",
+            &Sampling::default(),
             &[user("hello")],
             &[],
             &ButlerContext::default(),
@@ -792,6 +1049,43 @@ mod tests {
         );
         assert_eq!(body["messages"][1]["role"], "user");
         assert_eq!(body["messages"][1]["content"], "hello");
+    }
+
+    #[test]
+    fn sampling_defaults_to_half_and_omits_unset_extensions() {
+        // No configured sampling ⇒ the historical default temperature, and none
+        // of the local-only knobs (so strict cloud endpoints stay clean).
+        let body = build_butler_request(
+            "m",
+            &Sampling::default(),
+            &[user("hi")],
+            &[],
+            &ButlerContext::default(),
+        );
+        assert_eq!(body["temperature"], json!(0.5));
+        assert!(body.get("top_p").is_none());
+        assert!(body.get("top_k").is_none());
+        assert!(body.get("repeat_penalty").is_none());
+    }
+
+    #[test]
+    fn sampling_emits_only_the_configured_knobs() {
+        let sampling = Sampling {
+            temperature: Some(0.1),
+            top_k: Some(20),
+            ..Sampling::default()
+        };
+        let body = build_butler_request(
+            "m",
+            &sampling,
+            &[user("hi")],
+            &[],
+            &ButlerContext::default(),
+        );
+        assert_eq!(body["temperature"], json!(0.1));
+        assert_eq!(body["top_k"], json!(20));
+        assert!(body.get("top_p").is_none()); // unset ⇒ absent
+        assert!(body.get("repeat_penalty").is_none());
     }
 
     #[test]
