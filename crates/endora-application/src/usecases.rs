@@ -1605,6 +1605,7 @@ pub fn daily_brief(
     chat: &impl ChatRepository,
     preferences: &impl PreferenceRepository,
     capabilities: &dyn CapabilityRunner,
+    butler: &dyn Butler,
     ids: &impl IdSource,
     clock: &impl Clock,
 ) -> Result<Option<(ChatMessage, Vec<String>)>, AppError> {
@@ -1616,7 +1617,9 @@ pub fn daily_brief(
     let available = capabilities.available();
     let mut sections: Vec<String> = Vec::new();
     let mut activity: Vec<String> = Vec::new();
-    // Each is run only if it's usable AND cleared to act on its own (reversible).
+    // Gathering is DETERMINISTIC (the anti-fabrication floor): each skill is run
+    // by us — only if usable AND cleared to act on its own (reversible) — so the
+    // brief's facts are real, never invented. The model never gathers here.
     for (id, label) in [
         ("weather", "Weather"),
         ("safety_alerts", "Safety"),
@@ -1636,10 +1639,40 @@ pub fn daily_brief(
     if sections.is_empty() {
         return Ok(None);
     }
-    let text = format!(
+
+    // The deterministic concatenation is the FLOOR — always a valid brief even if
+    // the model is unavailable.
+    let plain = format!(
         "Here's your brief for {location}:\n\n{}",
         sections.join("\n\n")
     );
+    // Synthesis is AGENTIC: hand the real, already-gathered results to the butler
+    // and let it compose a warm, natural brief in its own voice (a faithful
+    // relay — same grounded path the agentic loop uses, so it shares no
+    // fabrication risk: it only relays what we gathered). If the butler is
+    // unavailable or returns nothing usable, the plain floor stands.
+    let ctx = ButlerContext {
+        now: format_datetime_utc(clock.now().unix_millis()),
+        tool_result: Some(format!(
+            "Compose the person's morning brief for {location} from these real results you \
+             just gathered. Write it warmly and naturally in your own words — a short, \
+             flowing brief, not a list of labels. Relay the specifics (the numbers, the \
+             headlines, any alerts) and add NOTHING that isn't here:\n\n{}",
+            sections.join("\n\n")
+        )),
+        ..ButlerContext::default()
+    };
+    let ask = [ChatMessage::new(
+        MessageId::new(ids.new_id()),
+        MessageRole::User,
+        "Give me my morning brief.",
+        clock.now(),
+    )?];
+    let text = match butler.respond(&ask, &prefs, &ctx) {
+        Ok(reply) if !reply.text.trim().is_empty() => reply.text.trim().to_owned(),
+        _ => plain,
+    };
+
     let message = ChatMessage::new(
         MessageId::new(ids.new_id()),
         MessageRole::Butler,
@@ -1714,6 +1747,7 @@ pub fn run_due_brief(
     preferences: &impl PreferenceRepository,
     briefs: &impl BriefScheduleRepository,
     capabilities: &dyn CapabilityRunner,
+    butler: &dyn Butler,
     ids: &impl IdSource,
     clock: &impl Clock,
 ) -> Result<Option<(ChatMessage, Vec<String>)>, AppError> {
@@ -1727,7 +1761,7 @@ pub fn run_due_brief(
     // Mark fired first, so a slow compose can't double-post on the next tick.
     schedule.last_at = now;
     briefs.set(&schedule)?;
-    daily_brief(chat, preferences, capabilities, ids, clock)
+    daily_brief(chat, preferences, capabilities, butler, ids, clock)
 }
 
 /// Composes a proactive check-in, grounded in the person's life and always asking
@@ -3096,16 +3130,45 @@ mod tests {
             }
         }
 
+        // Agentic synthesis: the butler is handed the *real* gathered results as a
+        // tool_result and relays them in natural prose (no "Weather —" label).
+        struct BriefSynthButler;
+        impl Butler for BriefSynthButler {
+            fn respond(
+                &self,
+                _history: &[ChatMessage],
+                _preferences: &[Preference],
+                context: &ButlerContext,
+            ) -> Result<ButlerReply, ProposalError> {
+                let gathered = context.tool_result.clone().unwrap_or_default();
+                assert!(
+                    gathered.contains("clear, 25C"),
+                    "the brief must hand the real gathered result to the synthesizer"
+                );
+                Ok(ButlerReply {
+                    text: "Good morning! It's clear and 25C where you are.".to_owned(),
+                    ..ButlerReply::default()
+                })
+            }
+        }
+
         let store = FakeStore::default();
         let ids = SeqIds::default();
         let clock = FixedClock(1_000);
-        // No home location yet ⇒ nothing to brief.
+        // No home location yet ⇒ nothing to brief (the butler is never called).
         assert!(
-            daily_brief(&store, &store, &BriefSkills, &ids, &clock)
-                .unwrap()
-                .is_none()
+            daily_brief(
+                &store,
+                &store,
+                &BriefSkills,
+                &BriefSynthButler,
+                &ids,
+                &clock
+            )
+            .unwrap()
+            .is_none()
         );
-        // With a location, the brief is composed from the (reversible) weather skill.
+        // With a location, the brief is gathered deterministically then synthesized.
         create_preference(
             &store,
             &ids,
@@ -3114,11 +3177,39 @@ mod tests {
             PreferenceKind::Context,
         )
         .unwrap();
-        let (msg, activity) = daily_brief(&store, &store, &BriefSkills, &ids, &clock)
+        let (msg, activity) = daily_brief(
+            &store,
+            &store,
+            &BriefSkills,
+            &BriefSynthButler,
+            &ids,
+            &clock,
+        )
+        .unwrap()
+        .unwrap();
+        // Natural synthesis, not the raw label dump — but still the real fact.
+        assert!(msg.text().contains("Good morning"));
+        assert!(msg.text().contains("25C"));
+        assert!(!msg.text().contains("Weather —"));
+        assert!(activity.iter().any(|a| a.contains("weather")));
+
+        // Floor: if the butler is unavailable, the deterministic concatenation
+        // stands — a brief is always produced.
+        struct DeadButler;
+        impl Butler for DeadButler {
+            fn respond(
+                &self,
+                _h: &[ChatMessage],
+                _p: &[Preference],
+                _c: &ButlerContext,
+            ) -> Result<ButlerReply, ProposalError> {
+                Err(ProposalError::Unavailable("down".to_owned()))
+            }
+        }
+        let (floor, _) = daily_brief(&store, &store, &BriefSkills, &DeadButler, &ids, &clock)
             .unwrap()
             .unwrap();
-        assert!(msg.text().contains("Weather — clear, 25C"));
-        assert!(activity.iter().any(|a| a.contains("weather")));
+        assert!(floor.text().contains("Weather — clear, 25C"));
     }
 
     #[test]
