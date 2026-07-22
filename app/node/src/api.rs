@@ -1187,12 +1187,14 @@ async fn brief(State(state): State<AppState>) -> Result<Json<serde_json::Value>,
     let ids = state.ids.clone();
     let clock = state.clock.clone();
     let capabilities = state.capabilities.clone();
+    let butler = state.butler.clone();
     let result = blocking(move || {
         let runner = build_runner(config.as_ref(), capabilities);
         let out = usecases::daily_brief(
             chat.as_ref(),
             understanding.as_ref(),
             &runner,
+            butler.as_ref(),
             ids.as_ref(),
             clock.as_ref(),
         )?;
@@ -2074,6 +2076,7 @@ pub fn spawn_heartbeat(state: AppState) {
             let ids = state.ids.clone();
             let clock = state.clock.clone();
             let capabilities = state.capabilities.clone();
+            let butler = state.butler.clone();
             let posted = tokio::task::spawn_blocking(move || {
                 let runner = build_runner(config.as_ref(), capabilities);
                 let context = usecases::butler_context(
@@ -2106,6 +2109,7 @@ pub fn spawn_heartbeat(state: AppState) {
                     understanding.as_ref(),
                     schedules.as_ref(),
                     &runner,
+                    butler.as_ref(),
                     ids.as_ref(),
                     clock.as_ref(),
                 )?;
