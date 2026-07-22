@@ -73,6 +73,12 @@ pub struct AppState {
     /// The butler's skills (weather, web, …) — declared modules the butler can
     /// reach for, each gated by its autonomy level (ADR 0019).
     pub capabilities: Arc<Vec<Arc<dyn Capability>>>,
+    /// Serializes butler *turns* (a chat reply, a proactive brief/check-in). The
+    /// agentic loop reads history, calls the model several times, then appends —
+    /// running two at once on one local model both thrashes it and lets turns
+    /// cross-talk (one turn answering with another's context). A single lock makes
+    /// every turn atomic, so a heartbeat brief can't interleave with a chat.
+    pub turn_lock: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl AppState {
@@ -111,6 +117,7 @@ impl AppState {
             butler,
             changes,
             capabilities: Arc::new(endora_infrastructure::default_capabilities()),
+            turn_lock: Arc::new(tokio::sync::Mutex::new(())),
         }
     }
 }
@@ -1135,6 +1142,8 @@ async fn send_chat(
     let clock = state.clock.clone();
     let butler = state.butler.clone();
     let capabilities = state.capabilities.clone();
+    // Serialize this turn against any other butler turn (chat or heartbeat brief).
+    let _turn = state.turn_lock.clone().lock_owned().await;
     let (reply, suggestions, activity) = blocking(move || {
         let runner = build_runner(config.as_ref(), capabilities);
         // Ground the butler in the person's current life before it answers.
@@ -1247,76 +1256,85 @@ async fn stream_chat(
 
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Event>();
 
-    tokio::task::spawn_blocking(move || {
-        let runner = build_runner(config.as_ref(), capabilities);
-        let event = |v: serde_json::Value| Event::default().data(v.to_string());
-        let context = match usecases::butler_context(
-            dirs.as_ref(),
-            dirs.as_ref(),
-            dirs.as_ref(),
-            dirs.as_ref(),
-            store.as_ref(),
-            understanding.as_ref(),
-            &runner,
-            clock.as_ref(),
-        ) {
-            Ok(c) => c,
-            Err(e) => {
-                let _ = tx.send(event(json!({ "type": "error", "message": e.to_string() })));
-                return;
-            }
-        };
-        // Scope the token closure so its borrow of `tx` ends before the `done`
-        // send below.
-        let result = {
-            let mut on_token = |chunk: &str| {
-                let _ = tx.send(event(json!({ "type": "token", "text": chunk })));
-            };
-            // Structured action steps (router → skill → result), surfaced live so
-            // the console can show an expandable trail of what the butler is doing,
-            // separate from the reply prose.
-            let mut on_step = |step: usecases::ButlerStep| {
-                let _ = tx.send(event(json!({
-                    "type": "step",
-                    "skill": step.skill,
-                    "status": step.status.as_str(),
-                    "label": step.label,
-                })));
-            };
-            usecases::send_to_butler_streaming(
-                chat.as_ref(),
-                understanding.as_ref(),
+    // Serialize this turn against any other butler turn (a concurrent chat, or a
+    // heartbeat brief). The guard is held on the async task across the whole
+    // blocking turn — so a second turn waits here until this one finishes.
+    let turn_lock = state.turn_lock.clone();
+    tokio::task::spawn(async move {
+        let _turn = turn_lock.lock_owned().await;
+        tokio::task::spawn_blocking(move || {
+            let runner = build_runner(config.as_ref(), capabilities);
+            let event = |v: serde_json::Value| Event::default().data(v.to_string());
+            let context = match usecases::butler_context(
+                dirs.as_ref(),
+                dirs.as_ref(),
+                dirs.as_ref(),
+                dirs.as_ref(),
                 store.as_ref(),
                 understanding.as_ref(),
                 &runner,
-                butler.as_ref(),
-                ids.as_ref(),
                 clock.as_ref(),
-                &context,
-                &message,
-                &mut on_token,
-                &mut on_step,
-            )
-        };
-        match result {
-            Ok((reply, suggestions, activity)) => {
-                // Persist the turn's actions/learnings to the butler's action log.
-                for item in &activity {
-                    record_event(events.as_ref(), clock.as_ref(), item);
+            ) {
+                Ok(c) => c,
+                Err(e) => {
+                    let _ = tx.send(event(json!({ "type": "error", "message": e.to_string() })));
+                    return;
                 }
-                // A successful write nudges the change stream, like other writes.
-                let _ = changes.send(());
-                let _ = tx.send(event(json!({
-                    "type": "done",
-                    "reply": MessageResponse::from(&reply),
-                    "proposals": suggestions.iter().map(suggestion_json).collect::<Vec<_>>(),
-                    "activity": activity,
-                })));
+            };
+            // Scope the token closure so its borrow of `tx` ends before the `done`
+            // send below.
+            let result = {
+                let mut on_token = |chunk: &str| {
+                    let _ = tx.send(event(json!({ "type": "token", "text": chunk })));
+                };
+                // Structured action steps (router → skill → result), surfaced live so
+                // the console can show an expandable trail of what the butler is doing,
+                // separate from the reply prose.
+                let mut on_step = |step: usecases::ButlerStep| {
+                    let _ = tx.send(event(json!({
+                        "type": "step",
+                        "skill": step.skill,
+                        "status": step.status.as_str(),
+                        "label": step.label,
+                    })));
+                };
+                usecases::send_to_butler_streaming(
+                    chat.as_ref(),
+                    understanding.as_ref(),
+                    store.as_ref(),
+                    understanding.as_ref(),
+                    &runner,
+                    butler.as_ref(),
+                    ids.as_ref(),
+                    clock.as_ref(),
+                    &context,
+                    &message,
+                    &mut on_token,
+                    &mut on_step,
+                )
+            };
+            match result {
+                Ok((reply, suggestions, activity)) => {
+                    // Persist the turn's actions/learnings to the butler's action log.
+                    for item in &activity {
+                        record_event(events.as_ref(), clock.as_ref(), item);
+                    }
+                    // A successful write nudges the change stream, like other writes.
+                    let _ = changes.send(());
+                    let _ = tx.send(event(json!({
+                        "type": "done",
+                        "reply": MessageResponse::from(&reply),
+                        "proposals": suggestions.iter().map(suggestion_json).collect::<Vec<_>>(),
+                        "activity": activity,
+                    })));
+                }
+                Err(e) => {
+                    let _ = tx.send(event(json!({ "type": "error", "message": e.to_string() })));
+                }
             }
-            Err(e) => {
-                let _ = tx.send(event(json!({ "type": "error", "message": e.to_string() })));
-            }
-        }
+        })
+        .await
+        .ok(); // release the turn lock once the blocking turn completes
     });
 
     let stream = unfold(rx, |mut rx| async move {
@@ -2077,6 +2095,9 @@ pub fn spawn_heartbeat(state: AppState) {
             let clock = state.clock.clone();
             let capabilities = state.capabilities.clone();
             let butler = state.butler.clone();
+            // Take the turn lock so a proactive brief/check-in never interleaves
+            // with a chat reply; held across the blocking work below.
+            let _turn = state.turn_lock.clone().lock_owned().await;
             let posted = tokio::task::spawn_blocking(move || {
                 let runner = build_runner(config.as_ref(), capabilities);
                 let context = usecases::butler_context(
