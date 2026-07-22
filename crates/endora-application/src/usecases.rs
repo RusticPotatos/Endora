@@ -1097,7 +1097,11 @@ pub fn send_to_butler_streaming(
     // it builds up live. A deterministic honesty reply (`answer_ctx == None`) is
     // emitted at once — the model never gets to stream a guess in that case.
     let streamed = answer_ctx.is_some();
-    if let Some(ctx) = answer_ctx {
+    if let Some(mut ctx) = answer_ctx {
+        // The final answer is prose for the person — route it to the synthesizer
+        // (the generalist), not the tool-tuned router, so plain conversation
+        // ("good morning") is answered reliably.
+        ctx.synthesize = true;
         reply = butler
             .respond_streaming(&history, &prefs, &ctx, on_token)
             .unwrap_or(reply);
@@ -1914,6 +1918,7 @@ pub fn butler_context(
         capabilities: skills,
         tool_result: None,
         now: format_datetime_utc(clock.now().unix_millis()),
+        synthesize: false,
     })
 }
 
