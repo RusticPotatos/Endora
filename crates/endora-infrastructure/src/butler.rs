@@ -385,29 +385,6 @@ impl ConfigurableButler {
         }
     }
 
-    /// Builds one [`LlmButler`] slot from the shared endpoint + key and the
-    /// slot's model and sampling.
-    fn slot(config: &ButlerModelConfig, slot: &ModelSlot) -> LlmButler {
-        LlmButler::with_config(
-            config.base_url.clone(),
-            slot.model.clone(),
-            config.api_key.clone(),
-            slot.sampling.clone(),
-        )
-    }
-
-    /// Builds the brain a stored config describes (mixture or single model).
-    fn build(config: &ButlerModelConfig) -> Arc<dyn Butler + Send + Sync> {
-        if config.mixture {
-            Arc::new(MixtureButler::new(
-                Self::slot(config, &config.router),
-                Self::slot(config, &config.synth),
-            ))
-        } else {
-            Arc::new(Self::slot(config, &config.single))
-        }
-    }
-
     /// Whether a stored config actually names the model(s) it needs — a blank
     /// config is treated as "unset" so the environment fallback runs.
     fn is_usable(config: &ButlerModelConfig) -> bool {
@@ -436,9 +413,35 @@ impl ConfigurableButler {
                 return Arc::clone(brain);
             }
         }
-        let brain = Self::build(&config);
+        let brain = butler_from_config(&config);
         *cache = Some((config, Arc::clone(&brain)));
         brain
+    }
+}
+
+/// Builds one [`LlmButler`] slot from a config's shared endpoint + key and the
+/// slot's model and sampling.
+fn slot_butler(config: &ButlerModelConfig, slot: &ModelSlot) -> LlmButler {
+    LlmButler::with_config(
+        config.base_url.clone(),
+        slot.model.clone(),
+        config.api_key.clone(),
+        slot.sampling.clone(),
+    )
+}
+
+/// Builds the brain a [`ButlerModelConfig`] describes — the router+synth mixture
+/// or a single model. Shared by [`ConfigurableButler`] and the model layer (which
+/// builds a candidate's brain to score it, ADR 0027).
+#[must_use]
+pub fn butler_from_config(config: &ButlerModelConfig) -> Arc<dyn Butler + Send + Sync> {
+    if config.mixture {
+        Arc::new(MixtureButler::new(
+            slot_butler(config, &config.router),
+            slot_butler(config, &config.synth),
+        ))
+    } else {
+        Arc::new(slot_butler(config, &config.single))
     }
 }
 
