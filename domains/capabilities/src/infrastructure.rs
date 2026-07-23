@@ -14,7 +14,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::application::CapabilityRunner;
-use endora_kernel::AutonomyLevel;
+use endora_kernel::{Decision, Reversibility};
 use serde_json::{Value, json};
 
 /// One setting a capability needs to work (a key, a model name, a URL). Declared
@@ -47,12 +47,12 @@ pub struct CapabilityInfo {
     pub category: &'static str,
     /// Whether invoking it sends data outside this machine.
     pub reaches_external: bool,
-    /// Whether its effect can be undone (read-only, a draft, a deletable log) vs.
-    /// permanent (sending, spending, editing/deleting external state). The autonomy
-    /// classifier NEVER runs an irreversible skill on its own (ADR 0024).
-    pub reversible: bool,
-    /// May it act on its own (read-only/low-stakes), or must it ask first?
-    pub autonomy: AutonomyLevel,
+    /// How undoable the skill's effect is — the **primary axis** of the autonomy
+    /// envelope (ADR 0024). Declared in metadata, never inferred by a model: it
+    /// decides whether policy may run the skill on its own, confirm first, or
+    /// block it outright. The classifier NEVER runs an irreversible skill
+    /// (deny-by-default).
+    pub reversibility: Reversibility,
     /// Whether the code is ready in principle (ignoring settings). Effective
     /// readiness also requires every [`Self::settings`] to have a value.
     pub configured: bool,
@@ -677,8 +677,7 @@ impl Capability for WeatherCapability {
             description: "Current conditions and today's forecast for a place, with a heads-up on severe weather.",
             category: "information",
             reaches_external: true,
-            reversible: true,
-            autonomy: AutonomyLevel::ActWithinPolicy,
+            reversibility: Reversibility::Reversible,
             configured: true,
             needs: "",
             settings: &[],
@@ -785,8 +784,7 @@ impl Capability for WebFetchCapability {
             description: "Fetch a web page and read its text — for research and briefings.",
             category: "information",
             reaches_external: true,
-            reversible: true,
-            autonomy: AutonomyLevel::ActWithinPolicy,
+            reversibility: Reversibility::Reversible,
             configured: true,
             needs: "",
             settings: &[],
@@ -870,8 +868,7 @@ impl Capability for LocalNewsCapability {
             description: "Recent news headlines for a place or topic — so answers about the news are real, not guessed.",
             category: "information",
             reaches_external: true,
-            reversible: true,
-            autonomy: AutonomyLevel::ActWithinPolicy,
+            reversibility: Reversibility::Reversible,
             configured: true,
             needs: "",
             settings: &[],
@@ -1028,8 +1025,7 @@ impl Capability for KnowledgeCapability {
             description: "Look up factual, encyclopedic knowledge about a topic, person, or place (Wikipedia).",
             category: "information",
             reaches_external: true,
-            reversible: true,
-            autonomy: AutonomyLevel::ActWithinPolicy,
+            reversibility: Reversibility::Reversible,
             configured: true,
             needs: "",
             settings: &[],
@@ -1105,8 +1101,7 @@ impl Capability for WebAnswersCapability {
             description: "Get a quick answer or definition from the web for a question (DuckDuckGo).",
             category: "information",
             reaches_external: true,
-            reversible: true,
-            autonomy: AutonomyLevel::ActWithinPolicy,
+            reversibility: Reversibility::Reversible,
             configured: true,
             needs: "",
             settings: &[],
@@ -1218,8 +1213,7 @@ impl Capability for ImageReviewCapability {
             description: "Describe or answer questions about an image, using a local vision model.",
             category: "media",
             reaches_external: false,
-            reversible: true,
-            autonomy: AutonomyLevel::ActWithinPolicy,
+            reversibility: Reversibility::Reversible,
             // Code is ready; it becomes usable once the `model` setting is filled.
             configured: true,
             needs: "set the vision model (e.g. moondream) in this skill's settings",
@@ -1282,7 +1276,7 @@ impl Capability for ImageReviewCapability {
 /// A skill that is declared with its full metadata but awaits a data source or
 /// key. It appears in the registry as "needs setup" rather than being missing.
 macro_rules! scaffold {
-    ($ty:ident, $id:literal, $name:literal, $desc:literal, $cat:literal, $external:literal, $reversible:literal, $auto:expr, $needs:literal) => {
+    ($ty:ident, $id:literal, $name:literal, $desc:literal, $cat:literal, $external:literal, $reversibility:expr, $needs:literal) => {
         struct $ty;
         impl Capability for $ty {
             fn info(&self) -> CapabilityInfo {
@@ -1292,8 +1286,7 @@ macro_rules! scaffold {
                     description: $desc,
                     category: $cat,
                     reaches_external: $external,
-                    reversible: $reversible,
-                    autonomy: $auto,
+                    reversibility: $reversibility,
                     configured: false,
                     needs: $needs,
                     settings: &[],
@@ -1320,8 +1313,7 @@ scaffold!(
     "What's on near you — concerts, markets, community happenings.",
     "information",
     true,
-    true, // reversible: read-only lookup
-    AutonomyLevel::ActWithinPolicy,
+    Reversibility::Reversible, // read-only lookup
     "an events data source / API key"
 );
 scaffold!(
@@ -1331,8 +1323,7 @@ scaffold!(
     "Find and compare flights for a trip.",
     "travel",
     true,
-    false, // irreversible: booking spends money and can't be undone
-    AutonomyLevel::ConfirmEachAction,
+    Reversibility::Irreversible, // booking spends money and can't be undone
     "a flights API key (booking stays a human decision)"
 );
 scaffold!(
@@ -1342,8 +1333,7 @@ scaffold!(
     "Keep a private log of where you are while travelling, so the butler has context.",
     "presence",
     false,
-    true, // reversible: a private log you can delete
-    AutonomyLevel::ConfirmEachAction,
+    Reversibility::OutwardReversible, // a private log you can delete
     "your opt-in and a location source (kept private to you)"
 );
 /// The "guard dog": active public-safety alerts near a place. Real for the US via
@@ -1358,8 +1348,7 @@ impl Capability for SafetyAlertsCapability {
             description: "Active safety alerts near you — severe weather and public warnings (US National Weather Service).",
             category: "safety",
             reaches_external: true,
-            reversible: true,
-            autonomy: AutonomyLevel::ActWithinPolicy,
+            reversibility: Reversibility::Reversible,
             configured: true,
             needs: "",
             settings: &[],
@@ -1439,8 +1428,7 @@ scaffold!(
     "Surface public emergency/incident alerts nearby (fire, rescue, major incidents).",
     "safety",
     true,
-    true, // reversible: read-only lookup
-    AutonomyLevel::ActWithinPolicy,
+    Reversibility::Reversible, // read-only lookup
     "a public incident/emergency feed for your area"
 );
 
@@ -1472,8 +1460,7 @@ impl Capability for HomeAssistantCapability {
             description: "Read your home's state — lights, presence, sensors — to learn your routines.",
             category: "presence",
             reaches_external: true,
-            reversible: true,
-            autonomy: AutonomyLevel::ActWithinPolicy,
+            reversibility: Reversibility::Reversible,
             configured: true,
             needs: "your Home Assistant URL and a long-lived access token",
             settings: HA_SETTINGS,
@@ -1579,8 +1566,9 @@ impl Capability for HomeAssistantCapability {
 /// Adapts the concrete capability registry to the application's
 /// [`CapabilityRunner`] port, so the butler use case can list and run skills
 /// without depending on this crate. A capability is "autonomous" (may run on its
-/// own this turn) exactly when its autonomy is [`AutonomyLevel::ActWithinPolicy`]
-/// — read-only, low-stakes. Anything that must confirm stays gated.
+/// own this turn) exactly when the classifier's verdict for its [`Reversibility`]
+/// band and the person's envelope is [`Act`](Decision::Act). Anything that must
+/// confirm — or is blocked — stays gated.
 pub struct RegistryRunner {
     capabilities: Arc<Vec<Arc<dyn Capability>>>,
     /// Per-capability enabled overrides (id → enabled). Missing = default enabled.
@@ -1641,26 +1629,50 @@ fn settings_complete(info: &CapabilityInfo, settings: &CapabilitySettings) -> bo
         .all(|s| settings.get(s.key).is_some_and(|v| !v.trim().is_empty()))
 }
 
-/// The deterministic classifier at the heart of the autonomy envelope (ADR 0022):
-/// given a skill's declared autonomy and reach, and the person's envelope, may it
-/// run on its own this turn? Never consults the model — the boundary is policy.
+/// The deterministic classifier at the heart of the autonomy envelope
+/// (ADR 0022/0024): given a skill's declared [`Reversibility`] band, reach, and
+/// the person's envelope, what does policy do — [`Act`](Decision::Act) on its
+/// own, [`Confirm`](Decision::Confirm) first, or [`Block`](Decision::Block)
+/// outright? Never consults the model — the boundary is policy.
+///
+/// The kernel owns the envelope-independent posture
+/// ([`Reversibility::default_decision`]); this function applies the person's two
+/// levers on top of it: `auto_external` can *narrow* an otherwise-autonomous read
+/// that leaves the device, and `auto_consequential` can *widen* an
+/// outward-but-reversible action to run on its own. The irreversible band stays
+/// blocked regardless — a mistaken confirm is unrecoverable, so it is refused, not
+/// offered, until the person opens it per capability (no opener exists yet).
+fn classify(info: &CapabilityInfo, env: &crate::application::AutonomyEnvelope) -> Decision {
+    match info.reversibility.default_decision() {
+        // The un-undoable is refused outright — deny-by-default, whatever the
+        // envelope says (ADR 0024).
+        Decision::Block => Decision::Block,
+        // Autonomous by default (Observe / Reversible), but a read that leaves the
+        // device waits for confirmation if the person narrowed the envelope to keep
+        // on-device actions in-hand.
+        Decision::Act => {
+            if info.reaches_external && !env.auto_external {
+                Decision::Confirm
+            } else {
+                Decision::Act
+            }
+        }
+        // Confirm by default (outward but reversible); autonomous only when the
+        // person has widened the envelope to allow consequential actions.
+        Decision::Confirm => {
+            if env.auto_consequential {
+                Decision::Act
+            } else {
+                Decision::Confirm
+            }
+        }
+    }
+}
+
+/// Whether a skill may run on its own this turn — exactly when the deterministic
+/// [`classify`] verdict is [`Act`](Decision::Act).
 fn may_run_autonomously(info: &CapabilityInfo, env: &crate::application::AutonomyEnvelope) -> bool {
-    // The un-undoable is NEVER run on its own, whatever the envelope says (ADR 0024).
-    // Irreversible actions only ever happen via an explicit, confirmed request.
-    if !info.reversible {
-        return false;
-    }
-    match info.autonomy {
-        // Observe-only skills never act.
-        AutonomyLevel::Observe => false,
-        // Read-only / low-stakes: autonomous, unless it leaves the device and the
-        // person has narrowed the envelope to keep on-device actions in-hand.
-        AutonomyLevel::ActWithinPolicy => !info.reaches_external || env.auto_external,
-        // Consequential (propose-and-approve, or per-action confirm): only
-        // autonomous if the person has widened the envelope to allow it; otherwise
-        // it surfaces for confirmation (the default).
-        AutonomyLevel::Suggest | AutonomyLevel::ConfirmEachAction => env.auto_consequential,
-    }
+    classify(info, env) == Decision::Act
 }
 
 impl CapabilityRunner for RegistryRunner {
@@ -1692,6 +1704,16 @@ impl CapabilityRunner for RegistryRunner {
             .iter()
             .find(|c| c.info().id == id)
             .ok_or_else(|| format!("no such skill '{id}'"))?;
+        // Deny-by-default on the irreversible band (ADR 0024): the un-undoable is
+        // blocked outright — never run, even on an explicit request — until the
+        // person opens it per capability. The failure mode is "it refused," never
+        // "it did something permanent." The classifier owns which band is blocked.
+        if classify(&cap.info(), &self.envelope) == Decision::Block {
+            return Err(format!(
+                "the '{id}' skill can't be undone, so Endora won't run it on its own — \
+                 this band stays blocked until you open it"
+            ));
+        }
         // Data-loss tripwire: for a skill that leaves the device, refuse to send a
         // request that appears to carry a secret (ADR 0023). Fail closed.
         if cap.info().reaches_external {
@@ -1722,75 +1744,118 @@ impl CapabilityRunner for RegistryRunner {
 mod tests {
     use super::*;
 
-    #[test]
-    fn the_envelope_classifier_gates_by_autonomy_and_reach() {
-        use crate::application::AutonomyEnvelope;
-        let info = |autonomy, reaches_external| CapabilityInfo {
+    /// A `CapabilityInfo` with a given band and reach; other fields are inert.
+    fn info(reversibility: Reversibility, reaches_external: bool) -> CapabilityInfo {
+        CapabilityInfo {
             id: "x",
             name: "X",
             description: "",
             category: "",
             reaches_external,
-            reversible: true,
-            autonomy,
+            reversibility,
             configured: true,
             needs: "",
             settings: &[],
-        };
-        let default_env = AutonomyEnvelope::default(); // external ok, consequential no
+        }
+    }
 
-        // Read-only local: always autonomous.
-        assert!(may_run_autonomously(
-            &info(AutonomyLevel::ActWithinPolicy, false),
-            &default_env
-        ));
-        // Read-only external: autonomous by default...
-        assert!(may_run_autonomously(
-            &info(AutonomyLevel::ActWithinPolicy, true),
-            &default_env
-        ));
-        // ...but not if the person narrows the envelope.
+    #[test]
+    fn the_classifier_maps_band_reach_and_envelope_to_a_decision() {
+        use crate::application::AutonomyEnvelope;
+        use Reversibility::{OutwardReversible, Reversible};
+        let default_env = AutonomyEnvelope::default(); // external ok, consequential no
         let no_external = AutonomyEnvelope {
             auto_external: false,
             auto_consequential: false,
         };
-        assert!(!may_run_autonomously(
-            &info(AutonomyLevel::ActWithinPolicy, true),
-            &no_external
-        ));
-        // Consequential: confirm by default, autonomous only when widened.
-        assert!(!may_run_autonomously(
-            &info(AutonomyLevel::ConfirmEachAction, true),
-            &default_env
-        ));
         let widened = AutonomyEnvelope {
             auto_external: true,
             auto_consequential: true,
         };
-        assert!(may_run_autonomously(
-            &info(AutonomyLevel::ConfirmEachAction, true),
-            &widened
-        ));
-        // Observe never acts, even fully widened.
-        assert!(!may_run_autonomously(
-            &info(AutonomyLevel::Observe, false),
-            &widened
-        ));
 
-        // The un-undoable is NEVER autonomous, even fully widened (ADR 0024).
-        let irreversible = CapabilityInfo {
-            id: "book",
-            name: "Book",
-            description: "",
-            category: "",
-            reaches_external: true,
-            reversible: false,
-            autonomy: AutonomyLevel::ConfirmEachAction,
-            configured: true,
-            needs: "",
-            settings: &[],
+        // Reversible local read: always acts.
+        assert_eq!(
+            classify(&info(Reversible, false), &default_env),
+            Decision::Act
+        );
+        // Reversible external read: acts by default...
+        assert_eq!(
+            classify(&info(Reversible, true), &default_env),
+            Decision::Act
+        );
+        // ...but waits for confirmation when the person narrows the envelope.
+        assert_eq!(
+            classify(&info(Reversible, true), &no_external),
+            Decision::Confirm
+        );
+        // Outward but reversible: confirm by default, acts only when widened.
+        assert_eq!(
+            classify(&info(OutwardReversible, true), &default_env),
+            Decision::Confirm
+        );
+        assert_eq!(
+            classify(&info(OutwardReversible, true), &widened),
+            Decision::Act
+        );
+
+        // `may_run_autonomously` is exactly "the verdict is Act".
+        assert!(may_run_autonomously(&info(Reversible, false), &default_env));
+        assert!(!may_run_autonomously(
+            &info(OutwardReversible, true),
+            &default_env
+        ));
+    }
+
+    #[test]
+    fn the_classifier_blocks_the_irreversible_rather_than_confirming_it() {
+        use crate::application::AutonomyEnvelope;
+        // Blocked outright, not merely confirmed — even fully widened (ADR 0024).
+        let widened = AutonomyEnvelope {
+            auto_external: true,
+            auto_consequential: true,
         };
-        assert!(!may_run_autonomously(&irreversible, &widened));
+        assert_eq!(
+            classify(&info(Reversibility::Irreversible, true), &widened),
+            Decision::Block
+        );
+        assert!(!may_run_autonomously(
+            &info(Reversibility::Irreversible, true),
+            &widened
+        ));
+    }
+
+    #[test]
+    fn run_refuses_an_irreversible_skill_deny_by_default() {
+        // A skill whose effect can't be undone must be refused by the execution
+        // path itself, not just excluded from autonomous runs (ADR 0024).
+        struct IrreversibleSkill;
+        impl Capability for IrreversibleSkill {
+            fn info(&self) -> CapabilityInfo {
+                CapabilityInfo {
+                    id: "wire_transfer",
+                    name: "Wire transfer",
+                    description: "",
+                    category: "",
+                    reaches_external: true,
+                    reversibility: Reversibility::Irreversible,
+                    configured: true,
+                    needs: "",
+                    settings: &[],
+                }
+            }
+            fn invoke(
+                &self,
+                _input: &Value,
+                _settings: &CapabilitySettings,
+            ) -> Result<Value, CapabilityError> {
+                panic!("an irreversible skill must never be invoked");
+            }
+        }
+        let runner = RegistryRunner::new(Arc::new(vec![
+            Arc::new(IrreversibleSkill) as Arc<dyn Capability>
+        ]));
+        let err = runner.run("wire_transfer", "{}").unwrap_err();
+        assert!(err.contains("can't be undone"), "unexpected error: {err}");
     }
 
     #[test]
