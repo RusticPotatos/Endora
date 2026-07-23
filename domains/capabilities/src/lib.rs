@@ -25,7 +25,8 @@ pub use application::{
     ModelSlot, ModelTuneSchedule, ModelTuneScheduleRepository, Sampling,
 };
 pub use infrastructure::{
-    Capability, CapabilityError, CapabilityInfo, CapabilitySettings, RegistryRunner, SettingSpec,
-    default_capabilities, redact_pii_in_value, scan_outbound_secret,
+    Capability, CapabilityError, CapabilityInfo, CapabilitySettings, CompositeRunner, McpClient,
+    McpRunner, McpToolInfo, RegistryRunner, SettingSpec, default_capabilities, redact_pii_in_value,
+    scan_outbound_secret,
 };
 pub use store::{ConfigStore, migrate};
