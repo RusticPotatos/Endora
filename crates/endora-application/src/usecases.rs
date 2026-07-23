@@ -1132,27 +1132,41 @@ pub fn send_to_butler_streaming(
     // gathering above was silent, so this is the first prose the person sees, and
     // it builds up live. A deterministic honesty reply (`answer_ctx == None`) is
     // emitted at once — the model never gets to stream a guess in that case.
-    let mut streamed = answer_ctx.is_some();
+    let mut streamed = false;
     if let Some(mut ctx) = answer_ctx {
         // The final answer is prose for the person — route it to the synthesizer
         // (the generalist), not the tool-tuned router, so plain conversation
         // ("good morning") is answered reliably.
         ctx.synthesize = true;
-        reply = butler
-            .respond_streaming(&history, &prefs, &ctx, on_token)
-            .unwrap_or_else(|_| reply.clone());
-        // A weak local model occasionally streams an empty "reply" field. Rather
-        // than dead-end on the fallback, retry once NON-streamed (more reliable)
-        // and emit that — so the person always gets a real answer.
-        if reply.text.trim().is_empty() {
-            if let Ok(retry) = butler.respond(&history, &prefs, &ctx) {
-                if !retry.text.trim().is_empty() {
-                    on_token(retry.text.trim());
-                    reply = retry;
-                    streamed = true;
+        // Track whether prose was actually streamed live. The streaming request
+        // drops the JSON-object grammar so tokens can stream (see the butler infra);
+        // a model that instead answers in plain prose the preview-extractor doesn't
+        // recognize would emit nothing live — in which case we still deliver the
+        // parsed answer below, at once, so the person is never left empty-handed.
+        let mut emitted = false;
+        {
+            let mut live = |chunk: &str| {
+                if !chunk.is_empty() {
+                    emitted = true;
+                }
+                on_token(chunk);
+            };
+            reply = butler
+                .respond_streaming(&history, &prefs, &ctx, &mut live)
+                .unwrap_or_else(|_| reply.clone());
+            // A weak local model occasionally streams an empty "reply" field. Rather
+            // than dead-end on the fallback, retry once NON-streamed (more reliable)
+            // and emit that — so the person always gets a real answer.
+            if reply.text.trim().is_empty() {
+                if let Ok(retry) = butler.respond(&history, &prefs, &ctx) {
+                    if !retry.text.trim().is_empty() {
+                        live(retry.text.trim());
+                        reply = retry;
+                    }
                 }
             }
         }
+        streamed = emitted;
     }
     // The capability ladder (local-first): the local rung came up empty. Before
     // falling back to the honest "I'm not sure", climb to the deeper (bigger/cloud)
