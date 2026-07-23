@@ -766,6 +766,161 @@ pub fn recent_activity(
     Ok(items)
 }
 
+/// One agentic gathering pass — the butler reaching for its skills.
+struct Gathering {
+    /// The final round's reply (its proposals/beliefs, and text if it answered
+    /// without needing a skill).
+    reply: ButlerReply,
+    /// Real skill results as `- id: output` lines, to ground the answer.
+    gathered: Vec<String>,
+    /// Whether the butler reached for any skill at all this pass.
+    requested_skill: bool,
+}
+
+/// The agentic loop, shared by the chat turn and the proactive flows (brief,
+/// nightly): hand the butler its full skill catalog (via [`ButlerContext`]) and let
+/// it reach for whatever it decides it needs, across up to `max_rounds` steps. The
+/// model chooses the skills — this never scripts them. Each proposed skill is
+/// authorized by policy (reversible + autonomous only; irreversible is never run on
+/// its own — ADR 0024), run, and its real result fed back for the next step;
+/// consequential/blocked decisions are audited (ADR 0005). **Grounding stays in
+/// code**: only real skill output is fed back, so the answer is built from facts,
+/// never invented.
+///
+/// # Errors
+/// [`AppError::Model`] if the butler brain is unavailable.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "explicit dependencies, no hidden state"
+)]
+fn gather_with_skills(
+    butler: &dyn Butler,
+    capabilities: &dyn CapabilityRunner,
+    audit: &dyn AuditLog,
+    ids: &impl IdSource,
+    clock: &impl Clock,
+    history: &[ChatMessage],
+    prefs: &[Preference],
+    context: &ButlerContext,
+    max_rounds: usize,
+    on_step: &mut dyn FnMut(ButlerStep),
+    activity: &mut Vec<String>,
+) -> Result<Gathering, AppError> {
+    let mut gathered: Vec<String> = Vec::new();
+    let mut requested_skill = false;
+    let mut reply = ButlerReply::default();
+    for round in 0..=max_rounds {
+        let mut ctx = context.clone();
+        if !gathered.is_empty() {
+            ctx.tool_result = Some(format!(
+                "Results you've gathered this turn — use another skill if you still need \
+                 more, otherwise give your complete answer using ALL of these:\n{}",
+                gathered.join("\n")
+            ));
+        }
+        reply = butler
+            .respond(history, prefs, &ctx)
+            .map_err(|e| AppError::Model {
+                message: e.to_string(),
+            })?;
+        let Some(used) = reply.capability_use.take() else {
+            break; // ready to answer — nothing more to gather
+        };
+        requested_skill = true;
+        if round == max_rounds {
+            break; // safety bound — answer with what was gathered
+        }
+        let id = used.capability.clone();
+        let spec = capabilities.available().into_iter().find(|c| c.id == id);
+        if spec.as_ref().is_some_and(|s| s.configured && s.autonomous) {
+            // Cleared to run on its own (configured + reversible/read-only). Show the
+            // step as it happens, then feed the result back for the next round.
+            let label = progress_label(&id);
+            on_step(ButlerStep {
+                skill: id.clone(),
+                status: StepStatus::Running,
+                label: label.clone(),
+                output: None,
+            });
+            match capabilities.run(&id, &used.input_json) {
+                Ok(out) => {
+                    on_step(ButlerStep {
+                        skill: id.clone(),
+                        status: StepStatus::Done,
+                        label,
+                        output: Some(out.clone()),
+                    });
+                    activity.push(format!("Used the {id} skill"));
+                    gathered.push(format!("- {id}: {out}"));
+                }
+                Err(e) => {
+                    on_step(ButlerStep {
+                        skill: id.clone(),
+                        status: StepStatus::Failed,
+                        label,
+                        output: Some(format!("failed: {e}")),
+                    });
+                    activity.push(format!("Tried the {id} skill, but it failed"));
+                    gathered.push(format!("- {id}: failed ({e}) — do not invent a result"));
+                }
+            }
+        } else {
+            // The model asked for a skill it can't just run: off, awaiting setup, or
+            // a consequential/blocked action. Record what policy decided (audit
+            // trail) and tell the butler honestly so it asks or points to setup,
+            // rather than faking it or dead-ending.
+            let decision = capabilities.decision(&id);
+            if spec.as_ref().is_some_and(|s| s.configured) {
+                let audited = match decision {
+                    Some(Decision::Block) => Some(format!(
+                        "Policy blocked the '{id}' skill — irreversible and not opened (refused, not run)"
+                    )),
+                    Some(Decision::Confirm) => Some(format!(
+                        "Policy required confirmation for the '{id}' skill (not run on its own)"
+                    )),
+                    _ => None,
+                };
+                if let Some(summary) = audited {
+                    if let Ok(rec) =
+                        AuditRecord::new(AuditId::new(ids.new_id()), clock.now(), &summary)
+                    {
+                        let _ = audit.append(&rec);
+                    }
+                }
+            }
+            let note = match spec {
+                Some(s) if !s.configured => format!(
+                    "- {id}: not set up — can't use it; tell them plainly and point them to set \
+                     it up under Skills"
+                ),
+                Some(_) if decision == Some(Decision::Block) => format!(
+                    "- {id}: can't be undone and isn't allowed yet — you can't do it even if they \
+                     ask; tell them they can allow it under Skills first"
+                ),
+                Some(_) => {
+                    format!("- {id}: consequential — needs their go-ahead; ask, don't do it")
+                }
+                None => format!("- {id}: no such skill — can't do that yet"),
+            };
+            on_step(ButlerStep {
+                skill: id.clone(),
+                status: StepStatus::Blocked,
+                label: progress_label(&id),
+                output: None,
+            });
+            activity.push(format!(
+                "Couldn't use {id} (off, not set up, or needs confirming)"
+            ));
+            gathered.push(note);
+        }
+    }
+    Ok(Gathering {
+        reply,
+        gathered,
+        requested_skill,
+    })
+}
+
 /// Sends a message to the butler and records both turns.
 ///
 /// Appends the person's message, asks the [`Butler`] to respond to the full
@@ -902,133 +1057,40 @@ pub fn send_to_butler_streaming(
     // `activity` — a plain-language record of what the butler did this turn.
     let mut activity: Vec<String> = Vec::new();
 
-    // AGENTIC LOOP (ADR 0019): the butler plans and uses SEVERAL reversible skills
-    // across steps to fully serve the request — gather weather, then news, then
-    // whatever else it needs — showing each step as it works. The model proposes
-    // each skill; policy authorizes (reversible + autonomous only, ADR 0024); the
-    // capability runs; its result feeds the next step. Bounded so it always ends,
-    // and it NEVER runs anything irreversible on its own.
+    // AGENTIC LOOP (ADR 0019/0024): hand the butler its full skill catalog and let
+    // it reach for whatever it needs, across steps — grounded and policy-gated. The
+    // same primitive backs the proactive flows (brief, nightly).
     const MAX_TOOL_ROUNDS: usize = 6;
-    let mut gathered: Vec<String> = Vec::new();
-    let mut model_requested_skill = false;
-    let mut reply = ButlerReply::default();
+    let gathering = gather_with_skills(
+        butler,
+        capabilities,
+        audit,
+        ids,
+        clock,
+        &history,
+        &prefs,
+        context,
+        MAX_TOOL_ROUNDS,
+        on_step,
+        &mut activity,
+    )?;
+    let mut reply = gathering.reply;
+    let model_requested_skill = gathering.requested_skill;
     // The context the FINAL answer is produced from. `Some` ⇒ stream the answer
     // token-by-token from the model (grounded by whatever it gathered); `None` ⇒
-    // the reply is a deterministic honesty string (emitted at once, never the
-    // model's guess). The gathering rounds below run non-streamed and silent —
-    // only steps show — so nothing speculative ever reaches the reply bubble.
-    let mut answer_ctx: Option<ButlerContext> = None;
-    for round in 0..=MAX_TOOL_ROUNDS {
+    // the reply is a deterministic honesty string (set by the anti-fabrication net
+    // below, emitted at once, never the model's guess).
+    let mut answer_ctx: Option<ButlerContext> = Some({
         let mut ctx = context.clone();
-        if !gathered.is_empty() {
+        if !gathering.gathered.is_empty() {
             ctx.tool_result = Some(format!(
                 "Results you've gathered this turn — use another skill if you still need \
                  more, otherwise give your complete answer using ALL of these:\n{}",
-                gathered.join("\n")
+                gathering.gathered.join("\n")
             ));
         }
-        reply = butler
-            .respond(&history, &prefs, &ctx)
-            .map_err(|e| AppError::Model {
-                message: e.to_string(),
-            })?;
-        let Some(used) = reply.capability_use.take() else {
-            answer_ctx = Some(ctx); // ready to answer — stream from this context
-            break;
-        };
-        model_requested_skill = true;
-        if round == MAX_TOOL_ROUNDS {
-            answer_ctx = Some(ctx); // safety bound — answer with what was gathered
-            break;
-        }
-        let id = used.capability.clone();
-        let spec = capabilities.available().into_iter().find(|c| c.id == id);
-        if spec.as_ref().is_some_and(|s| s.configured && s.autonomous) {
-            // Cleared to run on its own (configured + reversible/read-only). Show the
-            // step as it happens, then feed the result back for the next round.
-            let label = progress_label(&id);
-            on_step(ButlerStep {
-                skill: id.clone(),
-                status: StepStatus::Running,
-                label: label.clone(),
-                output: None,
-            });
-            match capabilities.run(&id, &used.input_json) {
-                Ok(out) => {
-                    on_step(ButlerStep {
-                        skill: id.clone(),
-                        status: StepStatus::Done,
-                        label,
-                        output: Some(out.clone()),
-                    });
-                    activity.push(format!("Used the {id} skill"));
-                    gathered.push(format!("- {id}: {out}"));
-                }
-                Err(e) => {
-                    on_step(ButlerStep {
-                        skill: id.clone(),
-                        status: StepStatus::Failed,
-                        label,
-                        output: Some(format!("failed: {e}")),
-                    });
-                    activity.push(format!("Tried the {id} skill, but it failed"));
-                    gathered.push(format!("- {id}: failed ({e}) — do not invent a result"));
-                }
-            }
-        } else {
-            // The model asked for a skill it can't just run: off, awaiting setup, or
-            // a consequential/blocked action. Record what policy decided (audit
-            // trail) and tell the butler honestly so it asks or points to setup,
-            // rather than faking it or dead-ending.
-            let decision = capabilities.decision(&id);
-            // Audit the consequential policy decision on a configured skill (ADRs
-            // 0005/0024): what policy did — confirm-required or blocked. Best-effort
-            // (transparency, never the critical path), so a failure never breaks the
-            // turn; routine autonomous acts stay in the action feed, not here.
-            if spec.as_ref().is_some_and(|s| s.configured) {
-                let audited = match decision {
-                    Some(Decision::Block) => Some(format!(
-                        "Policy blocked the '{id}' skill — irreversible and not opened (refused, not run)"
-                    )),
-                    Some(Decision::Confirm) => Some(format!(
-                        "Policy required confirmation for the '{id}' skill (not run on its own)"
-                    )),
-                    _ => None,
-                };
-                if let Some(summary) = audited {
-                    if let Ok(rec) =
-                        AuditRecord::new(AuditId::new(ids.new_id()), clock.now(), &summary)
-                    {
-                        let _ = audit.append(&rec);
-                    }
-                }
-            }
-            let note = match spec {
-                Some(s) if !s.configured => format!(
-                    "- {id}: not set up — can't use it; tell them plainly and point them to set \
-                     it up under Skills"
-                ),
-                Some(_) if decision == Some(Decision::Block) => format!(
-                    "- {id}: can't be undone and isn't allowed yet — you can't do it even if they \
-                     ask; tell them they can allow it under Skills first"
-                ),
-                Some(_) => {
-                    format!("- {id}: consequential — needs their go-ahead; ask, don't do it")
-                }
-                None => format!("- {id}: no such skill — can't do that yet"),
-            };
-            on_step(ButlerStep {
-                skill: id.clone(),
-                status: StepStatus::Blocked,
-                label: progress_label(&id),
-                output: None,
-            });
-            activity.push(format!(
-                "Couldn't use {id} (off, not set up, or needs confirming)"
-            ));
-            gathered.push(note);
-        }
-    }
+        ctx
+    });
 
     // Deterministic net against fabrication: if the person clearly asked something
     // factual (weather, news, active safety alerts) and the model reached for NO
