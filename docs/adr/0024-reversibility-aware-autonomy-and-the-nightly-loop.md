@@ -44,11 +44,17 @@ once-per-night) drives `run_due_nightly_loop` from the heartbeat. On a due night
 **reflects** — the butler forms/refines beliefs, saved via the same
 `record_formed_beliefs` path as a chat turn — and **surfaces** a short overnight
 note, logging to the action feed. It runs **entirely within the reversible band**:
-it calls no skills and takes no consequential action, so there is nothing it could
-do that it couldn't undo. `GET/POST /v1/nightly-loop/schedule` + a console control
-own the cadence. **Pending (deepen)**: a richer *experiment* step — researching
-topics via reversible skills and forming/testing hypotheses (`Assumption` /
-`Experiment`) — and value-weighted topic selection.
+at most it runs reversible *information* skills to research a topic, and it takes no
+consequential action, so there is nothing it could do that it couldn't undo.
+`GET/POST /v1/nightly-loop/schedule` + a console control own the cadence.
+
+The *experiment* step is now included: the loop picks a **value-weighted focus** (an
+active North Star the person is pursuing, else what needs attention) and
+**researches** it with a reversible information skill (`web_answers` / `knowledge`)
+— cleared exactly like the daily brief (configured + reversible + autonomous only,
+no fabrication) — then feeds the finding into the reflection. **Pending (deepen
+further)**: forming/testing hypotheses as first-class `Assumption` / `Experiment`
+entities in the direction context.
 
 ## Context
 
