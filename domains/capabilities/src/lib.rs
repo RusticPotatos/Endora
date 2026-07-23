@@ -21,8 +21,8 @@ pub mod store;
 pub use application::{
     AutonomyEnvelope, AutonomyEnvelopeRepository, ButlerModelConfig, ButlerModelConfigRepository,
     CapabilityConfigRepository, CapabilityRunner, CapabilitySettingsRepository, CapabilitySpec,
-    CapabilityUse, DeepModel, DeepModelRepository, ModelSlot, ModelTuneSchedule,
-    ModelTuneScheduleRepository, Sampling,
+    CapabilityUse, DeepModel, DeepModelRepository, McpServer, McpServerRegistry, McpTransport,
+    ModelSlot, ModelTuneSchedule, ModelTuneScheduleRepository, Sampling,
 };
 pub use infrastructure::{
     Capability, CapabilityError, CapabilityInfo, CapabilitySettings, RegistryRunner, SettingSpec,
