@@ -1338,6 +1338,13 @@ async fn stream_chat(
         let _turn = turn_lock.lock_owned().await;
         tokio::task::spawn_blocking(move || {
             let runner = build_runner(config.as_ref(), capabilities);
+            // The deeper (bigger/cloud) rung of the capability ladder, if the person
+            // configured one — the turn escalates to it only when the local model
+            // comes up empty (ADR 0027).
+            let deep = DeepModelRepository::get(config.as_ref())
+                .ok()
+                .flatten()
+                .map(|d| endora_infrastructure::DeepModelAsker::new(d.url, d.model, d.api_key));
             let event = |v: serde_json::Value| Event::default().data(v.to_string());
             let context = match usecases::butler_context(
                 dirs.as_ref(),
@@ -1392,6 +1399,8 @@ async fn stream_chat(
                     &runner,
                     butler.as_ref(),
                     audit.as_ref(),
+                    deep.as_ref()
+                        .map(|d| d as &dyn endora_application::DeepAsker),
                     ids.as_ref(),
                     clock.as_ref(),
                     &context,

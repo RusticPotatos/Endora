@@ -9,10 +9,21 @@ runtime-swappable model config (`ButlerModelConfig`, ADR-linked). It is
 **runnable end-to-end**, on demand: `POST /v1/model-layer/run` (a console
 "Evaluate & tune" button) discovers the local endpoint's models, scores each, and
 gate-adopts the best local one in the background, logging scores + the decision to
-activity. **Pending**: automating it — a `ModelDiscoverySchedule` driving it from
-the heartbeat on a cadence / off-hours (so it doesn't contend with chat on the
-GPU), and widening discovery beyond the local endpoint to Hugging Face /
-leaderboards.
+activity.
+
+**The capability ladder is implemented** (automatic escalation): the person can
+configure a deeper (bigger / cloud) model, exposed to the butler turn through a
+`DeepAsker` port (`endora_infrastructure::DeepModelAsker`). The turn is
+**local-first** — it escalates to the deeper rung **only when the local model comes
+up empty**, a deterministic trigger (not the model's self-report), and only when the
+person has opted in by configuring one. Escalation returns **prose only**, never an
+action, so it stays a reasoning aid behind the deterministic policy boundary; and
+the asker applies the **egress guard + PII minimization** (ADR 0023) before the
+question leaves the device, logging the escalation to the action feed. **Pending**:
+automating the local tune — a `ModelDiscoverySchedule` driving `run_model_layer`
+from the heartbeat off-hours — and widening discovery beyond the local endpoint to
+Hugging Face / leaderboards; and richer escalation triggers (e.g. low-confidence,
+not only empty).
 
 ## Context
 
