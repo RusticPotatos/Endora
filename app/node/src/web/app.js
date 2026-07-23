@@ -21,6 +21,8 @@ let STEP_LIST = [];            // the live action trail for the turn currently s
 let SHOW_ACTIVITY = localStorage.getItem("endora.showActivity") !== "0"; // default on
 let CHAT_STREAMING = false;    // true while a reply is streaming in (guards live-render)
 let CHAT_QUEUE = [];           // messages awaiting their turn — turns are SERIALIZED
+let CHAT_INFLIGHT = null;      // the user message whose reply is streaming now (not yet persisted)
+let LIVE_REPLY = "";           // the reply text accumulated so far, so a re-render can rebuild it
 let CHAT_ABORT = null;         // AbortController for the in-flight turn (the Stop button)
 let NAV = { v: "chat" };       // current view (the butler is the landing page)
 
@@ -603,6 +605,18 @@ function viewChat() {
     ? `<div class="row" style="justify-content:flex-start; margin:6px 0;" id="chat-pending">
          <div class="bubble butler thinking"><span class="dots"><i></i><i></i><i></i></span></div></div>`
     : "";
+  // While a turn is streaming, DB.messages doesn't include it yet. Rebuild the
+  // in-flight exchange from live state — the just-sent message(s) and the reply
+  // growing in (id="chat-live" so the token loop keeps writing into it) — so a
+  // re-render mid-stream (e.g. toggling Speak) can't wipe the current turn.
+  let liveTurn = "";
+  if (CHAT_STREAMING) {
+    const users = [CHAT_INFLIGHT, ...CHAT_QUEUE].filter(Boolean).map((t) =>
+      `<div class="row" style="justify-content:flex-end; margin:6px 0;"><div class="bubble me">${esc(t)}</div></div>`).join("");
+    const replyInner = LIVE_REPLY ? esc(LIVE_REPLY) : `<span class="dots"><i></i><i></i><i></i></span>`;
+    liveTurn = users +
+      `<div class="row" style="justify-content:flex-start; margin:6px 0;" id="chat-live"><div class="bubble butler">${replyInner}</div></div>`;
+  }
   // A subtle note of what Endora did behind the scenes on the latest turn —
   // learnings and inbox additions — so you can see what the conversation changed.
   const last = list[list.length - 1];
@@ -625,7 +639,7 @@ function viewChat() {
     : "";
   return `
     <div class="chat">
-      <div id="chat-thread" class="chat-thread">${(msgs || `<div class="empty">Say what you'd like to work on — the butler will help organize it.</div>`) + pending + activity}</div>
+      <div id="chat-thread" class="chat-thread">${(msgs || (CHAT_STREAMING ? "" : `<div class="empty">Say what you'd like to work on — the butler will help organize it.</div>`)) + (CHAT_STREAMING ? liveTurn : pending) + activity}</div>
       ${awaiting ? "" : proposals}
       <div class="composer">
         <textarea id="chat-input" rows="1" placeholder="Talk to your butler…"></textarea>
@@ -1243,6 +1257,13 @@ function updateComposerButton() {
     : `${icon("send")}<span>Send</span>`;
 }
 
+// Update the Speak button in place (icon + label) without a full render, so
+// toggling it never disturbs a streaming reply.
+function updateSpeakButton() {
+  const b = document.querySelector('[data-act="toggle:speak"]');
+  if (b) b.innerHTML = `${icon(SPEAK ? "speakerOn" : "speakerOff")}<span>${SPEAK ? "Speaking" : "Speak"}</span>`;
+}
+
 // Stop the in-flight turn and drop anything still queued.
 function stopChat() {
   CHAT_QUEUE = [];
@@ -1269,6 +1290,11 @@ function sendChat() {
 async function drainChat() {
   if (CHAT_STREAMING || !CHAT_QUEUE.length) return;
   const msg = CHAT_QUEUE.shift();
+  // Remember the in-flight turn in module state so a re-render (e.g. toggling
+  // Speak) can rebuild the just-sent message and the reply growing in, instead of
+  // wiping them (they aren't in the persisted DB.messages until the turn ends).
+  CHAT_INFLIGHT = msg;
+  LIVE_REPLY = "";
   // A live action trail sits just above the reply bubble; it fills in as the
   // butler routes to skills, and collapses to a summary when the turn ends.
   STEP_LIST = [];
@@ -1279,7 +1305,6 @@ async function drainChat() {
   if (thread0) thread0.appendChild(stepsWrap);
   // A butler bubble that starts as a "thinking" indicator and grows with tokens.
   const live = appendBubble('<span class="dots"><i></i><i></i><i></i></span>', "butler", "chat-live");
-  const body = live && live.querySelector(".bubble");
   let acc = "";
   CHAT_STREAMING = true;
   CHAT_ABORT = new AbortController();
@@ -1311,8 +1336,14 @@ async function drainChat() {
         try { ev = JSON.parse(dataLine.slice(5).trim()); } catch (_) { continue; }
         if (ev.type === "token") {
           acc += ev.text;
-          if (body) body.textContent = acc;
-          if (live) scrollBubbleIntoView(live);
+          LIVE_REPLY = acc;
+          // Look the bubble up fresh each token: if a re-render replaced the thread
+          // mid-stream, viewChat rebuilt a #chat-live from LIVE_REPLY and we keep
+          // writing into that one rather than a now-detached node.
+          const liveRow = document.getElementById("chat-live");
+          const bod = liveRow && liveRow.querySelector(".bubble");
+          if (bod) bod.textContent = acc;
+          if (liveRow) scrollBubbleIntoView(liveRow);
         } else if (ev.type === "step") {
           if (ev.status === "running") {
             STEP_LIST.push({ skill: ev.skill, label: ev.label, status: "running", output: null });
@@ -1342,7 +1373,9 @@ async function drainChat() {
   } catch (e) {
     if (e && e.name === "AbortError") {
       // Stopped by the person: leave a note; the server keeps whatever it saved.
-      if (body) body.textContent = "(stopped)";
+      const liveRow = document.getElementById("chat-live");
+      const bod = liveRow && liveRow.querySelector(".bubble");
+      if (bod) bod.textContent = "(stopped)";
       renderSteps(stepsWrap, STEP_LIST, false);
     } else {
       // Don't re-send (the server may have already saved the turn) — reload to the
@@ -1352,7 +1385,10 @@ async function drainChat() {
   } finally {
     CHAT_STREAMING = false;
     CHAT_ABORT = null;
-    if (live) live.removeAttribute("id"); // free "chat-live" for the next turn
+    CHAT_INFLIGHT = null;
+    LIVE_REPLY = "";
+    const liveRow = document.getElementById("chat-live");
+    if (liveRow) liveRow.removeAttribute("id"); // free "chat-live" for the next turn
     updateComposerButton();
     if (CHAT_QUEUE.length) {
       // More queued: don't full-reload (it would wipe the not-yet-persisted queued
@@ -1453,7 +1489,10 @@ async function dispatch(act) {
       SPEAK = !SPEAK;
       localStorage.setItem("endora.speak", SPEAK ? "1" : "0");
       if (SPEAK) unlockSpeech(); else if (TTS) TTS.cancel();
-      return render();
+      // Update the button in place — a full render() rebuilds the chat thread from
+      // persisted state and would wipe a reply that's still streaming in.
+      updateSpeakButton();
+      return;
     }
     if (verb === "toggle" && noun === "haptic") {
       PTT_HAPTIC = !PTT_HAPTIC;
