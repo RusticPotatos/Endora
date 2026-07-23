@@ -1,6 +1,6 @@
 //! Capabilities application layer — ports for running and configuring skills.
 
-use endora_kernel::RepositoryError;
+use endora_kernel::{Decision, RepositoryError};
 
 pub use crate::domain::AutonomyEnvelope;
 
@@ -259,4 +259,22 @@ pub trait CapabilityRunner {
     /// Runs a capability with JSON input, returning its JSON output or an error
     /// message. Only ever called for capabilities the policy layer has cleared.
     fn run(&self, id: &str, input_json: &str) -> Result<String, String>;
+
+    /// The deterministic policy [`Decision`] for a capability by id (ADRs
+    /// 0005/0024) — what policy does with it: [`Act`](Decision::Act) on its own,
+    /// [`Confirm`](Decision::Confirm) first, or [`Block`](Decision::Block) outright.
+    /// `None` if there is no such skill.
+    ///
+    /// The default derives a coarse verdict from [`CapabilitySpec::autonomous`]
+    /// (act, else confirm); a runner that classifies reversibility bands overrides
+    /// this to report [`Block`](Decision::Block) for the un-undoable.
+    fn decision(&self, id: &str) -> Option<Decision> {
+        self.available().into_iter().find(|s| s.id == id).map(|s| {
+            if s.autonomous {
+                Decision::Act
+            } else {
+                Decision::Confirm
+            }
+        })
+    }
 }
