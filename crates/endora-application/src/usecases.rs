@@ -1775,9 +1775,17 @@ pub fn set_checkin_schedule(
 /// # Errors
 /// [`AppError::Repository`] if the backend fails, or [`AppError::Domain`] if the
 /// generated message is somehow invalid.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "explicit dependencies, no hidden state"
+)]
 pub fn run_due_checkin(
     chat: &impl ChatRepository,
     checkins: &impl CheckinRepository,
+    preferences: &impl PreferenceRepository,
+    capabilities: &dyn CapabilityRunner,
+    butler: &dyn Butler,
+    audit: &dyn AuditLog,
     ids: &impl IdSource,
     clock: &impl Clock,
     context: &ButlerContext,
@@ -1793,10 +1801,55 @@ pub fn run_due_checkin(
     schedule.next_at = Timestamp::from_unix_millis(now.unix_millis() + schedule.interval_ms);
     checkins.set(&schedule)?;
 
+    // FLOOR (anti-fabrication): a grounded proactive opener that always works, even
+    // if the model brain is down — leads with what Endora understands of the person.
+    let floor = checkin_text(context);
+
+    // AGENTIC reach-out (ADR 0019): the butler already sees its skill catalogue and
+    // the person's life through `context`. Let it decide whether any skill would make
+    // this check-in genuinely useful, reach for it, and write the note — its choice,
+    // not a template. Policy gates every skill to reversible + autonomous only, so a
+    // check-in still can't do anything consequential (ADR 0024). Falls back to the
+    // floor if the model is unavailable or returns nothing usable.
+    let prefs = preferences.list_all().unwrap_or_default();
+    let mut activity: Vec<String> = Vec::new();
+    let checkin_ctx = ButlerContext {
+        now: format_datetime_utc(now.unix_millis()),
+        ..context.clone()
+    };
+    let ask = [ChatMessage::new(
+        MessageId::new(ids.new_id()),
+        MessageRole::User,
+        "It's time for your regular check-in and they're here. Look at what they're \
+         working toward and anything that needs attention — reach for any skills that \
+         would make this genuinely useful — then send a short, warm note: what you \
+         noticed, anything you can help with right now, and ask whether there's \
+         anything they'd like you to focus on more or do differently. Add nothing you \
+         don't actually know.",
+        now,
+    )?];
+    let text = gather_with_skills(
+        butler,
+        capabilities,
+        audit,
+        ids,
+        clock,
+        &ask,
+        &prefs,
+        &checkin_ctx,
+        4,
+        &mut |_step| {},
+        &mut activity,
+    )
+    .ok()
+    .map(|g| g.reply.text.trim().to_owned())
+    .filter(|t| !t.is_empty())
+    .unwrap_or(floor);
+
     let message = ChatMessage::new(
         MessageId::new(ids.new_id()),
         MessageRole::Butler,
-        &checkin_text(context),
+        &text,
         now,
     )?;
     chat.append(&message)?;
@@ -3880,15 +3933,46 @@ mod tests {
     #[test]
     fn checkin_runs_when_due_posts_a_message_and_advances_the_schedule() {
         use super::{chat_history, run_due_checkin, set_checkin_schedule};
+        use std::cell::RefCell;
         let store = FakeStore::default();
         let ids = SeqIds::default();
         let ctx = ButlerContext::default();
+        let audit = FakeAudit {
+            records: RefCell::new(Vec::new()),
+        };
+
+        // The butler reaches out agentically: it composes the note (here without
+        // needing any skill) and that reply is what gets posted.
+        struct CheckinButler;
+        impl Butler for CheckinButler {
+            fn respond(
+                &self,
+                _h: &[ChatMessage],
+                _p: &[Preference],
+                _c: &ButlerContext,
+            ) -> Result<ButlerReply, ProposalError> {
+                Ok(ButlerReply {
+                    text: "Checking in — anything you'd like me to focus on?".to_owned(),
+                    ..ButlerReply::default()
+                })
+            }
+        }
 
         // Off by default: nothing posts.
         assert!(
-            run_due_checkin(&store, &store, &ids, &FixedClock(1_000), &ctx)
-                .unwrap()
-                .is_none()
+            run_due_checkin(
+                &store,
+                &store,
+                &store,
+                &NoCapabilities,
+                &CheckinButler,
+                &audit,
+                &ids,
+                &FixedClock(1_000),
+                &ctx,
+            )
+            .unwrap()
+            .is_none()
         );
 
         // Enable with a 60s interval; next check-in is one interval out.
@@ -3898,16 +3982,38 @@ mod tests {
 
         // Before it is due: still nothing.
         assert!(
-            run_due_checkin(&store, &store, &ids, &FixedClock(30_000), &ctx)
-                .unwrap()
-                .is_none()
+            run_due_checkin(
+                &store,
+                &store,
+                &store,
+                &NoCapabilities,
+                &CheckinButler,
+                &audit,
+                &ids,
+                &FixedClock(30_000),
+                &ctx,
+            )
+            .unwrap()
+            .is_none()
         );
 
         // At/after the due time: the butler reaches out, and the schedule advances.
-        let posted = run_due_checkin(&store, &store, &ids, &FixedClock(61_000), &ctx).unwrap();
+        let posted = run_due_checkin(
+            &store,
+            &store,
+            &store,
+            &NoCapabilities,
+            &CheckinButler,
+            &audit,
+            &ids,
+            &FixedClock(61_000),
+            &ctx,
+        )
+        .unwrap();
         let msg = posted.expect("a check-in should have posted");
         assert_eq!(msg.role(), MessageRole::Butler);
-        assert!(!msg.text().is_empty());
+        // The posted note is the butler's own agentic reply.
+        assert!(msg.text().contains("focus on"));
         assert_eq!(chat_history(&store).unwrap().len(), 1);
         assert_eq!(
             CheckinRepository::get(&store)
@@ -3920,9 +4026,19 @@ mod tests {
 
         // It does not double-post on the very next tick.
         assert!(
-            run_due_checkin(&store, &store, &ids, &FixedClock(61_500), &ctx)
-                .unwrap()
-                .is_none()
+            run_due_checkin(
+                &store,
+                &store,
+                &store,
+                &NoCapabilities,
+                &CheckinButler,
+                &audit,
+                &ids,
+                &FixedClock(61_500),
+                &ctx,
+            )
+            .unwrap()
+            .is_none()
         );
     }
 
