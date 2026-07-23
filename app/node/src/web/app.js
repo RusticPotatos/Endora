@@ -838,11 +838,24 @@ function samplingRow(prefix, slot) {
 // brain answers day-to-day (local by default); the deep model is a bigger brain
 // you escalate to per question. Mixture + sampling live under "Advanced" so the
 // common case stays clean (ADR 0027; runtime-swappable, no restart).
+// The preset key whose endpoint matches a saved base URL (so a configured card
+// shows e.g. "DeepSeek" instead of "Choose a provider…"). "" if none matches.
+function presetFor(url) {
+  if (!url) return "";
+  const u = url.trim().replace(/\/+$/, "");
+  const hit = Object.entries(MODEL_PRESETS).find(([, v]) => (v.base_url || "").replace(/\/+$/, "") === u);
+  return hit ? hit[0] : "";
+}
+
+// Provider <option>s with `selected` set on the given key.
+function presetOptions(selected) {
+  return Object.entries(MODEL_PRESETS)
+    .map(([k, v]) => `<option value="${k}"${k === selected ? " selected" : ""}>${esc(v.label)}</option>`).join("");
+}
+
 function modelsSection() {
   const mc = MODEL_CONFIG || {};
   const dm = DEEP_MODEL || {};
-  const options = Object.entries(MODEL_PRESETS)
-    .map(([k, v]) => `<option value="${k}">${esc(v.label)}</option>`).join("");
   const mix = !!mc.mixture;
   // When the everyday model isn't overridden, name the deployment-default brain that
   // is actually running, so the card shows what's active instead of just "default".
@@ -856,7 +869,7 @@ function modelsSection() {
     <div class="card model-card">
       <div class="model-role">Everyday${mc.configured ? "" : ` · <span class="sub" style="font-weight:400;">using deployment default${activeDefault ? `: <b>${activeDefault}</b>` : ""}</span>`}</div>
       <div class="field"><label>Provider preset</label>
-        <select id="m-preset" onchange="applyModelPreset(this.value)"><option value="">Choose a provider…</option>${options}</select></div>
+        <select id="m-preset" onchange="applyModelPreset(this.value)"><option value="">Choose a provider…</option>${presetOptions(presetFor(mc.base_url))}</select></div>
       <div class="field"><label>Endpoint</label>
         <input id="m-base" placeholder="${esc(mc.default_base_url || "http://host.docker.internal:11434/v1")}" value="${esc(mc.base_url || "")}" /></div>
       <div class="field"><label>API key <span style="opacity:.7;">· cloud only</span></label>
@@ -890,10 +903,10 @@ function modelsSection() {
     </div>
 
     <div class="card model-card" style="margin-top:14px;">
-      <div class="model-role">Deep <span class="sub" style="font-weight:400;">· a bigger brain for hard questions</span></div>
+      <div class="model-role">Deep${dm.configured ? ` · <span class="sub" style="font-weight:400;">using <b>${esc(dm.model || "")}</b></span>` : ` <span class="sub" style="font-weight:400;">· a bigger brain for hard questions</span>`}</div>
       <div class="sub" style="margin:-4px 0 2px;">Optional, opt-in per question. It leaves your device, so it passes the same egress guard.</div>
       <div class="field"><label>Provider preset</label>
-        <select id="d-preset" onchange="applyDeepPreset(this.value)"><option value="">Choose a provider…</option>${options}</select></div>
+        <select id="d-preset" onchange="applyDeepPreset(this.value)"><option value="">Choose a provider…</option>${presetOptions(presetFor(dm.url))}</select></div>
       <div class="field"><label>Endpoint</label>
         <input id="deep-url" placeholder="https://api.provider.com/v1" value="${esc(dm.url || "")}" /></div>
       <div class="field"><label>API key</label>
