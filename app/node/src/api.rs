@@ -272,25 +272,49 @@ async fn notify_on_change(
 /// The styles and script are separate files (`/styles.css`, `/app.js`) so the
 /// console is organized by responsibility, not one giant file — still embedded,
 /// still no build step.
-async fn index() -> Html<&'static str> {
-    Html(include_str!("web/index.html"))
+async fn index() -> impl axum::response::IntoResponse {
+    // Cache-bust the assets per build: the shell is always revalidated (no-cache),
+    // and it points at `/app.js?v=<build>` / `/styles.css?v=<build>` so a deploy
+    // serves fresh script/styles even to a browser that heuristically cached the
+    // old ones (the assets themselves are then immutable per build, below).
+    let v = endora_application::build_id();
+    let html = include_str!("web/index.html")
+        .replace("/app.js", &format!("/app.js?v={v}"))
+        .replace("/styles.css", &format!("/styles.css?v={v}"));
+    (
+        [(axum::http::header::CACHE_CONTROL, "no-cache")],
+        Html(html),
+    )
 }
 
-/// The console's stylesheet (embedded).
+/// The console's stylesheet (embedded). Immutable per build — the shell versions
+/// the URL, so a new build fetches a new URL rather than a stale cached one.
 async fn console_css() -> impl axum::response::IntoResponse {
     (
-        [(axum::http::header::CONTENT_TYPE, "text/css; charset=utf-8")],
+        [
+            (axum::http::header::CONTENT_TYPE, "text/css; charset=utf-8"),
+            (
+                axum::http::header::CACHE_CONTROL,
+                "public, max-age=31536000, immutable",
+            ),
+        ],
         include_str!("web/styles.css"),
     )
 }
 
-/// The console's script (embedded).
+/// The console's script (embedded). Immutable per build (see [`console_css`]).
 async fn console_js() -> impl axum::response::IntoResponse {
     (
-        [(
-            axum::http::header::CONTENT_TYPE,
-            "application/javascript; charset=utf-8",
-        )],
+        [
+            (
+                axum::http::header::CONTENT_TYPE,
+                "application/javascript; charset=utf-8",
+            ),
+            (
+                axum::http::header::CACHE_CONTROL,
+                "public, max-age=31536000, immutable",
+            ),
+        ],
         include_str!("web/app.js"),
     )
 }
