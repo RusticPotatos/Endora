@@ -713,6 +713,11 @@ impl Capability for WeatherCapability {
             "condition": condition,
             "high_c": w["daily"]["temperature_2m_max"][0],
             "low_c": w["daily"]["temperature_2m_min"][0],
+            // The local time this reading is FROM — a brief is posted once and never
+            // updates, so "current" can go stale by the time it's read. Surfacing the
+            // observation time makes that obvious ("as of 7 AM") instead of looking
+            // like a wrong right-now temperature.
+            "observed_at": w["current"]["time"],
             "warning": if severe { format!("Heads-up: {condition} expected — take care.") } else { String::new() },
         }))
     }
@@ -734,14 +739,37 @@ impl Capability for WeatherCapability {
         if let Some(f) = o["feels_like_c"].as_f64() {
             s.push_str(&format!(" (feels like {})", cf(f)));
         }
+        // Time-stamp the reading so a stale brief reads as "as of this morning",
+        // not a wrong current temperature.
+        if let Some(at) = o["observed_at"].as_str().and_then(observed_time) {
+            s.push_str(&format!(" as of {at}"));
+        }
         if let (Some(hi), Some(lo)) = (o["high_c"].as_f64(), o["low_c"].as_f64()) {
-            s.push_str(&format!("; high {}, low {} today", cf(hi), cf(lo)));
+            s.push_str(&format!("; today's high {}, low {}", cf(hi), cf(lo)));
         }
         if let Some(w) = o["warning"].as_str().filter(|w| !w.is_empty()) {
             s.push_str(&format!(". {w}"));
         }
         s
     }
+}
+
+/// Formats an Open-Meteo local ISO timestamp (`2026-07-23T07:00`) as a friendly
+/// 12-hour time (`7:00 AM`), for the "as of …" tag on a weather reading. Returns
+/// `None` if the shape isn't recognized.
+fn observed_time(iso: &str) -> Option<String> {
+    let hm = iso.split('T').nth(1)?;
+    let (h, m) = hm.split_once(':')?;
+    let h: u32 = h.parse().ok()?;
+    if h > 23 || m.len() != 2 || !m.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let ampm = if h < 12 { "AM" } else { "PM" };
+    let h12 = match h % 12 {
+        0 => 12,
+        x => x,
+    };
+    Some(format!("{h12}:{m} {ampm}"))
 }
 
 fn weather_condition(code: i64) -> &'static str {
@@ -2031,6 +2059,29 @@ mod tests {
             .invoke(&json!({}), &CapabilitySettings::new())
             .unwrap_err();
         assert!(matches!(err, CapabilityError::Unavailable(_)));
+    }
+
+    #[test]
+    fn observed_time_formats_the_open_meteo_timestamp() {
+        assert_eq!(
+            observed_time("2026-07-23T07:00").as_deref(),
+            Some("7:00 AM")
+        );
+        assert_eq!(
+            observed_time("2026-07-23T00:15").as_deref(),
+            Some("12:15 AM")
+        );
+        assert_eq!(
+            observed_time("2026-07-23T13:30").as_deref(),
+            Some("1:30 PM")
+        );
+        assert_eq!(
+            observed_time("2026-07-23T12:00").as_deref(),
+            Some("12:00 PM")
+        );
+        // Unrecognized shapes fall back to no tag (rather than a wrong one).
+        assert_eq!(observed_time("garbage"), None);
+        assert_eq!(observed_time("2026-07-23T99:00"), None);
     }
 
     #[test]
