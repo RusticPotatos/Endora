@@ -190,8 +190,10 @@ pub trait CapabilitySettingsRepository {
 }
 
 /// Persists per-capability configuration the person controls from the Skills view
-/// (ADR 0021). This first slice stores only the **enabled** flag; only overrides
-/// are stored — a capability with no row keeps its built-in default (enabled).
+/// (ADR 0021). Stores the **enabled** flag and, per ADR 0024, whether the person
+/// has **opened the irreversible band** for this capability. Only overrides are
+/// stored — a capability with no row keeps its built-in defaults (enabled, and the
+/// irreversible band closed).
 pub trait CapabilityConfigRepository {
     /// The stored enabled/disabled overrides, as `(id, enabled)` pairs. Ids not
     /// present here have never been toggled and use their default.
@@ -200,11 +202,28 @@ pub trait CapabilityConfigRepository {
     /// [`RepositoryError`] if the backend fails.
     fn enabled_overrides(&self) -> Result<Vec<(String, bool)>, RepositoryError>;
 
-    /// Sets whether a capability is enabled (upsert by id).
+    /// Sets whether a capability is enabled (upsert by id, leaving the
+    /// irreversible-opener flag untouched).
     ///
     /// # Errors
     /// [`RepositoryError`] if the backend fails.
     fn set_enabled(&self, id: &str, enabled: bool) -> Result<(), RepositoryError>;
+
+    /// The capabilities whose **irreversible band the person has opened** (ADR
+    /// 0024), as `(id, opened)` pairs. Ids not present default to closed — the
+    /// irreversible band stays blocked until deliberately opened, per capability.
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if the backend fails.
+    fn opened_overrides(&self) -> Result<Vec<(String, bool)>, RepositoryError>;
+
+    /// Opens or re-closes a capability's irreversible band (upsert by id, leaving
+    /// the enabled flag untouched). Opening only ever moves the un-undoable from
+    /// *blocked* to *confirm-each-use* — never to autonomous (ADR 0024).
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if the backend fails.
+    fn set_open_irreversible(&self, id: &str, opened: bool) -> Result<(), RepositoryError>;
 }
 
 /// A capability the butler asked to use this turn (parsed from its reply). The

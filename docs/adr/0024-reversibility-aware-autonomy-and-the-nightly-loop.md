@@ -20,9 +20,16 @@ level), and the classifier maps that band + reach + the person's envelope to a
 (`auto_consequential`) or *narrows* (`auto_external`) it — never past the
 irreversible block. The execution path (`RegistryRunner::run`) blocks the
 irreversible band deny-by-default, and the skills API surfaces the band
-(`reversibility`). **Pending**: a per-capability *opener* to widen the irreversible
-band on the person's explicit say-so, surfacing the band + decision in the console
-UI and the audit trail, and the **nightly self-improvement loop** below.
+(`reversibility`).
+
+The **per-capability opener** is implemented: the person can deliberately open a
+specific capability's irreversible band (`CapabilityConfigRepository::set_open_irreversible`,
+`POST /v1/capabilities/{id}/open`, a Skills-view control), which moves it from
+`Block` to `Confirm` — **never** to `Act`, so an opened irreversible skill is
+confirmed on every use and never runs autonomously. Opening a skill records a line
+to the action feed. **Pending**: recording the *classified decision* per action in
+the audit trail (beyond the open/close event), and the **nightly self-improvement
+loop** below.
 
 ## Context
 
