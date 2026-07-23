@@ -75,6 +75,11 @@ pub struct AppState {
     /// The butler's skills (weather, web, …) — declared modules the butler can
     /// reach for, each gated by its autonomy level (ADR 0019).
     pub capabilities: Arc<Vec<Arc<dyn Capability>>>,
+    /// Connected MCP servers, as a runner (ADR 0021). Long-lived (subprocesses),
+    /// so it is connected once at startup and shared across turns; a registry
+    /// change rebuilds it and swaps it in behind the lock. Merged with the built-in
+    /// registry per turn (see [`build_runner`]).
+    pub mcp: Arc<std::sync::RwLock<Arc<endora_capabilities::McpRunner>>>,
     /// Serializes butler *turns* (a chat reply, a proactive brief/check-in). The
     /// agentic loop reads history, calls the model several times, then appends —
     /// running two at once on one local model both thrashes it and lets turns
@@ -104,6 +109,12 @@ impl AppState {
         let config = Arc::new(endora_capabilities::ConfigStore::new(store.db()));
         let audit = Arc::new(endora_platform::AuditStore::new(store.db()));
         let events = Arc::new(endora_platform::EventStore::new(store.db()));
+        // Connect any registered MCP servers up front (subprocesses persist across
+        // turns). A server that fails to start is skipped, so startup never blocks
+        // on a bad one (ADR 0021).
+        let mcp = Arc::new(std::sync::RwLock::new(Arc::new(connect_mcp(
+            config.as_ref(),
+        ))));
         Self {
             store,
             chat,
@@ -119,9 +130,158 @@ impl AppState {
             butler,
             changes,
             capabilities: Arc::new(endora_infrastructure::default_capabilities()),
+            mcp,
             turn_lock: Arc::new(tokio::sync::Mutex::new(())),
         }
     }
+}
+
+/// Connects to every **enabled stdio** MCP server in the registry, returning a
+/// runner over the ones that came up (ADR 0021). A server whose process fails to
+/// start or handshake is skipped — its tools simply don't appear — so one bad server
+/// can't break startup or a turn. HTTP transport is a later slice.
+fn connect_mcp(config: &endora_capabilities::ConfigStore) -> endora_capabilities::McpRunner {
+    use endora_capabilities::{McpClient, McpServerRegistry, McpTransport, StdioMcpClient};
+    let servers = config.list().unwrap_or_default();
+    let clients: Vec<(String, Box<dyn McpClient>)> = servers
+        .into_iter()
+        .filter(|s| s.enabled)
+        .filter_map(|s| match &s.transport {
+            McpTransport::Stdio { command, args } => StdioMcpClient::spawn(command, args)
+                .ok()
+                .map(|c| (s.name, Box::new(c) as Box<dyn McpClient>)),
+            McpTransport::Http { .. } => None,
+        })
+        .collect();
+    endora_capabilities::McpRunner::connect(clients)
+}
+
+/// Rebuilds the connected-MCP runner from the current registry and swaps it into
+/// `slot`. Called after a registry change so new/removed servers take effect without
+/// a restart. Blocking (spawns subprocesses) — run it off the async path.
+fn reconnect_mcp(
+    config: &endora_capabilities::ConfigStore,
+    slot: &std::sync::RwLock<Arc<endora_capabilities::McpRunner>>,
+) {
+    let runner = Arc::new(connect_mcp(config));
+    // Recover a poisoned lock rather than panicking the handler.
+    match slot.write() {
+        Ok(mut guard) => *guard = runner,
+        Err(poisoned) => *poisoned.into_inner() = runner,
+    }
+}
+
+/// A snapshot of the shared MCP runner (cheap `Arc` clone), for composing this turn.
+fn mcp_snapshot(state: &AppState) -> Arc<endora_capabilities::McpRunner> {
+    match state.mcp.read() {
+        Ok(guard) => guard.clone(),
+        Err(poisoned) => poisoned.into_inner().clone(),
+    }
+}
+
+/// Lists the registered MCP servers and, for each, how many of its tools are
+/// currently live (ADR 0021). A server with 0 live tools is registered but didn't
+/// connect (bad command, unreachable, or disabled).
+async fn list_mcp_servers(
+    State(state): State<AppState>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    use endora_capabilities::{CapabilityRunner, McpServerRegistry, McpTransport};
+    let config = state.config.clone();
+    let servers = blocking(move || config.list().map_err(AppError::Repository)).await?;
+    let live: std::collections::HashSet<String> = mcp_snapshot(&state)
+        .available()
+        .into_iter()
+        .map(|s| s.id)
+        .collect();
+    let out: Vec<_> = servers
+        .into_iter()
+        .map(|s| {
+            let (transport, command, args, url) = match &s.transport {
+                McpTransport::Stdio { command, args } => {
+                    ("stdio", command.clone(), args.clone(), String::new())
+                }
+                McpTransport::Http { url } => ("http", String::new(), Vec::new(), url.clone()),
+            };
+            let prefix = format!("{}.", s.name);
+            let tools_live = live.iter().filter(|id| id.starts_with(&prefix)).count();
+            json!({
+                "name": s.name,
+                "transport": transport,
+                "command": command,
+                "args": args,
+                "url": url,
+                "enabled": s.enabled,
+                "tools_live": tools_live,
+            })
+        })
+        .collect();
+    Ok(Json(json!({ "servers": out })))
+}
+
+fn default_enabled() -> bool {
+    true
+}
+
+#[derive(Deserialize)]
+struct McpServerRequest {
+    name: String,
+    /// `"stdio"` (default) or `"http"`.
+    #[serde(default)]
+    transport: String,
+    #[serde(default)]
+    command: String,
+    #[serde(default)]
+    args: Vec<String>,
+    #[serde(default)]
+    url: String,
+    #[serde(default = "default_enabled")]
+    enabled: bool,
+}
+
+/// Registers (or replaces) an MCP server, then reconnects so its tools appear
+/// without a restart. Registration is deliberately a plain, network-trusted config
+/// write here (like the other 0.x config endpoints); the tools it exposes are still
+/// band-classified before they can run (ADR 0021/0024).
+async fn register_mcp_server(
+    State(state): State<AppState>,
+    Json(req): Json<McpServerRequest>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    use endora_capabilities::{McpServer, McpServerRegistry};
+    let config = state.config.clone();
+    let mcp = state.mcp.clone();
+    blocking(move || {
+        let enabled = req.enabled;
+        let mut server = match req.transport.as_str() {
+            "http" => McpServer::http(&req.name, &req.url),
+            _ => McpServer::stdio(&req.name, &req.command, req.args),
+        }
+        .map_err(AppError::Domain)?;
+        server.enabled = enabled;
+        McpServerRegistry::register(config.as_ref(), &server).map_err(AppError::Repository)?;
+        reconnect_mcp(config.as_ref(), mcp.as_ref());
+        Ok(())
+    })
+    .await?;
+    let _ = state.changes.send(());
+    Ok(Json(json!({ "ok": true })))
+}
+
+/// Removes an MCP server by name, then reconnects.
+async fn remove_mcp_server(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    use endora_capabilities::McpServerRegistry;
+    let config = state.config.clone();
+    let mcp = state.mcp.clone();
+    blocking(move || {
+        McpServerRegistry::remove(config.as_ref(), &name).map_err(AppError::Repository)?;
+        reconnect_mcp(config.as_ref(), mcp.as_ref());
+        Ok(())
+    })
+    .await?;
+    let _ = state.changes.send(());
+    Ok(Json(json!({ "ok": true })))
 }
 
 /// Builds the router for the node's HTTP API.
@@ -203,6 +363,14 @@ pub fn app(state: AppState) -> Router {
         .route("/v1/capabilities/{id}/invoke", post(invoke_capability))
         .route("/v1/capabilities/{id}/enable", post(set_capability_enabled))
         .route("/v1/capabilities/{id}/open", post(set_capability_open))
+        .route(
+            "/v1/mcp/servers",
+            get(list_mcp_servers).post(register_mcp_server),
+        )
+        .route(
+            "/v1/mcp/servers/{name}",
+            axum::routing::delete(remove_mcp_server),
+        )
         .route(
             "/v1/capabilities/{id}/config",
             post(set_capability_settings),
@@ -1193,17 +1361,25 @@ fn record_event(events: &endora_platform::EventStore, clock: &SystemClock, summa
 fn build_runner(
     config: &endora_capabilities::ConfigStore,
     capabilities: Arc<Vec<Arc<dyn Capability>>>,
-) -> endora_infrastructure::RegistryRunner {
+    mcp: Arc<endora_capabilities::McpRunner>,
+) -> endora_capabilities::CompositeRunner {
     let overrides = config.enabled_overrides().unwrap_or_default();
     let opened = config.opened_overrides().unwrap_or_default();
     let envelope = AutonomyEnvelopeRepository::get(config).unwrap_or_default();
-    endora_infrastructure::RegistryRunner::with_config(
+    // Fresh per turn so config/envelope/opener changes take effect immediately.
+    let registry = endora_infrastructure::RegistryRunner::with_config(
         capabilities,
         overrides,
         opened,
         envelope,
         settings_map(config),
-    )
+    );
+    // Built-in skills + connected MCP servers, behind one runner. The application
+    // never learns a tool's origin (ADR 0021).
+    endora_capabilities::CompositeRunner::new(vec![
+        Arc::new(registry) as Arc<dyn endora_capabilities::CapabilityRunner + Send + Sync>,
+        mcp as Arc<dyn endora_capabilities::CapabilityRunner + Send + Sync>,
+    ])
 }
 
 /// Loads all capability settings, grouped by capability id, for the runner.
@@ -1239,10 +1415,11 @@ async fn send_chat(
     let clock = state.clock.clone();
     let butler = state.butler.clone();
     let capabilities = state.capabilities.clone();
+    let mcp = mcp_snapshot(&state);
     // Serialize this turn against any other butler turn (chat or heartbeat brief).
     let _turn = state.turn_lock.clone().lock_owned().await;
     let (reply, suggestions, activity) = blocking(move || {
-        let runner = build_runner(config.as_ref(), capabilities);
+        let runner = build_runner(config.as_ref(), capabilities, mcp);
         // Ground the butler in the person's current life before it answers.
         let context = usecases::butler_context(
             dirs.as_ref(),
@@ -1296,8 +1473,9 @@ async fn brief(State(state): State<AppState>) -> Result<Json<serde_json::Value>,
     let clock = state.clock.clone();
     let capabilities = state.capabilities.clone();
     let butler = state.butler.clone();
+    let mcp = mcp_snapshot(&state);
     let result = blocking(move || {
-        let runner = build_runner(config.as_ref(), capabilities);
+        let runner = build_runner(config.as_ref(), capabilities, mcp);
         let out = usecases::daily_brief(
             chat.as_ref(),
             understanding.as_ref(),
@@ -1353,6 +1531,7 @@ async fn stream_chat(
     let butler = state.butler.clone();
     let changes = state.changes.clone();
     let capabilities = state.capabilities.clone();
+    let mcp = mcp_snapshot(&state);
     let message = req.message;
 
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Event>();
@@ -1364,7 +1543,7 @@ async fn stream_chat(
     tokio::task::spawn(async move {
         let _turn = turn_lock.lock_owned().await;
         tokio::task::spawn_blocking(move || {
-            let runner = build_runner(config.as_ref(), capabilities);
+            let runner = build_runner(config.as_ref(), capabilities, mcp);
             // The deeper (bigger/cloud) rung of the capability ladder, if the person
             // configured one — the turn escalates to it only when the local model
             // comes up empty (ADR 0027).
@@ -2629,11 +2808,12 @@ pub fn spawn_heartbeat(state: AppState) {
             let clock = state.clock.clone();
             let capabilities = state.capabilities.clone();
             let butler = state.butler.clone();
+            let mcp = mcp_snapshot(&state);
             // Take the turn lock so a proactive brief/check-in never interleaves
             // with a chat reply; held across the blocking work below.
             let _turn = state.turn_lock.clone().lock_owned().await;
             let posted = tokio::task::spawn_blocking(move || {
-                let runner = build_runner(config.as_ref(), capabilities);
+                let runner = build_runner(config.as_ref(), capabilities, mcp);
                 let context = usecases::butler_context(
                     dirs.as_ref(),
                     dirs.as_ref(),
