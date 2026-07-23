@@ -27,8 +27,8 @@ pub use application::{
 };
 pub use infrastructure::{
     Capability, CapabilityError, CapabilityInfo, CapabilitySettings, CompositeRunner, McpClient,
-    McpRunner, McpToolInfo, RegistryRunner, SettingSpec, default_capabilities, redact_pii_in_value,
-    scan_outbound_secret,
+    McpRunner, McpToolInfo, OpenerRunner, RegistryRunner, SettingSpec, default_capabilities,
+    redact_pii_in_value, scan_outbound_secret,
 };
 pub use mcp_stdio::StdioMcpClient;
 pub use store::{ConfigStore, migrate};

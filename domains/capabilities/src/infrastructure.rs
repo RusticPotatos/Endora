@@ -1980,6 +1980,56 @@ impl CapabilityRunner for CompositeRunner {
     }
 }
 
+/// A per-turn overlay that lifts an inner source's deny-by-default for tools the
+/// person has **opened** (ADR 0024). An opened tool moves from
+/// [`Block`](Decision::Block) to [`Confirm`](Decision::Confirm) — confirm-each-use,
+/// never autonomous — and only opened tools may run; everything the person hasn't
+/// opened stays blocked. Wraps the shared MCP runner so specific MCP tools can be
+/// allowed without rebuilding (respawning) the connection, and reuses the same
+/// opener set the built-in registry reads each turn.
+pub struct OpenerRunner {
+    inner: Arc<dyn CapabilityRunner + Send + Sync>,
+    opened: std::collections::HashSet<String>,
+}
+
+impl OpenerRunner {
+    /// Overlays `opened` (the ids the person has opened) onto `inner`.
+    #[must_use]
+    pub fn new(
+        inner: Arc<dyn CapabilityRunner + Send + Sync>,
+        opened: std::collections::HashSet<String>,
+    ) -> Self {
+        Self { inner, opened }
+    }
+}
+
+impl CapabilityRunner for OpenerRunner {
+    fn available(&self) -> Vec<crate::application::CapabilitySpec> {
+        self.inner.available()
+    }
+
+    fn decision(&self, id: &str) -> Option<Decision> {
+        match self.inner.decision(id)? {
+            // Opened: the un-undoable becomes confirm-each-use, never autonomous.
+            Decision::Block if self.opened.contains(id) => Some(Decision::Confirm),
+            other => Some(other),
+        }
+    }
+
+    fn run(&self, id: &str, input_json: &str) -> Result<String, String> {
+        // Deny-by-default at the run layer too: a blocked-and-unopened tool never
+        // runs, even on a direct call. Opened tools (now confirm-each-use) run —
+        // reaching run means policy cleared them (a confirmation happened).
+        if self.inner.decision(id) == Some(Decision::Block) && !self.opened.contains(id) {
+            return Err(format!(
+                "'{id}' isn't allowed yet — open it under Skills first (it will still \
+                 confirm every use)"
+            ));
+        }
+        self.inner.run(id, input_json)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2689,5 +2739,33 @@ mod tests {
             "create_event({})"
         );
         assert!(composite.run("missing", "{}").is_err());
+    }
+
+    #[test]
+    fn opener_runner_lifts_block_to_confirm_only_for_opened_tools() {
+        let mcp = Arc::new(McpRunner::connect(vec![(
+            "fs".to_owned(),
+            Box::new(FakeTransport {
+                tools: vec![tool("read_file"), tool("write_file")],
+                healthy: true,
+            }) as Box<dyn McpClient>,
+        )]));
+        // The person has opened only fs.write_file.
+        let opened: std::collections::HashSet<String> = ["fs.write_file".to_owned()].into();
+        let overlay = OpenerRunner::new(mcp, opened);
+
+        // Deny-by-default holds for the un-opened tool; the opened one becomes
+        // confirm-each-use (never autonomous — its spec stays non-autonomous).
+        assert_eq!(overlay.decision("fs.read_file"), Some(Decision::Block));
+        assert_eq!(overlay.decision("fs.write_file"), Some(Decision::Confirm));
+        assert!(overlay.available().iter().all(|s| !s.autonomous));
+
+        // Only the opened tool may run; the blocked one is refused even on a direct
+        // call. The opened tool routes through to the transport.
+        assert!(overlay.run("fs.read_file", "{}").is_err());
+        assert_eq!(
+            overlay.run("fs.write_file", "{\"p\":1}").unwrap(),
+            "write_file({\"p\":1})"
+        );
     }
 }
