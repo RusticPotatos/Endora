@@ -1942,13 +1942,15 @@ impl CapabilityRunner for McpRunner {
 /// across sources by construction (built-ins carry no dot; MCP tools are
 /// `server.tool`), so the first source that lists an id owns it.
 pub struct CompositeRunner {
-    sources: Vec<Box<dyn CapabilityRunner + Send + Sync>>,
+    sources: Vec<Arc<dyn CapabilityRunner + Send + Sync>>,
 }
 
 impl CompositeRunner {
-    /// Merges the given sources, consulted in order.
+    /// Merges the given sources, consulted in order. Sources are [`Arc`] so a
+    /// long-lived one (e.g. connected MCP servers) can be shared across turns while a
+    /// fresh per-turn source (the config-bound registry runner) sits beside it.
     #[must_use]
-    pub fn new(sources: Vec<Box<dyn CapabilityRunner + Send + Sync>>) -> Self {
+    pub fn new(sources: Vec<Arc<dyn CapabilityRunner + Send + Sync>>) -> Self {
         Self { sources }
     }
 
@@ -1957,7 +1959,7 @@ impl CompositeRunner {
         self.sources
             .iter()
             .find(|s| s.available().iter().any(|spec| spec.id == id))
-            .map(|b| &**b)
+            .map(AsRef::as_ref)
     }
 }
 
@@ -2666,7 +2668,7 @@ mod tests {
                 healthy: true,
             }) as Box<dyn McpClient>,
         )]);
-        let composite = CompositeRunner::new(vec![Box::new(FakeBuiltin), Box::new(mcp)]);
+        let composite = CompositeRunner::new(vec![Arc::new(FakeBuiltin), Arc::new(mcp)]);
 
         // Both sources' catalogs are merged.
         let ids: Vec<String> = composite.available().into_iter().map(|s| s.id).collect();
