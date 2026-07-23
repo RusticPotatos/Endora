@@ -2,7 +2,7 @@
 
 use endora_kernel::{Decision, RepositoryError};
 
-pub use crate::domain::AutonomyEnvelope;
+pub use crate::domain::{AutonomyEnvelope, McpServer, McpTransport};
 
 /// An optional **deep model** — a bigger/cloud AI the person configures for hard
 /// questions the local model can't handle well (like a phone escalating to a bigger
@@ -224,6 +224,39 @@ pub trait CapabilityConfigRepository {
     /// # Errors
     /// [`RepositoryError`] if the backend fails.
     fn set_open_irreversible(&self, id: &str, opened: bool) -> Result<(), RepositoryError>;
+}
+
+/// Persists the **MCP servers** the catalog draws tools from (ADR 0021). The stored
+/// rows are plain configuration; adding one is a gated capability (deny-by-default),
+/// and every tool a server exposes is still band-classified before it can run — an
+/// unknown tool is treated as irreversible and blocked (ADR 0024). Servers are keyed
+/// by [`McpServer::name`], which also namespaces their tools (`name.tool`).
+pub trait McpServerRegistry {
+    /// All registered servers, enabled or not.
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if the backend fails.
+    fn list(&self) -> Result<Vec<McpServer>, RepositoryError>;
+
+    /// Adds a server or replaces the one with the same name (upsert), persisting its
+    /// transport and enabled flag.
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if the backend fails.
+    fn register(&self, server: &McpServer) -> Result<(), RepositoryError>;
+
+    /// Switches a server on or off by name, leaving its transport untouched. A no-op
+    /// if no server has that name.
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if the backend fails.
+    fn set_enabled(&self, name: &str, enabled: bool) -> Result<(), RepositoryError>;
+
+    /// Removes a server by name (idempotent — removing an absent name is fine).
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if the backend fails.
+    fn remove(&self, name: &str) -> Result<(), RepositoryError>;
 }
 
 /// A capability the butler asked to use this turn (parsed from its reply). The
