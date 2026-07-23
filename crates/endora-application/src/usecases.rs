@@ -35,8 +35,8 @@ use endora_scheduling::{
 use crate::error::AppError;
 use crate::ports::{
     AttentionItem, AttentionKind, Butler, ButlerContext, ButlerProposal, ButlerReply, Clock,
-    FormedBelief, IdSource, MemorySnapshot, MemoryStore, NorthStarBrief, Proposer, Snooze,
-    SnoozeRepository, Suggestion, SuggestionRepository, SuggestionStatus,
+    DeepAsker, FormedBelief, IdSource, MemorySnapshot, MemoryStore, NorthStarBrief, Proposer,
+    Snooze, SnoozeRepository, Suggestion, SuggestionRepository, SuggestionStatus,
 };
 
 /// Creates and stores a new [`Direction`].
@@ -794,7 +794,8 @@ pub fn send_to_butler(
     context: &ButlerContext,
     text: &str,
 ) -> Result<(ChatMessage, Vec<Suggestion>, Vec<String>), AppError> {
-    // Non-streaming is just streaming with the tokens and steps discarded.
+    // Non-streaming is just streaming with the tokens and steps discarded. Deep
+    // escalation is wired on the streaming (primary chat) path; None here.
     send_to_butler_streaming(
         chat,
         preferences,
@@ -803,6 +804,7 @@ pub fn send_to_butler(
         capabilities,
         butler,
         audit,
+        None,
         ids,
         clock,
         context,
@@ -878,6 +880,7 @@ pub fn send_to_butler_streaming(
     capabilities: &dyn CapabilityRunner,
     butler: &dyn Butler,
     audit: &dyn AuditLog,
+    deep: Option<&dyn DeepAsker>,
     ids: &impl IdSource,
     clock: &impl Clock,
     context: &ButlerContext,
@@ -1151,13 +1154,27 @@ pub fn send_to_butler_streaming(
             }
         }
     }
-    // A brain that returns nothing usable still owes the person a reply.
+    // The capability ladder (local-first): the local rung came up empty. Before
+    // falling back to the honest "I'm not sure", climb to the deeper (bigger/cloud)
+    // model if the person configured one. It only ever returns prose — never an
+    // action — so this is a reasoning aid, not a way around the policy boundary; and
+    // the deep asker applies the egress guard, since the question leaves the device.
+    let mut escalated = false;
     let reply_text = if reply.text.trim().is_empty() {
-        "I'm not sure how to help with that yet — can you say a bit more?".to_owned()
+        match deep.and_then(|d| d.ask(text)).map(|a| a.trim().to_owned()) {
+            Some(answer) if !answer.is_empty() => {
+                activity.push("Asked the deep model (the local model came up empty)".to_owned());
+                escalated = true;
+                answer
+            }
+            _ => "I'm not sure how to help with that yet — can you say a bit more?".to_owned(),
+        }
     } else {
         reply.text.trim().to_owned()
     };
-    if !streamed {
+    // Emit the answer if it wasn't already streamed live (the honest fallback and a
+    // deep-escalated answer are produced here, after streaming, so send them now).
+    if !streamed || escalated {
         on_token(&reply_text);
     }
     let butler = ChatMessage::new(
@@ -3205,6 +3222,118 @@ mod tests {
                 .map(|r| r.summary().to_owned())
                 .collect::<Vec<_>>()
         );
+    }
+
+    #[test]
+    fn the_ladder_escalates_to_the_deep_model_when_the_local_comes_up_empty() {
+        use super::send_to_butler_streaming;
+        use crate::ports::DeepAsker;
+
+        // The local rung: answers with nothing usable (an empty reply).
+        struct EmptyButler;
+        impl Butler for EmptyButler {
+            fn respond(
+                &self,
+                _h: &[ChatMessage],
+                _p: &[crate::Preference],
+                _c: &ButlerContext,
+            ) -> Result<ButlerReply, ProposalError> {
+                Ok(ButlerReply::default())
+            }
+        }
+        // The deeper rung: answers.
+        struct DeepModel;
+        impl DeepAsker for DeepModel {
+            fn ask(&self, q: &str) -> Option<String> {
+                assert!(q.contains("quantum"), "the person's question is escalated");
+                Some("A qubit can hold superposition.".to_owned())
+            }
+        }
+
+        let store = FakeStore::default();
+        let ids = SeqIds::default();
+        let clock = FixedClock(1_000);
+        let deep = DeepModel;
+        let mut streamed = String::new();
+        let (msg, _s, activity) = send_to_butler_streaming(
+            &store,
+            &store,
+            &store,
+            &store,
+            &NoCapabilities,
+            &EmptyButler,
+            &FakeAudit::default(),
+            Some(&deep),
+            &ids,
+            &clock,
+            &ButlerContext::default(),
+            "explain quantum superposition",
+            &mut |t| streamed.push_str(t),
+            &mut |_| {},
+        )
+        .unwrap();
+
+        // The deep answer becomes the reply, is streamed to the person, and the
+        // escalation is recorded — instead of the honest "I'm not sure" fallback.
+        assert!(msg.text().contains("superposition"));
+        assert!(
+            streamed.contains("superposition"),
+            "the escalated answer is streamed"
+        );
+        assert!(activity.iter().any(|a| a.contains("deep model")));
+    }
+
+    #[test]
+    fn the_ladder_leaves_a_good_local_answer_alone() {
+        use super::send_to_butler_streaming;
+        use crate::ports::DeepAsker;
+
+        struct GoodButler;
+        impl Butler for GoodButler {
+            fn respond(
+                &self,
+                _h: &[ChatMessage],
+                _p: &[crate::Preference],
+                _c: &ButlerContext,
+            ) -> Result<ButlerReply, ProposalError> {
+                Ok(ButlerReply {
+                    text: "Hello — glad to help.".to_owned(),
+                    ..ButlerReply::default()
+                })
+            }
+        }
+        // A deeper model that must never be consulted when the local rung answered.
+        struct PanicDeep;
+        impl DeepAsker for PanicDeep {
+            fn ask(&self, _q: &str) -> Option<String> {
+                panic!("must not escalate when the local model answered");
+            }
+        }
+
+        let store = FakeStore::default();
+        let ids = SeqIds::default();
+        let clock = FixedClock(1_000);
+        let deep = PanicDeep;
+        let (msg, _s, activity) = send_to_butler_streaming(
+            &store,
+            &store,
+            &store,
+            &store,
+            &NoCapabilities,
+            &GoodButler,
+            &FakeAudit::default(),
+            Some(&deep),
+            &ids,
+            &clock,
+            &ButlerContext::default(),
+            "hi",
+            &mut |_| {},
+            &mut |_| {},
+        )
+        .unwrap();
+
+        assert!(msg.text().contains("glad to help"));
+        assert!(activity.iter().all(|a| !a.contains("deep model")));
     }
 
     #[test]
