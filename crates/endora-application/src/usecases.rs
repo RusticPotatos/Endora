@@ -1854,6 +1854,27 @@ pub fn post_butler_message(
     Ok(message)
 }
 
+/// Posts a person's message to the chat (used by out-of-band paths like a manual
+/// "Ask deep", so the exchange shows both sides). Returns the persisted message.
+///
+/// # Errors
+/// [`AppError::Domain`] if the text is blank, or [`AppError::Repository`] on failure.
+pub fn post_user_message(
+    chat: &impl ChatRepository,
+    ids: &impl IdSource,
+    clock: &impl Clock,
+    text: &str,
+) -> Result<ChatMessage, AppError> {
+    let message = ChatMessage::new(
+        MessageId::new(ids.new_id()),
+        MessageRole::User,
+        text,
+        clock.now(),
+    )?;
+    chat.append(&message)?;
+    Ok(message)
+}
+
 /// Returns the daily-brief schedule, defaulting to **off**.
 ///
 /// # Errors
