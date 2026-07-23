@@ -69,7 +69,9 @@ const shortId = (id) => id.slice(0, 6) + "…";
 function flash(text, kind) {
   msgEl.textContent = text;
   msgEl.className = "msg show " + (kind || "ok");
-  if (kind === "ok") setTimeout(() => (msgEl.className = "msg"), 2500);
+  // A fixed toast, so always auto-dismiss (errors linger a little longer to read).
+  clearTimeout(flash._t);
+  flash._t = setTimeout(() => (msgEl.className = "msg"), kind === "err" ? 6000 : 2500);
 }
 function clearMsg() { msgEl.className = "msg"; }
 

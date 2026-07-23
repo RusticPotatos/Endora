@@ -114,7 +114,16 @@
   .form { display: flex; gap: 8px; margin: 8px 0 4px; align-items: flex-start; }
   .stack { display: flex; flex-direction: column; gap: 6px; }
   .empty { color: var(--muted); font-style: italic; padding: 6px 2px; }
-  .msg { padding: 10px 14px; border-radius: 8px; margin-bottom: 12px; display: none; }
+  /* Feedback toast — FIXED just below the header so it's always visible, even
+     when scrolled down a long page (e.g. the model cards near the bottom of
+     Settings). It used to sit in-flow at the top, so an action's result — "Saved",
+     "Connected", an error — went unseen and buttons looked dead. */
+  .msg {
+    position: fixed; left: 50%; top: 66px; transform: translateX(-50%); z-index: 60;
+    max-width: min(520px, calc(100vw - 24px)); width: max-content;
+    padding: 10px 16px; border-radius: 12px; box-shadow: var(--shadow-lift);
+    display: none; text-align: center; font-size: 14px;
+  }
   .msg.show { display: block; }
   .msg.err { background: color-mix(in srgb, var(--bad) 15%, transparent); color: var(--bad); border: 1px solid var(--bad); }
   .msg.ok { background: color-mix(in srgb, var(--ok) 15%, transparent); color: var(--ok); border: 1px solid var(--ok); }
