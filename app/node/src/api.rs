@@ -2647,6 +2647,7 @@ pub fn spawn_heartbeat(state: AppState) {
                     schedules.as_ref(),
                     &runner,
                     butler.as_ref(),
+                    audit.as_ref(),
                     ids.as_ref(),
                     clock.as_ref(),
                     &context,
