@@ -2416,6 +2416,10 @@ async fn deep_ask(
         let mut v = serde_json::Value::String(question.clone());
         endora_infrastructure::redact_pii_in_value(&mut v);
         let safe_question = v.as_str().unwrap_or(&question).to_owned();
+        // Persist the person's question (what they typed, kept local) so the chat
+        // shows both sides after a reload — this path otherwise stored only the
+        // answer, so the question vanished and it looked like nothing happened.
+        usecases::post_user_message(chat.as_ref(), ids.as_ref(), clock.as_ref(), &question)?;
         // Record the person's question, then the deep answer.
         record_event(events.as_ref(), clock.as_ref(), "Asked the deep model");
         match endora_infrastructure::ask_deep_model(
