@@ -9,6 +9,7 @@ let CHECKIN = { enabled: false, interval_ms: 0 }; // proactive check-in cadence
 let CAPS = [];                 // the butler's capabilities/skills (modules)
 let AUTONOMY = { auto_external: true, auto_consequential: false }; // the autonomy envelope (ADR 0022)
 let BRIEF_SCHED = { enabled: false, hour_utc: 12 }; // daily-brief schedule
+let NIGHT_SCHED = { enabled: false, hour_utc: 3 }; // nightly self-improvement loop (ADR 0024)
 let DEEP_MODEL = { configured: false, key_set: false, url: "", model: "" }; // optional bigger AI
 let MODEL_CONFIG = { configured: false, key_set: false, base_url: "", mixture: false,
   single: {}, router: {}, synth: {} }; // the butler's own models, editable at runtime (ADR 0027)
@@ -96,6 +97,7 @@ async function reload() {
     api("GET", "/v1/autonomy"),
   ]);
   try { BRIEF_SCHED = await api("GET", "/v1/brief/schedule"); } catch (_) {}
+  try { NIGHT_SCHED = await api("GET", "/v1/nightly-loop/schedule"); } catch (_) {}
   try { DEEP_MODEL = await api("GET", "/v1/deep-model"); } catch (_) {}
   try { MODEL_CONFIG = await api("GET", "/v1/model-config"); } catch (_) {}
   try { TUNE_SCHED = await api("GET", "/v1/model-tune/schedule"); } catch (_) {}
@@ -632,10 +634,24 @@ function viewChat() {
         <option value="off" ${!BRIEF_SCHED.enabled ? "selected" : ""}>Off</option>
         ${hourOpts}
       </select>`;
+  // Nightly self-improvement loop (ADR 0024): the butler reviews the day and
+  // reflects overnight, within the reversible band. Local hours shown; saved UTC.
+  const nightLocalHour = NIGHT_SCHED.enabled ? ((NIGHT_SCHED.hour_utc - tzOff) % 24 + 24) % 24 : -1;
+  const nightHourOpts = Array.from({ length: 24 }, (_, h) => {
+    const ampm = h < 12 ? "AM" : "PM"; const h12 = (h % 12) || 12;
+    return `<option value="${h}" ${h === nightLocalHour ? "selected" : ""}>${h12}:00 ${ampm}</option>`;
+  }).join("");
+  const nightControl = `
+      <span class="sub" title="Overnight, the butler reviews the day and updates what it understands about you — it only reflects and drafts, never anything it can't undo.">${icon("sparkle", 15)} Nightly review</span>
+      <select id="night-time" data-change="nightsched" style="width:auto;">
+        <option value="off" ${!NIGHT_SCHED.enabled ? "selected" : ""}>Off</option>
+        ${nightHourOpts}
+      </select>`;
   const checkinControl = `
     <div class="row" style="justify-content:flex-end; gap:8px; margin-bottom:8px; flex-wrap:wrap;">
       <button class="ghost" data-act="brief" title="a weather / safety / news brief for where you're based">${icon("sparkle", 15)} Brief me</button>
       ${briefControl}
+      ${nightControl}
       <span class="sub">${icon("clock", 15)} Check-ins</span>
       <select id="checkin-cadence" data-change="checkin" style="width:auto;">
         <option value="off" ${cadence === "off" ? "selected" : ""}>Off</option>
@@ -1565,6 +1581,15 @@ async function dispatch(act) {
       const hour_utc = enabled ? ((Number(noun) + tzOff) % 24 + 24) % 24 : (BRIEF_SCHED.hour_utc || 12);
       await api("POST", "/v1/brief/schedule", { enabled, hour_utc });
       flash(enabled ? "The butler will bring you a daily brief." : "Daily brief off.", "ok");
+      return reload();
+    }
+    // Nightly self-improvement loop (ADR 0024): `noun` is "off" or a LOCAL hour.
+    if (verb === "nightsched") {
+      const enabled = noun !== "off";
+      const tzOff = new Date().getTimezoneOffset() / 60;
+      const hour_utc = enabled ? ((Number(noun) + tzOff) % 24 + 24) % 24 : (NIGHT_SCHED.hour_utc || 3);
+      await api("POST", "/v1/nightly-loop/schedule", { enabled, hour_utc });
+      flash(enabled ? "The butler will review the day and reflect overnight." : "Nightly review off.", "ok");
       return reload();
     }
     if (verb === "snooze" && noun === "attention") {
