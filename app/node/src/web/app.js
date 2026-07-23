@@ -909,6 +909,10 @@ function viewSkills() {
   const card = (c) => {
     const ext = c.reaches_external;
     const enabled = c.enabled !== false;
+    // The irreversible band (ADR 0024): blocked deny-by-default until the person
+    // opens it, and even then confirmed on every use — never autonomous.
+    const irreversible = c.reversibility === "irreversible";
+    const opened = c.open_irreversible === true;
     const status = c.usable
       ? `<span class="pill concluded">On</span>`
       : (!enabled ? `<span class="pill">Off</span>` : `<span class="pill">Needs setup</span>`);
@@ -926,12 +930,22 @@ function viewSkills() {
       <div class="card">
         <div class="row">
           <div class="grow">
-            <div class="title">${esc(c.name)} ${status}${ext ? ` <span class="pill">leaves device</span>` : ""}</div>
+            <div class="title">${esc(c.name)} ${status}${ext ? ` <span class="pill">leaves device</span>` : ""}${irreversible ? (opened ? ` <span class="pill concluded">irreversible · confirmed</span>` : ` <span class="pill">irreversible · blocked</span>`) : ""}</div>
             <div class="sub">${esc(c.description)}</div>
             ${(enabled && !c.configured) ? `<div class="sub" style="margin-top:4px;">Needs: ${esc(c.needs)}</div>` : ""}
           </div>
           <button class="ghost" data-act="skill:enable:${c.id}:${enabled ? "0" : "1"}">${enabled ? "Turn off" : "Turn on"}</button>
         </div>
+        ${irreversible ? `
+        <div class="row" style="align-items:flex-start;gap:10px;margin-top:8px;border-top:1px solid var(--line);padding-top:8px;">
+          <div class="grow">
+            <div class="title" style="font-weight:500;">Irreversible actions</div>
+            <div class="sub">${opened
+              ? "Allowed — but Endora asks before every use and never does it on its own."
+              : "This skill can spend, send, or delete — blocked until you allow it. Even then it always asks first."}</div>
+          </div>
+          <button class="${opened ? "primary" : "ghost"}" data-act="skill:open:${c.id}:${opened ? "0" : "1"}">${opened ? "Block again" : "Allow (with confirmation)"}</button>
+        </div>` : ""}
         ${settingsForm}
       </div>`;
   };
@@ -1423,6 +1437,16 @@ async function dispatch(act) {
     if (verb === "skill" && noun === "enable") {
       const enabled = arg === "1";
       try { await api("POST", `/v1/capabilities/${id}/enable`, { enabled }); }
+      catch (e) { flash("Couldn't change that skill: " + e.message, "err"); }
+      return reload();
+    }
+    // Open or re-block a skill's irreversible actions (ADR 0024). `arg` is 1/0.
+    // Opening only ever moves it from blocked to confirm-each-use — never to
+    // autonomous — so we confirm the intent, not fake a bigger promise.
+    if (verb === "skill" && noun === "open") {
+      const open = arg === "1";
+      if (open && !confirm("Allow this skill's irreversible actions?\n\nEndora will still ask you before every single use, and will never do it on its own.")) return;
+      try { await api("POST", `/v1/capabilities/${id}/open`, { open }); }
       catch (e) { flash("Couldn't change that skill: " + e.message, "err"); }
       return reload();
     }
