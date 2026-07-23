@@ -738,6 +738,73 @@ pub fn list_models(base_url: &str, api_key: &str) -> Result<Vec<String>, String>
     Ok(ids)
 }
 
+/// Verifies an OpenAI-compatible endpoint **and API key actually work** — the
+/// settings "Test connection" check. When a `model` is given it sends a *minimal*
+/// chat completion, which is the real operation the key must authorize (many
+/// endpoints serve `/models` without auth but reject completions, so listing models
+/// alone can pass with a bad key); with no model it falls back to listing `/models`
+/// as a reachability check. Returns a short human-readable success detail. The
+/// `api_key`, if non-empty, is sent as a bearer token.
+///
+/// # Errors
+/// A friendly message when the endpoint is unreachable, the key is rejected, the
+/// model is unknown, or the reply is unexpected.
+pub fn test_connection(base_url: &str, api_key: &str, model: &str) -> Result<String, String> {
+    if base_url.trim().is_empty() {
+        return Err("enter the endpoint first".to_owned());
+    }
+    if model.trim().is_empty() {
+        // No model chosen yet: just confirm the endpoint is reachable + lists models.
+        let models = list_models(base_url, api_key)?;
+        let n = models.len();
+        return Ok(format!(
+            "Reached the endpoint — {n} model{} available. Pick a model and test again to \
+             confirm it answers with your key.",
+            if n == 1 { "" } else { "s" }
+        ));
+    }
+    let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
+    // Read the HTTP status ourselves (don't turn 4xx into a transport error), so we
+    // can tell "key rejected" from "model not found" from "unreachable".
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .http_status_as_error(false)
+        .timeout_global(Some(std::time::Duration::from_secs(30)))
+        .build()
+        .into();
+    let mut req = agent.post(&url).header("Content-Type", "application/json");
+    if !api_key.is_empty() {
+        req = req.header("Authorization", &format!("Bearer {api_key}"));
+    }
+    let body = json!({
+        "model": model,
+        "messages": [{ "role": "user", "content": "ping" }],
+        "max_tokens": 1,
+        "stream": false,
+    });
+    let mut response = req.send_json(&body).map_err(|e| {
+        format!("couldn't reach the endpoint — check the URL and your network ({e})")
+    })?;
+    let status = response.status().as_u16();
+    if status >= 300 {
+        return Err(match status {
+            401 | 403 => format!("the API key was rejected ({status}) — check the key"),
+            404 => format!("the model '{model}' wasn't found at this endpoint (404)"),
+            429 => "rate-limited (429) — the key works, but the provider is throttling".to_owned(),
+            s => format!("the endpoint returned status {s}"),
+        });
+    }
+    // A 2xx with a completion means the endpoint + key + model all work.
+    let json: Value = response
+        .body_mut()
+        .read_json()
+        .map_err(|e| format!("the endpoint replied but not in the expected shape ({e})"))?;
+    if json["choices"].as_array().is_some_and(|c| !c.is_empty()) {
+        Ok(format!("Connected — '{model}' answered with your key."))
+    } else {
+        Err("the endpoint replied without a completion — is the model id right?".to_owned())
+    }
+}
+
 /// Builds the OpenAI-compatible chat request from the conversation and the
 /// preferences already learned (so the butler need not re-ask). Pure, so it is
 /// unit-tested.
@@ -1018,7 +1085,7 @@ fn strip_code_fence(s: &str) -> &str {
 mod tests {
     use super::{
         LlmButler, ScriptedButler, build_butler_request, extract_json_object,
-        extract_reply_preview, parse_butler_json, parse_butler_response,
+        extract_reply_preview, parse_butler_json, parse_butler_response, test_connection,
     };
     use endora_application::{Butler, ButlerContext, ButlerProposal};
     use endora_application::{ChatMessage, MessageId, MessageRole, Timestamp};
@@ -1033,6 +1100,13 @@ mod tests {
             Timestamp::from_unix_millis(0),
         )
         .unwrap()
+    }
+
+    #[test]
+    fn test_connection_rejects_a_blank_endpoint_before_any_call() {
+        // The guard runs before any network I/O, so this is deterministic offline.
+        let err = test_connection("   ", "some-key", "gpt-4o").unwrap_err();
+        assert!(err.contains("endpoint"), "unexpected: {err}");
     }
 
     #[test]
