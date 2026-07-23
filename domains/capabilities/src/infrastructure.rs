@@ -1814,6 +1814,170 @@ impl CapabilityRunner for RegistryRunner {
     }
 }
 
+// ---- MCP host: transport port, adapter, and the composite runner ----------
+//
+// An MCP server is a *source* of catalog tools (ADR 0021). Because a tool's id and
+// description are discovered at runtime — not the `&'static` metadata the built-in
+// `Capability` trait carries — the adapter implements the application-layer
+// `CapabilityRunner` directly (whose `CapabilitySpec` is owned), rather than the
+// built-in `Capability` trait. The application still speaks only to one
+// `CapabilityRunner`; it never learns a tool came from MCP.
+
+/// A tool exposed by a connected MCP server, discovered at connect time.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct McpToolInfo {
+    /// The tool's own name on its server (un-namespaced), e.g. `"create_event"`.
+    pub name: String,
+    /// The one-line description the server advertises for it.
+    pub description: String,
+}
+
+/// The boundary to a single MCP server (ADR 0021). The concrete transport — a local
+/// stdio subprocess, or a networked HTTP/SSE connection — lives behind this port, so
+/// neither the adapter nor the policy layer ever speaks the protocol. Synchronous to
+/// match [`CapabilityRunner::run`]; an async transport bridges to this at its edge.
+pub trait McpClient: Send + Sync {
+    /// Lists the server's tools (its handshake + `tools/list`).
+    ///
+    /// # Errors
+    /// A human-readable message if the server can't be reached or replies badly.
+    fn list_tools(&self) -> Result<Vec<McpToolInfo>, String>;
+
+    /// Calls one tool by its (un-namespaced) name with JSON input, returning its
+    /// result as text.
+    ///
+    /// # Errors
+    /// A human-readable message if the call fails.
+    fn call(&self, tool: &str, input_json: &str) -> Result<String, String>;
+}
+
+/// One connected server: its name, its transport, and the tools it advertised.
+struct McpConnection {
+    server: String,
+    transport: Box<dyn McpClient>,
+    tools: Vec<McpToolInfo>,
+}
+
+/// A [`CapabilityRunner`] backed by connected **MCP servers** (ADR 0021). Each
+/// server's tools appear in the catalog **namespaced** as `server.tool`, so two
+/// servers can never collide on a name.
+///
+/// Safety posture (this slice): MCP tools are **never autonomous**, and their policy
+/// [`Decision`] is [`Block`](Decision::Block) — deny-by-default, treated exactly as
+/// the unclassified/irreversible band (ADR 0024). The butler can *see* a tool and
+/// propose it, but policy refuses to run it until a later slice classifies tools and
+/// lets the person open specific ones. [`run`](Self::run) itself routes faithfully to
+/// the transport — its contract is that it is only ever called once policy cleared.
+pub struct McpRunner {
+    connections: Vec<McpConnection>,
+}
+
+impl McpRunner {
+    /// Connects to each `(server_name, transport)`, discovering its tools up front. A
+    /// server whose `list_tools` fails is **skipped** — it contributes no tools rather
+    /// than failing the whole runner, so one unhealthy server can't take down the host
+    /// (ADR 0021).
+    #[must_use]
+    pub fn connect(servers: Vec<(String, Box<dyn McpClient>)>) -> Self {
+        let connections = servers
+            .into_iter()
+            .filter_map(|(server, transport)| match transport.list_tools() {
+                Ok(tools) => Some(McpConnection {
+                    server,
+                    transport,
+                    tools,
+                }),
+                Err(_) => None,
+            })
+            .collect();
+        Self { connections }
+    }
+
+    /// Resolves a namespaced `server.tool` id to its connection and tool.
+    fn find(&self, id: &str) -> Option<(&McpConnection, &McpToolInfo)> {
+        let (server, tool) = id.split_once('.')?;
+        let conn = self.connections.iter().find(|c| c.server == server)?;
+        let info = conn.tools.iter().find(|t| t.name == tool)?;
+        Some((conn, info))
+    }
+}
+
+impl CapabilityRunner for McpRunner {
+    fn available(&self) -> Vec<crate::application::CapabilitySpec> {
+        self.connections
+            .iter()
+            .flat_map(|c| {
+                c.tools
+                    .iter()
+                    .map(move |t| crate::application::CapabilitySpec {
+                        id: format!("{}.{}", c.server, t.name),
+                        description: t.description.clone(),
+                        configured: true,
+                        // Deny-by-default: an MCP tool is never cleared to act alone.
+                        autonomous: false,
+                    })
+            })
+            .collect()
+    }
+
+    fn decision(&self, id: &str) -> Option<Decision> {
+        // Only answer for tools we host; an unknown id is `None` so a composite can
+        // consult another source. A hosted tool is deny-by-default — treated as the
+        // irreversible band until a later slice classifies it.
+        self.find(id)
+            .map(|_| Reversibility::Irreversible.default_decision())
+    }
+
+    fn run(&self, id: &str, input_json: &str) -> Result<String, String> {
+        let (conn, tool) = self
+            .find(id)
+            .ok_or_else(|| format!("no such MCP tool '{id}'"))?;
+        conn.transport.call(&tool.name, input_json)
+    }
+}
+
+/// Merges several [`CapabilityRunner`] sources — the built-in registry and any MCP
+/// servers — behind the single runner interface (ADR 0021). The application still
+/// speaks to one `CapabilityRunner` and never learns a tool's origin. Ids are unique
+/// across sources by construction (built-ins carry no dot; MCP tools are
+/// `server.tool`), so the first source that lists an id owns it.
+pub struct CompositeRunner {
+    sources: Vec<Box<dyn CapabilityRunner + Send + Sync>>,
+}
+
+impl CompositeRunner {
+    /// Merges the given sources, consulted in order.
+    #[must_use]
+    pub fn new(sources: Vec<Box<dyn CapabilityRunner + Send + Sync>>) -> Self {
+        Self { sources }
+    }
+
+    /// The source that lists `id` in its catalog, if any.
+    fn owner(&self, id: &str) -> Option<&(dyn CapabilityRunner + Send + Sync)> {
+        self.sources
+            .iter()
+            .find(|s| s.available().iter().any(|spec| spec.id == id))
+            .map(|b| &**b)
+    }
+}
+
+impl CapabilityRunner for CompositeRunner {
+    fn available(&self) -> Vec<crate::application::CapabilitySpec> {
+        self.sources.iter().flat_map(|s| s.available()).collect()
+    }
+
+    fn decision(&self, id: &str) -> Option<Decision> {
+        self.owner(id)?.decision(id)
+    }
+
+    fn run(&self, id: &str, input_json: &str) -> Result<String, String> {
+        match self.owner(id) {
+            Some(source) => source.run(id, input_json),
+            None => Err(format!("no such skill '{id}'")),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2385,5 +2549,143 @@ mod tests {
             &WeatherCapability.info(),
             &CapabilitySettings::new()
         ));
+    }
+
+    // ---- MCP host: adapter + composite -------------------------------------
+
+    use crate::application::CapabilitySpec;
+
+    /// A stand-in MCP server. `call` echoes `tool(input)` so a test can prove which
+    /// tool was reached; an unhealthy server fails `list_tools`. No interior
+    /// mutability, so it stays `Send + Sync` for `Box<dyn McpClient>`.
+    struct FakeTransport {
+        tools: Vec<McpToolInfo>,
+        healthy: bool,
+    }
+
+    impl McpClient for FakeTransport {
+        fn list_tools(&self) -> Result<Vec<McpToolInfo>, String> {
+            if self.healthy {
+                Ok(self.tools.clone())
+            } else {
+                Err("server down".to_owned())
+            }
+        }
+        fn call(&self, tool: &str, input_json: &str) -> Result<String, String> {
+            Ok(format!("{tool}({input_json})"))
+        }
+    }
+
+    fn tool(name: &str) -> McpToolInfo {
+        McpToolInfo {
+            name: name.to_owned(),
+            description: format!("does {name}"),
+        }
+    }
+
+    #[test]
+    fn mcp_runner_namespaces_tools_is_deny_by_default_and_routes() {
+        let transport = FakeTransport {
+            tools: vec![tool("create_event"), tool("list_events")],
+            healthy: true,
+        };
+        let runner = McpRunner::connect(vec![("calendar".to_owned(), Box::new(transport))]);
+
+        // Tools appear namespaced, configured, and never autonomous.
+        let ids: Vec<String> = runner.available().into_iter().map(|s| s.id).collect();
+        assert_eq!(ids, vec!["calendar.create_event", "calendar.list_events"]);
+        assert!(
+            runner
+                .available()
+                .iter()
+                .all(|s| s.configured && !s.autonomous)
+        );
+
+        // Deny-by-default: a hosted tool blocks; an unknown id is None.
+        assert_eq!(
+            runner.decision("calendar.create_event"),
+            Some(Decision::Block)
+        );
+        assert_eq!(runner.decision("calendar.nope"), None);
+        assert_eq!(runner.decision("weather"), None);
+
+        // `run` routes faithfully to the transport (its contract: only called once
+        // policy has cleared the tool).
+        assert_eq!(
+            runner.run("calendar.create_event", "{\"x\":1}").unwrap(),
+            "create_event({\"x\":1})"
+        );
+        assert!(runner.run("calendar.nope", "{}").is_err());
+    }
+
+    #[test]
+    fn mcp_runner_skips_an_unhealthy_server() {
+        let ok = FakeTransport {
+            tools: vec![tool("read_file")],
+            healthy: true,
+        };
+        let down = FakeTransport {
+            tools: vec![tool("send_mail")],
+            healthy: false,
+        };
+        let runner = McpRunner::connect(vec![
+            ("files".to_owned(), Box::new(ok)),
+            ("mail".to_owned(), Box::new(down)),
+        ]);
+        // Only the healthy server contributes tools; the down one drops out silently.
+        let ids: Vec<String> = runner.available().into_iter().map(|s| s.id).collect();
+        assert_eq!(ids, vec!["files.read_file"]);
+    }
+
+    /// A minimal built-in-like source: an autonomous `weather` skill.
+    struct FakeBuiltin;
+    impl CapabilityRunner for FakeBuiltin {
+        fn available(&self) -> Vec<CapabilitySpec> {
+            vec![CapabilitySpec {
+                id: "weather".to_owned(),
+                description: "the weather".to_owned(),
+                configured: true,
+                autonomous: true,
+            }]
+        }
+        fn run(&self, id: &str, _input: &str) -> Result<String, String> {
+            if id == "weather" {
+                Ok("sunny".to_owned())
+            } else {
+                Err(format!("no such skill '{id}'"))
+            }
+        }
+    }
+
+    #[test]
+    fn composite_runner_merges_sources_and_routes_by_owner() {
+        let mcp = McpRunner::connect(vec![(
+            "calendar".to_owned(),
+            Box::new(FakeTransport {
+                tools: vec![tool("create_event")],
+                healthy: true,
+            }) as Box<dyn McpClient>,
+        )]);
+        let composite = CompositeRunner::new(vec![Box::new(FakeBuiltin), Box::new(mcp)]);
+
+        // Both sources' catalogs are merged.
+        let ids: Vec<String> = composite.available().into_iter().map(|s| s.id).collect();
+        assert_eq!(ids, vec!["weather", "calendar.create_event"]);
+
+        // Each source keeps its own policy verdict.
+        assert_eq!(composite.decision("weather"), Some(Decision::Act));
+        assert_eq!(
+            composite.decision("calendar.create_event"),
+            Some(Decision::Block)
+        );
+        assert_eq!(composite.decision("missing"), None);
+
+        // `run` dispatches to whichever source owns the id.
+        assert_eq!(composite.run("weather", "{}").unwrap(), "sunny");
+        assert_eq!(
+            composite.run("calendar.create_event", "{}").unwrap(),
+            "create_event({})"
+        );
+        assert!(composite.run("missing", "{}").is_err());
     }
 }
