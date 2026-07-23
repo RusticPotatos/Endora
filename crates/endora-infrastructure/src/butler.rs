@@ -606,6 +606,49 @@ pub fn ask_deep_model(
     }
 }
 
+/// The configured deeper (bigger / cloud) model as a [`DeepAsker`](endora_application::DeepAsker)
+/// — the next rung of the capability ladder. The butler turn escalates to it only
+/// when the local model comes up empty. Before the question leaves the device it
+/// applies the **egress guard** (withholds apparent secrets) and **PII
+/// minimization** (ADR 0023), and it returns prose only — never an action.
+pub struct DeepModelAsker {
+    url: String,
+    model: String,
+    api_key: String,
+}
+
+impl DeepModelAsker {
+    /// Wraps a deep-model endpoint. An empty `url`/`model` means "not configured",
+    /// and [`ask`](Self::ask) then declines (returns `None`).
+    #[must_use]
+    pub fn new(url: String, model: String, api_key: String) -> Self {
+        Self {
+            url,
+            model,
+            api_key,
+        }
+    }
+}
+
+impl endora_application::DeepAsker for DeepModelAsker {
+    fn ask(&self, question: &str) -> Option<String> {
+        if self.url.is_empty() || self.model.is_empty() {
+            return None; // no deeper rung configured — stay on the local answer
+        }
+        // Never send an apparent secret off the device (ADR 0023). Fail closed.
+        if endora_capabilities::scan_outbound_secret(question).is_some() {
+            return None;
+        }
+        // Minimize personal data leaving the device.
+        let mut v = Value::String(question.to_owned());
+        endora_capabilities::redact_pii_in_value(&mut v);
+        let safe = v.as_str().unwrap_or(question);
+        ask_deep_model(&self.url, &self.model, &self.api_key, safe)
+            .ok()
+            .filter(|a| !a.trim().is_empty())
+    }
+}
+
 /// Transcribes recorded audio via an OpenAI-compatible speech-to-text endpoint
 /// (`POST {base}/audio/transcriptions`, e.g. a local Whisper server). The node
 /// proxies the browser's recording here so the private STT host is never exposed
