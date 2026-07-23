@@ -178,6 +178,16 @@ impl LlmButler {
         let mut body =
             build_butler_request(&self.model, &self.sampling, history, preferences, context);
         body["stream"] = Value::Bool(true);
+        // Token streaming and JSON-object grammar don't mix on common local
+        // runtimes: Ollama (and others) BUFFER the whole response when
+        // `response_format: json_object` is set — enforcing the grammar — so the
+        // reply arrives in one chunk and nothing streams. Drop the constraint on
+        // the streaming request and lean on the defensive envelope parser
+        // (`extract_reply_preview` live, `parse_butler_json` at the end), which
+        // already handles unconstrained output. Non-streamed calls keep the grammar.
+        if let Some(obj) = body.as_object_mut() {
+            obj.remove("response_format");
+        }
         let url = format!("{}/chat/completions", self.base_url);
         let mut req = self.agent.post(&url);
         if !self.api_key.is_empty() {
