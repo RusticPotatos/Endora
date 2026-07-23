@@ -19,8 +19,9 @@ pub fn migrate(db: &Db) -> Result<(), RepositoryError> {
     db.lock()?
         .execute_batch(
             "CREATE TABLE IF NOT EXISTS capability_config (
-                id      TEXT PRIMARY KEY,
-                enabled INTEGER NOT NULL
+                id                TEXT PRIMARY KEY,
+                enabled           INTEGER NOT NULL,
+                open_irreversible INTEGER NOT NULL DEFAULT 0
             ) STRICT;
             CREATE TABLE IF NOT EXISTS capability_settings (
                 capability_id TEXT NOT NULL,
@@ -68,6 +69,13 @@ pub fn migrate(db: &Db) -> Result<(), RepositoryError> {
             ) STRICT;",
         )
         .map_err(backend)?;
+    // Additive migration for databases created before the irreversible-opener
+    // column existed (ADR 0024). Ignore the error when the column is already
+    // present (a fresh DB gets it from the CREATE above).
+    let _ = db.lock()?.execute(
+        "ALTER TABLE capability_config ADD COLUMN open_irreversible INTEGER NOT NULL DEFAULT 0",
+        [],
+    );
     Ok(())
 }
 
@@ -322,11 +330,41 @@ impl CapabilityConfigRepository for ConfigStore {
     }
 
     fn set_enabled(&self, id: &str, enabled: bool) -> Result<(), RepositoryError> {
+        // Upsert only the enabled column; a new row defaults the opener to closed,
+        // and an existing row keeps its opener flag untouched.
         self.db
             .lock()?
             .execute(
-                "INSERT OR REPLACE INTO capability_config (id, enabled) VALUES (?1, ?2)",
+                "INSERT INTO capability_config (id, enabled, open_irreversible) VALUES (?1, ?2, 0) \
+                 ON CONFLICT(id) DO UPDATE SET enabled = excluded.enabled",
                 params![id, i64::from(enabled)],
+            )
+            .map_err(backend)?;
+        Ok(())
+    }
+
+    fn opened_overrides(&self) -> Result<Vec<(String, bool)>, RepositoryError> {
+        let conn = self.db.lock()?;
+        let mut stmt = conn
+            .prepare("SELECT id, open_irreversible FROM capability_config")
+            .map_err(backend)?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)? != 0))
+            })
+            .map_err(backend)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(backend)
+    }
+
+    fn set_open_irreversible(&self, id: &str, opened: bool) -> Result<(), RepositoryError> {
+        // Upsert only the opener column; a new row defaults enabled to on (the
+        // built-in default), and an existing row keeps its enabled flag untouched.
+        self.db
+            .lock()?
+            .execute(
+                "INSERT INTO capability_config (id, enabled, open_irreversible) VALUES (?1, 1, ?2) \
+                 ON CONFLICT(id) DO UPDATE SET open_irreversible = excluded.open_irreversible",
+                params![id, i64::from(opened)],
             )
             .map_err(backend)?;
         Ok(())
@@ -377,6 +415,48 @@ mod tests {
         assert_eq!(
             store.enabled_overrides().unwrap(),
             vec![("news".to_owned(), false)]
+        );
+    }
+
+    #[test]
+    fn opener_round_trips_and_does_not_clobber_enabled() {
+        let db = Db::open_in_memory().unwrap();
+        migrate(&db).unwrap();
+        let store = ConfigStore::new(db);
+
+        // Closed by default: no rows.
+        assert!(store.opened_overrides().unwrap().is_empty());
+
+        // Open one capability's irreversible band.
+        store.set_open_irreversible("flights", true).unwrap();
+        assert_eq!(
+            store.opened_overrides().unwrap(),
+            vec![("flights".to_owned(), true)]
+        );
+
+        // Toggling `enabled` on the same id must NOT reset the opener, and vice
+        // versa — the two per-capability flags are independent (ON CONFLICT upsert).
+        store.set_enabled("flights", false).unwrap();
+        assert_eq!(
+            store.opened_overrides().unwrap(),
+            vec![("flights".to_owned(), true)],
+            "enabling/disabling must not clobber the opener"
+        );
+        assert_eq!(
+            store.enabled_overrides().unwrap(),
+            vec![("flights".to_owned(), false)]
+        );
+
+        // Re-close it.
+        store.set_open_irreversible("flights", false).unwrap();
+        assert_eq!(
+            store.opened_overrides().unwrap(),
+            vec![("flights".to_owned(), false)]
+        );
+        assert_eq!(
+            store.enabled_overrides().unwrap(),
+            vec![("flights".to_owned(), false)],
+            "re-closing the opener must not clobber enabled"
         );
     }
 }

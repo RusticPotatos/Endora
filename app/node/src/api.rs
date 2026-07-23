@@ -202,6 +202,7 @@ pub fn app(state: AppState) -> Router {
         .route("/v1/capabilities", get(list_capabilities))
         .route("/v1/capabilities/{id}/invoke", post(invoke_capability))
         .route("/v1/capabilities/{id}/enable", post(set_capability_enabled))
+        .route("/v1/capabilities/{id}/open", post(set_capability_open))
         .route(
             "/v1/capabilities/{id}/config",
             post(set_capability_settings),
@@ -1165,10 +1166,12 @@ fn build_runner(
     capabilities: Arc<Vec<Arc<dyn Capability>>>,
 ) -> endora_infrastructure::RegistryRunner {
     let overrides = config.enabled_overrides().unwrap_or_default();
+    let opened = config.opened_overrides().unwrap_or_default();
     let envelope = AutonomyEnvelopeRepository::get(config).unwrap_or_default();
     endora_infrastructure::RegistryRunner::with_config(
         capabilities,
         overrides,
+        opened,
         envelope,
         settings_map(config),
     )
@@ -1654,6 +1657,7 @@ async fn correct_belief(
 fn capability_json(
     info: &endora_infrastructure::CapabilityInfo,
     enabled: bool,
+    opened: bool,
     settings: &endora_infrastructure::CapabilitySettings,
 ) -> serde_json::Value {
     // The settings schema, each flagged whether it's been set — but NEVER the value
@@ -1681,6 +1685,11 @@ fn capability_json(
         "category": info.category,
         "reaches_external": info.reaches_external,
         "reversibility": info.reversibility.name(),
+        // Whether the person has opened this capability's irreversible band, and
+        // whether it is therefore currently blocked deny-by-default (ADR 0024). Only
+        // an irreversible skill can be blocked or opened.
+        "open_irreversible": opened,
+        "blocked": info.reversibility.name() == "irreversible" && !opened,
         // `configured` = code ready + settings filled; `enabled` = the person's on/off
         // switch; a skill is usable only when both hold (ADR 0021).
         "configured": info.configured && settings_complete,
@@ -1700,6 +1709,12 @@ async fn list_capabilities(State(state): State<AppState>) -> Json<Vec<serde_json
         .unwrap_or_default()
         .into_iter()
         .collect();
+    let opened: std::collections::HashMap<String, bool> = state
+        .config
+        .opened_overrides()
+        .unwrap_or_default()
+        .into_iter()
+        .collect();
     let settings = settings_map(state.config.as_ref());
     let empty = endora_infrastructure::CapabilitySettings::new();
     Json(
@@ -1709,7 +1724,8 @@ async fn list_capabilities(State(state): State<AppState>) -> Json<Vec<serde_json
             .map(|c| {
                 let info = c.info();
                 let on = enabled.get(info.id).copied().unwrap_or(true);
-                capability_json(&info, on, settings.get(info.id).unwrap_or(&empty))
+                let is_open = opened.get(info.id).copied().unwrap_or(false);
+                capability_json(&info, on, is_open, settings.get(info.id).unwrap_or(&empty))
             })
             .collect(),
     )
@@ -1801,6 +1817,51 @@ async fn set_capability_enabled(
     .await?;
     let _ = state.changes.send(());
     Ok(Json(json!({ "id": id, "enabled": req.enabled })))
+}
+
+#[derive(Deserialize)]
+struct OpenRequest {
+    open: bool,
+}
+
+/// Opens or re-blocks a capability's **irreversible band** for the person (ADR
+/// 0024). Opening only ever moves the un-undoable from *blocked* to
+/// *confirm-each-use* — the butler still never runs it on its own. Validated
+/// against the registry; nudges the change stream so open consoles refresh.
+async fn set_capability_open(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(req): Json<OpenRequest>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    if !state.capabilities.iter().any(|c| c.info().id == id) {
+        return Err(ApiError(AppError::NotFound {
+            entity: "capability",
+        }));
+    }
+    let events = state.events.clone();
+    let config = state.config.clone();
+    let clock = state.clock.clone();
+    let (cap_id, open) = (id.clone(), req.open);
+    blocking(move || {
+        config
+            .set_open_irreversible(&cap_id, open)
+            .map_err(AppError::Repository)?;
+        record_event(
+            events.as_ref(),
+            clock.as_ref(),
+            &if open {
+                format!(
+                    "Opened the {cap_id} skill's irreversible actions (still confirmed each time)"
+                )
+            } else {
+                format!("Re-blocked the {cap_id} skill's irreversible actions")
+            },
+        );
+        Ok::<_, AppError>(())
+    })
+    .await?;
+    let _ = state.changes.send(());
+    Ok(Json(json!({ "id": id, "open_irreversible": req.open })))
 }
 
 fn envelope_json(e: &AutonomyEnvelope) -> serde_json::Value {
