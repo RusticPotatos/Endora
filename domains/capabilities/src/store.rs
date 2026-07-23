@@ -2,13 +2,14 @@
 //! autonomy envelope, and the deep-model configuration, over the shared handle.
 
 use endora_kernel::RepositoryError;
-use endora_persistence::{Db, backend};
+use endora_persistence::{Db, backend, corrupt};
 use rusqlite::{OptionalExtension, params};
 
 use crate::application::{
     AutonomyEnvelope, AutonomyEnvelopeRepository, ButlerModelConfig, ButlerModelConfigRepository,
     CapabilityConfigRepository, CapabilitySettingsRepository, DeepModel, DeepModelRepository,
-    ModelSlot, ModelTuneSchedule, ModelTuneScheduleRepository, Sampling,
+    McpServer, McpServerRegistry, McpTransport, ModelSlot, ModelTuneSchedule,
+    ModelTuneScheduleRepository, Sampling,
 };
 
 /// Creates the capabilities config tables if absent (idempotent).
@@ -66,6 +67,14 @@ pub fn migrate(db: &Db) -> Result<(), RepositoryError> {
                 enabled  INTEGER NOT NULL,
                 hour_utc INTEGER NOT NULL,
                 last_ms  INTEGER NOT NULL
+            ) STRICT;
+            CREATE TABLE IF NOT EXISTS mcp_servers (
+                name    TEXT PRIMARY KEY,
+                kind    TEXT NOT NULL,
+                command TEXT NOT NULL DEFAULT '',
+                args    TEXT NOT NULL DEFAULT '',
+                url     TEXT NOT NULL DEFAULT '',
+                enabled INTEGER NOT NULL DEFAULT 1
             ) STRICT;",
         )
         .map_err(backend)?;
@@ -371,6 +380,98 @@ impl CapabilityConfigRepository for ConfigStore {
     }
 }
 
+impl McpServerRegistry for ConfigStore {
+    fn list(&self) -> Result<Vec<McpServer>, RepositoryError> {
+        let conn = self.db.lock()?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT name, kind, command, args, url, enabled FROM mcp_servers ORDER BY name",
+            )
+            .map_err(backend)?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok((
+                    r.get::<_, String>(0)?, // name
+                    r.get::<_, String>(1)?, // kind
+                    r.get::<_, String>(2)?, // command
+                    r.get::<_, String>(3)?, // args (JSON array)
+                    r.get::<_, String>(4)?, // url
+                    r.get::<_, i64>(5)? != 0,
+                ))
+            })
+            .map_err(backend)?;
+        let mut servers = Vec::new();
+        for row in rows {
+            let (name, kind, command, args_json, url, enabled) = row.map_err(backend)?;
+            let transport = match kind.as_str() {
+                "http" => McpTransport::Http { url },
+                // Default anything else to stdio — the only other variant we write.
+                _ => {
+                    let args: Vec<String> = if args_json.is_empty() {
+                        Vec::new()
+                    } else {
+                        serde_json::from_str(&args_json).map_err(corrupt)?
+                    };
+                    McpTransport::Stdio { command, args }
+                }
+            };
+            servers.push(McpServer {
+                name,
+                transport,
+                enabled,
+            });
+        }
+        Ok(servers)
+    }
+
+    fn register(&self, server: &McpServer) -> Result<(), RepositoryError> {
+        let (kind, command, args_json, url) = match &server.transport {
+            McpTransport::Stdio { command, args } => (
+                "stdio",
+                command.as_str(),
+                serde_json::to_string(args).map_err(backend)?,
+                String::new(),
+            ),
+            McpTransport::Http { url } => ("http", "", String::new(), url.clone()),
+        };
+        self.db
+            .lock()?
+            .execute(
+                "INSERT OR REPLACE INTO mcp_servers (name, kind, command, args, url, enabled) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![
+                    server.name,
+                    kind,
+                    command,
+                    args_json,
+                    url,
+                    i64::from(server.enabled),
+                ],
+            )
+            .map_err(backend)?;
+        Ok(())
+    }
+
+    fn set_enabled(&self, name: &str, enabled: bool) -> Result<(), RepositoryError> {
+        self.db
+            .lock()?
+            .execute(
+                "UPDATE mcp_servers SET enabled = ?2 WHERE name = ?1",
+                params![name, i64::from(enabled)],
+            )
+            .map_err(backend)?;
+        Ok(())
+    }
+
+    fn remove(&self, name: &str) -> Result<(), RepositoryError> {
+        self.db
+            .lock()?
+            .execute("DELETE FROM mcp_servers WHERE name = ?1", params![name])
+            .map_err(backend)?;
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{ConfigStore, migrate};
@@ -415,6 +516,80 @@ mod tests {
         assert_eq!(
             store.enabled_overrides().unwrap(),
             vec![("news".to_owned(), false)]
+        );
+    }
+
+    #[test]
+    fn mcp_servers_round_trip_upsert_toggle_and_remove() {
+        use crate::application::{McpServer, McpServerRegistry, McpTransport};
+
+        let db = Db::open_in_memory().unwrap();
+        migrate(&db).unwrap();
+        let store = ConfigStore::new(db);
+
+        // Empty to start.
+        assert!(store.list().unwrap().is_empty());
+
+        // Register a stdio server (with args) and an http one.
+        let fs = McpServer::stdio(
+            "filesystem",
+            "npx",
+            ["-y".to_owned(), "server-fs".to_owned()],
+        )
+        .unwrap();
+        let cal = McpServer::http("calendar", "https://cal.example").unwrap();
+        store.register(&fs).unwrap();
+        store.register(&cal).unwrap();
+
+        // Both come back, ordered by name, with transports intact.
+        let listed = store.list().unwrap();
+        assert_eq!(listed, vec![cal.clone(), fs.clone()]);
+        assert!(matches!(
+            &listed[1].transport,
+            McpTransport::Stdio { command, args }
+                if command == "npx" && args == &["-y".to_owned(), "server-fs".to_owned()]
+        ));
+
+        // Upsert by name replaces the transport in place (no duplicate row).
+        let fs2 = McpServer::http("filesystem", "https://fs.example").unwrap();
+        store.register(&fs2).unwrap();
+        let listed = store.list().unwrap();
+        assert_eq!(listed.len(), 2);
+        assert_eq!(
+            listed[1].transport,
+            McpTransport::Http {
+                url: "https://fs.example".to_owned()
+            }
+        );
+
+        // Toggle enabled without touching the transport. (Disambiguated: both this
+        // registry and CapabilityConfigRepository expose `set_enabled`.)
+        McpServerRegistry::set_enabled(&store, "calendar", false).unwrap();
+        let cal_row = store
+            .list()
+            .unwrap()
+            .into_iter()
+            .find(|s| s.name == "calendar")
+            .unwrap();
+        assert!(!cal_row.enabled);
+        assert_eq!(
+            cal_row.transport,
+            McpTransport::Http {
+                url: "https://cal.example".to_owned()
+            }
+        );
+
+        // Remove is idempotent.
+        store.remove("calendar").unwrap();
+        store.remove("calendar").unwrap();
+        assert_eq!(
+            store
+                .list()
+                .unwrap()
+                .iter()
+                .map(|s| s.name.clone())
+                .collect::<Vec<_>>(),
+            vec!["filesystem".to_owned()]
         );
     }
 
