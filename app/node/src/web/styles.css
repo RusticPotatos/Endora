@@ -120,6 +120,8 @@
   button.primary:hover { background: color-mix(in srgb, var(--accent) 88%, #000); border-color: color-mix(in srgb, var(--accent) 88%, #000); }
   button.ghost { background: transparent; border-color: transparent; color: var(--muted); padding: 7px 10px; }
   button.ghost:hover { background: var(--accent-weak); color: var(--ink); }
+  /* An enabled ghost toggle (e.g. Deep mode on) reads as active. */
+  button.ghost.active { color: var(--accent); background: var(--accent-weak); }
   button.danger { color: var(--bad); }
   button.danger:hover { background: color-mix(in srgb, var(--bad) 12%, transparent); border-color: color-mix(in srgb, var(--bad) 40%, var(--line)); color: var(--bad); }
   button:disabled { opacity: .5; cursor: default; }
