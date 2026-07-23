@@ -623,49 +623,8 @@ function viewChat() {
         ? `<button class="ptt" data-mic="1" title="push to talk, release to send">${icon("mic")}<span>Push to talk</span></button>`
         : `<button data-act="chat:mic" title="voice input needs HTTPS or localhost">${icon("mic")}<span>needs HTTPS</span></button>`)
     : "";
-  const cadence = CHECKIN.enabled ? String(CHECKIN.interval_ms) : "off";
-  // Daily-brief time: options in the person's LOCAL hours; saved as UTC.
-  const tzOff = new Date().getTimezoneOffset() / 60; // minutes behind UTC → hours
-  const localHour = BRIEF_SCHED.enabled ? ((BRIEF_SCHED.hour_utc - tzOff) % 24 + 24) % 24 : -1;
-  const hourOpts = Array.from({ length: 24 }, (_, h) => {
-    const ampm = h < 12 ? "AM" : "PM"; const h12 = (h % 12) || 12;
-    return `<option value="${h}" ${h === localHour ? "selected" : ""}>${h12}:00 ${ampm}</option>`;
-  }).join("");
-  const briefControl = `
-      <span class="sub">${icon("sparkle", 15)} Daily brief</span>
-      <select id="brief-time" data-change="briefsched" style="width:auto;">
-        <option value="off" ${!BRIEF_SCHED.enabled ? "selected" : ""}>Off</option>
-        ${hourOpts}
-      </select>`;
-  // Nightly self-improvement loop (ADR 0024): the butler reviews the day and
-  // reflects overnight, within the reversible band. Local hours shown; saved UTC.
-  const nightLocalHour = NIGHT_SCHED.enabled ? ((NIGHT_SCHED.hour_utc - tzOff) % 24 + 24) % 24 : -1;
-  const nightHourOpts = Array.from({ length: 24 }, (_, h) => {
-    const ampm = h < 12 ? "AM" : "PM"; const h12 = (h % 12) || 12;
-    return `<option value="${h}" ${h === nightLocalHour ? "selected" : ""}>${h12}:00 ${ampm}</option>`;
-  }).join("");
-  const nightControl = `
-      <span class="sub" title="Overnight, the butler reviews the day and updates what it understands about you — it only reflects and drafts, never anything it can't undo.">${icon("sparkle", 15)} Nightly review</span>
-      <select id="night-time" data-change="nightsched" style="width:auto;">
-        <option value="off" ${!NIGHT_SCHED.enabled ? "selected" : ""}>Off</option>
-        ${nightHourOpts}
-      </select>`;
-  const checkinControl = `
-    <div class="row" style="justify-content:flex-end; gap:8px; margin-bottom:8px; flex-wrap:wrap;">
-      <button class="ghost" data-act="brief" title="a weather / safety / news brief for where you're based">${icon("sparkle", 15)} Brief me</button>
-      ${briefControl}
-      ${nightControl}
-      <span class="sub">${icon("clock", 15)} Check-ins</span>
-      <select id="checkin-cadence" data-change="checkin" style="width:auto;">
-        <option value="off" ${cadence === "off" ? "selected" : ""}>Off</option>
-        <option value="120000" ${cadence === "120000" ? "selected" : ""}>Every 2 min</option>
-        <option value="3600000" ${cadence === "3600000" ? "selected" : ""}>Hourly</option>
-        <option value="86400000" ${cadence === "86400000" ? "selected" : ""}>Daily</option>
-      </select>
-    </div>`;
   return `
     <div class="chat">
-      ${checkinControl}
       <div id="chat-thread" class="chat-thread">${(msgs || `<div class="empty">Say what you'd like to work on — the butler will help organize it.</div>`) + pending + activity}</div>
       ${awaiting ? "" : proposals}
       <div class="composer">
@@ -816,8 +775,8 @@ function modelsSection() {
     .map(([k, v]) => `<option value="${k}">${esc(v.label)}</option>`).join("");
   const mix = !!mc.mixture;
   return `
-    <h3 style="margin-top:22px;">Models</h3>
-    <div class="sub" style="margin:2px 0 12px;">Your <b>everyday</b> brain answers day-to-day — local by default. The optional <b>deep</b> model is a bigger brain you escalate to per question. Both accept any OpenAI-compatible endpoint; changes apply on your next message.</div>
+    <h3>Models</h3>
+    <div class="note">A local <b>everyday</b> model, and an optional <b>deep</b> one for hard questions. Any OpenAI-compatible endpoint.</div>
 
     <div class="card model-card">
       <div class="model-role">Everyday${mc.configured ? "" : ` · <span class="sub" style="font-weight:400;">using deployment default</span>`}</div>
@@ -834,9 +793,9 @@ function modelsSection() {
       </div>
       <details class="adv" ${mix ? "open" : ""}>
         <summary>Advanced — mixture &amp; sampling</summary>
-        <label class="mix-toggle">
+        <label class="mix-toggle" title="A cold, tool-tuned router picks the skill; a warmer synthesizer writes the reply. Beats a single model at less VRAM.">
           <input id="m-mix" type="checkbox" ${mix ? "checked" : ""} onchange="toggleMixture(this.checked)" />
-          <span>Use a <b>mixture</b>: a cold, tool-tuned <b>router</b> picks the skill and a warmer <b>synthesizer</b> writes the reply — out-routes a single model at less VRAM.</span>
+          <span>Split into a <b>router</b> + <b>synthesizer</b> <span style="opacity:.6;">(advanced)</span></span>
         </label>
         <div id="m-single-adv" style="display:${mix ? "none" : "block"};">
           <div class="sub" style="margin:2px 0 4px;">Sampling (blank = provider default)</div>
@@ -870,8 +829,8 @@ function modelsSection() {
       <div class="row" style="justify-content:flex-end;"><button class="primary" data-act="deepsave">Save deep</button></div>
     </div>
 
-    <h3 style="margin-top:22px;">Auto-tune (experimental)</h3>
-    <div class="sub" style="margin:2px 0 10px;">Scores every model on your local endpoint against the same fitness battery the eval uses, and adopts the best <b>local</b> one on its own (a cloud winner is only proposed — ADR 0027). Watch <a data-act="go:audit" style="color:var(--accent);cursor:pointer">Activity</a> for the scores and result. It takes a few minutes and competes for the GPU.</div>
+    <h3>Auto-tune <span class="sub" style="font-weight:400;">· experimental</span></h3>
+    <div class="note">Scores the models on your endpoint and adopts the best local one on its own. Takes a few minutes and uses the GPU — watch <a class="link" data-act="go:audit">Activity</a> for the result.</div>
     <div class="card model-card">
       <label class="mix-toggle">
         <input id="tune-nightly" type="checkbox" ${TUNE_SCHED.enabled ? "checked" : ""} />
@@ -883,6 +842,35 @@ function modelsSection() {
         <button class="ghost" data-act="modeltune">Run now</button>
         <button class="primary" data-act="tunesave">Save schedule</button>
       </div>
+    </div>`;
+}
+
+// When Endora reaches out on its own — the daily brief, the overnight review, and
+// the check-in cadence. Local hours shown, saved as UTC. Lives in Settings so the
+// chat screen stays just the conversation.
+function proactivitySection() {
+  const tzOff = new Date().getTimezoneOffset() / 60;
+  const hourSelect = (id, change, hourUtc, on) => {
+    const localHour = on ? ((hourUtc - tzOff) % 24 + 24) % 24 : -1;
+    const opts = Array.from({ length: 24 }, (_, h) => {
+      const ampm = h < 12 ? "AM" : "PM"; const h12 = (h % 12) || 12;
+      return `<option value="${h}" ${h === localHour ? "selected" : ""}>${h12}:00 ${ampm}</option>`;
+    }).join("");
+    return `<select id="${id}" data-change="${change}" style="width:auto;"><option value="off" ${!on ? "selected" : ""}>Off</option>${opts}</select>`;
+  };
+  const cadence = CHECKIN.enabled ? String(CHECKIN.interval_ms) : "off";
+  const row = (label, note, control) => `
+    <div class="row" style="align-items:center; gap:10px; margin-bottom:12px;">
+      <div class="grow"><div class="title" style="font-weight:500;">${label}</div><div class="sub">${note}</div></div>
+      ${control}
+    </div>`;
+  return `
+    <h3>When Endora reaches out</h3>
+    <div class="card">
+      ${row("Daily brief", "weather · safety · news, once a day", hourSelect("brief-time", "briefsched", BRIEF_SCHED.hour_utc, BRIEF_SCHED.enabled))}
+      ${row("Nightly review", "reviews the day and reflects, overnight", hourSelect("night-time", "nightsched", NIGHT_SCHED.hour_utc, NIGHT_SCHED.enabled))}
+      ${row("Check-ins", "starts a conversation now and then", `<select id="checkin-cadence" data-change="checkin" style="width:auto;"><option value="off" ${cadence === "off" ? "selected" : ""}>Off</option><option value="120000" ${cadence === "120000" ? "selected" : ""}>Every 2 min</option><option value="3600000" ${cadence === "3600000" ? "selected" : ""}>Hourly</option><option value="86400000" ${cadence === "86400000" ? "selected" : ""}>Daily</option></select>`)}
+      <div class="row" style="justify-content:flex-end;"><button class="ghost" data-act="brief">${icon("sparkle", 15)} Brief me now</button></div>
     </div>`;
 }
 
@@ -901,7 +889,8 @@ function viewSettings() {
       ${row(PTT_HAPTIC, "toggle:haptic", "Vibrate on push-to-talk", "haptic cue on Android; iOS ignores it")}
       ${row(SHOW_ACTIVITY, "toggle:activity", "Show Endora's actions", "a note of what it did each turn")}
     </div>
-    <h3 style="margin-top:22px;">Manage</h3>
+    ${proactivitySection()}
+    <h3>Manage</h3>
     <div class="card nav-list">
       <button class="ghost" data-act="go:understanding">${icon("sparkle")}<span>What Endora understands about you</span>${icon("chevron", 15)}</button>
       <button class="ghost" data-act="go:learning">${icon("target")}<span>What Endora is learning</span>${icon("chevron", 15)}</button>
@@ -909,8 +898,7 @@ function viewSettings() {
       <button class="ghost" data-act="go:skills">${icon("skills")}<span>Skills</span>${icon("chevron", 15)}</button>
       <button class="ghost" data-act="export">${icon("export")}<span>Export my data</span>${icon("chevron", 15)}</button>
     </div>
-    ${modelsSection()}
-    <div class="sub" style="margin-top:14px;">Private egress (proxy/VPN) is set in deployment config.</div>`;
+    ${modelsSection()}`;
 }
 
 // What the butler has learned — visible, correctable, deletable memory.
@@ -1043,12 +1031,12 @@ function viewLearning() {
   return `
     ${crumbs([{ label: "Home", act: "go:chat" }, { label: "Learning" }])}
     <h2>What Endora is learning</h2>
-    <div class="sub" style="margin-bottom:14px;">Endora notices what helps you, tries small things, and reflects on how they went — so it grows more useful over time. This is its work, not a list for you to manage.</div>
+    <div class="note">It tries small things and reflects on how they went, to grow more useful over time.</div>
     <h3>What it's trying</h3>
     ${listOr(tryingCards, "Nothing running yet — Endora proposes small experiments as it gets to know you.")}
-    <h3 style="margin-top:20px;">What it's learned</h3>
+    <h3>What it's learned</h3>
     ${listOr(learned, "No reflections yet.")}
-    <div class="sub" style="margin-top:18px;">It's formed <a data-act="go:understanding" style="color:var(--accent);cursor:pointer">${beliefs} belief${beliefs === 1 ? "" : "s"} about you</a> — review or correct them any time.</div>`;
+    <div class="note" style="margin-top:18px;">It's formed <a class="link" data-act="go:understanding">${beliefs} belief${beliefs === 1 ? "" : "s"} about you</a> — review or correct them any time.</div>`;
 }
 
 function viewUnderstanding() {
@@ -1093,7 +1081,7 @@ function viewUnderstanding() {
 
     ${setup}
     ${groups || `<div class="empty">Nothing yet. Talk with Endora and it will start to understand you — you'll see it here.</div>`}
-    <div class="sub" style="margin-top:24px;"><a data-act="go:goals" style="color:var(--accent);cursor:pointer">Goals ›</a> — optional, if you like to track them explicitly.</div>`;
+    <div class="note" style="margin-top:24px;"><a class="link" data-act="go:goals">Goals ›</a> — optional.</div>`;
 }
 
 // Append a chat bubble to the thread and keep the newest in view.
