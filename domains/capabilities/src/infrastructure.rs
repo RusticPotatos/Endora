@@ -1733,6 +1733,13 @@ impl CapabilityRunner for RegistryRunner {
             .collect()
     }
 
+    fn decision(&self, id: &str) -> Option<Decision> {
+        self.capabilities
+            .iter()
+            .find(|c| c.info().id == id)
+            .map(|c| classify(&c.info(), &self.envelope, self.is_opened(id)))
+    }
+
     fn run(&self, id: &str, input_json: &str) -> Result<String, String> {
         if !self.is_enabled(id) {
             return Err(format!("the '{id}' skill is turned off"));
@@ -1960,6 +1967,52 @@ mod tests {
             !spec.autonomous,
             "an opened irreversible skill must still confirm"
         );
+    }
+
+    #[test]
+    fn decision_reports_the_full_verdict_including_block() {
+        // `decision` exposes the real Act/Confirm/Block verdict (for the audit
+        // trail), unlike the coarse `autonomous` bool which collapses the last two.
+        struct BookingSkill;
+        impl Capability for BookingSkill {
+            fn info(&self) -> CapabilityInfo {
+                CapabilityInfo {
+                    id: "booking",
+                    name: "Booking",
+                    description: "",
+                    category: "",
+                    reaches_external: true,
+                    reversibility: Reversibility::Irreversible,
+                    configured: true,
+                    needs: "",
+                    settings: &[],
+                }
+            }
+            fn invoke(
+                &self,
+                _input: &Value,
+                _settings: &CapabilitySettings,
+            ) -> Result<Value, CapabilityError> {
+                Ok(json!({}))
+            }
+        }
+        let caps: Arc<Vec<Arc<dyn Capability>>> =
+            Arc::new(vec![Arc::new(BookingSkill) as Arc<dyn Capability>]);
+
+        // Closed: the un-undoable is Blocked (the bool would only say "not autonomous").
+        let closed = RegistryRunner::new(caps.clone());
+        assert_eq!(closed.decision("booking"), Some(Decision::Block));
+        // Opened: Confirm — never Act.
+        let opened = RegistryRunner::with_config(
+            caps,
+            vec![],
+            vec![("booking".to_owned(), true)],
+            crate::application::AutonomyEnvelope::default(),
+            std::collections::HashMap::new(),
+        );
+        assert_eq!(opened.decision("booking"), Some(Decision::Confirm));
+        // Unknown skill: no verdict.
+        assert_eq!(closed.decision("nope"), None);
     }
 
     #[test]

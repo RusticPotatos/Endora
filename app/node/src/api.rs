@@ -1205,6 +1205,7 @@ async fn send_chat(
     let understanding = state.understanding.clone();
     let config = state.config.clone();
     let events = state.events.clone();
+    let audit = state.audit.clone();
     let ids = state.ids.clone();
     let clock = state.clock.clone();
     let butler = state.butler.clone();
@@ -1231,6 +1232,7 @@ async fn send_chat(
             understanding.as_ref(),
             &runner,
             butler.as_ref(),
+            audit.as_ref(),
             ids.as_ref(),
             clock.as_ref(),
             &context,
@@ -1314,6 +1316,7 @@ async fn stream_chat(
     let understanding = state.understanding.clone();
     let config = state.config.clone();
     let events = state.events.clone();
+    let audit = state.audit.clone();
     let ids = state.ids.clone();
     let clock = state.clock.clone();
     let butler = state.butler.clone();
@@ -1384,6 +1387,7 @@ async fn stream_chat(
                     understanding.as_ref(),
                     &runner,
                     butler.as_ref(),
+                    audit.as_ref(),
                     ids.as_ref(),
                     clock.as_ref(),
                     &context,
