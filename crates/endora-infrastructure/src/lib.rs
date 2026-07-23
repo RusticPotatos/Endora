@@ -16,7 +16,7 @@ pub mod model_layer;
 pub mod sqlite;
 
 pub use butler::{
-    ConfigurableButler, LlmButler, MixtureButler, ScriptedButler, ask_deep_model,
+    ConfigurableButler, DeepModelAsker, LlmButler, MixtureButler, ScriptedButler, ask_deep_model,
     butler_from_config, list_models, transcribe_audio,
 };
 pub use model_layer::{
