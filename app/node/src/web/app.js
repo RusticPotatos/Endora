@@ -844,23 +844,28 @@ function modelsSection() {
   const options = Object.entries(MODEL_PRESETS)
     .map(([k, v]) => `<option value="${k}">${esc(v.label)}</option>`).join("");
   const mix = !!mc.mixture;
+  // When the everyday model isn't overridden, name the deployment-default brain that
+  // is actually running, so the card shows what's active instead of just "default".
+  const activeDefault = mc.default_mixture
+    ? `${esc(mc.default_router || "")} + ${esc(mc.default_synth || "")}`
+    : esc(mc.default_model || "");
   return `
     <h3>Models</h3>
     <div class="note">A local <b>everyday</b> model, and an optional <b>deep</b> one for hard questions. Any OpenAI-compatible endpoint.</div>
 
     <div class="card model-card">
-      <div class="model-role">Everyday${mc.configured ? "" : ` · <span class="sub" style="font-weight:400;">using deployment default</span>`}</div>
+      <div class="model-role">Everyday${mc.configured ? "" : ` · <span class="sub" style="font-weight:400;">using deployment default${activeDefault ? `: <b>${activeDefault}</b>` : ""}</span>`}</div>
       <div class="field"><label>Provider preset</label>
         <select id="m-preset" onchange="applyModelPreset(this.value)"><option value="">Choose a provider…</option>${options}</select></div>
       <div class="field"><label>Endpoint</label>
-        <input id="m-base" placeholder="http://host.docker.internal:11434/v1" value="${esc(mc.base_url || "")}" /></div>
+        <input id="m-base" placeholder="${esc(mc.default_base_url || "http://host.docker.internal:11434/v1")}" value="${esc(mc.base_url || "")}" /></div>
       <div class="field"><label>API key <span style="opacity:.7;">· cloud only</span></label>
         <input id="m-key" type="password" autocomplete="off" placeholder="${mc.key_set ? "•••••• (unchanged)" : "stored securely, never shown"}" /></div>
       <div class="row" style="gap:8px;"><button class="ghost" data-act="discover:everyday" style="font-size:13px;">${icon("sparkle", 14)} Discover models</button><button class="ghost" data-act="testconn:everyday" style="font-size:13px;">${icon("check", 14)} Test connection</button></div>
       <div id="m-model-picker"></div>
       <datalist id="m-models"></datalist>
       <div id="m-single" style="display:${mix ? "none" : "flex"};flex-direction:column;gap:12px;">
-        ${modelName("single", mc.single, "e.g. qwen2.5:7b")}
+        ${modelName("single", mc.single, mc.default_model || "e.g. qwen2.5:7b")}
       </div>
       <details class="adv" ${mix ? "open" : ""}>
         <summary>Advanced — mixture &amp; sampling</summary>
