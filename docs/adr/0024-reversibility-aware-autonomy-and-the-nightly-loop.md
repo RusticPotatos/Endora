@@ -27,9 +27,16 @@ specific capability's irreversible band (`CapabilityConfigRepository::set_open_i
 `POST /v1/capabilities/{id}/open`, a Skills-view control), which moves it from
 `Block` to `Confirm` — **never** to `Act`, so an opened irreversible skill is
 confirmed on every use and never runs autonomously. Opening a skill records a line
-to the action feed. **Pending**: recording the *classified decision* per action in
-the audit trail (beyond the open/close event), and the **nightly self-improvement
-loop** below.
+to the action feed.
+
+**Decision-level audit implemented**: the deterministic policy [`Decision`] is
+exposed from the runner (`CapabilityRunner::decision`), and when the model reaches
+for a configured skill that policy withholds, the turn records what policy decided
+to the **audit trail** (`AuditLog`) — *"Policy blocked the 'X' skill …"* /
+*"Policy required confirmation for the 'X' skill …"*. Routine autonomous acts stay
+in the action feed; only the consequential decisions (confirm/block) land in audit,
+and the write is best-effort so it never breaks a turn. **Pending**: the **nightly
+self-improvement loop** below.
 
 ## Context
 
