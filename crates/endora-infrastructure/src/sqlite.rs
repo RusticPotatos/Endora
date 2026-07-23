@@ -224,6 +224,14 @@ CREATE TABLE IF NOT EXISTS events (
     at_ms   INTEGER NOT NULL,
     summary TEXT NOT NULL
 ) STRICT;
+CREATE TABLE IF NOT EXISTS mcp_servers (
+    name    TEXT PRIMARY KEY,
+    kind    TEXT NOT NULL,
+    command TEXT NOT NULL DEFAULT '',
+    args    TEXT NOT NULL DEFAULT '',
+    url     TEXT NOT NULL DEFAULT '',
+    enabled INTEGER NOT NULL DEFAULT 1
+) STRICT;
 ";
 
 /// A SQLite-backed store implementing the persistence ports over the shared
