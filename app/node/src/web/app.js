@@ -130,9 +130,20 @@ async function reload() {
 function subscribeToActivity() {
   try {
     const es = new EventSource("/v1/activity/stream");
-    // While a reply is streaming in, don't let a change-event reload wipe the
-    // live bubble mid-stream; sendChat reloads to the true state when it ends.
-    es.addEventListener("changed", () => { if (!CHAT_STREAMING) reload().catch(() => {}); });
+    // A background "changed" event refreshes the snapshot — but a full re-render
+    // must never yank unsaved work out from under the person:
+    //  - not while a reply is streaming (it would wipe the live bubble),
+    //  - not while they're on Settings (unsaved form input — an endpoint, a typed
+    //    API key, a picked preset — would be reset to stored values),
+    //  - not while they're typing in any field.
+    // Their own saves call reload() explicitly, so the view still updates on action.
+    es.addEventListener("changed", () => {
+      if (CHAT_STREAMING) return;
+      if (NAV.v === "settings") return;
+      const ae = document.activeElement;
+      if (ae && /^(INPUT|TEXTAREA|SELECT)$/.test(ae.tagName)) return;
+      reload().catch(() => {});
+    });
   } catch (_) { /* SSE unavailable: the UI still works, just not live. */ }
 }
 
