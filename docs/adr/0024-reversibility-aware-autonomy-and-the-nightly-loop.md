@@ -35,8 +35,20 @@ for a configured skill that policy withholds, the turn records what policy decid
 to the **audit trail** (`AuditLog`) — *"Policy blocked the 'X' skill …"* /
 *"Policy required confirmation for the 'X' skill …"*. Routine autonomous acts stay
 in the action feed; only the consequential decisions (confirm/block) land in audit,
-and the write is best-effort so it never breaks a turn. **Pending**: the **nightly
-self-improvement loop** below.
+and the write is best-effort so it never breaks a turn.
+
+**The nightly self-improvement loop is implemented** (spine): a
+`NightlyLoopSchedule` (off by default, a person-chosen off-hour, `is_due`
+once-per-night) drives `run_due_nightly_loop` from the heartbeat. On a due night it
+**reviews** the recent conversation and Endora's current understanding,
+**reflects** — the butler forms/refines beliefs, saved via the same
+`record_formed_beliefs` path as a chat turn — and **surfaces** a short overnight
+note, logging to the action feed. It runs **entirely within the reversible band**:
+it calls no skills and takes no consequential action, so there is nothing it could
+do that it couldn't undo. `GET/POST /v1/nightly-loop/schedule` + a console control
+own the cadence. **Pending (deepen)**: a richer *experiment* step — researching
+topics via reversible skills and forming/testing hypotheses (`Assumption` /
+`Experiment`) — and value-weighted topic selection.
 
 ## Context
 
