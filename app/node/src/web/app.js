@@ -464,6 +464,7 @@ function viewAudit() {
 // ---- voice (browser Web Speech API; STT may use a cloud service) ---
 let SPEAK = localStorage.getItem("endora.speak") === "1";      // read replies aloud (default OFF)
 let PTT_HAPTIC = localStorage.getItem("endora.haptic") !== "0"; // buzz on push-to-talk (default on)
+let DEEP_MODE = localStorage.getItem("endora.deepmode") === "1"; // route sends to the deep model (default OFF)
 const TTS = window.speechSynthesis;
 const STT = window.SpeechRecognition || window.webkitSpeechRecognition;
 let STT_AVAILABLE = false; // a Whisper STT server is configured (set from /health)
@@ -658,7 +659,7 @@ function viewChat() {
           <div class="composer-secondary">
             ${speakBtn}
             ${micBtn}
-            ${DEEP_MODEL.configured ? `<button class="ghost" data-act="deepask" title="send this question to your bigger model">${icon("sparkle", 15)}<span>Ask deep</span></button>` : ""}
+            ${DEEP_MODEL.configured ? `<button class="ghost${DEEP_MODE ? " active" : ""}" data-act="toggle:deep" title="when on, your messages go to the bigger model">${icon("sparkle", 15)}<span>${DEEP_MODE ? "Deep: on" : "Ask deep"}</span></button>` : ""}
           </div>
           <button class="primary" id="send-btn" data-act="${CHAT_STREAMING ? "chat:stop" : "chat:send"}">${CHAT_STREAMING ? `${icon("stop")}<span>Stop</span>` : `${icon("send")}<span>Send</span>`}</button>
         </div>
@@ -1293,6 +1294,29 @@ function updateSpeakButton() {
   if (b) b.innerHTML = `${icon(SPEAK ? "speakerOn" : "speakerOff")}<span>${SPEAK ? "Speaking" : "Speak"}</span>`;
 }
 
+// Update the Deep-mode toggle in place (same reasoning as the Speak button).
+function updateDeepButton() {
+  const b = document.querySelector('[data-act="toggle:deep"]');
+  if (b) {
+    b.classList.toggle("active", DEEP_MODE);
+    b.innerHTML = `${icon("sparkle", 15)}<span>${DEEP_MODE ? "Deep: on" : "Ask deep"}</span>`;
+  }
+}
+
+// Send a question to the deep (bigger) model. It persists both the question and the
+// answer server-side, so a reload shows the exchange. Keeps the input until it goes
+// through, so nothing is lost if the deep model is off or unreachable.
+async function askDeep(q, input) {
+  appendBubble(esc(q), "me");
+  flash("Asking the deep model…", "ok");
+  try {
+    const r = await api("POST", "/v1/deep-ask", { question: q });
+    if (r && r.answered === false) { flash(r.note || "No deep model configured.", "err"); return; }
+    if (input) { input.value = ""; growInput(input); }
+  } catch (e) { flash("Deep model: " + e.message, "err"); return; }
+  return reload();
+}
+
 // Stop the in-flight turn and drop anything still queued.
 function stopChat() {
   CHAT_QUEUE = [];
@@ -1309,6 +1333,9 @@ function sendChat() {
   if (!msg) return;
   const thread = document.getElementById("chat-thread");
   if (thread && thread.querySelector(".empty")) thread.innerHTML = "";
+  // Deep mode on: route to the bigger model instead of the everyday butler. Keep the
+  // text until it lands (askDeep clears it on success).
+  if (DEEP_MODE && DEEP_MODEL && DEEP_MODEL.configured) { askDeep(msg, input); return; }
   if (input) { input.value = ""; growInput(input); }
   appendBubble(esc(msg), "me"); // show it immediately, even if it waits its turn
   CHAT_QUEUE.push(msg);
@@ -1523,6 +1550,15 @@ async function dispatch(act) {
       updateSpeakButton();
       return;
     }
+    // Deep mode: while on, Send routes to the bigger model (an option, not a
+    // one-off button). Update in place so it never disturbs a streaming reply.
+    if (verb === "toggle" && noun === "deep") {
+      DEEP_MODE = !DEEP_MODE;
+      localStorage.setItem("endora.deepmode", DEEP_MODE ? "1" : "0");
+      updateDeepButton();
+      flash(DEEP_MODE ? "Deep mode on — your messages go to the bigger model." : "Deep mode off.", "ok");
+      return;
+    }
     if (verb === "toggle" && noun === "haptic") {
       PTT_HAPTIC = !PTT_HAPTIC;
       localStorage.setItem("endora.haptic", PTT_HAPTIC ? "1" : "0");
@@ -1664,22 +1700,6 @@ async function dispatch(act) {
       if (key.trim()) body.api_key = key.trim();
       try { await api("POST", "/v1/deep-model", body); flash("Deep model saved.", "ok"); }
       catch (e) { flash("Couldn't save: " + e.message, "err"); }
-      return reload();
-    }
-    // Escalate the typed question to the deep model.
-    if (verb === "deepask") {
-      const input = document.getElementById("chat-input");
-      const q = input && input.value.trim();
-      if (!q) { flash("Type a question first, then ask the bigger model.", "err"); return; }
-      // Show the question right away, but DON'T clear the box yet — if the deep
-      // model is unconfigured or unreachable we keep the text so it isn't lost.
-      appendBubble(esc(q), "me");
-      flash("Asking the deep model…", "ok");
-      try {
-        const r = await api("POST", "/v1/deep-ask", { question: q });
-        if (r && r.answered === false) { flash(r.note || "No deep model configured.", "err"); return reload(); }
-        if (input) input.value = ""; // cleared only once it actually went through
-      } catch (e) { flash("Deep model: " + e.message, "err"); return reload(); }
       return reload();
     }
     // Widen/narrow the autonomy envelope (ADR 0022). `noun` is the lever; `id` is 1/0.
