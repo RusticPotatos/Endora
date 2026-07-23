@@ -667,6 +667,13 @@ const MODEL_PRESETS = {
     single: { model: "llama-3.3-70b-versatile", temperature: 0.5 },
     router: { model: "llama-3.3-70b-versatile", temperature: 0.1 },
     synth:  { model: "llama-3.3-70b-versatile", temperature: 0.6 } },
+  // DeepSeek is OpenAI-compatible. deepseek-chat (V3) is the general model;
+  // deepseek-reasoner (R1) is the heavier reasoning one — a good "deep" pick you
+  // can type into the Model field.
+  deepseek: { label: "DeepSeek", base_url: "https://api.deepseek.com/v1", key: true,
+    single: { model: "deepseek-chat",     temperature: 0.5 },
+    router: { model: "deepseek-chat",     temperature: 0.1 },
+    synth:  { model: "deepseek-chat",     temperature: 0.6 } },
 };
 
 // Show the single-model fields or the router+synth fields as the mixture toggle
@@ -719,13 +726,51 @@ async function discoverModels(role) {
   if (!base) { flash("Enter the endpoint first.", "err"); return; }
   const body = { base_url: base, role };
   if (key) body.api_key = key;
+  const picker = document.getElementById(isDeep ? "deep-model-picker" : "m-model-picker");
+  if (picker) picker.innerHTML = `<div class="sub">Listing models…</div>`;
   try {
     const r = await api("POST", "/v1/models/discover", body);
     const models = r.models || [];
+    // Keep the datalist (autocomplete on the model fields) …
     const list = document.getElementById(isDeep ? "deep-models" : "m-models");
     if (list) list.innerHTML = models.map((m) => `<option value="${esc(m)}"></option>`).join("");
-    flash(models.length ? `Found ${models.length} models — tap the Model field to pick.` : "No models returned.", models.length ? "ok" : "err");
-  } catch (e) { flash("Couldn't list models: " + e.message, "err"); }
+    // … and render a visible, tappable picker (the datalist alone is invisible on
+    // mobile, so a discovered list was easy to miss).
+    if (picker) {
+      picker.innerHTML = models.length
+        ? `<div class="sub" style="margin:6px 0 4px;">Tap a model to use it:</div>`
+          + `<div class="model-picker">` + models.map((m) =>
+              `<button type="button" class="pill pick" data-model="${esc(m)}" onclick="pickModel('${role}', this.dataset.model)">${esc(m)}</button>`
+            ).join("") + `</div>`
+        : `<div class="sub">No models returned.</div>`;
+    }
+    flash(models.length ? `Found ${models.length} models — tap one below to pick it.` : "No models returned.", models.length ? "ok" : "err");
+  } catch (e) {
+    if (picker) picker.innerHTML = "";
+    flash("Couldn't list models: " + e.message, "err");
+  }
+}
+
+// Set the model field(s) from a tapped discovery result. For the everyday card that
+// is the synthesizer when a mixture is on, else the single model — mirroring what
+// Test connection checks; for deep it's the one deep model.
+function pickModel(role, name) {
+  if (!name) return;
+  let id;
+  if (role === "deep") {
+    id = "deep-model";
+  } else {
+    const mixOn = !!(document.getElementById("m-mix") || {}).checked;
+    id = mixOn ? "m-synth-model" : "m-single-model";
+  }
+  const el = document.getElementById(id);
+  if (el) el.value = name;
+  // Highlight the chosen chip.
+  const picker = document.getElementById(role === "deep" ? "deep-model-picker" : "m-model-picker");
+  if (picker) picker.querySelectorAll(".pill.pick").forEach((b) => {
+    b.classList.toggle("active", b.dataset.model === name);
+  });
+  flash("Model set to " + name, "ok");
 }
 
 // Test that an endpoint + API key actually work: sends a minimal completion with
@@ -787,6 +832,7 @@ function modelsSection() {
       <div class="field"><label>API key <span style="opacity:.7;">· cloud only</span></label>
         <input id="m-key" type="password" autocomplete="off" placeholder="${mc.key_set ? "•••••• (unchanged)" : "stored securely, never shown"}" /></div>
       <div class="row" style="gap:8px;"><button class="ghost" data-act="discover:everyday" style="font-size:13px;">${icon("sparkle", 14)} Discover models</button><button class="ghost" data-act="testconn:everyday" style="font-size:13px;">${icon("check", 14)} Test connection</button></div>
+      <div id="m-model-picker"></div>
       <datalist id="m-models"></datalist>
       <div id="m-single" style="display:${mix ? "none" : "flex"};flex-direction:column;gap:12px;">
         ${modelName("single", mc.single, "e.g. qwen2.5:7b")}
@@ -823,6 +869,7 @@ function modelsSection() {
       <div class="field"><label>API key</label>
         <input id="deep-key" type="password" autocomplete="off" placeholder="${dm.key_set ? "•••••• (unchanged)" : "stored securely, never shown"}" /></div>
       <div class="row" style="gap:8px;"><button class="ghost" data-act="discover:deep" style="font-size:13px;">${icon("sparkle", 14)} Discover models</button><button class="ghost" data-act="testconn:deep" style="font-size:13px;">${icon("check", 14)} Test connection</button></div>
+      <div id="deep-model-picker"></div>
       <datalist id="deep-models"></datalist>
       <div class="field"><label>Model</label>
         <input id="deep-model" list="deep-models" placeholder="e.g. gpt-4o, claude-sonnet-5" value="${esc(dm.model || "")}" /></div>
