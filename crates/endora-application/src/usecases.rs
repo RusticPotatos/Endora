@@ -2104,6 +2104,7 @@ pub fn run_due_nightly_loop(
     schedules: &impl NightlyLoopScheduleRepository,
     capabilities: &dyn CapabilityRunner,
     butler: &dyn Butler,
+    audit: &dyn AuditLog,
     ids: &impl IdSource,
     clock: &impl Clock,
     context: &ButlerContext,
@@ -2119,54 +2120,56 @@ pub fn run_due_nightly_loop(
     schedule.last_at = now;
     schedules.set(&schedule)?;
 
-    let history = chat.list()?;
+    let mut history = chat.list()?;
     let prefs = preferences.list_all()?;
     let mut activity: Vec<String> = Vec::new();
 
-    // Experiment (reversible): pick a focus the person cares about and research it
-    // with a reversible information skill — the same cleared-only, no-fabrication
-    // path the daily brief uses. Never runs anything policy hasn't cleared as
-    // reversible + autonomous, so the loop still can't do the un-undoable.
+    // AGENTIC overnight review (ADR 0019/0024): name a focus the person cares about
+    // and let the butler reach for WHATEVER skills help look into it — its choice,
+    // not a fixed script — then review the day and reflect, all in one grounded,
+    // policy-gated pass (reversible + autonomous only; it drafts and forms beliefs
+    // but does nothing it couldn't undo). The final reply IS the reflection.
     let focus = nightly_focus(context);
-    let research = focus
-        .as_deref()
-        .and_then(|f| research_topic(capabilities, f));
-    if let (Some(f), Some(_)) = (&focus, &research) {
-        activity.push(format!("Looked into \"{f}\" overnight"));
-    }
-
-    // Reflect: ground the quiet-hour review in the person's life and any research,
-    // and frame it — note privately what you learned (beliefs), then a morning note.
-    let framing = match &research {
-        Some(found) => format!(
-            "It's the quiet overnight hour and they're away. You looked into \
-             \"{}\" — something they care about — and found:\n\n{found}\n\nReview your \
-             recent conversation and what you understand about them, taking this into \
-             account. First, note privately what you've learned or grown more sure of \
-             (as beliefs) — only what's actually supported, nothing invented. Then \
-             write a short, warm note they'll see in the morning: what you looked into, \
-             what you noticed, and what you'll keep an eye on. Add nothing you don't know.",
-            focus.as_deref().unwrap_or("something they care about"),
+    let instruction = match &focus {
+        Some(f) => format!(
+            "It's the quiet overnight hour and they're away. Look into \"{f}\" — something \
+             they care about — reaching for whatever skills would help. Then review our \
+             recent conversation and what you understand about them: note privately what \
+             you've learned or grown more sure of (as beliefs), and leave a short, warm \
+             note they'll see in the morning — what you looked into, what you noticed, and \
+             what you'll keep an eye on. Add nothing you don't actually know."
         ),
-        None => "It's the quiet overnight hour and they're away. Review your recent \
-             conversation and what you already understand about them. First, note \
-             privately what you've learned or grown more sure of (as beliefs) — only \
-             what the conversation actually supports, nothing invented. Then write a \
-             short, warm note they'll see in the morning: what you noticed and what \
-             you'll keep an eye on. If there's genuinely nothing new, keep the note \
-             brief or say so plainly."
+        None => "It's the quiet overnight hour and they're away. Review our recent \
+             conversation and what you understand about them: note privately what you've \
+             learned or grown more sure of (as beliefs), and leave a short, warm note \
+             they'll see in the morning — what you noticed and what you'll keep an eye on. \
+             If there's genuinely nothing new, keep the note brief or say so plainly."
             .to_owned(),
     };
-    let ctx = ButlerContext {
+    history.push(ChatMessage::new(
+        MessageId::new(ids.new_id()),
+        MessageRole::User,
+        &instruction,
+        now,
+    )?);
+    let review_ctx = ButlerContext {
         now: format_datetime_utc(now.unix_millis()),
-        tool_result: Some(framing),
         ..context.clone()
     };
-    let reply = butler
-        .respond(&history, &prefs, &ctx)
-        .map_err(|e| AppError::Model {
-            message: e.to_string(),
-        })?;
+    let reply = gather_with_skills(
+        butler,
+        capabilities,
+        audit,
+        ids,
+        clock,
+        &history,
+        &prefs,
+        &review_ctx,
+        4,
+        &mut |_step| {},
+        &mut activity,
+    )?
+    .reply;
 
     // Reflect: persist the understanding it formed (same path as a chat turn).
     record_formed_beliefs(beliefs, reply.beliefs, ids, clock, &mut activity)?;
@@ -2192,38 +2195,6 @@ fn nightly_focus(context: &ButlerContext) -> Option<String> {
         return Some(ns.title.clone());
     }
     context.attention.first().cloned()
-}
-
-/// Researches `focus` with a reversible information skill — tries `web_answers`,
-/// then `knowledge` — and only one that is configured AND cleared to run on its own
-/// (reversible / read-only). Returns the skill's readable result, or `None` if none
-/// is available or it turned up nothing. Deterministic and reversible: it reads and
-/// summarizes; it never fabricates and never acts.
-fn research_topic(capabilities: &dyn CapabilityRunner, focus: &str) -> Option<String> {
-    let available = capabilities.available();
-    let input = json_query(focus);
-    for id in ["web_answers", "knowledge"] {
-        let cleared = available
-            .iter()
-            .any(|c| c.id == id && c.configured && c.autonomous);
-        if !cleared {
-            continue;
-        }
-        if let Ok(found) = capabilities.run(id, &input) {
-            let found = found.trim();
-            if !found.is_empty() {
-                return Some(found.to_owned());
-            }
-        }
-    }
-    None
-}
-
-/// Builds a `{"query": "…"}` JSON input, escaping the value (no `serde_json` in
-/// this crate — same manual-escape approach as [`json_location`]).
-fn json_query(query: &str) -> String {
-    let escaped = query.replace('\\', "\\\\").replace('"', "\\\"");
-    format!("{{\"query\":\"{escaped}\"}}")
 }
 
 /// Composes a proactive check-in, grounded in the person's life and always asking
@@ -4067,6 +4038,9 @@ mod tests {
             last_at: Timestamp::from_unix_millis(0),
         }));
 
+        let audit = FakeAudit {
+            records: RefCell::new(Vec::new()),
+        };
         let (msg, activity) = run_due_nightly_loop(
             &store,
             &store,
@@ -4074,6 +4048,7 @@ mod tests {
             &sched,
             &NoCapabilities,
             &ReflectiveButler,
+            &audit,
             &ids,
             &clock,
             &ButlerContext::default(),
@@ -4122,6 +4097,9 @@ mod tests {
         let store = FakeStore::default();
         let ids = SeqIds::default();
         let clock = FixedClock(27 * 3_600_000);
+        let audit = FakeAudit {
+            records: std::cell::RefCell::new(Vec::new()),
+        };
         let out = run_due_nightly_loop(
             &store,
             &store,
@@ -4129,6 +4107,7 @@ mod tests {
             &OffSchedule,
             &NoCapabilities,
             &NeverButler,
+            &audit,
             &ids,
             &clock,
             &ButlerContext::default(),
@@ -4173,7 +4152,8 @@ mod tests {
             }
         }
 
-        // A butler that reflects on what it researched.
+        // A butler that CHOOSES to research the focus (agentic): it reaches for the
+        // reversible read first, then — once the finding is fed back — reflects.
         struct ResearchButler;
         impl Butler for ResearchButler {
             fn respond(
@@ -4182,13 +4162,21 @@ mod tests {
                 _p: &[crate::Preference],
                 c: &ButlerContext,
             ) -> Result<ButlerReply, ProposalError> {
-                // The research is handed to the reflection via `tool_result`.
-                assert!(
-                    c.tool_result
-                        .as_deref()
-                        .is_some_and(|t| t.contains("Consistent sleep")),
-                    "the finding is fed into the reflection"
-                );
+                let researched = c
+                    .tool_result
+                    .as_deref()
+                    .is_some_and(|t| t.contains("Consistent sleep"));
+                if !researched {
+                    // First pass: pick the reversible read to look into the focus.
+                    return Ok(ButlerReply {
+                        capability_use: Some(endora_capabilities::CapabilityUse {
+                            capability: "web_answers".to_owned(),
+                            input_json: "{\"query\":\"sleep habits\"}".to_owned(),
+                        }),
+                        ..ButlerReply::default()
+                    });
+                }
+                // The finding is fed back — reflect and form a belief.
                 Ok(ButlerReply {
                     text: "I looked into sleep tonight — worth keeping steady hours.".to_owned(),
                     beliefs: vec![crate::ports::FormedBelief {
@@ -4233,6 +4221,9 @@ mod tests {
             ..ButlerContext::default()
         };
 
+        let audit = FakeAudit {
+            records: RefCell::new(Vec::new()),
+        };
         let (msg, activity) = run_due_nightly_loop(
             &store,
             &store,
@@ -4240,6 +4231,7 @@ mod tests {
             &sched,
             &ResearchRunner,
             &ResearchButler,
+            &audit,
             &ids,
             &clock,
             &context,
@@ -4247,12 +4239,8 @@ mod tests {
         .unwrap()
         .expect("the loop runs when due");
 
-        // It researched the focus, reflected on it, and surfaced a note.
-        assert!(
-            activity
-                .iter()
-                .any(|a| a.contains("Looked into") && a.contains("sleep"))
-        );
+        // It chose the reversible read to research the focus, reflected, and left a note.
+        assert!(activity.iter().any(|a| a.contains("web_answers")));
         assert!(msg.text().contains("sleep"));
         assert!(
             understanding(&store)
