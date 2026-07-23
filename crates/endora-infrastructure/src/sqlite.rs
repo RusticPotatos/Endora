@@ -159,8 +159,9 @@ CREATE TABLE IF NOT EXISTS beliefs (
     status           TEXT NOT NULL
 ) STRICT;
 CREATE TABLE IF NOT EXISTS capability_config (
-    id      TEXT PRIMARY KEY,
-    enabled INTEGER NOT NULL
+    id                TEXT PRIMARY KEY,
+    enabled           INTEGER NOT NULL,
+    open_irreversible INTEGER NOT NULL DEFAULT 0
 ) STRICT;
 CREATE TABLE IF NOT EXISTS capability_settings (
     capability_id TEXT NOT NULL,
@@ -269,6 +270,14 @@ impl SqliteStore {
                 "CREATE INDEX IF NOT EXISTS idx_experiments_review ON experiments(review_by_ms);",
             )
             .map_err(backend)?;
+            // Per-capability irreversible-band opener (ADR 0024); existing rows
+            // default to closed (0) — the un-undoable stays blocked until opened.
+            ensure_column(
+                &conn,
+                "capability_config",
+                "open_irreversible",
+                "INTEGER NOT NULL DEFAULT 0",
+            )?;
             // Lifecycle status on North Stars and Targets; existing rows default to
             // 'active'.
             ensure_column(
