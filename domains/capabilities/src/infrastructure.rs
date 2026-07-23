@@ -1573,6 +1573,9 @@ pub struct RegistryRunner {
     capabilities: Arc<Vec<Arc<dyn Capability>>>,
     /// Per-capability enabled overrides (id → enabled). Missing = default enabled.
     enabled: std::collections::HashMap<String, bool>,
+    /// Per-capability irreversible-band openers (id → opened, ADR 0024). Missing =
+    /// closed: the un-undoable stays blocked until the person opens it.
+    opened: std::collections::HashMap<String, bool>,
     /// The person's autonomy envelope — the boundary the butler acts within.
     envelope: crate::application::AutonomyEnvelope,
     /// Per-capability settings (id → key/value), for skills that need config.
@@ -1587,25 +1590,29 @@ impl RegistryRunner {
         Self {
             capabilities,
             enabled: std::collections::HashMap::new(),
+            opened: std::collections::HashMap::new(),
             envelope: crate::application::AutonomyEnvelope::default(),
             settings: std::collections::HashMap::new(),
         }
     }
 
     /// Wraps the registry, applying the person's enable/disable overrides (ADR 0021),
-    /// their autonomy envelope (ADR 0022), and per-capability settings (ADR 0021). A
-    /// disabled skill never runs; the envelope decides which kinds of action may run
-    /// without confirmation; settings make a configurable skill usable.
+    /// their autonomy envelope (ADR 0022), per-capability irreversible-band openers
+    /// (ADR 0024), and per-capability settings (ADR 0021). A disabled skill never
+    /// runs; the envelope and openers decide which kinds of action may run without
+    /// confirmation (or at all); settings make a configurable skill usable.
     #[must_use]
     pub fn with_config(
         capabilities: Arc<Vec<Arc<dyn Capability>>>,
         overrides: Vec<(String, bool)>,
+        opened: Vec<(String, bool)>,
         envelope: crate::application::AutonomyEnvelope,
         settings: std::collections::HashMap<String, CapabilitySettings>,
     ) -> Self {
         Self {
             capabilities,
             enabled: overrides.into_iter().collect(),
+            opened: opened.into_iter().collect(),
             envelope,
             settings,
         }
@@ -1614,6 +1621,12 @@ impl RegistryRunner {
     /// Whether a capability is enabled (its override, or its built-in default).
     fn is_enabled(&self, id: &str) -> bool {
         self.enabled.get(id).copied().unwrap_or(true)
+    }
+
+    /// Whether the person has opened this capability's irreversible band (ADR 0024).
+    /// Closed by default — the un-undoable stays blocked until deliberately opened.
+    fn is_opened(&self, id: &str) -> bool {
+        self.opened.get(id).copied().unwrap_or(false)
     }
 
     /// The stored settings for a capability (empty if none set).
@@ -1636,17 +1649,33 @@ fn settings_complete(info: &CapabilityInfo, settings: &CapabilitySettings) -> bo
 /// outright? Never consults the model — the boundary is policy.
 ///
 /// The kernel owns the envelope-independent posture
-/// ([`Reversibility::default_decision`]); this function applies the person's two
-/// levers on top of it: `auto_external` can *narrow* an otherwise-autonomous read
-/// that leaves the device, and `auto_consequential` can *widen* an
-/// outward-but-reversible action to run on its own. The irreversible band stays
-/// blocked regardless — a mistaken confirm is unrecoverable, so it is refused, not
-/// offered, until the person opens it per capability (no opener exists yet).
-fn classify(info: &CapabilityInfo, env: &crate::application::AutonomyEnvelope) -> Decision {
+/// ([`Reversibility::default_decision`]); this function applies the person's levers
+/// on top of it: `auto_external` can *narrow* an otherwise-autonomous read that
+/// leaves the device, and `auto_consequential` can *widen* an outward-but-reversible
+/// action to run on its own.
+///
+/// `opened_irreversible` is the person's per-capability escape hatch (ADR 0024): by
+/// default the irreversible band is [`Block`](Decision::Block) — refused, not
+/// offered, because a mistaken confirm is unrecoverable — but when the person has
+/// deliberately opened this capability it becomes [`Confirm`](Decision::Confirm).
+/// It never becomes [`Act`](Decision::Act): the un-undoable is confirmed every
+/// time, never run autonomously.
+fn classify(
+    info: &CapabilityInfo,
+    env: &crate::application::AutonomyEnvelope,
+    opened_irreversible: bool,
+) -> Decision {
     match info.reversibility.default_decision() {
-        // The un-undoable is refused outright — deny-by-default, whatever the
-        // envelope says (ADR 0024).
-        Decision::Block => Decision::Block,
+        // The un-undoable is refused outright — deny-by-default (ADR 0024) — unless
+        // the person has opened this capability, and even then only to confirm-each-
+        // use, never to autonomous.
+        Decision::Block => {
+            if opened_irreversible {
+                Decision::Confirm
+            } else {
+                Decision::Block
+            }
+        }
         // Autonomous by default (Observe / Reversible), but a read that leaves the
         // device waits for confirmation if the person narrowed the envelope to keep
         // on-device actions in-hand.
@@ -1670,9 +1699,14 @@ fn classify(info: &CapabilityInfo, env: &crate::application::AutonomyEnvelope) -
 }
 
 /// Whether a skill may run on its own this turn — exactly when the deterministic
-/// [`classify`] verdict is [`Act`](Decision::Act).
-fn may_run_autonomously(info: &CapabilityInfo, env: &crate::application::AutonomyEnvelope) -> bool {
-    classify(info, env) == Decision::Act
+/// [`classify`] verdict is [`Act`](Decision::Act). An opened irreversible skill is
+/// never autonomous (it confirms every time), so the opener does not change this.
+fn may_run_autonomously(
+    info: &CapabilityInfo,
+    env: &crate::application::AutonomyEnvelope,
+    opened_irreversible: bool,
+) -> bool {
+    classify(info, env, opened_irreversible) == Decision::Act
 }
 
 impl CapabilityRunner for RegistryRunner {
@@ -1689,7 +1723,11 @@ impl CapabilityRunner for RegistryRunner {
                     configured: info.configured
                         && self.is_enabled(info.id)
                         && settings_complete(&info, &self.settings_for(info.id)),
-                    autonomous: may_run_autonomously(&info, &self.envelope),
+                    autonomous: may_run_autonomously(
+                        &info,
+                        &self.envelope,
+                        self.is_opened(info.id),
+                    ),
                 }
             })
             .collect()
@@ -1706,12 +1744,13 @@ impl CapabilityRunner for RegistryRunner {
             .ok_or_else(|| format!("no such skill '{id}'"))?;
         // Deny-by-default on the irreversible band (ADR 0024): the un-undoable is
         // blocked outright — never run, even on an explicit request — until the
-        // person opens it per capability. The failure mode is "it refused," never
-        // "it did something permanent." The classifier owns which band is blocked.
-        if classify(&cap.info(), &self.envelope) == Decision::Block {
+        // person opens it per capability. Once opened it reaches this path only via
+        // an explicit confirmation. The failure mode is "it refused," never "it did
+        // something permanent." The classifier owns which band is blocked.
+        if classify(&cap.info(), &self.envelope, self.is_opened(id)) == Decision::Block {
             return Err(format!(
                 "the '{id}' skill can't be undone, so Endora won't run it on its own — \
-                 this band stays blocked until you open it"
+                 this band stays blocked until you open it for this skill"
             ));
         }
         // Data-loss tripwire: for a skill that leaves the device, refuse to send a
@@ -1773,55 +1812,63 @@ mod tests {
             auto_consequential: true,
         };
 
+        // `closed` = the irreversible opener is off; irrelevant for these bands.
+        let closed = false;
         // Reversible local read: always acts.
         assert_eq!(
-            classify(&info(Reversible, false), &default_env),
+            classify(&info(Reversible, false), &default_env, closed),
             Decision::Act
         );
         // Reversible external read: acts by default...
         assert_eq!(
-            classify(&info(Reversible, true), &default_env),
+            classify(&info(Reversible, true), &default_env, closed),
             Decision::Act
         );
         // ...but waits for confirmation when the person narrows the envelope.
         assert_eq!(
-            classify(&info(Reversible, true), &no_external),
+            classify(&info(Reversible, true), &no_external, closed),
             Decision::Confirm
         );
         // Outward but reversible: confirm by default, acts only when widened.
         assert_eq!(
-            classify(&info(OutwardReversible, true), &default_env),
+            classify(&info(OutwardReversible, true), &default_env, closed),
             Decision::Confirm
         );
         assert_eq!(
-            classify(&info(OutwardReversible, true), &widened),
+            classify(&info(OutwardReversible, true), &widened, closed),
             Decision::Act
         );
 
         // `may_run_autonomously` is exactly "the verdict is Act".
-        assert!(may_run_autonomously(&info(Reversible, false), &default_env));
+        assert!(may_run_autonomously(
+            &info(Reversible, false),
+            &default_env,
+            closed
+        ));
         assert!(!may_run_autonomously(
             &info(OutwardReversible, true),
-            &default_env
+            &default_env,
+            closed
         ));
     }
 
     #[test]
-    fn the_classifier_blocks_the_irreversible_rather_than_confirming_it() {
+    fn irreversible_is_blocked_when_closed_and_confirm_when_opened() {
         use crate::application::AutonomyEnvelope;
-        // Blocked outright, not merely confirmed — even fully widened (ADR 0024).
         let widened = AutonomyEnvelope {
             auto_external: true,
             auto_consequential: true,
         };
-        assert_eq!(
-            classify(&info(Reversibility::Irreversible, true), &widened),
-            Decision::Block
-        );
-        assert!(!may_run_autonomously(
-            &info(Reversibility::Irreversible, true),
-            &widened
-        ));
+        let irreversible = info(Reversibility::Irreversible, true);
+
+        // Closed: blocked outright, not merely confirmed — even fully widened.
+        assert_eq!(classify(&irreversible, &widened, false), Decision::Block);
+
+        // Opened (ADR 0024 escape hatch): moves to Confirm — never Act. The
+        // un-undoable is confirmed every time, never run autonomously, even fully
+        // widened.
+        assert_eq!(classify(&irreversible, &widened, true), Decision::Confirm);
+        assert!(!may_run_autonomously(&irreversible, &widened, true));
     }
 
     #[test]
@@ -1856,6 +1903,63 @@ mod tests {
         ]));
         let err = runner.run("wire_transfer", "{}").unwrap_err();
         assert!(err.contains("can't be undone"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn run_allows_an_opened_irreversible_skill_but_never_autonomously() {
+        // Once the person opens a capability's irreversible band, the execution path
+        // runs it (reached only via an explicit confirmation) — but it is still
+        // never cleared to act on its own (ADR 0024).
+        struct BookingSkill;
+        impl Capability for BookingSkill {
+            fn info(&self) -> CapabilityInfo {
+                CapabilityInfo {
+                    id: "booking",
+                    name: "Booking",
+                    description: "",
+                    category: "",
+                    reaches_external: true,
+                    reversibility: Reversibility::Irreversible,
+                    configured: true,
+                    needs: "",
+                    settings: &[],
+                }
+            }
+            fn invoke(
+                &self,
+                _input: &Value,
+                _settings: &CapabilitySettings,
+            ) -> Result<Value, CapabilityError> {
+                Ok(json!({ "booked": true }))
+            }
+        }
+        let caps: Arc<Vec<Arc<dyn Capability>>> =
+            Arc::new(vec![Arc::new(BookingSkill) as Arc<dyn Capability>]);
+
+        // Opened for this capability, fully-widened envelope.
+        let runner = RegistryRunner::with_config(
+            caps,
+            vec![],
+            vec![("booking".to_owned(), true)],
+            crate::application::AutonomyEnvelope {
+                auto_external: true,
+                auto_consequential: true,
+            },
+            std::collections::HashMap::new(),
+        );
+
+        // It runs now (the person confirmed) — no longer blocked.
+        assert_eq!(runner.run("booking", "{}").unwrap(), r#"{"booked":true}"#);
+        // But it is never autonomous: it must be confirmed every time.
+        let spec = runner
+            .available()
+            .into_iter()
+            .find(|s| s.id == "booking")
+            .unwrap();
+        assert!(
+            !spec.autonomous,
+            "an opened irreversible skill must still confirm"
+        );
     }
 
     #[test]
