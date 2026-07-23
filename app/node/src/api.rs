@@ -1267,6 +1267,7 @@ async fn brief(State(state): State<AppState>) -> Result<Json<serde_json::Value>,
     let understanding = state.understanding.clone();
     let config = state.config.clone();
     let events = state.events.clone();
+    let audit = state.audit.clone();
     let ids = state.ids.clone();
     let clock = state.clock.clone();
     let capabilities = state.capabilities.clone();
@@ -1278,6 +1279,7 @@ async fn brief(State(state): State<AppState>) -> Result<Json<serde_json::Value>,
             understanding.as_ref(),
             &runner,
             butler.as_ref(),
+            audit.as_ref(),
             ids.as_ref(),
             clock.as_ref(),
         )?;
@@ -2584,6 +2586,7 @@ pub fn spawn_heartbeat(state: AppState) {
             let schedules = state.schedules.clone();
             let understanding = state.understanding.clone();
             let config = state.config.clone();
+            let audit = state.audit.clone();
             let ids = state.ids.clone();
             let clock = state.clock.clone();
             let capabilities = state.capabilities.clone();
@@ -2624,6 +2627,7 @@ pub fn spawn_heartbeat(state: AppState) {
                     schedules.as_ref(),
                     &runner,
                     butler.as_ref(),
+                    audit.as_ref(),
                     ids.as_ref(),
                     clock.as_ref(),
                 )?;
