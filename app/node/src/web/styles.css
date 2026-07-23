@@ -96,6 +96,12 @@
   .pill.rejected, .pill.abandoned { color: var(--bad); border-color: var(--bad); }
   .pill.active { color: var(--accent); border-color: var(--accent); }
   .pill.archived { color: var(--muted); border-color: var(--line); }
+  /* A discovered-models picker: tappable chips (the datalist alone is invisible on
+     mobile). Scrolls if a provider returns a long list. */
+  .model-picker { display: flex; flex-wrap: wrap; gap: 6px; max-height: 168px; overflow-y: auto; margin: 2px 0 4px; }
+  .pill.pick { cursor: pointer; background: none; font-size: 13px; padding: 4px 11px; color: var(--ink); }
+  .pill.pick:hover { border-color: var(--accent); color: var(--accent); }
+  .pill.pick.active { border-color: var(--accent); color: var(--accent); font-weight: 550; }
   input, textarea, select {
     /* font-size must be >= 16px or iOS Safari auto-zooms into the field on focus
        (and we refocus the composer after each send), leaving the page zoomed in. */
