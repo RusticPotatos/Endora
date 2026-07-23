@@ -669,9 +669,11 @@ function viewChat() {
       <div class="composer">
         <textarea id="chat-input" rows="1" placeholder="Talk to your butler…"></textarea>
         <div class="composer-actions">
-          ${speakBtn || "<span></span>"}
-          ${micBtn || ""}
-          ${DEEP_MODEL.configured ? `<button class="ghost" data-act="deepask" title="send this question to your bigger model">${icon("sparkle", 15)} Ask deep</button>` : ""}
+          <div class="composer-secondary">
+            ${speakBtn}
+            ${micBtn}
+            ${DEEP_MODEL.configured ? `<button class="ghost" data-act="deepask" title="send this question to your bigger model">${icon("sparkle", 15)}<span>Ask deep</span></button>` : ""}
+          </div>
           <button class="primary" id="send-btn" data-act="${CHAT_STREAMING ? "chat:stop" : "chat:send"}">${CHAT_STREAMING ? `${icon("stop")}<span>Stop</span>` : `${icon("send")}<span>Send</span>`}</button>
         </div>
       </div>
@@ -1564,12 +1566,15 @@ async function dispatch(act) {
       const input = document.getElementById("chat-input");
       const q = input && input.value.trim();
       if (!q) { flash("Type a question first, then ask the bigger model.", "err"); return; }
-      if (input) input.value = "";
+      // Show the question right away, but DON'T clear the box yet — if the deep
+      // model is unconfigured or unreachable we keep the text so it isn't lost.
       appendBubble(esc(q), "me");
+      flash("Asking the deep model…", "ok");
       try {
         const r = await api("POST", "/v1/deep-ask", { question: q });
-        if (r && r.answered === false) flash(r.note || "No deep model configured.", "err");
-      } catch (e) { flash("Deep model: " + e.message, "err"); }
+        if (r && r.answered === false) { flash(r.note || "No deep model configured.", "err"); return reload(); }
+        if (input) input.value = ""; // cleared only once it actually went through
+      } catch (e) { flash("Deep model: " + e.message, "err"); return reload(); }
       return reload();
     }
     // Widen/narrow the autonomy envelope (ADR 0022). `noun` is the lever; `id` is 1/0.
