@@ -7,6 +7,7 @@ let CHAT_PROPOSALS = [];       // proposals from the butler's last reply
 let SUGGESTIONS = [];          // pending suggestions (the butler's durable proposal inbox)
 let CHECKIN = { enabled: false, interval_ms: 0 }; // proactive check-in cadence
 let CAPS = [];                 // the butler's capabilities/skills (modules)
+let MCP_SERVERS = { servers: [] }; // connected MCP servers + their tools (ADR 0021)
 let AUTONOMY = { auto_external: true, auto_consequential: false }; // the autonomy envelope (ADR 0022)
 let BRIEF_SCHED = { enabled: false, hour_utc: 12 }; // daily-brief schedule
 let NIGHT_SCHED = { enabled: false, hour_utc: 3 }; // nightly self-improvement loop (ADR 0024)
@@ -106,6 +107,7 @@ async function reload() {
   try { DEEP_MODEL = await api("GET", "/v1/deep-model"); } catch (_) {}
   try { MODEL_CONFIG = await api("GET", "/v1/model-config"); } catch (_) {}
   try { TUNE_SCHED = await api("GET", "/v1/model-tune/schedule"); } catch (_) {}
+  try { MCP_SERVERS = await api("GET", "/v1/mcp/servers"); } catch (_) {}
   DB = db;
   // Attach each butler reply's persisted action trail (steps + sources) from the
   // chat endpoint, so past answers keep their expandable actions after a reload.
@@ -1227,13 +1229,59 @@ function viewSkills() {
       ${toggle(env.auto_external !== false, "autonomy:external", "Use read-only skills on its own", "Check weather, news, safety alerts and web pages without asking. (Recommended)")}
       ${toggle(env.auto_consequential === true, "autonomy:consequential", "Take consequential actions on its own", "Let it carry out actions that normally need your confirmation — spending, sending, or things that can't be undone. Off is safer; turn on only if you're sure.")}
     </div>`;
+  // MCP servers (ADR 0021): external tool sources. Each tool is deny-by-default —
+  // visible but blocked until allowed, and even then confirmed every use.
+  const mcpServerCard = (s) => {
+    const addr = s.transport === "http" ? s.url : `${s.command} ${(s.args || []).join(" ")}`.trim();
+    const health = s.tools_live > 0
+      ? `<span class="pill concluded">${s.tools_live} tool${s.tools_live === 1 ? "" : "s"}</span>`
+      : `<span class="pill">not connected</span>`;
+    const toolRow = (t) => `
+      <div class="row" style="align-items:flex-start;gap:10px;margin-top:6px;border-top:1px solid var(--line);padding-top:6px;">
+        <div class="grow">
+          <div class="title" style="font-weight:500;">${esc(t.id)}</div>
+          <div class="sub">${esc(t.description || "")}</div>
+          <div class="sub">${t.opened ? "Allowed — asks before every use, never on its own." : "Blocked — allow it to let the butler use it (still confirms each use)."}</div>
+        </div>
+        <button class="${t.opened ? "primary" : "ghost"}" data-act="skill:open:${t.id}:${t.opened ? "0" : "1"}">${t.opened ? "Block" : "Allow"}</button>
+      </div>`;
+    return `
+      <div class="card">
+        <div class="row">
+          <div class="grow">
+            <div class="title">${esc(s.name)} ${health} <span class="pill">${esc(s.transport)}</span></div>
+            <div class="sub">${esc(addr)}</div>
+            ${s.tools_live === 0 ? `<div class="sub" style="margin-top:4px;">Registered but didn't connect — check the command is installed and reachable on the server.</div>` : ""}
+          </div>
+          <button class="ghost danger" data-act="mcp:remove:${esc(s.name)}">Remove</button>
+        </div>
+        ${(s.tools || []).map(toolRow).join("")}
+      </div>`;
+  };
+  const servers = (MCP_SERVERS && MCP_SERVERS.servers) || [];
+  const mcpAddForm = `
+    <div class="card">
+      <div class="title">Add a server</div>
+      <div class="sub" style="margin:4px 0 8px;">A local command that speaks MCP over stdio. Its tools appear above, blocked until you allow each one.</div>
+      <div class="field"><label>Name</label><input id="mcp-name" placeholder="e.g. filesystem" /></div>
+      <div class="field"><label>Command</label><input id="mcp-command" placeholder="e.g. npx" /></div>
+      <div class="field"><label>Arguments <span class="sub" style="font-weight:400;">· one per line</span></label>
+        <textarea id="mcp-args" rows="3" placeholder="-y&#10;@modelcontextprotocol/server-filesystem&#10;/data"></textarea></div>
+      <div class="row" style="justify-content:flex-end;"><button class="primary" data-act="mcp:add">Add server</button></div>
+    </div>`;
+  const mcpSection = `
+    <h3>MCP servers <span class="sub" style="font-weight:400;">· connect external tools</span></h3>
+    <div class="note">Tools from an MCP server are off-limits by default: the butler can see them, but each stays blocked until you allow it — and it still confirms every use.</div>
+    ${servers.map(mcpServerCard).join("")}
+    ${mcpAddForm}`;
   return `
     ${crumbs([{ label: "Home", act: "go:chat" }, { label: "Skills" }])}
     <h2>What Endora can do</h2>
 
     ${envelope}
     <h3>Skills</h3>
-    ${listOr((CAPS || []).map(card), "No skills registered.")}`;
+    ${listOr((CAPS || []).map(card), "No skills registered.")}
+    ${mcpSection}`;
 }
 
 // The home surface: what Endora currently understands about you. Not a task list —
@@ -1779,6 +1827,25 @@ async function dispatch(act) {
       if (open && !confirm("Allow this skill's irreversible actions?\n\nEndora will still ask you before every single use, and will never do it on its own.")) return;
       try { await api("POST", `/v1/capabilities/${id}/open`, { open }); }
       catch (e) { flash("Couldn't change that skill: " + e.message, "err"); }
+      return reload();
+    }
+    // Add an MCP server (ADR 0021): a local stdio command. Its tools appear blocked
+    // until allowed. A colon in the name would break the action encoding, so reject it.
+    if (verb === "mcp" && noun === "add") {
+      const name = val("mcp-name");
+      const command = val("mcp-command");
+      const args = val("mcp-args").split("\n").map((a) => a.trim()).filter(Boolean);
+      if (!name || !command) { flash("Enter a name and a command.", "err"); return; }
+      if (name.includes(":")) { flash("The name can't contain a colon.", "err"); return; }
+      try { await api("POST", "/v1/mcp/servers", { name, transport: "stdio", command, args }); flash("Server added.", "ok"); }
+      catch (e) { flash("Couldn't add the server: " + e.message, "err"); }
+      return reload();
+    }
+    // Remove an MCP server (its tools disconnect).
+    if (verb === "mcp" && noun === "remove") {
+      if (!confirm(`Remove the MCP server "${id}"? Its tools will be disconnected.`)) return;
+      try { await api("DELETE", "/v1/mcp/servers/" + encodeURIComponent(id)); flash("Server removed.", "ok"); }
+      catch (e) { flash("Couldn't remove: " + e.message, "err"); }
       return reload();
     }
     // Save a skill's settings (ADR 0021). Only non-empty fields are sent, so a
