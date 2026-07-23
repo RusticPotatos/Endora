@@ -213,6 +213,10 @@ pub fn app(state: AppState) -> Router {
             "/v1/brief/schedule",
             get(get_brief_schedule).post(set_brief_schedule),
         )
+        .route(
+            "/v1/nightly-loop/schedule",
+            get(get_nightly_loop_schedule).post(set_nightly_loop_schedule),
+        )
         .route("/v1/deep-model", get(get_deep_model).post(set_deep_model))
         .route(
             "/v1/model-config",
@@ -2416,6 +2420,36 @@ async fn set_brief_schedule(
     Ok(Json(brief_schedule_json(&s)))
 }
 
+fn nightly_loop_schedule_json(s: &endora_scheduling::NightlyLoopSchedule) -> serde_json::Value {
+    json!({ "enabled": s.enabled, "hour_utc": s.hour_utc })
+}
+
+/// The nightly self-improvement loop schedule (ADR 0024) — when the butler reviews
+/// the day and reflects, overnight, within the reversible band.
+async fn get_nightly_loop_schedule(
+    State(state): State<AppState>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let schedules = state.schedules.clone();
+    let s = blocking(move || usecases::nightly_loop_schedule(schedules.as_ref())).await?;
+    Ok(Json(nightly_loop_schedule_json(&s)))
+}
+
+/// Sets the nightly-loop schedule. `hour_utc` is the UTC hour (the console converts
+/// the person's local hour). The loop only ever reflects/drafts — never anything
+/// irreversible.
+async fn set_nightly_loop_schedule(
+    State(state): State<AppState>,
+    Json(req): Json<BriefScheduleRequest>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let schedules = state.schedules.clone();
+    let s = blocking(move || {
+        usecases::set_nightly_loop_schedule(schedules.as_ref(), req.enabled, req.hour_utc)
+    })
+    .await?;
+    let _ = state.changes.send(());
+    Ok(Json(nightly_loop_schedule_json(&s)))
+}
+
 /// Invokes a capability by id with a JSON body. Read-only skills run directly;
 /// this is the `act` path of the autonomy model. (Consequential skills will be
 /// routed through propose→confirm as they are wired.)
@@ -2535,7 +2569,30 @@ pub fn spawn_heartbeat(state: AppState) {
                     }
                     record_event(events.as_ref(), clock.as_ref(), "Prepared your daily brief");
                 }
-                Ok::<_, AppError>(posted.is_some() || briefed.is_some())
+                // The nightly self-improvement loop (ADR 0024), if due: review the
+                // day and reflect, within the reversible band — never anything
+                // irreversible. Serialized under the turn lock like the brief.
+                let reflected = usecases::run_due_nightly_loop(
+                    chat.as_ref(),
+                    understanding.as_ref(),
+                    understanding.as_ref(),
+                    schedules.as_ref(),
+                    butler.as_ref(),
+                    ids.as_ref(),
+                    clock.as_ref(),
+                    &context,
+                )?;
+                if let Some((_, activity)) = &reflected {
+                    for item in activity {
+                        record_event(events.as_ref(), clock.as_ref(), item);
+                    }
+                    record_event(
+                        events.as_ref(),
+                        clock.as_ref(),
+                        "Ran the nightly self-improvement loop",
+                    );
+                }
+                Ok::<_, AppError>(posted.is_some() || briefed.is_some() || reflected.is_some())
             })
             .await;
             if let Ok(Ok(true)) = posted {

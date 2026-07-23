@@ -29,13 +29,14 @@ use endora_understanding::{BeliefRepository, PreferenceRepository};
 
 use endora_scheduling::{
     BriefSchedule, BriefScheduleRepository, CheckinRepository, CheckinSchedule,
+    NightlyLoopSchedule, NightlyLoopScheduleRepository,
 };
 
 use crate::error::AppError;
 use crate::ports::{
     AttentionItem, AttentionKind, Butler, ButlerContext, ButlerProposal, ButlerReply, Clock,
-    IdSource, MemorySnapshot, MemoryStore, NorthStarBrief, Proposer, Snooze, SnoozeRepository,
-    Suggestion, SuggestionRepository, SuggestionStatus,
+    FormedBelief, IdSource, MemorySnapshot, MemoryStore, NorthStarBrief, Proposer, Snooze,
+    SnoozeRepository, Suggestion, SuggestionRepository, SuggestionStatus,
 };
 
 /// Creates and stores a new [`Direction`].
@@ -1188,15 +1189,34 @@ pub fn send_to_butler_streaming(
         saved.push(suggestion);
     }
 
-    // Store the understanding the butler formed this turn. These are Endora's own
-    // beliefs (not actions) — kept directly, then reviewable/correctable (ADR 0020).
-    // If the butler restated something Endora already believes, affirm the existing
-    // belief (raising confidence) rather than storing a near-duplicate.
+    // Store the understanding the butler formed this turn (ADR 0020).
+    record_formed_beliefs(beliefs, reply.beliefs, ids, clock, &mut activity)?;
+
+    Ok((butler, saved, activity))
+}
+
+/// Persists the beliefs the butler formed — Endora's own understanding (not
+/// actions), kept directly then reviewable/correctable (ADR 0020). If the butler
+/// restated something Endora already believes, the existing belief is **affirmed**
+/// (raising confidence) rather than storing a near-duplicate. Each stored/affirmed
+/// belief is appended to `activity` in plain language. Shared by the chat turn and
+/// the nightly self-improvement loop (ADR 0024) — the "reflect" step.
+///
+/// # Errors
+/// [`AppError::Domain`] if a statement is invalid, or [`AppError::Repository`] on
+/// a backend failure.
+fn record_formed_beliefs(
+    beliefs: &impl BeliefRepository,
+    formed: Vec<FormedBelief>,
+    ids: &impl IdSource,
+    clock: &impl Clock,
+    activity: &mut Vec<String>,
+) -> Result<(), AppError> {
     let existing = beliefs.list()?;
-    for formed in reply.beliefs {
+    for belief in formed {
         if let Some(mut prior) = existing
             .iter()
-            .find(|b| similar(b.statement(), &formed.statement))
+            .find(|b| similar(b.statement(), &belief.statement))
             .cloned()
         {
             activity.push(format!("Grew more sure that {}", prior.statement()));
@@ -1204,19 +1224,18 @@ pub fn send_to_butler_streaming(
             beliefs.save(&prior)?;
             continue;
         }
-        activity.push(format!("Learned that {}", formed.statement.trim()));
-        let belief = Belief::new(
+        activity.push(format!("Learned that {}", belief.statement.trim()));
+        let stored = Belief::new(
             BeliefId::new(ids.new_id()),
-            &formed.statement,
-            formed.kind,
-            formed.confidence,
-            &formed.evidence,
+            &belief.statement,
+            belief.kind,
+            belief.confidence,
+            &belief.evidence,
             clock.now(),
         )?;
-        beliefs.save(&belief)?;
+        beliefs.save(&stored)?;
     }
-
-    Ok((butler, saved, activity))
+    Ok(())
 }
 
 /// Normalizes a belief statement for duplicate detection: lowercase, collapse
@@ -1862,6 +1881,119 @@ pub fn run_due_brief(
     schedule.last_at = now;
     briefs.set(&schedule)?;
     daily_brief(chat, preferences, capabilities, butler, ids, clock)
+}
+
+/// The stored nightly-loop schedule, defaulting to **off** (ADR 0024).
+///
+/// # Errors
+/// [`AppError::Repository`] if the backend fails.
+pub fn nightly_loop_schedule(
+    schedules: &impl NightlyLoopScheduleRepository,
+) -> Result<NightlyLoopSchedule, AppError> {
+    Ok(schedules
+        .get()?
+        .unwrap_or_else(NightlyLoopSchedule::disabled_default))
+}
+
+/// Sets the nightly-loop cadence (on/off + UTC hour), preserving `last_at` so
+/// toggling it doesn't re-fire the same night (ADR 0024).
+///
+/// # Errors
+/// [`AppError::Repository`] if the backend fails.
+pub fn set_nightly_loop_schedule(
+    schedules: &impl NightlyLoopScheduleRepository,
+    enabled: bool,
+    hour_utc: u8,
+) -> Result<NightlyLoopSchedule, AppError> {
+    let current = schedules
+        .get()?
+        .unwrap_or_else(NightlyLoopSchedule::disabled_default);
+    let schedule = NightlyLoopSchedule {
+        enabled,
+        hour_utc: hour_utc.min(23),
+        last_at: current.last_at,
+    };
+    schedules.set(&schedule)?;
+    Ok(schedule)
+}
+
+/// If the **nightly self-improvement loop** is due (enabled, the hour matches, it
+/// hasn't run tonight), runs it and records that it fired (ADR 0024). Called by the
+/// heartbeat at a quiet off-hour.
+///
+/// The loop stays entirely within the **reversible band**: it reviews the recent
+/// conversation and Endora's current understanding, has the butler **reflect** —
+/// forming and refining beliefs (saved like a normal turn) — and leaves a short
+/// **overnight note**. It calls no skills and takes no consequential action, so
+/// there is nothing here it could do that it couldn't undo. Returns the posted note
+/// (if any) + activity, or `None` when not due / nothing to say.
+///
+/// # Errors
+/// [`AppError::Repository`] on a backend failure, or [`AppError::Model`] if the
+/// butler errors.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "explicit dependencies, no hidden state"
+)]
+pub fn run_due_nightly_loop(
+    chat: &impl ChatRepository,
+    beliefs: &impl BeliefRepository,
+    preferences: &impl PreferenceRepository,
+    schedules: &impl NightlyLoopScheduleRepository,
+    butler: &dyn Butler,
+    ids: &impl IdSource,
+    clock: &impl Clock,
+    context: &ButlerContext,
+) -> Result<Option<(ChatMessage, Vec<String>)>, AppError> {
+    let now = clock.now();
+    let Some(mut schedule) = schedules.get()? else {
+        return Ok(None);
+    };
+    if !schedule.is_due(now) {
+        return Ok(None);
+    }
+    // Mark fired first, so a slow reflection can't double-run on the next tick.
+    schedule.last_at = now;
+    schedules.set(&schedule)?;
+
+    let history = chat.list()?;
+    let prefs = preferences.list_all()?;
+    // Ground the reflection in the person's life, and frame the quiet-hour review:
+    // note privately what you've learned (beliefs), then a short morning note.
+    let ctx = ButlerContext {
+        now: format_datetime_utc(now.unix_millis()),
+        tool_result: Some(
+            "It's the quiet overnight hour and they're away. Review your recent \
+             conversation and what you already understand about them. First, note \
+             privately what you've learned or grown more sure of (as beliefs) — only \
+             what the conversation actually supports, nothing invented. Then write a \
+             short, warm note they'll see in the morning: what you noticed and what \
+             you'll keep an eye on. If there's genuinely nothing new, keep the note \
+             brief or say so plainly."
+                .to_owned(),
+        ),
+        ..context.clone()
+    };
+    let reply = butler
+        .respond(&history, &prefs, &ctx)
+        .map_err(|e| AppError::Model {
+            message: e.to_string(),
+        })?;
+
+    let mut activity: Vec<String> = Vec::new();
+    // Reflect: persist the understanding it formed (same path as a chat turn).
+    record_formed_beliefs(beliefs, reply.beliefs, ids, clock, &mut activity)?;
+
+    // Surface: leave the overnight note, if it wrote one. If it only refined
+    // beliefs and had nothing worth saying, don't post a chat message — the beliefs
+    // are already saved and reviewable in Understanding; we just stay quiet.
+    let text = reply.text.trim();
+    if text.is_empty() {
+        return Ok(None);
+    }
+    let message = post_butler_message(chat, ids, clock, text)?;
+    activity.push("Left an overnight note".to_owned());
+    Ok(Some((message, activity)))
 }
 
 /// Composes a proactive check-in, grounded in the person's life and always asking
@@ -3523,6 +3655,125 @@ mod tests {
         );
         correct_belief(&store, id).unwrap();
         assert!(understanding(&store).unwrap().is_empty());
+    }
+
+    #[test]
+    fn the_nightly_loop_reflects_and_leaves_an_overnight_note_when_due() {
+        use super::{run_due_nightly_loop, understanding};
+        use crate::{BeliefKind, Confidence};
+        use endora_scheduling::{NightlyLoopSchedule, NightlyLoopScheduleRepository};
+        use std::cell::RefCell;
+
+        // Overnight, the butler reflects: forms a belief and writes a short note.
+        struct ReflectiveButler;
+        impl Butler for ReflectiveButler {
+            fn respond(
+                &self,
+                _h: &[ChatMessage],
+                _p: &[crate::Preference],
+                _c: &ButlerContext,
+            ) -> Result<ButlerReply, ProposalError> {
+                Ok(ButlerReply {
+                    text: "Evening — I've noticed sleep is on your mind. I'll keep an eye on it."
+                        .to_owned(),
+                    beliefs: vec![crate::ports::FormedBelief {
+                        statement: "wants more consistent sleep".to_owned(),
+                        kind: BeliefKind::Intent,
+                        confidence: Confidence::Low,
+                        evidence: "mentioned being tired several times".to_owned(),
+                    }],
+                    ..ButlerReply::default()
+                })
+            }
+        }
+
+        // A due schedule: hour 3, clock at 27h (UTC hour 3, a day on from last_at 0).
+        struct DueSchedule(RefCell<NightlyLoopSchedule>);
+        impl NightlyLoopScheduleRepository for DueSchedule {
+            fn get(&self) -> Result<Option<NightlyLoopSchedule>, RepositoryError> {
+                Ok(Some(*self.0.borrow()))
+            }
+            fn set(&self, s: &NightlyLoopSchedule) -> Result<(), RepositoryError> {
+                *self.0.borrow_mut() = *s;
+                Ok(())
+            }
+        }
+
+        let store = FakeStore::default();
+        let ids = SeqIds::default();
+        let clock = FixedClock(27 * 3_600_000);
+        let sched = DueSchedule(RefCell::new(NightlyLoopSchedule {
+            enabled: true,
+            hour_utc: 3,
+            last_at: Timestamp::from_unix_millis(0),
+        }));
+
+        let (msg, activity) = run_due_nightly_loop(
+            &store,
+            &store,
+            &store,
+            &sched,
+            &ReflectiveButler,
+            &ids,
+            &clock,
+            &ButlerContext::default(),
+        )
+        .unwrap()
+        .expect("the loop runs when due");
+
+        // Surfaced an overnight note...
+        assert!(msg.text().contains("sleep"));
+        assert!(activity.iter().any(|a| a.contains("overnight note")));
+        // ...reflected (formed and saved a belief)...
+        let u = understanding(&store).unwrap();
+        assert!(u.iter().any(|b| b.statement().contains("sleep")));
+        assert!(activity.iter().any(|a| a.contains("Learned")));
+        // ...and marked itself fired, so it won't run again tonight.
+        assert!(!sched.0.borrow().is_due(clock.now()));
+    }
+
+    #[test]
+    fn the_nightly_loop_stays_quiet_when_not_due() {
+        use super::run_due_nightly_loop;
+        use endora_scheduling::{NightlyLoopSchedule, NightlyLoopScheduleRepository};
+
+        struct NeverButler;
+        impl Butler for NeverButler {
+            fn respond(
+                &self,
+                _h: &[ChatMessage],
+                _p: &[crate::Preference],
+                _c: &ButlerContext,
+            ) -> Result<ButlerReply, ProposalError> {
+                panic!("the butler must not be consulted when the loop isn't due");
+            }
+        }
+        // Off by default: never due, butler never called.
+        struct OffSchedule;
+        impl NightlyLoopScheduleRepository for OffSchedule {
+            fn get(&self) -> Result<Option<NightlyLoopSchedule>, RepositoryError> {
+                Ok(Some(NightlyLoopSchedule::disabled_default()))
+            }
+            fn set(&self, _s: &NightlyLoopSchedule) -> Result<(), RepositoryError> {
+                Ok(())
+            }
+        }
+
+        let store = FakeStore::default();
+        let ids = SeqIds::default();
+        let clock = FixedClock(27 * 3_600_000);
+        let out = run_due_nightly_loop(
+            &store,
+            &store,
+            &store,
+            &OffSchedule,
+            &NeverButler,
+            &ids,
+            &clock,
+            &ButlerContext::default(),
+        )
+        .unwrap();
+        assert!(out.is_none());
     }
 
     #[test]

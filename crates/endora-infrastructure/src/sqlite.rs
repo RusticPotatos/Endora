@@ -180,6 +180,12 @@ CREATE TABLE IF NOT EXISTS brief_schedule (
     hour_utc  INTEGER NOT NULL,
     last_ms   INTEGER NOT NULL
 ) STRICT;
+CREATE TABLE IF NOT EXISTS night_loop_schedule (
+    id        INTEGER PRIMARY KEY CHECK (id = 0),
+    enabled   INTEGER NOT NULL,
+    hour_utc  INTEGER NOT NULL,
+    last_ms   INTEGER NOT NULL
+) STRICT;
 CREATE TABLE IF NOT EXISTS deep_model (
     id      INTEGER PRIMARY KEY CHECK (id = 0),
     url     TEXT NOT NULL,
