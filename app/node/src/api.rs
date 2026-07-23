@@ -223,6 +223,7 @@ pub fn app(state: AppState) -> Router {
             get(get_model_config).post(set_model_config),
         )
         .route("/v1/models/discover", post(discover_models))
+        .route("/v1/models/test", post(test_model_connection))
         .route("/v1/model-layer/run", post(run_model_layer_now))
         .route(
             "/v1/model-tune/schedule",
@@ -2171,6 +2172,56 @@ async fn discover_models(
     })
     .await?;
     Ok(Json(json!({ "models": models })))
+}
+
+#[derive(Deserialize)]
+struct TestConnectionRequest {
+    #[serde(default)]
+    base_url: String,
+    /// The key to test — falls back to the stored key for `role` when blank, so the
+    /// person can test the already-saved key without re-entering it.
+    #[serde(default)]
+    api_key: Option<String>,
+    /// The model to exercise (a minimal completion). Blank ⇒ reachability check only.
+    #[serde(default)]
+    model: String,
+    /// Which stored key to fall back to: `deep` or `everyday` (default).
+    #[serde(default)]
+    role: Option<String>,
+}
+
+/// Tests that a model endpoint + API key actually work, for the settings "Test
+/// connection" button. Sends a minimal completion with the given (or stored) key —
+/// a real auth check, not just a `/models` listing — and returns `{ok, detail}`
+/// with a human-readable result either way. Never persists anything.
+async fn test_model_connection(
+    State(state): State<AppState>,
+    Json(req): Json<TestConnectionRequest>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let config = state.config.clone();
+    let base = req.base_url.trim().to_owned();
+    let model = req.model.trim().to_owned();
+    let result = blocking(move || {
+        let key = match req.api_key {
+            Some(k) if !k.trim().is_empty() => k.trim().to_owned(),
+            _ if req.role.as_deref() == Some("deep") => DeepModelRepository::get(config.as_ref())
+                .map_err(AppError::Repository)?
+                .map(|m| m.api_key)
+                .unwrap_or_default(),
+            _ => ButlerModelConfigRepository::get(config.as_ref())
+                .map_err(AppError::Repository)?
+                .map(|c| c.api_key)
+                .unwrap_or_default(),
+        };
+        Ok::<_, AppError>(endora_infrastructure::test_connection(&base, &key, &model))
+    })
+    .await?;
+    // A failed test is a normal, expected outcome (bad key, wrong model) — report it
+    // as data with `ok: false`, not an HTTP error.
+    Ok(Json(match result {
+        Ok(detail) => json!({ "ok": true, "detail": detail }),
+        Err(detail) => json!({ "ok": false, "detail": detail }),
+    }))
 }
 
 /// Kicks off the self-improving model layer (ADR 0027) in the background:
