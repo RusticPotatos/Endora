@@ -185,14 +185,24 @@ fn mcp_snapshot(state: &AppState) -> Arc<endora_capabilities::McpRunner> {
 async fn list_mcp_servers(
     State(state): State<AppState>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    use endora_capabilities::{CapabilityRunner, McpServerRegistry, McpTransport};
+    use endora_capabilities::{
+        CapabilityConfigRepository, CapabilityRunner, McpServerRegistry, McpTransport,
+    };
     let config = state.config.clone();
-    let servers = blocking(move || config.list().map_err(AppError::Repository)).await?;
-    let live: std::collections::HashSet<String> = mcp_snapshot(&state)
-        .available()
+    let (servers, opened) = blocking(move || {
+        Ok((
+            config.list().map_err(AppError::Repository)?,
+            config.opened_overrides().map_err(AppError::Repository)?,
+        ))
+    })
+    .await?;
+    let opened: std::collections::HashSet<String> = opened
         .into_iter()
-        .map(|s| s.id)
+        .filter(|(_, o)| *o)
+        .map(|(id, _)| id)
         .collect();
+    // The live tools (namespaced server.tool) each connected server exposes.
+    let live = mcp_snapshot(&state).available();
     let out: Vec<_> = servers
         .into_iter()
         .map(|s| {
@@ -203,7 +213,19 @@ async fn list_mcp_servers(
                 McpTransport::Http { url } => ("http", String::new(), Vec::new(), url.clone()),
             };
             let prefix = format!("{}.", s.name);
-            let tools_live = live.iter().filter(|id| id.starts_with(&prefix)).count();
+            // Each tool, with whether the person has opened it (allowed it to run,
+            // confirm-each-use). Un-opened MCP tools are visible but blocked (ADR 0024).
+            let tools: Vec<_> = live
+                .iter()
+                .filter(|spec| spec.id.starts_with(&prefix))
+                .map(|spec| {
+                    json!({
+                        "id": spec.id,
+                        "description": spec.description,
+                        "opened": opened.contains(&spec.id),
+                    })
+                })
+                .collect();
             json!({
                 "name": s.name,
                 "transport": transport,
@@ -211,7 +233,8 @@ async fn list_mcp_servers(
                 "args": args,
                 "url": url,
                 "enabled": s.enabled,
-                "tools_live": tools_live,
+                "tools_live": tools.len(),
+                "tools": tools,
             })
         })
         .collect();
@@ -1366,6 +1389,13 @@ fn build_runner(
     let overrides = config.enabled_overrides().unwrap_or_default();
     let opened = config.opened_overrides().unwrap_or_default();
     let envelope = AutonomyEnvelopeRepository::get(config).unwrap_or_default();
+    // The tools the person has opened this turn (ADR 0024) — shared by the built-in
+    // registry and the MCP overlay below.
+    let mcp_opened: std::collections::HashSet<String> = opened
+        .iter()
+        .filter(|(_, open)| *open)
+        .map(|(id, _)| id.clone())
+        .collect();
     // Fresh per turn so config/envelope/opener changes take effect immediately.
     let registry = endora_infrastructure::RegistryRunner::with_config(
         capabilities,
@@ -1374,11 +1404,17 @@ fn build_runner(
         envelope,
         settings_map(config),
     );
+    // Apply the same openers to the shared MCP runner's deny-by-default: an opened
+    // MCP tool becomes confirm-each-use this turn, without rebuilding the connection.
+    let mcp_source = endora_capabilities::OpenerRunner::new(
+        mcp as Arc<dyn endora_capabilities::CapabilityRunner + Send + Sync>,
+        mcp_opened,
+    );
     // Built-in skills + connected MCP servers, behind one runner. The application
     // never learns a tool's origin (ADR 0021).
     endora_capabilities::CompositeRunner::new(vec![
         Arc::new(registry) as Arc<dyn endora_capabilities::CapabilityRunner + Send + Sync>,
-        mcp as Arc<dyn endora_capabilities::CapabilityRunner + Send + Sync>,
+        Arc::new(mcp_source) as Arc<dyn endora_capabilities::CapabilityRunner + Send + Sync>,
     ])
 }
 
@@ -2056,7 +2092,14 @@ async fn set_capability_open(
     Path(id): Path<String>,
     Json(req): Json<OpenRequest>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    if !state.capabilities.iter().any(|c| c.info().id == id) {
+    // Accept a built-in capability id or a connected MCP tool id (server.tool) —
+    // both are opened the same way (ADR 0024), keyed by id in the config store.
+    let is_builtin = state.capabilities.iter().any(|c| c.info().id == id);
+    let is_mcp = {
+        use endora_capabilities::CapabilityRunner;
+        mcp_snapshot(&state).available().iter().any(|s| s.id == id)
+    };
+    if !is_builtin && !is_mcp {
         return Err(ApiError(AppError::NotFound {
             entity: "capability",
         }));
