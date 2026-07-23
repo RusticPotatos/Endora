@@ -52,6 +52,7 @@ const ICONS = {
   menu: '<line x1="4" y1="7" x2="20" y2="7"/><line x1="4" y1="12" x2="20" y2="12"/><line x1="4" y1="17" x2="20" y2="17"/>',
   skills: '<path d="M12 3l2.5 5 5.5.8-4 3.9 1 5.5-5-2.6-5 2.6 1-5.5-4-3.9 5.5-.8z"/>',
   gear: '<circle cx="12" cy="12" r="3.2"/><path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M18.4 5.6l-2.1 2.1M7.7 16.3l-2.1 2.1"/>',
+  check: '<path d="M5 13l4 4L19 7"/>',
 };
 function icon(name, size = 17) {
   const p = ICONS[name];
@@ -764,6 +765,32 @@ async function discoverModels(role) {
   } catch (e) { flash("Couldn't list models: " + e.message, "err"); }
 }
 
+// Test that an endpoint + API key actually work: sends a minimal completion with
+// the chosen model (a real auth check, not just a /models listing) and reports the
+// result. Uses the key typed in the card, or the stored key when that's blank.
+async function testConnection(role) {
+  const isDeep = role === "deep";
+  const base = ((document.getElementById(isDeep ? "deep-url" : "m-base") || {}).value || "").trim();
+  const key = ((document.getElementById(isDeep ? "deep-key" : "m-key") || {}).value || "").trim();
+  let model;
+  if (isDeep) {
+    model = ((document.getElementById("deep-model") || {}).value || "").trim();
+  } else {
+    // Everyday: test the synthesizer in a mixture, else the single model.
+    const mixOn = !!(document.getElementById("m-mix") || {}).checked;
+    const id = mixOn ? "m-synth-model" : "m-single-model";
+    model = ((document.getElementById(id) || {}).value || "").trim();
+  }
+  if (!base) { flash("Enter the endpoint first.", "err"); return; }
+  const body = { base_url: base, role, model };
+  if (key) body.api_key = key;
+  flash("Testing the connection…", "ok");
+  try {
+    const r = await api("POST", "/v1/models/test", body);
+    flash(r.detail || (r.ok ? "Connected." : "Test failed."), r.ok ? "ok" : "err");
+  } catch (e) { flash("Test failed: " + e.message, "err"); }
+}
+
 // One model's optional sampling knobs (blank = provider default).
 function samplingRow(prefix, slot) {
   const nv = (x) => (x === undefined || x === null) ? "" : x;
@@ -796,7 +823,7 @@ function modelsSection() {
         <input id="m-base" placeholder="http://host.docker.internal:11434/v1" value="${esc(mc.base_url || "")}" /></div>
       <div class="field"><label>API key <span style="opacity:.7;">· cloud only</span></label>
         <input id="m-key" type="password" autocomplete="off" placeholder="${mc.key_set ? "•••••• (unchanged)" : "stored securely, never shown"}" /></div>
-      <div><button class="ghost" data-act="discover:everyday" style="font-size:13px;">${icon("sparkle", 14)} Discover models</button></div>
+      <div class="row" style="gap:8px;"><button class="ghost" data-act="discover:everyday" style="font-size:13px;">${icon("sparkle", 14)} Discover models</button><button class="ghost" data-act="testconn:everyday" style="font-size:13px;">${icon("check", 14)} Test connection</button></div>
       <datalist id="m-models"></datalist>
       <div id="m-single" style="display:${mix ? "none" : "flex"};flex-direction:column;gap:12px;">
         ${modelName("single", mc.single, "e.g. qwen2.5:7b")}
@@ -832,7 +859,7 @@ function modelsSection() {
         <input id="deep-url" placeholder="https://api.provider.com/v1" value="${esc(dm.url || "")}" /></div>
       <div class="field"><label>API key</label>
         <input id="deep-key" type="password" autocomplete="off" placeholder="${dm.key_set ? "•••••• (unchanged)" : "stored securely, never shown"}" /></div>
-      <div><button class="ghost" data-act="discover:deep" style="font-size:13px;">${icon("sparkle", 14)} Discover models</button></div>
+      <div class="row" style="gap:8px;"><button class="ghost" data-act="discover:deep" style="font-size:13px;">${icon("sparkle", 14)} Discover models</button><button class="ghost" data-act="testconn:deep" style="font-size:13px;">${icon("check", 14)} Test connection</button></div>
       <datalist id="deep-models"></datalist>
       <div class="field"><label>Model</label>
         <input id="deep-model" list="deep-models" placeholder="e.g. gpt-4o, claude-sonnet-5" value="${esc(dm.model || "")}" /></div>
@@ -1482,6 +1509,7 @@ async function dispatch(act) {
     }
     // Discover the models an endpoint offers, into its picker.
     if (verb === "discover") { await discoverModels(noun); return; }
+    if (verb === "testconn") { await testConnection(noun); return; }
     // Kick off the self-improving model layer (background; results go to Activity).
     if (verb === "modeltune") {
       try { await api("POST", "/v1/model-layer/run", {}); flash("Evaluating your local models — watch Activity for scores and the result.", "ok"); }
