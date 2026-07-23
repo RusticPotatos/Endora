@@ -62,8 +62,9 @@ pub use endora_direction::{
 };
 pub use ports::{
     AttentionItem, AttentionKind, Butler, ButlerContext, ButlerProposal, ButlerReply, Clock,
-    FormedBelief, IdSource, MemorySnapshot, MemoryStore, NorthStarBrief, ProposalError, Proposer,
-    RepositoryError, Snooze, SnoozeRepository, Suggestion, SuggestionRepository, SuggestionStatus,
+    DeepAsker, FormedBelief, IdSource, MemorySnapshot, MemoryStore, NorthStarBrief, ProposalError,
+    Proposer, RepositoryError, Snooze, SnoozeRepository, Suggestion, SuggestionRepository,
+    SuggestionStatus,
 };
 pub use usecases::{ActivityItem, ActivityKind};
 
