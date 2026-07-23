@@ -2062,6 +2062,15 @@ async fn get_model_config(
         } else {
             !cfg.single.model.is_empty()
         };
+    // The effective deployment default (the env brain the butler falls back to when
+    // nothing is saved). Surfaced so the Everyday card can name the model actually
+    // running instead of a bare "using deployment default" — same values main.rs uses.
+    let default_base_url = std::env::var("ENDORA_MODEL_URL")
+        .unwrap_or_else(|_| "http://localhost:11434/v1".to_owned());
+    let default_model = std::env::var("ENDORA_MODEL").unwrap_or_else(|_| "qwen2.5:7b".to_owned());
+    let default_router = std::env::var("ENDORA_ROUTER_MODEL").unwrap_or_default();
+    let default_synth = std::env::var("ENDORA_SYNTH_MODEL").unwrap_or_default();
+    let default_mixture = !default_router.is_empty() && !default_synth.is_empty();
     Ok(Json(json!({
         "base_url": cfg.base_url,
         "mixture": cfg.mixture,
@@ -2070,6 +2079,11 @@ async fn get_model_config(
         "single": slot_json(&cfg.single),
         "router": slot_json(&cfg.router),
         "synth": slot_json(&cfg.synth),
+        "default_base_url": default_base_url,
+        "default_model": default_model,
+        "default_mixture": default_mixture,
+        "default_router": default_router,
+        "default_synth": default_synth,
     })))
 }
 
