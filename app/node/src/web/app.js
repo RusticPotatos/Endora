@@ -249,16 +249,16 @@ function viewHome() {
         <h3 style="margin:0; flex:1;">${esc(v.name)}</h3>
         <button class="ghost danger" data-act="delete:value:${v.id}" title="delete value">${icon("purge", 15)}</button>
       </div>
-      ${ds.length ? ds.map(dirCard).join("") : `<div class="empty">Nothing filed under this value yet.</div>`}`;
+      ${ds.length ? ds.map(dirCard).join("") : `<div class="empty">Nothing here yet.</div>`}`;
   }).join("");
   const unfiled = visible(DB.directions.filter((d) => !d.value_id));
   const unfiledHtml = `
-    <h3 style="margin-top:16px;">${(DB.values || []).length ? "Unfiled" : "Goals"}</h3>
+    <h3 style="margin-top:16px;">${(DB.values || []).length ? "Other" : "Goals"}</h3>
     ${listOr(unfiled.map(dirCard), "No goals yet. Create one below.")}`;
   return `
     ${crumbs([{ label: "Home", act: "go:chat" }, { label: "Goals" }])}
     ${dueBanner}
-    <h2>Goals by value</h2>
+    <h2>Your goals</h2>
     ${groups}
     ${unfiledHtml}
     ${archivedToggle(DB.directions)}
@@ -267,7 +267,7 @@ function viewHome() {
       <button class="primary" data-act="create:direction">Add goal</button>
     </div>
     <div class="form">
-      <input id="new-value" placeholder="A value it serves (e.g. Health)…" />
+      <input id="new-value" placeholder="A value to group under (e.g. Health)…" />
       <button data-act="create:value">Add value</button>
     </div>`;
 }
@@ -965,7 +965,7 @@ function viewSkills() {
       <div class="card">
         <div class="row">
           <div class="grow">
-            <div class="title">${esc(c.name)} ${status}${ext ? ` <span class="pill">leaves device</span>` : ""}${irreversible ? (opened ? ` <span class="pill concluded">irreversible · confirmed</span>` : ` <span class="pill">irreversible · blocked</span>`) : ""}</div>
+            <div class="title">${esc(c.name)} ${status}${ext ? ` <span class="pill">leaves device</span>` : ""}${irreversible ? ` <span class="pill">can't be undone</span>` : ""}</div>
             <div class="sub">${esc(c.description)}</div>
             ${(enabled && !c.configured) ? `<div class="sub" style="margin-top:4px;">Needs: ${esc(c.needs)}</div>` : ""}
           </div>
@@ -974,10 +974,10 @@ function viewSkills() {
         ${irreversible ? `
         <div class="row" style="align-items:flex-start;gap:10px;margin-top:8px;border-top:1px solid var(--line);padding-top:8px;">
           <div class="grow">
-            <div class="title" style="font-weight:500;">Irreversible actions</div>
+            <div class="title" style="font-weight:500;">Actions that can't be undone</div>
             <div class="sub">${opened
-              ? "Allowed — but Endora asks before every use and never does it on its own."
-              : "This skill can spend, send, or delete — blocked until you allow it. Even then it always asks first."}</div>
+              ? "Allowed — Endora still asks before every use, never on its own."
+              : "Spending, sending or deleting — blocked until you allow it, and it always asks first."}</div>
           </div>
           <button class="${opened ? "primary" : "ghost"}" data-act="skill:open:${c.id}:${opened ? "0" : "1"}">${opened ? "Block again" : "Allow (with confirmation)"}</button>
         </div>` : ""}
@@ -1002,7 +1002,7 @@ function viewSkills() {
     <h2>What Endora can do</h2>
 
     ${envelope}
-    <h3 style="margin-top:18px;">Skills</h3>
+    <h3>Skills</h3>
     ${listOr((CAPS || []).map(card), "No skills registered.")}`;
 }
 
