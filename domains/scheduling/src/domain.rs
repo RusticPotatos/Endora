@@ -73,3 +73,44 @@ impl BriefSchedule {
         hour == self.hour_utc && since >= 20 * 60 * 60 * 1_000
     }
 }
+
+/// The person's **nightly self-improvement loop** schedule (ADR 0024): while they
+/// sleep, the butler reviews the day and its understanding of them, reflects (forms
+/// and refines beliefs), and leaves a short overnight note — all within the
+/// *reversible band*, so it can research, draft, and learn but never send, spend, or
+/// change anything. Off by default; the person owns whether it runs and at what
+/// (off-)hour. The hour is **UTC** (the console converts local), keeping the
+/// server-side scheduler timezone-free — same convention as [`BriefSchedule`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NightlyLoopSchedule {
+    /// Whether the nightly loop is on.
+    pub enabled: bool,
+    /// The UTC hour (0–23) to run it — pick a quiet one (default 03:00 UTC).
+    pub hour_utc: u8,
+    /// When it last ran (so it fires once per night, not every tick).
+    pub last_at: Timestamp,
+}
+
+impl NightlyLoopSchedule {
+    /// The default: **off**, at a quiet 03:00 UTC if the person enables it.
+    #[must_use]
+    pub const fn disabled_default() -> Self {
+        Self {
+            enabled: false,
+            hour_utc: 3,
+            last_at: Timestamp::from_unix_millis(0),
+        }
+    }
+
+    /// Whether the loop is due: enabled, the current UTC hour matches, and it hasn't
+    /// run in the last ~20 hours (so it fires once per night, not every tick).
+    #[must_use]
+    pub fn is_due(&self, now: Timestamp) -> bool {
+        if !self.enabled {
+            return false;
+        }
+        let hour = (now.unix_millis().div_euclid(3_600_000) % 24) as u8;
+        let since = now.unix_millis() - self.last_at.unix_millis();
+        hour == self.hour_utc && since >= 20 * 60 * 60 * 1_000
+    }
+}
