@@ -10,11 +10,11 @@ use endora_direction::{
     Assumption, Direction, Experiment, LifecycleStatus, Observation, PolicyDecision,
     ProposedProcessChange, Reflection, Target, Value, authorize_process_change,
 };
-use endora_kernel::AutonomyLevel;
 use endora_kernel::ids::{
     AssumptionId, AuditId, BeliefId, DirectionId, ExperimentId, MessageId, ObservationId,
     PreferenceId, ProcessChangeId, ReflectionId, SuggestionId, TargetId, Timestamp, ValueId,
 };
+use endora_kernel::{AutonomyLevel, Decision};
 use endora_platform::AuditRecord;
 use endora_understanding::{Belief, Preference, PreferenceKind};
 
@@ -787,6 +787,7 @@ pub fn send_to_butler(
     beliefs: &impl BeliefRepository,
     capabilities: &dyn CapabilityRunner,
     butler: &dyn Butler,
+    audit: &dyn AuditLog,
     ids: &impl IdSource,
     clock: &impl Clock,
     context: &ButlerContext,
@@ -800,6 +801,7 @@ pub fn send_to_butler(
         beliefs,
         capabilities,
         butler,
+        audit,
         ids,
         clock,
         context,
@@ -874,6 +876,7 @@ pub fn send_to_butler_streaming(
     beliefs: &impl BeliefRepository,
     capabilities: &dyn CapabilityRunner,
     butler: &dyn Butler,
+    audit: &dyn AuditLog,
     ids: &impl IdSource,
     clock: &impl Clock,
     context: &ButlerContext,
@@ -969,12 +972,41 @@ pub fn send_to_butler_streaming(
                 }
             }
         } else {
-            // Off / awaiting setup / consequential — record it so the butler answers
-            // honestly and points to setup, rather than faking it or dead-ending.
+            // The model asked for a skill it can't just run: off, awaiting setup, or
+            // a consequential/blocked action. Record what policy decided (audit
+            // trail) and tell the butler honestly so it asks or points to setup,
+            // rather than faking it or dead-ending.
+            let decision = capabilities.decision(&id);
+            // Audit the consequential policy decision on a configured skill (ADRs
+            // 0005/0024): what policy did — confirm-required or blocked. Best-effort
+            // (transparency, never the critical path), so a failure never breaks the
+            // turn; routine autonomous acts stay in the action feed, not here.
+            if spec.as_ref().is_some_and(|s| s.configured) {
+                let audited = match decision {
+                    Some(Decision::Block) => Some(format!(
+                        "Policy blocked the '{id}' skill — irreversible and not opened (refused, not run)"
+                    )),
+                    Some(Decision::Confirm) => Some(format!(
+                        "Policy required confirmation for the '{id}' skill (not run on its own)"
+                    )),
+                    _ => None,
+                };
+                if let Some(summary) = audited {
+                    if let Ok(rec) =
+                        AuditRecord::new(AuditId::new(ids.new_id()), clock.now(), &summary)
+                    {
+                        let _ = audit.append(&rec);
+                    }
+                }
+            }
             let note = match spec {
                 Some(s) if !s.configured => format!(
                     "- {id}: not set up — can't use it; tell them plainly and point them to set \
                      it up under Skills"
+                ),
+                Some(_) if decision == Some(Decision::Block) => format!(
+                    "- {id}: can't be undone and isn't allowed yet — you can't do it even if they \
+                     ask; tell them they can allow it under Skills first"
                 ),
                 Some(_) => {
                     format!("- {id}: consequential — needs their go-ahead; ask, don't do it")
@@ -2721,6 +2753,7 @@ mod tests {
             &store,
             &NoCapabilities,
             &ScriptedTestButler,
+            &FakeAudit::default(),
             &ids,
             &clock,
             &ButlerContext::default(),
@@ -2816,6 +2849,7 @@ mod tests {
             &store,
             &OneSkill,
             &ToolButler,
+            &FakeAudit::default(),
             &ids,
             &clock,
             &ButlerContext::default(),
@@ -2880,6 +2914,7 @@ mod tests {
             &store,
             &GatedSkill,
             &ToolButler,
+            &FakeAudit::default(),
             &ids,
             &clock,
             &ButlerContext::default(),
@@ -2890,6 +2925,84 @@ mod tests {
         // The butler's own reply stands; nothing was run.
         assert!(reply.text().contains("can't check flights"));
         assert!(activity.iter().all(|a| !a.contains("Used")));
+    }
+
+    #[test]
+    fn a_blocked_consequential_decision_is_recorded_in_the_audit_trail() {
+        use super::send_to_butler;
+        use endora_kernel::Decision;
+
+        // A butler that asks for a configured-but-blocked skill.
+        struct BookingButler;
+        impl Butler for BookingButler {
+            fn respond(
+                &self,
+                _h: &[ChatMessage],
+                _p: &[Preference],
+                _c: &ButlerContext,
+            ) -> Result<ButlerReply, ProposalError> {
+                Ok(ButlerReply {
+                    text: "I shouldn't book that on my own.".to_owned(),
+                    capability_use: Some(endora_capabilities::CapabilityUse {
+                        capability: "booking".to_owned(),
+                        input_json: "{}".to_owned(),
+                    }),
+                    ..ButlerReply::default()
+                })
+            }
+        }
+
+        // Configured and real, but policy BLOCKS it (irreversible, not opened).
+        struct BlockedSkill;
+        impl CapabilityRunner for BlockedSkill {
+            fn available(&self) -> Vec<endora_capabilities::CapabilitySpec> {
+                vec![endora_capabilities::CapabilitySpec {
+                    id: "booking".to_owned(),
+                    description: "book travel".to_owned(),
+                    configured: true,
+                    autonomous: false,
+                }]
+            }
+            fn run(&self, _id: &str, _input_json: &str) -> Result<String, String> {
+                panic!("a blocked skill must never run");
+            }
+            fn decision(&self, _id: &str) -> Option<Decision> {
+                Some(Decision::Block)
+            }
+        }
+
+        let store = FakeStore::default();
+        let ids = SeqIds::default();
+        let clock = FixedClock(1_000);
+        let audit = FakeAudit::default();
+        let _ = send_to_butler(
+            &store,
+            &store,
+            &store,
+            &store,
+            &BlockedSkill,
+            &BookingButler,
+            &audit,
+            &ids,
+            &clock,
+            &ButlerContext::default(),
+            "book me a first-class flight",
+        )
+        .unwrap();
+
+        // Policy's decision to block a consequential action is recorded, for
+        // accountability (ADRs 0005/0024) — not left only in the model's prose.
+        let records = audit.recent(10).unwrap();
+        assert!(
+            records
+                .iter()
+                .any(|r| r.summary().contains("blocked") && r.summary().contains("booking")),
+            "expected an audit record of the blocked booking, got: {:?}",
+            records
+                .iter()
+                .map(|r| r.summary().to_owned())
+                .collect::<Vec<_>>()
+        );
     }
 
     #[test]
@@ -3083,6 +3196,7 @@ mod tests {
             &store,
             &NewsSkill,
             &FabricatingButler,
+            &FakeAudit::default(),
             &ids,
             &clock,
             &ButlerContext::default(),
@@ -3157,6 +3271,7 @@ mod tests {
             &store,
             &OffNews,
             &FabricatingButler,
+            &FakeAudit::default(),
             &ids,
             &clock,
             &ButlerContext::default(),
@@ -3385,6 +3500,7 @@ mod tests {
             &store,
             &NoCapabilities,
             &BeliefButler,
+            &FakeAudit::default(),
             &ids,
             &clock,
             &ButlerContext::default(),
@@ -3575,6 +3691,7 @@ mod tests {
             &store,
             &NoCapabilities,
             &EchoPrefsButler,
+            &FakeAudit::default(),
             &ids,
             &clock,
             &ButlerContext::default(),
