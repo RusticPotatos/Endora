@@ -305,6 +305,13 @@ pub struct CapabilitySpec {
     pub configured: bool,
     /// May it run on its own (read-only/low-stakes), or must the person authorize?
     pub autonomous: bool,
+    /// The JSON-Schema for the skill's input as a JSON string, when known (MCP tools
+    /// advertise one via `tools/list`). Lets the model layer offer the skill through
+    /// the endpoint's native tool-calling API — exact name + schema-validated
+    /// arguments — instead of a hand-written id the weak local model mis-emits. Kept
+    /// as text so it crosses context boundaries without a serde dependency. `None` for
+    /// built-ins that describe their inputs in the prompt instead.
+    pub input_schema: Option<String>,
 }
 
 /// Runs the butler's skills. The application asks this port to execute a

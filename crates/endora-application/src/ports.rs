@@ -323,6 +323,10 @@ pub struct ButlerContext {
     /// The skills the butler can actually use right now (id + one-line what),
     /// so it reaches for a real capability instead of only talking about it.
     pub capabilities: Vec<String>,
+    /// The same skills in structured form, so the model layer can offer them through
+    /// the endpoint's native tool-calling API (exact name + input schema) rather than
+    /// relying on the model to hand-write an id. Parallel to `capabilities`.
+    pub tools: Vec<CapabilityTool>,
     /// A result the butler just got back from a capability it used this turn —
     /// set only on the synthesis pass, so it can answer using real data.
     pub tool_result: Option<String>,
@@ -335,6 +339,21 @@ pub struct ButlerContext {
     /// *synthesizer* (the generalist), so plain conversation is answered by the
     /// model that's good at it rather than the tool-tuned router.
     pub synthesize: bool,
+}
+
+/// A skill offered to the model through native tool-calling: its exact id, what it
+/// does, and its input schema (when it advertises one — MCP tools do; built-ins pass
+/// `None` and rely on the prompt's examples).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CapabilityTool {
+    /// The exact capability id the runner expects, e.g. `"home-assistant.HassTurnOn"`.
+    pub id: String,
+    /// One-line description of what it does.
+    pub description: String,
+    /// JSON-Schema for its arguments as a JSON string, if known — kept as text so the
+    /// context stays comparable; the model layer parses it back when building the
+    /// tool-calling request.
+    pub input_schema: Option<String>,
 }
 
 // The capabilities ports — CapabilityUse, CapabilitySpec, CapabilityRunner,
