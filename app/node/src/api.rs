@@ -456,6 +456,53 @@ async fn remove_mcp_server(
     Ok(Json(json!({ "ok": true })))
 }
 
+/// Reconnects a single already-registered MCP server: re-runs the handshake and
+/// re-lists its tools, without touching its stored config. Useful when the server
+/// was unreachable when it was added (or its backing service has only just come up)
+/// and you want to retry without re-entering the URL and token. Reconnecting rebuilds
+/// the whole MCP runner (cheap), then reports honestly how many tools this server now
+/// exposes — `connected` is false, not an error, when it still didn't come up.
+async fn reconnect_mcp_server(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    use endora_capabilities::{CapabilityRunner, McpServerRegistry};
+    let config = state.config.clone();
+    let mcp = state.mcp.clone();
+    let lookup = name.clone();
+    let known = blocking(move || {
+        let known = McpServerRegistry::list(config.as_ref())
+            .map_err(AppError::Repository)?
+            .iter()
+            .any(|s| s.name == lookup);
+        // Only reconnect for a real server, so a typo'd name is a clean 404 rather
+        // than a silent no-op that rebuilds the runner for nothing.
+        if known {
+            reconnect_mcp(config.as_ref(), mcp.as_ref());
+        }
+        Ok(known)
+    })
+    .await?;
+    if !known {
+        return Err(ApiError(AppError::NotFound {
+            entity: "MCP server",
+        }));
+    }
+    // How many tools this server exposes after the fresh handshake.
+    let prefix = format!("{name}.");
+    let tools_live = mcp_snapshot(&state)
+        .available()
+        .iter()
+        .filter(|spec| spec.id.starts_with(&prefix))
+        .count();
+    let _ = state.changes.send(());
+    Ok(Json(json!({
+        "ok": true,
+        "connected": tools_live > 0,
+        "tools_live": tools_live,
+    })))
+}
+
 /// Builds the router for the node's HTTP API.
 pub fn app(state: AppState) -> Router {
     Router::new()
@@ -547,6 +594,10 @@ pub fn app(state: AppState) -> Router {
         .route(
             "/v1/mcp/servers/{name}",
             axum::routing::delete(remove_mcp_server),
+        )
+        .route(
+            "/v1/mcp/servers/{name}/reconnect",
+            post(reconnect_mcp_server),
         )
         .route(
             "/v1/capabilities/{id}/config",
@@ -4527,5 +4578,43 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn reconnecting_an_unknown_mcp_server_is_404() {
+        let res = app(test_state())
+            .oneshot(post("/v1/mcp/servers/nope/reconnect", ""))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn reconnecting_a_registered_server_reports_its_tool_count() {
+        let state = test_state();
+        // Register a stdio server whose command won't produce tools; the point is that
+        // reconnect answers for a real, known server rather than erroring.
+        let router = app(state);
+        let reg = router
+            .clone()
+            .oneshot(post(
+                "/v1/mcp/servers",
+                r#"{"name":"probe","transport":"stdio","command":"true","args":[],"env":{},"url":"","auth":"","enabled":true}"#,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(reg.status(), StatusCode::OK);
+
+        let res = router
+            .oneshot(post("/v1/mcp/servers/probe/reconnect", ""))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = json_body(res).await;
+        assert_eq!(body["ok"], true);
+        // It didn't connect (no real MCP server behind `true`), and the endpoint says
+        // so honestly instead of failing.
+        assert_eq!(body["connected"], false);
+        assert_eq!(body["tools_live"], 0);
     }
 }
