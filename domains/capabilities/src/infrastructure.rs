@@ -2064,36 +2064,66 @@ impl CapabilityRunner for CompositeRunner {
 
 /// A per-turn overlay that lifts an inner source's deny-by-default for tools the
 /// person has **opened** (ADR 0024). An opened tool moves from
-/// [`Block`](Decision::Block) to [`Confirm`](Decision::Confirm) — confirm-each-use,
-/// never autonomous — and only opened tools may run; everything the person hasn't
-/// opened stays blocked. Wraps the shared MCP runner so specific MCP tools can be
-/// allowed without rebuilding (respawning) the connection, and reuses the same
-/// opener set the built-in registry reads each turn.
+/// [`Block`](Decision::Block) to [`Confirm`](Decision::Confirm) — confirm-each-use —
+/// and only opened tools may run; everything the person hasn't opened stays blocked.
+///
+/// When the person has *also* widened the autonomy envelope to act on consequential
+/// things on its own (`auto_consequential`), an opened tool goes one step further to
+/// [`Act`](Decision::Act): they've made two deliberate choices — allow this specific
+/// tool, and allow acting without a per-use prompt — so the butler may run it in the
+/// loop. (An ADR 0024 amendment: the un-undoable can become autonomous, but only
+/// behind both of those explicit gates.) Wraps the shared MCP runner so specific MCP
+/// tools can be allowed without rebuilding the connection.
 pub struct OpenerRunner {
     inner: Arc<dyn CapabilityRunner + Send + Sync>,
     opened: std::collections::HashSet<String>,
+    /// The person allowed acting on consequential things on its own — so an opened
+    /// tool may run in the loop rather than only confirm-each-use.
+    auto_consequential: bool,
 }
 
 impl OpenerRunner {
-    /// Overlays `opened` (the ids the person has opened) onto `inner`.
+    /// Overlays `opened` (the ids the person has opened) onto `inner`. `auto_consequential`
+    /// mirrors the autonomy envelope: with it on, opened tools may run autonomously.
     #[must_use]
     pub fn new(
         inner: Arc<dyn CapabilityRunner + Send + Sync>,
         opened: std::collections::HashSet<String>,
+        auto_consequential: bool,
     ) -> Self {
-        Self { inner, opened }
+        Self {
+            inner,
+            opened,
+            auto_consequential,
+        }
     }
 }
 
 impl CapabilityRunner for OpenerRunner {
     fn available(&self) -> Vec<crate::application::CapabilitySpec> {
-        self.inner.available()
+        self.inner
+            .available()
+            .into_iter()
+            .map(|mut spec| {
+                // An opened tool may run on its own only when the person also allowed
+                // acting on consequential things autonomously; otherwise it confirms.
+                if self.opened.contains(&spec.id) && self.auto_consequential {
+                    spec.autonomous = true;
+                }
+                spec
+            })
+            .collect()
     }
 
     fn decision(&self, id: &str) -> Option<Decision> {
         match self.inner.decision(id)? {
-            // Opened: the un-undoable becomes confirm-each-use, never autonomous.
-            Decision::Block if self.opened.contains(id) => Some(Decision::Confirm),
+            // Opened: the un-undoable becomes confirm-each-use — or, when the person
+            // allowed acting on its own, autonomous (both gates opened deliberately).
+            Decision::Block if self.opened.contains(id) => Some(if self.auto_consequential {
+                Decision::Act
+            } else {
+                Decision::Confirm
+            }),
             other => Some(other),
         }
     }
@@ -2917,9 +2947,10 @@ mod tests {
                 healthy: true,
             }) as Box<dyn McpClient>,
         )]));
-        // The person has opened only fs.write_file.
+        // The person has opened only fs.write_file, but has NOT allowed acting on its
+        // own (auto_consequential = false).
         let opened: std::collections::HashSet<String> = ["fs.write_file".to_owned()].into();
-        let overlay = OpenerRunner::new(mcp, opened);
+        let overlay = OpenerRunner::new(mcp, opened, false);
 
         // Deny-by-default holds for the un-opened tool; the opened one becomes
         // confirm-each-use (never autonomous — its spec stays non-autonomous).
@@ -2933,6 +2964,41 @@ mod tests {
         assert_eq!(
             overlay.run("fs.write_file", "{\"p\":1}").unwrap(),
             "write_file({\"p\":1})"
+        );
+    }
+
+    #[test]
+    fn opener_runner_lets_opened_tools_act_when_autonomy_is_widened() {
+        let mcp = Arc::new(McpRunner::connect(vec![(
+            "home".to_owned(),
+            Box::new(FakeTransport {
+                tools: vec![tool("HassTurnOn"), tool("HassTurnOff")],
+                healthy: true,
+            }) as Box<dyn McpClient>,
+        )]));
+        let opened: std::collections::HashSet<String> = ["home.HassTurnOn".to_owned()].into();
+        // Both gates open: this specific tool is opened AND the person allowed acting
+        // on consequential things on its own.
+        let overlay = OpenerRunner::new(mcp, opened, true);
+
+        // The opened tool may now run in the loop (Act + autonomous); the un-opened
+        // one is still blocked, and never autonomous.
+        assert_eq!(overlay.decision("home.HassTurnOn"), Some(Decision::Act));
+        assert_eq!(overlay.decision("home.HassTurnOff"), Some(Decision::Block));
+        let specs = overlay.available();
+        assert!(
+            specs
+                .iter()
+                .find(|s| s.id == "home.HassTurnOn")
+                .unwrap()
+                .autonomous
+        );
+        assert!(
+            !specs
+                .iter()
+                .find(|s| s.id == "home.HassTurnOff")
+                .unwrap()
+                .autonomous
         );
     }
 }
