@@ -961,7 +961,7 @@ function mcpUseCatalog(i) {
   // fields are hinted so the person knows what to add.
   const envLines = (e.fields || []).filter((f) => f.target === "env").map((f) => `${f.key}=`);
   set("mcp-env", envLines.join("\n"));
-  set("mcp-url", "");
+  set("mcp-url", e.url || "");
   set("mcp-auth", "");
   const needs = (e.fields || []).filter((f) => f.target !== "env");
   flash(needs.length

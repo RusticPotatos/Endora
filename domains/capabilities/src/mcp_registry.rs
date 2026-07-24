@@ -26,6 +26,17 @@ pub struct RegistryEntry {
     pub description: String,
     /// A repository/homepage link, if the registry gave one.
     pub docs: String,
+    /// `"http"` when the registry lists a remote endpoint, else `"stdio"`.
+    pub transport: String,
+    /// The remote endpoint, when `transport` is `"http"`.
+    pub url: String,
+    /// Suggested launch command for a packaged server (e.g. `npx`), else empty.
+    pub command: String,
+    /// Suggested launch arguments (runtime args followed by the package id).
+    pub args: Vec<String>,
+    /// Environment variables the package says it needs — offered as blank
+    /// `KEY=` lines for the person to fill; values never come from the registry.
+    pub env_keys: Vec<String>,
 }
 
 /// Searches `base_url` for `q`. `None` means the lookup didn't work (unreachable,
@@ -63,37 +74,129 @@ fn parse(body: &Value) -> Option<Vec<RegistryEntry>> {
         .or_else(|| body.get("servers").and_then(Value::as_array))
         .or_else(|| body.get("data").and_then(Value::as_array))
         .or_else(|| body.get("results").and_then(Value::as_array))?;
+    // The registry lists a row per published version, so the same server can appear
+    // several times. Keep the first of each name — the list is for choosing a server,
+    // not a version.
+    let mut seen = std::collections::HashSet::new();
     Some(
         items
             .iter()
-            .filter_map(|it| {
-                let name = it
-                    .get("name")
-                    .and_then(Value::as_str)
-                    .map(str::trim)
-                    .filter(|s| !s.is_empty())?;
-                let description = it
-                    .get("description")
-                    .and_then(Value::as_str)
-                    .unwrap_or("")
-                    .to_owned();
-                let docs = it
-                    .get("repository")
-                    .and_then(|r| r.get("url"))
-                    .and_then(Value::as_str)
-                    .or_else(|| it.get("homepage").and_then(Value::as_str))
-                    .or_else(|| it.get("url").and_then(Value::as_str))
-                    .unwrap_or("")
-                    .to_owned();
-                Some(RegistryEntry {
-                    name: name.to_owned(),
-                    description,
-                    docs,
-                })
-            })
+            .filter_map(entry)
+            .filter(|e| seen.insert(e.name.clone()))
             .take(40)
             .collect(),
     )
+}
+
+/// Reads one registry item. The official registry nests the payload under `server`;
+/// older/other shapes put it at the top level, so we accept either. Field names are
+/// read in both camelCase and snake_case.
+fn entry(item: &Value) -> Option<RegistryEntry> {
+    let s = item.get("server").unwrap_or(item);
+    let name = s
+        .get("name")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|v| !v.is_empty())?;
+    let description = s
+        .get("description")
+        .or_else(|| s.get("title"))
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_owned();
+    let docs = s
+        .get("repository")
+        .and_then(|r| r.get("url"))
+        .and_then(Value::as_str)
+        .or_else(|| s.get("websiteUrl").and_then(Value::as_str))
+        .or_else(|| s.get("homepage").and_then(Value::as_str))
+        .unwrap_or("")
+        .to_owned();
+
+    // Prefer a hosted endpoint: nothing to install, just connect.
+    let remote_url = s
+        .get("remotes")
+        .and_then(Value::as_array)
+        .and_then(|rs| rs.iter().find_map(|r| r.get("url").and_then(Value::as_str)))
+        .map(str::to_owned);
+    if let Some(url) = remote_url {
+        return Some(RegistryEntry {
+            name: name.to_owned(),
+            description,
+            docs,
+            transport: "http".to_owned(),
+            url,
+            command: String::new(),
+            args: Vec::new(),
+            env_keys: Vec::new(),
+        });
+    }
+
+    // Otherwise suggest how to launch the first published package.
+    let pkg = s
+        .get("packages")
+        .and_then(Value::as_array)
+        .and_then(|p| p.first());
+    let (command, args, env_keys) = pkg.map_or_else(
+        || (String::new(), Vec::new(), Vec::new()),
+        |p| {
+            let field = |a: &str, b: &str| {
+                p.get(a)
+                    .or_else(|| p.get(b))
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_owned()
+            };
+            let registry_type = field("registryType", "registry_type");
+            let hint = field("runtimeHint", "runtime_hint");
+            let command = if hint.is_empty() {
+                match registry_type.as_str() {
+                    "npm" => "npx".to_owned(),
+                    "pypi" => "uvx".to_owned(),
+                    _ => String::new(),
+                }
+            } else {
+                hint
+            };
+            // Runtime arguments (e.g. `-y`) come before the package identifier.
+            let mut args: Vec<String> = p
+                .get("runtimeArguments")
+                .or_else(|| p.get("runtime_arguments"))
+                .and_then(Value::as_array)
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|x| x.get("value").and_then(Value::as_str))
+                        .map(str::to_owned)
+                        .collect()
+                })
+                .unwrap_or_default();
+            if let Some(id) = p.get("identifier").and_then(Value::as_str) {
+                args.push(id.to_owned());
+            }
+            let env_keys = p
+                .get("environmentVariables")
+                .or_else(|| p.get("environment_variables"))
+                .and_then(Value::as_array)
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|x| x.get("name").and_then(Value::as_str))
+                        .map(str::to_owned)
+                        .collect()
+                })
+                .unwrap_or_default();
+            (command, args, env_keys)
+        },
+    );
+    Some(RegistryEntry {
+        name: name.to_owned(),
+        description,
+        docs,
+        transport: "stdio".to_owned(),
+        url: String::new(),
+        command,
+        args,
+        env_keys,
+    })
 }
 
 /// Minimal percent-encoding for a query value (no new dependency).
@@ -117,22 +220,82 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn parses_the_common_response_shapes() {
-        let wrapped = json!({ "servers": [
-            { "name": "acme/files", "description": "files",
-              "repository": { "url": "https://example.com/repo" } },
-            { "name": "  ", "description": "blank name is skipped" },
+    fn parses_the_official_shape_where_the_payload_is_nested_under_server() {
+        // The real registry nests each entry under `server` — reading `name` from the
+        // top level (as an earlier version did) silently matched nothing.
+        let body = json!({ "servers": [
+            { "server": { "name": "acme/files", "description": "files",
+                          "repository": { "url": "https://example.com/repo" } },
+              "_meta": { "ignored": true } },
+            { "server": { "name": "  " } },
         ]});
-        let got = parse(&wrapped).unwrap();
-        assert_eq!(got.len(), 1);
+        let got = parse(&body).unwrap();
+        assert_eq!(got.len(), 1, "blank names are skipped");
         assert_eq!(got[0].name, "acme/files");
         assert_eq!(got[0].docs, "https://example.com/repo");
 
-        // A bare array works too, and a missing description is fine.
+        // A flat array (older/other registries) still works.
         let bare = json!([{ "name": "x", "homepage": "https://h" }]);
         let got = parse(&bare).unwrap();
         assert_eq!(got[0].description, "");
         assert_eq!(got[0].docs, "https://h");
+    }
+
+    #[test]
+    fn a_hosted_remote_becomes_an_http_entry() {
+        let body = json!({ "servers": [{ "server": {
+            "name": "ac/mcp",
+            "description": "hosted",
+            "remotes": [{ "type": "streamable-http", "url": "https://api.example/mcp" }],
+        }}]});
+        let got = parse(&body).unwrap();
+        assert_eq!(got[0].transport, "http");
+        assert_eq!(got[0].url, "https://api.example/mcp");
+        assert!(got[0].command.is_empty());
+    }
+
+    #[test]
+    fn a_package_becomes_a_runnable_stdio_suggestion() {
+        let body = json!({ "servers": [{ "server": {
+            "name": "com.x/fs",
+            "description": "files",
+            "remotes": null,
+            "packages": [{
+                "registryType": "npm",
+                "identifier": "remote-filesystem-mcp-server",
+                "runtimeHint": "npx",
+                "runtimeArguments": [{ "value": "-y", "type": "positional" }],
+                "environmentVariables": [{ "name": "GCS_BUCKET", "isRequired": true }],
+            }],
+        }}]});
+        let got = parse(&body).unwrap();
+        assert_eq!(got[0].transport, "stdio");
+        assert_eq!(got[0].command, "npx");
+        assert_eq!(got[0].args, vec!["-y", "remote-filesystem-mcp-server"]);
+        assert_eq!(got[0].env_keys, vec!["GCS_BUCKET"]);
+    }
+
+    #[test]
+    fn repeated_versions_of_one_server_collapse_to_a_single_entry() {
+        let body = json!({ "servers": [
+            { "server": { "name": "com.x/fs", "version": "0.1.2" } },
+            { "server": { "name": "com.x/fs", "version": "0.1.3" } },
+            { "server": { "name": "com.y/other" } },
+        ]});
+        let got = parse(&body).unwrap();
+        assert_eq!(got.len(), 2);
+        assert_eq!(got[0].name, "com.x/fs");
+        assert_eq!(got[1].name, "com.y/other");
+    }
+
+    #[test]
+    fn a_pypi_package_without_a_hint_uses_uvx() {
+        let body = json!({ "servers": [{ "server": {
+            "name": "p/y", "packages": [{ "registry_type": "pypi", "identifier": "mcp-server-x" }],
+        }}]});
+        let got = parse(&body).unwrap();
+        assert_eq!(got[0].command, "uvx");
+        assert_eq!(got[0].args, vec!["mcp-server-x"]);
     }
 
     #[test]
