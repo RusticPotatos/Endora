@@ -158,7 +158,15 @@ impl LlmButler {
         preferences: &[Preference],
         context: &ButlerContext,
     ) -> Result<ButlerReply, ProposalError> {
-        let body = build_butler_request(&self.model, &self.sampling, history, preferences, context);
+        // Offer native tool-calling on this (tool-selection) pass.
+        let body = build_butler_request(
+            &self.model,
+            &self.sampling,
+            history,
+            preferences,
+            context,
+            true,
+        );
         let url = format!("{}/chat/completions", self.base_url);
         let mut req = self.agent.post(&url);
         if !self.api_key.is_empty() {
@@ -177,7 +185,7 @@ impl LlmButler {
             .body_mut()
             .read_json()
             .map_err(|e| ProposalError::Unavailable(e.to_string()))?;
-        parse_butler_response(&json)
+        parse_model_reply(&json, context)
     }
 
     /// Streams the model's reply: sends `stream: true`, reads the server-sent
@@ -192,8 +200,16 @@ impl LlmButler {
         context: &ButlerContext,
         on_token: &mut dyn FnMut(&str),
     ) -> Result<ButlerReply, ProposalError> {
-        let mut body =
-            build_butler_request(&self.model, &self.sampling, history, preferences, context);
+        // The streaming pass is the FINAL answer (synthesis), never tool selection —
+        // don't offer tools here, keep it prose.
+        let mut body = build_butler_request(
+            &self.model,
+            &self.sampling,
+            history,
+            preferences,
+            context,
+            false,
+        );
         body["stream"] = Value::Bool(true);
         // Token streaming and JSON-object grammar don't mix on common local
         // runtimes: Ollama (and others) BUFFER the whole response when
@@ -846,12 +862,45 @@ pub fn test_connection(base_url: &str, api_key: &str, model: &str) -> Result<Str
 /// Builds the OpenAI-compatible chat request from the conversation and the
 /// preferences already learned (so the butler need not re-ask). Pure, so it is
 /// unit-tested.
+/// The name an MCP tool id takes in the native tool-calling API. Endpoints require
+/// `^[A-Za-z0-9_-]+$`, so the namespacing dot (`server.tool`) becomes `__`. Reversed
+/// by matching against the real ids, so this need not be perfectly invertible.
+fn tool_api_name(id: &str) -> String {
+    id.replace('.', "__")
+}
+
+/// The `tools` array for the endpoint's native tool-calling API — each skill as a
+/// function with its exact (sanitised) name, description, and input schema. A skill
+/// with no schema gets a permissive empty-object schema so it can still be offered.
+fn native_tools(context: &ButlerContext) -> Vec<Value> {
+    context
+        .tools
+        .iter()
+        .map(|t| {
+            let parameters = t
+                .input_schema
+                .as_deref()
+                .and_then(|s| serde_json::from_str::<Value>(s).ok())
+                .unwrap_or_else(|| json!({ "type": "object", "properties": {} }));
+            json!({
+                "type": "function",
+                "function": {
+                    "name": tool_api_name(&t.id),
+                    "description": t.description,
+                    "parameters": parameters,
+                }
+            })
+        })
+        .collect()
+}
+
 fn build_butler_request(
     model: &str,
     sampling: &Sampling,
     history: &[ChatMessage],
     preferences: &[Preference],
     context: &ButlerContext,
+    offer_tools: bool,
 ) -> Value {
     let mut system = BUTLER_SYSTEM_PROMPT.to_owned();
     if !context.now.is_empty() {
@@ -945,6 +994,18 @@ fn build_butler_request(
         // fallback for endpoints that ignore this field.
         "response_format": { "type": "json_object" },
     });
+    // Native tool-calling for the tool-selection pass: give the model the exact tool
+    // names + schemas and let it emit a real `tool_call`, instead of hand-writing an
+    // id in prose that the weak local model mis-emits (it skips action tools and
+    // hallucinates namespaced ids). Mutually exclusive with the JSON-object grammar —
+    // drop `response_format` so the model is free to return `tool_calls`; it still has
+    // the envelope prompt for when it just talks.
+    if offer_tools && !context.tools.is_empty() {
+        if let Some(obj) = body.as_object_mut() {
+            obj.insert("tools".to_owned(), json!(native_tools(context)));
+            obj.remove("response_format");
+        }
+    }
     apply_sampling(&mut body, sampling);
     body
 }
@@ -980,6 +1041,47 @@ fn parse_butler_response(json: &Value) -> Result<ButlerReply, ProposalError> {
         .as_str()
         .ok_or_else(|| ProposalError::Unavailable("unexpected response shape".to_owned()))?;
     Ok(parse_butler_json(content))
+}
+
+/// Parses a chat-completion response, preferring a **native tool call** when the
+/// model made one (the reliable path — exact tool name + schema-checked arguments),
+/// and otherwise falling back to the JSON envelope in the message content. `context`
+/// is consulted to map the sanitised tool-call name back to the real capability id.
+fn parse_model_reply(json: &Value, context: &ButlerContext) -> Result<ButlerReply, ProposalError> {
+    let message = &json["choices"][0]["message"];
+    if let Some(call) = message["tool_calls"]
+        .as_array()
+        .and_then(|calls| calls.first())
+    {
+        let api_name = call["function"]["name"].as_str().unwrap_or_default();
+        // Reverse the dot→`__` sanitisation by matching the real ids we offered.
+        let capability = context
+            .tools
+            .iter()
+            .map(|t| t.id.clone())
+            .find(|id| tool_api_name(id) == api_name)
+            .unwrap_or_else(|| api_name.replace("__", "."));
+        // OpenAI-style `arguments` is a JSON string; some endpoints inline an object.
+        let input_json = match &call["function"]["arguments"] {
+            Value::String(s) if !s.trim().is_empty() => s.clone(),
+            Value::Object(_) | Value::Array(_) => call["function"]["arguments"].to_string(),
+            _ => "{}".to_owned(),
+        };
+        let text = message["content"]
+            .as_str()
+            .unwrap_or_default()
+            .trim()
+            .to_owned();
+        return Ok(ButlerReply {
+            text,
+            capability_use: Some(endora_application::CapabilityUse {
+                capability,
+                input_json,
+            }),
+            ..ButlerReply::default()
+        });
+    }
+    parse_butler_response(json)
 }
 
 /// Parses the model's message content into a [`ButlerReply`]. Small models don't
@@ -1123,7 +1225,8 @@ fn strip_code_fence(s: &str) -> &str {
 mod tests {
     use super::{
         LlmButler, ScriptedButler, build_butler_request, extract_json_object,
-        extract_reply_preview, parse_butler_json, parse_butler_response, test_connection,
+        extract_reply_preview, parse_butler_json, parse_butler_response, parse_model_reply,
+        test_connection,
     };
     use endora_application::{Butler, ButlerContext, ButlerProposal};
     use endora_application::{ChatMessage, MessageId, MessageRole, Timestamp};
@@ -1232,6 +1335,90 @@ mod tests {
     }
 
     #[test]
+    fn offering_tools_adds_functions_and_drops_json_grammar() {
+        use endora_application::CapabilityTool;
+        let ctx = ButlerContext {
+            tools: vec![CapabilityTool {
+                id: "home-assistant.HassTurnOn".to_owned(),
+                description: "Turns on a device".to_owned(),
+                input_schema: Some(
+                    r#"{"type":"object","properties":{"name":{"type":"string"}}}"#.to_owned(),
+                ),
+            }],
+            ..Default::default()
+        };
+        let body = build_butler_request(
+            "qwen2.5:7b",
+            &Sampling::default(),
+            &[user("turn on the kitchen lights")],
+            &[],
+            &ctx,
+            true,
+        );
+        // Tools are offered with the dot sanitised out of the name, and the
+        // JSON-object grammar is dropped so the model can emit a tool_call.
+        assert!(body.get("response_format").is_none());
+        let f = &body["tools"][0]["function"];
+        assert_eq!(f["name"], "home-assistant__HassTurnOn");
+        assert_eq!(f["parameters"]["properties"]["name"]["type"], "string");
+        // With tools disabled (the synthesis pass) the grammar stays and no tools go.
+        let plain = build_butler_request(
+            "qwen2.5:7b",
+            &Sampling::default(),
+            &[user("hi")],
+            &[],
+            &ctx,
+            false,
+        );
+        assert_eq!(plain["response_format"]["type"], "json_object");
+        assert!(plain.get("tools").is_none());
+    }
+
+    #[test]
+    fn parse_model_reply_reads_a_native_tool_call_back_to_the_real_id() {
+        use endora_application::CapabilityTool;
+        let ctx = ButlerContext {
+            tools: vec![CapabilityTool {
+                id: "home-assistant.HassTurnOn".to_owned(),
+                description: "Turns on a device".to_owned(),
+                input_schema: None,
+            }],
+            ..Default::default()
+        };
+        let resp = json!({
+            "choices": [{
+                "message": {
+                    "content": "",
+                    "tool_calls": [{
+                        "function": {
+                            "name": "home-assistant__HassTurnOn",
+                            "arguments": "{\"name\":\"kitchen lights\"}"
+                        }
+                    }]
+                }
+            }]
+        });
+        let reply = parse_model_reply(&resp, &ctx).unwrap();
+        let used = reply.capability_use.expect("a tool was selected");
+        // The sanitised name maps back to the real namespaced id, args preserved.
+        assert_eq!(used.capability, "home-assistant.HassTurnOn");
+        assert_eq!(used.input_json, "{\"name\":\"kitchen lights\"}");
+    }
+
+    #[test]
+    fn parse_model_reply_falls_back_to_the_envelope_without_a_tool_call() {
+        let ctx = ButlerContext::default();
+        let resp = json!({
+            "choices": [{ "message": {
+                "content": "{\"reply\":\"hello there\",\"use\":null,\"proposals\":[]}"
+            }}]
+        });
+        let reply = parse_model_reply(&resp, &ctx).unwrap();
+        assert_eq!(reply.text, "hello there");
+        assert!(reply.capability_use.is_none());
+    }
+
+    #[test]
     fn request_includes_the_system_prompt_and_conversation() {
         let body = build_butler_request(
             "qwen3.5:9b",
@@ -1239,6 +1426,7 @@ mod tests {
             &[user("hello")],
             &[],
             &ButlerContext::default(),
+            false,
         );
         assert_eq!(body["messages"][0]["role"], "system");
         assert!(
@@ -1261,6 +1449,7 @@ mod tests {
             &[user("hi")],
             &[],
             &ButlerContext::default(),
+            false,
         );
         assert_eq!(body["temperature"], json!(0.5));
         assert!(body.get("top_p").is_none());
@@ -1281,6 +1470,7 @@ mod tests {
             &[user("hi")],
             &[],
             &ButlerContext::default(),
+            false,
         );
         assert_eq!(body["temperature"], json!(0.1));
         assert_eq!(body["top_k"], json!(20));
