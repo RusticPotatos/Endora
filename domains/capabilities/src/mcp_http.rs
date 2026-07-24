@@ -33,6 +33,9 @@ const MAX_BYTES: u64 = 4 * 1024 * 1024;
 pub struct HttpMcpClient {
     agent: ureq::Agent,
     url: String,
+    /// Optional bearer token sent as `Authorization` (e.g. a Home Assistant
+    /// long-lived token). A secret: held here, never logged or returned.
+    auth: String,
     /// The session id the server assigned on `initialize`, echoed on later requests.
     session: Mutex<Option<String>>,
     next_id: AtomicU64,
@@ -45,6 +48,14 @@ impl HttpMcpClient {
     /// A human-readable message if the server can't be reached or replies badly —
     /// the same "unhealthy server ⇒ skipped" signal the adapter relies on.
     pub fn connect(url: &str) -> Result<Self, String> {
+        Self::connect_with_auth(url, "")
+    }
+
+    /// Connects with a bearer token sent as `Authorization: Bearer …` (empty = none).
+    ///
+    /// # Errors
+    /// A human-readable message if the server can't be reached or replies badly.
+    pub fn connect_with_auth(url: &str, auth: &str) -> Result<Self, String> {
         let agent: ureq::Agent = ureq::Agent::config_builder()
             .timeout_global(Some(TIMEOUT))
             .build()
@@ -52,6 +63,7 @@ impl HttpMcpClient {
         let client = Self {
             agent,
             url: url.to_owned(),
+            auth: auth.trim().to_owned(),
             session: Mutex::new(None),
             next_id: AtomicU64::new(1),
         };
@@ -81,6 +93,9 @@ impl HttpMcpClient {
             .agent
             .post(&self.url)
             .header("accept", "application/json, text/event-stream");
+        if !self.auth.is_empty() {
+            builder = builder.header("authorization", &format!("Bearer {}", self.auth));
+        }
         if let Some(sid) = self.session_id() {
             builder = builder.header("mcp-session-id", &sid);
         }
@@ -128,6 +143,9 @@ impl HttpMcpClient {
             .agent
             .post(&self.url)
             .header("accept", "application/json, text/event-stream");
+        if !self.auth.is_empty() {
+            builder = builder.header("authorization", &format!("Bearer {}", self.auth));
+        }
         if let Some(sid) = self.session_id() {
             builder = builder.header("mcp-session-id", &sid);
         }
