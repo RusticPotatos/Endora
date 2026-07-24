@@ -807,8 +807,12 @@ fn gather_with_skills(
     on_step: &mut dyn FnMut(ButlerStep),
     activity: &mut Vec<String>,
 ) -> Result<Gathering, AppError> {
+    // Don't hammer a failing tool: after this many failed runs in a turn, stop and
+    // answer honestly with what we have rather than retrying the same dead end.
+    const MAX_TOOL_FAILURES: usize = 2;
     let mut gathered: Vec<String> = Vec::new();
     let mut requested_skill = false;
+    let mut failures = 0usize;
     let mut reply = ButlerReply::default();
     for round in 0..=max_rounds {
         let mut ctx = context.clone();
@@ -863,6 +867,10 @@ fn gather_with_skills(
                     });
                     activity.push(format!("Tried the {id} skill, but it failed"));
                     gathered.push(format!("- {id}: failed ({e}) — do not invent a result"));
+                    failures += 1;
+                    if failures >= MAX_TOOL_FAILURES {
+                        break; // stop retrying a dead end — answer honestly below
+                    }
                 }
             }
         } else {
@@ -3263,6 +3271,71 @@ mod tests {
         assert!(reply.text().contains("sunny, 30C"));
         // And the skill use is recorded in the turn's activity.
         assert!(activity.iter().any(|a| a.contains("weather")));
+    }
+
+    #[test]
+    fn a_failing_tool_is_not_retried_more_than_twice() {
+        use super::send_to_butler;
+
+        // A butler that asks to use the same tool every round and never answers on its
+        // own — so only the failure cap can stop the loop.
+        struct RelentlessButler;
+        impl Butler for RelentlessButler {
+            fn respond(
+                &self,
+                _h: &[ChatMessage],
+                _p: &[Preference],
+                _c: &ButlerContext,
+            ) -> Result<ButlerReply, ProposalError> {
+                Ok(ButlerReply {
+                    text: "trying".to_owned(),
+                    capability_use: Some(endora_capabilities::CapabilityUse {
+                        capability: "home.HassLightSet".to_owned(),
+                        input_json: "{}".to_owned(),
+                    }),
+                    ..ButlerReply::default()
+                })
+            }
+        }
+
+        // A cleared (autonomous) tool whose run always fails.
+        struct AlwaysFails;
+        impl CapabilityRunner for AlwaysFails {
+            fn available(&self) -> Vec<endora_capabilities::CapabilitySpec> {
+                vec![endora_capabilities::CapabilitySpec {
+                    id: "home.HassLightSet".to_owned(),
+                    description: "set a light".to_owned(),
+                    configured: true,
+                    autonomous: true,
+                    input_schema: None,
+                }]
+            }
+            fn run(&self, _id: &str, _input: &str) -> Result<String, String> {
+                Err("no lights match 'kitchen'".to_owned())
+            }
+        }
+
+        let store = FakeStore::default();
+        let ids = SeqIds::default();
+        let clock = FixedClock(1_000);
+        let (_reply, _s, activity) = send_to_butler(
+            &store,
+            &store,
+            &store,
+            &store,
+            &AlwaysFails,
+            &RelentlessButler,
+            &FakeAudit::default(),
+            &ids,
+            &clock,
+            &ButlerContext::default(),
+            "turn on the kitchen lights",
+        )
+        .unwrap();
+
+        // Capped at two failed attempts, not the full six rounds of hammering.
+        let tries = activity.iter().filter(|a| a.contains("failed")).count();
+        assert_eq!(tries, 2, "should stop after 2 failures, got: {activity:?}");
     }
 
     #[test]
