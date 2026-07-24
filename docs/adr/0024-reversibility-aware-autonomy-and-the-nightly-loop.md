@@ -29,6 +29,16 @@ specific capability's irreversible band (`CapabilityConfigRepository::set_open_i
 confirmed on every use and never runs autonomously. Opening a skill records a line
 to the action feed.
 
+**Amended (2026): a per-skill "ask first" override.** Beyond the band-derived
+default, the person can mark any skill *on with user input* — it then runs only after
+they confirm each use, never on its own, whatever its band
+(`CapabilityConfigRepository::set_confirm`, `POST /v1/capabilities/{id}/confirm`,
+surfaced as `confirm` in the skills API). The classifier applies it as a **downgrade
+only**: it turns an autonomous `Act` into `Confirm` and can never relax a hard
+`Block` (the irreversible opener remains the sole, deliberate way to allow the
+un-undoable). This gives every skill a uniform choice — Off / On (per its band) /
+Ask first — settable in the UI and seedable from deployment config.
+
 **Decision-level audit implemented**: the deterministic policy [`Decision`] is
 exposed from the runner (`CapabilityRunner::decision`), and when the model reaches
 for a configured skill that policy withholds, the turn records what policy decided
