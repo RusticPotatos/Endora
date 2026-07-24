@@ -61,10 +61,10 @@ pub use endora_direction::{
     authorize_process_change,
 };
 pub use ports::{
-    AttentionItem, AttentionKind, Butler, ButlerContext, ButlerProposal, ButlerReply, Clock,
-    DeepAsker, FormedBelief, IdSource, MemorySnapshot, MemoryStore, NorthStarBrief, ProposalError,
-    Proposer, RepositoryError, Snooze, SnoozeRepository, Suggestion, SuggestionRepository,
-    SuggestionStatus,
+    AttentionItem, AttentionKind, Butler, ButlerContext, ButlerProposal, ButlerReply,
+    CapabilityTool, Clock, DeepAsker, FormedBelief, IdSource, MemorySnapshot, MemoryStore,
+    NorthStarBrief, ProposalError, Proposer, RepositoryError, Snooze, SnoozeRepository, Suggestion,
+    SuggestionRepository, SuggestionStatus,
 };
 pub use usecases::{ActivityItem, ActivityKind};
 
