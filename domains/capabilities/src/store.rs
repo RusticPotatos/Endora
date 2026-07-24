@@ -22,7 +22,8 @@ pub fn migrate(db: &Db) -> Result<(), RepositoryError> {
             "CREATE TABLE IF NOT EXISTS capability_config (
                 id                TEXT PRIMARY KEY,
                 enabled           INTEGER NOT NULL,
-                open_irreversible INTEGER NOT NULL DEFAULT 0
+                open_irreversible INTEGER NOT NULL DEFAULT 0,
+                confirm           INTEGER NOT NULL DEFAULT 0
             ) STRICT;
             CREATE TABLE IF NOT EXISTS capability_settings (
                 capability_id TEXT NOT NULL,
@@ -78,11 +79,15 @@ pub fn migrate(db: &Db) -> Result<(), RepositoryError> {
             ) STRICT;",
         )
         .map_err(backend)?;
-    // Additive migration for databases created before the irreversible-opener
-    // column existed (ADR 0024). Ignore the error when the column is already
-    // present (a fresh DB gets it from the CREATE above).
+    // Additive migrations for databases created before these columns existed —
+    // the irreversible-opener (ADR 0024) and the ask-first override. Ignore the
+    // error when a column is already present (a fresh DB gets it from the CREATE).
     let _ = db.lock()?.execute(
         "ALTER TABLE capability_config ADD COLUMN open_irreversible INTEGER NOT NULL DEFAULT 0",
+        [],
+    );
+    let _ = db.lock()?.execute(
+        "ALTER TABLE capability_config ADD COLUMN confirm INTEGER NOT NULL DEFAULT 0",
         [],
     );
     Ok(())
@@ -378,6 +383,33 @@ impl CapabilityConfigRepository for ConfigStore {
             .map_err(backend)?;
         Ok(())
     }
+
+    fn confirm_overrides(&self) -> Result<Vec<(String, bool)>, RepositoryError> {
+        let conn = self.db.lock()?;
+        let mut stmt = conn
+            .prepare("SELECT id, confirm FROM capability_config")
+            .map_err(backend)?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)? != 0))
+            })
+            .map_err(backend)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(backend)
+    }
+
+    fn set_confirm(&self, id: &str, confirm: bool) -> Result<(), RepositoryError> {
+        // Upsert only the confirm column; a new row defaults enabled on and the
+        // opener closed, and an existing row keeps its other flags untouched.
+        self.db
+            .lock()?
+            .execute(
+                "INSERT INTO capability_config (id, enabled, confirm) VALUES (?1, 1, ?2) \
+                 ON CONFLICT(id) DO UPDATE SET confirm = excluded.confirm",
+                params![id, i64::from(confirm)],
+            )
+            .map_err(backend)?;
+        Ok(())
+    }
 }
 
 impl McpServerRegistry for ConfigStore {
@@ -632,6 +664,43 @@ mod tests {
             store.enabled_overrides().unwrap(),
             vec![("flights".to_owned(), false)],
             "re-closing the opener must not clobber enabled"
+        );
+    }
+
+    #[test]
+    fn confirm_round_trips_and_is_independent_of_the_other_flags() {
+        let db = Db::open_in_memory().unwrap();
+        migrate(&db).unwrap();
+        let store = ConfigStore::new(db);
+
+        // Off by default: no rows.
+        assert!(store.confirm_overrides().unwrap().is_empty());
+
+        // Set "ask first" for a read-only skill.
+        store.set_confirm("weather", true).unwrap();
+        assert_eq!(
+            store.confirm_overrides().unwrap(),
+            vec![("weather".to_owned(), true)]
+        );
+
+        // enabled / opener / confirm are three independent per-skill flags.
+        store.set_enabled("weather", false).unwrap();
+        store.set_open_irreversible("weather", true).unwrap();
+        assert_eq!(
+            store.confirm_overrides().unwrap(),
+            vec![("weather".to_owned(), true)],
+            "toggling enabled/opener must not clobber confirm"
+        );
+        assert_eq!(
+            store.enabled_overrides().unwrap(),
+            vec![("weather".to_owned(), false)]
+        );
+
+        // Clear it.
+        store.set_confirm("weather", false).unwrap();
+        assert_eq!(
+            store.confirm_overrides().unwrap(),
+            vec![("weather".to_owned(), false)]
         );
     }
 }

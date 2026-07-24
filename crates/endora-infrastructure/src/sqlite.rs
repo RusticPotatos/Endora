@@ -161,7 +161,8 @@ CREATE TABLE IF NOT EXISTS beliefs (
 CREATE TABLE IF NOT EXISTS capability_config (
     id                TEXT PRIMARY KEY,
     enabled           INTEGER NOT NULL,
-    open_irreversible INTEGER NOT NULL DEFAULT 0
+    open_irreversible INTEGER NOT NULL DEFAULT 0,
+    confirm           INTEGER NOT NULL DEFAULT 0
 ) STRICT;
 CREATE TABLE IF NOT EXISTS capability_settings (
     capability_id TEXT NOT NULL,
@@ -290,6 +291,14 @@ impl SqliteStore {
                 &conn,
                 "capability_config",
                 "open_irreversible",
+                "INTEGER NOT NULL DEFAULT 0",
+            )?;
+            // Per-skill "ask first" override (on with user input): the skill runs
+            // only after the person confirms each use, regardless of its band.
+            ensure_column(
+                &conn,
+                "capability_config",
+                "confirm",
                 "INTEGER NOT NULL DEFAULT 0",
             )?;
             // Lifecycle status on North Stars and Targets; existing rows default to
