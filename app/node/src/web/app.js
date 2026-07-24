@@ -918,6 +918,59 @@ async function discoverModels(role) {
   }
 }
 
+// Catalog results, kept so a "Use" click can prefill the form from the entry.
+let MCP_CATALOG = [];
+
+// Search the MCP catalog (curated + community registry) and render the results.
+async function mcpSearch() {
+    const q = ((document.getElementById("mcp-search") || {}).value || "").trim();
+    const box = document.getElementById("mcp-catalog-results");
+    if (box) box.innerHTML = `<div class="sub" style="margin-top:8px;">Searching…</div>`;
+    try {
+      const r = await api("GET", "/v1/mcp/catalog?q=" + encodeURIComponent(q));
+      MCP_CATALOG = r.servers || [];
+      if (!box) return;
+      if (!MCP_CATALOG.length) { box.innerHTML = `<div class="sub" style="margin-top:8px;">Nothing matched.</div>`; return; }
+      const note = r.registry_ok ? "" : `<div class="sub" style="margin-top:6px;">Showing built-in suggestions — the community registry wasn't reachable.</div>`;
+      box.innerHTML = note + MCP_CATALOG.map((e, i) => `
+        <div class="row" style="align-items:flex-start;gap:10px;margin-top:8px;border-top:1px solid var(--line);padding-top:8px;">
+          <div class="grow">
+            <div class="title" style="font-weight:500;">${esc(e.name)} <span class="pill">${esc(e.source)}</span>${e.transport === "http" ? ` <span class="pill">http</span>` : ""}</div>
+            <div class="sub">${esc(e.description || "")}</div>
+            ${e.docs ? `<div class="sub"><a class="link" href="${esc(e.docs)}" target="_blank" rel="noopener noreferrer">docs</a></div>` : ""}
+          </div>
+          <button class="ghost" onclick="mcpUseCatalog(${i})">Use</button>
+        </div>`).join("");
+    } catch (e) {
+      if (box) box.innerHTML = `<div class="sub" style="margin-top:8px;">Couldn't search: ${esc(e.message)}</div>`;
+    }
+}
+
+// Prefill the add form from a catalog entry. Everything stays editable — the entry
+// is a starting point, not a fixed recipe.
+function mcpUseCatalog(i) {
+  const e = MCP_CATALOG[i];
+  if (!e) return;
+  const set = (id, v) => { const el = document.getElementById(id); if (el) el.value = v; };
+  set("mcp-name", e.id || e.name || "");
+  const t = document.getElementById("mcp-transport");
+  if (t) { t.value = e.transport === "http" ? "http" : "stdio"; mcpTransportChange(t.value); }
+  set("mcp-command", e.command || "");
+  set("mcp-args", (e.args || []).join("\n"));
+  // Fields the entry says it needs: env vars become KEY= lines to fill in; arg/url
+  // fields are hinted so the person knows what to add.
+  const envLines = (e.fields || []).filter((f) => f.target === "env").map((f) => `${f.key}=`);
+  set("mcp-env", envLines.join("\n"));
+  set("mcp-url", "");
+  set("mcp-auth", "");
+  const needs = (e.fields || []).filter((f) => f.target !== "env");
+  flash(needs.length
+    ? `Filled in ${e.name}. Still needs: ${needs.map((f) => f.label).join(", ")}.`
+    : `Filled in ${e.name} — review and add it.`, "ok");
+  const form = document.getElementById("mcp-name");
+  if (form) form.scrollIntoView({ block: "center" });
+}
+
 // Toggle the MCP add-form fields between the stdio (command/args) and http (url) sets.
 function mcpTransportChange(v) {
   const stdio = document.getElementById("mcp-stdio-fields");
@@ -1276,6 +1329,19 @@ function viewSkills() {
       </div>`;
   };
   const servers = (MCP_SERVERS && MCP_SERVERS.servers) || [];
+  // Browse/search the catalog: curated entries + (best effort) the community
+  // registry. Picking one prefills the form below — everything stays editable, so a
+  // stale launch command can be corrected before it's registered.
+  const mcpBrowse = `
+    <div class="card">
+      <div class="title">Find a server</div>
+      <div class="sub" style="margin:4px 0 8px;">Search well-known servers and the community registry. Choosing one fills in the form below — you can edit anything before adding it.</div>
+      <div class="row" style="gap:8px;">
+        <input id="mcp-search" placeholder="e.g. files, github, home assistant" style="flex:1;" />
+        <button class="ghost" data-act="mcp:search">${icon("sparkle", 14)} Search</button>
+      </div>
+      <div id="mcp-catalog-results"></div>
+    </div>`;
   const mcpAddForm = `
     <div class="card">
       <div class="title">Add a server</div>
@@ -1304,6 +1370,7 @@ function viewSkills() {
     <h3>MCP servers <span class="sub" style="font-weight:400;">· connect external tools</span></h3>
     <div class="note">Tools from an MCP server are off-limits by default: the butler can see them, but each stays blocked until you allow it — and it still confirms every use.</div>
     ${servers.map(mcpServerCard).join("")}
+    ${mcpBrowse}
     ${mcpAddForm}`;
   return `
     ${crumbs([{ label: "Home", act: "go:chat" }, { label: "Skills" }])}
@@ -1867,6 +1934,8 @@ async function dispatch(act) {
       catch (e) { flash("Couldn't change that skill: " + e.message, "err"); }
       return reload();
     }
+    // Search the MCP catalog (curated + community registry).
+    if (verb === "mcp" && noun === "search") { await mcpSearch(); return; }
     // Add an MCP server (ADR 0021): a local stdio command or an HTTP endpoint. Its
     // tools appear blocked until allowed. A colon in the name would break the action
     // encoding, so reject it.

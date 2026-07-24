@@ -241,6 +241,51 @@ fn mcp_snapshot(state: &AppState) -> Arc<endora_capabilities::McpRunner> {
     }
 }
 
+#[derive(Deserialize)]
+struct CatalogQuery {
+    #[serde(default)]
+    q: String,
+}
+
+/// Searches the MCP catalog: the curated entries shipped with Endora, plus — best
+/// effort — the community registry (ADR 0021). Results prefill the "Add a server"
+/// form and stay editable, so a stale launch command can be corrected before it is
+/// registered. Registry lookup is opportunistic: if it is unreachable, misconfigured,
+/// or replies in a shape we don't recognise, the curated results still come back and
+/// `registry_ok` says what happened.
+async fn search_mcp_catalog(Query(q): Query<CatalogQuery>) -> Json<serde_json::Value> {
+    let needle = q.q.clone();
+    let mut servers = crate::mcp_catalog::search(&needle);
+    // The registry lives outside the process; do the blocking HTTP off the async path.
+    let found = tokio::task::spawn_blocking(move || {
+        let base = std::env::var("ENDORA_MCP_REGISTRY_URL")
+            .unwrap_or_else(|_| endora_capabilities::mcp_registry::DEFAULT_REGISTRY_URL.to_owned());
+        endora_capabilities::mcp_registry::search(&base, &needle)
+    })
+    .await
+    .unwrap_or(None);
+    let registry_ok = found.is_some();
+    for e in found.unwrap_or_default() {
+        // We can't know a registry entry's launch command reliably, so it prefills as
+        // an empty stdio server for the person to complete from its docs.
+        servers.push(json!({
+            "id": e.name,
+            "name": e.name,
+            "description": if e.description.is_empty() {
+                "From the community registry — see its docs for how to run it.".to_owned()
+            } else { e.description },
+            "category": "registry",
+            "transport": "stdio",
+            "command": "",
+            "args": [],
+            "docs": e.docs,
+            "source": "registry",
+            "fields": [],
+        }));
+    }
+    Json(json!({ "servers": servers, "registry_ok": registry_ok }))
+}
+
 /// Lists the registered MCP servers and, for each, how many of its tools are
 /// currently live (ADR 0021). A server with 0 live tools is registered but didn't
 /// connect (bad command, unreachable, or disabled).
@@ -477,6 +522,7 @@ pub fn app(state: AppState) -> Router {
             "/v1/capabilities/{id}/confirm",
             post(set_capability_confirm),
         )
+        .route("/v1/mcp/catalog", get(search_mcp_catalog))
         .route(
             "/v1/mcp/servers",
             get(list_mcp_servers).post(register_mcp_server),
