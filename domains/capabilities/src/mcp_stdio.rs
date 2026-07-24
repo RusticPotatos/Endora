@@ -28,25 +28,29 @@ const PROTOCOL_VERSION: &str = "2024-11-05";
 /// How long to wait for any single server reply before giving up (ADR 0021 health:
 /// a hung server fails this call rather than hanging the turn).
 const CALL_TIMEOUT: Duration = Duration::from_secs(20);
+/// A longer budget for the initial `initialize` reply: a `npx …` server downloads
+/// its package on first run, which can take a while before it says a word.
+const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(90);
 
 /// A line-oriented duplex to an MCP server: send one request line, receive reply
 /// lines. Abstracted so the session logic is testable without a real process.
 trait LineIo {
     /// Sends one request line (the newline is added).
     fn send(&mut self, line: &str) -> Result<(), String>;
-    /// Receives the next line the server emitted (blocks, with a timeout).
-    fn recv(&mut self) -> Result<String, String>;
+    /// Receives the next line the server emitted (blocks, up to `timeout`).
+    fn recv(&mut self, timeout: Duration) -> Result<String, String>;
 }
 
 /// Sends a JSON-RPC request with `id` and reads reply lines until the response
 /// carrying that same `id` arrives — skipping notifications and any other-id
 /// messages the server interleaves. Returns the `result` value (or an error if the
-/// server replied with one).
+/// server replied with one). Waits up to `timeout` for each reply line.
 fn request(
     io: &mut dyn LineIo,
     id: u64,
     method: &str,
     params: Option<Value>,
+    timeout: Duration,
 ) -> Result<Value, String> {
     let mut req = json!({ "jsonrpc": "2.0", "id": id, "method": method });
     if let Some(p) = params {
@@ -54,7 +58,7 @@ fn request(
     }
     io.send(&req.to_string())?;
     loop {
-        let line = io.recv()?;
+        let line = io.recv(timeout)?;
         let line = line.trim();
         if line.is_empty() {
             continue;
@@ -86,7 +90,7 @@ fn handshake(io: &mut dyn LineIo, next_id: &mut u64) -> Result<(), String> {
         "capabilities": {},
         "clientInfo": { "name": "endora", "version": env!("CARGO_PKG_VERSION") },
     });
-    request(io, id, "initialize", Some(params))?;
+    request(io, id, "initialize", Some(params), HANDSHAKE_TIMEOUT)?;
     notify(io, "notifications/initialized")
 }
 
@@ -94,7 +98,7 @@ fn handshake(io: &mut dyn LineIo, next_id: &mut u64) -> Result<(), String> {
 fn list_tools(io: &mut dyn LineIo, next_id: &mut u64) -> Result<Vec<McpToolInfo>, String> {
     let id = *next_id;
     *next_id += 1;
-    let result = request(io, id, "tools/list", None)?;
+    let result = request(io, id, "tools/list", None, CALL_TIMEOUT)?;
     let tools = result
         .get("tools")
         .and_then(Value::as_array)
@@ -126,7 +130,7 @@ fn call_tool(
     *next_id += 1;
     let args: Value = serde_json::from_str(input_json.trim()).unwrap_or_else(|_| json!({}));
     let params = json!({ "name": tool, "arguments": args });
-    let result = request(io, id, "tools/call", Some(params))?;
+    let result = request(io, id, "tools/call", Some(params), CALL_TIMEOUT)?;
     // MCP results carry a `content` array of typed parts; we relay the text parts.
     let text = result
         .get("content")
@@ -172,8 +176,8 @@ impl LineIo for StdioIo {
             .map_err(|e| format!("failed to send to MCP server: {e}"))
     }
 
-    fn recv(&mut self) -> Result<String, String> {
-        match self.rx.recv_timeout(CALL_TIMEOUT) {
+    fn recv(&mut self, timeout: Duration) -> Result<String, String> {
+        match self.rx.recv_timeout(timeout) {
             Ok(line) => Ok(line),
             Err(RecvTimeoutError::Timeout) => Err("the MCP server timed out".to_owned()),
             Err(RecvTimeoutError::Disconnected) => {
@@ -277,6 +281,7 @@ impl McpClient for StdioMcpClient {
 mod tests {
     use super::{LineIo, call_tool, handshake, list_tools};
     use std::collections::VecDeque;
+    use std::time::Duration;
 
     /// A scripted server: records the lines we send, and hands back pre-canned reply
     /// lines in order.
@@ -299,7 +304,7 @@ mod tests {
             self.sent.push(line.to_owned());
             Ok(())
         }
-        fn recv(&mut self) -> Result<String, String> {
+        fn recv(&mut self, _timeout: Duration) -> Result<String, String> {
             self.replies
                 .pop_front()
                 .ok_or_else(|| "no more replies scripted".to_owned())
