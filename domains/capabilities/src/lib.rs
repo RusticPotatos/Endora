@@ -16,6 +16,7 @@
 pub mod application;
 pub mod domain;
 pub mod infrastructure;
+pub mod mcp_http;
 pub mod mcp_stdio;
 pub mod store;
 
@@ -30,5 +31,6 @@ pub use infrastructure::{
     McpRunner, McpToolInfo, OpenerRunner, RegistryRunner, SettingSpec, default_capabilities,
     redact_pii_in_value, scan_outbound_secret,
 };
+pub use mcp_http::HttpMcpClient;
 pub use mcp_stdio::StdioMcpClient;
 pub use store::{ConfigStore, migrate};
