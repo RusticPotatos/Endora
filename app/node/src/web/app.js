@@ -1212,7 +1212,16 @@ function viewSkills() {
               : "Spending, sending or deleting — blocked until you allow it, and it always asks first."}</div>
           </div>
           <button class="${opened ? "primary" : "ghost"}" data-act="skill:open:${c.id}:${opened ? "0" : "1"}">${opened ? "Block again" : "Allow (with confirmation)"}</button>
-        </div>` : ""}
+        </div>` : (enabled ? `
+        <div class="row" style="align-items:flex-start;gap:10px;margin-top:8px;border-top:1px solid var(--line);padding-top:8px;">
+          <div class="grow">
+            <div class="title" style="font-weight:500;">Ask me first</div>
+            <div class="sub">${c.confirm
+              ? "On — Endora proposes it and runs it only after you confirm each time."
+              : "Off — Endora may use this on its own when it helps. Turn on to be asked first."}</div>
+          </div>
+          <button class="${c.confirm ? "primary" : "ghost"}" data-act="skill:confirm:${c.id}:${c.confirm ? "0" : "1"}">${c.confirm ? "Automatic" : "Ask first"}</button>
+        </div>` : "")}
         ${settingsForm}
       </div>`;
   };
@@ -1826,6 +1835,13 @@ async function dispatch(act) {
       const open = arg === "1";
       if (open && !confirm("Allow this skill's irreversible actions?\n\nEndora will still ask you before every single use, and will never do it on its own.")) return;
       try { await api("POST", `/v1/capabilities/${id}/open`, { open }); }
+      catch (e) { flash("Couldn't change that skill: " + e.message, "err"); }
+      return reload();
+    }
+    // Set a skill to "ask first" (on with user input) or back to automatic (ADR 0024).
+    if (verb === "skill" && noun === "confirm") {
+      const wantConfirm = arg === "1";
+      try { await api("POST", `/v1/capabilities/${id}/confirm`, { confirm: wantConfirm }); flash(wantConfirm ? "Endora will ask before using this." : "Endora may use this on its own.", "ok"); }
       catch (e) { flash("Couldn't change that skill: " + e.message, "err"); }
       return reload();
     }
