@@ -1604,6 +1604,9 @@ pub struct RegistryRunner {
     /// Per-capability irreversible-band openers (id → opened, ADR 0024). Missing =
     /// closed: the un-undoable stays blocked until the person opens it.
     opened: std::collections::HashMap<String, bool>,
+    /// Per-capability "ask first" overrides (id → confirm). When set, the skill runs
+    /// only after the person confirms each use — never on its own — whatever its band.
+    confirm: std::collections::HashMap<String, bool>,
     /// The person's autonomy envelope — the boundary the butler acts within.
     envelope: crate::application::AutonomyEnvelope,
     /// Per-capability settings (id → key/value), for skills that need config.
@@ -1619,6 +1622,7 @@ impl RegistryRunner {
             capabilities,
             enabled: std::collections::HashMap::new(),
             opened: std::collections::HashMap::new(),
+            confirm: std::collections::HashMap::new(),
             envelope: crate::application::AutonomyEnvelope::default(),
             settings: std::collections::HashMap::new(),
         }
@@ -1634,6 +1638,7 @@ impl RegistryRunner {
         capabilities: Arc<Vec<Arc<dyn Capability>>>,
         overrides: Vec<(String, bool)>,
         opened: Vec<(String, bool)>,
+        confirm: Vec<(String, bool)>,
         envelope: crate::application::AutonomyEnvelope,
         settings: std::collections::HashMap<String, CapabilitySettings>,
     ) -> Self {
@@ -1641,6 +1646,7 @@ impl RegistryRunner {
             capabilities,
             enabled: overrides.into_iter().collect(),
             opened: opened.into_iter().collect(),
+            confirm: confirm.into_iter().collect(),
             envelope,
             settings,
         }
@@ -1655,6 +1661,12 @@ impl RegistryRunner {
     /// Closed by default — the un-undoable stays blocked until deliberately opened.
     fn is_opened(&self, id: &str) -> bool {
         self.opened.get(id).copied().unwrap_or(false)
+    }
+
+    /// Whether the person set this capability to **ask first** (on with user input).
+    /// Off by default — a skill follows its band unless deliberately set to confirm.
+    fn is_confirm(&self, id: &str) -> bool {
+        self.confirm.get(id).copied().unwrap_or(false)
     }
 
     /// The stored settings for a capability (empty if none set).
@@ -1692,8 +1704,9 @@ fn classify(
     info: &CapabilityInfo,
     env: &crate::application::AutonomyEnvelope,
     opened_irreversible: bool,
+    confirm_each_use: bool,
 ) -> Decision {
-    match info.reversibility.default_decision() {
+    let base = match info.reversibility.default_decision() {
         // The un-undoable is refused outright — deny-by-default (ADR 0024) — unless
         // the person has opened this capability, and even then only to confirm-each-
         // use, never to autonomous.
@@ -1723,18 +1736,26 @@ fn classify(
                 Decision::Confirm
             }
         }
+    };
+    // Per-skill "ask first" (on with user input): never runs on its own — the butler
+    // proposes and waits. Downgrades an autonomous verdict to Confirm, and turns an
+    // allow-with-confirm into the same (it can't relax a hard Block, though).
+    match base {
+        Decision::Act if confirm_each_use => Decision::Confirm,
+        other => other,
     }
 }
 
 /// Whether a skill may run on its own this turn — exactly when the deterministic
-/// [`classify`] verdict is [`Act`](Decision::Act). An opened irreversible skill is
-/// never autonomous (it confirms every time), so the opener does not change this.
+/// [`classify`] verdict is [`Act`](Decision::Act). An opened irreversible skill or one
+/// set to ask-first is never autonomous (it confirms every time).
 fn may_run_autonomously(
     info: &CapabilityInfo,
     env: &crate::application::AutonomyEnvelope,
     opened_irreversible: bool,
+    confirm_each_use: bool,
 ) -> bool {
-    classify(info, env, opened_irreversible) == Decision::Act
+    classify(info, env, opened_irreversible, confirm_each_use) == Decision::Act
 }
 
 impl CapabilityRunner for RegistryRunner {
@@ -1755,6 +1776,7 @@ impl CapabilityRunner for RegistryRunner {
                         &info,
                         &self.envelope,
                         self.is_opened(info.id),
+                        self.is_confirm(info.id),
                     ),
                 }
             })
@@ -1765,7 +1787,14 @@ impl CapabilityRunner for RegistryRunner {
         self.capabilities
             .iter()
             .find(|c| c.info().id == id)
-            .map(|c| classify(&c.info(), &self.envelope, self.is_opened(id)))
+            .map(|c| {
+                classify(
+                    &c.info(),
+                    &self.envelope,
+                    self.is_opened(id),
+                    self.is_confirm(id),
+                )
+            })
     }
 
     fn run(&self, id: &str, input_json: &str) -> Result<String, String> {
@@ -1782,7 +1811,13 @@ impl CapabilityRunner for RegistryRunner {
         // person opens it per capability. Once opened it reaches this path only via
         // an explicit confirmation. The failure mode is "it refused," never "it did
         // something permanent." The classifier owns which band is blocked.
-        if classify(&cap.info(), &self.envelope, self.is_opened(id)) == Decision::Block {
+        if classify(
+            &cap.info(),
+            &self.envelope,
+            self.is_opened(id),
+            self.is_confirm(id),
+        ) == Decision::Block
+        {
             return Err(format!(
                 "the '{id}' skill can't be undone, so Endora won't run it on its own — \
                  this band stays blocked until you open it for this skill"
@@ -2063,43 +2098,64 @@ mod tests {
             auto_consequential: true,
         };
 
-        // `closed` = the irreversible opener is off; irrelevant for these bands.
+        // `closed` = the irreversible opener is off; `ask` = the ask-first override.
         let closed = false;
+        let ask = false;
         // Reversible local read: always acts.
         assert_eq!(
-            classify(&info(Reversible, false), &default_env, closed),
+            classify(&info(Reversible, false), &default_env, closed, ask),
             Decision::Act
         );
         // Reversible external read: acts by default...
         assert_eq!(
-            classify(&info(Reversible, true), &default_env, closed),
+            classify(&info(Reversible, true), &default_env, closed, ask),
             Decision::Act
         );
         // ...but waits for confirmation when the person narrows the envelope.
         assert_eq!(
-            classify(&info(Reversible, true), &no_external, closed),
+            classify(&info(Reversible, true), &no_external, closed, ask),
+            Decision::Confirm
+        );
+        // ...or when the person sets that skill to ask first (on with user input):
+        // an otherwise-autonomous read now confirms every use.
+        assert_eq!(
+            classify(&info(Reversible, false), &default_env, closed, true),
             Decision::Confirm
         );
         // Outward but reversible: confirm by default, acts only when widened.
         assert_eq!(
-            classify(&info(OutwardReversible, true), &default_env, closed),
+            classify(&info(OutwardReversible, true), &default_env, closed, ask),
             Decision::Confirm
         );
         assert_eq!(
-            classify(&info(OutwardReversible, true), &widened, closed),
+            classify(&info(OutwardReversible, true), &widened, closed, ask),
             Decision::Act
+        );
+        // Ask-first keeps a widened outward action confirming rather than acting.
+        assert_eq!(
+            classify(&info(OutwardReversible, true), &widened, closed, true),
+            Decision::Confirm
         );
 
         // `may_run_autonomously` is exactly "the verdict is Act".
         assert!(may_run_autonomously(
             &info(Reversible, false),
             &default_env,
-            closed
+            closed,
+            ask
         ));
         assert!(!may_run_autonomously(
             &info(OutwardReversible, true),
             &default_env,
-            closed
+            closed,
+            ask
+        ));
+        // Ask-first is never autonomous.
+        assert!(!may_run_autonomously(
+            &info(Reversible, false),
+            &default_env,
+            closed,
+            true
         ));
     }
 
@@ -2112,14 +2168,25 @@ mod tests {
         };
         let irreversible = info(Reversibility::Irreversible, true);
 
-        // Closed: blocked outright, not merely confirmed — even fully widened.
-        assert_eq!(classify(&irreversible, &widened, false), Decision::Block);
+        // Closed: blocked outright, not merely confirmed — even fully widened, and
+        // even if set to ask-first (ask-first can't relax the hard irreversible Block).
+        assert_eq!(
+            classify(&irreversible, &widened, false, false),
+            Decision::Block
+        );
+        assert_eq!(
+            classify(&irreversible, &widened, false, true),
+            Decision::Block
+        );
 
         // Opened (ADR 0024 escape hatch): moves to Confirm — never Act. The
         // un-undoable is confirmed every time, never run autonomously, even fully
         // widened.
-        assert_eq!(classify(&irreversible, &widened, true), Decision::Confirm);
-        assert!(!may_run_autonomously(&irreversible, &widened, true));
+        assert_eq!(
+            classify(&irreversible, &widened, true, false),
+            Decision::Confirm
+        );
+        assert!(!may_run_autonomously(&irreversible, &widened, true, false));
     }
 
     #[test]
@@ -2192,6 +2259,7 @@ mod tests {
             caps,
             vec![],
             vec![("booking".to_owned(), true)],
+            vec![],
             crate::application::AutonomyEnvelope {
                 auto_external: true,
                 auto_consequential: true,
@@ -2251,6 +2319,7 @@ mod tests {
             caps,
             vec![],
             vec![("booking".to_owned(), true)],
+            vec![],
             crate::application::AutonomyEnvelope::default(),
             std::collections::HashMap::new(),
         );

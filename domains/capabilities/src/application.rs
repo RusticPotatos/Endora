@@ -224,6 +224,23 @@ pub trait CapabilityConfigRepository {
     /// # Errors
     /// [`RepositoryError`] if the backend fails.
     fn set_open_irreversible(&self, id: &str, opened: bool) -> Result<(), RepositoryError>;
+
+    /// The capabilities the person has set to **ask first** ("on with user input"),
+    /// as `(id, confirm)` pairs. When set, the skill runs only after the person
+    /// confirms each use — the butler proposes, never acts on its own for it —
+    /// regardless of the skill's band. Ids not present default to their band's
+    /// behaviour (a read-only skill acts on its own).
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if the backend fails.
+    fn confirm_overrides(&self) -> Result<Vec<(String, bool)>, RepositoryError>;
+
+    /// Sets whether a capability must **ask first** before each use (upsert by id,
+    /// leaving the other flags untouched).
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if the backend fails.
+    fn set_confirm(&self, id: &str, confirm: bool) -> Result<(), RepositoryError>;
 }
 
 /// Persists the **MCP servers** the catalog draws tools from (ADR 0021). The stored
