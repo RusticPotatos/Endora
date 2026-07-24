@@ -77,7 +77,8 @@ pub fn migrate(db: &Db) -> Result<(), RepositoryError> {
                 url     TEXT NOT NULL DEFAULT '',
                 enabled INTEGER NOT NULL DEFAULT 1,
                 env     TEXT NOT NULL DEFAULT '',
-                auth    TEXT NOT NULL DEFAULT ''
+                auth    TEXT NOT NULL DEFAULT '',
+                trust_all INTEGER NOT NULL DEFAULT 1
             ) STRICT;",
         )
         .map_err(backend)?;
@@ -100,6 +101,12 @@ pub fn migrate(db: &Db) -> Result<(), RepositoryError> {
     );
     let _ = db.lock()?.execute(
         "ALTER TABLE mcp_servers ADD COLUMN auth TEXT NOT NULL DEFAULT ''",
+        [],
+    );
+    // Auto-allow a server's tools on connect (default on). Opened tools are still
+    // Block→Confirm, so this never removes the ask-before-each-use safety net.
+    let _ = db.lock()?.execute(
+        "ALTER TABLE mcp_servers ADD COLUMN trust_all INTEGER NOT NULL DEFAULT 1",
         [],
     );
     Ok(())
@@ -429,7 +436,7 @@ impl McpServerRegistry for ConfigStore {
         let conn = self.db.lock()?;
         let mut stmt = conn
             .prepare(
-                "SELECT name, kind, command, args, url, enabled, env, auth \
+                "SELECT name, kind, command, args, url, enabled, env, auth, trust_all \
                  FROM mcp_servers ORDER BY name",
             )
             .map_err(backend)?;
@@ -442,14 +449,15 @@ impl McpServerRegistry for ConfigStore {
                     r.get::<_, String>(3)?, // args (JSON array)
                     r.get::<_, String>(4)?, // url
                     r.get::<_, i64>(5)? != 0,
-                    r.get::<_, String>(6)?, // env (JSON object) — secret
-                    r.get::<_, String>(7)?, // auth (bearer token) — secret
+                    r.get::<_, String>(6)?,   // env (JSON object) — secret
+                    r.get::<_, String>(7)?,   // auth (bearer token) — secret
+                    r.get::<_, i64>(8)? != 0, // trust_all
                 ))
             })
             .map_err(backend)?;
         let mut servers = Vec::new();
         for row in rows {
-            let (name, kind, command, args_json, url, enabled, env_json, auth) =
+            let (name, kind, command, args_json, url, enabled, env_json, auth, trust_all) =
                 row.map_err(backend)?;
             let transport = match kind.as_str() {
                 "http" => McpTransport::Http { url, auth },
@@ -472,6 +480,7 @@ impl McpServerRegistry for ConfigStore {
                 name,
                 transport,
                 enabled,
+                trust_all,
             });
         }
         Ok(servers)
@@ -500,8 +509,8 @@ impl McpServerRegistry for ConfigStore {
             .lock()?
             .execute(
                 "INSERT OR REPLACE INTO mcp_servers \
-                 (name, kind, command, args, url, enabled, env, auth) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                 (name, kind, command, args, url, enabled, env, auth, trust_all) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
                 params![
                     server.name,
                     kind,
@@ -511,6 +520,7 @@ impl McpServerRegistry for ConfigStore {
                     i64::from(server.enabled),
                     env_json,
                     auth,
+                    i64::from(server.trust_all),
                 ],
             )
             .map_err(backend)?;
@@ -523,6 +533,17 @@ impl McpServerRegistry for ConfigStore {
             .execute(
                 "UPDATE mcp_servers SET enabled = ?2 WHERE name = ?1",
                 params![name, i64::from(enabled)],
+            )
+            .map_err(backend)?;
+        Ok(())
+    }
+
+    fn set_trust_all(&self, name: &str, trust_all: bool) -> Result<(), RepositoryError> {
+        self.db
+            .lock()?
+            .execute(
+                "UPDATE mcp_servers SET trust_all = ?2 WHERE name = ?1",
+                params![name, i64::from(trust_all)],
             )
             .map_err(backend)?;
         Ok(())
@@ -658,6 +679,37 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["filesystem".to_owned()]
         );
+    }
+
+    #[test]
+    fn mcp_trust_all_defaults_on_round_trips_and_toggles() {
+        use crate::application::{McpServer, McpServerRegistry, McpTransport};
+
+        let db = Db::open_in_memory().unwrap();
+        migrate(&db).unwrap();
+        let store = ConfigStore::new(db);
+
+        // A freshly constructed server auto-allows its tools by default.
+        let ha = McpServer::http("home-assistant", "https://ha.local/mcp_server/sse").unwrap();
+        assert!(ha.trust_all);
+        store.register(&ha).unwrap();
+        assert!(store.list().unwrap()[0].trust_all);
+
+        // Turning it off persists and leaves the transport untouched.
+        McpServerRegistry::set_trust_all(&store, "home-assistant", false).unwrap();
+        let row = store.list().unwrap().into_iter().next().unwrap();
+        assert!(!row.trust_all);
+        assert_eq!(
+            row.transport,
+            McpTransport::Http {
+                url: "https://ha.local/mcp_server/sse".to_owned(),
+                auth: String::new(),
+            }
+        );
+
+        // And back on.
+        McpServerRegistry::set_trust_all(&store, "home-assistant", true).unwrap();
+        assert!(store.list().unwrap()[0].trust_all);
     }
 
     #[test]
