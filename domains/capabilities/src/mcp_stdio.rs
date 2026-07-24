@@ -94,43 +94,32 @@ fn handshake(io: &mut dyn LineIo, next_id: &mut u64) -> Result<(), String> {
     notify(io, "notifications/initialized")
 }
 
-/// Lists the server's tools (`tools/list`).
-fn list_tools(io: &mut dyn LineIo, next_id: &mut u64) -> Result<Vec<McpToolInfo>, String> {
-    let id = *next_id;
-    *next_id += 1;
-    let result = request(io, id, "tools/list", None, CALL_TIMEOUT)?;
-    let tools = result
+/// Parses a `tools/list` result into tool infos. Shared with the HTTP transport, so
+/// the wire shape lives in one place.
+pub(crate) fn tools_from_result(result: &Value) -> Vec<McpToolInfo> {
+    result
         .get("tools")
         .and_then(Value::as_array)
-        .cloned()
-        .unwrap_or_default();
-    Ok(tools
-        .iter()
-        .filter_map(|t| {
-            let name = t.get("name")?.as_str()?.to_owned();
-            let description = t
-                .get("description")
-                .and_then(Value::as_str)
-                .unwrap_or("")
-                .to_owned();
-            Some(McpToolInfo { name, description })
+        .map(|tools| {
+            tools
+                .iter()
+                .filter_map(|t| {
+                    let name = t.get("name")?.as_str()?.to_owned();
+                    let description = t
+                        .get("description")
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .to_owned();
+                    Some(McpToolInfo { name, description })
+                })
+                .collect()
         })
-        .collect())
+        .unwrap_or_default()
 }
 
-/// Calls one tool (`tools/call`), returning its text content. `input_json` is the
-/// arguments object; blank/invalid input becomes `{}`.
-fn call_tool(
-    io: &mut dyn LineIo,
-    next_id: &mut u64,
-    tool: &str,
-    input_json: &str,
-) -> Result<String, String> {
-    let id = *next_id;
-    *next_id += 1;
-    let args: Value = serde_json::from_str(input_json.trim()).unwrap_or_else(|_| json!({}));
-    let params = json!({ "name": tool, "arguments": args });
-    let result = request(io, id, "tools/call", Some(params), CALL_TIMEOUT)?;
+/// Extracts the text content of a `tools/call` result (joining text parts), or an
+/// error if the server marked the result `isError`. Shared with the HTTP transport.
+pub(crate) fn text_from_call_result(result: &Value, tool: &str) -> Result<String, String> {
     // MCP results carry a `content` array of typed parts; we relay the text parts.
     let text = result
         .get("content")
@@ -156,6 +145,30 @@ fn call_tool(
     } else {
         text
     })
+}
+
+/// Lists the server's tools (`tools/list`).
+fn list_tools(io: &mut dyn LineIo, next_id: &mut u64) -> Result<Vec<McpToolInfo>, String> {
+    let id = *next_id;
+    *next_id += 1;
+    let result = request(io, id, "tools/list", None, CALL_TIMEOUT)?;
+    Ok(tools_from_result(&result))
+}
+
+/// Calls one tool (`tools/call`), returning its text content. `input_json` is the
+/// arguments object; blank/invalid input becomes `{}`.
+fn call_tool(
+    io: &mut dyn LineIo,
+    next_id: &mut u64,
+    tool: &str,
+    input_json: &str,
+) -> Result<String, String> {
+    let id = *next_id;
+    *next_id += 1;
+    let args: Value = serde_json::from_str(input_json.trim()).unwrap_or_else(|_| json!({}));
+    let params = json!({ "name": tool, "arguments": args });
+    let result = request(io, id, "tools/call", Some(params), CALL_TIMEOUT)?;
+    text_from_call_result(&result, tool)
 }
 
 /// The real line I/O: writes to the child's stdin, and reads lines the reader thread
