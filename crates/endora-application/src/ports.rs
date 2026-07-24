@@ -8,7 +8,7 @@
 use core::fmt;
 
 use endora_capabilities::CapabilityUse;
-use endora_conversation::ChatMessage;
+use endora_conversation::{ChatMessage, MessageRole};
 use endora_direction::{
     Assumption, Direction, Experiment, Observation, ProposedProcessChange, Reflection, Target,
     Value,
@@ -446,6 +446,48 @@ pub trait Butler {
             on_token(&reply.text);
         }
         Ok(reply)
+    }
+
+    /// One step of the **single tool-calling conversation** (ADR 0028): given the
+    /// conversation so far — including assistant tool-call turns and their
+    /// [`TurnMessage::ToolResult`]s — produce the next assistant turn. A reply with
+    /// `tool_calls` means "run these and give me their results"; an empty
+    /// `tool_calls` with `text` is the final answer. The application drives the loop
+    /// (executing calls through policy, appending results); this only voices the
+    /// model side.
+    ///
+    /// The default flattens the conversation to plain user/assistant messages and
+    /// answers via [`respond`](Self::respond), so any [`Butler`] works. A model-backed
+    /// butler overrides it to run real native tool-calling against the endpoint.
+    ///
+    /// # Errors
+    /// [`ProposalError`] if a backing model is unreachable or returns nothing.
+    fn take_turn(
+        &self,
+        conversation: &[TurnMessage],
+        preferences: &[Preference],
+        context: &ButlerContext,
+    ) -> Result<ButlerReply, ProposalError> {
+        let history: Vec<ChatMessage> = conversation
+            .iter()
+            .filter_map(|m| match m {
+                TurnMessage::User(text) => Some((MessageRole::User, text.as_str())),
+                TurnMessage::Assistant { text, .. } if !text.is_empty() => {
+                    Some((MessageRole::Butler, text.as_str()))
+                }
+                _ => None,
+            })
+            .filter_map(|(role, text)| {
+                ChatMessage::new(
+                    MessageId::new(0),
+                    role,
+                    text,
+                    Timestamp::from_unix_millis(0),
+                )
+                .ok()
+            })
+            .collect();
+        self.respond(&history, preferences, context)
     }
 }
 

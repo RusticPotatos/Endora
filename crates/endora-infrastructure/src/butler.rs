@@ -167,13 +167,24 @@ impl LlmButler {
             context,
             true,
         );
+        self.post_and_parse(&body, context)
+    }
+
+    /// POSTs a chat-completions `body` and parses the reply (native tool call or
+    /// envelope). Shared by the two-pass `try_model` and the single-conversation
+    /// `take_turn`.
+    fn post_and_parse(
+        &self,
+        body: &Value,
+        context: &ButlerContext,
+    ) -> Result<ButlerReply, ProposalError> {
         let url = format!("{}/chat/completions", self.base_url);
         let mut req = self.agent.post(&url);
         if !self.api_key.is_empty() {
             req = req.header("Authorization", &format!("Bearer {}", self.api_key));
         }
         let mut response = req
-            .send_json(&body)
+            .send_json(body)
             .map_err(|e| ProposalError::Unavailable(e.to_string()))?;
         if response.status().as_u16() >= 300 {
             return Err(ProposalError::Unavailable(format!(
@@ -345,6 +356,26 @@ impl Butler for LlmButler {
                 Ok(reply)
             })
     }
+
+    fn take_turn(
+        &self,
+        conversation: &[endora_application::TurnMessage],
+        preferences: &[Preference],
+        context: &ButlerContext,
+    ) -> Result<ButlerReply, ProposalError> {
+        // The real single tool-calling conversation (ADR 0028): tool results are in
+        // the messages, so the model answers grounded in them. Degrade (no proposals)
+        // rather than fail the turn if the model is unreachable.
+        let body = build_turn_request(
+            &self.model,
+            &self.sampling,
+            conversation,
+            preferences,
+            context,
+        );
+        self.post_and_parse(&body, context)
+            .or_else(|_| Ok(degraded_reply()))
+    }
 }
 
 /// A two-model butler (the ADR 0027 mixture experiment): a routing **specialist**
@@ -401,6 +432,18 @@ impl Butler for MixtureButler {
     ) -> Result<ButlerReply, ProposalError> {
         self.brain(context)
             .respond_streaming(history, preferences, context, on_token)
+    }
+
+    fn take_turn(
+        &self,
+        conversation: &[endora_application::TurnMessage],
+        preferences: &[Preference],
+        context: &ButlerContext,
+    ) -> Result<ButlerReply, ProposalError> {
+        // One model runs the whole conversation (tool calls and the final prose), so
+        // use the generalist synthesizer — the router is tool-tuned but weak at prose.
+        self.synthesizer
+            .take_turn(conversation, preferences, context)
     }
 }
 
@@ -511,6 +554,15 @@ impl Butler for ConfigurableButler {
     ) -> Result<ButlerReply, ProposalError> {
         self.current()
             .respond_streaming(history, preferences, context, on_token)
+    }
+
+    fn take_turn(
+        &self,
+        conversation: &[endora_application::TurnMessage],
+        preferences: &[Preference],
+        context: &ButlerContext,
+    ) -> Result<ButlerReply, ProposalError> {
+        self.current().take_turn(conversation, preferences, context)
     }
 }
 
@@ -894,6 +946,64 @@ fn native_tools(context: &ButlerContext) -> Vec<Value> {
         .collect()
 }
 
+/// Builds a request for the **single tool-calling conversation** (ADR 0028): the same
+/// system prompt + tools as [`build_butler_request`], but the messages are the real
+/// conversation — user turns, assistant turns carrying `tool_calls`, and `role:tool`
+/// results — so the model answers grounded in what the tools actually returned.
+fn build_turn_request(
+    model: &str,
+    sampling: &Sampling,
+    conversation: &[endora_application::TurnMessage],
+    preferences: &[Preference],
+    context: &ButlerContext,
+) -> Value {
+    use endora_application::TurnMessage;
+    // Reuse the system prompt, tools, and sampling from the standard builder (with an
+    // empty history), then replace its messages with the real conversation.
+    let mut body = build_butler_request(model, sampling, &[], preferences, context, true);
+    let system = body["messages"][0].clone();
+    let mut messages = vec![system];
+    for turn in conversation {
+        match turn {
+            TurnMessage::User(text) => {
+                messages.push(json!({ "role": "user", "content": text }));
+            }
+            TurnMessage::Assistant { text, tool_calls } if tool_calls.is_empty() => {
+                messages.push(json!({ "role": "assistant", "content": text }));
+            }
+            TurnMessage::Assistant { text, tool_calls } => {
+                let calls: Vec<Value> = tool_calls
+                    .iter()
+                    .map(|c| {
+                        json!({
+                            "id": c.id,
+                            "type": "function",
+                            "function": {
+                                "name": tool_api_name(&c.capability),
+                                "arguments": c.input_json,
+                            }
+                        })
+                    })
+                    .collect();
+                messages.push(json!({
+                    "role": "assistant",
+                    "content": text,
+                    "tool_calls": calls,
+                }));
+            }
+            TurnMessage::ToolResult { call_id, content } => {
+                messages.push(json!({
+                    "role": "tool",
+                    "tool_call_id": call_id,
+                    "content": content,
+                }));
+            }
+        }
+    }
+    body["messages"] = json!(messages);
+    body
+}
+
 fn build_butler_request(
     model: &str,
     sampling: &Sampling,
@@ -1242,7 +1352,7 @@ fn strip_code_fence(s: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::{
-        LlmButler, ScriptedButler, build_butler_request, extract_json_object,
+        LlmButler, ScriptedButler, build_butler_request, build_turn_request, extract_json_object,
         extract_reply_preview, parse_butler_json, parse_butler_response, parse_model_reply,
         test_connection,
     };
@@ -1421,6 +1531,66 @@ mod tests {
         // The sanitised name maps back to the real namespaced id, args preserved.
         assert_eq!(used.capability, "home-assistant.HassTurnOn");
         assert_eq!(used.input_json, "{\"name\":\"kitchen lights\"}");
+    }
+
+    #[test]
+    fn build_turn_request_renders_tool_turns_as_messages() {
+        use endora_application::{CapabilityTool, ToolCall, TurnMessage};
+        let ctx = ButlerContext {
+            tools: vec![CapabilityTool {
+                id: "home-assistant.HassTurnOn".to_owned(),
+                description: "on".to_owned(),
+                input_schema: None,
+            }],
+            ..Default::default()
+        };
+        let convo = vec![
+            TurnMessage::User("turn on the kitchen lights".to_owned()),
+            TurnMessage::Assistant {
+                text: String::new(),
+                tool_calls: vec![ToolCall {
+                    id: "c1".to_owned(),
+                    capability: "home-assistant.HassTurnOn".to_owned(),
+                    input_json: r#"{"area":"kitchen"}"#.to_owned(),
+                }],
+            },
+            TurnMessage::ToolResult {
+                call_id: "c1".to_owned(),
+                content: "no lights match".to_owned(),
+            },
+        ];
+        let body = build_turn_request("qwen2.5:7b", &Sampling::default(), &convo, &[], &ctx);
+        let msgs = body["messages"].as_array().unwrap();
+        assert_eq!(msgs[0]["role"], "system");
+        assert_eq!(msgs[1]["role"], "user");
+        // The assistant tool-call turn carries the sanitised name + id.
+        assert_eq!(msgs[2]["role"], "assistant");
+        assert_eq!(msgs[2]["tool_calls"][0]["id"], "c1");
+        assert_eq!(
+            msgs[2]["tool_calls"][0]["function"]["name"],
+            "home-assistant__HassTurnOn"
+        );
+        // The tool result is a role:tool message paired by id — the model answers from it.
+        assert_eq!(msgs[3]["role"], "tool");
+        assert_eq!(msgs[3]["tool_call_id"], "c1");
+        assert_eq!(msgs[3]["content"], "no lights match");
+        // Native tool-calling is offered and the json-object grammar is dropped.
+        assert!(body.get("response_format").is_none());
+        assert!(!body["tools"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn default_take_turn_falls_back_to_respond() {
+        use endora_application::TurnMessage;
+        // A butler with no tool-calling (Scripted) still answers via the default.
+        let convo = vec![TurnMessage::User(
+            "I want to get back into running".to_owned(),
+        )];
+        let reply = ScriptedButler
+            .take_turn(&convo, &[], &ButlerContext::default())
+            .unwrap();
+        assert!(!reply.text.is_empty());
+        assert!(!reply.proposals.is_empty());
     }
 
     #[test]
