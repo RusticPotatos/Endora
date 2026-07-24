@@ -1323,7 +1323,10 @@ function viewSkills() {
             <div class="sub">${esc(addr)}</div>
             ${s.tools_live === 0 ? `<div class="sub" style="margin-top:4px;">Registered but didn't connect — check the command is installed and reachable on the server.</div>` : ""}
           </div>
-          <button class="ghost danger" data-act="mcp:remove:${esc(s.name)}">Remove</button>
+          <div class="row" style="gap:6px;">
+            <button class="ghost" data-act="mcp:reconnect:${esc(s.name)}" title="Retry the connection using its saved settings">Reconnect</button>
+            <button class="ghost danger" data-act="mcp:remove:${esc(s.name)}">Remove</button>
+          </div>
         </div>
         ${(s.tools || []).map(toolRow).join("")}
       </div>`;
@@ -1970,6 +1973,14 @@ async function dispatch(act) {
       return reload();
     }
     // Remove an MCP server (its tools disconnect).
+    if (verb === "mcp" && noun === "reconnect") {
+      try {
+        const r = await api("POST", "/v1/mcp/servers/" + encodeURIComponent(id) + "/reconnect");
+        if (r.connected) flash(`Connected — ${r.tools_live} tool${r.tools_live === 1 ? "" : "s"}.`, "ok");
+        else flash("Still not connecting — check it's reachable and the token is right.", "err");
+      } catch (e) { flash("Couldn't reconnect: " + e.message, "err"); }
+      return reload();
+    }
     if (verb === "mcp" && noun === "remove") {
       if (!confirm(`Remove the MCP server "${id}"? Its tools will be disconnected.`)) return;
       try { await api("DELETE", "/v1/mcp/servers/" + encodeURIComponent(id)); flash("Server removed.", "ok"); }
