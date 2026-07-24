@@ -4,11 +4,14 @@
 //! Two implementations:
 //! - [`ScriptedButler`] — deterministic and offline; it turns a stated aim into a
 //!   proposed North Star and asks what value it serves. It proves the act/ask +
-//!   propose loop without any model, and is the reliable fallback.
+//!   propose loop without any model, and is the goal-capture brain used for tests
+//!   and the model-layer eval baseline.
 //! - [`LlmButler`] — model-backed (a local OpenAI-compatible endpoint). It asks
 //!   the model for a candid, non-sycophantic reply plus proposals from a closed
-//!   set, and falls back to the scripted butler if the model is unavailable or
-//!   returns something unusable, so the conversation never breaks.
+//!   set. If the model is unavailable or returns something unusable it answers with
+//!   a plain, honest *degraded* reply (see [`degraded_reply`]) so the conversation
+//!   never breaks — crucially with **no proposals**, so a transient model failure
+//!   never mutates state (e.g. filing a control request as a goal).
 //!
 //! Both only ever *propose*: the person confirms each action, and deterministic
 //! use cases execute it. The model is never the enforcement boundary.
@@ -63,6 +66,20 @@ fn scripted_reply(history: &[ChatMessage]) -> ButlerReply {
     }
 }
 
+/// The reply an [`LlmButler`] gives when its model can't be reached or returns
+/// something unusable. Honest about the transient failure and — deliberately —
+/// carries **no proposals and no beliefs**: a degraded turn must never mutate state.
+/// This is what keeps a model hiccup from filing "turn on my kitchen lights" as a
+/// North Star. It answers the conversation without pretending to have understood.
+fn degraded_reply() -> ButlerReply {
+    ButlerReply {
+        text: "Sorry — I couldn't reach my language model just now, so I didn't follow that \
+               properly. Give me a moment and try again."
+            .to_owned(),
+        ..ButlerReply::default()
+    }
+}
+
 /// Strips a leading intent phrase ("I want to …") to get the bare aim.
 fn strip_lead(text: &str) -> String {
     let lower = text.to_lowercase();
@@ -83,8 +100,10 @@ fn strip_lead(text: &str) -> String {
     text.to_owned()
 }
 
-/// A [`Butler`] backed by a local OpenAI-compatible chat endpoint, with the
-/// [`ScriptedButler`] as a fallback so the conversation is always answered.
+/// A [`Butler`] backed by a local OpenAI-compatible chat endpoint. When the model
+/// can't be reached or returns something unusable it answers with a side-effect-free
+/// [`degraded_reply`] (no proposals), so the conversation is always answered without
+/// a failed turn ever mutating state.
 pub struct LlmButler {
     agent: ureq::Agent,
     base_url: String,
@@ -93,7 +112,6 @@ pub struct LlmButler {
     api_key: String,
     /// Sampling parameters for this model's calls.
     sampling: Sampling,
-    fallback: ScriptedButler,
 }
 
 /// How long to wait for the whole model round-trip before giving up and using
@@ -129,7 +147,6 @@ impl LlmButler {
             model,
             api_key,
             sampling,
-            fallback: ScriptedButler,
         }
     }
 
@@ -289,10 +306,11 @@ impl Butler for LlmButler {
         preferences: &[Preference],
         context: &ButlerContext,
     ) -> Result<ButlerReply, ProposalError> {
-        // Never fail the conversation: fall back to the scripted butler if the
-        // model is unreachable or unusable.
+        // Never fail the conversation, but never mutate state on a failure either:
+        // if the model is unreachable or unusable, answer with a plain degraded reply
+        // that carries no proposals — so a hiccup can't file a request as a goal.
         self.try_model(history, preferences, context)
-            .or_else(|_| self.fallback.respond(history, preferences, context))
+            .or_else(|_| Ok(degraded_reply()))
     }
 
     fn respond_streaming(
@@ -302,12 +320,13 @@ impl Butler for LlmButler {
         context: &ButlerContext,
         on_token: &mut dyn FnMut(&str),
     ) -> Result<ButlerReply, ProposalError> {
-        // Stream from the model; if it is unreachable or unusable, fall back to
-        // the scripted butler (the default streaming impl emits it in one chunk).
+        // Stream from the model; if it is unreachable or unusable, emit a plain
+        // degraded reply (no proposals) in one chunk so the turn never mutates state.
         self.try_model_streaming(history, preferences, context, on_token)
             .or_else(|_| {
-                self.fallback
-                    .respond_streaming(history, preferences, context, on_token)
+                let reply = degraded_reply();
+                on_token(&reply.text);
+                Ok(reply)
             })
     }
 }
@@ -1138,6 +1157,51 @@ mod tests {
     }
 
     #[test]
+    fn llm_butler_degrades_without_proposals_when_the_model_is_unreachable() {
+        // Port 1 on loopback refuses immediately, so `try_model` fails fast and we
+        // exercise the fallback with no running model. The turn must still answer,
+        // but with NO proposals — a transient model failure must never file the
+        // message as a goal (the conversation-fallback bug).
+        let butler = LlmButler::new("http://127.0.0.1:1".to_owned(), "any-model".to_owned());
+        let reply = butler
+            .respond(
+                &[user("turn on my kitchen lights")],
+                &[],
+                &ButlerContext::default(),
+            )
+            .unwrap();
+        assert!(
+            reply.proposals.is_empty(),
+            "a degraded reply must not propose anything, got {:?}",
+            reply.proposals
+        );
+        assert!(!reply.text.is_empty(), "must still answer the conversation");
+    }
+
+    #[test]
+    fn llm_butler_streaming_also_degrades_without_proposals() {
+        let butler = LlmButler::new("http://127.0.0.1:1".to_owned(), "any-model".to_owned());
+        let mut streamed = String::new();
+        let reply = butler
+            .respond_streaming(
+                &[user("turn on my kitchen lights")],
+                &[],
+                &ButlerContext::default(),
+                &mut |t| streamed.push_str(t),
+            )
+            .unwrap();
+        assert!(
+            reply.proposals.is_empty(),
+            "no proposals on a degraded stream"
+        );
+        assert!(!reply.text.is_empty());
+        assert_eq!(
+            streamed, reply.text,
+            "the degraded text is streamed to the caller"
+        );
+    }
+
+    #[test]
     fn scripted_reply_speaks_naturally_without_internal_taxonomy() {
         // The conversation must not recite the app's internal vocabulary; those
         // words belong in the profile views, not the butler's spoken reply.
@@ -1285,28 +1349,8 @@ mod tests {
     }
 
     #[test]
-    fn llm_butler_falls_back_when_the_endpoint_is_unreachable() {
-        // An unroutable endpoint forces the scripted fallback.
-        let butler = LlmButler::new("http://127.0.0.1:1/v1".to_owned(), "none".to_owned());
-        let reply = butler
-            .respond(
-                &[user("I want to run more")],
-                &[],
-                &ButlerContext::default(),
-            )
-            .unwrap();
-        assert_eq!(
-            reply.proposals,
-            vec![ButlerProposal::CreateNorthStar {
-                title: "run more".to_owned()
-            }]
-        );
-    }
-
-    #[test]
     fn llm_butler_streaming_falls_back_and_emits_the_reply() {
-        // With no reachable model, streaming falls back to the scripted butler,
-        // which emits its whole reply in one chunk.
+        // With no reachable model, streaming emits the degraded reply in one chunk.
         let butler = LlmButler::new("http://127.0.0.1:1/v1".to_owned(), "none".to_owned());
         let mut streamed = String::new();
         let reply = butler
