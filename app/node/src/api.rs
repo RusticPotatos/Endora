@@ -418,14 +418,47 @@ async fn register_mcp_server(
     State(state): State<AppState>,
     Json(req): Json<McpServerRequest>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    use endora_capabilities::{McpServer, McpServerRegistry};
+    use endora_capabilities::{McpServer, McpServerRegistry, McpTransport};
     let config = state.config.clone();
     let mcp = state.mcp.clone();
     blocking(move || {
         let enabled = req.enabled;
+        // Editing an existing server: a blank secret means "keep what's stored", so
+        // changing (say) just the URL doesn't wipe a token the person didn't retype —
+        // the same rule capability settings use. Secrets are never sent back to the
+        // client, so a blank field is the only value it can offer for an unchanged one.
+        let existing = McpServerRegistry::list(config.as_ref())
+            .map_err(AppError::Repository)?
+            .into_iter()
+            .find(|s| s.name == req.name);
         let mut server = match req.transport.as_str() {
-            "http" => McpServer::http_with_auth(&req.name, &req.url, &req.auth),
-            _ => McpServer::stdio_with_env(&req.name, &req.command, req.args, req.env),
+            "http" => {
+                let mut auth = req.auth.clone();
+                if auth.is_empty() {
+                    if let Some(McpTransport::Http { auth: old, .. }) =
+                        existing.as_ref().map(|s| &s.transport)
+                    {
+                        auth = old.clone();
+                    }
+                }
+                McpServer::http_with_auth(&req.name, &req.url, &auth)
+            }
+            _ => {
+                let mut env = req.env.clone();
+                if let Some(McpTransport::Stdio { env: old, .. }) =
+                    existing.as_ref().map(|s| &s.transport)
+                {
+                    // Fill blanks from the stored env; a supplied value overrides.
+                    for (k, v) in env.iter_mut() {
+                        if v.is_empty() {
+                            if let Some(prev) = old.get(k) {
+                                *v = prev.clone();
+                            }
+                        }
+                    }
+                }
+                McpServer::stdio_with_env(&req.name, &req.command, req.args, env)
+            }
         }
         .map_err(AppError::Domain)?;
         server.enabled = enabled;
@@ -4578,6 +4611,44 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn editing_a_server_with_a_blank_token_keeps_the_saved_one() {
+        // Registered `disabled` so no real connection is attempted — this exercises the
+        // config merge, not networking.
+        let router = app(test_state());
+        let reg = router
+            .clone()
+            .oneshot(post(
+                "/v1/mcp/servers",
+                r#"{"name":"ha","transport":"http","url":"http://old/sse","auth":"secret-token","command":"","args":[],"env":{},"enabled":false}"#,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(reg.status(), StatusCode::OK);
+
+        // Edit: change only the URL, leave the token blank (the UI can't echo secrets).
+        let edit = router
+            .clone()
+            .oneshot(post(
+                "/v1/mcp/servers",
+                r#"{"name":"ha","transport":"http","url":"http://new/sse","auth":"","command":"","args":[],"env":{},"enabled":false}"#,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(edit.status(), StatusCode::OK);
+
+        let list = json_body(router.oneshot(get("/v1/mcp/servers")).await.unwrap()).await;
+        let ha = list["servers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|s| s["name"] == "ha")
+            .expect("ha server present");
+        // URL updated, but the token was preserved rather than wiped.
+        assert_eq!(ha["url"], "http://new/sse");
+        assert_eq!(ha["auth_set"], true);
     }
 
     #[tokio::test]
