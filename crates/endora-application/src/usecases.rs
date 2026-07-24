@@ -37,7 +37,7 @@ use crate::ports::{
     AttentionItem, AttentionKind, Butler, ButlerContext, ButlerProposal, ButlerReply,
     CapabilityTool, Clock, DeepAsker, FormedBelief, IdSource, MemorySnapshot, MemoryStore,
     NorthStarBrief, Proposer, Snooze, SnoozeRepository, Suggestion, SuggestionRepository,
-    SuggestionStatus,
+    SuggestionStatus, TurnMessage,
 };
 
 /// Creates and stores a new [`Direction`].
@@ -928,6 +928,156 @@ fn gather_with_skills(
         gathered,
         requested_skill,
     })
+}
+
+/// The single tool-calling conversation (ADR 0028). Seeds the conversation from the
+/// chat history, then drives [`Butler::take_turn`]: each tool call the model makes is
+/// executed **through policy**, and its real result — success **or** error — is
+/// appended as a [`TurnMessage::ToolResult`] the model answers from in-context, until
+/// it replies with no tool call. Bounded by `max_rounds` and a per-turn failure cap.
+///
+/// The loop adds **no canned narration**: an un-runnable tool yields a factual tool
+/// result (needs setup / needs confirmation / failed), and the model writes the
+/// user-facing answer from it. If the model misreports with the truth in front of it,
+/// that is a model failure to surface — not a string to hardcode (ADR 0028).
+// Staged: unit-tested here; the chat turn is cut over to it (and the deterministic
+// nets removed) in the ADR 0028 cutover slice.
+#[allow(dead_code)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "explicit dependencies, no hidden state"
+)]
+fn run_tool_turn(
+    butler: &dyn Butler,
+    capabilities: &dyn CapabilityRunner,
+    audit: &dyn AuditLog,
+    ids: &impl IdSource,
+    clock: &impl Clock,
+    history: &[ChatMessage],
+    prefs: &[Preference],
+    context: &ButlerContext,
+    max_rounds: usize,
+    on_step: &mut dyn FnMut(ButlerStep),
+    activity: &mut Vec<String>,
+) -> Result<ButlerReply, AppError> {
+    // Stop hammering a dead end: after this many failed runs in a turn, stop executing
+    // and let the model answer from what it has.
+    const MAX_TOOL_FAILURES: usize = 2;
+    // Seed the conversation with the plain chat so far.
+    let mut conversation: Vec<TurnMessage> = history
+        .iter()
+        .map(|m| match m.role() {
+            MessageRole::User => TurnMessage::User(m.text().to_owned()),
+            MessageRole::Butler => TurnMessage::Assistant {
+                text: m.text().to_owned(),
+                tool_calls: Vec::new(),
+            },
+        })
+        .collect();
+    let mut failures = 0usize;
+    let mut last = ButlerReply::default();
+    for round in 0..=max_rounds {
+        let reply = butler
+            .take_turn(&conversation, prefs, context)
+            .map_err(|e| AppError::Model {
+                message: e.to_string(),
+            })?;
+        last = reply.clone();
+        // No tool call (or we've hit the round bound) → this is the final answer,
+        // grounded in whatever tool results are already in the conversation.
+        if reply.tool_calls.is_empty() || round == max_rounds {
+            return Ok(reply);
+        }
+        // Record the assistant's tool-call turn, then run each call and append its
+        // real result (OpenAI requires the assistant turn before its tool results).
+        conversation.push(TurnMessage::Assistant {
+            text: reply.text.clone(),
+            tool_calls: reply.tool_calls.clone(),
+        });
+        for call in &reply.tool_calls {
+            let id = call.capability.clone();
+            // Action budget spent: don't execute more, but tell the model so it wraps
+            // up (a system fact fed back as a tool result — not a user-facing string).
+            if failures >= MAX_TOOL_FAILURES {
+                conversation.push(TurnMessage::ToolResult {
+                    call_id: call.id.clone(),
+                    content: "not run — reached this turn's action limit; answer with what you \
+                              have."
+                        .to_owned(),
+                });
+                continue;
+            }
+            let spec = capabilities.available().into_iter().find(|c| c.id == id);
+            let cleared = spec.as_ref().is_some_and(|s| s.configured && s.autonomous);
+            let (status, content) = if cleared {
+                on_step(ButlerStep {
+                    skill: id.clone(),
+                    status: StepStatus::Running,
+                    label: progress_label(&id),
+                    output: None,
+                });
+                match capabilities.run(&id, &call.input_json) {
+                    Ok(out) => {
+                        activity.push(format!("Used the {id} skill"));
+                        (StepStatus::Done, out)
+                    }
+                    Err(e) => {
+                        failures += 1;
+                        activity.push(format!("Tried the {id} skill, but it failed"));
+                        (StepStatus::Failed, format!("error: {e}"))
+                    }
+                }
+            } else {
+                // Not cleared to run: audit the policy verdict and hand the model a
+                // factual tool result so it answers honestly, in its own voice.
+                let decision = capabilities.decision(&id);
+                if spec.as_ref().is_some_and(|s| s.configured) {
+                    if let Some(summary) = match decision {
+                        Some(Decision::Block) => Some(format!(
+                            "Policy blocked the '{id}' skill — irreversible and not opened"
+                        )),
+                        Some(Decision::Confirm) => Some(format!(
+                            "Policy required confirmation for the '{id}' skill (not run on its own)"
+                        )),
+                        _ => None,
+                    } {
+                        if let Ok(rec) =
+                            AuditRecord::new(AuditId::new(ids.new_id()), clock.now(), &summary)
+                        {
+                            let _ = audit.append(&rec);
+                        }
+                    }
+                }
+                let content = match (spec.as_ref(), decision) {
+                    (Some(s), _) if !s.configured => {
+                        format!("'{id}' is not set up — you can't use it; tell them plainly.")
+                    }
+                    (Some(_), Some(Decision::Block)) => {
+                        format!("'{id}' isn't allowed yet — you can't run it even if asked.")
+                    }
+                    (Some(_), _) => {
+                        format!("'{id}' needs their go-ahead — ask; don't claim you did it.")
+                    }
+                    (None, _) => format!("no such skill '{id}' — you can't do that."),
+                };
+                activity.push(format!(
+                    "Couldn't use {id} (off, not set up, or needs confirming)"
+                ));
+                (StepStatus::Blocked, content)
+            };
+            on_step(ButlerStep {
+                skill: id.clone(),
+                status,
+                label: progress_label(&id),
+                output: Some(content.clone()),
+            });
+            conversation.push(TurnMessage::ToolResult {
+                call_id: call.id.clone(),
+                content,
+            });
+        }
+    }
+    Ok(last)
 }
 
 /// Sends a message to the butler and records both turns.
@@ -3336,6 +3486,201 @@ mod tests {
         // Capped at two failed attempts, not the full six rounds of hammering.
         let tries = activity.iter().filter(|a| a.contains("failed")).count();
         assert_eq!(tries, 2, "should stop after 2 failures, got: {activity:?}");
+    }
+
+    // A cleared (configured + autonomous) skill whose run returns `result`.
+    struct FixedSkill {
+        id: &'static str,
+        result: Result<String, String>,
+    }
+    impl CapabilityRunner for FixedSkill {
+        fn available(&self) -> Vec<endora_capabilities::CapabilitySpec> {
+            vec![endora_capabilities::CapabilitySpec {
+                id: self.id.to_owned(),
+                description: "does a thing".to_owned(),
+                configured: true,
+                autonomous: true,
+                input_schema: None,
+            }]
+        }
+        fn run(&self, _id: &str, _input: &str) -> Result<String, String> {
+            self.result.clone()
+        }
+    }
+
+    // A butler that calls `capability` until a tool result appears, then answers by
+    // echoing that result — so a test can see the model was grounded in it.
+    struct CallThenEcho {
+        capability: &'static str,
+    }
+    impl Butler for CallThenEcho {
+        fn respond(
+            &self,
+            _h: &[ChatMessage],
+            _p: &[Preference],
+            _c: &ButlerContext,
+        ) -> Result<ButlerReply, ProposalError> {
+            Ok(ButlerReply::default())
+        }
+        fn take_turn(
+            &self,
+            conversation: &[crate::TurnMessage],
+            _p: &[Preference],
+            _c: &ButlerContext,
+        ) -> Result<ButlerReply, ProposalError> {
+            if let Some(crate::TurnMessage::ToolResult { content, .. }) = conversation
+                .iter()
+                .rev()
+                .find(|m| matches!(m, crate::TurnMessage::ToolResult { .. }))
+            {
+                return Ok(ButlerReply {
+                    text: format!("grounded: {content}"),
+                    ..ButlerReply::default()
+                });
+            }
+            Ok(ButlerReply {
+                tool_calls: vec![crate::ToolCall {
+                    id: "c1".to_owned(),
+                    capability: self.capability.to_owned(),
+                    input_json: "{}".to_owned(),
+                }],
+                ..ButlerReply::default()
+            })
+        }
+    }
+
+    fn one_user_turn(text: &str) -> Vec<ChatMessage> {
+        vec![
+            ChatMessage::new(
+                MessageId::new(1),
+                MessageRole::User,
+                text,
+                Timestamp::from_unix_millis(0),
+            )
+            .unwrap(),
+        ]
+    }
+
+    #[test]
+    fn run_tool_turn_runs_a_cleared_tool_and_answers_from_its_result() {
+        let (ids, clock, audit) = (SeqIds::default(), FixedClock(0), FakeAudit::default());
+        let skill = FixedSkill {
+            id: "home.HassTurnOn",
+            result: Ok("turned on".to_owned()),
+        };
+        let mut activity = Vec::new();
+        let mut steps = Vec::new();
+        let reply = super::run_tool_turn(
+            &CallThenEcho {
+                capability: "home.HassTurnOn",
+            },
+            &skill,
+            &audit,
+            &ids,
+            &clock,
+            &one_user_turn("turn on the lights"),
+            &[],
+            &ButlerContext::default(),
+            6,
+            &mut |s| steps.push(s),
+            &mut activity,
+        )
+        .unwrap();
+        // The model answered grounded in the real result, and the tool actually ran.
+        assert_eq!(reply.text, "grounded: turned on");
+        assert!(
+            activity
+                .iter()
+                .any(|a| a.contains("Used the home.HassTurnOn"))
+        );
+        assert!(steps.iter().any(|s| s.status == super::StepStatus::Done));
+    }
+
+    #[test]
+    fn run_tool_turn_feeds_a_failure_back_so_the_model_answers_from_it() {
+        let (ids, clock, audit) = (SeqIds::default(), FixedClock(0), FakeAudit::default());
+        let skill = FixedSkill {
+            id: "home.HassLightSet",
+            result: Err("no lights match 'kitchen'".to_owned()),
+        };
+        let mut activity = Vec::new();
+        let reply = super::run_tool_turn(
+            &CallThenEcho {
+                capability: "home.HassLightSet",
+            },
+            &skill,
+            &audit,
+            &ids,
+            &clock,
+            &one_user_turn("turn on the kitchen lights"),
+            &[],
+            &ButlerContext::default(),
+            6,
+            &mut |_| {},
+            &mut activity,
+        )
+        .unwrap();
+        // The model's answer carries the REAL error (no fabricated success).
+        assert!(
+            reply.text.contains("no lights match 'kitchen'"),
+            "answer should be grounded in the failure, got: {}",
+            reply.text
+        );
+        assert!(activity.iter().any(|a| a.contains("failed")));
+    }
+
+    #[test]
+    fn run_tool_turn_caps_failed_executions_at_two() {
+        // A butler that never stops asking for the failing tool.
+        struct AlwaysCalls;
+        impl Butler for AlwaysCalls {
+            fn respond(
+                &self,
+                _h: &[ChatMessage],
+                _p: &[Preference],
+                _c: &ButlerContext,
+            ) -> Result<ButlerReply, ProposalError> {
+                Ok(ButlerReply::default())
+            }
+            fn take_turn(
+                &self,
+                _conversation: &[crate::TurnMessage],
+                _p: &[Preference],
+                _c: &ButlerContext,
+            ) -> Result<ButlerReply, ProposalError> {
+                Ok(ButlerReply {
+                    tool_calls: vec![crate::ToolCall {
+                        id: "c".to_owned(),
+                        capability: "home.HassLightSet".to_owned(),
+                        input_json: "{}".to_owned(),
+                    }],
+                    ..ButlerReply::default()
+                })
+            }
+        }
+        let (ids, clock, audit) = (SeqIds::default(), FixedClock(0), FakeAudit::default());
+        let skill = FixedSkill {
+            id: "home.HassLightSet",
+            result: Err("boom".to_owned()),
+        };
+        let mut activity = Vec::new();
+        let _ = super::run_tool_turn(
+            &AlwaysCalls,
+            &skill,
+            &audit,
+            &ids,
+            &clock,
+            &one_user_turn("do it"),
+            &[],
+            &ButlerContext::default(),
+            6,
+            &mut |_| {},
+            &mut activity,
+        )
+        .unwrap();
+        // Executions stop after two failures, not the full six rounds.
+        let failed = activity.iter().filter(|a| a.contains("failed")).count();
+        assert_eq!(failed, 2, "got: {activity:?}");
     }
 
     #[test]
