@@ -1716,6 +1716,9 @@ fn build_runner(
     let opened = config.opened_overrides().unwrap_or_default();
     let confirm = config.confirm_overrides().unwrap_or_default();
     let envelope = AutonomyEnvelopeRepository::get(config).unwrap_or_default();
+    // Whether the person allowed acting on consequential things on its own — an opened
+    // MCP tool may then run in the loop rather than only confirm-each-use.
+    let auto_consequential = envelope.auto_consequential;
     // The tools the person has opened this turn (ADR 0024) — shared by the built-in
     // registry and the MCP overlay below.
     let mcp_opened: std::collections::HashSet<String> = opened
@@ -1737,6 +1740,7 @@ fn build_runner(
     let mcp_source = endora_capabilities::OpenerRunner::new(
         mcp as Arc<dyn endora_capabilities::CapabilityRunner + Send + Sync>,
         mcp_opened,
+        auto_consequential,
     );
     // Built-in skills + connected MCP servers, behind one runner. The application
     // never learns a tool's origin (ADR 0021).
