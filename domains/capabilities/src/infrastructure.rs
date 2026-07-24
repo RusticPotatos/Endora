@@ -2014,8 +2014,44 @@ impl CapabilityRunner for McpRunner {
         let (conn, tool) = self
             .find(id)
             .ok_or_else(|| format!("no such MCP tool '{id}'"))?;
-        conn.transport.call(&tool.name, input_json)
+        // Weak models pass a scalar where the schema wants an array (e.g. HA's
+        // HassTurnOn wants domain:["light"] but the model sends "light"). Coerce the
+        // arguments to the tool's schema before the call so a single-value slip
+        // doesn't fail validation.
+        let args = coerce_args_to_schema(input_json, tool.input_schema.as_ref());
+        conn.transport.call(&tool.name, &args)
     }
+}
+
+/// Nudges tool arguments toward the tool's input schema for the common small-model
+/// slip of passing a scalar where an array is wanted: for each top-level property the
+/// schema types as `array`, a non-array value is wrapped in a one-element array. Only
+/// that one coercion — everything else is passed through untouched, and any parse
+/// failure returns the input unchanged (the server still validates).
+fn coerce_args_to_schema(input_json: &str, schema: Option<&serde_json::Value>) -> String {
+    let Some(schema) = schema else {
+        return input_json.to_owned();
+    };
+    let Some(props) = schema.get("properties").and_then(|p| p.as_object()) else {
+        return input_json.to_owned();
+    };
+    let Ok(mut args) = serde_json::from_str::<serde_json::Value>(input_json) else {
+        return input_json.to_owned();
+    };
+    let Some(obj) = args.as_object_mut() else {
+        return input_json.to_owned();
+    };
+    for (key, val) in obj.iter_mut() {
+        let wants_array = props
+            .get(key)
+            .and_then(|s| s.get("type"))
+            .and_then(serde_json::Value::as_str)
+            == Some("array");
+        if wants_array && !val.is_array() && !val.is_null() {
+            *val = serde_json::Value::Array(vec![val.take()]);
+        }
+    }
+    args.to_string()
 }
 
 /// Merges several [`CapabilityRunner`] sources — the built-in registry and any MCP
@@ -2815,6 +2851,31 @@ mod tests {
             "create_event({\"x\":1})"
         );
         assert!(runner.run("calendar.nope", "{}").is_err());
+    }
+
+    #[test]
+    fn coerce_wraps_a_scalar_where_the_schema_wants_an_array() {
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "domain": { "type": "array" },
+                "name": { "type": "string" }
+            }
+        });
+        // The classic HA slip: domain sent as a string, not an array.
+        let out = coerce_args_to_schema(r#"{"domain":"light","name":"kitchen"}"#, Some(&schema));
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["domain"], serde_json::json!(["light"]));
+        // A non-array field is left alone; an already-array value is untouched.
+        assert_eq!(v["name"], "kitchen");
+        let already = coerce_args_to_schema(r#"{"domain":["light"]}"#, Some(&schema));
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&already).unwrap()["domain"],
+            serde_json::json!(["light"])
+        );
+        // No schema, or unparseable input → passed through unchanged.
+        assert_eq!(coerce_args_to_schema("{bad", Some(&schema)), "{bad");
+        assert_eq!(coerce_args_to_schema(r#"{"x":1}"#, None), r#"{"x":1}"#);
     }
 
     #[test]
