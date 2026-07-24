@@ -197,7 +197,9 @@ fn apply_skills_config(config: &endora_capabilities::ConfigStore, path: &str) {
 /// start or handshake is skipped — its tools simply don't appear — so one bad server
 /// can't break startup or a turn. HTTP transport is a later slice.
 fn connect_mcp(config: &endora_capabilities::ConfigStore) -> endora_capabilities::McpRunner {
-    use endora_capabilities::{McpClient, McpServerRegistry, McpTransport, StdioMcpClient};
+    use endora_capabilities::{
+        HttpMcpClient, McpClient, McpServerRegistry, McpTransport, StdioMcpClient,
+    };
     let servers = config.list().unwrap_or_default();
     let clients: Vec<(String, Box<dyn McpClient>)> = servers
         .into_iter()
@@ -206,7 +208,9 @@ fn connect_mcp(config: &endora_capabilities::ConfigStore) -> endora_capabilities
             McpTransport::Stdio { command, args } => StdioMcpClient::spawn(command, args)
                 .ok()
                 .map(|c| (s.name, Box::new(c) as Box<dyn McpClient>)),
-            McpTransport::Http { .. } => None,
+            McpTransport::Http { url } => HttpMcpClient::connect(url)
+                .ok()
+                .map(|c| (s.name, Box::new(c) as Box<dyn McpClient>)),
         })
         .collect();
     endora_capabilities::McpRunner::connect(clients)
