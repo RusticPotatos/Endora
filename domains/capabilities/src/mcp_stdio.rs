@@ -110,7 +110,14 @@ pub(crate) fn tools_from_result(result: &Value) -> Vec<McpToolInfo> {
                         .and_then(Value::as_str)
                         .unwrap_or("")
                         .to_owned();
-                    Some(McpToolInfo { name, description })
+                    // The model needs the input shape to actually call the tool. MCP
+                    // spells it `inputSchema`; keep it verbatim (an object) if present.
+                    let input_schema = t.get("inputSchema").filter(|s| s.is_object()).cloned();
+                    Some(McpToolInfo {
+                        name,
+                        description,
+                        input_schema,
+                    })
                 })
                 .collect()
         })
@@ -383,6 +390,31 @@ mod tests {
         let mut id = 1;
         let out = call_tool(&mut io, &mut id, "risky", "{}");
         assert_eq!(out, Err("boom".to_owned()));
+    }
+
+    #[test]
+    fn tools_from_result_keeps_the_input_schema() {
+        let result = serde_json::json!({
+            "tools": [
+                {
+                    "name": "HassTurnOn",
+                    "description": "Turns on a device",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": { "name": { "type": "string" } },
+                        "required": ["name"]
+                    }
+                },
+                { "name": "GetDateTime", "description": "the time" }
+            ]
+        });
+        let tools = super::tools_from_result(&result);
+        assert_eq!(tools.len(), 2);
+        // The schema is retained so the model can learn how to call the tool.
+        let schema = tools[0].input_schema.as_ref().expect("schema kept");
+        assert_eq!(schema["properties"]["name"]["type"], "string");
+        // A tool with no schema simply has none.
+        assert!(tools[1].input_schema.is_none());
     }
 
     #[test]
