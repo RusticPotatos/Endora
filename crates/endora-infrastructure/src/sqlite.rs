@@ -231,7 +231,9 @@ CREATE TABLE IF NOT EXISTS mcp_servers (
     command TEXT NOT NULL DEFAULT '',
     args    TEXT NOT NULL DEFAULT '',
     url     TEXT NOT NULL DEFAULT '',
-    enabled INTEGER NOT NULL DEFAULT 1
+    enabled INTEGER NOT NULL DEFAULT 1,
+    env     TEXT NOT NULL DEFAULT '',
+    auth    TEXT NOT NULL DEFAULT ''
 ) STRICT;
 ";
 
@@ -301,6 +303,10 @@ impl SqliteStore {
                 "confirm",
                 "INTEGER NOT NULL DEFAULT 0",
             )?;
+            // Per-MCP-server credentials: a child-process environment (stdio) and a
+            // bearer token (http). Secrets — stored, never returned by the API.
+            ensure_column(&conn, "mcp_servers", "env", "TEXT NOT NULL DEFAULT ''")?;
+            ensure_column(&conn, "mcp_servers", "auth", "TEXT NOT NULL DEFAULT ''")?;
             // Lifecycle status on North Stars and Targets; existing rows default to
             // 'active'.
             ensure_column(

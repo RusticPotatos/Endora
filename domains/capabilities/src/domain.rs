@@ -41,11 +41,18 @@ pub enum McpTransport {
         command: String,
         /// Its arguments, e.g. `["-y", "@modelcontextprotocol/server-filesystem"]`.
         args: Vec<String>,
+        /// Environment for the child process. Many servers take their credentials
+        /// this way (e.g. `GITHUB_TOKEN`). Values are secrets: stored server-side and
+        /// never returned to a client.
+        env: std::collections::BTreeMap<String, String>,
     },
     /// A networked MCP server reached at `url` over HTTP/SSE.
     Http {
         /// The server's base URL.
         url: String,
+        /// Optional bearer token sent as `Authorization: Bearer …` (e.g. a Home
+        /// Assistant long-lived token). A secret: stored server-side, never returned.
+        auth: String,
     },
 }
 
@@ -77,6 +84,20 @@ impl McpServer {
         command: &str,
         args: impl IntoIterator<Item = String>,
     ) -> Result<Self, DomainError> {
+        Self::stdio_with_env(name, command, args, std::collections::BTreeMap::new())
+    }
+
+    /// A local stdio server with an environment for the child process — how most
+    /// servers take their credentials. Blank keys are dropped.
+    ///
+    /// # Errors
+    /// [`DomainError::EmptyField`] if `name` or `command` is blank.
+    pub fn stdio_with_env(
+        name: &str,
+        command: &str,
+        args: impl IntoIterator<Item = String>,
+        env: std::collections::BTreeMap<String, String>,
+    ) -> Result<Self, DomainError> {
         let name = require_non_empty("mcp_server.name", name)?;
         let command = require_non_empty("mcp_server.command", command)?;
         let args = args
@@ -84,9 +105,14 @@ impl McpServer {
             .map(|a| a.trim().to_owned())
             .filter(|a| !a.is_empty())
             .collect();
+        let env = env
+            .into_iter()
+            .map(|(k, v)| (k.trim().to_owned(), v))
+            .filter(|(k, _)| !k.is_empty())
+            .collect();
         Ok(Self {
             name,
-            transport: McpTransport::Stdio { command, args },
+            transport: McpTransport::Stdio { command, args, env },
             enabled: true,
         })
     }
@@ -96,11 +122,23 @@ impl McpServer {
     /// # Errors
     /// [`DomainError::EmptyField`] if `name` or `url` is blank.
     pub fn http(name: &str, url: &str) -> Result<Self, DomainError> {
+        Self::http_with_auth(name, url, "")
+    }
+
+    /// A networked server with a bearer token (e.g. a Home Assistant long-lived
+    /// token). An empty `auth` means no `Authorization` header is sent.
+    ///
+    /// # Errors
+    /// [`DomainError::EmptyField`] if `name` or `url` is blank.
+    pub fn http_with_auth(name: &str, url: &str, auth: &str) -> Result<Self, DomainError> {
         let name = require_non_empty("mcp_server.name", name)?;
         let url = require_non_empty("mcp_server.url", url)?;
         Ok(Self {
             name,
-            transport: McpTransport::Http { url },
+            transport: McpTransport::Http {
+                url,
+                auth: auth.trim().to_owned(),
+            },
             enabled: true,
         })
     }
@@ -126,8 +164,42 @@ mod tests {
             McpTransport::Stdio {
                 command: "npx".to_owned(),
                 args: vec!["-y".to_owned(), "server-fs".to_owned()],
+                env: std::collections::BTreeMap::new(),
             }
         );
+    }
+
+    #[test]
+    fn stdio_env_carries_credentials_and_drops_blank_keys() {
+        let env = [
+            ("GITHUB_TOKEN".to_owned(), "sk-x".to_owned()),
+            ("  ".to_owned(), "ignored".to_owned()),
+        ]
+        .into_iter()
+        .collect();
+        let s = McpServer::stdio_with_env("gh", "npx", ["server-github".to_owned()], env).unwrap();
+        let McpTransport::Stdio { env, .. } = s.transport else {
+            panic!("expected stdio")
+        };
+        assert_eq!(env.len(), 1);
+        assert_eq!(env.get("GITHUB_TOKEN").map(String::as_str), Some("sk-x"));
+    }
+
+    #[test]
+    fn http_auth_is_optional_and_trimmed() {
+        let none = McpServer::http("cal", "https://cal.example").unwrap();
+        assert_eq!(
+            none.transport,
+            McpTransport::Http {
+                url: "https://cal.example".to_owned(),
+                auth: String::new(),
+            }
+        );
+        let tok = McpServer::http_with_auth("ha", "https://ha.local/mcp", "  abc123 ").unwrap();
+        let McpTransport::Http { auth, .. } = tok.transport else {
+            panic!("expected http")
+        };
+        assert_eq!(auth, "abc123");
     }
 
     #[test]
@@ -149,7 +221,8 @@ mod tests {
                 .unwrap()
                 .transport,
             McpTransport::Http {
-                url: "https://cal.example".to_owned()
+                url: "https://cal.example".to_owned(),
+                auth: String::new()
             }
         );
     }
