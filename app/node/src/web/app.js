@@ -971,6 +971,30 @@ function mcpUseCatalog(i) {
   if (form) form.scrollIntoView({ block: "center" });
 }
 
+// Load an already-registered server into the Add/Save form so its URL or settings can
+// be changed in place. Secrets are never returned by the API, so the token/env values
+// come back blank — left blank on save they're kept as-is (the server merges them).
+function mcpEditServer(name) {
+  const s = ((MCP_SERVERS && MCP_SERVERS.servers) || []).find((x) => x.name === name);
+  if (!s) return;
+  const set = (id, v) => { const el = document.getElementById(id); if (el) el.value = v; };
+  set("mcp-name", s.name);
+  const t = document.getElementById("mcp-transport");
+  if (t) { t.value = s.transport === "http" ? "http" : "stdio"; mcpTransportChange(t.value); }
+  set("mcp-command", s.command || "");
+  set("mcp-args", (s.args || []).join("\n"));
+  // Env keys come back as names only; show them as KEY= lines to re-fill if wanted.
+  set("mcp-env", (s.env_keys || []).map((k) => `${k}=`).join("\n"));
+  set("mcp-url", s.url || "");
+  set("mcp-auth", "");
+  const secretNote = s.auth_set || (s.env_keys || []).length
+    ? " Leave the token/secret blank to keep what's saved."
+    : "";
+  flash(`Editing "${s.name}". Change what you need, then Save.${secretNote}`, "ok");
+  const form = document.getElementById("mcp-name");
+  if (form) form.scrollIntoView({ block: "center" });
+}
+
 // Toggle the MCP add-form fields between the stdio (command/args) and http (url) sets.
 function mcpTransportChange(v) {
   const stdio = document.getElementById("mcp-stdio-fields");
@@ -1324,6 +1348,7 @@ function viewSkills() {
             ${s.tools_live === 0 ? `<div class="sub" style="margin-top:4px;">Registered but didn't connect — check the command is installed and reachable on the server.</div>` : ""}
           </div>
           <div class="row" style="gap:6px;">
+            <button class="ghost" data-act="mcp:edit:${esc(s.name)}" title="Load this server into the form below to change its URL or settings">Edit</button>
             <button class="ghost" data-act="mcp:reconnect:${esc(s.name)}" title="Retry the connection using its saved settings">Reconnect</button>
             <button class="ghost danger" data-act="mcp:remove:${esc(s.name)}">Remove</button>
           </div>
@@ -1367,7 +1392,7 @@ function viewSkills() {
         <div class="field"><label>Access token <span class="sub" style="font-weight:400;">· optional, sent as a bearer token</span></label>
           <input id="mcp-auth" type="password" autocomplete="off" placeholder="stored securely, never shown" /></div>
       </div>
-      <div class="row" style="justify-content:flex-end;"><button class="primary" data-act="mcp:add">Add server</button></div>
+      <div class="row" style="justify-content:flex-end;"><button class="primary" data-act="mcp:add">Save server</button></div>
     </div>`;
   const mcpSection = `
     <h3>MCP servers <span class="sub" style="font-weight:400;">· connect external tools</span></h3>
@@ -1973,6 +1998,7 @@ async function dispatch(act) {
       return reload();
     }
     // Remove an MCP server (its tools disconnect).
+    if (verb === "mcp" && noun === "edit") { mcpEditServer(id); return; }
     if (verb === "mcp" && noun === "reconnect") {
       try {
         const r = await api("POST", "/v1/mcp/servers/" + encodeURIComponent(id) + "/reconnect");
