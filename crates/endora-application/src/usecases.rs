@@ -774,8 +774,6 @@ struct Gathering {
     reply: ButlerReply,
     /// Real skill results as `- id: output` lines, to ground the answer.
     gathered: Vec<String>,
-    /// Whether the butler reached for any skill at all this pass.
-    requested_skill: bool,
 }
 
 /// The agentic loop, shared by the chat turn and the proactive flows (brief,
@@ -811,7 +809,6 @@ fn gather_with_skills(
     // answer honestly with what we have rather than retrying the same dead end.
     const MAX_TOOL_FAILURES: usize = 2;
     let mut gathered: Vec<String> = Vec::new();
-    let mut requested_skill = false;
     let mut failures = 0usize;
     let mut reply = ButlerReply::default();
     for round in 0..=max_rounds {
@@ -831,7 +828,6 @@ fn gather_with_skills(
         let Some(used) = reply.capability_use.take() else {
             break; // ready to answer — nothing more to gather
         };
-        requested_skill = true;
         if round == max_rounds {
             break; // safety bound — answer with what was gathered
         }
@@ -923,11 +919,7 @@ fn gather_with_skills(
             gathered.push(note);
         }
     }
-    Ok(Gathering {
-        reply,
-        gathered,
-        requested_skill,
-    })
+    Ok(Gathering { reply, gathered })
 }
 
 /// The single tool-calling conversation (ADR 0028). Seeds the conversation from the
@@ -940,9 +932,6 @@ fn gather_with_skills(
 /// result (needs setup / needs confirmation / failed), and the model writes the
 /// user-facing answer from it. If the model misreports with the truth in front of it,
 /// that is a model failure to surface — not a string to hardcode (ADR 0028).
-// Staged: unit-tested here; the chat turn is cut over to it (and the deterministic
-// nets removed) in the ADR 0028 cutover slice.
-#[allow(dead_code)]
 #[expect(
     clippy::too_many_arguments,
     reason = "explicit dependencies, no hidden state"
@@ -1216,11 +1205,14 @@ pub fn send_to_butler_streaming(
     // `activity` — a plain-language record of what the butler did this turn.
     let mut activity: Vec<String> = Vec::new();
 
-    // AGENTIC LOOP (ADR 0019/0024): hand the butler its full skill catalog and let
-    // it reach for whatever it needs, across steps — grounded and policy-gated. The
-    // same primitive backs the proactive flows (brief, nightly).
+    // SINGLE TOOL-CALLING CONVERSATION (ADR 0028): the butler runs its tools through
+    // policy and answers grounded in their real results — success or error — with no
+    // deterministic narration. A failed tool comes back as a factual tool result the
+    // model must relay honestly; if it misreports with the truth in front of it, that
+    // is a model failure to surface, not a canned string to hardcode. (The proactive
+    // flows still use the two-pass `gather_with_skills`; they migrate separately.)
     const MAX_TOOL_ROUNDS: usize = 6;
-    let gathering = gather_with_skills(
+    let reply = run_tool_turn(
         butler,
         capabilities,
         audit,
@@ -1233,173 +1225,15 @@ pub fn send_to_butler_streaming(
         on_step,
         &mut activity,
     )?;
-    let mut reply = gathering.reply;
-    let model_requested_skill = gathering.requested_skill;
-    // The context the FINAL answer is produced from. `Some` ⇒ stream the answer
-    // token-by-token from the model (grounded by whatever it gathered); `None` ⇒
-    // the reply is a deterministic honesty string (set by the anti-fabrication net
-    // below, emitted at once, never the model's guess).
-    let mut answer_ctx: Option<ButlerContext> = Some({
-        let mut ctx = context.clone();
-        if !gathering.gathered.is_empty() {
-            ctx.tool_result = Some(format!(
-                "Results you've gathered this turn — use another skill if you still need \
-                 more, otherwise give your complete answer using ALL of these:\n{}",
-                gathering.gathered.join("\n")
-            ));
-        }
-        ctx
-    });
 
-    // Deterministic net against fabrication: if the person clearly asked something
-    // factual (weather, news, active safety alerts) and the model reached for NO
-    // skill at all, it would be answering from imagination. So run the matching
-    // skill ourselves — with their known home location — and let the butler answer
-    // from that real result instead. Policy still gates it (configured + read-only),
-    // and it only fires when the model requested nothing, so a correct model-driven
-    // tool use (e.g. a specific city it named) is left untouched.
-    if let Some(skill) = follow_up_intent(text, &history).filter(|_| !model_requested_skill) {
-        let spec = capabilities.available().into_iter().find(|c| c.id == skill);
-        let cleared = spec.as_ref().is_some_and(|s| s.configured && s.autonomous);
-        if cleared {
-            // Build the skill's input: the home skill reads from its own settings
-            // (no location), while weather/news/safety need the person's home
-            // location. Only a *location* skill with no known location is skipped
-            // (the model's own reply then stands).
-            let run_input = if skill == "home_assistant" {
-                Some(("your home".to_owned(), "{}".to_owned()))
-            } else {
-                known_location(&prefs).map(|loc| {
-                    let json = json_location(&loc);
-                    (loc, json)
-                })
-            };
-            if let Some((where_, input_json)) = run_input {
-                let label = progress_label(skill);
-                on_step(ButlerStep {
-                    skill: skill.to_owned(),
-                    status: StepStatus::Running,
-                    label: label.clone(),
-                    output: None,
-                });
-                match capabilities.run(skill, &input_json) {
-                    Ok(out) => {
-                        // Success: let the model relay the real result in its voice.
-                        on_step(ButlerStep {
-                            skill: skill.to_owned(),
-                            status: StepStatus::Done,
-                            label,
-                            output: Some(out.clone()),
-                        });
-                        activity.push(format!("Used the {skill} skill"));
-                        let mut ctx = context.clone();
-                        ctx.tool_result = Some(format!(
-                            "You used the '{skill}' skill for {where_} and it returned:\n{out}\n\
-                             Relay this to the person — share the specifics in your own words, \
-                             and add nothing that isn't here."
-                        ));
-                        answer_ctx = Some(ctx); // stream the grounded relay to the person
-                    }
-                    Err(_) => {
-                        // Failure: do NOT ask the model to relay it — the weak model
-                        // bluffs ("I don't have access") or denies the skill even
-                        // when told the plain truth. Set an honest reply in code so a
-                        // failed check can never become a fabricated or evasive one.
-                        on_step(ButlerStep {
-                            skill: skill.to_owned(),
-                            status: StepStatus::Failed,
-                            label,
-                            output: None,
-                        });
-                        activity.push(format!("Tried the {skill} skill, but it failed"));
-                        answer_ctx = None; // deterministic honesty — never the model's guess
-                        reply = ButlerReply {
-                            text: "I tried to check that for you just now, but the skill I use \
-                                 couldn't reach it — so I don't have a real answer for you \
-                                 rather than guess one. It may need its settings sorted under \
-                                 Skills."
-                                .to_owned(),
-                            ..ButlerReply::default()
-                        };
-                    }
-                }
-            }
-        } else {
-            // The person clearly asked for something factual, but the skill that
-            // would answer it is off, not set up, or outside the autonomy envelope.
-            // The model has proven it will fabricate here even when told not to, so
-            // we do NOT ask it — we set an honest reply deterministically. This makes
-            // inventing a fact structurally impossible in the can't-serve case.
-            on_step(ButlerStep {
-                skill: skill.to_owned(),
-                status: StepStatus::Blocked,
-                label: progress_label(skill),
-                output: None,
-            });
-            activity.push(format!("Couldn't check {skill} — it's off or not set up"));
-            answer_ctx = None; // deterministic honesty — never the model's guess
-            reply = ButlerReply {
-                text: "I can't check that for you right now — the skill I'd use is turned off \
-                       or not set up. You can manage what I'm allowed to do on my own under \
-                       Skills."
-                    .to_owned(),
-                ..ButlerReply::default()
-            };
-        }
-    }
-
-    // Deliver the answer. When it comes from the model (a grounded relay or a
-    // conversational reply), STREAM it token-by-token from `answer_ctx` — the
-    // gathering above was silent, so this is the first prose the person sees, and
-    // it builds up live. A deterministic honesty reply (`answer_ctx == None`) is
-    // emitted at once — the model never gets to stream a guess in that case.
-    let mut streamed = false;
-    if let Some(mut ctx) = answer_ctx {
-        // The final answer is prose for the person — route it to the synthesizer
-        // (the generalist), not the tool-tuned router, so plain conversation
-        // ("good morning") is answered reliably.
-        ctx.synthesize = true;
-        // Track whether prose was actually streamed live. The streaming request
-        // drops the JSON-object grammar so tokens can stream (see the butler infra);
-        // a model that instead answers in plain prose the preview-extractor doesn't
-        // recognize would emit nothing live — in which case we still deliver the
-        // parsed answer below, at once, so the person is never left empty-handed.
-        let mut emitted = false;
-        {
-            let mut live = |chunk: &str| {
-                if !chunk.is_empty() {
-                    emitted = true;
-                }
-                on_token(chunk);
-            };
-            reply = butler
-                .respond_streaming(&history, &prefs, &ctx, &mut live)
-                .unwrap_or_else(|_| reply.clone());
-            // A weak local model occasionally streams an empty "reply" field. Rather
-            // than dead-end on the fallback, retry once NON-streamed (more reliable)
-            // and emit that — so the person always gets a real answer.
-            if reply.text.trim().is_empty() {
-                if let Ok(retry) = butler.respond(&history, &prefs, &ctx) {
-                    if !retry.text.trim().is_empty() {
-                        live(retry.text.trim());
-                        reply = retry;
-                    }
-                }
-            }
-        }
-        streamed = emitted;
-    }
-    // The capability ladder (local-first): the local rung came up empty. Before
-    // falling back to the honest "I'm not sure", climb to the deeper (bigger/cloud)
-    // model if the person configured one. It only ever returns prose — never an
-    // action — so this is a reasoning aid, not a way around the policy boundary; and
-    // the deep asker applies the egress guard, since the question leaves the device.
-    let mut escalated = false;
+    // The capability ladder (local-first, ADR 0027): if the local model came up empty,
+    // climb to the deeper (bigger/cloud) model when the person configured one. Prose
+    // only — never an action — so it stays a reasoning aid behind the policy boundary,
+    // and the deep asker applies the egress guard since the question leaves the device.
     let reply_text = if reply.text.trim().is_empty() {
         match deep.and_then(|d| d.ask(text)).map(|a| a.trim().to_owned()) {
             Some(answer) if !answer.is_empty() => {
                 activity.push("Asked the deep model (the local model came up empty)".to_owned());
-                escalated = true;
                 answer
             }
             _ => "I'm not sure how to help with that yet — can you say a bit more?".to_owned(),
@@ -1407,44 +1241,37 @@ pub fn send_to_butler_streaming(
     } else {
         reply.text.trim().to_owned()
     };
-    // Emit the answer if it wasn't already streamed live (the honest fallback and a
-    // deep-escalated answer are produced here, after streaming, so send them now).
-    if !streamed || escalated {
-        on_token(&reply_text);
-    }
-    let butler = ChatMessage::new(
+    // `take_turn` is non-streaming, so deliver the final answer at once.
+    on_token(&reply_text);
+    let butler_msg = ChatMessage::new(
         MessageId::new(ids.new_id()),
         MessageRole::Butler,
         &reply_text,
         clock.now(),
     )?;
-    chat.append(&butler)?;
+    chat.append(&butler_msg)?;
 
-    // Persist the proposals as durable, pending suggestions tied to this reply,
-    // so the conversation's learnings survive a reload and can be applied later —
-    // not lost the moment the chat moves on (ADR 0019).
-    let mut saved = Vec::with_capacity(reply.proposals.len());
-    for proposal in reply.proposals {
-        let suggestion = Suggestion {
-            id: SuggestionId::new(ids.new_id()),
-            proposal,
-            status: SuggestionStatus::Pending,
-            from_message: Some(butler.id()),
-            created_at: clock.now(),
-            decided_at: None,
-        };
-        activity.push(format!(
-            "Added to your inbox — {}",
-            suggestion.proposal.label()
-        ));
-        suggestions.save(&suggestion)?;
-        saved.push(suggestion);
-    }
+    // Proposals are OFF in the tool-calling turn (ADR 0028 cutover): the butler
+    // converses and acts, and no longer auto-files goals/preferences. `suggestions`
+    // stays in the signature for the proactive flows and a future deliberate capture.
+    let _ = &suggestions;
 
-    // Store the understanding the butler formed this turn (ADR 0020).
-    record_formed_beliefs(beliefs, reply.beliefs, ids, clock, &mut activity)?;
+    // Understanding is KEPT (ADR 0020). The tool-calling answer is prose, so form
+    // beliefs in a separate envelope pass with tools OFF: an empty `tools` context
+    // keeps the JSON envelope (no native tool-calling), so the model returns its
+    // `understanding` without being pulled back into an action. Beliefs only — any
+    // proposals it makes on this pass are ignored.
+    let formed = {
+        let mut belief_ctx = context.clone();
+        belief_ctx.tools = Vec::new();
+        butler
+            .respond(&history, &prefs, &belief_ctx)
+            .map(|r| r.beliefs)
+            .unwrap_or_default()
+    };
+    record_formed_beliefs(beliefs, formed, ids, clock, &mut activity)?;
 
-    Ok((butler, saved, activity))
+    Ok((butler_msg, Vec::new(), activity))
 }
 
 /// Persists the beliefs the butler formed — Endora's own understanding (not
@@ -1527,92 +1354,6 @@ fn similar(a: &str, b: &str) -> bool {
     inter as f64 / union as f64 >= 0.6
 }
 
-/// Maps a clear factual request to the skill that should answer it, so the butler
-/// is grounded in real data rather than left to invent one. Deliberately narrow —
-/// only the requests where answering from memory would be a fabrication (weather,
-/// news, active safety alerts). Returns the capability id, or `None` to leave the
-/// turn to ordinary conversation.
-fn route_intent(text: &str) -> Option<&'static str> {
-    let t = text.to_lowercase();
-    let has = |needles: &[&str]| needles.iter().any(|n| t.contains(n));
-    // Home first (and before weather, so "temperature inside" isn't read as
-    // outdoor weather): a question about the person's own home devices/state maps
-    // to the home skill, which reads from its own settings (no location needed).
-    // Without this, a model that fails to route a home ask will invent a home
-    // state ("the lights were off at 2:30 PM") — this makes that impossible.
-    if has(&[
-        "my lights",
-        "the lights",
-        "lights on",
-        "lights off",
-        "my door",
-        "front door",
-        "back door",
-        "the garage",
-        "my garage",
-        "thermostat",
-        "temperature inside",
-        "inside temperature",
-        "my home",
-        "at home",
-        "my house",
-        "anyone home",
-        "who's home",
-        "who is home",
-        "my sensors",
-        "home sensors",
-        "my smart home",
-    ]) {
-        return Some("home_assistant");
-    }
-    // Safety next: an "is it safe / any warnings" ask is about active alerts.
-    if has(&[
-        "safety alert",
-        "safety warning",
-        "severe weather",
-        "any warnings",
-        "is it safe",
-    ]) {
-        return Some("safety_alerts");
-    }
-    if has(&["news", "headline", "headlines"]) {
-        return Some("news");
-    }
-    // Local events: "what's happening / things to do / events near me". This skill
-    // is a scaffold (no data source yet), so without this the model invents
-    // plausible-but-fake events and even a fake source when asked. Routing it here
-    // sends an events ask down the honest path — the butler says it can't check
-    // events rather than making them up.
-    if has(&[
-        "events",
-        "what's happening",
-        "whats happening",
-        "what is happening",
-        "happening near",
-        "happening today",
-        "happening this weekend",
-        "things to do",
-        "going on near",
-        "anything going on",
-        "concerts near",
-        "shows near",
-        "local events",
-    ]) {
-        return Some("local_events");
-    }
-    if has(&[
-        "weather",
-        "forecast",
-        "temperature",
-        "how hot",
-        "how cold",
-        "raining",
-    ]) {
-        return Some("weather");
-    }
-    None
-}
-
 /// A short, human present-tense label for a skill in progress — what the butler
 /// shows while it works a step ("· Checking the weather…"), so the person can see
 /// it moving toward the goal rather than sitting on a silent "one moment".
@@ -1630,39 +1371,6 @@ fn progress_label(id: &str) -> String {
         other => return format!("Using the {other} skill"),
     }
     .to_owned()
-}
-
-/// Like [`route_intent`], but also catches a **deictic follow-up** — "right now?",
-/// "currently?", "what about now" — by reusing the intent of the person's previous
-/// message. So a follow-up to a weather/news answer re-runs the skill instead of
-/// letting the model invent a fresh number. `history` ends with the current message.
-fn follow_up_intent(text: &str, history: &[ChatMessage]) -> Option<&'static str> {
-    if let Some(skill) = route_intent(text) {
-        return Some(skill);
-    }
-    let t = text.to_lowercase();
-    let deictic = [
-        "right now",
-        "currently",
-        "at the moment",
-        "what about now",
-        "how about now",
-        "and now",
-    ]
-    .iter()
-    .any(|p| t.contains(p))
-        || matches!(t.trim(), "now" | "now?");
-    if !deictic {
-        return None;
-    }
-    // Reuse the intent of the most recent earlier user message (skip the current
-    // one, which is the last entry).
-    history
-        .iter()
-        .rev()
-        .skip(1)
-        .filter(|m| m.role() == MessageRole::User)
-        .find_map(|m| route_intent(m.text()))
 }
 
 /// Formats a Unix-millisecond timestamp as `"Weekday, YYYY-MM-DD HH:MM UTC"` — no
@@ -3298,7 +3006,7 @@ mod tests {
     }
 
     #[test]
-    fn sending_to_the_butler_records_both_turns_and_returns_proposals() {
+    fn sending_to_the_butler_records_both_turns_without_auto_proposals() {
         use super::{chat_history, send_to_butler};
         let store = FakeStore::default();
         let ids = SeqIds::default();
@@ -3320,25 +3028,17 @@ mod tests {
         .unwrap();
         assert_eq!(reply.role(), MessageRole::Butler);
         assert!(reply.text().contains("I want to run more"));
-        // The proposal is persisted as a pending suggestion tied to the reply.
-        assert_eq!(suggestions.len(), 1);
-        assert_eq!(suggestions[0].status, SuggestionStatus::Pending);
-        assert_eq!(
-            suggestions[0].proposal,
-            ButlerProposal::CreateNorthStar {
-                title: "I want to run more".to_owned()
-            }
-        );
-        assert_eq!(suggestions[0].from_message, Some(reply.id()));
-        // And it is durable — listable afterwards.
+        // Proposals are OFF in the tool-calling turn (ADR 0028): the butler converses
+        // and acts, and no longer auto-files goals/preferences.
+        assert!(suggestions.is_empty());
         assert_eq!(
             super::list_suggestions(&store, Some(SuggestionStatus::Pending))
                 .unwrap()
                 .len(),
-            1
+            0
         );
 
-        // Both turns are persisted, oldest first.
+        // Both turns are still persisted, oldest first.
         let history = chat_history(&store).unwrap();
         assert_eq!(history.len(), 2);
         assert_eq!(history[0].role(), MessageRole::User);
@@ -3951,19 +3651,8 @@ mod tests {
     }
 
     #[test]
-    fn intent_routing_and_location_helpers() {
-        use super::{json_location, known_location, route_intent};
-        assert_eq!(
-            route_intent("how about what's in the news locally?"),
-            Some("news")
-        );
-        assert_eq!(route_intent("what's the weather today"), Some("weather"));
-        assert_eq!(
-            route_intent("is it safe outside right now"),
-            Some("safety_alerts")
-        );
-        assert_eq!(route_intent("let's talk about my week"), None);
-
+    fn location_helpers_read_a_based_in_preference() {
+        use super::{json_location, known_location};
         let t = Timestamp::from_unix_millis(0);
         let prefs = vec![
             Preference::new(PreferenceId::new(1), "Likes tea", PreferenceKind::Taste, t).unwrap(),
@@ -3990,233 +3679,6 @@ mod tests {
         assert_eq!(progress_label("safety_alerts"), "Checking safety alerts");
         // An unknown skill still gets a sensible, generic label.
         assert_eq!(progress_label("calendar"), "Using the calendar skill");
-    }
-
-    #[test]
-    fn home_asks_route_to_the_home_skill() {
-        use super::route_intent;
-        // Home questions the model may punt on must still route to home_assistant,
-        // so the net checks the home instead of the model inventing a state.
-        assert_eq!(
-            route_intent("are my lights on right now?"),
-            Some("home_assistant")
-        );
-        assert_eq!(
-            route_intent("is my front door locked?"),
-            Some("home_assistant")
-        );
-        assert_eq!(
-            route_intent("what's the temperature inside my house?"),
-            Some("home_assistant")
-        );
-        assert_eq!(route_intent("is anyone home?"), Some("home_assistant"));
-        // Outdoor weather still routes to weather, not the home skill.
-        assert_eq!(
-            route_intent("what's the weather in Boston?"),
-            Some("weather")
-        );
-    }
-
-    #[test]
-    fn events_asks_route_to_the_events_skill() {
-        use super::route_intent;
-        // An events ask must route to local_events (a scaffold) so the net takes
-        // the honest path instead of the model inventing events + a fake source.
-        assert_eq!(
-            route_intent("what events are happening in Charlotte today?"),
-            Some("local_events")
-        );
-        assert_eq!(
-            route_intent("anything going on near me this weekend?"),
-            Some("local_events")
-        );
-        assert_eq!(
-            route_intent("what are some things to do tonight?"),
-            Some("local_events")
-        );
-    }
-
-    #[test]
-    fn a_deictic_follow_up_reuses_the_previous_intent() {
-        use super::follow_up_intent;
-        let msg = |role, text: &str| {
-            ChatMessage::new(
-                MessageId::new(1),
-                role,
-                text,
-                Timestamp::from_unix_millis(0),
-            )
-            .unwrap()
-        };
-        // "Right now?" on its own has no intent...
-        assert_eq!(follow_up_intent("Right now?", &[]), None);
-        // ...but after a weather question, it re-runs weather.
-        let history = vec![
-            msg(MessageRole::User, "what's the weather today"),
-            msg(MessageRole::Butler, "It's clear and warm."),
-            msg(MessageRole::User, "Right now?"),
-        ];
-        assert_eq!(follow_up_intent("Right now?", &history), Some("weather"));
-        // A non-deictic follow-up is left alone (no false trigger).
-        let h2 = vec![
-            msg(MessageRole::User, "what's the weather today"),
-            msg(MessageRole::User, "ok what should I cook"),
-        ];
-        assert_eq!(follow_up_intent("ok what should I cook", &h2), None);
-    }
-
-    #[test]
-    fn a_factual_ask_the_model_ignores_is_still_answered_from_a_skill() {
-        use super::{create_preference, send_to_butler};
-
-        // A butler that never reaches for a skill and would happily answer the news
-        // question from imagination — exactly the fabrication we must prevent.
-        struct FabricatingButler;
-        impl Butler for FabricatingButler {
-            fn respond(
-                &self,
-                _h: &[ChatMessage],
-                _p: &[Preference],
-                context: &ButlerContext,
-            ) -> Result<ButlerReply, ProposalError> {
-                if let Some(result) = &context.tool_result {
-                    return Ok(ButlerReply {
-                        text: format!("Here's the latest — {result}"),
-                        ..ButlerReply::default()
-                    });
-                }
-                Ok(ButlerReply {
-                    text: "There's a big festival downtown this weekend.".to_owned(),
-                    ..ButlerReply::default()
-                })
-            }
-        }
-
-        struct NewsSkill;
-        impl CapabilityRunner for NewsSkill {
-            fn available(&self) -> Vec<endora_capabilities::CapabilitySpec> {
-                vec![endora_capabilities::CapabilitySpec {
-                    id: "news".to_owned(),
-                    description: "headlines".to_owned(),
-                    configured: true,
-                    autonomous: true,
-                    input_schema: None,
-                }]
-            }
-            fn run(&self, id: &str, input_json: &str) -> Result<String, String> {
-                assert_eq!(id, "news");
-                assert!(input_json.contains("28277"));
-                Ok("headline: council meets tonight".to_owned())
-            }
-        }
-
-        let store = FakeStore::default();
-        let ids = SeqIds::default();
-        let clock = FixedClock(1_000);
-        // The person has told Endora where they're based.
-        create_preference(
-            &store,
-            &ids,
-            &clock,
-            "Based in: 28277",
-            PreferenceKind::Taste,
-        )
-        .unwrap();
-
-        let (reply, _s, activity) = send_to_butler(
-            &store,
-            &store,
-            &store,
-            &store,
-            &NewsSkill,
-            &FabricatingButler,
-            &FakeAudit::default(),
-            &ids,
-            &clock,
-            &ButlerContext::default(),
-            "what's in the news?",
-        )
-        .unwrap();
-
-        // The net ran the news skill and the answer came from its result — the
-        // model's imagined "festival" was replaced.
-        assert!(reply.text().contains("council meets tonight"));
-        assert!(!reply.text().contains("festival"));
-        assert!(activity.iter().any(|a| a.contains("news")));
-    }
-
-    #[test]
-    fn a_factual_ask_for_a_disabled_skill_gets_honest_closure_not_a_fabrication() {
-        use super::{create_preference, send_to_butler};
-
-        struct FabricatingButler;
-        impl Butler for FabricatingButler {
-            fn respond(
-                &self,
-                _h: &[ChatMessage],
-                _p: &[Preference],
-                context: &ButlerContext,
-            ) -> Result<ButlerReply, ProposalError> {
-                if let Some(result) = &context.tool_result {
-                    return Ok(ButlerReply {
-                        text: format!("Honestly — {result}"),
-                        ..ButlerReply::default()
-                    });
-                }
-                Ok(ButlerReply {
-                    text: "There's a big festival downtown this weekend.".to_owned(),
-                    ..ButlerReply::default()
-                })
-            }
-        }
-
-        // News exists but is turned OFF (configured=false); it must never run.
-        struct OffNews;
-        impl CapabilityRunner for OffNews {
-            fn available(&self) -> Vec<endora_capabilities::CapabilitySpec> {
-                vec![endora_capabilities::CapabilitySpec {
-                    id: "news".to_owned(),
-                    description: "headlines".to_owned(),
-                    configured: false,
-                    autonomous: true,
-                    input_schema: None,
-                }]
-            }
-            fn run(&self, _id: &str, _input_json: &str) -> Result<String, String> {
-                panic!("a disabled skill must never run");
-            }
-        }
-
-        let store = FakeStore::default();
-        let ids = SeqIds::default();
-        let clock = FixedClock(1_000);
-        create_preference(
-            &store,
-            &ids,
-            &clock,
-            "Based in: 28277",
-            PreferenceKind::Taste,
-        )
-        .unwrap();
-
-        let (reply, _s, activity) = send_to_butler(
-            &store,
-            &store,
-            &store,
-            &store,
-            &OffNews,
-            &FabricatingButler,
-            &FakeAudit::default(),
-            &ids,
-            &clock,
-            &ButlerContext::default(),
-            "what's in the news?",
-        )
-        .unwrap();
-
-        // No fabricated festival; the butler was grounded in "it's off".
-        assert!(!reply.text().contains("festival"));
-        assert!(activity.iter().any(|a| a.contains("Couldn't check news")));
     }
 
     #[test]
