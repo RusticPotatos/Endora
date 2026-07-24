@@ -387,6 +387,10 @@ pub fn app(state: AppState) -> Router {
         .route("/v1/capabilities/{id}/enable", post(set_capability_enabled))
         .route("/v1/capabilities/{id}/open", post(set_capability_open))
         .route(
+            "/v1/capabilities/{id}/confirm",
+            post(set_capability_confirm),
+        )
+        .route(
             "/v1/mcp/servers",
             get(list_mcp_servers).post(register_mcp_server),
         )
@@ -1388,6 +1392,7 @@ fn build_runner(
 ) -> endora_capabilities::CompositeRunner {
     let overrides = config.enabled_overrides().unwrap_or_default();
     let opened = config.opened_overrides().unwrap_or_default();
+    let confirm = config.confirm_overrides().unwrap_or_default();
     let envelope = AutonomyEnvelopeRepository::get(config).unwrap_or_default();
     // The tools the person has opened this turn (ADR 0024) — shared by the built-in
     // registry and the MCP overlay below.
@@ -1396,11 +1401,12 @@ fn build_runner(
         .filter(|(_, open)| *open)
         .map(|(id, _)| id.clone())
         .collect();
-    // Fresh per turn so config/envelope/opener changes take effect immediately.
+    // Fresh per turn so config/envelope/opener/ask-first changes take effect at once.
     let registry = endora_infrastructure::RegistryRunner::with_config(
         capabilities,
         overrides,
         opened,
+        confirm,
         envelope,
         settings_map(config),
     );
@@ -1917,6 +1923,7 @@ fn capability_json(
     info: &endora_infrastructure::CapabilityInfo,
     enabled: bool,
     opened: bool,
+    confirm: bool,
     settings: &endora_infrastructure::CapabilitySettings,
 ) -> serde_json::Value {
     // The settings schema, each flagged whether it's been set — but NEVER the value
@@ -1949,6 +1956,9 @@ fn capability_json(
         // an irreversible skill can be blocked or opened.
         "open_irreversible": opened,
         "blocked": info.reversibility.name() == "irreversible" && !opened,
+        // Whether the person set this skill to ask first ("on with user input"): it
+        // runs only after they confirm each use, never on its own.
+        "confirm": confirm,
         // `configured` = code ready + settings filled; `enabled` = the person's on/off
         // switch; a skill is usable only when both hold (ADR 0021).
         "configured": info.configured && settings_complete,
@@ -1974,6 +1984,12 @@ async fn list_capabilities(State(state): State<AppState>) -> Json<Vec<serde_json
         .unwrap_or_default()
         .into_iter()
         .collect();
+    let confirm: std::collections::HashMap<String, bool> = state
+        .config
+        .confirm_overrides()
+        .unwrap_or_default()
+        .into_iter()
+        .collect();
     let settings = settings_map(state.config.as_ref());
     let empty = endora_infrastructure::CapabilitySettings::new();
     Json(
@@ -1984,7 +2000,14 @@ async fn list_capabilities(State(state): State<AppState>) -> Json<Vec<serde_json
                 let info = c.info();
                 let on = enabled.get(info.id).copied().unwrap_or(true);
                 let is_open = opened.get(info.id).copied().unwrap_or(false);
-                capability_json(&info, on, is_open, settings.get(info.id).unwrap_or(&empty))
+                let is_confirm = confirm.get(info.id).copied().unwrap_or(false);
+                capability_json(
+                    &info,
+                    on,
+                    is_open,
+                    is_confirm,
+                    settings.get(info.id).unwrap_or(&empty),
+                )
             })
             .collect(),
     )
@@ -2128,6 +2151,54 @@ async fn set_capability_open(
     .await?;
     let _ = state.changes.send(());
     Ok(Json(json!({ "id": id, "open_irreversible": req.open })))
+}
+
+#[derive(Deserialize)]
+struct ConfirmRequest {
+    confirm: bool,
+}
+
+/// Sets whether a skill must **ask first** ("on with user input"): when on, the
+/// butler proposes and runs it only after the person confirms each use, never on its
+/// own — whatever the skill's band. Validated against the registry (built-in or a
+/// connected MCP tool); nudges the change stream so open consoles refresh.
+async fn set_capability_confirm(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(req): Json<ConfirmRequest>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let is_builtin = state.capabilities.iter().any(|c| c.info().id == id);
+    let is_mcp = {
+        use endora_capabilities::CapabilityRunner;
+        mcp_snapshot(&state).available().iter().any(|s| s.id == id)
+    };
+    if !is_builtin && !is_mcp {
+        return Err(ApiError(AppError::NotFound {
+            entity: "capability",
+        }));
+    }
+    let events = state.events.clone();
+    let config = state.config.clone();
+    let clock = state.clock.clone();
+    let (cap_id, confirm) = (id.clone(), req.confirm);
+    blocking(move || {
+        config
+            .set_confirm(&cap_id, confirm)
+            .map_err(AppError::Repository)?;
+        record_event(
+            events.as_ref(),
+            clock.as_ref(),
+            &if confirm {
+                format!("Set the {cap_id} skill to ask first before each use")
+            } else {
+                format!("Set the {cap_id} skill to run automatically")
+            },
+        );
+        Ok::<_, AppError>(())
+    })
+    .await?;
+    let _ = state.changes.send(());
+    Ok(Json(json!({ "id": id, "confirm": req.confirm })))
 }
 
 fn envelope_json(e: &AutonomyEnvelope) -> serde_json::Value {
