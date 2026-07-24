@@ -1266,7 +1266,7 @@ function viewSkills() {
       <div class="card">
         <div class="row">
           <div class="grow">
-            <div class="title">${esc(s.name)} ${health} <span class="pill">${esc(s.transport)}</span></div>
+            <div class="title">${esc(s.name)} ${health} <span class="pill">${esc(s.transport)}</span>${s.auth_set ? ` <span class="pill concluded">token set</span>` : ""}${(s.env_keys || []).length ? ` <span class="pill concluded">${(s.env_keys || []).length} env</span>` : ""}</div>
             <div class="sub">${esc(addr)}</div>
             ${s.tools_live === 0 ? `<div class="sub" style="margin-top:4px;">Registered but didn't connect — check the command is installed and reachable on the server.</div>` : ""}
           </div>
@@ -1290,9 +1290,13 @@ function viewSkills() {
         <div class="field"><label>Command</label><input id="mcp-command" placeholder="e.g. npx" /></div>
         <div class="field"><label>Arguments <span class="sub" style="font-weight:400;">· one per line</span></label>
           <textarea id="mcp-args" rows="3" placeholder="-y&#10;@modelcontextprotocol/server-filesystem&#10;/data"></textarea></div>
+        <div class="field"><label>Environment <span class="sub" style="font-weight:400;">· KEY=value per line, for credentials</span></label>
+          <textarea id="mcp-env" rows="2" placeholder="GITHUB_TOKEN=ghp_…"></textarea></div>
       </div>
       <div id="mcp-http-fields" style="display:none;">
         <div class="field"><label>Endpoint URL</label><input id="mcp-url" placeholder="http://mcp-gateway:8080/" /></div>
+        <div class="field"><label>Access token <span class="sub" style="font-weight:400;">· optional, sent as a bearer token</span></label>
+          <input id="mcp-auth" type="password" autocomplete="off" placeholder="stored securely, never shown" /></div>
       </div>
       <div class="row" style="justify-content:flex-end;"><button class="primary" data-act="mcp:add">Add server</button></div>
     </div>`;
@@ -1876,11 +1880,21 @@ async function dispatch(act) {
         const url = val("mcp-url");
         if (!url) { flash("Enter the endpoint URL.", "err"); return; }
         body = { name, transport: "http", url };
+        const auth = (document.getElementById("mcp-auth") || {}).value || "";
+        if (auth.trim()) body.auth = auth.trim();
       } else {
         const command = val("mcp-command");
         const args = val("mcp-args").split("\n").map((a) => a.trim()).filter(Boolean);
         if (!command) { flash("Enter a command.", "err"); return; }
-        body = { name, transport: "stdio", command, args };
+        // KEY=value per line → an environment for the child process (credentials).
+        const env = {};
+        for (const line of val("mcp-env").split("\n")) {
+          const i = line.indexOf("=");
+          if (i <= 0) continue;
+          const k = line.slice(0, i).trim();
+          if (k) env[k] = line.slice(i + 1).trim();
+        }
+        body = { name, transport: "stdio", command, args, env };
       }
       try { await api("POST", "/v1/mcp/servers", body); flash("Server added.", "ok"); }
       catch (e) { flash("Couldn't add the server: " + e.message, "err"); }
