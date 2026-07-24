@@ -918,6 +918,14 @@ async function discoverModels(role) {
   }
 }
 
+// Toggle the MCP add-form fields between the stdio (command/args) and http (url) sets.
+function mcpTransportChange(v) {
+  const stdio = document.getElementById("mcp-stdio-fields");
+  const http = document.getElementById("mcp-http-fields");
+  if (stdio) stdio.style.display = v === "http" ? "none" : "block";
+  if (http) http.style.display = v === "http" ? "block" : "none";
+}
+
 // Set the model field(s) from a tapped discovery result. For the everyday card that
 // is the synthesizer when a mixture is on, else the single model — mirroring what
 // Test connection checks; for deep it's the one deep model.
@@ -1271,11 +1279,21 @@ function viewSkills() {
   const mcpAddForm = `
     <div class="card">
       <div class="title">Add a server</div>
-      <div class="sub" style="margin:4px 0 8px;">A local command that speaks MCP over stdio. Its tools appear above, blocked until you allow each one.</div>
+      <div class="sub" style="margin:4px 0 8px;">A local command (stdio) or a networked endpoint (e.g. a Docker MCP Gateway). Its tools appear above, blocked until you allow each one.</div>
       <div class="field"><label>Name</label><input id="mcp-name" placeholder="e.g. filesystem" /></div>
-      <div class="field"><label>Command</label><input id="mcp-command" placeholder="e.g. npx" /></div>
-      <div class="field"><label>Arguments <span class="sub" style="font-weight:400;">· one per line</span></label>
-        <textarea id="mcp-args" rows="3" placeholder="-y&#10;@modelcontextprotocol/server-filesystem&#10;/data"></textarea></div>
+      <div class="field"><label>Connection</label>
+        <select id="mcp-transport" onchange="mcpTransportChange(this.value)">
+          <option value="stdio">Local command (stdio)</option>
+          <option value="http">HTTP endpoint</option>
+        </select></div>
+      <div id="mcp-stdio-fields">
+        <div class="field"><label>Command</label><input id="mcp-command" placeholder="e.g. npx" /></div>
+        <div class="field"><label>Arguments <span class="sub" style="font-weight:400;">· one per line</span></label>
+          <textarea id="mcp-args" rows="3" placeholder="-y&#10;@modelcontextprotocol/server-filesystem&#10;/data"></textarea></div>
+      </div>
+      <div id="mcp-http-fields" style="display:none;">
+        <div class="field"><label>Endpoint URL</label><input id="mcp-url" placeholder="http://mcp-gateway:8080/" /></div>
+      </div>
       <div class="row" style="justify-content:flex-end;"><button class="primary" data-act="mcp:add">Add server</button></div>
     </div>`;
   const mcpSection = `
@@ -1845,15 +1863,26 @@ async function dispatch(act) {
       catch (e) { flash("Couldn't change that skill: " + e.message, "err"); }
       return reload();
     }
-    // Add an MCP server (ADR 0021): a local stdio command. Its tools appear blocked
-    // until allowed. A colon in the name would break the action encoding, so reject it.
+    // Add an MCP server (ADR 0021): a local stdio command or an HTTP endpoint. Its
+    // tools appear blocked until allowed. A colon in the name would break the action
+    // encoding, so reject it.
     if (verb === "mcp" && noun === "add") {
       const name = val("mcp-name");
-      const command = val("mcp-command");
-      const args = val("mcp-args").split("\n").map((a) => a.trim()).filter(Boolean);
-      if (!name || !command) { flash("Enter a name and a command.", "err"); return; }
+      const transport = (document.getElementById("mcp-transport") || {}).value || "stdio";
+      if (!name) { flash("Enter a name.", "err"); return; }
       if (name.includes(":")) { flash("The name can't contain a colon.", "err"); return; }
-      try { await api("POST", "/v1/mcp/servers", { name, transport: "stdio", command, args }); flash("Server added.", "ok"); }
+      let body;
+      if (transport === "http") {
+        const url = val("mcp-url");
+        if (!url) { flash("Enter the endpoint URL.", "err"); return; }
+        body = { name, transport: "http", url };
+      } else {
+        const command = val("mcp-command");
+        const args = val("mcp-args").split("\n").map((a) => a.trim()).filter(Boolean);
+        if (!command) { flash("Enter a command.", "err"); return; }
+        body = { name, transport: "stdio", command, args };
+      }
+      try { await api("POST", "/v1/mcp/servers", body); flash("Server added.", "ok"); }
       catch (e) { flash("Couldn't add the server: " + e.message, "err"); }
       return reload();
     }
