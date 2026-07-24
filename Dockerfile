@@ -31,9 +31,15 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
 # --- runtime stage ---------------------------------------------------------
 FROM debian:bookworm-slim
 # ca-certificates lets an optional HTTPS model endpoint be reached; SQLite is
-# statically linked, so nothing else is needed.
+# statically linked. nodejs+npm (for `npx …` servers) and python3 (for python
+# servers) are the two runtimes the vast majority of stdio MCP servers need
+# (ADR 0021) — without them a registered server's command isn't found and it stays
+# unconnected. Node's `npx` fetches a package on first run, so a freshly registered
+# npx server may need one retry while it downloads; a globally pre-installed server
+# (or one already cached) connects immediately.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates \
+    && apt-get install -y --no-install-recommends \
+        ca-certificates nodejs npm python3 \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /endora-node /usr/local/bin/endora-node
