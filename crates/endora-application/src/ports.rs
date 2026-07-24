@@ -204,8 +204,49 @@ pub struct ButlerReply {
     pub beliefs: Vec<FormedBelief>,
     /// A skill it wants to use this turn (may be none). The policy layer decides
     /// whether to run it; on a read-only skill the butler then answers with the
-    /// result.
+    /// result. (Legacy single-call view; kept for the two-pass turn.)
     pub capability_use: Option<CapabilityUse>,
+    /// Every tool the model asked to call this step, each with the id the endpoint
+    /// assigned it (ADR 0028). The single-conversation loop runs these and appends
+    /// their results as `role:tool` turns keyed by that id. Empty when it just talks.
+    pub tool_calls: Vec<ToolCall>,
+}
+
+/// One tool call the model made through the endpoint's native tool-calling API — the
+/// call id (so its result can be paired back), the capability id to run, and the JSON
+/// arguments (ADR 0028).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ToolCall {
+    /// The endpoint-assigned id, echoed on the matching `role:tool` result message.
+    pub id: String,
+    /// The capability id to run (the un-sanitised `server.tool` for MCP).
+    pub capability: String,
+    /// The JSON arguments for the call, as a string.
+    pub input_json: String,
+}
+
+/// One turn in the butler's single tool-calling conversation (ADR 0028): the person's
+/// message, an assistant turn (prose and/or tool calls), or a tool result paired to
+/// the call that produced it. Replaces threading tool output through a system prompt.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TurnMessage {
+    /// Something the person said.
+    User(String),
+    /// The butler's turn — prose it wrote and/or the tools it asked to call.
+    Assistant {
+        /// Any prose the butler wrote on this turn (often empty when it only calls).
+        text: String,
+        /// The tool calls it made this turn, each with its id.
+        tool_calls: Vec<ToolCall>,
+    },
+    /// The result of running a tool call, paired to it by `call_id`. Carries the real
+    /// outcome — success or error — so the model answers grounded in what happened.
+    ToolResult {
+        /// The id of the [`ToolCall`] this is the result of.
+        call_id: String,
+        /// The tool's output, or its error message.
+        content: String,
+    },
 }
 
 // BeliefRepository moved to the understanding context (ADR 0026); re-exported
