@@ -1865,6 +1865,10 @@ pub struct McpToolInfo {
     pub name: String,
     /// The one-line description the server advertises for it.
     pub description: String,
+    /// The tool's JSON-Schema for its input (`inputSchema` from `tools/list`), if the
+    /// server provided one. The model needs this to know *how* to call the tool — the
+    /// field names and which are required — otherwise it only knows the tool exists.
+    pub input_schema: Option<serde_json::Value>,
 }
 
 /// The boundary to a single MCP server (ADR 0021). The concrete transport — a local
@@ -1937,20 +1941,58 @@ impl McpRunner {
     }
 }
 
+/// Renders an MCP tool's JSON-Schema input into a compact one-line hint the model can
+/// act on — the field names, their types, and which are required — without dumping the
+/// whole schema into the prompt. `None` when there are no properties to describe (a
+/// no-argument tool needs no hint).
+fn compact_input_hint(schema: &serde_json::Value) -> Option<String> {
+    let props = schema.get("properties")?.as_object()?;
+    if props.is_empty() {
+        return None;
+    }
+    let required: std::collections::HashSet<&str> = schema
+        .get("required")
+        .and_then(serde_json::Value::as_array)
+        .map(|a| a.iter().filter_map(serde_json::Value::as_str).collect())
+        .unwrap_or_default();
+    let mut fields: Vec<String> = props
+        .iter()
+        .map(|(name, spec)| {
+            let ty = spec.get("type").and_then(serde_json::Value::as_str);
+            match (ty, required.contains(name.as_str())) {
+                (Some(ty), true) => format!("{name} ({ty}, required)"),
+                (Some(ty), false) => format!("{name} ({ty})"),
+                (None, true) => format!("{name} (required)"),
+                (None, false) => name.clone(),
+            }
+        })
+        .collect();
+    fields.sort(); // stable order → a deterministic prompt
+    Some(format!("call with input fields: {}", fields.join(", ")))
+}
+
 impl CapabilityRunner for McpRunner {
     fn available(&self) -> Vec<crate::application::CapabilitySpec> {
         self.connections
             .iter()
             .flat_map(|c| {
-                c.tools
-                    .iter()
-                    .map(move |t| crate::application::CapabilitySpec {
+                c.tools.iter().map(move |t| {
+                    // Fold the tool's input shape into the description so the model
+                    // learns HOW to call it (field names + which are required), not
+                    // just that it exists. Built-in skills get input examples in the
+                    // prompt; MCP tools only have this schema to go on.
+                    let description = match t.input_schema.as_ref().and_then(compact_input_hint) {
+                        Some(hint) => format!("{} — {hint}", t.description),
+                        None => t.description.clone(),
+                    };
+                    crate::application::CapabilitySpec {
                         id: format!("{}.{}", c.server, t.name),
-                        description: t.description.clone(),
+                        description,
                         configured: true,
                         // Deny-by-default: an MCP tool is never cleared to act alone.
                         autonomous: false,
-                    })
+                    }
+                })
             })
             .collect()
     }
@@ -2701,6 +2743,7 @@ mod tests {
         McpToolInfo {
             name: name.to_owned(),
             description: format!("does {name}"),
+            input_schema: None,
         }
     }
 
@@ -2737,6 +2780,55 @@ mod tests {
             "create_event({\"x\":1})"
         );
         assert!(runner.run("calendar.nope", "{}").is_err());
+    }
+
+    #[test]
+    fn compact_input_hint_lists_fields_types_and_required() {
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "name": { "type": "string" },
+                "area": { "type": "string" }
+            },
+            "required": ["name"]
+        });
+        let hint = compact_input_hint(&schema).unwrap();
+        assert!(hint.contains("name (string, required)"), "got: {hint}");
+        assert!(hint.contains("area (string)"), "got: {hint}");
+        // A no-argument tool needs no hint.
+        assert!(
+            compact_input_hint(&serde_json::json!({ "type": "object", "properties": {} }))
+                .is_none()
+        );
+        assert!(compact_input_hint(&serde_json::json!({})).is_none());
+    }
+
+    #[test]
+    fn mcp_available_folds_the_input_schema_into_the_description() {
+        let mut turn_on = tool("HassTurnOn");
+        turn_on.description = "Turns on a device".to_owned();
+        turn_on.input_schema = Some(serde_json::json!({
+            "type": "object",
+            "properties": { "name": { "type": "string" } },
+            "required": ["name"]
+        }));
+        let transport = FakeTransport {
+            tools: vec![turn_on],
+            healthy: true,
+        };
+        let runner = McpRunner::connect(vec![("home".to_owned(), Box::new(transport))]);
+        let spec = runner
+            .available()
+            .into_iter()
+            .find(|s| s.id == "home.HassTurnOn")
+            .unwrap();
+        // The model sees both what the tool does AND how to call it.
+        assert!(spec.description.contains("Turns on a device"));
+        assert!(
+            spec.description.contains("name (string, required)"),
+            "description should carry the input hint, got: {}",
+            spec.description
+        );
     }
 
     #[test]
