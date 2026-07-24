@@ -3988,7 +3988,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn chat_records_the_exchange_and_returns_proposals() {
+    async fn chat_records_the_exchange() {
         let app = app(test_state());
         let res = app
             .clone()
@@ -4001,8 +4001,9 @@ mod tests {
         assert_eq!(res.status(), StatusCode::OK);
         let body = json_body(res).await;
         assert_eq!(body["reply"]["role"], "butler");
-        assert_eq!(body["proposals"][0]["kind"], "create_north_star");
-        assert_eq!(body["proposals"][0]["title"], "get back into running");
+        // Proposals are OFF in the tool-calling turn (ADR 0028): converse + act, no
+        // auto goal-capture.
+        assert!(body["proposals"].as_array().unwrap().is_empty());
 
         // The history holds both turns.
         let hist = json_body(app.clone().oneshot(get("/v1/chat")).await.unwrap()).await;

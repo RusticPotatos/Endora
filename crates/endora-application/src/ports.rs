@@ -487,7 +487,32 @@ pub trait Butler {
                 .ok()
             })
             .collect();
-        self.respond(&history, preferences, context)
+        // Bridge for butlers without native tool-calling: surface the latest tool
+        // result to `respond` (as `tool_result`) so it can answer from it, and express
+        // any `capability_use` it returns as a `tool_call` so the single loop (ADR
+        // 0028) can drive it just like a native tool-caller.
+        let mut ctx = context.clone();
+        if let Some(TurnMessage::ToolResult { content, .. }) = conversation
+            .iter()
+            .rev()
+            .find(|m| matches!(m, TurnMessage::ToolResult { .. }))
+        {
+            ctx.tool_result = Some(content.clone());
+        }
+        let reply = self.respond(&history, preferences, &ctx)?;
+        if reply.tool_calls.is_empty() {
+            if let Some(used) = reply.capability_use.clone() {
+                return Ok(ButlerReply {
+                    tool_calls: vec![ToolCall {
+                        id: "call".to_owned(),
+                        capability: used.capability,
+                        input_json: used.input_json,
+                    }],
+                    ..reply
+                });
+            }
+        }
+        Ok(reply)
     }
 }
 
