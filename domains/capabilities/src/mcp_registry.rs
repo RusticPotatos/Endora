@@ -39,16 +39,65 @@ pub struct RegistryEntry {
     pub env_keys: Vec<String>,
 }
 
-/// Searches `base_url` for `q`. `None` means the lookup didn't work (unreachable,
-/// bad JSON, or an unrecognised shape) — callers fall back to the curated catalog.
+/// How many distinct servers to gather before stopping early.
+const ENOUGH: usize = 25;
+
+/// Query spellings to try, in order. The registry matches a **substring of the
+/// server name**, and names are packed like `io.github.foo/homeassistant-mcp` — so a
+/// natural two-word query ("home assistant") matches nothing while "homeassistant"
+/// matches plenty. Try the words joined and hyphenated too.
+fn query_variants(q: &str) -> Vec<String> {
+    let q = q.trim();
+    let mut out = vec![q.to_owned()];
+    if q.contains(char::is_whitespace) {
+        for v in [
+            q.split_whitespace().collect::<Vec<_>>().join(""),
+            q.split_whitespace().collect::<Vec<_>>().join("-"),
+        ] {
+            if !out.contains(&v) {
+                out.push(v);
+            }
+        }
+    }
+    out
+}
+
+/// Searches `base_url` for `q`, trying a few spellings of the query and merging the
+/// results (deduped by name). `None` means no lookup worked (unreachable, bad JSON,
+/// or an unrecognised shape) — callers fall back to the curated catalog.
 #[must_use]
 pub fn search(base_url: &str, q: &str) -> Option<Vec<RegistryEntry>> {
+    let mut out: Vec<RegistryEntry> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    let mut any_ok = false;
+    for variant in query_variants(q) {
+        // Stop as soon as we have plenty — the extra spellings only exist to rescue a
+        // query that found little, so a fruitful first try costs no extra round trip.
+        if out.len() >= ENOUGH {
+            break;
+        }
+        let Some(batch) = search_once(base_url, &variant) else {
+            continue;
+        };
+        any_ok = true;
+        for e in batch {
+            if seen.insert(e.name.clone()) {
+                out.push(e);
+            }
+        }
+    }
+    any_ok.then_some(out)
+}
+
+/// One lookup for one exact query spelling.
+fn search_once(base_url: &str, q: &str) -> Option<Vec<RegistryEntry>> {
+    let sep = if base_url.contains('?') { '&' } else { '?' };
+    // Ask for a full page; the registry's default is small.
     let url = if q.trim().is_empty() {
-        base_url.to_owned()
+        format!("{base_url}{sep}limit=100")
     } else {
         format!(
-            "{base_url}{}search={}",
-            if base_url.contains('?') { '&' } else { '?' },
+            "{base_url}{sep}limit=100&search={}",
             percent_encode(q.trim())
         )
     };
@@ -307,5 +356,22 @@ mod tests {
     fn query_values_are_encoded() {
         assert_eq!(percent_encode("home assistant"), "home+assistant");
         assert_eq!(percent_encode("a/b"), "a%2Fb");
+    }
+
+    #[test]
+    fn multi_word_queries_also_try_joined_and_hyphenated_spellings() {
+        // The registry matches a substring of the packed server name, so "home
+        // assistant" finds nothing while "homeassistant" finds plenty.
+        assert_eq!(
+            super::query_variants("home assistant"),
+            vec!["home assistant", "homeassistant", "home-assistant"]
+        );
+        // A single word needs no extra round trips.
+        assert_eq!(super::query_variants("github"), vec!["github"]);
+        // Whitespace is normalised, not blindly replaced.
+        assert_eq!(
+            super::query_variants("  home   assistant "),
+            vec!["home   assistant", "homeassistant", "home-assistant"]
+        );
     }
 }
