@@ -269,6 +269,14 @@ pub trait McpServerRegistry {
     /// [`RepositoryError`] if the backend fails.
     fn set_enabled(&self, name: &str, enabled: bool) -> Result<(), RepositoryError>;
 
+    /// Sets the auto-allow flag for a server by name, leaving everything else
+    /// untouched. A no-op if no server has that name. Enforcement (opening the tools)
+    /// happens on the next connect, from this stored flag.
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if the backend fails.
+    fn set_trust_all(&self, name: &str, trust_all: bool) -> Result<(), RepositoryError>;
+
     /// Removes a server by name (idempotent — removing an absent name is fine).
     ///
     /// # Errors

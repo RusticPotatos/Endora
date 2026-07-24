@@ -198,9 +198,16 @@ fn apply_skills_config(config: &endora_capabilities::ConfigStore, path: &str) {
 /// can't break startup or a turn. HTTP transport is a later slice.
 fn connect_mcp(config: &endora_capabilities::ConfigStore) -> endora_capabilities::McpRunner {
     use endora_capabilities::{
-        HttpMcpClient, McpClient, McpServerRegistry, McpTransport, StdioMcpClient,
+        CapabilityConfigRepository, CapabilityRunner, HttpMcpClient, McpClient, McpServerRegistry,
+        McpTransport, StdioMcpClient,
     };
     let servers = config.list().unwrap_or_default();
+    // Namespacing prefixes of servers whose tools should be auto-allowed on connect.
+    let trusted: Vec<String> = servers
+        .iter()
+        .filter(|s| s.enabled && s.trust_all)
+        .map(|s| format!("{}.", s.name))
+        .collect();
     let clients: Vec<(String, Box<dyn McpClient>)> = servers
         .into_iter()
         .filter(|s| s.enabled)
@@ -215,7 +222,19 @@ fn connect_mcp(config: &endora_capabilities::ConfigStore) -> endora_capabilities
                 .map(|c| (s.name, Box::new(c) as Box<dyn McpClient>)),
         })
         .collect();
-    endora_capabilities::McpRunner::connect(clients)
+    let runner = endora_capabilities::McpRunner::connect(clients);
+    // Auto-allow: for a server marked trust_all, open every tool it exposes so the
+    // butler can use them without per-tool clicking. Opened MCP tools remain
+    // Block→Confirm — it still asks before each use (ADR 0024). This is deterministic
+    // policy set in code from a stored flag, never routed from model output.
+    if !trusted.is_empty() {
+        for spec in runner.available() {
+            if trusted.iter().any(|prefix| spec.id.starts_with(prefix)) {
+                let _ = config.set_open_irreversible(&spec.id, true);
+            }
+        }
+    }
+    runner
 }
 
 /// Rebuilds the connected-MCP runner from the current registry and swaps it into
@@ -374,6 +393,7 @@ async fn list_mcp_servers(
                 "env_keys": env_keys,
                 "auth_set": auth_set,
                 "enabled": s.enabled,
+                "trust_all": s.trust_all,
                 "tools_live": tools.len(),
                 "tools": tools,
             })
@@ -408,6 +428,10 @@ struct McpServerRequest {
     auth: String,
     #[serde(default = "default_enabled")]
     enabled: bool,
+    /// Auto-allow all of this server's tools on connect (default on). Opened tools are
+    /// still confirmed each use — this never removes the ask-before-acting net.
+    #[serde(default = "default_enabled")]
+    trust_all: bool,
 }
 
 /// Registers (or replaces) an MCP server, then reconnects so its tools appear
@@ -462,6 +486,7 @@ async fn register_mcp_server(
         }
         .map_err(AppError::Domain)?;
         server.enabled = enabled;
+        server.trust_all = req.trust_all;
         McpServerRegistry::register(config.as_ref(), &server).map_err(AppError::Repository)?;
         reconnect_mcp(config.as_ref(), mcp.as_ref());
         Ok(())
@@ -534,6 +559,47 @@ async fn reconnect_mcp_server(
         "connected": tools_live > 0,
         "tools_live": tools_live,
     })))
+}
+
+#[derive(Deserialize)]
+struct TrustRequest {
+    trust_all: bool,
+}
+
+/// Sets a server's auto-allow flag, then reconnects so it takes effect. With it on,
+/// the reconnect opens every tool the server exposes (still Block→Confirm — the butler
+/// asks before each use). Turning it off stops auto-opening future tools; tools already
+/// allowed stay allowed until blocked individually, so the change is never a silent
+/// widening of access.
+async fn set_mcp_trust(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+    Json(req): Json<TrustRequest>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    use endora_capabilities::McpServerRegistry;
+    let config = state.config.clone();
+    let mcp = state.mcp.clone();
+    let lookup = name.clone();
+    let known = blocking(move || {
+        let known = McpServerRegistry::list(config.as_ref())
+            .map_err(AppError::Repository)?
+            .iter()
+            .any(|s| s.name == lookup);
+        if known {
+            McpServerRegistry::set_trust_all(config.as_ref(), &lookup, req.trust_all)
+                .map_err(AppError::Repository)?;
+            reconnect_mcp(config.as_ref(), mcp.as_ref());
+        }
+        Ok(known)
+    })
+    .await?;
+    if !known {
+        return Err(ApiError(AppError::NotFound {
+            entity: "MCP server",
+        }));
+    }
+    let _ = state.changes.send(());
+    Ok(Json(json!({ "ok": true, "trust_all": req.trust_all })))
 }
 
 /// Builds the router for the node's HTTP API.
@@ -632,6 +698,7 @@ pub fn app(state: AppState) -> Router {
             "/v1/mcp/servers/{name}/reconnect",
             post(reconnect_mcp_server),
         )
+        .route("/v1/mcp/servers/{name}/trust", post(set_mcp_trust))
         .route(
             "/v1/capabilities/{id}/config",
             post(set_capability_settings),
@@ -4649,6 +4716,61 @@ mod tests {
         // URL updated, but the token was preserved rather than wiped.
         assert_eq!(ha["url"], "http://new/sse");
         assert_eq!(ha["auth_set"], true);
+    }
+
+    #[tokio::test]
+    async fn trust_all_defaults_on_and_can_be_toggled() {
+        let router = app(test_state());
+        // Registered without a trust_all field → defaults on. Disabled so no connect.
+        let reg = router
+            .clone()
+            .oneshot(post(
+                "/v1/mcp/servers",
+                r#"{"name":"ha","transport":"http","url":"http://ha/sse","auth":"t","enabled":false}"#,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(reg.status(), StatusCode::OK);
+        let list = json_body(
+            router
+                .clone()
+                .oneshot(get("/v1/mcp/servers"))
+                .await
+                .unwrap(),
+        )
+        .await;
+        let ha = list["servers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|s| s["name"] == "ha")
+            .unwrap();
+        assert_eq!(ha["trust_all"], true);
+
+        // Turn it off via the endpoint.
+        let off = router
+            .clone()
+            .oneshot(post("/v1/mcp/servers/ha/trust", r#"{"trust_all":false}"#))
+            .await
+            .unwrap();
+        assert_eq!(off.status(), StatusCode::OK);
+        let list = json_body(router.oneshot(get("/v1/mcp/servers")).await.unwrap()).await;
+        let ha = list["servers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|s| s["name"] == "ha")
+            .unwrap();
+        assert_eq!(ha["trust_all"], false);
+    }
+
+    #[tokio::test]
+    async fn setting_trust_on_an_unknown_server_is_404() {
+        let res = app(test_state())
+            .oneshot(post("/v1/mcp/servers/nope/trust", r#"{"trust_all":true}"#))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]

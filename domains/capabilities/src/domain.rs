@@ -71,6 +71,12 @@ pub struct McpServer {
     /// Whether the person has this server switched on. A disabled server contributes
     /// no tools to the catalog.
     pub enabled: bool,
+    /// Auto-allow this server's tools on connect. When set, every tool it exposes is
+    /// opened for use without per-tool clicking — but opened MCP tools are still
+    /// `Block`→`Confirm`, so the butler asks before each use (ADR 0024). The enabling
+    /// is done in code from this stored flag; it is never driven by model output. Off
+    /// keeps the stricter deny-by-default, where each tool stays blocked until allowed.
+    pub trust_all: bool,
 }
 
 impl McpServer {
@@ -114,6 +120,7 @@ impl McpServer {
             name,
             transport: McpTransport::Stdio { command, args, env },
             enabled: true,
+            trust_all: true,
         })
     }
 
@@ -140,6 +147,7 @@ impl McpServer {
                 auth: auth.trim().to_owned(),
             },
             enabled: true,
+            trust_all: true,
         })
     }
 }
