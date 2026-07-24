@@ -964,18 +964,23 @@ fn run_tool_turn(
         })
         .collect();
     let mut failures = 0usize;
-    let mut last = ButlerReply::default();
+    // Tool calls already made this turn (capability + input), to stop the model from
+    // looping the same call — especially a read-only one that succeeds every time and
+    // so never trips the failure cap.
+    let mut seen: std::collections::HashSet<(String, String)> = std::collections::HashSet::new();
     for round in 0..=max_rounds {
         let reply = butler
             .take_turn(&conversation, prefs, context)
             .map_err(|e| AppError::Model {
                 message: e.to_string(),
             })?;
-        last = reply.clone();
-        // No tool call (or we've hit the round bound) → this is the final answer,
-        // grounded in whatever tool results are already in the conversation.
-        if reply.tool_calls.is_empty() || round == max_rounds {
+        // No tool call → the final answer, grounded in the tool results so far.
+        if reply.tool_calls.is_empty() {
             return Ok(reply);
+        }
+        // Out of rounds with tools still pending — fall through to a forced answer.
+        if round == max_rounds {
+            break;
         }
         // Record the assistant's tool-call turn, then run each call and append its
         // real result (OpenAI requires the assistant turn before its tool results).
@@ -992,6 +997,17 @@ fn run_tool_turn(
                     call_id: call.id.clone(),
                     content: "not run — reached this turn's action limit; answer with what you \
                               have."
+                        .to_owned(),
+                });
+                continue;
+            }
+            // Don't loop the same call: if this exact tool + input already ran this
+            // turn, hand back a nudge instead of re-running it.
+            if !seen.insert((id.clone(), call.input_json.clone())) {
+                conversation.push(TurnMessage::ToolResult {
+                    call_id: call.id.clone(),
+                    content: "you already called this with the same input this turn — use the \
+                              earlier result or answer now; do not repeat it."
                         .to_owned(),
                 });
                 continue;
@@ -1066,7 +1082,16 @@ fn run_tool_turn(
             });
         }
     }
-    Ok(last)
+    // Never converged (hit the round cap with tools still pending): force a final
+    // answer with tools OFF, so the model must reply in prose from what it gathered
+    // rather than call yet another tool and leave the turn without an answer.
+    let mut final_ctx = context.clone();
+    final_ctx.tools = Vec::new();
+    butler
+        .take_turn(&conversation, prefs, &final_ctx)
+        .map_err(|e| AppError::Model {
+            message: e.to_string(),
+        })
 }
 
 /// Sends a message to the butler and records both turns.
@@ -3183,9 +3208,13 @@ mod tests {
         )
         .unwrap();
 
-        // Capped at two failed attempts, not the full six rounds of hammering.
+        // A dead end is never hammered: with the same tool+input each round, the
+        // repeated-call guard runs it once; a burst of distinct failures caps at two.
         let tries = activity.iter().filter(|a| a.contains("failed")).count();
-        assert_eq!(tries, 2, "should stop after 2 failures, got: {activity:?}");
+        assert!(
+            tries <= 2,
+            "should never retry a dead end past the cap, got: {activity:?}"
+        );
     }
 
     // A cleared (configured + autonomous) skill whose run returns `result`.
@@ -3344,15 +3373,17 @@ mod tests {
             }
             fn take_turn(
                 &self,
-                _conversation: &[crate::TurnMessage],
+                conversation: &[crate::TurnMessage],
                 _p: &[Preference],
                 _c: &ButlerContext,
             ) -> Result<ButlerReply, ProposalError> {
+                // A DISTINCT input each round (so the repeated-call guard doesn't
+                // short-circuit it) — this exercises the failure cap.
                 Ok(ButlerReply {
                     tool_calls: vec![crate::ToolCall {
                         id: "c".to_owned(),
                         capability: "home.HassLightSet".to_owned(),
-                        input_json: "{}".to_owned(),
+                        input_json: format!("{{\"n\":{}}}", conversation.len()),
                     }],
                     ..ButlerReply::default()
                 })
@@ -3381,6 +3412,64 @@ mod tests {
         // Executions stop after two failures, not the full six rounds.
         let failed = activity.iter().filter(|a| a.contains("failed")).count();
         assert_eq!(failed, 2, "got: {activity:?}");
+    }
+
+    #[test]
+    fn run_tool_turn_does_not_loop_the_same_read_only_call() {
+        // A butler that keeps calling the SAME read-only tool with the same input —
+        // it succeeds every time, so only the repeated-call guard stops the loop.
+        struct RepeatsGetContext;
+        impl Butler for RepeatsGetContext {
+            fn respond(
+                &self,
+                _h: &[ChatMessage],
+                _p: &[Preference],
+                _c: &ButlerContext,
+            ) -> Result<ButlerReply, ProposalError> {
+                Ok(ButlerReply::default())
+            }
+            fn take_turn(
+                &self,
+                _conversation: &[crate::TurnMessage],
+                _p: &[Preference],
+                _c: &ButlerContext,
+            ) -> Result<ButlerReply, ProposalError> {
+                Ok(ButlerReply {
+                    tool_calls: vec![crate::ToolCall {
+                        id: "c".to_owned(),
+                        capability: "home.GetLiveContext".to_owned(),
+                        input_json: "{}".to_owned(),
+                    }],
+                    ..ButlerReply::default()
+                })
+            }
+        }
+        let (ids, clock, audit) = (SeqIds::default(), FixedClock(0), FakeAudit::default());
+        let skill = FixedSkill {
+            id: "home.GetLiveContext",
+            result: Ok("the lights are off".to_owned()),
+        };
+        let mut activity = Vec::new();
+        let _ = super::run_tool_turn(
+            &RepeatsGetContext,
+            &skill,
+            &audit,
+            &ids,
+            &clock,
+            &one_user_turn("what's on?"),
+            &[],
+            &ButlerContext::default(),
+            6,
+            &mut |_| {},
+            &mut activity,
+        )
+        .unwrap();
+        // The read-only tool ran exactly ONCE despite being requested every round.
+        let used = activity
+            .iter()
+            .filter(|a| a.contains("Used the home.GetLiveContext"))
+            .count();
+        assert_eq!(used, 1, "got: {activity:?}");
     }
 
     #[test]
