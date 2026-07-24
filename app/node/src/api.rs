@@ -109,6 +109,14 @@ impl AppState {
         let config = Arc::new(endora_capabilities::ConfigStore::new(store.db()));
         let audit = Arc::new(endora_platform::AuditStore::new(store.db()));
         let events = Arc::new(endora_platform::EventStore::new(store.db()));
+        // Deployment policy: if a skills config file is set, apply its per-skill modes
+        // at startup as the baseline (ADR 0024) — before MCP connects, so MCP-tool
+        // modes are in place too.
+        if let Ok(path) = std::env::var("ENDORA_SKILLS_CONFIG") {
+            if !path.trim().is_empty() {
+                apply_skills_config(config.as_ref(), path.trim());
+            }
+        }
         // Connect any registered MCP servers up front (subprocesses persist across
         // turns). A server that fails to start is skipped, so startup never blocks
         // on a bad one (ADR 0021).
@@ -132,6 +140,54 @@ impl AppState {
             capabilities: Arc::new(endora_infrastructure::default_capabilities()),
             mcp,
             turn_lock: Arc::new(tokio::sync::Mutex::new(())),
+        }
+    }
+}
+
+/// Applies a deployment **skills config file** (ADR 0024): a JSON object mapping a
+/// skill id (built-in, or an MCP tool `server.tool`) to a mode — `"off"`, `"auto"`,
+/// or `"ask"`. Applied at startup as the baseline for the listed skills; skills not
+/// listed are left to the person's choices. `auto` = enabled, runs per its band;
+/// `ask` = enabled but confirmed each use (and, for the un-undoable, allowed to run
+/// with confirmation); `off` = disabled. Missing/invalid files are logged and
+/// skipped — a bad config never stops the node from starting.
+fn apply_skills_config(config: &endora_capabilities::ConfigStore, path: &str) {
+    use endora_capabilities::CapabilityConfigRepository;
+    let text = match std::fs::read_to_string(path) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("skills config: can't read {path}: {e} — skipping");
+            return;
+        }
+    };
+    let map: std::collections::BTreeMap<String, String> = match serde_json::from_str(&text) {
+        Ok(m) => m,
+        Err(e) => {
+            eprintln!("skills config: {path} is not a JSON object of id→mode ({e}) — skipping");
+            return;
+        }
+    };
+    for (id, mode) in map {
+        match mode.as_str() {
+            "off" => {
+                let _ = config.set_enabled(&id, false);
+            }
+            "auto" => {
+                let _ = config.set_enabled(&id, true);
+                let _ = config.set_confirm(&id, false);
+                let _ = config.set_open_irreversible(&id, false);
+            }
+            // Ask first, band-agnostic: confirm downgrades an autonomous read, and
+            // opening lets an un-undoable run with confirmation. Both together give
+            // "on with user input" for any band.
+            "ask" => {
+                let _ = config.set_enabled(&id, true);
+                let _ = config.set_confirm(&id, true);
+                let _ = config.set_open_irreversible(&id, true);
+            }
+            other => {
+                eprintln!("skills config: unknown mode '{other}' for '{id}' (use off|auto|ask)");
+            }
         }
     }
 }
