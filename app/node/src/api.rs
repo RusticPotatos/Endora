@@ -266,8 +266,24 @@ async fn search_mcp_catalog(Query(q): Query<CatalogQuery>) -> Json<serde_json::V
     .unwrap_or(None);
     let registry_ok = found.is_some();
     for e in found.unwrap_or_default() {
-        // We can't know a registry entry's launch command reliably, so it prefills as
-        // an empty stdio server for the person to complete from its docs.
+        // The registry tells us either a hosted endpoint or how to launch a package;
+        // either way this prefills the form, and the person reviews before adding.
+        let mut fields: Vec<serde_json::Value> = e
+            .env_keys
+            .iter()
+            .map(|k| {
+                json!({
+                    "key": k, "label": k, "placeholder": "",
+                    "secret": true, "target": "env",
+                })
+            })
+            .collect();
+        if e.transport == "http" && e.url.is_empty() {
+            fields.push(json!({
+                "key": "url", "label": "Endpoint URL", "placeholder": "",
+                "secret": false, "target": "url",
+            }));
+        }
         servers.push(json!({
             "id": e.name,
             "name": e.name,
@@ -275,12 +291,13 @@ async fn search_mcp_catalog(Query(q): Query<CatalogQuery>) -> Json<serde_json::V
                 "From the community registry — see its docs for how to run it.".to_owned()
             } else { e.description },
             "category": "registry",
-            "transport": "stdio",
-            "command": "",
-            "args": [],
+            "transport": e.transport,
+            "command": e.command,
+            "args": e.args,
+            "url": e.url,
             "docs": e.docs,
             "source": "registry",
-            "fields": [],
+            "fields": fields,
         }));
     }
     Json(json!({ "servers": servers, "registry_ok": registry_ok }))
