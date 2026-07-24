@@ -34,9 +34,10 @@ use endora_scheduling::{
 
 use crate::error::AppError;
 use crate::ports::{
-    AttentionItem, AttentionKind, Butler, ButlerContext, ButlerProposal, ButlerReply, Clock,
-    DeepAsker, FormedBelief, IdSource, MemorySnapshot, MemoryStore, NorthStarBrief, Proposer,
-    Snooze, SnoozeRepository, Suggestion, SuggestionRepository, SuggestionStatus,
+    AttentionItem, AttentionKind, Butler, ButlerContext, ButlerProposal, ButlerReply,
+    CapabilityTool, Clock, DeepAsker, FormedBelief, IdSource, MemorySnapshot, MemoryStore,
+    NorthStarBrief, Proposer, Snooze, SnoozeRepository, Suggestion, SuggestionRepository,
+    SuggestionStatus,
 };
 
 /// Creates and stores a new [`Direction`].
@@ -2334,11 +2335,23 @@ pub fn butler_context(
         .collect();
     // Ground the butler in the skills it can actually reach right now (configured
     // ones only), so it uses a real capability instead of only talking about it.
-    let skills = capabilities
+    let available: Vec<_> = capabilities
         .available()
         .into_iter()
         .filter(|c| c.configured)
+        .collect();
+    let skills = available
+        .iter()
         .map(|c| format!("{} — {}", c.id, c.description))
+        .collect();
+    // The same skills structured for native tool-calling (exact id + input schema).
+    let tools = available
+        .iter()
+        .map(|c| CapabilityTool {
+            id: c.id.clone(),
+            description: c.description.clone(),
+            input_schema: c.input_schema.clone(),
+        })
         .collect();
     Ok(ButlerContext {
         values: value_list.iter().map(|v| v.name().to_owned()).collect(),
@@ -2346,6 +2359,7 @@ pub fn butler_context(
         attention,
         understanding,
         capabilities: skills,
+        tools,
         tool_result: None,
         now: format_datetime_utc(clock.now().unix_millis()),
         synthesize: false,
@@ -3216,6 +3230,7 @@ mod tests {
                     description: "current conditions".to_owned(),
                     configured: true,
                     autonomous: true,
+                    input_schema: None,
                 }]
             }
             fn run(&self, id: &str, input_json: &str) -> Result<String, String> {
@@ -3283,6 +3298,7 @@ mod tests {
                     description: "find flights".to_owned(),
                     configured: false,
                     autonomous: false,
+                    input_schema: None,
                 }]
             }
             fn run(&self, _id: &str, _input_json: &str) -> Result<String, String> {
@@ -3347,6 +3363,7 @@ mod tests {
                     description: "book travel".to_owned(),
                     configured: true,
                     autonomous: false,
+                    input_schema: None,
                 }]
             }
             fn run(&self, _id: &str, _input_json: &str) -> Result<String, String> {
@@ -3665,6 +3682,7 @@ mod tests {
                     description: "headlines".to_owned(),
                     configured: true,
                     autonomous: true,
+                    input_schema: None,
                 }]
             }
             fn run(&self, id: &str, input_json: &str) -> Result<String, String> {
@@ -3743,6 +3761,7 @@ mod tests {
                     description: "headlines".to_owned(),
                     configured: false,
                     autonomous: true,
+                    input_schema: None,
                 }]
             }
             fn run(&self, _id: &str, _input_json: &str) -> Result<String, String> {
@@ -3822,6 +3841,7 @@ mod tests {
                     description: "w".to_owned(),
                     configured: true,
                     autonomous: true,
+                    input_schema: None,
                 }]
             }
             fn run(&self, id: &str, input_json: &str) -> Result<String, String> {
@@ -4251,6 +4271,7 @@ mod tests {
                         description: "answer a question".to_owned(),
                         configured: true,
                         autonomous: true,
+                        input_schema: None,
                     },
                     // A consequential skill the loop must never reach for.
                     CapabilitySpec {
@@ -4258,6 +4279,7 @@ mod tests {
                         description: "book flights".to_owned(),
                         configured: true,
                         autonomous: false,
+                        input_schema: None,
                     },
                 ]
             }

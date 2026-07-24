@@ -1778,6 +1778,8 @@ impl CapabilityRunner for RegistryRunner {
                         self.is_opened(info.id),
                         self.is_confirm(info.id),
                     ),
+                    // Built-ins describe their inputs in the prompt, not a schema.
+                    input_schema: None,
                 }
             })
             .collect()
@@ -1991,6 +1993,9 @@ impl CapabilityRunner for McpRunner {
                         configured: true,
                         // Deny-by-default: an MCP tool is never cleared to act alone.
                         autonomous: false,
+                        // The real schema travels structurally too (as text), so the
+                        // model layer can offer this tool through native tool-calling.
+                        input_schema: t.input_schema.as_ref().map(ToString::to_string),
                     }
                 })
             })
@@ -2859,6 +2864,7 @@ mod tests {
                 description: "the weather".to_owned(),
                 configured: true,
                 autonomous: true,
+                input_schema: None,
             }]
         }
         fn run(&self, id: &str, _input: &str) -> Result<String, String> {
