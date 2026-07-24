@@ -205,10 +205,12 @@ fn connect_mcp(config: &endora_capabilities::ConfigStore) -> endora_capabilities
         .into_iter()
         .filter(|s| s.enabled)
         .filter_map(|s| match &s.transport {
-            McpTransport::Stdio { command, args } => StdioMcpClient::spawn(command, args)
-                .ok()
-                .map(|c| (s.name, Box::new(c) as Box<dyn McpClient>)),
-            McpTransport::Http { url } => HttpMcpClient::connect(url)
+            McpTransport::Stdio { command, args, env } => {
+                StdioMcpClient::spawn_with_env(command, args, env)
+                    .ok()
+                    .map(|c| (s.name, Box::new(c) as Box<dyn McpClient>))
+            }
+            McpTransport::Http { url, auth } => HttpMcpClient::connect_with_auth(url, auth)
                 .ok()
                 .map(|c| (s.name, Box::new(c) as Box<dyn McpClient>)),
         })
@@ -266,11 +268,25 @@ async fn list_mcp_servers(
     let out: Vec<_> = servers
         .into_iter()
         .map(|s| {
-            let (transport, command, args, url) = match &s.transport {
-                McpTransport::Stdio { command, args } => {
-                    ("stdio", command.clone(), args.clone(), String::new())
-                }
-                McpTransport::Http { url } => ("http", String::new(), Vec::new(), url.clone()),
+            // NEVER return the secrets (a stdio env's values, an http bearer token) —
+            // only their names / whether one is set, like capability settings do.
+            let (transport, command, args, url, env_keys, auth_set) = match &s.transport {
+                McpTransport::Stdio { command, args, env } => (
+                    "stdio",
+                    command.clone(),
+                    args.clone(),
+                    String::new(),
+                    env.keys().cloned().collect::<Vec<_>>(),
+                    false,
+                ),
+                McpTransport::Http { url, auth } => (
+                    "http",
+                    String::new(),
+                    Vec::new(),
+                    url.clone(),
+                    Vec::new(),
+                    !auth.is_empty(),
+                ),
             };
             let prefix = format!("{}.", s.name);
             // Each tool, with whether the person has opened it (allowed it to run,
@@ -292,6 +308,9 @@ async fn list_mcp_servers(
                 "command": command,
                 "args": args,
                 "url": url,
+                // Secret-safe: the env variable NAMES only, and whether a token is set.
+                "env_keys": env_keys,
+                "auth_set": auth_set,
                 "enabled": s.enabled,
                 "tools_live": tools.len(),
                 "tools": tools,
@@ -317,6 +336,14 @@ struct McpServerRequest {
     args: Vec<String>,
     #[serde(default)]
     url: String,
+    /// Environment for a stdio server's child process — where most servers take
+    /// their credentials. A secret: stored, never returned.
+    #[serde(default)]
+    env: std::collections::BTreeMap<String, String>,
+    /// Bearer token for an http server (e.g. a Home Assistant long-lived token).
+    /// A secret: stored, never returned.
+    #[serde(default)]
+    auth: String,
     #[serde(default = "default_enabled")]
     enabled: bool,
 }
@@ -335,8 +362,8 @@ async fn register_mcp_server(
     blocking(move || {
         let enabled = req.enabled;
         let mut server = match req.transport.as_str() {
-            "http" => McpServer::http(&req.name, &req.url),
-            _ => McpServer::stdio(&req.name, &req.command, req.args),
+            "http" => McpServer::http_with_auth(&req.name, &req.url, &req.auth),
+            _ => McpServer::stdio_with_env(&req.name, &req.command, req.args, req.env),
         }
         .map_err(AppError::Domain)?;
         server.enabled = enabled;

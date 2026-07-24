@@ -75,7 +75,9 @@ pub fn migrate(db: &Db) -> Result<(), RepositoryError> {
                 command TEXT NOT NULL DEFAULT '',
                 args    TEXT NOT NULL DEFAULT '',
                 url     TEXT NOT NULL DEFAULT '',
-                enabled INTEGER NOT NULL DEFAULT 1
+                enabled INTEGER NOT NULL DEFAULT 1,
+                env     TEXT NOT NULL DEFAULT '',
+                auth    TEXT NOT NULL DEFAULT ''
             ) STRICT;",
         )
         .map_err(backend)?;
@@ -88,6 +90,16 @@ pub fn migrate(db: &Db) -> Result<(), RepositoryError> {
     );
     let _ = db.lock()?.execute(
         "ALTER TABLE capability_config ADD COLUMN confirm INTEGER NOT NULL DEFAULT 0",
+        [],
+    );
+    // Per-server credentials: a child-process environment (stdio) and a bearer token
+    // (http). Secrets — stored here, never returned by the API.
+    let _ = db.lock()?.execute(
+        "ALTER TABLE mcp_servers ADD COLUMN env TEXT NOT NULL DEFAULT ''",
+        [],
+    );
+    let _ = db.lock()?.execute(
+        "ALTER TABLE mcp_servers ADD COLUMN auth TEXT NOT NULL DEFAULT ''",
         [],
     );
     Ok(())
@@ -417,7 +429,8 @@ impl McpServerRegistry for ConfigStore {
         let conn = self.db.lock()?;
         let mut stmt = conn
             .prepare(
-                "SELECT name, kind, command, args, url, enabled FROM mcp_servers ORDER BY name",
+                "SELECT name, kind, command, args, url, enabled, env, auth \
+                 FROM mcp_servers ORDER BY name",
             )
             .map_err(backend)?;
         let rows = stmt
@@ -429,14 +442,17 @@ impl McpServerRegistry for ConfigStore {
                     r.get::<_, String>(3)?, // args (JSON array)
                     r.get::<_, String>(4)?, // url
                     r.get::<_, i64>(5)? != 0,
+                    r.get::<_, String>(6)?, // env (JSON object) — secret
+                    r.get::<_, String>(7)?, // auth (bearer token) — secret
                 ))
             })
             .map_err(backend)?;
         let mut servers = Vec::new();
         for row in rows {
-            let (name, kind, command, args_json, url, enabled) = row.map_err(backend)?;
+            let (name, kind, command, args_json, url, enabled, env_json, auth) =
+                row.map_err(backend)?;
             let transport = match kind.as_str() {
-                "http" => McpTransport::Http { url },
+                "http" => McpTransport::Http { url, auth },
                 // Default anything else to stdio — the only other variant we write.
                 _ => {
                     let args: Vec<String> = if args_json.is_empty() {
@@ -444,7 +460,12 @@ impl McpServerRegistry for ConfigStore {
                     } else {
                         serde_json::from_str(&args_json).map_err(corrupt)?
                     };
-                    McpTransport::Stdio { command, args }
+                    let env = if env_json.is_empty() {
+                        std::collections::BTreeMap::new()
+                    } else {
+                        serde_json::from_str(&env_json).map_err(corrupt)?
+                    };
+                    McpTransport::Stdio { command, args, env }
                 }
             };
             servers.push(McpServer {
@@ -457,20 +478,30 @@ impl McpServerRegistry for ConfigStore {
     }
 
     fn register(&self, server: &McpServer) -> Result<(), RepositoryError> {
-        let (kind, command, args_json, url) = match &server.transport {
-            McpTransport::Stdio { command, args } => (
+        let (kind, command, args_json, url, env_json, auth) = match &server.transport {
+            McpTransport::Stdio { command, args, env } => (
                 "stdio",
                 command.as_str(),
                 serde_json::to_string(args).map_err(backend)?,
                 String::new(),
+                serde_json::to_string(env).map_err(backend)?,
+                String::new(),
             ),
-            McpTransport::Http { url } => ("http", "", String::new(), url.clone()),
+            McpTransport::Http { url, auth } => (
+                "http",
+                "",
+                String::new(),
+                url.clone(),
+                String::new(),
+                auth.clone(),
+            ),
         };
         self.db
             .lock()?
             .execute(
-                "INSERT OR REPLACE INTO mcp_servers (name, kind, command, args, url, enabled) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                "INSERT OR REPLACE INTO mcp_servers \
+                 (name, kind, command, args, url, enabled, env, auth) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
                 params![
                     server.name,
                     kind,
@@ -478,6 +509,8 @@ impl McpServerRegistry for ConfigStore {
                     args_json,
                     url,
                     i64::from(server.enabled),
+                    env_json,
+                    auth,
                 ],
             )
             .map_err(backend)?;
@@ -578,7 +611,7 @@ mod tests {
         assert_eq!(listed, vec![cal.clone(), fs.clone()]);
         assert!(matches!(
             &listed[1].transport,
-            McpTransport::Stdio { command, args }
+            McpTransport::Stdio { command, args, .. }
                 if command == "npx" && args == &["-y".to_owned(), "server-fs".to_owned()]
         ));
 
@@ -590,7 +623,8 @@ mod tests {
         assert_eq!(
             listed[1].transport,
             McpTransport::Http {
-                url: "https://fs.example".to_owned()
+                url: "https://fs.example".to_owned(),
+                auth: String::new()
             }
         );
 
@@ -607,7 +641,8 @@ mod tests {
         assert_eq!(
             cal_row.transport,
             McpTransport::Http {
-                url: "https://cal.example".to_owned()
+                url: "https://cal.example".to_owned(),
+                auth: String::new()
             }
         );
 

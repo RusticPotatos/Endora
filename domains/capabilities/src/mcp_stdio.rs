@@ -224,8 +224,23 @@ impl StdioMcpClient {
     /// fails (which is exactly the "unhealthy server ⇒ skipped" signal the adapter
     /// relies on).
     pub fn spawn(command: &str, args: &[String]) -> Result<Self, String> {
+        Self::spawn_with_env(command, args, &std::collections::BTreeMap::new())
+    }
+
+    /// Spawns the server with extra environment for the child — how most servers take
+    /// their credentials (e.g. `GITHUB_TOKEN`). Otherwise identical to [`Self::spawn`].
+    ///
+    /// # Errors
+    /// A human-readable message if the process can't be started or the handshake
+    /// fails (the "unhealthy server ⇒ skipped" signal the adapter relies on).
+    pub fn spawn_with_env(
+        command: &str,
+        args: &[String],
+        env: &std::collections::BTreeMap<String, String>,
+    ) -> Result<Self, String> {
         let mut child = Command::new(command)
             .args(args)
+            .envs(env)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
