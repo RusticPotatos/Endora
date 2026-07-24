@@ -830,6 +830,21 @@ async fn health() -> Json<serde_json::Value> {
     }))
 }
 
+/// Whisper (and similar STT) hallucinate a stock phrase repeated many times when
+/// handed near-silent or non-speech audio — e.g. "Torsdagsfotografi" twenty times in
+/// a row. Real speech varies; a hallucinated loop is one or two tokens over and over.
+/// We treat such a transcript as nothing said (so conversation mode keeps listening
+/// and push-to-talk inserts nothing) rather than send it as if the person spoke it.
+fn looks_like_stt_hallucination(text: &str) -> bool {
+    let words: Vec<&str> = text.split_whitespace().collect();
+    if words.len() < 6 {
+        return false;
+    }
+    let distinct: std::collections::HashSet<String> =
+        words.iter().map(|w| w.to_lowercase()).collect();
+    (distinct.len() as f64) / (words.len() as f64) <= 0.34
+}
+
 /// Transcribes a recording (raw audio bytes in the body) via the configured
 /// speech-to-text server (`ENDORA_STT_URL`, OpenAI-compatible). The node proxies
 /// it so the STT host is never exposed to the page; 503 when none is configured.
@@ -847,6 +862,12 @@ async fn transcribe(body: axum::body::Bytes) -> Result<Json<serde_json::Value>, 
             .map_err(|e| AppError::Model { message: e })
     })
     .await?;
+    // Drop the classic silence-hallucination so it never reaches the conversation.
+    let text = if looks_like_stt_hallucination(&text) {
+        String::new()
+    } else {
+        text
+    };
     Ok(Json(json!({ "text": text })))
 }
 
@@ -4716,6 +4737,26 @@ mod tests {
         // URL updated, but the token was preserved rather than wiped.
         assert_eq!(ha["url"], "http://new/sse");
         assert_eq!(ha["auth_set"], true);
+    }
+
+    #[test]
+    fn stt_hallucination_filter_drops_repeats_but_keeps_real_speech() {
+        use super::looks_like_stt_hallucination;
+        // The exact silence-hallucination signature: one token over and over.
+        let junk = "Torsdagsfotografi ".repeat(20);
+        assert!(looks_like_stt_hallucination(junk.trim()));
+        assert!(looks_like_stt_hallucination(
+            "thank you thank you thank you thank you thank you thank you"
+        ));
+        // Real sentences vary and must pass through untouched.
+        assert!(!looks_like_stt_hallucination(
+            "turn on the kitchen lights and check if the back door is locked"
+        ));
+        assert!(!looks_like_stt_hallucination(
+            "what's the weather like today"
+        ));
+        // Too short to judge — never dropped.
+        assert!(!looks_like_stt_hallucination("no no no"));
     }
 
     #[tokio::test]
