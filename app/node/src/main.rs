@@ -9,6 +9,7 @@
 #![forbid(unsafe_code)]
 
 mod api;
+mod mcp_catalog;
 mod tls;
 
 use std::sync::Arc;
