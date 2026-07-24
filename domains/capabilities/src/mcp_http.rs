@@ -1,19 +1,27 @@
-//! A **synchronous** streamable-HTTP MCP client (ADR 0021).
+//! A **synchronous** HTTP MCP client (ADR 0021) that speaks either transport.
 //!
-//! Speaks MCP over HTTP to a **networked** server — a sidecar container, or a Docker
-//! MCP Gateway that aggregates several servers behind one endpoint. This is the
-//! "connect to a server we don't host" path (the model-agnostic boundary), which
-//! keeps Endora's own image lean instead of spawning subprocesses. Kept sync (`ureq`
-//! is already a dependency) to match [`McpClient`]/[`CapabilityRunner`].
+//! Connects to a **networked** server — a sidecar container, a Docker MCP Gateway, or
+//! Home Assistant's MCP integration — the "connect to a server we don't host" path,
+//! keeping Endora's own image lean. Kept sync (`ureq`, already a dependency) to match
+//! [`McpClient`]/[`CapabilityRunner`].
 //!
-//! Each request is one POST of a JSON-RPC message. Per the streamable-HTTP transport
-//! the server replies with either a single JSON response or an SSE stream, and may
-//! hand back an `Mcp-Session-Id` on `initialize` that we echo on later requests. The
-//! JSON-RPC result shape is parsed by the same helpers the stdio client uses.
+//! It **auto-detects** the transport on connect:
+//! - **Streamable HTTP** (newer): each request is one POST; the reply is a single JSON
+//!   body or an inline SSE body, and an `Mcp-Session-Id` from `initialize` is echoed on
+//!   later requests.
+//! - **HTTP+SSE** (older; what Home Assistant's `/mcp_server/sse` uses): a long-lived
+//!   GET stream announces a POST endpoint via an `endpoint` event; requests are POSTed
+//!   there and every reply arrives back on the stream.
+//!
+//! It tries the SSE stream first (a single GET); if that isn't an event stream it falls
+//! back to POSTing. The JSON-RPC result shape is parsed by the same helpers the stdio
+//! client uses.
 
-use std::io::Read;
+use std::io::{BufRead, BufReader, Read};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::mpsc::{self, Receiver};
+use std::thread;
 use std::time::Duration;
 
 use serde_json::{Value, json};
@@ -29,16 +37,25 @@ const TIMEOUT: Duration = Duration::from_secs(30);
 /// Cap on a single response body.
 const MAX_BYTES: u64 = 4 * 1024 * 1024;
 
-/// A connected HTTP MCP server (streamable-HTTP transport, ADR 0021).
+/// A live HTTP+SSE connection: the POST endpoint the server announced, and the
+/// receiver for messages the reader thread pulls off the event stream.
+struct SseConn {
+    post_url: String,
+    rx: Mutex<Receiver<(String, String)>>,
+}
+
+/// A connected HTTP MCP server (ADR 0021). `sse` present ⇒ HTTP+SSE transport;
+/// absent ⇒ streamable HTTP.
 pub struct HttpMcpClient {
     agent: ureq::Agent,
     url: String,
     /// Optional bearer token sent as `Authorization` (e.g. a Home Assistant
     /// long-lived token). A secret: held here, never logged or returned.
     auth: String,
-    /// The session id the server assigned on `initialize`, echoed on later requests.
+    /// The session id the server assigned on `initialize` (streamable transport).
     session: Mutex<Option<String>>,
     next_id: AtomicU64,
+    sse: Option<SseConn>,
 }
 
 impl HttpMcpClient {
@@ -60,12 +77,16 @@ impl HttpMcpClient {
             .timeout_global(Some(TIMEOUT))
             .build()
             .into();
+        let auth = auth.trim().to_owned();
+        // Prefer the SSE transport if the endpoint offers one; otherwise POST.
+        let sse = open_sse(url, &auth);
         let client = Self {
             agent,
             url: url.to_owned(),
-            auth: auth.trim().to_owned(),
+            auth,
             session: Mutex::new(None),
             next_id: AtomicU64::new(1),
+            sse,
         };
         let params = json!({
             "protocolVersion": PROTOCOL_VERSION,
@@ -77,32 +98,50 @@ impl HttpMcpClient {
         Ok(client)
     }
 
-    /// The current session id, if the server assigned one.
+    /// The current session id, if the server assigned one (streamable transport).
     fn session_id(&self) -> Option<String> {
         self.session.lock().ok().and_then(|g| g.clone())
     }
 
-    /// POSTs a JSON-RPC request and returns its `result` value (or an error).
+    /// Adds the auth header (and session id, streamable only) to a request builder.
+    fn with_headers(
+        &self,
+        mut b: ureq::RequestBuilder<ureq::typestate::WithBody>,
+    ) -> ureq::RequestBuilder<ureq::typestate::WithBody> {
+        if !self.auth.is_empty() {
+            b = b.header("authorization", &format!("Bearer {}", self.auth));
+        }
+        if self.sse.is_none() {
+            if let Some(sid) = self.session_id() {
+                b = b.header("mcp-session-id", &sid);
+            }
+        }
+        b
+    }
+
+    /// Sends a JSON-RPC request and returns its `result` value (or an error).
     fn request(&self, method: &str, params: Option<Value>) -> Result<Value, String> {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let mut body = json!({ "jsonrpc": "2.0", "id": id, "method": method });
         if let Some(p) = params {
             body["params"] = p;
         }
-        let mut builder = self
+        if let Some(sse) = &self.sse {
+            return self.request_sse(sse, id, &body);
+        }
+        self.request_streamable(id, &body)
+    }
+
+    /// Streamable HTTP: POST the message, read the reply inline.
+    fn request_streamable(&self, id: u64, body: &Value) -> Result<Value, String> {
+        let builder = self
             .agent
             .post(&self.url)
             .header("accept", "application/json, text/event-stream");
-        if !self.auth.is_empty() {
-            builder = builder.header("authorization", &format!("Bearer {}", self.auth));
-        }
-        if let Some(sid) = self.session_id() {
-            builder = builder.header("mcp-session-id", &sid);
-        }
-        let mut resp = builder
-            .send_json(&body)
+        let mut resp = self
+            .with_headers(builder)
+            .send_json(body)
             .map_err(|e| format!("MCP HTTP request failed: {e}"))?;
-        // Capture a session id the server assigned (on initialize).
         if let Some(sid) = resp
             .headers()
             .get("mcp-session-id")
@@ -131,29 +170,147 @@ impl HttpMcpClient {
             serde_json::from_str::<Value>(text.trim())
                 .map_err(|e| format!("bad JSON from MCP server: {e}"))?
         };
-        if let Some(err) = msg.get("error") {
-            return Err(format!("MCP server error: {err}"));
-        }
-        Ok(msg.get("result").cloned().unwrap_or(Value::Null))
+        result_of(&msg)
     }
 
-    /// POSTs a JSON-RPC notification (no id, no reply expected). Best-effort.
-    fn notify(&self, method: &str) {
-        let mut builder = self
+    /// HTTP+SSE: POST the message to the announced endpoint, then read the matching
+    /// reply off the event stream.
+    fn request_sse(&self, sse: &SseConn, id: u64, body: &Value) -> Result<Value, String> {
+        let builder = self
             .agent
-            .post(&self.url)
+            .post(&sse.post_url)
+            .header("content-type", "application/json");
+        self.with_headers(builder)
+            .send_json(body)
+            .map_err(|e| format!("MCP SSE post failed: {e}"))?;
+        let rx = sse
+            .rx
+            .lock()
+            .map_err(|_| "MCP SSE channel poisoned".to_owned())?;
+        loop {
+            match rx.recv_timeout(TIMEOUT) {
+                Ok((_event, data)) => {
+                    if let Ok(msg) = serde_json::from_str::<Value>(&data) {
+                        if msg.get("id").and_then(Value::as_u64) == Some(id) {
+                            return result_of(&msg);
+                        }
+                    }
+                }
+                Err(_) => return Err("the MCP server timed out".to_owned()),
+            }
+        }
+    }
+
+    /// Sends a JSON-RPC notification (no id, no reply expected). Best-effort.
+    fn notify(&self, method: &str) {
+        let msg = json!({ "jsonrpc": "2.0", "method": method });
+        let post_url = self
+            .sse
+            .as_ref()
+            .map_or(self.url.as_str(), |s| s.post_url.as_str());
+        let builder = self
+            .agent
+            .post(post_url)
             .header("accept", "application/json, text/event-stream");
-        if !self.auth.is_empty() {
-            builder = builder.header("authorization", &format!("Bearer {}", self.auth));
-        }
-        if let Some(sid) = self.session_id() {
-            builder = builder.header("mcp-session-id", &sid);
-        }
-        let _ = builder.send_json(json!({ "jsonrpc": "2.0", "method": method }));
+        let _ = self.with_headers(builder).send_json(msg);
     }
 }
 
-/// Scans an SSE body's `data:` lines for the JSON-RPC message whose `id` matches.
+/// Pulls the `result` out of a JSON-RPC reply, or an error if it carried one.
+fn result_of(msg: &Value) -> Result<Value, String> {
+    if let Some(err) = msg.get("error") {
+        return Err(format!("MCP server error: {err}"));
+    }
+    Ok(msg.get("result").cloned().unwrap_or(Value::Null))
+}
+
+/// Opens the HTTP+SSE stream at `url`: GETs the event stream, drains it on a reader
+/// thread, and waits for the `endpoint` event that names where to POST messages.
+/// Returns `None` when the endpoint isn't an event stream (so the caller uses the
+/// streamable POST transport instead) or the handshake stalls.
+fn open_sse(url: &str, auth: &str) -> Option<SseConn> {
+    // A dedicated agent with NO global timeout — the GET is a long-lived stream.
+    let agent: ureq::Agent = ureq::Agent::config_builder().build().into();
+    let mut builder = agent.get(url).header("accept", "text/event-stream");
+    if !auth.is_empty() {
+        builder = builder.header("authorization", &format!("Bearer {auth}"));
+    }
+    let resp = builder.call().ok()?;
+    let is_stream = resp
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|c| c.contains("text/event-stream"));
+    if !is_stream {
+        return None;
+    }
+    let (tx, rx) = mpsc::channel::<(String, String)>();
+    thread::spawn(move || {
+        let mut resp = resp;
+        let reader = BufReader::new(resp.body_mut().as_reader());
+        let mut event = String::new();
+        let mut data = String::new();
+        for line in reader.lines() {
+            let Ok(line) = line else { break };
+            if line.is_empty() {
+                // Blank line ends an event; dispatch what we have.
+                if !data.is_empty() {
+                    let ev = if event.is_empty() {
+                        "message".to_owned()
+                    } else {
+                        std::mem::take(&mut event)
+                    };
+                    if tx.send((ev, std::mem::take(&mut data))).is_err() {
+                        break; // consumer gone
+                    }
+                }
+                event.clear();
+                data.clear();
+            } else if let Some(v) = line.strip_prefix("event:") {
+                event = v.trim().to_owned();
+            } else if let Some(v) = line.strip_prefix("data:") {
+                if !data.is_empty() {
+                    data.push('\n');
+                }
+                data.push_str(v.strip_prefix(' ').unwrap_or(v));
+            }
+        }
+    });
+    // The first meaningful event names the POST endpoint.
+    loop {
+        match rx.recv_timeout(Duration::from_secs(10)) {
+            Ok((event, data)) => {
+                if event == "endpoint" {
+                    return Some(SseConn {
+                        post_url: resolve_url(url, data.trim()),
+                        rx: Mutex::new(rx),
+                    });
+                }
+                // Ignore anything before the endpoint (comments/keep-alives).
+            }
+            Err(_) => return None,
+        }
+    }
+}
+
+/// Resolves an endpoint value against the SSE URL: absolute URLs pass through; a
+/// path is joined to the stream's scheme+host.
+fn resolve_url(base: &str, endpoint: &str) -> String {
+    if endpoint.starts_with("http://") || endpoint.starts_with("https://") {
+        return endpoint.to_owned();
+    }
+    let origin = base.find("://").map_or(base, |i| {
+        let after = &base[i + 3..];
+        after.find('/').map_or(base, |j| &base[..i + 3 + j])
+    });
+    if endpoint.starts_with('/') {
+        format!("{origin}{endpoint}")
+    } else {
+        format!("{origin}/{endpoint}")
+    }
+}
+
+/// Scans an inline SSE body's `data:` lines for the message whose `id` matches.
 fn sse_message_for_id(text: &str, id: u64) -> Result<Value, String> {
     for line in text.lines() {
         let Some(payload) = line.trim().strip_prefix("data:") else {
@@ -189,11 +346,10 @@ impl McpClient for HttpMcpClient {
 
 #[cfg(test)]
 mod tests {
-    use super::sse_message_for_id;
+    use super::{resolve_url, sse_message_for_id};
 
     #[test]
     fn sse_picks_the_reply_with_the_matching_id() {
-        // A stream carrying a stray event then the real reply.
         let body = "event: message\n\
                     data: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/x\"}\n\
                     \n\
@@ -201,7 +357,27 @@ mod tests {
                     data: {\"jsonrpc\":\"2.0\",\"id\":7,\"result\":{\"ok\":true}}\n\n";
         let msg = sse_message_for_id(body, 7).unwrap();
         assert_eq!(msg["result"]["ok"], true);
-        // No matching id ⇒ an error rather than a wrong message.
         assert!(sse_message_for_id(body, 99).is_err());
+    }
+
+    #[test]
+    fn endpoint_urls_resolve_against_the_stream_origin() {
+        // The common Home-Assistant-style case: an absolute path with a session token.
+        assert_eq!(
+            resolve_url(
+                "http://ha.local:8123/mcp_server/sse",
+                "/mcp_server/messages/abc"
+            ),
+            "http://ha.local:8123/mcp_server/messages/abc"
+        );
+        // A relative value gets a slash; an absolute URL passes through untouched.
+        assert_eq!(
+            resolve_url("https://gw:9/sse", "messages?s=1"),
+            "https://gw:9/messages?s=1"
+        );
+        assert_eq!(
+            resolve_url("https://gw:9/sse", "https://other/post"),
+            "https://other/post"
+        );
     }
 }
