@@ -1049,24 +1049,19 @@ fn parse_butler_response(json: &Value) -> Result<ButlerReply, ProposalError> {
 /// is consulted to map the sanitised tool-call name back to the real capability id.
 fn parse_model_reply(json: &Value, context: &ButlerContext) -> Result<ButlerReply, ProposalError> {
     let message = &json["choices"][0]["message"];
-    if let Some(call) = message["tool_calls"]
-        .as_array()
-        .and_then(|calls| calls.first())
-    {
-        let api_name = call["function"]["name"].as_str().unwrap_or_default();
-        // Reverse the dot→`__` sanitisation by matching the real ids we offered.
-        let capability = context
-            .tools
+    if let Some(calls) = message["tool_calls"].as_array().filter(|c| !c.is_empty()) {
+        // Capture EVERY call (with its id) for the single-conversation loop (ADR 0028),
+        // and keep the first as `capability_use` for the current two-pass loop.
+        let tool_calls: Vec<endora_application::ToolCall> = calls
             .iter()
-            .map(|t| t.id.clone())
-            .find(|id| tool_api_name(id) == api_name)
-            .unwrap_or_else(|| api_name.replace("__", "."));
-        // OpenAI-style `arguments` is a JSON string; some endpoints inline an object.
-        let input_json = match &call["function"]["arguments"] {
-            Value::String(s) if !s.trim().is_empty() => s.clone(),
-            Value::Object(_) | Value::Array(_) => call["function"]["arguments"].to_string(),
-            _ => "{}".to_owned(),
-        };
+            .map(|call| parse_one_tool_call(call, context))
+            .collect();
+        let capability_use = tool_calls
+            .first()
+            .map(|c| endora_application::CapabilityUse {
+                capability: c.capability.clone(),
+                input_json: c.input_json.clone(),
+            });
         let text = message["content"]
             .as_str()
             .unwrap_or_default()
@@ -1074,14 +1069,36 @@ fn parse_model_reply(json: &Value, context: &ButlerContext) -> Result<ButlerRepl
             .to_owned();
         return Ok(ButlerReply {
             text,
-            capability_use: Some(endora_application::CapabilityUse {
-                capability,
-                input_json,
-            }),
+            capability_use,
+            tool_calls,
             ..ButlerReply::default()
         });
     }
     parse_butler_response(json)
+}
+
+/// Parses one entry of an OpenAI-style `tool_calls` array into a [`ToolCall`],
+/// resolving the sanitised function name back to the real capability id.
+fn parse_one_tool_call(call: &Value, context: &ButlerContext) -> endora_application::ToolCall {
+    let api_name = call["function"]["name"].as_str().unwrap_or_default();
+    // Reverse the dot→`__` sanitisation by matching the real ids we offered.
+    let capability = context
+        .tools
+        .iter()
+        .map(|t| t.id.clone())
+        .find(|id| tool_api_name(id) == api_name)
+        .unwrap_or_else(|| api_name.replace("__", "."));
+    // OpenAI-style `arguments` is a JSON string; some endpoints inline an object.
+    let input_json = match &call["function"]["arguments"] {
+        Value::String(s) if !s.trim().is_empty() => s.clone(),
+        Value::Object(_) | Value::Array(_) => call["function"]["arguments"].to_string(),
+        _ => "{}".to_owned(),
+    };
+    endora_application::ToolCall {
+        id: call["id"].as_str().unwrap_or_default().to_owned(),
+        capability,
+        input_json,
+    }
 }
 
 /// Parses the model's message content into a [`ButlerReply`]. Small models don't
@@ -1117,6 +1134,7 @@ fn parse_butler_json(content: &str) -> ButlerReply {
         proposals,
         beliefs,
         capability_use,
+        ..ButlerReply::default()
     }
 }
 
@@ -1403,6 +1421,40 @@ mod tests {
         // The sanitised name maps back to the real namespaced id, args preserved.
         assert_eq!(used.capability, "home-assistant.HassTurnOn");
         assert_eq!(used.input_json, "{\"name\":\"kitchen lights\"}");
+    }
+
+    #[test]
+    fn parse_model_reply_captures_every_tool_call_with_its_id() {
+        use endora_application::CapabilityTool;
+        let ctx = ButlerContext {
+            tools: vec![CapabilityTool {
+                id: "home-assistant.HassTurnOn".to_owned(),
+                description: "on".to_owned(),
+                input_schema: None,
+            }],
+            ..Default::default()
+        };
+        let resp = json!({
+            "choices": [{ "message": {
+                "content": "",
+                "tool_calls": [
+                    { "id": "call_1", "function": { "name": "home-assistant__HassTurnOn", "arguments": "{\"name\":\"kitchen\"}" } },
+                    { "id": "call_2", "function": { "name": "weather", "arguments": "{\"location\":\"Boston\"}" } }
+                ]
+            }}]
+        });
+        let reply = parse_model_reply(&resp, &ctx).unwrap();
+        // Both calls captured, each with its id and resolved capability.
+        assert_eq!(reply.tool_calls.len(), 2);
+        assert_eq!(reply.tool_calls[0].id, "call_1");
+        assert_eq!(reply.tool_calls[0].capability, "home-assistant.HassTurnOn");
+        assert_eq!(reply.tool_calls[1].id, "call_2");
+        assert_eq!(reply.tool_calls[1].capability, "weather");
+        // The legacy single-call view still points at the first.
+        assert_eq!(
+            reply.capability_use.unwrap().capability,
+            "home-assistant.HassTurnOn"
+        );
     }
 
     #[test]
