@@ -987,6 +987,8 @@ function mcpEditServer(name) {
   set("mcp-env", (s.env_keys || []).map((k) => `${k}=`).join("\n"));
   set("mcp-url", s.url || "");
   set("mcp-auth", "");
+  const trustEl = document.getElementById("mcp-trust");
+  if (trustEl) trustEl.checked = s.trust_all !== false;
   const secretNote = s.auth_set || (s.env_keys || []).length
     ? " Leave the token/secret blank to keep what's saved."
     : "";
@@ -1353,6 +1355,7 @@ function viewSkills() {
             <button class="ghost danger" data-act="mcp:remove:${esc(s.name)}">Remove</button>
           </div>
         </div>
+        ${toggle(s.trust_all, `mcp:trust:${esc(s.name)}`, "Allow all its tools", "Auto-enables every tool this server exposes, so you don't allow them one by one. The butler still asks before each use.")}
         ${(s.tools || []).map(toolRow).join("")}
       </div>`;
   };
@@ -1392,6 +1395,10 @@ function viewSkills() {
         <div class="field"><label>Access token <span class="sub" style="font-weight:400;">· optional, sent as a bearer token</span></label>
           <input id="mcp-auth" type="password" autocomplete="off" placeholder="stored securely, never shown" /></div>
       </div>
+      <label class="row" style="gap:8px;align-items:center;margin-top:4px;">
+        <input type="checkbox" id="mcp-trust" checked />
+        <span class="sub">Allow all its tools automatically — the butler still asks before each use.</span>
+      </label>
       <div class="row" style="justify-content:flex-end;"><button class="primary" data-act="mcp:add">Save server</button></div>
     </div>`;
   const mcpSection = `
@@ -1993,12 +2000,22 @@ async function dispatch(act) {
         }
         body = { name, transport: "stdio", command, args, env };
       }
-      try { await api("POST", "/v1/mcp/servers", body); flash("Server added.", "ok"); }
+      const trustEl = document.getElementById("mcp-trust");
+      body.trust_all = trustEl ? trustEl.checked : true;
+      try { await api("POST", "/v1/mcp/servers", body); flash("Server saved.", "ok"); }
       catch (e) { flash("Couldn't add the server: " + e.message, "err"); }
       return reload();
     }
     // Remove an MCP server (its tools disconnect).
     if (verb === "mcp" && noun === "edit") { mcpEditServer(id); return; }
+    if (verb === "mcp" && noun === "trust") {
+      const on = arg === "1";
+      try {
+        await api("POST", "/v1/mcp/servers/" + encodeURIComponent(id) + "/trust", { trust_all: on });
+        flash(on ? "Allowing all its tools — still asks before each use." : "No longer auto-allowing this server's tools.", "ok");
+      } catch (e) { flash("Couldn't update: " + e.message, "err"); }
+      return reload();
+    }
     if (verb === "mcp" && noun === "reconnect") {
       try {
         const r = await api("POST", "/v1/mcp/servers/" + encodeURIComponent(id) + "/reconnect");

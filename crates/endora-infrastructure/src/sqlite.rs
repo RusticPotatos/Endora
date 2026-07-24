@@ -233,7 +233,8 @@ CREATE TABLE IF NOT EXISTS mcp_servers (
     url     TEXT NOT NULL DEFAULT '',
     enabled INTEGER NOT NULL DEFAULT 1,
     env     TEXT NOT NULL DEFAULT '',
-    auth    TEXT NOT NULL DEFAULT ''
+    auth    TEXT NOT NULL DEFAULT '',
+    trust_all INTEGER NOT NULL DEFAULT 1
 ) STRICT;
 ";
 
@@ -307,6 +308,14 @@ impl SqliteStore {
             // bearer token (http). Secrets — stored, never returned by the API.
             ensure_column(&conn, "mcp_servers", "env", "TEXT NOT NULL DEFAULT ''")?;
             ensure_column(&conn, "mcp_servers", "auth", "TEXT NOT NULL DEFAULT ''")?;
+            // Auto-allow a server's tools on connect (default on). Opened tools stay
+            // Block→Confirm, so this never drops the ask-before-each-use safety net.
+            ensure_column(
+                &conn,
+                "mcp_servers",
+                "trust_all",
+                "INTEGER NOT NULL DEFAULT 1",
+            )?;
             // Lifecycle status on North Stars and Targets; existing rows default to
             // 'active'.
             ensure_column(
