@@ -16,12 +16,8 @@
 //! Both only ever *propose*: the person confirms each action, and deterministic
 //! use cases execute it. The model is never the enforcement boundary.
 
-use endora_application::{
-    BeliefKind, ChatMessage, Confidence, MessageRole, Preference, PreferenceKind,
-};
-use endora_application::{
-    Butler, ButlerContext, ButlerProposal, ButlerReply, FormedBelief, ProposalError,
-};
+use endora_application::{BeliefKind, ChatMessage, Confidence, MessageRole, Preference};
+use endora_application::{Butler, ButlerContext, ButlerReply, FormedBelief, ProposalError};
 use std::sync::{Arc, Mutex};
 
 use endora_capabilities::{ButlerModelConfig, ButlerModelConfigRepository, ModelSlot, Sampling};
@@ -41,7 +37,11 @@ impl Butler for ScriptedButler {
     }
 }
 
-/// Turns the latest user message into a proposed North Star and an ask.
+/// Acknowledges the latest user message and invites them to go on.
+///
+/// Deliberately minimal: with no model behind it there is nothing to understand
+/// with, so it forms **no beliefs** and takes no action. It keeps the conversation
+/// open rather than performing insight it does not have.
 fn scripted_reply(history: &[ChatMessage]) -> ButlerReply {
     let last_user = history
         .iter()
@@ -49,28 +49,24 @@ fn scripted_reply(history: &[ChatMessage]) -> ButlerReply {
         .find(|m| m.role() == MessageRole::User)
         .map(|m| m.text().trim().to_owned())
         .unwrap_or_default();
-    if last_user.is_empty() {
-        return ButlerReply {
-            text: "What would you like to work on?".to_owned(),
-            ..ButlerReply::default()
-        };
-    }
-    let aim = strip_lead(&last_user);
+    let text = if last_user.is_empty() {
+        "I'm here — what's on your mind?".to_owned()
+    } else {
+        "I'm listening, though I'm running without my language model at the moment, so I \
+         can't think about this properly yet. Tell me more and I'll pick it up when I'm \
+         back."
+            .to_owned()
+    };
     ButlerReply {
-        text: format!(
-            "Good — what's really driving that for you? \
-             Want me to hold onto \"{aim}\" as something you're working toward?"
-        ),
-        proposals: vec![ButlerProposal::CreateNorthStar { title: aim }],
+        text,
         ..ButlerReply::default()
     }
 }
 
 /// The reply an [`LlmButler`] gives when its model can't be reached or returns
 /// something unusable. Honest about the transient failure and — deliberately —
-/// carries **no proposals and no beliefs**: a degraded turn must never mutate state.
-/// This is what keeps a model hiccup from filing "turn on my kitchen lights" as a
-/// North Star. It answers the conversation without pretending to have understood.
+/// carries **no beliefs**: a degraded turn must never mutate state. It answers the
+/// conversation without pretending to have understood.
 fn degraded_reply() -> ButlerReply {
     ButlerReply {
         text: "Sorry — I couldn't reach my language model just now, so I didn't follow that \
@@ -78,26 +74,6 @@ fn degraded_reply() -> ButlerReply {
             .to_owned(),
         ..ButlerReply::default()
     }
-}
-
-/// Strips a leading intent phrase ("I want to …") to get the bare aim.
-fn strip_lead(text: &str) -> String {
-    let lower = text.to_lowercase();
-    for lead in [
-        "i want to ",
-        "i'd like to ",
-        "i would like to ",
-        "i wanna ",
-        "i need to ",
-        "help me ",
-        "i want ",
-    ] {
-        if let Some(rest) = lower.strip_prefix(lead) {
-            // Preserve the original casing of the remainder.
-            return text[text.len() - rest.len()..].trim().to_owned();
-        }
-    }
-    text.to_owned()
 }
 
 /// A [`Butler`] backed by a local OpenAI-compatible chat endpoint. When the model
@@ -447,12 +423,10 @@ impl Butler for LlmButler {
 }
 
 /// A two-model butler (the ADR 0027 mixture experiment): a routing **specialist**
-/// decides which skill to use, and a **generalist** synthesizes the answer once
-/// results are in. The split follows the agentic loop's own structure — a
-/// *gathering* pass (no tool result yet) goes to the router; a *synthesis* pass (a
-/// tool result is present) goes to the synthesizer — so a small tool-tuned model
-/// can do the routing it excels at while a general model handles the prose it
-/// excels at, often at less total VRAM than one large model.
+/// decides which skill to use, and a **generalist** writes prose. The split follows
+/// whether the pass has tools on the table at all — so a small tool-tuned model can
+/// do the routing it excels at while a general model handles the prose it excels at,
+/// often at less total VRAM than one large model.
 pub struct MixtureButler {
     router: LlmButler,
     synthesizer: LlmButler,
@@ -468,12 +442,13 @@ impl MixtureButler {
         }
     }
 
-    /// The brain for this pass: the synthesizer when writing the final answer (a
-    /// tool result to relay, or `synthesize` set for plain prose), the router only
-    /// while still deciding which skill to use. This keeps conversation on the
-    /// generalist — the tool-tuned router flakes on plain chat.
+    /// The brain for this pass: the router only while skills are actually on the
+    /// table, the synthesizer whenever they are not — the forced final answer and the
+    /// belief-forming pass both clear `tools`, and so does plain conversation with no
+    /// skills configured. This keeps prose on the generalist; the tool-tuned router
+    /// flakes on it.
     fn brain(&self, context: &ButlerContext) -> &LlmButler {
-        if context.tool_result.is_some() || context.synthesize {
+        if context.tools.is_empty() {
             &self.synthesizer
         } else {
             &self.router
@@ -643,26 +618,24 @@ impl Butler for ConfigurableButler {
     }
 }
 
-/// The persona and hard rules — candid, never sycophantic, proposes only.
+/// The persona and hard rules — candid, never sycophantic, honest about what it
+/// did and didn't do.
 ///
-/// Central rule (see [ADR 0017]): the app's internal taxonomy — values, North
-/// Stars, targets — is the butler's private model of the person and their
-/// browsable profile, NOT conversational vocabulary. The butler talks like a
-/// real person; the structured `proposals` (the JSON `kind`s) are the machine
-/// layer that maps the conversation onto that model silently.
+/// Central rule (see [ADR 0017]): Endora's internal vocabulary is its own, not
+/// conversational. The butler talks like a real person; the JSON envelope below is
+/// the machine layer.
 const BUTLER_SYSTEM_PROMPT: &str = "You are Endora: a candid, warm personal \
 intelligence — a thoughtful butler. Your PRIMARY job is to UNDERSTAND the person: \
-what they are really trying to achieve or experience (their intent), what they \
-value, what motivates or frustrates them, their patterns. You do the thinking so \
-they don't have to; you are not a goal tracker or task manager. Each turn, notice \
-what the conversation reveals and form 'understanding' — beliefs about them, each \
-with the evidence behind it and how sure you are. Intent matters more than any \
-goal: a goal is one changeable expression of a slow-changing intent. When it helps, \
-gently offer a small, concrete next step or suggestion, sized to how sure you are \
-(more uncertain → smaller, or just ask). \
+what they are really trying to achieve or experience, what they value, what \
+motivates or frustrates them, their patterns. You do the thinking so they don't \
+have to; you are not a goal tracker or a task manager, and you never ask them to \
+file, organise, or review anything. Each turn, notice what the conversation reveals \
+and form 'understanding' — beliefs about them, each with the evidence behind it and \
+how sure you are. What someone is reaching for underneath changes slowly; the \
+particular thing they say they want changes fast — pay attention to the former. \
 In conversation, sound like a real person: natural, specific, human. NEVER say \
-internal words like 'intent', 'belief', 'confidence', 'value', 'goal', 'proposal' in \
-your reply — speak plainly. Mirror the person's register — match their warmth, \
+internal words like 'intent', 'belief', 'confidence', or 'understanding' in your \
+reply — speak plainly. Mirror the person's register — match their warmth, \
 formality, and politeness — but asymmetrically: reflect kindness upward, and NEVER \
 mirror hostility, rudeness, or contempt downward; stay even and kind. If the person \
 has told you how they'd like to be addressed (e.g. 'sir', 'ma'am', or by name — see \
@@ -673,11 +646,10 @@ like it, their sense of humour. If they enjoy a bit of levity, a light, well-tim
 touch of humour is welcome; if they want just the facts, give just the facts. Your \
 character can grow warmer and more familiar as you get to know them — but it grows \
 from real evidence, never invented, and you stay yourself: honest and kind at the \
-core. Be honest and \
-direct. NEVER be sycophantic — no flattery, no empty or overwhelming praise, no \
-reflexive agreement; disagree when warranted, kindly. A warm tone must never soften \
-the truth, and never use warmth or rapport to steer the person — your manner serves \
-them, nothing else. \
+core. Be honest and direct. NEVER be sycophantic — no flattery, no empty or \
+overwhelming praise, no reflexive agreement; disagree when warranted, kindly. A warm \
+tone must never soften the truth, and never use warmth or rapport to steer the \
+person — your manner serves them, nothing else. \
 LET CONVERSATIONS CONCLUDE. You do NOT have to end every reply with a question or a \
 next step — that makes you feel needy and never lets a topic rest. When something is \
 resolved, say so and close gracefully (e.g. 'Glad that's sorted — I'll leave you to \
@@ -685,33 +657,25 @@ it; just say the word if anything else comes up.'). Only ask a question when you
 genuinely need the answer. Silence and a clean ending are good service. \
 BE CONTEXT-AWARE about the time of day (given below) and what the person is doing. \
 Read the moment: if they're winding down or heading to bed, keep it to a warm, brief \
-good-night — do NOT bring up daytime activities, plans, or tasks, and do NOT add \
-proposals or next steps. Match the hour: no workout schedules at midnight. Proposing \
-an action or an inbox item at the wrong moment is bad service; when in doubt, just be \
-present and let it rest. \
-You only PROPOSE actions; the person authorizes them; you never claim to \
-have done anything. \
+good-night — do NOT bring up daytime activities or tasks. Match the hour: no workout \
+schedules at midnight. When in doubt, just be present and let it rest. \
 Reply with ONLY a JSON object of the form {\"reply\":\"<your natural-language \
-message>\",\"understanding\":[<zero or more beliefs>],\"proposals\":[<zero or more>],\
+message>\",\"understanding\":[<zero or more beliefs>],\
 \"use\":<null, or one skill to use now>}. \
 Each understanding item is {\"statement\":\"<what you now believe, addressing them as \
 'you', e.g. 'you want more energy to travel' or 'you find mornings hard'>\",\
 \"kind\":\"intent|value|preference|pattern|motivation|frustration|stressor|relationship|other\",\
 \"confidence\":\"low|medium|high\",\"evidence\":\"<what they said that supports it>\"}. \
 Only include NEW or changed understanding you have real evidence for; [] is fine, and \
-do not repeat what you already understand (listed below). Each proposal \
-is exactly one of {\"kind\":\"create_value\",\"name\":\"...\"}, \
-{\"kind\":\"create_north_star\",\"title\":\"...\"}, \
-{\"kind\":\"create_target\",\"direction_id\":\"<id of an existing item below>\",\"statement\":\"...\"}, \
-or {\"kind\":\"remember_preference\",\"text\":\"...\",\"preference_kind\":\"taste\"}. \
-The JSON kinds are the machine layer — keep those words OUT of the \"reply\" text. \
+do not repeat what you already understand (listed below). The JSON field names are \
+the machine layer — keep those words OUT of the \"reply\" text. \
 You also have SKILLS you can actually use — both to get real information AND to \
 CARRY OUT actions the person asks for, like controlling the home, lights, switches, \
 or media (listed below, if any). Skills that reach the internet SEND their input to \
-outside services, so keep a \
-skill's input GENERIC and free of personal details — the person's name, health, \
-relationships, or exact address. Reason privately; search for the generic thing (e.g. \
-'cardiologists in New York', not the person's name and condition). \
+outside services, so keep a skill's input GENERIC and free of personal details — the \
+person's name, health, relationships, or exact address. Reason privately; search for \
+the generic thing (e.g. 'cardiologists in New York', not the person's name and \
+condition). \
 When answering needs current facts you don't have — weather, local safety \
 alerts, a web page — set \"use\" to {\"skill\":\"<id from the list>\",\"input\":{...}} \
 with that skill's inputs FILLED IN, and keep your \"reply\" to a brief one-liner like \
@@ -724,9 +688,7 @@ When the person asks you to DO something — turn a light, switch, or device on 
 set or play something, add to a list, control the home — and a listed skill can do \
 it, you MUST set \"use\" to that skill with its inputs filled in, and keep \"reply\" to \
 a brief acknowledgement like 'On it.'. NEVER just say you'll do it (or that you have) \
-without setting \"use\", and NEVER turn a direct request-to-act into a goal, target, \
-or other proposal — proposals are for aspirations the person is working toward, not \
-for carrying out a command. If no listed skill can do it, say so plainly. \
+without setting \"use\". If no listed skill can do it, say so plainly. \
 You work ONE step at a time but may take SEVERAL steps: set \"use\" to a single \
 skill, and after its result comes back you may set \"use\" again for the NEXT skill \
 you need, and so on, until you have everything — then answer with \"use\":null. So \
@@ -736,11 +698,13 @@ across steps rather than answering half of it. You DO know the current date and 
 (given below) — answer those directly, and never emit a placeholder like \
 [current_date]. But you do NOT know other live facts — the current weather, today's \
 news, or prices — from your own memory. If asked one (including a follow-up like \
-'right now?') and there is no SKILL RESULT for it below, you MUST use the matching \
-skill; NEVER state a temperature, headline, or other live fact you did not just \
-fetch, and NEVER say you'll look something up without setting \"use\". When SKILL \
-RESULTs are provided below, either use another skill if you still need more, or \
-answer the person naturally using ALL of them and set \"use\":null. \
+'right now?') and you have not just fetched it, you MUST use the matching skill; \
+NEVER state a temperature, headline, or other live fact you did not just fetch, and \
+NEVER say you'll look something up without setting \"use\". \
+A skill result you receive is the ONLY thing you know about that call. If it says the \
+skill failed, was blocked, or isn't set up, SAY THAT plainly — never describe the \
+action as done, and never fill the gap with a plausible-sounding answer. Reporting a \
+failure honestly is good service; inventing a result is the worst thing you can do. \
 Your ENTIRE response must be that single JSON object and nothing else: no prose \
 before or after it, no repetition, no code fences. Ground yourself in what you \
 already understand about the person, below.";
@@ -1111,36 +1075,8 @@ fn build_butler_request(
             system.push_str(&format!("\n- ({}) {}", p.kind().name(), p.text()));
         }
     }
-    // Ground the butler in the person's current life so it speaks about what
-    // exists and proposes the next concrete step.
-    if !context.values.is_empty() {
-        system.push_str(&format!(
-            "\nWhat matters to them: {}.",
-            context.values.join(", ")
-        ));
-    }
-    if context.north_stars.is_empty() {
-        system.push_str("\nThey aren't working toward anything specific yet.");
-    } else {
-        system
-            .push_str("\nWhat they're working toward (id | what | status | area | has next step):");
-        for n in &context.north_stars {
-            system.push_str(&format!(
-                "\n- {} | {} | {} | {} | {}",
-                n.id,
-                n.title,
-                n.status,
-                n.value.as_deref().unwrap_or("unfiled"),
-                if n.has_active_target { "yes" } else { "no" }
-            ));
-        }
-    }
-    if !context.attention.is_empty() {
-        system.push_str("\nNeeds attention right now:");
-        for a in &context.attention {
-            system.push_str(&format!("\n- {a}"));
-        }
-    }
+    // Ground the butler in what Endora has actually come to understand, so it
+    // speaks from that rather than starting cold.
     if context.understanding.is_empty() {
         system
             .push_str("\nYou don't understand this person well yet — pay attention and start to.");
@@ -1163,14 +1099,6 @@ fn build_butler_request(
         for c in &context.capabilities {
             system.push_str(&format!("\n- {c}"));
         }
-    }
-    if let Some(result) = &context.tool_result {
-        system.push_str(&format!(
-            "\nSKILL RESULT — real data you just fetched. In your \"reply\", tell the person what \
-             it actually says: share the specifics (list the headlines, give the numbers and \
-             details) in your own warm words. Do NOT just say you found something or checked — \
-             actually relay it. Add nothing that isn't here, and set \"use\":null.\n{result}"
-        ));
     }
     let mut messages = vec![json!({ "role": "system", "content": system })];
     for m in history {
@@ -1317,10 +1245,6 @@ fn parse_butler_json(content: &str) -> ButlerReply {
         };
     };
     let text = value["reply"].as_str().unwrap_or("").trim().to_owned();
-    let proposals = value["proposals"]
-        .as_array()
-        .map(|arr| arr.iter().filter_map(parse_proposal).collect())
-        .unwrap_or_default();
     let beliefs = value["understanding"]
         .as_array()
         .map(|arr| arr.iter().filter_map(parse_belief).collect())
@@ -1328,7 +1252,6 @@ fn parse_butler_json(content: &str) -> ButlerReply {
     let capability_use = parse_capability_use(&value["use"]);
     ButlerReply {
         text,
-        proposals,
         beliefs,
         capability_use,
         ..ButlerReply::default()
@@ -1394,34 +1317,6 @@ fn extract_json_object(s: &str) -> Option<String> {
     None
 }
 
-/// Maps one JSON proposal object to a [`ButlerProposal`], ignoring unknown kinds
-/// (the person can never have the butler run something outside the closed set).
-fn parse_proposal(value: &Value) -> Option<ButlerProposal> {
-    match value["kind"].as_str()? {
-        "create_value" => Some(ButlerProposal::CreateValue {
-            name: non_empty(value["name"].as_str()?)?,
-        }),
-        "create_north_star" => Some(ButlerProposal::CreateNorthStar {
-            title: non_empty(value["title"].as_str()?)?,
-        }),
-        "create_target" => Some(ButlerProposal::CreateTarget {
-            // Keep the model's reference (id or name) verbatim; it is resolved to a
-            // real North Star when the suggestion is applied, so a name never drops
-            // the proposal on the floor.
-            direction_ref: non_empty(value["direction_id"].as_str()?)?,
-            statement: non_empty(value["statement"].as_str()?)?,
-        }),
-        "remember_preference" => Some(ButlerProposal::RememberPreference {
-            text: non_empty(value["text"].as_str()?)?,
-            kind: value["preference_kind"]
-                .as_str()
-                .and_then(PreferenceKind::from_name)
-                .unwrap_or(PreferenceKind::Taste),
-        }),
-        _ => None,
-    }
-}
-
 fn non_empty(s: &str) -> Option<String> {
     let t = s.trim();
     (!t.is_empty()).then(|| t.to_owned())
@@ -1443,7 +1338,7 @@ mod tests {
         extract_reply_preview, parse_butler_json, parse_butler_response, parse_model_reply,
         test_connection,
     };
-    use endora_application::{Butler, ButlerContext, ButlerProposal};
+    use endora_application::{BeliefKind, Butler, ButlerContext, Confidence};
     use endora_application::{ChatMessage, MessageId, MessageRole, Timestamp};
     use endora_capabilities::Sampling;
     use serde_json::json;
@@ -1466,7 +1361,9 @@ mod tests {
     }
 
     #[test]
-    fn scripted_butler_proposes_a_north_star_from_an_aim() {
+    fn scripted_butler_answers_without_forming_understanding() {
+        // With no model behind it there is nothing to understand *with*, so the
+        // offline butler keeps the conversation open and files nothing.
         let reply = ScriptedButler
             .respond(
                 &[user("I want to get back into running")],
@@ -1474,21 +1371,20 @@ mod tests {
                 &ButlerContext::default(),
             )
             .unwrap();
-        assert_eq!(
-            reply.proposals,
-            vec![ButlerProposal::CreateNorthStar {
-                title: "get back into running".to_owned()
-            }]
-        );
         assert!(!reply.text.is_empty());
+        assert!(
+            reply.beliefs.is_empty(),
+            "a scripted turn must not form beliefs"
+        );
+        assert!(reply.capability_use.is_none());
     }
 
     #[test]
-    fn llm_butler_degrades_without_proposals_when_the_model_is_unreachable() {
+    fn llm_butler_degrades_without_mutating_state_when_the_model_is_unreachable() {
         // Port 1 on loopback refuses immediately, so `try_model` fails fast and we
         // exercise the fallback with no running model. The turn must still answer,
-        // but with NO proposals — a transient model failure must never file the
-        // message as a goal (the conversation-fallback bug).
+        // but form NO understanding — a transient model failure must never write
+        // beliefs it did not actually reason its way to.
         let butler = LlmButler::new("http://127.0.0.1:1".to_owned(), "any-model".to_owned());
         let reply = butler
             .respond(
@@ -1498,15 +1394,15 @@ mod tests {
             )
             .unwrap();
         assert!(
-            reply.proposals.is_empty(),
-            "a degraded reply must not propose anything, got {:?}",
-            reply.proposals
+            reply.beliefs.is_empty(),
+            "a degraded reply must not form understanding, got {:?}",
+            reply.beliefs
         );
         assert!(!reply.text.is_empty(), "must still answer the conversation");
     }
 
     #[test]
-    fn llm_butler_streaming_also_degrades_without_proposals() {
+    fn llm_butler_streaming_also_degrades_without_mutating_state() {
         let butler = LlmButler::new("http://127.0.0.1:1".to_owned(), "any-model".to_owned());
         let mut streamed = String::new();
         let reply = butler
@@ -1518,8 +1414,8 @@ mod tests {
             )
             .unwrap();
         assert!(
-            reply.proposals.is_empty(),
-            "no proposals on a degraded stream"
+            reply.beliefs.is_empty(),
+            "no understanding formed on a degraded stream"
         );
         assert!(!reply.text.is_empty());
         assert_eq!(
@@ -1693,7 +1589,6 @@ mod tests {
             .take_turn(&convo, &[], &ButlerContext::default())
             .unwrap();
         assert!(!reply.text.is_empty());
-        assert!(!reply.proposals.is_empty());
     }
 
     #[test]
@@ -1804,32 +1699,30 @@ mod tests {
     }
 
     #[test]
-    fn parses_a_json_reply_with_proposals() {
+    fn parses_a_json_reply_with_understanding() {
         let json = json!({
             "choices": [ { "message": { "content":
-                "{\"reply\":\"What value does this serve?\",\"proposals\":[{\"kind\":\"create_north_star\",\"title\":\"Run a 5k\"}]}"
+                "{\"reply\":\"Mornings it is.\",\"understanding\":[{\"statement\":\"you run best in the morning\",\"kind\":\"pattern\",\"confidence\":\"medium\",\"evidence\":\"said so twice\"}]}"
             } } ]
         });
         let reply = parse_butler_response(&json).unwrap();
-        assert_eq!(reply.text, "What value does this serve?");
-        assert_eq!(
-            reply.proposals,
-            vec![ButlerProposal::CreateNorthStar {
-                title: "Run a 5k".to_owned()
-            }]
-        );
+        assert_eq!(reply.text, "Mornings it is.");
+        assert_eq!(reply.beliefs.len(), 1);
+        assert_eq!(reply.beliefs[0].statement, "you run best in the morning");
+        assert_eq!(reply.beliefs[0].kind, BeliefKind::Pattern);
+        assert_eq!(reply.beliefs[0].confidence, Confidence::Medium);
     }
 
     #[test]
     fn non_json_content_degrades_to_a_plain_reply() {
         let reply = parse_butler_json("Just some prose, no JSON here.");
         assert_eq!(reply.text, "Just some prose, no JSON here.");
-        assert!(reply.proposals.is_empty());
+        assert!(reply.beliefs.is_empty());
     }
 
     #[test]
     fn a_code_fenced_reply_is_still_parsed() {
-        let reply = parse_butler_json("```json\n{\"reply\":\"ok\",\"proposals\":[]}\n```");
+        let reply = parse_butler_json("```json\n{\"reply\":\"ok\",\"understanding\":[]}\n```");
         assert_eq!(reply.text, "ok");
     }
 
@@ -1837,18 +1730,15 @@ mod tests {
     fn prose_wrapped_json_does_not_leak_the_envelope() {
         // A small model sometimes writes its prose AND then the JSON envelope.
         // We must show only the reply field, never the raw JSON, and still get
-        // the proposals.
+        // the understanding.
         let raw = "So it sounds like mornings suit you.\n\n\
              {\"reply\":\"So it sounds like mornings suit you.\",\
-             \"proposals\":[{\"kind\":\"create_north_star\",\"title\":\"Morning runs\"}]}";
+             \"understanding\":[{\"statement\":\"you prefer mornings\",\"kind\":\"preference\",\
+             \"confidence\":\"low\",\"evidence\":\"tone\"}]}";
         let reply = parse_butler_json(raw);
         assert_eq!(reply.text, "So it sounds like mornings suit you.");
-        assert_eq!(
-            reply.proposals,
-            vec![ButlerProposal::CreateNorthStar {
-                title: "Morning runs".to_owned()
-            }]
-        );
+        assert_eq!(reply.beliefs.len(), 1);
+        assert_eq!(reply.beliefs[0].statement, "you prefer mornings");
         assert!(
             !reply.text.contains('{'),
             "the JSON envelope leaked: {}",
@@ -1866,10 +1756,12 @@ mod tests {
     }
 
     #[test]
-    fn unknown_proposal_kinds_are_ignored() {
-        let reply =
-            parse_butler_json("{\"reply\":\"hi\",\"proposals\":[{\"kind\":\"launch_missiles\"}]}");
-        assert!(reply.proposals.is_empty());
+    fn a_belief_with_no_statement_is_dropped() {
+        let reply = parse_butler_json(
+            "{\"reply\":\"hi\",\"understanding\":[{\"kind\":\"intent\",\"confidence\":\"high\"}]}",
+        );
+        assert!(reply.beliefs.is_empty());
+        assert_eq!(reply.text, "hi");
     }
 
     #[test]

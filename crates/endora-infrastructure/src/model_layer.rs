@@ -23,7 +23,8 @@
 use std::sync::Arc;
 
 use endora_application::{
-    Butler, ButlerContext, ButlerReply, ChatMessage, MessageId, MessageRole, Timestamp,
+    Butler, ButlerContext, ButlerReply, ChatMessage, MessageId, MessageRole, Timestamp, ToolCall,
+    TurnMessage,
 };
 use endora_capabilities::{ButlerModelConfig, ButlerModelConfigRepository};
 
@@ -131,6 +132,40 @@ fn ask_with_history(
     butler.respond(&history, &[], context).unwrap_or_default()
 }
 
+/// Asks for the answer that follows a skill result, through the **real** tool-calling
+/// path (ADR 0028): the result arrives as a `tool`-role message in the same
+/// conversation, not as a system-prompt blob. This is what the live turn does, so the
+/// relay cases measure the behaviour we actually ship.
+fn ask_after_tool(
+    butler: &dyn Butler,
+    prompt: &str,
+    capability: &str,
+    result: &str,
+    context: &ButlerContext,
+) -> ButlerReply {
+    let conversation = vec![
+        TurnMessage::User(prompt.to_owned()),
+        TurnMessage::Assistant {
+            text: String::new(),
+            tool_calls: vec![ToolCall {
+                id: "call_1".to_owned(),
+                capability: capability.to_owned(),
+                input_json: "{}".to_owned(),
+            }],
+        },
+        TurnMessage::ToolResult {
+            call_id: "call_1".to_owned(),
+            content: result.to_owned(),
+        },
+    ];
+    // Tools are cleared for the final answer, exactly as `run_tool_turn` does.
+    let mut ctx = context.clone();
+    ctx.tools = Vec::new();
+    butler
+        .take_turn(&conversation, &[], &ctx)
+        .unwrap_or_default()
+}
+
 fn used(reply: &ButlerReply) -> Option<&str> {
     reply.capability_use.as_ref().map(|u| u.capability.as_str())
 }
@@ -198,17 +233,13 @@ pub fn evaluate(butler: &dyn Butler) -> Scorecard {
     }
 
     // L1.3 relay a real result and stop.
-    let ctx_result = ButlerContext {
-        capabilities: eval_skills(),
-        tool_result: Some(
-            "You used the 'weather' skill for Boston and it returned: 72°F, sunny, wind 5mph. \
-             Relay this to the person in your own words."
-                .to_owned(),
-        ),
-        now: "Monday, 20 July 2026, 3:00 PM".to_owned(),
-        ..ButlerContext::default()
-    };
-    let relay = ask(butler, "what's the weather in Boston?", &ctx_result);
+    let relay = ask_after_tool(
+        butler,
+        "what's the weather in Boston?",
+        "weather",
+        "72°F, sunny, wind 5mph",
+        &ctx,
+    );
     let relay_ok = relay.text.contains("72") && used(&relay).is_none();
     push("relay", relay_ok);
     l1 += usize::from(relay_ok);
@@ -290,18 +321,13 @@ pub fn evaluate(butler: &dyn Butler) -> Scorecard {
     l2 += usize::from(hist_ok);
 
     // L2.7 synth faithful-relay on SUCCESS.
-    let ctx_home_result = ButlerContext {
-        capabilities: eval_skills(),
-        tool_result: Some(
-            "You used the 'home_assistant' skill for your home and it returned: \
-             living-room lights ON, front door LOCKED, thermostat 68°F. Relay this to the \
-             person in your own words; add nothing that isn't here."
-                .to_owned(),
-        ),
-        now: "Monday, 20 July 2026, 3:00 PM".to_owned(),
-        ..ButlerContext::default()
-    };
-    let home_relay = ask(butler, "are my lights on right now?", &ctx_home_result);
+    let home_relay = ask_after_tool(
+        butler,
+        "are my lights on right now?",
+        "home_assistant",
+        "living-room lights ON, front door LOCKED, thermostat 68°F",
+        &ctx,
+    );
     let hr = home_relay.text.to_lowercase();
     let relays_specifics =
         home_relay.text.contains("68") || hr.contains("locked") || hr.contains("living");

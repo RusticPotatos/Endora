@@ -1,8 +1,8 @@
 # Endora Architecture
 
-> Status: foundation phase. This describes the intended shape of the system and
-> the boundaries the current skeleton already enforces. Implementation grows one
-> vertical slice at a time; this document leads the code.
+> Describes the shape of the system and the boundaries it enforces. Implementation
+> grows one vertical slice at a time. Last reconciled with the code 2026-07-25
+> (ADR 0029).
 
 ## Overview
 
@@ -48,16 +48,16 @@ domains/     one crate per bounded context, each layered internally:
              <context>/src/{domain, application, infrastructure[, interface]}
   platform         audit trail + the butler's event log
   capabilities     skills, the policy-gated runner, egress guard, autonomy envelope
-  understanding    beliefs + preferences (what the butler has learned)
-  direction        values, targets, experiments, reflection, policy boundary
+  understanding    beliefs + preferences — Endora's model of the person
   conversation     the chat model + repository
-  scheduling       check-in + daily-brief cadences
-shared/      kernel (ids, time, errors, AutonomyLevel), persistence (Db handle)
+  scheduling       check-in, brief, and nightly-loop cadences
+shared/      kernel (ids, time, errors, AutonomyLevel, Reversibility),
+             persistence (Db handle)
 ```
 
 The thin **orchestration layer** (currently `endora-application`) holds the
 butler-turn contract and the use cases that compose several contexts (running a
-turn, applying a suggestion, preparing a brief). Contexts do not reach into each
+turn, preparing a brief, running the nightly loop). Contexts do not reach into each
 other's internals; they collaborate through application-layer ports, and the
 dependency graph is acyclic.
 
@@ -83,7 +83,8 @@ Infrastructure  →  Domain / Application abstractions
 
 The **Domain layer must not depend on**: HTTP, databases, AI vendors, UI
 frameworks, OS integrations, or model-specific concepts. This is enforced today:
-`endora-domain` has zero dependencies, and higher crates depend inward. See
+each context's `domain` module imports only `shared/kernel`, which itself has zero
+dependencies, and higher layers depend inward. See
 [ADR&nbsp;0001](adr/0001-modular-monolith.md).
 
 ## The deterministic policy boundary around probabilistic models
@@ -95,10 +96,10 @@ AI models are reasoning components, not authorities. Around every model sits a
    model output (a proposal)
             │
             ▼
-   ┌──────────────────────┐
+   ┌───────────────────────┐
    │  deterministic policy │  ← the enforcement boundary
-   │  (Policy & Consent)   │
-   └──────────┬───────────┘
+   │     (capabilities)    │
+   └──────────┬────────────┘
               │ authorized?              │ denied / escalate to human
               ▼                          ▼
         capability execution        no action
@@ -149,14 +150,24 @@ already exist. Until then, microservices would be ceremony. See
 ## Current code map
 
 ```text
+app/
+  node/                # Authoritative backend runtime (the brain) + web console
+  cli/                 # Thin, replaceable client
+domains/
+  understanding/       # Beliefs + preferences — Endora's model of the person
+  capabilities/        # Skills, policy-gated runner, egress guard, MCP host
+  conversation/        # The chat and its running summary
+  scheduling/          # Proactive cadences
+  platform/            # Audit trail + event log
+shared/
+  kernel/              # Ids, time, errors, AutonomyLevel, Reversibility — pure
+  persistence/         # The shared SQLite handle
 crates/
-  endora-domain/       # Domain layer — pure, zero dependencies
-  endora-application/  # Application layer — depends on domain only
-apps/
-  endora-node/         # Authoritative backend runtime (the brain)
-  endora-cli/          # Thin, replaceable client
+  endora-application/  # Orchestration: the butler-turn contract + cross-context use cases
+  endora-infrastructure/ # Adapters: SQLite store, model-backed butlers, the model layer
 ```
 
-We start with the fewest crates that preserve meaningful boundaries.
-Infrastructure and Interface layers become their own crates when a real slice
-needs them — not before.
+The **Identity & Values**, **Direction & Targets**, **Experiments & Learning** and
+**Reflection** contexts were deleted in
+[ADR 0029](adr/0029-delete-the-goal-tracker.md); understanding is now the only model
+Endora keeps of a person. See [domain-map.md](domain-map.md).

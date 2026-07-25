@@ -2,9 +2,6 @@
 
 let DB = null;                 // latest /v1/export snapshot
 let ACTIVITY = [];             // latest /v1/activity feed (newest first)
-let ATTENTION = [];            // latest /v1/attention items (most pressing first)
-let CHAT_PROPOSALS = [];       // proposals from the butler's last reply
-let SUGGESTIONS = [];          // pending suggestions (the butler's durable proposal inbox)
 let CHECKIN = { enabled: false, interval_ms: 0 }; // proactive check-in cadence
 let CAPS = [];                 // the butler's capabilities/skills (modules)
 let MCP_SERVERS = { servers: [] }; // connected MCP servers + their tools (ADR 0021)
@@ -51,7 +48,6 @@ const ICONS = {
   note: '<path d="M6 3h9l4 4v14H6z"/><path d="M15 3v4h4M9 12h6M9 16h4"/>',
   scale: '<path d="M12 4v16M7 20h10"/><path d="M4 8h16M4 8l-2.2 5a2.6 2.6 0 0 0 4.4 0zM20 8l-2.2 5a2.6 2.6 0 0 0 4.4 0z"/><path d="M8 5h8"/>',
   sparkle: '<path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8z"/>',
-  inbox: '<path d="M4 13l2-8h12l2 8v6H4z"/><path d="M4 13h4l1.5 2.5h5L16 13h4"/>',
   menu: '<line x1="4" y1="7" x2="20" y2="7"/><line x1="4" y1="12" x2="20" y2="12"/><line x1="4" y1="17" x2="20" y2="17"/>',
   skills: '<path d="M12 3l2.5 5 5.5.8-4 3.9 1 5.5-5-2.6-5 2.6 1-5.5-4-3.9 5.5-.8z"/>',
   gear: '<circle cx="12" cy="12" r="3.2"/><path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M18.4 5.6l-2.1 2.1M7.7 16.3l-2.1 2.1"/>',
@@ -91,13 +87,10 @@ async function api(method, path, body) {
 }
 
 async function reload() {
-  // The export snapshot, the derived activity feed, what needs attention, and the
-  // pending suggestions inbox (proposals the butler made, waiting to be applied).
-  const [db, activity, attention, suggestions, checkin, caps, autonomy] = await Promise.all([
+  // The export snapshot, the derived activity feed, and the everyday settings.
+  const [db, activity, checkin, caps, autonomy] = await Promise.all([
     api("GET", "/v1/export"),
     api("GET", "/v1/activity?limit=30"),
-    api("GET", "/v1/attention"),
-    api("GET", "/v1/suggestions?status=pending"),
     api("GET", "/v1/checkin"),
     api("GET", "/v1/capabilities"),
     api("GET", "/v1/autonomy"),
@@ -118,8 +111,6 @@ async function reload() {
     for (const m of (DB.messages || [])) if (byId[m.id]) m.actions = byId[m.id];
   } catch (_) {}
   ACTIVITY = activity;
-  ATTENTION = attention;
-  SUGGESTIONS = suggestions;
   CHECKIN = checkin;
   CAPS = caps;
   AUTONOMY = autonomy;
@@ -152,58 +143,9 @@ function subscribeToActivity() {
 function go(v, id) { NAV = { v, id }; clearMsg(); closeMenu(); render(); }
 
 // Observations reachable under a target (target → assumptions → experiments → obs).
-function observationsForTarget(targetId) {
-  const assumptionIds = DB.assumptions.filter((a) => a.target_id === targetId).map((a) => a.id);
-  const experimentIds = DB.experiments.filter((e) => assumptionIds.includes(e.assumption_id)).map((e) => e.id);
-  return DB.observations.filter((o) => experimentIds.includes(o.experiment_id));
-}
-
 const val = (id) => document.getElementById(id).value.trim();
 
 // ---- lifecycle (North Stars & Targets) ------------------------------------
-let SHOW_ARCHIVED = false;
-const isArchived = (x) => x.status === "archived";
-const visible = (items) => (SHOW_ARCHIVED ? items : items.filter((x) => !isArchived(x)));
-
-// A status pill, shown only when not the default "active".
-function statusPill(item) {
-  return item.status && item.status !== "active"
-    ? ` <span class="pill ${item.status}">${esc(item.status)}</span>` : "";
-}
-
-// The lifecycle control for a North Star ("direction") or "target": one Status
-// dropdown (pick a state to transition to — clearer than a row of look-alike
-// verb buttons), with Delete set apart as the one destructive action.
-function lifecycleRow(noun, item) {
-  const s = item.status || "active";
-  const opt = (v, label) => `<option value="${v}" ${s === v ? "selected" : ""}>${label}</option>`;
-  return `<div class="row" style="gap:8px; margin-top:8px; align-items:center;">
-    <label class="sub" for="st-${noun}-${item.id}">Status</label>
-    <select id="st-${noun}-${item.id}" data-change="status:${noun}:${item.id}" style="width:auto;">
-      ${opt("active", "Active")}${opt("achieved", "Achieved")}${opt("abandoned", "Abandoned")}${opt("archived", "Archived")}
-    </select>
-    <span class="grow"></span>
-    <button class="ghost danger" data-act="delete:${noun}:${item.id}" title="Delete permanently">${icon("purge",15)}<span>Delete</span></button>
-  </div>`;
-}
-
-// A toggle shown when there are archived items to reveal/hide.
-function archivedToggle(items) {
-  const n = items.filter(isArchived).length;
-  if (!n && !SHOW_ARCHIVED) return "";
-  return `<button class="ghost" data-act="toggle:archived" style="margin-top:6px;">${SHOW_ARCHIVED ? "Hide" : "Show"} archived (${n})</button>`;
-}
-
-// An experiment is due for review if a review was scheduled at or before now
-// and it is not already concluded (mirrors the domain's is_review_due).
-const isReviewDue = (e) => e.review_by_ms != null && e.review_by_ms <= Date.now() && e.status !== "concluded";
-function reviewLabel(e) {
-  if (e.review_by_ms == null) return "No review scheduled.";
-  const when = new Date(e.review_by_ms).toLocaleDateString();
-  return isReviewDue(e) ? `${icon("clock", 14)} Review due (${when})` : `Review scheduled for ${when}`;
-}
-
-// ---- views ----------------------------------------------------------------
 function crumbs(parts) {
   return `<div class="crumbs">` +
     parts.map((p, i) => i < parts.length - 1
@@ -217,77 +159,6 @@ function listOr(items, emptyText) {
 }
 
 // A North Star card, reused across the value groups on the home view.
-function dirCard(d) {
-  return `
-    <div class="card click" data-act="go:direction:${d.id}">
-      <div class="row"><div class="grow"><div class="title">${esc(d.title)}${statusPill(d)}</div>
-      <div class="sub">${DB.targets.filter((g) => g.direction_id === d.id).length} target(s)</div></div>
-      <span class="sub">${icon("chevron",16)}</span></div>
-    </div>`;
-}
-
-// What needs the person's attention, from /v1/attention. Each item can be
-// deferred ("Later") with backoff — snoozing repeatedly asks less often.
-const ATTENTION_ICON = { review_due: "clock", unfiled_north_star: "tag", empty_north_star: "target" };
-// Where clicking an attention item takes you: to the thing that needs the work.
-// Review-due points at the experiment's assumption; the North-Star items point
-// at the North Star itself (to file it under a value, or add a target).
-function attentionAct(a) {
-  if (a.kind === "review_due") {
-    const e = (DB.experiments || []).find((x) => x.id === a.subject);
-    return e ? `go:assumption:${e.assumption_id}` : null;
-  }
-  return `go:direction:${a.subject}`;
-}
-function attentionSection() {
-  if (!ATTENTION.length) return "";
-  const rows = ATTENTION.map((a) => {
-    const act = attentionAct(a);
-    const clickable = act ? `data-act="${act}" role="button" tabindex="0"` : "";
-    return `
-    <div class="attn-item">
-      <span class="attn-go" ${clickable}>${icon(ATTENTION_ICON[a.kind] || "target", 16)}<span>${esc(a.headline)}</span></span>
-      <button class="ghost" data-act="snooze:attention:${a.kind}:${a.subject}" title="ask me later">Later</button>
-    </div>`;
-  }).join("");
-  return `<div class="card attn-card">
-    <div class="attn-head">Needs your attention</div>${rows}</div>`;
-}
-
-function viewHome() {
-  const dueBanner = attentionSection();
-  // North Stars grouped under the value they serve, then the unfiled ones.
-  const groups = (DB.values || []).map((v) => {
-    const ds = visible(DB.directions.filter((d) => d.value_id === v.id));
-    return `
-      <div class="row" style="align-items:baseline; margin-top:16px;">
-        <h3 style="margin:0; flex:1;">${esc(v.name)}</h3>
-        <button class="ghost danger" data-act="delete:value:${v.id}" title="delete value">${icon("purge", 15)}</button>
-      </div>
-      ${ds.length ? ds.map(dirCard).join("") : `<div class="empty">Nothing here yet.</div>`}`;
-  }).join("");
-  const unfiled = visible(DB.directions.filter((d) => !d.value_id));
-  const unfiledHtml = `
-    <h3 style="margin-top:16px;">${(DB.values || []).length ? "Other" : "Goals"}</h3>
-    ${listOr(unfiled.map(dirCard), "No goals yet. Create one below.")}`;
-  return `
-    ${crumbs([{ label: "Home", act: "go:chat" }, { label: "Goals" }])}
-    ${dueBanner}
-    <h2>Your goals</h2>
-    ${groups}
-    ${unfiledHtml}
-    ${archivedToggle(DB.directions)}
-    <div class="form">
-      <input id="new-direction" placeholder="A goal…" />
-      <button class="primary" data-act="create:direction">Add goal</button>
-    </div>
-    <div class="form">
-      <input id="new-value" placeholder="A value to group under (e.g. Health)…" />
-      <button data-act="create:value">Add value</button>
-    </div>`;
-}
-
-// The live activity feed: newest first, updated in place by the change stream.
 const ACTIVITY_ICON = { observation: "note", decision: "scale", action: "sparkle" };
 function activityFeed() {
   if (!ACTIVITY.length) return `<div class="empty">No activity yet.</div>`;
@@ -297,158 +168,6 @@ function activityFeed() {
       <div class="sub">${esc(a.kind)}</div></div>
       <span class="sub">${esc(new Date(a.at_ms).toLocaleString())}</span>
     </div></div>`).join("");
-}
-
-function viewDirection(id) {
-  const d = byId(DB.directions, id);
-  if (!d) return viewHome();
-  const allTargets = DB.targets.filter((g) => g.direction_id === id);
-  const targets = visible(allTargets).map((g) => `
-    <div class="card click" data-act="go:target:${g.id}">
-      <div class="row"><div class="grow"><div class="title">${esc(g.statement)}${statusPill(g)}</div>
-      <div class="sub">${DB.assumptions.filter((a) => a.target_id === g.id).length} assumption(s) ·
-      ${DB.reflections.filter((r) => r.target_id === g.id).length} reflection(s)</div></div>
-      <span class="sub">${icon("chevron",16)}</span></div>
-      ${lifecycleRow("target", g)}
-    </div>`);
-  const valueOptions = `<option value="">(unfiled)</option>` +
-    (DB.values || []).map((v) => `<option value="${v.id}" ${d.value_id === v.id ? "selected" : ""}>${esc(v.name)}</option>`).join("");
-  return `
-    ${crumbs([{ label: "Home", act: "go:chat" }, { label: d.title }])}
-    <div class="card"><div class="title">${esc(d.title)}${statusPill(d)}</div>
-      <div class="row" style="gap:6px; margin-top:8px; align-items:center;">
-        <span class="sub">Serves value:</span>
-        <select id="val-${d.id}" style="width:auto;">${valueOptions}</select>
-        <button data-act="file:direction:${d.id}">File</button>
-      </div>
-      ${lifecycleRow("direction", d)}</div>
-    <h2>Targets under “${esc(d.title)}”</h2>
-    ${listOr(targets, "No targets yet.")}
-    ${archivedToggle(allTargets)}
-    <div class="form">
-      <input id="new-target" placeholder="A target under this goal…" />
-      <button class="primary" data-act="create:target:${id}">Add target</button>
-    </div>`;
-}
-
-function viewTarget(id) {
-  const g = byId(DB.targets, id);
-  if (!g) return viewHome();
-  const d = byId(DB.directions, g.direction_id);
-  const assumptions = DB.assumptions.filter((a) => a.target_id === id).map((a) => `
-    <div class="card click" data-act="go:assumption:${a.id}">
-      <div class="row"><div class="grow"><div class="title">${esc(a.statement)}</div>
-      <div class="sub">${DB.experiments.filter((e) => e.assumption_id === a.id).length} experiment(s)</div></div>
-      <span class="sub">${icon("chevron",16)}</span></div>
-    </div>`);
-  const reflections = DB.reflections.filter((r) => r.target_id === id).map((r) => `
-    <div class="card click" data-act="go:reflection:${r.id}">
-      <div class="row"><div class="grow"><div class="title">${esc(r.summary)}</div>
-      <div class="sub">${r.evidence.length} observation(s) cited ·
-      ${DB.process_changes.filter((c) => c.reflection_id === r.id).length} proposed change(s)</div></div>
-      <span class="sub">${icon("chevron",16)}</span></div>
-    </div>`);
-  const obs = observationsForTarget(id);
-  const eviBoxes = obs.length
-    ? obs.map((o) => `<label class="evi"><input type="checkbox" class="evi-box" value="${o.id}" /> ${esc(o.note)}</label>`).join("")
-    : `<div class="sub">Record observations under an experiment first to cite them here.</div>`;
-  return `
-    ${crumbs([{ label: "Home", act: "go:chat" },
-              { label: d ? d.title : "…", act: "go:direction:" + g.direction_id },
-              { label: g.statement }])}
-    <h2>Assumptions</h2>
-    ${listOr(assumptions, "No assumptions yet.")}
-    <div class="form">
-      <input id="new-assumption" placeholder="A belief this target rests on…" />
-      <button class="primary" data-act="create:assumption:${id}">Add assumption</button>
-    </div>
-    <h2>Reflections</h2>
-    ${listOr(reflections, "No reflections yet.")}
-    <div class="card">
-      <div class="stack">
-        <textarea id="new-reflection" placeholder="What the evidence says so far…"></textarea>
-        <div class="sub">Cite evidence:</div>
-        ${eviBoxes}
-        <div><button class="primary" data-act="create:reflection:${id}">Add reflection</button></div>
-      </div>
-    </div>`;
-}
-
-function viewAssumption(id) {
-  const a = byId(DB.assumptions, id);
-  if (!a) return viewHome();
-  const g = byId(DB.targets, a.target_id);
-  const experiments = DB.experiments.filter((e) => e.assumption_id === id).map((e) => {
-    const obs = DB.observations.filter((o) => o.experiment_id === e.id);
-    const obsHtml = obs.map((o) => `<div class="sub mono">• ${esc(o.note)}</div>`).join("");
-    return `
-    <div class="card">
-      <div class="row"><div class="grow"><div class="title">${esc(e.hypothesis)}</div></div>
-        <span class="pill ${e.status}">${e.status}</span></div>
-      <div class="row" style="margin-top:8px; gap:6px;">
-        <button data-act="start:experiment:${e.id}" ${e.status !== "proposed" ? "disabled" : ""}>Start</button>
-        <button data-act="conclude:experiment:${e.id}" ${e.status !== "running" ? "disabled" : ""}>Conclude</button>
-      </div>
-      ${e.status !== "concluded" ? `
-      <div class="row" style="margin-top:8px; gap:6px; align-items:center;">
-        <span class="sub grow">${esc(reviewLabel(e))}</span>
-        <input id="rev-${e.id}" type="number" min="1" value="7" style="width:70px;" title="days from now" />
-        <button data-act="review:experiment:${e.id}">Remind me</button>
-      </div>` : ""}
-      <div style="margin-top:8px;">${obsHtml || '<div class="sub">No observations.</div>'}</div>
-      <div class="form">
-        <input id="obs-${e.id}" placeholder="Record an observation…" />
-        <button data-act="record:observation:${e.id}">Note</button>
-      </div>
-    </div>`;
-  });
-  return `
-    ${crumbs([{ label: "Home", act: "go:chat" },
-              { label: g ? g.statement : "…", act: "go:target:" + a.target_id },
-              { label: a.statement }])}
-    <h2>Experiments testing “${esc(a.statement)}”</h2>
-    ${listOr(experiments, "No experiments yet.")}
-    <div class="form">
-      <input id="new-experiment" placeholder="A small, bounded test…" />
-      <button class="primary" data-act="propose:experiment:${id}">Propose experiment</button>
-    </div>`;
-}
-
-function viewReflection(id) {
-  const r = byId(DB.reflections, id);
-  if (!r) return viewHome();
-  const g = byId(DB.targets, r.target_id);
-  const changes = DB.process_changes.filter((c) => c.reflection_id === id).map((c) => `
-    <div class="card">
-      <div class="row"><div class="grow"><div class="title">${esc(c.description)}</div></div>
-        <span class="pill ${c.approval}">${c.approval}</span></div>
-      <div class="row" style="margin-top:8px; gap:6px; flex-wrap: wrap;">
-        <button data-act="approve:change:${c.id}" ${c.approval !== "pending" ? "disabled" : ""}>Approve</button>
-        <button data-act="reject:change:${c.id}" ${c.approval !== "pending" ? "disabled" : ""}>Reject</button>
-        <span class="grow"></span>
-        <select id="actor-${c.id}" title="actor autonomy level">
-          <option value="act_within_policy">act within policy</option>
-          <option value="confirm_each_action">confirm each action</option>
-          <option value="suggest">suggest</option>
-          <option value="observe">observe</option>
-        </select>
-        <button data-act="decide:change:${c.id}">Run policy</button>
-      </div>
-    </div>`);
-  return `
-    ${crumbs([{ label: "Home", act: "go:chat" },
-              { label: g ? g.statement : "…", act: "go:target:" + r.target_id },
-              { label: "Reflection" }])}
-    <h2>Reflection</h2>
-    <div class="card"><div class="title">${esc(r.summary)}</div>
-      <div class="sub">Cites ${r.evidence.length} observation(s).</div></div>
-    <h2>Proposed process changes</h2>
-    ${listOr(changes, "No proposed changes yet.")}
-    <div class="form">
-      <input id="new-change" placeholder="A process change this reflection suggests…" />
-      <button class="primary" data-act="propose:change:${id}">Propose</button>
-      <button data-act="draft:change:${id}" title="let the local model draft one">${icon("sparkle")}<span>Draft with model</span></button>
-    </div>`;
 }
 
 function viewAudit() {
@@ -728,9 +447,9 @@ function convoAfterReply() {
   if (CONVO_MODE) convoListen();
 }
 
-// The butler chat: the conversation, the last reply's proposals (each
-// confirmable), and an input. The butler proposes; you confirm; the normal
-// create endpoints execute — the model never acts on its own.
+// The butler chat: the conversation and an input. Anything the butler does in
+// the world runs through the policy boundary as it happens — there is no queue
+// of proposals for you to approve afterwards.
 function viewChat() {
   const list = DB.messages || [];
   const msgs = list.map((m) => {
@@ -766,17 +485,12 @@ function viewChat() {
       `<div class="row" style="justify-content:flex-start; margin:6px 0;" id="chat-live"><div class="bubble butler">${replyInner}</div></div>`;
   }
   // A subtle note of what Endora did behind the scenes on the latest turn —
-  // learnings and inbox additions — so you can see what the conversation changed.
+  // what it looked up and what it learned — so you can see what the turn did.
   const last = list[list.length - 1];
   const showActivity = SHOW_ACTIVITY && LAST_ACTIVITY.length && last && last.role === "butler" && last.id === LAST_ACTIVITY_MSG;
   const activity = showActivity
     ? `<div class="activity">${icon("sparkle", 13)} ${LAST_ACTIVITY.map(esc).join(" · ")}</div>`
     : "";
-  const proposals = CHAT_PROPOSALS.map((p, i) => `
-    <div class="card"><div class="row"><div class="grow"><div class="title">${esc(p.label)}</div>
-      <div class="sub">the butler proposes this — you decide</div></div>
-      <button class="primary" data-act="confirm:proposal:${i}">Confirm</button>
-      <button data-act="dismiss:proposal:${i}">Dismiss</button></div></div>`).join("");
   const speakBtn = TTS
     ? `<button class="ghost" data-act="toggle:speak" title="read replies aloud">${icon(SPEAK ? "speakerOn" : "speakerOff")}<span>${SPEAK ? "Speaking" : "Speak"}</span></button>`
     : "";
@@ -791,8 +505,7 @@ function viewChat() {
     : "";
   return `
     <div class="chat">
-      <div id="chat-thread" class="chat-thread">${(msgs || (CHAT_STREAMING ? "" : `<div class="empty">Say what you'd like to work on — the butler will help organize it.</div>`)) + (CHAT_STREAMING ? liveTurn : pending) + activity}</div>
-      ${awaiting ? "" : proposals}
+      <div id="chat-thread" class="chat-thread">${(msgs || (CHAT_STREAMING ? "" : `<div class="empty">Say anything — Endora is listening.</div>`)) + (CHAT_STREAMING ? liveTurn : pending) + activity}</div>
       <div class="composer">
         <textarea id="chat-input" rows="1" placeholder="Talk to your butler…"></textarea>
         <div class="composer-actions">
@@ -1240,23 +953,6 @@ function viewPrefs() {
     </div>`;
 }
 
-// The butler's proposal inbox: everything it has suggested from your chats,
-// waiting to be applied to your profile or dismissed — durable, not lost when the
-// conversation moves on. Applying runs the deterministic create (you authorize).
-function viewSuggestions() {
-  const cards = (SUGGESTIONS || []).map((s) => `
-    <div class="card"><div class="row">
-      <div class="grow"><div class="title">${esc(s.label)}</div>
-      <div class="sub">the butler proposed this — you decide</div></div>
-      <button class="primary" data-act="apply:suggestion:${s.id}">Apply</button>
-      <button class="ghost" data-act="dismiss:suggestion:${s.id}">Dismiss</button>
-    </div></div>`);
-  return `
-    ${crumbs([{ label: "Home", act: "go:chat" }, { label: "Inbox" }])}
-    <h2>Suggestions from your conversations</h2>
-    ${listOr(cards, "Nothing waiting. As you chat, the butler's proposals collect here.")}`;
-}
-
 // The butler's skills — the modules it can reach for. Ready ones work now;
 // others are declared and waiting on setup (a key, a model, a data source).
 function viewSkills() {
@@ -1426,28 +1122,27 @@ const BELIEF_KIND_LABEL = {
   stressor: "Stressors", relationship: "People who matter", other: "Other",
 };
 const BELIEF_KIND_ORDER = ["intent","value","motivation","pattern","preference","frustration","stressor","relationship","other"];
-// The learning loop, made visible: what Endora is trying and what it's concluded.
-// Read-mostly on purpose — this is the butler's own work, not a to-do list you
-// manage. The North Star/Goal/Target scaffolding stays internal to the butler.
+// What Endora has been doing and learning, made visible: its own action log plus
+// how much it now understands. Read-only on purpose — this is the butler's work,
+// not a to-do list you manage.
 function viewLearning() {
-  const trying = (DB.experiments || []).filter((e) => e.status === "running" || e.status === "proposed");
-  const tryingCards = trying.map((e) => `
-    <div class="card"><div class="row">
-      <div class="grow"><div class="title">${esc(e.hypothesis)}</div></div>
-      <span class="pill ${e.status}">${e.status}</span></div></div>`);
-  const learned = (DB.reflections || []).slice().reverse().slice(0, 12).map((r) => `
-    <div class="card"><div class="title">${esc(r.summary)}</div>
-      <div class="sub">weighed ${(r.evidence || []).length} observation(s)</div></div>`);
   const beliefs = (UNDERSTANDING || []).length;
+  const recent = (UNDERSTANDING || [])
+    .slice()
+    .sort((a, b) => (b.last_affirmed_ms || 0) - (a.last_affirmed_ms || 0))
+    .slice(0, 8)
+    .map((b) => `
+      <div class="card"><div class="title">${esc(b.statement)}</div>
+        ${b.evidence ? `<div class="sub">because ${esc(b.evidence)}</div>` : ""}</div>`);
   return `
     ${crumbs([{ label: "Home", act: "go:chat" }, { label: "Learning" }])}
     <h2>What Endora is learning</h2>
-    <div class="note">It tries small things and reflects on how they went, to grow more useful over time.</div>
-    <h3>What it's trying</h3>
-    ${listOr(tryingCards, "Nothing running yet — Endora proposes small experiments as it gets to know you.")}
-    <h3>What it's learned</h3>
-    ${listOr(learned, "No reflections yet.")}
-    <div class="note" style="margin-top:18px;">It's formed <a class="link" data-act="go:understanding">${beliefs} belief${beliefs === 1 ? "" : "s"} about you</a> — review or correct them any time.</div>`;
+    <div class="note">It pays attention as you talk, and looks into things on its own, to grow more useful over time.</div>
+    <h3>Most recently</h3>
+    ${listOr(recent, "Nothing yet — talk with Endora and it will start to notice things.")}
+    <h3 style="margin-top:22px;">What it's been doing</h3>
+    ${activityFeed()}
+    <div class="note" style="margin-top:18px;">It holds <a class="link" data-act="go:understanding">${beliefs} belief${beliefs === 1 ? "" : "s"} about you</a> — review or correct them any time.</div>`;
 }
 
 function viewUnderstanding() {
@@ -1491,8 +1186,7 @@ function viewUnderstanding() {
     <h2>What Endora understands about you</h2>
 
     ${setup}
-    ${groups || `<div class="empty">Nothing yet. Talk with Endora and it will start to understand you — you'll see it here.</div>`}
-    <div class="note" style="margin-top:24px;"><a class="link" data-act="go:goals">Goals ›</a> — optional.</div>`;
+    ${groups || `<div class="empty">Nothing yet. Talk with Endora and it will start to understand you — you'll see it here.</div>`}`;
 }
 
 // Append a chat bubble to the thread and keep the newest in view.
@@ -1594,7 +1288,7 @@ function sourcesHtml(urls) {
 
 // Send a message to the butler and stream the reply token-by-token (SSE): the
 // person's message shows at once, then the butler's bubble grows live as the
-// model produces prose, and proposals arrive with the final "done" event. On the
+// model produces prose, finishing with the "done" event. On the
 // server the message is persisted first and the reply when complete, so a reload
 // always reflects the true state (that's why we just reload() at the end).
 // Toggle the composer's primary button between Send and Stop to match state.
@@ -1734,7 +1428,6 @@ async function drainChat() {
           renderSteps(stepsWrap, STEP_LIST, true);
           if (live) scrollBubbleIntoView(live);
         } else if (ev.type === "done") {
-          CHAT_PROPOSALS = ev.proposals || [];
           LAST_ACTIVITY = ev.activity || [];
           LAST_ACTIVITY_MSG = ev.reply && ev.reply.id;
           renderSteps(stepsWrap, STEP_LIST, false); // collapse to a summary
@@ -1779,21 +1472,14 @@ async function drainChat() {
 }
 
 function render() {
-  updateInboxBadge();
+  updateMenuState();
   const v = NAV.v;
   app.innerHTML =
-      v === "direction" ? viewDirection(NAV.id)
-    : v === "target" ? viewTarget(NAV.id)
-    : v === "assumption" ? viewAssumption(NAV.id)
-    : v === "experiment" ? viewAssumption(NAV.id)
-    : v === "reflection" ? viewReflection(NAV.id)
-    : v === "audit" ? viewAudit()
+      v === "audit" ? viewAudit()
     : v === "chat" ? viewChat()
-    : v === "suggestions" ? viewSuggestions()
     : v === "skills" ? viewSkills()
     : v === "prefs" ? viewPrefs()
     : v === "settings" ? viewSettings()
-    : v === "goals" ? viewHome()
     : v === "learning" ? viewLearning()
     : v === "understanding" ? viewUnderstanding()
     : viewUnderstanding();
@@ -1805,14 +1491,8 @@ function render() {
   }
 }
 
-// Show the pending-suggestion count on the Inbox nav button.
-function updateInboxBadge() {
-  const n = (SUGGESTIONS || []).length;
-  // A subtle dot on the menu button when the inbox has something.
-  const btn = document.getElementById("menu-btn");
-  if (btn) btn.classList.toggle("has-badge", n > 0);
-  const count = document.getElementById("menu-inbox-count");
-  if (count) count.textContent = n ? String(n) : "";
+// Reflect the activity toggle's state in the menu.
+function updateMenuState() {
   const act = document.getElementById("menu-activity-state");
   if (act) act.textContent = SHOW_ACTIVITY ? "on" : "off";
 }
@@ -1917,32 +1597,6 @@ async function dispatch(act) {
       if (!how) return;
       await api("POST", "/v1/preferences", { text: `Address me as: ${how}`, kind: "context" });
       flash("Got it.", "ok");
-      return reload();
-    }
-    if (verb === "confirm" && noun === "proposal") {
-      const p = CHAT_PROPOSALS[Number(id)];
-      if (!p) return;
-      // Suggestions are persisted; applying runs the deterministic create
-      // server-side (and resolves a North Star named in a target).
-      try { await api("POST", `/v1/suggestions/${p.id}/apply`); flash("Done — added.", "ok"); }
-      catch (e) { flash("Couldn't add that: " + e.message, "err"); }
-      CHAT_PROPOSALS.splice(Number(id), 1);
-      return reload();
-    }
-    if (verb === "dismiss" && noun === "proposal") {
-      const p = CHAT_PROPOSALS[Number(id)];
-      if (p && p.id) { try { await api("POST", `/v1/suggestions/${p.id}/dismiss`); } catch (_) {} }
-      CHAT_PROPOSALS.splice(Number(id), 1);
-      return reload();
-    }
-    // Apply / dismiss a suggestion from the inbox, by its id.
-    if (verb === "apply" && noun === "suggestion") {
-      try { await api("POST", `/v1/suggestions/${id}/apply`); flash("Done — added.", "ok"); }
-      catch (e) { flash("Couldn't add that: " + e.message, "err"); }
-      return reload();
-    }
-    if (verb === "dismiss" && noun === "suggestion") {
-      try { await api("POST", `/v1/suggestions/${id}/dismiss`); } catch (_) {}
       return reload();
     }
     // Turn a skill on or off (ADR 0021). `id` is the capability id; `arg` is 1/0.
@@ -2288,10 +1942,10 @@ function setupHeader(health) {
   const menu = document.getElementById("menu");
   if (menu) {
     // A short, focused menu: the everyday destinations. Everything else
-    // (Understanding, Skills, Goals, preferences, export) lives inside Settings.
+    // (Skills, preferences, export) lives inside Settings.
     menu.innerHTML =
       item("go:chat", "chat", "Talk to Endora") +
-      item("go:suggestions", "inbox", "Inbox", `<span class="menu-count" id="menu-inbox-count"></span>`) +
+      item("go:understanding", "sparkle", "What Endora knows") +
       item("go:settings", "prefs", "Settings") +
       item("go:audit", "audit", "Activity & audit") +
       `<div class="divider"></div>` +
