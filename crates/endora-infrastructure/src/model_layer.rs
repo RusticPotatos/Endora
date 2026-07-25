@@ -27,7 +27,7 @@ use std::sync::Arc;
 
 use endora_application::{
     BeliefKind, Butler, ButlerContext, ButlerReply, ChatMessage, Confidence, MessageId,
-    MessageRole, Timestamp, ToolCall, TurnMessage,
+    MessageRole, Timestamp, ToolCall, TurnMessage, reads_as_an_instruction,
 };
 use endora_capabilities::{ButlerModelConfig, ButlerModelConfigRepository};
 
@@ -530,13 +530,30 @@ pub fn evaluate(butler: &dyn Butler) -> Scorecard {
     push("no-jargon", jargon_ok);
     l3 += usize::from(jargon_ok);
 
+    // L3.9 does not mistake a command for a fact about the person. Observed live:
+    // "you want me to turn off the kitchen light" filed as a durable preference,
+    // and later its opposite alongside it. The application drops these
+    // deterministically, but a model that keeps producing them is doing worse
+    // reasoning than one that doesn't, and that is worth scoring.
+    // Gated on `forms_ok` like the other negative cases: a butler that forms
+    // nothing would otherwise pass this for free, and silence must not score as
+    // judgement.
+    let commanded = ask(butler, "turn off the kitchen light please", &ctx_talk);
+    let command_ok = forms_ok
+        && !commanded
+            .beliefs
+            .iter()
+            .any(|b| reads_as_an_instruction(&b.statement));
+    push("command-not-belief", command_ok);
+    l3 += usize::from(command_ok);
+
     Scorecard {
         l1,
         l1_max: 8,
         l2,
         l2_max: 7,
         l3,
-        l3_max: 8,
+        l3_max: 9,
         cases,
     }
 }
@@ -963,9 +980,9 @@ mod tests {
         let card = evaluate(&crate::ScriptedButler);
         assert_eq!(card.l1_max, 8);
         assert_eq!(card.l2_max, 7);
-        assert_eq!(card.l3_max, 8);
-        assert_eq!(card.max(), 23);
-        assert_eq!(card.cases.len(), 23);
+        assert_eq!(card.l3_max, 9);
+        assert_eq!(card.max(), 24);
+        assert_eq!(card.cases.len(), 24);
         assert!(card.total() <= card.max());
     }
 
