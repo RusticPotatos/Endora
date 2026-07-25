@@ -927,13 +927,26 @@ pub fn set_checkin_schedule(
     Ok(schedule)
 }
 
-/// If a check-in is due, has the butler **reach out**: append a proactive opening
-/// message (grounded in what needs attention and what the person is working
-/// toward) and advance the schedule. Called by the node's heartbeat. Returns the
-/// message if one was posted, or `None` if nothing was due.
+/// Considers reaching out, and does so **only if the butler has a reason**.
+///
+/// The clock no longer decides. [`CheckinSchedule`] is a *budget* — it bounds how
+/// often the butler may speak uninvited and keeps it from talking over someone who
+/// just spoke — and within that budget the butler judges whether anything is worth
+/// raising, given what it understands about the person (ADR 0031).
+///
+/// Two deterministic properties make this safe to leave running:
+///
+/// 1. **The budget is spent whether or not it speaks.** Deciding "nothing to say"
+///    costs the same as speaking, so the butler cannot re-ask every thirty seconds
+///    until it talks itself into a reason.
+/// 2. **Silence is the default.** An empty reply, an unavailable model, or a failed
+///    turn all mean no message. Nothing is ever posted to fill the slot.
+///
+/// The reason it gives is recorded to the activity trail, so "why did it message
+/// me?" always has an answer.
 ///
 /// This is an `act` on the low-stakes end of the autonomy model (ADR 0010): a
-/// message, never a consequential action — those still go through propose→confirm.
+/// message, never a consequential action.
 ///
 /// # Errors
 /// [`AppError::Repository`] if the backend fails, or [`AppError::Domain`] if the
@@ -942,7 +955,7 @@ pub fn set_checkin_schedule(
     clippy::too_many_arguments,
     reason = "explicit dependencies, no hidden state"
 )]
-pub fn run_due_checkin(
+pub fn consider_reaching_out(
     chat: &impl ChatRepository,
     checkins: &impl CheckinRepository,
     preferences: &impl PreferenceRepository,
@@ -952,45 +965,48 @@ pub fn run_due_checkin(
     ids: &impl IdSource,
     clock: &impl Clock,
     context: &ButlerContext,
-) -> Result<Option<ChatMessage>, AppError> {
+) -> Result<Option<(ChatMessage, Vec<String>)>, AppError> {
     let now = clock.now();
     let Some(mut schedule) = checkins.get()? else {
         return Ok(None);
     };
-    if !schedule.is_due(now) {
+    // When the person themselves last spoke — if they are around, they can just ask.
+    let last_person_activity = chat
+        .list()?
+        .iter()
+        .rev()
+        .find(|m| m.role() == MessageRole::User)
+        .map(ChatMessage::at);
+    if !schedule.may_reach_out(now, last_person_activity) {
         return Ok(None);
     }
-    // Advance first, so a slow write can't double-post on the next tick.
+    // Spend the budget up front, whether or not it finds something to say. This is
+    // what stops a "no" from becoming a retry loop, and it also means a slow write
+    // can't double-post on the next tick.
     schedule.next_at = Timestamp::from_unix_millis(now.unix_millis() + schedule.interval_ms);
     checkins.set(&schedule)?;
 
-    // AGENTIC reach-out (ADR 0019/0028): the butler sees its skill catalogue and what
-    // Endora understands of the person through `context`. Let it decide whether any
-    // skill would make this check-in genuinely useful, reach for it, and write the
-    // note — its choice, not a template. Policy gates every skill to reversible +
-    // autonomous only, so a check-in still can't do anything consequential (ADR 0024).
-    //
-    // If the model is unavailable or returns nothing, we post NOTHING and simply try
-    // again next tick. There is no deterministic floor: a templated check-in would be
-    // Endora's voice without Endora's judgement behind it (ADR 0028 — we would rather
-    // stay quiet than emit a canned string).
     let prefs = preferences.list_all().unwrap_or_default();
     let mut activity: Vec<String> = Vec::new();
-    let checkin_ctx = ButlerContext {
+    let ask_ctx = ButlerContext {
         now: format_datetime_utc(now.unix_millis()),
         ..context.clone()
     };
     let ask = [ChatMessage::new(
         MessageId::new(ids.new_id()),
         MessageRole::User,
-        "It's time for your regular check-in and they're here. Think about what you \
-         understand about them — reach for any skills that would make this genuinely \
-         useful — then send a short, warm note: what you noticed, anything you can help \
-         with right now, and ask whether there's anything they'd like you to focus on \
-         more or do differently. Add nothing you don't actually know.",
+        "You have a moment to reach out to them, unprompted. Consider what you \
+         understand about them and what you could look up — is there anything \
+         genuinely worth saying right now? \
+         Say NOTHING AT ALL unless there is. An empty reply is the right answer most \
+         of the time, and is far better service than manufacturing something to fill \
+         the silence. There is no obligation to speak. \
+         If there IS something, open with it plainly — the specific thing you noticed \
+         or found — not a greeting and not a status report. Add nothing you don't \
+         actually know.",
         now,
     )?];
-    let text = run_tool_turn(
+    let reply = run_tool_turn(
         butler,
         capabilities,
         audit,
@@ -998,15 +1014,19 @@ pub fn run_due_checkin(
         clock,
         &ask,
         &prefs,
-        &checkin_ctx,
+        &ask_ctx,
         CHECKIN_TOOL_ROUNDS,
         &mut |_step| {},
         &mut activity,
     )
-    .ok()
-    .map(|reply| reply.text.trim().to_owned())
-    .filter(|t| !t.is_empty());
+    .ok();
+    let text = reply
+        .as_ref()
+        .map(|r| r.text.trim().to_owned())
+        .filter(|t| !t.is_empty());
+    // Nothing worth saying — the common and correct case. Stay quiet.
     let Some(text) = text else {
+        activity.push("Considered reaching out, and had nothing worth saying".to_owned());
         return Ok(None);
     };
 
@@ -1017,7 +1037,8 @@ pub fn run_due_checkin(
         now,
     )?;
     chat.append(&message)?;
-    Ok(Some(message))
+    activity.push("Reached out because there was something worth raising".to_owned());
+    Ok(Some((message, activity)))
 }
 
 /// Composes a **daily briefing** — an act of service (ADR 0025). The butler is handed
@@ -2861,8 +2882,8 @@ mod tests {
     }
 
     #[test]
-    fn checkin_runs_when_due_posts_a_message_and_advances_the_schedule() {
-        use super::{chat_history, run_due_checkin, set_checkin_schedule};
+    fn the_butler_speaks_only_when_it_has_something_and_the_budget_allows() {
+        use super::{chat_history, consider_reaching_out, set_checkin_schedule};
         use std::cell::RefCell;
         let store = FakeStore::default();
         let ids = SeqIds::default();
@@ -2871,10 +2892,9 @@ mod tests {
             records: RefCell::new(Vec::new()),
         };
 
-        // The butler reaches out agentically: it composes the note (here without
-        // needing any skill) and that reply is what gets posted.
-        struct CheckinButler;
-        impl Butler for CheckinButler {
+        /// A butler that has something to say.
+        struct HasSomething;
+        impl Butler for HasSomething {
             fn respond(
                 &self,
                 _h: &[ChatMessage],
@@ -2882,69 +2902,88 @@ mod tests {
                 _c: &ButlerContext,
             ) -> Result<ButlerReply, ProposalError> {
                 Ok(ButlerReply {
-                    text: "Checking in — anything you'd like me to focus on?".to_owned(),
+                    text: "That storm you mentioned is due tonight.".to_owned(),
                     ..ButlerReply::default()
                 })
             }
         }
 
-        // Off by default: nothing posts.
-        assert!(
-            run_due_checkin(
+        let reach = |clock_ms: i64, butler: &dyn Butler| {
+            consider_reaching_out(
                 &store,
                 &store,
                 &store,
                 &NoCapabilities,
-                &CheckinButler,
+                butler,
                 &audit,
                 &ids,
-                &FixedClock(1_000),
+                &FixedClock(clock_ms),
                 &ctx,
             )
             .unwrap()
-            .is_none()
-        );
+        };
 
-        // Enable with a 60s interval; next check-in is one interval out.
+        // Off by default: the butler never speaks uninvited until asked to.
+        assert!(reach(1_000, &HasSomething).is_none());
+
         let sched = set_checkin_schedule(&store, &FixedClock(1_000), true, 60_000).unwrap();
-        assert!(sched.enabled);
         assert_eq!(sched.next_at.unix_millis(), 61_000);
 
-        // Before it is due: still nothing.
-        assert!(
-            run_due_checkin(
-                &store,
-                &store,
-                &store,
-                &NoCapabilities,
-                &CheckinButler,
-                &audit,
-                &ids,
-                &FixedClock(30_000),
-                &ctx,
-            )
-            .unwrap()
-            .is_none()
-        );
+        // Inside the budget window: not yet allowed, however much it has to say.
+        assert!(reach(30_000, &HasSomething).is_none());
 
-        // At/after the due time: the butler reaches out, and the schedule advances.
-        let posted = run_due_checkin(
+        // Budget available AND something to say → it speaks.
+        let (msg, activity) = reach(61_000, &HasSomething).expect("should have reached out");
+        assert_eq!(msg.role(), MessageRole::Butler);
+        assert!(msg.text().contains("storm"));
+        assert_eq!(chat_history(&store).unwrap().len(), 1);
+        assert!(activity.iter().any(|a| a.contains("worth raising")));
+        // The budget advanced, so it cannot immediately speak again.
+        assert!(reach(61_500, &HasSomething).is_none());
+    }
+
+    #[test]
+    fn having_nothing_to_say_posts_nothing_and_still_spends_the_budget() {
+        use super::{chat_history, consider_reaching_out, set_checkin_schedule};
+        use std::cell::RefCell;
+        let store = FakeStore::default();
+        let ids = SeqIds::default();
+        let ctx = ButlerContext::default();
+        let audit = FakeAudit {
+            records: RefCell::new(Vec::new()),
+        };
+
+        /// A butler with nothing worth raising — the common, correct case.
+        struct Quiet;
+        impl Butler for Quiet {
+            fn respond(
+                &self,
+                _h: &[ChatMessage],
+                _p: &[Preference],
+                _c: &ButlerContext,
+            ) -> Result<ButlerReply, ProposalError> {
+                Ok(ButlerReply::default())
+            }
+        }
+
+        set_checkin_schedule(&store, &FixedClock(1_000), true, 60_000).unwrap();
+        let out = consider_reaching_out(
             &store,
             &store,
             &store,
             &NoCapabilities,
-            &CheckinButler,
+            &Quiet,
             &audit,
             &ids,
             &FixedClock(61_000),
             &ctx,
         )
         .unwrap();
-        let msg = posted.expect("a check-in should have posted");
-        assert_eq!(msg.role(), MessageRole::Butler);
-        // The posted note is the butler's own agentic reply.
-        assert!(msg.text().contains("focus on"));
-        assert_eq!(chat_history(&store).unwrap().len(), 1);
+        assert!(out.is_none(), "silence must post nothing");
+        assert!(chat_history(&store).unwrap().is_empty());
+
+        // Crucially the budget is still spent: a "nothing to say" must not become a
+        // retry loop that asks again every tick until it talks itself into speaking.
         assert_eq!(
             CheckinRepository::get(&store)
                 .unwrap()
@@ -2953,22 +2992,69 @@ mod tests {
                 .unix_millis(),
             121_000
         );
+    }
 
-        // It does not double-post on the very next tick.
+    #[test]
+    fn the_butler_does_not_talk_over_someone_who_just_spoke() {
+        use super::{consider_reaching_out, post_user_message, set_checkin_schedule};
+        use std::cell::RefCell;
+        let store = FakeStore::default();
+        let ids = SeqIds::default();
+        let ctx = ButlerContext::default();
+        let audit = FakeAudit {
+            records: RefCell::new(Vec::new()),
+        };
+
+        struct HasSomething;
+        impl Butler for HasSomething {
+            fn respond(
+                &self,
+                _h: &[ChatMessage],
+                _p: &[Preference],
+                _c: &ButlerContext,
+            ) -> Result<ButlerReply, ProposalError> {
+                Ok(ButlerReply {
+                    text: "Something worth saying.".to_owned(),
+                    ..ButlerReply::default()
+                })
+            }
+        }
+
+        set_checkin_schedule(&store, &FixedClock(1_000), true, 60_000).unwrap();
+        // The person spoke a minute ago — they are present and can simply ask.
+        post_user_message(&store, &ids, &FixedClock(61_000), "hey").unwrap();
         assert!(
-            run_due_checkin(
+            consider_reaching_out(
                 &store,
                 &store,
                 &store,
                 &NoCapabilities,
-                &CheckinButler,
+                &HasSomething,
                 &audit,
                 &ids,
-                &FixedClock(61_500),
+                &FixedClock(61_000),
                 &ctx,
             )
             .unwrap()
-            .is_none()
+            .is_none(),
+            "must not reach out on top of an active conversation"
+        );
+
+        // An hour after they last spoke, it may.
+        assert!(
+            consider_reaching_out(
+                &store,
+                &store,
+                &store,
+                &NoCapabilities,
+                &HasSomething,
+                &audit,
+                &ids,
+                &FixedClock(61_000 + 60 * 60 * 1_000),
+                &ctx,
+            )
+            .unwrap()
+            .is_some()
         );
     }
 

@@ -2019,6 +2019,7 @@ impl CapabilityRunner for McpRunner {
         // arguments to the tool's schema before the call so a single-value slip
         // doesn't fail validation.
         let args = coerce_args_to_schema(input_json, tool.input_schema.as_ref());
+        let args = drop_domain_word_name(&args, &tool.name);
         conn.transport.call(&tool.name, &args)
     }
 }
@@ -2050,6 +2051,83 @@ fn coerce_args_to_schema(input_json: &str, schema: Option<&serde_json::Value>) -
         if wants_array && !val.is_array() && !val.is_null() {
             *val = serde_json::Value::Array(vec![val.take()]);
         }
+    }
+    args.to_string()
+}
+
+/// Words that name a *kind* of device rather than a device. Home Assistant's intent
+/// matcher reads `name` as a friendly name, so these never match anything.
+const DEVICE_KIND_WORDS: &[&str] = &[
+    "light",
+    "lights",
+    "lamp",
+    "lamps",
+    "switch",
+    "switches",
+    "fan",
+    "fans",
+    "cover",
+    "covers",
+    "blind",
+    "blinds",
+    "lock",
+    "locks",
+    "speaker",
+    "speakers",
+    "media player",
+    "media players",
+    "tv",
+    "television",
+    "thermostat",
+    "thermostats",
+    "everything",
+    "all",
+];
+
+/// Drops a `name` that is a device *kind* rather than a device, when an `area` is
+/// present.
+///
+/// Home Assistant matches `name` against an entity's friendly name. A small model
+/// asked to "turn on the kitchen light" fills in `name:"light", area:"kitchen"`,
+/// which asks HA for a device literally called "light" in the kitchen — it matches
+/// nothing and comes back `MatchFailedError(NAME)`. Observed repeatedly against a
+/// live install; the model picks the right tool and the right area every time and
+/// only fumbles this one field.
+///
+/// The area alone expresses what the person meant, so the kind word is dropped.
+/// **Only when an area is present**: without one, dropping the name would widen
+/// "turn on the lights" to the whole house, so it is left to fail honestly rather
+/// than act more broadly than asked (ADR 0024 — never act beyond the request).
+///
+/// Scoped to Home Assistant's `Hass*` tools; other MCP servers are passed through
+/// untouched. This is the same "deterministic over prompting" move as the schema
+/// coercion above: the slip is a known model failure, so the correction lives in
+/// code rather than in a sterner instruction the model may ignore.
+fn drop_domain_word_name(args_json: &str, tool_name: &str) -> String {
+    if !tool_name.starts_with("Hass") {
+        return args_json.to_owned();
+    }
+    let Ok(mut args) = serde_json::from_str::<serde_json::Value>(args_json) else {
+        return args_json.to_owned();
+    };
+    let Some(obj) = args.as_object_mut() else {
+        return args_json.to_owned();
+    };
+    let has_area = ["area", "area_name", "floor", "floor_name"]
+        .iter()
+        .any(|k| obj.get(*k).is_some_and(|v| !v.is_null()));
+    if !has_area {
+        return args_json.to_owned();
+    }
+    let is_kind_word = obj
+        .get("name")
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|n| {
+            let n = n.trim().to_lowercase();
+            DEVICE_KIND_WORDS.contains(&n.as_str())
+        });
+    if is_kind_word {
+        obj.remove("name");
     }
     args.to_string()
 }
@@ -2876,6 +2954,44 @@ mod tests {
         // No schema, or unparseable input → passed through unchanged.
         assert_eq!(coerce_args_to_schema("{bad", Some(&schema)), "{bad");
         assert_eq!(coerce_args_to_schema(r#"{"x":1}"#, None), r#"{"x":1}"#);
+    }
+
+    /// The failure this fixes, taken verbatim from a live install: the butler picked
+    /// the right tool and the right area, then put the *kind* word in `name`, and
+    /// Home Assistant came back `MatchFailedError(NAME)` because no device is
+    /// actually called "light".
+    #[test]
+    fn a_device_kind_word_in_name_is_dropped_when_an_area_is_given() {
+        for kind in ["light", "lights", "Lights", " lamp ", "switch"] {
+            let args = format!(r#"{{"name":"{kind}","area":"kitchen"}}"#);
+            let out = drop_domain_word_name(&args, "HassTurnOn");
+            let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+            assert!(v.get("name").is_none(), "should have dropped name={kind:?}");
+            assert_eq!(v["area"], "kitchen", "the area is what the person meant");
+        }
+    }
+
+    #[test]
+    fn a_real_device_name_is_never_dropped() {
+        let out = drop_domain_word_name(r#"{"name":"reading lamp","area":"study"}"#, "HassTurnOn");
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["name"], "reading lamp");
+    }
+
+    #[test]
+    fn without_an_area_the_name_stands_and_the_call_fails_honestly() {
+        // Dropping it here would widen "turn on the lights" to the whole house —
+        // acting beyond what was asked. Better to let HA refuse the match.
+        let args = r#"{"name":"lights"}"#;
+        assert_eq!(drop_domain_word_name(args, "HassTurnOn"), args);
+    }
+
+    #[test]
+    fn non_home_assistant_tools_are_passed_through_untouched() {
+        let args = r#"{"name":"lights","area":"kitchen"}"#;
+        assert_eq!(drop_domain_word_name(args, "search_notes"), args);
+        // Unparseable input is passed through rather than guessed at.
+        assert_eq!(drop_domain_word_name("{bad", "HassTurnOn"), "{bad");
     }
 
     #[test]
