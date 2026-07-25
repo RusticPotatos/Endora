@@ -19,7 +19,6 @@ endora-infrastructure = { path = "../../crates/endora-infrastructure" }
 endora-conversation = { path = "../../domains/conversation" }
 endora-scheduling = { path = "../../domains/scheduling" }
 endora-understanding = { path = "../../domains/understanding" }
-endora-direction = { path = "../../domains/direction" }
 endora-capabilities = { path = "../../domains/capabilities" }
 endora-platform = { path = "../../domains/platform" }
 # Already in the tree transitively (via axum/tokio); declared directly to adapt

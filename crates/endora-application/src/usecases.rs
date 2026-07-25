@@ -1,29 +1,18 @@
-//! Use cases for the Direction & Targets slice.
+//! Use cases — the butler turn and the flows around it.
 //!
-//! These orchestrate the domain and the ports. They are the seam the interfaces
+//! These orchestrate the contexts and the ports. They are the seam the interfaces
 //! (node, CLI) call; they hold no transport or storage detail. Identifiers and
 //! time come from the [`IdSource`] and [`Clock`] ports, so the domain stays pure
 //! and the use cases stay testable with fakes.
 
 use endora_conversation::{ChatMessage, MessageRole};
-use endora_direction::{
-    Assumption, Direction, Experiment, LifecycleStatus, Observation, PolicyDecision,
-    ProposedProcessChange, Reflection, Target, Value, authorize_process_change,
-};
-use endora_kernel::ids::{
-    AssumptionId, AuditId, BeliefId, DirectionId, ExperimentId, MessageId, ObservationId,
-    PreferenceId, ProcessChangeId, ReflectionId, SuggestionId, TargetId, Timestamp, ValueId,
-};
-use endora_kernel::{AutonomyLevel, Decision};
+use endora_kernel::Decision;
+use endora_kernel::ids::{AuditId, BeliefId, MessageId, PreferenceId, Timestamp};
 use endora_platform::AuditRecord;
 use endora_understanding::{Belief, Preference, PreferenceKind};
 
 use endora_capabilities::CapabilityRunner;
 use endora_conversation::ChatRepository;
-use endora_direction::{
-    AssumptionRepository, DirectionRepository, ExperimentRepository, ObservationRepository,
-    ProcessChangeRepository, ReflectionRepository, TargetRepository, ValueRepository,
-};
 use endora_platform::{AuditLog, EventLog};
 use endora_understanding::{BeliefRepository, PreferenceRepository};
 
@@ -34,606 +23,10 @@ use endora_scheduling::{
 
 use crate::error::AppError;
 use crate::ports::{
-    AttentionItem, AttentionKind, Butler, ButlerContext, ButlerProposal, ButlerReply,
-    CapabilityTool, Clock, ConversationSummary, ConversationSummaryStore, DeepAsker, FormedBelief,
-    IdSource, MemorySnapshot, MemoryStore, NorthStarBrief, Proposer, Snooze, SnoozeRepository,
-    Suggestion, SuggestionRepository, SuggestionStatus, TurnMessage,
+    Butler, ButlerContext, ButlerReply, CapabilityTool, Clock, ConversationSummary,
+    ConversationSummaryStore, DeepAsker, FormedBelief, IdSource, MemorySnapshot, MemoryStore,
+    TurnMessage,
 };
-
-/// Creates and stores a new [`Direction`].
-///
-/// # Errors
-/// [`AppError::Domain`] if the title is invalid, or [`AppError::Repository`] if
-/// persistence fails.
-pub fn create_direction(
-    directions: &impl DirectionRepository,
-    ids: &impl IdSource,
-    title: &str,
-) -> Result<Direction, AppError> {
-    let direction = Direction::new(DirectionId::new(ids.new_id()), title)?;
-    directions.save(&direction)?;
-    Ok(direction)
-}
-
-/// Creates and stores a new [`Value`] (the "why" a North Star serves).
-///
-/// # Errors
-/// [`AppError::Domain`] if the name is invalid, or [`AppError::Repository`] if
-/// persistence fails.
-pub fn create_value(
-    values: &impl ValueRepository,
-    ids: &impl IdSource,
-    name: &str,
-) -> Result<Value, AppError> {
-    let value = Value::new(ValueId::new(ids.new_id()), name)?;
-    values.save(&value)?;
-    Ok(value)
-}
-
-/// Lists all values, in a stable order.
-///
-/// # Errors
-/// [`AppError::Repository`] if persistence fails.
-pub fn list_values(values: &impl ValueRepository) -> Result<Vec<Value>, AppError> {
-    Ok(values.list_all()?)
-}
-
-/// Permanently deletes a value, refusing while any North Star still serves it.
-///
-/// # Errors
-/// [`AppError::NotFound`] if the value does not exist, [`AppError::BadRequest`] if
-/// a North Star still references it, or [`AppError::Repository`] on failure.
-pub fn delete_value(
-    values: &impl ValueRepository,
-    directions: &impl DirectionRepository,
-    id: ValueId,
-) -> Result<(), AppError> {
-    if values.get(id)?.is_none() {
-        return Err(AppError::NotFound { entity: "value" });
-    }
-    if directions.list_all()?.iter().any(|d| d.value() == Some(id)) {
-        return Err(AppError::BadRequest {
-            message: "cannot delete a value while North Stars still serve it; \
-                      re-file those North Stars first"
-                .to_owned(),
-        });
-    }
-    values.delete(id)?;
-    Ok(())
-}
-
-/// Files a North Star under a value (or clears it with `None`).
-///
-/// The person — or the butler, by asking — sets this; it is never inferred.
-///
-/// # Errors
-/// [`AppError::NotFound`] if the direction or the named value does not exist, or
-/// [`AppError::Repository`] if persistence fails.
-pub fn assign_direction_value(
-    directions: &impl DirectionRepository,
-    values: &impl ValueRepository,
-    direction_id: DirectionId,
-    value_id: Option<ValueId>,
-) -> Result<Direction, AppError> {
-    let mut direction = directions.get(direction_id)?.ok_or(AppError::NotFound {
-        entity: "direction",
-    })?;
-    if let Some(v) = value_id {
-        if values.get(v)?.is_none() {
-            return Err(AppError::NotFound { entity: "value" });
-        }
-    }
-    direction.set_value(value_id);
-    directions.save(&direction)?;
-    Ok(direction)
-}
-
-/// Creates and stores a new [`Target`] under an existing direction.
-///
-/// # Errors
-/// [`AppError::NotFound`] if the direction does not exist, [`AppError::Domain`]
-/// if the statement is invalid, or [`AppError::Repository`] if persistence fails.
-pub fn create_target(
-    directions: &impl DirectionRepository,
-    targets: &impl TargetRepository,
-    ids: &impl IdSource,
-    direction: DirectionId,
-    statement: &str,
-) -> Result<Target, AppError> {
-    if directions.get(direction)?.is_none() {
-        return Err(AppError::NotFound {
-            entity: "direction",
-        });
-    }
-    let target = Target::new(TargetId::new(ids.new_id()), direction, statement)?;
-    targets.save(&target)?;
-    Ok(target)
-}
-
-/// Lists all directions, in a stable order.
-///
-/// # Errors
-/// [`AppError::Repository`] if persistence fails.
-pub fn list_directions(directions: &impl DirectionRepository) -> Result<Vec<Direction>, AppError> {
-    Ok(directions.list_all()?)
-}
-
-/// Lists the targets under a direction, in a stable order.
-///
-/// # Errors
-/// [`AppError::Repository`] if persistence fails.
-pub fn list_targets(
-    targets: &impl TargetRepository,
-    direction: DirectionId,
-) -> Result<Vec<Target>, AppError> {
-    Ok(targets.list_for_direction(direction)?)
-}
-
-/// Sets a direction's lifecycle status (achieve, abandon, archive, or reopen).
-///
-/// # Errors
-/// [`AppError::NotFound`] if the direction does not exist, or
-/// [`AppError::Repository`] if persistence fails.
-pub fn set_direction_status(
-    directions: &impl DirectionRepository,
-    id: DirectionId,
-    status: LifecycleStatus,
-) -> Result<Direction, AppError> {
-    let mut direction = directions.get(id)?.ok_or(AppError::NotFound {
-        entity: "direction",
-    })?;
-    direction.set_status(status);
-    directions.save(&direction)?;
-    Ok(direction)
-}
-
-/// Permanently deletes a direction, refusing if any targets still hang off it.
-///
-/// Deletion is irreversible; archiving is the reversible alternative. A direction
-/// with dependents must have them removed (or be archived instead) first.
-///
-/// # Errors
-/// [`AppError::NotFound`] if the direction does not exist, [`AppError::BadRequest`]
-/// if it still has targets, or [`AppError::Repository`] if persistence fails.
-pub fn delete_direction(
-    directions: &impl DirectionRepository,
-    targets: &impl TargetRepository,
-    id: DirectionId,
-) -> Result<(), AppError> {
-    if directions.get(id)?.is_none() {
-        return Err(AppError::NotFound {
-            entity: "direction",
-        });
-    }
-    if !targets.list_for_direction(id)?.is_empty() {
-        return Err(AppError::BadRequest {
-            message: "cannot delete a North Star that still has targets; \
-                      archive it, or remove its targets first"
-                .to_owned(),
-        });
-    }
-    directions.delete(id)?;
-    Ok(())
-}
-
-/// Sets a target's lifecycle status (achieve, abandon, archive, or reopen).
-///
-/// # Errors
-/// [`AppError::NotFound`] if the target does not exist, or
-/// [`AppError::Repository`] if persistence fails.
-pub fn set_target_status(
-    targets: &impl TargetRepository,
-    id: TargetId,
-    status: LifecycleStatus,
-) -> Result<Target, AppError> {
-    let mut target = targets
-        .get(id)?
-        .ok_or(AppError::NotFound { entity: "target" })?;
-    target.set_status(status);
-    targets.save(&target)?;
-    Ok(target)
-}
-
-/// Permanently deletes a target, refusing if any assumptions still hang off it.
-///
-/// Deletion is irreversible; archiving is the reversible alternative.
-///
-/// # Errors
-/// [`AppError::NotFound`] if the target does not exist, [`AppError::BadRequest`]
-/// if it still has assumptions, or [`AppError::Repository`] if persistence fails.
-pub fn delete_target(
-    targets: &impl TargetRepository,
-    assumptions: &impl AssumptionRepository,
-    id: TargetId,
-) -> Result<(), AppError> {
-    if targets.get(id)?.is_none() {
-        return Err(AppError::NotFound { entity: "target" });
-    }
-    if !assumptions.list_for_target(id)?.is_empty() {
-        return Err(AppError::BadRequest {
-            message: "cannot delete a target that still has assumptions; \
-                      archive it, or remove its assumptions first"
-                .to_owned(),
-        });
-    }
-    targets.delete(id)?;
-    Ok(())
-}
-
-/// Creates and stores a new [`Assumption`] under an existing target.
-///
-/// # Errors
-/// [`AppError::NotFound`] if the target does not exist, [`AppError::Domain`] if
-/// the statement is invalid, or [`AppError::Repository`] if persistence fails.
-pub fn create_assumption(
-    targets: &impl TargetRepository,
-    assumptions: &impl AssumptionRepository,
-    ids: &impl IdSource,
-    target: TargetId,
-    statement: &str,
-) -> Result<Assumption, AppError> {
-    if targets.get(target)?.is_none() {
-        return Err(AppError::NotFound { entity: "target" });
-    }
-    let assumption = Assumption::new(AssumptionId::new(ids.new_id()), target, statement)?;
-    assumptions.save(&assumption)?;
-    Ok(assumption)
-}
-
-/// Lists the assumptions under a target, in a stable order.
-///
-/// # Errors
-/// [`AppError::Repository`] if persistence fails.
-pub fn list_assumptions(
-    assumptions: &impl AssumptionRepository,
-    target: TargetId,
-) -> Result<Vec<Assumption>, AppError> {
-    Ok(assumptions.list_for_target(target)?)
-}
-
-/// Proposes and stores a new [`Experiment`] under an existing assumption.
-///
-/// # Errors
-/// [`AppError::NotFound`] if the assumption does not exist, [`AppError::Domain`]
-/// if the hypothesis is invalid, or [`AppError::Repository`] if persistence fails.
-pub fn propose_experiment(
-    assumptions: &impl AssumptionRepository,
-    experiments: &impl ExperimentRepository,
-    ids: &impl IdSource,
-    assumption: AssumptionId,
-    hypothesis: &str,
-) -> Result<Experiment, AppError> {
-    if assumptions.get(assumption)?.is_none() {
-        return Err(AppError::NotFound {
-            entity: "assumption",
-        });
-    }
-    let experiment = Experiment::propose(ExperimentId::new(ids.new_id()), assumption, hypothesis)?;
-    experiments.save(&experiment)?;
-    Ok(experiment)
-}
-
-/// Lists the experiments testing an assumption, in a stable order.
-///
-/// # Errors
-/// [`AppError::Repository`] if persistence fails.
-pub fn list_experiments(
-    experiments: &impl ExperimentRepository,
-    assumption: AssumptionId,
-) -> Result<Vec<Experiment>, AppError> {
-    Ok(experiments.list_for_assumption(assumption)?)
-}
-
-/// Starts a proposed experiment and persists the transition.
-///
-/// # Errors
-/// [`AppError::NotFound`] if the experiment does not exist, [`AppError::Domain`]
-/// if it is not in a startable state, or [`AppError::Repository`] on failure.
-pub fn start_experiment(
-    experiments: &impl ExperimentRepository,
-    id: ExperimentId,
-) -> Result<Experiment, AppError> {
-    let mut experiment = experiments.get(id)?.ok_or(AppError::NotFound {
-        entity: "experiment",
-    })?;
-    experiment.start()?;
-    experiments.save(&experiment)?;
-    Ok(experiment)
-}
-
-/// Concludes a running experiment and persists the transition.
-///
-/// # Errors
-/// [`AppError::NotFound`] if the experiment does not exist, [`AppError::Domain`]
-/// if it is not running, or [`AppError::Repository`] on failure.
-pub fn conclude_experiment(
-    experiments: &impl ExperimentRepository,
-    id: ExperimentId,
-) -> Result<Experiment, AppError> {
-    let mut experiment = experiments.get(id)?.ok_or(AppError::NotFound {
-        entity: "experiment",
-    })?;
-    experiment.conclude()?;
-    experiments.save(&experiment)?;
-    Ok(experiment)
-}
-
-/// Number of milliseconds in a day, for scheduling reviews some days out.
-const MILLIS_PER_DAY: i64 = 24 * 60 * 60 * 1_000;
-
-/// Schedules a reminder to review an experiment `in_days` from now, using the
-/// [`Clock`] port for the current time.
-///
-/// This only sets a reminder; it changes no lifecycle state and takes no action
-/// on its own (see `docs/adr/0010-autonomy-model.md`).
-///
-/// # Errors
-/// [`AppError::NotFound`] if the experiment does not exist, or
-/// [`AppError::Repository`] if persistence fails.
-pub fn schedule_experiment_review(
-    experiments: &impl ExperimentRepository,
-    clock: &impl Clock,
-    id: ExperimentId,
-    in_days: u32,
-) -> Result<Experiment, AppError> {
-    let mut experiment = experiments.get(id)?.ok_or(AppError::NotFound {
-        entity: "experiment",
-    })?;
-    let at = Timestamp::from_unix_millis(
-        clock.now().unix_millis() + i64::from(in_days) * MILLIS_PER_DAY,
-    );
-    experiment.schedule_review(at);
-    experiments.save(&experiment)?;
-    Ok(experiment)
-}
-
-/// Lists the experiments whose scheduled review is due as of now, per the
-/// [`Clock`] port. These are surfaced to the person; nothing acts on them.
-///
-/// # Errors
-/// [`AppError::Repository`] if the backend fails or stored data is corrupt.
-pub fn list_due_reviews(
-    experiments: &impl ExperimentRepository,
-    clock: &impl Clock,
-) -> Result<Vec<Experiment>, AppError> {
-    Ok(experiments.list_due_reviews(clock.now())?)
-}
-
-/// Records an [`Observation`] against an existing experiment, timestamped by the
-/// [`Clock`] port.
-///
-/// # Errors
-/// [`AppError::NotFound`] if the experiment does not exist, [`AppError::Domain`]
-/// if the note is invalid, or [`AppError::Repository`] if persistence fails.
-pub fn record_observation(
-    experiments: &impl ExperimentRepository,
-    observations: &impl ObservationRepository,
-    ids: &impl IdSource,
-    clock: &impl Clock,
-    experiment: ExperimentId,
-    note: &str,
-) -> Result<Observation, AppError> {
-    if experiments.get(experiment)?.is_none() {
-        return Err(AppError::NotFound {
-            entity: "experiment",
-        });
-    }
-    let observation = Observation::record(
-        ObservationId::new(ids.new_id()),
-        experiment,
-        note,
-        clock.now(),
-    )?;
-    observations.save(&observation)?;
-    Ok(observation)
-}
-
-/// Lists the observations recorded for an experiment, oldest first.
-///
-/// # Errors
-/// [`AppError::Repository`] if persistence fails.
-pub fn list_observations(
-    observations: &impl ObservationRepository,
-    experiment: ExperimentId,
-) -> Result<Vec<Observation>, AppError> {
-    Ok(observations.list_for_experiment(experiment)?)
-}
-
-/// Creates and stores a new [`Reflection`] over one or more observations, under
-/// an existing target.
-///
-/// # Errors
-/// [`AppError::NotFound`] if the target does not exist, [`AppError::Domain`] if the
-/// summary is blank or no evidence is cited, or [`AppError::Repository`] on
-/// failure.
-pub fn create_reflection(
-    targets: &impl TargetRepository,
-    reflections: &impl ReflectionRepository,
-    ids: &impl IdSource,
-    target: TargetId,
-    summary: &str,
-    evidence: Vec<ObservationId>,
-) -> Result<Reflection, AppError> {
-    if targets.get(target)?.is_none() {
-        return Err(AppError::NotFound { entity: "target" });
-    }
-    let reflection = Reflection::new(ReflectionId::new(ids.new_id()), target, summary, evidence)?;
-    reflections.save(&reflection)?;
-    Ok(reflection)
-}
-
-/// Lists the reflections for a target, in a stable order.
-///
-/// # Errors
-/// [`AppError::Repository`] if persistence fails.
-pub fn list_reflections(
-    reflections: &impl ReflectionRepository,
-    target: TargetId,
-) -> Result<Vec<Reflection>, AppError> {
-    Ok(reflections.list_for_target(target)?)
-}
-
-/// Proposes and stores a new [`ProposedProcessChange`] from an existing
-/// reflection. It starts pending human approval.
-///
-/// # Errors
-/// [`AppError::NotFound`] if the reflection does not exist, [`AppError::Domain`]
-/// if the description is blank, or [`AppError::Repository`] on failure.
-pub fn propose_process_change(
-    reflections: &impl ReflectionRepository,
-    changes: &impl ProcessChangeRepository,
-    ids: &impl IdSource,
-    reflection: ReflectionId,
-    description: &str,
-) -> Result<ProposedProcessChange, AppError> {
-    if reflections.get(reflection)?.is_none() {
-        return Err(AppError::NotFound {
-            entity: "reflection",
-        });
-    }
-    let change = ProposedProcessChange::propose(
-        ProcessChangeId::new(ids.new_id()),
-        reflection,
-        description,
-    )?;
-    changes.save(&change)?;
-    Ok(change)
-}
-
-/// Uses a reasoning model to *draft* a process change from an existing
-/// reflection, then stores it as a pending proposal.
-///
-/// The model is a reasoning component, not an authority: its output becomes an
-/// ordinary [`ProposedProcessChange`] in the `Pending` state, which still needs
-/// human approval and passes through the deterministic policy boundary like any
-/// other. See `docs/adr/0005-models-propose-policy-authorizes.md`.
-///
-/// # Errors
-/// [`AppError::NotFound`] if the reflection does not exist, [`AppError::Model`]
-/// if the model is unavailable or returns nothing usable, [`AppError::Domain`]
-/// if the drafted text is empty, or [`AppError::Repository`] on failure.
-pub fn draft_process_change(
-    reflections: &impl ReflectionRepository,
-    changes: &impl ProcessChangeRepository,
-    ids: &impl IdSource,
-    proposer: &dyn Proposer,
-    reflection: ReflectionId,
-) -> Result<ProposedProcessChange, AppError> {
-    let Some(reflection_record) = reflections.get(reflection)? else {
-        return Err(AppError::NotFound {
-            entity: "reflection",
-        });
-    };
-    let description = proposer.propose_process_change(
-        reflection_record.summary(),
-        reflection_record.evidence().len(),
-    )?;
-    let change = ProposedProcessChange::propose(
-        ProcessChangeId::new(ids.new_id()),
-        reflection,
-        &description,
-    )?;
-    changes.save(&change)?;
-    Ok(change)
-}
-
-/// Lists the proposed changes from a reflection, in a stable order.
-///
-/// # Errors
-/// [`AppError::Repository`] if persistence fails.
-pub fn list_process_changes(
-    changes: &impl ProcessChangeRepository,
-    reflection: ReflectionId,
-) -> Result<Vec<ProposedProcessChange>, AppError> {
-    Ok(changes.list_for_reflection(reflection)?)
-}
-
-/// Approves a pending process change (an explicit human decision) and persists
-/// it.
-///
-/// # Errors
-/// [`AppError::NotFound`] if the change does not exist, [`AppError::Domain`] if
-/// it was already decided, or [`AppError::Repository`] on failure.
-pub fn approve_process_change(
-    changes: &impl ProcessChangeRepository,
-    id: ProcessChangeId,
-) -> Result<ProposedProcessChange, AppError> {
-    let mut change = changes.get(id)?.ok_or(AppError::NotFound {
-        entity: "process change",
-    })?;
-    change.approve()?;
-    changes.save(&change)?;
-    Ok(change)
-}
-
-/// Rejects a pending process change and persists it.
-///
-/// # Errors
-/// [`AppError::NotFound`] if the change does not exist, [`AppError::Domain`] if
-/// it was already decided, or [`AppError::Repository`] on failure.
-pub fn reject_process_change(
-    changes: &impl ProcessChangeRepository,
-    id: ProcessChangeId,
-) -> Result<ProposedProcessChange, AppError> {
-    let mut change = changes.get(id)?.ok_or(AppError::NotFound {
-        entity: "process change",
-    })?;
-    change.reject()?;
-    changes.save(&change)?;
-    Ok(change)
-}
-
-/// Decides whether an actor may enact a proposed process change, and records
-/// the decision to the audit trail.
-///
-/// The decision itself is made by the deterministic domain policy
-/// ([`authorize_process_change`]); this use case is the seam that ties that
-/// decision to accountability — every consequential decision is audited.
-///
-/// # Errors
-/// [`AppError::Domain`] if the audit summary is somehow invalid, or
-/// [`AppError::Repository`] if writing the audit record fails.
-pub fn decide_process_change(
-    change: &ProposedProcessChange,
-    actor: AutonomyLevel,
-    ids: &impl IdSource,
-    clock: &impl Clock,
-    audit: &impl AuditLog,
-) -> Result<PolicyDecision, AppError> {
-    let decision = authorize_process_change(change, actor);
-    let summary = format!(
-        "policy {} enacting process change {} (actor: {actor:?})",
-        describe(decision),
-        change.id().value(),
-    );
-    let record = AuditRecord::new(AuditId::new(ids.new_id()), clock.now(), &summary)?;
-    audit.append(&record)?;
-    Ok(decision)
-}
-
-/// Loads a stored process change and decides whether `actor` may enact it,
-/// recording the decision to the audit trail.
-///
-/// This is the seam that ties the persisted change, the deterministic policy,
-/// and accountability together — the interface-facing form of
-/// [`decide_process_change`].
-///
-/// # Errors
-/// [`AppError::NotFound`] if the change does not exist, or [`AppError`] if the
-/// decision cannot be recorded.
-pub fn decide_stored_process_change(
-    changes: &impl ProcessChangeRepository,
-    ids: &impl IdSource,
-    clock: &impl Clock,
-    audit: &impl AuditLog,
-    id: ProcessChangeId,
-    actor: AutonomyLevel,
-) -> Result<PolicyDecision, AppError> {
-    let change = changes.get(id)?.ok_or(AppError::NotFound {
-        entity: "process change",
-    })?;
-    decide_process_change(&change, actor, ids, clock, audit)
-}
 
 /// Exports everything the user has stored (a memory right).
 ///
@@ -661,12 +54,10 @@ pub use endora_platform::recent_audit;
 
 /// What kind of thing an [`ActivityItem`] records.
 ///
-/// Kept coarse on purpose: the feed groups by the area of the loop, and the
+/// Kept coarse on purpose: the feed groups by what sort of event it was, and the
 /// human-readable summary carries the specifics.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ActivityKind {
-    /// An observation was recorded against an experiment.
-    Observation,
     /// A consequential decision was made and audited (see [`AuditLog`]).
     Decision,
     /// Something the butler did or learned this turn, or a setting the person
@@ -679,7 +70,6 @@ impl ActivityKind {
     #[must_use]
     pub const fn name(self) -> &'static str {
         match self {
-            Self::Observation => "observation",
             Self::Decision => "decision",
             Self::Action => "action",
         }
@@ -689,9 +79,9 @@ impl ActivityKind {
 /// One entry in the activity feed.
 ///
 /// This is a **read projection**, not a domain aggregate: it merges the
-/// persisted facts that already carry a time — recorded observations and audited
-/// decisions — into a single "what happened" timeline. Because it is derived, it
-/// stores nothing new and needs no schema of its own.
+/// persisted facts that already carry a time — audited decisions and the butler's
+/// own action log — into a single "what happened" timeline. Because it is derived,
+/// it stores nothing new and needs no schema of its own.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ActivityItem {
     at: Timestamp,
@@ -719,29 +109,20 @@ impl ActivityItem {
     }
 }
 
-/// Returns the most recent activity across the learning loop, newest first, up
-/// to `limit` entries.
+/// Returns the most recent activity, newest first, up to `limit` entries.
 ///
 /// The feed is a projection over what is already persisted with a timestamp:
-/// recorded observations and audited decisions. As more of the loop gains
+/// audited decisions and the butler's own action log. As more of the system gains
 /// durable timestamps, this timeline widens without a protocol change.
 ///
 /// # Errors
 /// [`AppError::Repository`] if the backend fails or stored data is corrupt.
 pub fn recent_activity(
-    observations: &impl ObservationRepository,
     audit: &impl AuditLog,
     events: &impl EventLog,
     limit: usize,
 ) -> Result<Vec<ActivityItem>, AppError> {
     let mut items = Vec::new();
-    for o in observations.recent(limit)? {
-        items.push(ActivityItem {
-            at: o.recorded_at(),
-            kind: ActivityKind::Observation,
-            summary: o.note().to_owned(),
-        });
-    }
     for r in audit.recent(limit)? {
         items.push(ActivityItem {
             at: r.at(),
@@ -765,161 +146,6 @@ pub fn recent_activity(
     });
     items.truncate(limit);
     Ok(items)
-}
-
-/// One agentic gathering pass — the butler reaching for its skills.
-struct Gathering {
-    /// The final round's reply (its proposals/beliefs, and text if it answered
-    /// without needing a skill).
-    reply: ButlerReply,
-    /// Real skill results as `- id: output` lines, to ground the answer.
-    gathered: Vec<String>,
-}
-
-/// The agentic loop, shared by the chat turn and the proactive flows (brief,
-/// nightly): hand the butler its full skill catalog (via [`ButlerContext`]) and let
-/// it reach for whatever it decides it needs, across up to `max_rounds` steps. The
-/// model chooses the skills — this never scripts them. Each proposed skill is
-/// authorized by policy (reversible + autonomous only; irreversible is never run on
-/// its own — ADR 0024), run, and its real result fed back for the next step;
-/// consequential/blocked decisions are audited (ADR 0005). **Grounding stays in
-/// code**: only real skill output is fed back, so the answer is built from facts,
-/// never invented.
-///
-/// # Errors
-/// [`AppError::Model`] if the butler brain is unavailable.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "explicit dependencies, no hidden state"
-)]
-fn gather_with_skills(
-    butler: &dyn Butler,
-    capabilities: &dyn CapabilityRunner,
-    audit: &dyn AuditLog,
-    ids: &impl IdSource,
-    clock: &impl Clock,
-    history: &[ChatMessage],
-    prefs: &[Preference],
-    context: &ButlerContext,
-    max_rounds: usize,
-    on_step: &mut dyn FnMut(ButlerStep),
-    activity: &mut Vec<String>,
-) -> Result<Gathering, AppError> {
-    // Don't hammer a failing tool: after this many failed runs in a turn, stop and
-    // answer honestly with what we have rather than retrying the same dead end.
-    const MAX_TOOL_FAILURES: usize = 2;
-    let mut gathered: Vec<String> = Vec::new();
-    let mut failures = 0usize;
-    let mut reply = ButlerReply::default();
-    for round in 0..=max_rounds {
-        let mut ctx = context.clone();
-        if !gathered.is_empty() {
-            ctx.tool_result = Some(format!(
-                "Results you've gathered this turn — use another skill if you still need \
-                 more, otherwise give your complete answer using ALL of these:\n{}",
-                gathered.join("\n")
-            ));
-        }
-        reply = butler
-            .respond(history, prefs, &ctx)
-            .map_err(|e| AppError::Model {
-                message: e.to_string(),
-            })?;
-        let Some(used) = reply.capability_use.take() else {
-            break; // ready to answer — nothing more to gather
-        };
-        if round == max_rounds {
-            break; // safety bound — answer with what was gathered
-        }
-        let id = used.capability.clone();
-        let spec = capabilities.available().into_iter().find(|c| c.id == id);
-        if spec.as_ref().is_some_and(|s| s.configured && s.autonomous) {
-            // Cleared to run on its own (configured + reversible/read-only). Show the
-            // step as it happens, then feed the result back for the next round.
-            let label = progress_label(&id);
-            on_step(ButlerStep {
-                skill: id.clone(),
-                status: StepStatus::Running,
-                label: label.clone(),
-                output: None,
-            });
-            match capabilities.run(&id, &used.input_json) {
-                Ok(out) => {
-                    on_step(ButlerStep {
-                        skill: id.clone(),
-                        status: StepStatus::Done,
-                        label,
-                        output: Some(out.clone()),
-                    });
-                    activity.push(format!("Used the {id} skill"));
-                    gathered.push(format!("- {id}: {out}"));
-                }
-                Err(e) => {
-                    on_step(ButlerStep {
-                        skill: id.clone(),
-                        status: StepStatus::Failed,
-                        label,
-                        output: Some(format!("failed: {e}")),
-                    });
-                    activity.push(format!("Tried the {id} skill, but it failed"));
-                    gathered.push(format!("- {id}: failed ({e}) — do not invent a result"));
-                    failures += 1;
-                    if failures >= MAX_TOOL_FAILURES {
-                        break; // stop retrying a dead end — answer honestly below
-                    }
-                }
-            }
-        } else {
-            // The model asked for a skill it can't just run: off, awaiting setup, or
-            // a consequential/blocked action. Record what policy decided (audit
-            // trail) and tell the butler honestly so it asks or points to setup,
-            // rather than faking it or dead-ending.
-            let decision = capabilities.decision(&id);
-            if spec.as_ref().is_some_and(|s| s.configured) {
-                let audited = match decision {
-                    Some(Decision::Block) => Some(format!(
-                        "Policy blocked the '{id}' skill — irreversible and not opened (refused, not run)"
-                    )),
-                    Some(Decision::Confirm) => Some(format!(
-                        "Policy required confirmation for the '{id}' skill (not run on its own)"
-                    )),
-                    _ => None,
-                };
-                if let Some(summary) = audited {
-                    if let Ok(rec) =
-                        AuditRecord::new(AuditId::new(ids.new_id()), clock.now(), &summary)
-                    {
-                        let _ = audit.append(&rec);
-                    }
-                }
-            }
-            let note = match spec {
-                Some(s) if !s.configured => format!(
-                    "- {id}: not set up — can't use it; tell them plainly and point them to set \
-                     it up under Skills"
-                ),
-                Some(_) if decision == Some(Decision::Block) => format!(
-                    "- {id}: can't be undone and isn't allowed yet — you can't do it even if they \
-                     ask; tell them they can allow it under Skills first"
-                ),
-                Some(_) => {
-                    format!("- {id}: consequential — needs their go-ahead; ask, don't do it")
-                }
-                None => format!("- {id}: no such skill — can't do that yet"),
-            };
-            on_step(ButlerStep {
-                skill: id.clone(),
-                status: StepStatus::Blocked,
-                label: progress_label(&id),
-                output: None,
-            });
-            activity.push(format!(
-                "Couldn't use {id} (off, not set up, or needs confirming)"
-            ));
-            gathered.push(note);
-        }
-    }
-    Ok(Gathering { reply, gathered })
 }
 
 /// The single tool-calling conversation (ADR 0028). Seeds the conversation from the
@@ -964,6 +190,18 @@ fn take_turn_retrying_empty(
     }
     Ok(reply)
 }
+
+/// Tool rounds allowed in a **chat** turn. `run_tool_turn` already answers after one
+/// tool round (retrying only on failure), so this only bounds a pathological loop —
+/// kept low to stay fast on a slow local model.
+const CHAT_TOOL_ROUNDS: usize = 3;
+/// Tool rounds allowed in a proactive **check-in** — it mostly just needs to look.
+const CHECKIN_TOOL_ROUNDS: usize = 3;
+/// Tool rounds allowed in a **brief**, which legitimately gathers several things
+/// (weather, alerts, news) before writing.
+const BRIEF_TOOL_ROUNDS: usize = 6;
+/// Tool rounds allowed in the **nightly loop** — it researches one focus, unhurried.
+const NIGHTLY_TOOL_ROUNDS: usize = 4;
 
 #[expect(
     clippy::too_many_arguments,
@@ -1128,11 +366,8 @@ fn run_tool_turn(
 
 /// Sends a message to the butler and records both turns.
 ///
-/// Appends the person's message, asks the [`Butler`] to respond to the full
-/// conversation, records the butler's reply, and returns the reply message and
-/// any [`ButlerProposal`]s. The proposals are *suggestions only* — they are not
-/// executed here; the person confirms each one separately (models propose, the
-/// person authorizes).
+/// Appends the person's message, runs the butler's turn, records the reply, and
+/// returns it together with a plain-language trail of what the butler did.
 ///
 /// # Errors
 /// [`AppError::Domain`] if the message text is blank, [`AppError::Model`] if the
@@ -1144,7 +379,6 @@ fn run_tool_turn(
 pub fn send_to_butler(
     chat: &impl ChatRepository,
     preferences: &impl PreferenceRepository,
-    suggestions: &impl SuggestionRepository,
     beliefs: &impl BeliefRepository,
     capabilities: &dyn CapabilityRunner,
     butler: &dyn Butler,
@@ -1153,13 +387,12 @@ pub fn send_to_butler(
     clock: &impl Clock,
     context: &ButlerContext,
     text: &str,
-) -> Result<(ChatMessage, Vec<Suggestion>, Vec<String>), AppError> {
+) -> Result<(ChatMessage, Vec<String>), AppError> {
     // Non-streaming is just streaming with the tokens and steps discarded. Deep
     // escalation is wired on the streaming (primary chat) path; None here.
     send_to_butler_streaming(
         chat,
         preferences,
-        suggestions,
         beliefs,
         capabilities,
         butler,
@@ -1305,7 +538,6 @@ fn render_transcript(messages: &[ChatMessage]) -> String {
 pub fn send_to_butler_streaming(
     chat: &impl ChatRepository,
     preferences: &impl PreferenceRepository,
-    suggestions: &impl SuggestionRepository,
     beliefs: &impl BeliefRepository,
     capabilities: &dyn CapabilityRunner,
     butler: &dyn Butler,
@@ -1318,7 +550,7 @@ pub fn send_to_butler_streaming(
     text: &str,
     on_token: &mut dyn FnMut(&str),
     on_step: &mut dyn FnMut(ButlerStep),
-) -> Result<(ChatMessage, Vec<Suggestion>, Vec<String>), AppError> {
+) -> Result<(ChatMessage, Vec<String>), AppError> {
     let user = ChatMessage::new(
         MessageId::new(ids.new_id()),
         MessageRole::User,
@@ -1359,12 +591,8 @@ pub fn send_to_butler_streaming(
     // policy and answers grounded in their real results — success or error — with no
     // deterministic narration. A failed tool comes back as a factual tool result the
     // model must relay honestly; if it misreports with the truth in front of it, that
-    // is a model failure to surface, not a canned string to hardcode. (The proactive
-    // flows still use the two-pass `gather_with_skills`; they migrate separately.)
-    // Small ceiling: run_tool_turn already answers after one tool round (retrying only
-    // on failure), so this only bounds a pathological loop — kept low to stay fast on
-    // a slow model rather than the old 6-round gather.
-    const MAX_TOOL_ROUNDS: usize = 3;
+    // is a model failure to surface, not a canned string to hardcode. The proactive
+    // flows (check-in, brief, nightly loop) run on this same loop.
     let reply = run_tool_turn(
         butler,
         capabilities,
@@ -1374,7 +602,7 @@ pub fn send_to_butler_streaming(
         &history,
         &prefs,
         context,
-        MAX_TOOL_ROUNDS,
+        CHAT_TOOL_ROUNDS,
         on_step,
         &mut activity,
     )?;
@@ -1404,11 +632,6 @@ pub fn send_to_butler_streaming(
     )?;
     chat.append(&butler_msg)?;
 
-    // Proposals are OFF in the tool-calling turn (ADR 0028 cutover): the butler
-    // converses and acts, and no longer auto-files goals/preferences. `suggestions`
-    // stays in the signature for the proactive flows and a future deliberate capture.
-    let _ = &suggestions;
-
     // Understanding is KEPT (ADR 0020) — but only on a CONVERSATION turn. On an action
     // turn (a tool ran, failed, or was blocked) we skip the extra model round: it's the
     // biggest latency saving on a slow model, and belief-forming matters far less when
@@ -1428,7 +651,7 @@ pub fn send_to_butler_streaming(
         record_formed_beliefs(beliefs, formed, ids, clock, &mut activity)?;
     }
 
-    Ok((butler_msg, Vec::new(), activity))
+    Ok((butler_msg, activity))
 }
 
 /// Persists the beliefs the butler formed — Endora's own understanding (not
@@ -1562,32 +785,6 @@ fn format_datetime_utc(ms: i64) -> String {
     format!("{dow}, {year:04}-{m:02}-{d:02} {hh:02}:{mm:02} UTC")
 }
 
-/// The person's stated home location, if they've set one (the location setup
-/// stores it as a preference like "Based in: Charlotte"). Used to answer local
-/// asks without pestering them for a place each time.
-fn known_location(preferences: &[Preference]) -> Option<String> {
-    for p in preferences {
-        let t = p.text().trim();
-        let lower = t.to_lowercase();
-        if let Some(rest) = lower.strip_prefix("based in") {
-            let start = t.len() - rest.len();
-            let loc = t[start..].trim_start_matches([':', ' ']).trim();
-            if !loc.is_empty() {
-                return Some(loc.to_owned());
-            }
-        }
-    }
-    None
-}
-
-/// Builds a `{"location":"..."}` JSON input for a capability, escaping the value
-/// so a place name with quotes can't break the JSON. Kept here (no serde in the
-/// application layer) since the shape is trivial and fixed.
-fn json_location(location: &str) -> String {
-    let escaped = location.replace('\\', "\\\\").replace('"', "\\\"");
-    format!("{{\"location\":\"{escaped}\"}}")
-}
-
 /// Endora's living understanding of the person — its active beliefs, most
 /// recently affirmed first. Corrected beliefs are omitted.
 ///
@@ -1629,116 +826,6 @@ pub fn correct_belief(beliefs: &impl BeliefRepository, id: BeliefId) -> Result<(
     belief.correct();
     beliefs.save(&belief)?;
     Ok(())
-}
-
-/// Lists the butler's persisted suggestions, newest first, optionally filtered by
-/// status (e.g. only the pending ones for an inbox).
-///
-/// # Errors
-/// [`AppError::Repository`] if the backend fails or stored data is corrupt.
-pub fn list_suggestions(
-    suggestions: &impl SuggestionRepository,
-    status: Option<SuggestionStatus>,
-) -> Result<Vec<Suggestion>, AppError> {
-    Ok(suggestions.list(status)?)
-}
-
-/// Dismisses a pending suggestion (records the decision; nothing is created).
-///
-/// # Errors
-/// [`AppError::NotFound`] if it does not exist, or [`AppError::Repository`].
-pub fn dismiss_suggestion(
-    suggestions: &impl SuggestionRepository,
-    clock: &impl Clock,
-    id: SuggestionId,
-) -> Result<(), AppError> {
-    let mut suggestion = suggestions.get(id)?.ok_or(AppError::NotFound {
-        entity: "suggestion",
-    })?;
-    suggestion.status = SuggestionStatus::Dismissed;
-    suggestion.decided_at = Some(clock.now());
-    suggestions.save(&suggestion)?;
-    Ok(())
-}
-
-/// Applies a pending suggestion: runs the deterministic create it stands for and
-/// records that it was applied. This is the human-authorized step — the butler
-/// only ever *proposed* it. Returns the resolved [`Suggestion`].
-///
-/// For a target, the North Star reference the butler gave (an id, or a name) is
-/// resolved here: an exact id if it exists, else a case-insensitive title match
-/// against an existing North Star. If it cannot be resolved, the suggestion is
-/// left pending and an error is returned so the caller can explain why.
-///
-/// # Errors
-/// [`AppError::NotFound`] if the suggestion (or a referenced North Star) is
-/// missing, [`AppError::Domain`] on invalid content, or [`AppError::Repository`].
-#[expect(
-    clippy::too_many_arguments,
-    reason = "explicit dependencies, no hidden state"
-)]
-pub fn apply_suggestion(
-    suggestions: &impl SuggestionRepository,
-    values: &impl ValueRepository,
-    directions: &impl DirectionRepository,
-    targets: &impl TargetRepository,
-    preferences: &impl PreferenceRepository,
-    ids: &impl IdSource,
-    clock: &impl Clock,
-    id: SuggestionId,
-) -> Result<Suggestion, AppError> {
-    let mut suggestion = suggestions.get(id)?.ok_or(AppError::NotFound {
-        entity: "suggestion",
-    })?;
-
-    match &suggestion.proposal {
-        ButlerProposal::CreateValue { name } => {
-            create_value(values, ids, name)?;
-        }
-        ButlerProposal::CreateNorthStar { title } => {
-            create_direction(directions, ids, title)?;
-        }
-        ButlerProposal::CreateTarget {
-            direction_ref,
-            statement,
-        } => {
-            let direction = resolve_direction(directions, direction_ref)?;
-            create_target(directions, targets, ids, direction, statement)?;
-        }
-        ButlerProposal::RememberPreference { text, kind } => {
-            create_preference(preferences, ids, clock, text, *kind)?;
-        }
-    }
-
-    suggestion.status = SuggestionStatus::Applied;
-    suggestion.decided_at = Some(clock.now());
-    suggestions.save(&suggestion)?;
-    Ok(suggestion)
-}
-
-/// Resolves a North Star reference (an id, or a name the model used) to a real
-/// [`DirectionId`]: an exact id that exists, else a case-insensitive title match.
-fn resolve_direction(
-    directions: &impl DirectionRepository,
-    reference: &str,
-) -> Result<DirectionId, AppError> {
-    // An exact, existing id wins.
-    if let Ok(raw) = reference.parse::<u128>() {
-        let id = DirectionId::new(raw);
-        if directions.get(id)?.is_some() {
-            return Ok(id);
-        }
-    }
-    // Otherwise match the name (the common case — the model gives a title).
-    let wanted = reference.trim().to_lowercase();
-    directions
-        .list_all()?
-        .into_iter()
-        .find(|d| d.title().trim().to_lowercase() == wanted)
-        .map(|d| d.id())
-        .ok_or(AppError::NotFound {
-            entity: "direction",
-        })
 }
 
 /// Returns the whole conversation with the butler, oldest first.
@@ -1825,16 +912,16 @@ pub fn run_due_checkin(
     schedule.next_at = Timestamp::from_unix_millis(now.unix_millis() + schedule.interval_ms);
     checkins.set(&schedule)?;
 
-    // FLOOR (anti-fabrication): a grounded proactive opener that always works, even
-    // if the model brain is down — leads with what Endora understands of the person.
-    let floor = checkin_text(context);
-
-    // AGENTIC reach-out (ADR 0019): the butler already sees its skill catalogue and
-    // the person's life through `context`. Let it decide whether any skill would make
-    // this check-in genuinely useful, reach for it, and write the note — its choice,
-    // not a template. Policy gates every skill to reversible + autonomous only, so a
-    // check-in still can't do anything consequential (ADR 0024). Falls back to the
-    // floor if the model is unavailable or returns nothing usable.
+    // AGENTIC reach-out (ADR 0019/0028): the butler sees its skill catalogue and what
+    // Endora understands of the person through `context`. Let it decide whether any
+    // skill would make this check-in genuinely useful, reach for it, and write the
+    // note — its choice, not a template. Policy gates every skill to reversible +
+    // autonomous only, so a check-in still can't do anything consequential (ADR 0024).
+    //
+    // If the model is unavailable or returns nothing, we post NOTHING and simply try
+    // again next tick. There is no deterministic floor: a templated check-in would be
+    // Endora's voice without Endora's judgement behind it (ADR 0028 — we would rather
+    // stay quiet than emit a canned string).
     let prefs = preferences.list_all().unwrap_or_default();
     let mut activity: Vec<String> = Vec::new();
     let checkin_ctx = ButlerContext {
@@ -1844,15 +931,14 @@ pub fn run_due_checkin(
     let ask = [ChatMessage::new(
         MessageId::new(ids.new_id()),
         MessageRole::User,
-        "It's time for your regular check-in and they're here. Look at what they're \
-         working toward and anything that needs attention — reach for any skills that \
-         would make this genuinely useful — then send a short, warm note: what you \
-         noticed, anything you can help with right now, and ask whether there's \
-         anything they'd like you to focus on more or do differently. Add nothing you \
-         don't actually know.",
+        "It's time for your regular check-in and they're here. Think about what you \
+         understand about them — reach for any skills that would make this genuinely \
+         useful — then send a short, warm note: what you noticed, anything you can help \
+         with right now, and ask whether there's anything they'd like you to focus on \
+         more or do differently. Add nothing you don't actually know.",
         now,
     )?];
-    let text = gather_with_skills(
+    let text = run_tool_turn(
         butler,
         capabilities,
         audit,
@@ -1861,14 +947,16 @@ pub fn run_due_checkin(
         &ask,
         &prefs,
         &checkin_ctx,
-        4,
+        CHECKIN_TOOL_ROUNDS,
         &mut |_step| {},
         &mut activity,
     )
     .ok()
-    .map(|g| g.reply.text.trim().to_owned())
-    .filter(|t| !t.is_empty())
-    .unwrap_or(floor);
+    .map(|reply| reply.text.trim().to_owned())
+    .filter(|t| !t.is_empty());
+    let Some(text) = text else {
+        return Ok(None);
+    };
 
     let message = ChatMessage::new(
         MessageId::new(ids.new_id()),
@@ -1880,16 +968,26 @@ pub fn run_due_checkin(
     Ok(Some(message))
 }
 
-/// Composes a **daily briefing** — an act of service (ADR 0025): it runs the
-/// reversible information skills (weather, active safety alerts, local news) for the
-/// person's home location and posts a single, grounded briefing to the chat. Uses
-/// ONLY skills that are configured *and* cleared to run autonomously (reversible,
-/// read-only), so a briefing never does anything consequential (ADR 0024). Returns
-/// the posted message and a plain-language activity trail, or `None` if there's no
-/// home location set or nothing to report.
+/// Composes a **daily briefing** — an act of service (ADR 0025). The butler is handed
+/// its skill catalogue and decides for itself what a brief needs today, gathering
+/// across tool rounds and then writing it. Policy gates every call to configured +
+/// reversible + autonomous, so a briefing never does anything consequential
+/// (ADR 0024), and each result — success or failure — comes back as a tool message the
+/// butler answers from, so the prose is grounded in what actually happened (ADR 0028).
+///
+/// There is **no scripted fallback**: if the butler gathered nothing worth saying, or
+/// the model is unavailable, this returns `None` and no brief is posted. A brief
+/// assembled by fixed code from a hardcoded skill list would be Endora claiming to
+/// have thought about the person's day when it had not.
+///
+/// Returns the posted message and a plain-language activity trail, or `None`.
 ///
 /// # Errors
 /// [`AppError::Repository`] on a backend failure.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "explicit dependencies, no hidden state"
+)]
 pub fn daily_brief(
     chat: &impl ChatRepository,
     preferences: &impl PreferenceRepository,
@@ -1898,35 +996,30 @@ pub fn daily_brief(
     audit: &dyn AuditLog,
     ids: &impl IdSource,
     clock: &impl Clock,
+    context: &ButlerContext,
 ) -> Result<Option<(ChatMessage, Vec<String>)>, AppError> {
     let prefs = preferences.list_all()?;
     let mut activity: Vec<String> = Vec::new();
 
-    // AGENTIC gather (ADR 0019): hand the butler its skill catalog and let it reach
-    // for whatever it decides a brief needs — no fixed script. Policy gates it
-    // (reversible + autonomous only) and only real results are fed back (grounded).
-    let skills: Vec<String> = capabilities
-        .available()
-        .into_iter()
-        .filter(|c| c.configured)
-        .map(|c| format!("{} — {}", c.id, c.description))
-        .collect();
+    // ONE agentic pass (ADR 0019/0028): the butler reaches for whatever it decides a
+    // brief needs, each result comes back as a tool message, and it writes the brief
+    // from those results in the same conversation. No gather/synthesize split, and no
+    // scripted weather→safety→news sweep underneath it.
     let brief_ctx = ButlerContext {
-        capabilities: skills,
         now: format_datetime_utc(clock.now().unix_millis()),
-        ..ButlerContext::default()
+        ..context.clone()
     };
     let ask = [ChatMessage::new(
         MessageId::new(ids.new_id()),
         MessageRole::User,
         "Put together my brief. Reach for whatever's relevant to me right now — the \
          weather and any safety alerts where I'm based, news I'd care about, anything \
-         else you can look up — then give me a short, warm rundown.",
+         else you can look up — then give me a short, warm rundown of what you actually \
+         found. If a skill failed or you couldn't reach something, say so plainly rather \
+         than filling the gap.",
         clock.now(),
     )?];
-    // If the model brain is unavailable the gather errors — fall through to the
-    // deterministic floor rather than failing the brief.
-    let mut gathered = gather_with_skills(
+    let text = run_tool_turn(
         butler,
         capabilities,
         audit,
@@ -1935,79 +1028,16 @@ pub fn daily_brief(
         &ask,
         &prefs,
         &brief_ctx,
-        6,
+        BRIEF_TOOL_ROUNDS,
         &mut |_step| {},
         &mut activity,
     )
-    .map(|g| g.gathered)
-    .unwrap_or_default();
-    // Did the model actually gather real facts (vs only "couldn't"/"blocked" notes)?
-    let has_real = gathered.iter().any(|g| {
-        !g.contains("failed")
-            && !g.contains("no such skill")
-            && !g.contains("not set up")
-            && !g.contains("consequential")
-            && !g.contains("can't be undone")
-    });
-
-    // FLOOR (anti-fabrication): the model reached for nothing real (or is down) —
-    // run the deterministic weather → safety → news sweep for the person's home, so
-    // a brief always carries real facts. Each skill runs only if cleared (reversible
-    // + autonomous), and only its true output is used.
-    if !has_real {
-        gathered.clear();
-        activity.clear();
-        if let Some(location) = known_location(&prefs) {
-            let input = json_location(&location);
-            let available = capabilities.available();
-            for (id, label) in [
-                ("weather", "Weather"),
-                ("safety_alerts", "Safety"),
-                ("news", "News"),
-            ] {
-                let cleared = available
-                    .iter()
-                    .any(|c| c.id == id && c.configured && c.autonomous);
-                if !cleared {
-                    continue;
-                }
-                if let Ok(out) = capabilities.run(id, &input) {
-                    gathered.push(format!("{label} — {out}"));
-                    activity.push(format!("Used the {id} skill for your brief"));
-                }
-            }
-        }
-    }
-    if gathered.is_empty() {
+    .ok()
+    .map(|reply| reply.text.trim().to_owned())
+    .filter(|t| !t.is_empty());
+    // Nothing worth saying (or no model) — stay quiet rather than post a hollow brief.
+    let Some(text) = text else {
         return Ok(None);
-    }
-
-    // The deterministic concatenation is the FLOOR — always a valid brief even if
-    // the model is unavailable for the phrasing pass below.
-    let plain = format!("Here's your brief:\n\n{}", gathered.join("\n\n"));
-    // Synthesis: hand the real gathered results to the butler and let it relay them
-    // warmly (a faithful relay — grounded, so no fabrication risk). If it returns
-    // nothing usable, the plain floor stands.
-    let ctx = ButlerContext {
-        now: format_datetime_utc(clock.now().unix_millis()),
-        tool_result: Some(format!(
-            "Compose the person's brief from these real results you just gathered. Write it \
-             warmly and naturally in your own words — a short, flowing brief, not a list of \
-             labels. Relay the specifics (the numbers, the headlines, any alerts) and add \
-             NOTHING that isn't here:\n\n{}",
-            gathered.join("\n\n")
-        )),
-        ..ButlerContext::default()
-    };
-    let ask2 = [ChatMessage::new(
-        MessageId::new(ids.new_id()),
-        MessageRole::User,
-        "Give me my brief.",
-        clock.now(),
-    )?];
-    let text = match butler.respond(&ask2, &prefs, &ctx) {
-        Ok(reply) if !reply.text.trim().is_empty() => reply.text.trim().to_owned(),
-        _ => plain,
     };
     let message = post_butler_message(chat, ids, clock, &text)?;
     Ok(Some((message, activity)))
@@ -2106,6 +1136,7 @@ pub fn run_due_brief(
     audit: &dyn AuditLog,
     ids: &impl IdSource,
     clock: &impl Clock,
+    context: &ButlerContext,
 ) -> Result<Option<(ChatMessage, Vec<String>)>, AppError> {
     let now = clock.now();
     let Some(mut schedule) = briefs.get()? else {
@@ -2117,7 +1148,16 @@ pub fn run_due_brief(
     // Mark fired first, so a slow compose can't double-post on the next tick.
     schedule.last_at = now;
     briefs.set(&schedule)?;
-    daily_brief(chat, preferences, capabilities, butler, audit, ids, clock)
+    daily_brief(
+        chat,
+        preferences,
+        capabilities,
+        butler,
+        audit,
+        ids,
+        clock,
+        context,
+    )
 }
 
 /// The stored nightly-loop schedule, defaulting to **off** (ADR 0024).
@@ -2206,7 +1246,7 @@ pub fn run_due_nightly_loop(
     // not a fixed script — then review the day and reflect, all in one grounded,
     // policy-gated pass (reversible + autonomous only; it drafts and forms beliefs
     // but does nothing it couldn't undo). The final reply IS the reflection.
-    let focus = nightly_focus(context);
+    let focus = nightly_focus(beliefs)?;
     let instruction = match &focus {
         Some(f) => format!(
             "It's the quiet overnight hour and they're away. Look into \"{f}\" — something \
@@ -2233,7 +1273,7 @@ pub fn run_due_nightly_loop(
         now: format_datetime_utc(now.unix_millis()),
         ..context.clone()
     };
-    let reply = gather_with_skills(
+    let reply = run_tool_turn(
         butler,
         capabilities,
         audit,
@@ -2242,11 +1282,10 @@ pub fn run_due_nightly_loop(
         &history,
         &prefs,
         &review_ctx,
-        4,
+        NIGHTLY_TOOL_ROUNDS,
         &mut |_step| {},
         &mut activity,
-    )?
-    .reply;
+    )?;
 
     // Reflect: persist the understanding it formed (same path as a chat turn).
     record_formed_beliefs(beliefs, reply.beliefs, ids, clock, &mut activity)?;
@@ -2263,88 +1302,41 @@ pub fn run_due_nightly_loop(
     Ok(Some((message, activity)))
 }
 
-/// The topic the nightly loop researches — **value-weighted**: an active North Star
-/// the person is pursuing (the context lists them grouped by value, most important
-/// first) takes priority, then whatever currently needs attention. `None` when
-/// there's nothing to go on, so the loop simply reflects without researching.
-fn nightly_focus(context: &ButlerContext) -> Option<String> {
-    if let Some(ns) = context.north_stars.iter().find(|n| n.status == "active") {
-        return Some(ns.title.clone());
-    }
-    context.attention.first().cloned()
+/// The topic the nightly loop researches, taken from what Endora actually
+/// **understands** about the person (ADR 0020): the intent it is most sure of, since
+/// intent is the slow-changing thing worth looking into overnight. Failing that, the
+/// strongest belief of any kind. `None` when Endora understands nothing yet, so the
+/// loop simply reflects without researching.
+///
+/// Confidence is the ranking, deliberately: researching a tentative guess spends the
+/// night on something Endora may be wrong about.
+fn nightly_focus(beliefs: &impl BeliefRepository) -> Result<Option<String>, AppError> {
+    let active = understanding(beliefs)?;
+    let strongest = |kind: Option<crate::BeliefKind>| {
+        active
+            .iter()
+            .filter(|b| kind.is_none_or(|k| b.kind() == k))
+            .max_by_key(|b| match b.confidence() {
+                crate::Confidence::High => 2,
+                crate::Confidence::Medium => 1,
+                crate::Confidence::Low => 0,
+            })
+            .map(|b| b.statement().to_owned())
+    };
+    Ok(strongest(Some(crate::BeliefKind::Intent)).or_else(|| strongest(None)))
 }
 
-/// Composes a proactive check-in, grounded in the person's life and always asking
-/// how the butler can serve them better (the self-improvement loop, in dialogue).
-fn checkin_text(context: &ButlerContext) -> String {
-    let focus = "Is there anything you'd like me to focus on more, or do differently?";
-    // Lead with understanding — the check-in is grounded in what Endora knows of
-    // the person, not a task list. Stored beliefs already read "you …".
-    if let Some(u) = context.understanding.first() {
-        // Strip the leading "[kind] " tag and trailing " (… confidence)".
-        let plain = u
-            .split_once("] ")
-            .map_or(u.as_str(), |(_, rest)| rest)
-            .rsplit_once(" (")
-            .map_or(u.as_str(), |(head, _)| head);
-        return format!("Checking in. I've had the sense that {plain}. {focus}");
-    }
-    if let Some(item) = context.attention.first() {
-        return format!(
-            "A moment when you have one — I noticed {item}. Want to look at it together? {focus}"
-        );
-    }
-    format!(
-        "Good to see you. What would you like to work on — and {}",
-        focus.to_lowercase()
-    )
-}
-
-/// Assembles the [`ButlerContext`] — a snapshot of the person's current life
-/// (values, North Stars with status/value/whether they have a target, and what
-/// needs attention) — so the butler's conversation is grounded in what exists.
+/// Assembles the [`ButlerContext`] — a snapshot of what Endora understands about
+/// the person and the skills it can reach right now — so the butler's conversation
+/// is grounded in that rather than starting cold each turn.
 ///
 /// # Errors
 /// [`AppError::Repository`] if the backend fails or stored data is corrupt.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "explicit dependencies, no hidden state"
-)]
 pub fn butler_context(
-    values: &impl ValueRepository,
-    directions: &impl DirectionRepository,
-    targets: &impl TargetRepository,
-    experiments: &impl ExperimentRepository,
-    snoozes: &impl SnoozeRepository,
     beliefs: &impl BeliefRepository,
     capabilities: &dyn CapabilityRunner,
     clock: &impl Clock,
 ) -> Result<ButlerContext, AppError> {
-    let value_list = values.list_all()?;
-    let mut north_stars = Vec::new();
-    for d in directions.list_all()? {
-        let has_active_target = targets
-            .list_for_direction(d.id())?
-            .iter()
-            .any(|t| t.status().is_active());
-        let value = d.value().and_then(|vid| {
-            value_list
-                .iter()
-                .find(|v| v.id() == vid)
-                .map(|v| v.name().to_owned())
-        });
-        north_stars.push(NorthStarBrief {
-            id: d.id().value().to_string(),
-            title: d.title().to_owned(),
-            status: d.status().name().to_owned(),
-            value,
-            has_active_target,
-        });
-    }
-    let attention = attention(directions, targets, experiments, snoozes, clock)?
-        .into_iter()
-        .map(|i| i.headline)
-        .collect();
     let understanding = understanding(beliefs)?
         .into_iter()
         .map(|b| {
@@ -2377,15 +1369,10 @@ pub fn butler_context(
         })
         .collect();
     Ok(ButlerContext {
-        values: value_list.iter().map(|v| v.name().to_owned()).collect(),
-        north_stars,
-        attention,
         understanding,
         capabilities: skills,
         tools,
-        tool_result: None,
         now: format_datetime_utc(clock.now().unix_millis()),
-        synthesize: false,
         conversation_summary: None,
     })
 }
@@ -2431,148 +1418,21 @@ pub fn delete_preference(
     Ok(())
 }
 
-/// Computes what currently needs the person's attention, most pressing first,
-/// with snoozed items suppressed (see `docs/adr/0016-adaptive-attention.md`).
-///
-/// This is a fresh read each time, so resolving an item removes it and new ones
-/// appear on their own — reprioritization is automatic.
-///
-/// # Errors
-/// [`AppError::Repository`] if the backend fails or stored data is corrupt.
-pub fn attention(
-    directions: &impl DirectionRepository,
-    targets: &impl TargetRepository,
-    experiments: &impl ExperimentRepository,
-    snoozes: &impl SnoozeRepository,
-    clock: &impl Clock,
-) -> Result<Vec<AttentionItem>, AppError> {
-    let now = clock.now();
-    let mut candidates: Vec<AttentionItem> = Vec::new();
-
-    // Due reviews are the most pressing.
-    for e in experiments.list_due_reviews(now)? {
-        candidates.push(AttentionItem {
-            kind: AttentionKind::ReviewDue,
-            subject: e.id().value().to_string(),
-            headline: format!("Review due: \"{}\"", e.hypothesis()),
-        });
-    }
-    // Active North Stars that are unfiled or have no active target.
-    for d in directions.list_all()? {
-        if !d.status().is_active() {
-            continue;
-        }
-        if d.value().is_none() {
-            candidates.push(AttentionItem {
-                kind: AttentionKind::UnfiledNorthStar,
-                subject: d.id().value().to_string(),
-                headline: format!(
-                    "\"{}\" isn't filed under a value yet — what does it serve?",
-                    d.title()
-                ),
-            });
-        }
-        let has_active_target = targets
-            .list_for_direction(d.id())?
-            .iter()
-            .any(|t| t.status().is_active());
-        if !has_active_target {
-            candidates.push(AttentionItem {
-                kind: AttentionKind::EmptyNorthStar,
-                subject: d.id().value().to_string(),
-                headline: format!(
-                    "\"{}\" has no active target yet — add one to start.",
-                    d.title()
-                ),
-            });
-        }
-    }
-
-    // Drop anything currently snoozed.
-    let mut out = Vec::new();
-    for item in candidates {
-        let hidden = snoozes
-            .get(item.kind.name(), &item.subject)?
-            .is_some_and(|s| s.until.unix_millis() > now.unix_millis());
-        if !hidden {
-            out.push(item);
-        }
-    }
-    Ok(out)
-}
-
-/// Snoozes an attention item ("not now"), with exponential backoff: each snooze
-/// roughly doubles the hidden interval (1, 2, 4, … days, capped), so a
-/// repeatedly-deferred item is raised less and less.
-///
-/// # Errors
-/// [`AppError::Repository`] if persistence fails.
-pub fn snooze_attention(
-    snoozes: &impl SnoozeRepository,
-    clock: &impl Clock,
-    kind: AttentionKind,
-    subject: &str,
-) -> Result<Snooze, AppError> {
-    let now = clock.now();
-    let count = snoozes.get(kind.name(), subject)?.map_or(0, |s| s.count);
-    // 1, 2, 4, 8, … days, capped at 64 so an item never disappears forever.
-    let days = 1i64 << count.min(6);
-    let until = Timestamp::from_unix_millis(now.unix_millis() + days * MILLIS_PER_DAY);
-    let snooze = Snooze {
-        count: count + 1,
-        until,
-    };
-    snoozes.set(kind.name(), subject, snooze)?;
-    Ok(snooze)
-}
-
-/// A short verb phrase for an audit summary.
-fn describe(decision: PolicyDecision) -> &'static str {
-    match decision {
-        PolicyDecision::Permit => "permitted",
-        PolicyDecision::RequireHumanApproval => "requires human approval before",
-        PolicyDecision::Deny { .. } => "denied",
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use super::draft_process_change;
-    use super::{
-        approve_process_change, assign_direction_value, conclude_experiment, create_assumption,
-        create_direction, create_reflection, create_target, create_value, decide_process_change,
-        decide_stored_process_change, delete_direction, delete_target, delete_value,
-        list_assumptions, list_due_reviews, list_experiments, list_observations,
-        list_process_changes, list_reflections, list_targets, list_values, propose_experiment,
-        propose_process_change, recent_audit, record_observation, reject_process_change,
-        schedule_experiment_review, set_direction_status, set_target_status, start_experiment,
-    };
-    use crate::LifecycleStatus;
-    use crate::error::AppError;
     use crate::ports::{
-        AttentionKind, Butler, ButlerContext, ButlerProposal, ButlerReply, Clock, IdSource,
-        ProposalError, Proposer, RepositoryError, Snooze, SnoozeRepository, Suggestion,
-        SuggestionRepository, SuggestionStatus,
+        Butler, ButlerContext, ButlerReply, Clock, IdSource, ProposalError, RepositoryError,
     };
     use crate::{
-        ApprovalState, Assumption, AssumptionId, AuditRecord, AutonomyLevel, ChatMessage,
-        Direction, DirectionId, Experiment, ExperimentId, ExperimentStatus, MessageId, MessageRole,
-        Observation, ObservationId, PolicyDecision, Preference, PreferenceId, PreferenceKind,
-        ProcessChangeId, ProposedProcessChange, Reflection, ReflectionId, SuggestionId, Target,
-        TargetId, Timestamp, Value, ValueId,
+        AuditRecord, ChatMessage, MessageId, MessageRole, Preference, PreferenceId, Timestamp,
     };
     use crate::{Belief, BeliefId};
     use endora_capabilities::CapabilityRunner;
     use endora_conversation::ChatRepository;
-    use endora_direction::{
-        AssumptionRepository, DirectionRepository, ExperimentRepository, ObservationRepository,
-        ProcessChangeRepository, ReflectionRepository, TargetRepository, ValueRepository,
-    };
-    use endora_platform::{AuditLog, EventLog};
+    use endora_platform::AuditLog;
     use endora_scheduling::{CheckinRepository, CheckinSchedule};
     use endora_understanding::{BeliefRepository, PreferenceRepository};
     use std::cell::{Cell, RefCell};
-    use std::collections::HashMap;
 
     /// An in-memory store implementing the repository ports, for tests only.
     /// A capability runner with no skills — the default for tests that don't
@@ -2589,18 +1449,8 @@ mod tests {
 
     #[derive(Default)]
     struct FakeStore {
-        values: RefCell<HashMap<u128, Value>>,
         messages: RefCell<Vec<ChatMessage>>,
         preferences: RefCell<Vec<Preference>>,
-        snoozes: RefCell<HashMap<(String, String), Snooze>>,
-        directions: RefCell<HashMap<u128, Direction>>,
-        targets: RefCell<HashMap<u128, Target>>,
-        assumptions: RefCell<HashMap<u128, Assumption>>,
-        experiments: RefCell<HashMap<u128, Experiment>>,
-        observations: RefCell<HashMap<u128, Observation>>,
-        reflections: RefCell<HashMap<u128, Reflection>>,
-        changes: RefCell<HashMap<u128, ProposedProcessChange>>,
-        suggestions: RefCell<Vec<Suggestion>>,
         checkin: RefCell<Option<CheckinSchedule>>,
         beliefs: RefCell<Vec<Belief>>,
     }
@@ -2633,180 +1483,6 @@ mod tests {
         }
     }
 
-    impl SuggestionRepository for FakeStore {
-        fn save(&self, s: &Suggestion) -> Result<(), RepositoryError> {
-            let mut v = self.suggestions.borrow_mut();
-            if let Some(existing) = v.iter_mut().find(|e| e.id == s.id) {
-                *existing = s.clone();
-            } else {
-                v.push(s.clone());
-            }
-            Ok(())
-        }
-        fn get(&self, id: SuggestionId) -> Result<Option<Suggestion>, RepositoryError> {
-            Ok(self
-                .suggestions
-                .borrow()
-                .iter()
-                .find(|s| s.id == id)
-                .cloned())
-        }
-        fn list(
-            &self,
-            status: Option<SuggestionStatus>,
-        ) -> Result<Vec<Suggestion>, RepositoryError> {
-            Ok(self
-                .suggestions
-                .borrow()
-                .iter()
-                .filter(|s| status.is_none_or(|w| s.status == w))
-                .cloned()
-                .collect())
-        }
-    }
-
-    impl ProcessChangeRepository for FakeStore {
-        fn save(&self, change: &ProposedProcessChange) -> Result<(), RepositoryError> {
-            self.changes
-                .borrow_mut()
-                .insert(change.id().value(), change.clone());
-            Ok(())
-        }
-        fn get(
-            &self,
-            id: ProcessChangeId,
-        ) -> Result<Option<ProposedProcessChange>, RepositoryError> {
-            Ok(self.changes.borrow().get(&id.value()).cloned())
-        }
-        fn list_for_reflection(
-            &self,
-            reflection: ReflectionId,
-        ) -> Result<Vec<ProposedProcessChange>, RepositoryError> {
-            let mut found: Vec<ProposedProcessChange> = self
-                .changes
-                .borrow()
-                .values()
-                .filter(|c| c.reflection() == reflection)
-                .cloned()
-                .collect();
-            found.sort_by_key(|c| c.id().value());
-            Ok(found)
-        }
-    }
-
-    impl ReflectionRepository for FakeStore {
-        fn save(&self, reflection: &Reflection) -> Result<(), RepositoryError> {
-            self.reflections
-                .borrow_mut()
-                .insert(reflection.id().value(), reflection.clone());
-            Ok(())
-        }
-        fn get(&self, id: ReflectionId) -> Result<Option<Reflection>, RepositoryError> {
-            Ok(self.reflections.borrow().get(&id.value()).cloned())
-        }
-        fn list_for_target(&self, target: TargetId) -> Result<Vec<Reflection>, RepositoryError> {
-            let mut found: Vec<Reflection> = self
-                .reflections
-                .borrow()
-                .values()
-                .filter(|r| r.target() == target)
-                .cloned()
-                .collect();
-            found.sort_by_key(|r| r.id().value());
-            Ok(found)
-        }
-    }
-
-    impl ObservationRepository for FakeStore {
-        fn save(&self, observation: &Observation) -> Result<(), RepositoryError> {
-            self.observations
-                .borrow_mut()
-                .insert(observation.id().value(), observation.clone());
-            Ok(())
-        }
-        fn list_for_experiment(
-            &self,
-            experiment: ExperimentId,
-        ) -> Result<Vec<Observation>, RepositoryError> {
-            let mut found: Vec<Observation> = self
-                .observations
-                .borrow()
-                .values()
-                .filter(|o| o.experiment() == experiment)
-                .cloned()
-                .collect();
-            found.sort_by_key(|o| o.id().value());
-            Ok(found)
-        }
-        fn recent(&self, limit: usize) -> Result<Vec<Observation>, RepositoryError> {
-            let mut all: Vec<Observation> = self.observations.borrow().values().cloned().collect();
-            all.sort_by_key(|o| (o.recorded_at().unix_millis(), o.id().value()));
-            all.reverse();
-            all.truncate(limit);
-            Ok(all)
-        }
-    }
-
-    impl AssumptionRepository for FakeStore {
-        fn save(&self, assumption: &Assumption) -> Result<(), RepositoryError> {
-            self.assumptions
-                .borrow_mut()
-                .insert(assumption.id().value(), assumption.clone());
-            Ok(())
-        }
-        fn get(&self, id: AssumptionId) -> Result<Option<Assumption>, RepositoryError> {
-            Ok(self.assumptions.borrow().get(&id.value()).cloned())
-        }
-        fn list_for_target(&self, target: TargetId) -> Result<Vec<Assumption>, RepositoryError> {
-            let mut found: Vec<Assumption> = self
-                .assumptions
-                .borrow()
-                .values()
-                .filter(|a| a.target() == target)
-                .cloned()
-                .collect();
-            found.sort_by_key(|a| a.id().value());
-            Ok(found)
-        }
-    }
-
-    impl ExperimentRepository for FakeStore {
-        fn save(&self, experiment: &Experiment) -> Result<(), RepositoryError> {
-            self.experiments
-                .borrow_mut()
-                .insert(experiment.id().value(), experiment.clone());
-            Ok(())
-        }
-        fn get(&self, id: ExperimentId) -> Result<Option<Experiment>, RepositoryError> {
-            Ok(self.experiments.borrow().get(&id.value()).cloned())
-        }
-        fn list_for_assumption(
-            &self,
-            assumption: AssumptionId,
-        ) -> Result<Vec<Experiment>, RepositoryError> {
-            let mut found: Vec<Experiment> = self
-                .experiments
-                .borrow()
-                .values()
-                .filter(|e| e.assumption() == assumption)
-                .cloned()
-                .collect();
-            found.sort_by_key(|e| e.id().value());
-            Ok(found)
-        }
-        fn list_due_reviews(&self, now: Timestamp) -> Result<Vec<Experiment>, RepositoryError> {
-            let mut found: Vec<Experiment> = self
-                .experiments
-                .borrow()
-                .values()
-                .filter(|e| e.is_review_due(now))
-                .cloned()
-                .collect();
-            found.sort_by_key(|e| (e.review_by().map(|t| t.unix_millis()), e.id().value()));
-            Ok(found)
-        }
-    }
-
     impl ChatRepository for FakeStore {
         fn append(&self, message: &ChatMessage) -> Result<(), RepositoryError> {
             self.messages.borrow_mut().push(message.clone());
@@ -2814,22 +1490,6 @@ mod tests {
         }
         fn list(&self) -> Result<Vec<ChatMessage>, RepositoryError> {
             Ok(self.messages.borrow().clone())
-        }
-    }
-
-    impl SnoozeRepository for FakeStore {
-        fn get(&self, kind: &str, subject: &str) -> Result<Option<Snooze>, RepositoryError> {
-            Ok(self
-                .snoozes
-                .borrow()
-                .get(&(kind.to_owned(), subject.to_owned()))
-                .copied())
-        }
-        fn set(&self, kind: &str, subject: &str, snooze: Snooze) -> Result<(), RepositoryError> {
-            self.snoozes
-                .borrow_mut()
-                .insert((kind.to_owned(), subject.to_owned()), snooze);
-            Ok(())
         }
     }
 
@@ -2847,8 +1507,8 @@ mod tests {
         }
     }
 
-    /// A butler that echoes the newest message and always proposes a North Star,
-    /// so the act/ask + propose flow can be exercised deterministically.
+    /// A butler that echoes the newest message, so the turn can be exercised
+    /// deterministically without a model.
     struct ScriptedTestButler;
     impl Butler for ScriptedTestButler {
         fn respond(
@@ -2859,84 +1519,9 @@ mod tests {
         ) -> Result<ButlerReply, ProposalError> {
             let last = history.last().map(ChatMessage::text).unwrap_or_default();
             Ok(ButlerReply {
-                text: format!("Shall I set that up? You said: {last}"),
-                proposals: vec![ButlerProposal::CreateNorthStar {
-                    title: last.to_owned(),
-                }],
+                text: format!("Noted. You said: {last}"),
                 ..ButlerReply::default()
             })
-        }
-    }
-
-    impl ValueRepository for FakeStore {
-        fn save(&self, value: &Value) -> Result<(), RepositoryError> {
-            self.values
-                .borrow_mut()
-                .insert(value.id().value(), value.clone());
-            Ok(())
-        }
-        fn get(&self, id: ValueId) -> Result<Option<Value>, RepositoryError> {
-            Ok(self.values.borrow().get(&id.value()).cloned())
-        }
-        fn list_all(&self) -> Result<Vec<Value>, RepositoryError> {
-            let mut found: Vec<Value> = self.values.borrow().values().cloned().collect();
-            found.sort_by_key(|v| v.id().value());
-            Ok(found)
-        }
-        fn delete(&self, id: ValueId) -> Result<(), RepositoryError> {
-            self.values.borrow_mut().remove(&id.value());
-            Ok(())
-        }
-    }
-
-    impl DirectionRepository for FakeStore {
-        fn save(&self, direction: &Direction) -> Result<(), RepositoryError> {
-            self.directions
-                .borrow_mut()
-                .insert(direction.id().value(), direction.clone());
-            Ok(())
-        }
-        fn get(&self, id: DirectionId) -> Result<Option<Direction>, RepositoryError> {
-            Ok(self.directions.borrow().get(&id.value()).cloned())
-        }
-        fn list_all(&self) -> Result<Vec<Direction>, RepositoryError> {
-            let mut found: Vec<Direction> = self.directions.borrow().values().cloned().collect();
-            found.sort_by_key(|d| d.id().value());
-            Ok(found)
-        }
-        fn delete(&self, id: DirectionId) -> Result<(), RepositoryError> {
-            self.directions.borrow_mut().remove(&id.value());
-            Ok(())
-        }
-    }
-
-    impl TargetRepository for FakeStore {
-        fn save(&self, target: &Target) -> Result<(), RepositoryError> {
-            self.targets
-                .borrow_mut()
-                .insert(target.id().value(), target.clone());
-            Ok(())
-        }
-        fn get(&self, id: TargetId) -> Result<Option<Target>, RepositoryError> {
-            Ok(self.targets.borrow().get(&id.value()).cloned())
-        }
-        fn list_for_direction(
-            &self,
-            direction: DirectionId,
-        ) -> Result<Vec<Target>, RepositoryError> {
-            let mut found: Vec<Target> = self
-                .targets
-                .borrow()
-                .values()
-                .filter(|g| g.direction() == direction)
-                .cloned()
-                .collect();
-            found.sort_by_key(|g| g.id().value());
-            Ok(found)
-        }
-        fn delete(&self, id: TargetId) -> Result<(), RepositoryError> {
-            self.targets.borrow_mut().remove(&id.value());
-            Ok(())
         }
     }
 
@@ -2952,6 +1537,19 @@ mod tests {
             self.next.set(id);
             id
         }
+    }
+
+    /// The most recent skill result in the conversation, for test butlers that have
+    /// no native tool-calling. The default [`Butler::take_turn`] shim folds each tool
+    /// result into the history as a `[skill result] …` turn (ADR 0028 — results ride
+    /// in the conversation, never the system prompt), so this is how a `respond`-only
+    /// butler sees what came back.
+    fn last_skill_result(history: &[ChatMessage]) -> Option<String> {
+        history.iter().rev().find_map(|m| {
+            m.text()
+                .strip_prefix("[skill result] ")
+                .map(|rest| rest.split('\n').next().unwrap_or(rest).to_owned())
+        })
     }
 
     /// A clock fixed at a chosen instant.
@@ -2980,198 +1578,14 @@ mod tests {
         }
     }
 
-    /// An in-memory event log (the butler's action log).
-    #[derive(Default)]
-    struct FakeEvents {
-        rows: RefCell<Vec<crate::ActivityEvent>>,
-    }
-
-    impl EventLog for FakeEvents {
-        fn record(&self, at: Timestamp, summary: &str) -> Result<(), RepositoryError> {
-            self.rows.borrow_mut().push(crate::ActivityEvent {
-                at,
-                summary: summary.to_owned(),
-            });
-            Ok(())
-        }
-        fn recent(&self, limit: usize) -> Result<Vec<crate::ActivityEvent>, RepositoryError> {
-            let all = self.rows.borrow();
-            Ok(all.iter().rev().take(limit).cloned().collect())
-        }
-    }
-
-    fn approved_change() -> ProposedProcessChange {
-        let mut p = ProposedProcessChange::propose(
-            ProcessChangeId::new(7),
-            ReflectionId::new(1),
-            "Default runs to mornings",
-        )
-        .unwrap();
-        p.approve().unwrap();
-        p
-    }
-
     #[test]
-    fn deciding_a_process_change_records_the_decision() {
-        let ids = SeqIds::default();
-        let clock = FixedClock(1_700_000_000_000);
-        let audit = FakeAudit::default();
-
-        let decision = decide_process_change(
-            &approved_change(),
-            AutonomyLevel::ActWithinPolicy,
-            &ids,
-            &clock,
-            &audit,
-        )
-        .unwrap();
-
-        assert_eq!(decision, PolicyDecision::Permit);
-        let records = audit.records.borrow();
-        assert_eq!(records.len(), 1);
-        assert_eq!(
-            records[0].at(),
-            Timestamp::from_unix_millis(1_700_000_000_000)
-        );
-        assert!(records[0].summary().contains("permitted"));
-        assert!(records[0].summary().contains("process change 7"));
-    }
-
-    #[test]
-    fn an_unapproved_change_is_audited_as_requiring_approval() {
-        let ids = SeqIds::default();
-        let clock = FixedClock(0);
-        let audit = FakeAudit::default();
-        let mut change = approved_change();
-        // A fresh (unapproved) proposal:
-        change = ProposedProcessChange::propose(
-            change.id(),
-            ReflectionId::new(1),
-            "Default runs to mornings",
-        )
-        .unwrap();
-
-        let decision = decide_process_change(
-            &change,
-            AutonomyLevel::ActWithinPolicy,
-            &ids,
-            &clock,
-            &audit,
-        )
-        .unwrap();
-
-        assert_eq!(decision, PolicyDecision::RequireHumanApproval);
-        assert_eq!(audit.recent(10).unwrap().len(), 1);
-        assert!(
-            audit.recent(1).unwrap()[0]
-                .summary()
-                .contains("requires human approval")
-        );
-    }
-
-    #[test]
-    fn create_direction_persists_and_returns_it() {
-        let store = FakeStore::default();
-        let ids = SeqIds::default();
-        let d = create_direction(&store, &ids, "Be healthier").unwrap();
-        assert_eq!(DirectionRepository::get(&store, d.id()).unwrap(), Some(d));
-    }
-
-    #[test]
-    fn create_target_requires_an_existing_direction() {
-        let store = FakeStore::default();
-        let ids = SeqIds::default();
-        let err =
-            create_target(&store, &store, &ids, DirectionId::new(999), "Run a 5k").unwrap_err();
-        assert_eq!(
-            err,
-            AppError::NotFound {
-                entity: "direction"
-            }
-        );
-    }
-
-    #[test]
-    fn create_target_under_a_direction_then_list() {
-        let store = FakeStore::default();
-        let ids = SeqIds::default();
-        let direction = create_direction(&store, &ids, "Be healthier").unwrap();
-
-        let g1 = create_target(&store, &store, &ids, direction.id(), "Run a 5k").unwrap();
-        let g2 = create_target(&store, &store, &ids, direction.id(), "Sleep 8h").unwrap();
-
-        assert_eq!(list_targets(&store, direction.id()).unwrap(), vec![g1, g2]);
-    }
-
-    #[test]
-    fn target_lifecycle_status_is_set_and_persisted() {
-        let store = FakeStore::default();
-        let ids = SeqIds::default();
-        let direction = create_direction(&store, &ids, "Be healthier").unwrap();
-        let target = create_target(&store, &store, &ids, direction.id(), "Run a 5k").unwrap();
-        assert_eq!(target.status(), LifecycleStatus::Active);
-
-        let achieved = set_target_status(&store, target.id(), LifecycleStatus::Achieved).unwrap();
-        assert_eq!(achieved.status(), LifecycleStatus::Achieved);
-        // Persisted: a re-list reflects the new status.
-        assert_eq!(
-            list_targets(&store, direction.id()).unwrap()[0].status(),
-            LifecycleStatus::Achieved
-        );
-    }
-
-    #[test]
-    fn setting_status_on_a_missing_target_is_not_found() {
-        let store = FakeStore::default();
-        let err =
-            set_target_status(&store, TargetId::new(1), LifecycleStatus::Archived).unwrap_err();
-        assert_eq!(err, AppError::NotFound { entity: "target" });
-    }
-
-    #[test]
-    fn deleting_a_target_with_assumptions_is_refused_then_allowed() {
-        let store = FakeStore::default();
-        let ids = SeqIds::default();
-        let direction = create_direction(&store, &ids, "Be healthier").unwrap();
-        let target = create_target(&store, &store, &ids, direction.id(), "Run a 5k").unwrap();
-        create_assumption(&store, &store, &ids, target.id(), "Mornings are freest").unwrap();
-
-        // Refused while a dependent assumption exists.
-        let err = delete_target(&store, &store, target.id()).unwrap_err();
-        assert!(matches!(err, AppError::BadRequest { .. }));
-
-        // Allowed once it has no assumptions.
-        let a = list_assumptions(&store, target.id()).unwrap()[0].id();
-        store.assumptions.borrow_mut().remove(&a.value());
-        delete_target(&store, &store, target.id()).unwrap();
-        assert!(list_targets(&store, direction.id()).unwrap().is_empty());
-    }
-
-    #[test]
-    fn deleting_a_direction_with_targets_is_refused() {
-        let store = FakeStore::default();
-        let ids = SeqIds::default();
-        let direction = create_direction(&store, &ids, "Be healthier").unwrap();
-        create_target(&store, &store, &ids, direction.id(), "Run a 5k").unwrap();
-
-        let err = delete_direction(&store, &store, direction.id()).unwrap_err();
-        assert!(matches!(err, AppError::BadRequest { .. }));
-
-        // Archiving is the reversible alternative and is always allowed.
-        let archived =
-            set_direction_status(&store, direction.id(), LifecycleStatus::Archived).unwrap();
-        assert_eq!(archived.status(), LifecycleStatus::Archived);
-    }
-
-    #[test]
-    fn sending_to_the_butler_records_both_turns_without_auto_proposals() {
+    fn sending_to_the_butler_records_both_turns() {
         use super::{chat_history, send_to_butler};
         let store = FakeStore::default();
         let ids = SeqIds::default();
         let clock = FixedClock(1_000);
 
-        let (reply, suggestions, _activity) = send_to_butler(
-            &store,
+        let (reply, _activity) = send_to_butler(
             &store,
             &store,
             &store,
@@ -3186,17 +1600,8 @@ mod tests {
         .unwrap();
         assert_eq!(reply.role(), MessageRole::Butler);
         assert!(reply.text().contains("I want to run more"));
-        // Proposals are OFF in the tool-calling turn (ADR 0028): the butler converses
-        // and acts, and no longer auto-files goals/preferences.
-        assert!(suggestions.is_empty());
-        assert_eq!(
-            super::list_suggestions(&store, Some(SuggestionStatus::Pending))
-                .unwrap()
-                .len(),
-            0
-        );
 
-        // Both turns are still persisted, oldest first.
+        // Both turns are persisted, oldest first.
         let history = chat_history(&store).unwrap();
         assert_eq!(history.len(), 2);
         assert_eq!(history[0].role(), MessageRole::User);
@@ -3207,19 +1612,19 @@ mod tests {
     fn a_cleared_skill_runs_and_the_butler_answers_with_its_result() {
         use super::send_to_butler;
 
-        // A butler that first asks to use the "weather" skill, then (once a skill
-        // result is in the context) answers using it. This is the propose → policy
-        // authorizes → execute → synthesize loop the use case drives.
+        // A butler that first asks to use the "weather" skill, then — once the skill
+        // result arrives as a turn in the conversation — answers using it. This is the
+        // propose → policy authorizes → execute → answer loop the use case drives.
         struct ToolButler;
         impl Butler for ToolButler {
             fn respond(
                 &self,
-                _h: &[ChatMessage],
+                history: &[ChatMessage],
                 _p: &[Preference],
-                context: &ButlerContext,
+                _context: &ButlerContext,
             ) -> Result<ButlerReply, ProposalError> {
-                if let Some(result) = &context.tool_result {
-                    // Synthesis pass: answer using the real result.
+                if let Some(result) = last_skill_result(history) {
+                    // The result is in front of it — answer from it.
                     return Ok(ButlerReply {
                         text: format!("Here's what I found — {result}"),
                         ..ButlerReply::default()
@@ -3259,8 +1664,7 @@ mod tests {
         let store = FakeStore::default();
         let ids = SeqIds::default();
         let clock = FixedClock(1_000);
-        let (reply, _suggestions, activity) = send_to_butler(
-            &store,
+        let (reply, activity) = send_to_butler(
             &store,
             &store,
             &store,
@@ -3326,8 +1730,7 @@ mod tests {
         let store = FakeStore::default();
         let ids = SeqIds::default();
         let clock = FixedClock(1_000);
-        let (_reply, _s, activity) = send_to_butler(
-            &store,
+        let (_reply, activity) = send_to_butler(
             &store,
             &store,
             &store,
@@ -3979,8 +2382,7 @@ mod tests {
         let store = FakeStore::default();
         let ids = SeqIds::default();
         let clock = FixedClock(1_000);
-        let (reply, _s, activity) = send_to_butler(
-            &store,
+        let (reply, activity) = send_to_butler(
             &store,
             &store,
             &store,
@@ -4052,7 +2454,6 @@ mod tests {
             &store,
             &store,
             &store,
-            &store,
             &BlockedSkill,
             &BookingButler,
             &audit,
@@ -4109,8 +2510,7 @@ mod tests {
         let clock = FixedClock(1_000);
         let deep = DeepModel;
         let mut streamed = String::new();
-        let (msg, _s, activity) = send_to_butler_streaming(
-            &store,
+        let (msg, activity) = send_to_butler_streaming(
             &store,
             &store,
             &store,
@@ -4169,8 +2569,7 @@ mod tests {
         let ids = SeqIds::default();
         let clock = FixedClock(1_000);
         let deep = PanicDeep;
-        let (msg, _s, activity) = send_to_butler_streaming(
-            &store,
+        let (msg, activity) = send_to_butler_streaming(
             &store,
             &store,
             &store,
@@ -4202,28 +2601,6 @@ mod tests {
         );
         // Unix epoch itself.
         assert_eq!(format_datetime_utc(0), "Thursday, 1970-01-01 00:00 UTC");
-    }
-
-    #[test]
-    fn location_helpers_read_a_based_in_preference() {
-        use super::{json_location, known_location};
-        let t = Timestamp::from_unix_millis(0);
-        let prefs = vec![
-            Preference::new(PreferenceId::new(1), "Likes tea", PreferenceKind::Taste, t).unwrap(),
-            Preference::new(
-                PreferenceId::new(2),
-                "Based in: 28277",
-                PreferenceKind::Taste,
-                t,
-            )
-            .unwrap(),
-        ];
-        assert_eq!(known_location(&prefs).as_deref(), Some("28277"));
-        assert_eq!(known_location(&[]), None);
-
-        assert_eq!(json_location("Charlotte"), "{\"location\":\"Charlotte\"}");
-        // A value with a quote is escaped so the JSON stays well-formed.
-        assert_eq!(json_location("a\"b"), "{\"location\":\"a\\\"b\"}");
     }
 
     #[test]
@@ -4264,8 +2641,8 @@ mod tests {
     }
 
     #[test]
-    fn daily_brief_composes_from_reversible_skills_and_needs_a_location() {
-        use super::{create_preference, daily_brief};
+    fn daily_brief_is_written_from_what_the_butler_actually_gathered() {
+        use super::daily_brief;
 
         struct BriefSkills;
         impl CapabilityRunner for BriefSkills {
@@ -4278,33 +2655,36 @@ mod tests {
                     input_schema: None,
                 }]
             }
-            fn run(&self, id: &str, input_json: &str) -> Result<String, String> {
+            fn run(&self, id: &str, _input_json: &str) -> Result<String, String> {
                 assert_eq!(id, "weather");
-                assert!(input_json.contains("28277"));
                 Ok("clear, 25C".to_owned())
             }
         }
 
-        // The brief gathers agentically first (the model may reach for skills), then
-        // hands the *real* gathered results to the butler as a tool_result to relay
-        // in natural prose. This test butler doesn't reach for a skill on the
-        // exploratory pass (empty tool_result) — so the deterministic floor gathers
-        // weather — and relays the real fact once it's handed back.
-        struct BriefSynthButler;
-        impl Butler for BriefSynthButler {
+        // The butler reaches for a skill, the result comes back as a turn in the same
+        // conversation, and it writes the brief from that — one pass, no synthesis
+        // hand-off (ADR 0028).
+        struct BriefButler;
+        impl Butler for BriefButler {
             fn respond(
                 &self,
-                _history: &[ChatMessage],
+                history: &[ChatMessage],
                 _preferences: &[Preference],
-                context: &ButlerContext,
+                _context: &ButlerContext,
             ) -> Result<ButlerReply, ProposalError> {
-                let gathered = context.tool_result.clone().unwrap_or_default();
-                if gathered.is_empty() {
-                    return Ok(ButlerReply::default()); // exploratory pass — gather nothing
-                }
+                let Some(result) = last_skill_result(history) else {
+                    // Nothing gathered yet — reach for the weather.
+                    return Ok(ButlerReply {
+                        capability_use: Some(endora_capabilities::CapabilityUse {
+                            capability: "weather".to_owned(),
+                            input_json: "{\"location\":\"28277\"}".to_owned(),
+                        }),
+                        ..ButlerReply::default()
+                    });
+                };
                 assert!(
-                    gathered.contains("clear, 25C"),
-                    "the brief must hand the real gathered result to the synthesizer"
+                    result.contains("clear, 25C"),
+                    "the brief must be written from the real gathered result"
                 );
                 Ok(ButlerReply {
                     text: "Good morning! It's clear and 25C where you are.".to_owned(),
@@ -4317,48 +2697,28 @@ mod tests {
         let ids = SeqIds::default();
         let clock = FixedClock(1_000);
         let audit = FakeAudit::default();
-        // No home location yet ⇒ nothing to brief.
-        assert!(
-            daily_brief(
-                &store,
-                &store,
-                &BriefSkills,
-                &BriefSynthButler,
-                &audit,
-                &ids,
-                &clock
-            )
-            .unwrap()
-            .is_none()
-        );
-        // With a location, the brief is gathered deterministically then synthesized.
-        create_preference(
-            &store,
-            &ids,
-            &clock,
-            "Based in: 28277",
-            PreferenceKind::Context,
-        )
-        .unwrap();
+        let ctx = ButlerContext::default();
+
         let (msg, activity) = daily_brief(
             &store,
             &store,
             &BriefSkills,
-            &BriefSynthButler,
+            &BriefButler,
             &audit,
             &ids,
             &clock,
+            &ctx,
         )
         .unwrap()
         .unwrap();
-        // Natural synthesis, not the raw label dump — but still the real fact.
+        // Natural prose carrying the real fact — no label dump.
         assert!(msg.text().contains("Good morning"));
         assert!(msg.text().contains("25C"));
         assert!(!msg.text().contains("Weather —"));
         assert!(activity.iter().any(|a| a.contains("weather")));
 
-        // Floor: if the butler is unavailable, the deterministic concatenation
-        // stands — a brief is always produced.
+        // No floor (ADR 0028): if the butler is unavailable there is NO brief. A
+        // scripted one would be Endora claiming to have thought about the day.
         struct DeadButler;
         impl Butler for DeadButler {
             fn respond(
@@ -4370,18 +2730,21 @@ mod tests {
                 Err(ProposalError::Unavailable("down".to_owned()))
             }
         }
-        let (floor, _) = daily_brief(
-            &store,
-            &store,
-            &BriefSkills,
-            &DeadButler,
-            &audit,
-            &ids,
-            &clock,
-        )
-        .unwrap()
-        .unwrap();
-        assert!(floor.text().contains("Weather — clear, 25C"));
+        assert!(
+            daily_brief(
+                &store,
+                &store,
+                &BriefSkills,
+                &DeadButler,
+                &audit,
+                &ids,
+                &clock,
+                &ctx,
+            )
+            .unwrap()
+            .is_none(),
+            "a brief is never fabricated when the butler can't think"
+        );
     }
 
     #[test]
@@ -4526,7 +2889,6 @@ mod tests {
         let ids = SeqIds::default();
         let clock = FixedClock(1_000);
         send_to_butler(
-            &store,
             &store,
             &store,
             &store,
@@ -4687,9 +3049,8 @@ mod tests {
     }
 
     #[test]
-    fn the_nightly_loop_researches_a_value_weighted_focus_reversibly() {
+    fn the_nightly_loop_researches_its_strongest_belief_reversibly() {
         use super::{run_due_nightly_loop, understanding};
-        use crate::ports::NorthStarBrief;
         use endora_capabilities::CapabilitySpec;
         use endora_scheduling::{NightlyLoopSchedule, NightlyLoopScheduleRepository};
         use std::cell::RefCell;
@@ -4730,14 +3091,12 @@ mod tests {
         impl Butler for ResearchButler {
             fn respond(
                 &self,
-                _h: &[ChatMessage],
+                history: &[ChatMessage],
                 _p: &[crate::Preference],
-                c: &ButlerContext,
+                _c: &ButlerContext,
             ) -> Result<ButlerReply, ProposalError> {
-                let researched = c
-                    .tool_result
-                    .as_deref()
-                    .is_some_and(|t| t.contains("Consistent sleep"));
+                let researched =
+                    last_skill_result(history).is_some_and(|t| t.contains("Consistent sleep"));
                 if !researched {
                     // First pass: pick the reversible read to look into the focus.
                     return Ok(ButlerReply {
@@ -4781,17 +3140,40 @@ mod tests {
             hour_utc: 3,
             last_at: Timestamp::from_unix_millis(0),
         }));
-        // A value-weighted focus: an active North Star about sleep.
-        let context = ButlerContext {
-            north_stars: vec![NorthStarBrief {
-                id: "ns1".to_owned(),
-                title: "sleep better".to_owned(),
-                status: "active".to_owned(),
-                value: Some("health".to_owned()),
-                has_active_target: false,
-            }],
-            ..ButlerContext::default()
-        };
+        // The focus comes from what Endora understands (ADR 0020): the intent it is
+        // most sure of wins, over a weaker belief and a stronger non-intent one.
+        for (statement, kind, confidence) in [
+            (
+                "you want to sleep better",
+                crate::BeliefKind::Intent,
+                crate::Confidence::High,
+            ),
+            (
+                "you want to read more",
+                crate::BeliefKind::Intent,
+                crate::Confidence::Low,
+            ),
+            (
+                "you find noise stressful",
+                crate::BeliefKind::Stressor,
+                crate::Confidence::High,
+            ),
+        ] {
+            BeliefRepository::save(
+                &store,
+                &Belief::new(
+                    BeliefId::new(ids.new_id()),
+                    statement,
+                    kind,
+                    confidence,
+                    "said so",
+                    clock.now(),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        }
+        let context = ButlerContext::default();
 
         let audit = FakeAudit {
             records: RefCell::new(Vec::new()),
@@ -4820,700 +3202,5 @@ mod tests {
                 .iter()
                 .any(|b| b.statement().contains("sleep"))
         );
-    }
-
-    #[test]
-    fn applying_a_target_suggestion_resolves_the_north_star_by_name() {
-        use super::{apply_suggestion, create_direction, dismiss_suggestion};
-        let store = FakeStore::default();
-        let ids = SeqIds::default();
-        let clock = FixedClock(1_000);
-
-        // An existing North Star, and a target suggestion that refers to it by
-        // *name* (as a small model would), not by id.
-        let ns = create_direction(&store, &ids, "Get back into running").unwrap();
-        let target_sugg = Suggestion {
-            id: SuggestionId::new(ids.new_id()),
-            proposal: ButlerProposal::CreateTarget {
-                direction_ref: "get back into running".to_owned(),
-                statement: "Run 3x a week".to_owned(),
-            },
-            status: SuggestionStatus::Pending,
-            from_message: None,
-            created_at: clock.now(),
-            decided_at: None,
-        };
-        SuggestionRepository::save(&store, &target_sugg).unwrap();
-
-        // Applying it resolves the name to the real North Star and creates the
-        // target under it.
-        let applied = apply_suggestion(
-            &store,
-            &store,
-            &store,
-            &store,
-            &store,
-            &ids,
-            &clock,
-            target_sugg.id,
-        )
-        .unwrap();
-        assert_eq!(applied.status, SuggestionStatus::Applied);
-        let targets = store.list_for_direction(ns.id()).unwrap();
-        assert_eq!(targets.len(), 1);
-        assert_eq!(targets[0].statement(), "Run 3x a week");
-
-        // A suggestion that names a North Star that doesn't exist stays pending.
-        let orphan = Suggestion {
-            id: SuggestionId::new(ids.new_id()),
-            proposal: ButlerProposal::CreateTarget {
-                direction_ref: "Nonexistent star".to_owned(),
-                statement: "x".to_owned(),
-            },
-            status: SuggestionStatus::Pending,
-            from_message: None,
-            created_at: clock.now(),
-            decided_at: None,
-        };
-        SuggestionRepository::save(&store, &orphan).unwrap();
-        assert!(
-            apply_suggestion(
-                &store, &store, &store, &store, &store, &ids, &clock, orphan.id
-            )
-            .is_err()
-        );
-        assert_eq!(
-            SuggestionRepository::get(&store, orphan.id)
-                .unwrap()
-                .unwrap()
-                .status,
-            SuggestionStatus::Pending
-        );
-
-        // And dismiss records the decision.
-        dismiss_suggestion(&store, &clock, orphan.id).unwrap();
-        assert_eq!(
-            SuggestionRepository::get(&store, orphan.id)
-                .unwrap()
-                .unwrap()
-                .status,
-            SuggestionStatus::Dismissed
-        );
-    }
-
-    #[test]
-    fn attention_surfaces_unfiled_and_empty_north_stars_then_backs_off_on_snooze() {
-        use super::{attention, snooze_attention};
-        let store = FakeStore::default();
-        let ids = SeqIds::default();
-        let day = 24 * 60 * 60 * 1_000;
-
-        // An active North Star with no value and no target: two attention items.
-        let d = create_direction(&store, &ids, "Get back into running").unwrap();
-        let items = attention(&store, &store, &store, &store, &FixedClock(0)).unwrap();
-        let kinds: Vec<_> = items.iter().map(|i| i.kind).collect();
-        assert!(kinds.contains(&AttentionKind::UnfiledNorthStar));
-        assert!(kinds.contains(&AttentionKind::EmptyNorthStar));
-
-        // Snooze the "unfiled" item: hidden for 1 day, back after.
-        snooze_attention(
-            &store,
-            &FixedClock(0),
-            AttentionKind::UnfiledNorthStar,
-            &d.id().value().to_string(),
-        )
-        .unwrap();
-        let after = attention(&store, &store, &store, &store, &FixedClock(day / 2)).unwrap();
-        assert!(
-            !after
-                .iter()
-                .any(|i| i.kind == AttentionKind::UnfiledNorthStar)
-        );
-        let later = attention(&store, &store, &store, &store, &FixedClock(day + 1)).unwrap();
-        assert!(
-            later
-                .iter()
-                .any(|i| i.kind == AttentionKind::UnfiledNorthStar)
-        );
-
-        // A second snooze backs off to ~2 days.
-        let s = snooze_attention(
-            &store,
-            &FixedClock(day + 1),
-            AttentionKind::UnfiledNorthStar,
-            &d.id().value().to_string(),
-        )
-        .unwrap();
-        assert_eq!(s.count, 2);
-        assert_eq!(s.until.unix_millis(), day + 1 + 2 * day);
-    }
-
-    #[test]
-    fn preferences_are_recorded_deletable_and_passed_to_the_butler() {
-        use super::{create_preference, delete_preference, list_preferences, send_to_butler};
-        use crate::PreferenceKind;
-
-        let store = FakeStore::default();
-        let ids = SeqIds::default();
-        let clock = FixedClock(0);
-        let p = create_preference(
-            &store,
-            &ids,
-            &clock,
-            "prefers mornings",
-            PreferenceKind::Taste,
-        )
-        .unwrap();
-        assert_eq!(list_preferences(&store).unwrap().len(), 1);
-
-        // A butler that reports how many preferences it was handed.
-        struct EchoPrefsButler;
-        impl Butler for EchoPrefsButler {
-            fn respond(
-                &self,
-                _history: &[ChatMessage],
-                preferences: &[Preference],
-                _context: &ButlerContext,
-            ) -> Result<ButlerReply, ProposalError> {
-                Ok(ButlerReply {
-                    text: format!("I already know {} thing(s) about you", preferences.len()),
-                    ..ButlerReply::default()
-                })
-            }
-        }
-        let (reply, _, _) = send_to_butler(
-            &store,
-            &store,
-            &store,
-            &store,
-            &NoCapabilities,
-            &EchoPrefsButler,
-            &FakeAudit::default(),
-            &ids,
-            &clock,
-            &ButlerContext::default(),
-            "hi",
-        )
-        .unwrap();
-        assert!(reply.text().contains("1 thing"));
-
-        // Memory is deletable.
-        delete_preference(&store, p.id()).unwrap();
-        assert!(list_preferences(&store).unwrap().is_empty());
-    }
-
-    #[test]
-    fn a_north_star_can_be_filed_under_a_value_and_cleared() {
-        let store = FakeStore::default();
-        let ids = SeqIds::default();
-        let value = create_value(&store, &ids, "Health").unwrap();
-        let direction = create_direction(&store, &ids, "Get back into running").unwrap();
-        assert_eq!(direction.value(), None);
-
-        let filed =
-            assign_direction_value(&store, &store, direction.id(), Some(value.id())).unwrap();
-        assert_eq!(filed.value(), Some(value.id()));
-        assert_eq!(list_values(&store).unwrap(), vec![value.clone()]);
-
-        // Unfiling clears the link.
-        let unfiled = assign_direction_value(&store, &store, direction.id(), None).unwrap();
-        assert_eq!(unfiled.value(), None);
-    }
-
-    #[test]
-    fn filing_under_an_unknown_value_is_not_found() {
-        let store = FakeStore::default();
-        let ids = SeqIds::default();
-        let direction = create_direction(&store, &ids, "Get back into running").unwrap();
-        let err = assign_direction_value(&store, &store, direction.id(), Some(ValueId::new(999)))
-            .unwrap_err();
-        assert_eq!(err, AppError::NotFound { entity: "value" });
-    }
-
-    #[test]
-    fn deleting_a_value_in_use_is_refused_then_allowed() {
-        let store = FakeStore::default();
-        let ids = SeqIds::default();
-        let value = create_value(&store, &ids, "Health").unwrap();
-        let direction = create_direction(&store, &ids, "Get back into running").unwrap();
-        assign_direction_value(&store, &store, direction.id(), Some(value.id())).unwrap();
-
-        // Refused while a North Star still serves it.
-        let err = delete_value(&store, &store, value.id()).unwrap_err();
-        assert!(matches!(err, AppError::BadRequest { .. }));
-
-        // Allowed once the North Star is re-filed (unfiled).
-        assign_direction_value(&store, &store, direction.id(), None).unwrap();
-        delete_value(&store, &store, value.id()).unwrap();
-        assert!(list_values(&store).unwrap().is_empty());
-    }
-
-    #[test]
-    fn invalid_title_is_a_domain_error() {
-        let store = FakeStore::default();
-        let ids = SeqIds::default();
-        let err = create_direction(&store, &ids, "   ").unwrap_err();
-        assert!(matches!(err, AppError::Domain(_)));
-    }
-
-    #[test]
-    fn create_assumption_requires_an_existing_target() {
-        let store = FakeStore::default();
-        let ids = SeqIds::default();
-        let err = create_assumption(
-            &store,
-            &store,
-            &ids,
-            TargetId::new(404),
-            "Mornings are freest",
-        )
-        .unwrap_err();
-        assert_eq!(err, AppError::NotFound { entity: "target" });
-    }
-
-    #[test]
-    fn create_assumption_under_a_target_then_list() {
-        let store = FakeStore::default();
-        let ids = SeqIds::default();
-        let direction = create_direction(&store, &ids, "Be healthier").unwrap();
-        let target = create_target(&store, &store, &ids, direction.id(), "Run a 5k").unwrap();
-
-        let a1 =
-            create_assumption(&store, &store, &ids, target.id(), "Mornings are freest").unwrap();
-        let a2 = create_assumption(&store, &store, &ids, target.id(), "Rain is rare").unwrap();
-
-        assert_eq!(list_assumptions(&store, target.id()).unwrap(), vec![a1, a2]);
-    }
-
-    /// Builds direction → target → assumption and returns the assumption id.
-    fn seed_assumption(store: &FakeStore, ids: &SeqIds) -> AssumptionId {
-        let direction = create_direction(store, ids, "Be healthier").unwrap();
-        let target = create_target(store, store, ids, direction.id(), "Run a 5k").unwrap();
-        create_assumption(store, store, ids, target.id(), "Mornings are freest")
-            .unwrap()
-            .id()
-    }
-
-    #[test]
-    fn propose_experiment_requires_an_existing_assumption() {
-        let store = FakeStore::default();
-        let ids = SeqIds::default();
-        let err = propose_experiment(&store, &store, &ids, AssumptionId::new(404), "Try mornings")
-            .unwrap_err();
-        assert_eq!(
-            err,
-            AppError::NotFound {
-                entity: "assumption"
-            }
-        );
-    }
-
-    #[test]
-    fn experiment_lifecycle_persists_transitions() {
-        let store = FakeStore::default();
-        let ids = SeqIds::default();
-        let assumption = seed_assumption(&store, &ids);
-
-        let e = propose_experiment(&store, &store, &ids, assumption, "Try mornings").unwrap();
-        assert_eq!(e.status(), ExperimentStatus::Proposed);
-
-        let started = start_experiment(&store, e.id()).unwrap();
-        assert_eq!(started.status(), ExperimentStatus::Running);
-
-        let concluded = conclude_experiment(&store, e.id()).unwrap();
-        assert_eq!(concluded.status(), ExperimentStatus::Concluded);
-
-        assert_eq!(
-            list_experiments(&store, assumption).unwrap(),
-            vec![concluded]
-        );
-    }
-
-    #[test]
-    fn scheduling_a_review_persists_the_due_time_and_surfaces_it_when_due() {
-        let store = FakeStore::default();
-        let ids = SeqIds::default();
-        let assumption = seed_assumption(&store, &ids);
-        let e = propose_experiment(&store, &store, &ids, assumption, "Try mornings").unwrap();
-
-        // "Now" is day zero; schedule a review 7 days out.
-        let day = 24 * 60 * 60 * 1_000;
-        let scheduled = schedule_experiment_review(&store, &FixedClock(0), e.id(), 7).unwrap();
-        assert_eq!(
-            scheduled.review_by().map(|t| t.unix_millis()),
-            Some(7 * day)
-        );
-
-        // Not yet due at day 3.
-        assert!(
-            list_due_reviews(&store, &FixedClock(3 * day))
-                .unwrap()
-                .is_empty()
-        );
-
-        // Due once the scheduled time arrives.
-        let due = list_due_reviews(&store, &FixedClock(7 * day)).unwrap();
-        assert_eq!(due, vec![scheduled]);
-    }
-
-    #[test]
-    fn a_concluded_experiment_is_not_surfaced_for_review() {
-        let store = FakeStore::default();
-        let ids = SeqIds::default();
-        let assumption = seed_assumption(&store, &ids);
-        let e = propose_experiment(&store, &store, &ids, assumption, "Try mornings").unwrap();
-        schedule_experiment_review(&store, &FixedClock(0), e.id(), 1).unwrap();
-        start_experiment(&store, e.id()).unwrap();
-        conclude_experiment(&store, e.id()).unwrap();
-
-        let far_future = FixedClock(365 * 24 * 60 * 60 * 1_000);
-        assert!(list_due_reviews(&store, &far_future).unwrap().is_empty());
-    }
-
-    #[test]
-    fn scheduling_a_review_for_a_missing_experiment_is_not_found() {
-        let store = FakeStore::default();
-        let err = schedule_experiment_review(&store, &FixedClock(0), ExperimentId::new(1), 3)
-            .unwrap_err();
-        assert!(matches!(err, AppError::NotFound { .. }));
-    }
-
-    #[test]
-    fn concluding_a_proposed_experiment_is_a_domain_error() {
-        let store = FakeStore::default();
-        let ids = SeqIds::default();
-        let assumption = seed_assumption(&store, &ids);
-        let e = propose_experiment(&store, &store, &ids, assumption, "Try mornings").unwrap();
-
-        let err = conclude_experiment(&store, e.id()).unwrap_err();
-        assert!(matches!(err, AppError::Domain(_)));
-    }
-
-    #[test]
-    fn starting_a_missing_experiment_is_not_found() {
-        let store = FakeStore::default();
-        let err = start_experiment(&store, ExperimentId::new(1)).unwrap_err();
-        assert_eq!(
-            err,
-            AppError::NotFound {
-                entity: "experiment"
-            }
-        );
-    }
-
-    #[test]
-    fn recording_an_observation_timestamps_it_from_the_clock() {
-        let store = FakeStore::default();
-        let ids = SeqIds::default();
-        let clock = FixedClock(1_700_000_000_000);
-        let assumption = seed_assumption(&store, &ids);
-        let e = propose_experiment(&store, &store, &ids, assumption, "Try mornings").unwrap();
-
-        let o = record_observation(&store, &store, &ids, &clock, e.id(), "felt good").unwrap();
-        assert_eq!(
-            o.recorded_at(),
-            Timestamp::from_unix_millis(1_700_000_000_000)
-        );
-        assert_eq!(list_observations(&store, e.id()).unwrap(), vec![o]);
-    }
-
-    #[test]
-    fn recording_against_a_missing_experiment_is_not_found() {
-        let store = FakeStore::default();
-        let ids = SeqIds::default();
-        let clock = FixedClock(0);
-        let err = record_observation(&store, &store, &ids, &clock, ExperimentId::new(1), "x")
-            .unwrap_err();
-        assert_eq!(
-            err,
-            AppError::NotFound {
-                entity: "experiment"
-            }
-        );
-    }
-
-    #[test]
-    fn create_reflection_requires_an_existing_target() {
-        let store = FakeStore::default();
-        let ids = SeqIds::default();
-        let err = create_reflection(
-            &store,
-            &store,
-            &ids,
-            TargetId::new(404),
-            "went well",
-            vec![ObservationId::new(1)],
-        )
-        .unwrap_err();
-        assert_eq!(err, AppError::NotFound { entity: "target" });
-    }
-
-    #[test]
-    fn create_reflection_requires_evidence() {
-        let store = FakeStore::default();
-        let ids = SeqIds::default();
-        let direction = create_direction(&store, &ids, "Be healthier").unwrap();
-        let target = create_target(&store, &store, &ids, direction.id(), "Run a 5k").unwrap();
-        let err =
-            create_reflection(&store, &store, &ids, target.id(), "went well", vec![]).unwrap_err();
-        assert!(matches!(err, AppError::Domain(_)));
-    }
-
-    #[test]
-    fn create_reflection_then_list() {
-        let store = FakeStore::default();
-        let ids = SeqIds::default();
-        let direction = create_direction(&store, &ids, "Be healthier").unwrap();
-        let target = create_target(&store, &store, &ids, direction.id(), "Run a 5k").unwrap();
-        let r = create_reflection(
-            &store,
-            &store,
-            &ids,
-            target.id(),
-            "mornings worked",
-            vec![ObservationId::new(1), ObservationId::new(2)],
-        )
-        .unwrap();
-        assert_eq!(list_reflections(&store, target.id()).unwrap(), vec![r]);
-    }
-
-    /// Builds direction → target → reflection and returns the reflection id.
-    fn seed_reflection(store: &FakeStore, ids: &SeqIds) -> ReflectionId {
-        let direction = create_direction(store, ids, "Be healthier").unwrap();
-        let target = create_target(store, store, ids, direction.id(), "Run a 5k").unwrap();
-        create_reflection(
-            store,
-            store,
-            ids,
-            target.id(),
-            "mornings worked",
-            vec![ObservationId::new(1)],
-        )
-        .unwrap()
-        .id()
-    }
-
-    #[test]
-    fn propose_process_change_requires_an_existing_reflection() {
-        let store = FakeStore::default();
-        let ids = SeqIds::default();
-        let err =
-            propose_process_change(&store, &store, &ids, ReflectionId::new(404), "Do mornings")
-                .unwrap_err();
-        assert_eq!(
-            err,
-            AppError::NotFound {
-                entity: "reflection"
-            }
-        );
-    }
-
-    #[test]
-    fn process_change_starts_pending_then_is_approved() {
-        let store = FakeStore::default();
-        let ids = SeqIds::default();
-        let reflection = seed_reflection(&store, &ids);
-
-        let c = propose_process_change(&store, &store, &ids, reflection, "Default to mornings")
-            .unwrap();
-        assert_eq!(c.approval(), ApprovalState::Pending);
-
-        let approved = approve_process_change(&store, c.id()).unwrap();
-        assert!(approved.is_approved());
-        assert_eq!(
-            list_process_changes(&store, reflection).unwrap(),
-            vec![approved]
-        );
-    }
-
-    #[test]
-    fn approving_a_rejected_change_is_a_domain_error() {
-        let store = FakeStore::default();
-        let ids = SeqIds::default();
-        let reflection = seed_reflection(&store, &ids);
-        let c = propose_process_change(&store, &store, &ids, reflection, "Default to mornings")
-            .unwrap();
-
-        reject_process_change(&store, c.id()).unwrap();
-        let err = approve_process_change(&store, c.id()).unwrap_err();
-        assert!(matches!(err, AppError::Domain(_)));
-    }
-
-    #[test]
-    fn approving_a_missing_change_is_not_found() {
-        let store = FakeStore::default();
-        let err = approve_process_change(&store, ProcessChangeId::new(1)).unwrap_err();
-        assert_eq!(
-            err,
-            AppError::NotFound {
-                entity: "process change"
-            }
-        );
-    }
-
-    #[test]
-    fn deciding_a_stored_approved_change_permits_and_audits() {
-        let store = FakeStore::default();
-        let ids = SeqIds::default();
-        let clock = FixedClock(1_000);
-        let audit = FakeAudit::default();
-        let reflection = seed_reflection(&store, &ids);
-        let c = propose_process_change(&store, &store, &ids, reflection, "Do mornings").unwrap();
-        approve_process_change(&store, c.id()).unwrap();
-
-        let decision = decide_stored_process_change(
-            &store,
-            &ids,
-            &clock,
-            &audit,
-            c.id(),
-            AutonomyLevel::ActWithinPolicy,
-        )
-        .unwrap();
-        assert_eq!(decision, PolicyDecision::Permit);
-        assert_eq!(recent_audit(&audit, 10).unwrap().len(), 1);
-    }
-
-    #[test]
-    fn activity_merges_observations_and_decisions_newest_first() {
-        use super::{ActivityKind, recent_activity};
-        use crate::{AuditId, AuditRecord, ExperimentId, Observation, ObservationId};
-        use endora_direction::ObservationRepository;
-
-        let store = FakeStore::default();
-        let audit = FakeAudit::default();
-
-        // Two observations and one audited decision, at distinct times.
-        ObservationRepository::save(
-            &store,
-            &Observation::record(
-                ObservationId::new(1),
-                ExperimentId::new(9),
-                "ran at 7am",
-                Timestamp::from_unix_millis(100),
-            )
-            .unwrap(),
-        )
-        .unwrap();
-        ObservationRepository::save(
-            &store,
-            &Observation::record(
-                ObservationId::new(2),
-                ExperimentId::new(9),
-                "slept in",
-                Timestamp::from_unix_millis(300),
-            )
-            .unwrap(),
-        )
-        .unwrap();
-        audit
-            .append(
-                &AuditRecord::new(
-                    AuditId::new(3),
-                    Timestamp::from_unix_millis(200),
-                    "policy permitted change 5",
-                )
-                .unwrap(),
-            )
-            .unwrap();
-
-        let events = FakeEvents::default();
-        events
-            .record(Timestamp::from_unix_millis(400), "Used the weather skill")
-            .unwrap();
-
-        // Merged and ordered newest first: 400 (action), 300 (obs), 200 (decision),
-        // 100 (obs).
-        let feed = recent_activity(&store, &audit, &events, 10).unwrap();
-        assert_eq!(feed.len(), 4);
-        assert_eq!(feed[0].summary(), "Used the weather skill");
-        assert_eq!(feed[0].kind(), ActivityKind::Action);
-        assert_eq!(feed[1].summary(), "slept in");
-        assert_eq!(feed[1].kind(), ActivityKind::Observation);
-        assert_eq!(feed[2].kind(), ActivityKind::Decision);
-        assert_eq!(feed[3].summary(), "ran at 7am");
-
-        // The limit truncates after the merge, keeping the newest.
-        let top = recent_activity(&store, &audit, &events, 1).unwrap();
-        assert_eq!(top.len(), 1);
-        assert_eq!(top[0].summary(), "Used the weather skill");
-    }
-
-    #[test]
-    fn deciding_a_missing_change_is_not_found() {
-        let store = FakeStore::default();
-        let ids = SeqIds::default();
-        let clock = FixedClock(0);
-        let audit = FakeAudit::default();
-        let err = decide_stored_process_change(
-            &store,
-            &ids,
-            &clock,
-            &audit,
-            ProcessChangeId::new(1),
-            AutonomyLevel::Observe,
-        )
-        .unwrap_err();
-        assert_eq!(
-            err,
-            AppError::NotFound {
-                entity: "process change"
-            }
-        );
-    }
-
-    /// A proposer that returns a canned line, or a failure, for tests.
-    struct FakeProposer(Result<String, ProposalError>);
-
-    impl Proposer for FakeProposer {
-        fn propose_process_change(
-            &self,
-            _summary: &str,
-            _evidence_count: usize,
-        ) -> Result<String, ProposalError> {
-            self.0.clone()
-        }
-    }
-
-    #[test]
-    fn drafting_stores_a_pending_change_from_the_model() {
-        let store = FakeStore::default();
-        let ids = SeqIds::default();
-        let reflection = seed_reflection(&store, &ids);
-        let proposer = FakeProposer(Ok("Default runs to mornings".to_owned()));
-
-        let change = draft_process_change(&store, &store, &ids, &proposer, reflection).unwrap();
-        assert_eq!(change.approval(), ApprovalState::Pending);
-        assert_eq!(change.description(), "Default runs to mornings");
-        // The drafted proposal is an ordinary pending change awaiting approval.
-        assert_eq!(
-            list_process_changes(&store, reflection).unwrap(),
-            vec![change]
-        );
-    }
-
-    #[test]
-    fn drafting_against_a_missing_reflection_is_not_found() {
-        let store = FakeStore::default();
-        let ids = SeqIds::default();
-        let proposer = FakeProposer(Ok("x".to_owned()));
-        let err = draft_process_change(&store, &store, &ids, &proposer, ReflectionId::new(1))
-            .unwrap_err();
-        assert_eq!(
-            err,
-            AppError::NotFound {
-                entity: "reflection"
-            }
-        );
-    }
-
-    #[test]
-    fn an_unavailable_model_is_a_model_error() {
-        let store = FakeStore::default();
-        let ids = SeqIds::default();
-        let reflection = seed_reflection(&store, &ids);
-        let proposer = FakeProposer(Err(ProposalError::Unavailable("no server".to_owned())));
-        let err = draft_process_change(&store, &store, &ids, &proposer, reflection).unwrap_err();
-        assert!(matches!(err, AppError::Model { .. }));
     }
 }
