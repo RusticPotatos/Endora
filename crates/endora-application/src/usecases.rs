@@ -708,30 +708,82 @@ fn normalized(s: &str) -> String {
         .to_owned()
 }
 
-/// Content words of a statement (drops short/common words), for fuzzy matching.
+/// Reduces a word to a crude stem so inflections match: `retirement`/`retire`,
+/// `travelling`/`travel`, `flights`/`flight`. Deliberately simple — this only has
+/// to make duplicate detection robust, not to be a linguistically correct stemmer,
+/// and an over-eager one would merge genuinely different beliefs.
+fn stem(word: &str) -> String {
+    for suffix in [
+        "ements", "ement", "ations", "ation", "ings", "ing", "ies", "ed", "es", "s",
+    ] {
+        if let Some(root) = word.strip_suffix(suffix) {
+            // Keep a recognisable root; "ties" must not collapse to "t".
+            if root.len() >= 3 {
+                let root = if suffix == "ies" {
+                    format!("{root}y")
+                } else {
+                    root.to_owned()
+                };
+                return trim_stem(&root);
+            }
+        }
+    }
+    trim_stem(word)
+}
+
+/// Drops a trailing `e` and un-doubles a final consonant, so British and American
+/// inflections land on one stem (`travelling` → `travell` → `travel`).
+fn trim_stem(root: &str) -> String {
+    let root = root.trim_end_matches('e');
+    let mut chars: Vec<char> = root.chars().collect();
+    if chars.len() > 3 {
+        let last = chars[chars.len() - 1];
+        if last == chars[chars.len() - 2] && !"aeiou".contains(last) {
+            chars.pop();
+        }
+    }
+    chars.into_iter().collect()
+}
+
+/// Content words of a statement, stemmed — drops filler so two phrasings of the
+/// same belief share keywords. The stop list covers the scaffolding a butler
+/// naturally varies between turns ("you want X" / "you'd like to have X").
 fn keywords(s: &str) -> Vec<String> {
     const STOP: &[&str] = &[
         "you", "your", "are", "the", "and", "for", "that", "this", "with", "have", "was", "its",
-        "but", "not", "can", "want", "like",
+        "but", "not", "can", "want", "like", "get", "getting", "able", "being", "been", "once",
+        "when", "while", "into", "about", "some", "more", "much", "very", "really", "just",
+        "still", "also", "would", "could", "should", "them", "they", "their", "she", "him", "her",
+        "his", "who", "why", "how", "what", "where", "than", "then", "there", "here",
     ];
     normalized(s)
-        .split_whitespace()
+        .split(|c: char| !c.is_alphanumeric())
         .filter(|w| w.len() > 2 && !STOP.contains(w))
-        .map(str::to_owned)
+        .map(stem)
+        .filter(|w| !w.is_empty())
         .collect()
 }
 
 /// Whether two belief statements are effectively the same (a paraphrase), by
-/// keyword overlap — so "you want information about your surroundings" and
-/// "you're looking for information about your surroundings" are one belief.
+/// stemmed keyword overlap — so "you want more energy so you can travel when you
+/// retire" and "you're motivated by being able to travel in retirement" are one
+/// belief, not two.
+///
+/// Uses **containment** rather than symmetric Jaccard: if one statement's keywords
+/// are largely a subset of the other's, it says nothing new. A plain Jaccard
+/// penalises the longer, more specific phrasing and lets near-duplicates through —
+/// which is what let them accumulate before (the `no-duplicate` eval case, ADR 0030).
+/// The threshold stays deliberately high: **wrongly merging two distinct beliefs
+/// silently loses understanding, which is worse than storing one duplicate the
+/// person can correct.**
 fn similar(a: &str, b: &str) -> bool {
     let (ka, kb) = (keywords(a), keywords(b));
     if ka.is_empty() || kb.is_empty() {
         return normalized(a) == normalized(b);
     }
-    let inter = ka.iter().filter(|w| kb.contains(w)).count();
-    let union = ka.len() + kb.iter().filter(|w| !ka.contains(w)).count();
-    inter as f64 / union as f64 >= 0.6
+    let shared = ka.iter().filter(|w| kb.contains(w)).count() as f64;
+    let smaller = ka.len().min(kb.len()) as f64;
+    shared / smaller >= 0.75
 }
 
 /// A short, human present-tense label for a skill in progress — what the butler
@@ -1536,6 +1588,67 @@ mod tests {
             let id = self.next.get() + 1;
             self.next.set(id);
             id
+        }
+    }
+
+    /// The two directions of belief de-duplication. The live eval (ADR 0030) found
+    /// qwen2.5:7b re-stating what it already understood, so the deterministic
+    /// backstop — not the prompt — has to hold this line
+    /// (see the "deterministic over prompting" lesson behind ADR 0028).
+    mod dedup {
+        use super::super::similar;
+
+        const KNOWN: &str = "you want more energy so you can travel when you retire";
+
+        #[test]
+        fn rephrasings_of_the_same_belief_are_one_belief() {
+            for rephrasing in [
+                "you want more energy to travel when you retire",
+                "you want to have the energy to travel once you retire",
+                "you would like the energy for travelling after you retire",
+                "you want the energy to travel in retirement",
+            ] {
+                assert!(
+                    similar(KNOWN, rephrasing),
+                    "should have merged: {rephrasing:?}"
+                );
+            }
+        }
+
+        #[test]
+        fn distinct_beliefs_are_never_merged() {
+            // Wrongly merging loses understanding silently, with nothing for the
+            // person to correct — strictly worse than keeping a duplicate.
+            for distinct in [
+                "you find long flights physically difficult",
+                "you are dreading retirement",
+                "you want more energy for your work",
+                "your brother is planning a hike in September",
+                "you travel for work more than you'd like",
+                // Borderline on purpose: shares the travel-in-retirement thread but
+                // claims a different driver (motivation, not energy). Kept separate —
+                // merging would silently drop the new claim.
+                "you are motivated by the freedom of retirement",
+            ] {
+                assert!(
+                    !similar(KNOWN, distinct),
+                    "should NOT have merged: {distinct:?}"
+                );
+            }
+        }
+
+        #[test]
+        fn stemming_matches_inflections_without_collapsing_short_words() {
+            assert!(similar("you enjoy hiking", "you enjoy hikes"));
+            assert!(similar("you value retirement", "you value retiring"));
+            // Short words must not stem down to a shared stub.
+            assert!(!similar("you like ties", "you like tea"));
+        }
+
+        #[test]
+        fn an_empty_statement_falls_back_to_exact_comparison() {
+            assert!(similar("", ""));
+            assert!(!similar("", KNOWN));
         }
     }
 
