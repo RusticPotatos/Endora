@@ -633,6 +633,11 @@ pub fn app(state: AppState) -> Router {
         .route("/v1/understanding/{id}/correct", post(correct_belief))
         .route("/v1/outcomes", get(list_outcomes))
         .route("/v1/outcomes/{id}/reaction", post(react_to_outcome))
+        // Read and drop only. There is deliberately NO create or edit route: Endora
+        // forms its own intentions, and the person's whole side of the interface is
+        // "stop doing that" (ADR 0036).
+        .route("/v1/intentions", get(list_intentions))
+        .route("/v1/intentions/{id}/drop", post(drop_intention))
         .route("/v1/capabilities", get(list_capabilities))
         .route("/v1/capabilities/{id}/invoke", post(invoke_capability))
         .route("/v1/capabilities/{id}/enable", post(set_capability_enabled))
@@ -1448,6 +1453,49 @@ async fn correct_belief(
     let understanding = state.understanding.clone();
     blocking(move || usecases::correct_belief(understanding.as_ref(), bid)).await?;
     Ok(Json(json!({ "corrected": true })))
+}
+
+fn intention_json(i: &endora_application::Intention) -> serde_json::Value {
+    json!({
+        "id": i.id().value().to_string(),
+        "statement": i.statement(),
+        // Never null: an intention that cannot be explained cannot exist (ADR 0036).
+        "motivating_belief": i.motivating_belief().value().to_string(),
+        "note": i.note(),
+        "state": i.state().name(),
+        "active": i.is_active(),
+        "steps_taken": i.steps_taken(),
+        "created_ms": i.created_at().unix_millis(),
+        "last_progressed_ms": i.last_progressed_at().unix_millis(),
+    })
+}
+
+/// What Endora is pursuing, and what it has pursued before (ADR 0036).
+async fn list_intentions(
+    State(state): State<AppState>,
+) -> Result<Json<Vec<serde_json::Value>>, ApiError> {
+    let understanding = state.understanding.clone();
+    let items = blocking(move || usecases::intentions(understanding.as_ref())).await?;
+    Ok(Json(items.iter().map(intention_json).collect()))
+}
+
+/// The person tells Endora to stop working on something — their whole authority over
+/// an intention, and the only verb they have (ADR 0036).
+async fn drop_intention(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let iid = id
+        .parse::<u128>()
+        .map(endora_application::IntentionId::new)
+        .map_err(|_| {
+            ApiError(AppError::NotFound {
+                entity: "intention",
+            })
+        })?;
+    let understanding = state.understanding.clone();
+    let out = blocking(move || usecases::drop_intention(understanding.as_ref(), iid)).await?;
+    Ok(Json(intention_json(&out)))
 }
 
 /// How many outcomes the console shows — recent history, not an archive to manage.
@@ -2569,6 +2617,7 @@ pub fn spawn_heartbeat(state: AppState) {
                     understanding.as_ref(),
                     understanding.as_ref(),
                     understanding.as_ref(),
+                    understanding.as_ref(),
                     schedules.as_ref(),
                     &runner,
                     butler.as_ref(),
@@ -2855,6 +2904,67 @@ mod tests {
         assert!(ct.starts_with("text/html"), "content-type was {ct}");
         let body = res.into_body().collect().await.unwrap().to_bytes();
         assert!(String::from_utf8_lossy(&body).contains("<title>Endora</title>"));
+    }
+
+    #[tokio::test]
+    async fn there_is_no_way_for_the_person_to_create_an_intention() {
+        // ADR 0036's first constraint, as a test rather than a promise. Endora forms
+        // its own intentions; a console with an "add" button would mean the ADR failed,
+        // and the API is where that would have to start.
+        let app = app(test_state());
+        for (uri, body) in [
+            ("/v1/intentions", r#"{"statement":"do a thing"}"#),
+            ("/v1/intentions/1", r#"{"statement":"edit a thing"}"#),
+        ] {
+            let res = app.clone().oneshot(post(uri, body)).await.unwrap();
+            assert!(
+                res.status() == StatusCode::METHOD_NOT_ALLOWED
+                    || res.status() == StatusCode::NOT_FOUND,
+                "POST {uri} answered {} — the person must not be able to file work",
+                res.status()
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn an_intention_is_visible_and_can_be_dropped_but_only_dropped() {
+        use endora_application::{
+            BeliefId, Intention, IntentionId, IntentionRepository, Timestamp,
+        };
+        let state = test_state();
+        IntentionRepository::save(
+            state.understanding.as_ref(),
+            &Intention::form(
+                IntentionId::new(5),
+                "learn what helps them sleep",
+                BeliefId::new(7),
+                Timestamp::from_unix_millis(10),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let app = app(state);
+
+        let listed = json_body(app.clone().oneshot(get("/v1/intentions")).await.unwrap()).await;
+        assert_eq!(listed.as_array().unwrap().len(), 1);
+        assert_eq!(listed[0]["statement"], "learn what helps them sleep");
+        assert_eq!(listed[0]["active"], true);
+        // Never null — an intention that can't be explained can't exist.
+        assert_eq!(listed[0]["motivating_belief"], "7");
+
+        let dropped = json_body(
+            app.clone()
+                .oneshot(post("/v1/intentions/5/drop", "{}"))
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(dropped["state"], "abandoned");
+        assert_eq!(dropped["active"], false);
+
+        // It stays visible as something Endora once pursued, but is no longer current.
+        let listed = json_body(app.oneshot(get("/v1/intentions")).await.unwrap()).await;
+        assert_eq!(listed[0]["active"], false);
     }
 
     #[tokio::test]

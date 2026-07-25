@@ -14,6 +14,7 @@ let MODEL_CONFIG = { configured: false, key_set: false, base_url: "", mixture: f
 let TUNE_SCHED = { enabled: false, hour_utc: 4 }; // nightly self-improving model tune (ADR 0027)
 let UNDERSTANDING = [];        // Endora's beliefs about the person (the home surface)
 let OUTCOMES = [];             // what Endora DID, and what it saw afterwards (ADR 0035)
+let INTENTIONS = [];           // what Endora is pursuing, and has pursued (ADR 0036)
 let LAST_ACTIVITY = [];        // what Endora did behind the scenes on the last turn
 let LAST_ACTIVITY_MSG = null;  // the butler message id that activity belongs to
 let STEP_LIST = [];            // the live action trail for the turn currently streaming
@@ -117,6 +118,7 @@ async function reload() {
   AUTONOMY = autonomy;
   try { UNDERSTANDING = await api("GET", "/v1/understanding"); } catch (_) { UNDERSTANDING = []; }
   try { OUTCOMES = await api("GET", "/v1/outcomes"); } catch (_) { OUTCOMES = []; }
+  try { INTENTIONS = await api("GET", "/v1/intentions"); } catch (_) { INTENTIONS = []; }
   render();
 }
 
@@ -1189,7 +1191,34 @@ function viewUnderstanding() {
 
     ${setup}
     ${groups || `<div class="empty">Nothing yet. Talk with Endora and it will start to understand you — you'll see it here.</div>`}
+    ${viewIntention()}
     ${viewOutcomes()}`;
+}
+
+// What Endora is currently working on (ADR 0036).
+//
+// One thing at a time — a cursor, not a queue — and the person's only verb is to stop
+// it. There is deliberately no "add" control here: Endora forms its own intentions from
+// what it understands, and a console that let you file work would make this the goal
+// tracker ADR 0029 deleted.
+function viewIntention() {
+  const current = (INTENTIONS || []).find((i) => i.active);
+  if (!current) return "";
+  // An intention taken up from a belief reuses its wording, so showing "because it
+  // believes <the same sentence>" reads as a stutter. Only name the belief when it
+  // actually adds something.
+  const source = (UNDERSTANDING || []).find((b) => b.id === current.motivating_belief);
+  const belief = source && source.statement.trim() !== current.statement.trim() ? source : null;
+  return `
+    <h3 style="margin-top:22px;">What Endora is working on</h3>
+    <div class="card"><div class="row">
+      <div class="grow">
+        <div class="title">${esc(current.statement)} <span class="pill">night ${current.steps_taken + 1}</span></div>
+        ${belief ? `<div class="sub">because it believes: ${esc(belief.statement)}</div>` : ""}
+        ${current.note ? `<div class="sub">last night: ${esc(current.note)}</div>` : `<div class="sub">hasn't got to it yet.</div>`}
+      </div>
+      <button class="ghost" data-act="dropintention::${current.id}" title="stop working on this">Leave it</button>
+    </div></div>`;
 }
 
 // What Endora has actually DONE, and what it saw afterwards (ADR 0035).
@@ -1805,6 +1834,13 @@ async function dispatch(act) {
     if (verb === "correct" && noun === "belief") {
       try { await api("POST", `/v1/understanding/${id}/correct`); flash("Got it — I'll hold that more loosely.", "ok"); }
       catch (e) { flash("Couldn't note that: " + e.message, "err"); }
+      return reload();
+    }
+    // Stop working on something. The person's ONLY verb over an intention — there is
+    // deliberately no way to create or edit one (ADR 0036).
+    if (verb === "dropintention") {
+      try { await api("POST", `/v1/intentions/${id}/drop`); flash("Alright — I'll leave that.", "ok"); }
+      catch (e) { flash("Couldn't stop that: " + e.message, "err"); }
       return reload();
     }
     // How an action landed. Offered where the action appears; never asked for, and

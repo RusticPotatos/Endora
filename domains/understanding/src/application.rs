@@ -1,10 +1,42 @@
-//! Understanding application layer — repository ports for beliefs, preferences and
-//! outcomes.
+//! Understanding application layer — repository ports for beliefs, preferences,
+//! outcomes and intentions.
 
 use endora_kernel::RepositoryError;
-use endora_kernel::ids::{BeliefId, OutcomeId, PreferenceId};
+use endora_kernel::ids::{BeliefId, IntentionId, OutcomeId, PreferenceId};
 
-use crate::domain::{Belief, Outcome, Preference};
+use crate::domain::{Belief, Intention, Outcome, Preference};
+
+/// Persists and retrieves [`Intention`]s — what Endora is pursuing (ADR 0036).
+///
+/// [`active`](Self::active) is the load-bearing query: **at most one** intention is
+/// active at a time, so this is a cursor rather than a queue, and there is no backlog
+/// for it to become.
+pub trait IntentionRepository {
+    /// Inserts an intention, or replaces the one with the same id.
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if the backend fails.
+    fn save(&self, intention: &Intention) -> Result<(), RepositoryError>;
+
+    /// Fetches an intention by id, `None` if absent.
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if the backend fails or stored data is corrupt.
+    fn get(&self, id: IntentionId) -> Result<Option<Intention>, RepositoryError>;
+
+    /// The one Endora is currently pursuing, if any.
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if the backend fails or stored data is corrupt.
+    fn active(&self) -> Result<Option<Intention>, RepositoryError>;
+
+    /// Every intention, most recently moved first — including finished ones, so the
+    /// person can see what Endora has pursued and dropped.
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if the backend fails or stored data is corrupt.
+    fn list(&self) -> Result<Vec<Intention>, RepositoryError>;
+}
 
 /// Persists and retrieves [`Outcome`]s — what happened after Endora acted (ADR 0035).
 ///
