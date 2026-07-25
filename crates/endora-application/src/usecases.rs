@@ -1017,7 +1017,6 @@ fn run_tool_turn(
             text: reply.text.clone(),
             tool_calls: reply.tool_calls.clone(),
         });
-        let mut round_failed = false;
         for call in &reply.tool_calls {
             let id = call.capability.clone();
             // Action budget spent: don't execute more, but tell the model so it wraps
@@ -1058,7 +1057,6 @@ fn run_tool_turn(
                     }
                     Err(e) => {
                         failures += 1;
-                        round_failed = true;
                         activity.push(format!("Tried the {id} skill, but it failed"));
                         (StepStatus::Failed, format!("error: {e}"))
                     }
@@ -1112,12 +1110,13 @@ fn run_tool_turn(
                 content,
             });
         }
-        // One tool round, then answer — unless a tool FAILED, in which case give the
-        // model one more round to retry (bounded by the failure cap). This keeps a turn
-        // to roughly a single tool call + answer, which matters most on a slow model.
-        if !round_failed || failures >= MAX_TOOL_FAILURES {
-            break;
-        }
+        // Let the model decide when it's done: the next round it either calls another
+        // tool (e.g. it read state first and now acts on it) or answers with no tool
+        // call, which exits the loop above. We do NOT force an answer after one round —
+        // that killed the read-then-act pattern (a "turn off the light" that first
+        // checked state would stop at the check). The loop stays bounded regardless by
+        // MAX_TOOL_ROUNDS, the failure cap, and the repeated-call guard, so a slow model
+        // still can't run away.
     }
     // Reached here after acting (or the round cap): force the final answer with tools
     // OFF, so the model replies in prose grounded in what it gathered rather than
@@ -3731,6 +3730,110 @@ mod tests {
             "expected the retried turn to run the tool, got: {activity:?}"
         );
         assert!(reply.text.contains("turned on"), "got: {}", reply.text);
+    }
+
+    #[test]
+    fn run_tool_turn_reads_state_then_acts_in_a_later_round() {
+        // The model often checks state before a command ("turn off the light" → read,
+        // see it's on, then turn it off). The turn must give it a round to ACT after
+        // the read, not force an answer the moment the read succeeds.
+        struct ReadThenAct;
+        impl Butler for ReadThenAct {
+            fn respond(
+                &self,
+                _h: &[ChatMessage],
+                _p: &[Preference],
+                _c: &ButlerContext,
+            ) -> Result<ButlerReply, ProposalError> {
+                Ok(ButlerReply::default())
+            }
+            fn take_turn(
+                &self,
+                conversation: &[crate::TurnMessage],
+                _p: &[Preference],
+                _c: &ButlerContext,
+            ) -> Result<ButlerReply, ProposalError> {
+                let results = conversation
+                    .iter()
+                    .filter(|m| matches!(m, crate::TurnMessage::ToolResult { .. }))
+                    .count();
+                let call = |cap: &str| {
+                    Ok(ButlerReply {
+                        tool_calls: vec![crate::ToolCall {
+                            id: "c".to_owned(),
+                            capability: cap.to_owned(),
+                            input_json: "{}".to_owned(),
+                        }],
+                        ..ButlerReply::default()
+                    })
+                };
+                match results {
+                    // First: read the live state.
+                    0 => call("home.GetLiveContext"),
+                    // Then: act on it.
+                    1 => call("home.HassLightSet"),
+                    // Finally: answer.
+                    _ => Ok(ButlerReply {
+                        text: "The kitchen light is now off.".to_owned(),
+                        ..ButlerReply::default()
+                    }),
+                }
+            }
+        }
+
+        // Both the read and the action must be runnable.
+        struct TwoSkills;
+        impl CapabilityRunner for TwoSkills {
+            fn available(&self) -> Vec<endora_capabilities::CapabilitySpec> {
+                ["home.GetLiveContext", "home.HassLightSet"]
+                    .into_iter()
+                    .map(|id| endora_capabilities::CapabilitySpec {
+                        id: id.to_owned(),
+                        description: "does a thing".to_owned(),
+                        configured: true,
+                        autonomous: true,
+                        input_schema: None,
+                    })
+                    .collect()
+            }
+            fn run(&self, id: &str, _input: &str) -> Result<String, String> {
+                match id {
+                    "home.GetLiveContext" => Ok("kitchen light: on".to_owned()),
+                    _ => Ok("set".to_owned()),
+                }
+            }
+        }
+
+        let (ids, clock, audit) = (SeqIds::default(), FixedClock(0), FakeAudit::default());
+        let mut activity = Vec::new();
+        let reply = super::run_tool_turn(
+            &ReadThenAct,
+            &TwoSkills,
+            &audit,
+            &ids,
+            &clock,
+            &one_user_turn("turn off the kitchen light"),
+            &[],
+            &ButlerContext::default(),
+            3,
+            &mut |_| {},
+            &mut activity,
+        )
+        .unwrap();
+        // The action ran in a round AFTER the read — not skipped by an early answer.
+        assert!(
+            activity
+                .iter()
+                .any(|a| a.contains("Used the home.GetLiveContext")),
+            "expected the read to run, got: {activity:?}"
+        );
+        assert!(
+            activity
+                .iter()
+                .any(|a| a.contains("Used the home.HassLightSet")),
+            "expected the action to run after the read, got: {activity:?}"
+        );
+        assert!(reply.text.contains("now off"), "got: {}", reply.text);
     }
 
     #[test]
