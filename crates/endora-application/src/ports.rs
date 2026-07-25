@@ -177,6 +177,13 @@ pub struct ButlerContext {
     /// present without sending the whole transcript (which slows a local model), so
     /// the butler stays coherent over a long chat. `None` until the window overflows.
     pub conversation_summary: Option<String>,
+    /// How the butler's own past actions have landed, per skill — built from the
+    /// outcomes it recorded and what the person said about them (ADR 0035).
+    ///
+    /// Only skills the person has actually reacted to appear, so this stays short and
+    /// carries signal rather than noise. Empty until they have said something about
+    /// anything, which is the normal early state.
+    pub track_record: Vec<String>,
 }
 
 /// A compact summary of the conversation so far, and how many messages it folds in —

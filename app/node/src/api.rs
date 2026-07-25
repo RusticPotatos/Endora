@@ -631,6 +631,8 @@ pub fn app(state: AppState) -> Router {
         .route("/v1/understanding", get(list_understanding))
         .route("/v1/understanding/{id}/affirm", post(affirm_belief))
         .route("/v1/understanding/{id}/correct", post(correct_belief))
+        .route("/v1/outcomes", get(list_outcomes))
+        .route("/v1/outcomes/{id}/reaction", post(react_to_outcome))
         .route("/v1/capabilities", get(list_capabilities))
         .route("/v1/capabilities/{id}/invoke", post(invoke_capability))
         .route("/v1/capabilities/{id}/enable", post(set_capability_enabled))
@@ -1015,7 +1017,12 @@ async fn send_chat(
     let (reply, activity) = blocking(move || {
         let runner = build_runner(config.as_ref(), capabilities, mcp);
         // Ground the butler in the person's current life before it answers.
-        let context = usecases::butler_context(understanding.as_ref(), &runner, clock.as_ref())?;
+        let context = usecases::butler_context(
+            understanding.as_ref(),
+            understanding.as_ref(),
+            &runner,
+            clock.as_ref(),
+        )?;
         let out = usecases::send_to_butler(
             chat.as_ref(),
             understanding.as_ref(),
@@ -1060,7 +1067,12 @@ async fn brief(State(state): State<AppState>) -> Result<Json<serde_json::Value>,
     let mcp = mcp_snapshot(&state);
     let result = blocking(move || {
         let runner = build_runner(config.as_ref(), capabilities, mcp);
-        let context = usecases::butler_context(understanding.as_ref(), &runner, clock.as_ref())?;
+        let context = usecases::butler_context(
+            understanding.as_ref(),
+            understanding.as_ref(),
+            &runner,
+            clock.as_ref(),
+        )?;
         let out = usecases::daily_brief(
             chat.as_ref(),
             understanding.as_ref(),
@@ -1138,15 +1150,18 @@ async fn stream_chat(
                 .flatten()
                 .map(|d| endora_infrastructure::DeepModelAsker::new(d.url, d.model, d.api_key));
             let event = |v: serde_json::Value| Event::default().data(v.to_string());
-            let context =
-                match usecases::butler_context(understanding.as_ref(), &runner, clock.as_ref()) {
-                    Ok(c) => c,
-                    Err(e) => {
-                        let _ =
-                            tx.send(event(json!({ "type": "error", "message": e.to_string() })));
-                        return;
-                    }
-                };
+            let context = match usecases::butler_context(
+                understanding.as_ref(),
+                understanding.as_ref(),
+                &runner,
+                clock.as_ref(),
+            ) {
+                Ok(c) => c,
+                Err(e) => {
+                    let _ = tx.send(event(json!({ "type": "error", "message": e.to_string() })));
+                    return;
+                }
+            };
             // Collect the turn's steps so they can be PERSISTED with the reply (so a
             // past answer keeps its expandable actions + Sources after a reload), in
             // addition to streaming them live.
@@ -1411,6 +1426,64 @@ async fn correct_belief(
     let understanding = state.understanding.clone();
     blocking(move || usecases::correct_belief(understanding.as_ref(), bid)).await?;
     Ok(Json(json!({ "corrected": true })))
+}
+
+/// How many outcomes the console shows — recent history, not an archive to manage.
+const OUTCOMES_SHOWN: usize = 30;
+
+fn outcome_json(o: &endora_application::Outcome) -> serde_json::Value {
+    json!({
+        "id": o.id().value().to_string(),
+        "capability": o.capability(),
+        "input": o.input(),
+        // The tool's own account and what Endora saw are kept apart here exactly as
+        // they are in storage (ADR 0035) — the console must not merge them either.
+        "claim": o.claim(),
+        "observation": o.observation(),
+        "observed": o.was_observed(),
+        "at_ms": o.at().unix_millis(),
+        "motivating_belief": o.motivating_belief().map(|b| b.value().to_string()),
+        "reaction": o.reaction().map(endora_application::Reaction::name),
+    })
+}
+
+/// What Endora has done lately, and what it saw afterwards (ADR 0035) — the memory
+/// right to *see* its actions, next to the beliefs it holds.
+async fn list_outcomes(
+    State(state): State<AppState>,
+) -> Result<Json<Vec<serde_json::Value>>, ApiError> {
+    let understanding = state.understanding.clone();
+    let items =
+        blocking(move || usecases::recent_outcomes(understanding.as_ref(), OUTCOMES_SHOWN)).await?;
+    Ok(Json(items.iter().map(outcome_json).collect()))
+}
+
+#[derive(serde::Deserialize)]
+struct ReactionBody {
+    reaction: String,
+}
+
+/// The person says how an action landed. Offered where the action already appears —
+/// they are never asked for it (ADR 0035).
+async fn react_to_outcome(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(body): Json<ReactionBody>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let oid = id
+        .parse::<u128>()
+        .map(endora_application::OutcomeId::new)
+        .map_err(|_| ApiError(AppError::NotFound { entity: "outcome" }))?;
+    let reaction =
+        endora_application::Reaction::from_name(body.reaction.trim()).ok_or_else(|| {
+            ApiError(AppError::BadRequest {
+                message: "reaction must be helped, did_not_help, or no_reaction".to_owned(),
+            })
+        })?;
+    let understanding = state.understanding.clone();
+    let out =
+        blocking(move || usecases::react_to_outcome(understanding.as_ref(), oid, reaction)).await?;
+    Ok(Json(outcome_json(&out)))
 }
 
 fn capability_json(
@@ -2420,8 +2493,12 @@ pub fn spawn_heartbeat(state: AppState) {
             let _turn = state.turn_lock.clone().lock_owned().await;
             let posted = tokio::task::spawn_blocking(move || {
                 let runner = build_runner(config.as_ref(), capabilities, mcp);
-                let context =
-                    usecases::butler_context(understanding.as_ref(), &runner, clock.as_ref())?;
+                let context = usecases::butler_context(
+                    understanding.as_ref(),
+                    understanding.as_ref(),
+                    &runner,
+                    clock.as_ref(),
+                )?;
                 // The butler decides whether it has a reason to speak; the schedule
                 // only bounds how often it may (ADR 0031).
                 let posted = usecases::consider_reaching_out(
@@ -2754,6 +2831,93 @@ mod tests {
         assert!(ct.starts_with("text/html"), "content-type was {ct}");
         let body = res.into_body().collect().await.unwrap().to_bytes();
         assert!(String::from_utf8_lossy(&body).contains("<title>Endora</title>"));
+    }
+
+    #[tokio::test]
+    async fn outcomes_are_visible_and_start_empty() {
+        // Nothing has acted yet, so there is nothing to show — and the endpoint must
+        // still answer, since the console asks for it on every load.
+        let listed = json_body(
+            app(test_state())
+                .oneshot(get("/v1/outcomes"))
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(listed, serde_json::json!([]));
+    }
+
+    #[tokio::test]
+    async fn an_outcome_surfaces_its_claim_and_observation_separately_and_takes_a_reaction() {
+        use endora_application::{Outcome, OutcomeId, OutcomeRepository, Timestamp};
+        let state = test_state();
+        // The kitchen light: the tool claimed success, the world disagreed. The console
+        // must show BOTH, unmerged (ADR 0035).
+        OutcomeRepository::save(
+            state.understanding.as_ref(),
+            &Outcome::record(
+                OutcomeId::new(42),
+                "home.HassTurnOff",
+                r#"{"name":"kitchen"}"#,
+                "action_done",
+                Some("kitchen switch: on"),
+                Timestamp::from_unix_millis(1_000),
+                None,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let app = app(state);
+
+        let listed = json_body(app.clone().oneshot(get("/v1/outcomes")).await.unwrap()).await;
+        assert_eq!(listed.as_array().unwrap().len(), 1);
+        assert_eq!(listed[0]["capability"], "home.HassTurnOff");
+        assert_eq!(listed[0]["claim"], "action_done");
+        assert_eq!(listed[0]["observation"], "kitchen switch: on");
+        assert_eq!(listed[0]["observed"], true);
+        assert!(listed[0]["reaction"].is_null(), "nobody was asked");
+
+        let reacted = json_body(
+            app.clone()
+                .oneshot(post(
+                    "/v1/outcomes/42/reaction",
+                    r#"{"reaction":"did_not_help"}"#,
+                ))
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(reacted["reaction"], "did_not_help");
+
+        // And it stuck.
+        let listed = json_body(app.oneshot(get("/v1/outcomes")).await.unwrap()).await;
+        assert_eq!(listed[0]["reaction"], "did_not_help");
+    }
+
+    #[tokio::test]
+    async fn reacting_to_an_unknown_outcome_is_a_clean_not_found() {
+        let res = app(test_state())
+            .oneshot(post(
+                "/v1/outcomes/12345/reaction",
+                r#"{"reaction":"helped"}"#,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn an_unrecognized_reaction_is_rejected_rather_than_stored() {
+        // The stored vocabulary is closed (ADR 0035); a typo must not become a value
+        // that later reads back as corrupt.
+        let res = app(test_state())
+            .oneshot(post(
+                "/v1/outcomes/1/reaction",
+                r#"{"reaction":"loved it"}"#,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test]
