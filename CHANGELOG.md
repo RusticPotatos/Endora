@@ -44,6 +44,25 @@ tagged release.
 
 ### Added
 
+- **The fitness battery is data-driven, and runs repeatedly.** Cases moved out of a
+  hardcoded function into `crates/endora-infrastructure/src/eval.rs` as declarative
+  data — a name, a tier, a probe, and a check — so adding one is adding a struct
+  literal. The battery grew from 24 cases to **34**, including the case that matters
+  most for ADR 0028 (`relay:failure-is-honest`: with a tool error in front of it, the
+  model must not narrate success), plus candour, register and conversation-ending
+  cases, and more understanding cases.
+- **`evaluate_repeated` reports the spread instead of hiding it.** A single run is a
+  smoke test: two consecutive runs of the same model scored L1 6/8 then 8/8 with
+  nothing in the routing path changed. Repeat runs report per-case pass rates, the
+  mean, the range, and which cases *flipped* — a case that flips says the model is
+  marginal on that behaviour, which is often more useful than the score. The live
+  harness now defaults to 3 runs (`ENDORA_EVAL_RUNS`) and asserts on the **worst**
+  run, because a butler that is sometimes unusable is unusable. Tier maxima are
+  derived from the battery, so growing it cannot desync them.
+- **No personal data in the battery.** The cases are synthetic, modelled on observed
+  failure *shapes* rather than harvested content — putting a real conversation in git
+  would breach §5/§6, and a battery that cannot be shared cannot compare models with
+  anyone else.
 - **Contradictions are surfaced rather than resolved.** When a new belief disagrees
   with one Endora already holds, both are kept and the conflict is written to the
   activity trail. Which one is true is the person's judgement, not the butler's —
