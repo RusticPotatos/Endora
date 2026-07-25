@@ -1,6 +1,6 @@
 //! Capabilities application layer — ports for running and configuring skills.
 
-use endora_kernel::{Decision, RepositoryError};
+use endora_kernel::{Decision, RepositoryError, Reversibility};
 
 pub use crate::domain::{AutonomyEnvelope, McpServer, McpTransport};
 
@@ -312,6 +312,12 @@ pub struct CapabilitySpec {
     /// as text so it crosses context boundaries without a serde dependency. `None` for
     /// built-ins that describe their inputs in the prompt instead.
     pub input_schema: Option<String>,
+    /// How undoable this capability's effect is. Surfaced to the application so the
+    /// turn can tell an **observation** from a **receipt**: a capability in the
+    /// [`Reversibility::Observe`] band reports state, so its result *is* evidence,
+    /// while anything else returns the actuator's claim about what it did — which
+    /// may be untrue (ADR 0034).
+    pub reversibility: Reversibility,
 }
 
 /// Runs the butler's skills. The application asks this port to execute a
