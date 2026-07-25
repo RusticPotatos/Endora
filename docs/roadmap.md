@@ -4,324 +4,104 @@
 > not authoritative for decisions. Architectural decisions are recorded in
 > [ADRs](adr/README.md), and execution is tracked in GitHub issues/milestones.
 > When this roadmap and an ADR disagree, the ADR wins.
+>
+> Rewritten 2026-07-25 after [ADR 0029](adr/0029-delete-the-goal-tracker.md). The
+> previous version planned releases 0.5→1.0 around the goal tracker (North Stars,
+> targets, experiments, reflections). That machinery is gone; so is the plan built
+> on it. The canonical statement of direction is
+> [docs/direction-reset.md](direction-reset.md).
+
+## What Endora is
+
+An **autonomous personal intelligence**, running on your hardware. Its job is to
+understand a person and act usefully in their interest — not to give them somewhere
+to file their goals. See [direction-reset.md](direction-reset.md) and
+[ADR 0020](adr/0020-intent-first-understanding-loop.md).
+
+The guiding test for every feature, unchanged: *if this disappeared tomorrow, would
+Endora still feel like an autonomous personal intelligence?* If yes, it is probably
+just tooling.
 
 ## Where we are
 
-The foundation is built and **v0.1.0 has shipped**: the full learning loop, the
-deterministic policy boundary, audit, memory rights, a local model proposer, a
-SQLite store, a node-served web console, review scheduling, and a live activity
-feed all exist. Work since 0.1.0 (the console, retention, and reachability
-milestones, plus the Goal→Target rename) sits on `develop`.
+Built and working:
 
-The next arc is **the butler** ([ADR 0014](adr/0014-the-butler-conversation-values-attention.md)):
-turning the system from a tree the user operates into an assistant the user talks
-to. That arc — releases **0.5 → 1.0** — is planned in
-[The road to 1.0](#the-road-to-10--the-butler) below.
+- **Understanding** — beliefs about the person with evidence, confidence, and the
+  ability to be affirmed, corrected, or to expire. The home surface, and the only
+  model Endora keeps of a person (ADRs 0020, 0029).
+- **One tool-calling turn** — the butler runs its skills through the policy layer and
+  answers grounded in the real results, success or failure, with no deterministic
+  narration papering over either (ADR 0028).
+- **Skills and the MCP host** — built-in skills plus any MCP server, each behind
+  per-skill configuration and enablement (ADR 0021).
+- **The safety machinery** — reversibility bands with deny-by-default, the autonomy
+  envelope, the SSRF egress guard and outbound secret tripwire, and an audit trail
+  (ADRs 0005, 0022, 0023, 0024).
+- **Proactivity** — optional check-ins, a daily brief, and a nightly loop that
+  researches whatever Endora is most sure the person is reaching for, reflects, and
+  leaves a note (ADRs 0019, 0024).
+- **A model layer that can improve itself** — a fitness battery and a deterministic
+  adoption policy: auto-adopt a better local model, only *propose* a cloud one
+  (ADR 0027).
+- **Memory rights** — everything visible, correctable, exportable, deletable.
 
-## What v1.0 means
+## The near arc
 
-> **One complete vertical slice of the learning loop, running locally, with the
-> constitutional guarantees (deterministic policy boundary, memory rights, audit)
-> actually enforced in code — not just documented.**
+Sequenced by what unblocks what, not by release number. Tagging is a human decision.
 
-v1.0 is a real, usable, honestly-guaranteed release — not a general autonomous
-agent. It ships the full learning loop for a single target, driven from the CLI,
-with a local model proposing and deterministic policy authorizing.
+### 1. Measure understanding
 
-## Scope decisions for v1.0
+Belief quality is now the load-bearing behaviour and the thing with no fallback
+(ADR 0029's stated risk). Extend the [0027](adr/0027-self-improving-model-layer.md)
+battery from routing and no-fabrication to **understanding**: does the butler form
+beliefs with real evidence, avoid restating what it already believes, and correctly
+decline to form one when the conversation supports nothing? Until this is measured,
+every other improvement here is guesswork.
 
-These were chosen deliberately. Where a decision is architectural it is promoted
-to an ADR during the work (numbers below are the intended slots).
+### 2. Beliefs that behave like a model, not a list
 
-### 1. The slice: the full learning loop, one target
+Expiry and decay are modelled but barely exercised. Beliefs should weaken without
+reinforcement, contradict each other visibly, and be consolidated when the butler
+learns something that subsumes several. This is what makes understanding a *living*
+model (direction-reset, "Understanding is a living model").
 
-v1.0 implements the whole loop for a single user target:
+### 3. Interventions, properly
 
-```text
-Direction → Assumption → Experiment → Observation → Reflection
-          → Proposed process change → Human approval
-```
+The reset promised interventions **proportional to confidence** — higher uncertainty
+means a smaller action or just a question. Today the butler acts when asked and
+researches overnight; it does not yet size an unprompted action to how sure it is.
+This needs its own ADR, and it must not reintroduce a queue of records to approve.
 
-This exercises every layer and every core guarantee end-to-end. It touches the
-**Direction & Targets**, **Experiments & Learning**, and **Reflection** bounded
-contexts, plus the cross-cutting **Policy & Consent**, **Memory**, and
-**Audit & Accountability** contexts. Detailed entities/APIs are designed *with*
-this slice — recorded in **ADR 0006 (first vertical slice)** — not invented
-ahead of it.
+### 4. Agentic proactivity
 
-### 2. Model: real, local, open-weights — behind the deterministic boundary
+Check-ins and briefs are on the single tool-calling turn now, but the *decision to
+reach out at all* is still a clock. It should come from what Endora understands and
+has noticed — "it comes to you," but for a reason it can state.
 
-The **deterministic policy boundary is the load-bearing guarantee** and must be
-fully real and independently tested. Behind it, v1.0 uses a **real local model**,
-not a stub:
+### Later
 
-- **Default: Qwen3.5 9B** (~6.6 GB quantized) — fits 8 GB VRAM / 16 GB Apple
-  Silicon, the sweet spot for the majority-hardware goal.
-- **Lighter fallback: Qwen3.5 4B** (~3.4 GB quantized) for older laptops.
-- Served locally through an **OpenAI-compatible endpoint** (e.g. Ollama or a
-  llama.cpp server; MLX builds available on Apple Silicon), consumed via a
-  **replaceable adapter** so the specific model and runner are never load-bearing.
-  This keeps Endora local-first and privacy-preserving by default; larger models
-  (e.g. Qwen3.6 27B) and optional cloud providers are post-1.0 adapters.
-- The final pick and the model's **license compatibility with Apache-2.0** are
-  confirmed in **ADR 0008 (local model adapter)**, after a small eval on the
-  loop's actual prompts (proposing experiments, summarizing observations,
-  drafting reflections).
+- A sandbox in which the butler can author and run its own capabilities
+  (ADR 0022's self-authored capabilities, deliberately still ahead).
+- The capability ladder: exhaust local before ranking up, and manage its own
+  infrastructure as it goes.
+- Native clients, if the web console ever genuinely stops being enough.
 
-The model only ever **proposes**. Every consequential effect is gated by
-deterministic policy — see
-[ADR 0005](adr/0005-models-propose-policy-authorizes.md).
+## What 1.0 would mean
 
-### 3. Client: CLI first
+Not a feature count. **1.0 is when Endora understands a person well enough, and
+acts well enough on that understanding, that a non-author would keep it running** —
+with the constitutional guarantees enforced in code, not merely documented:
+deterministic policy authorizes every consequential action, memory stays visible /
+correctable / exportable / deletable, and the model is never the enforcement
+boundary.
 
-The existing `endora-cli` becomes the **reference client**, speaking the real
-protocol. Swift/SwiftUI (the stated first native client) is a **1.x fast-follow**,
-not a v1.0 blocker. This is the fastest path to a genuinely usable release.
+The `0.x` protocol is unstable by design until then; tagging `1.0.0` commits to
+compatibility within the major version, so it is a deliberate human decision.
 
-## Workstreams
+## Cross-cutting, in every release
 
-Each item lists what "done for v1.0" means. None of these put HTTP, storage, or
-model concepts into the Domain layer.
-
-1. **Slice definition & domain modeling** — model the target/assumption/experiment/
-   observation/reflection concepts in `endora-domain` (pure), test-first.
-   → ADR 0006.
-2. **Persistence** — SQLite behind application-defined ports, in a new
-   infrastructure crate, with migrations. → [ADR 0004](adr/0004-sqlite-first.md).
-3. **Protocol surface** — versioned HTTP + JSON in the node, OpenAPI-described,
-   with SSE for live updates. Introduces the async runtime + HTTP stack.
-   → ADR 0007 (async/HTTP stack).
-4. **Policy & Consent boundary** — deterministic authorization driven by
-   `AutonomyLevel`; every proposal routed through it; independently tested.
-   → [ADR 0005](adr/0005-models-propose-policy-authorizes.md).
-5. **Model integration** — local open-weights model behind a replaceable
-   OpenAI-compatible adapter, sitting *behind* the policy boundary. → ADR 0008.
-6. **Memory rights** — slice data is visible, correctable, **exportable, and
-   deletable**. Non-negotiable for 1.0.
-7. **Audit & Accountability** — record what was proposed, what policy decided,
-   and what executed, for consequential actions.
-8. **CLI reference client** — drive the full loop from `endora-cli` over the
-   protocol.
-9. **Release engineering** — native binaries (macOS, Linux/Ubuntu Server) +
-   Docker, SemVer commitment, `CHANGELOG.md`, a security-review pass, and a real
-   supported-versions entry in [SECURITY.md](../SECURITY.md).
-
-## Sequencing (indicative)
-
-- **Phase 0 — decide.** ADR 0006 (slice), ADR 0007 (async/HTTP), ADR 0008 (model
-  adapter). No feature code before the slice is specified.
-- **Phase 1 — data skeleton.** Domain modeling + SQLite persistence, test-first.
-- **Phase 2 — end-to-end thin path.** Protocol + CLI reading/writing the slice,
-  no model, no policy yet — a walking skeleton.
-- **Phase 3 — the boundary.** Policy & Consent + Audit made real and tested.
-- **Phase 4 — reasoning.** Local model adapter proposing *through* the boundary.
-- **Phase 5 — rights & release.** Memory export/delete, hardening, packaging,
-  security review, tag v1.0.
-
-## New dependencies expected (each justified per CONTRIBUTING)
-
-v1.0 is the "actual first vertical slice" that justifies dependencies
-intentionally deferred during setup. Expected additions, none in `endora-domain`:
-
-- Async runtime + HTTP server/client (Tokio/Axum-class) — protocol surface.
-- SQLite driver (e.g. `rusqlite` or `sqlx`) — persistence.
-- Serialization (Serde/JSON) and OpenAPI tooling — protocol contracts.
-- An HTTP client for the local model's OpenAI-compatible endpoint.
-
-Each significant choice gets a rationale and, where load-bearing, an ADR.
-
-## Explicitly out of scope for v1.0
-
-Swift/SwiftUI, Android, and web clients; cloud sync; multiple/cloud model
-providers; MCP; microservices; event sourcing. These remain post-1.0.
-
-## v1.0 exit criteria
-
-- [ ] Full learning loop works for one target, driven from the CLI.
-- [ ] A local open-weights model proposes; deterministic policy authorizes.
-- [ ] No model output reaches a consequential action without policy approval
-      (tested).
-- [ ] Slice data is exportable and deletable (memory rights).
-- [ ] Consequential actions are audited.
-- [ ] Versioned protocol with an OpenAPI description.
-- [ ] Runs on macOS, Linux/Ubuntu Server, and Docker.
-- [ ] fmt, clippy (`-D warnings`), and tests green in CI on Linux and macOS.
-- [ ] ADRs 0006–0008 written; `CHANGELOG.md` and SECURITY support entry in place.
-
-## Tracking
-
-This roadmap is mirrored by a **v1.0 milestone** with one issue per workstream.
-The roadmap describes intent; the issues carry the work.
-
----
-
-## Post-0.1: toward a usable product
-
-> The foundational vertical slice above shipped as the **v0.1.0** tag. The
-> versions below stay in `0.x` until the constitution's full stewardship vision
-> is reached.
-
-v0.1.0 is a CLI against a local HTTP node. The gap to something a *non-author*
-uses daily is **not** more domain features — it is a UI, one-command deployment,
-and a mechanic that pulls people back to observe their experiments. These phases
-target exactly that.
-
-**Deliberately out of this roadmap:** native/mobile apps and offline multi-device
-sync. The node is authoritative and clients are thin, so a responsive web console
-reached from an **always-on** node covers "capture from my phone" without the
-hardest unsolved problem (sync). Native apps are a far-future possibility, not a
-plan.
-
-### 0.2 — A usable product in one container
-
-- The **node serves a self-contained web console at `/`** — same-origin, so no
-  CORS and no separate front-end build. It exercises the whole loop (create/list
-  Direction → … → Reflection), the propose → approve → decide policy flow, the
-  audit trail, and export/purge. Static assets are embedded in the binary, so the
-  container stays self-contained. See [ADR 0009](adr/0009-node-served-ui-and-single-container.md).
-- **Single-container deployment**: `docker compose up` runs the node (UI + API +
-  CLI all in the image) plus an optional local model — the whole system in one
-  command.
-- Small enabler: a `direction list` endpoint/command so buckets are discoverable.
-
-Web-first is deliberate: it is the fastest path to *usable* and works on any
-device with a browser. A native (Swift/SwiftUI) client is a later follow-up, not
-a prerequisite.
-
-### 0.3 — Retention: the loop that pulls you back
-
-- **Scheduled review prompts** — "you said you'd check this experiment in two
-  weeks." *Delivered* ([ADR 0011](adr/0011-review-scheduling-reminders.md)): an
-  experiment can carry a scheduled review time, and the system surfaces reviews
-  that are due (`GET /v1/reviews/due`, a console banner) without acting on them —
-  Endora's first *proactive* behavior, and the first application of the autonomy
-  model ([ADR 0010](adr/0010-autonomy-model.md)). Reviews are computed on read,
-  not pushed by a background scheduler; live delivery comes next.
-- An **activity feed** (`GET /v1/activity`) recording what happened, and
-  **server-sent events** so the console reflects new activity — including due
-  reviews — live. *Delivered*
-  ([ADR 0012](adr/0012-activity-feed-and-change-stream.md)): the feed is a read
-  projection over the persisted, timestamped facts (observations and audited
-  decisions), and `GET /v1/activity/stream` pushes a `changed` signal after every
-  write so the console refreshes live. The feed widens for free as more of the
-  loop gains durable timestamps.
-
-This is the make-or-break mechanic: the loop only closes if experiments actually
-get observed. The most design care goes here.
-
-### 0.4 — Reachable from where you live
-
-- A **responsive** console usable from a phone browser. *Delivered*: a mobile
-  breakpoint stacks forms and tightens the frame so the whole loop is usable at
-  phone widths.
-- Docs for running an **always-on** node (home server or a small VPS) and
-  reaching it securely — e.g. Tailscale, or a reverse proxy that adds the
-  authentication the API still lacks. This delivers "mobile capture" with no sync.
-  *Delivered*: [docs/hosting.md](hosting.md) covers always-on supervision
-  (systemd / container restart), backups, and secure reach over a private overlay
-  or an authenticating proxy; `make docker-run` now binds loopback by default.
-
-## The road to 1.0 — the butler
-
-The original 1.0 slice (the learning loop, driven from the CLI and console) is
-essentially built and shipping on `develop`. What makes Endora *the product* is the
-**butler** ([ADR 0014](adr/0014-the-butler-conversation-values-attention.md)): you
-talk to it, it organizes your life by your values, and it works the loop for you —
-proposing, never deciding, with the policy boundary intact. These releases integrate
-that one complete vertical slice at a time. (The Goal→Target rename is breaking, so
-the release that carries it is **0.5.0**; tagging is a human decision.)
-
-### 0.5 — Artifacts, complete and correct
-- **Goal → Target rename** ([ADR 0013](adr/0013-rename-goal-to-target.md)) — a
-  breaking rename of the second-tier concept; done, pending release.
-- **Lifecycle**: North Stars and Targets gain states (active / achieved / abandoned
-  / archived) plus archive and delete, across the domain, API, CLI, and console.
-  Today only experiments can "conclude" and nothing else can be finished, dropped,
-  or removed except a global purge — the butler needs to close things out.
-
-### 0.6 — Values: organize by *why*
-- Build the **Identity & Values** context (its own ADR): **Value → North Star →
-  Target**. A North Star is filed under the value it serves (health, community,
-  craft); the console groups by value and the API/CLI follow. This is the organizing
-  backbone the butler files into. *Delivered*
-  ([ADR 0015](adr/0015-identity-and-values-context.md)): a `Value` aggregate, an
-  optional North Star → Value link (assigned, never inferred), full CRUD across
-  domain/storage/API/CLI, and a console home grouped by value. Existing databases
-  migrate cleanly (a new `values` table + nullable `value_id`).
-
-### 0.7 — The butler, MVP (chat)
-- A **conversation** surface: a chat endpoint and a console chat panel. The model
-  runs the **act/ask loop** — you talk, it proposes structure and plans (North
-  Stars, targets, experiments), asks clarifying questions, and records answers as
-  **preferences**. Every consequential step still routes **propose → policy
-  authorizes → confirm if irreversible**. This is where the AI becomes the driver
-  rather than a single drafting call. The **anti-sycophancy eval harness** starts
-  here — the moment the model drives. *Delivered (MVP)*: a `Butler` port with a
-  closed set of proposable actions; the model **proposes**, the person
-  **confirms**, existing use cases **execute** — the model never acts. Two brains:
-  a deterministic `ScriptedButler` (offline, the reliable fallback) and an
-  `LlmButler` (local OpenAI-compatible model, candid + anti-sycophancy prompt,
-  falling back to scripted). Chat is persisted (and included in export/purge);
-  `POST/GET /v1/chat`, CLI `chat`, and a console chat panel with confirmable
-  proposals. **Preferences delivered**: the butler records what it learns (taste /
-  grants of authority, always by explicit confirmation) as visible, correctable,
-  deletable memory, and feeds them back into its own context so it stops re-asking
-  (ADR 0010's "learning = accumulation of preferences"). `/v1/preferences`, CLI
-  `preference …`, a console Preferences view, and a `remember_preference` butler
-  proposal. **Anti-sycophancy eval delivered**: an opt-in eval harness
-  (`crates/endora-infrastructure/tests/butler_eval.rs`, `#[ignore]`d so CI stays
-  model-free) baits the butler with prompts that tempt flattery and checks it stays
-  candid. Sycophancy is model *behaviour* the boundary can't gate, so it is treated
-  as a **defect measured by evals** (ADR 0014 §5), run on demand against a live
-  model. **0.7 is complete.** *Deferred*: richer proposal kinds (later releases).
-
-### 0.8 — Attention & proactivity
-- **Adaptive attention**: the deferral-backoff ranking (ADR 0014 §3) decides what to
-  raise, with **hybrid triggers** — events (the existing change stream) + scheduled
-  sweeps + conversation. The butler surfaces stale North Stars and due reviews and
-  asks *less* as they are deferred, reprioritizing on new evidence. Its own ADR pins
-  the attention formula. "It comes to you." *Delivered*
-  ([ADR 0016](adr/0016-adaptive-attention.md)): a computed attention read model
-  (`GET /v1/attention`) surfacing due reviews, unfiled North Stars, and empty North
-  Stars, with **deferral-backoff** (`POST /v1/attention/snooze` — each snooze doubles
-  the hidden interval). The console home shows a "Needs your attention" section with
-  a per-item "Later". *Still ahead*: time-based **staleness** (needs per-item
-  activity timestamps) and value-weighted priority.
-
-### 0.9 — Voice & character
-- **Personality**: style mirroring with the golden-rule floor (ADR 0014 §4), and the
-  candor / anti-sycophancy invariants hardened into evals. **Voice**: STT/TTS as a
-  thin client over the same protocol. Its own ADR for persona + voice. *Delivered*
-  ([ADR 0017](adr/0017-persona-and-voice.md)): the butler's system prompt now
-  mirrors the person's register with the golden-rule floor (reflect kindness up,
-  never hostility down), on top of stored style preferences; the anti-sycophancy
-  eval landed in 0.7. **Voice** is browser-native and client-side — the console
-  reads replies aloud (`speechSynthesis`) behind an opt-in toggle and captures
-  spoken messages (`SpeechRecognition`) from a mic button, with no backend change
-  and a stated local-first caveat (browser STT may use a cloud service, so it is
-  opt-in).
-
-### 1.0 — The butler is the product
-- Everything integrated: the person lives in the conversation, values organize the
-  structure, attention is proactive and calibrated, and the butler is candid and
-  never sycophantic — all local-first, memory rights intact, policy boundary
-  enforced. 1.0 is redefined around this; the CLI learning loop was an early
-  milestone, now passed. *Integration delivered*: the butler is now **grounded in
-  the person's current life** — each turn it is handed a `ButlerContext` (their
-  values, North Stars with status/value/whether they have a target, and what needs
-  attention), so it refers to what actually exists and proposes the next concrete
-  step, including a **target under an existing North Star** (`create_target`). The
-  code carries the 1.0 feature set; **cutting the `1.0.0` release/tag is a human
-  decision** (it commits to protocol stability within the major version).
-
-Cross-cutting, in **every** release: the deterministic **policy boundary** authorizes
-consequential actions, **memory stays visible / correctable / exportable / deletable**,
-and **sycophancy is treated as a defect** measured by evals — never left to the
-model's discretion.
-
-### Beyond 1.0
-
-Native clients, real offline sync (if it is ever justified), and the
-**Capabilities** and **Protection** bounded contexts — *bounded, reversible*
-autonomy executed under the Policy boundary — remain the long arc toward the
-constitution's full vision. Deliberately after the butler is usable and trusted.
+- **Models propose; deterministic policy authorizes.** Never routed around.
+- **Reversibility first.** Endora acts alone only within reversible bounds.
+- **Memory rights** hold for everything stored, including audit records.
+- **Sycophancy and fabrication are defects measured by evals**, never left to the
+  model's discretion — and never patched over with a canned string (ADR 0028).

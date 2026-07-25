@@ -81,7 +81,7 @@ clients ──HTTP/JSON──▶ node ──▶ policy boundary ──▶ skills
 
 ```text
 app/      node (backend + web UI)   cli (thin client)   ← composition roots
-domains/  platform · capabilities · understanding · direction · conversation · scheduling
+domains/  understanding · capabilities · conversation · scheduling · platform
           each a crate layered domain / application / infrastructure, inward-pointing
 shared/   kernel (ids, time, errors)   persistence (the shared SQLite handle)
 ```
