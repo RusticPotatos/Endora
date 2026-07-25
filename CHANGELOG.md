@@ -7,6 +7,56 @@ tagged release.
 
 ## [Unreleased]
 
+### Removed
+
+- **The goal tracker is gone** ([ADR 0029](docs/adr/0029-delete-the-goal-tracker.md),
+  superseding [ADR 0020](docs/adr/0020-intent-first-understanding-loop.md) §4).
+  ADR 0020 reset the direction to an autonomous personal intelligence but chose to
+  leave the goal machinery in place "as an optional expression of intent". It never
+  became optional: it stayed 12 of 28 tables, ~25 of 60 routes, and the bulk of what
+  the butler's context was assembled from — and the system prompt ended up telling
+  the model "you are not a goal tracker" while handing it a goal-tracker schema to
+  fill in. Removed: `Value`, North Star (`Direction`), `Target`, `Assumption`,
+  `Experiment`, `Observation`, `Reflection`, `ProposedProcessChange`, the
+  attention/snooze read model, and the suggestions inbox with its `ButlerProposal`
+  set — across the domain, storage, HTTP, CLI and console. The `domains/direction`
+  crate and the `Proposer` port are retired. **~8,600 net lines deleted.**
+- **BREAKING:** the `/v1/values`, `/v1/directions`, `/v1/targets`,
+  `/v1/assumptions`, `/v1/experiments`, `/v1/reviews`, `/v1/observations`,
+  `/v1/reflections`, `/v1/process-changes`, `/v1/suggestions` and `/v1/attention`
+  endpoints and their CLI commands are removed; `/v1/export` no longer carries those
+  collections. Existing databases **drop the old tables on open**, so no one is left
+  holding data nothing can read, correct, or delete (constitution §6).
+
+### Changed
+
+- **Understanding is now the only model Endora keeps of a person.** Beliefs already
+  carried what goals stood in for — what someone is reaching for, with evidence, a
+  confidence, and the ability to be corrected or to expire. `ButlerContext` carries
+  that plus the skills the butler can reach, and nothing else.
+- **The nightly loop researches what Endora is most sure of.** `nightly_focus` picks
+  the highest-confidence *intent* belief instead of an active North Star; confidence
+  is the ranking, so the night is not spent on a tentative guess.
+- **The butler no longer files anything for later approval.** It converses and acts
+  through the policy boundary as it goes. Not a loosening — every action still passes
+  deterministic authorization — but the intermediate "propose a record, review it
+  later" step is gone, which is the friction ADR 0020 §3 set out to remove.
+- **The system prompt is rewritten** now the contradiction it was policing is gone:
+  the proposal schema and the instructions that existed only to fight it are deleted,
+  and an explicit rule to report a failed or blocked skill plainly takes their place.
+- **The ADR 0028 cutover is complete.** `daily_brief`, `run_due_checkin` and
+  `run_due_nightly_loop` moved onto the single tool-calling conversation; the old
+  two-pass `gather_with_skills` engine, `ButlerContext::tool_result` and
+  `ButlerContext::synthesize` are deleted. Tool results now ride in the conversation
+  for every butler, including those without native tool-calling.
+- **No more scripted floors.** The daily brief's hardcoded weather → safety → news
+  sweep, its `has_real` substring-sniffing of model prose, and the templated check-in
+  are gone. When the butler has nothing real to say — or no model to think with — it
+  stays quiet rather than emitting a canned string in Endora's voice.
+- Docs reconciled with the code: `docs/roadmap.md` rewritten off the goal-tracker arc,
+  `docs/domain-map.md` rewritten around the five surviving contexts, and
+  `docs/architecture.md`'s code map corrected (it still showed the pre-ROCA layout).
+
 ## [0.11.0] — 2026-07-21
 
 The butler becomes real: it understands you, uses skills to act on real data, guards

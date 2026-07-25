@@ -18,8 +18,7 @@ use api::AppState;
 use endora_application::Butler;
 use endora_capabilities::ConfigStore;
 use endora_infrastructure::{
-    ConfigurableButler, LlmButler, MixtureButler, OpenAiCompatibleProposer, RandomIdSource,
-    SqliteStore, SystemClock,
+    ConfigurableButler, LlmButler, MixtureButler, RandomIdSource, SqliteStore, SystemClock,
 };
 
 #[tokio::main]
@@ -66,10 +65,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         store,
         Arc::new(RandomIdSource),
         Arc::new(SystemClock),
-        Arc::new(OpenAiCompatibleProposer::new(
-            model_url.clone(),
-            model.clone(),
-        )),
         butler,
     );
 

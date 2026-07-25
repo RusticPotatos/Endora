@@ -67,108 +67,14 @@ fn route(args: &[&str]) -> Option<Action> {
             json!({ "text": text }),
         )),
         ["preference", "delete", id] => Some(Action::Delete(format!("/v1/preferences/{id}"))),
-        ["value", "create", name] => Some(Action::Post(
-            "/v1/values".to_owned(),
-            json!({ "name": name }),
-        )),
-        ["value", "list"] => Some(Action::Get("/v1/values".to_owned())),
-        ["value", "delete", id] => Some(Action::Delete(format!("/v1/values/{id}"))),
-        ["direction", "value", id, "none"] => Some(Action::Post(
-            format!("/v1/directions/{id}/value"),
-            json!({ "value_id": null }),
-        )),
-        ["direction", "value", id, value_id] => Some(Action::Post(
-            format!("/v1/directions/{id}/value"),
-            json!({ "value_id": value_id }),
-        )),
-        ["direction", "create", title] => Some(Action::Post(
-            "/v1/directions".to_owned(),
-            json!({ "title": title }),
-        )),
-        ["direction", "list"] => Some(Action::Get("/v1/directions".to_owned())),
-        ["direction", "status", id, status] => Some(Action::Post(
-            format!("/v1/directions/{id}"),
-            json!({ "status": status }),
-        )),
-        ["direction", "delete", id] => Some(Action::Delete(format!("/v1/directions/{id}"))),
-        ["target", "create", direction, statement] => Some(Action::Post(
-            format!("/v1/directions/{direction}/targets"),
-            json!({ "statement": statement }),
-        )),
-        ["target", "list", direction] => {
-            Some(Action::Get(format!("/v1/directions/{direction}/targets")))
-        }
-        ["target", "status", id, status] => Some(Action::Post(
-            format!("/v1/targets/{id}"),
-            json!({ "status": status }),
-        )),
-        ["target", "delete", id] => Some(Action::Delete(format!("/v1/targets/{id}"))),
-        ["assumption", "create", target, statement] => Some(Action::Post(
-            format!("/v1/targets/{target}/assumptions"),
-            json!({ "statement": statement }),
-        )),
-        ["assumption", "list", target] => {
-            Some(Action::Get(format!("/v1/targets/{target}/assumptions")))
-        }
-        ["experiment", "propose", assumption, hypothesis] => Some(Action::Post(
-            format!("/v1/assumptions/{assumption}/experiments"),
-            json!({ "hypothesis": hypothesis }),
-        )),
-        ["experiment", "list", assumption] => Some(Action::Get(format!(
-            "/v1/assumptions/{assumption}/experiments"
-        ))),
-        ["experiment", "start", id] => Some(Action::Post(
-            format!("/v1/experiments/{id}/start"),
+        ["understanding"] => Some(Action::Get("/v1/understanding".to_owned())),
+        ["understanding", "affirm", id] => Some(Action::Post(
+            format!("/v1/understanding/{id}/affirm"),
             json!({}),
         )),
-        ["experiment", "conclude", id] => Some(Action::Post(
-            format!("/v1/experiments/{id}/conclude"),
+        ["understanding", "correct", id] => Some(Action::Post(
+            format!("/v1/understanding/{id}/correct"),
             json!({}),
-        )),
-        ["experiment", "review", id, days] => Some(Action::Post(
-            format!("/v1/experiments/{id}/review"),
-            json!({ "in_days": days.parse::<u32>().ok()? }),
-        )),
-        ["reviews", "due"] => Some(Action::Get("/v1/reviews/due".to_owned())),
-        ["observation", "record", experiment, note] => Some(Action::Post(
-            format!("/v1/experiments/{experiment}/observations"),
-            json!({ "note": note }),
-        )),
-        ["observation", "list", experiment] => Some(Action::Get(format!(
-            "/v1/experiments/{experiment}/observations"
-        ))),
-        ["reflection", "create", target, summary, evidence] => {
-            let evidence: Vec<&str> = evidence.split(',').filter(|s| !s.is_empty()).collect();
-            Some(Action::Post(
-                format!("/v1/targets/{target}/reflections"),
-                json!({ "summary": summary, "evidence": evidence }),
-            ))
-        }
-        ["reflection", "list", target] => {
-            Some(Action::Get(format!("/v1/targets/{target}/reflections")))
-        }
-        ["process-change", "propose", reflection, description] => Some(Action::Post(
-            format!("/v1/reflections/{reflection}/process-changes"),
-            json!({ "description": description }),
-        )),
-        ["process-change", "list", reflection] => Some(Action::Get(format!(
-            "/v1/reflections/{reflection}/process-changes"
-        ))),
-        ["process-change", "draft", reflection] => Some(Action::Post(
-            format!("/v1/reflections/{reflection}/process-changes/draft"),
-            json!({}),
-        )),
-        ["process-change", "approve", id] => Some(Action::Post(
-            format!("/v1/process-changes/{id}/approve"),
-            json!({}),
-        )),
-        ["process-change", "reject", id] => Some(Action::Post(
-            format!("/v1/process-changes/{id}/reject"),
-            json!({}),
-        )),
-        ["process-change", "decide", id, actor] => Some(Action::Post(
-            format!("/v1/process-changes/{id}/decision"),
-            json!({ "actor": actor }),
         )),
         ["audit"] => Some(Action::Get("/v1/audit".to_owned())),
         ["audit", limit] => Some(Action::Get(format!("/v1/audit?limit={limit}"))),
@@ -211,41 +117,14 @@ fn print_usage() {
         "\nUsage: endora <command>\n\n\
          Commands:\n  \
            health                                 check the node is up\n  \
-           chat \"<message>\"                       talk to the butler (proposes; you confirm)\n  \
+           chat \"<message>\"                       talk to the butler\n  \
            chat                                   show the conversation so far\n  \
            preference list                        what the butler has learned\n  \
            preference add <text>                  remember a preference\n  \
            preference delete <id>                 forget a preference\n  \
-           value create <name>                    create a value (a North Star's why)\n  \
-           value list                             list your values\n  \
-           value delete <id>                      delete a value (no North Stars may serve it)\n  \
-           direction create <title>               create a direction\n  \
-           direction list                         list your directions\n  \
-           direction value <id> <value-id|none>   file a North Star under a value (or clear)\n  \
-           direction status <id> <state>          set state (active|achieved|abandoned|archived)\n  \
-           direction delete <id>                  delete a direction (must have no targets)\n  \
-           target create <direction-id> <statement> add a target to a direction\n  \
-           target list <direction-id>               list a direction's targets\n  \
-           target status <id> <state>               set state (active|achieved|abandoned|archived)\n  \
-           target delete <id>                       delete a target (must have no assumptions)\n  \
-           assumption create <target-id> <text>     add an assumption to a target\n  \
-           assumption list <target-id>              list a target's assumptions\n  \
-           experiment propose <assumption-id> <h> propose an experiment\n  \
-           experiment list <assumption-id>        list an assumption's experiments\n  \
-           experiment start <experiment-id>       start a proposed experiment\n  \
-           experiment conclude <experiment-id>    conclude a running experiment\n  \
-           experiment review <experiment-id> <days>  remind me to review it in N days\n  \
-           reviews due                            list experiments due for review\n  \
-           observation record <experiment-id> <n> record an observation\n  \
-           observation list <experiment-id>       list an experiment's observations\n  \
-           reflection create <target-id> <summary> <obs-ids>  reflect (obs-ids: comma-separated)\n  \
-           reflection list <target-id>              list a target's reflections\n  \
-           process-change propose <reflection-id> <desc>  propose a process change\n  \
-           process-change list <reflection-id>    list a reflection's proposed changes\n  \
-           process-change draft <reflection-id>   let the model draft a change (pending)\n  \
-           process-change approve <id>            approve a proposed change\n  \
-           process-change reject <id>             reject a proposed change\n  \
-           process-change decide <id> <actor>     run policy on a change (audited)\n  \
+           understanding                          what Endora believes about you, and why\n  \
+           understanding affirm <id>              confirm a belief (raises its confidence)\n  \
+           understanding correct <id>             mark a belief wrong (drops it)\n  \
            audit [limit]                          show recent audit records\n  \
            activity [limit]                       show the recent activity feed\n  \
            export                                 export all your data as JSON\n  \
@@ -263,17 +142,6 @@ mod tests {
     #[test]
     fn routes_health() {
         assert_eq!(route(&["health"]), Some(Action::Get("/health".to_owned())));
-    }
-
-    #[test]
-    fn routes_direction_create() {
-        assert_eq!(
-            route(&["direction", "create", "Be healthier"]),
-            Some(Action::Post(
-                "/v1/directions".to_owned(),
-                json!({ "title": "Be healthier" })
-            ))
-        );
     }
 
     #[test]
@@ -308,212 +176,33 @@ mod tests {
     }
 
     #[test]
-    fn routes_values_and_filing() {
-        assert_eq!(
-            route(&["value", "create", "Health"]),
-            Some(Action::Post(
-                "/v1/values".to_owned(),
-                json!({ "name": "Health" })
-            ))
-        );
-        assert_eq!(
-            route(&["value", "delete", "5"]),
-            Some(Action::Delete("/v1/values/5".to_owned()))
-        );
-        assert_eq!(
-            route(&["direction", "value", "3", "5"]),
-            Some(Action::Post(
-                "/v1/directions/3/value".to_owned(),
-                json!({ "value_id": "5" })
-            ))
-        );
-        assert_eq!(
-            route(&["direction", "value", "3", "none"]),
-            Some(Action::Post(
-                "/v1/directions/3/value".to_owned(),
-                json!({ "value_id": null })
-            ))
-        );
-    }
-
-    #[test]
-    fn routes_direction_list() {
-        assert_eq!(
-            route(&["direction", "list"]),
-            Some(Action::Get("/v1/directions".to_owned()))
-        );
-    }
-
-    #[test]
-    fn routes_target_create_and_list() {
-        assert_eq!(
-            route(&["target", "create", "42", "Run a 5k"]),
-            Some(Action::Post(
-                "/v1/directions/42/targets".to_owned(),
-                json!({ "statement": "Run a 5k" })
-            ))
-        );
-        assert_eq!(
-            route(&["target", "list", "42"]),
-            Some(Action::Get("/v1/directions/42/targets".to_owned()))
-        );
-    }
-
-    #[test]
-    fn routes_lifecycle_status_and_delete() {
-        assert_eq!(
-            route(&["target", "status", "7", "achieved"]),
-            Some(Action::Post(
-                "/v1/targets/7".to_owned(),
-                json!({ "status": "achieved" })
-            ))
-        );
-        assert_eq!(
-            route(&["target", "delete", "7"]),
-            Some(Action::Delete("/v1/targets/7".to_owned()))
-        );
-        assert_eq!(
-            route(&["direction", "status", "3", "archived"]),
-            Some(Action::Post(
-                "/v1/directions/3".to_owned(),
-                json!({ "status": "archived" })
-            ))
-        );
-        assert_eq!(
-            route(&["direction", "delete", "3"]),
-            Some(Action::Delete("/v1/directions/3".to_owned()))
-        );
-    }
-
-    #[test]
-    fn routes_assumption_create_and_list() {
-        assert_eq!(
-            route(&["assumption", "create", "7", "Mornings are freest"]),
-            Some(Action::Post(
-                "/v1/targets/7/assumptions".to_owned(),
-                json!({ "statement": "Mornings are freest" })
-            ))
-        );
-        assert_eq!(
-            route(&["assumption", "list", "7"]),
-            Some(Action::Get("/v1/targets/7/assumptions".to_owned()))
-        );
-    }
-
-    #[test]
-    fn routes_experiment_commands() {
-        assert_eq!(
-            route(&["experiment", "propose", "5", "Try mornings"]),
-            Some(Action::Post(
-                "/v1/assumptions/5/experiments".to_owned(),
-                json!({ "hypothesis": "Try mornings" })
-            ))
-        );
-        assert_eq!(
-            route(&["experiment", "start", "9"]),
-            Some(Action::Post(
-                "/v1/experiments/9/start".to_owned(),
-                json!({})
-            ))
-        );
-        assert_eq!(
-            route(&["experiment", "conclude", "9"]),
-            Some(Action::Post(
-                "/v1/experiments/9/conclude".to_owned(),
-                json!({})
-            ))
-        );
-    }
-
-    #[test]
-    fn routes_review_commands() {
-        assert_eq!(
-            route(&["experiment", "review", "9", "7"]),
-            Some(Action::Post(
-                "/v1/experiments/9/review".to_owned(),
-                json!({ "in_days": 7 })
-            ))
-        );
-        // A non-numeric day count is not a valid review command.
-        assert_eq!(route(&["experiment", "review", "9", "soon"]), None);
-        assert_eq!(
-            route(&["reviews", "due"]),
-            Some(Action::Get("/v1/reviews/due".to_owned()))
-        );
-    }
-
-    #[test]
-    fn routes_observation_commands() {
-        assert_eq!(
-            route(&["observation", "record", "9", "felt good"]),
-            Some(Action::Post(
-                "/v1/experiments/9/observations".to_owned(),
-                json!({ "note": "felt good" })
-            ))
-        );
-        assert_eq!(
-            route(&["observation", "list", "9"]),
-            Some(Action::Get("/v1/experiments/9/observations".to_owned()))
-        );
-    }
-
-    #[test]
-    fn routes_reflection_create_splits_evidence() {
-        assert_eq!(
-            route(&["reflection", "create", "3", "mornings worked", "10,11"]),
-            Some(Action::Post(
-                "/v1/targets/3/reflections".to_owned(),
-                json!({ "summary": "mornings worked", "evidence": ["10", "11"] })
-            ))
-        );
-        assert_eq!(
-            route(&["reflection", "list", "3"]),
-            Some(Action::Get("/v1/targets/3/reflections".to_owned()))
-        );
-    }
-
-    #[test]
-    fn routes_process_change_commands() {
-        assert_eq!(
-            route(&["process-change", "propose", "6", "Default to mornings"]),
-            Some(Action::Post(
-                "/v1/reflections/6/process-changes".to_owned(),
-                json!({ "description": "Default to mornings" })
-            ))
-        );
-        assert_eq!(
-            route(&["process-change", "approve", "7"]),
-            Some(Action::Post(
-                "/v1/process-changes/7/approve".to_owned(),
-                json!({})
-            ))
-        );
-    }
-
-    #[test]
-    fn routes_process_change_draft() {
-        assert_eq!(
-            route(&["process-change", "draft", "6"]),
-            Some(Action::Post(
-                "/v1/reflections/6/process-changes/draft".to_owned(),
-                json!({})
-            ))
-        );
-    }
-
-    #[test]
-    fn routes_decision_and_audit() {
-        assert_eq!(
-            route(&["process-change", "decide", "7", "act_within_policy"]),
-            Some(Action::Post(
-                "/v1/process-changes/7/decision".to_owned(),
-                json!({ "actor": "act_within_policy" })
-            ))
-        );
+    fn routes_audit() {
         assert_eq!(route(&["audit"]), Some(Action::Get("/v1/audit".to_owned())));
         assert_eq!(
-            route(&["audit", "5"]),
-            Some(Action::Get("/v1/audit?limit=5".to_owned()))
+            route(&["audit", "10"]),
+            Some(Action::Get("/v1/audit?limit=10".to_owned()))
+        );
+    }
+
+    #[test]
+    fn routes_understanding() {
+        assert_eq!(
+            route(&["understanding"]),
+            Some(Action::Get("/v1/understanding".to_owned()))
+        );
+        assert_eq!(
+            route(&["understanding", "affirm", "7"]),
+            Some(Action::Post(
+                "/v1/understanding/7/affirm".to_owned(),
+                json!({})
+            ))
+        );
+        assert_eq!(
+            route(&["understanding", "correct", "7"]),
+            Some(Action::Post(
+                "/v1/understanding/7/correct".to_owned(),
+                json!({})
+            ))
         );
     }
 

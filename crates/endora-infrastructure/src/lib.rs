@@ -11,7 +11,6 @@
 pub mod butler;
 pub mod clock;
 pub mod ids;
-pub mod model;
 pub mod model_layer;
 pub mod sqlite;
 
@@ -31,5 +30,4 @@ pub use endora_capabilities::{
     default_capabilities, redact_pii_in_value, scan_outbound_secret,
 };
 pub use ids::RandomIdSource;
-pub use model::OpenAiCompatibleProposer;
 pub use sqlite::SqliteStore;
