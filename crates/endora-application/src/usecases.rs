@@ -9,7 +9,7 @@ use endora_conversation::{ChatMessage, MessageRole};
 use endora_kernel::ids::{AuditId, BeliefId, MessageId, OutcomeId, PreferenceId, Timestamp};
 use endora_kernel::{Decision, Reversibility};
 use endora_platform::AuditRecord;
-use endora_understanding::{Belief, Outcome, Preference, PreferenceKind};
+use endora_understanding::{Belief, Outcome, Preference, PreferenceKind, Reaction};
 
 use endora_capabilities::CapabilityRunner;
 use endora_conversation::ChatRepository;
@@ -1280,6 +1280,82 @@ pub fn affirm_belief(
     Ok(belief)
 }
 
+/// How many recent outcomes the track record is built from. Bounded because the
+/// prompt has to stay small on a slow local model, and because how an action landed
+/// last month says little about now.
+const TRACK_RECORD_WINDOW: usize = 50;
+
+/// The outcomes of what Endora has done, most recent first (ADR 0035) — the memory
+/// right to *see* what it did, alongside the beliefs it holds.
+///
+/// # Errors
+/// [`AppError::Repository`] if the backend fails or stored data is corrupt.
+pub fn recent_outcomes(
+    outcomes: &impl OutcomeRepository,
+    limit: usize,
+) -> Result<Vec<Outcome>, AppError> {
+    Ok(outcomes.list()?.into_iter().take(limit).collect())
+}
+
+/// The person says how an action landed (ADR 0035). They are never asked for this;
+/// it is offered where the action already appears, and the latest word wins.
+///
+/// # Errors
+/// [`AppError::NotFound`] if there is no such outcome, or [`AppError::Repository`].
+pub fn react_to_outcome(
+    outcomes: &impl OutcomeRepository,
+    id: OutcomeId,
+    reaction: Reaction,
+) -> Result<Outcome, AppError> {
+    let mut outcome = outcomes
+        .get(id)?
+        .ok_or(AppError::NotFound { entity: "outcome" })?;
+    outcome.react(reaction);
+    outcomes.save(&outcome)?;
+    Ok(outcome)
+}
+
+/// How the butler's past actions have landed, per skill — one line each (ADR 0035).
+///
+/// **Only skills the person has actually reacted to appear.** An action nobody
+/// commented on says nothing about whether it helped, and padding the prompt with
+/// "5 uses, no feedback" would spend a slow local model's context on noise. Empty
+/// until they have said something, which is the normal early state.
+///
+/// Ordered by how much was said about a skill, so the most-judged comes first, and
+/// capped — this is a nudge, not a report.
+fn track_record(outcomes: &[Outcome]) -> Vec<String> {
+    /// Skills listed in the prompt at most.
+    const MAX_SKILLS: usize = 5;
+    let mut by_skill: std::collections::BTreeMap<&str, (usize, usize)> =
+        std::collections::BTreeMap::new();
+    for outcome in outcomes {
+        let entry = match outcome.reaction() {
+            Some(Reaction::Helped) => (1, 0),
+            Some(Reaction::DidNotHelp) => (0, 1),
+            // No reaction, or "made no difference": nothing to learn from.
+            _ => continue,
+        };
+        let counts = by_skill.entry(outcome.capability()).or_insert((0, 0));
+        counts.0 += entry.0;
+        counts.1 += entry.1;
+    }
+    let mut ranked: Vec<_> = by_skill.into_iter().collect();
+    ranked.sort_by_key(|(skill, (helped, missed))| {
+        // Most-judged first; the skill name breaks ties so the prompt is stable.
+        (std::cmp::Reverse(helped + missed), *skill)
+    });
+    ranked
+        .into_iter()
+        .take(MAX_SKILLS)
+        .map(|(skill, (helped, missed))| match (helped, missed) {
+            (h, 0) => format!("{skill} — helped {h} time(s)"),
+            (0, m) => format!("{skill} — didn't help {m} time(s)"),
+            (h, m) => format!("{skill} — helped {h} time(s), didn't help {m}"),
+        })
+        .collect()
+}
+
 /// The person says a belief is wrong: mark it corrected (drops out of understanding).
 ///
 /// # Errors
@@ -1842,6 +1918,7 @@ fn nightly_focus(
 /// [`AppError::Repository`] if the backend fails or stored data is corrupt.
 pub fn butler_context(
     beliefs: &impl BeliefRepository,
+    outcomes: &impl OutcomeRepository,
     capabilities: &dyn CapabilityRunner,
     clock: &impl Clock,
 ) -> Result<ButlerContext, AppError> {
@@ -1876,12 +1953,16 @@ pub fn butler_context(
             input_schema: c.input_schema.clone(),
         })
         .collect();
+    // How its own past actions landed (ADR 0035) — a bounded read, since only the
+    // recent stretch is informative and the prompt has to stay small.
+    let recent = recent_outcomes(outcomes, TRACK_RECORD_WINDOW)?;
     Ok(ButlerContext {
         understanding,
         capabilities: skills,
         tools,
         now: format_datetime_utc(clock.now().unix_millis()),
         conversation_summary: None,
+        track_record: track_record(&recent),
     })
 }
 
@@ -2710,6 +2791,99 @@ smart home:
             &mut Vec::new(),
         );
         sink.outcomes.list().unwrap()
+    }
+
+    /// An outcome for `capability` with a given reaction, for track-record tests.
+    fn judged(id: u128, capability: &str, reaction: Option<crate::Reaction>) -> crate::Outcome {
+        let mut outcome = crate::Outcome::record(
+            crate::OutcomeId::new(id),
+            capability,
+            "{}",
+            "done",
+            None,
+            Timestamp::from_unix_millis(id as i64),
+            None,
+        )
+        .expect("valid");
+        if let Some(reaction) = reaction {
+            outcome.react(reaction);
+        }
+        outcome
+    }
+
+    #[test]
+    fn the_track_record_only_mentions_skills_the_person_judged() {
+        use crate::Reaction::{DidNotHelp, Helped, NoReaction};
+        let record = super::track_record(&[
+            judged(1, "weather", Some(Helped)),
+            judged(2, "weather", Some(Helped)),
+            judged(3, "weather", Some(DidNotHelp)),
+            // Never reacted to: says nothing about whether it helped, so it must not
+            // pad the prompt (ADR 0035).
+            judged(4, "news", None),
+            // "Made no difference" is not a judgement to learn from either.
+            judged(5, "web_search", Some(NoReaction)),
+        ]);
+        assert_eq!(record, vec!["weather — helped 2 time(s), didn't help 1"]);
+    }
+
+    #[test]
+    fn the_track_record_is_empty_before_the_person_says_anything() {
+        // The normal early state — and it must stay out of the prompt entirely.
+        let record = super::track_record(&[judged(1, "weather", None)]);
+        assert!(record.is_empty(), "{record:?}");
+    }
+
+    #[test]
+    fn the_track_record_leads_with_the_most_judged_skill() {
+        use crate::Reaction::{DidNotHelp, Helped};
+        let record = super::track_record(&[
+            judged(1, "news", Some(Helped)),
+            judged(2, "weather", Some(Helped)),
+            judged(3, "weather", Some(DidNotHelp)),
+        ]);
+        assert_eq!(
+            record,
+            vec![
+                "weather — helped 1 time(s), didn't help 1",
+                "news — helped 1 time(s)",
+            ]
+        );
+    }
+
+    #[test]
+    fn reacting_to_an_outcome_records_the_latest_word() {
+        use super::react_to_outcome;
+        let store = FakeOutcomes::default();
+        store.save(&judged(1, "weather", None)).unwrap();
+
+        let out = react_to_outcome(&store, crate::OutcomeId::new(1), crate::Reaction::Helped)
+            .expect("the outcome exists");
+        assert_eq!(out.reaction(), Some(crate::Reaction::Helped));
+
+        // They may change their mind.
+        react_to_outcome(
+            &store,
+            crate::OutcomeId::new(1),
+            crate::Reaction::DidNotHelp,
+        )
+        .unwrap();
+        assert_eq!(store.list().unwrap().len(), 1, "updated, not duplicated");
+        assert_eq!(
+            store.list().unwrap()[0].reaction(),
+            Some(crate::Reaction::DidNotHelp)
+        );
+    }
+
+    #[test]
+    fn reacting_to_an_outcome_that_does_not_exist_is_not_found() {
+        use super::react_to_outcome;
+        let store = FakeOutcomes::default();
+        let err = react_to_outcome(&store, crate::OutcomeId::new(9), crate::Reaction::Helped);
+        assert!(matches!(
+            err,
+            Err(crate::AppError::NotFound { entity: "outcome" })
+        ));
     }
 
     #[test]

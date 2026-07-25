@@ -13,6 +13,7 @@ let MODEL_CONFIG = { configured: false, key_set: false, base_url: "", mixture: f
   single: {}, router: {}, synth: {} }; // the butler's own models, editable at runtime (ADR 0027)
 let TUNE_SCHED = { enabled: false, hour_utc: 4 }; // nightly self-improving model tune (ADR 0027)
 let UNDERSTANDING = [];        // Endora's beliefs about the person (the home surface)
+let OUTCOMES = [];             // what Endora DID, and what it saw afterwards (ADR 0035)
 let LAST_ACTIVITY = [];        // what Endora did behind the scenes on the last turn
 let LAST_ACTIVITY_MSG = null;  // the butler message id that activity belongs to
 let STEP_LIST = [];            // the live action trail for the turn currently streaming
@@ -115,6 +116,7 @@ async function reload() {
   CAPS = caps;
   AUTONOMY = autonomy;
   try { UNDERSTANDING = await api("GET", "/v1/understanding"); } catch (_) { UNDERSTANDING = []; }
+  try { OUTCOMES = await api("GET", "/v1/outcomes"); } catch (_) { OUTCOMES = []; }
   render();
 }
 
@@ -1186,7 +1188,40 @@ function viewUnderstanding() {
     <h2>What Endora understands about you</h2>
 
     ${setup}
-    ${groups || `<div class="empty">Nothing yet. Talk with Endora and it will start to understand you — you'll see it here.</div>`}`;
+    ${groups || `<div class="empty">Nothing yet. Talk with Endora and it will start to understand you — you'll see it here.</div>`}
+    ${viewOutcomes()}`;
+}
+
+// What Endora has actually DONE, and what it saw afterwards (ADR 0035).
+//
+// The tool's claim and Endora's observation are shown SEPARATELY, exactly as they
+// are stored — the console must not merge them either, because a tool that reports
+// success while nothing changed is the whole reason the record exists.
+//
+// Saying how it landed is optional and never solicited: no badge, no counter, no
+// "N awaiting your feedback". An outcome nobody comments on is complete.
+function viewOutcomes() {
+  if (!(OUTCOMES || []).length) return "";
+  const rows = OUTCOMES.map((o) => {
+    const seen = o.observed
+      ? `<div class="sub">Endora then looked: ${esc(o.observation)}</div>`
+      : `<div class="sub">Endora couldn't check this one for itself.</div>`;
+    const picked = (r) => o.reaction === r ? " active" : "";
+    return `
+      <div class="card"><div class="row">
+        <div class="grow">
+          <div class="title">${esc(o.capability)} <span class="pill${o.observed ? "" : " pending"}">${o.observed ? "checked" : "unconfirmed"}</span></div>
+          <div class="sub">It reported: ${esc(o.claim)}</div>
+          ${seen}
+        </div>
+        <button class="ghost${picked("helped")}" data-act="react:helped:${o.id}" title="that helped">Helped</button>
+        <button class="ghost${picked("did_not_help")}" data-act="react:did_not_help:${o.id}" title="that didn't help">Didn't</button>
+      </div></div>`;
+  }).join("");
+  return `
+    <h3 style="margin-top:22px;">What Endora has done</h3>
+    <div class="note" style="margin-bottom:10px;">Only what it changed — reading things isn't listed. Say how one landed if you like; there's no need to.</div>
+    ${rows}`;
 }
 
 // Append a chat bubble to the thread and keep the newest in view.
@@ -1770,6 +1805,15 @@ async function dispatch(act) {
     if (verb === "correct" && noun === "belief") {
       try { await api("POST", `/v1/understanding/${id}/correct`); flash("Got it — I'll hold that more loosely.", "ok"); }
       catch (e) { flash("Couldn't note that: " + e.message, "err"); }
+      return reload();
+    }
+    // How an action landed. Offered where the action appears; never asked for, and
+    // the latest word wins (ADR 0035).
+    if (verb === "react") {
+      try {
+        await api("POST", `/v1/outcomes/${id}/reaction`, { reaction: noun });
+        flash(noun === "helped" ? "Good — I'll do more of that." : noun === "did_not_help" ? "Noted — I'll rethink that one." : "Noted.", "ok");
+      } catch (e) { flash("Couldn't note that: " + e.message, "err"); }
       return reload();
     }
     // Set the proactive check-in cadence (noun is "off" or an interval in ms).
