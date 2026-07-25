@@ -6,15 +6,19 @@
 //! and the use cases stay testable with fakes.
 
 use endora_conversation::{ChatMessage, MessageRole};
-use endora_kernel::ids::{AuditId, BeliefId, MessageId, OutcomeId, PreferenceId, Timestamp};
+use endora_kernel::ids::{
+    AuditId, BeliefId, IntentionId, MessageId, OutcomeId, PreferenceId, Timestamp,
+};
 use endora_kernel::{Decision, Reversibility};
 use endora_platform::AuditRecord;
-use endora_understanding::{Belief, Outcome, Preference, PreferenceKind, Reaction};
+use endora_understanding::{Belief, Intention, Outcome, Preference, PreferenceKind, Reaction};
 
 use endora_capabilities::CapabilityRunner;
 use endora_conversation::ChatRepository;
 use endora_platform::{AuditLog, EventLog};
-use endora_understanding::{BeliefRepository, OutcomeRepository, PreferenceRepository};
+use endora_understanding::{
+    BeliefRepository, IntentionRepository, OutcomeRepository, PreferenceRepository,
+};
 
 use endora_scheduling::{
     BriefSchedule, BriefScheduleRepository, CheckinRepository, CheckinSchedule,
@@ -1285,6 +1289,34 @@ pub fn affirm_belief(
 /// last month says little about now.
 const TRACK_RECORD_WINDOW: usize = 50;
 
+/// What Endora is pursuing and has pursued, most recently moved first (ADR 0036).
+///
+/// # Errors
+/// [`AppError::Repository`] if the backend fails or stored data is corrupt.
+pub fn intentions(intentions: &impl IntentionRepository) -> Result<Vec<Intention>, AppError> {
+    Ok(intentions.list()?)
+}
+
+/// The person tells Endora to stop working on something (ADR 0036).
+///
+/// Their whole authority over an intention, and deliberately the only verb they have:
+/// Endora forms its own, from what it understands, and there is no path by which the
+/// person can create or edit one.
+///
+/// # Errors
+/// [`AppError::NotFound`] if there is no such intention, or [`AppError::Repository`].
+pub fn drop_intention(
+    intentions: &impl IntentionRepository,
+    id: IntentionId,
+) -> Result<Intention, AppError> {
+    let mut intention = intentions.get(id)?.ok_or(AppError::NotFound {
+        entity: "intention",
+    })?;
+    intention.abandon();
+    intentions.save(&intention)?;
+    Ok(intention)
+}
+
 /// The outcomes of what Endora has done, most recent first (ADR 0035) — the memory
 /// right to *see* what it did, alongside the beliefs it holds.
 ///
@@ -1789,6 +1821,7 @@ pub fn run_due_nightly_loop(
     beliefs: &impl BeliefRepository,
     preferences: &impl PreferenceRepository,
     outcomes: &impl OutcomeRepository,
+    intentions: &impl IntentionRepository,
     schedules: &impl NightlyLoopScheduleRepository,
     capabilities: &dyn CapabilityRunner,
     butler: &dyn Butler,
@@ -1817,17 +1850,47 @@ pub fn run_due_nightly_loop(
     // not a fixed script — then review the day and reflect, all in one grounded,
     // policy-gated pass (reversible + autonomous only; it drafts and forms beliefs
     // but does nothing it couldn't undo). The final reply IS the reflection.
-    let focus = nightly_focus(beliefs, clock)?;
-    // Overnight work traces to the belief that prompted it (ADR 0035).
-    let actions = OutcomeSink::motivated_by(outcomes, focus.as_ref().map(|(id, _)| *id));
-    let instruction = match focus.as_ref().map(|(_, statement)| statement) {
-        Some(f) => format!(
-            "It's the quiet overnight hour and they're away. Look into \"{f}\" — something \
-             they care about — reaching for whatever skills would help. Then review our \
-             recent conversation and what you understand about them: note privately what \
-             you've learned or grown more sure of (as beliefs), and leave a short, warm \
-             note they'll see in the morning — what you looked into, what you noticed, and \
-             what you'll keep an eye on. Add nothing you don't actually know."
+    // Retire what's over before deciding anything, so a spent or stale thread can't
+    // occupy the one active slot (ADR 0036).
+    if let Some(why) = retire_finished_intention(intentions, clock)? {
+        activity.push(format!("Stopped working on something — {why}"));
+    }
+    // Continue what Endora is already pursuing, or take something up. This is the
+    // change ADR 0036 is for: seven nights on one thing, not seven unrelated evenings.
+    let intention = match intentions.active()? {
+        Some(existing) => Some(existing),
+        None => take_up_an_intention(intentions, beliefs, ids, clock, &mut activity)?,
+    };
+    // Overnight work traces to the belief that prompted it (ADR 0035/0036).
+    let actions = OutcomeSink::motivated_by(
+        outcomes,
+        intention.as_ref().map(Intention::motivating_belief),
+    );
+    let instruction = match intention.as_ref() {
+        // Picked it up tonight — nothing found yet, so there is nothing to resume.
+        Some(i) if i.note().is_empty() => format!(
+            "It's the quiet overnight hour and they're away. You're taking up \"{}\" — \
+             something they care about — so start looking into it, reaching for whatever \
+             skills would help. Then review our recent conversation and what you understand \
+             about them: note privately what you've learned or grown more sure of (as \
+             beliefs), and leave a short, warm note they'll see in the morning — what you \
+             looked into, what you noticed, and what you'll keep an eye on. Add nothing you \
+             don't actually know.",
+            i.statement()
+        ),
+        // Already under way: hand back its own account of where it got to, so tonight
+        // continues the thread instead of starting it again.
+        Some(i) => format!(
+            "It's the quiet overnight hour and they're away. You're already looking into \
+             \"{}\" — this is night {} of it. Here is what you found last time, in your own \
+             words:\n\n{}\n\nCarry on from there rather than starting over: what's the next \
+             thing worth checking? Reach for whatever skills would help. Then review our \
+             recent conversation and what you understand about them, note privately what \
+             you've learned (as beliefs), and leave a short, warm note they'll see in the \
+             morning. Add nothing you don't actually know.",
+            i.statement(),
+            i.steps_taken() + 1,
+            i.note()
         ),
         None => "It's the quiet overnight hour and they're away. Review our recent \
              conversation and what you understand about them: note privately what you've \
@@ -1864,6 +1927,22 @@ pub fn run_due_nightly_loop(
     // Reflect: persist the understanding it formed (same path as a chat turn).
     record_formed_beliefs(beliefs, reply.beliefs, ids, clock, &mut activity)?;
 
+    // Remember where tonight got to, in the butler's own words, so the next night can
+    // pick the thread up (ADR 0036). Prose in, prose out — no state machine for the
+    // model to maintain, and nothing here can corrupt if it writes something odd.
+    if let Some(mut intention) = intention {
+        let note = reply.text.trim();
+        if !note.is_empty() {
+            intention.progress(note, now);
+            intentions.save(&intention)?;
+            activity.push(format!(
+                "Made progress on \"{}\" (night {})",
+                intention.statement(),
+                intention.steps_taken()
+            ));
+        }
+    }
+
     // Forget: age out beliefs nothing has reinforced in a long time (ADR 0032).
     // Understanding is a living model, so the overnight review is where it *loses*
     // things as well as gains them.
@@ -1891,6 +1970,57 @@ pub fn run_due_nightly_loop(
 ///
 /// Confidence is the ranking, deliberately: researching a tentative guess spends the
 /// night on something Endora may be wrong about.
+/// Retires the active intention if it is spent or stale, freeing the one slot
+/// (ADR 0036). Returns why, in plain words, for the activity trail.
+///
+/// # Errors
+/// [`AppError::Repository`] if the backend fails.
+fn retire_finished_intention(
+    intentions: &impl IntentionRepository,
+    clock: &impl Clock,
+) -> Result<Option<String>, AppError> {
+    let Some(mut active) = intentions.active()? else {
+        return Ok(None);
+    };
+    let Some(why) = active.retire_if_over(clock.now()) else {
+        return Ok(None);
+    };
+    let reason = format!("{why} (\"{}\")", active.statement());
+    intentions.save(&active)?;
+    Ok(Some(reason))
+}
+
+/// Takes up something to pursue, from the belief Endora is most sure about (ADR 0036).
+///
+/// Only ever called with no active intention, so the one-at-a-time rule holds by
+/// construction rather than by a check that could be forgotten. `None` when there is
+/// nothing understood well enough to pursue — a new Endora simply has no thread yet.
+///
+/// # Errors
+/// [`AppError::Repository`] if the backend fails, or [`AppError::Domain`] if the
+/// belief's statement somehow does not make a valid intention.
+fn take_up_an_intention(
+    intentions: &impl IntentionRepository,
+    beliefs: &impl BeliefRepository,
+    ids: &impl IdSource,
+    clock: &impl Clock,
+    activity: &mut Vec<String>,
+) -> Result<Option<Intention>, AppError> {
+    let Some((belief, statement)) = nightly_focus(beliefs, clock)? else {
+        return Ok(None);
+    };
+    let intention = Intention::form(
+        IntentionId::new(ids.new_id()),
+        &statement,
+        belief,
+        clock.now(),
+    )
+    .map_err(AppError::Domain)?;
+    intentions.save(&intention)?;
+    activity.push(format!("Started looking into \"{statement}\""));
+    Ok(Some(intention))
+}
+
 fn nightly_focus(
     beliefs: &impl BeliefRepository,
     clock: &impl Clock,
@@ -2022,7 +2152,9 @@ mod tests {
     use endora_kernel::Reversibility;
     use endora_platform::AuditLog;
     use endora_scheduling::{CheckinRepository, CheckinSchedule};
-    use endora_understanding::{BeliefRepository, OutcomeRepository, PreferenceRepository};
+    use endora_understanding::{
+        BeliefRepository, IntentionRepository, OutcomeRepository, PreferenceRepository,
+    };
     use std::cell::{Cell, RefCell};
 
     /// An in-memory store implementing the repository ports, for tests only.
@@ -2508,6 +2640,34 @@ smart home:
             Ok(self.saved.borrow().iter().find(|o| o.id() == id).cloned())
         }
         fn list(&self) -> Result<Vec<crate::Outcome>, RepositoryError> {
+            Ok(self.saved.borrow().clone())
+        }
+    }
+
+    /// An in-memory [`IntentionRepository`] (ADR 0036), so a test can watch Endora
+    /// take something up, carry it across nights, and drop it.
+    #[derive(Default)]
+    struct FakeIntentions {
+        saved: RefCell<Vec<crate::Intention>>,
+    }
+
+    impl IntentionRepository for FakeIntentions {
+        fn save(&self, intention: &crate::Intention) -> Result<(), RepositoryError> {
+            let mut all = self.saved.borrow_mut();
+            if let Some(existing) = all.iter_mut().find(|i| i.id() == intention.id()) {
+                *existing = intention.clone();
+                return Ok(());
+            }
+            all.push(intention.clone());
+            Ok(())
+        }
+        fn get(&self, id: crate::IntentionId) -> Result<Option<crate::Intention>, RepositoryError> {
+            Ok(self.saved.borrow().iter().find(|i| i.id() == id).cloned())
+        }
+        fn active(&self) -> Result<Option<crate::Intention>, RepositoryError> {
+            Ok(self.saved.borrow().iter().find(|i| i.is_active()).cloned())
+        }
+        fn list(&self) -> Result<Vec<crate::Intention>, RepositoryError> {
             Ok(self.saved.borrow().clone())
         }
     }
@@ -4314,6 +4474,7 @@ smart home:
             &store,
             &store,
             &FakeOutcomes::default(),
+            &FakeIntentions::default(),
             &sched,
             &NoCapabilities,
             &ReflectiveButler,
@@ -4334,6 +4495,238 @@ smart home:
         assert!(activity.iter().any(|a| a.contains("Learned")));
         // ...and marked itself fired, so it won't run again tonight.
         assert!(!sched.0.borrow().is_due(clock.now()));
+    }
+
+    /// A due nightly schedule at UTC hour 3 — the setup every intention test needs.
+    fn due_nightly() -> impl endora_scheduling::NightlyLoopScheduleRepository {
+        use endora_scheduling::{NightlyLoopSchedule, NightlyLoopScheduleRepository};
+        struct Due(RefCell<NightlyLoopSchedule>);
+        impl NightlyLoopScheduleRepository for Due {
+            fn get(&self) -> Result<Option<NightlyLoopSchedule>, RepositoryError> {
+                Ok(Some(*self.0.borrow()))
+            }
+            fn set(&self, s: &NightlyLoopSchedule) -> Result<(), RepositoryError> {
+                *self.0.borrow_mut() = *s;
+                Ok(())
+            }
+        }
+        Due(RefCell::new(NightlyLoopSchedule {
+            enabled: true,
+            hour_utc: 3,
+            last_at: Timestamp::from_unix_millis(0),
+        }))
+    }
+
+    /// A butler that reports back whatever it was told, so a test can see exactly
+    /// what instruction the loop handed it, and leaves a note.
+    struct EchoesItsInstruction {
+        seen: RefCell<String>,
+    }
+    impl Butler for EchoesItsInstruction {
+        fn respond(
+            &self,
+            history: &[ChatMessage],
+            _p: &[crate::Preference],
+            _c: &ButlerContext,
+        ) -> Result<ButlerReply, ProposalError> {
+            let last = history.last().map(ChatMessage::text).unwrap_or_default();
+            self.seen.borrow_mut().push_str(last);
+            Ok(ButlerReply {
+                text: "Tonight I read about room temperature.".to_owned(),
+                ..ButlerReply::default()
+            })
+        }
+    }
+
+    /// Runs one night and hands back the instruction the butler was given.
+    fn one_night(
+        beliefs: &FakeStore,
+        intentions: &FakeIntentions,
+        clock: &FixedClock,
+    ) -> (String, Vec<String>) {
+        let butler = EchoesItsInstruction {
+            seen: RefCell::new(String::new()),
+        };
+        let (_, activity) = super::run_due_nightly_loop(
+            beliefs,
+            beliefs,
+            beliefs,
+            &FakeOutcomes::default(),
+            intentions,
+            &due_nightly(),
+            &NoCapabilities,
+            &butler,
+            &FakeAudit::default(),
+            &SeqIds::default(),
+            clock,
+            &ButlerContext::default(),
+        )
+        .unwrap()
+        .expect("the loop runs when due");
+        let seen = butler.seen.borrow().clone();
+        (seen, activity)
+    }
+
+    /// A store holding one belief strong enough to be taken up.
+    fn store_with_a_belief() -> FakeStore {
+        use crate::{BeliefKind, Confidence};
+        let store = FakeStore::default();
+        BeliefRepository::save(
+            &store,
+            &Belief::new(
+                BeliefId::new(7),
+                "wants to sleep better",
+                BeliefKind::Intent,
+                Confidence::High,
+                "said so twice",
+                Timestamp::from_unix_millis(0),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        store
+    }
+
+    #[test]
+    fn the_nightly_loop_takes_up_one_thing_and_says_what_it_came_from() {
+        // ADR 0036: Endora forms the intention itself, and it traces to a belief.
+        let store = store_with_a_belief();
+        let intentions = FakeIntentions::default();
+        let (instruction, activity) = one_night(&store, &intentions, &FixedClock(27 * 3_600_000));
+
+        assert!(
+            instruction.contains("taking up") && instruction.contains("sleep better"),
+            "night one starts the thread: {instruction}"
+        );
+        assert!(activity.iter().any(|a| a.contains("Started looking into")));
+
+        let held = intentions.list().unwrap();
+        assert_eq!(held.len(), 1, "one thing at a time");
+        assert_eq!(held[0].motivating_belief(), BeliefId::new(7));
+        assert_eq!(
+            held[0].steps_taken(),
+            1,
+            "tonight counted as a night's work"
+        );
+        assert_eq!(held[0].note(), "Tonight I read about room temperature.");
+    }
+
+    #[test]
+    fn the_next_night_continues_the_thread_instead_of_starting_over() {
+        // The whole point of ADR 0036. Night two must be handed night one's findings
+        // and told to carry on — not to take the same thing up afresh.
+        let store = store_with_a_belief();
+        let intentions = FakeIntentions::default();
+        one_night(&store, &intentions, &FixedClock(27 * 3_600_000));
+        let (instruction, _) = one_night(&store, &intentions, &FixedClock(51 * 3_600_000));
+
+        assert!(
+            instruction.contains("already looking into"),
+            "night two resumes: {instruction}"
+        );
+        assert!(
+            instruction.contains("night 2"),
+            "it knows how far in it is: {instruction}"
+        );
+        assert!(
+            instruction.contains("Tonight I read about room temperature."),
+            "it is handed its own findings back: {instruction}"
+        );
+        assert!(
+            !instruction.contains("taking up"),
+            "it must not start over: {instruction}"
+        );
+
+        let held = intentions.list().unwrap();
+        assert_eq!(held.len(), 1, "still one thread, not two");
+        assert_eq!(held[0].steps_taken(), 2);
+    }
+
+    #[test]
+    fn a_second_belief_does_not_start_a_second_thread() {
+        // The cursor-not-queue rule (ADR 0036). Even with something new and strong to
+        // chase, Endora finishes what it is on.
+        use crate::{BeliefKind, Confidence};
+        let store = store_with_a_belief();
+        let intentions = FakeIntentions::default();
+        one_night(&store, &intentions, &FixedClock(27 * 3_600_000));
+
+        BeliefRepository::save(
+            &store,
+            &Belief::new(
+                BeliefId::new(9),
+                "wants to travel more",
+                BeliefKind::Intent,
+                Confidence::High,
+                "brought it up today",
+                Timestamp::from_unix_millis(30 * 3_600_000),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        one_night(&store, &intentions, &FixedClock(51 * 3_600_000));
+
+        assert_eq!(
+            intentions.list().unwrap().len(),
+            1,
+            "a shinier belief must not open a second thread"
+        );
+    }
+
+    #[test]
+    fn a_spent_thread_is_dropped_so_something_else_can_be_taken_up() {
+        // Nothing rots: the step budget frees the one slot on its own, visibly.
+        let store = store_with_a_belief();
+        let intentions = FakeIntentions::default();
+        // Seven nights in, and spent.
+        let mut spent = crate::Intention::form(
+            crate::IntentionId::new(1),
+            "an exhausted thread",
+            BeliefId::new(7),
+            Timestamp::from_unix_millis(0),
+        )
+        .unwrap();
+        for _ in 0..7 {
+            spent.progress("looked into it", Timestamp::from_unix_millis(0));
+        }
+        intentions.save(&spent).unwrap();
+
+        let (instruction, activity) = one_night(&store, &intentions, &FixedClock(27 * 3_600_000));
+
+        assert!(
+            activity
+                .iter()
+                .any(|a| a.contains("Stopped working on something")),
+            "it says it gave up, in the trail: {activity:?}"
+        );
+        assert!(
+            instruction.contains("taking up"),
+            "the freed slot is used for something new: {instruction}"
+        );
+        assert_eq!(
+            intentions
+                .list()
+                .unwrap()
+                .iter()
+                .filter(|i| i.is_active())
+                .count(),
+            1,
+            "still exactly one active"
+        );
+    }
+
+    #[test]
+    fn with_nothing_understood_yet_the_loop_still_reflects_without_a_thread() {
+        // A new Endora has no belief strong enough to pursue. It must still run.
+        let store = FakeStore::default();
+        let intentions = FakeIntentions::default();
+        let (instruction, _) = one_night(&store, &intentions, &FixedClock(27 * 3_600_000));
+
+        assert!(
+            !instruction.contains("taking up") && !instruction.contains("already looking into"),
+            "no thread invented from nothing: {instruction}"
+        );
+        assert!(intentions.list().unwrap().is_empty());
     }
 
     #[test]
@@ -4374,6 +4767,7 @@ smart home:
             &store,
             &store,
             &FakeOutcomes::default(),
+            &FakeIntentions::default(),
             &OffSchedule,
             &NoCapabilities,
             &NeverButler,
@@ -4523,6 +4917,7 @@ smart home:
             &store,
             &store,
             &FakeOutcomes::default(),
+            &FakeIntentions::default(),
             &sched,
             &ResearchRunner,
             &ResearchButler,

@@ -1,14 +1,17 @@
-//! Understanding infrastructure — SQLite-backed belief, preference and outcome
-//! repositories.
+//! Understanding infrastructure — SQLite-backed belief, preference, outcome and
+//! intention repositories.
 
 use endora_kernel::RepositoryError;
-use endora_kernel::ids::{BeliefId, OutcomeId, PreferenceId, Timestamp};
+use endora_kernel::ids::{BeliefId, IntentionId, OutcomeId, PreferenceId, Timestamp};
 use endora_persistence::{Db, backend, corrupt, id_text, parse_id};
 use rusqlite::{Connection, params};
 
-use crate::application::{BeliefRepository, OutcomeRepository, PreferenceRepository};
+use crate::application::{
+    BeliefRepository, IntentionRepository, OutcomeRepository, PreferenceRepository,
+};
 use crate::domain::{
-    Belief, BeliefKind, BeliefStatus, Confidence, Outcome, Preference, PreferenceKind, Reaction,
+    Belief, BeliefKind, BeliefStatus, Confidence, Intention, IntentionState, Outcome, Preference,
+    PreferenceKind, Reaction,
 };
 
 /// Creates the understanding tables if absent (idempotent).
@@ -33,6 +36,16 @@ pub fn migrate(db: &Db) -> Result<(), RepositoryError> {
                 created_ms       INTEGER NOT NULL,
                 last_affirmed_ms INTEGER NOT NULL,
                 status           TEXT NOT NULL
+            ) STRICT;
+            CREATE TABLE IF NOT EXISTS intentions (
+                id                 TEXT PRIMARY KEY,
+                statement          TEXT NOT NULL,
+                motivating_belief  TEXT NOT NULL,
+                note               TEXT NOT NULL,
+                state              TEXT NOT NULL,
+                created_ms         INTEGER NOT NULL,
+                last_progressed_ms INTEGER NOT NULL,
+                steps_taken        INTEGER NOT NULL
             ) STRICT;
             CREATE TABLE IF NOT EXISTS outcomes (
                 id                TEXT PRIMARY KEY,
@@ -128,6 +141,90 @@ impl BeliefRepository for UnderstandingStore {
         let conn = self.db.lock()?;
         all_beliefs(&conn)
     }
+}
+
+impl IntentionRepository for UnderstandingStore {
+    fn save(&self, intention: &Intention) -> Result<(), RepositoryError> {
+        self.db
+            .lock()?
+            .execute(
+                "INSERT OR REPLACE INTO intentions \
+                 (id, statement, motivating_belief, note, state, created_ms, \
+                  last_progressed_ms, steps_taken) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                params![
+                    id_text(intention.id().value()),
+                    intention.statement(),
+                    id_text(intention.motivating_belief().value()),
+                    intention.note(),
+                    intention.state().name(),
+                    intention.created_at().unix_millis(),
+                    intention.last_progressed_at().unix_millis(),
+                    intention.steps_taken(),
+                ],
+            )
+            .map_err(backend)?;
+        Ok(())
+    }
+
+    fn get(&self, id: IntentionId) -> Result<Option<Intention>, RepositoryError> {
+        let conn = self.db.lock()?;
+        Ok(all_intentions(&conn)?.into_iter().find(|i| i.id() == id))
+    }
+
+    fn active(&self) -> Result<Option<Intention>, RepositoryError> {
+        let conn = self.db.lock()?;
+        // At most one is active (ADR 0036); if a bug ever produced two, the most
+        // recently moved wins, since `all_intentions` is ordered by that.
+        Ok(all_intentions(&conn)?
+            .into_iter()
+            .find(Intention::is_active))
+    }
+
+    fn list(&self) -> Result<Vec<Intention>, RepositoryError> {
+        let conn = self.db.lock()?;
+        all_intentions(&conn)
+    }
+}
+
+fn all_intentions(conn: &Connection) -> Result<Vec<Intention>, RepositoryError> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, statement, motivating_belief, note, state, created_ms, \
+             last_progressed_ms, steps_taken \
+             FROM intentions ORDER BY last_progressed_ms DESC, rowid DESC",
+        )
+        .map_err(backend)?;
+    let rows = stmt
+        .query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, String>(3)?,
+                r.get::<_, String>(4)?,
+                r.get::<_, i64>(5)?,
+                r.get::<_, i64>(6)?,
+                r.get::<_, u32>(7)?,
+            ))
+        })
+        .map_err(backend)?;
+    let mut out = Vec::new();
+    for row in rows {
+        let (id, statement, belief, note, state, created_ms, progressed_ms, steps) =
+            row.map_err(backend)?;
+        out.push(Intention::from_parts(
+            IntentionId::new(parse_id(&id)?),
+            statement,
+            BeliefId::new(parse_id(&belief)?),
+            note,
+            IntentionState::from_name(&state),
+            Timestamp::from_unix_millis(created_ms),
+            Timestamp::from_unix_millis(progressed_ms),
+            steps,
+        ));
+    }
+    Ok(out)
 }
 
 impl OutcomeRepository for UnderstandingStore {
@@ -289,9 +386,11 @@ fn all_beliefs(conn: &Connection) -> Result<Vec<Belief>, RepositoryError> {
 #[cfg(test)]
 mod tests {
     use super::{UnderstandingStore, migrate};
-    use crate::application::{BeliefRepository, OutcomeRepository, PreferenceRepository};
-    use crate::domain::{Outcome, Preference, PreferenceKind, Reaction};
-    use endora_kernel::ids::{BeliefId, OutcomeId, PreferenceId, Timestamp};
+    use crate::application::{
+        BeliefRepository, IntentionRepository, OutcomeRepository, PreferenceRepository,
+    };
+    use crate::domain::{Intention, Outcome, Preference, PreferenceKind, Reaction};
+    use endora_kernel::ids::{BeliefId, IntentionId, OutcomeId, PreferenceId, Timestamp};
     use endora_persistence::Db;
 
     #[test]
@@ -318,6 +417,79 @@ mod tests {
         migrate(&db).unwrap();
         let store = UnderstandingStore::new(db);
         assert!(BeliefRepository::list(&store).unwrap().is_empty());
+    }
+
+    #[test]
+    fn an_intention_round_trips_with_its_reason_and_its_progress() {
+        let db = Db::open_in_memory().unwrap();
+        migrate(&db).unwrap();
+        let store = UnderstandingStore::new(db);
+        let mut intention = Intention::form(
+            IntentionId::new(1),
+            "learn what helps them sleep",
+            BeliefId::new(7),
+            Timestamp::from_unix_millis(10),
+        )
+        .unwrap();
+        intention.progress(
+            "They mentioned the room being too warm.",
+            Timestamp::from_unix_millis(20),
+        );
+        IntentionRepository::save(&store, &intention).unwrap();
+
+        let stored = IntentionRepository::get(&store, IntentionId::new(1))
+            .unwrap()
+            .expect("saved");
+        assert_eq!(stored, intention);
+        assert_eq!(stored.motivating_belief(), BeliefId::new(7));
+        assert_eq!(stored.note(), "They mentioned the room being too warm.");
+        assert_eq!(stored.steps_taken(), 1);
+    }
+
+    #[test]
+    fn only_the_active_intention_is_the_current_one() {
+        // ADR 0036's cursor-not-queue rule, from the reading side: finished intentions
+        // stay visible in `list` but never come back as something Endora is doing.
+        let db = Db::open_in_memory().unwrap();
+        migrate(&db).unwrap();
+        let store = UnderstandingStore::new(db);
+
+        let mut done = Intention::form(
+            IntentionId::new(1),
+            "an earlier thread",
+            BeliefId::new(7),
+            Timestamp::from_unix_millis(10),
+        )
+        .unwrap();
+        done.complete();
+        IntentionRepository::save(&store, &done).unwrap();
+
+        assert!(
+            IntentionRepository::active(&store).unwrap().is_none(),
+            "a finished intention is not the current one"
+        );
+
+        let current = Intention::form(
+            IntentionId::new(2),
+            "what Endora is on now",
+            BeliefId::new(8),
+            Timestamp::from_unix_millis(30),
+        )
+        .unwrap();
+        IntentionRepository::save(&store, &current).unwrap();
+
+        assert_eq!(
+            IntentionRepository::active(&store)
+                .unwrap()
+                .expect("one is active")
+                .id(),
+            IntentionId::new(2)
+        );
+        assert_eq!(
+            IntentionRepository::list(&store).unwrap().len(),
+            2,
+            "the finished one stays visible"
+        );
     }
 
     #[test]
