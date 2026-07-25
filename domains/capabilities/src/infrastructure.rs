@@ -677,7 +677,10 @@ impl Capability for WeatherCapability {
             description: "Current conditions and today's forecast for a place, with a heads-up on severe weather.",
             category: "information",
             reaches_external: true,
-            reversibility: Reversibility::Reversible,
+            // Reads state; changes nothing. Policy-identical to Reversible
+            // (both are Act), but it lets the turn tell an observation from a
+            // receipt — see ADR 0034.
+            reversibility: Reversibility::Observe,
             configured: true,
             needs: "",
             settings: &[],
@@ -812,7 +815,10 @@ impl Capability for WebFetchCapability {
             description: "Fetch a web page and read its text — for research and briefings.",
             category: "information",
             reaches_external: true,
-            reversibility: Reversibility::Reversible,
+            // Reads state; changes nothing. Policy-identical to Reversible
+            // (both are Act), but it lets the turn tell an observation from a
+            // receipt — see ADR 0034.
+            reversibility: Reversibility::Observe,
             configured: true,
             needs: "",
             settings: &[],
@@ -896,7 +902,10 @@ impl Capability for LocalNewsCapability {
             description: "Recent news headlines for a place or topic — so answers about the news are real, not guessed.",
             category: "information",
             reaches_external: true,
-            reversibility: Reversibility::Reversible,
+            // Reads state; changes nothing. Policy-identical to Reversible
+            // (both are Act), but it lets the turn tell an observation from a
+            // receipt — see ADR 0034.
+            reversibility: Reversibility::Observe,
             configured: true,
             needs: "",
             settings: &[],
@@ -1053,7 +1062,10 @@ impl Capability for KnowledgeCapability {
             description: "Look up factual, encyclopedic knowledge about a topic, person, or place (Wikipedia).",
             category: "information",
             reaches_external: true,
-            reversibility: Reversibility::Reversible,
+            // Reads state; changes nothing. Policy-identical to Reversible
+            // (both are Act), but it lets the turn tell an observation from a
+            // receipt — see ADR 0034.
+            reversibility: Reversibility::Observe,
             configured: true,
             needs: "",
             settings: &[],
@@ -1129,7 +1141,10 @@ impl Capability for WebAnswersCapability {
             description: "Get a quick answer or definition from the web for a question (DuckDuckGo).",
             category: "information",
             reaches_external: true,
-            reversibility: Reversibility::Reversible,
+            // Reads state; changes nothing. Policy-identical to Reversible
+            // (both are Act), but it lets the turn tell an observation from a
+            // receipt — see ADR 0034.
+            reversibility: Reversibility::Observe,
             configured: true,
             needs: "",
             settings: &[],
@@ -1241,7 +1256,10 @@ impl Capability for ImageReviewCapability {
             description: "Describe or answer questions about an image, using a local vision model.",
             category: "media",
             reaches_external: false,
-            reversibility: Reversibility::Reversible,
+            // Reads state; changes nothing. Policy-identical to Reversible
+            // (both are Act), but it lets the turn tell an observation from a
+            // receipt — see ADR 0034.
+            reversibility: Reversibility::Observe,
             // Code is ready; it becomes usable once the `model` setting is filled.
             configured: true,
             needs: "set the vision model (e.g. moondream) in this skill's settings",
@@ -1376,7 +1394,10 @@ impl Capability for SafetyAlertsCapability {
             description: "Active safety alerts near you — severe weather and public warnings (US National Weather Service).",
             category: "safety",
             reaches_external: true,
-            reversibility: Reversibility::Reversible,
+            // Reads state; changes nothing. Policy-identical to Reversible
+            // (both are Act), but it lets the turn tell an observation from a
+            // receipt — see ADR 0034.
+            reversibility: Reversibility::Observe,
             configured: true,
             needs: "",
             settings: &[],
@@ -1488,7 +1509,10 @@ impl Capability for HomeAssistantCapability {
             description: "Read your home's state — lights, presence, sensors — to learn your routines.",
             category: "presence",
             reaches_external: true,
-            reversibility: Reversibility::Reversible,
+            // Reads state; changes nothing. Policy-identical to Reversible
+            // (both are Act), but it lets the turn tell an observation from a
+            // receipt — see ADR 0034.
+            reversibility: Reversibility::Observe,
             configured: true,
             needs: "your Home Assistant URL and a long-lived access token",
             settings: HA_SETTINGS,
@@ -1772,6 +1796,7 @@ impl CapabilityRunner for RegistryRunner {
                     configured: info.configured
                         && self.is_enabled(info.id)
                         && settings_complete(&info, &self.settings_for(info.id)),
+                    reversibility: info.reversibility,
                     autonomous: may_run_autonomously(
                         &info,
                         &self.envelope,
@@ -1991,8 +2016,12 @@ impl CapabilityRunner for McpRunner {
                         id: format!("{}.{}", c.server, t.name),
                         description,
                         configured: true,
-                        // Deny-by-default: an MCP tool is never cleared to act alone.
+                        // Deny-by-default: an MCP tool is never cleared to act alone,
+                        // and — since the server tells us nothing about whether a tool
+                        // reads or actuates — its result is treated as a receipt, not
+                        // as evidence (ADR 0034).
                         autonomous: false,
+                        reversibility: Reversibility::Irreversible,
                         // The real schema travels structurally too (as text), so the
                         // model layer can offer this tool through native tool-calling.
                         input_schema: t.input_schema.as_ref().map(ToString::to_string),
@@ -3157,6 +3186,7 @@ mod tests {
                 configured: true,
                 autonomous: true,
                 input_schema: None,
+                reversibility: endora_kernel::Reversibility::Observe,
             }]
         }
         fn run(&self, id: &str, _input: &str) -> Result<String, String> {

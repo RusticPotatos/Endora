@@ -6,8 +6,8 @@
 //! and the use cases stay testable with fakes.
 
 use endora_conversation::{ChatMessage, MessageRole};
-use endora_kernel::Decision;
 use endora_kernel::ids::{AuditId, BeliefId, MessageId, PreferenceId, Timestamp};
+use endora_kernel::{Decision, Reversibility};
 use endora_platform::AuditRecord;
 use endora_understanding::{Belief, Preference, PreferenceKind};
 
@@ -146,6 +146,35 @@ pub fn recent_activity(
     });
     items.truncate(limit);
     Ok(items)
+}
+
+/// Marks a tool result as **evidence** or as an unverified **receipt** (ADR 0034).
+///
+/// Endora's architecture principle is *models propose, policy authorizes,
+/// capabilities execute, **evidence verifies***. The first three were built; the
+/// fourth was not, and the turn simply believed whatever an actuator claimed. That
+/// gap is not hypothetical: Home Assistant was asked to turn a light off with a tool
+/// that only sets brightness, matched the targets, changed nothing, and answered
+/// `action_done` — so the butler announced success while the light stayed on. No
+/// amount of grounding helps a model whose tool told it everything went fine.
+///
+/// A capability in the [`Reversibility::Observe`] band *reports state*, so its result
+/// is an observation and stands on its own. Anything else returns the actuator's
+/// account of its own work, which is exactly the thing that can be wrong. Saying so
+/// in the tool result is not narration on the butler's behalf (ADR 0028) — it is part
+/// of the real outcome, and it is the honest default for every integration, including
+/// ones nobody has debugged yet.
+fn note_verification(output: &str, spec: Option<&crate::CapabilitySpec>) -> String {
+    let observes = spec.is_some_and(|s| s.reversibility == Reversibility::Observe);
+    if observes {
+        return output.to_owned();
+    }
+    format!(
+        "{output}\n\n[unverified] This is what the tool reported about its own work. \
+         Endora has NOT independently confirmed the effect. Say what was reported and \
+         that it is unconfirmed — do not state the world has changed as though you had \
+         checked."
+    )
 }
 
 /// The single tool-calling conversation (ADR 0028). Seeds the conversation from the
@@ -291,7 +320,7 @@ fn run_tool_turn(
                 match capabilities.run(&id, &call.input_json) {
                     Ok(out) => {
                         activity.push(format!("Used the {id} skill"));
-                        (StepStatus::Done, out)
+                        (StepStatus::Done, note_verification(&out, spec.as_ref()))
                     }
                     Err(e) => {
                         failures += 1;
@@ -1908,6 +1937,71 @@ mod tests {
         }
     }
 
+    /// ADR 0034: the turn must be able to tell an observation from an actuator's
+    /// claim about its own work.
+    mod verification {
+        use super::super::note_verification;
+        use endora_capabilities::CapabilitySpec;
+        use endora_kernel::Reversibility;
+
+        fn spec(band: Reversibility) -> CapabilitySpec {
+            CapabilitySpec {
+                id: "x".to_owned(),
+                description: "x".to_owned(),
+                configured: true,
+                autonomous: true,
+                input_schema: None,
+                reversibility: band,
+            }
+        }
+
+        #[test]
+        fn an_observation_stands_on_its_own() {
+            // A read reports state; the result IS the evidence.
+            let out = note_verification("72F, sunny", Some(&spec(Reversibility::Observe)));
+            assert_eq!(out, "72F, sunny");
+        }
+
+        #[test]
+        fn an_actuators_own_account_is_marked_unverified() {
+            // The live failure: HA reported action_done for a call that changed
+            // nothing, and the butler announced success while the light stayed on.
+            let out = note_verification(
+                "The action completed successfully on: Kitchen Table (light).",
+                Some(&spec(Reversibility::Irreversible)),
+            );
+            assert!(
+                out.contains("The action completed successfully"),
+                "keeps the result"
+            );
+            assert!(out.contains("[unverified]"), "marks it: {out}");
+            assert!(
+                out.contains("NOT independently confirmed"),
+                "says why it is unverified: {out}"
+            );
+        }
+
+        #[test]
+        fn every_band_that_changes_anything_is_marked() {
+            for band in [
+                Reversibility::Reversible,
+                Reversibility::OutwardReversible,
+                Reversibility::Irreversible,
+            ] {
+                assert!(
+                    note_verification("done", Some(&spec(band))).contains("[unverified]"),
+                    "{band:?} should be marked"
+                );
+            }
+        }
+
+        #[test]
+        fn an_unknown_capability_is_treated_as_an_actuator() {
+            // Failing closed: if we cannot tell what it did, we do not vouch for it.
+            assert!(note_verification("done", None).contains("[unverified]"));
+        }
+    }
+
     /// Commands are not facts about a person. Live data had two of them filed as
     /// durable beliefs, contradicting each other.
     mod instructions {
@@ -2070,6 +2164,7 @@ mod tests {
                     configured: true,
                     autonomous: true,
                     input_schema: None,
+                    reversibility: endora_kernel::Reversibility::Observe,
                 }]
             }
             fn run(&self, id: &str, input_json: &str) -> Result<String, String> {
@@ -2138,6 +2233,7 @@ mod tests {
                     configured: true,
                     autonomous: true,
                     input_schema: None,
+                    reversibility: endora_kernel::Reversibility::Observe,
                 }]
             }
             fn run(&self, _id: &str, _input: &str) -> Result<String, String> {
@@ -2184,6 +2280,7 @@ mod tests {
                 configured: true,
                 autonomous: true,
                 input_schema: None,
+                reversibility: endora_kernel::Reversibility::Observe,
             }]
         }
         fn run(&self, _id: &str, _input: &str) -> Result<String, String> {
@@ -2713,6 +2810,7 @@ mod tests {
                         configured: true,
                         autonomous: true,
                         input_schema: None,
+                        reversibility: endora_kernel::Reversibility::Observe,
                     })
                     .collect()
             }
@@ -2790,6 +2888,7 @@ mod tests {
                     configured: false,
                     autonomous: false,
                     input_schema: None,
+                    reversibility: endora_kernel::Reversibility::Observe,
                 }]
             }
             fn run(&self, _id: &str, _input_json: &str) -> Result<String, String> {
@@ -2854,6 +2953,7 @@ mod tests {
                     configured: true,
                     autonomous: false,
                     input_schema: None,
+                    reversibility: endora_kernel::Reversibility::Observe,
                 }]
             }
             fn run(&self, _id: &str, _input_json: &str) -> Result<String, String> {
@@ -3071,6 +3171,7 @@ mod tests {
                     configured: true,
                     autonomous: true,
                     input_schema: None,
+                    reversibility: endora_kernel::Reversibility::Observe,
                 }]
             }
             fn run(&self, id: &str, _input_json: &str) -> Result<String, String> {
@@ -3554,6 +3655,7 @@ mod tests {
                         configured: true,
                         autonomous: true,
                         input_schema: None,
+                        reversibility: endora_kernel::Reversibility::Observe,
                     },
                     // A consequential skill the loop must never reach for.
                     CapabilitySpec {
@@ -3562,6 +3664,7 @@ mod tests {
                         configured: true,
                         autonomous: false,
                         input_schema: None,
+                        reversibility: endora_kernel::Reversibility::Observe,
                     },
                 ]
             }
