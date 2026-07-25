@@ -22,7 +22,8 @@ pub use error::AppError;
 // import the types they translate to and from — the orchestration layer is the
 // surface above the domain (ADR 0026).
 pub use endora_kernel::{
-    AuditId, AutonomyLevel, BeliefId, DomainError, MessageId, OutcomeId, PreferenceId, Timestamp,
+    AuditId, AutonomyLevel, BeliefId, DomainError, IntentionId, MessageId, OutcomeId, PreferenceId,
+    Timestamp,
 };
 // The audit trail and event log live in the platform context now (ADR 0026);
 // re-exported so `endora_application::{AuditLog, EventLog, ActivityEvent}` hold.
@@ -46,8 +47,9 @@ pub use endora_scheduling::{
 // Belief/preference repositories live in the understanding context (ADR 0026);
 // re-exported so their `endora_application::…` paths are unchanged.
 pub use endora_understanding::{
-    Belief, BeliefKind, BeliefRepository, BeliefStatus, Confidence, Outcome, OutcomeRepository,
-    Preference, PreferenceKind, PreferenceRepository, Reaction,
+    Belief, BeliefKind, BeliefRepository, BeliefStatus, Confidence, Intention, IntentionRepository,
+    IntentionState, Outcome, OutcomeRepository, Preference, PreferenceKind, PreferenceRepository,
+    Reaction,
 };
 pub use ports::{
     Butler, ButlerContext, ButlerReply, CapabilityTool, Clock, ConversationSummary,

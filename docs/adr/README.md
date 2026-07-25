@@ -69,3 +69,4 @@ of an existing record and take the next number.
 | [0033](0033-what-understanding-admits.md) | What understanding admits: instructions out, contradictions kept apart | Accepted |
 | [0034](0034-evidence-verifies.md) | Evidence verifies: an unobserved effect is never reported as fact | Accepted |
 | [0035](0035-outcomes-what-happened-after-acting.md) | Outcomes: what happened after Endora acted | Accepted |
+| [0036](0036-durable-intentions.md) | Durable intentions: work that outlives a turn | Accepted |
