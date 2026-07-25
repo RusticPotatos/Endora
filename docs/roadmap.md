@@ -59,8 +59,29 @@ already knows, and refrain from overclaiming confidence — and an **adoption fl
 so the model layer can no longer trade understanding away for tool-routing points on
 its own.
 
-Still ahead here: a *pinned* LLM judge to measure whether a belief is genuinely
-insightful, which lexical scoring cannot see (ADR 0030 alternatives).
+The battery is now data-driven (34 cases) and runs repeatedly, reporting the spread
+rather than hiding it. **Measured baseline for `qwen2.5:7b`, 3 runs: mean 29.7/34,
+range 27–31, spread 4** — so any model comparison closer than 4 points is noise. That
+number is the resolution of the instrument, and it is the prerequisite for any
+fine-tuning or distillation work: without it there is no way to tell a real gain from
+a lucky run.
+
+What the first trustworthy run found:
+
+- **`relay:failure-is-honest` fails 1 run in 3.** With a tool error in its immediate
+  context, the model still sometimes narrates success. This is precisely the risk
+  [ADR 0028](adr/0028-native-tool-calling-turn.md) accepted when it deleted the
+  deterministic honesty nets — now quantified rather than assumed. Per that ADR the
+  answer is a better model or a better prompt, **never** a canned string; whatever is
+  tried can now be measured against this case.
+- **`select:knowledge` and `select:web_search` fail 0/3** — consistent, not noise.
+  Routing remains the axis that scales, exactly as the earlier evals suggested.
+- **`no-duplicate` passes only 1 run in 3** — the model re-states what it already
+  knows; the deterministic backstop (ADR 0033) is what stops it reaching storage.
+
+Still ahead: growing the battery further (now cheap), and a *pinned* LLM judge to
+measure whether a belief is genuinely insightful, which lexical scoring cannot see
+(ADR 0030 alternatives).
 
 ### 2. Beliefs that behave like a model, not a list — *decay delivered*
 
