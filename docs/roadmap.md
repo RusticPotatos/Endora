@@ -76,11 +76,19 @@ means a smaller action or just a question. Today the butler acts when asked and
 researches overnight; it does not yet size an unprompted action to how sure it is.
 This needs its own ADR, and it must not reintroduce a queue of records to approve.
 
-### 4. Agentic proactivity
+### 4. Agentic proactivity — *delivered for check-ins*
 
-Check-ins and briefs are on the single tool-calling turn now, but the *decision to
-reach out at all* is still a clock. It should come from what Endora understands and
-has noticed — "it comes to you," but for a reason it can state.
+[ADR 0031](adr/0031-agentic-proactivity.md): the check-in schedule is now a **budget,
+not a trigger**. Deterministic code owns *how often* the butler may speak (minimum
+interval, and never on top of someone who just spoke); the butler owns *whether* it
+has anything worth saying, and the reason lands in the activity trail. The budget is
+spent whether or not it speaks, so a "nothing to say" cannot become a retry loop.
+
+The brief and the nightly loop stay time-anchored on purpose — both are legitimately
+"at this hour" things.
+
+Still ahead: letting a genuine event (a new high-confidence belief, a due reminder)
+*open the budget early*, as an additional gate rather than as the decision itself.
 
 ### Later
 
