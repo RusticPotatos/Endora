@@ -2,19 +2,20 @@
 //! `docs/adr/0014-the-butler-conversation-values-attention.md`).
 //!
 //! Two implementations:
-//! - [`ScriptedButler`] — deterministic and offline; it turns a stated aim into a
-//!   proposed North Star and asks what value it serves. It proves the act/ask +
-//!   propose loop without any model, and is the goal-capture brain used for tests
-//!   and the model-layer eval baseline.
-//! - [`LlmButler`] — model-backed (a local OpenAI-compatible endpoint). It asks
-//!   the model for a candid, non-sycophantic reply plus proposals from a closed
-//!   set. If the model is unavailable or returns something unusable it answers with
-//!   a plain, honest *degraded* reply (see [`degraded_reply`]) so the conversation
-//!   never breaks — crucially with **no proposals**, so a transient model failure
-//!   never mutates state (e.g. filing a control request as a goal).
+//! - [`ScriptedButler`] — deterministic and offline. With no model behind it there is
+//!   nothing to understand *with*, so it keeps the conversation open, forms no beliefs
+//!   and takes no action, rather than performing insight it does not have. The baseline
+//!   the model layer scores candidates against.
+//! - [`LlmButler`] — model-backed (a local OpenAI-compatible endpoint). It drives the
+//!   single tool-calling turn (ADR 0028), answering from real tool results. If the model
+//!   is unavailable or returns something unusable it answers with a plain, honest
+//!   *degraded* reply (see [`degraded_reply`]) so the conversation never breaks —
+//!   crucially forming **no beliefs**, so a transient model failure never writes to
+//!   understanding.
 //!
-//! Both only ever *propose*: the person confirms each action, and deterministic
-//! use cases execute it. The model is never the enforcement boundary.
+//! Neither is the enforcement boundary. A tool call is a *proposal*: deterministic
+//! policy decides whether it runs (ADRs 0005/0024), the capability executes it, and the
+//! result — success or failure — comes back for the model to answer from.
 
 use endora_application::{BeliefKind, ChatMessage, Confidence, MessageRole, Preference};
 use endora_application::{Butler, ButlerContext, ButlerReply, FormedBelief, ProposalError};
