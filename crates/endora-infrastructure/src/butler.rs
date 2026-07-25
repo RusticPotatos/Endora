@@ -447,12 +447,10 @@ impl Butler for LlmButler {
 }
 
 /// A two-model butler (the ADR 0027 mixture experiment): a routing **specialist**
-/// decides which skill to use, and a **generalist** synthesizes the answer once
-/// results are in. The split follows the agentic loop's own structure — a
-/// *gathering* pass (no tool result yet) goes to the router; a *synthesis* pass (a
-/// tool result is present) goes to the synthesizer — so a small tool-tuned model
-/// can do the routing it excels at while a general model handles the prose it
-/// excels at, often at less total VRAM than one large model.
+/// decides which skill to use, and a **generalist** writes prose. The split follows
+/// whether the pass has tools on the table at all — so a small tool-tuned model can
+/// do the routing it excels at while a general model handles the prose it excels at,
+/// often at less total VRAM than one large model.
 pub struct MixtureButler {
     router: LlmButler,
     synthesizer: LlmButler,
@@ -468,12 +466,13 @@ impl MixtureButler {
         }
     }
 
-    /// The brain for this pass: the synthesizer when writing the final answer (a
-    /// tool result to relay, or `synthesize` set for plain prose), the router only
-    /// while still deciding which skill to use. This keeps conversation on the
-    /// generalist — the tool-tuned router flakes on plain chat.
+    /// The brain for this pass: the router only while skills are actually on the
+    /// table, the synthesizer whenever they are not — the forced final answer and the
+    /// belief-forming pass both clear `tools`, and so does plain conversation with no
+    /// skills configured. This keeps prose on the generalist; the tool-tuned router
+    /// flakes on it.
     fn brain(&self, context: &ButlerContext) -> &LlmButler {
-        if context.tool_result.is_some() || context.synthesize {
+        if context.tools.is_empty() {
             &self.synthesizer
         } else {
             &self.router
@@ -1163,14 +1162,6 @@ fn build_butler_request(
         for c in &context.capabilities {
             system.push_str(&format!("\n- {c}"));
         }
-    }
-    if let Some(result) = &context.tool_result {
-        system.push_str(&format!(
-            "\nSKILL RESULT — real data you just fetched. In your \"reply\", tell the person what \
-             it actually says: share the specifics (list the headlines, give the numbers and \
-             details) in your own warm words. Do NOT just say you found something or checked — \
-             actually relay it. Add nothing that isn't here, and set \"use\":null.\n{result}"
-        ));
     }
     let mut messages = vec![json!({ "role": "system", "content": system })];
     for m in history {

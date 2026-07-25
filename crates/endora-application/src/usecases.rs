@@ -767,161 +767,6 @@ pub fn recent_activity(
     Ok(items)
 }
 
-/// One agentic gathering pass — the butler reaching for its skills.
-struct Gathering {
-    /// The final round's reply (its proposals/beliefs, and text if it answered
-    /// without needing a skill).
-    reply: ButlerReply,
-    /// Real skill results as `- id: output` lines, to ground the answer.
-    gathered: Vec<String>,
-}
-
-/// The agentic loop, shared by the chat turn and the proactive flows (brief,
-/// nightly): hand the butler its full skill catalog (via [`ButlerContext`]) and let
-/// it reach for whatever it decides it needs, across up to `max_rounds` steps. The
-/// model chooses the skills — this never scripts them. Each proposed skill is
-/// authorized by policy (reversible + autonomous only; irreversible is never run on
-/// its own — ADR 0024), run, and its real result fed back for the next step;
-/// consequential/blocked decisions are audited (ADR 0005). **Grounding stays in
-/// code**: only real skill output is fed back, so the answer is built from facts,
-/// never invented.
-///
-/// # Errors
-/// [`AppError::Model`] if the butler brain is unavailable.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "explicit dependencies, no hidden state"
-)]
-fn gather_with_skills(
-    butler: &dyn Butler,
-    capabilities: &dyn CapabilityRunner,
-    audit: &dyn AuditLog,
-    ids: &impl IdSource,
-    clock: &impl Clock,
-    history: &[ChatMessage],
-    prefs: &[Preference],
-    context: &ButlerContext,
-    max_rounds: usize,
-    on_step: &mut dyn FnMut(ButlerStep),
-    activity: &mut Vec<String>,
-) -> Result<Gathering, AppError> {
-    // Don't hammer a failing tool: after this many failed runs in a turn, stop and
-    // answer honestly with what we have rather than retrying the same dead end.
-    const MAX_TOOL_FAILURES: usize = 2;
-    let mut gathered: Vec<String> = Vec::new();
-    let mut failures = 0usize;
-    let mut reply = ButlerReply::default();
-    for round in 0..=max_rounds {
-        let mut ctx = context.clone();
-        if !gathered.is_empty() {
-            ctx.tool_result = Some(format!(
-                "Results you've gathered this turn — use another skill if you still need \
-                 more, otherwise give your complete answer using ALL of these:\n{}",
-                gathered.join("\n")
-            ));
-        }
-        reply = butler
-            .respond(history, prefs, &ctx)
-            .map_err(|e| AppError::Model {
-                message: e.to_string(),
-            })?;
-        let Some(used) = reply.capability_use.take() else {
-            break; // ready to answer — nothing more to gather
-        };
-        if round == max_rounds {
-            break; // safety bound — answer with what was gathered
-        }
-        let id = used.capability.clone();
-        let spec = capabilities.available().into_iter().find(|c| c.id == id);
-        if spec.as_ref().is_some_and(|s| s.configured && s.autonomous) {
-            // Cleared to run on its own (configured + reversible/read-only). Show the
-            // step as it happens, then feed the result back for the next round.
-            let label = progress_label(&id);
-            on_step(ButlerStep {
-                skill: id.clone(),
-                status: StepStatus::Running,
-                label: label.clone(),
-                output: None,
-            });
-            match capabilities.run(&id, &used.input_json) {
-                Ok(out) => {
-                    on_step(ButlerStep {
-                        skill: id.clone(),
-                        status: StepStatus::Done,
-                        label,
-                        output: Some(out.clone()),
-                    });
-                    activity.push(format!("Used the {id} skill"));
-                    gathered.push(format!("- {id}: {out}"));
-                }
-                Err(e) => {
-                    on_step(ButlerStep {
-                        skill: id.clone(),
-                        status: StepStatus::Failed,
-                        label,
-                        output: Some(format!("failed: {e}")),
-                    });
-                    activity.push(format!("Tried the {id} skill, but it failed"));
-                    gathered.push(format!("- {id}: failed ({e}) — do not invent a result"));
-                    failures += 1;
-                    if failures >= MAX_TOOL_FAILURES {
-                        break; // stop retrying a dead end — answer honestly below
-                    }
-                }
-            }
-        } else {
-            // The model asked for a skill it can't just run: off, awaiting setup, or
-            // a consequential/blocked action. Record what policy decided (audit
-            // trail) and tell the butler honestly so it asks or points to setup,
-            // rather than faking it or dead-ending.
-            let decision = capabilities.decision(&id);
-            if spec.as_ref().is_some_and(|s| s.configured) {
-                let audited = match decision {
-                    Some(Decision::Block) => Some(format!(
-                        "Policy blocked the '{id}' skill — irreversible and not opened (refused, not run)"
-                    )),
-                    Some(Decision::Confirm) => Some(format!(
-                        "Policy required confirmation for the '{id}' skill (not run on its own)"
-                    )),
-                    _ => None,
-                };
-                if let Some(summary) = audited {
-                    if let Ok(rec) =
-                        AuditRecord::new(AuditId::new(ids.new_id()), clock.now(), &summary)
-                    {
-                        let _ = audit.append(&rec);
-                    }
-                }
-            }
-            let note = match spec {
-                Some(s) if !s.configured => format!(
-                    "- {id}: not set up — can't use it; tell them plainly and point them to set \
-                     it up under Skills"
-                ),
-                Some(_) if decision == Some(Decision::Block) => format!(
-                    "- {id}: can't be undone and isn't allowed yet — you can't do it even if they \
-                     ask; tell them they can allow it under Skills first"
-                ),
-                Some(_) => {
-                    format!("- {id}: consequential — needs their go-ahead; ask, don't do it")
-                }
-                None => format!("- {id}: no such skill — can't do that yet"),
-            };
-            on_step(ButlerStep {
-                skill: id.clone(),
-                status: StepStatus::Blocked,
-                label: progress_label(&id),
-                output: None,
-            });
-            activity.push(format!(
-                "Couldn't use {id} (off, not set up, or needs confirming)"
-            ));
-            gathered.push(note);
-        }
-    }
-    Ok(Gathering { reply, gathered })
-}
-
 /// The single tool-calling conversation (ADR 0028). Seeds the conversation from the
 /// chat history, then drives [`Butler::take_turn`]: each tool call the model makes is
 /// executed **through policy**, and its real result — success **or** error — is
@@ -964,6 +809,18 @@ fn take_turn_retrying_empty(
     }
     Ok(reply)
 }
+
+/// Tool rounds allowed in a **chat** turn. `run_tool_turn` already answers after one
+/// tool round (retrying only on failure), so this only bounds a pathological loop —
+/// kept low to stay fast on a slow local model.
+const CHAT_TOOL_ROUNDS: usize = 3;
+/// Tool rounds allowed in a proactive **check-in** — it mostly just needs to look.
+const CHECKIN_TOOL_ROUNDS: usize = 3;
+/// Tool rounds allowed in a **brief**, which legitimately gathers several things
+/// (weather, alerts, news) before writing.
+const BRIEF_TOOL_ROUNDS: usize = 6;
+/// Tool rounds allowed in the **nightly loop** — it researches one focus, unhurried.
+const NIGHTLY_TOOL_ROUNDS: usize = 4;
 
 #[expect(
     clippy::too_many_arguments,
@@ -1359,12 +1216,8 @@ pub fn send_to_butler_streaming(
     // policy and answers grounded in their real results — success or error — with no
     // deterministic narration. A failed tool comes back as a factual tool result the
     // model must relay honestly; if it misreports with the truth in front of it, that
-    // is a model failure to surface, not a canned string to hardcode. (The proactive
-    // flows still use the two-pass `gather_with_skills`; they migrate separately.)
-    // Small ceiling: run_tool_turn already answers after one tool round (retrying only
-    // on failure), so this only bounds a pathological loop — kept low to stay fast on
-    // a slow model rather than the old 6-round gather.
-    const MAX_TOOL_ROUNDS: usize = 3;
+    // is a model failure to surface, not a canned string to hardcode. The proactive
+    // flows (check-in, brief, nightly loop) run on this same loop.
     let reply = run_tool_turn(
         butler,
         capabilities,
@@ -1374,7 +1227,7 @@ pub fn send_to_butler_streaming(
         &history,
         &prefs,
         context,
-        MAX_TOOL_ROUNDS,
+        CHAT_TOOL_ROUNDS,
         on_step,
         &mut activity,
     )?;
@@ -1560,32 +1413,6 @@ fn format_datetime_utc(ms: i64) -> String {
     let m = if mp < 10 { mp + 3 } else { mp - 9 };
     let year = y + i64::from(m <= 2);
     format!("{dow}, {year:04}-{m:02}-{d:02} {hh:02}:{mm:02} UTC")
-}
-
-/// The person's stated home location, if they've set one (the location setup
-/// stores it as a preference like "Based in: Charlotte"). Used to answer local
-/// asks without pestering them for a place each time.
-fn known_location(preferences: &[Preference]) -> Option<String> {
-    for p in preferences {
-        let t = p.text().trim();
-        let lower = t.to_lowercase();
-        if let Some(rest) = lower.strip_prefix("based in") {
-            let start = t.len() - rest.len();
-            let loc = t[start..].trim_start_matches([':', ' ']).trim();
-            if !loc.is_empty() {
-                return Some(loc.to_owned());
-            }
-        }
-    }
-    None
-}
-
-/// Builds a `{"location":"..."}` JSON input for a capability, escaping the value
-/// so a place name with quotes can't break the JSON. Kept here (no serde in the
-/// application layer) since the shape is trivial and fixed.
-fn json_location(location: &str) -> String {
-    let escaped = location.replace('\\', "\\\\").replace('"', "\\\"");
-    format!("{{\"location\":\"{escaped}\"}}")
 }
 
 /// Endora's living understanding of the person — its active beliefs, most
@@ -1825,16 +1652,16 @@ pub fn run_due_checkin(
     schedule.next_at = Timestamp::from_unix_millis(now.unix_millis() + schedule.interval_ms);
     checkins.set(&schedule)?;
 
-    // FLOOR (anti-fabrication): a grounded proactive opener that always works, even
-    // if the model brain is down — leads with what Endora understands of the person.
-    let floor = checkin_text(context);
-
-    // AGENTIC reach-out (ADR 0019): the butler already sees its skill catalogue and
-    // the person's life through `context`. Let it decide whether any skill would make
-    // this check-in genuinely useful, reach for it, and write the note — its choice,
-    // not a template. Policy gates every skill to reversible + autonomous only, so a
-    // check-in still can't do anything consequential (ADR 0024). Falls back to the
-    // floor if the model is unavailable or returns nothing usable.
+    // AGENTIC reach-out (ADR 0019/0028): the butler sees its skill catalogue and what
+    // Endora understands of the person through `context`. Let it decide whether any
+    // skill would make this check-in genuinely useful, reach for it, and write the
+    // note — its choice, not a template. Policy gates every skill to reversible +
+    // autonomous only, so a check-in still can't do anything consequential (ADR 0024).
+    //
+    // If the model is unavailable or returns nothing, we post NOTHING and simply try
+    // again next tick. There is no deterministic floor: a templated check-in would be
+    // Endora's voice without Endora's judgement behind it (ADR 0028 — we would rather
+    // stay quiet than emit a canned string).
     let prefs = preferences.list_all().unwrap_or_default();
     let mut activity: Vec<String> = Vec::new();
     let checkin_ctx = ButlerContext {
@@ -1844,15 +1671,14 @@ pub fn run_due_checkin(
     let ask = [ChatMessage::new(
         MessageId::new(ids.new_id()),
         MessageRole::User,
-        "It's time for your regular check-in and they're here. Look at what they're \
-         working toward and anything that needs attention — reach for any skills that \
-         would make this genuinely useful — then send a short, warm note: what you \
-         noticed, anything you can help with right now, and ask whether there's \
-         anything they'd like you to focus on more or do differently. Add nothing you \
-         don't actually know.",
+        "It's time for your regular check-in and they're here. Think about what you \
+         understand about them — reach for any skills that would make this genuinely \
+         useful — then send a short, warm note: what you noticed, anything you can help \
+         with right now, and ask whether there's anything they'd like you to focus on \
+         more or do differently. Add nothing you don't actually know.",
         now,
     )?];
-    let text = gather_with_skills(
+    let text = run_tool_turn(
         butler,
         capabilities,
         audit,
@@ -1861,14 +1687,16 @@ pub fn run_due_checkin(
         &ask,
         &prefs,
         &checkin_ctx,
-        4,
+        CHECKIN_TOOL_ROUNDS,
         &mut |_step| {},
         &mut activity,
     )
     .ok()
-    .map(|g| g.reply.text.trim().to_owned())
-    .filter(|t| !t.is_empty())
-    .unwrap_or(floor);
+    .map(|reply| reply.text.trim().to_owned())
+    .filter(|t| !t.is_empty());
+    let Some(text) = text else {
+        return Ok(None);
+    };
 
     let message = ChatMessage::new(
         MessageId::new(ids.new_id()),
@@ -1880,16 +1708,26 @@ pub fn run_due_checkin(
     Ok(Some(message))
 }
 
-/// Composes a **daily briefing** — an act of service (ADR 0025): it runs the
-/// reversible information skills (weather, active safety alerts, local news) for the
-/// person's home location and posts a single, grounded briefing to the chat. Uses
-/// ONLY skills that are configured *and* cleared to run autonomously (reversible,
-/// read-only), so a briefing never does anything consequential (ADR 0024). Returns
-/// the posted message and a plain-language activity trail, or `None` if there's no
-/// home location set or nothing to report.
+/// Composes a **daily briefing** — an act of service (ADR 0025). The butler is handed
+/// its skill catalogue and decides for itself what a brief needs today, gathering
+/// across tool rounds and then writing it. Policy gates every call to configured +
+/// reversible + autonomous, so a briefing never does anything consequential
+/// (ADR 0024), and each result — success or failure — comes back as a tool message the
+/// butler answers from, so the prose is grounded in what actually happened (ADR 0028).
+///
+/// There is **no scripted fallback**: if the butler gathered nothing worth saying, or
+/// the model is unavailable, this returns `None` and no brief is posted. A brief
+/// assembled by fixed code from a hardcoded skill list would be Endora claiming to
+/// have thought about the person's day when it had not.
+///
+/// Returns the posted message and a plain-language activity trail, or `None`.
 ///
 /// # Errors
 /// [`AppError::Repository`] on a backend failure.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "explicit dependencies, no hidden state"
+)]
 pub fn daily_brief(
     chat: &impl ChatRepository,
     preferences: &impl PreferenceRepository,
@@ -1898,35 +1736,30 @@ pub fn daily_brief(
     audit: &dyn AuditLog,
     ids: &impl IdSource,
     clock: &impl Clock,
+    context: &ButlerContext,
 ) -> Result<Option<(ChatMessage, Vec<String>)>, AppError> {
     let prefs = preferences.list_all()?;
     let mut activity: Vec<String> = Vec::new();
 
-    // AGENTIC gather (ADR 0019): hand the butler its skill catalog and let it reach
-    // for whatever it decides a brief needs — no fixed script. Policy gates it
-    // (reversible + autonomous only) and only real results are fed back (grounded).
-    let skills: Vec<String> = capabilities
-        .available()
-        .into_iter()
-        .filter(|c| c.configured)
-        .map(|c| format!("{} — {}", c.id, c.description))
-        .collect();
+    // ONE agentic pass (ADR 0019/0028): the butler reaches for whatever it decides a
+    // brief needs, each result comes back as a tool message, and it writes the brief
+    // from those results in the same conversation. No gather/synthesize split, and no
+    // scripted weather→safety→news sweep underneath it.
     let brief_ctx = ButlerContext {
-        capabilities: skills,
         now: format_datetime_utc(clock.now().unix_millis()),
-        ..ButlerContext::default()
+        ..context.clone()
     };
     let ask = [ChatMessage::new(
         MessageId::new(ids.new_id()),
         MessageRole::User,
         "Put together my brief. Reach for whatever's relevant to me right now — the \
          weather and any safety alerts where I'm based, news I'd care about, anything \
-         else you can look up — then give me a short, warm rundown.",
+         else you can look up — then give me a short, warm rundown of what you actually \
+         found. If a skill failed or you couldn't reach something, say so plainly rather \
+         than filling the gap.",
         clock.now(),
     )?];
-    // If the model brain is unavailable the gather errors — fall through to the
-    // deterministic floor rather than failing the brief.
-    let mut gathered = gather_with_skills(
+    let text = run_tool_turn(
         butler,
         capabilities,
         audit,
@@ -1935,79 +1768,16 @@ pub fn daily_brief(
         &ask,
         &prefs,
         &brief_ctx,
-        6,
+        BRIEF_TOOL_ROUNDS,
         &mut |_step| {},
         &mut activity,
     )
-    .map(|g| g.gathered)
-    .unwrap_or_default();
-    // Did the model actually gather real facts (vs only "couldn't"/"blocked" notes)?
-    let has_real = gathered.iter().any(|g| {
-        !g.contains("failed")
-            && !g.contains("no such skill")
-            && !g.contains("not set up")
-            && !g.contains("consequential")
-            && !g.contains("can't be undone")
-    });
-
-    // FLOOR (anti-fabrication): the model reached for nothing real (or is down) —
-    // run the deterministic weather → safety → news sweep for the person's home, so
-    // a brief always carries real facts. Each skill runs only if cleared (reversible
-    // + autonomous), and only its true output is used.
-    if !has_real {
-        gathered.clear();
-        activity.clear();
-        if let Some(location) = known_location(&prefs) {
-            let input = json_location(&location);
-            let available = capabilities.available();
-            for (id, label) in [
-                ("weather", "Weather"),
-                ("safety_alerts", "Safety"),
-                ("news", "News"),
-            ] {
-                let cleared = available
-                    .iter()
-                    .any(|c| c.id == id && c.configured && c.autonomous);
-                if !cleared {
-                    continue;
-                }
-                if let Ok(out) = capabilities.run(id, &input) {
-                    gathered.push(format!("{label} — {out}"));
-                    activity.push(format!("Used the {id} skill for your brief"));
-                }
-            }
-        }
-    }
-    if gathered.is_empty() {
+    .ok()
+    .map(|reply| reply.text.trim().to_owned())
+    .filter(|t| !t.is_empty());
+    // Nothing worth saying (or no model) — stay quiet rather than post a hollow brief.
+    let Some(text) = text else {
         return Ok(None);
-    }
-
-    // The deterministic concatenation is the FLOOR — always a valid brief even if
-    // the model is unavailable for the phrasing pass below.
-    let plain = format!("Here's your brief:\n\n{}", gathered.join("\n\n"));
-    // Synthesis: hand the real gathered results to the butler and let it relay them
-    // warmly (a faithful relay — grounded, so no fabrication risk). If it returns
-    // nothing usable, the plain floor stands.
-    let ctx = ButlerContext {
-        now: format_datetime_utc(clock.now().unix_millis()),
-        tool_result: Some(format!(
-            "Compose the person's brief from these real results you just gathered. Write it \
-             warmly and naturally in your own words — a short, flowing brief, not a list of \
-             labels. Relay the specifics (the numbers, the headlines, any alerts) and add \
-             NOTHING that isn't here:\n\n{}",
-            gathered.join("\n\n")
-        )),
-        ..ButlerContext::default()
-    };
-    let ask2 = [ChatMessage::new(
-        MessageId::new(ids.new_id()),
-        MessageRole::User,
-        "Give me my brief.",
-        clock.now(),
-    )?];
-    let text = match butler.respond(&ask2, &prefs, &ctx) {
-        Ok(reply) if !reply.text.trim().is_empty() => reply.text.trim().to_owned(),
-        _ => plain,
     };
     let message = post_butler_message(chat, ids, clock, &text)?;
     Ok(Some((message, activity)))
@@ -2106,6 +1876,7 @@ pub fn run_due_brief(
     audit: &dyn AuditLog,
     ids: &impl IdSource,
     clock: &impl Clock,
+    context: &ButlerContext,
 ) -> Result<Option<(ChatMessage, Vec<String>)>, AppError> {
     let now = clock.now();
     let Some(mut schedule) = briefs.get()? else {
@@ -2117,7 +1888,16 @@ pub fn run_due_brief(
     // Mark fired first, so a slow compose can't double-post on the next tick.
     schedule.last_at = now;
     briefs.set(&schedule)?;
-    daily_brief(chat, preferences, capabilities, butler, audit, ids, clock)
+    daily_brief(
+        chat,
+        preferences,
+        capabilities,
+        butler,
+        audit,
+        ids,
+        clock,
+        context,
+    )
 }
 
 /// The stored nightly-loop schedule, defaulting to **off** (ADR 0024).
@@ -2233,7 +2013,7 @@ pub fn run_due_nightly_loop(
         now: format_datetime_utc(now.unix_millis()),
         ..context.clone()
     };
-    let reply = gather_with_skills(
+    let reply = run_tool_turn(
         butler,
         capabilities,
         audit,
@@ -2242,11 +2022,10 @@ pub fn run_due_nightly_loop(
         &history,
         &prefs,
         &review_ctx,
-        4,
+        NIGHTLY_TOOL_ROUNDS,
         &mut |_step| {},
         &mut activity,
-    )?
-    .reply;
+    )?;
 
     // Reflect: persist the understanding it formed (same path as a chat turn).
     record_formed_beliefs(beliefs, reply.beliefs, ids, clock, &mut activity)?;
@@ -2272,32 +2051,6 @@ fn nightly_focus(context: &ButlerContext) -> Option<String> {
         return Some(ns.title.clone());
     }
     context.attention.first().cloned()
-}
-
-/// Composes a proactive check-in, grounded in the person's life and always asking
-/// how the butler can serve them better (the self-improvement loop, in dialogue).
-fn checkin_text(context: &ButlerContext) -> String {
-    let focus = "Is there anything you'd like me to focus on more, or do differently?";
-    // Lead with understanding — the check-in is grounded in what Endora knows of
-    // the person, not a task list. Stored beliefs already read "you …".
-    if let Some(u) = context.understanding.first() {
-        // Strip the leading "[kind] " tag and trailing " (… confidence)".
-        let plain = u
-            .split_once("] ")
-            .map_or(u.as_str(), |(_, rest)| rest)
-            .rsplit_once(" (")
-            .map_or(u.as_str(), |(head, _)| head);
-        return format!("Checking in. I've had the sense that {plain}. {focus}");
-    }
-    if let Some(item) = context.attention.first() {
-        return format!(
-            "A moment when you have one — I noticed {item}. Want to look at it together? {focus}"
-        );
-    }
-    format!(
-        "Good to see you. What would you like to work on — and {}",
-        focus.to_lowercase()
-    )
 }
 
 /// Assembles the [`ButlerContext`] — a snapshot of the person's current life
@@ -2383,9 +2136,7 @@ pub fn butler_context(
         understanding,
         capabilities: skills,
         tools,
-        tool_result: None,
         now: format_datetime_utc(clock.now().unix_millis()),
-        synthesize: false,
         conversation_summary: None,
     })
 }
@@ -2557,9 +2308,9 @@ mod tests {
     use crate::{
         ApprovalState, Assumption, AssumptionId, AuditRecord, AutonomyLevel, ChatMessage,
         Direction, DirectionId, Experiment, ExperimentId, ExperimentStatus, MessageId, MessageRole,
-        Observation, ObservationId, PolicyDecision, Preference, PreferenceId, PreferenceKind,
-        ProcessChangeId, ProposedProcessChange, Reflection, ReflectionId, SuggestionId, Target,
-        TargetId, Timestamp, Value, ValueId,
+        Observation, ObservationId, PolicyDecision, Preference, PreferenceId, ProcessChangeId,
+        ProposedProcessChange, Reflection, ReflectionId, SuggestionId, Target, TargetId, Timestamp,
+        Value, ValueId,
     };
     use crate::{Belief, BeliefId};
     use endora_capabilities::CapabilityRunner;
@@ -2954,6 +2705,19 @@ mod tests {
         }
     }
 
+    /// The most recent skill result in the conversation, for test butlers that have
+    /// no native tool-calling. The default [`Butler::take_turn`] shim folds each tool
+    /// result into the history as a `[skill result] …` turn (ADR 0028 — results ride
+    /// in the conversation, never the system prompt), so this is how a `respond`-only
+    /// butler sees what came back.
+    fn last_skill_result(history: &[ChatMessage]) -> Option<String> {
+        history.iter().rev().find_map(|m| {
+            m.text()
+                .strip_prefix("[skill result] ")
+                .map(|rest| rest.split('\n').next().unwrap_or(rest).to_owned())
+        })
+    }
+
     /// A clock fixed at a chosen instant.
     struct FixedClock(i64);
 
@@ -3207,19 +2971,19 @@ mod tests {
     fn a_cleared_skill_runs_and_the_butler_answers_with_its_result() {
         use super::send_to_butler;
 
-        // A butler that first asks to use the "weather" skill, then (once a skill
-        // result is in the context) answers using it. This is the propose → policy
-        // authorizes → execute → synthesize loop the use case drives.
+        // A butler that first asks to use the "weather" skill, then — once the skill
+        // result arrives as a turn in the conversation — answers using it. This is the
+        // propose → policy authorizes → execute → answer loop the use case drives.
         struct ToolButler;
         impl Butler for ToolButler {
             fn respond(
                 &self,
-                _h: &[ChatMessage],
+                history: &[ChatMessage],
                 _p: &[Preference],
-                context: &ButlerContext,
+                _context: &ButlerContext,
             ) -> Result<ButlerReply, ProposalError> {
-                if let Some(result) = &context.tool_result {
-                    // Synthesis pass: answer using the real result.
+                if let Some(result) = last_skill_result(history) {
+                    // The result is in front of it — answer from it.
                     return Ok(ButlerReply {
                         text: format!("Here's what I found — {result}"),
                         ..ButlerReply::default()
@@ -4205,28 +3969,6 @@ mod tests {
     }
 
     #[test]
-    fn location_helpers_read_a_based_in_preference() {
-        use super::{json_location, known_location};
-        let t = Timestamp::from_unix_millis(0);
-        let prefs = vec![
-            Preference::new(PreferenceId::new(1), "Likes tea", PreferenceKind::Taste, t).unwrap(),
-            Preference::new(
-                PreferenceId::new(2),
-                "Based in: 28277",
-                PreferenceKind::Taste,
-                t,
-            )
-            .unwrap(),
-        ];
-        assert_eq!(known_location(&prefs).as_deref(), Some("28277"));
-        assert_eq!(known_location(&[]), None);
-
-        assert_eq!(json_location("Charlotte"), "{\"location\":\"Charlotte\"}");
-        // A value with a quote is escaped so the JSON stays well-formed.
-        assert_eq!(json_location("a\"b"), "{\"location\":\"a\\\"b\"}");
-    }
-
-    #[test]
     fn progress_labels_read_as_present_tense_steps() {
         use super::progress_label;
         assert_eq!(progress_label("weather"), "Checking the weather");
@@ -4264,8 +4006,8 @@ mod tests {
     }
 
     #[test]
-    fn daily_brief_composes_from_reversible_skills_and_needs_a_location() {
-        use super::{create_preference, daily_brief};
+    fn daily_brief_is_written_from_what_the_butler_actually_gathered() {
+        use super::daily_brief;
 
         struct BriefSkills;
         impl CapabilityRunner for BriefSkills {
@@ -4278,33 +4020,36 @@ mod tests {
                     input_schema: None,
                 }]
             }
-            fn run(&self, id: &str, input_json: &str) -> Result<String, String> {
+            fn run(&self, id: &str, _input_json: &str) -> Result<String, String> {
                 assert_eq!(id, "weather");
-                assert!(input_json.contains("28277"));
                 Ok("clear, 25C".to_owned())
             }
         }
 
-        // The brief gathers agentically first (the model may reach for skills), then
-        // hands the *real* gathered results to the butler as a tool_result to relay
-        // in natural prose. This test butler doesn't reach for a skill on the
-        // exploratory pass (empty tool_result) — so the deterministic floor gathers
-        // weather — and relays the real fact once it's handed back.
-        struct BriefSynthButler;
-        impl Butler for BriefSynthButler {
+        // The butler reaches for a skill, the result comes back as a turn in the same
+        // conversation, and it writes the brief from that — one pass, no synthesis
+        // hand-off (ADR 0028).
+        struct BriefButler;
+        impl Butler for BriefButler {
             fn respond(
                 &self,
-                _history: &[ChatMessage],
+                history: &[ChatMessage],
                 _preferences: &[Preference],
-                context: &ButlerContext,
+                _context: &ButlerContext,
             ) -> Result<ButlerReply, ProposalError> {
-                let gathered = context.tool_result.clone().unwrap_or_default();
-                if gathered.is_empty() {
-                    return Ok(ButlerReply::default()); // exploratory pass — gather nothing
-                }
+                let Some(result) = last_skill_result(history) else {
+                    // Nothing gathered yet — reach for the weather.
+                    return Ok(ButlerReply {
+                        capability_use: Some(endora_capabilities::CapabilityUse {
+                            capability: "weather".to_owned(),
+                            input_json: "{\"location\":\"28277\"}".to_owned(),
+                        }),
+                        ..ButlerReply::default()
+                    });
+                };
                 assert!(
-                    gathered.contains("clear, 25C"),
-                    "the brief must hand the real gathered result to the synthesizer"
+                    result.contains("clear, 25C"),
+                    "the brief must be written from the real gathered result"
                 );
                 Ok(ButlerReply {
                     text: "Good morning! It's clear and 25C where you are.".to_owned(),
@@ -4317,48 +4062,28 @@ mod tests {
         let ids = SeqIds::default();
         let clock = FixedClock(1_000);
         let audit = FakeAudit::default();
-        // No home location yet ⇒ nothing to brief.
-        assert!(
-            daily_brief(
-                &store,
-                &store,
-                &BriefSkills,
-                &BriefSynthButler,
-                &audit,
-                &ids,
-                &clock
-            )
-            .unwrap()
-            .is_none()
-        );
-        // With a location, the brief is gathered deterministically then synthesized.
-        create_preference(
-            &store,
-            &ids,
-            &clock,
-            "Based in: 28277",
-            PreferenceKind::Context,
-        )
-        .unwrap();
+        let ctx = ButlerContext::default();
+
         let (msg, activity) = daily_brief(
             &store,
             &store,
             &BriefSkills,
-            &BriefSynthButler,
+            &BriefButler,
             &audit,
             &ids,
             &clock,
+            &ctx,
         )
         .unwrap()
         .unwrap();
-        // Natural synthesis, not the raw label dump — but still the real fact.
+        // Natural prose carrying the real fact — no label dump.
         assert!(msg.text().contains("Good morning"));
         assert!(msg.text().contains("25C"));
         assert!(!msg.text().contains("Weather —"));
         assert!(activity.iter().any(|a| a.contains("weather")));
 
-        // Floor: if the butler is unavailable, the deterministic concatenation
-        // stands — a brief is always produced.
+        // No floor (ADR 0028): if the butler is unavailable there is NO brief. A
+        // scripted one would be Endora claiming to have thought about the day.
         struct DeadButler;
         impl Butler for DeadButler {
             fn respond(
@@ -4370,18 +4095,21 @@ mod tests {
                 Err(ProposalError::Unavailable("down".to_owned()))
             }
         }
-        let (floor, _) = daily_brief(
-            &store,
-            &store,
-            &BriefSkills,
-            &DeadButler,
-            &audit,
-            &ids,
-            &clock,
-        )
-        .unwrap()
-        .unwrap();
-        assert!(floor.text().contains("Weather — clear, 25C"));
+        assert!(
+            daily_brief(
+                &store,
+                &store,
+                &BriefSkills,
+                &DeadButler,
+                &audit,
+                &ids,
+                &clock,
+                &ctx,
+            )
+            .unwrap()
+            .is_none(),
+            "a brief is never fabricated when the butler can't think"
+        );
     }
 
     #[test]
@@ -4730,14 +4458,12 @@ mod tests {
         impl Butler for ResearchButler {
             fn respond(
                 &self,
-                _h: &[ChatMessage],
+                history: &[ChatMessage],
                 _p: &[crate::Preference],
-                c: &ButlerContext,
+                _c: &ButlerContext,
             ) -> Result<ButlerReply, ProposalError> {
-                let researched = c
-                    .tool_result
-                    .as_deref()
-                    .is_some_and(|t| t.contains("Consistent sleep"));
+                let researched =
+                    last_skill_result(history).is_some_and(|t| t.contains("Consistent sleep"));
                 if !researched {
                     // First pass: pick the reversible read to look into the focus.
                     return Ok(ButlerReply {

@@ -368,18 +368,10 @@ pub struct ButlerContext {
     /// the endpoint's native tool-calling API (exact name + input schema) rather than
     /// relying on the model to hand-write an id. Parallel to `capabilities`.
     pub tools: Vec<CapabilityTool>,
-    /// A result the butler just got back from a capability it used this turn —
-    /// set only on the synthesis pass, so it can answer using real data.
-    pub tool_result: Option<String>,
     /// The current date and time (human-readable), so the butler always knows what
     /// day it is rather than guessing or leaking a placeholder. Cheap local truth —
     /// grounded every turn, unlike weather/news which need a skill.
     pub now: String,
-    /// This turn's FINAL answer is being written (prose for the person), not a
-    /// tool-routing decision. In the mixture (ADR 0027) it routes to the
-    /// *synthesizer* (the generalist), so plain conversation is answered by the
-    /// model that's good at it rather than the tool-tuned router.
-    pub synthesize: bool,
     /// A compact running summary of the earlier conversation this session — the part
     /// that has scrolled out of the recent verbatim window. Keeps the day's thread
     /// present without sending the whole transcript (which slows a local model), so
@@ -495,38 +487,40 @@ pub trait Butler {
         preferences: &[Preference],
         context: &ButlerContext,
     ) -> Result<ButlerReply, ProposalError> {
+        // Bridge for butlers without native tool-calling. Tool results are folded into
+        // the *conversation* as ordinary turns — never into the system prompt (ADR 0028
+        // retires that channel): a result the model reads as a message it just received
+        // is what keeps its answer grounded, and it keeps success and failure on
+        // exactly the same footing.
         let history: Vec<ChatMessage> = conversation
             .iter()
             .filter_map(|m| match m {
-                TurnMessage::User(text) => Some((MessageRole::User, text.as_str())),
+                TurnMessage::User(text) => Some((MessageRole::User, text.clone())),
                 TurnMessage::Assistant { text, .. } if !text.is_empty() => {
-                    Some((MessageRole::Butler, text.as_str()))
+                    Some((MessageRole::Butler, text.clone()))
                 }
-                _ => None,
+                TurnMessage::ToolResult { content, .. } => Some((
+                    MessageRole::User,
+                    format!(
+                        "[skill result] {content}\nAnswer from this. Relay what it actually \
+                         says — including a failure — and add nothing that isn't here."
+                    ),
+                )),
+                TurnMessage::Assistant { .. } => None,
             })
             .filter_map(|(role, text)| {
                 ChatMessage::new(
                     MessageId::new(0),
                     role,
-                    text,
+                    &text,
                     Timestamp::from_unix_millis(0),
                 )
                 .ok()
             })
             .collect();
-        // Bridge for butlers without native tool-calling: surface the latest tool
-        // result to `respond` (as `tool_result`) so it can answer from it, and express
-        // any `capability_use` it returns as a `tool_call` so the single loop (ADR
-        // 0028) can drive it just like a native tool-caller.
-        let mut ctx = context.clone();
-        if let Some(TurnMessage::ToolResult { content, .. }) = conversation
-            .iter()
-            .rev()
-            .find(|m| matches!(m, TurnMessage::ToolResult { .. }))
-        {
-            ctx.tool_result = Some(content.clone());
-        }
-        let reply = self.respond(&history, preferences, &ctx)?;
+        // Express any `capability_use` it returns as a `tool_call`, so the single loop
+        // (ADR 0028) drives it just like a native tool-caller.
+        let reply = self.respond(&history, preferences, context)?;
         if reply.tool_calls.is_empty() {
             if let Some(used) = reply.capability_use.clone() {
                 return Ok(ButlerReply {

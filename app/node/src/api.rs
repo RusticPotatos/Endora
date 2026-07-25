@@ -1857,13 +1857,15 @@ async fn send_chat(
     })))
 }
 
-/// Composes and posts a daily briefing (weather / safety / news for the person's
-/// home location) — an act of service using only reversible, autonomous skills
-/// (ADRs 0024/0025). Returns the posted message, or a note if there's nothing to
-/// brief (no home location, or no ready skills).
+/// Composes and posts a daily briefing — an act of service using only reversible,
+/// autonomous skills (ADRs 0024/0025). The butler decides what the brief needs and
+/// writes it from what it actually gathered (ADR 0028). Returns the posted message,
+/// or a note if it had nothing worth saying.
 async fn brief(State(state): State<AppState>) -> Result<Json<serde_json::Value>, ApiError> {
     let chat = state.chat.clone();
     let understanding = state.understanding.clone();
+    let dirs = state.direction.clone();
+    let store = state.store.clone();
     let config = state.config.clone();
     let events = state.events.clone();
     let audit = state.audit.clone();
@@ -1874,6 +1876,16 @@ async fn brief(State(state): State<AppState>) -> Result<Json<serde_json::Value>,
     let mcp = mcp_snapshot(&state);
     let result = blocking(move || {
         let runner = build_runner(config.as_ref(), capabilities, mcp);
+        let context = usecases::butler_context(
+            dirs.as_ref(),
+            dirs.as_ref(),
+            dirs.as_ref(),
+            dirs.as_ref(),
+            store.as_ref(),
+            understanding.as_ref(),
+            &runner,
+            clock.as_ref(),
+        )?;
         let out = usecases::daily_brief(
             chat.as_ref(),
             understanding.as_ref(),
@@ -1882,6 +1894,7 @@ async fn brief(State(state): State<AppState>) -> Result<Json<serde_json::Value>,
             audit.as_ref(),
             ids.as_ref(),
             clock.as_ref(),
+            &context,
         )?;
         if let Some((_, activity)) = &out {
             for item in activity {
@@ -3324,6 +3337,7 @@ pub fn spawn_heartbeat(state: AppState) {
                     audit.as_ref(),
                     ids.as_ref(),
                     clock.as_ref(),
+                    &context,
                 )?;
                 if let Some((_, activity)) = &briefed {
                     for item in activity {
