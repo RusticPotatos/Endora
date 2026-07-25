@@ -86,6 +86,29 @@ pub struct AppState {
     /// cross-talk (one turn answering with another's context). A single lock makes
     /// every turn atomic, so a heartbeat brief can't interleave with a chat.
     pub turn_lock: Arc<tokio::sync::Mutex<()>>,
+    /// The running conversation summary (ADR 0028 context compaction), kept in memory
+    /// so the chat prompt stays bounded on a long conversation without dropping the
+    /// day's thread. Durable, cross-session facts live in beliefs, so an in-memory
+    /// summary that resets on restart is fine.
+    pub summary: ConversationSummaryCache,
+}
+
+/// In-memory [`ConversationSummaryStore`](endora_application::ConversationSummaryStore):
+/// a single running summary shared across turns (Endora is single-conversation).
+#[derive(Clone, Default)]
+pub struct ConversationSummaryCache(
+    Arc<std::sync::RwLock<Option<endora_application::ConversationSummary>>>,
+);
+
+impl endora_application::ConversationSummaryStore for ConversationSummaryCache {
+    fn get(&self) -> Option<endora_application::ConversationSummary> {
+        self.0.read().ok().and_then(|g| g.clone())
+    }
+    fn set(&self, summary: endora_application::ConversationSummary) {
+        if let Ok(mut g) = self.0.write() {
+            *g = Some(summary);
+        }
+    }
 }
 
 impl AppState {
@@ -140,6 +163,7 @@ impl AppState {
             capabilities: Arc::new(endora_infrastructure::default_capabilities()),
             mcp,
             turn_lock: Arc::new(tokio::sync::Mutex::new(())),
+            summary: ConversationSummaryCache::default(),
         }
     }
 }
@@ -1899,6 +1923,7 @@ async fn stream_chat(
     let butler = state.butler.clone();
     let changes = state.changes.clone();
     let capabilities = state.capabilities.clone();
+    let summary = state.summary.clone();
     let mcp = mcp_snapshot(&state);
     let message = req.message;
 
@@ -1975,6 +2000,7 @@ async fn stream_chat(
                     audit.as_ref(),
                     deep.as_ref()
                         .map(|d| d as &dyn endora_application::DeepAsker),
+                    Some(&summary as &dyn endora_application::ConversationSummaryStore),
                     ids.as_ref(),
                     clock.as_ref(),
                     &context,
