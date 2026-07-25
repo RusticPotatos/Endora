@@ -2,9 +2,8 @@
 
 ## Status
 
-**Proposed** (2026-07-25). Amends the "one mapping per integration" of
-[0034](0034-evidence-verifies.md). Not adopted — held for a decision, since it changes
-how Endora acquires knowledge about third-party software.
+**Accepted** (2026-07-25). Amends the "one mapping per integration" of
+[0034](0034-evidence-verifies.md).
 
 ## Context
 
@@ -81,7 +80,10 @@ The facts worth holding **now**, deliberately few:
 - **`verified_by`** — which capability observes what this one changes. Replaces
   `verifier`.
 
-Both are name-matched strings today. Both become data, supplied once per server.
+Both are name-matched strings today. Both become data — and they come from **one
+question**, not two: *which tool reads this server's state?* The nominated tool is the
+`reads_only` one, and it is what every other tool on that server is `verified_by`. One
+answer, both facts, no per-tool grind.
 
 ### What observation derives on its own
 
