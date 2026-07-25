@@ -117,6 +117,17 @@ CREATE TABLE IF NOT EXISTS message_actions (
     actions    TEXT NOT NULL
 ) STRICT;
 
+-- The running conversation summary (ADR 0028 context compaction): a single row.
+-- Persisted so a restart doesn't re-summarise the whole backlog (which, on a slow
+-- local model, degraded the first turns after every deploy) and the butler keeps
+-- the day's thread across restarts. `covered` = how many of the oldest messages the
+-- summary already folds in.
+CREATE TABLE IF NOT EXISTS conversation_summary (
+    id      INTEGER PRIMARY KEY CHECK (id = 0),
+    body    TEXT NOT NULL,
+    covered INTEGER NOT NULL
+) STRICT;
+
 CREATE INDEX IF NOT EXISTS idx_messages_at ON messages(at_ms);
 
 CREATE TABLE IF NOT EXISTS attention_snoozes (
