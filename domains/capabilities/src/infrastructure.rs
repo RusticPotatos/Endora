@@ -1922,6 +1922,9 @@ struct McpConnection {
     server: String,
     transport: Box<dyn McpClient>,
     tools: Vec<McpToolInfo>,
+    /// The tool the person nominated as this server's state reader (ADR 0038). Empty
+    /// when nobody has said, which means no read-back — the honest default.
+    reader_tool: String,
 }
 
 /// A [`CapabilityRunner`] backed by connected **MCP servers** (ADR 0021). Each
@@ -1939,24 +1942,20 @@ pub struct McpRunner {
 }
 
 impl McpRunner {
-    /// Whether this tool is the **state reader** Endora uses to verify that server's
-    /// actions — the counterpart of `verifier`, asked of the reader rather than of the
-    /// action.
+    /// Whether this tool is the **state reader** for its server — the one the person
+    /// nominated (ADR 0038).
     ///
-    /// This is Endora's own knowledge, not the server's claim: it holds only for the
-    /// reader `verifier` already names, on a server that also hosts the actions it
-    /// verifies. Everything else stays deny-by-default, which is the point — an MCP
-    /// server announcing "I only read" would not be evidence of anything.
+    /// The nomination comes from the person, never from the server: a server announcing
+    /// "I only read" is not evidence of anything, and policy must not take an unvetted
+    /// third party's word (ADR 0005). A server with no nomination has no reader, and
+    /// everything on it stays deny-by-default.
     fn is_state_reader(&self, id: &str) -> bool {
         let Some((server, tool)) = id.split_once('.') else {
             return false;
         };
-        tool == "GetLiveContext"
-            && self
-                .connections
-                .iter()
-                .filter(|c| c.server == server)
-                .any(|c| c.tools.iter().any(|t| t.name.starts_with("Hass")))
+        self.connections
+            .iter()
+            .any(|c| c.server == server && !c.reader_tool.is_empty() && c.reader_tool == tool)
     }
 
     /// Connects to each `(server_name, transport)`, discovering its tools up front. A
@@ -1965,16 +1964,32 @@ impl McpRunner {
     /// (ADR 0021).
     #[must_use]
     pub fn connect(servers: Vec<(String, Box<dyn McpClient>)>) -> Self {
+        Self::connect_with_readers(
+            servers
+                .into_iter()
+                .map(|(server, transport)| (server, transport, String::new()))
+                .collect(),
+        )
+    }
+
+    /// Connects, carrying each server's nominated **state reader** (ADR 0038) — the tool
+    /// whose result is an observation and through which that server's actions are
+    /// verified. An empty nomination means no read-back for that server.
+    #[must_use]
+    pub fn connect_with_readers(servers: Vec<(String, Box<dyn McpClient>, String)>) -> Self {
         let connections = servers
             .into_iter()
-            .filter_map(|(server, transport)| match transport.list_tools() {
-                Ok(tools) => Some(McpConnection {
-                    server,
-                    transport,
-                    tools,
-                }),
-                Err(_) => None,
-            })
+            .filter_map(
+                |(server, transport, reader_tool)| match transport.list_tools() {
+                    Ok(tools) => Some(McpConnection {
+                        server,
+                        transport,
+                        reader_tool,
+                        tools,
+                    }),
+                    Err(_) => None,
+                },
+            )
             .collect();
         Self { connections }
     }
@@ -2098,11 +2113,15 @@ impl CapabilityRunner for McpRunner {
     /// Servers Endora knows nothing about return `None`, so their results stay marked
     /// unverified rather than being vouched for.
     fn verifier(&self, id: &str) -> Option<String> {
-        let (server, tool) = id.split_once('.')?;
-        if !tool.starts_with("Hass") {
-            return None;
-        }
-        let reader = format!("{server}.GetLiveContext");
+        let (server, _) = id.split_once('.')?;
+        // Whatever the person nominated for THIS server (ADR 0038). No integration is
+        // named here: a calendar or filesystem server gets read-back on exactly the same
+        // terms as Home Assistant, as soon as someone says which of its tools reads.
+        let conn = self
+            .connections
+            .iter()
+            .find(|c| c.server == server && !c.reader_tool.is_empty())?;
+        let reader = format!("{server}.{}", conn.reader_tool);
         // Only if that server really exposes it, and never verify a read with itself.
         (id != reader && self.find(&reader).is_some()).then_some(reader)
     }
@@ -3390,18 +3409,18 @@ mod tests {
     }
 
     #[test]
-    fn a_state_reader_is_an_observation_not_a_receipt() {
+    fn the_nominated_reader_is_an_observation_not_a_receipt() {
         // Observed live: GetLiveContext's own result came back stamped
         //   "[unverified] This is what the tool reported about its own work."
-        // A read has no work of its own. Worse, that text tells the model not to trust
-        // the very reading ADR 0034 uses as the confirmation — so the mechanism was
-        // arguing against itself in production.
-        let mcp = McpRunner::connect(vec![(
+        // A read has no work of its own, and that text tells the model not to trust the
+        // very reading ADR 0034 uses as confirmation.
+        let mcp = McpRunner::connect_with_readers(vec![(
             "home-assistant".to_owned(),
             Box::new(FakeTransport {
                 tools: vec![tool("HassTurnOff"), tool("GetLiveContext")],
                 healthy: true,
             }) as Box<dyn McpClient>,
+            "GetLiveContext".to_owned(),
         )]);
 
         let specs = mcp.available();
@@ -3409,22 +3428,15 @@ mod tests {
             .iter()
             .find(|s| s.id == "home-assistant.GetLiveContext")
             .expect("the reader is offered");
-        assert_eq!(
-            reader.reversibility,
-            Reversibility::Observe,
-            "a read reports state, so its result is evidence (ADR 0034)"
-        );
-        // And it may run on its own, so the read-back still works when the person has
-        // opened the actions but not the reader.
+        assert_eq!(reader.reversibility, Reversibility::Observe);
+        assert!(reader.autonomous, "a read may run on its own");
         assert_eq!(
             mcp.decision("home-assistant.GetLiveContext"),
             Some(Decision::Act)
         );
-        assert!(reader.autonomous);
 
-        // Everything else on the same server stays deny-by-default. The classification
-        // is Endora's own knowledge about one named reader, not a door for any server
-        // that calls a tool read-only.
+        // Everything else on the server stays deny-by-default, and is verified through
+        // the nominated reader.
         let action = specs
             .iter()
             .find(|s| s.id == "home-assistant.HassTurnOff")
@@ -3432,25 +3444,58 @@ mod tests {
         assert_eq!(action.reversibility, Reversibility::Irreversible);
         assert!(!action.autonomous);
         assert_eq!(
-            mcp.decision("home-assistant.HassTurnOff"),
-            Some(Decision::Block)
+            mcp.verifier("home-assistant.HassTurnOff").as_deref(),
+            Some("home-assistant.GetLiveContext")
         );
+        // A reader never verifies itself.
+        assert_eq!(mcp.verifier("home-assistant.GetLiveContext"), None);
     }
 
     #[test]
-    fn a_lone_get_live_context_is_not_treated_as_a_reader() {
-        // The classification is tied to the server hosting the actions it verifies —
-        // it must not fire for an unrelated server that happens to use the same name.
-        let mcp = McpRunner::connect(vec![(
-            "somewhere-else".to_owned(),
+    fn any_server_gets_read_back_once_someone_nominates_its_reader() {
+        // ADR 0038's whole point. Nothing here is Home Assistant, and nothing in the
+        // runner knows what this server is — a calendar gets verification on exactly
+        // the same terms, because the mapping is data rather than a name in the source.
+        let mcp = McpRunner::connect_with_readers(vec![(
+            "calendar".to_owned(),
             Box::new(FakeTransport {
-                tools: vec![tool("GetLiveContext")],
+                tools: vec![tool("create_event"), tool("list_events")],
+                healthy: true,
+            }) as Box<dyn McpClient>,
+            "list_events".to_owned(),
+        )]);
+
+        assert_eq!(
+            mcp.verifier("calendar.create_event").as_deref(),
+            Some("calendar.list_events"),
+            "an action is verified through the nominated reader"
+        );
+        let reader = mcp
+            .available()
+            .into_iter()
+            .find(|s| s.id == "calendar.list_events")
+            .expect("offered");
+        assert_eq!(reader.reversibility, Reversibility::Observe);
+        assert!(reader.autonomous);
+    }
+
+    #[test]
+    fn a_server_with_no_nomination_gets_no_reader_and_no_read_back() {
+        // The honest default, unchanged: Endora does not guess which tool reads, and a
+        // server's own say-so is not evidence (ADR 0005/0038). Note this holds even for
+        // a tool literally named GetLiveContext — the old hardcode is gone.
+        let mcp = McpRunner::connect(vec![(
+            "home-assistant".to_owned(),
+            Box::new(FakeTransport {
+                tools: vec![tool("HassTurnOff"), tool("GetLiveContext")],
                 healthy: true,
             }) as Box<dyn McpClient>,
         )]);
-        let spec = &mcp.available()[0];
-        assert_eq!(spec.reversibility, Reversibility::Irreversible);
-        assert!(!spec.autonomous);
+        assert_eq!(mcp.verifier("home-assistant.HassTurnOff"), None);
+        for spec in mcp.available() {
+            assert_eq!(spec.reversibility, Reversibility::Irreversible);
+            assert!(!spec.autonomous);
+        }
     }
 
     #[test]

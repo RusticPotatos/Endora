@@ -67,7 +67,8 @@ of an existing record and take the next number.
 | [0031](0031-agentic-proactivity.md) | Agentic proactivity: a budget, not a trigger | Accepted |
 | [0032](0032-beliefs-decay-and-expire.md) | Beliefs decay and expire | Accepted |
 | [0033](0033-what-understanding-admits.md) | What understanding admits: instructions out, contradictions kept apart | Accepted |
-| [0034](0034-evidence-verifies.md) | Evidence verifies: an unobserved effect is never reported as fact | Accepted (amended by 0037) |
+| [0034](0034-evidence-verifies.md) | Evidence verifies: an unobserved effect is never reported as fact | Accepted (amended by 0037, 0038) |
 | [0035](0035-outcomes-what-happened-after-acting.md) | Outcomes: what happened after Endora acted | Accepted |
 | [0036](0036-durable-intentions.md) | Durable intentions: work that outlives a turn | Accepted |
 | [0037](0037-disclosure-not-persuasion.md) | Disclosure, not persuasion: an unverified action is always visible | Accepted |
+| [0038](0038-capability-profiles.md) | Capability profiles: learning what a tool does, instead of patching each one | Accepted |

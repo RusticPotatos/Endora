@@ -77,6 +77,17 @@ pub struct McpServer {
     /// is done in code from this stored flag; it is never driven by model output. Off
     /// keeps the stricter deny-by-default, where each tool stays blocked until allowed.
     pub trust_all: bool,
+    /// The tool on this server that **reads its state** — the one Endora uses to check
+    /// what an action actually did (ADR 0038). Empty means nobody has said.
+    ///
+    /// One answer settles two facts: the nominated tool's own result is an *observation*
+    /// rather than a receipt, and every other tool on this server is verified through
+    /// it. It replaces a hardcoded `Hass*` → `GetLiveContext` mapping that no other
+    /// server could ever benefit from.
+    ///
+    /// Supplied by the person, so policy is never taking a third party's word for what
+    /// its own tools do (ADR 0005). Endora may *suggest* a value; it never sets one.
+    pub reader_tool: String,
 }
 
 impl McpServer {
@@ -121,6 +132,7 @@ impl McpServer {
             transport: McpTransport::Stdio { command, args, env },
             enabled: true,
             trust_all: true,
+            reader_tool: String::new(),
         })
     }
 
@@ -148,7 +160,15 @@ impl McpServer {
             },
             enabled: true,
             trust_all: true,
+            reader_tool: String::new(),
         })
+    }
+
+    /// Nominates the tool that reads this server's state (ADR 0038). Blank clears it.
+    #[must_use]
+    pub fn with_reader(mut self, tool: &str) -> Self {
+        self.reader_tool = tool.trim().to_owned();
+        self
     }
 }
 
