@@ -147,11 +147,121 @@ pub(crate) fn text_from_call_result(result: &Value, tool: &str) -> Result<String
         });
     }
     // Fall back to the raw result if the server returned no text content.
-    Ok(if text.is_empty() {
+    let text = if text.is_empty() {
         result.to_string()
     } else {
         text
-    })
+    };
+    // Render a machine-shaped envelope into a plain sentence, if we recognise one.
+    match summarize_assist(&text) {
+        Some(rendered) => rendered,
+        None => Ok(text),
+    }
+}
+
+/// Names the targets an Assist response acted on: `Kitchen (area)`, `Kitchen Table`.
+fn assist_targets(list: &Value) -> Vec<String> {
+    list.as_array()
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|t| {
+                    let name = t.get("name").and_then(Value::as_str)?;
+                    let kind = t.get("type").and_then(Value::as_str).unwrap_or_default();
+                    Some(if kind == "area" {
+                        format!("{name} (area)")
+                    } else {
+                        name.to_owned()
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Renders a Home Assistant **Assist** response into a sentence.
+///
+/// HA answers with a machine-shaped envelope — `response_type` plus
+/// `data.success`/`data.failed` — and frequently an **empty** `speech` object. Handed
+/// to a model raw, a completed action reads like a search result. Observed live: the
+/// butler turned the kitchen lights off, got back
+/// `{"speech":{},"response_type":"action_done","data":{"success":[…],"failed":[]}}`,
+/// and told the person *"I found some items related to the kitchen area… would you
+/// like me to perform an action?"* — after already having performed it.
+///
+/// This describes **what the tool returned**, not what the butler should say. The
+/// butler still writes its own reply in its own voice; ADR 0028's objection is to
+/// replacing that voice with canned strings, not to a tool adapter making its own
+/// output legible — which is exactly what the built-in capabilities' `summarize`
+/// already does. A model cannot be grounded in a result it cannot parse.
+///
+/// Returns `None` for anything that is not an Assist envelope, so other MCP servers
+/// pass through untouched.
+fn summarize_assist(text: &str) -> Option<Result<String, String>> {
+    let value: Value = serde_json::from_str(text).ok()?;
+    let response_type = value.get("response_type").and_then(Value::as_str)?;
+    // HA's own sentence, when it bothered to write one, is the most faithful thing
+    // we can pass on.
+    let spoken = value
+        .get("speech")
+        .and_then(|s| s.get("plain"))
+        .and_then(|p| p.get("speech"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+
+    let data = value.get("data");
+    let failed = data.map(|d| assist_targets(d.get("failed").unwrap_or(&Value::Null)));
+    let succeeded = data.map(|d| assist_targets(d.get("success").unwrap_or(&Value::Null)));
+
+    if response_type == "error" {
+        let detail = spoken.map_or_else(
+            || {
+                data.and_then(|d| d.get("code"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("no reason given")
+                    .to_owned()
+            },
+            std::borrow::ToOwned::to_owned,
+        );
+        return Some(Err(format!("Home Assistant refused the request: {detail}")));
+    }
+
+    // A partial or total failure must reach the turn as an error, so the failure
+    // path engages rather than the model deciding how bad it was.
+    if let Some(failed) = failed.as_ref().filter(|f| !f.is_empty()) {
+        return Some(Err(format!(
+            "Home Assistant could not act on: {}",
+            failed.join(", ")
+        )));
+    }
+
+    match response_type {
+        "action_done" => {
+            let targets = succeeded.unwrap_or_default();
+            Some(Ok(if targets.is_empty() {
+                spoken.map_or_else(
+                    || "The action completed, but Home Assistant named no targets.".to_owned(),
+                    std::borrow::ToOwned::to_owned,
+                )
+            } else {
+                format!(
+                    "The action completed successfully on: {}.{}",
+                    targets.join(", "),
+                    spoken.map_or(String::new(), |s| format!(" {s}"))
+                )
+            }))
+        }
+        "query_answer" => spoken.map_or_else(
+            || {
+                let targets = succeeded.unwrap_or_default();
+                (!targets.is_empty())
+                    .then(|| Ok(format!("Home Assistant reports: {}.", targets.join(", "))))
+            },
+            |s| Some(Ok(s.to_owned())),
+        ),
+        _ => spoken.map(|s| Ok(s.to_owned())),
+    }
 }
 
 /// Lists the server's tools (`tools/list`).
@@ -431,4 +541,98 @@ mod tests {
     // (slice 2b-ii). A shell-based subprocess mock proved too sensitive to the CI
     // shell's stdout buffering (bash vs dash) to be a reliable unit test, so the
     // protocol is covered hermetically above via the LineIo seam instead.
+}
+
+#[cfg(test)]
+mod assist_tests {
+    use super::text_from_call_result;
+    use serde_json::json;
+
+    /// Wraps a payload the way an MCP server returns it: a `content` array of text
+    /// parts, which is how HA's Assist envelope actually arrives.
+    fn mcp_text(payload: &str) -> serde_json::Value {
+        json!({ "content": [ { "type": "text", "text": payload } ] })
+    }
+
+    /// The exact response captured from the live deployment, where the butler had
+    /// just turned the kitchen lights off and then told the person it had "found
+    /// some items" and asked whether to perform an action.
+    const LIVE_ACTION_DONE: &str = r#"{"speech": {}, "response_type": "action_done", "data": {"success": [{"name": "Kitchen", "type": "area", "id": "kitchen"}, {"name": "Kitchen Table", "type": "entity", "id": "light.kitchen_table"}, {"name": "Kitchen", "type": "entity", "id": "light.kitchen"}], "failed": []}}"#;
+
+    #[test]
+    fn a_completed_action_reads_as_completed_not_as_a_search_result() {
+        let out = text_from_call_result(&mcp_text(LIVE_ACTION_DONE), "HassLightSet").unwrap();
+        assert!(
+            out.contains("completed successfully"),
+            "should read as a completed action, got: {out}"
+        );
+        assert!(out.contains("Kitchen (area)"), "names the area: {out}");
+        assert!(out.contains("Kitchen Table"), "names the entity: {out}");
+        // The raw envelope must not survive — it is what the model misread.
+        assert!(!out.contains("response_type"), "raw envelope leaked: {out}");
+        assert!(!out.contains("\"success\""), "raw envelope leaked: {out}");
+    }
+
+    #[test]
+    fn home_assistants_own_sentence_wins_when_it_wrote_one() {
+        let payload = json!({
+            "speech": { "plain": { "speech": "Turned off the kitchen lights" } },
+            "response_type": "action_done",
+            "data": { "success": [ { "name": "Kitchen", "type": "area" } ], "failed": [] }
+        })
+        .to_string();
+        let out = text_from_call_result(&mcp_text(&payload), "HassTurnOff").unwrap();
+        assert!(out.contains("Turned off the kitchen lights"), "got: {out}");
+    }
+
+    #[test]
+    fn a_partial_failure_is_an_error_not_a_success_story() {
+        // If some targets failed, the turn's failure path must engage rather than
+        // the model deciding how bad it was.
+        let payload = json!({
+            "speech": {},
+            "response_type": "action_done",
+            "data": {
+                "success": [ { "name": "Kitchen Table", "type": "entity" } ],
+                "failed":  [ { "name": "Hallway", "type": "entity" } ]
+            }
+        })
+        .to_string();
+        let err = text_from_call_result(&mcp_text(&payload), "HassTurnOff").unwrap_err();
+        assert!(err.contains("Hallway"), "names what failed: {err}");
+        assert!(err.contains("could not act"), "got: {err}");
+    }
+
+    #[test]
+    fn an_assist_error_response_becomes_an_error() {
+        let payload = json!({
+            "speech": { "plain": { "speech": "Sorry, I am not aware of any device called that" } },
+            "response_type": "error",
+            "data": { "code": "no_intent_match" }
+        })
+        .to_string();
+        let err = text_from_call_result(&mcp_text(&payload), "HassTurnOn").unwrap_err();
+        assert!(err.contains("not aware of any device"), "got: {err}");
+    }
+
+    #[test]
+    fn a_query_answer_is_relayed() {
+        let payload = json!({
+            "speech": { "plain": { "speech": "The kitchen light is on" } },
+            "response_type": "query_answer",
+            "data": { "success": [], "failed": [] }
+        })
+        .to_string();
+        let out = text_from_call_result(&mcp_text(&payload), "HassGetState").unwrap();
+        assert_eq!(out, "The kitchen light is on");
+    }
+
+    #[test]
+    fn other_mcp_servers_pass_through_untouched() {
+        // Only Assist envelopes are recognised; anything else keeps its own text.
+        let out = text_from_call_result(&mcp_text("plain tool output"), "search").unwrap();
+        assert_eq!(out, "plain tool output");
+        let json_out = text_from_call_result(&mcp_text(r#"{"rows":[1,2,3]}"#), "query").unwrap();
+        assert_eq!(json_out, r#"{"rows":[1,2,3]}"#);
+    }
 }
