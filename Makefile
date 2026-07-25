@@ -9,11 +9,26 @@ CARGO ?= cargo
 # line, e.g. `make test WORKSPACE_FLAGS=--workspace`.
 WORKSPACE_FLAGS ?= --workspace --all-features
 
-# Docker context for the Compose deploy targets. Empty = the local Docker
-# daemon; set to a remote context to build+run there, e.g.
-# `make deploy DOCKER_CONTEXT=nas`. Compose reads docker-compose.yml plus any
-# local docker-compose.override.yml (kept out of git).
+# Optional per-machine settings, kept out of git: put `DOCKER_CONTEXT = nas`
+# (or any other override) in `local.mk` and every target below picks it up.
+# Deployment targets are a property of *your* machine, not of the project, so
+# they belong here rather than baked into a default everyone inherits.
+-include local.mk
+
+# Where the Compose deploy targets run. Empty = the local Docker daemon, which
+# is what a fresh clone should do: `make deploy` on a new machine must work
+# self-contained, without assuming a host that only exists on one network. Set a
+# remote context to build+run there, e.g. `make deploy DOCKER_CONTEXT=nas`, or
+# once and for all in local.mk.
 DOCKER_CONTEXT ?=
+
+# Compose derives its project name from the working directory, so running a
+# deploy from a git worktree would invent a NEW project — a fresh empty volume,
+# and a name collision with the real deployment. Pinning it means every deploy
+# targets the same containers and the same data wherever it is run from.
+COMPOSE_PROJECT_NAME ?= endora
+export COMPOSE_PROJECT_NAME
+
 COMPOSE = docker $(if $(DOCKER_CONTEXT),--context $(DOCKER_CONTEXT),) compose
 
 .DEFAULT_GOAL := help
@@ -74,10 +89,11 @@ docker-run: ## Run the node container (loopback-only on 8787, persists ./endora-
 	docker run --rm -p 127.0.0.1:8787:8787 -v "$(CURDIR)/endora-data:/data" endora-node
 
 .PHONY: deploy
-deploy: ## Build + start the node via Compose (DOCKER_CONTEXT=nas to target the NAS)
+deploy: ## Build + start the node via Compose (DOCKER_CONTEXT=nas to target a remote host)
 	# Builds on the target host and starts it detached; data persists in the
-	# named volume. Set DOCKER_CONTEXT to deploy to a remote host over that
-	# context. The 0.x API is unauthenticated — keep it on a trusted network.
+	# named volume `$(COMPOSE_PROJECT_NAME)_endora-data`. Runs against the local
+	# Docker daemon unless DOCKER_CONTEXT names a remote one (set it per-machine
+	# in local.mk). The 0.x API is unauthenticated — keep it on a trusted network.
 	# ENDORA_BUILD stamps the deploy's git short SHA into the image, so /health
 	# and the console header show which build is live.
 	ENDORA_BUILD="$$(git rev-parse --short HEAD 2>/dev/null || echo dev)" $(COMPOSE) up -d --build

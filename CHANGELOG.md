@@ -9,6 +9,12 @@ tagged release.
 
 ### Fixed
 
+- **`make deploy` no longer depends on where you run it from.** Compose derives its
+  project name from the working directory, so a deploy run from a git worktree
+  invented a *new* project — a fresh empty volume and a container-name collision with
+  the real deployment, failing only after the whole image had built. The Makefile now
+  pins `COMPOSE_PROJECT_NAME=endora`, so every deploy reaches the same containers and
+  the same data wherever it runs from.
 - **Home Assistant actions failed on the commonest phrasing.** "Turn on the kitchen
   light" put the *kind* word in HA's `name` field — `{name:"light", area:"kitchen"}`
   asks Home Assistant for a device literally called "light" and comes back
@@ -24,6 +30,10 @@ tagged release.
 
 ### Added
 
+- **Per-machine Make settings via a git-ignored `local.mk`.** Deployment hosts are a
+  property of your machine, not of the project: `make deploy` still targets the local
+  Docker daemon out of the box, so a fresh clone works with no setup, and putting
+  `DOCKER_CONTEXT = nas` in `local.mk` makes an always-on box your personal default.
 - **Beliefs decay and expire** ([ADR 0032](docs/adr/0032-beliefs-decay-and-expire.md)).
   `BeliefStatus::Expired` existed, round-tripped through storage, and was **never set
   by any code path** — the direction reset's "nothing is assumed permanently" was a
