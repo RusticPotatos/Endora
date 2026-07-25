@@ -2020,6 +2020,7 @@ impl CapabilityRunner for McpRunner {
         // doesn't fail validation.
         let args = coerce_args_to_schema(input_json, tool.input_schema.as_ref());
         let args = drop_domain_word_name(&args, &tool.name);
+        reject_no_op_light_set(&args, &tool.name)?;
         conn.transport.call(&tool.name, &args)
     }
 }
@@ -2053,6 +2054,45 @@ fn coerce_args_to_schema(input_json: &str, schema: Option<&serde_json::Value>) -
         }
     }
     args.to_string()
+}
+
+/// Refuses a `HassLightSet` call that cannot do anything.
+///
+/// `HassLightSet` sets **brightness or colour**. Asked to turn a light on or off, a
+/// model reaches for it anyway — and Home Assistant matches the targets, changes
+/// nothing, and answers `action_done` with an empty `failed` list. The turn then
+/// reports a success that never happened.
+///
+/// Observed live: "Please turn the kitchen light off" → `HassLightSet{area:"kitchen"}`
+/// → HA reported success on three targets → the butler announced the device "has been
+/// successfully adjusted" → **the light was still on.** The correct tools,
+/// `HassTurnOn` and `HassTurnOff`, were available and accurately described the whole
+/// time; the model simply picked the wrong one.
+///
+/// A false success is the worst failure this system can produce: it is unfalsifiable
+/// from the conversation, and no amount of grounding helps a model whose tool told it
+/// everything went fine. So the no-op is refused *before* it is sent, and the error
+/// names the tool that would work — which is a fact about the API, not a canned
+/// narration (ADR 0028): the butler still writes whatever it says next.
+fn reject_no_op_light_set(args_json: &str, tool_name: &str) -> Result<(), String> {
+    if tool_name != "HassLightSet" {
+        return Ok(());
+    }
+    let Ok(args) = serde_json::from_str::<Value>(args_json) else {
+        return Ok(());
+    };
+    let sets_something = ["brightness", "color", "temperature"]
+        .iter()
+        .any(|k| args.get(*k).is_some_and(|v| !v.is_null()));
+    if sets_something {
+        return Ok(());
+    }
+    Err(
+        "HassLightSet only changes brightness or colour, and none were given, so this \
+         would have done nothing. To switch a light on or off use HassTurnOn or \
+         HassTurnOff instead."
+            .to_owned(),
+    )
 }
 
 /// Words that name a *kind* of device rather than a device. Home Assistant's intent
@@ -2969,6 +3009,51 @@ mod tests {
             assert!(v.get("name").is_none(), "should have dropped name={kind:?}");
             assert_eq!(v["area"], "kitchen", "the area is what the person meant");
         }
+    }
+
+    /// The live failure: "Please turn the kitchen light off" produced
+    /// `HassLightSet{area:"kitchen"}`. HA matched three targets, changed nothing,
+    /// and answered `action_done` — so the butler announced success and the light
+    /// stayed on.
+    #[test]
+    fn a_light_set_that_sets_nothing_is_refused_before_it_is_sent() {
+        let err = reject_no_op_light_set(r#"{"area":"kitchen"}"#, "HassLightSet").unwrap_err();
+        assert!(
+            err.contains("HassTurnOff"),
+            "names the tool that works: {err}"
+        );
+        assert!(err.contains("would have done nothing"), "got: {err}");
+    }
+
+    #[test]
+    fn a_light_set_that_actually_sets_something_goes_through() {
+        for args in [
+            r#"{"area":"kitchen","brightness":50}"#,
+            r#"{"area":"kitchen","color":"warm white"}"#,
+            r#"{"name":"Kitchen Table","temperature":2700}"#,
+        ] {
+            assert!(
+                reject_no_op_light_set(args, "HassLightSet").is_ok(),
+                "should have been allowed: {args}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_refusal_is_scoped_to_light_set() {
+        // Turning something off with no extra parameters is exactly right for these.
+        assert!(reject_no_op_light_set(r#"{"area":"kitchen"}"#, "HassTurnOff").is_ok());
+        assert!(reject_no_op_light_set(r#"{"area":"kitchen"}"#, "HassTurnOn").is_ok());
+        assert!(reject_no_op_light_set(r#"{"q":"x"}"#, "search_notes").is_ok());
+        // Unparseable input is passed on rather than guessed at.
+        assert!(reject_no_op_light_set("{bad", "HassLightSet").is_ok());
+    }
+
+    #[test]
+    fn a_null_brightness_does_not_count_as_setting_something() {
+        let err = reject_no_op_light_set(r#"{"area":"kitchen","brightness":null}"#, "HassLightSet")
+            .unwrap_err();
+        assert!(err.contains("HassTurnOn"), "got: {err}");
     }
 
     #[test]

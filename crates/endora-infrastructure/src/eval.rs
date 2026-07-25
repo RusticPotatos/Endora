@@ -58,6 +58,9 @@ pub enum Probe {
         /// What it returned — success text, or an error.
         result: &'static str,
     },
+    /// Ask with a **specific** catalogue rather than the default one — for testing
+    /// disambiguation between similarly-named tools.
+    WithTools(&'static [&'static str], &'static str),
     /// Plain conversation with no skills offered. Used for understanding: a tools
     /// context pulls a weak model toward acting instead of listening.
     Conversation(&'static str),
@@ -71,6 +74,7 @@ impl Probe {
             | Self::WithoutSkills(p)
             | Self::Conversation(p)
             | Self::WithHistory(_, p)
+            | Self::WithTools(_, p)
             | Self::AfterTool { prompt: p, .. } => p,
         }
     }
@@ -270,6 +274,24 @@ const CASUAL_PRIOR: &[(MessageRole, &str)] = &[
     ),
 ];
 
+/// The Home Assistant tools as the live server actually describes them, trimmed to
+/// the choice the model gets wrong. `HassLightSet` sets brightness or colour and
+/// cannot switch anything; `HassTurnOff` is the tool for turning a light off. The
+/// media-player entries are kept because the real catalogue is dominated by them,
+/// and that crowding is part of what the model has to see past.
+const HASS_TOOLS: &[&str] = &[
+    "home-assistant.HassTurnOn — Turns on/opens/presses a device or entity. Use for \
+     requests like 'turn on', 'activate', 'enable', or 'lock'.",
+    "home-assistant.HassTurnOff — Turns off/closes a device or entity. Use for \
+     requests like 'turn off', 'deactivate', 'disable', or 'unlock'.",
+    "home-assistant.HassLightSet — Sets the brightness percentage or color of a light.",
+    "home-assistant.HassMediaPause — Pauses a media player",
+    "home-assistant.HassMediaNext — Skips a media player to the next item",
+    "home-assistant.HassSetVolume — Sets the volume percentage of a media player",
+    "home-assistant.HassGetState — Provides real-time information about the CURRENT \
+     state, value, or mode of devices, sensors, entities, or areas.",
+];
+
 /// A turn that plainly reveals something about the person — the positive
 /// understanding case, and the one several negative cases are gated on.
 const REVEALING: &str = "I've been dragging all week honestly. I keep putting off the hike \
@@ -389,6 +411,29 @@ pub fn battery() -> Vec<EvalCase> {
             tier: Tier::L1,
             probe: Probe::WithSkills("what's today's date?"),
             check: |r, _| !leaks_placeholder(&r.text),
+        },
+        EvalCase {
+            name: "select:turn-off-not-light-set",
+            tier: Tier::L1,
+            probe: Probe::WithTools(HASS_TOOLS, "please turn the kitchen light off"),
+            check: |r, _| {
+                // The live failure this exists for: the model picked HassLightSet,
+                // which only sets brightness or colour. HA matched the targets,
+                // changed nothing, reported `action_done`, and the butler announced
+                // success while the light stayed on. A false success is the worst
+                // outcome this system can produce, so the choice is scored.
+                used(r).is_some_and(|t| t.ends_with("HassTurnOff"))
+            },
+        },
+        EvalCase {
+            name: "select:light-set-when-dimming",
+            tier: Tier::L1,
+            probe: Probe::WithTools(HASS_TOOLS, "dim the kitchen lights to 30%"),
+            check: |r, _| {
+                // The other side of the same disambiguation: HassLightSet IS right
+                // here, so the fix must not have taught it to always avoid it.
+                used(r).is_some_and(|t| t.ends_with("HassLightSet"))
+            },
         },
         EvalCase {
             name: "brief-intent",
@@ -634,6 +679,16 @@ fn run_probe(butler: &dyn Butler, probe: &Probe) -> ButlerReply {
         Probe::WithoutSkills(prompt) | Probe::Conversation(prompt) => butler
             .respond(&[message(prompt, MessageRole::User, 1)], &[], &bare)
             .unwrap_or_default(),
+        Probe::WithTools(tools, prompt) => {
+            let ctx = ButlerContext {
+                capabilities: tools.iter().map(|s| (*s).to_owned()).collect(),
+                now: with_skills.now.clone(),
+                ..ButlerContext::default()
+            };
+            butler
+                .respond(&[message(prompt, MessageRole::User, 1)], &[], &ctx)
+                .unwrap_or_default()
+        }
         Probe::WithHistory(prior, prompt) => {
             let mut history: Vec<ChatMessage> = prior
                 .iter()
