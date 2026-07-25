@@ -72,6 +72,42 @@ win** — a candidate that scores worse overall stays out however well it unders
 The person decides whether tool-routing gains are worth an understanding loss; that
 is exactly the class of judgement ADR 0027 reserves for a human.
 
+## First measurement
+
+Run against the deployed model on the reference host, 2026-07-25:
+
+```text
+=== qwen2.5:7b: L1 6/8, L2 7/7, L3 7/8, TOTAL 20/23 ===
+  L1 failures: select:safety_alerts, brief-intent
+  L3 failure:  no-duplicate
+```
+
+Two things worth recording, because they change what to work on next:
+
+1. **Understanding is not the weak axis — routing is.** 7/8 on L3 from a 7B model
+   is better than ADR 0029's risk statement assumed. The remaining L1 gaps are skill
+   selection, which the earlier eval work already identified as the axis that scales
+   with model size. The pessimistic case for deleting the goal tracker did not
+   materialise.
+2. **The one understanding failure was real and had a live consequence.** The model
+   re-states beliefs it already holds. The deterministic backstop in
+   `record_formed_beliefs` is what stops that reaching storage — and probing it showed
+   it only caught near-verbatim repeats: `you want to have the energy to travel once
+   you retire` scored 0.50 against an existing `you want more energy so you can travel
+   when you retire` and would have been stored as a second belief. Duplicates would
+   have accumulated in Understanding and in the context handed to every subsequent
+   turn, degrading later reasoning.
+
+   Fixed in the same change: `similar()` now stems words and compares by
+   **containment** rather than symmetric Jaccard, at a deliberately high threshold.
+   The asymmetry matters — wrongly merging two distinct beliefs silently loses
+   understanding with nothing for the person to correct, which is worse than keeping
+   a duplicate they can see. Both directions are pinned by tests.
+
+   This is the "deterministic over prompting" pattern the project already relies on:
+   the model's tendency to repeat itself is a model defect, and the guarantee lives
+   in code rather than in a sterner instruction.
+
 ## Consequences
 
 - The model layer can no longer trade away understanding on its own. The failure mode
