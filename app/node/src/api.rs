@@ -86,28 +86,32 @@ pub struct AppState {
     /// cross-talk (one turn answering with another's context). A single lock makes
     /// every turn atomic, so a heartbeat brief can't interleave with a chat.
     pub turn_lock: Arc<tokio::sync::Mutex<()>>,
-    /// The running conversation summary (ADR 0028 context compaction), kept in memory
-    /// so the chat prompt stays bounded on a long conversation without dropping the
-    /// day's thread. Durable, cross-session facts live in beliefs, so an in-memory
-    /// summary that resets on restart is fine.
-    pub summary: ConversationSummaryCache,
+    /// The running conversation summary (ADR 0028 context compaction), which keeps the
+    /// chat prompt bounded on a long conversation without dropping the day's thread.
+    /// Persisted (SQLite), so a restart doesn't re-summarise the whole backlog — on a
+    /// slow local model that catch-up degraded the first turns after every deploy — and
+    /// the butler keeps the day's thread across restarts.
+    pub summary: PersistentSummary,
 }
 
-/// In-memory [`ConversationSummaryStore`](endora_application::ConversationSummaryStore):
-/// a single running summary shared across turns (Endora is single-conversation).
-#[derive(Clone, Default)]
-pub struct ConversationSummaryCache(
-    Arc<std::sync::RwLock<Option<endora_application::ConversationSummary>>>,
-);
+/// Persistent [`ConversationSummaryStore`](endora_application::ConversationSummaryStore):
+/// the single running summary, stored in SQLite via the conversation
+/// [`ChatStore`](endora_conversation::ChatStore) (Endora is single-conversation).
+#[derive(Clone)]
+pub struct PersistentSummary(Arc<endora_conversation::ChatStore>);
 
-impl endora_application::ConversationSummaryStore for ConversationSummaryCache {
+impl endora_application::ConversationSummaryStore for PersistentSummary {
     fn get(&self) -> Option<endora_application::ConversationSummary> {
-        self.0.read().ok().and_then(|g| g.clone())
+        self.0
+            .load_summary()
+            .ok()
+            .flatten()
+            .map(|(text, covered)| endora_application::ConversationSummary { text, covered })
     }
     fn set(&self, summary: endora_application::ConversationSummary) {
-        if let Ok(mut g) = self.0.write() {
-            *g = Some(summary);
-        }
+        // Best-effort: a failed summary write just means the next turn re-summarises;
+        // it must never break the turn.
+        let _ = self.0.save_summary(&summary.text, summary.covered);
     }
 }
 
@@ -126,6 +130,8 @@ impl AppState {
         let (changes, _) = broadcast::channel(16);
         // Context stores share the one connection the store opened (ADR 0026).
         let chat = Arc::new(endora_conversation::ChatStore::new(store.db()));
+        // The running summary is persisted through the same chat store (SQLite).
+        let summary = PersistentSummary(chat.clone());
         let schedules = Arc::new(endora_scheduling::ScheduleStore::new(store.db()));
         let understanding = Arc::new(endora_understanding::UnderstandingStore::new(store.db()));
         let direction = Arc::new(endora_direction::DirectionStore::new(store.db()));
@@ -163,7 +169,7 @@ impl AppState {
             capabilities: Arc::new(endora_infrastructure::default_capabilities()),
             mcp,
             turn_lock: Arc::new(tokio::sync::Mutex::new(())),
-            summary: ConversationSummaryCache::default(),
+            summary,
         }
     }
 }
