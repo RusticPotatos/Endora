@@ -63,10 +63,16 @@ The battery is now data-driven (39 cases) and runs repeatedly, reporting the spr
 rather than hiding it — because the spread *is* the resolution of the instrument, and
 without it there is no way to tell a real gain from a lucky run.
 
-**Measured 2026-07-25, `qwen2.5:7b`, 3 runs: mean 32.3/39, range 32–33, spread 1.**
-(An earlier 29.7/34 figure was against a smaller battery and is superseded. Note the
-spread narrowed from 4 to 1 as the battery grew, which is what more cases should do to
-it.)
+**Measured 2026-07-25, `qwen2.5:7b`.** Three separate 3-run measurements, taken hours
+apart while the battery was being corrected, gave **32.3/39, 32.0/39 and 30.0/40** — and
+the understanding tier alone swung **9/11, 10/11, 4/11**. The L3 swing happened with no
+change that could touch those cases.
+
+Read that as the honest state of the instrument: **a 3-run measurement is not enough to
+state a resolution.** Two earlier write-ups here quoted "spread 4" and then "spread 0" as
+if each were a property of the battery; both were single measurements of a noisy thing.
+Quote a range across independent measurements, not the spread within one, and treat any
+difference under a few points as unproven.
 
 What the runs found:
 
@@ -76,14 +82,27 @@ What the runs found:
   deterministic honesty nets — now quantified rather than assumed. Per that ADR the
   answer is a better model or a better prompt, **never** a canned string; whatever is
   tried can now be measured against this case.
-- **`select:knowledge` and `select:web_search` fail 0/3** — consistent, not noise.
-  Routing remains the axis that scales, exactly as the earlier evals suggested.
+- **`select:knowledge` and `select:web_search` fail 0/3 in every measurement** — the
+  one result stable enough to act on.
 - **`no-duplicate` passes 0 runs in 3** — the model re-states what it already knows;
   the deterministic backstop (ADR 0033) is what stops it reaching storage.
-- **The three `verify:*` cases score 1/3, 0/3, 0/3** — the read-back reaches the model
-  and the model ignores it. This is the finding that matters most right now, because
-  step 3 below was sequenced behind it. See
+- **The three `verify:*` cases never rise above 1/3** — the read-back reaches the model
+  and the model ignores it. Stable across every measurement, and the finding that
+  ADR 0037 answers. See
   [ADR 0034](adr/0034-evidence-verifies.md#the-answer-came-back-negative-measured-2026-07-25).
+- **The battery was reading the wrong channel.** Sixteen cases scored `capability_use`,
+  the pre-[0028](adr/0028-native-tool-calling-turn.md) field production writes nowhere
+  outside tests, and the `WithSkills`/`WithTools` probes left `context.tools` empty so
+  the model was never offered native tool-calling at all. Fixed: those probes now drive
+  `take_turn` with real schemas, and `used()` reads `tool_calls` first.
+
+  **This did not explain the live routing defect.** Asked to turn off the kitchen light,
+  the deployed butler reached for `HassLightSet`; both `select:turn-off-not-light-set`
+  and a new `select:turn-off-in-a-crowded-catalogue` (built-ins *and* the whole Home
+  Assistant server, as production sends) pass 3/3 on the corrected path. Two hypotheses
+  — wrong channel, then catalogue crowding — measured and refuted. The remaining
+  difference is the live Home Assistant catalogue itself: what that server actually
+  exposes and how it describes it, which the synthetic list only approximates.
 
 Still ahead: growing the battery further (now cheap), and a *pinned* LLM judge to
 measure whether a belief is genuinely insightful, which lexical scoring cannot see
