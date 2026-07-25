@@ -22,6 +22,14 @@ use endora_infrastructure::model_layer::{Scorecard, evaluate};
 use endora_infrastructure::{LlmButler, MixtureButler};
 
 /// Prints a per-case scorecard and the level/total lines, then returns it.
+///
+/// **A single run is noisy.** Sampling is non-deterministic, so borderline cases flip
+/// between runs — two consecutive runs of `qwen2.5:7b` scored L1 6/8 and then 8/8
+/// with nothing in the routing path changed. Treat one run as a smoke test, not a
+/// measurement: compare models over several runs, and do not read a few points of
+/// movement as a regression or an improvement. Widening the battery is the fix, and
+/// is what has to happen before scores can gate anything finer-grained than the
+/// existing adoption floor (ADR 0030).
 fn report(label: &str, card: &Scorecard) {
     println!("\n=== {label} ===");
     for case in &card.cases {

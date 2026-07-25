@@ -44,6 +44,12 @@ tagged release.
 
 ### Added
 
+- **Contradictions are surfaced rather than resolved.** When a new belief disagrees
+  with one Endora already holds, both are kept and the conflict is written to the
+  activity trail. Which one is true is the person's judgement, not the butler's —
+  auto-resolving by confidence or recency would have Endora deciding which of your
+  stated preferences is real. A ninth eval case, `command-not-belief`, scores whether
+  the model produces the defect in the first place.
 - **Per-machine Make settings via a git-ignored `local.mk`.** Deployment hosts are a
   property of your machine, not of the project: `make deploy` still targets the local
   Docker daemon out of the box, so a fresh clone works with no setup, and putting

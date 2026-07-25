@@ -54,7 +54,7 @@ pub use ports::{
     ConversationSummaryStore, DeepAsker, FormedBelief, IdSource, MemorySnapshot, MemoryStore,
     ProposalError, RepositoryError, ToolCall, TurnMessage,
 };
-pub use usecases::{ActivityItem, ActivityKind};
+pub use usecases::{ActivityItem, ActivityKind, reads_as_an_instruction, statements_disagree};
 
 /// Human-readable identity of this build, suitable for a node/CLI banner.
 ///

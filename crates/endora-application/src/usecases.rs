@@ -673,6 +673,11 @@ fn record_formed_beliefs(
 ) -> Result<(), AppError> {
     let existing = beliefs.list()?;
     for belief in formed {
+        // A command the person gave is not a fact about them. Dropping these keeps
+        // the model of the person from filling up with spent instructions.
+        if reads_as_an_instruction(&belief.statement) {
+            continue;
+        }
         if let Some(mut prior) = existing
             .iter()
             .find(|b| similar(b.statement(), &belief.statement))
@@ -682,6 +687,23 @@ fn record_formed_beliefs(
             prior.affirm(clock.now());
             beliefs.save(&prior)?;
             continue;
+        }
+        // Surface a disagreement rather than resolving it. Endora holding two
+        // contradictory beliefs means it is wrong about something, which is the most
+        // useful thing understanding can tell the person — and which of them is true
+        // is exactly the judgement that belongs to them, not to the butler
+        // (constitution §4: distinguish evidence from assumption, never present a
+        // guess as a fact). Both are kept; the person resolves it by correcting one.
+        for conflicting in existing
+            .iter()
+            .filter(|b| b.status() == crate::BeliefStatus::Active)
+            .filter(|b| statements_disagree(b.statement(), &belief.statement))
+        {
+            activity.push(format!(
+                "Noticed this sits oddly with something I already thought: \"{}\" vs \"{}\"",
+                conflicting.statement(),
+                belief.statement.trim()
+            ));
         }
         activity.push(format!("Learned that {}", belief.statement.trim()));
         let stored = Belief::new(
@@ -695,6 +717,47 @@ fn record_formed_beliefs(
         beliefs.save(&stored)?;
     }
     Ok(())
+}
+
+/// Verbs that name a change to the world rather than something about the person.
+const ACTION_VERBS: &[&str] = &[
+    "turn", "switch", "set", "play", "pause", "resume", "dim", "brighten", "lock", "unlock",
+    "open", "close", "start", "stop", "send", "add", "remove", "delete", "book", "order", "buy",
+    "schedule", "cancel", "call", "text", "email", "post", "put", "move",
+];
+
+/// Whether a "belief" is really a **one-off instruction** the person gave, rather
+/// than something true about them.
+///
+/// Observed live: the butler filed "you want me to turn off the kitchen light" as a
+/// durable preference, and later "you want me to turn on the kitchen lights" beside
+/// it. Neither is understanding — they are two commands from two moments, recorded
+/// as if they described a person. Left alone they accumulate, contradict each other,
+/// and pollute the context every later turn reasons from.
+///
+/// The discriminator is **what follows the request**. "You want me to *be more
+/// direct*" is a genuine standing preference about how Endora should behave and must
+/// be kept; "you want me to *turn off* the light" names an action on the world and is
+/// spent the moment it is carried out.
+pub fn reads_as_an_instruction(statement: &str) -> bool {
+    let text = normalized(statement);
+    let addressed_to_endora = [
+        "want me to",
+        "asked me to",
+        "told me to",
+        "need me to",
+        "would like me to",
+        "d like me to",
+        "wanted me to",
+    ]
+    .iter()
+    .any(|phrase| text.contains(phrase));
+    if !addressed_to_endora {
+        return false;
+    }
+    polarity_tokens(&text)
+        .iter()
+        .any(|w| ACTION_VERBS.contains(&w.as_str()))
 }
 
 /// Normalizes a belief statement for duplicate detection: lowercase, collapse
@@ -764,6 +827,70 @@ fn keywords(s: &str) -> Vec<String> {
         .collect()
 }
 
+/// Every word of a statement, lowercased with apostrophes closed up so `don't`
+/// becomes `dont`. Unlike [`keywords`] this drops **nothing** — the words that flip
+/// a statement's meaning (`on`, `no`, `not`) are exactly the short, common ones a
+/// keyword filter throws away.
+fn polarity_tokens(s: &str) -> Vec<String> {
+    s.to_lowercase()
+        .replace(['\'', '\u{2019}'], "")
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .map(str::to_owned)
+        .collect()
+}
+
+/// Words that reverse a statement's sense. Asymmetry in these means two statements
+/// disagree however much vocabulary they share.
+const NEGATIONS: &[&str] = &[
+    "not", "never", "no", "dont", "doesnt", "didnt", "wont", "isnt", "arent", "cant", "cannot",
+    "without", "instead", "rather", "dislike", "dislikes", "hate", "hates", "avoid", "avoids",
+];
+
+/// Pairs where holding one side contradicts the other.
+const ANTONYMS: &[(&str, &str)] = &[
+    ("on", "off"),
+    ("more", "less"),
+    ("always", "never"),
+    ("like", "dislike"),
+    ("prefer", "avoid"),
+    ("before", "after"),
+    ("morning", "evening"),
+    ("morning", "night"),
+    ("early", "late"),
+    ("hot", "cold"),
+    ("warm", "cool"),
+    ("start", "stop"),
+    ("open", "close"),
+    ("lock", "unlock"),
+    ("increase", "decrease"),
+    ("up", "down"),
+    ("fahrenheit", "celsius"),
+    ("metric", "imperial"),
+];
+
+/// Whether two statements **disagree** — one negates where the other does not, or
+/// they sit on opposite sides of an antonym pair.
+///
+/// This is checked on the raw words rather than the stemmed keywords, because the
+/// decisive tokens are the ones keyword filtering removes: `on` is two characters,
+/// `like` is a stopword, and `don't` splits into fragments. Without this,
+/// "turn **off** the kitchen light" and "turn **on** the kitchen lights" reduce to
+/// the same keyword set and merge into one belief — silently discarding the
+/// disagreement instead of surfacing it.
+#[must_use]
+pub fn statements_disagree(a: &str, b: &str) -> bool {
+    let (ta, tb) = (polarity_tokens(a), polarity_tokens(b));
+    let negated = |t: &[String]| t.iter().any(|w| NEGATIONS.contains(&w.as_str()));
+    if negated(&ta) != negated(&tb) {
+        return true;
+    }
+    let has = |t: &[String], w: &str| t.iter().any(|x| x == w);
+    ANTONYMS
+        .iter()
+        .any(|(x, y)| (has(&ta, x) && has(&tb, y)) || (has(&ta, y) && has(&tb, x)))
+}
+
 /// Whether two belief statements are effectively the same (a paraphrase), by
 /// stemmed keyword overlap — so "you want more energy so you can travel when you
 /// retire" and "you're motivated by being able to travel in retirement" are one
@@ -776,7 +903,15 @@ fn keywords(s: &str) -> Vec<String> {
 /// The threshold stays deliberately high: **wrongly merging two distinct beliefs
 /// silently loses understanding, which is worse than storing one duplicate the
 /// person can correct.**
+///
+/// Statements that [disagree](statements_disagree) are **never** similar, however
+/// much wording they share. Two contradictory beliefs are the most informative thing
+/// understanding can contain — they mean Endora is wrong about something — and
+/// collapsing them into one keeps whichever arrived first and destroys the signal.
 fn similar(a: &str, b: &str) -> bool {
+    if statements_disagree(a, b) {
+        return false;
+    }
     let (ka, kb) = (keywords(a), keywords(b));
     if ka.is_empty() || kb.is_empty() {
         return normalized(a) == normalized(b);
@@ -1663,7 +1798,7 @@ mod tests {
     /// backstop — not the prompt — has to hold this line
     /// (see the "deterministic over prompting" lesson behind ADR 0028).
     mod dedup {
-        use super::super::similar;
+        use super::super::{similar, statements_disagree};
 
         const KNOWN: &str = "you want more energy so you can travel when you retire";
 
@@ -1712,10 +1847,113 @@ mod tests {
             assert!(!similar("you like ties", "you like tea"));
         }
 
+        /// Every one of these was live in the deployed database at once. `similar`
+        /// merged all four — three of them contradictions — so the disagreement was
+        /// silently discarded and whichever arrived first won.
+        #[test]
+        fn contradictory_beliefs_are_never_merged() {
+            for (a, b) in [
+                (
+                    "you want me to turn off the kitchen light",
+                    "You want me to turn on the kitchen lights.",
+                ),
+                (
+                    "You prefer temperature measurements in Fahrenheit.",
+                    "You find it more convenient and accurate to measure temperature in \
+                     Celsius rather than Fahrenheit.",
+                ),
+                ("you like tea", "you don't like tea"),
+                (
+                    "you always run in the morning",
+                    "you never run in the morning",
+                ),
+            ] {
+                assert!(!similar(a, b), "merged a contradiction:\n  {a:?}\n  {b:?}");
+                assert!(statements_disagree(a, b), "should disagree: {a:?} / {b:?}");
+            }
+        }
+
+        #[test]
+        fn polarity_is_read_from_words_a_keyword_filter_would_drop() {
+            // "on" is two characters, "like" is a stopword, "don't" splits into
+            // fragments — all invisible to `keywords`, all decisive here.
+            assert!(statements_disagree("turn it on", "turn it off"));
+            assert!(statements_disagree("you like tea", "you dont like tea"));
+            assert!(statements_disagree("you run early", "you run late"));
+        }
+
+        #[test]
+        fn agreeing_statements_are_not_mistaken_for_disagreement() {
+            // Both negated, so the negation is symmetric and not a disagreement.
+            assert!(!statements_disagree(
+                "you never run in the morning",
+                "you dont run in the morning"
+            ));
+            // Sharing no polarity vocabulary at all.
+            assert!(!statements_disagree(
+                "you want more energy to travel",
+                "you want the energy to travel in retirement"
+            ));
+            // ...and a genuine rephrasing still merges.
+            assert!(similar(
+                "you want more energy so you can travel when you retire",
+                "you want the energy to travel in retirement"
+            ));
+        }
+
         #[test]
         fn an_empty_statement_falls_back_to_exact_comparison() {
             assert!(similar("", ""));
             assert!(!similar("", KNOWN));
+        }
+    }
+
+    /// Commands are not facts about a person. Live data had two of them filed as
+    /// durable beliefs, contradicting each other.
+    mod instructions {
+        use super::super::reads_as_an_instruction;
+
+        #[test]
+        fn a_one_off_command_is_not_understanding() {
+            for command in [
+                "you want me to turn off the kitchen light",
+                "You want me to turn on the kitchen lights.",
+                "you asked me to play some music",
+                "you told me to add milk to the shopping list",
+                "you would like me to lock the front door",
+            ] {
+                assert!(reads_as_an_instruction(command), "should drop: {command:?}");
+            }
+        }
+
+        #[test]
+        fn a_standing_preference_about_endora_is_kept() {
+            // These are also phrased as "you want me to …" but describe how Endora
+            // should *be*, not a task to carry out. Dropping them would lose the
+            // most useful thing the person can tell the butler about itself.
+            for preference in [
+                "you want me to be more direct",
+                "you want me to keep an eye on your sleep",
+                "you asked me to check in less often",
+                "you would like me to explain my reasoning",
+            ] {
+                assert!(
+                    !reads_as_an_instruction(preference),
+                    "should keep: {preference:?}"
+                );
+            }
+        }
+
+        #[test]
+        fn ordinary_beliefs_are_untouched() {
+            for belief in [
+                "you want more energy to travel when you retire",
+                "you prefer temperatures in Fahrenheit",
+                "you find mornings hard",
+                "you turn in early on weeknights",
+            ] {
+                assert!(!reads_as_an_instruction(belief), "should keep: {belief:?}");
+            }
         }
     }
 
