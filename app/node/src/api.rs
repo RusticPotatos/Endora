@@ -1040,6 +1040,7 @@ async fn send_chat(
             chat.as_ref(),
             understanding.as_ref(),
             understanding.as_ref(),
+            understanding.as_ref(),
             &runner,
             butler.as_ref(),
             audit.as_ref(),
@@ -1084,6 +1085,7 @@ async fn brief(State(state): State<AppState>) -> Result<Json<serde_json::Value>,
         let context = usecases::butler_context(understanding.as_ref(), &runner, clock.as_ref())?;
         let out = usecases::daily_brief(
             chat.as_ref(),
+            understanding.as_ref(),
             understanding.as_ref(),
             &runner,
             butler.as_ref(),
@@ -1198,6 +1200,7 @@ async fn stream_chat(
                 };
                 usecases::send_to_butler_streaming(
                     chat.as_ref(),
+                    understanding.as_ref(),
                     understanding.as_ref(),
                     understanding.as_ref(),
                     &runner,
@@ -2449,6 +2452,7 @@ pub fn spawn_heartbeat(state: AppState) {
                     chat.as_ref(),
                     schedules.as_ref(),
                     understanding.as_ref(),
+                    understanding.as_ref(),
                     &runner,
                     butler.as_ref(),
                     audit.as_ref(),
@@ -2464,6 +2468,7 @@ pub fn spawn_heartbeat(state: AppState) {
                 // A daily brief, if one is due (reversible skills only).
                 let briefed = usecases::run_due_brief(
                     chat.as_ref(),
+                    understanding.as_ref(),
                     understanding.as_ref(),
                     schedules.as_ref(),
                     &runner,
@@ -2484,6 +2489,7 @@ pub fn spawn_heartbeat(state: AppState) {
                 // irreversible. Serialized under the turn lock like the brief.
                 let reflected = usecases::run_due_nightly_loop(
                     chat.as_ref(),
+                    understanding.as_ref(),
                     understanding.as_ref(),
                     understanding.as_ref(),
                     schedules.as_ref(),

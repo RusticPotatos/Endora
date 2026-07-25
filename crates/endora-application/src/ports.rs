@@ -11,7 +11,7 @@ use endora_capabilities::CapabilityUse;
 use endora_conversation::{ChatMessage, MessageRole};
 use endora_kernel::ids::{MessageId, Timestamp};
 use endora_platform::AuditRecord;
-use endora_understanding::{Belief, BeliefKind, Confidence, Preference};
+use endora_understanding::{Belief, BeliefKind, Confidence, Outcome, Preference};
 
 /// A complete snapshot of the user's stored data, for the memory rights of the
 /// constitution: it is what "export" hands back and what "delete" removes.
@@ -25,6 +25,8 @@ pub struct MemorySnapshot {
     pub preferences: Vec<Preference>,
     /// Endora's understanding of the person — the beliefs it holds.
     pub beliefs: Vec<Belief>,
+    /// What happened after Endora acted — claim, observation and reaction (ADR 0035).
+    pub outcomes: Vec<Outcome>,
 }
 
 /// The user's right to export and delete all of their data (constitution:
