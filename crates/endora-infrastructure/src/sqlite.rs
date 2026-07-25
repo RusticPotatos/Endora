@@ -167,7 +167,8 @@ CREATE TABLE IF NOT EXISTS mcp_servers (
     enabled INTEGER NOT NULL DEFAULT 1,
     env     TEXT NOT NULL DEFAULT '',
     auth    TEXT NOT NULL DEFAULT '',
-    trust_all INTEGER NOT NULL DEFAULT 1
+    trust_all INTEGER NOT NULL DEFAULT 1,
+    reader_tool TEXT NOT NULL DEFAULT ''
 ) STRICT;
 ";
 
