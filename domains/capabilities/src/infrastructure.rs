@@ -1939,6 +1939,26 @@ pub struct McpRunner {
 }
 
 impl McpRunner {
+    /// Whether this tool is the **state reader** Endora uses to verify that server's
+    /// actions — the counterpart of `verifier`, asked of the reader rather than of the
+    /// action.
+    ///
+    /// This is Endora's own knowledge, not the server's claim: it holds only for the
+    /// reader `verifier` already names, on a server that also hosts the actions it
+    /// verifies. Everything else stays deny-by-default, which is the point — an MCP
+    /// server announcing "I only read" would not be evidence of anything.
+    fn is_state_reader(&self, id: &str) -> bool {
+        let Some((server, tool)) = id.split_once('.') else {
+            return false;
+        };
+        tool == "GetLiveContext"
+            && self
+                .connections
+                .iter()
+                .filter(|c| c.server == server)
+                .any(|c| c.tools.iter().any(|t| t.name.starts_with("Hass")))
+    }
+
     /// Connects to each `(server_name, transport)`, discovering its tools up front. A
     /// server whose `list_tools` fails is **skipped** — it contributes no tools rather
     /// than failing the whole runner, so one unhealthy server can't take down the host
@@ -2000,6 +2020,18 @@ fn compact_input_hint(schema: &serde_json::Value) -> Option<String> {
 
 impl CapabilityRunner for McpRunner {
     fn available(&self) -> Vec<crate::application::CapabilitySpec> {
+        // The ids Endora treats as state readers, resolved once rather than per tool.
+        let reader_ids: std::collections::HashSet<String> = self
+            .connections
+            .iter()
+            .flat_map(|c| {
+                c.tools
+                    .iter()
+                    .map(move |t| format!("{}.{}", c.server, t.name))
+            })
+            .filter(|id| self.is_state_reader(id))
+            .collect();
+        let reader_ids = &reader_ids;
         self.connections
             .iter()
             .flat_map(|c| {
@@ -2012,16 +2044,28 @@ impl CapabilityRunner for McpRunner {
                         Some(hint) => format!("{} — {hint}", t.description),
                         None => t.description.clone(),
                     };
+                    // A tool Endora itself designates as that server's state reader is
+                    // a READ: it reports the world, it does not act on it. Left in the
+                    // irreversible band it was handed `[unverified] this is what the
+                    // tool reported about its own work` — telling the model not to trust
+                    // the very reading that is supposed to be the confirmation, which is
+                    // incoherent and was observed live. A read has no work of its own to
+                    // be unverified about (ADR 0034/0037).
+                    let reads_state =
+                        reader_ids.contains(format!("{}.{}", c.server, t.name).as_str());
                     crate::application::CapabilitySpec {
                         id: format!("{}.{}", c.server, t.name),
                         description,
                         configured: true,
-                        // Deny-by-default: an MCP tool is never cleared to act alone,
-                        // and — since the server tells us nothing about whether a tool
-                        // reads or actuates — its result is treated as a receipt, not
-                        // as evidence (ADR 0034).
-                        autonomous: false,
-                        reversibility: Reversibility::Irreversible,
+                        // Deny-by-default everywhere else: the server tells us nothing
+                        // about whether a tool reads or actuates, so its result is a
+                        // receipt, not evidence (ADR 0034).
+                        autonomous: reads_state,
+                        reversibility: if reads_state {
+                            Reversibility::Observe
+                        } else {
+                            Reversibility::Irreversible
+                        },
                         // The real schema travels structurally too (as text), so the
                         // model layer can offer this tool through native tool-calling.
                         input_schema: t.input_schema.as_ref().map(ToString::to_string),
@@ -2033,10 +2077,17 @@ impl CapabilityRunner for McpRunner {
 
     fn decision(&self, id: &str) -> Option<Decision> {
         // Only answer for tools we host; an unknown id is `None` so a composite can
-        // consult another source. A hosted tool is deny-by-default — treated as the
-        // irreversible band until a later slice classifies it.
-        self.find(id)
-            .map(|_| Reversibility::Irreversible.default_decision())
+        // consult another source. Deny-by-default, except the state reader Endora uses
+        // to verify actions — a read is in the `Observe` band and may run on its own, so
+        // the read-back still works when the person has opened the actions but not the
+        // reader.
+        self.find(id).map(|_| {
+            if self.is_state_reader(id) {
+                Reversibility::Observe.default_decision()
+            } else {
+                Reversibility::Irreversible.default_decision()
+            }
+        })
     }
 
     /// Home Assistant hosts both actuators (`Hass*`) and a state reader
@@ -3336,6 +3387,70 @@ mod tests {
             "create_event({})"
         );
         assert!(composite.run("missing", "{}").is_err());
+    }
+
+    #[test]
+    fn a_state_reader_is_an_observation_not_a_receipt() {
+        // Observed live: GetLiveContext's own result came back stamped
+        //   "[unverified] This is what the tool reported about its own work."
+        // A read has no work of its own. Worse, that text tells the model not to trust
+        // the very reading ADR 0034 uses as the confirmation — so the mechanism was
+        // arguing against itself in production.
+        let mcp = McpRunner::connect(vec![(
+            "home-assistant".to_owned(),
+            Box::new(FakeTransport {
+                tools: vec![tool("HassTurnOff"), tool("GetLiveContext")],
+                healthy: true,
+            }) as Box<dyn McpClient>,
+        )]);
+
+        let specs = mcp.available();
+        let reader = specs
+            .iter()
+            .find(|s| s.id == "home-assistant.GetLiveContext")
+            .expect("the reader is offered");
+        assert_eq!(
+            reader.reversibility,
+            Reversibility::Observe,
+            "a read reports state, so its result is evidence (ADR 0034)"
+        );
+        // And it may run on its own, so the read-back still works when the person has
+        // opened the actions but not the reader.
+        assert_eq!(
+            mcp.decision("home-assistant.GetLiveContext"),
+            Some(Decision::Act)
+        );
+        assert!(reader.autonomous);
+
+        // Everything else on the same server stays deny-by-default. The classification
+        // is Endora's own knowledge about one named reader, not a door for any server
+        // that calls a tool read-only.
+        let action = specs
+            .iter()
+            .find(|s| s.id == "home-assistant.HassTurnOff")
+            .expect("the action is offered");
+        assert_eq!(action.reversibility, Reversibility::Irreversible);
+        assert!(!action.autonomous);
+        assert_eq!(
+            mcp.decision("home-assistant.HassTurnOff"),
+            Some(Decision::Block)
+        );
+    }
+
+    #[test]
+    fn a_lone_get_live_context_is_not_treated_as_a_reader() {
+        // The classification is tied to the server hosting the actions it verifies —
+        // it must not fire for an unrelated server that happens to use the same name.
+        let mcp = McpRunner::connect(vec![(
+            "somewhere-else".to_owned(),
+            Box::new(FakeTransport {
+                tools: vec![tool("GetLiveContext")],
+                healthy: true,
+            }) as Box<dyn McpClient>,
+        )]);
+        let spec = &mcp.available()[0];
+        assert_eq!(spec.reversibility, Reversibility::Irreversible);
+        assert!(!spec.autonomous);
     }
 
     #[test]
