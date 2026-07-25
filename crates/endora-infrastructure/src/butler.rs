@@ -170,6 +170,24 @@ impl LlmButler {
         self.post_and_parse(&body, context)
     }
 
+    /// Keeps a **local** Ollama model resident between turns, so it doesn't cold-load
+    /// on the next call (a reload can blow past the timeout and degrade the reply).
+    /// `keep_alive` is an Ollama extension; only sent to a local endpoint, since a
+    /// strict cloud endpoint rejects unknown fields.
+    fn with_keep_alive(&self, mut body: Value) -> Value {
+        let b = self.base_url.as_str();
+        let local = b.contains(":11434")
+            || b.contains("host.docker.internal")
+            || b.contains("localhost")
+            || b.contains("127.0.0.1");
+        if local {
+            if let Some(obj) = body.as_object_mut() {
+                obj.insert("keep_alive".to_owned(), json!("30m"));
+            }
+        }
+        body
+    }
+
     /// POSTs a chat-completions `body` and parses the reply (native tool call or
     /// envelope). Shared by the two-pass `try_model` and the single-conversation
     /// `take_turn`.
@@ -183,8 +201,9 @@ impl LlmButler {
         if !self.api_key.is_empty() {
             req = req.header("Authorization", &format!("Bearer {}", self.api_key));
         }
+        let body = self.with_keep_alive(body.clone());
         let mut response = req
-            .send_json(body)
+            .send_json(&body)
             .map_err(|e| ProposalError::Unavailable(e.to_string()))?;
         if response.status().as_u16() >= 300 {
             return Err(ProposalError::Unavailable(format!(
@@ -232,6 +251,7 @@ impl LlmButler {
         if let Some(obj) = body.as_object_mut() {
             obj.remove("response_format");
         }
+        let body = self.with_keep_alive(body);
         let url = format!("{}/chat/completions", self.base_url);
         let mut req = self.agent.post(&url);
         if !self.api_key.is_empty() {
@@ -1460,6 +1480,22 @@ mod tests {
                 reply.text
             );
         }
+    }
+
+    #[test]
+    fn keep_alive_is_added_for_local_endpoints_only() {
+        let body = || json!({ "model": "m", "messages": [] });
+        // A local Ollama endpoint keeps the model resident.
+        let local = LlmButler::new(
+            "http://host.docker.internal:11434/v1".to_owned(),
+            "m".to_owned(),
+        );
+        assert_eq!(local.with_keep_alive(body())["keep_alive"], "30m");
+        let local2 = LlmButler::new("http://127.0.0.1:11434/v1".to_owned(), "m".to_owned());
+        assert_eq!(local2.with_keep_alive(body())["keep_alive"], "30m");
+        // A cloud endpoint is never sent the unknown field (it would 400).
+        let cloud = LlmButler::new("https://api.openai.com/v1".to_owned(), "m".to_owned());
+        assert!(cloud.with_keep_alive(body()).get("keep_alive").is_none());
     }
 
     #[test]
