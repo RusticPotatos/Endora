@@ -331,6 +331,24 @@ pub trait CapabilityRunner {
     /// message. Only ever called for capabilities the policy layer has cleared.
     fn run(&self, id: &str, input_json: &str) -> Result<String, String>;
 
+    /// The capability that **observes what this one changes**, if any — the read
+    /// used to verify an actuation (ADR 0034).
+    ///
+    /// Endora's architecture says *evidence verifies*. Without this, the turn can
+    /// only report what an actuator claimed about its own work, which is exactly the
+    /// thing that can be untrue. A source that knows one of its capabilities reads
+    /// the same state another writes returns that reader's id here, and the turn
+    /// looks at the world instead of taking the tool's word.
+    ///
+    /// This is **one mapping per integration**, not one per tool: an MCP server that
+    /// exposes a state reader can name it for every action it hosts.
+    ///
+    /// The default is `None` — nothing can be verified, so results stay marked
+    /// unverified. Honest for integrations nobody has taught Endora about.
+    fn verifier(&self, _id: &str) -> Option<String> {
+        None
+    }
+
     /// The deterministic policy [`Decision`] for a capability by id (ADRs
     /// 0005/0024) — what policy does with it: [`Act`](Decision::Act) on its own,
     /// [`Confirm`](Decision::Confirm) first, or [`Block`](Decision::Block) outright.
