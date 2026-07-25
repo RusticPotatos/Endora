@@ -18,38 +18,67 @@
 //!   cargo test -p endora-infrastructure --test agentic_eval -- --ignored --nocapture
 //! ```
 
-use endora_infrastructure::model_layer::{Scorecard, evaluate};
+use endora_infrastructure::model_layer::{RepeatedScore, evaluate_repeated};
 use endora_infrastructure::{LlmButler, MixtureButler};
 
-/// Prints a per-case scorecard and the level/total lines, then returns it.
+/// How many times to run the battery. Overridable with `ENDORA_EVAL_RUNS`.
 ///
-/// **A single run is noisy.** Sampling is non-deterministic, so borderline cases flip
-/// between runs — two consecutive runs of `qwen2.5:7b` scored L1 6/8 and then 8/8
-/// with nothing in the routing path changed. Treat one run as a smoke test, not a
-/// measurement: compare models over several runs, and do not read a few points of
-/// movement as a regression or an improvement. Widening the battery is the fix, and
-/// is what has to happen before scores can gate anything finer-grained than the
-/// existing adoption floor (ADR 0030).
-fn report(label: &str, card: &Scorecard) {
-    println!("\n=== {label} ===");
-    for case in &card.cases {
+/// More than one, always: a single run is a smoke test. Sampling is
+/// non-deterministic and borderline cases flip — two consecutive runs of
+/// `qwen2.5:7b` scored L1 6/8 then 8/8 with nothing in the routing path changed.
+fn runs() -> usize {
+    std::env::var("ENDORA_EVAL_RUNS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(3)
+}
+
+/// Prints the per-case pass rates, the per-tier scores, and — the point of running
+/// more than once — the **spread**, which is the resolution of the instrument.
+fn report(label: &str, score: &RepeatedScore) {
+    let n = score.runs.len();
+    println!("\n=== {label} ({n} runs) ===");
+    for rate in &score.rates {
+        let mark = if rate.passes == rate.runs {
+            "PASS"
+        } else if rate.passes == 0 {
+            "FAIL"
+        } else {
+            "FLAKY"
+        };
         println!(
-            "  [{}] {}",
-            if case.passed { "PASS" } else { "FAIL" },
-            case.name
+            "  [{:>5}] {}/{}  {}",
+            mark, rate.passes, rate.runs, rate.name
+        );
+    }
+    if let Some(last) = score.runs.last() {
+        println!(
+            "  tiers (last run): L1 {}/{}, L2 {}/{}, L3 {}/{}",
+            last.l1, last.l1_max, last.l2, last.l2_max, last.l3, last.l3_max
         );
     }
     println!(
-        "=== {label}: L1 {}/{}, L2 {}/{}, L3 {}/{}, TOTAL {}/{} ===\n",
-        card.l1,
-        card.l1_max,
-        card.l2,
-        card.l2_max,
-        card.l3,
-        card.l3_max,
-        card.total(),
-        card.max()
+        "=== {label}: mean {:.1}/{}, range {}–{}, spread {} ===",
+        score.mean_total(),
+        score.runs.first().map_or(0, |s| s.max()),
+        score.min_total(),
+        score.max_total(),
+        score.spread()
     );
+    let unstable = score.unstable();
+    if unstable.is_empty() {
+        println!("    every case behaved the same way each run.");
+    } else {
+        println!(
+            "    {} case(s) flipped between runs — the model is marginal on these, and",
+            unstable.len()
+        );
+        println!(
+            "    any comparison closer than a spread of {} is noise.",
+            score.spread()
+        );
+    }
+    println!();
 }
 
 /// Single-model eval: one model does routing *and* synthesis.
@@ -60,21 +89,27 @@ fn butler_drives_the_agentic_loop() {
         .expect("set ENDORA_MODEL_URL (e.g. http://192.168.1.14:11434/v1)");
     let model = std::env::var("ENDORA_MODEL").expect("set ENDORA_MODEL (e.g. qwen2.5:14b)");
     let butler = LlmButler::new(url, model.clone());
-    let card = evaluate(&butler);
-    report(&model, &card);
+    let score = evaluate_repeated(&butler, runs());
+    report(&model, &score);
+    // Asserted on the WORST run, not the mean: a butler that is sometimes unusable
+    // is unusable. Understanding is the only model Endora keeps of a person
+    // (ADR 0029), so a model that forms none is not viable however well it routes.
+    let worst = score
+        .runs
+        .iter()
+        .min_by_key(|s| s.total())
+        .expect("at least one run");
     assert!(
-        card.l1 >= 3,
-        "{model} scored L1 {}/{}: not viable as an agentic rung-one butler",
-        card.l1,
-        card.l1_max
+        worst.l1 * 4 >= worst.l1_max,
+        "{model} scored L1 {}/{} at worst: not viable as an agentic rung-one butler",
+        worst.l1,
+        worst.l1_max
     );
-    // Understanding is the only model Endora keeps of a person (ADR 0029), so a
-    // model that forms none is not a viable butler however well it routes tools.
     assert!(
-        card.l3 >= 3,
-        "{model} scored L3 {}/{}: too weak at understanding to be the butler's brain",
-        card.l3,
-        card.l3_max
+        worst.l3 * 3 >= worst.l3_max,
+        "{model} scored L3 {}/{} at worst: too weak at understanding to be the brain",
+        worst.l3,
+        worst.l3_max
     );
 }
 
@@ -96,12 +131,17 @@ fn mixture_drives_the_agentic_loop() {
         LlmButler::new(url.clone(), router),
         LlmButler::new(url, synth),
     );
-    let card = evaluate(&butler);
-    report(&label, &card);
+    let score = evaluate_repeated(&butler, runs());
+    report(&label, &score);
+    let worst = score
+        .runs
+        .iter()
+        .min_by_key(|s| s.total())
+        .expect("at least one run");
     assert!(
-        card.l1 >= 3,
-        "{label} scored L1 {}/{}: not viable",
-        card.l1,
-        card.l1_max
+        worst.l1 * 4 >= worst.l1_max,
+        "{label} scored L1 {}/{} at worst: not viable",
+        worst.l1,
+        worst.l1_max
     );
 }
