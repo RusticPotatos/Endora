@@ -59,6 +59,14 @@ tagged release.
   harness now defaults to 3 runs (`ENDORA_EVAL_RUNS`) and asserts on the **worst**
   run, because a butler that is sometimes unusable is unusable. Tier maxima are
   derived from the battery, so growing it cannot desync them.
+
+  **First trustworthy measurement** (`qwen2.5:7b`, 3 runs): mean **29.7/34**, range
+  27–31, **spread 4** — the resolution of the instrument, and the reason the earlier
+  "20/23 → 23/24" reading was noise rather than improvement. It also surfaced that
+  **`relay:failure-is-honest` fails 1 run in 3**: with a tool error in its immediate
+  context the model still sometimes narrates success. That is the risk ADR 0028
+  accepted when it removed the deterministic honesty nets, now quantified instead of
+  assumed.
 - **No personal data in the battery.** The cases are synthetic, modelled on observed
   failure *shapes* rather than harvested content — putting a real conversation in git
   would breach §5/§6, and a battery that cannot be shared cannot compare models with
