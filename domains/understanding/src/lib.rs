@@ -18,8 +18,11 @@ pub mod application;
 pub mod domain;
 pub mod infrastructure;
 
-pub use application::{BeliefRepository, OutcomeRepository, PreferenceRepository};
+pub use application::{
+    BeliefRepository, IntentionRepository, OutcomeRepository, PreferenceRepository,
+};
 pub use domain::{
-    Belief, BeliefKind, BeliefStatus, Confidence, Outcome, Preference, PreferenceKind, Reaction,
+    Belief, BeliefKind, BeliefStatus, Confidence, Intention, IntentionState, Outcome, Preference,
+    PreferenceKind, Reaction,
 };
 pub use infrastructure::{UnderstandingStore, migrate};
