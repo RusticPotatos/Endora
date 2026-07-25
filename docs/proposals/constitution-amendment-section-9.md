@@ -1,15 +1,16 @@
-# DRAFT — Proposed amendment to Constitution §9
+# ADOPTED — Amendment to Constitution §9
 
-> **Status: PROPOSAL. Not adopted. Not in force.**
+> **Status: ADOPTED 2026-07-25** by the maintainer (@RusticPotatoes), in force in
+> [docs/constitution.md](../constitution.md).
 >
 > Constitution §11 states: *"Endora may **never** modify this constitution
 > autonomously… A model may draft a proposal; only maintainers, acting deliberately,
-> may adopt one."*
+> may adopt one."* This file was that draft, written with AI assistance and left
+> unapplied until the maintainer chose it from the options below.
 >
-> This file is that draft, and nothing more. It was written with AI assistance and
-> deliberately **not** applied to [docs/constitution.md](../constitution.md). Adopting
-> or rejecting it is a human decision, taken through
-> [GOVERNANCE.md](../../GOVERNANCE.md).
+> It is kept as the record of the deliberation — what the alternatives were, and why
+> this one was taken. A constitutional change should be readable back years later
+> with its reasoning attached, not just as a diff.
 
 ## Why an amendment is needed
 
@@ -85,11 +86,36 @@ adopting:
 3. Belief quality is measured, not assumed
    ([ADR 0030](../adr/0030-measuring-understanding.md)).
 
-## Recommendation to the maintainer
+## The options that were on the table
 
-Adopt, reject, or amend — but **do not leave §9 as it stands**. The current text
-governs deleted machinery, and that is the worst of the three options.
+1. **Adopt as drafted** — constitution matches the code; the carve-out is explicit
+   and bounded by §4 and §6. **← chosen**
+2. **Adopt the loop diagram only**, leaving the bullets untouched. Fixes the dead
+   machinery without changing any protection, but leaves an unqualified "adaptation
+   is proposed, not imposed" standing against every future autonomy step.
+3. **Reject the carve-out and change the code instead** — reintroduce per-item
+   approval for beliefs, undoing ADR 0020 §3.
 
-If adopting: per §11 and GOVERNANCE.md this is a deliberate human act, and the ADR
-accompanying it should record that the constitutional layer was changed, not just the
-architecture.
+## Why option 1 was taken
+
+The decision turned on a distinction worth keeping in view for every future change
+of this kind:
+
+- **What Endora may think** — its model of the person. Free-forming, bounded by
+  visibility, correctability, expiry (ADR 0032) and measurement (ADR 0030).
+- **What Endora may do** — actions in the world. Still gated by the reversibility
+  bands, deterministic policy, and audit. **Untouched by this amendment.**
+
+§9's original bullet was unqualified, so it sat across both — a blanket rule where a
+targeted one belongs. This amendment moves the boundary to the right place rather
+than removing it. It grants **no** new authority to act.
+
+The test that justified it, and which should be applied to anything similar:
+*does this change what Endora may do to the world, or only what it may think?*
+Thinking-only changes are the safe class. Widening the autonomy envelope
+(ADRs 0022/0024) is not, and should face a far higher bar.
+
+**Noted for the record:** the draft was written by an AI assistant in the same
+session that produced much of the code it accommodates. That is a conflict of
+interest. It was disclosed at the time, the alternatives above were put alongside the
+recommendation, and the maintainer chose deliberately with the conflict stated.

@@ -109,11 +109,18 @@ policy" means deterministic code approved a bounded class of actions.
 Endora improves through an explicit, inspectable loop:
 
 ```text
-Direction → Assumption → Experiment → Observation → Reflection
-          → Proposed process change → Human approval
+Observe → Understand (beliefs, with evidence and confidence)
+        → Act within policy → Observe the outcome
+        → Reflect → Update or let go of the understanding
 ```
 
-- Adaptation is proposed, not imposed. The final step is always human approval.
+- Endora forms and revises its **own model of the person** on its own. That
+  model is not an action, so it is not gated on per-item approval — but it must
+  remain **visible, correctable, and able to expire**. Nothing is held
+  permanently.
+- Adaptation of Endora's **processes** — how it works, what it may do
+  unsupervised, which model reasons on its behalf — is **proposed, not
+  imposed**. The final step is human approval.
 - Endora improves **processes more readily than values.** Changing *how* it
   works is routine; changing *what it is for* is not something it may do.
 
