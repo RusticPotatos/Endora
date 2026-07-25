@@ -1237,33 +1237,41 @@ fn compact_history(
     }
     // Fold the overflow into the summary only once enough new messages have piled up —
     // NOT every turn. Each turn adds messages, so the window boundary advances every
-    // turn; summarising on every advance would pay a slow model call per turn on a
-    // long chat (which is exactly what degraded late turns). Between batches the
-    // not-yet-summarised overflow rides along verbatim, so nothing is dropped — the
-    // prompt just holds up to `window + SUMMARY_BATCH` recent messages.
+    // turn; summarising on every advance would pay a slow model call per turn on a long
+    // chat (which is exactly what degraded late turns).
     const SUMMARY_BATCH: usize = 12;
+    // Hard cap on how many recent messages ride verbatim, so the prompt can't blow up
+    // even when the summary is behind: the tail window plus at most one pending batch.
+    let max_verbatim = window + SUMMARY_BATCH;
     let boundary = full.len() - window; // messages [0..boundary) are older than the tail window
     let mut current = summary.get().unwrap_or_default();
     if boundary >= current.covered + SUMMARY_BATCH {
-        // One summarisation call, folding the prior summary + the new overflow chunk.
-        let chunk = render_transcript(&full[current.covered..boundary]);
+        // Fold exactly ONE batch per turn, not the whole backlog. A big backlog — e.g.
+        // after a restart cleared the in-memory summary — is then caught up over a few
+        // turns, each a small, fast call rather than one giant summarisation that would
+        // itself time out on a slow model.
+        let end = current.covered + SUMMARY_BATCH;
+        let chunk = render_transcript(&full[current.covered..end]);
         if let Ok(s) = butler.summarize(&current.text, &chunk) {
             let s = s.trim();
             if !s.is_empty() {
                 current = ConversationSummary {
                     text: s.to_owned(),
-                    covered: boundary,
+                    covered: end,
                 };
                 summary.set(current.clone());
             }
         }
-        // Summariser unavailable/failed: keep the prior summary and coverage; the
-        // overflow just rides along verbatim until the next attempt.
+        // Summariser unavailable/failed: keep the prior summary and coverage; the cap
+        // below still bounds the prompt.
     }
     let text = (!current.text.is_empty()).then_some(current.text);
-    // Verbatim = everything not yet summarised (the tail window plus any overflow
-    // still waiting for the next batch).
-    (full[current.covered..].to_vec(), text)
+    // Verbatim = the not-yet-summarised tail, but never more than `max_verbatim`. If the
+    // summary is lagging (summariser failing), drop the oldest beyond the cap rather than
+    // send a giant prompt — lost detail beats a timeout, and durable facts live in
+    // beliefs, not the transcript.
+    let start = current.covered.max(full.len().saturating_sub(max_verbatim));
+    (full[start..].to_vec(), text)
 }
 
 /// Renders messages as a plain `User:/Butler:` transcript, for summarising.
@@ -3499,6 +3507,61 @@ mod tests {
         let (recent3, summary3) = compact_history(&SummBut, &store, &msgs[..5], 12);
         assert_eq!(recent3.len(), 5);
         assert!(summary3.is_none());
+    }
+
+    #[test]
+    fn compact_history_caps_verbatim_when_the_summariser_fails() {
+        use super::compact_history;
+        use crate::ConversationSummaryStore as _;
+        struct Store(std::cell::RefCell<Option<crate::ConversationSummary>>);
+        impl crate::ConversationSummaryStore for Store {
+            fn get(&self) -> Option<crate::ConversationSummary> {
+                self.0.borrow().clone()
+            }
+            fn set(&self, s: crate::ConversationSummary) {
+                *self.0.borrow_mut() = Some(s);
+            }
+        }
+        // A summariser that always fails (e.g. the model timed out) — coverage never
+        // advances, so without a cap the whole backlog would ride verbatim.
+        struct FailSumm;
+        impl Butler for FailSumm {
+            fn respond(
+                &self,
+                _h: &[ChatMessage],
+                _p: &[Preference],
+                _c: &ButlerContext,
+            ) -> Result<ButlerReply, ProposalError> {
+                Ok(ButlerReply::default())
+            }
+            fn summarize(&self, _p: &str, _t: &str) -> Result<String, ProposalError> {
+                Err(ProposalError::Unavailable("timeout".to_owned()))
+            }
+        }
+        let msgs: Vec<ChatMessage> = (0u128..60)
+            .map(|i| {
+                ChatMessage::new(
+                    MessageId::new(i + 1),
+                    MessageRole::User,
+                    &format!("m{i}"),
+                    Timestamp::from_unix_millis(0),
+                )
+                .unwrap()
+            })
+            .collect();
+        let store = Store(std::cell::RefCell::new(None));
+
+        // 60 messages, window 12, batch 12 → even though the summariser fails, verbatim
+        // is capped at window + batch = 24 (the oldest are dropped, not sent).
+        let (recent, summary) = compact_history(&FailSumm, &store, &msgs, 12);
+        assert_eq!(
+            recent.len(),
+            24,
+            "verbatim must stay bounded, got {recent:?}"
+        );
+        assert_eq!(recent[0].text(), "m36"); // 60 - 24
+        assert!(summary.is_none());
+        assert!(store.get().is_none(), "a failed summary is not stored");
     }
 
     #[test]
