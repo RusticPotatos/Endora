@@ -164,17 +164,109 @@ pub fn recent_activity(
 /// in the tool result is not narration on the butler's behalf (ADR 0028) — it is part
 /// of the real outcome, and it is the honest default for every integration, including
 /// ones nobody has debugged yet.
-fn note_verification(output: &str, spec: Option<&crate::CapabilitySpec>) -> String {
+fn note_verification(
+    output: &str,
+    spec: Option<&crate::CapabilitySpec>,
+    observation: Option<&str>,
+) -> String {
     let observes = spec.is_some_and(|s| s.reversibility == Reversibility::Observe);
     if observes {
         return output.to_owned();
     }
+    let Some(observed) = observation else {
+        return format!(
+            "{output}\n\n[unverified] This is what the tool reported about its own work. \
+             Endora has NOT independently confirmed the effect. Say what was reported and \
+             that it is unconfirmed — do not state the world has changed as though you had \
+             checked."
+        );
+    };
     format!(
-        "{output}\n\n[unverified] This is what the tool reported about its own work. \
-         Endora has NOT independently confirmed the effect. Say what was reported and \
-         that it is unconfirmed — do not state the world has changed as though you had \
-         checked."
+        "{output}\n\n[observed] Endora then read the state back. This is what the world \
+         actually looks like now:\n{observed}\n\nAnswer from the OBSERVATION, not from \
+         what the tool claimed. If they disagree, the observation wins and you should say \
+         the action did not take effect."
     )
+}
+
+/// Points out when one name refers to **more than one thing**.
+///
+/// This is the defect that produced a whole afternoon of wrong diagnoses. A Home
+/// Assistant install had two entities both called "Kitchen" in the Kitchen area — a
+/// `light` reading `off` and a `switch` reading `on` — and the switch was the actual
+/// ceiling light. Asked to "turn off the kitchen light", the model constrained to the
+/// `light` domain, matched the dead entity, and every layer downstream faithfully
+/// reported success about the wrong device.
+///
+/// Nothing in the stack was broken. The *name* was ambiguous, and every component
+/// resolved the ambiguity silently and differently. So when a state reading shows one
+/// name spanning several domains, say so — an ambiguity the person can see is a
+/// question they can answer, where an ambiguity resolved silently is a bug they have
+/// to catch by looking at the ceiling.
+///
+/// Parses the `names:` / `domain:` shape Home Assistant's live context uses; anything
+/// else yields no note.
+fn flag_ambiguous_names(observed: &str) -> String {
+    let mut by_name: std::collections::BTreeMap<String, std::collections::BTreeSet<String>> =
+        std::collections::BTreeMap::new();
+    let mut current: Option<String> = None;
+    for line in observed.lines() {
+        let trimmed = line.trim().trim_start_matches('-').trim();
+        if let Some(name) = trimmed.strip_prefix("names:") {
+            current = Some(name.trim().to_owned());
+        } else if let Some(domain) = trimmed.strip_prefix("domain:") {
+            if let Some(name) = current.as_ref() {
+                by_name
+                    .entry(name.clone())
+                    .or_default()
+                    .insert(domain.trim().to_owned());
+            }
+        }
+    }
+    let clashes: Vec<String> = by_name
+        .into_iter()
+        .filter(|(_, domains)| domains.len() > 1)
+        .map(|(name, domains)| {
+            format!(
+                "\"{name}\" is {}",
+                domains.into_iter().collect::<Vec<_>>().join(" AND ")
+            )
+        })
+        .collect();
+    if clashes.is_empty() {
+        return String::new();
+    }
+    format!(
+        "\n\n[ambiguous] One name refers to more than one thing here: {}. Do not guess \
+         which was meant — say what you found and ask which one they want.",
+        clashes.join("; ")
+    )
+}
+
+/// Reads the world back after an actuation, so the turn answers from what is
+/// **observed** rather than from what the actuator claimed (ADR 0034).
+///
+/// Runs after a failure too, and deliberately: a failed action's most useful output
+/// is what actually exists. The live failure this was built for — `HassTurnOff`
+/// returning `no_match_reason=AREA` — is far more actionable once the reply also
+/// carries the entities that *are* in that area.
+///
+/// Best-effort: if the read fails there is simply no observation, and the result
+/// falls back to being marked unverified. Verification must never turn a working
+/// action into a broken turn.
+fn read_state_back(capabilities: &dyn CapabilityRunner, id: &str) -> Option<String> {
+    let verifier = capabilities.verifier(id)?;
+    let spec = capabilities
+        .available()
+        .into_iter()
+        .find(|c| c.id == verifier)?;
+    if !spec.configured {
+        return None;
+    }
+    capabilities.run(&verifier, "{}").ok().map(|observed| {
+        let flagged = flag_ambiguous_names(&observed);
+        format!("{observed}{flagged}")
+    })
 }
 
 /// The single tool-calling conversation (ADR 0028). Seeds the conversation from the
@@ -320,12 +412,31 @@ fn run_tool_turn(
                 match capabilities.run(&id, &call.input_json) {
                     Ok(out) => {
                         activity.push(format!("Used the {id} skill"));
-                        (StepStatus::Done, note_verification(&out, spec.as_ref()))
+                        // Evidence verifies (ADR 0034): look at the world rather than
+                        // taking the actuator's word for what it did.
+                        let observed = read_state_back(capabilities, &id);
+                        if observed.is_some() {
+                            activity.push(format!("Checked the result of {id}"));
+                        }
+                        (
+                            StepStatus::Done,
+                            note_verification(&out, spec.as_ref(), observed.as_deref()),
+                        )
                     }
                     Err(e) => {
                         failures += 1;
                         activity.push(format!("Tried the {id} skill, but it failed"));
-                        (StepStatus::Failed, format!("error: {e}"))
+                        // Read back on failure too: a failed action's most useful
+                        // output is what actually exists, which is what lets the
+                        // model retry against reality instead of guessing again.
+                        let observed =
+                            read_state_back(capabilities, &id).map_or_else(String::new, |o| {
+                                format!(
+                                    "\n\n[observed] Endora read the state back anyway. \
+                                     This is what is actually there:\n{o}"
+                                )
+                            });
+                        (StepStatus::Failed, format!("error: {e}{observed}"))
                     }
                 }
             } else {
@@ -1958,7 +2069,7 @@ mod tests {
         #[test]
         fn an_observation_stands_on_its_own() {
             // A read reports state; the result IS the evidence.
-            let out = note_verification("72F, sunny", Some(&spec(Reversibility::Observe)));
+            let out = note_verification("72F, sunny", Some(&spec(Reversibility::Observe)), None);
             assert_eq!(out, "72F, sunny");
         }
 
@@ -1969,6 +2080,7 @@ mod tests {
             let out = note_verification(
                 "The action completed successfully on: Kitchen Table (light).",
                 Some(&spec(Reversibility::Irreversible)),
+                None,
             );
             assert!(
                 out.contains("The action completed successfully"),
@@ -1989,7 +2101,7 @@ mod tests {
                 Reversibility::Irreversible,
             ] {
                 assert!(
-                    note_verification("done", Some(&spec(band))).contains("[unverified]"),
+                    note_verification("done", Some(&spec(band)), None).contains("[unverified]"),
                     "{band:?} should be marked"
                 );
             }
@@ -1998,7 +2110,93 @@ mod tests {
         #[test]
         fn an_unknown_capability_is_treated_as_an_actuator() {
             // Failing closed: if we cannot tell what it did, we do not vouch for it.
-            assert!(note_verification("done", None).contains("[unverified]"));
+            assert!(note_verification("done", None, None).contains("[unverified]"));
+        }
+    }
+
+    /// ADR 0034 layer 1. The payload is the real one captured from a live Home
+    /// Assistant during the session that produced this code.
+    mod read_back {
+        use super::super::{flag_ambiguous_names, note_verification};
+        use endora_capabilities::CapabilitySpec;
+        use endora_kernel::Reversibility;
+
+        /// The live reading: two entities named "Kitchen", opposite states, and the
+        /// switch is the real ceiling light.
+        const LIVE: &str = "Live Context: An overview of the areas and the devices in this \
+smart home:
+- names: Kitchen
+  domain: light
+  state: 'off'
+  areas: Kitchen
+- names: Kitchen
+  domain: switch
+  state: 'on'
+  areas: Kitchen
+- names: Kitchen Table
+  domain: light
+  state: unavailable
+  areas: Kitchen
+";
+
+        fn actuator() -> CapabilitySpec {
+            CapabilitySpec {
+                id: "home-assistant.HassTurnOff".to_owned(),
+                description: "x".to_owned(),
+                configured: true,
+                autonomous: true,
+                input_schema: None,
+                reversibility: Reversibility::Irreversible,
+            }
+        }
+
+        #[test]
+        fn an_observation_replaces_the_actuators_claim() {
+            let out = note_verification(
+                "The action completed successfully on: Kitchen (area).",
+                Some(&actuator()),
+                Some("switch Kitchen is 'on'"),
+            );
+            assert!(out.contains("[observed]"), "{out}");
+            assert!(
+                out.contains("switch Kitchen is 'on'"),
+                "carries the reading: {out}"
+            );
+            assert!(
+                out.contains("the observation wins"),
+                "tells the model which to believe: {out}"
+            );
+            assert!(
+                !out.contains("[unverified]"),
+                "no longer merely unverified: {out}"
+            );
+        }
+
+        #[test]
+        fn without_a_read_back_it_stays_unverified() {
+            let out = note_verification("done", Some(&actuator()), None);
+            assert!(out.contains("[unverified]"), "{out}");
+        }
+
+        #[test]
+        fn one_name_across_two_domains_is_called_out() {
+            // The defect that caused a whole afternoon of wrong diagnoses.
+            let note = flag_ambiguous_names(LIVE);
+            assert!(note.contains("[ambiguous]"), "{note}");
+            assert!(note.contains("\"Kitchen\""), "names the clash: {note}");
+            assert!(note.contains("light"), "{note}");
+            assert!(note.contains("switch"), "{note}");
+            assert!(note.contains("Do not guess"), "{note}");
+            // A name that appears once is not a clash.
+            assert!(!note.contains("Kitchen Table"), "{note}");
+        }
+
+        #[test]
+        fn an_unambiguous_reading_gets_no_note() {
+            let clean = "- names: Hallway\n  domain: light\n  state: 'on'\n";
+            assert_eq!(flag_ambiguous_names(clean), "");
+            assert_eq!(flag_ambiguous_names("not a live context at all"), "");
+            assert_eq!(flag_ambiguous_names(""), "");
         }
     }
 

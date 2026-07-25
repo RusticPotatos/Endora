@@ -61,6 +61,23 @@ tagged release.
   (policy-neutral: both map to `Act`).
 
   This does not stop the model picking the wrong tool — it means you find out.
+- **Read-back verification and ambiguity surfacing** (ADR 0034 layer 1). A capability
+  can now name the one that *observes what it changes*; after an actuation the turn
+  runs it and the model answers from the **observation**, with an explicit instruction
+  that the observation wins if it disagrees with the tool's claim. One mapping per
+  integration — every Home Assistant `Hass*` action verifies through `GetLiveContext`
+  — and unknown servers stay `[unverified]`. **The read-back runs after failures too**,
+  because a failed action's most useful output is what actually exists: the live
+  `HassTurnOff` failure is far more actionable once the result carries the entities
+  that *are* in that area.
+
+  It also flags **ambiguous names**. A live install had two entities both called
+  "Kitchen" in one area — a `light` reading `off` and a `switch` reading `on`, the
+  switch being the real ceiling light — so "turn off the kitchen light" matched the
+  dead entity and every layer faithfully reported success about the wrong device.
+  Nothing was broken; the name was ambiguous and each component resolved it silently.
+  A reading where one name spans several domains now says so and tells the butler to
+  ask rather than guess.
 - **The fitness battery is data-driven, and runs repeatedly.** Cases moved out of a
   hardcoded function into `crates/endora-infrastructure/src/eval.rs` as declarative
   data — a name, a tier, a probe, and a check — so adding one is adding a struct

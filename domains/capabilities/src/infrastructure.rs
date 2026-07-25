@@ -2039,6 +2039,23 @@ impl CapabilityRunner for McpRunner {
             .map(|_| Reversibility::Irreversible.default_decision())
     }
 
+    /// Home Assistant hosts both actuators (`Hass*`) and a state reader
+    /// (`GetLiveContext`) on the same server, so an action can be checked against the
+    /// world it just claimed to change (ADR 0034). One mapping for the whole
+    /// integration — every `Hass*` action verifies through the same reader.
+    ///
+    /// Servers Endora knows nothing about return `None`, so their results stay marked
+    /// unverified rather than being vouched for.
+    fn verifier(&self, id: &str) -> Option<String> {
+        let (server, tool) = id.split_once('.')?;
+        if !tool.starts_with("Hass") {
+            return None;
+        }
+        let reader = format!("{server}.GetLiveContext");
+        // Only if that server really exposes it, and never verify a read with itself.
+        (id != reader && self.find(&reader).is_some()).then_some(reader)
+    }
+
     fn run(&self, id: &str, input_json: &str) -> Result<String, String> {
         let (conn, tool) = self
             .find(id)
@@ -2243,6 +2260,10 @@ impl CapabilityRunner for CompositeRunner {
             None => Err(format!("no such skill '{id}'")),
         }
     }
+
+    fn verifier(&self, id: &str) -> Option<String> {
+        self.owner(id)?.verifier(id)
+    }
 }
 
 /// A per-turn overlay that lifts an inner source's deny-by-default for tools the
@@ -2309,6 +2330,10 @@ impl CapabilityRunner for OpenerRunner {
             }),
             other => Some(other),
         }
+    }
+
+    fn verifier(&self, id: &str) -> Option<String> {
+        self.inner.verifier(id)
     }
 
     fn run(&self, id: &str, input_json: &str) -> Result<String, String> {
