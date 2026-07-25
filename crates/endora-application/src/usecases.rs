@@ -842,12 +842,48 @@ fn format_datetime_utc(ms: i64) -> String {
 ///
 /// # Errors
 /// [`AppError::Repository`] if the backend fails or stored data is corrupt.
-pub fn understanding(beliefs: &impl BeliefRepository) -> Result<Vec<Belief>, AppError> {
+pub fn understanding(
+    beliefs: &impl BeliefRepository,
+    clock: &impl Clock,
+) -> Result<Vec<Belief>, AppError> {
+    let now = clock.now();
     Ok(beliefs
         .list()?
         .into_iter()
         .filter(|b| b.status() == crate::BeliefStatus::Active)
+        // Beliefs weaken without reinforcement and eventually fade out entirely
+        // (ADR 0032). Filtering on read means understanding is honest the moment it
+        // is asked for, whether or not the nightly loop has run.
+        .filter(|b| !b.has_faded(now))
         .collect())
+}
+
+/// Ages understanding: marks every faded belief as expired, so Endora stops acting
+/// on things nothing has supported in a long time and the person can see that it
+/// let them go. Run by the nightly loop.
+///
+/// Read-side filtering already hides faded beliefs, so this changes no behaviour —
+/// it makes the forgetting **durable and visible** rather than implicit, which is
+/// what the memory rights require of anything Endora holds (constitution §6).
+/// Returns the statements it expired, for the activity trail.
+///
+/// # Errors
+/// [`AppError::Repository`] if the backend fails or stored data is corrupt.
+pub fn expire_faded_beliefs(
+    beliefs: &impl BeliefRepository,
+    clock: &impl Clock,
+) -> Result<Vec<String>, AppError> {
+    let now = clock.now();
+    let mut expired = Vec::new();
+    for mut belief in beliefs.list()? {
+        if !belief.has_faded(now) {
+            continue;
+        }
+        expired.push(belief.statement().to_owned());
+        belief.expire();
+        beliefs.save(&belief)?;
+    }
+    Ok(expired)
 }
 
 /// The person confirms a belief is right: raise its confidence.
@@ -1319,7 +1355,7 @@ pub fn run_due_nightly_loop(
     // not a fixed script — then review the day and reflect, all in one grounded,
     // policy-gated pass (reversible + autonomous only; it drafts and forms beliefs
     // but does nothing it couldn't undo). The final reply IS the reflection.
-    let focus = nightly_focus(beliefs)?;
+    let focus = nightly_focus(beliefs, clock)?;
     let instruction = match &focus {
         Some(f) => format!(
             "It's the quiet overnight hour and they're away. Look into \"{f}\" — something \
@@ -1363,6 +1399,13 @@ pub fn run_due_nightly_loop(
     // Reflect: persist the understanding it formed (same path as a chat turn).
     record_formed_beliefs(beliefs, reply.beliefs, ids, clock, &mut activity)?;
 
+    // Forget: age out beliefs nothing has reinforced in a long time (ADR 0032).
+    // Understanding is a living model, so the overnight review is where it *loses*
+    // things as well as gains them.
+    for statement in expire_faded_beliefs(beliefs, clock)? {
+        activity.push(format!("Let go of a stale belief: {statement}"));
+    }
+
     // Surface: leave the overnight note, if it wrote one. If it only refined
     // beliefs and had nothing worth saying, don't post a chat message — the beliefs
     // are already saved and reviewable in Understanding; we just stay quiet.
@@ -1383,8 +1426,11 @@ pub fn run_due_nightly_loop(
 ///
 /// Confidence is the ranking, deliberately: researching a tentative guess spends the
 /// night on something Endora may be wrong about.
-fn nightly_focus(beliefs: &impl BeliefRepository) -> Result<Option<String>, AppError> {
-    let active = understanding(beliefs)?;
+fn nightly_focus(
+    beliefs: &impl BeliefRepository,
+    clock: &impl Clock,
+) -> Result<Option<String>, AppError> {
+    let active = understanding(beliefs, clock)?;
     let strongest = |kind: Option<crate::BeliefKind>| {
         active
             .iter()
@@ -1410,7 +1456,7 @@ pub fn butler_context(
     capabilities: &dyn CapabilityRunner,
     clock: &impl Clock,
 ) -> Result<ButlerContext, AppError> {
-    let understanding = understanding(beliefs)?
+    let understanding = understanding(beliefs, clock)?
         .into_iter()
         .map(|b| {
             format!(
@@ -3102,7 +3148,7 @@ mod tests {
         .unwrap();
 
         // The butler formed understanding, stored directly (no confirm step).
-        let u = understanding(&store).unwrap();
+        let u = understanding(&store, &FixedClock(1_000)).unwrap();
         assert_eq!(u.len(), 1);
         assert_eq!(u[0].statement(), "wants energy to travel");
         assert_eq!(u[0].confidence(), Confidence::Low);
@@ -3111,11 +3157,15 @@ mod tests {
         let id = u[0].id();
         affirm_belief(&store, &clock, id).unwrap();
         assert_eq!(
-            understanding(&store).unwrap()[0].confidence(),
+            understanding(&store, &FixedClock(1_000)).unwrap()[0].confidence(),
             Confidence::Medium
         );
         correct_belief(&store, id).unwrap();
-        assert!(understanding(&store).unwrap().is_empty());
+        assert!(
+            understanding(&store, &FixedClock(1_000))
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]
@@ -3191,7 +3241,7 @@ mod tests {
         assert!(msg.text().contains("sleep"));
         assert!(activity.iter().any(|a| a.contains("overnight note")));
         // ...reflected (formed and saved a belief)...
-        let u = understanding(&store).unwrap();
+        let u = understanding(&store, &FixedClock(1_000)).unwrap();
         assert!(u.iter().any(|b| b.statement().contains("sleep")));
         assert!(activity.iter().any(|a| a.contains("Learned")));
         // ...and marked itself fired, so it won't run again tonight.
@@ -3396,7 +3446,7 @@ mod tests {
         assert!(activity.iter().any(|a| a.contains("web_answers")));
         assert!(msg.text().contains("sleep"));
         assert!(
-            understanding(&store)
+            understanding(&store, &FixedClock(1_000))
                 .unwrap()
                 .iter()
                 .any(|b| b.statement().contains("sleep"))

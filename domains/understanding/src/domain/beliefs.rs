@@ -36,7 +36,33 @@ pub enum BeliefKind {
     Other,
 }
 
+/// One day, in milliseconds — the unit the belief half-lives are written in.
+const DAY_MS: i64 = 24 * 60 * 60 * 1_000;
+
 impl BeliefKind {
+    /// How long a belief of this kind stays trustworthy **without reinforcement**,
+    /// before Endora should be one step less sure of it.
+    ///
+    /// The rates encode what ADR 0020 says about the person: **intent and values
+    /// change slowly** and are what Endora is really modelling, so they hold for a
+    /// long time. A **frustration or stressor is often about a particular week** —
+    /// continuing to act on "you're stressed about the move" six months after the
+    /// move is worse than having forgotten it. Preferences and patterns sit between.
+    ///
+    /// These are deliberately generous. Forgetting something true is a smaller harm
+    /// than confidently holding something stale, but both are harms, and the person
+    /// can always affirm a belief to reset its clock.
+    #[must_use]
+    pub const fn half_life_ms(self) -> i64 {
+        match self {
+            Self::Intent | Self::Value => 365 * DAY_MS,
+            Self::Motivation | Self::Relationship => 180 * DAY_MS,
+            Self::Preference | Self::Pattern => 120 * DAY_MS,
+            Self::Other => 90 * DAY_MS,
+            Self::Frustration | Self::Stressor => 45 * DAY_MS,
+        }
+    }
+
     /// Stable, lowercase name for storage and the protocol.
     #[must_use]
     pub const fn name(self) -> &'static str {
@@ -109,6 +135,20 @@ impl Confidence {
         match self {
             Self::Low => Self::Medium,
             Self::Medium | Self::High => Self::High,
+        }
+    }
+
+    /// The next step down, or `None` once it falls below `Low` — at which point
+    /// Endora no longer believes it at all. Unlike [`raised`](Self::raised), which
+    /// saturates at `High`, this bottoms out into nothing: a belief that keeps
+    /// weakening with nothing to support it should eventually be let go, not held
+    /// forever at `low`.
+    #[must_use]
+    pub const fn lowered(self) -> Option<Self> {
+        match self {
+            Self::High => Some(Self::Medium),
+            Self::Medium => Some(Self::Low),
+            Self::Low => None,
         }
     }
 }
@@ -220,6 +260,49 @@ impl Belief {
     /// The person said it was wrong.
     pub fn correct(&mut self) {
         self.status = BeliefStatus::Corrected;
+    }
+
+    /// How many half-lives have passed since this belief was last reinforced.
+    fn half_lives_elapsed(&self, now: Timestamp) -> i64 {
+        let since = now.unix_millis() - self.last_affirmed_at.unix_millis();
+        if since <= 0 {
+            return 0;
+        }
+        since / self.kind.half_life_ms()
+    }
+
+    /// How sure Endora should be **right now**, given how long it has been since
+    /// anything reinforced this belief.
+    ///
+    /// Confidence steps down one level per elapsed half-life. This is what makes
+    /// understanding a *living* model rather than a list that only grows: a belief
+    /// nothing has supported for a year should not still be presented as `high`.
+    /// Purely derived from the stored timestamp, so it needs no background job to
+    /// stay honest and cannot drift from what is on disk.
+    #[must_use]
+    pub fn confidence_at(&self, now: Timestamp) -> Option<Confidence> {
+        let mut confidence = self.confidence;
+        for _ in 0..self.half_lives_elapsed(now) {
+            confidence = confidence.lowered()?;
+        }
+        Some(confidence)
+    }
+
+    /// Whether this belief has decayed past the point of being worth holding —
+    /// faded below `Low` with nothing reinforcing it.
+    ///
+    /// A belief the person **corrected** is already out of `understanding`, and one
+    /// they **affirmed** has had its clock reset, so this only catches beliefs that
+    /// simply stopped being true and were never mentioned again.
+    #[must_use]
+    pub fn has_faded(&self, now: Timestamp) -> bool {
+        self.status == BeliefStatus::Active && self.confidence_at(now).is_none()
+    }
+
+    /// Marks a faded belief as aged out. Endora forgets it rather than continuing to
+    /// act on something nothing has supported in a long time.
+    pub fn expire(&mut self) {
+        self.status = BeliefStatus::Expired;
     }
 
     /// Its identifier.
@@ -349,5 +432,118 @@ mod tests {
         for c in [Confidence::Low, Confidence::Medium, Confidence::High] {
             assert_eq!(Confidence::from_name(c.name()), c);
         }
+    }
+
+    // --- Decay and expiry (ADR 0032) ---
+
+    const DAY: i64 = 24 * 60 * 60 * 1_000;
+
+    fn belief_of(kind: BeliefKind, confidence: Confidence) -> Belief {
+        Belief::new(
+            BeliefId::new(1),
+            "you want more energy",
+            kind,
+            confidence,
+            "said so",
+            Timestamp::from_unix_millis(0),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn confidence_steps_down_once_per_half_life_without_reinforcement() {
+        let b = belief_of(BeliefKind::Preference, Confidence::High);
+        let hl = BeliefKind::Preference.half_life_ms();
+        assert_eq!(
+            b.confidence_at(Timestamp::from_unix_millis(0)),
+            Some(Confidence::High)
+        );
+        // Just short of a half-life it is unchanged.
+        assert_eq!(
+            b.confidence_at(Timestamp::from_unix_millis(hl - 1)),
+            Some(Confidence::High)
+        );
+        assert_eq!(
+            b.confidence_at(Timestamp::from_unix_millis(hl)),
+            Some(Confidence::Medium)
+        );
+        assert_eq!(
+            b.confidence_at(Timestamp::from_unix_millis(2 * hl)),
+            Some(Confidence::Low)
+        );
+        // Past Low it is no longer believed at all.
+        assert_eq!(b.confidence_at(Timestamp::from_unix_millis(3 * hl)), None);
+    }
+
+    #[test]
+    fn intent_outlives_a_stressor() {
+        // ADR 0020: intent is the slow-changing thing worth modelling; a stressor is
+        // often about a particular week. A year on, one should survive and one should
+        // not, from the same starting confidence.
+        let year = Timestamp::from_unix_millis(365 * DAY);
+        let intent = belief_of(BeliefKind::Intent, Confidence::High);
+        let stressor = belief_of(BeliefKind::Stressor, Confidence::High);
+        assert!(
+            !intent.has_faded(year),
+            "intent should still be held after a year"
+        );
+        assert!(
+            stressor.has_faded(year),
+            "a year-old stressor should have faded"
+        );
+    }
+
+    #[test]
+    fn affirming_resets_the_clock() {
+        let hl = BeliefKind::Preference.half_life_ms();
+        let mut b = belief_of(BeliefKind::Preference, Confidence::High);
+        let late = Timestamp::from_unix_millis(3 * hl);
+        assert!(b.has_faded(late));
+        // The person says it is still right — it is current again, not fading.
+        b.affirm(late);
+        assert!(!b.has_faded(late));
+        assert_eq!(b.confidence_at(late), Some(Confidence::High));
+    }
+
+    #[test]
+    fn a_corrected_belief_is_not_also_reported_as_faded() {
+        // It is already out of understanding; calling it "faded" would double-count
+        // and put a wrong belief in the expiry trail as though time removed it.
+        let mut b = belief_of(BeliefKind::Stressor, Confidence::Low);
+        b.correct();
+        assert!(!b.has_faded(Timestamp::from_unix_millis(999 * DAY)));
+    }
+
+    #[test]
+    fn expiring_marks_it_aged_out_rather_than_corrected() {
+        // The distinction matters: "you were wrong" and "this stopped being true"
+        // are different things to have recorded about a person.
+        let mut b = belief_of(BeliefKind::Stressor, Confidence::Low);
+        b.expire();
+        assert_eq!(b.status(), BeliefStatus::Expired);
+    }
+
+    #[test]
+    fn a_clock_that_goes_backwards_does_not_age_anything() {
+        let b = Belief::new(
+            BeliefId::new(1),
+            "you like tea",
+            BeliefKind::Preference,
+            Confidence::Medium,
+            "said so",
+            Timestamp::from_unix_millis(10 * DAY),
+        )
+        .unwrap();
+        assert_eq!(
+            b.confidence_at(Timestamp::from_unix_millis(0)),
+            Some(Confidence::Medium)
+        );
+    }
+
+    #[test]
+    fn confidence_bottoms_out_rather_than_saturating() {
+        assert_eq!(Confidence::High.lowered(), Some(Confidence::Medium));
+        assert_eq!(Confidence::Medium.lowered(), Some(Confidence::Low));
+        assert_eq!(Confidence::Low.lowered(), None);
     }
 }
