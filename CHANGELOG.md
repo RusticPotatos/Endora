@@ -7,6 +7,34 @@ tagged release.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Home Assistant actions failed on the commonest phrasing.** "Turn on the kitchen
+  light" put the *kind* word in HA's `name` field — `{name:"light", area:"kitchen"}`
+  asks Home Assistant for a device literally called "light" and comes back
+  `MatchFailedError(NAME)`. The butler was picking the right tool and the right area
+  every time; only this one field was wrong. `Hass*` calls now drop a `name` that is
+  a device kind when an area is given. **Only** when an area is given — without one,
+  dropping it would widen "turn on the lights" to the whole house, so it is left to
+  fail honestly instead (ADR 0024).
+- **Belief de-duplication survives rephrasing.** Found by the first live run of the
+  new understanding eval: `similar()` only caught near-verbatim repeats, so a
+  rephrased belief was filed as a second one and duplicates accumulated into every
+  later turn's context. Now stems words and compares by containment.
+
+### Added
+
+- **An L3 "understanding" tier in the model fitness battery**
+  ([ADR 0030](docs/adr/0030-measuring-understanding.md)) — does the butler form
+  beliefs from real evidence, stay quiet when a turn reveals nothing, avoid re-filing
+  what it knows, and refrain from overclaiming confidence. Scoring is lexical and
+  unit-tested rather than model-judged, which would be circular and unauditable.
+  Baseline for `qwen2.5:7b`: **L1 6/8, L2 7/7, L3 7/8, 20/23** — understanding is not
+  the weak axis; routing is.
+- **An adoption floor**: the model layer never auto-adopts a candidate that wins on
+  total while scoring lower on understanding — it proposes it instead. Understanding
+  is a veto on automatic adoption, not a way to win.
+
 ### Removed
 
 - **The goal tracker is gone** ([ADR 0029](docs/adr/0029-delete-the-goal-tracker.md),
@@ -30,6 +58,15 @@ tagged release.
 
 ### Changed
 
+- **Proactive check-ins are agentic** ([ADR 0031](docs/adr/0031-agentic-proactivity.md)).
+  The schedule is now a **budget, not a trigger**: deterministic code owns how often
+  the butler may speak (minimum interval, and never on top of someone who just
+  spoke), and the butler decides whether it has anything worth saying — with the
+  reason recorded to the activity trail. The budget is spent whether or not it
+  speaks, so "nothing to say" cannot become a retry loop. Silence is the default on
+  every failure path. The daily brief and nightly loop stay time-anchored on purpose.
+  `run_due_checkin` → `consider_reaching_out`; `CheckinSchedule::is_due` →
+  `may_reach_out`.
 - **Understanding is now the only model Endora keeps of a person.** Beliefs already
   carried what goals stood in for — what someone is reaching for, with evidence, a
   confidence, and the ability to be corrected or to expire. `ButlerContext` carries
