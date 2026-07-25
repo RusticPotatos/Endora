@@ -2396,7 +2396,9 @@ pub fn spawn_heartbeat(state: AppState) {
                 let runner = build_runner(config.as_ref(), capabilities, mcp);
                 let context =
                     usecases::butler_context(understanding.as_ref(), &runner, clock.as_ref())?;
-                let posted = usecases::run_due_checkin(
+                // The butler decides whether it has a reason to speak; the schedule
+                // only bounds how often it may (ADR 0031).
+                let posted = usecases::consider_reaching_out(
                     chat.as_ref(),
                     schedules.as_ref(),
                     understanding.as_ref(),
@@ -2407,12 +2409,10 @@ pub fn spawn_heartbeat(state: AppState) {
                     clock.as_ref(),
                     &context,
                 )?;
-                if posted.is_some() {
-                    record_event(
-                        events.as_ref(),
-                        clock.as_ref(),
-                        "Reached out with a check-in",
-                    );
+                if let Some((_, activity)) = &posted {
+                    for item in activity {
+                        record_event(events.as_ref(), clock.as_ref(), item);
+                    }
                 }
                 // A daily brief, if one is due (reversible skills only).
                 let briefed = usecases::run_due_brief(
