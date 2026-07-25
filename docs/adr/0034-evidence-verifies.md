@@ -86,8 +86,9 @@ the observation/receipt distinction at all.
   out. Wrong-tool selection is a separate axis, addressed by measurement (the
   `select:turn-off-not-light-set` eval cases), a smaller tool surface, or a better
   model — not by more per-tool patches.
-- `CapabilitySpec` gains `reversibility`; `run_tool_turn` annotates on the success
-  path only, since a failure is already unambiguous.
+- `CapabilitySpec` gains `reversibility`; `run_tool_turn` annotates the success path.
+  (Layer 1 below extends this: a *failure* also triggers a read-back, because what
+  actually exists is the most useful thing to know after a failed action.)
 
 ## Layer 1 — read-back (added 2026-07-25)
 
