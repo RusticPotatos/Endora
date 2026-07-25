@@ -22,7 +22,8 @@ pub use error::AppError;
 // import the types they translate to and from — the orchestration layer is the
 // surface above the domain (ADR 0026).
 pub use endora_kernel::{
-    AuditId, AutonomyLevel, BeliefId, DomainError, MessageId, PreferenceId, Timestamp,
+    AuditId, AutonomyLevel, BeliefId, DomainError, MessageId, PreferenceId, Reversibility,
+    Timestamp,
 };
 // The audit trail and event log live in the platform context now (ADR 0026);
 // re-exported so `endora_application::{AuditLog, EventLog, ActivityEvent}` hold.
@@ -54,7 +55,9 @@ pub use ports::{
     ConversationSummaryStore, DeepAsker, FormedBelief, IdSource, MemorySnapshot, MemoryStore,
     ProposalError, RepositoryError, ToolCall, TurnMessage,
 };
-pub use usecases::{ActivityItem, ActivityKind, reads_as_an_instruction, statements_disagree};
+pub use usecases::{
+    ActivityItem, ActivityKind, note_verification, reads_as_an_instruction, statements_disagree,
+};
 
 /// Human-readable identity of this build, suitable for a node/CLI banner.
 ///
