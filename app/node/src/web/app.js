@@ -1056,6 +1056,7 @@ function viewSkills() {
           </div>
         </div>
         ${toggle(s.trust_all, `mcp:trust:${esc(s.name)}`, "Allow all its tools", "Auto-enables every tool this server exposes, so you don't allow them one by one. The butler still asks before each use.")}
+        ${readerRow(s)}
         ${(s.tools || []).map(toolRow).join("")}
       </div>`;
   };
@@ -1327,6 +1328,45 @@ function renderSources(afterEl, steps) {
   box.style.cssText = "justify-content:flex-start; margin:2px 0 10px;";
   box.innerHTML = `<div class="sources"><span class="src-label">Sources</span>${links}</div>`;
   afterEl.insertAdjacentElement("afterend", box);
+}
+
+// Nominate the tool that reads a server's state (ADR 0038). Blank clears it.
+async function setReader(el) {
+  const server = el.getAttribute("data-reader-for");
+  try {
+    await api("POST", "/v1/mcp/servers/" + encodeURIComponent(server) + "/reader", { reader_tool: el.value });
+    flash(el.value ? `Endora will check ${server} with ${el.value}.` : `No read-back for ${server}.`, "ok");
+  } catch (e) {
+    flash("Couldn't set that: " + e.message, "err");
+  }
+  return reload();
+}
+
+// Which of a server's tools READS its state (ADR 0038).
+//
+// One answer settles two things: that tool's result becomes an observation rather than
+// a receipt, and everything else on the server is checked through it after it acts.
+// Without it Endora can only repeat what a tool claimed about its own work — honest,
+// but unverifiable. Endora never picks this itself: a server's own say-so about what
+// it does is not evidence.
+function readerRow(s) {
+  // Tools arrive namespaced as `server.tool`; the nomination is the bare tool name.
+  const prefix = s.name + ".";
+  const tools = (s.tools || [])
+    .map((t) => (t.id || "").startsWith(prefix) ? t.id.slice(prefix.length) : t.id)
+    .filter(Boolean);
+  if (!tools.length) return "";
+  const opts = ['<option value="">— nobody has said —</option>']
+    .concat(tools.map((t) => `<option value="${esc(t)}"${t === s.reader_tool ? " selected" : ""}>${esc(t)}</option>`))
+    .join("");
+  return `
+    <div class="row" style="gap:8px;align-items:center;margin-top:6px;">
+      <div class="grow">
+        <div class="title" style="font-size:13px;">Which tool reads this server's state?</div>
+        <div class="sub">Endora uses it to check what an action actually did, instead of taking the tool's word for it.</div>
+      </div>
+      <select data-reader-for="${esc(s.name)}" onchange="setReader(this)">${opts}</select>
+    </div>`;
 }
 
 // HTML-string versions for rendering a PAST message's persisted actions in the

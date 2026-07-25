@@ -224,21 +224,26 @@ fn connect_mcp(config: &endora_capabilities::ConfigStore) -> endora_capabilities
         .filter(|s| s.enabled && s.trust_all)
         .map(|s| format!("{}.", s.name))
         .collect();
-    let clients: Vec<(String, Box<dyn McpClient>)> = servers
+    // Each server carries the tool the person nominated as its state reader (ADR 0038),
+    // so read-back is data rather than a name in Endora's source.
+    let clients: Vec<(String, Box<dyn McpClient>, String)> = servers
         .into_iter()
         .filter(|s| s.enabled)
-        .filter_map(|s| match &s.transport {
-            McpTransport::Stdio { command, args, env } => {
-                StdioMcpClient::spawn_with_env(command, args, env)
+        .filter_map(|s| {
+            let reader = s.reader_tool.clone();
+            match &s.transport {
+                McpTransport::Stdio { command, args, env } => {
+                    StdioMcpClient::spawn_with_env(command, args, env)
+                        .ok()
+                        .map(|c| (s.name, Box::new(c) as Box<dyn McpClient>, reader))
+                }
+                McpTransport::Http { url, auth } => HttpMcpClient::connect_with_auth(url, auth)
                     .ok()
-                    .map(|c| (s.name, Box::new(c) as Box<dyn McpClient>))
+                    .map(|c| (s.name, Box::new(c) as Box<dyn McpClient>, reader)),
             }
-            McpTransport::Http { url, auth } => HttpMcpClient::connect_with_auth(url, auth)
-                .ok()
-                .map(|c| (s.name, Box::new(c) as Box<dyn McpClient>)),
         })
         .collect();
-    let runner = endora_capabilities::McpRunner::connect(clients);
+    let runner = endora_capabilities::McpRunner::connect_with_readers(clients);
     // Auto-allow: for a server marked trust_all, open every tool it exposes so the
     // butler can use them without per-tool clicking. Opened MCP tools remain
     // Block→Confirm — it still asks before each use (ADR 0024). This is deterministic
@@ -410,6 +415,7 @@ async fn list_mcp_servers(
                 "auth_set": auth_set,
                 "enabled": s.enabled,
                 "trust_all": s.trust_all,
+                "reader_tool": s.reader_tool,
                 "tools_live": tools.len(),
                 "tools": tools,
             })
@@ -587,6 +593,79 @@ struct TrustRequest {
 /// asks before each use). Turning it off stops auto-opening future tools; tools already
 /// allowed stay allowed until blocked individually, so the change is never a silent
 /// widening of access.
+#[derive(serde::Deserialize)]
+struct ReaderRequest {
+    /// The tool on this server that reads its state. Blank clears the nomination.
+    reader_tool: String,
+}
+
+/// Nominates which of a server's tools **reads its state** (ADR 0038).
+///
+/// One answer settles two things: that tool's own result becomes an observation rather
+/// than a receipt, and every other tool on the server is verified through it. It comes
+/// from the person, never from the server — a server's self-report is not evidence, and
+/// policy must not take an unvetted third party's word (ADR 0005).
+///
+/// The nomination is validated against the tools the server actually exposes, so a typo
+/// cannot quietly disable read-back.
+async fn set_mcp_reader(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+    Json(req): Json<ReaderRequest>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    use endora_capabilities::{CapabilityRunner, McpServerRegistry};
+    let config = state.config.clone();
+    let mcp = state.mcp.clone();
+    let lookup = name.clone();
+    let reader = req.reader_tool.trim().to_owned();
+
+    // Does this server exist at all? Answered first, so an unknown server reads as a
+    // 404 rather than being judged on the tool name it could never have.
+    let known_config = config.clone();
+    let known_name = lookup.clone();
+    let known = blocking(move || {
+        Ok(McpServerRegistry::list(known_config.as_ref())
+            .map_err(AppError::Repository)?
+            .iter()
+            .any(|s| s.name == known_name))
+    })
+    .await?;
+    if !known {
+        return Err(ApiError(AppError::NotFound {
+            entity: "MCP server",
+        }));
+    }
+
+    // A blank clears the nomination; anything else must be a tool this server really
+    // exposes. A typo would fail by simply never verifying anything, which is the worst
+    // way for a safety mechanism to break.
+    if !reader.is_empty() {
+        let offered = mcp.read().ok().is_some_and(|r| {
+            r.available()
+                .into_iter()
+                .any(|c| c.id == format!("{lookup}.{reader}"))
+        });
+        if !offered {
+            return Err(ApiError(AppError::BadRequest {
+                message: format!("'{reader}' is not a tool this server exposes"),
+            }));
+        }
+    }
+
+    let stored = reader.clone();
+    blocking(move || {
+        let mut servers = McpServerRegistry::list(config.as_ref()).map_err(AppError::Repository)?;
+        if let Some(server) = servers.iter_mut().find(|s| s.name == lookup) {
+            server.reader_tool = stored;
+            McpServerRegistry::register(config.as_ref(), server).map_err(AppError::Repository)?;
+            reconnect_mcp(config.as_ref(), mcp.as_ref());
+        }
+        Ok(())
+    })
+    .await?;
+    Ok(Json(json!({ "ok": true, "reader_tool": reader })))
+}
+
 async fn set_mcp_trust(
     State(state): State<AppState>,
     Path(name): Path<String>,
@@ -660,6 +739,7 @@ pub fn app(state: AppState) -> Router {
             post(reconnect_mcp_server),
         )
         .route("/v1/mcp/servers/{name}/trust", post(set_mcp_trust))
+        .route("/v1/mcp/servers/{name}/reader", post(set_mcp_reader))
         .route(
             "/v1/capabilities/{id}/config",
             post(set_capability_settings),
@@ -3329,6 +3409,39 @@ mod tests {
             .find(|s| s["name"] == "ha")
             .unwrap();
         assert_eq!(ha["trust_all"], false);
+    }
+
+    #[tokio::test]
+    async fn nominating_a_reader_on_an_unknown_server_is_404() {
+        let res = app(test_state())
+            .oneshot(post(
+                "/v1/mcp/servers/nope/reader",
+                r#"{"reader_tool":"list_events"}"#,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn a_reader_nomination_must_name_a_tool_the_server_really_has() {
+        // A typo must not quietly disable read-back — it would fail by simply never
+        // verifying anything, which is the worst way for a safety mechanism to break.
+        let state = test_state();
+        let app = app(state);
+        let res = app
+            .clone()
+            .oneshot(post(
+                "/v1/mcp/servers/whatever/reader",
+                r#"{"reader_tool":"GetLiveContxt"}"#,
+            ))
+            .await
+            .unwrap();
+        assert!(
+            res.status() == StatusCode::BAD_REQUEST || res.status() == StatusCode::NOT_FOUND,
+            "a tool the server doesn't expose was accepted: {}",
+            res.status()
+        );
     }
 
     #[tokio::test]
