@@ -1090,6 +1090,17 @@ fn build_butler_request(
             system.push_str(&format!("\n- {u}"));
         }
     }
+    // How its own actions have actually landed (ADR 0035). Only skills the person has
+    // reacted to appear, so this is short and every line carries a real judgement.
+    if !context.track_record.is_empty() {
+        system.push_str(
+            "\nHow your past actions have landed, in their words — weigh this when \
+             choosing what to do:",
+        );
+        for record in &context.track_record {
+            system.push_str(&format!("\n- {record}"));
+        }
+    }
     if context.capabilities.is_empty() {
         system.push_str("\nYou have no skills available right now; set \"use\":null.");
     } else {
