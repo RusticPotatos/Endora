@@ -380,6 +380,33 @@ pub struct ButlerContext {
     /// *synthesizer* (the generalist), so plain conversation is answered by the
     /// model that's good at it rather than the tool-tuned router.
     pub synthesize: bool,
+    /// A compact running summary of the earlier conversation this session — the part
+    /// that has scrolled out of the recent verbatim window. Keeps the day's thread
+    /// present without sending the whole transcript (which slows a local model), so
+    /// the butler stays coherent over a long chat. `None` until the window overflows.
+    pub conversation_summary: Option<String>,
+}
+
+/// A compact summary of the conversation so far, and how many messages it folds in —
+/// so the turn knows whether new messages have scrolled past the recent window and
+/// the summary needs extending (ADR 0028 context compaction).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ConversationSummary {
+    /// The running summary text.
+    pub text: String,
+    /// How many of the oldest messages this summary already folds in.
+    pub covered: usize,
+}
+
+/// Stores the running conversation summary between turns, so it is regenerated only
+/// when the recent window overflows (not every turn). An in-memory implementation is
+/// fine — the durable, cross-session facts live in beliefs (ADR 0020); this only
+/// keeps the current session's thread compact.
+pub trait ConversationSummaryStore {
+    /// The current summary, if one has been formed this session.
+    fn get(&self) -> Option<ConversationSummary>;
+    /// Replaces the stored summary.
+    fn set(&self, summary: ConversationSummary);
 }
 
 /// A skill offered to the model through native tool-calling: its exact id, what it
@@ -513,6 +540,18 @@ pub trait Butler {
             }
         }
         Ok(reply)
+    }
+
+    /// Compacts a chunk of conversation (optionally folding a prior summary) into a
+    /// short running summary — used to keep a long chat's prompt bounded without
+    /// dropping the day's thread (ADR 0028 context compaction). The default returns an
+    /// empty string, meaning "no compaction available"; the caller then simply keeps
+    /// the recent verbatim window. A model-backed butler overrides it.
+    ///
+    /// # Errors
+    /// [`ProposalError`] if a backing model is unreachable or returns nothing.
+    fn summarize(&self, _prior_summary: &str, _transcript: &str) -> Result<String, ProposalError> {
+        Ok(String::new())
     }
 }
 

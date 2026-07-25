@@ -35,9 +35,9 @@ use endora_scheduling::{
 use crate::error::AppError;
 use crate::ports::{
     AttentionItem, AttentionKind, Butler, ButlerContext, ButlerProposal, ButlerReply,
-    CapabilityTool, Clock, DeepAsker, FormedBelief, IdSource, MemorySnapshot, MemoryStore,
-    NorthStarBrief, Proposer, Snooze, SnoozeRepository, Suggestion, SuggestionRepository,
-    SuggestionStatus, TurnMessage,
+    CapabilityTool, Clock, ConversationSummary, ConversationSummaryStore, DeepAsker, FormedBelief,
+    IdSource, MemorySnapshot, MemoryStore, NorthStarBrief, Proposer, Snooze, SnoozeRepository,
+    Suggestion, SuggestionRepository, SuggestionStatus, TurnMessage,
 };
 
 /// Creates and stores a new [`Direction`].
@@ -1141,6 +1141,7 @@ pub fn send_to_butler(
         butler,
         audit,
         None,
+        None,
         ids,
         clock,
         context,
@@ -1195,6 +1196,59 @@ pub struct ButlerStep {
     pub output: Option<String>,
 }
 
+/// Bounds the prompt for a long chat (ADR 0028): returns the recent verbatim window
+/// plus a compact running summary of everything before it. The summary is extended
+/// (one model call) only when new messages have scrolled past the window since it was
+/// last built; otherwise the cached summary is reused. If summarising isn't available
+/// (the default butler) or fails, the recent window still stands — just without the
+/// earlier context folded in.
+fn compact_history(
+    butler: &dyn Butler,
+    summary: &dyn ConversationSummaryStore,
+    full: &[ChatMessage],
+    window: usize,
+) -> (Vec<ChatMessage>, Option<String>) {
+    if full.len() <= window {
+        return (full.to_vec(), None);
+    }
+    let boundary = full.len() - window; // messages [0..boundary) are older
+    let prior = summary.get().unwrap_or_default();
+    let text = if boundary > prior.covered {
+        // New messages have overflowed since the last summary — fold them in (one call).
+        let chunk = render_transcript(&full[prior.covered..boundary]);
+        match butler.summarize(&prior.text, &chunk) {
+            Ok(s) if !s.trim().is_empty() => {
+                let s = s.trim().to_owned();
+                summary.set(ConversationSummary {
+                    text: s.clone(),
+                    covered: boundary,
+                });
+                Some(s)
+            }
+            // Summariser unavailable/failed: keep the prior summary, if any.
+            _ => (!prior.text.is_empty()).then_some(prior.text),
+        }
+    } else {
+        (!prior.text.is_empty()).then_some(prior.text)
+    };
+    (full[boundary..].to_vec(), text)
+}
+
+/// Renders messages as a plain `User:/Butler:` transcript, for summarising.
+fn render_transcript(messages: &[ChatMessage]) -> String {
+    messages
+        .iter()
+        .map(|m| {
+            let who = match m.role() {
+                MessageRole::User => "User",
+                MessageRole::Butler => "Butler",
+            };
+            format!("{who}: {}", m.text())
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 /// Like [`send_to_butler`], but streams the reply's prose to `on_token` as the
 /// butler produces it (for a live, token-by-token chat). The person's message is
 /// persisted **before** the butler is called, and the butler's reply is persisted
@@ -1217,6 +1271,7 @@ pub fn send_to_butler_streaming(
     butler: &dyn Butler,
     audit: &dyn AuditLog,
     deep: Option<&dyn DeepAsker>,
+    summary: Option<&dyn ConversationSummaryStore>,
     ids: &impl IdSource,
     clock: &impl Clock,
     context: &ButlerContext,
@@ -1232,18 +1287,29 @@ pub fn send_to_butler_streaming(
     )?;
     chat.append(&user)?;
 
-    // Only send the model a RECENT window of the conversation, not the whole history.
-    // Every turn already carries a large fixed prompt (persona + all tool schemas), so
-    // letting the transcript grow unbounded pushes each call's prompt-eval past the
-    // timeout on a local model — which is why a long chat starts degrading. The tail
-    // keeps enough context to stay coherent while bounding the prompt.
-    const HISTORY_WINDOW: usize = 12;
+    // CONTEXT COMPACTION (ADR 0028): send the model a bounded prompt — a compact running
+    // summary of earlier turns + a recent verbatim window — not the whole transcript.
+    // A big prompt slows a local model past the timeout, so a long chat would otherwise
+    // degrade; but a butler shouldn't forget the day, so the overflow is summarised
+    // rather than dropped. The summary is regenerated only when the window overflows
+    // FURTHER (new messages scroll past it), so most turns pay nothing.
+    const RECENT_WINDOW: usize = 12;
     let full = chat.list()?;
-    let history: Vec<ChatMessage> = full
-        .iter()
-        .skip(full.len().saturating_sub(HISTORY_WINDOW))
-        .cloned()
-        .collect();
+    let (history, summary_text) = match summary {
+        Some(store) => compact_history(butler, store, &full, RECENT_WINDOW),
+        // No summary store (non-streaming path/tests): just bound with the recent
+        // window, no summarising.
+        None => (
+            full.iter()
+                .skip(full.len().saturating_sub(RECENT_WINDOW))
+                .cloned()
+                .collect(),
+            None,
+        ),
+    };
+    let mut context = context.clone();
+    context.conversation_summary = summary_text;
+    let context = &context;
     let prefs = preferences.list_all()?;
 
     // `activity` — a plain-language record of what the butler did this turn.
@@ -2280,6 +2346,7 @@ pub fn butler_context(
         tool_result: None,
         now: format_datetime_utc(clock.now().unix_millis()),
         synthesize: false,
+        conversation_summary: None,
     })
 }
 
@@ -3317,6 +3384,64 @@ mod tests {
     }
 
     #[test]
+    fn compact_history_summarizes_overflow_and_keeps_the_recent_window() {
+        use super::compact_history;
+        use crate::ConversationSummaryStore as _;
+        struct Store(std::cell::RefCell<Option<crate::ConversationSummary>>);
+        impl crate::ConversationSummaryStore for Store {
+            fn get(&self) -> Option<crate::ConversationSummary> {
+                self.0.borrow().clone()
+            }
+            fn set(&self, s: crate::ConversationSummary) {
+                *self.0.borrow_mut() = Some(s);
+            }
+        }
+        struct SummBut;
+        impl Butler for SummBut {
+            fn respond(
+                &self,
+                _h: &[ChatMessage],
+                _p: &[Preference],
+                _c: &ButlerContext,
+            ) -> Result<ButlerReply, ProposalError> {
+                Ok(ButlerReply::default())
+            }
+            fn summarize(&self, _prior: &str, _transcript: &str) -> Result<String, ProposalError> {
+                Ok("EARLIER".to_owned())
+            }
+        }
+        let msgs: Vec<ChatMessage> = (0u128..20)
+            .map(|i| {
+                let role = if i % 2 == 0 {
+                    MessageRole::User
+                } else {
+                    MessageRole::Butler
+                };
+                ChatMessage::new(
+                    MessageId::new(i + 1),
+                    role,
+                    &format!("m{i}"),
+                    Timestamp::from_unix_millis(0),
+                )
+                .unwrap()
+            })
+            .collect();
+        let store = Store(std::cell::RefCell::new(None));
+
+        // 20 messages, window 12 → last 12 verbatim, older 8 summarized.
+        let (recent, summary) = compact_history(&SummBut, &store, &msgs, 12);
+        assert_eq!(recent.len(), 12);
+        assert_eq!(recent[0].text(), "m8");
+        assert_eq!(summary.as_deref(), Some("EARLIER"));
+        assert_eq!(store.get().unwrap().covered, 8);
+
+        // A short history (<= window) needs no summary.
+        let (recent2, summary2) = compact_history(&SummBut, &store, &msgs[..5], 12);
+        assert_eq!(recent2.len(), 5);
+        assert!(summary2.is_none());
+    }
+
+    #[test]
     fn run_tool_turn_runs_a_cleared_tool_and_answers_from_its_result() {
         let (ids, clock, audit) = (SeqIds::default(), FixedClock(0), FakeAudit::default());
         let skill = FixedSkill {
@@ -3681,6 +3806,7 @@ mod tests {
             &EmptyButler,
             &FakeAudit::default(),
             Some(&deep),
+            None,
             &ids,
             &clock,
             &ButlerContext::default(),
@@ -3740,6 +3866,7 @@ mod tests {
             &GoodButler,
             &FakeAudit::default(),
             Some(&deep),
+            None,
             &ids,
             &clock,
             &ButlerContext::default(),

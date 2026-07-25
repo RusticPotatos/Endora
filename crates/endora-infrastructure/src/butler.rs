@@ -396,6 +396,54 @@ impl Butler for LlmButler {
         self.post_and_parse(&body, context)
             .or_else(|_| Ok(degraded_reply()))
     }
+
+    fn summarize(&self, prior: &str, transcript: &str) -> Result<String, ProposalError> {
+        let system = "You keep a butler's running memory of a conversation. Compress it \
+            into a brief, factual summary: what the person wants, decisions made, tasks in \
+            flight, and the thread of the day. Keep concrete names and numbers. Two to five \
+            sentences, plain prose — no preamble, no lists.";
+        let user = if prior.trim().is_empty() {
+            format!("Summarize the conversation so far:\n\n{transcript}")
+        } else {
+            format!(
+                "Summary so far:\n{prior}\n\nExtend it to fold in these newer messages, \
+                 staying brief:\n\n{transcript}"
+            )
+        };
+        let mut body = json!({
+            "model": self.model,
+            "stream": false,
+            "messages": [
+                { "role": "system", "content": system },
+                { "role": "user", "content": user },
+            ],
+        });
+        apply_sampling(&mut body, &self.sampling);
+        let body = self.with_keep_alive(body);
+        let url = format!("{}/chat/completions", self.base_url);
+        let mut req = self.agent.post(&url);
+        if !self.api_key.is_empty() {
+            req = req.header("Authorization", &format!("Bearer {}", self.api_key));
+        }
+        let mut response = req
+            .send_json(&body)
+            .map_err(|e| ProposalError::Unavailable(e.to_string()))?;
+        if response.status().as_u16() >= 300 {
+            return Err(ProposalError::Unavailable(format!(
+                "endpoint returned status {}",
+                response.status()
+            )));
+        }
+        let json: Value = response
+            .body_mut()
+            .read_json()
+            .map_err(|e| ProposalError::Unavailable(e.to_string()))?;
+        Ok(json["choices"][0]["message"]["content"]
+            .as_str()
+            .unwrap_or_default()
+            .trim()
+            .to_owned())
+    }
 }
 
 /// A two-model butler (the ADR 0027 mixture experiment): a routing **specialist**
@@ -464,6 +512,11 @@ impl Butler for MixtureButler {
         // use the generalist synthesizer — the router is tool-tuned but weak at prose.
         self.synthesizer
             .take_turn(conversation, preferences, context)
+    }
+
+    fn summarize(&self, prior: &str, transcript: &str) -> Result<String, ProposalError> {
+        // Summarising is prose — the generalist synthesizer.
+        self.synthesizer.summarize(prior, transcript)
     }
 }
 
@@ -583,6 +636,10 @@ impl Butler for ConfigurableButler {
         context: &ButlerContext,
     ) -> Result<ButlerReply, ProposalError> {
         self.current().take_turn(conversation, preferences, context)
+    }
+
+    fn summarize(&self, prior: &str, transcript: &str) -> Result<String, ProposalError> {
+        self.current().summarize(prior, transcript)
     }
 }
 
@@ -1035,6 +1092,16 @@ fn build_butler_request(
     let mut system = BUTLER_SYSTEM_PROMPT.to_owned();
     if !context.now.is_empty() {
         system.push_str(&format!("\nThe current date and time is {}.", context.now));
+    }
+    if let Some(summary) = context
+        .conversation_summary
+        .as_deref()
+        .filter(|s| !s.trim().is_empty())
+    {
+        system.push_str(&format!(
+            "\nEarlier in this conversation (summary of what came before the recent \
+             messages):\n{summary}"
+        ));
     }
     if !preferences.is_empty() {
         system.push_str(
