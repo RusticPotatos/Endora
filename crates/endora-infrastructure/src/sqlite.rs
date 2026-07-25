@@ -10,7 +10,8 @@ use endora_persistence::Db;
 
 use endora_application::{
     AuditId, AuditRecord, Belief, BeliefId, BeliefKind, BeliefStatus, ChatMessage, Confidence,
-    MessageId, MessageRole, Preference, PreferenceId, PreferenceKind, Timestamp,
+    MessageId, MessageRole, Outcome, OutcomeId, Preference, PreferenceId, PreferenceKind, Reaction,
+    Timestamp,
 };
 use endora_application::{MemorySnapshot, MemoryStore, RepositoryError};
 use rusqlite::{Connection, params};
@@ -69,6 +70,16 @@ CREATE TABLE IF NOT EXISTS beliefs (
     created_ms       INTEGER NOT NULL,
     last_affirmed_ms INTEGER NOT NULL,
     status           TEXT NOT NULL
+) STRICT;
+CREATE TABLE IF NOT EXISTS outcomes (
+    id                TEXT PRIMARY KEY,
+    capability        TEXT NOT NULL,
+    input             TEXT NOT NULL,
+    claim             TEXT NOT NULL,
+    observation       TEXT,
+    at_ms             INTEGER NOT NULL,
+    motivating_belief TEXT,
+    reaction          TEXT
 ) STRICT;
 CREATE TABLE IF NOT EXISTS capability_config (
     id                TEXT PRIMARY KEY,
@@ -247,6 +258,7 @@ impl MemoryStore for SqliteStore {
             messages: all_messages(&conn)?,
             preferences: all_preferences(&conn)?,
             beliefs: all_beliefs(&conn)?,
+            outcomes: all_outcomes(&conn)?,
         })
     }
 
@@ -262,6 +274,7 @@ impl MemoryStore for SqliteStore {
             "preferences",
             "checkin",
             "beliefs",
+            "outcomes",
             "events",
             "capability_config",
             "capability_settings",
@@ -346,6 +359,56 @@ fn all_beliefs(conn: &Connection) -> Result<Vec<Belief>, RepositoryError> {
             Timestamp::from_unix_millis(created_ms),
             Timestamp::from_unix_millis(affirmed_ms),
             BeliefStatus::from_name(&status),
+        ));
+    }
+    Ok(out)
+}
+
+/// Reads every outcome for the memory export (ADR 0035) — what Endora did, what the
+/// tool claimed, and what Endora observed afterwards.
+fn all_outcomes(conn: &Connection) -> Result<Vec<Outcome>, RepositoryError> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, capability, input, claim, observation, at_ms, motivating_belief, reaction \
+             FROM outcomes ORDER BY at_ms DESC, rowid DESC",
+        )
+        .map_err(backend)?;
+    let rows = stmt
+        .query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, String>(3)?,
+                r.get::<_, Option<String>>(4)?,
+                r.get::<_, i64>(5)?,
+                r.get::<_, Option<String>>(6)?,
+                r.get::<_, Option<String>>(7)?,
+            ))
+        })
+        .map_err(backend)?;
+    let mut out = Vec::new();
+    for row in rows {
+        let (id, capability, input, claim, observation, at_ms, belief, reaction) =
+            row.map_err(backend)?;
+        let reaction = reaction
+            .map(|r| {
+                Reaction::from_name(&r)
+                    .ok_or_else(|| RepositoryError::Corrupt(format!("unknown reaction {r:?}")))
+            })
+            .transpose()?;
+        let motivating_belief = belief
+            .map(|b| parse_id(&b).map(BeliefId::new))
+            .transpose()?;
+        out.push(Outcome::from_parts(
+            OutcomeId::new(parse_id(&id)?),
+            capability,
+            input,
+            claim,
+            observation,
+            Timestamp::from_unix_millis(at_ms),
+            motivating_belief,
+            reaction,
         ));
     }
     Ok(out)
