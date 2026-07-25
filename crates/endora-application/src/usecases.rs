@@ -1232,7 +1232,18 @@ pub fn send_to_butler_streaming(
     )?;
     chat.append(&user)?;
 
-    let history = chat.list()?;
+    // Only send the model a RECENT window of the conversation, not the whole history.
+    // Every turn already carries a large fixed prompt (persona + all tool schemas), so
+    // letting the transcript grow unbounded pushes each call's prompt-eval past the
+    // timeout on a local model — which is why a long chat starts degrading. The tail
+    // keeps enough context to stay coherent while bounding the prompt.
+    const HISTORY_WINDOW: usize = 12;
+    let full = chat.list()?;
+    let history: Vec<ChatMessage> = full
+        .iter()
+        .skip(full.len().saturating_sub(HISTORY_WINDOW))
+        .cloned()
+        .collect();
     let prefs = preferences.list_all()?;
 
     // `activity` — a plain-language record of what the butler did this turn.
