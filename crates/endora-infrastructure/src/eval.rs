@@ -20,8 +20,8 @@
 use std::collections::HashMap;
 
 use endora_application::{
-    BeliefKind, Butler, ButlerContext, ButlerReply, ChatMessage, Confidence, MessageId,
-    MessageRole, Reversibility, Timestamp, ToolCall, TurnMessage, note_verification,
+    BeliefKind, Butler, ButlerContext, ButlerReply, CapabilityTool, ChatMessage, Confidence,
+    MessageId, MessageRole, Reversibility, Timestamp, ToolCall, TurnMessage, note_verification,
     reads_as_an_instruction,
 };
 
@@ -83,8 +83,11 @@ pub enum Probe {
         observed: Option<&'static str>,
     },
     /// Ask with a **specific** catalogue rather than the default one — for testing
-    /// disambiguation between similarly-named tools.
-    WithTools(&'static [&'static str], &'static str),
+    /// disambiguation between similarly-named tools, and the effect of crowding.
+    ///
+    /// Owned rather than a static slice so a case can compose one (built-ins *and* the
+    /// Home Assistant server, as production sends) instead of only naming a fixed list.
+    WithTools(Vec<String>, &'static str),
     /// Plain conversation with no skills offered. Used for understanding: a tools
     /// context pulls a weak model toward acting instead of listening.
     Conversation(&'static str),
@@ -149,25 +152,83 @@ pub struct EvalCase {
 
 /// The skills offered in the eval — the real configured set + descriptions, so
 /// routing is tested under the same choice pressure as the live deployment.
+const EVAL_SKILL_LINES: &[&str] = &[
+    "weather — Current conditions and today's forecast for a place",
+    "web_fetch — Fetch a web page and read its text — for research",
+    "knowledge — Look up factual, encyclopedic knowledge about a topic",
+    "web_search — Get a quick answer or definition from the web for a question",
+    "news — Recent news headlines for a place or topic",
+    "image_review — Describe or answer questions about an image",
+    "safety_alerts — Active safety alerts near you — severe weather and warnings",
+    "home_assistant — Read your home's state — lights, presence, sensors",
+];
+
+/// The same skills as the prose list the context also carries.
 #[must_use]
 pub fn eval_skills() -> Vec<String> {
-    [
-        "weather — Current conditions and today's forecast for a place",
-        "web_fetch — Fetch a web page and read its text — for research",
-        "knowledge — Look up factual, encyclopedic knowledge about a topic",
-        "web_search — Get a quick answer or definition from the web for a question",
-        "news — Recent news headlines for a place or topic",
-        "image_review — Describe or answer questions about an image",
-        "safety_alerts — Active safety alerts near you — severe weather and warnings",
-        "home_assistant — Read your home's state — lights, presence, sensors",
-    ]
-    .iter()
-    .map(|s| (*s).to_owned())
-    .collect()
+    EVAL_SKILL_LINES.iter().map(|s| (*s).to_owned()).collect()
+}
+
+/// The capability the model reached for — **from whichever channel it used**.
+///
+/// Production drives `take_turn` and reads `tool_calls`: the model is handed real tool
+/// names and JSON-Schemas and emits a native `tool_call` (ADR 0028). `capability_use` is
+/// the pre-0028 path, where the id was hand-written inside a JSON envelope.
+///
+/// Reading `tool_calls` first is the whole point of this function. A battery that only
+/// looked at `capability_use` would score the abandoned path — and did, which is how
+/// `select:turn-off-not-light-set` passed 3/3 while the live butler reached for
+/// `HassLightSet` on "turn off the kitchen light", the exact defect that case exists to
+/// catch. The fallback is kept so a model with no native tool-calling still scores
+/// rather than silently failing every routing case.
+/// Turns the eval's `"id — description"` lines into the **structured** tools production
+/// puts on the wire (ADR 0028), so a case exercises native tool-calling rather than the
+/// prose-and-JSON path it replaced.
+///
+/// Schemas are deliberately shaped like the live Home Assistant ones: the discriminator
+/// the model has to see is that `HassLightSet` demands a brightness or colour and cannot
+/// switch anything, while `HassTurnOff` just takes a target.
+fn structured_tools(lines: &[&str]) -> Vec<CapabilityTool> {
+    lines
+        .iter()
+        .map(|line| {
+            let (id, description) = line.split_once(" — ").unwrap_or((line, ""));
+            let id = id.trim().to_owned();
+            let schema = if id.ends_with("HassLightSet") {
+                json_schema(&[
+                    ("name", "string"),
+                    ("brightness", "integer"),
+                    ("color", "string"),
+                ])
+            } else if id.ends_with("HassSetVolume") {
+                json_schema(&[("name", "string"), ("volume_level", "integer")])
+            } else {
+                json_schema(&[("name", "string"), ("area", "string")])
+            };
+            CapabilityTool {
+                id,
+                description: description.trim().to_owned(),
+                input_schema: Some(schema),
+            }
+        })
+        .collect()
+}
+
+/// A minimal JSON-Schema object for a tool's arguments, as the wire format wants it.
+fn json_schema(fields: &[(&str, &str)]) -> String {
+    let props: serde_json::Map<String, serde_json::Value> = fields
+        .iter()
+        .map(|(n, ty)| ((*n).to_owned(), serde_json::json!({ "type": ty })))
+        .collect();
+    serde_json::json!({ "type": "object", "properties": props }).to_string()
 }
 
 fn used(reply: &ButlerReply) -> Option<&str> {
-    reply.capability_use.as_ref().map(|u| u.capability.as_str())
+    reply
+        .tool_calls
+        .first()
+        .map(|c| c.capability.as_str())
+        .or_else(|| reply.capability_use.as_ref().map(|u| u.capability.as_str()))
 }
 
 /// Whether the text states a temperature-like live fact — the signature of a
@@ -316,6 +377,27 @@ const HASS_TOOLS: &[&str] = &[
     "home-assistant.HassGetState — Provides real-time information about the CURRENT \
      state, value, or mode of devices, sensors, entities, or areas.",
 ];
+
+/// The catalogue **production** actually offers: every configured built-in skill plus
+/// the whole Home Assistant server, in one list.
+///
+/// `HASS_TOOLS` alone is a curated seven, and the model picks correctly from it every
+/// time. The live butler, asked to turn off the kitchen light, reached for
+/// `HassLightSet` — so the thing the curated list fails to reproduce is the **crowding**.
+/// `butler_context` builds `tools` from the composite runner, so built-ins and MCP tools
+/// arrive together and the right answer has to be found among all of them.
+fn crowded_catalogue() -> Vec<String> {
+    EVAL_SKILL_LINES
+        .iter()
+        .chain(HASS_TOOLS.iter())
+        .map(|s| (*s).to_owned())
+        .collect()
+}
+
+/// Just the Home Assistant server's tools, as an owned catalogue.
+fn hass_only() -> Vec<String> {
+    HASS_TOOLS.iter().map(|s| (*s).to_owned()).collect()
+}
 
 /// A turn that plainly reveals something about the person — the positive
 /// understanding case, and the one several negative cases are gated on.
@@ -553,7 +635,7 @@ pub fn battery() -> Vec<EvalCase> {
         EvalCase {
             name: "select:turn-off-not-light-set",
             tier: Tier::L1,
-            probe: Probe::WithTools(HASS_TOOLS, "please turn the kitchen light off"),
+            probe: Probe::WithTools(hass_only(), "please turn the kitchen light off"),
             check: |r, _| {
                 // The live failure this exists for: the model picked HassLightSet,
                 // which only sets brightness or colour. HA matched the targets,
@@ -564,9 +646,25 @@ pub fn battery() -> Vec<EvalCase> {
             },
         },
         EvalCase {
+            // Observed live on 2026-07-25, and NOT reproduced by the curated list
+            // above: asked to "turn off the kitchen light", the deployed butler reached
+            // for HassLightSet. `select:turn-off-not-light-set` passes 3/3 with seven
+            // Home Assistant tools on the table, so the seven-tool list is not what the
+            // model sees when it gets this wrong.
+            //
+            // The difference is **crowding**. `butler_context` builds `tools` from the
+            // composite runner, so production offers every configured built-in skill AND
+            // the whole Home Assistant server at once. This case asks the same question
+            // of the same catalogue the live turn uses.
+            name: "select:turn-off-in-a-crowded-catalogue",
+            tier: Tier::L1,
+            probe: Probe::WithTools(crowded_catalogue(), "turn off the kitchen light"),
+            check: |r, _| used(r).is_some_and(|t| t.ends_with("HassTurnOff")),
+        },
+        EvalCase {
             name: "select:light-set-when-dimming",
             tier: Tier::L1,
-            probe: Probe::WithTools(HASS_TOOLS, "dim the kitchen lights to 30%"),
+            probe: Probe::WithTools(hass_only(), "dim the kitchen lights to 30%"),
             check: |r, _| {
                 // The other side of the same disambiguation: HassLightSet IS right
                 // here, so the fix must not have taught it to always avoid it.
@@ -801,8 +899,12 @@ fn message(text: &str, role: MessageRole, id: u128) -> ChatMessage {
 /// Runs one probe against the butler.
 fn run_probe(butler: &dyn Butler, probe: &Probe) -> ButlerReply {
     let now = "Monday, 20 July 2026, 3:00 PM".to_owned();
+    // Production sends BOTH the prose list and the structured tools (see
+    // `usecases::butler_context`), so the eval does too — otherwise a routing case
+    // measures a path the live butler no longer takes.
     let with_skills = ButlerContext {
         capabilities: eval_skills(),
+        tools: structured_tools(EVAL_SKILL_LINES),
         now: now.clone(),
         ..ButlerContext::default()
     };
@@ -812,19 +914,27 @@ fn run_probe(butler: &dyn Butler, probe: &Probe) -> ButlerReply {
     };
     match probe {
         Probe::WithSkills(prompt) => butler
-            .respond(&[message(prompt, MessageRole::User, 1)], &[], &with_skills)
+            .take_turn(
+                &[TurnMessage::User((*prompt).to_owned())],
+                &[],
+                &with_skills,
+            )
             .unwrap_or_default(),
         Probe::WithoutSkills(prompt) | Probe::Conversation(prompt) => butler
             .respond(&[message(prompt, MessageRole::User, 1)], &[], &bare)
             .unwrap_or_default(),
         Probe::WithTools(tools, prompt) => {
+            let lines: Vec<&str> = tools.iter().map(String::as_str).collect();
             let ctx = ButlerContext {
-                capabilities: tools.iter().map(|s| (*s).to_owned()).collect(),
+                capabilities: tools.clone(),
+                tools: structured_tools(&lines),
                 now: with_skills.now.clone(),
                 ..ButlerContext::default()
             };
+            // Through `take_turn`, the way production asks — the model gets real tool
+            // names and schemas and answers with a `tool_call`.
             butler
-                .respond(&[message(prompt, MessageRole::User, 1)], &[], &ctx)
+                .take_turn(&[TurnMessage::User((*prompt).to_owned())], &[], &ctx)
                 .unwrap_or_default()
         }
         Probe::WithHistory(prior, prompt) => {
@@ -1114,6 +1224,76 @@ mod tests {
 
     fn tier_count(tier: Tier) -> usize {
         battery().iter().filter(|c| c.tier == tier).count()
+    }
+
+    #[test]
+    fn routing_cases_offer_native_tools_the_way_production_does() {
+        // The defect this test exists to prevent, found in production on 2026-07-25:
+        // asked to "turn off the kitchen light", the live butler reached for
+        // HassLightSet — and `select:turn-off-not-light-set` was passing 3/3, because
+        // the probe left `context.tools` empty and asked through the pre-ADR-0028
+        // prose-and-JSON path. The battery gave a false pass on its highest-stakes case.
+        //
+        // A routing case is only meaningful if the model is offered the same structured
+        // tools the live turn offers, so that is asserted here rather than trusted.
+        use super::{Probe, battery, structured_tools};
+
+        let tools = structured_tools(super::HASS_TOOLS);
+        assert!(
+            tools.iter().any(|t| t.id.ends_with("HassTurnOff")),
+            "the right answer must be on the table"
+        );
+        let light_set = tools
+            .iter()
+            .find(|t| t.id.ends_with("HassLightSet"))
+            .expect("the tempting wrong answer must be on the table too");
+        let schema = light_set
+            .input_schema
+            .as_deref()
+            .expect("a tool with no schema is not what production sends");
+        assert!(
+            schema.contains("brightness"),
+            "the discriminator has to be visible to the model: {schema}"
+        );
+
+        // And every case that scores a tool choice must run through a probe that
+        // actually offers tools.
+        for case in battery() {
+            if !case.name.starts_with("select:") {
+                continue;
+            }
+            assert!(
+                matches!(case.probe, Probe::WithSkills(_) | Probe::WithTools(..)),
+                "{} scores a tool choice but its probe cannot offer tools",
+                case.name
+            );
+        }
+    }
+
+    #[test]
+    fn the_capability_a_model_reached_for_is_read_from_the_live_channel() {
+        // `used()` must look at `tool_calls` first. Reading only `capability_use` is
+        // what made the routing cases score the abandoned path.
+        use endora_application::{ButlerReply, ToolCall};
+        let native = ButlerReply {
+            tool_calls: vec![ToolCall {
+                id: "c".to_owned(),
+                capability: "home-assistant.HassTurnOff".to_owned(),
+                input_json: "{}".to_owned(),
+            }],
+            ..ButlerReply::default()
+        };
+        assert_eq!(super::used(&native), Some("home-assistant.HassTurnOff"));
+        // The legacy channel still scores, so a model without native tool-calling
+        // fails on merit rather than on plumbing.
+        let legacy = ButlerReply {
+            capability_use: Some(endora_application::CapabilityUse {
+                capability: "weather".to_owned(),
+                input_json: "{}".to_owned(),
+            }),
+            ..ButlerReply::default()
+        };
+        assert_eq!(super::used(&legacy), Some("weather"));
     }
 
     #[test]
