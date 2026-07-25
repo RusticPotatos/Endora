@@ -66,3 +66,4 @@ of an existing record and take the next number.
 | [0030](0030-measuring-understanding.md) | Measuring understanding: the L3 eval tier and the adoption floor | Accepted |
 | [0031](0031-agentic-proactivity.md) | Agentic proactivity: a budget, not a trigger | Accepted |
 | [0032](0032-beliefs-decay-and-expire.md) | Beliefs decay and expire | Accepted |
+| [0033](0033-what-understanding-admits.md) | What understanding admits: instructions out, contradictions kept apart | Accepted |
