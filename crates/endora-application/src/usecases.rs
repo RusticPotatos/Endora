@@ -932,6 +932,39 @@ fn gather_with_skills(
 /// result (needs setup / needs confirmation / failed), and the model writes the
 /// user-facing answer from it. If the model misreports with the truth in front of it,
 /// that is a model failure to surface — not a string to hardcode (ADR 0028).
+/// Ask the model for one turn, retrying a completely empty completion.
+///
+/// A slow local model occasionally returns *nothing* — no tool call and no text —
+/// on a turn it should have acted on (observed ~1 in 3 on qwen2.5:14b). Left alone
+/// that whiff surfaces as the canned "not sure how to help" fallback with an empty
+/// activity log. Retrying is cheap (an empty completion returns near-instantly) and,
+/// because sampling is non-deterministic, usually turns the retry into a real tool
+/// call or answer. Bounded so a persistently mute model still returns promptly.
+fn take_turn_retrying_empty(
+    butler: &dyn Butler,
+    conversation: &[TurnMessage],
+    prefs: &[Preference],
+    context: &ButlerContext,
+) -> Result<ButlerReply, AppError> {
+    const MAX_EMPTY_RETRIES: usize = 2;
+    let mut reply = butler
+        .take_turn(conversation, prefs, context)
+        .map_err(|e| AppError::Model {
+            message: e.to_string(),
+        })?;
+    let mut retries = 0;
+    while reply.tool_calls.is_empty() && reply.text.trim().is_empty() && retries < MAX_EMPTY_RETRIES
+    {
+        retries += 1;
+        reply = butler
+            .take_turn(conversation, prefs, context)
+            .map_err(|e| AppError::Model {
+                message: e.to_string(),
+            })?;
+    }
+    Ok(reply)
+}
+
 #[expect(
     clippy::too_many_arguments,
     reason = "explicit dependencies, no hidden state"
@@ -969,11 +1002,7 @@ fn run_tool_turn(
     // so never trips the failure cap.
     let mut seen: std::collections::HashSet<(String, String)> = std::collections::HashSet::new();
     for round in 0..=max_rounds {
-        let reply = butler
-            .take_turn(&conversation, prefs, context)
-            .map_err(|e| AppError::Model {
-                message: e.to_string(),
-            })?;
+        let reply = take_turn_retrying_empty(butler, &conversation, prefs, context)?;
         // No tool call → the final answer, grounded in the tool results so far.
         if reply.tool_calls.is_empty() {
             return Ok(reply);
@@ -1095,11 +1124,7 @@ fn run_tool_turn(
     // calling yet another tool and leaving the turn without an answer.
     let mut final_ctx = context.clone();
     final_ctx.tools = Vec::new();
-    butler
-        .take_turn(&conversation, prefs, &final_ctx)
-        .map_err(|e| AppError::Model {
-            message: e.to_string(),
-        })
+    take_turn_retrying_empty(butler, &conversation, prefs, &final_ctx)
 }
 
 /// Sends a message to the butler and records both turns.
@@ -3621,6 +3646,91 @@ mod tests {
             .filter(|a| a.contains("Used the home.GetLiveContext"))
             .count();
         assert_eq!(used, 1, "got: {activity:?}");
+    }
+
+    #[test]
+    fn run_tool_turn_retries_an_empty_completion_then_acts() {
+        // A slow local model sometimes whiffs: an empty first completion (no tool
+        // call, no text). The turn must retry rather than surface the whiff, so the
+        // second (non-deterministic) attempt gets to call the tool.
+        struct EmptyThenCalls {
+            calls: std::cell::Cell<usize>,
+        }
+        impl Butler for EmptyThenCalls {
+            fn respond(
+                &self,
+                _h: &[ChatMessage],
+                _p: &[Preference],
+                _c: &ButlerContext,
+            ) -> Result<ButlerReply, ProposalError> {
+                Ok(ButlerReply::default())
+            }
+            fn take_turn(
+                &self,
+                conversation: &[crate::TurnMessage],
+                _p: &[Preference],
+                _c: &ButlerContext,
+            ) -> Result<ButlerReply, ProposalError> {
+                // Once a tool result is in hand, answer from it.
+                if let Some(crate::TurnMessage::ToolResult { content, .. }) = conversation
+                    .iter()
+                    .rev()
+                    .find(|m| matches!(m, crate::TurnMessage::ToolResult { .. }))
+                {
+                    return Ok(ButlerReply {
+                        text: format!("grounded: {content}"),
+                        ..ButlerReply::default()
+                    });
+                }
+                let n = self.calls.get();
+                self.calls.set(n + 1);
+                // First attempt: a complete whiff (no tool call, no text).
+                if n == 0 {
+                    return Ok(ButlerReply::default());
+                }
+                // Retry: the model commits to the action tool.
+                Ok(ButlerReply {
+                    tool_calls: vec![crate::ToolCall {
+                        id: "c1".to_owned(),
+                        capability: "home.HassTurnOn".to_owned(),
+                        input_json: "{}".to_owned(),
+                    }],
+                    ..ButlerReply::default()
+                })
+            }
+        }
+
+        let (ids, clock, audit) = (SeqIds::default(), FixedClock(0), FakeAudit::default());
+        let skill = FixedSkill {
+            id: "home.HassTurnOn",
+            result: Ok("turned on".to_owned()),
+        };
+        let mut activity = Vec::new();
+        let reply = super::run_tool_turn(
+            &EmptyThenCalls {
+                calls: std::cell::Cell::new(0),
+            },
+            &skill,
+            &audit,
+            &ids,
+            &clock,
+            &one_user_turn("turn on the kitchen light"),
+            &[],
+            &ButlerContext::default(),
+            3,
+            &mut |_| {},
+            &mut activity,
+        )
+        .unwrap();
+        // The retry recovered: the tool ran and the answer is grounded in it —
+        // not the empty whiff that would have become the canned fallback.
+        assert!(
+            activity
+                .iter()
+                .any(|a| a.contains("Used the home.HassTurnOn")),
+            "expected the retried turn to run the tool, got: {activity:?}"
+        );
+        assert!(reply.text.contains("turned on"), "got: {}", reply.text);
     }
 
     #[test]
