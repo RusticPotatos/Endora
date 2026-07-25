@@ -159,7 +159,14 @@ pub(crate) fn text_from_call_result(result: &Value, tool: &str) -> Result<String
     }
 }
 
-/// Names the targets an Assist response acted on: `Kitchen (area)`, `Kitchen Table`.
+/// Names the targets an Assist response acted on, **with what they are**:
+/// `Kitchen (area)`, `Kitchen Table (light)`.
+///
+/// The entity kind comes from the domain prefix of HA's id (`light.kitchen_table`).
+/// Including it is not decoration: given only bare names, a model fills the gap from
+/// whatever vocabulary is nearby, and this server exposes ten media-player tools. It
+/// duly reported adjusting "the media player in the Kitchen area" after a call to
+/// `HassLightSet`. Naming the domain removes the room for that invention.
 fn assist_targets(list: &Value) -> Vec<String> {
     list.as_array()
         .map(|items| {
@@ -168,11 +175,18 @@ fn assist_targets(list: &Value) -> Vec<String> {
                 .filter_map(|t| {
                     let name = t.get("name").and_then(Value::as_str)?;
                     let kind = t.get("type").and_then(Value::as_str).unwrap_or_default();
-                    Some(if kind == "area" {
-                        format!("{name} (area)")
-                    } else {
-                        name.to_owned()
-                    })
+                    if kind == "area" {
+                        return Some(format!("{name} (area)"));
+                    }
+                    let domain = t
+                        .get("id")
+                        .and_then(Value::as_str)
+                        .and_then(|id| id.split_once('.'))
+                        .map(|(domain, _)| domain.replace('_', " "));
+                    Some(
+                        domain
+                            .map_or_else(|| name.to_owned(), |domain| format!("{name} ({domain})")),
+                    )
                 })
                 .collect()
         })
@@ -567,7 +581,14 @@ mod assist_tests {
             "should read as a completed action, got: {out}"
         );
         assert!(out.contains("Kitchen (area)"), "names the area: {out}");
-        assert!(out.contains("Kitchen Table"), "names the entity: {out}");
+        assert!(
+            out.contains("Kitchen Table (light)"),
+            "names the entity AND what it is, so the model cannot guess: {out}"
+        );
+        assert!(
+            !out.to_lowercase().contains("media"),
+            "nothing here should suggest a media player: {out}"
+        );
         // The raw envelope must not survive — it is what the model misread.
         assert!(!out.contains("response_type"), "raw envelope leaked: {out}");
         assert!(!out.contains("\"success\""), "raw envelope leaked: {out}");
