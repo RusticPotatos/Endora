@@ -28,6 +28,20 @@ tagged release.
   rephrased belief was filed as a second one and duplicates accumulated into every
   later turn's context. Now stems words and compares by containment.
 
+### Changed
+
+- **Constitution §9 amended** (adopted by the maintainer, 2026-07-25; deliberation
+  recorded in [docs/proposals/constitution-amendment-section-9.md](docs/proposals/constitution-amendment-section-9.md)).
+  The clause described the `Direction → Assumption → Experiment → Observation →
+  Reflection` loop, every step of which was deleted by ADR 0029 — a constitutional
+  limit governing machinery that no longer existed. It now describes the loop Endora
+  actually runs, and states explicitly what had been true in code since ADR 0020 §3
+  but unstated constitutionally: Endora forms and revises **its own model of the
+  person** without per-item approval, bounded by remaining visible, correctable and
+  able to expire. Adaptation of Endora's **processes** is still proposed, not
+  imposed. **No new authority to act** — the reversibility bands, the deterministic
+  policy boundary and audit are untouched.
+
 ### Added
 
 - **Per-machine Make settings via a git-ignored `local.mk`.** Deployment hosts are a
