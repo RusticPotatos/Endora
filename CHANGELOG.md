@@ -44,6 +44,23 @@ tagged release.
 
 ### Added
 
+- **"Evidence verifies" is implemented** ([ADR 0034](docs/adr/0034-evidence-verifies.md)).
+  The architecture principle is *models propose, policy authorizes, capabilities
+  execute, **evidence verifies**, memory learns* — and the fourth clause had **zero
+  lines of code**. The turn proposed, authorized, executed, and then narrated, with no
+  step that looked at the world, so the butler's account of what happened came from
+  the actuator's self-report. Three production defects in one day traced to that gap,
+  the worst being a light that never turned off while Home Assistant reported success.
+
+  A capability that *reads* state (`Reversibility::Observe`) returns evidence and
+  stands on its own. Anything that *acts* returns a receipt, and its result is now
+  marked `[unverified]` with an instruction to report what was claimed and that it is
+  unconfirmed. Capabilities of unknown band fail closed — every MCP result is a
+  receipt until an integration says otherwise, so integrations nobody has debugged are
+  honest by default. Eight built-in reads mislabelled `Reversible` are now `Observe`
+  (policy-neutral: both map to `Act`).
+
+  This does not stop the model picking the wrong tool — it means you find out.
 - **The fitness battery is data-driven, and runs repeatedly.** Cases moved out of a
   hardcoded function into `crates/endora-infrastructure/src/eval.rs` as declarative
   data — a name, a tier, a probe, and a check — so adding one is adding a struct
