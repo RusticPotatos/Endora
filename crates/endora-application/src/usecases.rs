@@ -1235,27 +1235,35 @@ fn compact_history(
     if full.len() <= window {
         return (full.to_vec(), None);
     }
-    let boundary = full.len() - window; // messages [0..boundary) are older
-    let prior = summary.get().unwrap_or_default();
-    let text = if boundary > prior.covered {
-        // New messages have overflowed since the last summary — fold them in (one call).
-        let chunk = render_transcript(&full[prior.covered..boundary]);
-        match butler.summarize(&prior.text, &chunk) {
-            Ok(s) if !s.trim().is_empty() => {
-                let s = s.trim().to_owned();
-                summary.set(ConversationSummary {
-                    text: s.clone(),
+    // Fold the overflow into the summary only once enough new messages have piled up —
+    // NOT every turn. Each turn adds messages, so the window boundary advances every
+    // turn; summarising on every advance would pay a slow model call per turn on a
+    // long chat (which is exactly what degraded late turns). Between batches the
+    // not-yet-summarised overflow rides along verbatim, so nothing is dropped — the
+    // prompt just holds up to `window + SUMMARY_BATCH` recent messages.
+    const SUMMARY_BATCH: usize = 12;
+    let boundary = full.len() - window; // messages [0..boundary) are older than the tail window
+    let mut current = summary.get().unwrap_or_default();
+    if boundary >= current.covered + SUMMARY_BATCH {
+        // One summarisation call, folding the prior summary + the new overflow chunk.
+        let chunk = render_transcript(&full[current.covered..boundary]);
+        if let Ok(s) = butler.summarize(&current.text, &chunk) {
+            let s = s.trim();
+            if !s.is_empty() {
+                current = ConversationSummary {
+                    text: s.to_owned(),
                     covered: boundary,
-                });
-                Some(s)
+                };
+                summary.set(current.clone());
             }
-            // Summariser unavailable/failed: keep the prior summary, if any.
-            _ => (!prior.text.is_empty()).then_some(prior.text),
         }
-    } else {
-        (!prior.text.is_empty()).then_some(prior.text)
-    };
-    (full[boundary..].to_vec(), text)
+        // Summariser unavailable/failed: keep the prior summary and coverage; the
+        // overflow just rides along verbatim until the next attempt.
+    }
+    let text = (!current.text.is_empty()).then_some(current.text);
+    // Verbatim = everything not yet summarised (the tail window plus any overflow
+    // still waiting for the next batch).
+    (full[current.covered..].to_vec(), text)
 }
 
 /// Renders messages as a plain `User:/Butler:` transcript, for summarising.
@@ -3434,7 +3442,7 @@ mod tests {
                 Ok("EARLIER".to_owned())
             }
         }
-        let msgs: Vec<ChatMessage> = (0u128..20)
+        let msgs: Vec<ChatMessage> = (0u128..26)
             .map(|i| {
                 let role = if i % 2 == 0 {
                     MessageRole::User
@@ -3452,17 +3460,45 @@ mod tests {
             .collect();
         let store = Store(std::cell::RefCell::new(None));
 
-        // 20 messages, window 12 → last 12 verbatim, older 8 summarized.
-        let (recent, summary) = compact_history(&SummBut, &store, &msgs, 12);
+        // A small overflow (20 msgs, window 12 → 8 over) is UNDER the batch threshold:
+        // don't pay a summariser call every turn — the overflow rides along verbatim.
+        let (recent0, summary0) = compact_history(&SummBut, &store, &msgs[..20], 12);
+        assert_eq!(
+            recent0.len(),
+            20,
+            "under the batch threshold, nothing is folded"
+        );
+        assert!(summary0.is_none());
+        assert!(store.get().is_none(), "no summary written yet");
+
+        // 24 messages, window 12 → 12 over = a full batch: fold the oldest 12 into the
+        // summary, keep the last 12 verbatim.
+        let (recent, summary) = compact_history(&SummBut, &store, &msgs[..24], 12);
         assert_eq!(recent.len(), 12);
-        assert_eq!(recent[0].text(), "m8");
+        assert_eq!(recent[0].text(), "m12");
         assert_eq!(summary.as_deref(), Some("EARLIER"));
-        assert_eq!(store.get().unwrap().covered, 8);
+        assert_eq!(store.get().unwrap().covered, 12);
+
+        // Two more messages (26 total) is UNDER the next batch: don't re-summarise,
+        // just carry the extra overflow verbatim on top of the covered summary.
+        let (recent2, summary2) = compact_history(&SummBut, &store, &msgs, 12);
+        assert_eq!(
+            recent2.len(),
+            14,
+            "12 covered → the remaining 14 ride verbatim"
+        );
+        assert_eq!(recent2[0].text(), "m12");
+        assert_eq!(summary2.as_deref(), Some("EARLIER"));
+        assert_eq!(
+            store.get().unwrap().covered,
+            12,
+            "no re-summarise under the batch"
+        );
 
         // A short history (<= window) needs no summary.
-        let (recent2, summary2) = compact_history(&SummBut, &store, &msgs[..5], 12);
-        assert_eq!(recent2.len(), 5);
-        assert!(summary2.is_none());
+        let (recent3, summary3) = compact_history(&SummBut, &store, &msgs[..5], 12);
+        assert_eq!(recent3.len(), 5);
+        assert!(summary3.is_none());
     }
 
     #[test]
