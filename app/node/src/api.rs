@@ -1197,6 +1197,9 @@ async fn stream_chat(
             let collected_step = collected.clone();
             // Scope the token closure so its borrow of `tx` ends before the `done`
             // send below.
+            // Every action this turn took, recorded deterministically whatever the
+            // reply ends up claiming (ADR 0037).
+            let mut disclosed: Vec<usecases::ActionDisclosure> = Vec::new();
             let result = {
                 let mut on_token = |chunk: &str| {
                     let _ = tx.send(event(json!({ "type": "token", "text": chunk })));
@@ -1235,6 +1238,7 @@ async fn stream_chat(
                     &message,
                     &mut on_token,
                     &mut on_step,
+                    &mut disclosed,
                 )
             };
             match result {
@@ -1247,7 +1251,23 @@ async fn stream_chat(
                     // survives a reload — the client renders it under the message.
                     let steps = collected.lock().map(|g| g.clone()).unwrap_or_default();
                     let sources = sources_from_steps(&steps);
-                    let actions = json!({ "steps": steps, "sources": sources });
+                    // The deterministic half of honesty about actions (ADR 0037): the
+                    // model ignores the read-back roughly two runs in three, so the
+                    // person is shown what ran and whether it was confirmed regardless
+                    // of what the prose says. This never edits the reply.
+                    let disclosures: Vec<serde_json::Value> = disclosed
+                        .iter()
+                        .map(|d| {
+                            json!({
+                                "skill": d.skill,
+                                "claimed": d.claimed,
+                                "observed": d.observed,
+                                "confirmed": d.was_observed(),
+                            })
+                        })
+                        .collect();
+                    let actions =
+                        json!({ "steps": steps, "sources": sources, "actions_taken": disclosures });
                     let _ =
                         chat.save_actions(&reply.id().value().to_string(), &actions.to_string());
                     // A successful write nudges the change stream, like other writes.
