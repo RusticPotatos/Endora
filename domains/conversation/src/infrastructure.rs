@@ -24,6 +24,11 @@ pub fn migrate(db: &Db) -> Result<(), RepositoryError> {
             CREATE TABLE IF NOT EXISTS message_actions (
                 message_id TEXT PRIMARY KEY,
                 actions    TEXT NOT NULL
+            ) STRICT;
+            CREATE TABLE IF NOT EXISTS conversation_summary (
+                id      INTEGER PRIMARY KEY CHECK (id = 0),
+                body    TEXT NOT NULL,
+                covered INTEGER NOT NULL
             ) STRICT;",
         )
         .map_err(backend)?;
@@ -58,6 +63,43 @@ impl ChatStore {
             .execute(
                 "INSERT OR REPLACE INTO message_actions (message_id, actions) VALUES (?1, ?2)",
                 params![message_id, actions_json],
+            )
+            .map_err(backend)?;
+        Ok(())
+    }
+
+    /// Loads the running conversation summary as `(body, covered)`, if one has been
+    /// stored (ADR 0028 context compaction). `None` before the first summary.
+    ///
+    /// # Errors
+    /// [`RepositoryError::Backend`] if the read fails.
+    pub fn load_summary(&self) -> Result<Option<(String, usize)>, RepositoryError> {
+        let conn = self.db.lock()?;
+        let row = conn
+            .query_row(
+                "SELECT body, covered FROM conversation_summary WHERE id = 0",
+                [],
+                |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)),
+            )
+            .map(|(body, covered)| (body, covered.max(0) as usize));
+        match row {
+            Ok(v) => Ok(Some(v)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(backend(e)),
+        }
+    }
+
+    /// Stores the running conversation summary (single row), replacing any prior one.
+    ///
+    /// # Errors
+    /// [`RepositoryError::Backend`] if the write fails.
+    pub fn save_summary(&self, body: &str, covered: usize) -> Result<(), RepositoryError> {
+        self.db
+            .lock()?
+            .execute(
+                "INSERT OR REPLACE INTO conversation_summary (id, body, covered) \
+                 VALUES (0, ?1, ?2)",
+                params![body, covered as i64],
             )
             .map_err(backend)?;
         Ok(())
@@ -167,5 +209,29 @@ mod tests {
         assert_eq!(all.len(), 2);
         assert_eq!(all[0].text(), "hi"); // same ms → insertion order
         assert_eq!(all[1].text(), "hello");
+    }
+
+    #[test]
+    fn conversation_summary_round_trips_and_replaces() {
+        let db = Db::open_in_memory().unwrap();
+        migrate(&db).unwrap();
+        let store = ChatStore::new(db);
+
+        // Nothing stored yet.
+        assert_eq!(store.load_summary().unwrap(), None);
+
+        // Store, then read it back.
+        store.save_summary("earlier today", 8).unwrap();
+        assert_eq!(
+            store.load_summary().unwrap(),
+            Some(("earlier today".to_owned(), 8))
+        );
+
+        // A second save replaces the single row (doesn't accumulate).
+        store.save_summary("earlier, updated", 20).unwrap();
+        assert_eq!(
+            store.load_summary().unwrap(),
+            Some(("earlier, updated".to_owned(), 20))
+        );
     }
 }
