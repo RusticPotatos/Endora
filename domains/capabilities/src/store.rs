@@ -78,7 +78,8 @@ pub fn migrate(db: &Db) -> Result<(), RepositoryError> {
                 enabled INTEGER NOT NULL DEFAULT 1,
                 env     TEXT NOT NULL DEFAULT '',
                 auth    TEXT NOT NULL DEFAULT '',
-                trust_all INTEGER NOT NULL DEFAULT 1
+                trust_all INTEGER NOT NULL DEFAULT 1,
+                reader_tool TEXT NOT NULL DEFAULT ''
             ) STRICT;",
         )
         .map_err(backend)?;
@@ -107,6 +108,13 @@ pub fn migrate(db: &Db) -> Result<(), RepositoryError> {
     // Block→Confirm, so this never removes the ask-before-each-use safety net.
     let _ = db.lock()?.execute(
         "ALTER TABLE mcp_servers ADD COLUMN trust_all INTEGER NOT NULL DEFAULT 1",
+        [],
+    );
+    // Which tool reads this server's state (ADR 0038). Existing rows read back blank —
+    // nobody has nominated one — and blank means "no read-back for this server", which
+    // is the same honest default a server Endora knows nothing about already gets.
+    let _ = db.lock()?.execute(
+        "ALTER TABLE mcp_servers ADD COLUMN reader_tool TEXT NOT NULL DEFAULT ''",
         [],
     );
     Ok(())
@@ -436,7 +444,7 @@ impl McpServerRegistry for ConfigStore {
         let conn = self.db.lock()?;
         let mut stmt = conn
             .prepare(
-                "SELECT name, kind, command, args, url, enabled, env, auth, trust_all \
+                "SELECT name, kind, command, args, url, enabled, env, auth, trust_all, reader_tool \
                  FROM mcp_servers ORDER BY name",
             )
             .map_err(backend)?;
@@ -452,13 +460,24 @@ impl McpServerRegistry for ConfigStore {
                     r.get::<_, String>(6)?,   // env (JSON object) — secret
                     r.get::<_, String>(7)?,   // auth (bearer token) — secret
                     r.get::<_, i64>(8)? != 0, // trust_all
+                    r.get::<_, String>(9)?,   // reader_tool (ADR 0038)
                 ))
             })
             .map_err(backend)?;
         let mut servers = Vec::new();
         for row in rows {
-            let (name, kind, command, args_json, url, enabled, env_json, auth, trust_all) =
-                row.map_err(backend)?;
+            let (
+                name,
+                kind,
+                command,
+                args_json,
+                url,
+                enabled,
+                env_json,
+                auth,
+                trust_all,
+                reader_tool,
+            ) = row.map_err(backend)?;
             let transport = match kind.as_str() {
                 "http" => McpTransport::Http { url, auth },
                 // Default anything else to stdio — the only other variant we write.
@@ -481,6 +500,7 @@ impl McpServerRegistry for ConfigStore {
                 transport,
                 enabled,
                 trust_all,
+                reader_tool,
             });
         }
         Ok(servers)
@@ -509,8 +529,8 @@ impl McpServerRegistry for ConfigStore {
             .lock()?
             .execute(
                 "INSERT OR REPLACE INTO mcp_servers \
-                 (name, kind, command, args, url, enabled, env, auth, trust_all) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                 (name, kind, command, args, url, enabled, env, auth, trust_all, reader_tool) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
                 params![
                     server.name,
                     kind,
@@ -521,6 +541,7 @@ impl McpServerRegistry for ConfigStore {
                     env_json,
                     auth,
                     i64::from(server.trust_all),
+                    server.reader_tool,
                 ],
             )
             .map_err(backend)?;
