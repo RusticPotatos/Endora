@@ -2350,6 +2350,89 @@ impl CapabilityRunner for OpenerRunner {
     }
 }
 
+/// A wrapper for the butler's **unattended** turns — the heartbeat's check-in, daily
+/// brief, and nightly loop — that clamps autonomy to the *reversible* bands.
+///
+/// The person's levers ([`OpenerRunner`], the autonomy envelope) answer "may Endora do
+/// this **when I am here**": opening a tool and widening the envelope together clear an
+/// irreversible capability to run inside a chat turn, where the person is present, sees
+/// the activity trail, and can say stop. None of that is true at 03:00 while they sleep.
+///
+/// So an unattended turn gets a narrower catalog: anything above
+/// [`Reversibility::Reversible`] loses `autonomous` and its [`Act`](Decision::Act)
+/// verdict drops to [`Confirm`](Decision::Confirm) — there is nobody to confirm, so in
+/// practice it simply does not run, and the butler is handed a factual tool result
+/// saying so. `Observe` and `Reversible` capabilities are untouched, which is what lets
+/// the nightly loop still research, draft, and form beliefs (ADR 0024).
+///
+/// This makes [`run_due_nightly_loop`]'s documented guarantee — "nothing here it could
+/// do that it couldn't undo" — true in code rather than only in prose. Before this, that
+/// claim held only while the envelope happened to be closed.
+///
+/// Deny-by-default: a capability whose band cannot be read is assumed to be an actuator,
+/// the same rule ADR 0034 applies to verification.
+pub struct ReversibleOnlyRunner {
+    inner: Arc<dyn CapabilityRunner + Send + Sync>,
+}
+
+impl ReversibleOnlyRunner {
+    /// Wraps `inner` so only reversible capabilities may act without a person.
+    #[must_use]
+    pub fn new(inner: Arc<dyn CapabilityRunner + Send + Sync>) -> Self {
+        Self { inner }
+    }
+
+    /// Whether this capability may run with nobody there — `Observe` and `Reversible`
+    /// only. An id with no visible band is treated as an actuator, so it may not.
+    fn may_run_unattended(&self, id: &str) -> bool {
+        self.inner
+            .available()
+            .into_iter()
+            .find(|s| s.id == id)
+            .is_some_and(|s| s.reversibility <= Reversibility::Reversible)
+    }
+}
+
+impl CapabilityRunner for ReversibleOnlyRunner {
+    fn available(&self) -> Vec<crate::application::CapabilitySpec> {
+        self.inner
+            .available()
+            .into_iter()
+            .map(|mut spec| {
+                if spec.reversibility > Reversibility::Reversible {
+                    spec.autonomous = false;
+                }
+                spec
+            })
+            .collect()
+    }
+
+    fn decision(&self, id: &str) -> Option<Decision> {
+        match self.inner.decision(id)? {
+            // Cleared to act when someone is present, but this is not that: fall back
+            // to needing a person, who is by definition not here to give it.
+            Decision::Act if !self.may_run_unattended(id) => Some(Decision::Confirm),
+            other => Some(other),
+        }
+    }
+
+    fn verifier(&self, id: &str) -> Option<String> {
+        self.inner.verifier(id)
+    }
+
+    fn run(&self, id: &str, input_json: &str) -> Result<String, String> {
+        // Refused at the run layer too, so a direct call can't route around the
+        // narrowed catalog above.
+        if !self.may_run_unattended(id) {
+            return Err(format!(
+                "'{id}' can't run unattended — it changes something Endora couldn't take \
+                 back, and nobody is here to confirm it"
+            ));
+        }
+        self.inner.run(id, input_json)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3282,6 +3365,52 @@ mod tests {
             overlay.run("fs.write_file", "{\"p\":1}").unwrap(),
             "write_file({\"p\":1})"
         );
+    }
+
+    #[test]
+    fn unattended_runner_keeps_an_opened_actuator_from_running_with_nobody_there() {
+        // The exact configuration the nightly loop's safety claim has to survive: the
+        // person opened a Home Assistant actuator AND widened the envelope, so in a
+        // chat turn `OpenerRunner` clears it to act on its own. Unattended, it must not.
+        let mcp = Arc::new(McpRunner::connect(vec![(
+            "home".to_owned(),
+            Box::new(FakeTransport {
+                tools: vec![tool("HassTurnOff")],
+                healthy: true,
+            }) as Box<dyn McpClient>,
+        )]));
+        let opened: std::collections::HashSet<String> = ["home.HassTurnOff".to_owned()].into();
+        let attended = Arc::new(OpenerRunner::new(mcp, opened, true));
+        // Precondition: attended, it really is cleared to act.
+        assert_eq!(attended.decision("home.HassTurnOff"), Some(Decision::Act));
+
+        let unattended = ReversibleOnlyRunner::new(attended);
+        // Unattended, the same tool falls back to needing a person.
+        assert_eq!(
+            unattended.decision("home.HassTurnOff"),
+            Some(Decision::Confirm)
+        );
+        assert!(unattended.available().iter().all(|s| !s.autonomous));
+        // And it is refused at the run layer too, not merely un-offered.
+        assert!(unattended.run("home.HassTurnOff", "{}").is_err());
+    }
+
+    #[test]
+    fn unattended_runner_leaves_reversible_skills_alone() {
+        // The nightly loop still has to be able to research: an `Observe`-band skill
+        // keeps acting on its own, which is the whole point of the loop.
+        let unattended = ReversibleOnlyRunner::new(Arc::new(FakeBuiltin));
+        assert_eq!(unattended.decision("weather"), Some(Decision::Act));
+        assert!(unattended.available().iter().all(|s| s.autonomous));
+        assert_eq!(unattended.run("weather", "{}").unwrap(), "sunny");
+    }
+
+    #[test]
+    fn unattended_runner_treats_an_unknown_band_as_an_actuator() {
+        // Deny-by-default, same rule ADR 0034 applies to verification: a capability
+        // whose band we cannot see is assumed to change something.
+        let unattended = ReversibleOnlyRunner::new(Arc::new(FakeBuiltin));
+        assert!(unattended.run("mystery", "{}").is_err());
     }
 
     #[test]

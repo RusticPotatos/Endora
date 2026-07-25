@@ -96,12 +96,18 @@ Still ahead here: **contradiction** (two beliefs that cannot both be true should
 surfaced, not silently coexist) and **consolidation** (several specific beliefs
 subsumed by one the butler has since learned).
 
-### 3. Interventions, properly
+### 3. Interventions, properly — *the destination; sequenced below*
 
 The reset promised interventions **proportional to confidence** — higher uncertainty
 means a smaller action or just a question. Today the butler acts when asked and
 researches overnight; it does not yet size an unprompted action to how sure it is.
 This needs its own ADR, and it must not reintroduce a queue of records to approve.
+
+Stated plainly: **nothing Endora does unprompted changes anything.** Every unattended
+path ends in a message or a reversible read. That is the gap between a butler that
+notices and one that acts, and it is the last big one. It is deliberately *last* in the
+sequence below — it is the only step where being wrong has consequences, and it needs
+both a track record to calibrate against and work that outlives a single turn.
 
 ### 4. Agentic proactivity — *delivered for check-ins*
 
@@ -117,13 +123,86 @@ The brief and the nightly loop stay time-anchored on purpose — both are legiti
 Still ahead: letting a genuine event (a new high-confidence belief, a due reminder)
 *open the budget early*, as an additional gate rather than as the decision itself.
 
-### Later
+## The sequence to unprompted action
 
+Each step closes one clause of the architecture principle, and each exists because the
+one after it cannot stand up without it:
+
+> **Models propose. Policy authorizes. Capabilities execute. Evidence verifies.
+> Memory learns.**
+
+Clauses one to four are built. **Memory learns** holds for *beliefs* and not for
+*actions* — nothing records whether something Endora did actually helped. That is the
+first step, because "proportional to confidence" is otherwise uncalibratable.
+
+### A. Unattended means reversible — *delivered*
+
+The person's levers answer "may Endora do this **when I am here**". Opening an
+irreversible tool and widening the envelope together cleared it to act inside a chat
+turn — and the heartbeat shared that runner, so the nightly loop's documented guarantee
+("nothing it could do that it couldn't undo") held only while the envelope happened to
+be closed. `ReversibleOnlyRunner` clamps unattended turns to the `Observe` and
+`Reversible` bands, so the claim is enforced rather than asserted. Not a wall in front of
+step D — it is the baseline D deliberately opens a narrow, audited door through.
+
+### B. Outcomes: what happened after Endora acted
+
+The reward signal, and cheaper than it looks — [ADR 0034](adr/0034-evidence-verifies.md)
+already produces the observation half. An outcome is that read-back plus the person's
+lightweight reaction (helped / didn't / didn't notice), linked to the belief that
+motivated it. `run_tool_turn` records one per non-`Observe` run; `butler_context` carries
+a short track record so the butler can see how its own actions have landed; memory rights
+apply as they do to beliefs. Needs an ADR.
+
+### C. Durable intentions
+
+Turns are capped at three to six rounds and reseed from chat history; no work survives a
+turn, let alone a restart. An `Intention` — statement, originating belief, next step,
+state, step budget — gives the nightly loop something to *continue* rather than restart,
+and decays like a belief so it cannot accumulate.
+
+The ADR must open by naming what this is **not**. [ADR 0029](adr/0029-delete-the-goal-tracker.md)
+deleted a queue of records the person had to groom; this is Endora's own working memory,
+reviewed the way understanding is reviewed and never managed. If the console grows an
+"add intention" button, the ADR failed. Lives in `understanding` until a second consumer
+earns it a context of its own.
+
+### D. Proportional interventions
+
+The payload. Confidence is a *model output*, so the sizing must be deterministic policy
+that treats it as data — a pure function in `shared/kernel` beside `Reversibility`, never
+an instruction in a prompt. The same lesson [ADR 0028](adr/0028-native-tool-calling-turn.md)
+learned about honesty and [ADR 0033](adr/0033-what-understanding-admits.md) about
+de-duplication.
+
+Roughly: low confidence buys a question, medium buys `Observe`/`Reversible` work, high
+buys `OutwardReversible` *only* where the person opened that capability and widened the
+envelope — and `Irreversible` is never available unprompted, at any confidence, through
+any gate. That last line is what keeps the door narrow.
+
+**Blocked on a measured number, not on an opinion.** `relay:failure-is-honest` fails
+**1 run in 3** ([ADR 0030](adr/0030-measuring-understanding.md)). Unattended action on a
+model that misreports failure a third of the time is not shippable. Either the read-back
+becomes the load-bearing honesty guarantee for actuations, or the model rungs up first —
+and the battery says which, rather than a hunch.
+
+### E. Then
+
+- Event-driven wake: a genuine event (a new high-confidence belief, a due reminder)
+  *opens the check-in budget early*, as an extra gate and never as the decision itself
+  — the remainder [ADR 0031](adr/0031-agentic-proactivity.md) named.
+- Belief **contradiction** and **consolidation**, the remainder
+  [ADR 0032](adr/0032-beliefs-decay-and-expire.md) named.
 - A sandbox in which the butler can author and run its own capabilities
-  (ADR 0022's self-authored capabilities, deliberately still ahead).
+  (ADR 0022's self-authored capabilities). Correctly last: the only step where the butler
+  writes code that then runs, and it wants every prior step's machinery.
 - The capability ladder: exhaust local before ranking up, and manage its own
   infrastructure as it goes.
 - Native clients, if the web console ever genuinely stops being enough.
+
+Throughout: **grow the battery with each step** — it is data-driven now, so cases are
+cheap — and re-baseline afterwards reporting the *spread*, not the best run. The
+instrument resolves to 4 points; a 3-point gain is noise.
 
 ## What 1.0 would mean
 
