@@ -1337,7 +1337,26 @@ async fn set_checkin(
     Ok(Json(schedule.into()))
 }
 
-fn belief_json(b: &Belief) -> serde_json::Value {
+/// Serializes a belief for the console. `confidence` is the **decayed** value — how
+/// sure Endora is right now, given how long since anything reinforced it (ADR 0032) —
+/// not the value frozen at the moment it was formed. Showing the stored one would
+/// present a year-old guess as current.
+fn belief_json(b: &Belief, now: endora_application::Timestamp) -> serde_json::Value {
+    let confidence = b.confidence_at(now).unwrap_or(b.confidence());
+    json!({
+        "id": b.id().value().to_string(),
+        "statement": b.statement(),
+        "kind": b.kind().name(),
+        "confidence": confidence.name(),
+        "evidence": b.evidence(),
+        "last_affirmed_ms": b.last_affirmed_at().unix_millis(),
+    })
+}
+
+/// Serializes a belief **exactly as stored**, for the export. The memory right is to
+/// see what Endora actually holds, so the export must not reinterpret it: it reports
+/// the recorded confidence, where the live view reports the decayed one.
+fn stored_belief_json(b: &Belief) -> serde_json::Value {
     json!({
         "id": b.id().value().to_string(),
         "statement": b.statement(),
@@ -1353,8 +1372,11 @@ async fn list_understanding(
     State(state): State<AppState>,
 ) -> Result<Json<Vec<serde_json::Value>>, ApiError> {
     let understanding = state.understanding.clone();
-    let items = blocking(move || usecases::understanding(understanding.as_ref())).await?;
-    Ok(Json(items.iter().map(belief_json).collect()))
+    let clock = state.clock.clone();
+    let now = clock.now();
+    let items =
+        blocking(move || usecases::understanding(understanding.as_ref(), clock.as_ref())).await?;
+    Ok(Json(items.iter().map(|b| belief_json(b, now)).collect()))
 }
 
 fn parse_belief_id(id: &str) -> Result<BeliefId, ApiError> {
@@ -1371,9 +1393,10 @@ async fn affirm_belief(
     let bid = parse_belief_id(&id)?;
     let understanding = state.understanding.clone();
     let clock = state.clock.clone();
+    let now = clock.now();
     let b = blocking(move || usecases::affirm_belief(understanding.as_ref(), clock.as_ref(), bid))
         .await?;
-    Ok(Json(belief_json(&b)))
+    Ok(Json(belief_json(&b, now)))
 }
 
 /// The person says a belief is wrong — drop it from understanding.
@@ -2598,7 +2621,7 @@ impl From<&MemorySnapshot> for ExportResponse {
             audit: s.audit.iter().map(AuditResponse::from).collect(),
             messages: s.messages.iter().map(MessageResponse::from).collect(),
             preferences: s.preferences.iter().map(PreferenceResponse::from).collect(),
-            beliefs: s.beliefs.iter().map(belief_json).collect(),
+            beliefs: s.beliefs.iter().map(stored_belief_json).collect(),
         }
     }
 }
