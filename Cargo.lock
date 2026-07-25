@@ -262,7 +262,6 @@ version = "0.11.0"
 dependencies = [
  "endora-capabilities",
  "endora-conversation",
- "endora-direction",
  "endora-kernel",
  "endora-platform",
  "endora-scheduling",
@@ -299,23 +298,14 @@ dependencies = [
 ]
 
 [[package]]
-name = "endora-direction"
-version = "0.11.0"
-dependencies = [
- "endora-kernel",
- "endora-persistence",
- "rusqlite",
-]
-
-[[package]]
 name = "endora-infrastructure"
 version = "0.11.0"
 dependencies = [
  "endora-application",
  "endora-capabilities",
- "endora-direction",
  "endora-persistence",
  "endora-platform",
+ "endora-understanding",
  "rusqlite",
  "serde_json",
  "ureq",
@@ -335,7 +325,6 @@ dependencies = [
  "endora-application",
  "endora-capabilities",
  "endora-conversation",
- "endora-direction",
  "endora-infrastructure",
  "endora-platform",
  "endora-scheduling",

@@ -13,7 +13,6 @@ endora-kernel = { path = "../../shared/kernel" }
 endora-platform = { path = "../../domains/platform" }
 endora-capabilities = { path = "../../domains/capabilities" }
 endora-understanding = { path = "../../domains/understanding" }
-endora-direction = { path = "../../domains/direction" }
 endora-conversation = { path = "../../domains/conversation" }
 endora-scheduling = { path = "../../domains/scheduling" }
 

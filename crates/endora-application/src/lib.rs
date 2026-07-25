@@ -22,9 +22,7 @@ pub use error::AppError;
 // import the types they translate to and from — the orchestration layer is the
 // surface above the domain (ADR 0026).
 pub use endora_kernel::{
-    AssumptionId, AuditId, AutonomyLevel, BeliefId, DirectionId, DomainError, ExperimentId,
-    MessageId, ObservationId, PreferenceId, ProcessChangeId, ReflectionId, SuggestionId, TargetId,
-    Timestamp, ValueId,
+    AuditId, AutonomyLevel, BeliefId, DomainError, MessageId, PreferenceId, Timestamp,
 };
 // The audit trail and event log live in the platform context now (ADR 0026);
 // re-exported so `endora_application::{AuditLog, EventLog, ActivityEvent}` hold.
@@ -51,21 +49,10 @@ pub use endora_understanding::{
     Belief, BeliefKind, BeliefRepository, BeliefStatus, Confidence, Preference, PreferenceKind,
     PreferenceRepository,
 };
-// The aims + learning-loop repositories live in the direction context (ADR 0026);
-// re-exported so their `endora_application::…` paths are unchanged.
-pub use endora_direction::{
-    ApprovalState, Assumption, AssumptionRepository, Direction, DirectionRepository, Experiment,
-    ExperimentRepository, ExperimentStatus, LifecycleStatus, Observation, ObservationRepository,
-    PolicyDecision, ProcessChangeRepository, ProposedProcessChange, Reflection,
-    ReflectionRepository, Target, TargetRepository, Value, ValueRepository,
-    authorize_process_change,
-};
 pub use ports::{
-    AttentionItem, AttentionKind, Butler, ButlerContext, ButlerProposal, ButlerReply,
-    CapabilityTool, Clock, ConversationSummary, ConversationSummaryStore, DeepAsker, FormedBelief,
-    IdSource, MemorySnapshot, MemoryStore, NorthStarBrief, ProposalError, Proposer,
-    RepositoryError, Snooze, SnoozeRepository, Suggestion, SuggestionRepository, SuggestionStatus,
-    ToolCall, TurnMessage,
+    Butler, ButlerContext, ButlerReply, CapabilityTool, Clock, ConversationSummary,
+    ConversationSummaryStore, DeepAsker, FormedBelief, IdSource, MemorySnapshot, MemoryStore,
+    ProposalError, RepositoryError, ToolCall, TurnMessage,
 };
 pub use usecases::{ActivityItem, ActivityKind};
 

@@ -2,13 +2,14 @@
 
 ## Status
 
-Proposed (2026-07-24). Amends the turn contract of
+Accepted (2026-07-24; the cutover completed 2026-07-25). Amends the turn contract of
 [0014](0014-the-butler-conversation-values-attention.md),
 [0019](0019-proactive-self-improving-butler.md), and
 [0027](0027-self-improving-model-layer.md). Native tool-calling on the
-tool-*selection* pass already shipped (PRs #89/#90/#92); this record adopts the
-**single-conversation loop** and the **removal of deterministic narration** as the
-direction, to be built in slices.
+tool-*selection* pass shipped first (PRs #89/#90/#92); the single-conversation loop
+landed on the chat turn, and the proactive flows (check-in, brief, nightly loop)
+followed, at which point `gather_with_skills`, `ButlerContext.tool_result` and the
+deterministic floors were deleted. Fully in effect.
 
 ## Context
 

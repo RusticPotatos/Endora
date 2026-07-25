@@ -6,7 +6,6 @@ members = [
     "domains/platform",
     "domains/capabilities",
     "domains/understanding",
-    "domains/direction",
     "domains/conversation",
     "domains/scheduling",
     "crates/endora-application",

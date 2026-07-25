@@ -48,6 +48,12 @@ mostly **reviews understanding** and gives light feedback; they rarely manage ob
 
 ### 4. Goals are demoted, not deleted
 
+> **Superseded by [ADR 0029](0029-delete-the-goal-tracker.md) (2026-07-25).** The
+> hedge below did not hold: the machinery stayed load-bearing — in `butler_context`,
+> in the nightly loop's choice of focus, and in the system prompt, which ended up
+> telling the model "you are not a goal tracker" while handing it a goal-tracker
+> schema. It has been deleted, and the reset is no longer reversible.
+
 The existing Direction/Target/… machinery remains as an *optional* expression of intent
 (reachable, but no longer the center). We do not rip it out — the reset is reversible
 (this branch), and goals still serve people who want them.

@@ -1,98 +1,101 @@
 # Endora Domain Map
 
-> Status: foundation phase. This lists the **planned** bounded contexts and what
-> each one owns. It deliberately stops short of naming detailed entities, fields,
-> or APIs — those are designed with the first vertical slice that needs them, not
-> invented up front.
+> What each bounded context owns. Rewritten 2026-07-25 after
+> [ADR 0029](adr/0029-delete-the-goal-tracker.md), which deleted the Identity &
+> Values, Direction & Targets, Experiments & Learning, and Reflection contexts —
+> understanding is now the only model Endora keeps of a person.
 
-Each context owns its own model and vocabulary. Contexts collaborate through
-explicit application-layer boundaries, never by reaching into one another's
-internals (see [architecture.md](architecture.md)).
+Each context owns its own model and vocabulary, and is its own crate under
+`domains/`. Contexts collaborate through explicit application-layer boundaries,
+never by reaching into one another's internals (see
+[architecture.md](architecture.md)).
 
-## Identity & Values
+## Understanding
 
-Owns who the user is *to themselves*: their stated values and the principles
-they want to live by. The source of the user's own definition of a good life.
-Nothing here is inferred silently; values are user-owned and user-editable.
+`domains/understanding` — the heart of the system. Owns Endora's **living model of
+the person**: beliefs about what they are reaching for, what they value, their
+patterns, motivations, frustrations, stressors, and relationships. Every belief
+carries **evidence, a confidence, timestamps**, and can be **affirmed, corrected, or
+expire** — nothing is held permanently, and nothing is hidden from the person
+(ADR 0020).
 
-A **`Value`** is the *why* a North Star serves (health, community, craft); North
-Stars are filed under a value (**Value → North Star → Target**), assigned by the
-person, never inferred (see
-[ADR 0015](adr/0015-identity-and-values-context.md)).
+Also owns **preferences**: things the person has stated outright, which the butler
+honours rather than re-asks.
 
-## Direction & Targets
+Endora forms beliefs on its own — this is its internal model, not an action, so it is
+not gated by per-item confirmation. The person reviews and corrects.
 
-Owns long-term **North Stars** (directions) and the concrete **targets** beneath
-them, and the relationships between them. Turns values into direction the rest of
-the system can reference.
+## Conversation
 
-## Experiments & Learning
-
-Owns the learning loop as data: assumptions, hypotheses, small experiments,
-their designs, and outcomes. This is where "run a small experiment and see what
-happens" is represented.
-
-## Reflection
-
-Owns observations, retrospectives, and reflections. Consumes experiment
-outcomes and lived signals; produces the material from which process-improvement
-proposals are drawn.
-
-## Memory
-
-Owns durable, user-facing memory: what Endora retains as useful evidence over
-time. Enforces the constitutional **memory rights** — visible, correctable,
-exportable, deletable. Other contexts store *their* durable knowledge here or
-reference it; Memory is the guardian of the rights, not a dumping ground.
-
-## Policy & Consent
-
-Owns the **deterministic authorization** rules: what is permitted, under what
-autonomy level, with what consent. This is the enforcement boundary around
-probabilistic models — models propose, this context authorizes. Owns autonomy
-levels, consent records, and permission decisions.
+`domains/conversation` — the chat with the butler: messages, their roles and
+ordering, and the running summary that keeps a long conversation's prompt bounded
+without losing the day's thread (ADR 0028).
 
 ## Capabilities
 
-Owns the catalog of things Endora *can do* (capabilities) and their execution,
-under least authority. A capability runs only what Policy & Consent authorized;
-it never trusts a model's request directly.
+`domains/capabilities` — everything Endora *can do*, and the machinery that decides
+whether a given call may run. Owns the skill catalog (built-ins and MCP servers), the
+per-skill configuration and enablement, the **policy-gated runner**, the **autonomy
+envelope**, and the **egress guard** (SSRF protection and the outbound secret
+tripwire). Also owns the butler's model configuration and the deep-model escalation
+slot.
 
-## Protection
+This is the enforcement boundary: a capability runs only what deterministic policy
+authorized, and never trusts a model's request directly (ADRs 0005, 0021, 0022,
+0023, 0024).
 
-Owns safety and protective concerns that cut across contexts: guarding against
-irreversible or disproportionate actions, rate/impact limits, and safe defaults.
-Complements Policy & Consent (which decides *permission*) by tending to *harm
-reduction*.
+## Scheduling
 
-## Audit & Accountability
+`domains/scheduling` — the cadences for Endora's proactive moments: check-ins, the
+daily brief, the nightly self-improvement loop, and the model-tuning sweep. Off by
+default; the person owns whether each runs and when.
 
-Owns the audit trail: what was proposed, what policy decided, what executed, and
-why. Records exist to protect the user and are themselves subject to memory
-rights. Provides the accountability the constitution requires without becoming
-surveillance.
+## Platform
+
+`domains/platform` — the **audit trail** (what was proposed, what policy decided,
+what executed, and why) and the butler's **event log** (what it did and learned).
+Records exist to protect the person and are themselves subject to memory rights —
+they are accountability, not surveillance.
+
+## Shared
+
+`shared/kernel` — the cross-cutting primitives every context speaks: typed ids,
+time, errors, `AutonomyLevel`, and the `Reversibility` bands with their
+deny-by-default `Decision` mapping. Pure, with no dependencies.
+
+`shared/persistence` — the single SQLite handle the context stores share.
+
+## Memory rights
+
+Not a context but an invariant across all of them: everything Endora stores is
+**visible, correctable, exportable, and deletable** (constitution §6). Export and
+purge span every context; a context that stores something the person cannot reach is
+a bug.
 
 ---
 
 ## Relationships (high level)
 
 ```text
-Identity & Values ──▶ Direction & Targets ──▶ Experiments & Learning
-                                                     │
-                                                     ▼
-                                                Reflection
-                                                     │
-                                                     ▼
-                                        Proposed process change
-                                                     │
-   (all consequential actions pass through)          ▼
-Capabilities ◀── Policy & Consent ◀────────── Human approval
-     │                  ▲
-     ▼                  │
-  Protection        Audit & Accountability
-                        ▲
-        Memory ─────────┘  (durable, user-owned evidence throughout)
+                        conversation
+                             │
+                             ▼
+                    ┌────────────────┐
+                    │  the butler    │  the model — proposes only
+                    │     turn       │
+                    └───┬────────┬───┘
+        forms beliefs   │        │   asks to run a tool
+                        ▼        ▼
+              understanding    Policy (capabilities)
+                        │        │  deny-by-default, reversibility bands
+                        │        ▼
+                        │    execution ──▶ real result, success or failure,
+                        │                  back into the same conversation
+                        │        │
+                        └────────┴──────▶ platform (audit + event log)
+
+  scheduling ──▶ triggers a proactive turn (check-in / brief / nightly loop)
 ```
 
-This diagram shows intent, not a wiring spec. Concrete contracts are defined per
-vertical slice.
+The model never reaches execution directly. Understanding is the one thing the
+butler writes on its own; everything that touches the world goes through policy.
