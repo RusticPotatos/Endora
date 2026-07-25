@@ -62,3 +62,7 @@ secrets/
 
 # Local-only compose overrides (host-specific; may contain private IPs)
 docker-compose.override.yml
+
+# Per-machine Make settings (e.g. DOCKER_CONTEXT for your own deploy target).
+# Deployment hosts are a property of your machine, not of the project.
+local.mk
