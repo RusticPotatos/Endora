@@ -35,6 +35,7 @@ id_type!(MessageId, "message");
 id_type!(PreferenceId, "preference");
 id_type!(BeliefId, "belief");
 id_type!(AuditId, "audit record");
+id_type!(OutcomeId, "outcome");
 
 /// A point in time, as milliseconds since the Unix epoch, **supplied by the
 /// caller**. The domain never reads the system clock, so its behavior stays

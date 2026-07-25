@@ -6,15 +6,15 @@
 //! and the use cases stay testable with fakes.
 
 use endora_conversation::{ChatMessage, MessageRole};
-use endora_kernel::ids::{AuditId, BeliefId, MessageId, PreferenceId, Timestamp};
+use endora_kernel::ids::{AuditId, BeliefId, MessageId, OutcomeId, PreferenceId, Timestamp};
 use endora_kernel::{Decision, Reversibility};
 use endora_platform::AuditRecord;
-use endora_understanding::{Belief, Preference, PreferenceKind};
+use endora_understanding::{Belief, Outcome, Preference, PreferenceKind};
 
 use endora_capabilities::CapabilityRunner;
 use endora_conversation::ChatRepository;
 use endora_platform::{AuditLog, EventLog};
-use endora_understanding::{BeliefRepository, PreferenceRepository};
+use endora_understanding::{BeliefRepository, OutcomeRepository, PreferenceRepository};
 
 use endora_scheduling::{
     BriefSchedule, BriefScheduleRepository, CheckinRepository, CheckinSchedule,
@@ -324,6 +324,77 @@ const BRIEF_TOOL_ROUNDS: usize = 6;
 /// Tool rounds allowed in the **nightly loop** — it researches one focus, unhurried.
 const NIGHTLY_TOOL_ROUNDS: usize = 4;
 
+/// Where a turn's actions are recorded, and what motivated them (ADR 0035).
+///
+/// Grouped rather than threaded as two more loose parameters, because they are one
+/// concern: an outcome and the belief it traces back to. `motivated_by` is `Some` only
+/// where the turn genuinely has a reason on file — the nightly loop acting on its focus
+/// belief — and `None` when the person simply asked for something.
+pub(crate) struct OutcomeSink<'a> {
+    outcomes: &'a dyn OutcomeRepository,
+    motivated_by: Option<BeliefId>,
+}
+
+impl<'a> OutcomeSink<'a> {
+    /// A sink for a turn with no belief behind it — the person asked.
+    pub(crate) const fn unmotivated(outcomes: &'a dyn OutcomeRepository) -> Self {
+        Self {
+            outcomes,
+            motivated_by: None,
+        }
+    }
+
+    /// A sink for a turn Endora took because of something it believes.
+    pub(crate) const fn motivated_by(
+        outcomes: &'a dyn OutcomeRepository,
+        belief: Option<BeliefId>,
+    ) -> Self {
+        Self {
+            outcomes,
+            motivated_by: belief,
+        }
+    }
+
+    /// Records what an action claimed and what was observed afterwards.
+    ///
+    /// Skips the `Observe` band: a read changes nothing, so there is no outcome to have
+    /// — its result is already evidence (ADR 0034). A capability with no visible spec is
+    /// treated as an actuator and recorded, matching the deny-by-default rule elsewhere.
+    ///
+    /// **Best-effort.** A failed write is swallowed: recording what happened must never
+    /// break a working action, the same rule ADR 0034 set for verification.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "explicit dependencies, no hidden state"
+    )]
+    fn record(
+        &self,
+        spec: Option<&crate::CapabilitySpec>,
+        capability: &str,
+        input: &str,
+        claim: &str,
+        observation: Option<&str>,
+        ids: &impl IdSource,
+        clock: &impl Clock,
+    ) {
+        if spec.is_some_and(|s| s.reversibility == Reversibility::Observe) {
+            return;
+        }
+        let Ok(outcome) = Outcome::record(
+            OutcomeId::new(ids.new_id()),
+            capability,
+            input,
+            claim,
+            observation,
+            clock.now(),
+            self.motivated_by,
+        ) else {
+            return;
+        };
+        let _ = self.outcomes.save(&outcome);
+    }
+}
+
 #[expect(
     clippy::too_many_arguments,
     reason = "explicit dependencies, no hidden state"
@@ -332,6 +403,7 @@ fn run_tool_turn(
     butler: &dyn Butler,
     capabilities: &dyn CapabilityRunner,
     audit: &dyn AuditLog,
+    actions: &OutcomeSink<'_>,
     ids: &impl IdSource,
     clock: &impl Clock,
     history: &[ChatMessage],
@@ -418,6 +490,18 @@ fn run_tool_turn(
                         if observed.is_some() {
                             activity.push(format!("Checked the result of {id}"));
                         }
+                        // Memory learns (ADR 0035): the claim and the observation are
+                        // kept, apart and unreconciled, so "did that help?" has
+                        // something to be answered from later.
+                        actions.record(
+                            spec.as_ref(),
+                            &id,
+                            &call.input_json,
+                            &out,
+                            observed.as_deref(),
+                            ids,
+                            clock,
+                        );
                         (
                             StepStatus::Done,
                             note_verification(&out, spec.as_ref(), observed.as_deref()),
@@ -429,13 +513,25 @@ fn run_tool_turn(
                         // Read back on failure too: a failed action's most useful
                         // output is what actually exists, which is what lets the
                         // model retry against reality instead of guessing again.
-                        let observed =
-                            read_state_back(capabilities, &id).map_or_else(String::new, |o| {
-                                format!(
-                                    "\n\n[observed] Endora read the state back anyway. \
-                                     This is what is actually there:\n{o}"
-                                )
-                            });
+                        let observed = read_state_back(capabilities, &id);
+                        // A failed action is still something that happened, and its
+                        // read-back is the most useful thing about it (ADR 0034), so it
+                        // is recorded like any other.
+                        actions.record(
+                            spec.as_ref(),
+                            &id,
+                            &call.input_json,
+                            &format!("error: {e}"),
+                            observed.as_deref(),
+                            ids,
+                            clock,
+                        );
+                        let observed = observed.map_or_else(String::new, |o| {
+                            format!(
+                                "\n\n[observed] Endora read the state back anyway. \
+                                 This is what is actually there:\n{o}"
+                            )
+                        });
                         (StepStatus::Failed, format!("error: {e}{observed}"))
                     }
                 }
@@ -520,6 +616,7 @@ pub fn send_to_butler(
     chat: &impl ChatRepository,
     preferences: &impl PreferenceRepository,
     beliefs: &impl BeliefRepository,
+    outcomes: &impl OutcomeRepository,
     capabilities: &dyn CapabilityRunner,
     butler: &dyn Butler,
     audit: &dyn AuditLog,
@@ -534,6 +631,7 @@ pub fn send_to_butler(
         chat,
         preferences,
         beliefs,
+        outcomes,
         capabilities,
         butler,
         audit,
@@ -679,6 +777,7 @@ pub fn send_to_butler_streaming(
     chat: &impl ChatRepository,
     preferences: &impl PreferenceRepository,
     beliefs: &impl BeliefRepository,
+    outcomes: &impl OutcomeRepository,
     capabilities: &dyn CapabilityRunner,
     butler: &dyn Butler,
     audit: &dyn AuditLog,
@@ -726,6 +825,8 @@ pub fn send_to_butler_streaming(
 
     // `activity` — a plain-language record of what the butler did this turn.
     let mut activity: Vec<String> = Vec::new();
+    // They asked, so nothing on file motivated it (ADR 0035).
+    let actions = OutcomeSink::unmotivated(outcomes);
 
     // SINGLE TOOL-CALLING CONVERSATION (ADR 0028): the butler runs its tools through
     // policy and answers grounded in their real results — success or error — with no
@@ -737,6 +838,7 @@ pub fn send_to_butler_streaming(
         butler,
         capabilities,
         audit,
+        &actions,
         ids,
         clock,
         &history,
@@ -1270,6 +1372,7 @@ pub fn consider_reaching_out(
     chat: &impl ChatRepository,
     checkins: &impl CheckinRepository,
     preferences: &impl PreferenceRepository,
+    outcomes: &impl OutcomeRepository,
     capabilities: &dyn CapabilityRunner,
     butler: &dyn Butler,
     audit: &dyn AuditLog,
@@ -1299,6 +1402,7 @@ pub fn consider_reaching_out(
 
     let prefs = preferences.list_all().unwrap_or_default();
     let mut activity: Vec<String> = Vec::new();
+    let actions = OutcomeSink::unmotivated(outcomes);
     let ask_ctx = ButlerContext {
         now: format_datetime_utc(now.unix_millis()),
         ..context.clone()
@@ -1321,6 +1425,7 @@ pub fn consider_reaching_out(
         butler,
         capabilities,
         audit,
+        &actions,
         ids,
         clock,
         &ask,
@@ -1375,6 +1480,7 @@ pub fn consider_reaching_out(
 pub fn daily_brief(
     chat: &impl ChatRepository,
     preferences: &impl PreferenceRepository,
+    outcomes: &impl OutcomeRepository,
     capabilities: &dyn CapabilityRunner,
     butler: &dyn Butler,
     audit: &dyn AuditLog,
@@ -1384,6 +1490,7 @@ pub fn daily_brief(
 ) -> Result<Option<(ChatMessage, Vec<String>)>, AppError> {
     let prefs = preferences.list_all()?;
     let mut activity: Vec<String> = Vec::new();
+    let actions = OutcomeSink::unmotivated(outcomes);
 
     // ONE agentic pass (ADR 0019/0028): the butler reaches for whatever it decides a
     // brief needs, each result comes back as a tool message, and it writes the brief
@@ -1407,6 +1514,7 @@ pub fn daily_brief(
         butler,
         capabilities,
         audit,
+        &actions,
         ids,
         clock,
         &ask,
@@ -1514,6 +1622,7 @@ pub fn set_brief_schedule(
 pub fn run_due_brief(
     chat: &impl ChatRepository,
     preferences: &impl PreferenceRepository,
+    outcomes: &impl OutcomeRepository,
     briefs: &impl BriefScheduleRepository,
     capabilities: &dyn CapabilityRunner,
     butler: &dyn Butler,
@@ -1535,6 +1644,7 @@ pub fn run_due_brief(
     daily_brief(
         chat,
         preferences,
+        outcomes,
         capabilities,
         butler,
         audit,
@@ -1602,6 +1712,7 @@ pub fn run_due_nightly_loop(
     chat: &impl ChatRepository,
     beliefs: &impl BeliefRepository,
     preferences: &impl PreferenceRepository,
+    outcomes: &impl OutcomeRepository,
     schedules: &impl NightlyLoopScheduleRepository,
     capabilities: &dyn CapabilityRunner,
     butler: &dyn Butler,
@@ -1631,7 +1742,9 @@ pub fn run_due_nightly_loop(
     // policy-gated pass (reversible + autonomous only; it drafts and forms beliefs
     // but does nothing it couldn't undo). The final reply IS the reflection.
     let focus = nightly_focus(beliefs, clock)?;
-    let instruction = match &focus {
+    // Overnight work traces to the belief that prompted it (ADR 0035).
+    let actions = OutcomeSink::motivated_by(outcomes, focus.as_ref().map(|(id, _)| *id));
+    let instruction = match focus.as_ref().map(|(_, statement)| statement) {
         Some(f) => format!(
             "It's the quiet overnight hour and they're away. Look into \"{f}\" — something \
              they care about — reaching for whatever skills would help. Then review our \
@@ -1661,6 +1774,7 @@ pub fn run_due_nightly_loop(
         butler,
         capabilities,
         audit,
+        &actions,
         ids,
         clock,
         &history,
@@ -1704,7 +1818,7 @@ pub fn run_due_nightly_loop(
 fn nightly_focus(
     beliefs: &impl BeliefRepository,
     clock: &impl Clock,
-) -> Result<Option<String>, AppError> {
+) -> Result<Option<(BeliefId, String)>, AppError> {
     let active = understanding(beliefs, clock)?;
     let strongest = |kind: Option<crate::BeliefKind>| {
         active
@@ -1715,7 +1829,7 @@ fn nightly_focus(
                 crate::Confidence::Medium => 1,
                 crate::Confidence::Low => 0,
             })
-            .map(|b| b.statement().to_owned())
+            .map(|b| (b.id(), b.statement().to_owned()))
     };
     Ok(strongest(Some(crate::BeliefKind::Intent)).or_else(|| strongest(None)))
 }
@@ -1814,6 +1928,7 @@ pub fn delete_preference(
 
 #[cfg(test)]
 mod tests {
+    use super::OutcomeSink;
     use crate::ports::{
         Butler, ButlerContext, ButlerReply, Clock, IdSource, ProposalError, RepositoryError,
     };
@@ -1823,9 +1938,10 @@ mod tests {
     use crate::{Belief, BeliefId};
     use endora_capabilities::CapabilityRunner;
     use endora_conversation::ChatRepository;
+    use endora_kernel::Reversibility;
     use endora_platform::AuditLog;
     use endora_scheduling::{CheckinRepository, CheckinSchedule};
-    use endora_understanding::{BeliefRepository, PreferenceRepository};
+    use endora_understanding::{BeliefRepository, OutcomeRepository, PreferenceRepository};
     use std::cell::{Cell, RefCell};
 
     /// An in-memory store implementing the repository ports, for tests only.
@@ -2288,6 +2404,49 @@ smart home:
         }
     }
 
+    /// An in-memory [`OutcomeRepository`] (ADR 0035), so a test can assert on what the
+    /// turn recorded about the actions it took.
+    #[derive(Default)]
+    struct FakeOutcomes {
+        saved: RefCell<Vec<crate::Outcome>>,
+    }
+
+    impl OutcomeRepository for FakeOutcomes {
+        fn save(&self, outcome: &crate::Outcome) -> Result<(), RepositoryError> {
+            let mut all = self.saved.borrow_mut();
+            // Mirror the store's INSERT OR REPLACE so reacting updates rather than
+            // appending a second row.
+            if let Some(existing) = all.iter_mut().find(|o| o.id() == outcome.id()) {
+                *existing = outcome.clone();
+                return Ok(());
+            }
+            all.push(outcome.clone());
+            Ok(())
+        }
+        fn get(&self, id: crate::OutcomeId) -> Result<Option<crate::Outcome>, RepositoryError> {
+            Ok(self.saved.borrow().iter().find(|o| o.id() == id).cloned())
+        }
+        fn list(&self) -> Result<Vec<crate::Outcome>, RepositoryError> {
+            Ok(self.saved.borrow().clone())
+        }
+    }
+
+    /// An [`OutcomeRepository`] whose writes always fail — ADR 0035 makes recording
+    /// best-effort, so a broken store must never break a working action.
+    struct BrokenOutcomes;
+
+    impl OutcomeRepository for BrokenOutcomes {
+        fn save(&self, _outcome: &crate::Outcome) -> Result<(), RepositoryError> {
+            Err(RepositoryError::Backend("disk on fire".to_owned()))
+        }
+        fn get(&self, _id: crate::OutcomeId) -> Result<Option<crate::Outcome>, RepositoryError> {
+            Ok(None)
+        }
+        fn list(&self) -> Result<Vec<crate::Outcome>, RepositoryError> {
+            Ok(Vec::new())
+        }
+    }
+
     #[test]
     fn sending_to_the_butler_records_both_turns() {
         use super::{chat_history, send_to_butler};
@@ -2299,6 +2458,7 @@ smart home:
             &store,
             &store,
             &store,
+            &FakeOutcomes::default(),
             &NoCapabilities,
             &ScriptedTestButler,
             &FakeAudit::default(),
@@ -2379,6 +2539,7 @@ smart home:
             &store,
             &store,
             &store,
+            &FakeOutcomes::default(),
             &OneSkill,
             &ToolButler,
             &FakeAudit::default(),
@@ -2446,6 +2607,7 @@ smart home:
             &store,
             &store,
             &store,
+            &FakeOutcomes::default(),
             &AlwaysFails,
             &RelentlessButler,
             &FakeAudit::default(),
@@ -2484,6 +2646,203 @@ smart home:
         fn run(&self, _id: &str, _input: &str) -> Result<String, String> {
             self.result.clone()
         }
+    }
+
+    /// An actuator with a declared band and an optional state reader that verifies it
+    /// (ADR 0034), so a test can exercise what the turn *records* about an action.
+    struct BandedSkill {
+        id: &'static str,
+        band: Reversibility,
+        result: Result<String, String>,
+        /// What the read-back reports, if this integration has one.
+        reads_back: Option<&'static str>,
+    }
+    impl CapabilityRunner for BandedSkill {
+        fn available(&self) -> Vec<endora_capabilities::CapabilitySpec> {
+            let mut specs = vec![endora_capabilities::CapabilitySpec {
+                id: self.id.to_owned(),
+                description: "does a thing".to_owned(),
+                configured: true,
+                autonomous: true,
+                input_schema: None,
+                reversibility: self.band,
+            }];
+            if self.reads_back.is_some() {
+                specs.push(endora_capabilities::CapabilitySpec {
+                    id: "reader".to_owned(),
+                    description: "reads state".to_owned(),
+                    configured: true,
+                    autonomous: true,
+                    input_schema: None,
+                    reversibility: Reversibility::Observe,
+                });
+            }
+            specs
+        }
+        fn verifier(&self, id: &str) -> Option<String> {
+            (id == self.id && self.reads_back.is_some()).then(|| "reader".to_owned())
+        }
+        fn run(&self, id: &str, _input: &str) -> Result<String, String> {
+            if id == "reader" {
+                return Ok(self.reads_back.unwrap_or_default().to_owned());
+            }
+            self.result.clone()
+        }
+    }
+
+    /// Runs one turn against `skill` and hands back everything it recorded.
+    fn outcomes_of(skill: &BandedSkill, sink: &OutcomeSink<'_>) -> Vec<crate::Outcome> {
+        let (ids, clock, audit) = (SeqIds::default(), FixedClock(4_000), FakeAudit::default());
+        let _ = super::run_tool_turn(
+            &CallThenEcho {
+                capability: skill.id,
+            },
+            skill,
+            &audit,
+            sink,
+            &ids,
+            &clock,
+            &one_user_turn("do the thing"),
+            &[],
+            &ButlerContext::default(),
+            6,
+            &mut |_| {},
+            &mut Vec::new(),
+        );
+        sink.outcomes.list().unwrap()
+    }
+
+    #[test]
+    fn acting_leaves_an_outcome_holding_the_claim_and_the_observation() {
+        // ADR 0035's core rule. The tool claims success; the read-back shows the light
+        // still on. BOTH must survive, apart, with no verdict derived from them.
+        let store = FakeOutcomes::default();
+        let recorded = outcomes_of(
+            &BandedSkill {
+                id: "home.HassTurnOff",
+                band: Reversibility::Irreversible,
+                result: Ok("action_done".to_owned()),
+                reads_back: Some("kitchen switch: on"),
+            },
+            &OutcomeSink::unmotivated(&store),
+        );
+
+        assert_eq!(recorded.len(), 1, "one action, one outcome");
+        assert_eq!(recorded[0].capability(), "home.HassTurnOff");
+        assert_eq!(recorded[0].claim(), "action_done");
+        assert_eq!(recorded[0].observation(), Some("kitchen switch: on"));
+        assert_eq!(recorded[0].reaction(), None, "the person is never asked");
+    }
+
+    #[test]
+    fn reading_the_world_is_not_an_outcome() {
+        // An `Observe` capability changes nothing, so there is nothing to have an
+        // outcome about — its result is already evidence (ADR 0034).
+        let store = FakeOutcomes::default();
+        let recorded = outcomes_of(
+            &BandedSkill {
+                id: "weather",
+                band: Reversibility::Observe,
+                result: Ok("72F, sunny".to_owned()),
+                reads_back: None,
+            },
+            &OutcomeSink::unmotivated(&store),
+        );
+        assert!(recorded.is_empty(), "a read left a record: {recorded:?}");
+    }
+
+    #[test]
+    fn a_failed_action_is_recorded_too() {
+        // A failure is still something that happened, and ADR 0034 says its read-back
+        // is the most useful thing about it.
+        let store = FakeOutcomes::default();
+        let recorded = outcomes_of(
+            &BandedSkill {
+                id: "home.HassTurnOff",
+                band: Reversibility::Irreversible,
+                result: Err("no_match_reason=AREA".to_owned()),
+                reads_back: Some("kitchen switch: on"),
+            },
+            &OutcomeSink::unmotivated(&store),
+        );
+        assert_eq!(recorded.len(), 1);
+        assert!(
+            recorded[0].claim().contains("no_match_reason=AREA"),
+            "the failure is the claim: {:?}",
+            recorded[0].claim()
+        );
+        assert_eq!(recorded[0].observation(), Some("kitchen switch: on"));
+    }
+
+    #[test]
+    fn an_unverifiable_action_records_no_observation_rather_than_a_blank_one() {
+        // Nothing could read the effect back. "We didn't look" must stay distinct from
+        // "we looked and saw nothing" (ADR 0034's honest default).
+        let store = FakeOutcomes::default();
+        let recorded = outcomes_of(
+            &BandedSkill {
+                id: "mystery.Act",
+                band: Reversibility::Irreversible,
+                result: Ok("ok".to_owned()),
+                reads_back: None,
+            },
+            &OutcomeSink::unmotivated(&store),
+        );
+        assert_eq!(recorded.len(), 1);
+        assert_eq!(recorded[0].observation(), None);
+        assert!(!recorded[0].was_observed());
+    }
+
+    #[test]
+    fn an_action_taken_for_a_reason_traces_back_to_the_belief() {
+        let store = FakeOutcomes::default();
+        let recorded = outcomes_of(
+            &BandedSkill {
+                id: "home.HassTurnOff",
+                band: Reversibility::Irreversible,
+                result: Ok("done".to_owned()),
+                reads_back: None,
+            },
+            &OutcomeSink::motivated_by(&store, Some(BeliefId::new(7))),
+        );
+        assert_eq!(recorded[0].motivating_belief(), Some(BeliefId::new(7)));
+    }
+
+    #[test]
+    fn a_broken_outcome_store_never_breaks_a_working_action() {
+        // Best-effort recording (ADR 0035), the same rule ADR 0034 set for
+        // verification: checking what happened must not break what happened.
+        let (ids, clock, audit) = (SeqIds::default(), FixedClock(0), FakeAudit::default());
+        let skill = BandedSkill {
+            id: "home.HassTurnOn",
+            band: Reversibility::Irreversible,
+            result: Ok("turned on".to_owned()),
+            reads_back: None,
+        };
+        let mut activity = Vec::new();
+        let reply = super::run_tool_turn(
+            &CallThenEcho {
+                capability: "home.HassTurnOn",
+            },
+            &skill,
+            &audit,
+            &OutcomeSink::unmotivated(&BrokenOutcomes),
+            &ids,
+            &clock,
+            &one_user_turn("turn on the lights"),
+            &[],
+            &ButlerContext::default(),
+            6,
+            &mut |_| {},
+            &mut activity,
+        )
+        .expect("the turn survives a failed outcome write");
+        assert!(
+            reply.text.contains("turned on"),
+            "the action still answered from its real result: {}",
+            reply.text
+        );
+        assert!(activity.iter().any(|a| a.contains("Used the")));
     }
 
     // A butler that calls `capability` until a tool result appears, then answers by
@@ -2695,6 +3054,7 @@ smart home:
             },
             &skill,
             &audit,
+            &OutcomeSink::unmotivated(&FakeOutcomes::default()),
             &ids,
             &clock,
             &one_user_turn("turn on the lights"),
@@ -2729,6 +3089,7 @@ smart home:
             },
             &skill,
             &audit,
+            &OutcomeSink::unmotivated(&FakeOutcomes::default()),
             &ids,
             &clock,
             &one_user_turn("turn on the kitchen lights"),
@@ -2789,6 +3150,7 @@ smart home:
             &AlwaysCalls,
             &skill,
             &audit,
+            &OutcomeSink::unmotivated(&FakeOutcomes::default()),
             &ids,
             &clock,
             &one_user_turn("do it"),
@@ -2844,6 +3206,7 @@ smart home:
             &RepeatsGetContext,
             &skill,
             &audit,
+            &OutcomeSink::unmotivated(&FakeOutcomes::default()),
             &ids,
             &clock,
             &one_user_turn("what's on?"),
@@ -2926,6 +3289,7 @@ smart home:
             },
             &skill,
             &audit,
+            &OutcomeSink::unmotivated(&FakeOutcomes::default()),
             &ids,
             &clock,
             &one_user_turn("turn on the kitchen light"),
@@ -3026,6 +3390,7 @@ smart home:
             &ReadThenAct,
             &TwoSkills,
             &audit,
+            &OutcomeSink::unmotivated(&FakeOutcomes::default()),
             &ids,
             &clock,
             &one_user_turn("turn off the kitchen light"),
@@ -3101,6 +3466,7 @@ smart home:
             &store,
             &store,
             &store,
+            &FakeOutcomes::default(),
             &GatedSkill,
             &ToolButler,
             &FakeAudit::default(),
@@ -3170,6 +3536,7 @@ smart home:
             &store,
             &store,
             &store,
+            &FakeOutcomes::default(),
             &BlockedSkill,
             &BookingButler,
             &audit,
@@ -3230,6 +3597,7 @@ smart home:
             &store,
             &store,
             &store,
+            &FakeOutcomes::default(),
             &NoCapabilities,
             &EmptyButler,
             &FakeAudit::default(),
@@ -3289,6 +3657,7 @@ smart home:
             &store,
             &store,
             &store,
+            &FakeOutcomes::default(),
             &NoCapabilities,
             &GoodButler,
             &FakeAudit::default(),
@@ -3419,6 +3788,7 @@ smart home:
         let (msg, activity) = daily_brief(
             &store,
             &store,
+            &FakeOutcomes::default(),
             &BriefSkills,
             &BriefButler,
             &audit,
@@ -3451,6 +3821,7 @@ smart home:
             daily_brief(
                 &store,
                 &store,
+                &FakeOutcomes::default(),
                 &BriefSkills,
                 &DeadButler,
                 &audit,
@@ -3496,6 +3867,7 @@ smart home:
                 &store,
                 &store,
                 &store,
+                &FakeOutcomes::default(),
                 &NoCapabilities,
                 butler,
                 &audit,
@@ -3554,6 +3926,7 @@ smart home:
             &store,
             &store,
             &store,
+            &FakeOutcomes::default(),
             &NoCapabilities,
             &Quiet,
             &audit,
@@ -3611,6 +3984,7 @@ smart home:
                 &store,
                 &store,
                 &store,
+                &FakeOutcomes::default(),
                 &NoCapabilities,
                 &HasSomething,
                 &audit,
@@ -3629,6 +4003,7 @@ smart home:
                 &store,
                 &store,
                 &store,
+                &FakeOutcomes::default(),
                 &NoCapabilities,
                 &HasSomething,
                 &audit,
@@ -3674,6 +4049,7 @@ smart home:
             &store,
             &store,
             &store,
+            &FakeOutcomes::default(),
             &NoCapabilities,
             &BeliefButler,
             &FakeAudit::default(),
@@ -3763,6 +4139,7 @@ smart home:
             &store,
             &store,
             &store,
+            &FakeOutcomes::default(),
             &sched,
             &NoCapabilities,
             &ReflectiveButler,
@@ -3822,6 +4199,7 @@ smart home:
             &store,
             &store,
             &store,
+            &FakeOutcomes::default(),
             &OffSchedule,
             &NoCapabilities,
             &NeverButler,
@@ -3970,6 +4348,7 @@ smart home:
             &store,
             &store,
             &store,
+            &FakeOutcomes::default(),
             &sched,
             &ResearchRunner,
             &ResearchButler,
