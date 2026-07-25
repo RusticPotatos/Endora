@@ -10,6 +10,7 @@
 
 pub mod butler;
 pub mod clock;
+pub mod eval;
 pub mod ids;
 pub mod model_layer;
 pub mod sqlite;
