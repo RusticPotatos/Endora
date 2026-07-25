@@ -416,6 +416,7 @@ fn run_tool_turn(
     max_rounds: usize,
     on_step: &mut dyn FnMut(ButlerStep),
     activity: &mut Vec<String>,
+    disclosures: &mut Vec<ActionDisclosure>,
 ) -> Result<ButlerReply, AppError> {
     // Stop hammering a dead end: after this many failed runs in a turn, stop executing
     // and let the model answer from what it has.
@@ -506,6 +507,7 @@ fn run_tool_turn(
                             ids,
                             clock,
                         );
+                        disclose(disclosures, spec.as_ref(), &id, &out, observed.as_deref());
                         (
                             StepStatus::Done,
                             note_verification(&out, spec.as_ref(), observed.as_deref()),
@@ -529,6 +531,13 @@ fn run_tool_turn(
                             observed.as_deref(),
                             ids,
                             clock,
+                        );
+                        disclose(
+                            disclosures,
+                            spec.as_ref(),
+                            &id,
+                            &format!("error: {e}"),
+                            observed.as_deref(),
                         );
                         let observed = observed.map_or_else(String::new, |o| {
                             format!(
@@ -647,6 +656,7 @@ pub fn send_to_butler(
         text,
         &mut |_| {},
         &mut |_| {},
+        &mut Vec::new(),
     )
 }
 
@@ -693,6 +703,63 @@ pub struct ButlerStep {
     /// The skill's raw result on a terminal step, for the UI to reveal on demand
     /// (what the butler actually got back). `None` while running or when blocked.
     pub output: Option<String>,
+}
+
+/// Records an actuation for the person to see, whatever the reply ends up saying
+/// (ADR 0037).
+///
+/// Skips the `Observe` band on the same reasoning as the outcome record: a read changes
+/// nothing, so there is nothing to disclose about it. A capability with no visible spec
+/// is treated as an actuator, matching deny-by-default everywhere else.
+fn disclose(
+    disclosures: &mut Vec<ActionDisclosure>,
+    spec: Option<&crate::CapabilitySpec>,
+    skill: &str,
+    claimed: &str,
+    observed: Option<&str>,
+) {
+    if spec.is_some_and(|s| s.reversibility == Reversibility::Observe) {
+        return;
+    }
+    disclosures.push(ActionDisclosure {
+        skill: skill.to_owned(),
+        claimed: claimed.trim().to_owned(),
+        observed: observed.map(|o| o.trim().to_owned()),
+    });
+}
+
+/// One action a turn took, and whether Endora saw the effect for itself (ADR 0037).
+///
+/// The **deterministic** half of honesty about actions. [ADR 0034](../../docs/adr/0034-evidence-verifies.md)
+/// put the read-back in the tool result and asked the model to respect it; measured, a
+/// weak local model ignores that instruction — it asserts an unverified success every
+/// time. So the guarantee stops being *"the butler will report this honestly"* (a claim
+/// about a model) and becomes *"the person can always see it"* (a claim about code).
+///
+/// This never touches `reply.text`. The butler writes what it writes; this sits beside
+/// it, the same way the activity trail already does. Putting words in the butler's mouth
+/// is what ADR 0028 forbids — showing the person what happened is not that.
+///
+/// It derives no verdict. Deciding *contradicted* versus *confirmed* needs a model of
+/// what the caller intended, which does not exist (ADR 0034); the claim and the reading
+/// are shown side by side and the person judges.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ActionDisclosure {
+    /// The capability that acted.
+    pub skill: String,
+    /// The actuator's own account of its work — success text, or the error.
+    pub claimed: String,
+    /// What Endora observed afterwards, when the integration has a reader. `None` means
+    /// nothing could check — which is the fact worth surfacing, not a gap to hide.
+    pub observed: Option<String>,
+}
+
+impl ActionDisclosure {
+    /// Whether Endora saw the effect for itself rather than only being told about it.
+    #[must_use]
+    pub const fn was_observed(&self) -> bool {
+        self.observed.is_some()
+    }
 }
 
 /// Bounds the prompt for a long chat (ADR 0028): returns the recent verbatim window
@@ -793,6 +860,7 @@ pub fn send_to_butler_streaming(
     text: &str,
     on_token: &mut dyn FnMut(&str),
     on_step: &mut dyn FnMut(ButlerStep),
+    disclosures: &mut Vec<ActionDisclosure>,
 ) -> Result<(ChatMessage, Vec<String>), AppError> {
     let user = ChatMessage::new(
         MessageId::new(ids.new_id()),
@@ -851,6 +919,7 @@ pub fn send_to_butler_streaming(
         CHAT_TOOL_ROUNDS,
         on_step,
         &mut activity,
+        disclosures,
     )?;
 
     // The capability ladder (local-first, ADR 0027): if the local model came up empty,
@@ -1542,6 +1611,7 @@ pub fn consider_reaching_out(
         CHECKIN_TOOL_ROUNDS,
         &mut |_step| {},
         &mut activity,
+        &mut Vec::new(),
     )
     .ok();
     let text = reply
@@ -1631,6 +1701,7 @@ pub fn daily_brief(
         BRIEF_TOOL_ROUNDS,
         &mut |_step| {},
         &mut activity,
+        &mut Vec::new(),
     )
     .ok()
     .map(|reply| reply.text.trim().to_owned())
@@ -1922,6 +1993,7 @@ pub fn run_due_nightly_loop(
         NIGHTLY_TOOL_ROUNDS,
         &mut |_step| {},
         &mut activity,
+        &mut Vec::new(),
     )?;
 
     // Reflect: persist the understanding it formed (same path as a chat turn).
@@ -2949,6 +3021,7 @@ smart home:
             6,
             &mut |_| {},
             &mut Vec::new(),
+            &mut Vec::new(),
         );
         sink.outcomes.list().unwrap()
     }
@@ -3044,6 +3117,185 @@ smart home:
             err,
             Err(crate::AppError::NotFound { entity: "outcome" })
         ));
+    }
+
+    /// Runs one turn and returns what the interface would show about its actions.
+    fn disclosures_of(skill: &BandedSkill) -> Vec<super::ActionDisclosure> {
+        let (ids, clock, audit) = (SeqIds::default(), FixedClock(0), FakeAudit::default());
+        let mut disclosed = Vec::new();
+        let _ = super::run_tool_turn(
+            &CallThenEcho {
+                capability: skill.id,
+            },
+            skill,
+            &audit,
+            &OutcomeSink::unmotivated(&FakeOutcomes::default()),
+            &ids,
+            &clock,
+            &one_user_turn("do the thing"),
+            &[],
+            &ButlerContext::default(),
+            6,
+            &mut |_| {},
+            &mut Vec::new(),
+            &mut disclosed,
+        );
+        disclosed
+    }
+
+    #[test]
+    fn an_unverified_action_is_disclosed_even_when_the_reply_claims_success() {
+        // ADR 0037, and the whole reason it exists. Measured, this model asserts an
+        // unverified success EVERY time (verify:unconfirmed-is-not-overclaimed 0/3).
+        // `CallThenEcho` reproduces that: it echoes the tool's "action_done" as its
+        // answer. The disclosure must appear anyway — the guarantee is about code, not
+        // about what the model chose to say.
+        let disclosed = disclosures_of(&BandedSkill {
+            id: "home.HassTurnOn",
+            band: Reversibility::Irreversible,
+            result: Ok("action_done".to_owned()),
+            reads_back: None,
+        });
+
+        assert_eq!(disclosed.len(), 1, "the action is shown: {disclosed:?}");
+        assert_eq!(disclosed[0].skill, "home.HassTurnOn");
+        assert_eq!(disclosed[0].claimed, "action_done");
+        assert!(
+            !disclosed[0].was_observed(),
+            "and it is shown as unconfirmed, which is the point"
+        );
+    }
+
+    #[test]
+    fn a_disclosure_carries_the_reading_without_judging_it() {
+        // The kitchen light. ADR 0034 declined to derive a verdict — that needs a model
+        // of intent which doesn't exist — so the claim and the reading travel side by
+        // side and the person judges. Collapsing them here would be the canned string
+        // ADR 0028 deleted, wearing a hat.
+        let disclosed = disclosures_of(&BandedSkill {
+            id: "home.HassTurnOff",
+            band: Reversibility::Irreversible,
+            result: Ok("action_done".to_owned()),
+            reads_back: Some("kitchen switch: on"),
+        });
+
+        assert_eq!(disclosed.len(), 1);
+        assert_eq!(disclosed[0].claimed, "action_done");
+        assert_eq!(disclosed[0].observed.as_deref(), Some("kitchen switch: on"));
+        assert!(disclosed[0].was_observed());
+    }
+
+    #[test]
+    fn reading_the_world_is_not_disclosed_as_an_action() {
+        // Same rule as the outcome record: an Observe capability changes nothing, so
+        // there is nothing to disclose and no reason to clutter the reply with it.
+        let disclosed = disclosures_of(&BandedSkill {
+            id: "weather",
+            band: Reversibility::Observe,
+            result: Ok("72F, sunny".to_owned()),
+            reads_back: None,
+        });
+        assert!(disclosed.is_empty(), "a read was disclosed: {disclosed:?}");
+    }
+
+    #[test]
+    fn a_failed_action_is_disclosed_too() {
+        let disclosed = disclosures_of(&BandedSkill {
+            id: "home.HassTurnOff",
+            band: Reversibility::Irreversible,
+            result: Err("no_match_reason=AREA".to_owned()),
+            reads_back: Some("kitchen switch: on"),
+        });
+        assert_eq!(disclosed.len(), 1);
+        assert!(disclosed[0].claimed.contains("no_match_reason=AREA"));
+        assert_eq!(disclosed[0].observed.as_deref(), Some("kitchen switch: on"));
+    }
+
+    #[test]
+    fn the_disclosure_never_edits_the_reply() {
+        // ADR 0028 stands: the butler's words are its own. This adds a channel beside
+        // the reply, it does not append to or rewrite it — so a model that overclaims
+        // still visibly overclaims, and the eval can still catch it.
+        //
+        // The butler here is the measured failure mode: it acts, then flatly asserts
+        // success it never verified.
+        const OVERCLAIM: &str = "All set — the lights are on.";
+        struct ActsThenOverclaims;
+        impl Butler for ActsThenOverclaims {
+            fn respond(
+                &self,
+                _h: &[ChatMessage],
+                _p: &[Preference],
+                _c: &ButlerContext,
+            ) -> Result<ButlerReply, ProposalError> {
+                Ok(ButlerReply::default())
+            }
+            fn take_turn(
+                &self,
+                conversation: &[crate::TurnMessage],
+                _p: &[Preference],
+                _c: &ButlerContext,
+            ) -> Result<ButlerReply, ProposalError> {
+                let acted = conversation
+                    .iter()
+                    .any(|m| matches!(m, crate::TurnMessage::ToolResult { .. }));
+                if acted {
+                    return Ok(ButlerReply {
+                        text: OVERCLAIM.to_owned(),
+                        ..ButlerReply::default()
+                    });
+                }
+                Ok(ButlerReply {
+                    tool_calls: vec![crate::ToolCall {
+                        id: "c".to_owned(),
+                        capability: "home.HassTurnOn".to_owned(),
+                        input_json: "{}".to_owned(),
+                    }],
+                    ..ButlerReply::default()
+                })
+            }
+        }
+
+        let (ids, clock, audit) = (SeqIds::default(), FixedClock(0), FakeAudit::default());
+        let skill = BandedSkill {
+            id: "home.HassTurnOn",
+            band: Reversibility::Irreversible,
+            result: Ok("action_done".to_owned()),
+            reads_back: None,
+        };
+        let mut disclosed = Vec::new();
+        let reply = super::run_tool_turn(
+            &ActsThenOverclaims,
+            &skill,
+            &audit,
+            &OutcomeSink::unmotivated(&FakeOutcomes::default()),
+            &ids,
+            &clock,
+            &one_user_turn("turn on the lights"),
+            &[],
+            &ButlerContext::default(),
+            6,
+            &mut |_| {},
+            &mut Vec::new(),
+            &mut disclosed,
+        )
+        .expect("the turn answers");
+
+        // The overclaim survives verbatim. Nothing was appended, softened, or replaced.
+        assert_eq!(
+            reply.text, OVERCLAIM,
+            "the butler's words must be its own (ADR 0028)"
+        );
+        // And the truth is available anyway, beside it.
+        assert_eq!(
+            disclosed.len(),
+            1,
+            "the fact lives beside the reply instead"
+        );
+        assert!(
+            !disclosed[0].was_observed(),
+            "shown as unconfirmed, contradicting the reply the person can also see"
+        );
     }
 
     #[test]
@@ -3169,6 +3421,7 @@ smart home:
             6,
             &mut |_| {},
             &mut activity,
+            &mut Vec::new(),
         )
         .expect("the turn survives a failed outcome write");
         assert!(
@@ -3397,6 +3650,7 @@ smart home:
             6,
             &mut |s| steps.push(s),
             &mut activity,
+            &mut Vec::new(),
         )
         .unwrap();
         // The model answered grounded in the real result, and the tool actually ran.
@@ -3432,6 +3686,7 @@ smart home:
             6,
             &mut |_| {},
             &mut activity,
+            &mut Vec::new(),
         )
         .unwrap();
         // The model's answer carries the REAL error (no fabricated success).
@@ -3493,6 +3748,7 @@ smart home:
             6,
             &mut |_| {},
             &mut activity,
+            &mut Vec::new(),
         )
         .unwrap();
         // Executions stop after two failures, not the full six rounds.
@@ -3549,6 +3805,7 @@ smart home:
             6,
             &mut |_| {},
             &mut activity,
+            &mut Vec::new(),
         )
         .unwrap();
         // The read-only tool ran exactly ONCE despite being requested every round.
@@ -3632,6 +3889,7 @@ smart home:
             3,
             &mut |_| {},
             &mut activity,
+            &mut Vec::new(),
         )
         .unwrap();
         // The retry recovered: the tool ran and the answer is grounded in it —
@@ -3733,6 +3991,7 @@ smart home:
             3,
             &mut |_| {},
             &mut activity,
+            &mut Vec::new(),
         )
         .unwrap();
         // The action ran in a round AFTER the read — not skipped by an early answer.
@@ -3943,6 +4202,7 @@ smart home:
             "explain quantum superposition",
             &mut |t| streamed.push_str(t),
             &mut |_| {},
+            &mut Vec::new(),
         )
         .unwrap();
 
@@ -4003,6 +4263,7 @@ smart home:
             "hi",
             &mut |_| {},
             &mut |_| {},
+            &mut Vec::new(),
         )
         .unwrap();
 
