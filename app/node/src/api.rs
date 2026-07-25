@@ -980,6 +980,26 @@ fn build_runner(
     ])
 }
 
+/// The runner for turns that are only ever allowed to *gather* — the heartbeat's
+/// check-in, brief, and nightly loop, plus an on-demand brief.
+///
+/// Same catalog as [`build_runner`], with autonomy clamped to the reversible bands. The
+/// person's openers and a widened envelope clear an actuator to run while they are
+/// *present*, watching the activity trail and able to say stop; none of that is true at
+/// 03:00. Keeps the nightly loop's guarantee — "nothing it could do that it couldn't
+/// undo" — enforced rather than merely documented.
+fn build_reversible_only_runner(
+    config: &endora_capabilities::ConfigStore,
+    capabilities: Arc<Vec<Arc<dyn Capability>>>,
+    mcp: Arc<endora_capabilities::McpRunner>,
+) -> endora_capabilities::ReversibleOnlyRunner {
+    endora_capabilities::ReversibleOnlyRunner::new(Arc::new(build_runner(
+        config,
+        capabilities,
+        mcp,
+    )))
+}
+
 /// Loads all capability settings, grouped by capability id, for the runner.
 fn settings_map(
     config: &endora_capabilities::ConfigStore,
@@ -1066,7 +1086,9 @@ async fn brief(State(state): State<AppState>) -> Result<Json<serde_json::Value>,
     let butler = state.butler.clone();
     let mcp = mcp_snapshot(&state);
     let result = blocking(move || {
-        let runner = build_runner(config.as_ref(), capabilities, mcp);
+        // A brief is an act of service, defined as reversible — it gathers and writes,
+        // it never actuates. Enforced, not just documented above.
+        let runner = build_reversible_only_runner(config.as_ref(), capabilities, mcp);
         let context = usecases::butler_context(
             understanding.as_ref(),
             understanding.as_ref(),
@@ -2492,7 +2514,9 @@ pub fn spawn_heartbeat(state: AppState) {
             // with a chat reply; held across the blocking work below.
             let _turn = state.turn_lock.clone().lock_owned().await;
             let posted = tokio::task::spawn_blocking(move || {
-                let runner = build_runner(config.as_ref(), capabilities, mcp);
+                // Unattended: nobody is here to confirm anything, so only the reversible
+                // bands may act — regardless of what the person opened for chat turns.
+                let runner = build_reversible_only_runner(config.as_ref(), capabilities, mcp);
                 let context = usecases::butler_context(
                     understanding.as_ref(),
                     understanding.as_ref(),
