@@ -49,14 +49,18 @@ Built and working:
 
 Sequenced by what unblocks what, not by release number. Tagging is a human decision.
 
-### 1. Measure understanding
+### 1. Measure understanding — *delivered*
 
-Belief quality is now the load-bearing behaviour and the thing with no fallback
-(ADR 0029's stated risk). Extend the [0027](adr/0027-self-improving-model-layer.md)
-battery from routing and no-fabrication to **understanding**: does the butler form
-beliefs with real evidence, avoid restating what it already believes, and correctly
-decline to form one when the conversation supports nothing? Until this is measured,
-every other improvement here is guesswork.
+Belief quality is the load-bearing behaviour and the thing with no fallback
+(ADR 0029's stated risk). [ADR 0030](adr/0030-measuring-understanding.md) adds an
+**L3 understanding tier** to the fitness battery — does the butler form beliefs from
+real evidence, stay quiet when a turn reveals nothing, avoid re-filing what it
+already knows, and refrain from overclaiming confidence — and an **adoption floor**,
+so the model layer can no longer trade understanding away for tool-routing points on
+its own.
+
+Still ahead here: a *pinned* LLM judge to measure whether a belief is genuinely
+insightful, which lexical scoring cannot see (ADR 0030 alternatives).
 
 ### 2. Beliefs that behave like a model, not a list
 

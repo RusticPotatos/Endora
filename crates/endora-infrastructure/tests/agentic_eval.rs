@@ -2,8 +2,11 @@
 //! multi-step skill loop and the self-improving model layer). It measures whether
 //! a given model can actually **drive the agentic loop**: pick the right skill,
 //! refuse to fabricate a live fact, relay a real result faithfully, answer
-//! grounded facts directly, and hold the L2 "Jarvis" behaviours (use a configured
-//! integration, never bluff/deny, stay in English, keep casual chat warm).
+//! grounded facts directly, hold the L2 "Jarvis" behaviours (use a configured
+//! integration, never bluff/deny, stay in English, keep casual chat warm), and —
+//! L3, ADR 0030 — build a sound **understanding** of the person: form beliefs from
+//! real evidence, stay quiet when a turn reveals nothing, avoid re-filing what it
+//! already knows, and not overclaim confidence.
 //!
 //! The scoring battery itself now lives in [`endora_infrastructure::model_layer`]
 //! as the reusable **fitness function** ([`evaluate`]) the model layer calls to
@@ -29,11 +32,13 @@ fn report(label: &str, card: &Scorecard) {
         );
     }
     println!(
-        "=== {label}: L1 {}/{}, L2 {}/{}, TOTAL {}/{} ===\n",
+        "=== {label}: L1 {}/{}, L2 {}/{}, L3 {}/{}, TOTAL {}/{} ===\n",
         card.l1,
         card.l1_max,
         card.l2,
         card.l2_max,
+        card.l3,
+        card.l3_max,
         card.total(),
         card.max()
     );
@@ -54,6 +59,14 @@ fn butler_drives_the_agentic_loop() {
         "{model} scored L1 {}/{}: not viable as an agentic rung-one butler",
         card.l1,
         card.l1_max
+    );
+    // Understanding is the only model Endora keeps of a person (ADR 0029), so a
+    // model that forms none is not a viable butler however well it routes tools.
+    assert!(
+        card.l3 >= 3,
+        "{model} scored L3 {}/{}: too weak at understanding to be the butler's brain",
+        card.l3,
+        card.l3_max
     );
 }
 
