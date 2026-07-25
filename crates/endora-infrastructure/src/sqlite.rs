@@ -241,6 +241,19 @@ impl SqliteStore {
                 "trust_all",
                 "INTEGER NOT NULL DEFAULT 1",
             )?;
+            // Which tool reads this server's state (ADR 0038). An existing database
+            // needs the column added here: `SCHEMA` above is CREATE TABLE IF NOT
+            // EXISTS, which is a no-op once the table is there, so a new column on an
+            // OLD table only ever arrives through `ensure_column`. Missing it broke
+            // every MCP server read on an existing deployment — and because
+            // `connect_mcp` swallows the error with `unwrap_or_default`, the visible
+            // symptom was every tool silently vanishing rather than an error.
+            ensure_column(
+                &conn,
+                "mcp_servers",
+                "reader_tool",
+                "TEXT NOT NULL DEFAULT ''",
+            )?;
         }
         Ok(Self { db })
     }
@@ -628,6 +641,55 @@ mod tests {
     /// The platform event log over the store's shared connection (ADR 0026).
     fn event_store(store: &SqliteStore) -> endora_platform::EventStore {
         endora_platform::EventStore::new(store.db())
+    }
+
+    #[test]
+    fn opening_a_database_created_before_a_column_existed_still_works() {
+        // The upgrade path, which nothing covered — and it broke a live deployment.
+        // `SCHEMA` is CREATE TABLE IF NOT EXISTS, so on an EXISTING table it does
+        // nothing, and a newly added column only ever arrives via `ensure_column`.
+        // Tests that build a fresh store never exercise that, because the fresh
+        // CREATE TABLE already has every column.
+        use endora_capabilities::{McpServer, McpServerRegistry};
+        let db = endora_persistence::Db::open_in_memory().unwrap();
+        // An `mcp_servers` table as an older Endora left it: no `reader_tool`.
+        db.lock()
+            .unwrap()
+            .execute_batch(
+                "CREATE TABLE mcp_servers (
+                    name    TEXT PRIMARY KEY,
+                    kind    TEXT NOT NULL,
+                    command TEXT NOT NULL DEFAULT '',
+                    args    TEXT NOT NULL DEFAULT '',
+                    url     TEXT NOT NULL DEFAULT '',
+                    enabled INTEGER NOT NULL DEFAULT 1
+                ) STRICT;
+                 INSERT INTO mcp_servers (name, kind, command) VALUES ('home', 'stdio', 'x');",
+            )
+            .unwrap();
+
+        // Opening the store must migrate it rather than leave a table the queries
+        // cannot read.
+        let store = SqliteStore::from_db(db.clone()).unwrap();
+        let config = endora_capabilities::ConfigStore::new(store.db());
+
+        let servers = McpServerRegistry::list(&config).expect("an upgraded database reads back");
+        assert_eq!(servers.len(), 1);
+        assert_eq!(servers[0].name, "home");
+        assert_eq!(
+            servers[0].reader_tool, "",
+            "nobody has nominated one yet, which is the honest default"
+        );
+
+        // And the new column is writable, not just readable.
+        let updated = McpServer::stdio("home", "x", Vec::new())
+            .unwrap()
+            .with_reader("GetLiveContext");
+        McpServerRegistry::register(&config, &updated).unwrap();
+        assert_eq!(
+            McpServerRegistry::list(&config).unwrap()[0].reader_tool,
+            "GetLiveContext"
+        );
     }
 
     #[test]
