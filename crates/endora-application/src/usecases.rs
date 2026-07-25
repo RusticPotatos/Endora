@@ -164,7 +164,7 @@ pub fn recent_activity(
 /// in the tool result is not narration on the butler's behalf (ADR 0028) — it is part
 /// of the real outcome, and it is the honest default for every integration, including
 /// ones nobody has debugged yet.
-fn note_verification(
+pub fn note_verification(
     output: &str,
     spec: Option<&crate::CapabilitySpec>,
     observation: Option<&str>,
