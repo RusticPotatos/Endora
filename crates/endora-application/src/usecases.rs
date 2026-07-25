@@ -988,6 +988,7 @@ fn run_tool_turn(
             text: reply.text.clone(),
             tool_calls: reply.tool_calls.clone(),
         });
+        let mut round_failed = false;
         for call in &reply.tool_calls {
             let id = call.capability.clone();
             // Action budget spent: don't execute more, but tell the model so it wraps
@@ -1028,6 +1029,7 @@ fn run_tool_turn(
                     }
                     Err(e) => {
                         failures += 1;
+                        round_failed = true;
                         activity.push(format!("Tried the {id} skill, but it failed"));
                         (StepStatus::Failed, format!("error: {e}"))
                     }
@@ -1081,10 +1083,16 @@ fn run_tool_turn(
                 content,
             });
         }
+        // One tool round, then answer — unless a tool FAILED, in which case give the
+        // model one more round to retry (bounded by the failure cap). This keeps a turn
+        // to roughly a single tool call + answer, which matters most on a slow model.
+        if !round_failed || failures >= MAX_TOOL_FAILURES {
+            break;
+        }
     }
-    // Never converged (hit the round cap with tools still pending): force a final
-    // answer with tools OFF, so the model must reply in prose from what it gathered
-    // rather than call yet another tool and leave the turn without an answer.
+    // Reached here after acting (or the round cap): force the final answer with tools
+    // OFF, so the model replies in prose grounded in what it gathered rather than
+    // calling yet another tool and leaving the turn without an answer.
     let mut final_ctx = context.clone();
     final_ctx.tools = Vec::new();
     butler
@@ -1236,7 +1244,10 @@ pub fn send_to_butler_streaming(
     // model must relay honestly; if it misreports with the truth in front of it, that
     // is a model failure to surface, not a canned string to hardcode. (The proactive
     // flows still use the two-pass `gather_with_skills`; they migrate separately.)
-    const MAX_TOOL_ROUNDS: usize = 6;
+    // Small ceiling: run_tool_turn already answers after one tool round (retrying only
+    // on failure), so this only bounds a pathological loop — kept low to stay fast on
+    // a slow model rather than the old 6-round gather.
+    const MAX_TOOL_ROUNDS: usize = 3;
     let reply = run_tool_turn(
         butler,
         capabilities,
@@ -1281,20 +1292,24 @@ pub fn send_to_butler_streaming(
     // stays in the signature for the proactive flows and a future deliberate capture.
     let _ = &suggestions;
 
-    // Understanding is KEPT (ADR 0020). The tool-calling answer is prose, so form
-    // beliefs in a separate envelope pass with tools OFF: an empty `tools` context
-    // keeps the JSON envelope (no native tool-calling), so the model returns its
-    // `understanding` without being pulled back into an action. Beliefs only — any
-    // proposals it makes on this pass are ignored.
-    let formed = {
+    // Understanding is KEPT (ADR 0020) — but only on a CONVERSATION turn. On an action
+    // turn (a tool ran, failed, or was blocked) we skip the extra model round: it's the
+    // biggest latency saving on a slow model, and belief-forming matters far less when
+    // the person was giving a command than when they were talking. On a pure chat turn,
+    // a tools-OFF envelope pass forms beliefs (an empty `tools` context keeps the JSON
+    // envelope, so understanding comes back without pulling the model into an action).
+    let acted = activity.iter().any(|a| {
+        a.starts_with("Used the ") || a.starts_with("Tried the ") || a.starts_with("Couldn't use ")
+    });
+    if !acted {
         let mut belief_ctx = context.clone();
         belief_ctx.tools = Vec::new();
-        butler
+        let formed = butler
             .respond(&history, &prefs, &belief_ctx)
             .map(|r| r.beliefs)
-            .unwrap_or_default()
-    };
-    record_formed_beliefs(beliefs, formed, ids, clock, &mut activity)?;
+            .unwrap_or_default();
+        record_formed_beliefs(beliefs, formed, ids, clock, &mut activity)?;
+    }
 
     Ok((butler_msg, Vec::new(), activity))
 }
