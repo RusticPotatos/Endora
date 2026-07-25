@@ -89,17 +89,50 @@ the observation/receipt distinction at all.
 - `CapabilitySpec` gains `reversibility`; `run_tool_turn` annotates on the success
   path only, since a failure is already unambiguous.
 
-## What comes next (deliberately not in this ADR)
+## Layer 1 — read-back (added 2026-07-25)
 
-**Read-back.** A capability declares how to observe its effect, and the turn performs
-that read after acting — so the model receives *observed state* rather than the
-actuator's claim, and `[unverified]` becomes `[confirmed]` or `[contradicted]`. Home
-Assistant already exposes `HassGetState`, so it is the natural first integration. That
-is one mapping per integration rather than one patch per tool, and it turns hedging
-back into confidence honestly.
+`CapabilityRunner::verifier(id)` names the capability that **observes what another
+changes**. After an actuation the turn runs it and hands the model the reading:
 
-This ADR deliberately ships the universal, zero-configuration half first: it is what
-makes every integration safe by default, including the ones not written yet.
+> `[observed]` Endora then read the state back. This is what the world actually looks
+> like now: … Answer from the OBSERVATION, not from what the tool claimed. If they
+> disagree, the observation wins.
+
+One mapping per integration, not one per tool: every Home Assistant `Hass*` action
+verifies through that server's `GetLiveContext`. Servers Endora knows nothing about
+return `None` and stay marked `[unverified]`, so the honest default is unchanged.
+
+**The read-back runs after a failure too**, deliberately. A failed action's most
+useful output is what actually exists — the live `HassTurnOff` failure
+(`no_match_reason=AREA`) is far more actionable once the result also carries the
+entities that *are* in that area, because the model can then retry against reality
+instead of guessing again.
+
+It reports the observation rather than a verdict. Deciding *confirmed* versus
+*contradicted* needs a model of what the caller intended, which does not exist yet;
+handing over both the claim and the reading is honest and lets the model reconcile
+them against real data. Verification is best-effort — a failed read simply leaves the
+result unverified, because checking must never break a working action.
+
+### Ambiguity is surfaced, not resolved
+
+The live defect that produced an afternoon of wrong diagnoses was not a broken
+component. A Home Assistant install had **two entities both named "Kitchen"** in the
+same area — a `light` reading `off` and a `switch` reading `on` — and the switch was
+the actual ceiling light. Asked to "turn off the kitchen light" the model constrained
+to the `light` domain, matched the dead entity, and every layer downstream faithfully
+reported success about the wrong device.
+
+Nothing was broken. The *name* was ambiguous, and each component resolved it silently
+and differently. So a state reading in which one name spans several domains now
+carries:
+
+> `[ambiguous]` One name refers to more than one thing here: "Kitchen" is light AND
+> switch. Do not guess which was meant — say what you found and ask which one they
+> want.
+
+An ambiguity the person can see is a question they can answer. An ambiguity resolved
+silently is a bug they have to catch by looking at the ceiling.
 
 ## Alternatives considered
 
