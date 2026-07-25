@@ -60,6 +60,7 @@ of an existing record and take the next number.
 | [0024](0024-reversibility-aware-autonomy-and-the-nightly-loop.md) | Reversibility-aware autonomy and the nightly self-improvement loop | Accepted |
 | [0025](0025-hospitality-and-the-evolving-persona.md) | Hospitality and the evolving persona | Accepted |
 | [0026](0026-package-by-bounded-context.md) | Responsibility-Oriented Clean Architecture (app / domains / shared) | Accepted |
-| [0027](0027-self-improving-model-layer.md) | The self-improving model layer (discovery, eval, gated adoption) | Proposed |
+| [0027](0027-self-improving-model-layer.md) | The self-improving model layer (discovery, eval, gated adoption) | Accepted (amended by 0030) |
 | [0028](0028-native-tool-calling-turn.md) | One native tool-calling turn (grounded honesty, no deterministic narration) | Accepted |
 | [0029](0029-delete-the-goal-tracker.md) | Delete the goal tracker; understanding is the only model | Accepted |
+| [0030](0030-measuring-understanding.md) | Measuring understanding: the L3 eval tier and the adoption floor | Accepted |
