@@ -59,12 +59,16 @@ already knows, and refrain from overclaiming confidence — and an **adoption fl
 so the model layer can no longer trade understanding away for tool-routing points on
 its own.
 
-The battery is now data-driven (34 cases) and runs repeatedly, reporting the spread
+The battery is now data-driven (37 cases) and runs repeatedly, reporting the spread
 rather than hiding it. **Measured baseline for `qwen2.5:7b`, 3 runs: mean 29.7/34,
 range 27–31, spread 4** — so any model comparison closer than 4 points is noise. That
 number is the resolution of the instrument, and it is the prerequisite for any
 fine-tuning or distillation work: without it there is no way to tell a real gain from
 a lucky run.
+
+> That baseline predates the three `verify:*` cases added for
+> [ADR 0034](adr/0034-evidence-verifies.md), so it is out of 34, not 37. It needs
+> re-measuring against the current battery before it is compared to anything.
 
 What the first trustworthy run found:
 
