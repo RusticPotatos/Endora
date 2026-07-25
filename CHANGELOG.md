@@ -24,6 +24,18 @@ tagged release.
 
 ### Added
 
+- **Beliefs decay and expire** ([ADR 0032](docs/adr/0032-beliefs-decay-and-expire.md)).
+  `BeliefStatus::Expired` existed, round-tripped through storage, and was **never set
+  by any code path** — the direction reset's "nothing is assumed permanently" was a
+  promise nothing kept. Confidence now steps down one level per elapsed half-life
+  since a belief was last affirmed, and fades out entirely below `low`. Half-lives
+  are per kind and encode ADR 0020's own thesis: intent and values change slowly (365
+  days), a frustration or stressor usually does not (45). Affirming resets the clock.
+  Decay is derived from the stored timestamp, so understanding is honest the moment
+  it is read; the nightly loop additionally persists expiry and reports each let-go
+  belief to the activity trail, so the forgetting is visible. The export keeps
+  reporting **stored** confidence — the memory right is to see what Endora actually
+  holds — while the console shows the current reading.
 - **An L3 "understanding" tier in the model fitness battery**
   ([ADR 0030](docs/adr/0030-measuring-understanding.md)) — does the butler form
   beliefs from real evidence, stay quiet when a turn reveals nothing, avoid re-filing

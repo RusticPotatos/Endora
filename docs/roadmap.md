@@ -62,12 +62,18 @@ its own.
 Still ahead here: a *pinned* LLM judge to measure whether a belief is genuinely
 insightful, which lexical scoring cannot see (ADR 0030 alternatives).
 
-### 2. Beliefs that behave like a model, not a list
+### 2. Beliefs that behave like a model, not a list — *decay delivered*
 
-Expiry and decay are modelled but barely exercised. Beliefs should weaken without
-reinforcement, contradict each other visibly, and be consolidated when the butler
-learns something that subsumes several. This is what makes understanding a *living*
-model (direction-reset, "Understanding is a living model").
+[ADR 0032](adr/0032-beliefs-decay-and-expire.md): beliefs now **weaken without
+reinforcement and fade out entirely**. `BeliefStatus::Expired` existed and was never
+set by any code path — the "nothing is assumed permanently" promise was fiction.
+Half-lives are per kind, encoding ADR 0020's own claim that intent changes slowly
+(365 days) and a stressor does not (45); affirming resets the clock; the nightly loop
+persists the forgetting so it is visible.
+
+Still ahead here: **contradiction** (two beliefs that cannot both be true should be
+surfaced, not silently coexist) and **consolidation** (several specific beliefs
+subsumed by one the butler has since learned).
 
 ### 3. Interventions, properly
 
