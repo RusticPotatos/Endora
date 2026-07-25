@@ -463,7 +463,7 @@ function viewChat() {
     // A butler reply carries its persisted action trail + sources (if any), so
     // you can expand a PAST answer to see what it did and where it came from.
     if (!mine && m.actions) {
-      return bubble + stepsHtml(m.actions.steps) + sourcesHtml(m.actions.sources);
+      return bubble + actionsTakenHtml(m.actions.actions_taken) + stepsHtml(m.actions.steps) + sourcesHtml(m.actions.sources);
     }
     return bubble;
   }).join("");
@@ -1331,6 +1331,24 @@ function renderSources(afterEl, steps) {
 
 // HTML-string versions for rendering a PAST message's persisted actions in the
 // chat history (collapsed; click to expand). Same look as the live panel.
+// What Endora actually DID this turn, and whether it confirmed the effect (ADR 0037).
+//
+// Not collapsible and not buried under "details", unlike the step trail: the whole
+// point is that it is visible without being asked for. The model ignores the read-back
+// roughly two runs in three and asserts unverified success every time, so the reply
+// above this may well claim the opposite of what it says here. Both are shown; the
+// person judges. Nothing here edits the reply.
+function actionsTakenHtml(actions) {
+  if (!actions || !actions.length) return "";
+  const rows = actions.map((a) => {
+    const what = `<span class="step-more">${esc(a.skill)}</span>`;
+    if (a.confirmed) {
+      return `<div class="step-row">${icon("check", 13)}<span>${what} — Endora checked afterwards: ${esc(a.observed)}</span></div>`;
+    }
+    return `<div class="step-row">${icon("target", 13)}<span>${what} — reported ${esc(a.claimed)}, <strong>not confirmed</strong>. Endora couldn't check this one for itself.</span></div>`;
+  }).join("");
+  return `<div class="row" style="justify-content:flex-start;margin:2px 0;"><div class="steps" style="padding:8px 10px;"><div class="step-list">${rows}</div></div></div>`;
+}
 function stepsHtml(steps) {
   if (!steps || !steps.length) return "";
   const rows = steps.map((s) => {

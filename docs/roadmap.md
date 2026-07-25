@@ -60,15 +60,13 @@ so the model layer can no longer trade understanding away for tool-routing point
 its own.
 
 The battery is now data-driven (39 cases) and runs repeatedly, reporting the spread
-rather than hiding it. **Measured baseline for `qwen2.5:7b`, 3 runs: mean 29.7/34,
-range 27–31, spread 4** — so any model comparison closer than 4 points is noise. That
-number is the resolution of the instrument, and it is the prerequisite for any
-fine-tuning or distillation work: without it there is no way to tell a real gain from
-a lucky run.
+rather than hiding it — because the spread *is* the resolution of the instrument, and
+without it there is no way to tell a real gain from a lucky run.
 
-**Re-measured 2026-07-25** on the current 39-case battery, `qwen2.5:7b`, 3 runs:
-**mean 32.3/39, range 32–33, spread 1**. (The older 29.7/34 figure was against a
-smaller battery and is superseded.)
+**Measured 2026-07-25, `qwen2.5:7b`, 3 runs: mean 32.3/39, range 32–33, spread 1.**
+(An earlier 29.7/34 figure was against a smaller battery and is superseded. Note the
+spread narrowed from 4 to 1 as the battery grew, which is what more cases should do to
+it.)
 
 What the runs found:
 
@@ -198,16 +196,30 @@ could verify, this model asserts the world changed every single time.
 An Endora acting unattended on that would announce success it has not verified, as a
 matter of course. So step D waits, and the thing to try first is no longer a guess:
 
-1. **Rung the model up.** `qwen2.5:14b` is the obvious candidate and the battery can
-   now settle it in one run — but on a 12GB card it evicts the resident 7b, so this is
-   a deliberate change to the live deployment, not a free experiment
-   (see the mixture-thrashing note in ADR 0027's history).
-2. **Make the observation load-bearing in code**, not advisory prose in the tool result.
-   The turn already *has* the observation; nothing forces the answer to respect it.
-3. **A prompt that survives measurement** — cheapest to try, and the case that would
-   prove it already exists.
+1. ~~**Rung the model up.**~~ **Closed.** `qwen2.5:14b` was already tried and dropped
+   for latency — it is the reason the deployment settled on `qwen2.5:7b`. Re-measured
+   2026-07-25 for completeness and abandoned: the 39-case battery takes **5.2 minutes on
+   7b and had not finished after 20 on 14b**, roughly 4× per turn, on top of evicting
+   the resident 7b from a 12GB card while it runs. A butler that takes four times as
+   long to answer is not a better butler, whatever it scores.
 
-Whatever is tried, the battery is what says whether it worked.
+   This matters for the argument, not just the schedule: the honesty guarantee cannot be
+   bought with a bigger model *on this hardware*, so it has to come from code. Which is
+   what option 2 is.
+2. **Make the observation load-bearing in code** — *delivered*, as
+   [ADR 0037](adr/0037-disclosure-not-persuasion.md). Not by editing the reply (that is
+   the deterministic narration ADR 0028 deleted) but by disclosing every action and its
+   verification status beside the reply, deterministically, whatever the prose claims.
+   The guarantee stops being *"the butler will report this honestly"* — a claim about a
+   model — and becomes *"the person can always see it"*, a claim about code.
+3. **A prompt that survives measurement** — still open, still cheapest, and the case
+   that would prove it already exists. Note that "the observation wins" is already about
+   as direct as an instruction gets, and it is ignored.
+
+Whatever is tried, the battery is what says whether it worked — and the `verify:*` cases
+are expected to keep failing until the *model* improves. ADR 0037 does not make them
+pass, deliberately: anything that did, without the model getting better, would be the
+canned string ADR 0028 deleted, wearing a hat.
 
 ### E. Then
 
