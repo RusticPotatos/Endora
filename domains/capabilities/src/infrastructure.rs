@@ -2228,6 +2228,9 @@ fn coerce_args_to_schema(input_json: &str, schema: Option<&serde_json::Value>) -
             }
         }
     }
+    // Did the model TRY to aim at something? Recorded before the empties are dropped,
+    // because that is the only moment the difference is visible.
+    let aimed_at_something = obj.iter().any(|(_, v)| is_targeting_attempt(v));
     // A kind filter that merely repeats another one is a duplication, not a narrowing.
     // Live: HassTurnOff{area:"kitchen", domain:["switch"], device_class:["switch"]} —
     // the same word twice. `Kitchen Main Light` is domain `switch` with no matching
@@ -2247,7 +2250,30 @@ fn coerce_args_to_schema(input_json: &str, schema: Option<&serde_json::Value>) -
         serde_json::Value::Array(items) => !items.is_empty(),
         _ => true,
     });
+    // Dropping empties is what lets a slightly-malformed call through — but it must not
+    // turn a call that aimed at ONE thing into a call that hits everything.
+    //
+    // Observed live: HassTurnOn{area:null, name:null, domain:["light"]} became
+    // {domain:["light"]} and Home Assistant turned on every light in the house. The
+    // model plainly meant to name something and sent nulls instead; the honest reading
+    // of that is "it failed to say what", not "it meant all of them".
+    //
+    // So if every targeting value it gave was empty, the call is left alone rather than
+    // cleaned into a house-wide one, and the server rejects it as it did before.
+    if aimed_at_something && !obj.iter().any(|(_, v)| v.is_string()) {
+        return input_json.to_owned();
+    }
     args.to_string()
+}
+
+/// Whether this value looks like an attempt to aim at something — a name, an area, a
+/// floor — as opposed to a kind filter or a setting.
+///
+/// Scalars point at things and arrays restrict which kinds count, the same split the
+/// read-back scoping uses. An empty or null scalar is an attempt that came out blank,
+/// which is the case worth noticing.
+fn is_targeting_attempt(v: &Value) -> bool {
+    v.is_null() || v.is_string()
 }
 
 /// Removes an array-valued filter whose values are already covered by another one.
@@ -3852,6 +3878,62 @@ mod tests {
             parsed.get("floor").is_none(),
             "an empty filter was sent: {out}"
         );
+    }
+
+    #[test]
+    fn cleaning_a_call_never_turns_one_target_into_all_of_them() {
+        // Observed live, and caused by the empty-field hygiene I added:
+        //   HassTurnOn{area:null, name:null, domain:["light"]}
+        // cleaned to {domain:["light"]} — and Home Assistant turned on every light in
+        // the house. The model plainly meant to name something and sent nulls; the
+        // honest reading is "it failed to say what", not "it meant all of them".
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "area": { "type": "string" },
+                "name": { "type": "string" },
+                "domain": { "type": "array", "items": { "type": "string" } }
+            }
+        });
+        let out = coerce_args_to_schema(
+            r#"{"area":null,"name":null,"domain":["light"]}"#,
+            Some(&schema),
+        );
+        let parsed: Value = serde_json::from_str(&out).unwrap();
+        assert!(
+            parsed.get("area").is_some() || parsed.get("name").is_some(),
+            "the empties were cleaned away, leaving a house-wide action: {out}"
+        );
+    }
+
+    #[test]
+    fn a_call_with_one_real_target_is_still_cleaned() {
+        // The guard must not undo the fix it sits next to: an empty `floor` alongside a
+        // real name still gets dropped, because the call still aims at something.
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "name": { "type": "string" },
+                "floor": { "type": "string" },
+                "domain": { "type": "array", "items": { "type": "string" } }
+            }
+        });
+        let out = coerce_args_to_schema(
+            r#"{"name":"Kitchen Table","floor":"","domain":["light"]}"#,
+            Some(&schema),
+        );
+        let parsed: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(parsed["name"], "Kitchen Table");
+        assert!(parsed.get("floor").is_none(), "empty floor survived: {out}");
+    }
+
+    #[test]
+    fn a_tool_that_takes_no_target_is_left_alone() {
+        // Something like "cancel all timers" supplies no targeting field at all. It never
+        // aimed at one thing, so there is nothing for the guard to protect.
+        let schema = serde_json::json!({ "type": "object", "properties": {} });
+        let out = coerce_args_to_schema("{}", Some(&schema));
+        assert_eq!(out, "{}");
     }
 
     #[test]
