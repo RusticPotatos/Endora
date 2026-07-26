@@ -1,5 +1,5 @@
-//! Direct reach into Home Assistant — the named per-integration adapter ADR 0038 called
-//! for, and the exact reach ADR 0042 grants.
+//! Direct reach into Home Assistant — the named per-integration adapter ADR 0054 called
+//! for, and the exact reach ADR 0054 grants.
 //!
 //! Everything Endora has done with this house so far has gone through the MCP surface
 //! Home Assistant offers, which is the **voice assistant** surface: sixteen Assist
@@ -29,7 +29,7 @@ pub struct Entity {
     /// Its state right now, for the reading.
     pub state: String,
     /// What sort of thing it is: its domain (`light`) and its device class where it has
-    /// one. The vocabulary of *kinds*, as opposed to names (ADR 0041).
+    /// one. The vocabulary of *kinds*, as opposed to names (ADR 0054).
     pub kinds: Vec<String>,
 }
 
@@ -37,7 +37,7 @@ pub struct Entity {
 pub struct HomeAssistant {
     base: String,
     token: String,
-    /// Whether the person has allowed Endora to write names back (ADR 0043). Seeing and
+    /// Whether the person has allowed Endora to write names back (ADR 0054). Seeing and
     /// acting are one grant; editing the service's own configuration is another, and it
     /// is off until deliberately turned on.
     may_write: bool,
@@ -156,7 +156,7 @@ impl HomeAssistant {
     }
 }
 
-/// What an alias write changed, kept so it can be put back (ADR 0043).
+/// What an alias write changed, kept so it can be put back (ADR 0054).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AliasWrite {
     /// The entity whose names were edited.
@@ -170,7 +170,7 @@ pub struct AliasWrite {
 impl HomeAssistant {
     /// Teaches Home Assistant that `alias` is another name for `entity`, so the service
     /// itself resolves it from then on — for every client, voice assistants included, and
-    /// not only inside Endora (ADR 0043).
+    /// not only inside Endora (ADR 0054).
     ///
     /// Strictly **additive**. Existing aliases are read first and preserved, the new one
     /// is appended, and the prior list is returned so the edit can be undone. A rename or
@@ -421,7 +421,7 @@ const SWITCHABLE: &[&str] = &[
 ///
 /// Data rather than a constant in the wiring: whoever registers the MCP server chooses
 /// its name, and a name hardcoded in Endora would be exactly the per-integration guessing
-/// ADR 0038 rules out. Defaults to the conventional name so nobody has to fill it in.
+/// ADR 0054 rules out. Defaults to the conventional name so nobody has to fill it in.
 #[must_use]
 pub fn paired_server(settings: &crate::infrastructure::CapabilitySettings) -> String {
     settings

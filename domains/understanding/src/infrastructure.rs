@@ -175,7 +175,7 @@ impl IntentionRepository for UnderstandingStore {
 
     fn active(&self) -> Result<Option<Intention>, RepositoryError> {
         let conn = self.db.lock()?;
-        // At most one is active (ADR 0036); if a bug ever produced two, the most
+        // At most one is active (ADR 0052); if a bug ever produced two, the most
         // recently moved wins, since `all_intentions` is ordered by that.
         Ok(all_intentions(&conn)?
             .into_iter()
@@ -292,7 +292,7 @@ fn all_outcomes(conn: &Connection) -> Result<Vec<Outcome>, RepositoryError> {
         let (id, capability, input, claim, observation, at_ms, belief, reaction, changed) =
             row.map_err(backend)?;
         // A reaction we cannot parse is corrupt, but an *absent* one is the normal case
-        // (ADR 0035 — the person is never asked), so only a present-and-unknown value is
+        // (ADR 0053 — the person is never asked), so only a present-and-unknown value is
         // an error.
         let reaction = reaction
             .map(|r| {
@@ -454,7 +454,7 @@ mod tests {
 
     #[test]
     fn only_the_active_intention_is_the_current_one() {
-        // ADR 0036's cursor-not-queue rule, from the reading side: finished intentions
+        // ADR 0052's cursor-not-queue rule, from the reading side: finished intentions
         // stay visible in `list` but never come back as something Endora is doing.
         let db = Db::open_in_memory().unwrap();
         migrate(&db).unwrap();
@@ -500,7 +500,7 @@ mod tests {
 
     #[test]
     fn an_outcome_round_trips_with_its_claim_and_observation_intact() {
-        // The point of the record (ADR 0035): a claim of success and an observation
+        // The point of the record (ADR 0053): a claim of success and an observation
         // that contradicts it must both survive storage, unreconciled.
         let db = Db::open_in_memory().unwrap();
         migrate(&db).unwrap();

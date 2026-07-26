@@ -7,7 +7,7 @@ authority; clients are thin and replaceable. This guide covers running the node
 exposing it to the open internet.
 
 > **Read this first.** The `0.x` HTTP API is **unauthenticated** by design (see
-> [SECURITY.md](../SECURITY.md) and [ADR 0009](adr/0009-node-served-ui-and-single-container.md)).
+> [SECURITY.md](../SECURITY.md) and [ADR 0050](adr/0050-the-shape-of-the-system.md)).
 > Anything that can reach the node's port can read and write everything. So the
 > whole security model here is **network reachability**: keep the node on a
 > trusted network (loopback or a private overlay), and if you ever expose it more
@@ -93,7 +93,7 @@ authentication.
    `ENDORA_ADDR=100.x.y.z:8787` (your Tailscale IP) — **not** `0.0.0.0`.
 3. On your phone (connected to the tailnet), open
    `http://<node-tailscale-name>:8787`. The console loads, and its live updates
-   (server-sent events, [ADR 0012](adr/0012-activity-feed-and-change-stream.md))
+   (server-sent events, [ADR 0050](adr/0050-the-shape-of-the-system.md))
    work over the overlay just as they do locally.
 
 This is the simplest secure setup and the one we recommend for personal use.

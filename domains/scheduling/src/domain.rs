@@ -8,11 +8,11 @@ use endora_kernel::ids::Timestamp;
 const QUIET_AFTER_ACTIVITY_MS: i64 = 60 * 60 * 1_000;
 
 /// The person's bounds on proactive **check-ins** — the butler reaching out on its
-/// own (ADR 0019 §heartbeat/check-ins, ADR 0031).
+/// own (ADR 0056 §heartbeat/check-ins, ADR 0056).
 ///
 /// This is a **budget, not a trigger**. It says how *often* the butler may speak
 /// uninvited; whether it has anything worth saying is the butler's judgement, made
-/// against what it understands (ADR 0031). The person owns the budget: whether it
+/// against what it understands (ADR 0056). The person owns the budget: whether it
 /// is on at all, and the minimum gap between outreaches.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CheckinSchedule {
@@ -95,7 +95,7 @@ impl BriefSchedule {
     }
 }
 
-/// The person's **nightly self-improvement loop** schedule (ADR 0024): while they
+/// The person's **nightly self-improvement loop** schedule (ADR 0051): while they
 /// sleep, the butler reviews the day and its understanding of them, reflects (forms
 /// and refines beliefs), and leaves a short overnight note — all within the
 /// *reversible band*, so it can research, draft, and learn but never send, spend, or

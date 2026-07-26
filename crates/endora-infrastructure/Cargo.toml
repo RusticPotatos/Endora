@@ -1,6 +1,6 @@
 [package]
 name = "endora-infrastructure"
-description = "Endora infrastructure layer: adapters implementing application ports, including SQLite-backed persistence (ADR 0004)."
+description = "Endora infrastructure layer: adapters implementing application ports, including SQLite-backed persistence (ADR 0050)."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -19,7 +19,7 @@ ureq = { version = "3.3", features = ["json", "socks-proxy"] }
 serde_json = "1.0.150"
 
 [dev-dependencies]
-# Repositories that moved to their bounded contexts (ADR 0026); the SqliteStore
+# Repositories that moved to their bounded contexts (ADR 0050); the SqliteStore
 # migration/export/config tests exercise them through the context stores over
 # the same shared connection.
 endora-capabilities = { path = "../../domains/capabilities" }

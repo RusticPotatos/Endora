@@ -26,7 +26,7 @@
 > ```
 
 Every named step in that diagram was deleted by
-[ADR 0029](../adr/0029-delete-the-goal-tracker.md). `Direction`, `Assumption`,
+[ADR 0052](../adr/0052-what-it-knows-about-you.md). `Direction`, `Assumption`,
 `Experiment`, `Observation`, `Reflection` and `ProposedProcessChange` no longer exist
 in the code, the protocol, or the UI.
 
@@ -72,7 +72,7 @@ verbatim from the current text.
 **Changed.** The loop names what exists. The first bullet makes explicit something
 already true in code but never stated constitutionally: Endora's *understanding* is
 formed autonomously and is **not** subject to per-item approval — that friction is
-what ADR 0020 §3 removed — while remaining correctable and impermanent.
+what ADR 0052 §3 removed — while remaining correctable and impermanent.
 
 That first bullet is the substantive change, and the one worth arguing about. It
 grants Endora standing authority over its own model of a person. Three existing
@@ -81,10 +81,10 @@ adopting:
 
 1. Every belief is visible and correctable (§6, and the Understanding view).
 2. Beliefs decay and expire without reinforcement
-   ([ADR 0032](../adr/0032-beliefs-decay-and-expire.md)), so a wrong belief has a
+   ([ADR 0052](../adr/0052-what-it-knows-about-you.md)), so a wrong belief has a
    bounded life even if the person never notices it.
 3. Belief quality is measured, not assumed
-   ([ADR 0030](../adr/0030-measuring-understanding.md)).
+   ([ADR 0055](../adr/0055-the-model-layer.md)).
 
 ## The options that were on the table
 
@@ -94,7 +94,7 @@ adopting:
    machinery without changing any protection, but leaves an unqualified "adaptation
    is proposed, not imposed" standing against every future autonomy step.
 3. **Reject the carve-out and change the code instead** — reintroduce per-item
-   approval for beliefs, undoing ADR 0020 §3.
+   approval for beliefs, undoing ADR 0052 §3.
 
 ## Why option 1 was taken
 
@@ -102,7 +102,7 @@ The decision turned on a distinction worth keeping in view for every future chan
 of this kind:
 
 - **What Endora may think** — its model of the person. Free-forming, bounded by
-  visibility, correctability, expiry (ADR 0032) and measurement (ADR 0030).
+  visibility, correctability, expiry (ADR 0052) and measurement (ADR 0055).
 - **What Endora may do** — actions in the world. Still gated by the reversibility
   bands, deterministic policy, and audit. **Untouched by this amendment.**
 

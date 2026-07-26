@@ -1,6 +1,6 @@
 //! # Endora application layer
 //!
-//! This crate is the thin **orchestration layer** (ADR 0026): it holds the
+//! This crate is the thin **orchestration layer** (ADR 0050): it holds the
 //! butler-turn contract and the use cases that compose several bounded contexts,
 //! and defines the abstractions (ports) that infrastructure implements. It
 //! depends inward on the context crates under `domains/` and the shared kernel,
@@ -20,15 +20,15 @@ pub use error::AppError;
 // The application layer re-exports the domain vocabulary of each context (models
 // + ids), so the adapter layers (infrastructure, the node) have one place to
 // import the types they translate to and from — the orchestration layer is the
-// surface above the domain (ADR 0026).
+// surface above the domain (ADR 0050).
 pub use endora_kernel::{
     AuditId, AutonomyLevel, BeliefId, DomainError, IntentionId, MessageId, OutcomeId, PreferenceId,
     Reversibility, Timestamp,
 };
-// The audit trail and event log live in the platform context now (ADR 0026);
+// The audit trail and event log live in the platform context now (ADR 0050);
 // re-exported so `endora_application::{AuditLog, EventLog, ActivityEvent}` hold.
 pub use endora_platform::{ActivityEvent, AuditLog, AuditRecord, EventLog};
-// The capabilities ports live in the capabilities context (ADR 0026); re-exported
+// The capabilities ports live in the capabilities context (ADR 0050); re-exported
 // so their `endora_application::…` paths are unchanged.
 pub use endora_capabilities::{
     AutonomyEnvelope, AutonomyEnvelopeRepository, ButlerModelConfig, ButlerModelConfigRepository,
@@ -36,15 +36,15 @@ pub use endora_capabilities::{
     CapabilityUse, DeepModel, DeepModelRepository, ModelSlot, ModelTuneSchedule,
     ModelTuneScheduleRepository, Sampling,
 };
-// The chat repository lives in the conversation context (ADR 0026); re-exported
+// The chat repository lives in the conversation context (ADR 0050); re-exported
 // so `endora_application::ChatRepository` is unchanged.
 pub use endora_conversation::{ChatMessage, ChatRepository, MessageRole};
-// The schedules live in the scheduling context (ADR 0026); re-exported so their
+// The schedules live in the scheduling context (ADR 0050); re-exported so their
 // `endora_application::…` paths are unchanged.
 pub use endora_scheduling::{
     BriefSchedule, BriefScheduleRepository, CheckinRepository, CheckinSchedule,
 };
-// Belief/preference repositories live in the understanding context (ADR 0026);
+// Belief/preference repositories live in the understanding context (ADR 0050);
 // re-exported so their `endora_application::…` paths are unchanged.
 pub use endora_understanding::{
     Belief, BeliefKind, BeliefRepository, BeliefStatus, Confidence, Intention, IntentionRepository,

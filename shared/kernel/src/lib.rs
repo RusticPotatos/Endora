@@ -5,7 +5,7 @@
 //! ports through which time and identity enter the pure layers, and
 //! the shared autonomy vocabulary: [`AutonomyLevel`] (how much standing authority
 //! a component has) and [`Reversibility`] with its [`Decision`] (how undoable an
-//! action is, and what policy does with it — ADR 0024). These are the vocabulary
+//! action is, and what policy does with it — ADR 0051). These are the vocabulary
 //! that two contexts — direction's policy and capabilities' envelope — genuinely
 //! share.
 //!

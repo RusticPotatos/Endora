@@ -1,9 +1,9 @@
 //! Reversibility bands — the primary axis of the autonomy envelope.
 //!
 //! Endora's constitution states that models *propose* and deterministic policy
-//! *authorizes* (ADR 0005). [`AutonomyLevel`](crate::AutonomyLevel) says how much
+//! *authorizes* (ADR 0051). [`AutonomyLevel`](crate::AutonomyLevel) says how much
 //! standing authority a component is granted; this module says how *undoable* a
-//! given action is — the axis ADR 0024 makes primary. The person's rule is
+//! given action is — the axis ADR 0051 makes primary. The person's rule is
 //! **experiment freely, never do the un-undoable**, so an action is graded by
 //! whether its effect can be taken back, and that grade maps to a [`Decision`]:
 //! act on its own, ask first, or refuse outright.
@@ -11,13 +11,13 @@
 //! Like [`AutonomyLevel`](crate::AutonomyLevel), these are plain, deterministic
 //! value types — no model, transport, or policy engine is referenced here. A band
 //! comes from a capability's *declared metadata*, never a model's self-report
-//! (ADR 0024). The Policy & Consent and Capabilities contexts consume these to
+//! (ADR 0051). The Policy & Consent and Capabilities contexts consume these to
 //! decide what may run without a human.
 
 use core::cmp::Ordering;
 
 /// How undoable an action's effect is — the primary axis of the autonomy
-/// envelope (ADR 0024).
+/// envelope (ADR 0051).
 ///
 /// Bands are ordered from least to most consequential; a more consequential band
 /// is never treated more permissively than a less consequential one. The band is
@@ -75,7 +75,7 @@ impl Reversibility {
     }
 
     /// The **default posture** for this band, independent of the person's
-    /// envelope (ADR 0024): experiment freely, confirm outward-but-reversible
+    /// envelope (ADR 0051): experiment freely, confirm outward-but-reversible
     /// effects, and block the un-undoable.
     ///
     /// The envelope may *widen* a band's disposition (e.g. auto-approve outward
@@ -161,7 +161,7 @@ mod tests {
 
     #[test]
     fn the_default_band_is_the_un_undoable_so_unknowns_are_blocked() {
-        // Deny-by-default (ADR 0024): anything unclassifiable is treated as
+        // Deny-by-default (ADR 0051): anything unclassifiable is treated as
         // irreversible, which blocks.
         assert_eq!(Reversibility::default(), Irreversible);
         assert_eq!(Reversibility::default().default_decision(), Decision::Block);
@@ -180,7 +180,7 @@ mod tests {
 
     #[test]
     fn irreversible_is_blocked_not_merely_confirmed() {
-        // The distinguishing invariant of ADR 0024: the un-undoable is refused
+        // The distinguishing invariant of ADR 0051: the un-undoable is refused
         // outright, not offered for a (mistakable) confirmation.
         assert_ne!(Irreversible.default_decision(), Decision::Confirm);
         assert_eq!(Irreversible.default_decision(), Decision::Block);

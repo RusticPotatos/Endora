@@ -7,7 +7,7 @@
 //!   and takes no action, rather than performing insight it does not have. The baseline
 //!   the model layer scores candidates against.
 //! - [`LlmButler`] — model-backed (a local OpenAI-compatible endpoint). It drives the
-//!   single tool-calling turn (ADR 0028), answering from real tool results. If the model
+//!   single tool-calling turn (ADR 0053), answering from real tool results. If the model
 //!   is unavailable or returns something unusable it answers with a plain, honest
 //!   *degraded* reply (see [`degraded_reply`]) so the conversation never breaks —
 //!   crucially forming **no beliefs**, so a transient model failure never writes to
@@ -107,7 +107,7 @@ impl LlmButler {
     }
 
     /// Creates a model-backed butler with an explicit API key and sampling
-    /// parameters (the runtime-configurable path — ADR 0027).
+    /// parameters (the runtime-configurable path — ADR 0055).
     #[must_use]
     pub fn with_config(
         base_url: String,
@@ -360,7 +360,7 @@ impl Butler for LlmButler {
         preferences: &[Preference],
         context: &ButlerContext,
     ) -> Result<ButlerReply, ProposalError> {
-        // The real single tool-calling conversation (ADR 0028): tool results are in
+        // The real single tool-calling conversation (ADR 0053): tool results are in
         // the messages, so the model answers grounded in them. Degrade (no proposals)
         // rather than fail the turn if the model is unreachable.
         let body = build_turn_request(
@@ -423,7 +423,7 @@ impl Butler for LlmButler {
     }
 }
 
-/// A two-model butler (the ADR 0027 mixture experiment): a routing **specialist**
+/// A two-model butler (the ADR 0055 mixture experiment): a routing **specialist**
 /// decides which skill to use, and a **generalist** writes prose. The split follows
 /// whether the pass has tools on the table at all — so a small tool-tuned model can
 /// do the routing it excels at while a general model handles the prose it excels at,
@@ -497,7 +497,7 @@ impl Butler for MixtureButler {
 }
 
 /// A butler whose model configuration is editable at runtime from the console
-/// (ADR 0027). Each turn it reads the stored [`ButlerModelConfig`]; when one is
+/// (ADR 0055). Each turn it reads the stored [`ButlerModelConfig`]; when one is
 /// set it runs that — a single model or the router+synth mixture, each slot with
 /// its own sampling and a shared bearer key — caching the built brain and
 /// rebuilding only when the config changes. When nothing is stored (or the store
@@ -571,7 +571,7 @@ fn slot_butler(config: &ButlerModelConfig, slot: &ModelSlot) -> LlmButler {
 
 /// Builds the brain a [`ButlerModelConfig`] describes — the router+synth mixture
 /// or a single model. Shared by [`ConfigurableButler`] and the model layer (which
-/// builds a candidate's brain to score it, ADR 0027).
+/// builds a candidate's brain to score it, ADR 0055).
 #[must_use]
 pub fn butler_from_config(config: &ButlerModelConfig) -> Arc<dyn Butler + Send + Sync> {
     if config.mixture {
@@ -622,7 +622,7 @@ impl Butler for ConfigurableButler {
 /// The persona and hard rules — candid, never sycophantic, honest about what it
 /// did and didn't do.
 ///
-/// Central rule (see [ADR 0017]): Endora's internal vocabulary is its own, not
+/// Central rule (see [ADR 0056]): Endora's internal vocabulary is its own, not
 /// conversational. The butler talks like a real person; the JSON envelope below is
 /// the machine layer.
 const BUTLER_SYSTEM_PROMPT: &str = "You are Endora: a candid, warm personal \
@@ -758,7 +758,7 @@ pub fn ask_deep_model(
 /// — the next rung of the capability ladder. The butler turn escalates to it only
 /// when the local model comes up empty. Before the question leaves the device it
 /// applies the **egress guard** (withholds apparent secrets) and **PII
-/// minimization** (ADR 0023), and it returns prose only — never an action.
+/// minimization** (ADR 0051), and it returns prose only — never an action.
 pub struct DeepModelAsker {
     url: String,
     model: String,
@@ -783,7 +783,7 @@ impl endora_application::DeepAsker for DeepModelAsker {
         if self.url.is_empty() || self.model.is_empty() {
             return None; // no deeper rung configured — stay on the local answer
         }
-        // Never send an apparent secret off the device (ADR 0023). Fail closed.
+        // Never send an apparent secret off the device (ADR 0051). Fail closed.
         if endora_capabilities::scan_outbound_secret(question).is_some() {
             return None;
         }
@@ -988,7 +988,7 @@ fn native_tools(context: &ButlerContext) -> Vec<Value> {
         .collect()
 }
 
-/// Builds a request for the **single tool-calling conversation** (ADR 0028): the same
+/// Builds a request for the **single tool-calling conversation** (ADR 0053): the same
 /// system prompt + tools as [`build_butler_request`], but the messages are the real
 /// conversation — user turns, assistant turns carrying `tool_calls`, and `role:tool`
 /// results — so the model answers grounded in what the tools actually returned.
@@ -1090,7 +1090,7 @@ fn build_butler_request(
             system.push_str(&format!("\n- {u}"));
         }
     }
-    // What things are actually called here (ADR 0039). Endora asked after watching the
+    // What things are actually called here (ADR 0054). Endora asked after watching the
     // same target fail repeatedly, and this is the person's answer — grounding, not an
     // instruction, so it sits with what the butler knows rather than what it must do.
     if !context.target_aliases.is_empty() {
@@ -1099,7 +1099,7 @@ fn build_butler_request(
             system.push_str(&format!("\n- {alias}"));
         }
     }
-    // How its own actions have actually landed (ADR 0035). Only skills the person has
+    // How its own actions have actually landed (ADR 0053). Only skills the person has
     // reacted to appear, so this is short and every line carries a real judgement.
     if !context.track_record.is_empty() {
         system.push_str(
@@ -1196,7 +1196,7 @@ fn parse_butler_response(json: &Value) -> Result<ButlerReply, ProposalError> {
 fn parse_model_reply(json: &Value, context: &ButlerContext) -> Result<ButlerReply, ProposalError> {
     let message = &json["choices"][0]["message"];
     if let Some(calls) = message["tool_calls"].as_array().filter(|c| !c.is_empty()) {
-        // Capture EVERY call (with its id) for the single-conversation loop (ADR 0028),
+        // Capture EVERY call (with its id) for the single-conversation loop (ADR 0053),
         // and keep the first as `capability_use` for the current two-pass loop.
         let tool_calls: Vec<endora_application::ToolCall> = calls
             .iter()

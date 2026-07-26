@@ -2,7 +2,7 @@
 
 > Describes the shape of the system and the boundaries it enforces. Implementation
 > grows one vertical slice at a time. Last reconciled with the code 2026-07-25
-> (ADR 0029).
+> (ADR 0052).
 
 ## Overview
 
@@ -37,7 +37,7 @@ the node only through a stable, versioned protocol.
 
 ## Workspace layout — Responsibility-Oriented Clean Architecture (ROCA)
 
-The code is organized **by responsibility**, not by technical layer (ADR 0026).
+The code is organized **by responsibility**, not by technical layer (ADR 0050).
 Each bounded context is its own crate under `domains/`, owning its full
 Clean-Architecture stack; cross-cutting primitives live in `shared/`; the
 composition roots live in `app/`.
@@ -85,7 +85,7 @@ The **Domain layer must not depend on**: HTTP, databases, AI vendors, UI
 frameworks, OS integrations, or model-specific concepts. This is enforced today:
 each context's `domain` module imports only `shared/kernel`, which itself has zero
 dependencies, and higher layers depend inward. See
-[ADR&nbsp;0001](adr/0001-modular-monolith.md).
+[ADR&nbsp;0001](adr/0050-the-shape-of-the-system.md).
 
 ## The deterministic policy boundary around probabilistic models
 
@@ -108,7 +108,7 @@ AI models are reasoning components, not authorities. Around every model sits a
 Models never call privileged capabilities directly. A model *proposes*;
 deterministic policy code decides; capabilities execute only what policy
 authorized. The language model is never the final enforcement boundary. See
-[ADR&nbsp;0005](adr/0005-models-propose-policy-authorizes.md) and
+[ADR&nbsp;0005](adr/0051-where-the-boundary-is.md) and
 [constitution §3](constitution.md).
 
 ## Stable, versioned application protocol
@@ -117,7 +117,7 @@ authorized. The language model is never the final enforcement boundary. See
   major version is a hard requirement so clients can evolve independently.
 - Transport is **HTTP + JSON**, described by **OpenAPI**, with **server-sent
   events** for simple live updates. See
-  [ADR&nbsp;0003](adr/0003-http-json-openapi-protocol.md).
+  [ADR&nbsp;0003](adr/0050-the-shape-of-the-system.md).
 - **MCP is not the application protocol.** MCP may *later* expose selected Endora
   capabilities to external AI systems, but Endora's own clients speak the
   versioned HTTP/JSON protocol.
@@ -135,7 +135,7 @@ authorized. The language model is never the final enforcement boundary. See
 Persistence starts with **SQLite** — a single-file, local, zero-operations
 store that fits a local-first platform. Storage sits in the infrastructure layer
 behind application-defined ports, so the engine can change later without
-touching the domain. See [ADR&nbsp;0004](adr/0004-sqlite-first.md).
+touching the domain. See [ADR&nbsp;0004](adr/0050-the-shape-of-the-system.md).
 
 ## Why microservices are deliberately deferred
 
@@ -145,7 +145,7 @@ per-service deploys — which is the wrong trade for a local-first app on consum
 hardware with, initially, one primary developer audience. Clean bounded contexts
 keep the door open: if a genuine need to extract a service appears, the seams
 already exist. Until then, microservices would be ceremony. See
-[ADR&nbsp;0001](adr/0001-modular-monolith.md).
+[ADR&nbsp;0001](adr/0050-the-shape-of-the-system.md).
 
 ## Current code map
 
@@ -169,5 +169,5 @@ crates/
 
 The **Identity & Values**, **Direction & Targets**, **Experiments & Learning** and
 **Reflection** contexts were deleted in
-[ADR 0029](adr/0029-delete-the-goal-tracker.md); understanding is now the only model
+[ADR 0052](adr/0052-what-it-knows-about-you.md); understanding is now the only model
 Endora keeps of a person. See [domain-map.md](domain-map.md).

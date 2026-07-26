@@ -1,7 +1,7 @@
 # Endora Domain Map
 
 > What each bounded context owns. Rewritten 2026-07-25 after
-> [ADR 0029](adr/0029-delete-the-goal-tracker.md), which deleted the Identity &
+> [ADR 0052](adr/0052-what-it-knows-about-you.md), which deleted the Identity &
 > Values, Direction & Targets, Experiments & Learning, and Reflection contexts —
 > understanding is now the only model Endora keeps of a person.
 
@@ -17,7 +17,7 @@ the person**: beliefs about what they are reaching for, what they value, their
 patterns, motivations, frustrations, stressors, and relationships. Every belief
 carries **evidence, a confidence, timestamps**, and can be **affirmed, corrected, or
 expire** — nothing is held permanently, and nothing is hidden from the person
-(ADR 0020).
+(ADR 0052).
 
 Also owns **preferences**: things the person has stated outright, which the butler
 honours rather than re-asks.
@@ -29,7 +29,7 @@ not gated by per-item confirmation. The person reviews and corrects.
 
 `domains/conversation` — the chat with the butler: messages, their roles and
 ordering, and the running summary that keeps a long conversation's prompt bounded
-without losing the day's thread (ADR 0028).
+without losing the day's thread (ADR 0053).
 
 ## Capabilities
 

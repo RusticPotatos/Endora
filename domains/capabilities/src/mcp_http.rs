@@ -1,4 +1,4 @@
-//! A **synchronous** HTTP MCP client (ADR 0021) that speaks either transport.
+//! A **synchronous** HTTP MCP client (ADR 0054) that speaks either transport.
 //!
 //! Connects to a **networked** server — a sidecar container, a Docker MCP Gateway, or
 //! Home Assistant's MCP integration — the "connect to a server we don't host" path,
@@ -32,7 +32,7 @@ use crate::mcp_stdio::{text_from_call_result, tools_from_result};
 /// The MCP protocol revision this client speaks.
 const PROTOCOL_VERSION: &str = "2024-11-05";
 /// How long to wait for a reply (a networked server; a gateway may proxy to a slow
-/// upstream, but a turn must not hang indefinitely — ADR 0021 health).
+/// upstream, but a turn must not hang indefinitely — ADR 0054 health).
 const TIMEOUT: Duration = Duration::from_secs(30);
 /// Cap on a single response body.
 const MAX_BYTES: u64 = 4 * 1024 * 1024;
@@ -44,7 +44,7 @@ struct SseConn {
     rx: Mutex<Receiver<(String, String)>>,
 }
 
-/// A connected HTTP MCP server (ADR 0021). `sse` present ⇒ HTTP+SSE transport;
+/// A connected HTTP MCP server (ADR 0054). `sse` present ⇒ HTTP+SSE transport;
 /// absent ⇒ streamable HTTP.
 pub struct HttpMcpClient {
     agent: ureq::Agent,
