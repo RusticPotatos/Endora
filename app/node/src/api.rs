@@ -337,6 +337,10 @@ async fn search_mcp_catalog(Query(q): Query<CatalogQuery>) -> Json<serde_json::V
             "url": e.url,
             "docs": e.docs,
             "source": "registry",
+            // When the registry last recorded a change. It publishes no popularity
+            // signal — no downloads, no stars — so this is the only thing that
+            // distinguishes a maintained server from an abandoned one.
+            "updated": e.updated,
             "fields": fields,
         }));
     }

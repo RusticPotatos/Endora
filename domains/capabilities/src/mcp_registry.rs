@@ -37,6 +37,11 @@ pub struct RegistryEntry {
     /// Environment variables the package says it needs — offered as blank
     /// `KEY=` lines for the person to fill; values never come from the registry.
     pub env_keys: Vec<String>,
+    /// When the registry last saw an update, as the ISO date it publishes (may be
+    /// empty). The registry exposes no download count or popularity of any kind, so
+    /// recency is the only ordering signal available — and a date at least says whether
+    /// a server has been touched this year.
+    pub updated: String,
 }
 
 /// How many distinct servers to gather before stopping early.
@@ -86,6 +91,11 @@ pub fn search(base_url: &str, q: &str) -> Option<Vec<RegistryEntry>> {
             }
         }
     }
+    // Newest first. The registry publishes no popularity signal at all — no downloads,
+    // no stars — so recency is the only ordering available, and a server nobody has
+    // touched in two years is the one worth scrolling past. Entries with no date sort
+    // last rather than first, so a missing timestamp never masquerades as fresh.
+    out.sort_by(|a, b| b.updated.cmp(&a.updated));
     any_ok.then_some(out)
 }
 
@@ -140,6 +150,25 @@ fn parse(body: &Value) -> Option<Vec<RegistryEntry>> {
 /// Reads one registry item. The official registry nests the payload under `server`;
 /// older/other shapes put it at the top level, so we accept either. Field names are
 /// read in both camelCase and snake_case.
+/// When the registry last recorded a change, from the official `_meta` block.
+///
+/// The registry publishes no download count, star count or popularity of any kind —
+/// only these timestamps — so recency is the only ordering signal there is. Returned as
+/// the bare `YYYY-MM-DD`, which is all a person scanning a list needs.
+fn updated_at(item: &Value) -> String {
+    item.get("_meta")
+        .and_then(|m| m.get("io.modelcontextprotocol.registry/official"))
+        .and_then(|o| {
+            o.get("updatedAt")
+                .or_else(|| o.get("publishedAt"))
+                .and_then(Value::as_str)
+        })
+        .unwrap_or("")
+        .chars()
+        .take(10)
+        .collect()
+}
+
 fn entry(item: &Value) -> Option<RegistryEntry> {
     let s = item.get("server").unwrap_or(item);
     let name = s
@@ -178,6 +207,7 @@ fn entry(item: &Value) -> Option<RegistryEntry> {
             command: String::new(),
             args: Vec::new(),
             env_keys: Vec::new(),
+            updated: updated_at(item),
         });
     }
 
@@ -245,6 +275,7 @@ fn entry(item: &Value) -> Option<RegistryEntry> {
         command,
         args,
         env_keys,
+        updated: updated_at(item),
     })
 }
 
