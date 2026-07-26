@@ -59,10 +59,10 @@ back exactly. This is what [0039](0039-capability-repair-proposals.md) meant by 
 reversibility story", and the reason the band is `OutwardReversible` rather than
 `Irreversible`: it reaches outside Endora, and it can be taken back.
 
-**Limit worth naming:** the undo *value* is captured and returned, but there is no stored
-history of writes and no button that replays them. Restoring today means calling the
-function with a value from the record. A written-down undo log is the next slice, not this
-one.
+**Limit named here, and closed by [0045](0045-an-undo-log-for-what-it-changed.md):** this
+ADR captured the undo *value* and stored nothing, so it existed for the length of one
+function call. A prior value nobody keeps is not a reversibility story but a claim about
+one. Writes are now logged, shown, and individually reversible.
 
 ### Off until turned on
 

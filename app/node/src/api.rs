@@ -771,6 +771,8 @@ pub fn app(state: AppState) -> Router {
         .route("/v1/repairs", get(list_repairs))
         .route("/v1/aliases", get(list_aliases).post(set_alias))
         .route("/v1/aliases/upstream", post(push_aliases_upstream))
+        .route("/v1/config-writes", get(list_config_writes))
+        .route("/v1/config-writes/{id}/undo", post(undo_config_write))
         .route("/v1/outcomes/{id}/reaction", post(react_to_outcome))
         // Read and drop only. There is deliberately NO create or edit route: Endora
         // forms its own intentions, and the person's whole side of the interface is
@@ -1755,6 +1757,7 @@ async fn drop_intention(
 }
 
 /// How many outcomes the console shows — recent history, not an archive to manage.
+const CONFIG_WRITES_SHOWN: usize = 50;
 const OUTCOMES_SHOWN: usize = 30;
 
 fn outcome_json(o: &endora_application::Outcome) -> serde_json::Value {
@@ -1816,6 +1819,84 @@ async fn set_alias(
     Ok(Json(
         json!({ "server": alias.server, "said": alias.said, "means": alias.means }),
     ))
+}
+
+/// Every change Endora has made to a service's own configuration (ADR 0045).
+///
+/// The memory right to *see* what it changed about the world, next to the right to see
+/// what it believes and what it did.
+async fn list_config_writes(
+    State(state): State<AppState>,
+) -> Result<Json<Vec<serde_json::Value>>, ApiError> {
+    let config = state.config.clone();
+    let writes = blocking(move || {
+        endora_capabilities::ConfigWriteLog::writes(config.as_ref(), CONFIG_WRITES_SHOWN)
+            .map_err(AppError::Repository)
+    })
+    .await?;
+    Ok(Json(
+        writes
+            .iter()
+            .map(|w| {
+                json!({
+                    "id": w.id.to_string(),
+                    "at_ms": w.at_ms,
+                    "server": w.server,
+                    "target": w.target,
+                    "added": w.added,
+                    "was": w.was,
+                    "undone": w.undone,
+                    "what": w.describe(),
+                })
+            })
+            .collect(),
+    ))
+}
+
+/// Puts one change back exactly as it was (ADR 0045).
+///
+/// The row is **kept** and marked, never deleted: what Endora changed about someone's
+/// house is not something it should be able to make disappear.
+async fn undo_config_write(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let wanted: u128 = id.parse().map_err(|_| {
+        ApiError(AppError::BadRequest {
+            message: "that is not a change id".to_owned(),
+        })
+    })?;
+    let config = state.config.clone();
+    let said = blocking(move || {
+        let Some(write) = endora_capabilities::ConfigWriteLog::write(config.as_ref(), wanted)
+            .map_err(AppError::Repository)?
+        else {
+            return Err(AppError::NotFound { entity: "change" });
+        };
+        if write.undone {
+            return Ok("that change was already put back".to_owned());
+        }
+        let channels = native_channels(config.as_ref());
+        let Some((_, channel)) = channels.iter().find(|(name, _)| *name == write.server) else {
+            return Err(AppError::BadRequest {
+                message: format!("Endora has no direct reach into {} any more", write.server),
+            });
+        };
+        match channel.undo(&write) {
+            Some(Ok(said)) => {
+                endora_capabilities::ConfigWriteLog::mark_undone(config.as_ref(), wanted)
+                    .map_err(AppError::Repository)?;
+                Ok(said)
+            }
+            Some(Err(why)) => Err(AppError::BadRequest { message: why }),
+            None => Err(AppError::BadRequest {
+                message: "Endora is not allowed to write names into this service".to_owned(),
+            }),
+        }
+    })
+    .await?;
+    let _ = state.changes.send(());
+    Ok(Json(json!({ "ok": true, "undone": said })))
 }
 
 /// Turns off capabilities Endora has established do not work (ADR 0044).
@@ -1883,6 +1964,8 @@ async fn push_aliases_upstream(
     State(state): State<AppState>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let config = state.config.clone();
+    let ids = state.ids.clone();
+    let clock = state.clock.clone();
     let taught = blocking(move || {
         let channels = native_channels(config.as_ref());
         let aliases = endora_capabilities::TargetAliasRepository::aliases(config.as_ref())
@@ -1894,7 +1977,33 @@ async fn push_aliases_upstream(
             };
             let result = channel.teach(&alias.means, &alias.said);
             said.push(match result {
-                Some(Ok(what)) => json!({ "alias": alias.said, "of": alias.means, "done": what }),
+                Some(Ok(mut write)) => {
+                    // The change is only real once it is written down: the prior value is
+                    // the undo, and holding it for the length of a function call is not a
+                    // reversibility story (ADR 0045).
+                    let already = write
+                        .was
+                        .iter()
+                        .any(|a| a.eq_ignore_ascii_case(&write.added));
+                    write.id = endora_application::IdSource::new_id(ids.as_ref());
+                    write.at_ms = clock.now().unix_millis();
+                    write.server = alias.server.clone();
+                    let described = write.describe();
+                    if !already {
+                        endora_capabilities::ConfigWriteLog::record(config.as_ref(), &write)
+                            .map_err(AppError::Repository)?;
+                    }
+                    json!({
+                        "alias": alias.said,
+                        "of": alias.means,
+                        "done": if already {
+                            format!("{} already answers to '{}'", write.target, write.added)
+                        } else {
+                            described
+                        },
+                        "id": if already { String::new() } else { write.id.to_string() },
+                    })
+                }
                 Some(Err(why)) => {
                     json!({ "alias": alias.said, "of": alias.means, "failed": why })
                 }

@@ -7,8 +7,8 @@ use rusqlite::{OptionalExtension, params};
 
 use crate::application::{
     AutonomyEnvelope, AutonomyEnvelopeRepository, ButlerModelConfig, ButlerModelConfigRepository,
-    CapabilityConfigRepository, CapabilitySettingsRepository, DeepModel, DeepModelRepository,
-    McpServer, McpServerRegistry, McpTransport, ModelSlot, ModelTuneSchedule,
+    CapabilityConfigRepository, CapabilitySettingsRepository, ConfigWrite, DeepModel,
+    DeepModelRepository, McpServer, McpServerRegistry, McpTransport, ModelSlot, ModelTuneSchedule,
     ModelTuneScheduleRepository, Sampling, TargetAlias, TargetAliasRepository,
 };
 
@@ -74,6 +74,15 @@ pub fn migrate(db: &Db) -> Result<(), RepositoryError> {
                 said   TEXT NOT NULL,
                 means  TEXT NOT NULL,
                 PRIMARY KEY (server, said)
+            ) STRICT;
+            CREATE TABLE IF NOT EXISTS config_writes (
+                id      TEXT PRIMARY KEY,
+                at_ms   INTEGER NOT NULL,
+                server  TEXT NOT NULL,
+                target  TEXT NOT NULL,
+                added   TEXT NOT NULL,
+                was     TEXT NOT NULL,
+                undone  INTEGER NOT NULL DEFAULT 0
             ) STRICT;
             CREATE TABLE IF NOT EXISTS mcp_servers (
                 name    TEXT PRIMARY KEY,
@@ -439,6 +448,85 @@ impl CapabilityConfigRepository for ConfigStore {
                 "INSERT INTO capability_config (id, enabled, confirm) VALUES (?1, 1, ?2) \
                  ON CONFLICT(id) DO UPDATE SET confirm = excluded.confirm",
                 params![id, i64::from(confirm)],
+            )
+            .map_err(backend)?;
+        Ok(())
+    }
+}
+
+impl crate::application::ConfigWriteLog for ConfigStore {
+    fn record(&self, write: &ConfigWrite) -> Result<(), RepositoryError> {
+        // `was` is stored as JSON: it is a list, and flattening it to a delimited string
+        // would corrupt any name containing the delimiter — which is exactly the sort of
+        // detail an undo cannot afford to get wrong.
+        let was = serde_json::to_string(&write.was).map_err(|e| corrupt(e.to_string()))?;
+        self.db
+            .lock()?
+            .execute(
+                "INSERT OR REPLACE INTO config_writes \
+                 (id, at_ms, server, target, added, was, undone) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![
+                    write.id.to_string(),
+                    write.at_ms,
+                    write.server,
+                    write.target,
+                    write.added,
+                    was,
+                    i64::from(write.undone),
+                ],
+            )
+            .map_err(backend)?;
+        Ok(())
+    }
+
+    fn writes(&self, limit: usize) -> Result<Vec<ConfigWrite>, RepositoryError> {
+        let conn = self.db.lock()?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, at_ms, server, target, added, was, undone FROM config_writes \
+                 ORDER BY at_ms DESC LIMIT ?1",
+            )
+            .map_err(backend)?;
+        let rows = stmt
+            .query_map(params![i64::try_from(limit).unwrap_or(i64::MAX)], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, i64>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, String>(3)?,
+                    r.get::<_, String>(4)?,
+                    r.get::<_, String>(5)?,
+                    r.get::<_, i64>(6)?,
+                ))
+            })
+            .map_err(backend)?;
+        let mut out = Vec::new();
+        for row in rows {
+            let (id, at_ms, server, target, added, was, undone) = row.map_err(backend)?;
+            out.push(ConfigWrite {
+                id: id.parse().map_err(|_| corrupt("unreadable id"))?,
+                at_ms,
+                server,
+                target,
+                added,
+                was: serde_json::from_str(&was).unwrap_or_default(),
+                undone: undone != 0,
+            });
+        }
+        Ok(out)
+    }
+
+    fn write(&self, id: u128) -> Result<Option<ConfigWrite>, RepositoryError> {
+        Ok(self.writes(usize::MAX)?.into_iter().find(|w| w.id == id))
+    }
+
+    fn mark_undone(&self, id: u128) -> Result<(), RepositoryError> {
+        self.db
+            .lock()?
+            .execute(
+                "UPDATE config_writes SET undone = 1 WHERE id = ?1",
+                params![id.to_string()],
             )
             .map_err(backend)?;
         Ok(())
@@ -862,5 +950,94 @@ mod tests {
             store.confirm_overrides().unwrap(),
             vec![("weather".to_owned(), false)]
         );
+    }
+
+    /// A unique file path under the system temp directory, so a store can be closed and
+    /// reopened the way a restart would.
+    fn temp_db_path(name: &str) -> std::path::PathBuf {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("endora-{name}-{unique}.db"))
+    }
+
+    fn store_at(path: &std::path::Path) -> ConfigStore {
+        let db = Db::open(path.to_str().unwrap()).unwrap();
+        migrate(&db).unwrap();
+        ConfigStore::new(db)
+    }
+
+    #[test]
+    fn a_change_and_its_undo_survive_a_restart() {
+        // The whole point of ADR 0045. ADR 0043 captured the prior value and dropped it
+        // on the floor, so the undo existed for the length of one function call.
+        use crate::application::{ConfigWrite, ConfigWriteLog};
+        let path = temp_db_path("restart");
+        let write = ConfigWrite {
+            id: 42,
+            at_ms: 1_700_000_000_000,
+            server: "home-assistant".to_owned(),
+            target: "light.kitchen_table".to_owned(),
+            added: "table".to_owned(),
+            was: vec!["kitchen table light".to_owned()],
+            undone: false,
+        };
+        store_at(&path).record(&write).unwrap();
+        // A second store over the same file, the way it would be after a restart.
+        let found = store_at(&path)
+            .write(42)
+            .unwrap()
+            .expect("the change was not kept");
+        assert_eq!(found, write, "the record came back different");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn undoing_marks_the_change_and_never_deletes_it() {
+        // What Endora changed about someone's house is not something it should be able to
+        // make disappear.
+        use crate::application::{ConfigWrite, ConfigWriteLog};
+        let path = temp_db_path("undo");
+        let store = store_at(&path);
+        store
+            .record(&ConfigWrite {
+                id: 7,
+                at_ms: 1,
+                server: "home-assistant".to_owned(),
+                target: "light.x".to_owned(),
+                added: "lamp".to_owned(),
+                was: Vec::new(),
+                undone: false,
+            })
+            .unwrap();
+        store.mark_undone(7).unwrap();
+        let found = store.write(7).unwrap().expect("the row was deleted");
+        assert!(found.undone, "the change was not marked");
+        assert_eq!(store.writes(10).unwrap().len(), 1, "history lost a row");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn a_name_containing_a_comma_comes_back_whole() {
+        // `was` is a list, and flattening it to a delimited string would corrupt any name
+        // containing the delimiter — exactly what an undo cannot afford to get wrong.
+        use crate::application::{ConfigWrite, ConfigWriteLog};
+        let path = temp_db_path("commas");
+        let store = store_at(&path);
+        let awkward = vec!["lamp, tall".to_owned(), "reading \"light\"".to_owned()];
+        store
+            .record(&ConfigWrite {
+                id: 9,
+                at_ms: 1,
+                server: "s".to_owned(),
+                target: "light.x".to_owned(),
+                added: "new".to_owned(),
+                was: awkward.clone(),
+                undone: false,
+            })
+            .unwrap();
+        assert_eq!(store.write(9).unwrap().unwrap().was, awkward);
+        let _ = std::fs::remove_file(&path);
     }
 }

@@ -399,7 +399,7 @@ impl crate::infrastructure::NativeChannel for HomeAssistant {
         Some(self.call_service(domain, service, entity))
     }
 
-    fn teach(&self, name: &str, alias: &str) -> Option<Result<String, String>> {
+    fn teach(&self, name: &str, alias: &str) -> Option<Result<crate::domain::ConfigWrite, String>> {
         if !self.may_write {
             return None;
         }
@@ -409,21 +409,34 @@ impl crate::infrastructure::NativeChannel for HomeAssistant {
                 .find(|e| e.name.eq_ignore_ascii_case(name.trim()))?,
             Err(e) => return Some(Err(e)),
         };
+        // Already knowing the name is not a change, so it is not logged as one — an undo
+        // log full of no-ops is a log nobody reads.
         Some(self.add_alias(&entity.id, alias).map(|write| {
-            if write.was.iter().any(|a| a.eq_ignore_ascii_case(alias)) {
-                format!("{} already answers to '{alias}'.", write.entity)
-            } else {
-                format!(
-                    "Home Assistant now knows {} as '{alias}' (it was: {}).",
-                    write.entity,
-                    if write.was.is_empty() {
-                        "no other names".to_owned()
-                    } else {
-                        write.was.join(", ")
-                    }
-                )
+            crate::domain::ConfigWrite {
+                id: 0, // the caller stamps identity and time; the adapter knows neither
+                at_ms: 0,
+                server: String::new(),
+                target: write.entity,
+                added: write.added,
+                was: write.was,
+                undone: false,
             }
         }))
+    }
+
+    fn undo(&self, write: &crate::domain::ConfigWrite) -> Option<Result<String, String>> {
+        if !self.may_write {
+            return None;
+        }
+        let restore = AliasWrite {
+            entity: write.target.clone(),
+            added: write.added.clone(),
+            was: write.was.clone(),
+        };
+        Some(
+            self.restore_aliases(&restore)
+                .map(|()| format!("{} no longer answers to '{}'.", write.target, write.added)),
+        )
     }
 }
 
