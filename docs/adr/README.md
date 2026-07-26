@@ -81,3 +81,4 @@ of an existing record and take the next number.
 | [0045](0045-an-undo-log-for-what-it-changed.md) | An undo log for what it changed | Accepted |
 | [0046](0046-a-made-up-category-is-part-of-the-target.md) | A made-up category is part of the target | Accepted |
 | [0047](0047-a-thing-and-its-diagnostics-are-not-two-things.md) | A thing and its diagnostics are not two things | Accepted |
+| [0048](0048-the-tightest-match-wins.md) | The tightest match wins | Accepted |
