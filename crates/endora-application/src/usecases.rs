@@ -823,16 +823,51 @@ fn disclose(
 /// would itself be false.
 ///
 /// Only actuating actions are considered, because reads never reach the disclosure list.
-fn nothing_changed_note(disclosures: &[ActionDisclosure]) -> &'static str {
+fn nothing_changed_note(disclosures: &[ActionDisclosure]) -> String {
     let tried_and_failed = !disclosures.is_empty()
         && disclosures
             .iter()
             .all(|d| d.claimed.trim_start().starts_with("error:"));
-    if tried_and_failed {
-        "\n\n(Nothing was changed — everything I tried failed.)"
-    } else {
-        ""
+    if !tried_and_failed {
+        return String::new();
     }
+    // The person gets what the model was given. When a name did not match, Endora already
+    // worked out what does exist; sending that only to the model wasted it — observed, the
+    // reply offered to "check the living room instead" while the shortlist sat unread in
+    // the tool result.
+    let names = candidates_offered(disclosures);
+    if names.is_empty() {
+        return "\n\n(Nothing was changed — everything I tried failed.)".to_owned();
+    }
+    format!(
+        "\n\n(Nothing was changed — everything I tried failed. These exist and look like \
+         what you asked for: {}.)",
+        names.join(", ")
+    )
+}
+
+/// The names the target search offered this turn, lifted back out of the tool results.
+///
+/// Reading Endora's own marker, not a server's format — the one place that is fair game,
+/// because this text was written here.
+fn candidates_offered(disclosures: &[ActionDisclosure]) -> Vec<String> {
+    let mut names: Vec<String> = Vec::new();
+    for claimed in disclosures.iter().map(|d| d.claimed.as_str()) {
+        let Some(block) = claimed.split("[candidates]").nth(1) else {
+            continue;
+        };
+        for line in block.lines() {
+            let Some(name) = line.trim().strip_prefix("- ") else {
+                continue;
+            };
+            let name = name.trim();
+            if !name.is_empty() && !names.iter().any(|n| n == name) {
+                names.push(name.to_owned());
+            }
+        }
+    }
+    names.truncate(4);
+    names
 }
 
 /// One action a turn took, and whether Endora saw the effect for itself (ADR 0053).
@@ -5716,5 +5751,35 @@ smart home:
         // A pure conversation turn has nothing to correct, and appending a denial to a
         // reply that never claimed to act would be noise.
         assert_eq!(super::nothing_changed_note(&[]), "");
+    }
+
+    #[test]
+    fn a_failed_turn_tells_the_person_what_does_exist() {
+        // Observed: the reply offered to "check the living room instead" while the
+        // shortlist Endora had already worked out sat unread in the tool result. The
+        // person gets what the model was given.
+        let failed = vec![super::ActionDisclosure {
+            skill: "home.HassTurnOff".to_owned(),
+            claimed: "error: MatchFailedError\n\n[candidates] that name did not match \
+                      anything. These exist:\n  - Kitchen Table\n  - Kitchen Bright"
+                .to_owned(),
+            observed: None,
+        }];
+        let note = super::nothing_changed_note(&failed);
+        assert!(note.contains("Kitchen Table"), "{note}");
+        assert!(note.contains("Kitchen Bright"), "{note}");
+        assert!(note.contains("Nothing was changed"), "{note}");
+    }
+
+    #[test]
+    fn a_failure_with_nothing_to_suggest_stays_short() {
+        let failed = vec![super::ActionDisclosure {
+            skill: "home.HassTurnOff".to_owned(),
+            claimed: "error: the server is unreachable".to_owned(),
+            observed: None,
+        }];
+        let note = super::nothing_changed_note(&failed);
+        assert!(note.contains("Nothing was changed"), "{note}");
+        assert!(!note.contains("look like"), "invented a suggestion: {note}");
     }
 }
