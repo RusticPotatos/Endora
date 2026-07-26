@@ -1237,7 +1237,11 @@ function viewRepairs() {
     <div class="card"><div class="row">
       <div class="grow">
         <div class="title">${esc(r.capability)}</div>
-        <div class="sub">${r.attempts} attempts aimed at “${esc(r.target)}” reported success and changed nothing. Did you mean something else?</div>
+        <div class="sub">${r.attempts} attempts aimed at “${esc(r.target)}” didn't work. What is it actually called?</div>
+        <div class="form" style="margin-top:6px;">
+          <input id="alias-${esc(r.capability)}-${esc(r.target)}" placeholder="the real name, e.g. Kitchen Main" />
+          <button class="primary" data-act="alias:${esc(r.capability)}:${esc(r.target)}">Remember</button>
+        </div>
       </div>
     </div></div>`).join("");
   return `
@@ -1929,6 +1933,19 @@ async function dispatch(act) {
     if (verb === "correct" && noun === "belief") {
       try { await api("POST", `/v1/understanding/${id}/correct`); flash("Got it — I'll hold that more loosely.", "ok"); }
       catch (e) { flash("Couldn't note that: " + e.message, "err"); }
+      return reload();
+    }
+    // Answer what Endora asked about a target it can't hit (ADR 0039). This is the
+    // confirmed source — Endora never fills it in from a server's own text.
+    if (verb === "alias") {
+      const server = String(noun || "").split(".")[0];
+      const el = document.getElementById(`alias-${noun}-${id}`);
+      const means = el ? el.value.trim() : "";
+      if (!means) { flash("Tell it what the thing is actually called.", "err"); return; }
+      try {
+        await api("POST", "/v1/aliases", { server, said: id, means });
+        flash(`Noted — “${id}” means “${means}”.`, "ok");
+      } catch (e) { flash("Couldn't note that: " + e.message, "err"); }
       return reload();
     }
     // Stop working on something. The person's ONLY verb over an intention — there is

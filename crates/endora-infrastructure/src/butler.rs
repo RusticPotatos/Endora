@@ -1090,6 +1090,15 @@ fn build_butler_request(
             system.push_str(&format!("\n- {u}"));
         }
     }
+    // What things are actually called here (ADR 0039). Endora asked after watching the
+    // same target fail repeatedly, and this is the person's answer — grounding, not an
+    // instruction, so it sits with what the butler knows rather than what it must do.
+    if !context.target_aliases.is_empty() {
+        system.push_str("\nWhat things are called in this home — use these exact names:");
+        for alias in &context.target_aliases {
+            system.push_str(&format!("\n- {alias}"));
+        }
+    }
     // How its own actions have actually landed (ADR 0035). Only skills the person has
     // reacted to appear, so this is short and every line carries a real judgement.
     if !context.track_record.is_empty() {
