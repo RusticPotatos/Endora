@@ -1499,6 +1499,11 @@ const HA_SETTINGS: &[SettingSpec] = &[
         label: "Name of the matching MCP server (blank = home-assistant)",
         secret: false,
     },
+    SettingSpec {
+        key: "write_names",
+        label: "Let Endora write names back into Home Assistant (on/off)",
+        secret: false,
+    },
 ];
 
 /// Reads Home Assistant state so the butler can learn the home's routines (lights,
@@ -2811,6 +2816,21 @@ pub trait NativeChannel: Send + Sync {
     /// Does what `tool` was trying to do, to exactly one thing, by id. `None` when this
     /// channel cannot express that particular tool — the caller falls back.
     fn act(&self, tool: &str, id: &str) -> Option<Result<String, String>>;
+
+    /// Teaches the service that `alias` is another name for the thing it currently calls
+    /// `name`, so the service itself resolves it from then on — for every client, not
+    /// only for Endora (ADR 0043).
+    ///
+    /// `None` from a channel that cannot be taught, which is the default: seeing and
+    /// acting are a much smaller grant than editing, and a channel earns the third
+    /// separately from the first two.
+    ///
+    /// # Errors
+    /// Through the inner `Result`, a human-readable message if the service refuses.
+    fn teach(&self, name: &str, alias: &str) -> Option<Result<String, String>> {
+        let _ = (name, alias);
+        None
+    }
 }
 
 /// Searches a server's own reading for the target a call failed to name, and retries when
