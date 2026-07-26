@@ -9,8 +9,8 @@ Accepted (2026).
 The roadmap (`docs/roadmap.md`) sets v1.0 as *one complete vertical slice of the
 learning loop, running locally, with the constitutional guarantees enforced in
 code*. Our architecture docs deliberately defer entity and API design until a
-slice is selected ([architecture.md](../architecture.md),
-[domain-map.md](../domain-map.md)). This ADR selects that slice and names — at a
+slice is selected ([architecture.md](../../architecture.md),
+[domain-map.md](../../domain-map.md)). This ADR selects that slice and names — at a
 high level only — the concepts it introduces. Field-level schemas and the
 OpenAPI contract are defined in the implementing PRs, not here.
 

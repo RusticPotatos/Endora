@@ -25,9 +25,9 @@ pub struct MemorySnapshot {
     pub preferences: Vec<Preference>,
     /// Endora's understanding of the person — the beliefs it holds.
     pub beliefs: Vec<Belief>,
-    /// What happened after Endora acted — claim, observation and reaction (ADR 0035).
+    /// What happened after Endora acted — claim, observation and reaction (ADR 0053).
     pub outcomes: Vec<Outcome>,
-    /// What Endora has pursued, is pursuing, and dropped (ADR 0036).
+    /// What Endora has pursued, is pursuing, and dropped (ADR 0052).
     pub intentions: Vec<Intention>,
 }
 
@@ -49,7 +49,7 @@ pub trait MemoryStore {
 
 // `RepositoryError` is the shared persistence-failure vocabulary; it lives in the
 // kernel so the shared `Db` handle and every context's repositories speak it. See
-// ADR 0026. Re-exported here so `ports::RepositoryError` paths are unchanged.
+// ADR 0050. Re-exported here so `ports::RepositoryError` paths are unchanged.
 pub use endora_kernel::RepositoryError;
 
 /// A failure from a reasoning model behind the [`Proposer`] port.
@@ -74,7 +74,7 @@ impl core::error::Error for ProposalError {}
 
 /// A belief the butler has formed about the person this turn — understanding,
 /// not an action. Stored directly (Endora owns its own model); the person reviews
-/// and corrects it (ADR 0020).
+/// and corrects it (ADR 0052).
 ///
 /// Understanding is the only thing the butler *files* on its own. Actions in the
 /// world stay behind the policy boundary, where they are executed as capability
@@ -106,14 +106,14 @@ pub struct ButlerReply {
     /// result. (Legacy single-call view; kept for the two-pass turn.)
     pub capability_use: Option<CapabilityUse>,
     /// Every tool the model asked to call this step, each with the id the endpoint
-    /// assigned it (ADR 0028). The single-conversation loop runs these and appends
+    /// assigned it (ADR 0053). The single-conversation loop runs these and appends
     /// their results as `role:tool` turns keyed by that id. Empty when it just talks.
     pub tool_calls: Vec<ToolCall>,
 }
 
 /// One tool call the model made through the endpoint's native tool-calling API — the
 /// call id (so its result can be paired back), the capability id to run, and the JSON
-/// arguments (ADR 0028).
+/// arguments (ADR 0053).
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ToolCall {
     /// The endpoint-assigned id, echoed on the matching `role:tool` result message.
@@ -124,7 +124,7 @@ pub struct ToolCall {
     pub input_json: String,
 }
 
-/// One turn in the butler's single tool-calling conversation (ADR 0028): the person's
+/// One turn in the butler's single tool-calling conversation (ADR 0053): the person's
 /// message, an assistant turn (prose and/or tool calls), or a tool result paired to
 /// the call that produced it. Replaces threading tool output through a system prompt.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -148,11 +148,11 @@ pub enum TurnMessage {
     },
 }
 
-// BeliefRepository moved to the understanding context (ADR 0026); re-exported
+// BeliefRepository moved to the understanding context (ADR 0050); re-exported
 // from `endora_application` (see lib.rs) so existing paths hold.
 
 // The check-in and daily-brief schedules — CheckinSchedule, BriefSchedule, and
-// their repositories — now live in the scheduling context (ADR 0026). They are
+// their repositories — now live in the scheduling context (ADR 0050). They are
 // re-exported from `endora_application` (see lib.rs) so existing paths hold.
 
 /// A snapshot of what Endora currently knows, handed to the butler each turn so
@@ -179,16 +179,16 @@ pub struct ButlerContext {
     /// present without sending the whole transcript (which slows a local model), so
     /// the butler stays coherent over a long chat. `None` until the window overflows.
     pub conversation_summary: Option<String>,
-    /// What the person has told Endora its tools' targets are really called (ADR 0039)
+    /// What the person has told Endora its tools' targets are really called (ADR 0054)
     /// — one line each, e.g. `on home-assistant, "kitchen main" means "Kitchen Main"`.
     ///
     /// Grounding, the way understanding is: it tells the butler what a thing is called
     /// here. It is **not** a substitution — nothing rewrites the target a model asks
     /// for, because that could act on the wrong thing and would hide the mistake from
-    /// the battery that exists to measure it (ADR 0028).
+    /// the battery that exists to measure it (ADR 0053).
     pub target_aliases: Vec<String>,
     /// How the butler's own past actions have landed, per skill — built from the
-    /// outcomes it recorded and what the person said about them (ADR 0035).
+    /// outcomes it recorded and what the person said about them (ADR 0053).
     ///
     /// Only skills the person has actually reacted to appear, so this stays short and
     /// carries signal rather than noise. Empty until they have said something about
@@ -198,7 +198,7 @@ pub struct ButlerContext {
 
 /// A compact summary of the conversation so far, and how many messages it folds in —
 /// so the turn knows whether new messages have scrolled past the recent window and
-/// the summary needs extending (ADR 0028 context compaction).
+/// the summary needs extending (ADR 0053 context compaction).
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ConversationSummary {
     /// The running summary text.
@@ -209,7 +209,7 @@ pub struct ConversationSummary {
 
 /// Stores the running conversation summary between turns, so it is regenerated only
 /// when the recent window overflows (not every turn). An in-memory implementation is
-/// fine — the durable, cross-session facts live in beliefs (ADR 0020); this only
+/// fine — the durable, cross-session facts live in beliefs (ADR 0052); this only
 /// keeps the current session's thread compact.
 pub trait ConversationSummaryStore {
     /// The current summary, if one has been formed this session.
@@ -235,7 +235,7 @@ pub struct CapabilityTool {
 
 // The capabilities ports — CapabilityUse, CapabilitySpec, CapabilityRunner,
 // DeepModel(+Repository), AutonomyEnvelope(+Repository), and the settings/config
-// repositories — now live in the capabilities context (ADR 0026). They are
+// repositories — now live in the capabilities context (ADR 0050). They are
 // re-exported from `endora_application` (see lib.rs) so existing paths hold.
 
 /// The butler brain: given the conversation so far, produce a reply and any
@@ -284,7 +284,7 @@ pub trait Butler {
         Ok(reply)
     }
 
-    /// One step of the **single tool-calling conversation** (ADR 0028): given the
+    /// One step of the **single tool-calling conversation** (ADR 0053): given the
     /// conversation so far — including assistant tool-call turns and their
     /// [`TurnMessage::ToolResult`]s — produce the next assistant turn. A reply with
     /// `tool_calls` means "run these and give me their results"; an empty
@@ -305,7 +305,7 @@ pub trait Butler {
         context: &ButlerContext,
     ) -> Result<ButlerReply, ProposalError> {
         // Bridge for butlers without native tool-calling. Tool results are folded into
-        // the *conversation* as ordinary turns — never into the system prompt (ADR 0028
+        // the *conversation* as ordinary turns — never into the system prompt (ADR 0053
         // retires that channel): a result the model reads as a message it just received
         // is what keeps its answer grounded, and it keeps success and failure on
         // exactly the same footing.
@@ -336,7 +336,7 @@ pub trait Butler {
             })
             .collect();
         // Express any `capability_use` it returns as a `tool_call`, so the single loop
-        // (ADR 0028) drives it just like a native tool-caller.
+        // (ADR 0053) drives it just like a native tool-caller.
         let reply = self.respond(&history, preferences, context)?;
         if reply.tool_calls.is_empty() {
             if let Some(used) = reply.capability_use.clone() {
@@ -355,7 +355,7 @@ pub trait Butler {
 
     /// Compacts a chunk of conversation (optionally folding a prior summary) into a
     /// short running summary — used to keep a long chat's prompt bounded without
-    /// dropping the day's thread (ADR 0028 context compaction). The default returns an
+    /// dropping the day's thread (ADR 0053 context compaction). The default returns an
     /// empty string, meaning "no compaction available"; the caller then simply keeps
     /// the recent verbatim window. A model-backed butler overrides it.
     ///
@@ -383,17 +383,17 @@ pub trait DeepAsker {
     fn ask(&self, question: &str) -> Option<String>;
 }
 
-// PreferenceRepository moved to the understanding context (ADR 0026);
+// PreferenceRepository moved to the understanding context (ADR 0050);
 // re-exported from `endora_application` (see lib.rs) so existing paths hold.
 
-// ChatRepository moved to the conversation context (ADR 0026); re-exported from
+// ChatRepository moved to the conversation context (ADR 0050); re-exported from
 // `endora_application` (see lib.rs) so existing paths hold.
 
 // `Clock` and `IdSource` are shared-kernel ports (time and identity enter the
 // pure layers through them), re-exported here so `endora_application::{Clock,
-// IdSource}` and `ports::…` paths are unchanged. See ADR 0026.
+// IdSource}` and `ports::…` paths are unchanged. See ADR 0050.
 pub use endora_kernel::{Clock, IdSource};
 
 // The audit trail and the butler's event log — `AuditLog`, `EventLog`, and
-// `ActivityEvent` — now belong to the platform context (ADR 0026). They are
+// `ActivityEvent` — now belong to the platform context (ADR 0050). They are
 // re-exported from `endora_application` (see lib.rs) so existing paths hold.

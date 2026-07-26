@@ -9,7 +9,7 @@ Accepted (2026).
 The learning-loop hierarchy is: a **North Star** (the domain type `Direction`),
 and beneath it the mid-level concept that assumptions hang from, historically
 named **Goal** ([ADR 0006](0006-first-vertical-slice.md),
-[domain-map](../domain-map.md)).
+[domain-map](../../domain-map.md)).
 
 In use this reads awkwardly. A North Star is *itself* goal-flavored — someone sets
 "get back into running" as their North Star — so the level beneath it, when also

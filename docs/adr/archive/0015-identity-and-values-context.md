@@ -12,7 +12,7 @@ want to get back into running"; the reason — health, or community (a running
 group, almost therapy), or the craft of it — is what actually makes the North Star
 matter, and it is how a life organizes. [ADR 0014](0014-the-butler-conversation-values-attention.md)
 placed a **Values** layer above North Stars and named the **Identity & Values**
-context (already drawn in the [domain map](../domain-map.md)) as its home. This ADR
+context (already drawn in the [domain map](../../domain-map.md)) as its home. This ADR
 fixes how that context is modeled for its first, minimal build.
 
 ## Decision

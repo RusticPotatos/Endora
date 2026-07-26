@@ -1,4 +1,4 @@
-//! A small, curated catalog of well-known MCP servers (ADR 0021).
+//! A small, curated catalog of well-known MCP servers (ADR 0054).
 //!
 //! These are **starting points, not fixed recipes**: an entry prefills the "Add a
 //! server" form (transport, command, args, the env keys it wants) and everything
@@ -8,7 +8,7 @@
 //!
 //! The catalog is deliberately node-level configuration data, not domain: it says
 //! nothing about policy. Anything installed from it is still deny-by-default — its
-//! tools are visible but blocked until the person allows each one (ADR 0024).
+//! tools are visible but blocked until the person allows each one (ADR 0051).
 
 use serde_json::{Value, json};
 

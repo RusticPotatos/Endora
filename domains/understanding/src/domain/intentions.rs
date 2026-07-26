@@ -1,4 +1,4 @@
-//! Intentions — what Endora is currently pursuing, and where it got to (ADR 0036).
+//! Intentions — what Endora is currently pursuing, and where it got to (ADR 0052).
 //!
 //! Endora's own working memory, not a task list. Four constraints separate the two, and
 //! three of them live here:
@@ -29,7 +29,7 @@ const STALE_AFTER_MS: i64 = 14 * 24 * 60 * 60 * 1_000;
 /// Where an intention is in its life.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IntentionState {
-    /// Being pursued. At most one intention is in this state at a time (ADR 0036).
+    /// Being pursued. At most one intention is in this state at a time (ADR 0052).
     Active,
     /// Endora saw it through.
     Done,
@@ -63,7 +63,7 @@ impl IntentionState {
     }
 }
 
-/// One thing Endora is pursuing on the person's behalf, and why (ADR 0036).
+/// One thing Endora is pursuing on the person's behalf, and why (ADR 0052).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Intention {
     id: IntentionId,
@@ -131,7 +131,7 @@ impl Intention {
     ///
     /// Deliberately takes prose rather than structured state. The model is the least
     /// reliable component in the system, and this is state that must not corrupt
-    /// (ADR 0036).
+    /// (ADR 0052).
     pub fn progress(&mut self, note: &str, at: Timestamp) {
         self.note = note.trim().to_owned();
         self.last_progressed_at = at;
@@ -262,7 +262,7 @@ mod tests {
 
     #[test]
     fn an_intention_always_names_the_belief_it_came_from() {
-        // ADR 0036: no free-floating intentions, so "why is it doing this?" always has
+        // ADR 0052: no free-floating intentions, so "why is it doing this?" always has
         // an answer. Enforced by the type — this test documents the intent of that.
         assert_eq!(formed().motivating_belief(), BeliefId::new(7));
     }
@@ -285,7 +285,7 @@ mod tests {
 
     #[test]
     fn progress_keeps_the_butlers_own_words_for_next_time() {
-        // The resumption mechanism (ADR 0036): prose in, prose out, no state machine
+        // The resumption mechanism (ADR 0052): prose in, prose out, no state machine
         // for the model to maintain.
         let mut intention = formed();
         intention.progress("  They mentioned the room being too warm.  ", at(DAY));
@@ -341,7 +341,7 @@ mod tests {
 
     #[test]
     fn the_person_can_drop_it() {
-        // Their only verb over an intention (ADR 0036).
+        // Their only verb over an intention (ADR 0052).
         let mut intention = formed();
         intention.abandon();
         assert!(!intention.is_active());

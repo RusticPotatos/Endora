@@ -3,7 +3,7 @@
 ## Status
 
 Accepted (2026-07-25). Completes the fourth clause of the architecture principle in
-[docs/direction-reset.md](../direction-reset.md). Extends the turn contract of
+[docs/direction-reset.md](../../direction-reset.md). Extends the turn contract of
 [0028](0028-native-tool-calling-turn.md) and sits alongside the policy boundary of
 [0005](0005-models-propose-policy-authorizes.md) / [0024](0024-reversibility-aware-autonomy-and-the-nightly-loop.md).
 

@@ -23,7 +23,7 @@ pub use model_layer::{
     AdoptionDecision, AdoptionOutcome, CaseResult, ModelCandidate, Scorecard, ScoredCandidate,
     decide_adoption, evaluate, is_local, run_model_layer,
 };
-// The capabilities context owns the skills, runner, and egress guard (ADR 0026);
+// The capabilities context owns the skills, runner, and egress guard (ADR 0050);
 // re-exported so `endora_infrastructure::{RegistryRunner, …}` paths are unchanged.
 pub use clock::SystemClock;
 pub use endora_capabilities::{

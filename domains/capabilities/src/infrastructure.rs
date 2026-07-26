@@ -1,5 +1,5 @@
 //! Butler **capabilities** (skills) — the modules the butler can reach for
-//! (ADR 0019 §capabilities). Each is a self-contained unit that declares what it
+//! (ADR 0056 §capabilities). Each is a self-contained unit that declares what it
 //! does, its **autonomy level** (may it act, or must it ask?), whether it
 //! **reaches outside the machine**, and whether it is **configured** (ready, or
 //! waiting on a key / model / data source). Consequential or unconfigured skills
@@ -7,7 +7,7 @@
 //! authorizes; the model is never the enforcement boundary.
 //!
 //! MCP note: these are the internal `Capability` interface; an MCP server is one
-//! way to back a capability (ADR 0019 §3). The registry here is the substrate a
+//! way to back a capability (ADR 0056 §3). The registry here is the substrate a
 //! future MCP host adapter plugs into.
 
 use std::sync::Arc;
@@ -19,7 +19,7 @@ use serde_json::{Value, json};
 
 /// One setting a capability needs to work (a key, a model name, a URL). Declared
 /// in metadata so the console can render a form and the policy layer can tell
-/// whether the skill is ready (ADR 0021).
+/// whether the skill is ready (ADR 0054).
 #[derive(Debug, Clone, Copy)]
 pub struct SettingSpec {
     /// Stable key the value is stored under, e.g. `"model"` or `"api_key"`.
@@ -48,7 +48,7 @@ pub struct CapabilityInfo {
     /// Whether invoking it sends data outside this machine.
     pub reaches_external: bool,
     /// How undoable the skill's effect is — the **primary axis** of the autonomy
-    /// envelope (ADR 0024). Declared in metadata, never inferred by a model: it
+    /// envelope (ADR 0051). Declared in metadata, never inferred by a model: it
     /// decides whether policy may run the skill on its own, confirm first, or
     /// block it outright. The classifier NEVER runs an irreversible skill
     /// (deny-by-default).
@@ -154,7 +154,7 @@ fn egress_proxy() -> Option<ureq::Proxy> {
 /// An agent for **external** skill egress. If an egress proxy is configured,
 /// outbound skill requests route through it — so you can send them via a VPN's
 /// proxy (e.g. gluetun's HTTP proxy) **without** binding Endora's network to the VPN
-/// container (ADR 0023). Loosely coupled: if the proxy is down, only external skills
+/// container (ADR 0051). Loosely coupled: if the proxy is down, only external skills
 /// fail; the app keeps running.
 fn external_agent() -> ureq::Agent {
     let mut builder = ureq::Agent::config_builder().timeout_global(Some(Duration::from_secs(15)));
@@ -210,7 +210,7 @@ fn http_get_text_ua(url: &str, ua: &str, max_bytes: usize) -> Result<String, Cap
 
 /// Rejects a URL whose host is, or resolves to, a non-public address — closing the
 /// SSRF hole where a model-provided URL could reach the internal network or a cloud
-/// metadata endpoint (ADR 0023). Only for **arbitrary** URLs; the trusted internal
+/// metadata endpoint (ADR 0051). Only for **arbitrary** URLs; the trusted internal
 /// model calls and constant-host API skills do not use this.
 fn guard_egress(url: &str) -> Result<(), CapabilityError> {
     let (host, port) = host_and_port(url)
@@ -303,7 +303,7 @@ fn host_and_port(url: &str) -> Option<(String, u16)> {
     }
 }
 
-/// The data-loss tripwire (ADR 0023): scans text about to leave the machine (an
+/// The data-loss tripwire (ADR 0051): scans text about to leave the machine (an
 /// external skill's input) for **high-confidence secrets**, so the butler can't be
 /// steered into leaking a key or private key in a query. Deliberately precise —
 /// only well-known credential shapes — to avoid blocking legitimate requests.
@@ -343,7 +343,7 @@ pub fn scan_outbound_secret(text: &str) -> Option<&'static str> {
     .find_map(classify_secret_token)
 }
 
-/// Query minimization (ADR 0023): redacts personal identifiers from an external
+/// Query minimization (ADR 0051): redacts personal identifiers from an external
 /// skill's input before it leaves — so a search doesn't carry a real email address
 /// out. Recurses through the JSON, redacting string values in place. Deliberately
 /// narrow (email addresses) and word-boundaried, so URLs and ordinary text survive.
@@ -447,7 +447,7 @@ fn classify_secret_token(t: &str) -> Option<&'static str> {
 }
 
 /// Like [`http_get_text`], but guards the URL against SSRF and follows redirects
-/// manually, re-guarding each hop (ADR 0023). For model/person-provided URLs.
+/// manually, re-guarding each hop (ADR 0051). For model/person-provided URLs.
 fn guarded_get_text(url: &str, max_bytes: usize) -> Result<String, CapabilityError> {
     let bytes = guarded_get_bytes(url, max_bytes)?;
     Ok(String::from_utf8_lossy(&bytes).into_owned())
@@ -679,7 +679,7 @@ impl Capability for WeatherCapability {
             reaches_external: true,
             // Reads state; changes nothing. Policy-identical to Reversible
             // (both are Act), but it lets the turn tell an observation from a
-            // receipt — see ADR 0034.
+            // receipt — see ADR 0053.
             reversibility: Reversibility::Observe,
             configured: true,
             needs: "",
@@ -817,7 +817,7 @@ impl Capability for WebFetchCapability {
             reaches_external: true,
             // Reads state; changes nothing. Policy-identical to Reversible
             // (both are Act), but it lets the turn tell an observation from a
-            // receipt — see ADR 0034.
+            // receipt — see ADR 0053.
             reversibility: Reversibility::Observe,
             configured: true,
             needs: "",
@@ -904,7 +904,7 @@ impl Capability for LocalNewsCapability {
             reaches_external: true,
             // Reads state; changes nothing. Policy-identical to Reversible
             // (both are Act), but it lets the turn tell an observation from a
-            // receipt — see ADR 0034.
+            // receipt — see ADR 0053.
             reversibility: Reversibility::Observe,
             configured: true,
             needs: "",
@@ -1064,7 +1064,7 @@ impl Capability for KnowledgeCapability {
             reaches_external: true,
             // Reads state; changes nothing. Policy-identical to Reversible
             // (both are Act), but it lets the turn tell an observation from a
-            // receipt — see ADR 0034.
+            // receipt — see ADR 0053.
             reversibility: Reversibility::Observe,
             configured: true,
             needs: "",
@@ -1143,7 +1143,7 @@ impl Capability for WebAnswersCapability {
             reaches_external: true,
             // Reads state; changes nothing. Policy-identical to Reversible
             // (both are Act), but it lets the turn tell an observation from a
-            // receipt — see ADR 0034.
+            // receipt — see ADR 0053.
             reversibility: Reversibility::Observe,
             configured: true,
             needs: "",
@@ -1258,7 +1258,7 @@ impl Capability for ImageReviewCapability {
             reaches_external: false,
             // Reads state; changes nothing. Policy-identical to Reversible
             // (both are Act), but it lets the turn tell an observation from a
-            // receipt — see ADR 0034.
+            // receipt — see ADR 0053.
             reversibility: Reversibility::Observe,
             // Code is ready; it becomes usable once the `model` setting is filled.
             configured: true,
@@ -1396,7 +1396,7 @@ impl Capability for SafetyAlertsCapability {
             reaches_external: true,
             // Reads state; changes nothing. Policy-identical to Reversible
             // (both are Act), but it lets the turn tell an observation from a
-            // receipt — see ADR 0034.
+            // receipt — see ADR 0053.
             reversibility: Reversibility::Observe,
             configured: true,
             needs: "",
@@ -1508,7 +1508,7 @@ const HA_SETTINGS: &[SettingSpec] = &[
 
 /// Reads Home Assistant state so the butler can learn the home's routines (lights,
 /// presence, sensors). Read-only and reversible — it observes, it does not actuate;
-/// controlling devices/scripts is a separate, confirm-gated capability (ADR 0024).
+/// controlling devices/scripts is a separate, confirm-gated capability (ADR 0051).
 struct HomeAssistantCapability;
 
 impl Capability for HomeAssistantCapability {
@@ -1521,7 +1521,7 @@ impl Capability for HomeAssistantCapability {
             reaches_external: true,
             // Reads state; changes nothing. Policy-identical to Reversible
             // (both are Act), but it lets the turn tell an observation from a
-            // receipt — see ADR 0034.
+            // receipt — see ADR 0053.
             reversibility: Reversibility::Observe,
             configured: true,
             needs: "your Home Assistant URL and a long-lived access token",
@@ -1635,7 +1635,7 @@ pub struct RegistryRunner {
     capabilities: Arc<Vec<Arc<dyn Capability>>>,
     /// Per-capability enabled overrides (id → enabled). Missing = default enabled.
     enabled: std::collections::HashMap<String, bool>,
-    /// Per-capability irreversible-band openers (id → opened, ADR 0024). Missing =
+    /// Per-capability irreversible-band openers (id → opened, ADR 0051). Missing =
     /// closed: the un-undoable stays blocked until the person opens it.
     opened: std::collections::HashMap<String, bool>,
     /// Per-capability "ask first" overrides (id → confirm). When set, the skill runs
@@ -1662,9 +1662,9 @@ impl RegistryRunner {
         }
     }
 
-    /// Wraps the registry, applying the person's enable/disable overrides (ADR 0021),
-    /// their autonomy envelope (ADR 0022), per-capability irreversible-band openers
-    /// (ADR 0024), and per-capability settings (ADR 0021). A disabled skill never
+    /// Wraps the registry, applying the person's enable/disable overrides (ADR 0054),
+    /// their autonomy envelope (ADR 0051), per-capability irreversible-band openers
+    /// (ADR 0051), and per-capability settings (ADR 0054). A disabled skill never
     /// runs; the envelope and openers decide which kinds of action may run without
     /// confirmation (or at all); settings make a configurable skill usable.
     #[must_use]
@@ -1691,7 +1691,7 @@ impl RegistryRunner {
         self.enabled.get(id).copied().unwrap_or(true)
     }
 
-    /// Whether the person has opened this capability's irreversible band (ADR 0024).
+    /// Whether the person has opened this capability's irreversible band (ADR 0051).
     /// Closed by default — the un-undoable stays blocked until deliberately opened.
     fn is_opened(&self, id: &str) -> bool {
         self.opened.get(id).copied().unwrap_or(false)
@@ -1717,7 +1717,7 @@ fn settings_complete(info: &CapabilityInfo, settings: &CapabilitySettings) -> bo
 }
 
 /// The deterministic classifier at the heart of the autonomy envelope
-/// (ADR 0022/0024): given a skill's declared [`Reversibility`] band, reach, and
+/// (ADR 0051/0024): given a skill's declared [`Reversibility`] band, reach, and
 /// the person's envelope, what does policy do — [`Act`](Decision::Act) on its
 /// own, [`Confirm`](Decision::Confirm) first, or [`Block`](Decision::Block)
 /// outright? Never consults the model — the boundary is policy.
@@ -1728,7 +1728,7 @@ fn settings_complete(info: &CapabilityInfo, settings: &CapabilitySettings) -> bo
 /// leaves the device, and `auto_consequential` can *widen* an outward-but-reversible
 /// action to run on its own.
 ///
-/// `opened_irreversible` is the person's per-capability escape hatch (ADR 0024): by
+/// `opened_irreversible` is the person's per-capability escape hatch (ADR 0051): by
 /// default the irreversible band is [`Block`](Decision::Block) — refused, not
 /// offered, because a mistaken confirm is unrecoverable — but when the person has
 /// deliberately opened this capability it becomes [`Confirm`](Decision::Confirm).
@@ -1741,7 +1741,7 @@ fn classify(
     confirm_each_use: bool,
 ) -> Decision {
     let base = match info.reversibility.default_decision() {
-        // The un-undoable is refused outright — deny-by-default (ADR 0024) — unless
+        // The un-undoable is refused outright — deny-by-default (ADR 0051) — unless
         // the person has opened this capability, and even then only to confirm-each-
         // use, never to autonomous.
         Decision::Block => {
@@ -1802,7 +1802,7 @@ impl CapabilityRunner for RegistryRunner {
                     id: info.id.to_owned(),
                     description: info.description.to_owned(),
                     // Usable only if the code is ready, the person has it enabled, AND
-                    // every required setting has a value (ADR 0021).
+                    // every required setting has a value (ADR 0054).
                     configured: info.configured
                         && self.is_enabled(info.id)
                         && settings_complete(&info, &self.settings_for(info.id)),
@@ -1843,7 +1843,7 @@ impl CapabilityRunner for RegistryRunner {
             .iter()
             .find(|c| c.info().id == id)
             .ok_or_else(|| format!("no such skill '{id}'"))?;
-        // Deny-by-default on the irreversible band (ADR 0024): the un-undoable is
+        // Deny-by-default on the irreversible band (ADR 0051): the un-undoable is
         // blocked outright — never run, even on an explicit request — until the
         // person opens it per capability. Once opened it reaches this path only via
         // an explicit confirmation. The failure mode is "it refused," never "it did
@@ -1861,7 +1861,7 @@ impl CapabilityRunner for RegistryRunner {
             ));
         }
         // Data-loss tripwire: for a skill that leaves the device, refuse to send a
-        // request that appears to carry a secret (ADR 0023). Fail closed.
+        // request that appears to carry a secret (ADR 0051). Fail closed.
         if cap.info().reaches_external {
             if let Some(kind) = scan_outbound_secret(input_json) {
                 return Err(format!(
@@ -1873,7 +1873,7 @@ impl CapabilityRunner for RegistryRunner {
             .or_else(|_| Ok::<Value, serde_json::Error>(json!({})))
             .unwrap_or_else(|_| json!({}));
         // Query minimization: strip personal identifiers (email addresses) from a
-        // request before it leaves the device (ADR 0023).
+        // request before it leaves the device (ADR 0051).
         if cap.info().reaches_external {
             redact_pii_in_value(&mut input);
         }
@@ -1888,7 +1888,7 @@ impl CapabilityRunner for RegistryRunner {
 
 // ---- MCP host: transport port, adapter, and the composite runner ----------
 //
-// An MCP server is a *source* of catalog tools (ADR 0021). Because a tool's id and
+// An MCP server is a *source* of catalog tools (ADR 0054). Because a tool's id and
 // description are discovered at runtime — not the `&'static` metadata the built-in
 // `Capability` trait carries — the adapter implements the application-layer
 // `CapabilityRunner` directly (whose `CapabilitySpec` is owned), rather than the
@@ -1908,7 +1908,7 @@ pub struct McpToolInfo {
     pub input_schema: Option<serde_json::Value>,
 }
 
-/// The boundary to a single MCP server (ADR 0021). The concrete transport — a local
+/// The boundary to a single MCP server (ADR 0054). The concrete transport — a local
 /// stdio subprocess, or a networked HTTP/SSE connection — lives behind this port, so
 /// neither the adapter nor the policy layer ever speaks the protocol. Synchronous to
 /// match [`CapabilityRunner::run`]; an async transport bridges to this at its edge.
@@ -1932,18 +1932,18 @@ struct McpConnection {
     server: String,
     transport: Box<dyn McpClient>,
     tools: Vec<McpToolInfo>,
-    /// The tool the person nominated as this server's state reader (ADR 0038). Empty
+    /// The tool the person nominated as this server's state reader (ADR 0054). Empty
     /// when nobody has said, which means no read-back — the honest default.
     reader_tool: String,
 }
 
-/// A [`CapabilityRunner`] backed by connected **MCP servers** (ADR 0021). Each
+/// A [`CapabilityRunner`] backed by connected **MCP servers** (ADR 0054). Each
 /// server's tools appear in the catalog **namespaced** as `server.tool`, so two
 /// servers can never collide on a name.
 ///
 /// Safety posture (this slice): MCP tools are **never autonomous**, and their policy
 /// [`Decision`] is [`Block`](Decision::Block) — deny-by-default, treated exactly as
-/// the unclassified/irreversible band (ADR 0024). The butler can *see* a tool and
+/// the unclassified/irreversible band (ADR 0051). The butler can *see* a tool and
 /// propose it, but policy refuses to run it until a later slice classifies tools and
 /// lets the person open specific ones. [`run`](Self::run) itself routes faithfully to
 /// the transport — its contract is that it is only ever called once policy cleared.
@@ -1953,11 +1953,11 @@ pub struct McpRunner {
 
 impl McpRunner {
     /// Whether this tool is the **state reader** for its server — the one the person
-    /// nominated (ADR 0038).
+    /// nominated (ADR 0054).
     ///
     /// The nomination comes from the person, never from the server: a server announcing
     /// "I only read" is not evidence of anything, and policy must not take an unvetted
-    /// third party's word (ADR 0005). A server with no nomination has no reader, and
+    /// third party's word (ADR 0051). A server with no nomination has no reader, and
     /// everything on it stays deny-by-default.
     fn is_state_reader(&self, id: &str) -> bool {
         let Some((server, tool)) = id.split_once('.') else {
@@ -1971,7 +1971,7 @@ impl McpRunner {
     /// Connects to each `(server_name, transport)`, discovering its tools up front. A
     /// server whose `list_tools` fails is **skipped** — it contributes no tools rather
     /// than failing the whole runner, so one unhealthy server can't take down the host
-    /// (ADR 0021).
+    /// (ADR 0054).
     #[must_use]
     pub fn connect(servers: Vec<(String, Box<dyn McpClient>)>) -> Self {
         Self::connect_with_readers(
@@ -1982,7 +1982,7 @@ impl McpRunner {
         )
     }
 
-    /// Connects, carrying each server's nominated **state reader** (ADR 0038) — the tool
+    /// Connects, carrying each server's nominated **state reader** (ADR 0054) — the tool
     /// whose result is an observation and through which that server's actions are
     /// verified. An empty nomination means no read-back for that server.
     #[must_use]
@@ -2075,7 +2075,7 @@ impl CapabilityRunner for McpRunner {
                     // tool reported about its own work` — telling the model not to trust
                     // the very reading that is supposed to be the confirmation, which is
                     // incoherent and was observed live. A read has no work of its own to
-                    // be unverified about (ADR 0034/0037).
+                    // be unverified about (ADR 0053/0037).
                     let reads_state =
                         reader_ids.contains(format!("{}.{}", c.server, t.name).as_str());
                     crate::application::CapabilitySpec {
@@ -2084,7 +2084,7 @@ impl CapabilityRunner for McpRunner {
                         configured: true,
                         // Deny-by-default everywhere else: the server tells us nothing
                         // about whether a tool reads or actuates, so its result is a
-                        // receipt, not evidence (ADR 0034).
+                        // receipt, not evidence (ADR 0053).
                         autonomous: reads_state,
                         reversibility: if reads_state {
                             Reversibility::Observe
@@ -2117,14 +2117,14 @@ impl CapabilityRunner for McpRunner {
 
     /// Home Assistant hosts both actuators (`Hass*`) and a state reader
     /// (`GetLiveContext`) on the same server, so an action can be checked against the
-    /// world it just claimed to change (ADR 0034). One mapping for the whole
+    /// world it just claimed to change (ADR 0053). One mapping for the whole
     /// integration — every `Hass*` action verifies through the same reader.
     ///
     /// Servers Endora knows nothing about return `None`, so their results stay marked
     /// unverified rather than being vouched for.
     fn verifier(&self, id: &str) -> Option<String> {
         let (server, _) = id.split_once('.')?;
-        // Whatever the person nominated for THIS server (ADR 0038). No integration is
+        // Whatever the person nominated for THIS server (ADR 0054). No integration is
         // named here: a calendar or filesystem server gets read-back on exactly the same
         // terms as Home Assistant, as soon as someone says which of its tools reads.
         let conn = self
@@ -2162,7 +2162,7 @@ impl CapabilityRunner for McpRunner {
         // kitchen main — which is a `switch` — the model sent `domain: ["light"]`. If
         // the read-back inherited that, it would show the kitchen's lights and hide the
         // switch: exactly the entity that explains the failure. After an action that did
-        // not land, "what is actually there" is the whole point of looking (ADR 0034).
+        // not land, "what is actually there" is the whole point of looking (ADR 0053).
         //
         // The split is by JSON shape rather than by field name, so it needs no knowledge
         // of any server: a scalar (`name`, `area`, `floor`) points at something, while an
@@ -2325,7 +2325,7 @@ fn drop_duplicated_kind_filters(obj: &mut serde_json::Map<String, serde_json::Va
 /// `items`. `None` when the field is unconstrained, which is the common case.
 ///
 /// Schema-driven on purpose: this is what lets Endora keep a model's slips from failing
-/// a whole call without knowing anything about the server it is talking to (ADR 0038).
+/// a whole call without knowing anything about the server it is talking to (ADR 0054).
 fn permitted_values(field: Option<&serde_json::Value>) -> Option<Vec<String>> {
     let field = field?;
     let list = field
@@ -2356,7 +2356,7 @@ fn permitted_values(field: Option<&serde_json::Value>) -> Option<Vec<String>> {
 /// from the conversation, and no amount of grounding helps a model whose tool told it
 /// everything went fine. So the no-op is refused *before* it is sent, and the error
 /// names the tool that would work — which is a fact about the API, not a canned
-/// narration (ADR 0028): the butler still writes whatever it says next.
+/// narration (ADR 0053): the butler still writes whatever it says next.
 fn reject_no_op_light_set(args_json: &str, tool_name: &str) -> Result<(), String> {
     if tool_name != "HassLightSet" {
         return Ok(());
@@ -2420,7 +2420,7 @@ const DEVICE_KIND_WORDS: &[&str] = &[
 /// The area alone expresses what the person meant, so the kind word is dropped.
 /// **Only when an area is present**: without one, dropping the name would widen
 /// "turn on the lights" to the whole house, so it is left to fail honestly rather
-/// than act more broadly than asked (ADR 0024 — never act beyond the request).
+/// than act more broadly than asked (ADR 0051 — never act beyond the request).
 ///
 /// Scoped to Home Assistant's `Hass*` tools; other MCP servers are passed through
 /// untouched. This is the same "deterministic over prompting" move as the schema
@@ -2456,7 +2456,7 @@ fn drop_domain_word_name(args_json: &str, tool_name: &str) -> String {
 }
 
 /// Merges several [`CapabilityRunner`] sources — the built-in registry and any MCP
-/// servers — behind the single runner interface (ADR 0021). The application still
+/// servers — behind the single runner interface (ADR 0054). The application still
 /// speaks to one `CapabilityRunner` and never learns a tool's origin. Ids are unique
 /// across sources by construction (built-ins carry no dot; MCP tools are
 /// `server.tool`), so the first source that lists an id owns it.
@@ -2511,7 +2511,7 @@ impl CapabilityRunner for CompositeRunner {
 }
 
 /// Retries a **failed** call once with the person's confirmed target aliases applied
-/// (ADR 0039).
+/// (ADR 0054).
 ///
 /// Endora asks what a target is really called; the answer used to reach the model as
 /// context and nothing more. Measured, that does not work: with `"table" means "Kitchen
@@ -2524,7 +2524,7 @@ impl CapabilityRunner for CompositeRunner {
 /// - it fires only after a call has already **failed**, so it can never hijack a working
 ///   one or redirect an action that was about to hit the right thing;
 /// - it uses only what the person **confirmed**, which is the authoritative source in
-///   ADR 0038's ranking;
+///   ADR 0054's ranking;
 /// - it retries **once**;
 /// - and it **says so** in the result, so the substitution is visible to the model, to
 ///   the outcome record, and to the person in the disclosure.
@@ -2573,7 +2573,7 @@ impl AliasRunner {
         if resolved.is_empty() {
             return None;
         }
-        // The person's answer outranks the model's other guesses (ADR 0038's ranking).
+        // The person's answer outranks the model's other guesses (ADR 0054's ranking).
         //
         // Observed live, with the alias in place and still failing:
         //   {name: "table light", area: "Living Room", floor: "1"} -> INVALID_FLOOR
@@ -2628,7 +2628,7 @@ impl CapabilityRunner for AliasRunner {
 }
 
 /// A per-turn overlay that lifts an inner source's deny-by-default for tools the
-/// person has **opened** (ADR 0024). An opened tool moves from
+/// person has **opened** (ADR 0051). An opened tool moves from
 /// [`Block`](Decision::Block) to [`Confirm`](Decision::Confirm) — confirm-each-use —
 /// and only opened tools may run; everything the person hasn't opened stays blocked.
 ///
@@ -2636,7 +2636,7 @@ impl CapabilityRunner for AliasRunner {
 /// things on its own (`auto_consequential`), an opened tool goes one step further to
 /// [`Act`](Decision::Act): they've made two deliberate choices — allow this specific
 /// tool, and allow acting without a per-use prompt — so the butler may run it in the
-/// loop. (An ADR 0024 amendment: the un-undoable can become autonomous, but only
+/// loop. (An ADR 0051 amendment: the un-undoable can become autonomous, but only
 /// behind both of those explicit gates.) Wraps the shared MCP runner so specific MCP
 /// tools can be allowed without rebuilding the connection.
 pub struct OpenerRunner {
@@ -2728,14 +2728,14 @@ impl CapabilityRunner for OpenerRunner {
 /// verdict drops to [`Confirm`](Decision::Confirm) — there is nobody to confirm, so in
 /// practice it simply does not run, and the butler is handed a factual tool result
 /// saying so. `Observe` and `Reversible` capabilities are untouched, which is what lets
-/// the nightly loop still research, draft, and form beliefs (ADR 0024).
+/// the nightly loop still research, draft, and form beliefs (ADR 0051).
 ///
 /// This makes [`run_due_nightly_loop`]'s documented guarantee — "nothing here it could
 /// do that it couldn't undo" — true in code rather than only in prose. Before this, that
 /// claim held only while the envelope happened to be closed.
 ///
 /// Deny-by-default: a capability whose band cannot be read is assumed to be an actuator,
-/// the same rule ADR 0034 applies to verification.
+/// the same rule ADR 0053 applies to verification.
 pub struct ReversibleOnlyRunner {
     inner: Arc<dyn CapabilityRunner + Send + Sync>,
 }
@@ -2803,7 +2803,7 @@ impl CapabilityRunner for ReversibleOnlyRunner {
 }
 
 /// A server's **own** interface, richer than the tool surface it exposes to a model
-/// (ADR 0042).
+/// (ADR 0054).
 ///
 /// A tool catalogue is a product decision by whoever wrote the server, and it is often
 /// the *voice assistant* view: fuzzy names, no identifiers. The same service usually has
@@ -2832,7 +2832,7 @@ pub trait NativeChannel: Send + Sync {
     /// channel cannot express that particular tool — the caller falls back.
     fn act(&self, tool: &str, id: &str) -> Option<Result<String, String>>;
 
-    /// Whether `tool` could actually operate this thing (ADR 0041).
+    /// Whether `tool` could actually operate this thing (ADR 0054).
     ///
     /// Direct reach sees everything a service holds, which includes things that are not
     /// controls: diagnostics, configuration entries, connection indicators. Those share
@@ -2847,14 +2847,14 @@ pub trait NativeChannel: Send + Sync {
 
     /// Teaches the service that `alias` is another name for the thing it currently calls
     /// `name`, so the service itself resolves it from then on — for every client, not
-    /// only for Endora (ADR 0043).
+    /// only for Endora (ADR 0054).
     ///
     /// `None` from a channel that cannot be taught, which is the default: seeing and
     /// acting are a much smaller grant than editing, and a channel earns the third
     /// separately from the first two.
     ///
     /// Returns the **write**, not a sentence — carrying what was changed and what it was
-    /// before, so the edit can be logged and put back (ADR 0045). A channel that reports
+    /// before, so the edit can be logged and put back (ADR 0054). A channel that reports
     /// only that it succeeded has made a change nobody can reverse.
     ///
     /// # Errors
@@ -2865,7 +2865,7 @@ pub trait NativeChannel: Send + Sync {
     }
 
     /// The words this service uses as **categories** — the sorts of thing it has, as
-    /// opposed to the names of particular things (ADR 0041).
+    /// opposed to the names of particular things (ADR 0054).
     ///
     /// Empty by default and empty for any service Endora cannot ask, in which case
     /// nothing downstream changes: guessing at what counts as a category would make an
@@ -2878,7 +2878,7 @@ pub trait NativeChannel: Send + Sync {
     }
 
     /// Takes a name away again — the other half of [`teach`](Self::teach), so a name can
-    /// be untold and not only added (ADR 0045).
+    /// be untold and not only added (ADR 0054).
     ///
     /// # Errors
     /// Through the inner `Result`, a human-readable message if the service refuses.
@@ -2902,9 +2902,9 @@ pub trait NativeChannel: Send + Sync {
 }
 
 /// Searches a server's own reading for the target a call failed to name, and retries when
-/// exactly one thing matches (ADR 0041).
+/// exactly one thing matches (ADR 0054).
 ///
-/// A failed action already causes Endora to read the state back (ADR 0034), so the list of
+/// A failed action already causes Endora to read the state back (ADR 0053), so the list of
 /// names that really exist is in hand at the moment it is most useful. Until now that
 /// whole reading was handed to the model, which then had to find one line in it and copy
 /// it exactly. Measured across fourteen consecutive attempts at a light called
@@ -2918,7 +2918,7 @@ pub trait NativeChannel: Send + Sync {
 ///   the model copies from three lines instead of searching five kilobytes;
 /// - **only when exactly one** candidate contains every word the call was aiming at, the
 ///   call is retried against it. Two plausible names is a guess, and a guess that actuates
-///   something is what ADR 0024 exists to prevent.
+///   something is what ADR 0051 exists to prevent.
 ///
 /// Recovery-only, like [`AliasRunner`] and for the same reasons: it cannot hijack a
 /// working call, it is bounded, and it says what it did so the model, the outcome record
@@ -2928,7 +2928,7 @@ pub trait NativeChannel: Send + Sync {
 /// contains are dropped, because `area: "kitchen"` adds nothing to `name: "Kitchen Table"`.
 pub struct TargetSearchRunner {
     inner: Arc<dyn CapabilityRunner + Send + Sync>,
-    /// Direct reach into a server, by server name (ADR 0042). Where one exists, it is
+    /// Direct reach into a server, by server name (ADR 0054). Where one exists, it is
     /// both the better reading — everything, not only what the tool surface exposes —
     /// and the better way to act, because an id cannot be mis-matched.
     channels: Vec<(String, Arc<dyn NativeChannel>)>,
@@ -2950,7 +2950,7 @@ impl TargetSearchRunner {
         }
     }
 
-    /// Wraps `inner`, with direct reach into the named servers (ADR 0042).
+    /// Wraps `inner`, with direct reach into the named servers (ADR 0054).
     #[must_use]
     pub fn with_channels(
         inner: Arc<dyn CapabilityRunner + Send + Sync>,
@@ -2969,7 +2969,7 @@ impl TargetSearchRunner {
     }
 
     /// This server's state as it is right now, via the tool the person nominated as its
-    /// reader (ADR 0038). `None` when nobody nominated one — the honest silence, and the
+    /// reader (ADR 0054). `None` when nobody nominated one — the honest silence, and the
     /// reason this whole mechanism needs no per-server code.
     fn reading(&self, id: &str) -> Option<String> {
         // Direct reach first: it reports everything the service knows, where the tool
@@ -3035,7 +3035,7 @@ impl TargetSearchRunner {
             .find(|(_, known_name)| known_name.eq_ignore_ascii_case(name))?;
         match channel.act(tool, entity)? {
             // Say so. A person reading the trail should see that Endora went around the
-            // tool surface, and exactly what it acted on (ADR 0037).
+            // tool surface, and exactly what it acted on (ADR 0053).
             Ok(out) => Some(Ok(format!(
                 "(The first attempt failed. Endora looked up what actually exists and \
                  acted on '{name}' directly, as {entity}.)\n{out}"
@@ -3110,7 +3110,7 @@ impl CapabilityRunner for TargetSearchRunner {
             return Err(original);
         };
         // A kind filter the service has never used as a category is not a category — it
-        // is part of what the person named (ADR 0041). Only a service that can say so
+        // is part of what the person named (ADR 0054). Only a service that can say so
         // changes anything here.
         let words = match self.channel(id).and_then(|c| c.categories().ok()) {
             Some(known) if !known.is_empty() => {
@@ -3121,7 +3121,7 @@ impl CapabilityRunner for TargetSearchRunner {
         let found = crate::target_search::candidates(&reading, &words);
         // Only an unambiguous match may be acted on. Everything else is shown — unless
         // the tie is only between a thing and its own diagnostics, which is not a real
-        // ambiguity (ADR 0041).
+        // ambiguity (ADR 0054).
         let settled = crate::target_search::only_real_match(&found)
             .or_else(|| self.only_one_that_can_be_acted_on(id, &found));
         let Some(best) = settled else {
@@ -3131,7 +3131,7 @@ impl CapabilityRunner for TargetSearchRunner {
             ));
         };
         // Direct reach, where it exists: resolve the name to the service's own id and
-        // act on exactly that (ADR 0042). An id cannot be mis-matched, so this is the end
+        // act on exactly that (ADR 0054). An id cannot be mis-matched, so this is the end
         // of the guessing rather than a better guess.
         if let Some(channel) = self.channel(id) {
             if let Some(result) = self.act_directly(channel, id, &best.value) {
@@ -3161,7 +3161,7 @@ impl CapabilityRunner for TargetSearchRunner {
 }
 
 /// Hides the capabilities the person has **withdrawn** — turned off — from every
-/// source, and refuses to run them (ADR 0040).
+/// source, and refuses to run them (ADR 0054).
 ///
 /// Turning a skill off has always worked for built-ins, because [`RegistryRunner`]
 /// applies the stored flag itself. MCP tools had no equivalent: the flag could be set
@@ -3348,7 +3348,7 @@ mod tests {
             Decision::Block
         );
 
-        // Opened (ADR 0024 escape hatch): moves to Confirm — never Act. The
+        // Opened (ADR 0051 escape hatch): moves to Confirm — never Act. The
         // un-undoable is confirmed every time, never run autonomously, even fully
         // widened.
         assert_eq!(
@@ -3361,7 +3361,7 @@ mod tests {
     #[test]
     fn run_refuses_an_irreversible_skill_deny_by_default() {
         // A skill whose effect can't be undone must be refused by the execution
-        // path itself, not just excluded from autonomous runs (ADR 0024).
+        // path itself, not just excluded from autonomous runs (ADR 0051).
         struct IrreversibleSkill;
         impl Capability for IrreversibleSkill {
             fn info(&self) -> CapabilityInfo {
@@ -3396,7 +3396,7 @@ mod tests {
     fn run_allows_an_opened_irreversible_skill_but_never_autonomously() {
         // Once the person opens a capability's irreversible band, the execution path
         // runs it (reached only via an explicit confirmation) — but it is still
-        // never cleared to act on its own (ADR 0024).
+        // never cleared to act on its own (ADR 0051).
         struct BookingSkill;
         impl Capability for BookingSkill {
             fn info(&self) -> CapabilityInfo {
@@ -4267,7 +4267,7 @@ mod tests {
         // Observed live: GetLiveContext's own result came back stamped
         //   "[unverified] This is what the tool reported about its own work."
         // A read has no work of its own, and that text tells the model not to trust the
-        // very reading ADR 0034 uses as confirmation.
+        // very reading ADR 0053 uses as confirmation.
         let mcp = McpRunner::connect_with_readers(vec![(
             "home-assistant".to_owned(),
             Box::new(FakeTransport {
@@ -4573,7 +4573,7 @@ mod tests {
 
     #[test]
     fn any_server_gets_read_back_once_someone_nominates_its_reader() {
-        // ADR 0038's whole point. Nothing here is Home Assistant, and nothing in the
+        // ADR 0054's whole point. Nothing here is Home Assistant, and nothing in the
         // runner knows what this server is — a calendar gets verification on exactly
         // the same terms, because the mapping is data rather than a name in the source.
         let mcp = McpRunner::connect_with_readers(vec![(
@@ -4602,7 +4602,7 @@ mod tests {
     #[test]
     fn a_server_with_no_nomination_gets_no_reader_and_no_read_back() {
         // The honest default, unchanged: Endora does not guess which tool reads, and a
-        // server's own say-so is not evidence (ADR 0005/0038). Note this holds even for
+        // server's own say-so is not evidence (ADR 0051/0038). Note this holds even for
         // a tool literally named GetLiveContext — the old hardcode is gone.
         let mcp = McpRunner::connect(vec![(
             "home-assistant".to_owned(),
@@ -4687,7 +4687,7 @@ mod tests {
 
     #[test]
     fn unattended_runner_treats_an_unknown_band_as_an_actuator() {
-        // Deny-by-default, same rule ADR 0034 applies to verification: a capability
+        // Deny-by-default, same rule ADR 0053 applies to verification: a capability
         // whose band we cannot see is assumed to change something.
         let unattended = ReversibleOnlyRunner::new(Arc::new(FakeBuiltin));
         assert!(unattended.run("mystery", "{}").is_err());
@@ -4793,7 +4793,7 @@ mod tests {
     #[test]
     fn withdrawing_a_reader_leaves_actions_unverified_rather_than_broken() {
         // Read-back must not name a tool that can no longer be run: the turn would ask
-        // for a reading it cannot get. Unverified is the honest fallback (ADR 0034).
+        // for a reading it cannot get. Unverified is the honest fallback (ADR 0053).
         let runner = withdrawing("home.HassLightSet");
         assert_eq!(runner.verifier("home.HassTurnOn"), None);
     }
@@ -4932,7 +4932,7 @@ mod tests {
     #[test]
     fn a_server_with_no_nominated_reader_searches_nothing() {
         // No reader means no reading, which means no candidates — the same honest silence
-        // ADR 0038 chose, and the reason this needs no per-server code.
+        // ADR 0054 chose, and the reason this needs no per-server code.
         struct Blind;
         impl CapabilityRunner for Blind {
             fn available(&self) -> Vec<crate::application::CapabilitySpec> {

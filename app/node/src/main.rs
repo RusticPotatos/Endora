@@ -32,7 +32,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or_else(|_| "http://localhost:11434/v1".to_owned());
     let model = std::env::var("ENDORA_MODEL").unwrap_or_else(|_| "qwen2.5:7b".to_owned());
 
-    // The butler brain. If a router + synthesizer are configured (ADR 0027), run
+    // The butler brain. If a router + synthesizer are configured (ADR 0055), run
     // the mixture — a tool-tuned specialist routes to skills, a generalist writes
     // the reply — which the eval shows out-routes a single model at less VRAM.
     // Otherwise a single model does both. Either way it falls back to the scripted
@@ -54,7 +54,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     // A model configuration saved from the console overrides the environment at
-    // runtime (ADR 0027): the butler reads it each turn and rebuilds when it
+    // runtime (ADR 0055): the butler reads it each turn and rebuilds when it
     // changes, falling back to the environment brain above when nothing is stored.
     let store = Arc::new(SqliteStore::open(&db_path)?);
     let model_config = Arc::new(ConfigStore::new(store.db()));

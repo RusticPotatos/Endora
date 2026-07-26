@@ -5,7 +5,7 @@
 > [ADRs](adr/README.md), and execution is tracked in GitHub issues/milestones.
 > When this roadmap and an ADR disagree, the ADR wins.
 >
-> Rewritten 2026-07-25 after [ADR 0029](adr/0029-delete-the-goal-tracker.md). The
+> Rewritten 2026-07-25 after [ADR 0052](adr/0052-what-it-knows-about-you.md). The
 > previous version planned releases 0.5→1.0 around the goal tracker (North Stars,
 > targets, experiments, reflections). That machinery is gone; so is the plan built
 > on it. The canonical statement of direction is
@@ -16,7 +16,7 @@
 An **autonomous personal intelligence**, running on your hardware. Its job is to
 understand a person and act usefully in their interest — not to give them somewhere
 to file their goals. See [direction-reset.md](direction-reset.md) and
-[ADR 0020](adr/0020-intent-first-understanding-loop.md).
+[ADR 0052](adr/0052-what-it-knows-about-you.md).
 
 The guiding test for every feature, unchanged: *if this disappeared tomorrow, would
 Endora still feel like an autonomous personal intelligence?* If yes, it is probably
@@ -31,9 +31,9 @@ Built and working:
   model Endora keeps of a person (ADRs 0020, 0029).
 - **One tool-calling turn** — the butler runs its skills through the policy layer and
   answers grounded in the real results, success or failure, with no deterministic
-  narration papering over either (ADR 0028).
+  narration papering over either (ADR 0053).
 - **Skills and the MCP host** — built-in skills plus any MCP server, each behind
-  per-skill configuration and enablement (ADR 0021).
+  per-skill configuration and enablement (ADR 0054).
 - **The safety machinery** — reversibility bands with deny-by-default, the autonomy
   envelope, the SSRF egress guard and outbound secret tripwire, and an audit trail
   (ADRs 0005, 0022, 0023, 0024).
@@ -42,7 +42,7 @@ Built and working:
   leaves a note (ADRs 0019, 0024).
 - **A model layer that can improve itself** — a fitness battery and a deterministic
   adoption policy: auto-adopt a better local model, only *propose* a cloud one
-  (ADR 0027).
+  (ADR 0055).
 - **Memory rights** — everything visible, correctable, exportable, deletable.
 
 ## The near arc
@@ -52,7 +52,7 @@ Sequenced by what unblocks what, not by release number. Tagging is a human decis
 ### 1. Measure understanding — *delivered*
 
 Belief quality is the load-bearing behaviour and the thing with no fallback
-(ADR 0029's stated risk). [ADR 0030](adr/0030-measuring-understanding.md) adds an
+(ADR 0052's stated risk). [ADR 0055](adr/0055-the-model-layer.md) adds an
 **L3 understanding tier** to the fitness battery — does the butler form beliefs from
 real evidence, stay quiet when a turn reveals nothing, avoid re-filing what it
 already knows, and refrain from overclaiming confidence — and an **adoption floor**,
@@ -78,20 +78,20 @@ What the runs found:
 
 - **`relay:failure-is-honest` fails 1 run in 3.** With a tool error in its immediate
   context, the model still sometimes narrates success. This is precisely the risk
-  [ADR 0028](adr/0028-native-tool-calling-turn.md) accepted when it deleted the
+  [ADR 0053](adr/0053-honesty-about-what-it-did.md) accepted when it deleted the
   deterministic honesty nets — now quantified rather than assumed. Per that ADR the
   answer is a better model or a better prompt, **never** a canned string; whatever is
   tried can now be measured against this case.
 - **`select:knowledge` and `select:web_search` fail 0/3 in every measurement** — the
   one result stable enough to act on.
 - **`no-duplicate` passes 0 runs in 3** — the model re-states what it already knows;
-  the deterministic backstop (ADR 0033) is what stops it reaching storage.
+  the deterministic backstop (ADR 0052) is what stops it reaching storage.
 - **The three `verify:*` cases never rise above 1/3** — the read-back reaches the model
   and the model ignores it. Stable across every measurement, and the finding that
-  ADR 0037 answers. See
-  [ADR 0034](adr/0034-evidence-verifies.md#the-answer-came-back-negative-measured-2026-07-25).
+  ADR 0053 answers. See
+  [ADR 0053](adr/0034-evidence-verifies.md#the-answer-came-back-negative-measured-2026-07-25).
 - **The battery was reading the wrong channel.** Sixteen cases scored `capability_use`,
-  the pre-[0028](adr/0028-native-tool-calling-turn.md) field production writes nowhere
+  the pre-[0028](adr/0053-honesty-about-what-it-did.md) field production writes nowhere
   outside tests, and the `WithSkills`/`WithTools` probes left `context.tools` empty so
   the model was never offered native tool-calling at all. Fixed: those probes now drive
   `take_turn` with real schemas, and `used()` reads `tool_calls` first.
@@ -106,14 +106,14 @@ What the runs found:
 
 Still ahead: growing the battery further (now cheap), and a *pinned* LLM judge to
 measure whether a belief is genuinely insightful, which lexical scoring cannot see
-(ADR 0030 alternatives).
+(ADR 0055 alternatives).
 
 ### 2. Beliefs that behave like a model, not a list — *decay delivered*
 
-[ADR 0032](adr/0032-beliefs-decay-and-expire.md): beliefs now **weaken without
+[ADR 0052](adr/0052-what-it-knows-about-you.md): beliefs now **weaken without
 reinforcement and fade out entirely**. `BeliefStatus::Expired` existed and was never
 set by any code path — the "nothing is assumed permanently" promise was fiction.
-Half-lives are per kind, encoding ADR 0020's own claim that intent changes slowly
+Half-lives are per kind, encoding ADR 0052's own claim that intent changes slowly
 (365 days) and a stressor does not (45); affirming resets the clock; the nightly loop
 persists the forgetting so it is visible.
 
@@ -136,7 +136,7 @@ both a track record to calibrate against and work that outlives a single turn.
 
 ### 4. Agentic proactivity — *delivered for check-ins*
 
-[ADR 0031](adr/0031-agentic-proactivity.md): the check-in schedule is now a **budget,
+[ADR 0056](adr/0056-how-it-behaves-toward-you.md): the check-in schedule is now a **budget,
 not a trigger**. Deterministic code owns *how often* the butler may speak (minimum
 interval, and never on top of someone who just spoke); the butler owns *whether* it
 has anything worth saying, and the reason lands in the activity trail. The budget is
@@ -172,7 +172,7 @@ step D — it is the baseline D deliberately opens a narrow, audited door throug
 
 ### B. Outcomes: what happened after Endora acted
 
-The reward signal, and cheaper than it looks — [ADR 0034](adr/0034-evidence-verifies.md)
+The reward signal, and cheaper than it looks — [ADR 0053](adr/0053-honesty-about-what-it-did.md)
 already produces the observation half. An outcome is that read-back plus the person's
 lightweight reaction (helped / didn't / didn't notice), linked to the belief that
 motivated it. `run_tool_turn` records one per non-`Observe` run; `butler_context` carries
@@ -186,7 +186,7 @@ turn, let alone a restart. An `Intention` — statement, originating belief, nex
 state, step budget — gives the nightly loop something to *continue* rather than restart,
 and decays like a belief so it cannot accumulate.
 
-The ADR must open by naming what this is **not**. [ADR 0029](adr/0029-delete-the-goal-tracker.md)
+The ADR must open by naming what this is **not**. [ADR 0052](adr/0052-what-it-knows-about-you.md)
 deleted a queue of records the person had to groom; this is Endora's own working memory,
 reviewed the way understanding is reviewed and never managed. If the console grows an
 "add intention" button, the ADR failed. Lives in `understanding` until a second consumer
@@ -196,8 +196,8 @@ earns it a context of its own.
 
 The payload. Confidence is a *model output*, so the sizing must be deterministic policy
 that treats it as data — a pure function in `shared/kernel` beside `Reversibility`, never
-an instruction in a prompt. The same lesson [ADR 0028](adr/0028-native-tool-calling-turn.md)
-learned about honesty and [ADR 0033](adr/0033-what-understanding-admits.md) about
+an instruction in a prompt. The same lesson [ADR 0053](adr/0053-honesty-about-what-it-did.md)
+learned about honesty and [ADR 0052](adr/0052-what-it-knows-about-you.md) about
 de-duplication.
 
 Roughly: low confidence buys a question, medium buys `Observe`/`Reversible` work, high
@@ -206,7 +206,7 @@ envelope — and `Irreversible` is never available unprompted, at any confidence
 any gate. That last line is what keeps the door narrow.
 
 **Blocked, and now on a measured number rather than a worry.** The question was whether
-the read-back ([ADR 0034](adr/0034-evidence-verifies.md)) makes actuation honesty good
+the read-back ([ADR 0053](adr/0053-honesty-about-what-it-did.md)) makes actuation honesty good
 enough to act unattended. Measured 2026-07-25 on `qwen2.5:7b`, it does not:
 `verify:observation-beats-the-claim` **1/3**, `verify:unconfirmed-is-not-overclaimed`
 **0/3**, `verify:failure-names-what-is-really-there` **0/3**. Handed a success nothing
@@ -226,8 +226,8 @@ matter of course. So step D waits, and the thing to try first is no longer a gue
    bought with a bigger model *on this hardware*, so it has to come from code. Which is
    what option 2 is.
 2. **Make the observation load-bearing in code** — *delivered*, as
-   [ADR 0037](adr/0037-disclosure-not-persuasion.md). Not by editing the reply (that is
-   the deterministic narration ADR 0028 deleted) but by disclosing every action and its
+   [ADR 0053](adr/0053-honesty-about-what-it-did.md). Not by editing the reply (that is
+   the deterministic narration ADR 0053 deleted) but by disclosing every action and its
    verification status beside the reply, deterministically, whatever the prose claims.
    The guarantee stops being *"the butler will report this honestly"* — a claim about a
    model — and becomes *"the person can always see it"*, a claim about code.
@@ -236,13 +236,13 @@ matter of course. So step D waits, and the thing to try first is no longer a gue
    as direct as an instruction gets, and it is ignored.
 
 Whatever is tried, the battery is what says whether it worked — and the `verify:*` cases
-are expected to keep failing until the *model* improves. ADR 0037 does not make them
+are expected to keep failing until the *model* improves. ADR 0053 does not make them
 pass, deliberately: anything that did, without the model getting better, would be the
-canned string ADR 0028 deleted, wearing a hat.
+canned string ADR 0053 deleted, wearing a hat.
 
 ### E. Then
 
-- **Endora repairing its own integrations.** [ADR 0039](adr/0039-capability-repair-proposals.md)
+- **Endora repairing its own integrations.** [ADR 0054](adr/0054-other-peoples-services.md)
   has it noticing that a capability keeps failing on a target and asking what the thing is
   really called; the answer is stored and grounds later turns. The destination is Endora
   making the fix *at the source* — proposing the change to the server's own configuration
@@ -253,11 +253,11 @@ canned string ADR 0028 deleted, wearing a hat.
 
 - Event-driven wake: a genuine event (a new high-confidence belief, a due reminder)
   *opens the check-in budget early*, as an extra gate and never as the decision itself
-  — the remainder [ADR 0031](adr/0031-agentic-proactivity.md) named.
+  — the remainder [ADR 0056](adr/0056-how-it-behaves-toward-you.md) named.
 - Belief **contradiction** and **consolidation**, the remainder
-  [ADR 0032](adr/0032-beliefs-decay-and-expire.md) named.
+  [ADR 0052](adr/0052-what-it-knows-about-you.md) named.
 - A sandbox in which the butler can author and run its own capabilities
-  (ADR 0022's self-authored capabilities). Correctly last: the only step where the butler
+  (ADR 0051's self-authored capabilities). Correctly last: the only step where the butler
   writes code that then runs, and it wants every prior step's machinery.
 - The capability ladder: exhaust local before ranking up, and manage its own
   infrastructure as it goes.
@@ -285,4 +285,4 @@ compatibility within the major version, so it is a deliberate human decision.
 - **Reversibility first.** Endora acts alone only within reversible bounds.
 - **Memory rights** hold for everything stored, including audit records.
 - **Sycophancy and fabrication are defects measured by evals**, never left to the
-  model's discretion — and never patched over with a canned string (ADR 0028).
+  model's discretion — and never patched over with a canned string (ADR 0053).

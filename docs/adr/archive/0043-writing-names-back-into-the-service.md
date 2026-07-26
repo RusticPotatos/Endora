@@ -70,7 +70,7 @@ Seeing and acting are one grant; **editing the service's own configuration is an
 and it does not come free with the first. The channel refuses to teach until the person
 turns it on, and the default in the repository is off.
 
-This is [0024](0024-reversibility-bands.md)'s posture applied one level up: not "which
+This is [0024](0024-reversibility-aware-autonomy-and-the-nightly-loop.md)'s posture applied one level up: not "which
 actions may run", but "which *kinds of reach* Endora has at all".
 
 ## Consequences

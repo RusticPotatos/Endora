@@ -4,9 +4,9 @@ use endora_kernel::DomainError;
 use endora_kernel::error::require_non_empty;
 
 /// A change Endora made to a **service's own configuration**, kept so it can be put back
-/// (ADR 0045).
+/// (ADR 0054).
 ///
-/// ADR 0043 captured the prior value at the moment of the write and then dropped it on the
+/// ADR 0054 captured the prior value at the moment of the write and then dropped it on the
 /// floor: the undo existed for the length of one function call. A record nobody stored is
 /// not a reversibility story, it is a claim about one.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -56,7 +56,7 @@ impl ConfigWrite {
     }
 }
 
-/// The person's **autonomy envelope** (ADR 0022): the deterministic boundary the
+/// The person's **autonomy envelope** (ADR 0051): the deterministic boundary the
 /// butler acts independently *within*. Widening it grants more independence; the
 /// policy layer — never the model — still enforces the edges. This first slice has
 /// two coarse levers; finer axes (spend vs. privacy, per-domain) come later.
@@ -73,7 +73,7 @@ pub struct AutonomyEnvelope {
 impl Default for AutonomyEnvelope {
     fn default() -> Self {
         // Preserves the established behaviour: read-only skills act on their own,
-        // consequential ones ask (ADR 0010).
+        // consequential ones ask (ADR 0051).
         Self {
             auto_external: true,
             auto_consequential: false,
@@ -81,7 +81,7 @@ impl Default for AutonomyEnvelope {
     }
 }
 
-/// How Endora reaches an [`McpServer`] (ADR 0021). Transport is an infrastructure
+/// How Endora reaches an [`McpServer`] (ADR 0054). Transport is an infrastructure
 /// detail behind a port: `Stdio` (a local subprocess speaking MCP over its stdio)
 /// ships first; `Http` (a networked MCP server over HTTP/SSE) is the same registry
 /// shape with a different runtime. The domain only records *which*; it never speaks
@@ -110,12 +110,12 @@ pub enum McpTransport {
 }
 
 /// A registered **MCP server** — a source of tools the butler's catalog can draw on
-/// What the person calls something, and what that server actually calls it (ADR 0039).
+/// What the person calls something, and what that server actually calls it (ADR 0054).
 ///
 /// Endora notices when a capability keeps failing or changing nothing on the same
 /// target, and asks. This is the answer: *"kitchen main" means `Kitchen Main`*. It is
 /// **confirmed** knowledge — supplied by the person, never inferred from a server's
-/// text, which is the parsing ADR 0038 exists to avoid.
+/// text, which is the parsing ADR 0054 exists to avoid.
 ///
 /// Keyed by **server**, not by tool: an entity's name belongs to the server, so one
 /// answer covers every tool that server exposes rather than being re-asked per tool.
@@ -123,7 +123,7 @@ pub enum McpTransport {
 /// It reaches the model as **context**, the way a belief does. It is deliberately not a
 /// substitution: the runner never rewrites the target a model asked for, because that
 /// can act on the wrong thing and would hide the model's mistake from the eval battery
-/// that exists to measure it (ADR 0028).
+/// that exists to measure it (ADR 0053).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TargetAlias {
     /// The server whose vocabulary this is, e.g. `"home-assistant"`.
@@ -158,9 +158,9 @@ impl TargetAlias {
     }
 }
 
-/// (ADR 0021). The registry row is plain data; the *act* of adding one is a gated
+/// (ADR 0054). The registry row is plain data; the *act* of adding one is a gated
 /// capability (deny-by-default), and every tool it exposes is still band-classified
-/// before it can run (unknown ⇒ irreversible ⇒ blocked, ADR 0024). `name` is the
+/// before it can run (unknown ⇒ irreversible ⇒ blocked, ADR 0051). `name` is the
 /// stable id and the namespacing prefix for this server's tools (`name.tool`), so it
 /// must be non-empty.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -174,12 +174,12 @@ pub struct McpServer {
     pub enabled: bool,
     /// Auto-allow this server's tools on connect. When set, every tool it exposes is
     /// opened for use without per-tool clicking — but opened MCP tools are still
-    /// `Block`→`Confirm`, so the butler asks before each use (ADR 0024). The enabling
+    /// `Block`→`Confirm`, so the butler asks before each use (ADR 0051). The enabling
     /// is done in code from this stored flag; it is never driven by model output. Off
     /// keeps the stricter deny-by-default, where each tool stays blocked until allowed.
     pub trust_all: bool,
     /// The tool on this server that **reads its state** — the one Endora uses to check
-    /// what an action actually did (ADR 0038). Empty means nobody has said.
+    /// what an action actually did (ADR 0054). Empty means nobody has said.
     ///
     /// One answer settles two facts: the nominated tool's own result is an *observation*
     /// rather than a receipt, and every other tool on this server is verified through
@@ -187,7 +187,7 @@ pub struct McpServer {
     /// server could ever benefit from.
     ///
     /// Supplied by the person, so policy is never taking a third party's word for what
-    /// its own tools do (ADR 0005). Endora may *suggest* a value; it never sets one.
+    /// its own tools do (ADR 0051). Endora may *suggest* a value; it never sets one.
     pub reader_tool: String,
 }
 
@@ -265,7 +265,7 @@ impl McpServer {
         })
     }
 
-    /// Nominates the tool that reads this server's state (ADR 0038). Blank clears it.
+    /// Nominates the tool that reads this server's state (ADR 0054). Blank clears it.
     #[must_use]
     pub fn with_reader(mut self, tool: &str) -> Self {
         self.reader_tool = tool.trim().to_owned();

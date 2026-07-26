@@ -37,7 +37,7 @@ list, and each is enforced in code rather than asserted here.
 
 There is no endpoint and no console affordance to add or edit an intention. Endora forms
 them, from what it understands. The only verb the person has is **drop it** — that is
-their authority over boundaries ([direction-reset](../direction-reset.md), "human
+their authority over boundaries ([direction-reset](../../direction-reset.md), "human
 authority"), and it is the whole of their side of the interface. A UI with an "add
 intention" button would mean this ADR failed.
 

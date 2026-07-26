@@ -37,7 +37,7 @@ authorizes, capabilities execute.**
 - Every consequential path must be routed through policy — convenience shortcuts
   that let a model act directly are prohibited and are a review/CI concern.
 - Prompt injection that attempts to cross the deterministic boundary is an
-  in-scope security issue (see [SECURITY.md](../../SECURITY.md)).
+  in-scope security issue (see [SECURITY.md](../../../SECURITY.md)).
 
 ## Alternatives considered
 

@@ -22,7 +22,7 @@ edit this file, never a copy. For the full picture, read [README.md](README.md),
 
 - Endora follows **Responsibility-Oriented Clean Architecture (ROCA)** — a
   domain-first modular monolith organized **by responsibility**, not by layer
-  (ADR 0026). The workspace is `app/` (composition roots), `domains/` (one crate
+  (ADR 0050). The workspace is `app/` (composition roots), `domains/` (one crate
   per bounded context: `platform`, `capabilities`, `understanding`,
   `conversation`, `scheduling`), and `shared/` (`kernel`, `persistence`).
 - **Each context owns its own `domain` / `application` / `infrastructure`**
