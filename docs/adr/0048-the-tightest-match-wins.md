@@ -56,14 +56,19 @@ A loose match still wins when it is the only sensible one — "guest bedroom lef
 still resolves to `Guest Bedroom Left` despite the leftover word. Tightness is a
 preference between candidates, not a threshold a candidate must clear.
 
-### Two things can genuinely share a name
+### Two entries can be one device, on purpose
 
-This house has a `light` and a `switch` both called `Kitchen Main Light` — the same
-duplication that made the original "is it a light or a switch?" confusion so hard. They
-dedupe to one candidate, and the action goes to the first thing the service lists under
-that name. Acceptable because both are that ceiling light, and the alternative — refusing
-whenever a service names two things identically — would refuse a request the person
-considers completely unambiguous.
+This house has a `light` and a `switch` both called `Kitchen Main Light`. That is not an
+accident and not two devices: the owner named them that way themselves, because they are
+**the same ceiling light** seen through two entities.
+
+They dedupe to one candidate, and the action goes to the first thing the service lists
+under that name. That is correct rather than lucky — either entity operates the same
+light. And it is why refusing whenever a service names two things identically would be
+wrong: to the person there is one thing there, and the request was never ambiguous.
+
+A service's entity list is a technical view. The names on it are the person's, and where
+those names collide it is usually because the person considers the things the same.
 
 ## Consequences
 
