@@ -1330,6 +1330,14 @@ function renderSources(afterEl, steps) {
   afterEl.insertAdjacentElement("afterend", box);
 }
 
+// Trim a long tool result to something readable, keeping the start (where the useful
+// part is) and saying how much was left out rather than trailing off silently.
+function clip(text, max) {
+  const s = String(text || "");
+  if (s.length <= max) return s;
+  return s.slice(0, max) + `… (+${s.length - max} more characters)`;
+}
+
 // Nominate the tool that reads a server's state (ADR 0038). Blank clears it.
 async function setReader(el) {
   const server = el.getAttribute("data-reader-for");
@@ -1383,9 +1391,11 @@ function actionsTakenHtml(actions) {
   const rows = actions.map((a) => {
     const what = `<span class="step-more">${esc(a.skill)}</span>`;
     if (a.confirmed) {
-      return `<div class="step-row">${icon("check", 13)}<span>${what} — Endora checked afterwards: ${esc(a.observed)}</span></div>`;
+      // Bounded: a read-back can run to thousands of characters, and pasting the whole
+      // thing under the reply buries it. The full text is still in the step trail.
+      return `<div class="step-row">${icon("check", 13)}<span>${what} — Endora checked afterwards: ${esc(clip(a.observed, 240))}</span></div>`;
     }
-    return `<div class="step-row">${icon("target", 13)}<span>${what} — reported ${esc(a.claimed)}, <strong>not confirmed</strong>. Endora couldn't check this one for itself.</span></div>`;
+    return `<div class="step-row">${icon("target", 13)}<span>${what} — reported ${esc(clip(a.claimed, 240))}, <strong>not confirmed</strong>. Endora couldn't check this one for itself.</span></div>`;
   }).join("");
   return `<div class="row" style="justify-content:flex-start;margin:2px 0;"><div class="steps" style="padding:8px 10px;"><div class="step-list">${rows}</div></div></div>`;
 }
