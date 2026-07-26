@@ -5,7 +5,7 @@
 //! repositories — but they all share **one** connection through [`Db`], a cheap
 //! clone around an `Arc<Mutex<Connection>>`. This preserves the exact
 //! single-connection-behind-a-Mutex semantics the store had before the
-//! Responsibility-Oriented reorg (ADR 0026), while letting repositories live in
+//! Responsibility-Oriented reorg (ADR 0050), while letting repositories live in
 //! their own crates.
 //!
 //! `Db` deliberately exposes only `lock()`; each context's infrastructure writes

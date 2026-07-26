@@ -1,11 +1,11 @@
-//! Outcomes — what actually happened after Endora acted (ADR 0035).
+//! Outcomes — what actually happened after Endora acted (ADR 0053).
 //!
 //! A [`Belief`](crate::domain::Belief) is what Endora understands; an [`Outcome`] is
 //! what it *did*, and what the world looked like afterwards. Together they are the two
 //! halves of "memory learns": the first was built long ago, the second is this.
 //!
 //! The record keeps the actuator's **claim** and Endora's **observation** side by side,
-//! verbatim, and derives no verdict from them. That is ADR 0034's reasoning carried into
+//! verbatim, and derives no verdict from them. That is ADR 0053's reasoning carried into
 //! storage: deciding *confirmed* versus *contradicted* needs a model of what the caller
 //! intended, which does not exist. Keeping both unreconciled is honest, and it is the
 //! raw material a later layer can reconcile against real data rather than against an
@@ -15,7 +15,7 @@ use endora_kernel::error::{DomainError, require_non_empty};
 use endora_kernel::ids::{BeliefId, OutcomeId, Timestamp};
 
 /// What the person made of an action, once they say — and they are never asked
-/// (ADR 0035). Absent is the normal state, not a gap to be filled.
+/// (ADR 0053). Absent is the normal state, not a gap to be filled.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Reaction {
     /// It helped.
@@ -51,10 +51,10 @@ impl Reaction {
 }
 
 /// One thing Endora did, with the actuator's claim about it and what Endora then
-/// observed (ADR 0035).
+/// observed (ADR 0053).
 ///
 /// Only actions get one. A capability in the `Observe` band changes nothing, so there is
-/// no outcome to record — its result is already evidence (ADR 0034).
+/// no outcome to record — its result is already evidence (ADR 0053).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Outcome {
     id: OutcomeId,
@@ -72,7 +72,7 @@ impl Outcome {
     /// Records what an action claimed and what was observed afterwards.
     ///
     /// `observation` is `None` when nothing could read the effect back — an honest
-    /// default for integrations Endora knows nothing about (ADR 0034). The reaction
+    /// default for integrations Endora knows nothing about (ADR 0053). The reaction
     /// starts absent: the person is never asked.
     ///
     /// # Errors
@@ -163,7 +163,7 @@ impl Outcome {
     }
 
     /// The actuator's own account of its work — which is exactly the thing that can be
-    /// untrue (ADR 0034).
+    /// untrue (ADR 0053).
     #[must_use]
     pub fn claim(&self) -> &str {
         &self.claim
@@ -194,7 +194,7 @@ impl Outcome {
     }
 
     /// Whether the world actually moved: `Some(false)` means Endora read the state
-    /// before and after and they were identical, whatever the tool claimed (ADR 0039).
+    /// before and after and they were identical, whatever the tool claimed (ADR 0054).
     /// `None` means there was nothing to compare — no reader, or no before-reading.
     #[must_use]
     pub const fn changed(&self) -> Option<bool> {
@@ -232,7 +232,7 @@ mod tests {
 
     #[test]
     fn the_claim_and_the_observation_are_kept_apart() {
-        // ADR 0035: both verbatim, no verdict derived. A claim of success alongside an
+        // ADR 0053: both verbatim, no verdict derived. A claim of success alongside an
         // observation that contradicts it must survive as *both*, not collapse to one.
         let outcome = Outcome::record(
             OutcomeId::new(1),
@@ -253,7 +253,7 @@ mod tests {
     #[test]
     fn an_unverifiable_action_is_recorded_as_unobserved() {
         // Nothing could read the effect back — honest for integrations nobody has
-        // taught Endora about (ADR 0034), and distinguishable from "observed nothing".
+        // taught Endora about (ADR 0053), and distinguishable from "observed nothing".
         let outcome = recorded();
         assert_eq!(outcome.observation(), None);
         assert!(!outcome.was_observed());

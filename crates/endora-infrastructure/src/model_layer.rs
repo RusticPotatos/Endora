@@ -1,11 +1,11 @@
-//! The self-improving model layer (ADR 0027).
+//! The self-improving model layer (ADR 0055).
 //!
 //! Two halves:
 //!
 //! - **Fitness function** — [`evaluate`] scores any [`Butler`] on the agentic
 //!   behaviours that matter: skill selection, no-fabrication, faithful relay and
 //!   grounding (L1), the "Jarvis" behaviours (L2), and **understanding** — how
-//!   soundly it builds Endora's model of the person (L3, ADR 0030). Returns a
+//!   soundly it builds Endora's model of the person (L3, ADR 0055). Returns a
 //!   structured [`Scorecard`]. This is the same battery the `agentic_eval` test
 //!   prints; here it is a library so a scheduled loop can call it, not just a human.
 //!
@@ -15,7 +15,7 @@
 //!   "exhaust local before ranking up" path), but only **propose** a **cloud**
 //!   (keyed) model, which leaves the device and costs money, for the person to
 //!   confirm. A candidate that would **cost understanding** is likewise only
-//!   proposed, never auto-adopted (the ADR 0030 floor). [`run_model_layer`] wires
+//!   proposed, never auto-adopted (the ADR 0055 floor). [`run_model_layer`] wires
 //!   the two together: evaluate, decide, and apply (write the config for a local
 //!   adoption; surface a proposal otherwise).
 //!
@@ -38,7 +38,7 @@ pub use crate::eval::{
     evidence_is_grounded, leaks_jargon, statements_duplicate,
 };
 
-// --- Candidate registry + adoption policy (ADR 0027) -------------------------
+// --- Candidate registry + adoption policy (ADR 0055) -------------------------
 
 /// A model the layer can consider adopting: a name plus its full
 /// [`ButlerModelConfig`] (endpoint, model(s), sampling, and — for cloud — a key).
@@ -93,18 +93,18 @@ pub enum AdoptionDecision {
     },
 }
 
-/// Decides adoption from scored candidates. Policy (ADR 0027; "models propose,
+/// Decides adoption from scored candidates. Policy (ADR 0055; "models propose,
 /// deterministic policy authorizes"): **prefer a better local model** — if any
 /// keyless candidate beats the incumbent, adopt the best such one automatically
 /// (exhaust local before ranking up). Only when **no** local candidate beats the
 /// incumbent but a **cloud** one does is that cloud model *proposed*, never
 /// auto-adopted. Ties do not beat the incumbent (strictly greater required).
 ///
-/// **The understanding floor (ADR 0030):** a candidate that wins on total but scores
+/// **The understanding floor (ADR 0055):** a candidate that wins on total but scores
 /// *lower* on L3 than the incumbent is never auto-adopted — it is proposed instead.
-/// Since ADR 0029, understanding is the only model Endora keeps of a person, so a
+/// Since ADR 0052, understanding is the only model Endora keeps of a person, so a
 /// swap that trades it for tool-routing points is exactly the silent degradation
-/// ADR 0027 set out to prevent. The person decides whether that trade is worth it.
+/// ADR 0055 set out to prevent. The person decides whether that trade is worth it.
 #[must_use]
 pub fn decide_adoption(incumbent: &Scorecard, scored: &[ScoredCandidate]) -> AdoptionDecision {
     let incumbent_total = incumbent.total();
@@ -344,12 +344,12 @@ mod tests {
         assert!(!is_local(&cloud("y")));
     }
 
-    // --- The understanding floor (ADR 0030) ---
+    // --- The understanding floor (ADR 0055) ---
 
     #[test]
     fn a_local_model_that_would_cost_understanding_is_proposed_not_adopted() {
         // Wins on total (16 > 12) purely on tool-routing, while understanding drops
-        // 8 → 2. Since ADR 0029 that is the one thing with no fallback, so the swap
+        // 8 → 2. Since ADR 0052 that is the one thing with no fallback, so the swap
         // is the person's call — never automatic.
         let cands = vec![scored_with_l3(local("router-savant"), 16, 2)];
         match decide_adoption(&card_with_l3(12, 8), &cands) {

@@ -1,10 +1,10 @@
-//! Agentic-capability eval for the LLM butler (ADR 0019/0020/0027 — the
+//! Agentic-capability eval for the LLM butler (ADR 0056/0020/0027 — the
 //! multi-step skill loop and the self-improving model layer). It measures whether
 //! a given model can actually **drive the agentic loop**: pick the right skill,
 //! refuse to fabricate a live fact, relay a real result faithfully, answer
 //! grounded facts directly, hold the L2 "Jarvis" behaviours (use a configured
 //! integration, never bluff/deny, stay in English, keep casual chat warm), and —
-//! L3, ADR 0030 — build a sound **understanding** of the person: form beliefs from
+//! L3, ADR 0055 — build a sound **understanding** of the person: form beliefs from
 //! real evidence, stay quiet when a turn reveals nothing, avoid re-filing what it
 //! already knows, and not overclaim confidence.
 //!
@@ -93,7 +93,7 @@ fn butler_drives_the_agentic_loop() {
     report(&model, &score);
     // Asserted on the WORST run, not the mean: a butler that is sometimes unusable
     // is unusable. Understanding is the only model Endora keeps of a person
-    // (ADR 0029), so a model that forms none is not viable however well it routes.
+    // (ADR 0052), so a model that forms none is not viable however well it routes.
     let worst = score
         .runs
         .iter()
@@ -113,7 +113,7 @@ fn butler_drives_the_agentic_loop() {
     );
 }
 
-/// Mixture eval (ADR 0027): a routing specialist + a synthesizing generalist.
+/// Mixture eval (ADR 0055): a routing specialist + a synthesizing generalist.
 /// Set ENDORA_ROUTER_MODEL and ENDORA_SYNTH_MODEL (both served at
 /// ENDORA_MODEL_URL). Compares the router+synthesizer split against a single
 /// model — the question being whether it matches a big generalist at less VRAM.

@@ -1,8 +1,8 @@
-//! Searching a server's own reading for the target a call failed to name (ADR 0041).
+//! Searching a server's own reading for the target a call failed to name (ADR 0054).
 //!
 //! When an action fails to match a name, the most useful thing in the world is the list
 //! of names that *do* exist — and Endora already holds it, because a failed action reads
-//! the state back (ADR 0034). Until now it handed the model the whole reading and hoped.
+//! the state back (ADR 0053). Until now it handed the model the whole reading and hoped.
 //!
 //! Measured, that hope is misplaced. Across fourteen consecutive attempts at a light
 //! called `Kitchen Table`, with `names: Kitchen Table` present in the reading every
@@ -33,14 +33,14 @@ pub struct Candidate {
     /// `Kitchen Main Light` and `Kitchen Main Light LED` both contain all three words of
     /// "kitchen main light", so they score identically — but the first is exactly what
     /// was asked for and the second is that plus something else. Leftover words are how
-    /// a tight match is told from a loose one (ADR 0041).
+    /// a tight match is told from a loose one (ADR 0054).
     pub extra: usize,
 }
 
 /// The words a call was aiming at: the values of its **scalar string** fields, split into
 /// words and lowercased.
 ///
-/// Arrays are skipped for the reason the read-back skips them (ADR 0034): a scalar points
+/// Arrays are skipped for the reason the read-back skips them (ADR 0053): a scalar points
 /// at something, an array restricts which kinds count. `domain: ["light"]` is not part of
 /// what was aimed at, and treating it as such would make every light a candidate.
 #[must_use]
@@ -62,7 +62,7 @@ pub fn target_words(input_json: &str) -> Vec<String> {
 }
 
 /// The words a call was aiming at, counting **kind filters the service does not recognise**
-/// as part of the target rather than as categories (ADR 0041).
+/// as part of the target rather than as categories (ADR 0054).
 ///
 /// `target_words` skips arrays for a good reason — `domain: ["light"]` restricts which
 /// sorts of thing count, it does not point at one. But that reasoning only holds while the
@@ -184,7 +184,7 @@ pub fn candidates(reading: &str, words: &[String]) -> Vec<Candidate> {
 ///
 /// What actually makes a retry safe is that nothing else comes close. Two names tied at
 /// the top is a coin flip, and a coin flip that actuates something is the failure mode
-/// [ADR 0024](../../docs/adr/0024-reversibility-bands.md) exists to prevent.
+/// [ADR 0051](../../docs/adr/0024-reversibility-bands.md) exists to prevent.
 ///
 /// A single shared word is a coincidence rather than a match, so it only counts when
 /// nothing else in the reading resembles the request at all.
@@ -194,7 +194,7 @@ pub fn only_real_match(found: &[Candidate]) -> Option<&Candidate> {
     // A tie is a guess — but two candidates only tie when they match the request equally
     // well AND account for their own names equally well. `Kitchen Main Light` and
     // `Kitchen Main Light LED` are not tied: one is what was asked for, the other is that
-    // plus a part nobody mentioned (ADR 0041).
+    // plus a part nobody mentioned (ADR 0054).
     let equally_good = found
         .iter()
         .filter(|c| c.matched == best.matched && c.extra == best.extra)
@@ -396,7 +396,7 @@ mod tests {
 
     #[test]
     fn it_reads_a_calendar_exactly_as_it_reads_a_house() {
-        // The point of ADR 0041: no Home Assistant knowledge anywhere in here. A JSON
+        // The point of ADR 0054: no Home Assistant knowledge anywhere in here. A JSON
         // reading from any server is searched the same way.
         let reading = r#"{"events":[{"title": "Endora Syncup"},{"title": "Dentist"}]}"#;
         let words = target_words(r#"{"title":"endora sync-up"}"#);

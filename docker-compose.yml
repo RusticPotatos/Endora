@@ -58,7 +58,7 @@ services:
       # relaying results). Used for the drafting endpoint and as the single-model
       # butler when the mixture below is not set.
       ENDORA_MODEL: "qwen2.5:7b"
-      # The butler brain (ADR 0027). Set BOTH to run the mixture: a tool-tuned
+      # The butler brain (ADR 0055). Set BOTH to run the mixture: a tool-tuned
       # specialist routes to skills, a generalist writes the reply. The agentic
       # eval shows this out-routes a single model at less VRAM (hermes3:8b +
       # qwen2.5:7b scored 8/8, matching a single qwen2.5:14b). Unset both to use

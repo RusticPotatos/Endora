@@ -38,7 +38,7 @@ pub trait DeepModelRepository {
 /// standard OpenAI-compatible fields honoured everywhere; `top_k` and
 /// `repeat_penalty` are non-standard extensions honoured by local runtimes
 /// (Ollama) but rejected by strict cloud endpoints, so providers that need them
-/// off leave them unset. See ADR 0027 — the discovery loop tunes these per slot.
+/// off leave them unset. See ADR 0055 — the discovery loop tunes these per slot.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Sampling {
     /// Randomness. Lower = more deterministic. Router wants this cold (~0.0–0.2)
@@ -64,7 +64,7 @@ pub struct ModelSlot {
 }
 
 /// The butler's model configuration, editable at runtime from the console
-/// (ADR 0027). Shared endpoint + key; either a single model or the router +
+/// (ADR 0055). Shared endpoint + key; either a single model or the router +
 /// synthesizer mixture. The key is a secret stored server-side and never
 /// returned to a client. When unset, the node falls back to its environment
 /// configuration.
@@ -84,7 +84,7 @@ pub struct ButlerModelConfig {
     pub synth: ModelSlot,
 }
 
-/// A schedule for the self-improving model tune (ADR 0027) — off by default.
+/// A schedule for the self-improving model tune (ADR 0055) — off by default.
 /// When on, the heartbeat runs the local-model evaluation + gated adoption once a
 /// day at `hour_utc`; pick an off-hour so the eval doesn't contend with chat on
 /// the GPU.
@@ -152,7 +152,7 @@ pub trait ButlerModelConfigRepository {
     fn set(&self, config: &ButlerModelConfig) -> Result<(), RepositoryError>;
 }
 
-/// Persists the person's [`AutonomyEnvelope`] (ADR 0022).
+/// Persists the person's [`AutonomyEnvelope`] (ADR 0051).
 pub trait AutonomyEnvelopeRepository {
     /// The stored envelope, or the default if never set.
     ///
@@ -168,7 +168,7 @@ pub trait AutonomyEnvelopeRepository {
 }
 
 /// Persists per-capability **settings** — the values a skill needs to run (a model
-/// name, an API key, a URL), keyed by capability id then setting key (ADR 0021).
+/// name, an API key, a URL), keyed by capability id then setting key (ADR 0054).
 /// Secrets live only here and are never echoed back to clients.
 pub trait CapabilitySettingsRepository {
     /// All stored settings, as `(capability_id, key, value)` triples.
@@ -190,7 +190,7 @@ pub trait CapabilitySettingsRepository {
 }
 
 /// Persists per-capability configuration the person controls from the Skills view
-/// (ADR 0021). Stores the **enabled** flag and, per ADR 0024, whether the person
+/// (ADR 0054). Stores the **enabled** flag and, per ADR 0051, whether the person
 /// has **opened the irreversible band** for this capability. Only overrides are
 /// stored — a capability with no row keeps its built-in defaults (enabled, and the
 /// irreversible band closed).
@@ -219,7 +219,7 @@ pub trait CapabilityConfigRepository {
 
     /// Opens or re-closes a capability's irreversible band (upsert by id, leaving
     /// the enabled flag untouched). Opening only ever moves the un-undoable from
-    /// *blocked* to *confirm-each-use* — never to autonomous (ADR 0024).
+    /// *blocked* to *confirm-each-use* — never to autonomous (ADR 0051).
     ///
     /// # Errors
     /// [`RepositoryError`] if the backend fails.
@@ -243,8 +243,8 @@ pub trait CapabilityConfigRepository {
     fn set_confirm(&self, id: &str, confirm: bool) -> Result<(), RepositoryError>;
 }
 
-/// Stores what the person said a server's targets are really called (ADR 0039).
-/// The log of changes Endora has made to services' own configuration (ADR 0045).
+/// Stores what the person said a server's targets are really called (ADR 0054).
+/// The log of changes Endora has made to services' own configuration (ADR 0054).
 ///
 /// Append-only in spirit: a write is recorded, and undoing marks it rather than deleting
 /// it. What Endora changed about someone's house is not something it should be able to
@@ -275,7 +275,7 @@ pub trait ConfigWriteLog {
     fn mark_undone(&self, id: u128) -> Result<(), RepositoryError>;
 }
 
-/// Stores what the person said a server's targets are really called (ADR 0039).
+/// Stores what the person said a server's targets are really called (ADR 0054).
 pub trait TargetAliasRepository {
     /// Every alias, so the turn can be grounded in all of them.
     ///
@@ -297,10 +297,10 @@ pub trait TargetAliasRepository {
     fn forget_alias(&self, server: &str, said: &str) -> Result<(), RepositoryError>;
 }
 
-/// Persists the **MCP servers** the catalog draws tools from (ADR 0021). The stored
+/// Persists the **MCP servers** the catalog draws tools from (ADR 0054). The stored
 /// rows are plain configuration; adding one is a gated capability (deny-by-default),
 /// and every tool a server exposes is still band-classified before it can run — an
-/// unknown tool is treated as irreversible and blocked (ADR 0024). Servers are keyed
+/// unknown tool is treated as irreversible and blocked (ADR 0051). Servers are keyed
 /// by [`McpServer::name`], which also namespaces their tools (`name.tool`).
 pub trait McpServerRegistry {
     /// All registered servers, enabled or not.
@@ -370,7 +370,7 @@ pub struct CapabilitySpec {
     /// turn can tell an **observation** from a **receipt**: a capability in the
     /// [`Reversibility::Observe`] band reports state, so its result *is* evidence,
     /// while anything else returns the actuator's claim about what it did — which
-    /// may be untrue (ADR 0034).
+    /// may be untrue (ADR 0053).
     pub reversibility: Reversibility,
 }
 
@@ -386,7 +386,7 @@ pub trait CapabilityRunner {
     fn run(&self, id: &str, input_json: &str) -> Result<String, String>;
 
     /// The capability that **observes what this one changes**, if any — the read
-    /// used to verify an actuation (ADR 0034).
+    /// used to verify an actuation (ADR 0053).
     ///
     /// Endora's architecture says *evidence verifies*. Without this, the turn can
     /// only report what an actuator claimed about its own work, which is exactly the

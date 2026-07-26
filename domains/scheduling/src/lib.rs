@@ -5,7 +5,7 @@
 //! rundown prepared each day). This context owns the schedule value types and
 //! their repositories; the heartbeat-driven orchestration that actually runs a
 //! due check-in or brief composes several contexts and lives in the orchestration
-//! layer. Depends only on the shared kernel — a leaf context. See ADR 0026.
+//! layer. Depends only on the shared kernel — a leaf context. See ADR 0050.
 
 #![forbid(unsafe_code)]
 

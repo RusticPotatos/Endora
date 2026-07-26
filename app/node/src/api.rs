@@ -38,7 +38,7 @@ use tokio::sync::broadcast;
 #[derive(Clone)]
 pub struct AppState {
     /// The persistence adapter (implements the repository ports not yet moved to
-    /// their bounded context — ADR 0026).
+    /// their bounded context — ADR 0050).
     pub store: Arc<SqliteStore>,
     /// The conversation context's chat repository, over the shared connection.
     pub chat: Arc<endora_conversation::ChatStore>,
@@ -63,9 +63,9 @@ pub struct AppState {
     /// changed" nudge, and clients re-read the authoritative state.
     pub changes: broadcast::Sender<()>,
     /// The butler's skills (weather, web, …) — declared modules the butler can
-    /// reach for, each gated by its autonomy level (ADR 0019).
+    /// reach for, each gated by its autonomy level (ADR 0056).
     pub capabilities: Arc<Vec<Arc<dyn Capability>>>,
-    /// Connected MCP servers, as a runner (ADR 0021). Long-lived (subprocesses),
+    /// Connected MCP servers, as a runner (ADR 0054). Long-lived (subprocesses),
     /// so it is connected once at startup and shared across turns; a registry
     /// change rebuilds it and swaps it in behind the lock. Merged with the built-in
     /// registry per turn (see [`build_runner`]).
@@ -76,7 +76,7 @@ pub struct AppState {
     /// cross-talk (one turn answering with another's context). A single lock makes
     /// every turn atomic, so a heartbeat brief can't interleave with a chat.
     pub turn_lock: Arc<tokio::sync::Mutex<()>>,
-    /// The running conversation summary (ADR 0028 context compaction), which keeps the
+    /// The running conversation summary (ADR 0053 context compaction), which keeps the
     /// chat prompt bounded on a long conversation without dropping the day's thread.
     /// Persisted (SQLite), so a restart doesn't re-summarise the whole backlog — on a
     /// slow local model that catch-up degraded the first turns after every deploy — and
@@ -117,7 +117,7 @@ impl AppState {
         // A small buffer is plenty: subscribers coalesce to a single refresh,
         // and a lagged receiver still gets one "changed" signal.
         let (changes, _) = broadcast::channel(16);
-        // Context stores share the one connection the store opened (ADR 0026).
+        // Context stores share the one connection the store opened (ADR 0050).
         let chat = Arc::new(endora_conversation::ChatStore::new(store.db()));
         // The running summary is persisted through the same chat store (SQLite).
         let summary = PersistentSummary(chat.clone());
@@ -127,7 +127,7 @@ impl AppState {
         let audit = Arc::new(endora_platform::AuditStore::new(store.db()));
         let events = Arc::new(endora_platform::EventStore::new(store.db()));
         // Deployment policy: if a skills config file is set, apply its per-skill modes
-        // at startup as the baseline (ADR 0024) — before MCP connects, so MCP-tool
+        // at startup as the baseline (ADR 0051) — before MCP connects, so MCP-tool
         // modes are in place too.
         if let Ok(path) = std::env::var("ENDORA_SKILLS_CONFIG") {
             if !path.trim().is_empty() {
@@ -136,7 +136,7 @@ impl AppState {
         }
         // Connect any registered MCP servers up front (subprocesses persist across
         // turns). A server that fails to start is skipped, so startup never blocks
-        // on a bad one (ADR 0021).
+        // on a bad one (ADR 0054).
         let mcp = Arc::new(std::sync::RwLock::new(Arc::new(connect_mcp(
             config.as_ref(),
         ))));
@@ -160,7 +160,7 @@ impl AppState {
     }
 }
 
-/// Applies a deployment **skills config file** (ADR 0024): a JSON object mapping a
+/// Applies a deployment **skills config file** (ADR 0051): a JSON object mapping a
 /// skill id (built-in, or an MCP tool `server.tool`) to a mode — `"off"`, `"auto"`,
 /// or `"ask"`. Applied at startup as the baseline for the listed skills; skills not
 /// listed are left to the person's choices. `auto` = enabled, runs per its band;
@@ -209,7 +209,7 @@ fn apply_skills_config(config: &endora_capabilities::ConfigStore, path: &str) {
 }
 
 /// Connects to every **enabled stdio** MCP server in the registry, returning a
-/// runner over the ones that came up (ADR 0021). A server whose process fails to
+/// runner over the ones that came up (ADR 0054). A server whose process fails to
 /// start or handshake is skipped — its tools simply don't appear — so one bad server
 /// can't break startup or a turn. HTTP transport is a later slice.
 fn connect_mcp(config: &endora_capabilities::ConfigStore) -> endora_capabilities::McpRunner {
@@ -224,7 +224,7 @@ fn connect_mcp(config: &endora_capabilities::ConfigStore) -> endora_capabilities
         .filter(|s| s.enabled && s.trust_all)
         .map(|s| format!("{}.", s.name))
         .collect();
-    // Each server carries the tool the person nominated as its state reader (ADR 0038),
+    // Each server carries the tool the person nominated as its state reader (ADR 0054),
     // so read-back is data rather than a name in Endora's source.
     let clients: Vec<(String, Box<dyn McpClient>, String)> = servers
         .into_iter()
@@ -246,7 +246,7 @@ fn connect_mcp(config: &endora_capabilities::ConfigStore) -> endora_capabilities
     let runner = endora_capabilities::McpRunner::connect_with_readers(clients);
     // Auto-allow: for a server marked trust_all, open every tool it exposes so the
     // butler can use them without per-tool clicking. Opened MCP tools remain
-    // Block→Confirm — it still asks before each use (ADR 0024). This is deterministic
+    // Block→Confirm — it still asks before each use (ADR 0051). This is deterministic
     // policy set in code from a stored flag, never routed from model output.
     if !trusted.is_empty() {
         for spec in runner.available() {
@@ -332,7 +332,7 @@ struct CatalogQuery {
 }
 
 /// Searches the MCP catalog: the curated entries shipped with Endora, plus — best
-/// effort — the community registry (ADR 0021). Results prefill the "Add a server"
+/// effort — the community registry (ADR 0054). Results prefill the "Add a server"
 /// form and stay editable, so a stale launch command can be corrected before it is
 /// registered. Registry lookup is opportunistic: if it is unreachable, misconfigured,
 /// or replies in a shape we don't recognise, the curated results still come back and
@@ -392,7 +392,7 @@ async fn search_mcp_catalog(Query(q): Query<CatalogQuery>) -> Json<serde_json::V
 }
 
 /// Lists the registered MCP servers and, for each, how many of its tools are
-/// currently live (ADR 0021). A server with 0 live tools is registered but didn't
+/// currently live (ADR 0054). A server with 0 live tools is registered but didn't
 /// connect (bad command, unreachable, or disabled).
 async fn list_mcp_servers(
     State(state): State<AppState>,
@@ -409,7 +409,7 @@ async fn list_mcp_servers(
         ))
     })
     .await?;
-    // Tools the person has turned off entirely (ADR 0040) — not offered to the butler at
+    // Tools the person has turned off entirely (ADR 0054) — not offered to the butler at
     // all, which is a different state from blocked and must be visible as such.
     let withdrawn: std::collections::HashSet<String> = enabled
         .into_iter()
@@ -448,7 +448,7 @@ async fn list_mcp_servers(
             };
             let prefix = format!("{}.", s.name);
             // Each tool, with whether the person has opened it (allowed it to run,
-            // confirm-each-use). Un-opened MCP tools are visible but blocked (ADR 0024).
+            // confirm-each-use). Un-opened MCP tools are visible but blocked (ADR 0051).
             let tools: Vec<_> = live
                 .iter()
                 .filter(|spec| spec.id.starts_with(&prefix))
@@ -516,7 +516,7 @@ struct McpServerRequest {
 /// Registers (or replaces) an MCP server, then reconnects so its tools appear
 /// without a restart. Registration is deliberately a plain, network-trusted config
 /// write here (like the other 0.x config endpoints); the tools it exposes are still
-/// band-classified before they can run (ADR 0021/0024).
+/// band-classified before they can run (ADR 0054/0024).
 async fn register_mcp_server(
     State(state): State<AppState>,
     Json(req): Json<McpServerRequest>,
@@ -656,12 +656,12 @@ struct ReaderRequest {
     reader_tool: String,
 }
 
-/// Nominates which of a server's tools **reads its state** (ADR 0038).
+/// Nominates which of a server's tools **reads its state** (ADR 0054).
 ///
 /// One answer settles two things: that tool's own result becomes an observation rather
 /// than a receipt, and every other tool on the server is verified through it. It comes
 /// from the person, never from the server — a server's self-report is not evidence, and
-/// policy must not take an unvetted third party's word (ADR 0005).
+/// policy must not take an unvetted third party's word (ADR 0051).
 ///
 /// The nomination is validated against the tools the server actually exposes, so a typo
 /// cannot quietly disable read-back.
@@ -781,7 +781,7 @@ pub fn app(state: AppState) -> Router {
         .route("/v1/outcomes/{id}/reaction", post(react_to_outcome))
         // Read and drop only. There is deliberately NO create or edit route: Endora
         // forms its own intentions, and the person's whole side of the interface is
-        // "stop doing that" (ADR 0036).
+        // "stop doing that" (ADR 0052).
         .route("/v1/intentions", get(list_intentions))
         .route("/v1/intentions/{id}/drop", post(drop_intention))
         .route("/v1/capabilities", get(list_capabilities))
@@ -870,7 +870,7 @@ async fn notify_on_change(
     response
 }
 
-/// Serves the web console's HTML shell (embedded in the binary; see ADR 0009).
+/// Serves the web console's HTML shell (embedded in the binary; see ADR 0050).
 /// The styles and script are separate files (`/styles.css`, `/app.js`) so the
 /// console is organized by responsibility, not one giant file — still embedded,
 /// still no build step.
@@ -1079,7 +1079,7 @@ impl From<&ChatMessage> for MessageResponse {
 }
 
 /// Builds a capability runner that honours the person's enable/disable choices
-/// (ADR 0021) and their autonomy envelope (ADR 0022). Reading config is
+/// (ADR 0054) and their autonomy envelope (ADR 0051). Reading config is
 /// best-effort: on failure it falls back to defaults, so a glitch never breaks the
 /// butler.
 /// Records one line to the butler's action log (best-effort — transparency, not
@@ -1097,7 +1097,7 @@ fn build_runner(
     let overrides = config.enabled_overrides().unwrap_or_default();
     // Everything the person has turned off, whatever kind of capability it is. The
     // built-in registry applies its own flag below; an MCP tool had no equivalent, so
-    // "off" silently did nothing to it (ADR 0040).
+    // "off" silently did nothing to it (ADR 0054).
     let withdrawn: std::collections::HashSet<String> = overrides
         .iter()
         .filter(|(_, enabled)| !*enabled)
@@ -1109,7 +1109,7 @@ fn build_runner(
     // Whether the person allowed acting on consequential things on its own — an opened
     // MCP tool may then run in the loop rather than only confirm-each-use.
     let auto_consequential = envelope.auto_consequential;
-    // The tools the person has opened this turn (ADR 0024) — shared by the built-in
+    // The tools the person has opened this turn (ADR 0051) — shared by the built-in
     // registry and the MCP overlay below.
     let mcp_opened: std::collections::HashSet<String> = opened
         .iter()
@@ -1132,7 +1132,7 @@ fn build_runner(
         mcp_opened,
         auto_consequential,
     );
-    // Confirmed target aliases (ADR 0039), so a call that fails on a name the person has
+    // Confirmed target aliases (ADR 0054), so a call that fails on a name the person has
     // already explained gets one retry with their answer — see `AliasRunner`.
     let aliases: Vec<(String, String, String)> =
         endora_capabilities::TargetAliasRepository::aliases(config)
@@ -1141,8 +1141,8 @@ fn build_runner(
             .map(|a| (a.server, a.said, a.means))
             .collect();
     // Built-in skills + connected MCP servers, behind one runner. The application
-    // never learns a tool's origin (ADR 0021).
-    // Confirmed answers first, then observed ones — ADR 0038's trust ranking, expressed
+    // never learns a tool's origin (ADR 0054).
+    // Confirmed answers first, then observed ones — ADR 0054's trust ranking, expressed
     // as the order of recovery: the alias the person gave is tried before Endora goes
     // looking through the server's own reading for a name that resembles the request.
     let recovers = endora_capabilities::TargetSearchRunner::with_channels(
@@ -1184,7 +1184,7 @@ fn build_reversible_only_runner(
     )))
 }
 
-/// The servers Endora has **direct reach** into (ADR 0042) — its own connection to a
+/// The servers Endora has **direct reach** into (ADR 0054) — its own connection to a
 /// service, alongside whatever tool surface that service exposes to the model.
 ///
 /// Home Assistant's is built from the URL and long-lived token already stored against the
@@ -1282,7 +1282,7 @@ async fn send_chat(
 
 /// Composes and posts a daily briefing — an act of service using only reversible,
 /// autonomous skills (ADRs 0024/0025). The butler decides what the brief needs and
-/// writes it from what it actually gathered (ADR 0028). Returns the posted message,
+/// writes it from what it actually gathered (ADR 0053). Returns the posted message,
 /// or a note if it had nothing worth saying.
 async fn brief(State(state): State<AppState>) -> Result<Json<serde_json::Value>, ApiError> {
     let chat = state.chat.clone();
@@ -1377,7 +1377,7 @@ async fn stream_chat(
             let runner = build_runner(config.as_ref(), capabilities, mcp);
             // The deeper (bigger/cloud) rung of the capability ladder, if the person
             // configured one — the turn escalates to it only when the local model
-            // comes up empty (ADR 0027).
+            // comes up empty (ADR 0055).
             let deep = DeepModelRepository::get(config.as_ref())
                 .ok()
                 .flatten()
@@ -1405,7 +1405,7 @@ async fn stream_chat(
             // Scope the token closure so its borrow of `tx` ends before the `done`
             // send below.
             // Every action this turn took, recorded deterministically whatever the
-            // reply ends up claiming (ADR 0037).
+            // reply ends up claiming (ADR 0053).
             let mut disclosed: Vec<usecases::ActionDisclosure> = Vec::new();
             let result = {
                 let mut on_token = |chunk: &str| {
@@ -1460,7 +1460,7 @@ async fn stream_chat(
                     // survives a reload — the client renders it under the message.
                     let steps = collected.lock().map(|g| g.clone()).unwrap_or_default();
                     let sources = sources_from_steps(&steps);
-                    // The deterministic half of honesty about actions (ADR 0037): the
+                    // The deterministic half of honesty about actions (ADR 0053): the
                     // model ignores the read-back roughly two runs in three, so the
                     // person is shown what ran and whether it was confirmed regardless
                     // of what the prose says. This never edits the reply.
@@ -1646,7 +1646,7 @@ async fn set_checkin(
 }
 
 /// Serializes a belief for the console. `confidence` is the **decayed** value — how
-/// sure Endora is right now, given how long since anything reinforced it (ADR 0032) —
+/// sure Endora is right now, given how long since anything reinforced it (ADR 0052) —
 /// not the value frozen at the moment it was formed. Showing the stored one would
 /// present a year-old guess as current.
 fn belief_json(b: &Belief, now: endora_application::Timestamp) -> serde_json::Value {
@@ -1722,7 +1722,7 @@ fn intention_json(i: &endora_application::Intention) -> serde_json::Value {
     json!({
         "id": i.id().value().to_string(),
         "statement": i.statement(),
-        // Never null: an intention that cannot be explained cannot exist (ADR 0036).
+        // Never null: an intention that cannot be explained cannot exist (ADR 0052).
         "motivating_belief": i.motivating_belief().value().to_string(),
         "note": i.note(),
         "state": i.state().name(),
@@ -1733,7 +1733,7 @@ fn intention_json(i: &endora_application::Intention) -> serde_json::Value {
     })
 }
 
-/// What Endora is pursuing, and what it has pursued before (ADR 0036).
+/// What Endora is pursuing, and what it has pursued before (ADR 0052).
 async fn list_intentions(
     State(state): State<AppState>,
 ) -> Result<Json<Vec<serde_json::Value>>, ApiError> {
@@ -1743,7 +1743,7 @@ async fn list_intentions(
 }
 
 /// The person tells Endora to stop working on something — their whole authority over
-/// an intention, and the only verb they have (ADR 0036).
+/// an intention, and the only verb they have (ADR 0052).
 async fn drop_intention(
     State(state): State<AppState>,
     Path(id): Path<String>,
@@ -1771,11 +1771,11 @@ fn outcome_json(o: &endora_application::Outcome) -> serde_json::Value {
         "capability": o.capability(),
         "input": o.input(),
         // The tool's own account and what Endora saw are kept apart here exactly as
-        // they are in storage (ADR 0035) — the console must not merge them either.
+        // they are in storage (ADR 0053) — the console must not merge them either.
         "claim": o.claim(),
         "observation": o.observation(),
         "observed": o.was_observed(),
-        // Whether the world actually moved (ADR 0039). `null` means there was nothing
+        // Whether the world actually moved (ADR 0054). `null` means there was nothing
         // to compare — no reader, or the action never ran.
         "changed": o.changed(),
         "at_ms": o.at().unix_millis(),
@@ -1791,7 +1791,7 @@ struct AliasRequest {
     means: String,
 }
 
-/// What the person has told Endora its tools' targets are really called (ADR 0039).
+/// What the person has told Endora its tools' targets are really called (ADR 0054).
 async fn list_aliases(
     State(state): State<AppState>,
 ) -> Result<Json<Vec<serde_json::Value>>, ApiError> {
@@ -1806,9 +1806,9 @@ async fn list_aliases(
     ))
 }
 
-/// The person answers what Endora asked: this target is really called that (ADR 0039).
+/// The person answers what Endora asked: this target is really called that (ADR 0054).
 ///
-/// The **confirmed** source in ADR 0038's ranking, and the only one policy trusts.
+/// The **confirmed** source in ADR 0054's ranking, and the only one policy trusts.
 /// Endora never fills this in from a server's text — that is the per-integration
 /// parsing 0038 exists to stop.
 async fn set_alias(
@@ -1826,7 +1826,7 @@ async fn set_alias(
     ))
 }
 
-/// Forgets a name — here, and in the service if it was taught there (ADR 0045).
+/// Forgets a name — here, and in the service if it was taught there (ADR 0054).
 ///
 /// The other half of teaching. A name Endora was told and wrote upstream could be added
 /// and never taken away, which left a person's own configuration carrying a word they had
@@ -1869,7 +1869,7 @@ async fn forget_alias_everywhere(
     Ok(Json(json!({ "ok": true, "upstream": upstream })))
 }
 
-/// Every change Endora has made to a service's own configuration (ADR 0045).
+/// Every change Endora has made to a service's own configuration (ADR 0054).
 ///
 /// The memory right to *see* what it changed about the world, next to the right to see
 /// what it believes and what it did.
@@ -1901,7 +1901,7 @@ async fn list_config_writes(
     ))
 }
 
-/// Puts one change back exactly as it was (ADR 0045).
+/// Puts one change back exactly as it was (ADR 0054).
 ///
 /// The row is **kept** and marked, never deleted: what Endora changed about someone's
 /// house is not something it should be able to make disappear.
@@ -1947,19 +1947,19 @@ async fn undo_config_write(
     Ok(Json(json!({ "ok": true, "undone": said })))
 }
 
-/// Turns off capabilities Endora has established do not work (ADR 0044).
+/// Turns off capabilities Endora has established do not work (ADR 0051).
 ///
 /// The finding was already derived and already correct; it just sat in a card waiting for
 /// someone to click. A butler that owns its own tooling acts on what it knows, so policy
 /// applies it — **policy**, not the model. The derivation is arithmetic over stored
 /// outcomes with nothing generative in the path, which is what makes acting on it
-/// consistent with ADR 0005 rather than a widening of what the model is trusted to do.
+/// consistent with ADR 0051 rather than a widening of what the model is trusted to do.
 ///
 /// Three properties make this safe to do unattended:
 ///
 /// - it only ever turns something **off**, which cannot break anything that was working;
 /// - the bar is deliberately high — several targets, repeated outright refusals, and not
-///   one success of any kind, including unverified ones (ADR 0040);
+///   one success of any kind, including unverified ones (ADR 0054);
 /// - it is **one click** to undo, and the activity trail says what happened and why.
 fn withdraw_what_never_works(state: &AppState) {
     use endora_capabilities::CapabilityConfigRepository;
@@ -2000,7 +2000,7 @@ fn withdraw_what_never_works(state: &AppState) {
 }
 
 /// Writes the names the person has confirmed back into the service that owns them
-/// (ADR 0043).
+/// (ADR 0054).
 ///
 /// A confirmed alias currently helps only Endora. The same fact written into Home
 /// Assistant's own registry helps **everything** that talks to that house — its app, its
@@ -2028,7 +2028,7 @@ async fn push_aliases_upstream(
                 Some(Ok(mut write)) => {
                     // The change is only real once it is written down: the prior value is
                     // the undo, and holding it for the length of a function call is not a
-                    // reversibility story (ADR 0045).
+                    // reversibility story (ADR 0054).
                     let already = write
                         .was
                         .iter()
@@ -2068,7 +2068,7 @@ async fn push_aliases_upstream(
     Ok(Json(json!({ "taught": taught })))
 }
 
-/// What Endora has noticed is wrong with its own tooling (ADR 0039).
+/// What Endora has noticed is wrong with its own tooling (ADR 0054).
 ///
 /// Derived on read, never stored — there is nothing here to dismiss or process.
 async fn list_repairs(
@@ -2094,7 +2094,7 @@ async fn list_repairs(
             .iter()
             // A tool that is already turned off can never produce new evidence, so its
             // finding would sit there forever asking for something already done. The
-            // derivation stays pure and unaware of config (ADR 0039); this is the one
+            // derivation stays pure and unaware of config (ADR 0054); this is the one
             // place that knows both, and answering the question is what retires the card.
             .filter(|r| {
                 r.remedy != endora_understanding::Remedy::StopOfferingIt
@@ -2105,7 +2105,7 @@ async fn list_repairs(
                     "capability": r.capability,
                     "target": r.target,
                     "attempts": r.attempts,
-                    // What would actually fix it (ADR 0040). The console offers a
+                    // What would actually fix it (ADR 0054). The console offers a
                     // different control for each, because "what is it really called?"
                     // is the wrong question about a tool that has never worked at all.
                     "remedy": match r.remedy {
@@ -2118,7 +2118,7 @@ async fn list_repairs(
     ))
 }
 
-/// What Endora has done lately, and what it saw afterwards (ADR 0035) — the memory
+/// What Endora has done lately, and what it saw afterwards (ADR 0053) — the memory
 /// right to *see* its actions, next to the beliefs it holds.
 async fn list_outcomes(
     State(state): State<AppState>,
@@ -2135,7 +2135,7 @@ struct ReactionBody {
 }
 
 /// The person says how an action landed. Offered where the action already appears —
-/// they are never asked for it (ADR 0035).
+/// they are never asked for it (ADR 0053).
 async fn react_to_outcome(
     State(state): State<AppState>,
     Path(id): Path<String>,
@@ -2190,7 +2190,7 @@ fn capability_json(
         "reaches_external": info.reaches_external,
         "reversibility": info.reversibility.name(),
         // Whether the person has opened this capability's irreversible band, and
-        // whether it is therefore currently blocked deny-by-default (ADR 0024). Only
+        // whether it is therefore currently blocked deny-by-default (ADR 0051). Only
         // an irreversible skill can be blocked or opened.
         "open_irreversible": opened,
         "blocked": info.reversibility.name() == "irreversible" && !opened,
@@ -2198,7 +2198,7 @@ fn capability_json(
         // runs only after they confirm each use, never on its own.
         "confirm": confirm,
         // `configured` = code ready + settings filled; `enabled` = the person's on/off
-        // switch; a skill is usable only when both hold (ADR 0021).
+        // switch; a skill is usable only when both hold (ADR 0054).
         "configured": info.configured && settings_complete,
         "enabled": enabled,
         "usable": info.configured && settings_complete && enabled,
@@ -2268,7 +2268,7 @@ struct SettingsRequest {
     settings: std::collections::HashMap<String, String>,
 }
 
-/// Sets one or more settings for a capability (ADR 0021). Validated against the
+/// Sets one or more settings for a capability (ADR 0054). Validated against the
 /// registry and its declared setting keys, so only known keys are stored.
 async fn set_capability_settings(
     State(state): State<AppState>,
@@ -2315,7 +2315,7 @@ struct EnableRequest {
     enabled: bool,
 }
 
-/// Turns a capability on or off for the person (ADR 0021). Validated against the
+/// Turns a capability on or off for the person (ADR 0054). Validated against the
 /// registry so only real skill ids are stored; nudges the change stream so open
 /// consoles refresh.
 async fn set_capability_enabled(
@@ -2324,7 +2324,7 @@ async fn set_capability_enabled(
     Json(req): Json<EnableRequest>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     // Any capability the butler actually offers, not just the built-in registry: an MCP
-    // tool is exactly the kind of thing worth turning off (ADR 0040), and this route
+    // tool is exactly the kind of thing worth turning off (ADR 0054), and this route
     // used to 404 for every one of them.
     let known = state.capabilities.iter().any(|c| c.info().id == id)
         || state.mcp.read().ok().is_some_and(|r| {
@@ -2374,7 +2374,7 @@ async fn set_capability_open(
     Json(req): Json<OpenRequest>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     // Accept a built-in capability id or a connected MCP tool id (server.tool) —
-    // both are opened the same way (ADR 0024), keyed by id in the config store.
+    // both are opened the same way (ADR 0051), keyed by id in the config store.
     let is_builtin = state.capabilities.iter().any(|c| c.info().id == id);
     let is_mcp = {
         use endora_capabilities::CapabilityRunner;
@@ -2464,7 +2464,7 @@ fn envelope_json(e: &AutonomyEnvelope) -> serde_json::Value {
 }
 
 /// Returns the person's autonomy envelope — the boundary the butler acts within
-/// (ADR 0022).
+/// (ADR 0051).
 async fn get_autonomy(State(state): State<AppState>) -> Result<Json<serde_json::Value>, ApiError> {
     let config = state.config.clone();
     let envelope = blocking(move || {
@@ -2480,7 +2480,7 @@ struct AutonomyRequest {
     auto_consequential: bool,
 }
 
-/// Sets the autonomy envelope (ADR 0022). Widening it grants the butler more
+/// Sets the autonomy envelope (ADR 0051). Widening it grants the butler more
 /// independence; the deterministic policy layer still enforces the edges.
 async fn set_autonomy(
     State(state): State<AppState>,
@@ -2596,7 +2596,7 @@ fn slot_json(slot: &ModelSlot) -> serde_json::Value {
     })
 }
 
-/// The butler model configuration (ADR 0027), editable from the console. The API
+/// The butler model configuration (ADR 0055), editable from the console. The API
 /// key is NEVER returned — only whether one is set.
 async fn get_model_config(
     State(state): State<AppState>,
@@ -2815,7 +2815,7 @@ async fn test_model_connection(
     }))
 }
 
-/// Kicks off the self-improving model layer (ADR 0027) in the background:
+/// Kicks off the self-improving model layer (ADR 0055) in the background:
 /// discover the models on the local endpoint, score each with the fitness
 /// function, and gate-adopt the best **local** one (auto-adopt local, propose
 /// cloud). Slow (it runs the eval per candidate), so it runs detached and records
@@ -2927,7 +2927,7 @@ async fn run_model_layer_now(
     Ok(Json(json!({ "started": true })))
 }
 
-/// The nightly model-tune schedule (ADR 0027) — off by default.
+/// The nightly model-tune schedule (ADR 0055) — off by default.
 async fn get_tune_schedule(
     State(state): State<AppState>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
@@ -2977,7 +2977,7 @@ struct DeepAskRequest {
 
 /// Escalates one question to the configured deep model and posts its answer to the
 /// chat. The person opts in per question (the everyday stays local). The outbound
-/// question passes the egress guard — a secret blocks it, PII is redacted (ADR 0023).
+/// question passes the egress guard — a secret blocks it, PII is redacted (ADR 0051).
 async fn deep_ask(
     State(state): State<AppState>,
     Json(req): Json<DeepAskRequest>,
@@ -3079,7 +3079,7 @@ fn nightly_loop_schedule_json(s: &endora_scheduling::NightlyLoopSchedule) -> ser
     json!({ "enabled": s.enabled, "hour_utc": s.hour_utc })
 }
 
-/// The nightly self-improvement loop schedule (ADR 0024) — when the butler reviews
+/// The nightly self-improvement loop schedule (ADR 0051) — when the butler reviews
 /// the day and reflects, overnight, within the reversible band.
 async fn get_nightly_loop_schedule(
     State(state): State<AppState>,
@@ -3123,7 +3123,7 @@ async fn invoke_capability(
             entity: "capability",
         }));
     };
-    // Data-loss tripwire + query minimization (ADR 0023), on the explicit-invoke
+    // Data-loss tripwire + query minimization (ADR 0051), on the explicit-invoke
     // path too: refuse a request carrying a secret, and redact personal identifiers
     // before it leaves.
     let mut input = input;
@@ -3161,7 +3161,7 @@ async fn invoke_capability(
 /// Spawns the butler's **heartbeat**: a background loop that periodically checks
 /// whether a proactive check-in is due (per the person's cadence) and, if so, has
 /// the butler post one. Only messages — nothing consequential — so it stays on the
-/// safe side of the autonomy model (ADR 0010/0019). The blocking store work runs
+/// safe side of the autonomy model (ADR 0051/0019). The blocking store work runs
 /// on a worker thread; a posted check-in nudges the change stream.
 pub fn spawn_heartbeat(state: AppState) {
     tokio::spawn(async move {
@@ -3210,7 +3210,7 @@ pub fn spawn_heartbeat(state: AppState) {
                     clock.as_ref(),
                 )?;
                 // The butler decides whether it has a reason to speak; the schedule
-                // only bounds how often it may (ADR 0031).
+                // only bounds how often it may (ADR 0056).
                 let posted = usecases::consider_reaching_out(
                     chat.as_ref(),
                     schedules.as_ref(),
@@ -3247,7 +3247,7 @@ pub fn spawn_heartbeat(state: AppState) {
                     }
                     record_event(events.as_ref(), clock.as_ref(), "Prepared your daily brief");
                 }
-                // The nightly self-improvement loop (ADR 0024), if due: review the
+                // The nightly self-improvement loop (ADR 0051), if due: review the
                 // day and reflect, within the reversible band — never anything
                 // irreversible. Serialized under the turn lock like the brief.
                 let reflected = usecases::run_due_nightly_loop(
@@ -3281,7 +3281,7 @@ pub fn spawn_heartbeat(state: AppState) {
                 let _ = state.changes.send(());
             }
 
-            // Nightly self-improving model tune (ADR 0027), if scheduled + due.
+            // Nightly self-improving model tune (ADR 0055), if scheduled + due.
             // Marked fired first (so it can't double-run), then run DETACHED and
             // without the turn lock — it's long and competes on the GPU, which is
             // why the schedule points at an off-hour.
@@ -3546,7 +3546,7 @@ mod tests {
 
     #[tokio::test]
     async fn there_is_no_way_for_the_person_to_create_an_intention() {
-        // ADR 0036's first constraint, as a test rather than a promise. Endora forms
+        // ADR 0052's first constraint, as a test rather than a promise. Endora forms
         // its own intentions; a console with an "add" button would mean the ADR failed,
         // and the API is where that would have to start.
         let app = app(test_state());
@@ -3653,7 +3653,7 @@ mod tests {
 
     #[tokio::test]
     async fn an_alias_is_confirmed_by_the_person_and_grounds_later_turns() {
-        // ADR 0039's answer path: Endora asks what a target is really called, and the
+        // ADR 0054's answer path: Endora asks what a target is really called, and the
         // person's answer is the CONFIRMED source — the only one policy trusts.
         let app = app(test_state());
         let stored = json_body(
@@ -3746,7 +3746,7 @@ mod tests {
         assert_eq!(found[0]["attempts"], 2);
 
         // Nothing was stored to make that happen, and nothing can be dismissed: there
-        // is deliberately no way to write a repair (ADR 0039/0029).
+        // is deliberately no way to write a repair (ADR 0054/0029).
         let res = app
             .oneshot(post("/v1/repairs", r#"{"capability":"x"}"#))
             .await
@@ -3777,7 +3777,7 @@ mod tests {
         use endora_application::{Outcome, OutcomeId, OutcomeRepository, Timestamp};
         let state = test_state();
         // The kitchen light: the tool claimed success, the world disagreed. The console
-        // must show BOTH, unmerged (ADR 0035).
+        // must show BOTH, unmerged (ADR 0053).
         OutcomeRepository::save(
             state.understanding.as_ref(),
             &Outcome::record(
@@ -3834,7 +3834,7 @@ mod tests {
 
     #[tokio::test]
     async fn an_unrecognized_reaction_is_rejected_rather_than_stored() {
-        // The stored vocabulary is closed (ADR 0035); a typo must not become a value
+        // The stored vocabulary is closed (ADR 0053); a typo must not become a value
         // that later reads back as corrupt.
         let res = app(test_state())
             .oneshot(post(

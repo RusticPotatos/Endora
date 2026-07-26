@@ -32,7 +32,7 @@ node's Interface/Infrastructure layers.
 
 - Adds the largest dependency set so far (Tokio, Axum, tower, hyper, an OpenAPI
   crate, and serde for JSON). Each is mainstream and well-maintained; this is the
-  justified moment per [CONTRIBUTING](../../CONTRIBUTING.md).
+  justified moment per [CONTRIBUTING](../../../CONTRIBUTING.md).
 - The node becomes an async service; care is needed to keep blocking work (e.g.
   SQLite calls) off the async executor (via the storage layer's strategy).
 - Framework choice is confined to the interface/infrastructure layers, so a

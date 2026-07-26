@@ -74,7 +74,7 @@ remove.
 
 **Existing databases shed the old tables on open.** Leaving them in place would
 strand data the person can no longer see, correct, or delete, which is exactly what
-[constitution §6](../constitution.md) forbids.
+[constitution §6](../../constitution.md) forbids.
 
 ## Consequences
 
@@ -86,7 +86,7 @@ strand data the person can no longer see, correct, or delete, which is exactly w
   `/v1/experiments`, `/v1/reviews`, `/v1/observations`, `/v1/reflections`,
   `/v1/process-changes`, `/v1/suggestions` and `/v1/attention` endpoints are gone,
   along with their CLI commands; `/v1/export` no longer carries those collections.
-  Acceptable in `0.x` (see [SECURITY.md](../../SECURITY.md) on supported versions).
+  Acceptable in `0.x` (see [SECURITY.md](../../../SECURITY.md) on supported versions).
 - ~8,600 net lines leave the codebase. The safety machinery — reversibility bands,
   deny-by-default, the egress guard, the autonomy envelope, the audit trail — is
   untouched. This ADR changes what Endora is *for*, not what it is allowed to do.

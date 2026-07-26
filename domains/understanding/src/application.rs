@@ -6,7 +6,7 @@ use endora_kernel::ids::{BeliefId, IntentionId, OutcomeId, PreferenceId};
 
 use crate::domain::{Belief, Intention, Outcome, Preference};
 
-/// Persists and retrieves [`Intention`]s — what Endora is pursuing (ADR 0036).
+/// Persists and retrieves [`Intention`]s — what Endora is pursuing (ADR 0052).
 ///
 /// [`active`](Self::active) is the load-bearing query: **at most one** intention is
 /// active at a time, so this is a cursor rather than a queue, and there is no backlog
@@ -38,7 +38,7 @@ pub trait IntentionRepository {
     fn list(&self) -> Result<Vec<Intention>, RepositoryError>;
 }
 
-/// Persists and retrieves [`Outcome`]s — what happened after Endora acted (ADR 0035).
+/// Persists and retrieves [`Outcome`]s — what happened after Endora acted (ADR 0053).
 ///
 /// The counterpart to [`BeliefRepository`]: one holds what Endora understands, the other
 /// what it did and what the world looked like afterwards.

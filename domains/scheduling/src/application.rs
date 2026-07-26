@@ -4,7 +4,7 @@ use endora_kernel::RepositoryError;
 
 use crate::domain::{BriefSchedule, CheckinSchedule, NightlyLoopSchedule};
 
-/// Persists the single [`NightlyLoopSchedule`] (ADR 0024).
+/// Persists the single [`NightlyLoopSchedule`] (ADR 0051).
 pub trait NightlyLoopScheduleRepository {
     /// Returns the stored schedule, or `None` if never set.
     ///

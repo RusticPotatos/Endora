@@ -69,7 +69,7 @@ impl ChatStore {
     }
 
     /// Loads the running conversation summary as `(body, covered)`, if one has been
-    /// stored (ADR 0028 context compaction). `None` before the first summary.
+    /// stored (ADR 0053 context compaction). `None` before the first summary.
     ///
     /// # Errors
     /// [`RepositoryError::Backend`] if the read fails.
