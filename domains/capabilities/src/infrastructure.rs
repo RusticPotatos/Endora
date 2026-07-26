@@ -2777,6 +2777,80 @@ impl CapabilityRunner for ReversibleOnlyRunner {
     }
 }
 
+/// Hides the capabilities the person has **withdrawn** — turned off — from every
+/// source, and refuses to run them (ADR 0040).
+///
+/// Turning a skill off has always worked for built-ins, because [`RegistryRunner`]
+/// applies the stored flag itself. MCP tools had no equivalent: the flag could be set
+/// and nothing happened, because the tools come from a shared connection built long
+/// before the person's config is read. This applies it once, above every source, so
+/// "off" means the same thing whatever the capability is and wherever it came from.
+///
+/// **Why hiding rather than blocking.** A blocked tool is still in the catalogue, and
+/// the measured failure is the model *choosing the wrong tool* — it picks a brightness
+/// setter to switch a light, is refused, and picks it again. Refusing more loudly does
+/// not help; the tool has to stop being on the menu. Blocking is the answer for a tool
+/// that works and is dangerous; withdrawal is the answer for one that does not work.
+///
+/// Reversible by construction: it reads a stored flag, so restoring a capability is one
+/// click and nothing was lost.
+pub struct WithdrawnRunner {
+    inner: Arc<dyn CapabilityRunner + Send + Sync>,
+    withdrawn: std::collections::HashSet<String>,
+}
+
+impl WithdrawnRunner {
+    /// Wraps `inner`, hiding the given ids. Ids that no source offers are simply never
+    /// matched, so a stale flag from a removed server is harmless.
+    #[must_use]
+    pub fn new(
+        inner: Arc<dyn CapabilityRunner + Send + Sync>,
+        withdrawn: std::collections::HashSet<String>,
+    ) -> Self {
+        Self { inner, withdrawn }
+    }
+}
+
+impl CapabilityRunner for WithdrawnRunner {
+    fn available(&self) -> Vec<crate::application::CapabilitySpec> {
+        self.inner
+            .available()
+            .into_iter()
+            .filter(|spec| !self.withdrawn.contains(&spec.id))
+            .collect()
+    }
+
+    fn decision(&self, id: &str) -> Option<Decision> {
+        if self.withdrawn.contains(id) {
+            return None;
+        }
+        self.inner.decision(id)
+    }
+
+    fn verifier(&self, id: &str) -> Option<String> {
+        // A withdrawn tool must not be nominated as anything's verifier either: it would
+        // be asked to read state it can no longer be run to read.
+        let verifier = self.inner.verifier(id)?;
+        if self.withdrawn.contains(&verifier) {
+            return None;
+        }
+        Some(verifier)
+    }
+
+    fn read_back_input(&self, action_id: &str, action_input: &str) -> String {
+        self.inner.read_back_input(action_id, action_input)
+    }
+
+    fn run(&self, id: &str, input_json: &str) -> Result<String, String> {
+        // Refused here too, so a model naming it from earlier in the conversation — or a
+        // direct call — cannot route around the narrowed catalogue.
+        if self.withdrawn.contains(id) {
+            return Err(format!("'{id}' is turned off"));
+        }
+        self.inner.run(id, input_json)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4269,5 +4343,85 @@ mod tests {
                 .unwrap()
                 .autonomous
         );
+    }
+
+    /// A runner offering two tools, one of which the person turned off.
+    fn two_tools() -> Arc<dyn CapabilityRunner + Send + Sync> {
+        struct Two;
+        impl CapabilityRunner for Two {
+            fn available(&self) -> Vec<crate::application::CapabilitySpec> {
+                ["home.HassTurnOn", "home.HassLightSet"]
+                    .into_iter()
+                    .map(|id| crate::application::CapabilitySpec {
+                        id: id.to_owned(),
+                        description: String::new(),
+                        configured: true,
+                        autonomous: false,
+                        reversibility: Reversibility::Reversible,
+                        input_schema: None,
+                    })
+                    .collect()
+            }
+            fn decision(&self, _id: &str) -> Option<Decision> {
+                Some(Decision::Confirm)
+            }
+            fn run(&self, id: &str, _input: &str) -> Result<String, String> {
+                Ok(format!("ran {id}"))
+            }
+            fn verifier(&self, _id: &str) -> Option<String> {
+                Some("home.HassLightSet".to_owned())
+            }
+            fn read_back_input(&self, _id: &str, _input: &str) -> String {
+                "{}".to_owned()
+            }
+        }
+        Arc::new(Two)
+    }
+
+    fn withdrawing(id: &str) -> WithdrawnRunner {
+        WithdrawnRunner::new(two_tools(), [id.to_owned()].into_iter().collect())
+    }
+
+    #[test]
+    fn a_withdrawn_capability_is_not_on_the_menu_at_all() {
+        // The measured failure is the model CHOOSING the wrong tool, so refusing it more
+        // loudly does not help — it has to stop being offered.
+        let runner = withdrawing("home.HassLightSet");
+        let ids: Vec<String> = runner.available().into_iter().map(|s| s.id).collect();
+        assert_eq!(ids, vec!["home.HassTurnOn".to_owned()]);
+    }
+
+    #[test]
+    fn a_withdrawn_capability_cannot_be_run_by_name() {
+        // The model may name a tool it saw earlier in the conversation, and a direct
+        // call must not route around the narrowed catalogue either.
+        let err = withdrawing("home.HassLightSet")
+            .run("home.HassLightSet", "{}")
+            .expect_err("a withdrawn tool ran");
+        assert!(err.contains("turned off"), "{err}");
+        assert!(
+            withdrawing("home.HassLightSet")
+                .decision("home.HassLightSet")
+                .is_none(),
+            "a withdrawn tool still had a policy decision"
+        );
+    }
+
+    #[test]
+    fn withdrawing_a_reader_leaves_actions_unverified_rather_than_broken() {
+        // Read-back must not name a tool that can no longer be run: the turn would ask
+        // for a reading it cannot get. Unverified is the honest fallback (ADR 0034).
+        let runner = withdrawing("home.HassLightSet");
+        assert_eq!(runner.verifier("home.HassTurnOn"), None);
+    }
+
+    #[test]
+    fn everything_else_is_untouched() {
+        let runner = withdrawing("home.HassLightSet");
+        assert_eq!(
+            runner.run("home.HassTurnOn", "{}").unwrap(),
+            "ran home.HassTurnOn"
+        );
+        assert_eq!(runner.decision("home.HassTurnOn"), Some(Decision::Confirm));
     }
 }

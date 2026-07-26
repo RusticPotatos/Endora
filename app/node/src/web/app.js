@@ -940,14 +940,21 @@ function viewSkills() {
     const health = s.tools_live > 0
       ? `<span class="pill concluded">${s.tools_live} tool${s.tools_live === 1 ? "" : "s"}</span>`
       : `<span class="pill">not connected</span>`;
+    // A withdrawn tool (ADR 0040) is not offered to the butler at all — a different
+    // thing from blocked, which still shows it the tool and refuses each use. Shown
+    // here so it is never a mystery why a tool stopped being used, with one click back.
     const toolRow = (t) => `
-      <div class="row" style="align-items:flex-start;gap:10px;margin-top:6px;border-top:1px solid var(--line);padding-top:6px;">
+      <div class="row" style="align-items:flex-start;gap:10px;margin-top:6px;border-top:1px solid var(--line);padding-top:6px;${t.enabled === false ? "opacity:.6;" : ""}">
         <div class="grow">
-          <div class="title" style="font-weight:500;">${esc(t.id)}</div>
+          <div class="title" style="font-weight:500;">${esc(t.id)}${t.enabled === false ? ` <span class="pill">turned off</span>` : ""}</div>
           <div class="sub">${esc(t.description || "")}</div>
-          <div class="sub">${t.opened ? "Allowed — asks before every use, never on its own." : "Blocked — allow it to let the butler use it (still confirms each use)."}</div>
+          <div class="sub">${t.enabled === false
+            ? "Turned off — the butler isn't offered this tool at all."
+            : t.opened ? "Allowed — asks before every use, never on its own." : "Blocked — allow it to let the butler use it (still confirms each use)."}</div>
         </div>
-        <button class="${t.opened ? "primary" : "ghost"}" data-act="skill:open:${t.id}:${t.opened ? "0" : "1"}">${t.opened ? "Block" : "Allow"}</button>
+        ${t.enabled === false
+          ? `<button class="ghost" data-act="skill:enable:${t.id}:1">Offer it again</button>`
+          : `<button class="${t.opened ? "primary" : "ghost"}" data-act="skill:open:${t.id}:${t.opened ? "0" : "1"}">${t.opened ? "Block" : "Allow"}</button>`}
       </div>`;
     return `
       <div class="card">
@@ -1134,15 +1141,29 @@ function viewIntention() {
     </div></div>`;
 }
 
-// Tooling Endora has noticed keeps not working (ADR 0039).
+// Tooling Endora has noticed keeps not working (ADR 0039, 0040).
 //
 // Derived from what it observed, never stored — so there is no badge, no count to clear
 // and nothing to dismiss. It states the pattern and asks; it does not guess the answer,
 // because guessing would mean parsing one server's format, which is the per-integration
 // patching ADR 0038 exists to stop.
+//
+// Two findings, two different questions. A tool that works elsewhere but not on this
+// thing is probably being given the wrong name — so it asks for the name. A tool that
+// has never worked on anything is the wrong tool, and no name will fix it — so it offers
+// to stop offering it.
 function viewRepairs() {
   if (!(REPAIRS || []).length) return "";
-  const rows = REPAIRS.map((r) => `
+  const rows = REPAIRS.map((r) => r.remedy === "stop_offering_it"
+    ? `
+    <div class="card"><div class="row">
+      <div class="grow">
+        <div class="title">${esc(r.capability)}</div>
+        <div class="sub">${r.attempts} attempts, none of them on anything, and it has never once worked. This looks like the wrong tool rather than the wrong name — turning it off makes the butler reach for one that works.</div>
+      </div>
+      <button class="ghost danger" data-act="skill:enable:${esc(r.capability)}:0" title="Stop offering this tool to the butler. You can turn it back on any time in Skills.">Stop offering it</button>
+    </div></div>`
+    : `
     <div class="card"><div class="row">
       <div class="grow">
         <div class="title">${esc(r.capability)}</div>
@@ -1155,7 +1176,7 @@ function viewRepairs() {
     </div></div>`).join("");
   return `
     <h3 style="margin-top:22px;">Something Endora can't get working</h3>
-    <div class="note" style="margin-bottom:10px;">It checked before and after each time. Nothing moved — so the target is probably named differently than it thinks.</div>
+    <div class="note" style="margin-bottom:10px;">It checked before and after each time. Nothing moved — so either it's aiming at the wrong name, or reaching for the wrong tool.</div>
     ${rows}`;
 }
 
@@ -1689,7 +1710,14 @@ async function dispatch(act) {
     // Turn a skill on or off (ADR 0021). `id` is the capability id; `arg` is 1/0.
     if (verb === "skill" && noun === "enable") {
       const enabled = arg === "1";
-      try { await api("POST", `/v1/capabilities/${id}/enable`, { enabled }); }
+      try {
+        await api("POST", `/v1/capabilities/${id}/enable`, { enabled });
+        // Worth saying out loud: turning a tool off changes what the butler is even
+        // shown, and the way back is not obvious unless we name it (ADR 0040).
+        flash(enabled
+          ? `Offering ${id} again.`
+          : `No longer offering ${id}. You can turn it back on under Skills.`, "ok");
+      }
       catch (e) { flash("Couldn't change that skill: " + e.message, "err"); }
       return reload();
     }
