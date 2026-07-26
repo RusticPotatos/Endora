@@ -527,7 +527,15 @@ fn run_tool_turn(
                         // Read back on failure too: a failed action's most useful
                         // output is what actually exists, which is what lets the
                         // model retry against reality instead of guessing again.
-                        let observed = read_state_back(capabilities, &id, &call.input_json);
+                        //
+                        // Deliberately UNSCOPED here, unlike the success path. When an
+                        // action fails, its target is the prime suspect — "Area 'Kitchen
+                        // Main' does not exist" — so reading back with the same target
+                        // fails in exactly the same way and tells the model nothing.
+                        // Observed live: the scoped read returned the identical error,
+                        // twice, and the butler was left insisting there were no lights
+                        // in a kitchen that had five. Widen when something went wrong.
+                        let observed = read_state_back(capabilities, &id, "{}");
                         // A failed action is still something that happened, and its
                         // read-back is the most useful thing about it (ADR 0034), so it
                         // is recorded like any other.
@@ -3204,6 +3212,81 @@ smart home:
             reads_back: None,
         });
         assert!(disclosed.is_empty(), "a read was disclosed: {disclosed:?}");
+    }
+
+    #[test]
+    fn a_failed_action_reads_the_world_back_without_inheriting_its_bad_target() {
+        // Live: HassTurnOff{area:"Kitchen Main"} failed because that area does not
+        // exist — and the scoped read-back inherited the same argument and returned the
+        // identical error, so the butler kept insisting there were no lights in a
+        // kitchen that had five. When an action fails, its target is the prime suspect;
+        // reading back with it is guaranteed to teach nothing.
+        struct FailsThenReads;
+        impl CapabilityRunner for FailsThenReads {
+            fn available(&self) -> Vec<endora_capabilities::CapabilitySpec> {
+                ["home.HassTurnOff", "home.GetLiveContext"]
+                    .into_iter()
+                    .map(|id| endora_capabilities::CapabilitySpec {
+                        id: id.to_owned(),
+                        description: String::new(),
+                        configured: true,
+                        autonomous: true,
+                        input_schema: None,
+                        reversibility: if id.ends_with("GetLiveContext") {
+                            Reversibility::Observe
+                        } else {
+                            Reversibility::Irreversible
+                        },
+                    })
+                    .collect()
+            }
+            fn verifier(&self, id: &str) -> Option<String> {
+                (id == "home.HassTurnOff").then(|| "home.GetLiveContext".to_owned())
+            }
+            fn read_back_input(&self, _action: &str, action_input: &str) -> String {
+                // Stands in for the real scoping: whatever it is handed.
+                action_input.to_owned()
+            }
+            fn run(&self, id: &str, input: &str) -> Result<String, String> {
+                if id == "home.HassTurnOff" {
+                    return Err("Area 'Kitchen Main' does not exist".to_owned());
+                }
+                // The reader fails the same way IF it inherits the bad target.
+                if input.contains("Kitchen Main") {
+                    return Err("Area 'Kitchen Main' does not exist".to_owned());
+                }
+                Ok("Kitchen Main | domain: switch | state: on".to_owned())
+            }
+        }
+
+        let (ids, clock, audit) = (SeqIds::default(), FixedClock(0), FakeAudit::default());
+        let mut disclosed = Vec::new();
+        let _ = super::run_tool_turn(
+            &CallThenEcho {
+                capability: "home.HassTurnOff",
+            },
+            &FailsThenReads,
+            &audit,
+            &OutcomeSink::unmotivated(&FakeOutcomes::default()),
+            &ids,
+            &clock,
+            &one_user_turn("turn off the kitchen main"),
+            &[],
+            &ButlerContext::default(),
+            6,
+            &mut |_| {},
+            &mut Vec::new(),
+            &mut disclosed,
+        );
+
+        let observed = disclosed
+            .first()
+            .and_then(|d| d.observed.clone())
+            .expect("a failed action still reads the world back");
+        assert!(
+            observed.contains("switch"),
+            "the reading must show what IS there, not repeat the failure: {observed}"
+        );
     }
 
     #[test]
