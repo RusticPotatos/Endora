@@ -16,6 +16,13 @@ use crate::application::{
 ///
 /// # Errors
 /// [`RepositoryError::Backend`] if the schema cannot be applied.
+/// Applies this context's schema.
+///
+/// **Production does not call this.** The composition root shares one database whose
+/// schema comes from `endora-infrastructure`'s `SCHEMA`, and this exists so the context's
+/// own tests can stand a store up alone. A table added here and not there is created in
+/// every test and in no real database — which is exactly what happened to `config_writes`,
+/// and why the tables below must be kept in step with that `SCHEMA`.
 pub fn migrate(db: &Db) -> Result<(), RepositoryError> {
     db.lock()?
         .execute_batch(
