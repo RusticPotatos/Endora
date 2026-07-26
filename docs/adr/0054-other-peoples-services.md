@@ -122,6 +122,20 @@ That log survives "forget everything": it is not knowledge about the person, it 
 for a change that still exists inside somebody else's service, and deleting the receipt does
 not undo the change.
 
+### A quirk that widens is not a quirk worth keeping
+
+One of the original per-integration patches dropped a `name` that was merely a device-kind
+word (`{name: "light", area: "kitchen"}` → `{area: "kitchen"}`), leaving *every light in
+the kitchen*. It predated the rule against widening, and it broke it.
+
+Deleted rather than generalised. The search reaches a better answer without widening
+anything: `Kitchen Main Light`, one thing, which is what a person calling it "the kitchen
+light" means. It also took a hardcoded list of English device words with it.
+
+The general lesson: a patch that survives long enough to be inherited should be re-read
+against the rules that arrived after it. This one had become the thing it was protecting
+against.
+
 ### Quirks are allowed, behind a boundary
 
 Some knowledge genuinely cannot generalise. It stays code — in that integration's **named
