@@ -161,6 +161,35 @@ Some knowledge genuinely cannot generalise. It stays code — in that integratio
 adapter**, never in the shared runner and never in the protocol client. The test: *could
 another server reasonably need the opposite behaviour?* If yes, it is a quirk.
 
+A channel reaches the rest of the system through three small pre-call questions, each
+defaulting to "nothing to say" so a service that cannot answer changes nothing:
+
+- **refuse** — this call cannot do anything, so do not send it. A call that quietly does
+  nothing is the worst failure available: it reports success, changes nothing, and leaves
+  the person and the record disagreeing.
+- **tighten** — this call already names one thing, so drop what could only widen it.
+- **categories** — these are the words this service uses for *kinds*, as opposed to names.
+
+### What was cleaned up, and what was simply deleted
+
+The six hardcodes this ADR's predecessor inventoried are now resolved, and two of them by
+removal rather than relocation:
+
+| hardcode | outcome |
+| --- | --- |
+| `is_state_reader` | became data — the person nominates the reader |
+| `verifier` mapping | became data, from the same nomination |
+| `drop_domain_word_name` | **deleted** — it widened calls, which the rules now forbid |
+| `reject_no_op_light_set` | moved behind the adapter, as `refuse` |
+| `flag_ambiguous_names` | **deleted** — one service's text format parsed in the *orchestration* layer, warning a model in prose about an ambiguity the search now settles in code |
+| the response envelope in the transport | still there; the last one, and the largest |
+
+`flag_ambiguous_names` is worth its own note. It parsed `names:`/`domain:` lines to tell the
+model "one name means two things here — do not guess". Every part of that was wrong by the
+time it was removed: the wrong layer, a service-specific format, and a *prose warning to a
+model* standing in for a rule. The rule exists now — a tie acts on nothing — and it does not
+depend on the model reading anything.
+
 ## Consequences
 
 - Any MCP server can get read-back, evidence, findings and repair without Endora shipping a
