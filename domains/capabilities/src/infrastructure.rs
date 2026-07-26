@@ -2840,10 +2840,23 @@ pub trait NativeChannel: Send + Sync {
     /// acting are a much smaller grant than editing, and a channel earns the third
     /// separately from the first two.
     ///
+    /// Returns the **write**, not a sentence — carrying what was changed and what it was
+    /// before, so the edit can be logged and put back (ADR 0045). A channel that reports
+    /// only that it succeeded has made a change nobody can reverse.
+    ///
     /// # Errors
     /// Through the inner `Result`, a human-readable message if the service refuses.
-    fn teach(&self, name: &str, alias: &str) -> Option<Result<String, String>> {
+    fn teach(&self, name: &str, alias: &str) -> Option<Result<crate::domain::ConfigWrite, String>> {
         let _ = (name, alias);
+        None
+    }
+
+    /// Puts a change back exactly as it was, from the record of it.
+    ///
+    /// # Errors
+    /// Through the inner `Result`, a human-readable message if the service refuses.
+    fn undo(&self, write: &crate::domain::ConfigWrite) -> Option<Result<String, String>> {
+        let _ = write;
         None
     }
 }
