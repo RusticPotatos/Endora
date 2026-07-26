@@ -229,60 +229,6 @@ fn note_unchanged(before: Option<&str>, after: Option<&str>) -> String {
         .to_owned()
 }
 
-/// Points out when one name refers to **more than one thing**.
-///
-/// This is the defect that produced a whole afternoon of wrong diagnoses. A Home
-/// Assistant install had two entities both called "Kitchen" in the Kitchen area — a
-/// `light` reading `off` and a `switch` reading `on` — and the switch was the actual
-/// ceiling light. Asked to "turn off the kitchen light", the model constrained to the
-/// `light` domain, matched the dead entity, and every layer downstream faithfully
-/// reported success about the wrong device.
-///
-/// Nothing in the stack was broken. The *name* was ambiguous, and every component
-/// resolved the ambiguity silently and differently. So when a state reading shows one
-/// name spanning several domains, say so — an ambiguity the person can see is a
-/// question they can answer, where an ambiguity resolved silently is a bug they have
-/// to catch by looking at the ceiling.
-///
-/// Parses the `names:` / `domain:` shape Home Assistant's live context uses; anything
-/// else yields no note.
-fn flag_ambiguous_names(observed: &str) -> String {
-    let mut by_name: std::collections::BTreeMap<String, std::collections::BTreeSet<String>> =
-        std::collections::BTreeMap::new();
-    let mut current: Option<String> = None;
-    for line in observed.lines() {
-        let trimmed = line.trim().trim_start_matches('-').trim();
-        if let Some(name) = trimmed.strip_prefix("names:") {
-            current = Some(name.trim().to_owned());
-        } else if let Some(domain) = trimmed.strip_prefix("domain:") {
-            if let Some(name) = current.as_ref() {
-                by_name
-                    .entry(name.clone())
-                    .or_default()
-                    .insert(domain.trim().to_owned());
-            }
-        }
-    }
-    let clashes: Vec<String> = by_name
-        .into_iter()
-        .filter(|(_, domains)| domains.len() > 1)
-        .map(|(name, domains)| {
-            format!(
-                "\"{name}\" is {}",
-                domains.into_iter().collect::<Vec<_>>().join(" AND ")
-            )
-        })
-        .collect();
-    if clashes.is_empty() {
-        return String::new();
-    }
-    format!(
-        "\n\n[ambiguous] One name refers to more than one thing here: {}. Do not guess \
-         which was meant — say what you found and ask which one they want.",
-        clashes.join("; ")
-    )
-}
-
 /// Reads the world back after an actuation, so the turn answers from what is
 /// **observed** rather than from what the actuator claimed (ADR 0053).
 ///
@@ -311,10 +257,7 @@ fn read_state_back(
     // context owns schema knowledge, so it works out which of the action's targeting
     // arguments this reader also accepts.
     let input = capabilities.read_back_input(id, action_input);
-    capabilities.run(&verifier, &input).ok().map(|observed| {
-        let flagged = flag_ambiguous_names(&observed);
-        format!("{observed}{flagged}")
-    })
+    capabilities.run(&verifier, &input).ok()
 }
 
 /// The single tool-calling conversation (ADR 0053). Seeds the conversation from the
@@ -2690,27 +2633,9 @@ mod tests {
     /// ADR 0053 layer 1. The payload is the real one captured from a live Home
     /// Assistant during the session that produced this code.
     mod read_back {
-        use super::super::{flag_ambiguous_names, note_verification};
+        use super::super::note_verification;
         use endora_capabilities::CapabilitySpec;
         use endora_kernel::Reversibility;
-
-        /// The live reading: two entities named "Kitchen", opposite states, and the
-        /// switch is the real ceiling light.
-        const LIVE: &str = "Live Context: An overview of the areas and the devices in this \
-smart home:
-- names: Kitchen
-  domain: light
-  state: 'off'
-  areas: Kitchen
-- names: Kitchen
-  domain: switch
-  state: 'on'
-  areas: Kitchen
-- names: Kitchen Table
-  domain: light
-  state: unavailable
-  areas: Kitchen
-";
 
         fn actuator() -> CapabilitySpec {
             CapabilitySpec {
@@ -2749,27 +2674,6 @@ smart home:
         fn without_a_read_back_it_stays_unverified() {
             let out = note_verification("done", Some(&actuator()), None);
             assert!(out.contains("[unverified]"), "{out}");
-        }
-
-        #[test]
-        fn one_name_across_two_domains_is_called_out() {
-            // The defect that caused a whole afternoon of wrong diagnoses.
-            let note = flag_ambiguous_names(LIVE);
-            assert!(note.contains("[ambiguous]"), "{note}");
-            assert!(note.contains("\"Kitchen\""), "names the clash: {note}");
-            assert!(note.contains("light"), "{note}");
-            assert!(note.contains("switch"), "{note}");
-            assert!(note.contains("Do not guess"), "{note}");
-            // A name that appears once is not a clash.
-            assert!(!note.contains("Kitchen Table"), "{note}");
-        }
-
-        #[test]
-        fn an_unambiguous_reading_gets_no_note() {
-            let clean = "- names: Hallway\n  domain: light\n  state: 'on'\n";
-            assert_eq!(flag_ambiguous_names(clean), "");
-            assert_eq!(flag_ambiguous_names("not a live context at all"), "");
-            assert_eq!(flag_ambiguous_names(""), "");
         }
     }
 
