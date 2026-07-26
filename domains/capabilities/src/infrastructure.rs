@@ -2221,10 +2221,8 @@ fn coerce_args_to_schema(input_json: &str, schema: Option<&serde_json::Value>) -
                 serde_json::Value::Array(items) => {
                     items.retain(|i| i.as_str().is_some_and(|s| allowed.iter().any(|a| a == s)));
                 }
-                serde_json::Value::String(sv) => {
-                    if !allowed.iter().any(|a| a == sv) {
-                        *val = serde_json::Value::Null;
-                    }
+                serde_json::Value::String(sv) if !allowed.iter().any(|a| a == sv) => {
+                    *val = serde_json::Value::Null;
                 }
                 _ => {}
             }
