@@ -1107,11 +1107,22 @@ fn build_runner(
         mcp_opened,
         auto_consequential,
     );
+    // Confirmed target aliases (ADR 0039), so a call that fails on a name the person has
+    // already explained gets one retry with their answer — see `AliasRunner`.
+    let aliases: Vec<(String, String, String)> =
+        endora_capabilities::TargetAliasRepository::aliases(config)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|a| (a.server, a.said, a.means))
+            .collect();
     // Built-in skills + connected MCP servers, behind one runner. The application
     // never learns a tool's origin (ADR 0021).
     endora_capabilities::CompositeRunner::new(vec![
         Arc::new(registry) as Arc<dyn endora_capabilities::CapabilityRunner + Send + Sync>,
-        Arc::new(mcp_source) as Arc<dyn endora_capabilities::CapabilityRunner + Send + Sync>,
+        Arc::new(endora_capabilities::AliasRunner::new(
+            Arc::new(mcp_source) as Arc<dyn endora_capabilities::CapabilityRunner + Send + Sync>,
+            aliases,
+        )) as Arc<dyn endora_capabilities::CapabilityRunner + Send + Sync>,
     ])
 }
 
