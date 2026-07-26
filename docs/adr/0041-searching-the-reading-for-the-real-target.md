@@ -94,9 +94,20 @@ it in is how a retry re-fails on a fragment of the answer.
 ### Which field the name goes in is not guessed
 
 A call does not say which of its fields is "the name", and deciding that would be exactly
-the per-server knowledge this avoids. So a real name is tried in each field that currently
-holds a fragment of it, most specific first, capped at three placements, and the first that
-works wins.
+the per-server knowledge this avoids. So a real name is tried in **each** scalar field the
+call carried — fragment-holders first, then the rest — capped at three placements, first
+success wins.
+
+*Each* field, not only the fragment-holders, because the second live run failed on exactly
+that restriction:
+
+```text
+{area: "guest bedroom left", name: "lamp"}  ->  INVALID_AREA
+```
+
+`Guest Bedroom Left` is an entity, not an area. The search found it, and then had nowhere
+to put it: `area` already held the whole name, and `name` held *lamp*, a word the house
+does not use. It knew the answer and could not try it.
 
 That is a real search rather than a guess, and it is safe for a specific reason: a
 placement that is wrong **fails to match and changes nothing**. The cost of being wrong is
