@@ -391,6 +391,32 @@ fn describe_service_result(body: &str, service: &str, entity: &str) -> String {
     }
 }
 
+/// The domains `homeassistant.turn_on` / `turn_off` can actually operate.
+///
+/// Everything else a house holds — sensors, diagnostics, configuration entries, update
+/// and connectivity indicators — reports or configures rather than switches. They matter
+/// because they are **named after the device they belong to**: `Kitchen Main Light LED`
+/// and `Kitchen Main Light Cloud connection` sit beside `Kitchen Main Light` and tie with
+/// it in any search for that name.
+const SWITCHABLE: &[&str] = &[
+    "light",
+    "switch",
+    "fan",
+    "cover",
+    "climate",
+    "media_player",
+    "scene",
+    "script",
+    "automation",
+    "input_boolean",
+    "humidifier",
+    "vacuum",
+    "lock",
+    "siren",
+    "valve",
+    "water_heater",
+];
+
 /// The MCP server this instance is the direct counterpart of.
 ///
 /// Data rather than a constant in the wiring: whoever registers the MCP server chooses
@@ -447,6 +473,15 @@ impl crate::infrastructure::NativeChannel for HomeAssistant {
             .map(|e| format!("names: {}\n  state: {}", e.name, e.state))
             .collect::<Vec<_>>()
             .join("\n"))
+    }
+
+    fn actionable(&self, tool: &str, entity: &str) -> bool {
+        if service_for(tool).is_none() {
+            return true; // not a tool this channel expresses; it narrows nothing
+        }
+        entity
+            .split_once('.')
+            .is_some_and(|(domain, _)| SWITCHABLE.contains(&domain))
     }
 
     fn categories(&self) -> Result<Vec<String>, String> {
