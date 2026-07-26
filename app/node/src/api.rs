@@ -273,6 +273,50 @@ fn reconnect_mcp(
     }
 }
 
+/// Reconnects any **enabled server that is exposing no tools**.
+///
+/// Zero tools on an enabled server is not a state that ever makes sense: it means the
+/// connection was attempted and found nothing there. Left alone it is permanent, because
+/// tools are discovered once at connect time — and it fails silently, since the server
+/// still looks registered and switched on.
+///
+/// Reconnecting rebuilds every connection, so this only fires when something is actually
+/// wrong rather than on a healthy tick.
+fn reconnect_empty_mcp_servers(state: &AppState) {
+    use endora_capabilities::{CapabilityRunner, McpServerRegistry};
+    let enabled: Vec<String> = McpServerRegistry::list(state.config.as_ref())
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|s| s.enabled)
+        .map(|s| s.name)
+        .collect();
+    if enabled.is_empty() {
+        return;
+    }
+    // Which prefixes actually have tools right now.
+    let live = mcp_snapshot(state).available();
+    let empty: Vec<&String> = enabled
+        .iter()
+        .filter(|name| {
+            let prefix = format!("{name}.");
+            !live.iter().any(|c| c.id.starts_with(&prefix))
+        })
+        .collect();
+    if empty.is_empty() {
+        return;
+    }
+    println!(
+        "mcp: {} enabled server(s) exposing no tools ({}) — reconnecting",
+        empty.len(),
+        empty
+            .iter()
+            .map(|s| s.as_str())
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+    reconnect_mcp(state.config.as_ref(), state.mcp.as_ref());
+}
+
 /// A snapshot of the shared MCP runner (cheap `Arc` clone), for composing this turn.
 fn mcp_snapshot(state: &AppState) -> Arc<endora_capabilities::McpRunner> {
     match state.mcp.read() {
@@ -2769,8 +2813,23 @@ async fn invoke_capability(
 pub fn spawn_heartbeat(state: AppState) {
     tokio::spawn(async move {
         let mut ticker = tokio::time::interval(std::time::Duration::from_secs(30));
+        let mut ticks: u64 = 0;
         loop {
             ticker.tick().await;
+            ticks += 1;
+            // An enabled server that came up with NO tools connected to nothing, so try
+            // again. Observed after a reboot: every container started at once, Endora
+            // reached the Home Assistant server before it was listening, got an empty
+            // catalogue, and never retried — so for twenty minutes the butler had no way
+            // to act and narrated "turning on the kitchen light" with nothing behind it.
+            //
+            // `connect_mcp` runs once at startup, which is exactly wrong on a machine
+            // where everything boots together. Every second minute is often enough to
+            // ride out a boot race and cheap enough to leave running for a server that
+            // is genuinely gone.
+            if ticks.is_multiple_of(4) {
+                reconnect_empty_mcp_servers(&state);
+            }
             let events = state.events.clone();
             let chat = state.chat.clone();
             let schedules = state.schedules.clone();
@@ -3271,6 +3330,36 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[test]
+    fn an_enabled_server_with_no_tools_is_the_state_worth_retrying() {
+        // The condition the heartbeat looks for, stated as a test because the bug it
+        // fixes was silent: after a reboot the Home Assistant server was registered,
+        // enabled, and exposing zero tools, so the butler narrated actions it had no
+        // way to take. Zero tools on an ENABLED server never makes sense — it means the
+        // connection found nothing — and nothing retried it.
+        use endora_application::CapabilitySpec;
+        let has_tools = |server: &str, live: &[CapabilitySpec]| {
+            let prefix = format!("{server}.");
+            live.iter().any(|c| c.id.starts_with(&prefix))
+        };
+        let spec = |id: &str| CapabilitySpec {
+            id: id.to_owned(),
+            description: String::new(),
+            configured: true,
+            autonomous: false,
+            input_schema: None,
+            reversibility: endora_application::Reversibility::Irreversible,
+        };
+
+        // A healthy server is left alone.
+        let live = vec![spec("home-assistant.HassTurnOff")];
+        assert!(has_tools("home-assistant", &live));
+
+        // One that came up empty is detected — including when another server is fine,
+        // which is the case a naive "any tools at all?" check would miss.
+        assert!(!has_tools("calendar", &live));
     }
 
     #[tokio::test]
