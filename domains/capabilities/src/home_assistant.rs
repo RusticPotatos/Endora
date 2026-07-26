@@ -28,6 +28,9 @@ pub struct Entity {
     pub name: String,
     /// Its state right now, for the reading.
     pub state: String,
+    /// What sort of thing it is: its domain (`light`) and its device class where it has
+    /// one. The vocabulary of *kinds*, as opposed to names (ADR 0046).
+    pub kinds: Vec<String>,
 }
 
 /// A configured connection to a Home Assistant instance.
@@ -74,6 +77,13 @@ impl HomeAssistant {
             .iter()
             .filter_map(|e| {
                 let id = e["entity_id"].as_str()?;
+                let mut kinds = Vec::new();
+                if let Some((domain, _)) = id.split_once('.') {
+                    kinds.push(domain.to_owned());
+                }
+                if let Some(class) = e["attributes"]["device_class"].as_str() {
+                    kinds.push(class.to_owned());
+                }
                 Some(Entity {
                     id: id.to_owned(),
                     name: e["attributes"]["friendly_name"]
@@ -81,6 +91,7 @@ impl HomeAssistant {
                         .unwrap_or(id)
                         .to_owned(),
                     state: e["state"].as_str().unwrap_or("?").to_owned(),
+                    kinds,
                 })
             })
             .collect();
@@ -436,6 +447,20 @@ impl crate::infrastructure::NativeChannel for HomeAssistant {
             .map(|e| format!("names: {}\n  state: {}", e.name, e.state))
             .collect::<Vec<_>>()
             .join("\n"))
+    }
+
+    fn categories(&self) -> Result<Vec<String>, String> {
+        // Read off the house itself rather than from a list in Endora's source: every
+        // domain it actually has, and every device class it actually uses.
+        let mut kinds: Vec<String> = self
+            .entities()?
+            .into_iter()
+            .flat_map(|e| e.kinds)
+            .map(|k| k.to_lowercase())
+            .collect();
+        kinds.sort();
+        kinds.dedup();
+        Ok(kinds)
     }
 
     fn act(&self, tool: &str, entity: &str) -> Option<Result<String, String>> {

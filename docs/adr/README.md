@@ -79,3 +79,4 @@ of an existing record and take the next number.
 | [0043](0043-writing-names-back-into-the-service.md) | Writing names back into the service | Accepted |
 | [0044](0044-policy-acts-on-what-it-has-established.md) | Policy acts on what it has established | Accepted |
 | [0045](0045-an-undo-log-for-what-it-changed.md) | An undo log for what it changed | Accepted |
+| [0046](0046-a-made-up-category-is-part-of-the-target.md) | A made-up category is part of the target | Accepted |
