@@ -37,12 +37,21 @@ pub struct RepairProposal {
     pub attempts: usize,
 }
 
-/// Reads outcome history back and reports capabilities that keep changing nothing.
+/// Reads outcome history back and reports capabilities that keep not working.
 ///
-/// Only outcomes Endora actually verified count: `changed == Some(false)` means it read
-/// the state before and after and they were identical. A `None` — no reader nominated,
-/// or no before-reading — is not evidence of anything and is ignored, the same honest
-/// silence ADR 0038 chose for servers nobody has told Endora about.
+/// Two shapes count, because they are the same finding from the person's side — this
+/// tool does not do what I ask with this target:
+///
+/// - **Changed nothing.** `changed == Some(false)`: Endora read the state before and
+///   after and they were identical, whatever the tool claimed.
+/// - **Failed outright.** The tool returned an error. Nine attempts on the kitchen
+///   failed to match any entity because the model kept inventing names ("main light",
+///   "any kitchen light") for something actually called `Kitchen Main` — and with only
+///   the no-change rule, none of that derived a thing.
+///
+/// An unverified success is still not evidence: `changed == None` on a call that
+/// *succeeded* means there was nothing to compare, and silence is the honest answer
+/// (ADR 0038).
 ///
 /// Grouped by capability **and target**, because "this tool never works" and "this tool
 /// never works *on the kitchen*" are different findings and only the second is
@@ -52,7 +61,7 @@ pub fn repair_proposals(outcomes: &[Outcome]) -> Vec<RepairProposal> {
     let mut counts: std::collections::BTreeMap<(String, String), usize> =
         std::collections::BTreeMap::new();
     for outcome in outcomes {
-        if outcome.changed() != Some(false) {
+        if !is_not_working(outcome) {
             continue;
         }
         let key = (outcome.capability().to_owned(), target_of(outcome.input()));
@@ -76,6 +85,16 @@ pub fn repair_proposals(outcomes: &[Outcome]) -> Vec<RepairProposal> {
             .then_with(|| a.target.cmp(&b.target))
     });
     proposals
+}
+
+/// Whether this outcome is evidence the capability is not doing its job: it either
+/// failed, or it reported success and demonstrably changed nothing.
+///
+/// Failure is recognised by Endora's **own** marker on the claim, not by reading any
+/// server's error format — the turn records a failed run as `error: …`, so this stays
+/// as integration-agnostic as the rest of the derivation.
+fn is_not_working(outcome: &Outcome) -> bool {
+    outcome.changed() == Some(false) || outcome.claim().trim_start().starts_with("error:")
 }
 
 /// The human-meaningful part of an action's arguments — the string values, which are
@@ -105,11 +124,28 @@ mod tests {
     use endora_kernel::ids::{OutcomeId, Timestamp};
 
     fn outcome(id: u128, capability: &str, input: &str, changed: Option<bool>) -> Outcome {
+        claimed(
+            id,
+            capability,
+            input,
+            "the action completed successfully",
+            changed,
+        )
+    }
+
+    /// An outcome with an explicit claim, so a failure can be expressed.
+    fn claimed(
+        id: u128,
+        capability: &str,
+        input: &str,
+        claim: &str,
+        changed: Option<bool>,
+    ) -> Outcome {
         Outcome::record(
             OutcomeId::new(id),
             capability,
             input,
-            "the action completed successfully",
+            claim,
             Some("kitchen main | switch | on"),
             Timestamp::from_unix_millis(id as i64),
             None,
@@ -138,6 +174,46 @@ mod tests {
     }
 
     #[test]
+    fn repeated_failures_count_as_much_as_repeated_no_ops() {
+        // The live gap: nine attempts on the kitchen FAILED to match anything, because
+        // the model kept inventing names for an entity called `Kitchen Main`. Every one
+        // had `changed: None` — nothing to compare, since nothing ran — so the
+        // no-change rule alone derived nothing at all while the person watched it fail
+        // over and over.
+        let history = [
+            claimed(
+                1,
+                "home.HassTurnOff",
+                r#"{"area":"kitchen","name":"main light"}"#,
+                "error: no_match_reason=NAME",
+                None,
+            ),
+            claimed(
+                2,
+                "home.HassTurnOff",
+                r#"{"name":"main light","area":"kitchen"}"#,
+                "error: no_match_reason=NAME",
+                None,
+            ),
+        ];
+        let proposals = repair_proposals(&history);
+        assert_eq!(proposals.len(), 1, "{proposals:?}");
+        assert_eq!(proposals[0].attempts, 2);
+    }
+
+    #[test]
+    fn a_success_nobody_could_verify_is_still_not_evidence() {
+        // `changed: None` on a call that SUCCEEDED means there was nothing to compare —
+        // no reader nominated, or no before-reading — not that something is wrong.
+        // Silence is the honest answer, not a guess (ADR 0038).
+        let history = [
+            outcome(1, "home.HassTurnOff", r#"{"area":"kitchen"}"#, None),
+            outcome(2, "home.HassTurnOff", r#"{"area":"kitchen"}"#, None),
+        ];
+        assert!(repair_proposals(&history).is_empty());
+    }
+
+    #[test]
     fn one_no_op_is_an_accident_not_a_finding() {
         // Turning off an already-off light changes nothing and is perfectly correct.
         // Only repetition is evidence.
@@ -155,17 +231,6 @@ mod tests {
         let history = [
             outcome(1, "home.HassTurnOff", r#"{"area":"kitchen"}"#, Some(true)),
             outcome(2, "home.HassTurnOff", r#"{"area":"kitchen"}"#, Some(true)),
-        ];
-        assert!(repair_proposals(&history).is_empty());
-    }
-
-    #[test]
-    fn unverified_actions_are_not_evidence() {
-        // No reader nominated means no before/after to compare. Silence is the honest
-        // answer, not a guess (ADR 0038).
-        let history = [
-            outcome(1, "home.HassTurnOff", r#"{"area":"kitchen"}"#, None),
-            outcome(2, "home.HassTurnOff", r#"{"area":"kitchen"}"#, None),
         ];
         assert!(repair_proposals(&history).is_empty());
     }
