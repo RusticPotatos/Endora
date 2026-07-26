@@ -57,6 +57,16 @@ at. It always shows what it found; it retries only when exactly one thing matche
   guess that actuates something is precisely what [0024](0024-reversibility-bands.md)
   exists to prevent.
 
+Words the server **never uses** are excluded before that test (added the same day, from
+the first live run). "Turn on the guest bedroom left lamp" found `Guest Bedroom Left` and
+then refused to use it, because nothing in the house is called a *lamp* and the match was
+therefore not complete. The person's vocabulary is not the server's, and a word appearing
+nowhere in the reading cannot tell one candidate from another.
+
+That stays safe because **uniqueness**, not completeness, is what makes a retry safe:
+"the garage lamp" also loses *lamp*, and is left with *garage*, which matches several
+things — so nothing is retried, exactly as before.
+
 ### Pure text, so it belongs to no integration
 
 The search knows nothing about Home Assistant, YAML, or any schema:
