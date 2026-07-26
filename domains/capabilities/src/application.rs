@@ -349,6 +349,22 @@ pub trait CapabilityRunner {
         None
     }
 
+    /// The arguments to call [`verifier`](Self::verifier) with, so the read-back is
+    /// scoped to **what the action was aimed at**.
+    ///
+    /// Observed live: asked to turn off the kitchen main, the turn read state back with
+    /// no arguments, got every device in the house, and the butler answered about the
+    /// *garage* — the first thing in the dump that happened to be on. An observation
+    /// that wide does not verify an action, it buries it.
+    ///
+    /// The default is `"{}"` — the whole reading, which is what a source that cannot
+    /// match up schemas should do. A source that knows both schemas narrows it by
+    /// passing along the targeting arguments the reader shares with the action. Nothing
+    /// in that rule names an integration: it is schema against schema.
+    fn read_back_input(&self, _action_id: &str, _action_input: &str) -> String {
+        "{}".to_owned()
+    }
+
     /// The deterministic policy [`Decision`] for a capability by id (ADRs
     /// 0005/0024) — what policy does with it: [`Act`](Decision::Act) on its own,
     /// [`Confirm`](Decision::Confirm) first, or [`Block`](Decision::Block) outright.
