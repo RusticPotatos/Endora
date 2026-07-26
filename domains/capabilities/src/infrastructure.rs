@@ -2830,18 +2830,42 @@ impl TargetSearchRunner {
         self.inner.run(&verifier, "{}").ok()
     }
 
-    /// The fields a real name could be placed in: those holding a fragment of it. Most
-    /// specific first, then alphabetical, so the order is deterministic.
+    /// The fields a real name could be placed in.
+    ///
+    /// **Every** scalar field, not only the ones already holding a fragment of the name.
+    /// A call does not say which of its fields means "the name" — working that out would
+    /// be the per-server knowledge this avoids — and the live failure was exactly a call
+    /// that had the right words in the wrong field:
+    ///
+    /// ```text
+    /// {area: "guest bedroom left", name: "lamp"}   -> INVALID_AREA
+    /// ```
+    ///
+    /// `Guest Bedroom Left` is an entity, not an area. Restricting placements to
+    /// fragment-holders left nowhere to put it: `area` already held the whole name, and
+    /// `name` held "lamp", a word the house does not use. So it found the answer and had
+    /// no way to try it.
+    ///
+    /// Fragment-holders first, most specific first, then everything else alphabetically —
+    /// likeliest placement first, deterministic throughout. A field already holding the
+    /// exact name is skipped: that call is the one that just failed.
     fn placements(input_json: &str, name: &str) -> Vec<String> {
         let lowered = name.to_lowercase();
-        let mut fields: Vec<(usize, String)> = crate::target_search::target_fields(input_json)
-            .into_iter()
-            .filter(|(_, value)| !value.eq_ignore_ascii_case(name))
-            .filter(|(_, value)| crate::target_search::is_fragment_of(value, &lowered))
-            .map(|(field, value)| (value.split_whitespace().count(), field))
-            .collect();
-        fields.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
-        fields.into_iter().map(|(_, field)| field).collect()
+        let mut fields: Vec<(bool, usize, String)> =
+            crate::target_search::target_fields(input_json)
+                .into_iter()
+                .filter(|(_, value)| !value.eq_ignore_ascii_case(name))
+                .map(|(field, value)| {
+                    let fragment = crate::target_search::is_fragment_of(&value, &lowered);
+                    (fragment, value.split_whitespace().count(), field)
+                })
+                .collect();
+        fields.sort_by(|a, b| {
+            b.0.cmp(&a.0)
+                .then_with(|| b.1.cmp(&a.1))
+                .then_with(|| a.2.cmp(&b.2))
+        });
+        fields.into_iter().map(|(_, _, field)| field).collect()
     }
 }
 
@@ -4573,15 +4597,19 @@ mod tests {
                 return Ok(
                     "{\"result\": \"- names: Kitchen Main Light\\n  domain: light\\n\
                            - names: Kitchen Table\\n  domain: light\\n\
+                           - names: Guest Bedroom Left\\n  domain: light\\n\
+                           - names: Guest Bedroom\\n  domain: light\\n\
                            - names: Garage Main\\n  domain: light\\n\"}"
                         .to_owned(),
                 );
             }
             self.calls.lock().unwrap().push(input.to_owned());
             let v: Value = serde_json::from_str(input).unwrap();
-            // Matches by name, exactly — like the real thing.
-            if v.get("name").and_then(Value::as_str) == Some("Kitchen Table") {
-                return Ok("turned on Kitchen Table".to_owned());
+            // Matches by name, exactly — like the real thing. An entity name in the AREA
+            // field is refused, which is the live INVALID_AREA failure.
+            let named = v.get("name").and_then(Value::as_str).unwrap_or_default();
+            if ["Kitchen Table", "Guest Bedroom Left"].contains(&named) {
+                return Ok(format!("turned on {named}"));
             }
             Err("MatchFailedError no_match_reason=NAME".to_owned())
         }
@@ -4706,6 +4734,30 @@ mod tests {
             inner.calls.lock().unwrap().len() <= 1 + MAX_PLACEMENTS,
             "unbounded retrying: {:?}",
             inner.calls.lock().unwrap()
+        );
+    }
+
+    #[test]
+    fn it_moves_a_real_name_into_a_field_that_can_hold_it() {
+        // Live, and the search found the answer then had nowhere to put it:
+        //   {area: "guest bedroom left", name: "lamp"} -> INVALID_AREA
+        // `Guest Bedroom Left` is an entity, not an area. The field already held the
+        // whole name and the name field held "lamp", so restricting placements to
+        // fragment-holders left no placement at all.
+        let (inner, runner) = house();
+        let out = runner
+            .run(
+                "home.HassTurnOn",
+                r#"{"area":"guest bedroom left","name":"lamp","domain":["light"]}"#,
+            )
+            .expect("found the name and could not use it");
+        assert!(out.contains("turned on Guest Bedroom Left"), "{out}");
+        let calls = inner.calls.lock().unwrap();
+        assert!(
+            calls
+                .iter()
+                .any(|c| c.contains(r#""name":"Guest Bedroom Left""#)),
+            "never tried the name in a field that could hold it: {calls:?}"
         );
     }
 }
