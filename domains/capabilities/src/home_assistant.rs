@@ -29,7 +29,7 @@ pub struct Entity {
     /// Its state right now, for the reading.
     pub state: String,
     /// What sort of thing it is: its domain (`light`) and its device class where it has
-    /// one. The vocabulary of *kinds*, as opposed to names (ADR 0046).
+    /// one. The vocabulary of *kinds*, as opposed to names (ADR 0041).
     pub kinds: Vec<String>,
 }
 
