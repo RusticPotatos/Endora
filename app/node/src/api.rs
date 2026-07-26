@@ -1818,6 +1818,58 @@ async fn set_alias(
     ))
 }
 
+/// Turns off capabilities Endora has established do not work (ADR 0044).
+///
+/// The finding was already derived and already correct; it just sat in a card waiting for
+/// someone to click. A butler that owns its own tooling acts on what it knows, so policy
+/// applies it — **policy**, not the model. The derivation is arithmetic over stored
+/// outcomes with nothing generative in the path, which is what makes acting on it
+/// consistent with ADR 0005 rather than a widening of what the model is trusted to do.
+///
+/// Three properties make this safe to do unattended:
+///
+/// - it only ever turns something **off**, which cannot break anything that was working;
+/// - the bar is deliberately high — several targets, repeated outright refusals, and not
+///   one success of any kind, including unverified ones (ADR 0040);
+/// - it is **one click** to undo, and the activity trail says what happened and why.
+fn withdraw_what_never_works(state: &AppState) {
+    use endora_capabilities::CapabilityConfigRepository;
+    let Ok(found) = usecases::repairs(state.understanding.as_ref()) else {
+        return;
+    };
+    let already: std::collections::HashSet<String> = state
+        .config
+        .enabled_overrides()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|(_, on)| !*on)
+        .map(|(id, _)| id)
+        .collect();
+    for repair in found {
+        if repair.remedy != endora_understanding::Remedy::StopOfferingIt
+            || already.contains(&repair.capability)
+        {
+            continue;
+        }
+        if state.config.set_enabled(&repair.capability, false).is_err() {
+            continue;
+        }
+        // Said out loud, in the place the person already looks. A capability quietly
+        // disappearing is the kind of silent narrowing that erodes trust, so the record
+        // carries the count that justified it and the way back.
+        record_event(
+            state.events.as_ref(),
+            state.clock.as_ref(),
+            &format!(
+                "Stopped offering the {} skill to myself: {} attempts, every one refused, \
+                 and it has never once worked. Turn it back on under Skills if you want it.",
+                repair.capability, repair.attempts
+            ),
+        );
+        let _ = state.changes.send(());
+    }
+}
+
 /// Writes the names the person has confirmed back into the service that owns them
 /// (ADR 0043).
 ///
@@ -2973,6 +3025,7 @@ pub fn spawn_heartbeat(state: AppState) {
             // is genuinely gone.
             if ticks.is_multiple_of(4) {
                 reconnect_empty_mcp_servers(&state);
+                withdraw_what_never_works(&state);
             }
             let events = state.events.clone();
             let chat = state.chat.clone();
