@@ -769,7 +769,12 @@ pub fn app(state: AppState) -> Router {
         .route("/v1/understanding/{id}/correct", post(correct_belief))
         .route("/v1/outcomes", get(list_outcomes))
         .route("/v1/repairs", get(list_repairs))
-        .route("/v1/aliases", get(list_aliases).post(set_alias))
+        .route(
+            "/v1/aliases",
+            get(list_aliases)
+                .post(set_alias)
+                .delete(forget_alias_everywhere),
+        )
         .route("/v1/aliases/upstream", post(push_aliases_upstream))
         .route("/v1/config-writes", get(list_config_writes))
         .route("/v1/config-writes/{id}/undo", post(undo_config_write))
@@ -1819,6 +1824,49 @@ async fn set_alias(
     Ok(Json(
         json!({ "server": alias.server, "said": alias.said, "means": alias.means }),
     ))
+}
+
+/// Forgets a name — here, and in the service if it was taught there (ADR 0045).
+///
+/// The other half of teaching. A name Endora was told and wrote upstream could be added
+/// and never taken away, which left a person's own configuration carrying a word they had
+/// changed their mind about and no way to say so from here.
+///
+/// The upstream removal is logged like any other change, so it too can be put back.
+async fn forget_alias_everywhere(
+    State(state): State<AppState>,
+    Json(req): Json<AliasRequest>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let config = state.config.clone();
+    let ids = state.ids.clone();
+    let clock = state.clock.clone();
+    let (server, said, means) = (req.server.clone(), req.said.clone(), req.means.clone());
+    let upstream = blocking(move || {
+        // Local first: forgetting here must not depend on a service being reachable.
+        endora_capabilities::TargetAliasRepository::forget_alias(config.as_ref(), &server, &said)
+            .map_err(AppError::Repository)?;
+        let channels = native_channels(config.as_ref());
+        let Some((_, channel)) = channels.iter().find(|(name, _)| *name == server) else {
+            return Ok(String::new());
+        };
+        match channel.forget(&means, &said) {
+            Some(Ok(mut write)) => {
+                write.id = endora_application::IdSource::new_id(ids.as_ref());
+                write.at_ms = clock.now().unix_millis();
+                write.server = server;
+                let described = write.describe();
+                endora_capabilities::ConfigWriteLog::record(config.as_ref(), &write)
+                    .map_err(AppError::Repository)?;
+                Ok(described)
+            }
+            // It was never taught upstream, or cannot be — forgetting it here is still
+            // done, and saying nothing more is honest.
+            Some(Err(_)) | None => Ok(String::new()),
+        }
+    })
+    .await?;
+    let _ = state.changes.send(());
+    Ok(Json(json!({ "ok": true, "upstream": upstream })))
 }
 
 /// Every change Endora has made to a service's own configuration (ADR 0045).

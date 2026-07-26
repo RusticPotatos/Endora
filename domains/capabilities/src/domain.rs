@@ -28,9 +28,22 @@ pub struct ConfigWrite {
 }
 
 impl ConfigWrite {
+    /// Whether this write **removed** the name rather than adding it.
+    ///
+    /// Derived rather than stored: a name that was already in the prior list and is the
+    /// subject of the write can only have been taken away. That keeps one table, one undo
+    /// (replay `was`), and no flag that could disagree with the data next to it.
+    #[must_use]
+    pub fn is_removal(&self) -> bool {
+        self.was.iter().any(|a| a.eq_ignore_ascii_case(&self.added))
+    }
+
     /// A one-line account of what changed, for the trail and the console.
     #[must_use]
     pub fn describe(&self) -> String {
+        if self.is_removal() {
+            return format!("{} no longer answers to '{}'", self.target, self.added);
+        }
         let before = if self.was.is_empty() {
             "no other names".to_owned()
         } else {
@@ -340,6 +353,39 @@ mod tests {
                 url: "https://cal.example".to_owned(),
                 auth: String::new()
             }
+        );
+    }
+
+    #[test]
+    fn a_write_tells_an_addition_from_a_removal_by_what_was_there_before() {
+        use super::ConfigWrite;
+        // Derived, not stored: a name already in the prior list can only have been taken
+        // away. One table, one undo, and no flag that could disagree with the data.
+        let added = ConfigWrite {
+            id: 1,
+            at_ms: 0,
+            server: "home-assistant".to_owned(),
+            target: "light.kitchen_table".to_owned(),
+            added: "table".to_owned(),
+            was: vec!["table light".to_owned()],
+            undone: false,
+        };
+        assert!(!added.is_removal());
+        assert!(
+            added.describe().contains("now also answers to 'table'"),
+            "{}",
+            added.describe()
+        );
+
+        let removed = ConfigWrite {
+            was: vec!["table light".to_owned(), "table".to_owned()],
+            ..added
+        };
+        assert!(removed.is_removal());
+        assert!(
+            removed.describe().contains("no longer answers to 'table'"),
+            "{}",
+            removed.describe()
         );
     }
 }

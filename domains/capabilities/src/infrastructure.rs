@@ -2851,6 +2851,20 @@ pub trait NativeChannel: Send + Sync {
         None
     }
 
+    /// Takes a name away again — the other half of [`teach`](Self::teach), so a name can
+    /// be untold and not only added (ADR 0045).
+    ///
+    /// # Errors
+    /// Through the inner `Result`, a human-readable message if the service refuses.
+    fn forget(
+        &self,
+        name: &str,
+        alias: &str,
+    ) -> Option<Result<crate::domain::ConfigWrite, String>> {
+        let _ = (name, alias);
+        None
+    }
+
     /// Puts a change back exactly as it was, from the record of it.
     ///
     /// # Errors
