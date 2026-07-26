@@ -242,6 +242,15 @@ canned string ADR 0028 deleted, wearing a hat.
 
 ### E. Then
 
+- **Endora repairing its own integrations.** [ADR 0039](adr/0039-capability-repair-proposals.md)
+  has it noticing that a capability keeps failing on a target and asking what the thing is
+  really called; the answer is stored and grounds later turns. The destination is Endora
+  making the fix *at the source* — proposing the change to the server's own configuration
+  and applying it once that capability is opened and the envelope widened. An alias inside
+  Endora only helps Endora; an alias in Home Assistant helps every client the person owns.
+  That step needs its own ADR: writing to third-party configuration is a reversibility
+  question, not a convenience one.
+
 - Event-driven wake: a genuine event (a new high-confidence belief, a due reminder)
   *opens the check-in budget early*, as an extra gate and never as the decision itself
   — the remainder [ADR 0031](adr/0031-agentic-proactivity.md) named.
