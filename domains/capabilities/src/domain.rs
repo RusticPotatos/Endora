@@ -3,6 +3,46 @@
 use endora_kernel::DomainError;
 use endora_kernel::error::require_non_empty;
 
+/// A change Endora made to a **service's own configuration**, kept so it can be put back
+/// (ADR 0045).
+///
+/// ADR 0043 captured the prior value at the moment of the write and then dropped it on the
+/// floor: the undo existed for the length of one function call. A record nobody stored is
+/// not a reversibility story, it is a claim about one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConfigWrite {
+    /// Monotonic id, so a write can be pointed at.
+    pub id: u128,
+    /// When it happened, in milliseconds since the epoch.
+    pub at_ms: i64,
+    /// Which service was edited.
+    pub server: String,
+    /// What in that service — an entity id, a path, whatever the service calls a thing.
+    pub target: String,
+    /// The name that was added.
+    pub added: String,
+    /// Every name it had **before**. Replaying this is the undo.
+    pub was: Vec<String>,
+    /// Whether it has since been put back.
+    pub undone: bool,
+}
+
+impl ConfigWrite {
+    /// A one-line account of what changed, for the trail and the console.
+    #[must_use]
+    pub fn describe(&self) -> String {
+        let before = if self.was.is_empty() {
+            "no other names".to_owned()
+        } else {
+            self.was.join(", ")
+        };
+        format!(
+            "{} now also answers to '{}' (it was: {before})",
+            self.target, self.added
+        )
+    }
+}
+
 /// The person's **autonomy envelope** (ADR 0022): the deterministic boundary the
 /// butler acts independently *within*. Widening it grants more independence; the
 /// policy layer — never the model — still enforces the edges. This first slice has

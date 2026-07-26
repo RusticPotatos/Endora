@@ -2,7 +2,7 @@
 
 use endora_kernel::{Decision, RepositoryError, Reversibility};
 
-pub use crate::domain::{AutonomyEnvelope, McpServer, McpTransport, TargetAlias};
+pub use crate::domain::{AutonomyEnvelope, ConfigWrite, McpServer, McpTransport, TargetAlias};
 
 /// An optional **deep model** — a bigger/cloud AI the person configures for hard
 /// questions the local model can't handle well (like a phone escalating to a bigger
@@ -241,6 +241,38 @@ pub trait CapabilityConfigRepository {
     /// # Errors
     /// [`RepositoryError`] if the backend fails.
     fn set_confirm(&self, id: &str, confirm: bool) -> Result<(), RepositoryError>;
+}
+
+/// Stores what the person said a server's targets are really called (ADR 0039).
+/// The log of changes Endora has made to services' own configuration (ADR 0045).
+///
+/// Append-only in spirit: a write is recorded, and undoing marks it rather than deleting
+/// it. What Endora changed about someone's house is not something it should be able to
+/// make disappear.
+pub trait ConfigWriteLog {
+    /// Records a change, with the prior value that undoes it.
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if the backend fails.
+    fn record(&self, write: &ConfigWrite) -> Result<(), RepositoryError>;
+
+    /// The most recent changes, newest first.
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if the backend fails.
+    fn writes(&self, limit: usize) -> Result<Vec<ConfigWrite>, RepositoryError>;
+
+    /// One change by id.
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if the backend fails.
+    fn write(&self, id: u128) -> Result<Option<ConfigWrite>, RepositoryError>;
+
+    /// Marks a change as put back. The row stays.
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if the backend fails.
+    fn mark_undone(&self, id: u128) -> Result<(), RepositoryError>;
 }
 
 /// Stores what the person said a server's targets are really called (ADR 0039).
