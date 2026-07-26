@@ -212,6 +212,50 @@ impl HomeAssistant {
         })
     }
 
+    /// Removes one alias, leaving the rest. The prior list comes back with it, so the
+    /// removal undoes exactly as an addition does.
+    ///
+    /// # Errors
+    /// A human-readable message if Home Assistant cannot be reached or refuses the edit.
+    pub fn remove_alias(&self, entity: &str, alias: &str) -> Result<AliasWrite, String> {
+        let alias = alias.trim();
+        let mut socket = self.connect_ws()?;
+        let entry = ws_call(
+            &mut socket,
+            1,
+            &json!({ "type": "config/entity_registry/get", "entity_id": entity }),
+        )?;
+        let was: Vec<String> = entry["aliases"]
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .filter_map(|v| v.as_str().map(str::to_owned))
+                    .collect()
+            })
+            .unwrap_or_default();
+        if !was.iter().any(|a| a.eq_ignore_ascii_case(alias)) {
+            return Err(format!("{entity} does not answer to '{alias}'"));
+        }
+        let now: Vec<&String> = was
+            .iter()
+            .filter(|a| !a.eq_ignore_ascii_case(alias))
+            .collect();
+        ws_call(
+            &mut socket,
+            2,
+            &json!({
+                "type": "config/entity_registry/update",
+                "entity_id": entity,
+                "aliases": now,
+            }),
+        )?;
+        Ok(AliasWrite {
+            entity: entity.to_owned(),
+            added: alias.to_owned(),
+            was,
+        })
+    }
+
     /// Puts an entity's aliases back exactly as they were — the undo for
     /// [`add_alias`](Self::add_alias).
     ///
@@ -422,6 +466,34 @@ impl crate::infrastructure::NativeChannel for HomeAssistant {
                 undone: false,
             }
         }))
+    }
+
+    fn forget(
+        &self,
+        name: &str,
+        alias: &str,
+    ) -> Option<Result<crate::domain::ConfigWrite, String>> {
+        if !self.may_write {
+            return None;
+        }
+        let entity = match self.entities() {
+            Ok(all) => all
+                .into_iter()
+                .find(|e| e.name.eq_ignore_ascii_case(name.trim()))?,
+            Err(e) => return Some(Err(e)),
+        };
+        Some(
+            self.remove_alias(&entity.id, alias)
+                .map(|write| crate::domain::ConfigWrite {
+                    id: 0,
+                    at_ms: 0,
+                    server: String::new(),
+                    target: write.entity,
+                    added: write.added,
+                    was: write.was,
+                    undone: false,
+                }),
+        )
     }
 
     fn undo(&self, write: &crate::domain::ConfigWrite) -> Option<Result<String, String>> {
