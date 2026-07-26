@@ -20,6 +20,7 @@ pub mod mcp_http;
 pub mod mcp_registry;
 pub mod mcp_stdio;
 pub mod store;
+pub mod target_search;
 
 pub use application::{
     AutonomyEnvelope, AutonomyEnvelopeRepository, ButlerModelConfig, ButlerModelConfigRepository,
@@ -31,8 +32,13 @@ pub use application::{
 pub use infrastructure::{
     AliasRunner, Capability, CapabilityError, CapabilityInfo, CapabilitySettings, CompositeRunner,
     McpClient, McpRunner, McpToolInfo, OpenerRunner, RegistryRunner, ReversibleOnlyRunner,
-    SettingSpec, WithdrawnRunner, default_capabilities, redact_pii_in_value, scan_outbound_secret,
+    SettingSpec, TargetSearchRunner, WithdrawnRunner, default_capabilities, redact_pii_in_value,
+    scan_outbound_secret,
 };
 pub use mcp_http::HttpMcpClient;
 pub use mcp_stdio::StdioMcpClient;
 pub use store::{ConfigStore, migrate};
+pub use target_search::{
+    Candidate, candidates, is_fragment_of, only_real_match, retarget, shortlist, target_fields,
+    target_words,
+};
