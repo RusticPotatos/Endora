@@ -2148,9 +2148,20 @@ impl CapabilityRunner for McpRunner {
         ) else {
             return WHOLE.to_owned();
         };
+        // Location narrows the reading; a KIND filter must not. Asked to turn off the
+        // kitchen main — which is a `switch` — the model sent `domain: ["light"]`. If
+        // the read-back inherited that, it would show the kitchen's lights and hide the
+        // switch: exactly the entity that explains the failure. After an action that did
+        // not land, "what is actually there" is the whole point of looking (ADR 0034).
+        //
+        // The split is by JSON shape rather than by field name, so it needs no knowledge
+        // of any server: a scalar (`name`, `area`, `floor`) points at something, while an
+        // array (`domain`, `device_class`) restricts which kinds count.
         let scoped: serde_json::Map<String, Value> = args
             .iter()
-            .filter(|(key, value)| props.contains_key(*key) && !value.is_null())
+            .filter(|(key, value)| {
+                props.contains_key(*key) && !value.is_null() && !value.is_array()
+            })
             .map(|(key, value)| ((*key).clone(), (*value).clone()))
             .collect();
         if scoped.is_empty() {
@@ -2201,8 +2212,52 @@ fn coerce_args_to_schema(input_json: &str, schema: Option<&serde_json::Value>) -
         if wants_array && !val.is_array() && !val.is_null() {
             *val = serde_json::Value::Array(vec![val.take()]);
         }
+        // Drop values the schema says are not allowed, rather than letting the server
+        // reject the whole call. Observed live: `device_class: ["light"]` — not one of
+        // that field's permitted values — failed the entire turn with a validation
+        // error, so a light nobody could name stayed on.
+        if let Some(allowed) = permitted_values(props.get(key)) {
+            match val {
+                serde_json::Value::Array(items) => {
+                    items.retain(|i| i.as_str().is_some_and(|s| allowed.iter().any(|a| a == s)));
+                }
+                serde_json::Value::String(sv) => {
+                    if !allowed.iter().any(|a| a == sv) {
+                        *val = serde_json::Value::Null;
+                    }
+                }
+                _ => {}
+            }
+        }
     }
+    // An empty value is not a filter, it is noise — and some servers reject it outright
+    // (`floor: ""` came back as "invalid slot info", failing the call). Dropping empties
+    // also clears anything emptied by the enum check above.
+    obj.retain(|_, v| match v {
+        serde_json::Value::Null => false,
+        serde_json::Value::String(s) => !s.trim().is_empty(),
+        serde_json::Value::Array(items) => !items.is_empty(),
+        _ => true,
+    });
     args.to_string()
+}
+
+/// The values a schema permits for a field, from `enum` — directly, or on an array's
+/// `items`. `None` when the field is unconstrained, which is the common case.
+///
+/// Schema-driven on purpose: this is what lets Endora keep a model's slips from failing
+/// a whole call without knowing anything about the server it is talking to (ADR 0038).
+fn permitted_values(field: Option<&serde_json::Value>) -> Option<Vec<String>> {
+    let field = field?;
+    let list = field
+        .get("enum")
+        .or_else(|| field.get("items").and_then(|i| i.get("enum")))?;
+    let values: Vec<String> = list
+        .as_array()?
+        .iter()
+        .filter_map(|v| v.as_str().map(ToOwned::to_owned))
+        .collect();
+    (!values.is_empty()).then_some(values)
 }
 
 /// Refuses a `HassLightSet` call that cannot do anything.
@@ -3514,6 +3569,59 @@ mod tests {
     }
 
     #[test]
+    fn arguments_the_schema_forbids_are_dropped_not_sent() {
+        // Live failure: device_class:["light"] — not one of that field's permitted
+        // values — failed the WHOLE call with a validation error, so a light nobody
+        // could name stayed on. The schema says which values are allowed; use it.
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "name": { "type": "string" },
+                "floor": { "type": "string" },
+                "device_class": {
+                    "type": "array",
+                    "items": { "enum": ["outlet", "switch", "tv"] }
+                }
+            }
+        });
+        let out = coerce_args_to_schema(
+            r#"{"name":"main","floor":"","device_class":["light"]}"#,
+            Some(&schema),
+        );
+        let parsed: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(parsed["name"], "main");
+        assert!(
+            parsed.get("device_class").is_none(),
+            "an invalid enum value was sent: {out}"
+        );
+        assert!(
+            parsed.get("floor").is_none(),
+            "an empty filter was sent: {out}"
+        );
+    }
+
+    #[test]
+    fn a_permitted_value_survives_the_hygiene() {
+        // The check must not eat valid arguments — that would break every working call.
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "device_class": {
+                    "type": "array",
+                    "items": { "enum": ["outlet", "switch"] }
+                }
+            }
+        });
+        let out = coerce_args_to_schema(r#"{"device_class":"switch"}"#, Some(&schema));
+        let parsed: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(
+            parsed["device_class"],
+            serde_json::json!(["switch"]),
+            "a valid value was coerced to an array and kept: {out}"
+        );
+    }
+
+    #[test]
     fn the_read_back_is_scoped_to_what_the_action_targeted() {
         // The live failure: "turn the kitchen main off" read state back with no
         // arguments, got every device in the house, and the butler answered about the
@@ -3540,6 +3648,36 @@ mod tests {
         let parsed: Value = serde_json::from_str(&scoped).unwrap();
         assert_eq!(parsed["area"], "kitchen");
         assert_eq!(parsed["name"], "main");
+    }
+
+    #[test]
+    fn a_kind_filter_never_narrows_the_read_back() {
+        // The live case: "kitchen main" is a SWITCH, and the model sent
+        // domain: ["light"]. Inheriting that would hide the one entity that explains
+        // the failure — after an action that did not land, what is actually there is
+        // the whole point of looking.
+        let mcp = McpRunner::connect_with_readers(vec![(
+            "home-assistant".to_owned(),
+            Box::new(FakeTransport {
+                tools: vec![
+                    schema_tool("HassTurnOff", &["name", "area", "domain"]),
+                    schema_tool("GetLiveContext", &["name", "area", "domain"]),
+                ],
+                healthy: true,
+            }) as Box<dyn McpClient>,
+            "GetLiveContext".to_owned(),
+        )]);
+
+        let scoped = mcp.read_back_input(
+            "home-assistant.HassTurnOff",
+            r#"{"area":"kitchen","name":"main","domain":["light"]}"#,
+        );
+        let parsed: Value = serde_json::from_str(&scoped).unwrap();
+        assert_eq!(parsed["area"], "kitchen", "location still narrows");
+        assert!(
+            parsed.get("domain").is_none(),
+            "the kind filter leaked into the reading: {scoped}"
+        );
     }
 
     #[test]
