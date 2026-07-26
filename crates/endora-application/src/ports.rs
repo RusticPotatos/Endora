@@ -179,6 +179,14 @@ pub struct ButlerContext {
     /// present without sending the whole transcript (which slows a local model), so
     /// the butler stays coherent over a long chat. `None` until the window overflows.
     pub conversation_summary: Option<String>,
+    /// What the person has told Endora its tools' targets are really called (ADR 0039)
+    /// — one line each, e.g. `on home-assistant, "kitchen main" means "Kitchen Main"`.
+    ///
+    /// Grounding, the way understanding is: it tells the butler what a thing is called
+    /// here. It is **not** a substitution — nothing rewrites the target a model asks
+    /// for, because that could act on the wrong thing and would hide the mistake from
+    /// the battery that exists to measure it (ADR 0028).
+    pub target_aliases: Vec<String>,
     /// How the butler's own past actions have landed, per skill — built from the
     /// outcomes it recorded and what the person said about them (ADR 0035).
     ///

@@ -9,7 +9,7 @@ use crate::application::{
     AutonomyEnvelope, AutonomyEnvelopeRepository, ButlerModelConfig, ButlerModelConfigRepository,
     CapabilityConfigRepository, CapabilitySettingsRepository, DeepModel, DeepModelRepository,
     McpServer, McpServerRegistry, McpTransport, ModelSlot, ModelTuneSchedule,
-    ModelTuneScheduleRepository, Sampling,
+    ModelTuneScheduleRepository, Sampling, TargetAlias, TargetAliasRepository,
 };
 
 /// Creates the capabilities config tables if absent (idempotent).
@@ -68,6 +68,12 @@ pub fn migrate(db: &Db) -> Result<(), RepositoryError> {
                 enabled  INTEGER NOT NULL,
                 hour_utc INTEGER NOT NULL,
                 last_ms  INTEGER NOT NULL
+            ) STRICT;
+            CREATE TABLE IF NOT EXISTS target_aliases (
+                server TEXT NOT NULL,
+                said   TEXT NOT NULL,
+                means  TEXT NOT NULL,
+                PRIMARY KEY (server, said)
             ) STRICT;
             CREATE TABLE IF NOT EXISTS mcp_servers (
                 name    TEXT PRIMARY KEY,
@@ -433,6 +439,52 @@ impl CapabilityConfigRepository for ConfigStore {
                 "INSERT INTO capability_config (id, enabled, confirm) VALUES (?1, 1, ?2) \
                  ON CONFLICT(id) DO UPDATE SET confirm = excluded.confirm",
                 params![id, i64::from(confirm)],
+            )
+            .map_err(backend)?;
+        Ok(())
+    }
+}
+
+impl TargetAliasRepository for ConfigStore {
+    fn aliases(&self) -> Result<Vec<TargetAlias>, RepositoryError> {
+        let conn = self.db.lock()?;
+        let mut stmt = conn
+            .prepare("SELECT server, said, means FROM target_aliases ORDER BY server, said")
+            .map_err(backend)?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                ))
+            })
+            .map_err(backend)?;
+        let mut out = Vec::new();
+        for row in rows {
+            let (server, said, means) = row.map_err(backend)?;
+            out.push(TargetAlias::new(&server, &said, &means).map_err(corrupt)?);
+        }
+        Ok(out)
+    }
+
+    fn set_alias(&self, alias: &TargetAlias) -> Result<(), RepositoryError> {
+        self.db
+            .lock()?
+            .execute(
+                "INSERT OR REPLACE INTO target_aliases (server, said, means) VALUES (?1, ?2, ?3)",
+                params![alias.server, alias.said, alias.means],
+            )
+            .map_err(backend)?;
+        Ok(())
+    }
+
+    fn forget_alias(&self, server: &str, said: &str) -> Result<(), RepositoryError> {
+        self.db
+            .lock()?
+            .execute(
+                "DELETE FROM target_aliases WHERE server = ?1 AND said = ?2",
+                params![server, said],
             )
             .map_err(backend)?;
         Ok(())

@@ -159,6 +159,12 @@ CREATE TABLE IF NOT EXISTS events (
     at_ms   INTEGER NOT NULL,
     summary TEXT NOT NULL
 ) STRICT;
+CREATE TABLE IF NOT EXISTS target_aliases (
+    server TEXT NOT NULL,
+    said   TEXT NOT NULL,
+    means  TEXT NOT NULL,
+    PRIMARY KEY (server, said)
+) STRICT;
 CREATE TABLE IF NOT EXISTS mcp_servers (
     name    TEXT PRIMARY KEY,
     kind    TEXT NOT NULL,
@@ -304,6 +310,7 @@ impl MemoryStore for SqliteStore {
             "checkin",
             "beliefs",
             "outcomes",
+            "target_aliases",
             "intentions",
             "events",
             "capability_config",
