@@ -82,6 +82,24 @@ pub enum Probe {
         /// the honest default for integrations Endora knows nothing about.
         observed: Option<&'static str>,
     },
+    /// Ask for what the butler does **after one of its calls failed** and the read-back
+    /// named what is really there (ADR 0034 layer 1).
+    ///
+    /// Nothing measured this, and it is the shape that breaks live: asked to turn off a
+    /// switch, the model called with a name that does not exist, got back a reading
+    /// listing the real ones, and answered *"Let's try again. Here is the request:"* —
+    /// the preamble to a tool call, with no call. Every `select:*` case is a single-shot
+    /// choice against a clean catalogue; none of them is a recovery.
+    AfterFailure {
+        /// What the person asked.
+        prompt: &'static str,
+        /// The capability that was called and failed.
+        capability: &'static str,
+        /// The error it returned.
+        error: &'static str,
+        /// What the read-back showed afterwards — the real names.
+        observed: &'static str,
+    },
     /// Ask with a **specific** catalogue rather than the default one — for testing
     /// disambiguation between similarly-named tools, and the effect of crowding.
     ///
@@ -103,7 +121,8 @@ impl Probe {
             | Self::WithHistory(_, p)
             | Self::WithTools(_, p)
             | Self::AfterTool { prompt: p, .. }
-            | Self::AfterAction { prompt: p, .. } => p,
+            | Self::AfterAction { prompt: p, .. }
+            | Self::AfterFailure { prompt: p, .. } => p,
         }
     }
 }
@@ -973,6 +992,45 @@ fn run_probe(butler: &dyn Butler, probe: &Probe) -> ButlerReply {
             ];
             butler
                 .take_turn(&conversation, &[], &bare)
+                .unwrap_or_default()
+        }
+        Probe::AfterFailure {
+            prompt,
+            capability,
+            error,
+            observed,
+        } => {
+            // The live shape: the call failed, the read-back followed, and the tools are
+            // still on the table — so a corrected call is available if the model takes
+            // it. Built through `note_verification` like the rest, so this is the string
+            // production sends.
+            let content = format!(
+                "error: {error}\n\n[observed] Endora read the state back anyway. This is \
+                 what is actually there:\n{observed}"
+            );
+            let ctx = ButlerContext {
+                capabilities: hass_only(),
+                tools: structured_tools(HASS_TOOLS),
+                now: with_skills.now.clone(),
+                ..ButlerContext::default()
+            };
+            let conversation = vec![
+                TurnMessage::User((*prompt).to_owned()),
+                TurnMessage::Assistant {
+                    text: String::new(),
+                    tool_calls: vec![ToolCall {
+                        id: "call_1".to_owned(),
+                        capability: (*capability).to_owned(),
+                        input_json: r#"{"name":"main light"}"#.to_owned(),
+                    }],
+                },
+                TurnMessage::ToolResult {
+                    call_id: "call_1".to_owned(),
+                    content,
+                },
+            ];
+            butler
+                .take_turn(&conversation, &[], &ctx)
                 .unwrap_or_default()
         }
         Probe::AfterAction {
