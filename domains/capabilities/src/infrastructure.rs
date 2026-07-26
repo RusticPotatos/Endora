@@ -2851,6 +2851,19 @@ pub trait NativeChannel: Send + Sync {
         None
     }
 
+    /// The words this service uses as **categories** — the sorts of thing it has, as
+    /// opposed to the names of particular things (ADR 0046).
+    ///
+    /// Empty by default and empty for any service Endora cannot ask, in which case
+    /// nothing downstream changes: guessing at what counts as a category would make an
+    /// ordinary `domain: ["light"]` pollute every search.
+    ///
+    /// # Errors
+    /// A human-readable message if the service cannot be reached.
+    fn categories(&self) -> Result<Vec<String>, String> {
+        Ok(Vec::new())
+    }
+
     /// Takes a name away again — the other half of [`teach`](Self::teach), so a name can
     /// be untold and not only added (ADR 0045).
     ///
@@ -3051,7 +3064,15 @@ impl CapabilityRunner for TargetSearchRunner {
         let Some(reading) = self.reading(id) else {
             return Err(original);
         };
-        let words = crate::target_search::target_words(input_json);
+        // A kind filter the service has never used as a category is not a category — it
+        // is part of what the person named (ADR 0046). Only a service that can say so
+        // changes anything here.
+        let words = match self.channel(id).and_then(|c| c.categories().ok()) {
+            Some(known) if !known.is_empty() => {
+                crate::target_search::target_words_with_kinds(input_json, &known)
+            }
+            _ => crate::target_search::target_words(input_json),
+        };
         let found = crate::target_search::candidates(&reading, &words);
         // Only an unambiguous match may be acted on. Everything else is shown.
         let Some(best) = crate::target_search::only_real_match(&found) else {

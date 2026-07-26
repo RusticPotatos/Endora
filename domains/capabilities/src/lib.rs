@@ -42,5 +42,5 @@ pub use mcp_stdio::StdioMcpClient;
 pub use store::{ConfigStore, migrate};
 pub use target_search::{
     Candidate, candidates, is_fragment_of, only_real_match, retarget, shortlist, target_fields,
-    target_words,
+    target_words, target_words_with_kinds,
 };
