@@ -190,9 +190,7 @@ function viewAudit() {
 
 // ---- voice (browser Web Speech API; STT may use a cloud service) ---
 let SPEAK = localStorage.getItem("endora.speak") === "1";      // read replies aloud (default OFF)
-let PTT_HAPTIC = localStorage.getItem("endora.haptic") !== "0"; // buzz on push-to-talk (default on)
 let DEEP_MODE = localStorage.getItem("endora.deepmode") === "1"; // route sends to the deep model (default OFF)
-let CONVO_MODE = false;        // hands-free conversation loop (listen → send → speak → listen)
 let CONVO_REC = null;          // the active voice-activity recording, if listening
 const TTS = window.speechSynthesis;
 const STT = window.SpeechRecognition || window.webkitSpeechRecognition;
@@ -212,10 +210,9 @@ function unlockSpeech() {
 function speak(text) {
   // In a hands-free conversation, resume listening once the reply is spoken — or
   // right away if there's nothing to speak, so the loop never stalls.
-  if (!SPEAK || !TTS || !text) { if (typeof convoAfterReply === "function") convoAfterReply(); return; }
+  if (!SPEAK || !TTS || !text) return;
   TTS.cancel();
   const u = new SpeechSynthesisUtterance(text);
-  u.onend = () => { if (typeof convoAfterReply === "function") convoAfterReply(); };
   TTS.speak(u);
   // iOS sometimes pauses the queue; a nudge keeps it going.
   if (TTS.paused) TTS.resume();
@@ -243,215 +240,6 @@ function listen() {
   try { rec.start(); } catch (_) { flash("Couldn't start voice input.", "err"); }
 }
 
-// Push-to-talk: hold the mic to dictate (interim text fills the box live),
-// release to send. Uses pointer events so it works with mouse and touch.
-let PTT_REC = null;
-let PTT_MEDIA = null; // active Whisper recording { recorder, chunks, btn }
-let MIC_STREAM = null; // a cached mic stream, reused across recordings
-
-// Acquire the mic once and reuse the stream. Requesting getUserMedia on every press
-// makes browsers that don't persist the grant (e.g. self-signed HTTPS) re-prompt each
-// time; reusing one granted stream asks at most once per session.
-async function getMic() {
-  if (MIC_STREAM && MIC_STREAM.active) return MIC_STREAM;
-  MIC_STREAM = await navigator.mediaDevices.getUserMedia({ audio: true });
-  return MIC_STREAM;
-}
-// Release the mic (stops the indicator). Called when voice features are done.
-function releaseMic() {
-  if (MIC_STREAM) { MIC_STREAM.getTracks().forEach((t) => t.stop()); MIC_STREAM = null; }
-}
-// Free the mic when the page is hidden, so it isn't held open in the background.
-document.addEventListener("visibilitychange", () => {
-  if (document.hidden && !CONVO_MODE && !PTT_MEDIA) releaseMic();
-});
-
-// When a Whisper STT server is configured, record real audio and transcribe it
-// server-side (accurate, works in any browser) instead of the flaky Web Speech
-// API. Falls back to Web Speech when no server is set.
-async function startWhisperPTT(btn) {
-  if (PTT_MEDIA || !navigator.mediaDevices || !window.MediaRecorder) return;
-  if (!window.isSecureContext) { flash("Voice input needs a secure page (HTTPS or localhost).", "err"); return; }
-  try {
-    const stream = await getMic(); // reused across presses — no repeat permission prompt
-    const recorder = new MediaRecorder(stream);
-    const chunks = [];
-    recorder.ondataavailable = (e) => { if (e.data && e.data.size) chunks.push(e.data); };
-    recorder.start();
-    PTT_MEDIA = { recorder, chunks, btn };
-    if (btn) btn.classList.add("recording");
-    if (PTT_HAPTIC && navigator.vibrate) navigator.vibrate(25);
-  } catch (_) { flash("Couldn't start the mic — allow microphone access.", "err"); }
-}
-async function stopWhisperPTT(andSend) {
-  const m = PTT_MEDIA; if (!m) return; PTT_MEDIA = null;
-  if (m.btn) m.btn.classList.remove("recording");
-  const done = new Promise((res) => { m.recorder.onstop = res; });
-  try { m.recorder.stop(); } catch (_) {}
-  await done;
-  // Keep the mic stream alive for reuse (no re-prompt); it's released on page-hide.
-  if (!andSend) return;
-  const blob = new Blob(m.chunks, { type: m.recorder.mimeType || "audio/webm" });
-  if (!blob.size) return;
-  const input = document.getElementById("chat-input");
-  const ph = input ? input.placeholder : "";
-  if (input) input.placeholder = "Transcribing…";
-  try {
-    const res = await fetch("/v1/transcribe", { method: "POST", headers: { "content-type": "application/octet-stream" }, body: blob });
-    if (!res.ok) throw new Error("transcription failed");
-    const data = await res.json();
-    if (input && data.text) { input.value = data.text; growInput(input); sendChat(); }
-  } catch (e) { flash("Couldn't transcribe that" + (e.message ? " (" + e.message + ")" : "") + ".", "err"); }
-  finally { if (input) input.placeholder = ph || "Talk to your butler…"; }
-}
-
-function startPTT(btn) {
-  if (STT_AVAILABLE) return startWhisperPTT(btn);
-  if (!STT) { flash("Speech recognition isn't available in this browser (try Chrome/Edge).", "err"); return; }
-  if (!window.isSecureContext) { flash("Voice input needs a secure page (HTTPS or localhost).", "err"); return; }
-  if (PTT_REC) return;
-  const rec = new STT();
-  rec.lang = "en-US"; rec.interimResults = true; rec.continuous = true; rec.maxAlternatives = 1;
-  rec.onresult = (e) => {
-    let t = "";
-    for (let i = 0; i < e.results.length; i++) t += e.results[i][0].transcript;
-    const input = document.getElementById("chat-input");
-    if (input) { input.value = t; input.style.height = "auto"; input.style.height = input.scrollHeight + "px"; }
-  };
-  rec.onerror = (e) => {
-    const err = e && e.error;
-    if (err === "not-allowed" || err === "service-not-allowed") flash("The browser blocked the mic. Allow microphone access.", "err");
-    else if (err && err !== "no-speech" && err !== "aborted") flash("Couldn't capture speech (" + err + ").", "err");
-  };
-  rec.onend = () => { PTT_REC = null; if (btn) btn.classList.remove("recording"); };
-  try {
-    rec.start(); PTT_REC = rec;
-    if (btn) btn.classList.add("recording");
-    if (PTT_HAPTIC && navigator.vibrate) navigator.vibrate(25); // haptic cue (Android; iOS Safari ignores)
-  } catch (_) { PTT_REC = null; flash("Couldn't start voice input.", "err"); }
-}
-function stopPTT(andSend) {
-  if (PTT_MEDIA) { stopWhisperPTT(andSend); return; }
-  const rec = PTT_REC;
-  if (!rec) return;
-  try { rec.stop(); } catch (_) {}
-  // Let the final transcript land, then send if there's anything to send.
-  if (andSend) setTimeout(() => {
-    const input = document.getElementById("chat-input");
-    if (input && input.value.trim()) sendChat();
-  }, 250);
-}
-
-// ---- Conversational mode: hands-free listen → send → speak → listen ----------
-//
-// Needs the Whisper transcription server (real STT) and a secure page. Records until
-// you stop speaking (voice-activity detection), transcribes, sends, and reads the
-// reply aloud — then listens again. Tap to stop.
-
-// Record from `stream` until ~1.2s of silence follows speech (or a hard cap), using
-// an analyser to watch the input level. Calls `onDone(blob|null)` — null if no speech.
-function recordUntilSilence(stream, onDone) {
-  const SILENCE_MS = 1200, MAX_MS = 15000, THRESHOLD = 0.014, MIN_SPEECH_MS = 250;
-  let ctx, analyser, recorder;
-  try {
-    ctx = new (window.AudioContext || window.webkitAudioContext)();
-    const src = ctx.createMediaStreamSource(stream);
-    analyser = ctx.createAnalyser();
-    analyser.fftSize = 512;
-    src.connect(analyser);
-    recorder = new MediaRecorder(stream);
-  } catch (_) { onDone(null); return { abort() {} }; }
-  const chunks = [];
-  recorder.ondataavailable = (e) => { if (e.data && e.data.size) chunks.push(e.data); };
-  const buf = new Uint8Array(analyser.frequencyBinCount);
-  const start = Date.now();
-  let spokeAt = null, silenceAt = null, raf = 0, stopped = false;
-  const finish = () => { if (recorder.state === "recording") { try { recorder.stop(); } catch (_) {} } };
-  const tick = () => {
-    if (stopped) return;
-    analyser.getByteTimeDomainData(buf);
-    let sum = 0;
-    for (let i = 0; i < buf.length; i++) { const v = (buf[i] - 128) / 128; sum += v * v; }
-    const rms = Math.sqrt(sum / buf.length);
-    const now = Date.now();
-    if (rms > THRESHOLD) { if (!spokeAt) spokeAt = now; silenceAt = null; }
-    else if (spokeAt && now - spokeAt > MIN_SPEECH_MS) {
-      if (!silenceAt) silenceAt = now;
-      else if (now - silenceAt > SILENCE_MS) { finish(); return; }
-    }
-    if (now - start > MAX_MS) { finish(); return; }
-    raf = requestAnimationFrame(tick);
-  };
-  recorder.onstop = () => {
-    stopped = true;
-    cancelAnimationFrame(raf);
-    ctx.close().catch(() => {});
-    const blob = spokeAt ? new Blob(chunks, { type: recorder.mimeType || "audio/webm" }) : null;
-    onDone(blob);
-  };
-  recorder.start();
-  raf = requestAnimationFrame(tick);
-  return { abort() { stopped = true; cancelAnimationFrame(raf); try { recorder.stop(); } catch (_) {} } };
-}
-
-function convoStatus(text) {
-  const b = document.querySelector('[data-act="toggle:convo"]');
-  if (b) b.innerHTML = `${icon("mic", 15)}<span>${text}</span>`;
-}
-
-async function startConvo() {
-  if (!STT_AVAILABLE) { flash("Conversation mode needs the transcription server.", "err"); return; }
-  if (!window.isSecureContext) { flash("Voice needs a secure page (HTTPS or localhost).", "err"); return; }
-  CONVO_MODE = true;
-  // Replies must be spoken for a hands-free loop; turn Speak on and unlock TTS.
-  if (!SPEAK) { SPEAK = true; localStorage.setItem("endora.speak", "1"); updateSpeakButton(); }
-  unlockSpeech();
-  const b = document.querySelector('[data-act="toggle:convo"]');
-  if (b) b.classList.add("active");
-  try { await getMic(); } catch (_) { flash("Couldn't access the mic.", "err"); stopConvo(); return; }
-  convoListen();
-}
-
-function stopConvo() {
-  CONVO_MODE = false;
-  if (CONVO_REC) { CONVO_REC.abort(); CONVO_REC = null; }
-  if (TTS) TTS.cancel();
-  const b = document.querySelector('[data-act="toggle:convo"]');
-  if (b) { b.classList.remove("active"); b.innerHTML = `${icon("mic", 15)}<span>Conversation</span>`; }
-  releaseMic();
-}
-
-async function convoListen() {
-  if (!CONVO_MODE) return;
-  let stream;
-  try { stream = await getMic(); } catch (_) { stopConvo(); return; }
-  convoStatus("Listening…");
-  CONVO_REC = recordUntilSilence(stream, async (blob) => {
-    CONVO_REC = null;
-    if (!CONVO_MODE) return;
-    if (!blob || !blob.size) { convoListen(); return; } // nothing said — keep listening
-    convoStatus("Thinking…");
-    let text = "";
-    try {
-      const res = await fetch("/v1/transcribe", { method: "POST", headers: { "content-type": "application/octet-stream" }, body: blob });
-      if (res.ok) { const d = await res.json(); text = (d.text || "").trim(); }
-    } catch (_) { /* fall through to retry listening */ }
-    if (!CONVO_MODE) return;
-    if (!text) { convoListen(); return; }
-    // Send it. The reply streams; speak() reads it aloud and, on end, resumes the
-    // loop via convoAfterReply() — so we never listen while the butler is talking.
-    const input = document.getElementById("chat-input");
-    if (input) { input.value = text; growInput(input); }
-    convoStatus("Speaking…");
-    sendChat();
-  });
-}
-
-// Called when the butler's spoken reply finishes (or immediately if it wasn't
-// spoken): resume listening for the next turn.
-function convoAfterReply() {
-  if (CONVO_MODE) convoListen();
-}
 
 // The butler chat: the conversation and an input. Anything the butler does in
 // the world runs through the policy boundary as it happens — there is no queue
@@ -500,14 +288,14 @@ function viewChat() {
   const speakBtn = TTS
     ? `<button class="ghost" data-act="toggle:speak" title="read replies aloud">${icon(SPEAK ? "speakerOn" : "speakerOff")}<span>${SPEAK ? "Speaking" : "Speak"}</span></button>`
     : "";
-  const micBtn = (STT || STT_AVAILABLE)
+  // Dictation puts your words in the box and leaves them there — you read them and
+  // hit send. Browser-native recognition, so there is no upload and no wait for a
+  // transcription server; press-and-hold-to-send and the hands-free loop were slower
+  // and less predictable than the thing they replaced.
+  const micBtn = STT
     ? (window.isSecureContext
-        ? `<button class="ptt" data-mic="1" title="push to talk, release to send">${icon("mic")}<span>Push to talk</span></button>`
+        ? `<button class="ghost" data-act="chat:mic" title="dictate into the box — you still press send">${icon("mic")}<span>Dictate</span></button>`
         : `<button data-act="chat:mic" title="voice input needs HTTPS or localhost">${icon("mic")}<span>needs HTTPS</span></button>`)
-    : "";
-  // Hands-free conversation needs the transcription server (real STT) + a secure page.
-  const convoBtn = (STT_AVAILABLE && window.isSecureContext)
-    ? `<button class="ghost${CONVO_MODE ? " active" : ""}" data-act="toggle:convo" title="hands-free: it listens, replies aloud, and listens again">${icon("mic", 15)}<span>${CONVO_MODE ? "Conversation on" : "Conversation"}</span></button>`
     : "";
   return `
     <div class="chat">
@@ -518,7 +306,6 @@ function viewChat() {
           <div class="composer-secondary">
             ${speakBtn}
             ${micBtn}
-            ${convoBtn}
             ${DEEP_MODEL.configured ? `<button class="ghost${DEEP_MODE ? " active" : ""}" data-act="toggle:deep" title="when on, your messages go to the bigger model">${icon("sparkle", 15)}<span>${DEEP_MODE ? "Deep: on" : "Ask deep"}</span></button>` : ""}
           </div>
           <button class="primary" id="send-btn" data-act="${CHAT_STREAMING ? "chat:stop" : "chat:send"}">${CHAT_STREAMING ? `${icon("stop")}<span>Stop</span>` : `${icon("send")}<span>Send</span>`}</button>
@@ -924,7 +711,6 @@ function viewSettings() {
     <h2>Settings</h2>
     <div class="card" style="display:flex;flex-direction:column;gap:14px;">
       ${row(SPEAK, "toggle:speak", "Read replies aloud", TTS ? "" : "not supported in this browser")}
-      ${row(PTT_HAPTIC, "toggle:haptic", "Vibrate on push-to-talk", "haptic cue on Android; iOS ignores it")}
       ${row(SHOW_ACTIVITY, "toggle:activity", "Show Endora's actions", "a note of what it did each turn")}
     </div>
     ${proactivitySection()}
@@ -1722,18 +1508,6 @@ async function dispatch(act) {
       flash(DEEP_MODE ? "Deep mode on — your messages go to the bigger model." : "Deep mode off.", "ok");
       return;
     }
-    // Start/stop the hands-free conversation loop.
-    if (verb === "toggle" && noun === "convo") {
-      if (CONVO_MODE) { stopConvo(); flash("Conversation ended.", "ok"); }
-      else { startConvo(); }
-      return;
-    }
-    if (verb === "toggle" && noun === "haptic") {
-      PTT_HAPTIC = !PTT_HAPTIC;
-      localStorage.setItem("endora.haptic", PTT_HAPTIC ? "1" : "0");
-      if (PTT_HAPTIC && navigator.vibrate) navigator.vibrate(25);
-      return render();
-    }
     if (verb === "toggle" && noun === "menu") {
       const m = document.getElementById("menu");
       if (m) m.hidden = !m.hidden;
@@ -2074,14 +1848,6 @@ document.body.addEventListener("click", (ev) => {
   if (!ev.target.closest("#menu")) closeMenu();
 });
 
-// Push-to-talk: press-and-hold the mic ([data-mic]) to dictate, release to send.
-document.body.addEventListener("pointerdown", (ev) => {
-  const b = ev.target.closest("[data-mic]");
-  if (b) { ev.preventDefault(); startPTT(b); }
-});
-document.body.addEventListener("pointerup", () => stopPTT(true));
-document.body.addEventListener("pointercancel", () => stopPTT(false));
-
 // Enter sends the chat message (Shift+Enter is free for a newline if the input
 // ever becomes multi-line).
 document.body.addEventListener("keydown", (ev) => {
@@ -2126,7 +1892,7 @@ document.body.addEventListener("change", (ev) => {
 // beyond the butler chat lives in here, so the main surface stays clean.
 function setupHeader(health) {
   const service = (health && health.service) || "";
-  STT_AVAILABLE = !!(health && health.stt); // a Whisper server ⇒ real push-to-talk
+  STT_AVAILABLE = !!(health && health.stt); // a Whisper server is configured
   const menuBtn = document.getElementById("menu-btn");
   if (menuBtn) menuBtn.innerHTML = icon("menu");
   const item = (act, name, label, extra = "", cls = "") =>
