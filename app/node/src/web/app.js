@@ -880,7 +880,7 @@ function viewSkills() {
           <div class="grow">
             <div class="title">${esc(s.name)} ${health} <span class="pill">${esc(s.transport)}</span>${s.auth_set ? ` <span class="pill concluded">token set</span>` : ""}${(s.env_keys || []).length ? ` <span class="pill concluded">${(s.env_keys || []).length} env</span>` : ""}</div>
             <div class="sub">${esc(addr)}</div>
-            ${s.tools_live === 0 ? `<div class="sub" style="margin-top:4px;">Registered but didn't connect — check the command is installed and reachable on the server.</div>` : ""}
+            ${s.tools_live === 0 ? `<div class="sub" style="margin-top:4px;color:var(--danger,#c33);"><strong>Connected to nothing — no tools.</strong> Endora can't use this server, and it will say it did things it couldn't. Retrying every couple of minutes; check the command or endpoint is reachable.</div>` : ""}
           </div>
           <div class="row" style="gap:6px;">
             <button class="ghost" data-act="mcp:edit:${esc(s.name)}" title="Load this server into the form below to change its URL or settings">Edit</button>
