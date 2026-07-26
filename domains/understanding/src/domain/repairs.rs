@@ -84,14 +84,23 @@ pub struct RepairProposal {
 pub fn repair_proposals(outcomes: &[Outcome]) -> Vec<RepairProposal> {
     let mut counts: std::collections::BTreeMap<(String, String), usize> =
         std::collections::BTreeMap::new();
+    // The two streams a withdrawal needs, kept apart from the counts above because a
+    // withdrawal is a much stronger claim and cannot rest on the weaker evidence.
+    let mut refusals: std::collections::BTreeMap<(String, String), usize> =
+        std::collections::BTreeMap::new();
     let mut ever_worked: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     for outcome in outcomes {
-        if !is_not_working(outcome) {
+        if !failed_outright(outcome) {
             ever_worked.insert(outcome.capability().to_owned());
+        }
+        if !is_not_working(outcome) {
             continue;
         }
         let key = (outcome.capability().to_owned(), target_of(outcome.input()));
-        *counts.entry(key).or_default() += 1;
+        *counts.entry(key.clone()).or_default() += 1;
+        if failed_outright(outcome) {
+            *refusals.entry(key).or_default() += 1;
+        }
     }
     // A capability whose failures span several different targets and which has never
     // once worked is not being mis-aimed — it is the wrong tool (ADR 0040). One finding
@@ -99,7 +108,7 @@ pub fn repair_proposals(outcomes: &[Outcome]) -> Vec<RepairProposal> {
     // person is asked one question rather than the same question per noun.
     let mut wholly_broken: std::collections::BTreeMap<String, usize> =
         std::collections::BTreeMap::new();
-    for (capability, targets) in group_by_capability(&counts) {
+    for (capability, targets) in group_by_capability(&refusals) {
         if ever_worked.contains(&capability) {
             continue;
         }
@@ -118,6 +127,10 @@ pub fn repair_proposals(outcomes: &[Outcome]) -> Vec<RepairProposal> {
     }
     let mut proposals: Vec<RepairProposal> = counts
         .into_iter()
+        // A call that named nothing at all cannot be answered with a name. Asking "what
+        // is '' actually called?" is unanswerable, and the calls behind it are the
+        // model's own failure to say what it meant — which the runner already refuses.
+        .filter(|((_, target), _)| !target.is_empty())
         .filter(|((capability, _), attempts)| {
             *attempts >= ENOUGH_TO_BE_A_PATTERN && !wholly_broken.contains_key(capability)
         })
@@ -165,6 +178,20 @@ fn group_by_capability(
     by_capability
 }
 
+/// Whether the capability itself said it could not do the job — Endora's own `error:`
+/// marker on the claim, never any server's error format.
+///
+/// The **unambiguous** half of the evidence, and the only half a withdrawal may rest on
+/// (ADR 0040). "Changed nothing" is ambiguous in ways this is not: switching off an
+/// already-off light legitimately changes nothing, and a read-back scoped to the wrong
+/// thing reports no change on an action that plainly worked. Live, five `HassTurnOn`
+/// calls that really did turn lights on were all recorded `changed: false` — enough,
+/// under a rule that counted them, to propose withdrawing the most useful tool in the
+/// house. An outright refusal cannot be misread that way.
+fn failed_outright(outcome: &Outcome) -> bool {
+    outcome.claim().trim_start().starts_with("error:")
+}
+
 /// Whether this outcome is evidence the capability is not doing its job: it either
 /// failed, or it reported success and demonstrably changed nothing.
 ///
@@ -172,7 +199,7 @@ fn group_by_capability(
 /// server's error format — the turn records a failed run as `error: …`, so this stays
 /// as integration-agnostic as the rest of the derivation.
 fn is_not_working(outcome: &Outcome) -> bool {
-    outcome.changed() == Some(false) || outcome.claim().trim_start().starts_with("error:")
+    outcome.changed() == Some(false) || failed_outright(outcome)
 }
 
 /// What an action was aimed at, in words a person would recognise.
@@ -642,5 +669,103 @@ mod tests {
         assert_eq!(proposals.len(), 1, "{proposals:?}");
         assert_eq!(proposals[0].capability, "files.Move");
         assert_eq!(proposals[0].remedy, Remedy::StopOfferingIt);
+    }
+
+    #[test]
+    fn a_tool_that_really_worked_is_never_withdrawn_over_an_unreliable_no_change_reading() {
+        // Straight from production, and it proposed withdrawing the most useful tool in
+        // the house. `HassTurnOn` had nine refusals and five calls that DID turn lights
+        // on — every one of those recorded `changed: false`, because the read-back was
+        // scoped to something else. Counting them as failures made the tool look wholly
+        // broken when it plainly works.
+        let mut history = vec![
+            claimed(
+                1,
+                "home.HassTurnOn",
+                r#"{"name":"table"}"#,
+                "error: no match",
+                None,
+            ),
+            claimed(
+                2,
+                "home.HassTurnOn",
+                r#"{"name":"table"}"#,
+                "error: no match",
+                None,
+            ),
+            claimed(
+                3,
+                "home.HassTurnOn",
+                r#"{"name":"kitchen"}"#,
+                "error: no match",
+                None,
+            ),
+            claimed(
+                4,
+                "home.HassTurnOn",
+                r#"{"name":"kitchen"}"#,
+                "error: no match",
+                None,
+            ),
+        ];
+        // The successes: no error, and a no-change reading that is simply not to be
+        // trusted about whether the light came on.
+        history.push(outcome(
+            5,
+            "home.HassTurnOn",
+            r#"{"name":"Garage Main"}"#,
+            Some(false),
+        ));
+        let proposals = repair_proposals(&history);
+        assert!(
+            proposals.iter().all(|p| p.remedy == Remedy::NameTheTarget),
+            "a tool that worked was proposed for withdrawal: {proposals:?}"
+        );
+    }
+
+    #[test]
+    fn withdrawing_rests_only_on_the_tool_refusing_outright() {
+        // "Changed nothing" is ambiguous — an already-off light, a mis-scoped read-back.
+        // "I cannot do this" is not. Only the second is strong enough to remove a tool,
+        // so a history of pure no-ops derives alias questions and never a withdrawal.
+        let history = [
+            outcome(1, "home.HassTurnOff", r#"{"name":"table"}"#, Some(false)),
+            outcome(2, "home.HassTurnOff", r#"{"name":"table"}"#, Some(false)),
+            outcome(3, "home.HassTurnOff", r#"{"name":"bedroom"}"#, Some(false)),
+            outcome(4, "home.HassTurnOff", r#"{"name":"bedroom"}"#, Some(false)),
+        ];
+        let proposals = repair_proposals(&history);
+        assert!(
+            proposals.iter().all(|p| p.remedy == Remedy::NameTheTarget),
+            "no-op evidence alone withdrew a tool: {proposals:?}"
+        );
+        assert_eq!(proposals.len(), 2, "{proposals:?}");
+    }
+
+    #[test]
+    fn a_call_that_named_nothing_asks_no_question() {
+        // Live, and unanswerable: the model sent {area:null, name:null}, so the finding
+        // read "attempts aimed at '' didn't work. What is it actually called?" There is
+        // no it. The call's failure was saying nothing, which the runner already refuses.
+        let history = [
+            claimed(
+                1,
+                "home.HassTurnOn",
+                r#"{"area":null,"name":null}"#,
+                "error: no",
+                None,
+            ),
+            claimed(
+                2,
+                "home.HassTurnOn",
+                r#"{"area":null,"name":null}"#,
+                "error: no",
+                None,
+            ),
+        ];
+        assert!(
+            repair_proposals(&history).is_empty(),
+            "asked the person to name something that was never named"
+        );
     }
 }
