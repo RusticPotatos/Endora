@@ -1841,8 +1841,20 @@ async fn list_capabilities(State(state): State<AppState>) -> Json<Vec<serde_json
         state
             .capabilities
             .iter()
-            .map(|c| {
-                let info = c.info();
+            .map(|c| c.info())
+            // Show a skill the person can do something about; hide one they cannot.
+            //
+            // A scaffold is declared with full metadata and no data source behind it —
+            // unconfigured, and with no settings to fill in. There is no action
+            // available, so listing it only advertises something Endora cannot do and
+            // invites the fair question "what is an incident scanner and why can't I
+            // configure it?". Unconfigured skills that DO have settings still show,
+            // because those are a task rather than a dead end.
+            //
+            // The rule is a property, not a list: give a scaffold settings, or
+            // implement it, and it appears here with no further change.
+            .filter(|info| info.configured || !info.settings.is_empty())
+            .map(|info| {
                 let on = enabled.get(info.id).copied().unwrap_or(true);
                 let is_open = opened.get(info.id).copied().unwrap_or(false);
                 let is_confirm = confirm.get(info.id).copied().unwrap_or(false);

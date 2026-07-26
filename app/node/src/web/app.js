@@ -21,6 +21,7 @@ let LAST_ACTIVITY_MSG = null;  // the butler message id that activity belongs to
 let STEP_LIST = [];            // the live action trail for the turn currently streaming
 let SHOW_ACTIVITY = localStorage.getItem("endora.showActivity") !== "0"; // default on
 let CHAT_STREAMING = false;    // true while a reply is streaming in (guards live-render)
+let HAPTIC = localStorage.getItem("endora.haptic") !== "0"; // buzz on reply + mic (default on)
 let CHAT_STOPPED = false;      // the person stopped the last turn, so no reply is coming
 let CHAT_QUEUE = [];           // messages awaiting their turn — turns are SERIALIZED
 let CHAT_INFLIGHT = null;      // the user message whose reply is streaming now (not yet persisted)
@@ -238,6 +239,7 @@ function listen() {
       flash("Couldn't capture speech" + (err ? " (" + err + ")" : "") + ".", "err");
     }
   };
+  rec.onstart = () => buzz(15); // the mic is live — worth knowing without looking
   try { rec.start(); } catch (_) { flash("Couldn't start voice input.", "err"); }
 }
 
@@ -717,6 +719,7 @@ function viewSettings() {
     <div class="card" style="display:flex;flex-direction:column;gap:14px;">
       ${row(SPEAK, "toggle:speak", "Read replies aloud", TTS ? "" : "not supported in this browser")}
       ${row(SHOW_ACTIVITY, "toggle:activity", "Show Endora's actions", "a note of what it did each turn")}
+      ${navigator.vibrate ? row(HAPTIC, "toggle:haptic", "Vibrate", "a short buzz when a reply lands and when the mic starts listening") : ""}
     </div>
     ${proactivitySection()}
     <h3>Manage</h3>
@@ -1283,6 +1286,13 @@ async function askDeep(q, input) {
 }
 
 // Stop the in-flight turn and drop anything still queued.
+// A short buzz for the moments you may not be looking at the screen: a reply
+// landing, and the mic actually starting to listen. Android honours it; iOS ignores
+// vibrate entirely, so this is a bonus rather than a signal anything depends on.
+function buzz(ms) {
+  if (HAPTIC && navigator.vibrate) navigator.vibrate(ms);
+}
+
 function stopChat() {
   CHAT_QUEUE = [];
   // Remember that THIS was deliberate. The reload in the stream's `finally` renders
@@ -1391,6 +1401,7 @@ async function drainChat() {
         } else if (ev.type === "done") {
           // A reply landed, so nothing is outstanding.
           CHAT_STOPPED = false;
+          buzz(25);
           LAST_ACTIVITY = ev.activity || [];
           LAST_ACTIVITY_MSG = ev.reply && ev.reply.id;
           renderSteps(stepsWrap, STEP_LIST, false); // collapse to a summary
@@ -1526,6 +1537,12 @@ async function dispatch(act) {
       const m = document.getElementById("menu");
       if (m) m.hidden = !m.hidden;
       return;
+    }
+    if (verb === "toggle" && noun === "haptic") {
+      HAPTIC = !HAPTIC;
+      localStorage.setItem("endora.haptic", HAPTIC ? "1" : "0");
+      buzz(25); // confirm the change in the medium it controls
+      return render();
     }
     if (verb === "toggle" && noun === "activity") {
       SHOW_ACTIVITY = !SHOW_ACTIVITY;
