@@ -2827,7 +2827,7 @@ pub fn spawn_heartbeat(state: AppState) {
             // where everything boots together. Every second minute is often enough to
             // ride out a boot race and cheap enough to leave running for a server that
             // is genuinely gone.
-            if ticks % 4 == 0 {
+            if ticks.is_multiple_of(4) {
                 reconnect_empty_mcp_servers(&state);
             }
             let events = state.events.clone();
