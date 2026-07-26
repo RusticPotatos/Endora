@@ -65,6 +65,21 @@ A channel that cannot express a tool returns nothing and the existing retry runs
 switching on and off is mapped; brightness and colour carry arguments this does not
 attempt to translate, and a half-translated action is worse than none.
 
+### A reply is not an outcome (corrected 2026-07-26, from the person noticing)
+
+Home Assistant answers a service call with the list of states it changed, and that list is
+routinely **empty for calls that worked** — it answers before its integrations report back,
+so the list describes timing rather than result.
+
+Read as an outcome, it produced a false record: a light that verifiably turned off was
+stored as *"was already as asked, so 'turn off' changed nothing"*. The person saw the light
+go off while Endora said it had done nothing.
+
+So the reply now claims only what it can support — the call was accepted — and the
+**read-back** settles whether anything changed, which is what
+[0034](0034-evidence-verifies.md) built it for. Endora already had the right instrument and
+was overriding it with a worse one.
+
 ### Ids stay out of the matching text
 
 Learned immediately, and worth recording: `light.kitchen_table` contains the words
