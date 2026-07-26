@@ -98,6 +98,23 @@ substitution. The runner never rewrites the target a model asked for: that can a
 wrong thing, and it would hide the model's mistake from the battery that exists to measure
 it ([0028](0028-native-tool-calling-turn.md)).
 
+### A confirmed name outranks the model's other guesses (added 2026-07-26)
+
+Substituting the name alone was not enough. Observed live, with the alias in place:
+
+```text
+{name: "table light", area: "Living Room", floor: "1"}  ->  INVALID_FLOOR
+```
+
+A kitchen light, placed on an invented floor in the wrong room. The server rejected the
+call on the *floor* and never looked at the name, so the substitution never got a chance.
+
+So a confirmed name now **replaces** the model's other scalar guesses rather than sitting
+beside them. The person's answer is the top of [0038](0038-capability-profiles.md)'s trust
+ranking; every other scalar in the call is a guess about the same target, and keeping them
+can only contradict the answer. Kind filters stay — they restrict which *sorts* of thing
+count rather than claiming which one it is, and dropping them would widen the call.
+
 **This is a workaround and should be named as one.** An alias in Home Assistant fixes the
 problem for every client — voice assistants included — while an alias here only ever helps
 Endora. It is the right first rung because it is internal and reversible, not because it

@@ -2558,8 +2558,8 @@ impl AliasRunner {
         let server = id.split_once('.').map(|(s, _)| s)?;
         let mut args: Value = serde_json::from_str(input_json).ok()?;
         let obj = args.as_object_mut()?;
-        let mut changed = false;
-        for value in obj.values_mut() {
+        let mut resolved: Vec<String> = Vec::new();
+        for (field, value) in obj.iter_mut() {
             let Some(text) = value.as_str() else { continue };
             let hit = self
                 .aliases
@@ -2567,10 +2567,25 @@ impl AliasRunner {
                 .find(|(srv, said, _)| srv == server && said.eq_ignore_ascii_case(text.trim()));
             if let Some((_, _, means)) = hit {
                 *value = Value::String(means.clone());
-                changed = true;
+                resolved.push(field.clone());
             }
         }
-        changed.then(|| args.to_string())
+        if resolved.is_empty() {
+            return None;
+        }
+        // The person's answer outranks the model's other guesses (ADR 0038's ranking).
+        //
+        // Observed live, with the alias in place and still failing:
+        //   {name: "table light", area: "Living Room", floor: "1"} -> INVALID_FLOOR
+        // The kitchen light was put on an invented floor in the wrong room, so the
+        // substitution never got as far as being tried. A confirmed name identifies one
+        // thing on its own; every other scalar the model supplied is a guess about the
+        // same target, and keeping them can only contradict the answer.
+        //
+        // Kind filters are kept — they restrict which sorts of thing count rather than
+        // claiming which one it is, and dropping them would widen the call.
+        obj.retain(|field, value| resolved.contains(field) || !value.is_string());
+        Some(args.to_string())
     }
 }
 
@@ -4984,5 +4999,88 @@ mod tests {
             .expect_err("acted on an ambiguous match");
         assert!(err.contains("Kitchen Table"), "{err}");
         assert!(direct.acted.lock().unwrap().is_empty(), "acted on a guess");
+    }
+
+    #[test]
+    fn a_confirmed_name_drops_the_models_other_guesses() {
+        // Live, with the alias already in place and still failing:
+        //   {name:"table light", area:"Living Room", floor:"1"} -> INVALID_FLOOR
+        // A kitchen light placed on an invented floor in the wrong room. The server
+        // rejected the call on the floor and never looked at the name, so substituting
+        // it changed nothing.
+        struct Picky;
+        impl CapabilityRunner for Picky {
+            fn available(&self) -> Vec<crate::application::CapabilitySpec> {
+                Vec::new()
+            }
+            fn decision(&self, _id: &str) -> Option<Decision> {
+                Some(Decision::Act)
+            }
+            fn verifier(&self, _id: &str) -> Option<String> {
+                None
+            }
+            fn read_back_input(&self, _id: &str, _input: &str) -> String {
+                "{}".to_owned()
+            }
+            fn run(&self, _id: &str, input: &str) -> Result<String, String> {
+                let v: Value = serde_json::from_str(input).unwrap();
+                if v.get("floor").is_some() {
+                    return Err("INVALID_FLOOR".to_owned());
+                }
+                if v.get("name").and_then(Value::as_str) == Some("Kitchen Table") {
+                    return Ok("turned off Kitchen Table".to_owned());
+                }
+                Err("no match".to_owned())
+            }
+        }
+        let runner = AliasRunner::new(
+            Arc::new(Picky),
+            vec![(
+                "home".to_owned(),
+                "table light".to_owned(),
+                "Kitchen Table".to_owned(),
+            )],
+        );
+        let out = runner
+            .run(
+                "home.HassTurnOff",
+                r#"{"name":"table light","area":"Living Room","floor":"1","domain":["light"]}"#,
+            )
+            .expect("the confirmed name never got a chance");
+        assert!(out.contains("turned off Kitchen Table"), "{out}");
+    }
+
+    #[test]
+    fn a_confirmed_name_still_never_widens_the_call() {
+        // Kind filters restrict which sorts of thing count rather than claiming which one
+        // it is. Dropping them would widen the call, which is how one action became every
+        // light in the house.
+        let runner = AliasRunner::new(
+            Arc::new(House {
+                calls: std::sync::Mutex::new(Vec::new()),
+            }),
+            vec![(
+                "home".to_owned(),
+                "table".to_owned(),
+                "Kitchen Table".to_owned(),
+            )],
+        );
+        let applied = runner
+            .apply(
+                "home.HassTurnOn",
+                r#"{"name":"table","area":"kitchen","domain":["light"]}"#,
+            )
+            .expect("the alias did not apply");
+        let v: Value = serde_json::from_str(&applied).unwrap();
+        assert_eq!(v["name"], "Kitchen Table");
+        assert_eq!(
+            v["domain"],
+            serde_json::json!(["light"]),
+            "widened: {applied}"
+        );
+        assert!(
+            v.get("area").is_none(),
+            "kept a guess about the same target: {applied}"
+        );
     }
 }
