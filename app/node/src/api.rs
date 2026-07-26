@@ -770,6 +770,7 @@ pub fn app(state: AppState) -> Router {
         .route("/v1/outcomes", get(list_outcomes))
         .route("/v1/repairs", get(list_repairs))
         .route("/v1/aliases", get(list_aliases).post(set_alias))
+        .route("/v1/aliases/upstream", post(push_aliases_upstream))
         .route("/v1/outcomes/{id}/reaction", post(react_to_outcome))
         // Read and drop only. There is deliberately NO create or edit route: Endora
         // forms its own intentions, and the person's whole side of the interface is
@@ -1815,6 +1816,47 @@ async fn set_alias(
     Ok(Json(
         json!({ "server": alias.server, "said": alias.said, "means": alias.means }),
     ))
+}
+
+/// Writes the names the person has confirmed back into the service that owns them
+/// (ADR 0043).
+///
+/// A confirmed alias currently helps only Endora. The same fact written into Home
+/// Assistant's own registry helps **everything** that talks to that house — its app, its
+/// voice assistants, anything else — and stops the failure at the source rather than
+/// recovering from it every time.
+///
+/// Deliberately only what the person already confirmed. Endora does not invent names here.
+async fn push_aliases_upstream(
+    State(state): State<AppState>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let config = state.config.clone();
+    let taught = blocking(move || {
+        let channels = native_channels(config.as_ref());
+        let aliases = endora_capabilities::TargetAliasRepository::aliases(config.as_ref())
+            .map_err(AppError::Repository)?;
+        let mut said: Vec<serde_json::Value> = Vec::new();
+        for alias in aliases {
+            let Some((_, channel)) = channels.iter().find(|(name, _)| *name == alias.server) else {
+                continue;
+            };
+            let result = channel.teach(&alias.means, &alias.said);
+            said.push(match result {
+                Some(Ok(what)) => json!({ "alias": alias.said, "of": alias.means, "done": what }),
+                Some(Err(why)) => {
+                    json!({ "alias": alias.said, "of": alias.means, "failed": why })
+                }
+                None => json!({
+                    "alias": alias.said,
+                    "of": alias.means,
+                    "skipped": "Endora is not allowed to write names into this service",
+                }),
+            });
+        }
+        Ok(said)
+    })
+    .await?;
+    Ok(Json(json!({ "taught": taught })))
 }
 
 /// What Endora has noticed is wrong with its own tooling (ADR 0039).
