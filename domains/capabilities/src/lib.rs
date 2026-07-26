@@ -29,9 +29,9 @@ pub use application::{
     TargetAliasRepository,
 };
 pub use infrastructure::{
-    Capability, CapabilityError, CapabilityInfo, CapabilitySettings, CompositeRunner, McpClient,
-    McpRunner, McpToolInfo, OpenerRunner, RegistryRunner, ReversibleOnlyRunner, SettingSpec,
-    default_capabilities, redact_pii_in_value, scan_outbound_secret,
+    AliasRunner, Capability, CapabilityError, CapabilityInfo, CapabilitySettings, CompositeRunner,
+    McpClient, McpRunner, McpToolInfo, OpenerRunner, RegistryRunner, ReversibleOnlyRunner,
+    SettingSpec, default_capabilities, redact_pii_in_value, scan_outbound_secret,
 };
 pub use mcp_http::HttpMcpClient;
 pub use mcp_stdio::StdioMcpClient;
