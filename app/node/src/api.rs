@@ -1134,12 +1134,19 @@ fn build_runner(
             .collect();
     // Built-in skills + connected MCP servers, behind one runner. The application
     // never learns a tool's origin (ADR 0021).
-    let composite = endora_capabilities::CompositeRunner::new(vec![
-        Arc::new(registry) as Arc<dyn endora_capabilities::CapabilityRunner + Send + Sync>,
-        Arc::new(endora_capabilities::AliasRunner::new(
+    // Confirmed answers first, then observed ones — ADR 0038's trust ranking, expressed
+    // as the order of recovery: the alias the person gave is tried before Endora goes
+    // looking through the server's own reading for a name that resembles the request.
+    let recovers = endora_capabilities::TargetSearchRunner::new(Arc::new(
+        endora_capabilities::AliasRunner::new(
             Arc::new(mcp_source) as Arc<dyn endora_capabilities::CapabilityRunner + Send + Sync>,
             aliases,
-        )) as Arc<dyn endora_capabilities::CapabilityRunner + Send + Sync>,
+        ),
+    )
+        as Arc<dyn endora_capabilities::CapabilityRunner + Send + Sync>);
+    let composite = endora_capabilities::CompositeRunner::new(vec![
+        Arc::new(registry) as Arc<dyn endora_capabilities::CapabilityRunner + Send + Sync>,
+        Arc::new(recovers) as Arc<dyn endora_capabilities::CapabilityRunner + Send + Sync>,
     ]);
     // Outermost, so a withdrawn capability is off the menu regardless of which source
     // offered it or what any inner layer would have decided.
