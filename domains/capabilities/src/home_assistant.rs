@@ -321,7 +321,15 @@ fn describe_service_result(body: &str, service: &str, entity: &str) -> String {
         .and_then(|v| v.as_array().map(Vec::len));
     let did = service.replace('_', " ");
     match changed {
-        Some(0) => format!("{entity} was already as asked, so '{did}' changed nothing."),
+        // An empty list is NOT "already as asked", which is what this said until a light
+        // that demonstrably turned off was recorded as having changed nothing. Home
+        // Assistant answers the call before its integrations report back, so an empty
+        // list means "accepted, nothing had changed YET" — a statement about timing, not
+        // about the outcome. Reading it as an outcome put a false claim in the record.
+        Some(0) => format!(
+            "Home Assistant accepted '{did}' on {entity}. Its reply says nothing about \
+             the result — state arrives separately — so the read-back decides."
+        ),
         Some(n) => format!("Home Assistant did '{did}' on {entity} ({n} changed)."),
         // Not a list at all: report it, rather than inventing a reading of it.
         None => format!("Home Assistant accepted '{did}' on {entity}. It replied: {body}"),
@@ -464,12 +472,18 @@ mod tests {
     }
 
     #[test]
-    fn an_empty_reply_means_already_that_way_and_never_silence() {
-        // Live: the tool result was the two characters `[]`, and the butler answered
-        // "I'm not sure how to help with that yet" about an action that had succeeded.
-        let said = describe_service_result("[]", "turn_on", "light.guest_bedroom_left");
-        assert!(said.contains("already"), "{said}");
-        assert!(said.contains("light.guest_bedroom_left"), "{said}");
+    fn an_empty_reply_claims_nothing_about_the_outcome() {
+        // Two live lessons in one test. The reply `[]` must not be forwarded raw — the
+        // butler answered "I'm not sure how to help with that yet" about an action that
+        // had succeeded — and it must not be read as "already as asked" either: a light
+        // that verifiably turned off was recorded as having changed nothing.
+        let said = describe_service_result("[]", "turn_off", "light.kitchen_table");
+        assert!(said.contains("light.kitchen_table"), "{said}");
+        assert!(said.contains("accepted"), "{said}");
+        assert!(
+            !said.contains("already") && !said.contains("changed nothing"),
+            "claimed an outcome the reply does not report: {said}"
+        );
     }
 
     #[test]
