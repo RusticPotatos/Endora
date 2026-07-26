@@ -528,6 +528,29 @@ impl crate::infrastructure::NativeChannel for HomeAssistant {
             .is_some_and(|(domain, _)| SWITCHABLE.contains(&domain))
     }
 
+    fn refuse(&self, tool: &str, input_json: &str) -> Option<String> {
+        // `HassLightSet` changes brightness or colour. Asked to switch a light on or off,
+        // the model reaches for it repeatedly, and with no brightness or colour given the
+        // call is accepted and does nothing — reporting success while the light stays as
+        // it was. Refusing says what happened and points at the tools that would work.
+        if tool.rsplit('.').next()? != "HassLightSet" {
+            return None;
+        }
+        let args: Value = serde_json::from_str(input_json).ok()?;
+        let sets_something = ["brightness", "color", "temperature"]
+            .iter()
+            .any(|k| args.get(*k).is_some_and(|v| !v.is_null()));
+        if sets_something {
+            return None;
+        }
+        Some(
+            "HassLightSet only changes brightness or colour, and none were given, so this \
+             would have done nothing. To switch a light on or off use HassTurnOn or \
+             HassTurnOff instead."
+                .to_owned(),
+        )
+    }
+
     fn tighten(&self, input_json: &str) -> Option<String> {
         let mut args: Value = serde_json::from_str(input_json).ok()?;
         let obj = args.as_object_mut()?;
@@ -839,6 +862,60 @@ mod tests {
         assert!(
             house()
                 .tighten(r#"{"entity_id":"light.kitchen_table"}"#)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn a_light_set_that_sets_nothing_is_refused_before_it_is_sent() {
+        use crate::infrastructure::NativeChannel;
+        let why = house()
+            .refuse("home-assistant.HassLightSet", r#"{"area":"kitchen"}"#)
+            .expect("a call that can do nothing was sent");
+        assert!(why.contains("HassTurnOn"), "{why}");
+    }
+
+    #[test]
+    fn a_light_set_that_actually_sets_something_goes_through() {
+        use crate::infrastructure::NativeChannel;
+        for args in [
+            r#"{"area":"kitchen","brightness":50}"#,
+            r#"{"area":"kitchen","color":"warm white"}"#,
+            r#"{"name":"Kitchen Table","temperature":2700}"#,
+        ] {
+            assert!(
+                house()
+                    .refuse("home-assistant.HassLightSet", args)
+                    .is_none(),
+                "should have been allowed: {args}"
+            );
+        }
+        // A null is not a value.
+        assert!(
+            house()
+                .refuse("home-assistant.HassLightSet", r#"{"brightness":null}"#)
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn the_refusal_is_scoped_to_the_one_tool_that_needs_it() {
+        use crate::infrastructure::NativeChannel;
+        // Switching something off with no extra parameters is exactly right for these.
+        for tool in [
+            "home-assistant.HassTurnOff",
+            "home-assistant.HassTurnOn",
+            "notes.search",
+        ] {
+            assert!(
+                house().refuse(tool, r#"{"area":"kitchen"}"#).is_none(),
+                "{tool}"
+            );
+        }
+        // Unparseable input is passed on rather than guessed at.
+        assert!(
+            house()
+                .refuse("home-assistant.HassLightSet", "{bad")
                 .is_none()
         );
     }
