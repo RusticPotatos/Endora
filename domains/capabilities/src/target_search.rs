@@ -87,9 +87,25 @@ pub fn candidates(reading: &str, words: &[String]) -> Vec<Candidate> {
     if words.is_empty() {
         return Vec::new();
     }
+    let fragments: Vec<String> = lines_of(reading).iter().map(|l| value_of(l)).collect();
+    // Words the server never uses are the person's vocabulary, not the server's, and they
+    // carry no power to tell one candidate from another. Live: "turn on the guest bedroom
+    // left lamp" found `Guest Bedroom Left` and then refused to use it, because nothing in
+    // the house is called a "lamp" and the match was therefore not "complete".
+    //
+    // Dropping them stays safe because completeness is not what makes a retry safe —
+    // UNIQUENESS is. "turn on the garage lamp" still resolves to nothing actionable,
+    // because dropping "lamp" leaves "garage", which matches several things.
+    let words: Vec<String> = words
+        .iter()
+        .filter(|w| fragments.iter().any(|f| contains_word(f, w)))
+        .cloned()
+        .collect();
+    if words.is_empty() {
+        return Vec::new();
+    }
     let mut found: Vec<Candidate> = Vec::new();
-    for line in lines_of(reading) {
-        let value = value_of(&line);
+    for value in fragments {
         if value.is_empty() {
             continue;
         }
@@ -336,5 +352,40 @@ mod tests {
         let found = candidates(reading, &["table".to_owned()]);
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].value, "Kitchen Table");
+    }
+
+    #[test]
+    fn a_word_the_house_never_uses_does_not_block_a_clear_match() {
+        // Live: "turn on the guest bedroom left lamp". The search found `Guest Bedroom
+        // Left` and then refused to use it, because nothing in the house is called a
+        // "lamp" so the match was not "complete". The person's vocabulary is not the
+        // server's, and a word that appears nowhere cannot tell candidates apart.
+        let reading = "- names: Guest Bedroom Left\n- names: Guest Bedroom\n- names: Garage Main";
+        let words = target_words(r#"{"area":"guest bedroom left","name":"lamp"}"#);
+        let found = candidates(reading, &words);
+        let best = only_real_match(&found).expect("blocked by a word the house never uses");
+        assert_eq!(best.value, "Guest Bedroom Left");
+    }
+
+    #[test]
+    fn dropping_unknown_words_still_cannot_make_a_vague_request_actionable() {
+        // What keeps that safe is UNIQUENESS, not completeness. "the garage lamp" loses
+        // "lamp" and is left with "garage", which matches several things — so nothing is
+        // retried, exactly as before.
+        let reading = "- names: Garage\n- names: Garage Main\n- names: Garage Bright";
+        let words = target_words(r#"{"name":"garage lamp"}"#);
+        let found = candidates(reading, &words);
+        assert!(found.len() > 1, "{found:?}");
+        assert!(
+            only_real_match(&found).is_none(),
+            "acted on a vague request: {found:?}"
+        );
+    }
+
+    #[test]
+    fn a_request_sharing_no_words_at_all_finds_nothing() {
+        let reading = "- names: Garage Main";
+        let found = candidates(reading, &target_words(r#"{"name":"greenhouse mister"}"#));
+        assert!(found.is_empty(), "{found:?}");
     }
 }
