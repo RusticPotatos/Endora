@@ -4,7 +4,7 @@
 
 Accepted (2026-07-25). Implements a guarantee
 [0020](0020-intent-first-understanding-loop.md) and
-[docs/direction-reset.md](../direction-reset.md) both make but no code kept.
+[docs/direction-reset.md](../../direction-reset.md) both make but no code kept.
 
 ## Context
 

@@ -43,7 +43,7 @@ impl BeliefKind {
     /// How long a belief of this kind stays trustworthy **without reinforcement**,
     /// before Endora should be one step less sure of it.
     ///
-    /// The rates encode what ADR 0020 says about the person: **intent and values
+    /// The rates encode what ADR 0052 says about the person: **intent and values
     /// change slowly** and are what Endora is really modelling, so they hold for a
     /// long time. A **frustration or stressor is often about a particular week** —
     /// continuing to act on "you're stressed about the move" six months after the
@@ -434,7 +434,7 @@ mod tests {
         }
     }
 
-    // --- Decay and expiry (ADR 0032) ---
+    // --- Decay and expiry (ADR 0052) ---
 
     const DAY: i64 = 24 * 60 * 60 * 1_000;
 
@@ -477,7 +477,7 @@ mod tests {
 
     #[test]
     fn intent_outlives_a_stressor() {
-        // ADR 0020: intent is the slow-changing thing worth modelling; a stressor is
+        // ADR 0052: intent is the slow-changing thing worth modelling; a stressor is
         // often about a particular week. A year on, one should survive and one should
         // not, from the same starting confidence.
         let year = Timestamp::from_unix_millis(365 * DAY);

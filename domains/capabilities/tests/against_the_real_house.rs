@@ -1,4 +1,4 @@
-//! The target search, run against a **real** reading (ADR 0041).
+//! The target search, run against a **real** reading (ADR 0054).
 //!
 //! Three corrections to this search shipped and failed in a row, each because the unit
 //! tests used a tidy five-line reading I wrote myself. The live one is 5KB, arrives as a

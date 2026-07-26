@@ -36,7 +36,7 @@ CREATE TABLE IF NOT EXISTS message_actions (
     actions    TEXT NOT NULL
 ) STRICT;
 
--- The running conversation summary (ADR 0028 context compaction): a single row.
+-- The running conversation summary (ADR 0053 context compaction): a single row.
 -- Persisted so a restart doesn't re-summarise the whole backlog (which, on a slow
 -- local model, degraded the first turns after every deploy) and the butler keeps
 -- the day's thread across restarts. `covered` = how many of the oldest messages the
@@ -192,7 +192,7 @@ CREATE TABLE IF NOT EXISTS mcp_servers (
 /// [`Db`] handle.
 ///
 /// Repositories not yet moved to their own bounded context still live here
-/// during the Responsibility-Oriented reorg (ADR 0026). Because it holds the
+/// during the Responsibility-Oriented reorg (ADR 0050). Because it holds the
 /// shared `Db`, any context repository built over the same handle shares this
 /// one connection — the composition root uses [`from_db`](Self::from_db) and
 /// [`db`](Self::db) to wire them together.
@@ -229,7 +229,7 @@ impl SqliteStore {
             // database sheds it rather than carrying dead tables forever.
             drop_goal_tracker(&conn)?;
             conn.execute_batch(SCHEMA).map_err(backend)?;
-            // Per-capability irreversible-band opener (ADR 0024); existing rows
+            // Per-capability irreversible-band opener (ADR 0051); existing rows
             // default to closed (0) — the un-undoable stays blocked until opened.
             ensure_column(
                 &conn,
@@ -257,7 +257,7 @@ impl SqliteStore {
                 "trust_all",
                 "INTEGER NOT NULL DEFAULT 1",
             )?;
-            // Which tool reads this server's state (ADR 0038). An existing database
+            // Which tool reads this server's state (ADR 0054). An existing database
             // needs the column added here: `SCHEMA` above is CREATE TABLE IF NOT
             // EXISTS, which is a no-op once the table is there, so a new column on an
             // OLD table only ever arrives through `ensure_column`. Missing it broke
@@ -270,7 +270,7 @@ impl SqliteStore {
                 "reader_tool",
                 "TEXT NOT NULL DEFAULT ''",
             )?;
-            // Whether an action actually moved the world (ADR 0039). Existing rows read
+            // Whether an action actually moved the world (ADR 0054). Existing rows read
             // back NULL — nothing to compare — which is the honest default.
             ensure_column(&conn, "outcomes", "changed", "INTEGER")?;
         }
@@ -290,7 +290,7 @@ impl SqliteStore {
 }
 
 // The eight direction repositories are implemented by the direction context's
-// DirectionStore over the shared Db now (ADR 0026); the all_*/parse_* helpers
+// DirectionStore over the shared Db now (ADR 0050); the all_*/parse_* helpers
 // below remain for MemoryStore's export.
 
 impl MemoryStore for SqliteStore {
@@ -309,7 +309,7 @@ impl MemoryStore for SqliteStore {
     fn purge(&self) -> Result<(), RepositoryError> {
         let mut conn = self.lock()?;
         let tx = conn.transaction().map_err(backend)?;
-        // `config_writes` is deliberately NOT purged (ADR 0045). It is not knowledge about
+        // `config_writes` is deliberately NOT purged (ADR 0054). It is not knowledge about
         // the person; it is a receipt for changes that still exist inside somebody else's
         // service. Deleting the receipt does not undo the change — it only makes the
         // change unrecoverable and invisible, which is strictly worse for the person than
@@ -343,7 +343,7 @@ impl MemoryStore for SqliteStore {
 }
 
 // AuditLog and EventLog are implemented by the platform context's AuditStore and
-// EventStore over the shared Db now (ADR 0026); `all_audit` stays for MemoryStore.
+// EventStore over the shared Db now (ADR 0050); `all_audit` stays for MemoryStore.
 
 fn all_preferences(conn: &Connection) -> Result<Vec<Preference>, RepositoryError> {
     let mut stmt = conn
@@ -416,7 +416,7 @@ fn all_beliefs(conn: &Connection) -> Result<Vec<Belief>, RepositoryError> {
     Ok(out)
 }
 
-/// Reads every intention for the memory export (ADR 0036) — what Endora has pursued.
+/// Reads every intention for the memory export (ADR 0052) — what Endora has pursued.
 fn all_intentions(conn: &Connection) -> Result<Vec<Intention>, RepositoryError> {
     let mut stmt = conn
         .prepare(
@@ -457,7 +457,7 @@ fn all_intentions(conn: &Connection) -> Result<Vec<Intention>, RepositoryError> 
     Ok(out)
 }
 
-/// Reads every outcome for the memory export (ADR 0035) — what Endora did, what the
+/// Reads every outcome for the memory export (ADR 0053) — what Endora did, what the
 /// tool claimed, and what Endora observed afterwards.
 fn all_outcomes(conn: &Connection) -> Result<Vec<Outcome>, RepositoryError> {
     let mut stmt = conn
@@ -608,7 +608,7 @@ fn ensure_column(
 /// Endora was, for a while, a goal tracker: the person created
 /// Direction→Target→Assumption→Experiment→Observation→Reflection and the model
 /// summarised afterwards. That inverted the point — it is Endora's job to do the
-/// thinking — and the machinery is gone (see the direction reset, ADR 0020, and
+/// thinking — and the machinery is gone (see the direction reset, ADR 0052, and
 /// the ADR that made it final). This sheds the tables rather than leaving an
 /// existing database carrying data nothing can read or delete, which would put it
 /// outside the memory rights in constitution §6.
@@ -657,17 +657,17 @@ mod tests {
         SqliteStore::open_in_memory().unwrap()
     }
 
-    /// The direction repositories over the store's shared connection (ADR 0026).
+    /// The direction repositories over the store's shared connection (ADR 0050).
     fn cfg_store(store: &SqliteStore) -> ConfigStore {
         ConfigStore::new(store.db())
     }
 
-    /// The platform audit trail over the store's shared connection (ADR 0026).
+    /// The platform audit trail over the store's shared connection (ADR 0050).
     fn audit_store(store: &SqliteStore) -> endora_platform::AuditStore {
         endora_platform::AuditStore::new(store.db())
     }
 
-    /// The platform event log over the store's shared connection (ADR 0026).
+    /// The platform event log over the store's shared connection (ADR 0050).
     fn event_store(store: &SqliteStore) -> endora_platform::EventStore {
         endora_platform::EventStore::new(store.db())
     }

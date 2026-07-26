@@ -13,19 +13,19 @@ function messages() {
 let ACTIVITY = [];             // latest /v1/activity feed (newest first)
 let CHECKIN = { enabled: false, interval_ms: 0 }; // proactive check-in cadence
 let CAPS = [];                 // the butler's capabilities/skills (modules)
-let MCP_SERVERS = { servers: [] }; // connected MCP servers + their tools (ADR 0021)
-let AUTONOMY = { auto_external: true, auto_consequential: false }; // the autonomy envelope (ADR 0022)
+let MCP_SERVERS = { servers: [] }; // connected MCP servers + their tools (ADR 0054)
+let AUTONOMY = { auto_external: true, auto_consequential: false }; // the autonomy envelope (ADR 0051)
 let BRIEF_SCHED = { enabled: false, hour_utc: 12 }; // daily-brief schedule
-let NIGHT_SCHED = { enabled: false, hour_utc: 3 }; // nightly self-improvement loop (ADR 0024)
+let NIGHT_SCHED = { enabled: false, hour_utc: 3 }; // nightly self-improvement loop (ADR 0051)
 let DEEP_MODEL = { configured: false, key_set: false, url: "", model: "" }; // optional bigger AI
 let MODEL_CONFIG = { configured: false, key_set: false, base_url: "", mixture: false,
-  single: {}, router: {}, synth: {} }; // the butler's own models, editable at runtime (ADR 0027)
-let TUNE_SCHED = { enabled: false, hour_utc: 4 }; // nightly self-improving model tune (ADR 0027)
+  single: {}, router: {}, synth: {} }; // the butler's own models, editable at runtime (ADR 0055)
+let TUNE_SCHED = { enabled: false, hour_utc: 4 }; // nightly self-improving model tune (ADR 0055)
 let UNDERSTANDING = [];        // Endora's beliefs about the person (the home surface)
-let OUTCOMES = [];             // what Endora DID, and what it saw afterwards (ADR 0035)
-let INTENTIONS = [];           // what Endora is pursuing, and has pursued (ADR 0036)
-let REPAIRS = [];              // tooling Endora has noticed keeps not working (ADR 0039)
-let CONFIG_WRITES = [];        // changes Endora made to your services' own settings (ADR 0045)
+let OUTCOMES = [];             // what Endora DID, and what it saw afterwards (ADR 0053)
+let INTENTIONS = [];           // what Endora is pursuing, and has pursued (ADR 0052)
+let REPAIRS = [];              // tooling Endora has noticed keeps not working (ADR 0054)
+let CONFIG_WRITES = [];        // changes Endora made to your services' own settings (ADR 0054)
 let LAST_ACTIVITY = [];        // what Endora did behind the scenes on the last turn
 let LAST_ACTIVITY_MSG = null;  // the butler message id that activity belongs to
 let STEP_LIST = [];            // the live action trail for the turn currently streaming
@@ -603,7 +603,7 @@ function samplingRow(prefix, slot) {
 // The model configuration — two consistent cards (Everyday + Deep). The everyday
 // brain answers day-to-day (local by default); the deep model is a bigger brain
 // you escalate to per question. Mixture + sampling live under "Advanced" so the
-// common case stays clean (ADR 0027; runtime-swappable, no restart).
+// common case stays clean (ADR 0055; runtime-swappable, no restart).
 // The preset key whose endpoint matches a saved base URL (so a configured card
 // shows e.g. "DeepSeek" instead of "Choose a provider…"). "" if none matches.
 function presetFor(url) {
@@ -771,7 +771,7 @@ function viewSettings() {
 // Derived, not stored: a butler message is unprompted when the message before it is
 // not the person's. A reply always follows something you said; a check-in does not.
 // So the inbox needs no new table and no flag anyone has to remember to set — the
-// same reason repair proposals are derived (ADR 0039).
+// same reason repair proposals are derived (ADR 0054).
 function unpromptedMessages() {
   const list = messages();
   const out = [];
@@ -908,7 +908,7 @@ function viewSkills() {
   const card = (c) => {
     const ext = c.reaches_external;
     const enabled = c.enabled !== false;
-    // The irreversible band (ADR 0024): blocked deny-by-default until the person
+    // The irreversible band (ADR 0051): blocked deny-by-default until the person
     // opens it, and even then confirmed on every use — never autonomous.
     const irreversible = c.reversibility === "irreversible";
     const opened = c.open_irreversible === true;
@@ -965,14 +965,14 @@ function viewSkills() {
       ${toggle(env.auto_external !== false, "autonomy:external", "Use read-only skills on its own", "Check weather, news, safety alerts and web pages without asking. (Recommended)")}
       ${toggle(env.auto_consequential === true, "autonomy:consequential", "Take consequential actions on its own", "Let it carry out actions that normally need your confirmation — spending, sending, or things that can't be undone. Off is safer; turn on only if you're sure.")}
     </div>`;
-  // MCP servers (ADR 0021): external tool sources. Each tool is deny-by-default —
+  // MCP servers (ADR 0054): external tool sources. Each tool is deny-by-default —
   // visible but blocked until allowed, and even then confirmed every use.
   const mcpServerCard = (s) => {
     const addr = s.transport === "http" ? s.url : `${s.command} ${(s.args || []).join(" ")}`.trim();
     const health = s.tools_live > 0
       ? `<span class="pill concluded">${s.tools_live} tool${s.tools_live === 1 ? "" : "s"}</span>`
       : `<span class="pill">not connected</span>`;
-    // A withdrawn tool (ADR 0040) is not offered to the butler at all — a different
+    // A withdrawn tool (ADR 0054) is not offered to the butler at all — a different
     // thing from blocked, which still shows it the tool and refuses each use. Shown
     // here so it is never a mystery why a tool stopped being used, with one click back.
     const toolRow = (t) => `
@@ -1070,7 +1070,7 @@ function viewSkills() {
 
 // The home surface: what Endora currently understands about you. Not a task list —
 // beliefs it has formed (with the evidence and how sure it is), which you can
-// affirm or correct. This is the point of the product (ADR 0020).
+// affirm or correct. This is the point of the product (ADR 0052).
 const BELIEF_KIND_LABEL = {
   intent: "What you're really after", value: "What you value", preference: "Preferences",
   pattern: "Patterns", motivation: "What drives you", frustration: "Frustrations",
@@ -1148,12 +1148,12 @@ function viewUnderstanding() {
     ${viewOutcomes()}`;
 }
 
-// What Endora is currently working on (ADR 0036).
+// What Endora is currently working on (ADR 0052).
 //
 // One thing at a time — a cursor, not a queue — and the person's only verb is to stop
 // it. There is deliberately no "add" control here: Endora forms its own intentions from
 // what it understands, and a console that let you file work would make this the goal
-// tracker ADR 0029 deleted.
+// tracker ADR 0052 deleted.
 function viewIntention() {
   const current = (INTENTIONS || []).find((i) => i.active);
   if (!current) return "";
@@ -1174,12 +1174,12 @@ function viewIntention() {
     </div></div>`;
 }
 
-// Tooling Endora has noticed keeps not working (ADR 0039, 0040).
+// Tooling Endora has noticed keeps not working (ADR 0054, 0040).
 //
 // Derived from what it observed, never stored — so there is no badge, no count to clear
 // and nothing to dismiss. It states the pattern and asks; it does not guess the answer,
 // because guessing would mean parsing one server's format, which is the per-integration
-// patching ADR 0038 exists to stop.
+// patching ADR 0054 exists to stop.
 //
 // Two findings, two different questions. A tool that works elsewhere but not on this
 // thing is probably being given the wrong name — so it asks for the name. A tool that
@@ -1213,7 +1213,7 @@ function viewRepairs() {
     ${rows}`;
 }
 
-// Changes Endora has made to your services' own settings (ADR 0045).
+// Changes Endora has made to your services' own settings (ADR 0054).
 //
 // The memory right to SEE what it changed about the world, next to the right to see what
 // it believes and what it did — and, unlike those, a button to put each one back. Undone
@@ -1235,7 +1235,7 @@ function viewConfigWrites() {
     ${rows}`;
 }
 
-// What Endora has actually DONE, and what it saw afterwards (ADR 0035).
+// What Endora has actually DONE, and what it saw afterwards (ADR 0053).
 //
 // The tool's claim and Endora's observation are shown SEPARATELY, exactly as they
 // are stored — the console must not merge them either, because a tool that reports
@@ -1351,7 +1351,7 @@ function clip(text, max) {
   return s.slice(0, max) + `… (+${s.length - max} more characters)`;
 }
 
-// Nominate the tool that reads a server's state (ADR 0038). Blank clears it.
+// Nominate the tool that reads a server's state (ADR 0054). Blank clears it.
 async function setReader(el) {
   const server = el.getAttribute("data-reader-for");
   try {
@@ -1363,7 +1363,7 @@ async function setReader(el) {
   return reload();
 }
 
-// Which of a server's tools READS its state (ADR 0038).
+// Which of a server's tools READS its state (ADR 0054).
 //
 // One answer settles two things: that tool's result becomes an observation rather than
 // a receipt, and everything else on the server is checked through it after it acts.
@@ -1392,7 +1392,7 @@ function readerRow(s) {
 
 // HTML-string versions for rendering a PAST message's persisted actions in the
 // chat history (collapsed; click to expand). Same look as the live panel.
-// What Endora actually DID this turn, and whether it confirmed the effect (ADR 0037).
+// What Endora actually DID this turn, and whether it confirmed the effect (ADR 0053).
 //
 // Not collapsible and not buried under "details", unlike the step trail: the whole
 // point is that it is visible without being asked for. The model ignores the read-back
@@ -1762,8 +1762,8 @@ async function dispatch(act) {
       flash("Got it.", "ok");
       return reload();
     }
-    // Turn a skill on or off (ADR 0021). `id` is the capability id; `arg` is 1/0.
-    // Put back one change Endora made to a service's own settings (ADR 0045).
+    // Turn a skill on or off (ADR 0054). `id` is the capability id; `arg` is 1/0.
+    // Put back one change Endora made to a service's own settings (ADR 0054).
     if (verb === "unwrite") {
       try {
         const r = await api("POST", `/v1/config-writes/${id}/undo`, {});
@@ -1776,7 +1776,7 @@ async function dispatch(act) {
       try {
         await api("POST", `/v1/capabilities/${id}/enable`, { enabled });
         // Worth saying out loud: turning a tool off changes what the butler is even
-        // shown, and the way back is not obvious unless we name it (ADR 0040).
+        // shown, and the way back is not obvious unless we name it (ADR 0054).
         flash(enabled
           ? `Offering ${id} again.`
           : `No longer offering ${id}. You can turn it back on under Skills.`, "ok");
@@ -1784,7 +1784,7 @@ async function dispatch(act) {
       catch (e) { flash("Couldn't change that skill: " + e.message, "err"); }
       return reload();
     }
-    // Open or re-block a skill's irreversible actions (ADR 0024). `arg` is 1/0.
+    // Open or re-block a skill's irreversible actions (ADR 0051). `arg` is 1/0.
     // Opening only ever moves it from blocked to confirm-each-use — never to
     // autonomous — so we confirm the intent, not fake a bigger promise.
     if (verb === "skill" && noun === "open") {
@@ -1794,7 +1794,7 @@ async function dispatch(act) {
       catch (e) { flash("Couldn't change that skill: " + e.message, "err"); }
       return reload();
     }
-    // Set a skill to "ask first" (on with user input) or back to automatic (ADR 0024).
+    // Set a skill to "ask first" (on with user input) or back to automatic (ADR 0051).
     if (verb === "skill" && noun === "confirm") {
       const wantConfirm = arg === "1";
       try { await api("POST", `/v1/capabilities/${id}/confirm`, { confirm: wantConfirm }); flash(wantConfirm ? "Endora will ask before using this." : "Endora may use this on its own.", "ok"); }
@@ -1803,7 +1803,7 @@ async function dispatch(act) {
     }
     // Search the MCP catalog (curated + community registry).
     if (verb === "mcp" && noun === "search") { await mcpSearch(); return; }
-    // Add an MCP server (ADR 0021): a local stdio command or an HTTP endpoint. Its
+    // Add an MCP server (ADR 0054): a local stdio command or an HTTP endpoint. Its
     // tools appear blocked until allowed. A colon in the name would break the action
     // encoding, so reject it.
     if (verb === "mcp" && noun === "add") {
@@ -1862,7 +1862,7 @@ async function dispatch(act) {
       catch (e) { flash("Couldn't remove: " + e.message, "err"); }
       return reload();
     }
-    // Save a skill's settings (ADR 0021). Only non-empty fields are sent, so a
+    // Save a skill's settings (ADR 0054). Only non-empty fields are sent, so a
     // blank secret leaves the stored value unchanged.
     if (verb === "skillcfg") {
       const cap = (CAPS || []).find((c) => c.id === noun);
@@ -1928,7 +1928,7 @@ async function dispatch(act) {
       catch (e) { flash("Couldn't save: " + e.message, "err"); }
       return reload();
     }
-    // Widen/narrow the autonomy envelope (ADR 0022). `noun` is the lever; `id` is 1/0.
+    // Widen/narrow the autonomy envelope (ADR 0051). `noun` is the lever; `id` is 1/0.
     if (verb === "autonomy") {
       const env = Object.assign({ auto_external: true, auto_consequential: false }, AUTONOMY || {});
       if (noun === "external") env.auto_external = id === "1";
@@ -1955,7 +1955,7 @@ async function dispatch(act) {
       if (m) readAloud(m.text);
       return;
     }
-    // Answer what Endora asked about a target it can't hit (ADR 0039). This is the
+    // Answer what Endora asked about a target it can't hit (ADR 0054). This is the
     // confirmed source — Endora never fills it in from a server's own text.
     if (verb === "alias") {
       const server = String(noun || "").split(".")[0];
@@ -1969,14 +1969,14 @@ async function dispatch(act) {
       return reload();
     }
     // Stop working on something. The person's ONLY verb over an intention — there is
-    // deliberately no way to create or edit one (ADR 0036).
+    // deliberately no way to create or edit one (ADR 0052).
     if (verb === "dropintention") {
       try { await api("POST", `/v1/intentions/${id}/drop`); flash("Alright — I'll leave that.", "ok"); }
       catch (e) { flash("Couldn't stop that: " + e.message, "err"); }
       return reload();
     }
     // How an action landed. Offered where the action appears; never asked for, and
-    // the latest word wins (ADR 0035).
+    // the latest word wins (ADR 0053).
     if (verb === "react") {
       try {
         await api("POST", `/v1/outcomes/${id}/reaction`, { reaction: noun });
@@ -2001,7 +2001,7 @@ async function dispatch(act) {
       flash(enabled ? "The butler will bring you a daily brief." : "Daily brief off.", "ok");
       return reload();
     }
-    // Nightly self-improvement loop (ADR 0024): `noun` is "off" or a LOCAL hour.
+    // Nightly self-improvement loop (ADR 0051): `noun` is "off" or a LOCAL hour.
     if (verb === "nightsched") {
       const enabled = noun !== "off";
       const tzOff = new Date().getTimezoneOffset() / 60;

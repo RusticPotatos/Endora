@@ -8,7 +8,7 @@
 //! visible, correctable, and deletable — and the butler feeds them back into its
 //! own context so it stops asking the same thing twice.
 //!
-//! ADR 0010 draws two kinds. **Taste** (style/defaults) *may* be inferred;
+//! ADR 0051 draws two kinds. **Taste** (style/defaults) *may* be inferred;
 //! **grants of authority** may *only* be explicitly stated. In this build every
 //! preference is created by explicit confirmation, so both kinds are effectively
 //! "stated"; the inference path (which would enforce "never infer authority")

@@ -3,7 +3,7 @@
 ## Status
 
 Accepted (2026-07-25). Completes the fifth clause of the architecture principle in
-[docs/direction-reset.md](../direction-reset.md) for *actions*. Consumes the read-back
+[docs/direction-reset.md](../../direction-reset.md) for *actions*. Consumes the read-back
 built by [0034](0034-evidence-verifies.md); applies to
 [0028](0028-native-tool-calling-turn.md)'s turn.
 

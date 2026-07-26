@@ -4,8 +4,8 @@ Endora is **model-agnostic**. It talks to a local, OpenAI-compatible chat endpoi
 over HTTP; it does **not** bundle, install, or manage a model runtime. You host the
 model however you like, and point Endora at it with one setting.
 
-That boundary is deliberate ([ADR 0008](adr/0008-local-model-adapter.md),
-[ADR 0009](adr/0009-node-served-ui-and-single-container.md)): the model runs as its
+That boundary is deliberate ([ADR 0055](adr/0055-the-model-layer.md),
+[ADR 0050](adr/0050-the-shape-of-the-system.md)): the model runs as its
 own service, Endora as its own container, and the only thing between them is a URL.
 Swap models, resize hardware, or move the endpoint to another host — change the URL,
 nothing else. **This page is guidance, not a requirement. Where Endora's
@@ -114,7 +114,7 @@ Use a proxy **dedicated to this**, not a shared P2P/torrent VPN path. A small
 HTTP/SOCKS proxy container, Tor (`socks5://tor:9050`), or a separate egress VPN all
 work. (This is the *network* half of privacy; the *content* half — not putting
 personal details into the queries themselves — is handled separately by the egress
-guard, [ADR 0023](adr/0023-egress-guard-and-data-loss-tripwire.md).)
+guard, [ADR 0051](adr/0051-where-the-boundary-is.md).)
 
 ## Security note
 

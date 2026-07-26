@@ -106,7 +106,7 @@ pub fn migrate(db: &Db) -> Result<(), RepositoryError> {
         )
         .map_err(backend)?;
     // Additive migrations for databases created before these columns existed —
-    // the irreversible-opener (ADR 0024) and the ask-first override. Ignore the
+    // the irreversible-opener (ADR 0051) and the ask-first override. Ignore the
     // error when a column is already present (a fresh DB gets it from the CREATE).
     let _ = db.lock()?.execute(
         "ALTER TABLE capability_config ADD COLUMN open_irreversible INTEGER NOT NULL DEFAULT 0",
@@ -132,7 +132,7 @@ pub fn migrate(db: &Db) -> Result<(), RepositoryError> {
         "ALTER TABLE mcp_servers ADD COLUMN trust_all INTEGER NOT NULL DEFAULT 1",
         [],
     );
-    // Which tool reads this server's state (ADR 0038). Existing rows read back blank —
+    // Which tool reads this server's state (ADR 0054). Existing rows read back blank —
     // nobody has nominated one — and blank means "no read-back for this server", which
     // is the same honest default a server Endora knows nothing about already gets.
     let _ = db.lock()?.execute(
@@ -607,7 +607,7 @@ impl McpServerRegistry for ConfigStore {
                     r.get::<_, String>(6)?,   // env (JSON object) — secret
                     r.get::<_, String>(7)?,   // auth (bearer token) — secret
                     r.get::<_, i64>(8)? != 0, // trust_all
-                    r.get::<_, String>(9)?,   // reader_tool (ADR 0038)
+                    r.get::<_, String>(9)?,   // reader_tool (ADR 0054)
                 ))
             })
             .map_err(backend)?;
@@ -977,7 +977,7 @@ mod tests {
 
     #[test]
     fn a_change_and_its_undo_survive_a_restart() {
-        // The whole point of ADR 0045. ADR 0043 captured the prior value and dropped it
+        // The whole point of ADR 0054. ADR 0054 captured the prior value and dropped it
         // on the floor, so the undo existed for the length of one function call.
         use crate::application::{ConfigWrite, ConfigWriteLog};
         let path = temp_db_path("restart");

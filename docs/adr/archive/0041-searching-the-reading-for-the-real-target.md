@@ -41,7 +41,7 @@ at. It always shows what it found; it acts only when one candidate is clearly th
   reading. Copying from three lines is a different task from searching five kilobytes.
   Nothing acts, so no threshold is needed.
 - **Act — only when unambiguous.** The rules below. A guess that actuates something is what
-  [0024](0024-reversibility-bands.md) exists to prevent.
+  [0024](0024-reversibility-aware-autonomy-and-the-nightly-loop.md) exists to prevent.
 
 ### What counts as the answer
 
