@@ -150,3 +150,28 @@ fn a_kind_word_as_a_name_resolves_to_one_thing_rather_than_a_whole_room() {
     let best = only_real_match(&found).expect("could not tell which light was meant");
     assert_eq!(best.value, "Kitchen Main Light");
 }
+
+#[test]
+fn an_exact_alias_beats_a_room_the_model_invented() {
+    // The live failure: {name:"table light", area:"living room"} — a kitchen light placed
+    // in the Living Room. Direct reach reads the service's friendly names, and nothing is
+    // called "table light" there, so the request tied four ways against Living Room
+    // things and nothing was acted on. The shortlist the person saw proves it: `Kitchen
+    // Table` appeared last, below every Living Room candidate.
+    let input = r#"{"name":"table light","area":"living room","domain":["light"]}"#;
+    let service_names_only = "names: Kitchen Table\nnames: living room lamp\n\
+                              names: Living Room Bright\nnames: Living Room Dimmed\n\
+                              names: Living Room Nightlight";
+    assert!(
+        only_real_match(&candidates(service_names_only, &target_words(input))).is_none(),
+        "the reading Endora actually had should be unactionable"
+    );
+
+    // Knowing every name the thing answers to settles it outright: `table light` matches
+    // the request exactly, with nothing left over.
+    let every_name = format!("{service_names_only}\nnames: table light\nnames: table");
+    let found = candidates(&every_name, &target_words(input));
+    let best = only_real_match(&found).expect("still cannot tell what was meant");
+    assert_eq!(best.value, "table light");
+    assert_eq!(best.extra, 0, "an exact name has nothing left over");
+}
