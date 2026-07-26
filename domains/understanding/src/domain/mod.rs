@@ -4,8 +4,10 @@ pub mod beliefs;
 pub mod intentions;
 pub mod outcomes;
 pub mod preferences;
+pub mod repairs;
 
 pub use beliefs::{Belief, BeliefKind, BeliefStatus, Confidence};
 pub use intentions::{Intention, IntentionState};
 pub use outcomes::{Outcome, Reaction};
 pub use preferences::{Preference, PreferenceKind};
+pub use repairs::{RepairProposal, repair_proposals};

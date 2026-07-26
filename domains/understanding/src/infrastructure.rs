@@ -55,7 +55,8 @@ pub fn migrate(db: &Db) -> Result<(), RepositoryError> {
                 observation       TEXT,
                 at_ms             INTEGER NOT NULL,
                 motivating_belief TEXT,
-                reaction          TEXT
+                reaction          TEXT,
+                changed           INTEGER
             ) STRICT;",
         )
         .map_err(backend)?;
@@ -233,8 +234,9 @@ impl OutcomeRepository for UnderstandingStore {
             .lock()?
             .execute(
                 "INSERT OR REPLACE INTO outcomes \
-                 (id, capability, input, claim, observation, at_ms, motivating_belief, reaction) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                 (id, capability, input, claim, observation, at_ms, motivating_belief, \
+                  reaction, changed) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
                 params![
                     id_text(outcome.id().value()),
                     outcome.capability(),
@@ -244,6 +246,7 @@ impl OutcomeRepository for UnderstandingStore {
                     outcome.at().unix_millis(),
                     outcome.motivating_belief().map(|b| id_text(b.value())),
                     outcome.reaction().map(Reaction::name),
+                    outcome.changed().map(i64::from),
                 ],
             )
             .map_err(backend)?;
@@ -264,7 +267,8 @@ impl OutcomeRepository for UnderstandingStore {
 fn all_outcomes(conn: &Connection) -> Result<Vec<Outcome>, RepositoryError> {
     let mut stmt = conn
         .prepare(
-            "SELECT id, capability, input, claim, observation, at_ms, motivating_belief, reaction \
+            "SELECT id, capability, input, claim, observation, at_ms, motivating_belief, \
+             reaction, changed \
              FROM outcomes ORDER BY at_ms DESC, rowid DESC",
         )
         .map_err(backend)?;
@@ -279,12 +283,13 @@ fn all_outcomes(conn: &Connection) -> Result<Vec<Outcome>, RepositoryError> {
                 r.get::<_, i64>(5)?,
                 r.get::<_, Option<String>>(6)?,
                 r.get::<_, Option<String>>(7)?,
+                r.get::<_, Option<i64>>(8)?,
             ))
         })
         .map_err(backend)?;
     let mut out = Vec::new();
     for row in rows {
-        let (id, capability, input, claim, observation, at_ms, belief, reaction) =
+        let (id, capability, input, claim, observation, at_ms, belief, reaction, changed) =
             row.map_err(backend)?;
         // A reaction we cannot parse is corrupt, but an *absent* one is the normal case
         // (ADR 0035 — the person is never asked), so only a present-and-unknown value is
@@ -307,6 +312,7 @@ fn all_outcomes(conn: &Connection) -> Result<Vec<Outcome>, RepositoryError> {
             Timestamp::from_unix_millis(at_ms),
             motivating_belief,
             reaction,
+            changed.map(|c| c != 0),
         ));
     }
     Ok(out)
@@ -507,6 +513,7 @@ mod tests {
             Some("kitchen switch: on"),
             Timestamp::from_unix_millis(10),
             Some(BeliefId::new(7)),
+            None,
         )
         .unwrap();
         OutcomeRepository::save(&store, &outcome).unwrap();
@@ -533,6 +540,7 @@ mod tests {
             "done",
             None,
             Timestamp::from_unix_millis(10),
+            None,
             None,
         )
         .unwrap();
@@ -566,6 +574,7 @@ mod tests {
                 "done",
                 None,
                 Timestamp::from_unix_millis(at),
+                None,
                 None,
             )
             .unwrap();
