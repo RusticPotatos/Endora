@@ -21,6 +21,7 @@ let LAST_ACTIVITY_MSG = null;  // the butler message id that activity belongs to
 let STEP_LIST = [];            // the live action trail for the turn currently streaming
 let SHOW_ACTIVITY = localStorage.getItem("endora.showActivity") !== "0"; // default on
 let CHAT_STREAMING = false;    // true while a reply is streaming in (guards live-render)
+let CHAT_STOPPED = false;      // the person stopped the last turn, so no reply is coming
 let CHAT_QUEUE = [];           // messages awaiting their turn — turns are SERIALIZED
 let CHAT_INFLIGHT = null;      // the user message whose reply is streaming now (not yet persisted)
 let LIVE_REPLY = "";           // the reply text accumulated so far, so a re-render can rebuild it
@@ -257,14 +258,18 @@ function viewChat() {
     }
     return bubble;
   }).join("");
-  // Derived from persisted state, so it survives a reload: if the newest message
-  // is yours, the butler still owes a reply — show the thinking indicator. (The
-  // reply is always appended within the node's model timeout, so this can't
-  // hang forever.)
+  // Derived from persisted state, so it survives a reload: if the newest message is
+  // yours, the butler still owes a reply — show the thinking indicator.
+  //
+  // Unless the person STOPPED it. Then no reply is coming, and the dots would sit
+  // there forever waiting for something that was cancelled. Say what happened.
   const awaiting = list.length > 0 && list[list.length - 1].role === "user";
   const pending = awaiting
-    ? `<div class="row" style="justify-content:flex-start; margin:6px 0;" id="chat-pending">
-         <div class="bubble butler thinking"><span class="dots"><i></i><i></i><i></i></span></div></div>`
+    ? (CHAT_STOPPED
+        ? `<div class="row" style="justify-content:flex-start; margin:6px 0;">
+             <div class="bubble butler"><span class="sub">You stopped this one. Send again if you'd like an answer.</span></div></div>`
+        : `<div class="row" style="justify-content:flex-start; margin:6px 0;" id="chat-pending">
+             <div class="bubble butler thinking"><span class="dots"><i></i><i></i><i></i></span></div></div>`)
     : "";
   // While a turn is streaming, DB.messages doesn't include it yet. Rebuild the
   // in-flight exchange from live state — the just-sent message(s) and the reply
@@ -1280,6 +1285,11 @@ async function askDeep(q, input) {
 // Stop the in-flight turn and drop anything still queued.
 function stopChat() {
   CHAT_QUEUE = [];
+  // Remember that THIS was deliberate. The reload in the stream's `finally` renders
+  // from persisted state, which ends with the person's message and no reply — so the
+  // thinking indicator comes back and never leaves, because the reply it is waiting
+  // for was cancelled. Marking the stop lets the render say so instead.
+  CHAT_STOPPED = true;
   if (CHAT_ABORT) CHAT_ABORT.abort();
 }
 
@@ -1291,6 +1301,8 @@ function sendChat() {
   const input = document.getElementById("chat-input");
   const msg = input ? input.value.trim() : "";
   if (!msg) return;
+  // A new turn: whatever was stopped before is history.
+  CHAT_STOPPED = false;
   const thread = document.getElementById("chat-thread");
   if (thread && thread.querySelector(".empty")) thread.innerHTML = "";
   // Deep mode on: route to the bigger model instead of the everyday butler. Keep the
@@ -1377,6 +1389,8 @@ async function drainChat() {
           renderSteps(stepsWrap, STEP_LIST, true);
           if (live) scrollBubbleIntoView(live);
         } else if (ev.type === "done") {
+          // A reply landed, so nothing is outstanding.
+          CHAT_STOPPED = false;
           LAST_ACTIVITY = ev.activity || [];
           LAST_ACTIVITY_MSG = ev.reply && ev.reply.id;
           renderSteps(stepsWrap, STEP_LIST, false); // collapse to a summary
