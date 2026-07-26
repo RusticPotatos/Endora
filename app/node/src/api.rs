@@ -401,13 +401,21 @@ async fn list_mcp_servers(
         CapabilityConfigRepository, CapabilityRunner, McpServerRegistry, McpTransport,
     };
     let config = state.config.clone();
-    let (servers, opened) = blocking(move || {
+    let (servers, opened, enabled) = blocking(move || {
         Ok((
             config.list().map_err(AppError::Repository)?,
             config.opened_overrides().map_err(AppError::Repository)?,
+            config.enabled_overrides().map_err(AppError::Repository)?,
         ))
     })
     .await?;
+    // Tools the person has turned off entirely (ADR 0040) — not offered to the butler at
+    // all, which is a different state from blocked and must be visible as such.
+    let withdrawn: std::collections::HashSet<String> = enabled
+        .into_iter()
+        .filter(|(_, on)| !*on)
+        .map(|(id, _)| id)
+        .collect();
     let opened: std::collections::HashSet<String> = opened
         .into_iter()
         .filter(|(_, o)| *o)
@@ -449,6 +457,7 @@ async fn list_mcp_servers(
                         "id": spec.id,
                         "description": spec.description,
                         "opened": opened.contains(&spec.id),
+                        "enabled": !withdrawn.contains(&spec.id),
                     })
                 })
                 .collect();
@@ -1076,8 +1085,16 @@ fn build_runner(
     config: &endora_capabilities::ConfigStore,
     capabilities: Arc<Vec<Arc<dyn Capability>>>,
     mcp: Arc<endora_capabilities::McpRunner>,
-) -> endora_capabilities::CompositeRunner {
+) -> endora_capabilities::WithdrawnRunner {
     let overrides = config.enabled_overrides().unwrap_or_default();
+    // Everything the person has turned off, whatever kind of capability it is. The
+    // built-in registry applies its own flag below; an MCP tool had no equivalent, so
+    // "off" silently did nothing to it (ADR 0040).
+    let withdrawn: std::collections::HashSet<String> = overrides
+        .iter()
+        .filter(|(_, enabled)| !*enabled)
+        .map(|(id, _)| id.clone())
+        .collect();
     let opened = config.opened_overrides().unwrap_or_default();
     let confirm = config.confirm_overrides().unwrap_or_default();
     let envelope = AutonomyEnvelopeRepository::get(config).unwrap_or_default();
@@ -1117,13 +1134,19 @@ fn build_runner(
             .collect();
     // Built-in skills + connected MCP servers, behind one runner. The application
     // never learns a tool's origin (ADR 0021).
-    endora_capabilities::CompositeRunner::new(vec![
+    let composite = endora_capabilities::CompositeRunner::new(vec![
         Arc::new(registry) as Arc<dyn endora_capabilities::CapabilityRunner + Send + Sync>,
         Arc::new(endora_capabilities::AliasRunner::new(
             Arc::new(mcp_source) as Arc<dyn endora_capabilities::CapabilityRunner + Send + Sync>,
             aliases,
         )) as Arc<dyn endora_capabilities::CapabilityRunner + Send + Sync>,
-    ])
+    ]);
+    // Outermost, so a withdrawn capability is off the menu regardless of which source
+    // offered it or what any inner layer would have decided.
+    endora_capabilities::WithdrawnRunner::new(
+        Arc::new(composite) as Arc<dyn endora_capabilities::CapabilityRunner + Send + Sync>,
+        withdrawn,
+    )
 }
 
 /// The runner for turns that are only ever allowed to *gather* — the heartbeat's
@@ -1769,15 +1792,43 @@ async fn list_repairs(
     State(state): State<AppState>,
 ) -> Result<Json<Vec<serde_json::Value>>, ApiError> {
     let understanding = state.understanding.clone();
-    let found = blocking(move || usecases::repairs(understanding.as_ref())).await?;
+    let config = state.config.clone();
+    let (found, withdrawn) = blocking(move || {
+        use endora_capabilities::CapabilityConfigRepository;
+        let found = usecases::repairs(understanding.as_ref())?;
+        let withdrawn: std::collections::HashSet<String> = config
+            .enabled_overrides()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|(_, on)| !*on)
+            .map(|(id, _)| id)
+            .collect();
+        Ok((found, withdrawn))
+    })
+    .await?;
     Ok(Json(
         found
             .iter()
+            // A tool that is already turned off can never produce new evidence, so its
+            // finding would sit there forever asking for something already done. The
+            // derivation stays pure and unaware of config (ADR 0039); this is the one
+            // place that knows both, and answering the question is what retires the card.
+            .filter(|r| {
+                r.remedy != endora_understanding::Remedy::StopOfferingIt
+                    || !withdrawn.contains(&r.capability)
+            })
             .map(|r| {
                 json!({
                     "capability": r.capability,
                     "target": r.target,
                     "attempts": r.attempts,
+                    // What would actually fix it (ADR 0040). The console offers a
+                    // different control for each, because "what is it really called?"
+                    // is the wrong question about a tool that has never worked at all.
+                    "remedy": match r.remedy {
+                        endora_understanding::Remedy::NameTheTarget => "name_the_target",
+                        endora_understanding::Remedy::StopOfferingIt => "stop_offering_it",
+                    },
                 })
             })
             .collect(),
@@ -1989,7 +2040,15 @@ async fn set_capability_enabled(
     Path(id): Path<String>,
     Json(req): Json<EnableRequest>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    if !state.capabilities.iter().any(|c| c.info().id == id) {
+    // Any capability the butler actually offers, not just the built-in registry: an MCP
+    // tool is exactly the kind of thing worth turning off (ADR 0040), and this route
+    // used to 404 for every one of them.
+    let known = state.capabilities.iter().any(|c| c.info().id == id)
+        || state.mcp.read().ok().is_some_and(|r| {
+            use endora_capabilities::CapabilityRunner;
+            r.available().iter().any(|c| c.id == id)
+        });
+    if !known {
         return Err(ApiError(AppError::NotFound {
             entity: "capability",
         }));
