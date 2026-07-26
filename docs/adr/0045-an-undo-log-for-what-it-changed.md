@@ -57,6 +57,13 @@ The adapter knows neither the clock nor the id source, and should not: it knows 
 to one service. The composition layer stamps both, which also keeps `ConfigWrite` a plain
 domain value the store can round-trip.
 
+### Forgetting everything does not forget this
+
+"Forget everything" erases what Endora knows about the person. This log is not that: it is
+a **receipt for changes that still exist inside somebody else's service**. Deleting it does
+not undo them — it makes them unrecoverable and invisible, which is strictly worse for the
+person than keeping the record. So the purge leaves it alone.
+
 ### A no-op is not a change
 
 Teaching a service a name it already knows writes nothing and logs nothing. An undo log
@@ -73,6 +80,8 @@ padded with rows that undo nothing is a log nobody reads.
   be real, and for config writes it now is.
 - History grows without bound. Acceptable at this scale — four rows in a week — and a
   retention rule can come when there is anything to retain.
+- **A purge leaves this table standing**, which is a deliberate exception to "forget
+  everything" and has to be explained rather than discovered.
 - **Undo depends on the channel still existing.** A change made to a service Endora has
   since lost reach into cannot be replayed from here; the record still says exactly what to
   put back by hand.
