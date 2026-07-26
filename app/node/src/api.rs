@@ -1294,8 +1294,10 @@ async fn stream_chat(
                         "label": step.label,
                         "output": step.output,
                     });
+                    // Every call reports twice — once running, once with its outcome — and the
+                    // persisted trail keeps one row per call (see `fold_step`).
                     if let Ok(mut g) = collected_step.lock() {
-                        g.push(v.clone());
+                        fold_step(&mut g, v.clone());
                     }
                     let mut e = v;
                     e["type"] = json!("step");
@@ -1372,6 +1374,40 @@ async fn stream_chat(
         rx.recv().await.map(|ev| (Ok(ev), rx))
     });
     Sse::new(stream).keep_alive(KeepAlive::default())
+}
+
+/// Folds a step into the trail **persisted** with the reply.
+///
+/// Every tool call reports twice — once running, once with its outcome. The live view
+/// finalises the running row in place; the persisted trail kept both, so reopening a
+/// past reply showed three tool calls as "6 actions". This collapses the same way, so
+/// what is stored matches what was watched.
+///
+/// A terminal step with nothing in flight starts its own row: a blocked call never
+/// reports running, and folding it away would hide the most interesting kind of step
+/// there is — one that policy refused.
+fn fold_step(trail: &mut Vec<serde_json::Value>, step: serde_json::Value) {
+    let field = |v: &serde_json::Value, k: &str| {
+        v.get(k)
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .to_owned()
+    };
+    if field(&step, "status") == "running" {
+        trail.push(step);
+        return;
+    }
+    // Finish the in-flight row **for this same skill**. Matching on skill matters: a
+    // blocked call reports no `running` at all, and folding it into whatever happened to
+    // be in flight would overwrite an unrelated call and hide the refusal.
+    let skill = field(&step, "skill");
+    let in_flight = trail
+        .iter()
+        .rposition(|s| field(s, "status") == "running" && field(s, "skill") == skill);
+    match in_flight {
+        Some(i) => trail[i] = step,
+        None => trail.push(step),
+    }
 }
 
 /// Extracts the http(s) URLs a turn's steps returned — the real sources — from
@@ -3065,6 +3101,52 @@ mod tests {
         // It stays visible as something Endora once pursued, but is no longer current.
         let listed = json_body(app.oneshot(get("/v1/intentions")).await.unwrap()).await;
         assert_eq!(listed[0]["active"], false);
+    }
+
+    #[test]
+    fn the_persisted_step_trail_counts_calls_not_events() {
+        use super::fold_step;
+        let step = |skill: &str, status: &str| serde_json::json!({ "skill": skill, "status": status, "label": "x", "output": null });
+
+        // The live trail from a real turn: one failed action, then two reads. Each
+        // reports twice — running, then its outcome.
+        let mut trail = Vec::new();
+        for s in [
+            step("home-assistant.HassTurnOff", "running"),
+            step("home-assistant.HassTurnOff", "failed"),
+            step("home-assistant.GetLiveContext", "running"),
+            step("home-assistant.GetLiveContext", "done"),
+            step("home-assistant.GetLiveContext", "running"),
+            step("home-assistant.GetLiveContext", "done"),
+        ] {
+            fold_step(&mut trail, s);
+        }
+
+        // Three calls, not six events — the console said "6 actions" for this turn.
+        assert_eq!(trail.len(), 3, "trail was {trail:?}");
+        let statuses: Vec<&str> = trail
+            .iter()
+            .map(|s| s["status"].as_str().unwrap())
+            .collect();
+        assert_eq!(statuses, vec!["failed", "done", "done"]);
+    }
+
+    #[test]
+    fn a_blocked_step_keeps_its_own_row() {
+        use super::fold_step;
+        // Policy refusing a call never reports "running" first. Folding it into an
+        // unrelated in-flight row would hide the most interesting step there is.
+        let mut trail = Vec::new();
+        fold_step(
+            &mut trail,
+            serde_json::json!({ "skill": "a", "status": "running", "label": "x", "output": null }),
+        );
+        fold_step(
+            &mut trail,
+            serde_json::json!({ "skill": "b", "status": "blocked", "label": "x", "output": null }),
+        );
+        assert_eq!(trail.len(), 2, "the blocked call was swallowed: {trail:?}");
+        assert_eq!(trail[1]["skill"], "b");
     }
 
     #[tokio::test]

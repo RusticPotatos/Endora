@@ -1552,8 +1552,11 @@ async function drainChat() {
           } else {
             // Terminal: finalize the last still-running step, else record it fresh
             // (a "blocked" step arrives with no prior "running").
+            // Match on skill as well as state: a blocked call reports no "running"
+            // at all, so finalising whatever happened to be in flight would overwrite
+            // an unrelated call and hide the refusal.
             let i = STEP_LIST.length - 1;
-            while (i >= 0 && STEP_LIST[i].status !== "running") i--;
+            while (i >= 0 && !(STEP_LIST[i].status === "running" && STEP_LIST[i].skill === ev.skill)) i--;
             if (i >= 0) { STEP_LIST[i].status = ev.status; STEP_LIST[i].output = ev.output || null; }
             else STEP_LIST.push({ skill: ev.skill, label: ev.label, status: ev.status, output: ev.output || null });
           }
