@@ -77,3 +77,4 @@ of an existing record and take the next number.
 | [0041](0041-searching-the-reading-for-the-real-target.md) | Searching the reading for the real target | Accepted |
 | [0042](0042-direct-reach-into-a-service.md) | Direct reach into a service | Accepted |
 | [0043](0043-writing-names-back-into-the-service.md) | Writing names back into the service | Accepted |
+| [0044](0044-policy-acts-on-what-it-has-established.md) | Policy acts on what it has established | Accepted |
