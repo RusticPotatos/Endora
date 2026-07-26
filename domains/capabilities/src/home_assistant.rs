@@ -528,6 +528,25 @@ impl crate::infrastructure::NativeChannel for HomeAssistant {
             .is_some_and(|(domain, _)| SWITCHABLE.contains(&domain))
     }
 
+    fn tighten(&self, input_json: &str) -> Option<String> {
+        let mut args: Value = serde_json::from_str(input_json).ok()?;
+        let obj = args.as_object_mut()?;
+        // `entity_id` is Home Assistant's identifier field — the one piece of naming
+        // knowledge this needs, and it lives here rather than in the shared runner.
+        let pinned = obj
+            .get("entity_id")
+            .and_then(Value::as_str)
+            .is_some_and(|v| !v.trim().is_empty());
+        if !pinned {
+            return None;
+        }
+        let before = obj.len();
+        // Everything else that says WHICH thing. Kind filters stay: they narrow too, and
+        // dropping them is the widening this exists to prevent.
+        obj.retain(|field, _| !["area", "floor", "name"].contains(&field.as_str()));
+        (obj.len() < before).then(|| args.to_string())
+    }
+
     fn categories(&self) -> Result<Vec<String>, String> {
         // Read off the house itself rather than from a list in Endora's source: every
         // domain it actually has, and every device class it actually uses.
@@ -775,5 +794,52 @@ mod tests {
     fn a_confirmed_name_matching_the_service_name_is_not_listed_twice() {
         let names = house().names_of(&entity("table light"));
         assert_eq!(names.len(), 1, "{names:?}");
+    }
+
+    #[test]
+    fn an_exact_id_makes_a_room_redundant() {
+        // Live, and it succeeded — which is why nothing caught it. A request for ONE light
+        // arrived naming the light and the whole kitchen; Home Assistant matched the room
+        // and switched off both kitchen lights, reporting success.
+        use crate::infrastructure::NativeChannel;
+        let out = house()
+            .tighten(r#"{"entity_id":"light.kitchen_table","area":"kitchen","domain":["light"]}"#)
+            .expect("left the room in the call");
+        let v: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["entity_id"], "light.kitchen_table");
+        assert!(v.get("area").is_none(), "kept the room: {out}");
+        assert_eq!(
+            v["domain"],
+            serde_json::json!(["light"]),
+            "dropped a kind filter: {out}"
+        );
+    }
+
+    #[test]
+    fn a_call_without_an_id_is_left_exactly_as_it_was() {
+        // Narrowing only applies where something already pins the target. Everything else
+        // is the recovery path's business, after a failure.
+        use crate::infrastructure::NativeChannel;
+        assert!(
+            house()
+                .tighten(r#"{"name":"table light","area":"kitchen"}"#)
+                .is_none()
+        );
+        assert!(
+            house()
+                .tighten(r#"{"entity_id":"  ","area":"kitchen"}"#)
+                .is_none()
+        );
+        assert!(house().tighten("not json").is_none());
+    }
+
+    #[test]
+    fn an_id_on_its_own_needs_no_narrowing() {
+        use crate::infrastructure::NativeChannel;
+        assert!(
+            house()
+                .tighten(r#"{"entity_id":"light.kitchen_table"}"#)
+                .is_none()
+        );
     }
 }

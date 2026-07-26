@@ -99,6 +99,25 @@ Recovery **never widens a call**: kind filters are kept, and only scalars the re
 already contains are dropped. Written after argument hygiene turned an aimed-at-nothing call
 into every light in the house.
 
+### An exact identifier pins the target
+
+A call that already names one thing must not also name a room. Live, and it **succeeded**,
+which is why nothing caught it:
+
+```text
+{entity_id: "light.kitchen_table", area: "kitchen"}
+  -> completed successfully on: Kitchen (area), Kitchen Main Light, Kitchen Table
+```
+
+Two lights, for a request that named one. Every widening guard watches the *failure* path;
+a call that widens and works is invisible to all of them.
+
+So where a channel can tell that a call already pins its target, the broader targeting
+fields are dropped **before** the call. This is the only place a channel acts ahead of a
+failure rather than after one, and it is allowed for a single reason: it can only ever make
+a call hit *less*. Kind filters stay, because dropping those is the widening this exists to
+prevent.
+
 ### Direct reach, where it is given
 
 A tool surface is a product decision, not the service. Where Endora holds the service's own

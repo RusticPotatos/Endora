@@ -2786,6 +2786,22 @@ pub trait NativeChannel: Send + Sync {
         None
     }
 
+    /// Narrows a call that already names exactly one thing, before it is sent
+    /// (ADR 0054).
+    ///
+    /// `None` when there is nothing to narrow, which is the default and the common case.
+    ///
+    /// This is the one place the channel acts **before** a failure rather than after, and
+    /// it is allowed for a single reason: it can only ever make a call hit *less*. Live,
+    /// a request for one light arrived as
+    /// `{entity_id: "light.kitchen_table", area: "kitchen"}` — an exact identifier and a
+    /// whole room. The service matched the room, switched off both kitchen lights, and
+    /// reported success, so every guard that watches the failure path stayed silent.
+    fn tighten(&self, input_json: &str) -> Option<String> {
+        let _ = input_json;
+        None
+    }
+
     /// The words this service uses as **categories** — the sorts of thing it has, as
     /// opposed to the names of particular things (ADR 0054).
     ///
@@ -3024,6 +3040,14 @@ impl CapabilityRunner for TargetSearchRunner {
     }
 
     fn run(&self, id: &str, input_json: &str) -> Result<String, String> {
+        // An exact identifier pins the target; anything else in the call can only widen
+        // it (ADR 0054). Done BEFORE the call, because a call that widens and succeeds is
+        // never seen by the recovery path below.
+        let tightened = self
+            .channel(id)
+            .and_then(|c| c.tighten(input_json))
+            .unwrap_or_else(|| input_json.to_owned());
+        let input_json = tightened.as_str();
         let first = self.inner.run(id, input_json);
         let Err(original) = first else {
             return first;
