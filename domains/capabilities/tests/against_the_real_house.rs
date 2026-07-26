@@ -136,3 +136,17 @@ fn a_real_kind_still_narrows_rather_than_naming() {
     let best = only_real_match(&found).expect("a plainly named thing was not found");
     assert_eq!(best.value, "Garage Main");
 }
+
+#[test]
+fn a_kind_word_as_a_name_resolves_to_one_thing_rather_than_a_whole_room() {
+    // `drop_domain_word_name` handled `{name:"light", area:"kitchen"}` by DELETING the
+    // name, leaving "every light in the kitchen" — widening the call, which is the thing
+    // ADR 0054 forbids and which once switched on the whole house.
+    //
+    // The search reaches a better answer without widening anything: one light, the one a
+    // person calling it "the kitchen light" means.
+    let input = r#"{"name":"light","area":"kitchen","domain":["light"]}"#;
+    let found = candidates(HOUSE, &target_words(input));
+    let best = only_real_match(&found).expect("could not tell which light was meant");
+    assert_eq!(best.value, "Kitchen Main Light");
+}
