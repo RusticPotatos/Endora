@@ -711,6 +711,7 @@ pub fn app(state: AppState) -> Router {
         .route("/v1/understanding/{id}/affirm", post(affirm_belief))
         .route("/v1/understanding/{id}/correct", post(correct_belief))
         .route("/v1/outcomes", get(list_outcomes))
+        .route("/v1/repairs", get(list_repairs))
         .route("/v1/outcomes/{id}/reaction", post(react_to_outcome))
         // Read and drop only. There is deliberately NO create or edit route: Endora
         // forms its own intentions, and the person's whole side of the interface is
@@ -1651,6 +1652,28 @@ fn outcome_json(o: &endora_application::Outcome) -> serde_json::Value {
         "motivating_belief": o.motivating_belief().map(|b| b.value().to_string()),
         "reaction": o.reaction().map(endora_application::Reaction::name),
     })
+}
+
+/// What Endora has noticed is wrong with its own tooling (ADR 0039).
+///
+/// Derived on read, never stored — there is nothing here to dismiss or process.
+async fn list_repairs(
+    State(state): State<AppState>,
+) -> Result<Json<Vec<serde_json::Value>>, ApiError> {
+    let understanding = state.understanding.clone();
+    let found = blocking(move || usecases::repairs(understanding.as_ref())).await?;
+    Ok(Json(
+        found
+            .iter()
+            .map(|r| {
+                json!({
+                    "capability": r.capability,
+                    "target": r.target,
+                    "attempts": r.attempts,
+                })
+            })
+            .collect(),
+    ))
 }
 
 /// What Endora has done lately, and what it saw afterwards (ADR 0035) — the memory
@@ -3150,6 +3173,48 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn repairs_are_derived_from_what_was_observed_not_stored() {
+        use endora_application::{Outcome, OutcomeId, OutcomeRepository, Timestamp};
+        let state = test_state();
+        // Two actions that reported success and moved nothing — the live kitchen case.
+        for id in [1_u128, 2] {
+            OutcomeRepository::save(
+                state.understanding.as_ref(),
+                &Outcome::record(
+                    OutcomeId::new(id),
+                    "home-assistant.HassTurnOff",
+                    r#"{"area":"kitchen"}"#,
+                    "The action completed successfully on: Kitchen (area).",
+                    Some("Kitchen Main | switch | on"),
+                    Timestamp::from_unix_millis(id as i64),
+                    None,
+                    Some(false),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        }
+        let app = app(state);
+
+        let found = json_body(app.clone().oneshot(get("/v1/repairs")).await.unwrap()).await;
+        assert_eq!(found.as_array().unwrap().len(), 1, "{found}");
+        assert_eq!(found[0]["capability"], "home-assistant.HassTurnOff");
+        assert_eq!(found[0]["attempts"], 2);
+
+        // Nothing was stored to make that happen, and nothing can be dismissed: there
+        // is deliberately no way to write a repair (ADR 0039/0029).
+        let res = app
+            .oneshot(post("/v1/repairs", r#"{"capability":"x"}"#))
+            .await
+            .unwrap();
+        assert!(
+            res.status() == StatusCode::METHOD_NOT_ALLOWED || res.status() == StatusCode::NOT_FOUND,
+            "repairs became writable — that is a queue: {}",
+            res.status()
+        );
+    }
+
+    #[tokio::test]
     async fn outcomes_are_visible_and_start_empty() {
         // Nothing has acted yet, so there is nothing to show — and the endpoint must
         // still answer, since the console asks for it on every load.
@@ -3178,6 +3243,7 @@ mod tests {
                 "action_done",
                 Some("kitchen switch: on"),
                 Timestamp::from_unix_millis(1_000),
+                None,
                 None,
             )
             .unwrap(),
