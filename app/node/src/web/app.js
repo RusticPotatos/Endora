@@ -183,7 +183,7 @@ function viewAudit() {
     <div class="card"><div class="sub mono">${new Date(a.at_ms).toLocaleString()}</div>
       <div>${esc(a.summary)}</div></div>`);
   return `
-    ${crumbs([{ label: "Home", act: "go:chat" }, { label: "Activity" }])}
+    ${crumbs([{ label: "Messages", act: "go:chat" }, { label: "Activity" }])}
     <h2>Recent activity</h2>
     ${activityFeed()}
     <h2 style="margin-top:22px;">Audit trail (newest first)</h2>
@@ -444,11 +444,16 @@ async function mcpSearch() {
       MCP_CATALOG = r.servers || [];
       if (!box) return;
       if (!MCP_CATALOG.length) { box.innerHTML = `<div class="sub" style="margin-top:8px;">Nothing matched.</div>`; return; }
-      const note = r.registry_ok ? "" : `<div class="sub" style="margin-top:6px;">Showing built-in suggestions — the community registry wasn't reachable.</div>`;
+      // Newest first. The registry publishes no download or star count of any kind, so
+      // recency is the only ordering signal there is — say that rather than imply a
+      // popularity sort nobody can actually provide.
+      const note = r.registry_ok
+        ? `<div class="sub" style="margin-top:6px;">Newest first — the registry doesn't publish download counts, so recency is all there is to sort by.</div>`
+        : `<div class="sub" style="margin-top:6px;">Showing built-in suggestions — the community registry wasn't reachable.</div>`;
       box.innerHTML = note + MCP_CATALOG.map((e, i) => `
         <div class="row" style="align-items:flex-start;gap:10px;margin-top:8px;border-top:1px solid var(--line);padding-top:8px;">
           <div class="grow">
-            <div class="title" style="font-weight:500;">${esc(e.name)} <span class="pill">${esc(e.source)}</span>${e.transport === "http" ? ` <span class="pill">http</span>` : ""}</div>
+            <div class="title" style="font-weight:500;">${esc(e.name)} <span class="pill">${esc(e.source)}</span>${e.transport === "http" ? ` <span class="pill">http</span>` : ""}${e.updated ? ` <span class="pill">updated ${esc(e.updated)}</span>` : ""}</div>
             <div class="sub">${esc(e.description || "")}</div>
             ${e.docs ? `<div class="sub"><a class="link" href="${esc(e.docs)}" target="_blank" rel="noopener noreferrer">docs</a></div>` : ""}
           </div>
@@ -713,24 +718,61 @@ function viewSettings() {
       <div class="grow"><div class="title" style="font-weight:500;">${label}</div>${note ? `<div class="sub">${note}</div>` : ""}</div>
       <button class="${on ? "primary" : "ghost"}" data-act="${act}">${on ? "On" : "Off"}</button>
     </div>`;
+  const nav = (act, ic, label, note) => `
+    <button class="ghost" data-act="${act}">${icon(ic)}
+      <span class="grow" style="text-align:left;">${label}${note ? `<span class="sub" style="display:block;font-weight:400;">${note}</span>` : ""}</span>
+      ${icon("chevron", 15)}</button>`;
+  // One list of rows, each leading somewhere — nothing configured inline. Settings was
+  // a pile of toggles with a "Manage" list buried under it; this is the Manage list all
+  // the way down, so every category is findable in one glance.
   return `
-    ${crumbs([{ label: "Home", act: "go:chat" }, { label: "Settings" }])}
+    ${crumbs([{ label: "Messages", act: "go:chat" }, { label: "Settings" }])}
     <h2>Settings</h2>
+    <div class="card nav-list">
+      ${nav("go:display", "prefs", "Preferences", "reading replies aloud, vibration, showing actions")}
+      ${nav("go:models", "sparkle", "Models", "which model answers, and the bigger one behind it")}
+      ${nav("go:proactive", "target", "Reaching out", "check-ins, the daily brief, the overnight loop")}
+      ${nav("go:skills", "skills", "Skills", "what Endora can do, and the servers it connects to")}
+      ${nav("go:understanding", "sparkle", "What Endora understands", "beliefs, what it's working on, what it did")}
+      ${nav("go:learning", "target", "What Endora is learning")}
+      ${nav("go:prefs", "prefs", "Things Endora remembers about you")}
+      ${nav("go:audit", "audit", "Activity & audit")}
+      ${nav("export", "export", "Export my data")}
+    </div>
+    <div class="card nav-list" style="margin-top:14px;">
+      <button class="ghost danger" data-act="purge">${icon("purge")}
+        <span class="grow" style="text-align:left;">Delete everything<span class="sub" style="display:block;font-weight:400;">every message, belief and record — this cannot be undone</span></span>
+      </button>
+    </div>`;
+}
+
+// The plain on/off preferences. Their own screen, so Settings can stay a list.
+function viewDisplay() {
+  const row = (on, act, label, note) => `
+    <div class="row" style="align-items:flex-start;gap:10px;">
+      <div class="grow"><div class="title" style="font-weight:500;">${label}</div>${note ? `<div class="sub">${note}</div>` : ""}</div>
+      <button class="${on ? "primary" : "ghost"}" data-act="${act}">${on ? "On" : "Off"}</button>
+    </div>`;
+  return `
+    ${crumbs([{ label: "Messages", act: "go:chat" }, { label: "Settings", act: "go:settings" }, { label: "Preferences" }])}
+    <h2>Preferences</h2>
     <div class="card" style="display:flex;flex-direction:column;gap:14px;">
       ${row(SPEAK, "toggle:speak", "Read replies aloud", TTS ? "" : "not supported in this browser")}
       ${row(SHOW_ACTIVITY, "toggle:activity", "Show Endora's actions", "a note of what it did each turn")}
       ${navigator.vibrate ? row(HAPTIC, "toggle:haptic", "Vibrate", "a short buzz when a reply lands and when the mic starts listening") : ""}
-    </div>
-    ${proactivitySection()}
-    <h3>Manage</h3>
-    <div class="card nav-list">
-      <button class="ghost" data-act="go:understanding">${icon("sparkle")}<span>What Endora understands about you</span>${icon("chevron", 15)}</button>
-      <button class="ghost" data-act="go:learning">${icon("target")}<span>What Endora is learning</span>${icon("chevron", 15)}</button>
-      <button class="ghost" data-act="go:prefs">${icon("prefs")}<span>Your preferences</span>${icon("chevron", 15)}</button>
-      <button class="ghost" data-act="go:skills">${icon("skills")}<span>Skills</span>${icon("chevron", 15)}</button>
-      <button class="ghost" data-act="export">${icon("export")}<span>Export my data</span>${icon("chevron", 15)}</button>
-    </div>
+    </div>`;
+}
+
+function viewModels() {
+  return `
+    ${crumbs([{ label: "Messages", act: "go:chat" }, { label: "Settings", act: "go:settings" }, { label: "Models" }])}
     ${modelsSection()}`;
+}
+
+function viewProactive() {
+  return `
+    ${crumbs([{ label: "Messages", act: "go:chat" }, { label: "Settings", act: "go:settings" }, { label: "Reaching out" }])}
+    ${proactivitySection()}`;
 }
 
 // What the butler has learned — visible, correctable, deletable memory.
@@ -744,7 +786,7 @@ function viewPrefs() {
       <button class="ghost danger" data-act="delete:pref:${p.id}" title="forget this">${icon("purge",15)}</button>
     </div></div>`);
   return `
-    ${crumbs([{ label: "Home", act: "go:chat" }, { label: "Preferences" }])}
+    ${crumbs([{ label: "Messages", act: "go:chat" }, { label: "Preferences" }])}
     <h2>What the butler knows about you</h2>
     ${listOr(rows, "Nothing yet. The butler will propose things to remember as you talk — or add one below.")}
     <div class="form">
@@ -796,14 +838,9 @@ function viewSkills() {
           </div>
           <button class="${opened ? "primary" : "ghost"}" data-act="skill:open:${c.id}:${opened ? "0" : "1"}">${opened ? "Block again" : "Allow (with confirmation)"}</button>
         </div>` : (enabled ? `
-        <div class="row" style="align-items:flex-start;gap:10px;margin-top:8px;border-top:1px solid var(--line);padding-top:8px;">
-          <div class="grow">
-            <div class="title" style="font-weight:500;">Ask me first</div>
-            <div class="sub">${c.confirm
-              ? "On — Endora proposes it and runs it only after you confirm each time."
-              : "Off — Endora may use this on its own when it helps. Turn on to be asked first."}</div>
-          </div>
-          <button class="${c.confirm ? "primary" : "ghost"}" data-act="skill:confirm:${c.id}:${c.confirm ? "0" : "1"}">${c.confirm ? "Automatic" : "Ask first"}</button>
+        <div class="row" style="gap:8px;margin-top:6px;">
+          <button class="ghost" style="font-size:12px;padding:2px 8px;" data-act="skill:confirm:${c.id}:${c.confirm ? "0" : "1"}"
+            title="${c.confirm ? "Endora asks before every use. Click to let it decide." : "Endora may use this on its own. Click to be asked each time."}">${c.confirm ? "Asks first" : "Uses freely"}</button>
         </div>` : "")}
         ${settingsForm}
       </div>`;
@@ -853,7 +890,10 @@ function viewSkills() {
         </div>
         ${toggle(s.trust_all, `mcp:trust:${esc(s.name)}`, "Allow all its tools", "Auto-enables every tool this server exposes, so you don't allow them one by one. The butler still asks before each use.")}
         ${readerRow(s)}
-        ${(s.tools || []).map(toolRow).join("")}
+        ${(s.tools || []).length
+          ? `<details class="steps" style="margin-top:6px;"><summary>${(s.tools || []).length} tool${(s.tools || []).length === 1 ? "" : "s"}</summary>
+               <div class="step-list">${(s.tools || []).map(toolRow).join("")}</div></details>`
+          : ""}
       </div>`;
   };
   const servers = (MCP_SERVERS && MCP_SERVERS.servers) || [];
@@ -905,7 +945,7 @@ function viewSkills() {
     ${mcpBrowse}
     ${mcpAddForm}`;
   return `
-    ${crumbs([{ label: "Home", act: "go:chat" }, { label: "Skills" }])}
+    ${crumbs([{ label: "Messages", act: "go:chat" }, { label: "Skills" }])}
     <h2>What Endora can do</h2>
 
     ${envelope}
@@ -936,7 +976,7 @@ function viewLearning() {
       <div class="card"><div class="title">${esc(b.statement)}</div>
         ${b.evidence ? `<div class="sub">because ${esc(b.evidence)}</div>` : ""}</div>`);
   return `
-    ${crumbs([{ label: "Home", act: "go:chat" }, { label: "Learning" }])}
+    ${crumbs([{ label: "Messages", act: "go:chat" }, { label: "Learning" }])}
     <h2>What Endora is learning</h2>
     <div class="note">It pays attention as you talk, and looks into things on its own, to grow more useful over time.</div>
     <h3>Most recently</h3>
@@ -1454,6 +1494,9 @@ function render() {
     : v === "skills" ? viewSkills()
     : v === "prefs" ? viewPrefs()
     : v === "settings" ? viewSettings()
+    : v === "display" ? viewDisplay()
+    : v === "models" ? viewModels()
+    : v === "proactive" ? viewProactive()
     : v === "learning" ? viewLearning()
     : v === "understanding" ? viewUnderstanding()
     : viewUnderstanding();
@@ -1933,12 +1976,11 @@ function setupHeader(health) {
     // A short, focused menu: the everyday destinations. Everything else
     // (Skills, preferences, export) lives inside Settings.
     menu.innerHTML =
-      item("go:chat", "chat", "Talk to Endora") +
-      item("go:understanding", "sparkle", "What Endora knows") +
+      item("go:understanding", "sparkle", "Home") +
+      item("go:chat", "chat", "Messages") +
       item("go:settings", "prefs", "Settings") +
-      item("go:audit", "audit", "Activity & audit") +
       `<div class="divider"></div>` +
-      item("purge", "purge", "Delete everything", "", "danger");
+      "";
   }
   // Brand: "Endora" + a version pill. The pill also carries the build id (the
   // deploy's git SHA) so a refresh visibly changes when a new build is live —
