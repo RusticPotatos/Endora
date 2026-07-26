@@ -74,3 +74,4 @@ of an existing record and take the next number.
 | [0038](0038-capability-profiles.md) | Capability profiles: learning what a tool does, instead of patching each one | Accepted |
 | [0039](0039-capability-repair-proposals.md) | Capability repair proposals: noticing its own tooling is wrong | Accepted |
 | [0040](0040-withdrawing-a-capability-that-never-works.md) | Withdrawing a capability that never works | Accepted |
+| [0041](0041-searching-the-reading-for-the-real-target.md) | Searching the reading for the real target | Accepted |
