@@ -795,16 +795,34 @@ function unreadCount() {
   return unpromptedMessages().filter((m) => (m.at_ms || 0) > seen).length;
 }
 
+// Which day a message belongs to, in words — "Today", "Yesterday", or the date. An
+// inbox that fills up through the day reads better in days than in timestamps.
+function inboxDay(at) {
+  const when = new Date(at);
+  const midnight = (d) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+  const days = Math.round((midnight(new Date()) - midnight(when)) / 86400000);
+  if (days === 0) return "Today";
+  if (days === 1) return "Yesterday";
+  return when.toLocaleDateString(undefined, { weekday: "long", month: "short", day: "numeric" });
+}
+
 function viewInbox() {
   const msgs = unpromptedMessages();
   const seen = inboxSeenAt();
+  let day = "";
   const rows = msgs.map((m) => {
     const unread = (m.at_ms || 0) > seen;
-    return `
+    // A day heading whenever the day changes. The list is newest first, so these fall
+    // in order without sorting anything twice.
+    const today = inboxDay(m.at_ms);
+    const heading = today === day ? "" : `<h3 style="margin:18px 0 8px;">${esc(today)}</h3>`;
+    day = today;
+    const time = new Date(m.at_ms).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+    return `${heading}
     <div class="card"${unread ? ` style="border-color: color-mix(in srgb, var(--accent) 45%, var(--line));"` : ""}>
       <div class="row" style="align-items:flex-start;gap:10px;">
         <div class="grow">
-          <div class="sub">${esc(new Date(m.at_ms).toLocaleString())}${unread ? ` · <strong>new</strong>` : ""}</div>
+          <div class="sub">${esc(time)}${unread ? ` · <strong>new</strong>` : ""}</div>
           <div class="title" style="font-weight:400;white-space:pre-wrap;">${esc(m.text)}</div>
         </div>
         <button class="ghost" data-act="play:msg:${m.id}" title="read this aloud">${icon("speakerOn", 15)}</button>
@@ -817,9 +835,9 @@ function viewInbox() {
     localStorage.setItem("endora.inboxSeen", String(msgs[0].at_ms || Date.now()));
   }
   return `
-    ${crumbs([{ label: "Home", act: "go:chat" }, { label: "Messages" }])}
-    <h2>Messages</h2>
-    <div class="note" style="margin-bottom:10px;">Things Endora brought to you on its own — check-ins, your brief, and what it looked into overnight. Replies to what you asked stay in the conversation.</div>
+    ${crumbs([{ label: "Home", act: "go:chat" }, { label: "Inbox" }])}
+    <h2>Inbox</h2>
+    <div class="note" style="margin-bottom:10px;">What Endora sent you through the day, on its own — check-ins, your brief, and what it looked into overnight. Replies to things you asked stay in the conversation on Home.</div>
     ${listOr(rows, "Nothing yet. When Endora has something worth saying unprompted, it lands here.")}`;
 }
 
@@ -2122,7 +2140,7 @@ function setupHeader(health) {
       item(
         "go:inbox",
         "chat",
-        "Messages",
+        "Inbox",
         // A count only when there is something unread — a badge showing "0" is just
         // furniture, and one that never clears is a nag.
         unreadCount() ? `<span class="pill active">${unreadCount()}</span>` : "",
