@@ -57,6 +57,54 @@ pub enum McpTransport {
 }
 
 /// A registered **MCP server** — a source of tools the butler's catalog can draw on
+/// What the person calls something, and what that server actually calls it (ADR 0039).
+///
+/// Endora notices when a capability keeps failing or changing nothing on the same
+/// target, and asks. This is the answer: *"kitchen main" means `Kitchen Main`*. It is
+/// **confirmed** knowledge — supplied by the person, never inferred from a server's
+/// text, which is the parsing ADR 0038 exists to avoid.
+///
+/// Keyed by **server**, not by tool: an entity's name belongs to the server, so one
+/// answer covers every tool that server exposes rather than being re-asked per tool.
+///
+/// It reaches the model as **context**, the way a belief does. It is deliberately not a
+/// substitution: the runner never rewrites the target a model asked for, because that
+/// can act on the wrong thing and would hide the model's mistake from the eval battery
+/// that exists to measure it (ADR 0028).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TargetAlias {
+    /// The server whose vocabulary this is, e.g. `"home-assistant"`.
+    pub server: String,
+    /// What was asked for, in the words that kept failing.
+    pub said: String,
+    /// What that server actually calls it.
+    pub means: String,
+}
+
+impl TargetAlias {
+    /// Records what the person said the target really is. Trims all three.
+    ///
+    /// # Errors
+    /// [`DomainError::EmptyField`] if any part is blank — an alias that names nothing
+    /// on either side cannot ground anything.
+    pub fn new(server: &str, said: &str, means: &str) -> Result<Self, DomainError> {
+        Ok(Self {
+            server: require_non_empty("alias.server", server)?,
+            said: require_non_empty("alias.said", said)?,
+            means: require_non_empty("alias.means", means)?,
+        })
+    }
+
+    /// How it reads to the butler, as one grounded fact.
+    #[must_use]
+    pub fn as_context(&self) -> String {
+        format!(
+            "on {}, \"{}\" means \"{}\"",
+            self.server, self.said, self.means
+        )
+    }
+}
+
 /// (ADR 0021). The registry row is plain data; the *act* of adding one is a gated
 /// capability (deny-by-default), and every tool it exposes is still band-classified
 /// before it can run (unknown ⇒ irreversible ⇒ blocked, ADR 0024). `name` is the

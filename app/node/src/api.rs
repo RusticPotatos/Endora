@@ -712,6 +712,7 @@ pub fn app(state: AppState) -> Router {
         .route("/v1/understanding/{id}/correct", post(correct_belief))
         .route("/v1/outcomes", get(list_outcomes))
         .route("/v1/repairs", get(list_repairs))
+        .route("/v1/aliases", get(list_aliases).post(set_alias))
         .route("/v1/outcomes/{id}/reaction", post(react_to_outcome))
         // Read and drop only. There is deliberately NO create or edit route: Endora
         // forms its own intentions, and the person's whole side of the interface is
@@ -1126,6 +1127,7 @@ async fn send_chat(
         let context = usecases::butler_context(
             understanding.as_ref(),
             understanding.as_ref(),
+            config.as_ref(),
             &runner,
             clock.as_ref(),
         )?;
@@ -1178,6 +1180,7 @@ async fn brief(State(state): State<AppState>) -> Result<Json<serde_json::Value>,
         let context = usecases::butler_context(
             understanding.as_ref(),
             understanding.as_ref(),
+            config.as_ref(),
             &runner,
             clock.as_ref(),
         )?;
@@ -1261,6 +1264,7 @@ async fn stream_chat(
             let context = match usecases::butler_context(
                 understanding.as_ref(),
                 understanding.as_ref(),
+                config.as_ref(),
                 &runner,
                 clock.as_ref(),
             ) {
@@ -1648,10 +1652,55 @@ fn outcome_json(o: &endora_application::Outcome) -> serde_json::Value {
         "claim": o.claim(),
         "observation": o.observation(),
         "observed": o.was_observed(),
+        // Whether the world actually moved (ADR 0039). `null` means there was nothing
+        // to compare — no reader, or the action never ran.
+        "changed": o.changed(),
         "at_ms": o.at().unix_millis(),
         "motivating_belief": o.motivating_belief().map(|b| b.value().to_string()),
         "reaction": o.reaction().map(endora_application::Reaction::name),
     })
+}
+
+#[derive(serde::Deserialize)]
+struct AliasRequest {
+    server: String,
+    said: String,
+    means: String,
+}
+
+/// What the person has told Endora its tools' targets are really called (ADR 0039).
+async fn list_aliases(
+    State(state): State<AppState>,
+) -> Result<Json<Vec<serde_json::Value>>, ApiError> {
+    use endora_capabilities::TargetAliasRepository;
+    let config = state.config.clone();
+    let found = blocking(move || config.aliases().map_err(AppError::Repository)).await?;
+    Ok(Json(
+        found
+            .iter()
+            .map(|a| json!({ "server": a.server, "said": a.said, "means": a.means }))
+            .collect(),
+    ))
+}
+
+/// The person answers what Endora asked: this target is really called that (ADR 0039).
+///
+/// The **confirmed** source in ADR 0038's ranking, and the only one policy trusts.
+/// Endora never fills this in from a server's text — that is the per-integration
+/// parsing 0038 exists to stop.
+async fn set_alias(
+    State(state): State<AppState>,
+    Json(req): Json<AliasRequest>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    use endora_capabilities::{TargetAlias, TargetAliasRepository};
+    let alias = TargetAlias::new(&req.server, &req.said, &req.means)
+        .map_err(|e| ApiError(AppError::Domain(e)))?;
+    let config = state.config.clone();
+    let stored = alias.clone();
+    blocking(move || config.set_alias(&stored).map_err(AppError::Repository)).await?;
+    Ok(Json(
+        json!({ "server": alias.server, "said": alias.said, "means": alias.means }),
+    ))
 }
 
 /// What Endora has noticed is wrong with its own tooling (ADR 0039).
@@ -2727,6 +2776,7 @@ pub fn spawn_heartbeat(state: AppState) {
                 let context = usecases::butler_context(
                     understanding.as_ref(),
                     understanding.as_ref(),
+                    config.as_ref(),
                     &runner,
                     clock.as_ref(),
                 )?;
@@ -3170,6 +3220,41 @@ mod tests {
         );
         assert_eq!(trail.len(), 2, "the blocked call was swallowed: {trail:?}");
         assert_eq!(trail[1]["skill"], "b");
+    }
+
+    #[tokio::test]
+    async fn an_alias_is_confirmed_by_the_person_and_grounds_later_turns() {
+        // ADR 0039's answer path: Endora asks what a target is really called, and the
+        // person's answer is the CONFIRMED source — the only one policy trusts.
+        let app = app(test_state());
+        let stored = json_body(
+            app.clone()
+                .oneshot(post(
+                    "/v1/aliases",
+                    r#"{"server":"home-assistant","said":"kitchen main","means":"Kitchen Main"}"#,
+                ))
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(stored["means"], "Kitchen Main");
+
+        let listed = json_body(app.oneshot(get("/v1/aliases")).await.unwrap()).await;
+        assert_eq!(listed.as_array().unwrap().len(), 1);
+        assert_eq!(listed[0]["said"], "kitchen main");
+    }
+
+    #[tokio::test]
+    async fn an_alias_that_names_nothing_is_refused() {
+        // A blank side grounds nothing and would quietly do nothing at all.
+        let res = app(test_state())
+            .oneshot(post(
+                "/v1/aliases",
+                r#"{"server":"home-assistant","said":"kitchen main","means":"  "}"#,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test]

@@ -25,7 +25,8 @@ pub use application::{
     AutonomyEnvelope, AutonomyEnvelopeRepository, ButlerModelConfig, ButlerModelConfigRepository,
     CapabilityConfigRepository, CapabilityRunner, CapabilitySettingsRepository, CapabilitySpec,
     CapabilityUse, DeepModel, DeepModelRepository, McpServer, McpServerRegistry, McpTransport,
-    ModelSlot, ModelTuneSchedule, ModelTuneScheduleRepository, Sampling,
+    ModelSlot, ModelTuneSchedule, ModelTuneScheduleRepository, Sampling, TargetAlias,
+    TargetAliasRepository,
 };
 pub use infrastructure::{
     Capability, CapabilityError, CapabilityInfo, CapabilitySettings, CompositeRunner, McpClient,
