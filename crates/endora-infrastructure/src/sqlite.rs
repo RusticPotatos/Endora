@@ -165,6 +165,15 @@ CREATE TABLE IF NOT EXISTS target_aliases (
     means  TEXT NOT NULL,
     PRIMARY KEY (server, said)
 ) STRICT;
+CREATE TABLE IF NOT EXISTS config_writes (
+    id      TEXT PRIMARY KEY,
+    at_ms   INTEGER NOT NULL,
+    server  TEXT NOT NULL,
+    target  TEXT NOT NULL,
+    added   TEXT NOT NULL,
+    was     TEXT NOT NULL,
+    undone  INTEGER NOT NULL DEFAULT 0
+) STRICT;
 CREATE TABLE IF NOT EXISTS mcp_servers (
     name    TEXT PRIMARY KEY,
     kind    TEXT NOT NULL,
@@ -300,6 +309,12 @@ impl MemoryStore for SqliteStore {
     fn purge(&self) -> Result<(), RepositoryError> {
         let mut conn = self.lock()?;
         let tx = conn.transaction().map_err(backend)?;
+        // `config_writes` is deliberately NOT purged (ADR 0045). It is not knowledge about
+        // the person; it is a receipt for changes that still exist inside somebody else's
+        // service. Deleting the receipt does not undo the change — it only makes the
+        // change unrecoverable and invisible, which is strictly worse for the person than
+        // keeping it.
+        //
         // Delete children before parents so foreign keys stay satisfied.
         for table in [
             "audit_log",
