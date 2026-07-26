@@ -64,6 +64,16 @@ a **receipt for changes that still exist inside somebody else's service**. Delet
 not undo them — it makes them unrecoverable and invisible, which is strictly worse for the
 person than keeping the record. So the purge leaves it alone.
 
+### A name can be untold, and that is a change too
+
+Teaching without forgetting leaves a person's own configuration carrying a word they have
+changed their mind about, with no way to say so from here. So a name can be removed, and
+the removal is logged exactly as an addition is.
+
+Addition and removal are told apart by **what was there before**, not by a stored flag: a
+name already in the prior list can only have been taken away. One table, one undo — replay
+`was` — and no flag that could ever disagree with the data beside it.
+
 ### A no-op is not a change
 
 Teaching a service a name it already knows writes nothing and logs nothing. An undo log
