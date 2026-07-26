@@ -816,6 +816,25 @@ fn disclose(
     });
 }
 
+/// The line to append when a turn tried to change something and changed nothing.
+///
+/// Empty in every other case — including a turn that took no action at all, where there
+/// is nothing to correct, and a turn where anything succeeded, where "nothing changed"
+/// would itself be false.
+///
+/// Only actuating actions are considered, because reads never reach the disclosure list.
+fn nothing_changed_note(disclosures: &[ActionDisclosure]) -> &'static str {
+    let tried_and_failed = !disclosures.is_empty()
+        && disclosures
+            .iter()
+            .all(|d| d.claimed.trim_start().starts_with("error:"));
+    if tried_and_failed {
+        "\n\n(Nothing was changed — everything I tried failed.)"
+    } else {
+        ""
+    }
+}
+
 /// One action a turn took, and whether Endora saw the effect for itself (ADR 0037).
 ///
 /// The **deterministic** half of honesty about actions. [ADR 0034](../../docs/adr/0034-evidence-verifies.md)
@@ -1025,6 +1044,16 @@ pub fn send_to_butler_streaming(
     } else {
         reply.text.trim().to_owned()
     };
+    // Say it plainly when a turn changed nothing (ADR 0037). Observed: asked to turn on
+    // the kitchen table, the only action failed, and the reply announced that "the guest
+    // bedroom left lamp is already on" — a device from earlier in the conversation that
+    // this turn never touched. The activity trail showed the failure; the sentence the
+    // person actually reads did not.
+    //
+    // Deterministic, and it does not rewrite what the model said: it appends what is
+    // true. Whether the model narrates well is not something Endora can fix, but whether
+    // the person is told nothing happened is.
+    let reply_text = format!("{reply_text}{}", nothing_changed_note(disclosures));
     // `take_turn` is non-streaming, so deliver the final answer at once.
     on_token(&reply_text);
     let butler_msg = ChatMessage::new(
@@ -5648,5 +5677,44 @@ smart home:
                 .iter()
                 .any(|b| b.statement().contains("sleep"))
         );
+    }
+
+    #[test]
+    fn a_turn_that_changed_nothing_says_so() {
+        // Live: asked to turn on the kitchen table, the only action failed, and the reply
+        // announced that "the guest bedroom left lamp is already on" — a device from
+        // earlier in the conversation that the turn never touched.
+        let failed = vec![super::ActionDisclosure {
+            skill: "home.HassTurnOn".to_owned(),
+            claimed: "error: MatchFailedError".to_owned(),
+            observed: None,
+        }];
+        assert!(super::nothing_changed_note(&failed).contains("Nothing was changed"));
+    }
+
+    #[test]
+    fn a_turn_that_changed_something_claims_nothing_extra() {
+        // "Nothing changed" would itself be false the moment anything worked, including
+        // when one action failed and a later one succeeded.
+        let mixed = vec![
+            super::ActionDisclosure {
+                skill: "home.HassTurnOn".to_owned(),
+                claimed: "error: MatchFailedError".to_owned(),
+                observed: None,
+            },
+            super::ActionDisclosure {
+                skill: "home.HassTurnOn".to_owned(),
+                claimed: "The action completed successfully on: Kitchen Table".to_owned(),
+                observed: None,
+            },
+        ];
+        assert_eq!(super::nothing_changed_note(&mixed), "");
+    }
+
+    #[test]
+    fn a_turn_that_acted_on_nothing_is_left_alone() {
+        // A pure conversation turn has nothing to correct, and appending a denial to a
+        // reply that never claimed to act would be noise.
+        assert_eq!(super::nothing_changed_note(&[]), "");
     }
 }
