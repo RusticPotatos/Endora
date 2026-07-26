@@ -75,7 +75,16 @@ impl HomeAssistant {
         Ok(entities)
     }
 
-    /// Calls a service on exactly one entity.
+    /// Calls a service on exactly one entity, and reports **what happened** in words.
+    ///
+    /// Home Assistant answers a service call with the list of states it changed, so a
+    /// successful call that changed nothing replies `[]`. Handing that back verbatim was
+    /// observed live: the tool result was the two characters `[]`, and the butler — with
+    /// nothing else to go on — told the person "I'm not sure how to help with that yet"
+    /// about an action that had just succeeded.
+    ///
+    /// So the reply is read rather than forwarded. `[]` is not a failure; it is "already
+    /// in that state", which is worth saying to the model, the record and the person.
     ///
     /// # Errors
     /// A human-readable message if the call fails.
@@ -86,7 +95,8 @@ impl HomeAssistant {
         entity: &str,
     ) -> Result<String, String> {
         let path = format!("/api/services/{domain}/{service}");
-        self.post(&path, &json!({ "entity_id": entity }))
+        let body = self.post(&path, &json!({ "entity_id": entity }))?;
+        Ok(describe_service_result(&body, service, entity))
     }
 
     fn get(&self, path: &str) -> Result<String, String> {
@@ -120,6 +130,23 @@ impl HomeAssistant {
             .read_to_end(&mut buf)
             .map_err(|e| e.to_string())?;
         Ok(String::from_utf8_lossy(&buf).into_owned())
+    }
+}
+
+/// Turns Home Assistant's answer to a service call into a sentence.
+///
+/// The answer is the list of entities whose state it changed. Empty means the call was
+/// accepted and nothing moved — almost always because it was already that way.
+fn describe_service_result(body: &str, service: &str, entity: &str) -> String {
+    let changed = serde_json::from_str::<Value>(body)
+        .ok()
+        .and_then(|v| v.as_array().map(Vec::len));
+    let did = service.replace('_', " ");
+    match changed {
+        Some(0) => format!("{entity} was already as asked, so '{did}' changed nothing."),
+        Some(n) => format!("Home Assistant did '{did}' on {entity} ({n} changed)."),
+        // Not a list at all: report it, rather than inventing a reading of it.
+        None => format!("Home Assistant accepted '{did}' on {entity}. It replied: {body}"),
     }
 }
 
@@ -207,6 +234,32 @@ mod tests {
         );
         settings.insert("token".to_owned(), "abc".to_owned());
         assert!(HomeAssistant::from_settings(&settings).is_some());
+    }
+
+    #[test]
+    fn an_empty_reply_means_already_that_way_and_never_silence() {
+        // Live: the tool result was the two characters `[]`, and the butler answered
+        // "I'm not sure how to help with that yet" about an action that had succeeded.
+        let said = describe_service_result("[]", "turn_on", "light.guest_bedroom_left");
+        assert!(said.contains("already"), "{said}");
+        assert!(said.contains("light.guest_bedroom_left"), "{said}");
+    }
+
+    #[test]
+    fn a_real_change_says_what_it_did() {
+        let said = describe_service_result(
+            r#"[{"entity_id":"light.kitchen_table"}]"#,
+            "turn_on",
+            "light.kitchen_table",
+        );
+        assert!(said.contains("turn on"), "{said}");
+        assert!(said.contains("light.kitchen_table"), "{said}");
+    }
+
+    #[test]
+    fn an_answer_that_is_not_a_list_is_reported_not_interpreted() {
+        let said = describe_service_result("service not found", "turn_on", "light.x");
+        assert!(said.contains("service not found"), "{said}");
     }
 
     #[test]
