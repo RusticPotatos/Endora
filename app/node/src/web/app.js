@@ -25,6 +25,7 @@ let UNDERSTANDING = [];        // Endora's beliefs about the person (the home su
 let OUTCOMES = [];             // what Endora DID, and what it saw afterwards (ADR 0035)
 let INTENTIONS = [];           // what Endora is pursuing, and has pursued (ADR 0036)
 let REPAIRS = [];              // tooling Endora has noticed keeps not working (ADR 0039)
+let CONFIG_WRITES = [];        // changes Endora made to your services' own settings (ADR 0045)
 let LAST_ACTIVITY = [];        // what Endora did behind the scenes on the last turn
 let LAST_ACTIVITY_MSG = null;  // the butler message id that activity belongs to
 let STEP_LIST = [];            // the live action trail for the turn currently streaming
@@ -132,6 +133,7 @@ async function reload() {
   try { OUTCOMES = await api("GET", "/v1/outcomes"); } catch (_) { OUTCOMES = []; }
   try { INTENTIONS = await api("GET", "/v1/intentions"); } catch (_) { INTENTIONS = []; }
   try { REPAIRS = await api("GET", "/v1/repairs"); } catch (_) { REPAIRS = []; }
+  try { CONFIG_WRITES = await api("GET", "/v1/config-writes"); } catch (_) { CONFIG_WRITES = []; }
   render();
 }
 
@@ -1112,6 +1114,7 @@ function viewUnderstanding() {
     ${groups || `<div class="empty">Nothing yet. Talk with Endora and it will start to understand you — you'll see it here.</div>`}
     ${viewIntention()}
     ${viewRepairs()}
+    ${viewConfigWrites()}
     ${viewOutcomes()}`;
 }
 
@@ -1177,6 +1180,28 @@ function viewRepairs() {
   return `
     <h3 style="margin-top:22px;">Something Endora can't get working</h3>
     <div class="note" style="margin-bottom:10px;">It checked before and after each time. Nothing moved — so either it's aiming at the wrong name, or reaching for the wrong tool.</div>
+    ${rows}`;
+}
+
+// Changes Endora has made to your services' own settings (ADR 0045).
+//
+// The memory right to SEE what it changed about the world, next to the right to see what
+// it believes and what it did — and, unlike those, a button to put each one back. Undone
+// changes stay listed: what Endora changed about your house is not something it should be
+// able to make disappear.
+function viewConfigWrites() {
+  if (!(CONFIG_WRITES || []).length) return "";
+  const rows = CONFIG_WRITES.map((w) => `
+    <div class="card"><div class="row">
+      <div class="grow">
+        <div class="title">${esc(w.what)}${w.undone ? ` <span class="pill">put back</span>` : ""}</div>
+        <div class="sub">in ${esc(w.server)}${w.at_ms ? ` · ${new Date(w.at_ms).toLocaleString()}` : ""}</div>
+      </div>
+      ${w.undone ? "" : `<button class="ghost" data-act="unwrite::${esc(w.id)}" title="Put this back exactly as it was">Undo</button>`}
+    </div></div>`).join("");
+  return `
+    <h3 style="margin-top:22px;">Changes Endora made to your services</h3>
+    <div class="note" style="margin-bottom:10px;">Names it wrote into a connected service so the fix works everywhere, not just here. Each one can be put back.</div>
     ${rows}`;
 }
 
@@ -1708,6 +1733,14 @@ async function dispatch(act) {
       return reload();
     }
     // Turn a skill on or off (ADR 0021). `id` is the capability id; `arg` is 1/0.
+    // Put back one change Endora made to a service's own settings (ADR 0045).
+    if (verb === "unwrite") {
+      try {
+        const r = await api("POST", `/v1/config-writes/${id}/undo`, {});
+        flash(r.undone || "Put back.", "ok");
+      } catch (e) { flash("Couldn't put that back: " + e.message, "err"); }
+      return reload();
+    }
     if (verb === "skill" && noun === "enable") {
       const enabled = arg === "1";
       try {

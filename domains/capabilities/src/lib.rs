@@ -26,9 +26,9 @@ pub mod target_search;
 pub use application::{
     AutonomyEnvelope, AutonomyEnvelopeRepository, ButlerModelConfig, ButlerModelConfigRepository,
     CapabilityConfigRepository, CapabilityRunner, CapabilitySettingsRepository, CapabilitySpec,
-    CapabilityUse, DeepModel, DeepModelRepository, McpServer, McpServerRegistry, McpTransport,
-    ModelSlot, ModelTuneSchedule, ModelTuneScheduleRepository, Sampling, TargetAlias,
-    TargetAliasRepository,
+    CapabilityUse, ConfigWrite, ConfigWriteLog, DeepModel, DeepModelRepository, McpServer,
+    McpServerRegistry, McpTransport, ModelSlot, ModelTuneSchedule, ModelTuneScheduleRepository,
+    Sampling, TargetAlias, TargetAliasRepository,
 };
 pub use home_assistant::{HomeAssistant, paired_server};
 pub use infrastructure::{
