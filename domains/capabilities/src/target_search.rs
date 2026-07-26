@@ -26,11 +26,8 @@ const SHORTLIST: usize = 5;
 pub struct Candidate {
     /// The value exactly as it appears in the reading — what a retry must send.
     pub value: String,
-    /// How many of the asked-for words it contains.
+    /// How many of the asked-for words it contains — its score against the request.
     pub matched: usize,
-    /// Whether it contains **every** word the call was aiming at. Only an unambiguous
-    /// exact-and-complete match is strong enough to retry on its own.
-    pub complete: bool,
 }
 
 /// The words a call was aiming at: the values of its **scalar string** fields, split into
@@ -88,22 +85,6 @@ pub fn candidates(reading: &str, words: &[String]) -> Vec<Candidate> {
         return Vec::new();
     }
     let fragments: Vec<String> = lines_of(reading).iter().map(|l| value_of(l)).collect();
-    // Words the server never uses are the person's vocabulary, not the server's, and they
-    // carry no power to tell one candidate from another. Live: "turn on the guest bedroom
-    // left lamp" found `Guest Bedroom Left` and then refused to use it, because nothing in
-    // the house is called a "lamp" and the match was therefore not "complete".
-    //
-    // Dropping them stays safe because completeness is not what makes a retry safe —
-    // UNIQUENESS is. "turn on the garage lamp" still resolves to nothing actionable,
-    // because dropping "lamp" leaves "garage", which matches several things.
-    let words: Vec<String> = words
-        .iter()
-        .filter(|w| fragments.iter().any(|f| contains_word(f, w)))
-        .cloned()
-        .collect();
-    if words.is_empty() {
-        return Vec::new();
-    }
     let mut found: Vec<Candidate> = Vec::new();
     for value in fragments {
         if value.is_empty() {
@@ -116,11 +97,7 @@ pub fn candidates(reading: &str, words: &[String]) -> Vec<Candidate> {
         if found.iter().any(|c| c.value.eq_ignore_ascii_case(&value)) {
             continue;
         }
-        found.push(Candidate {
-            matched,
-            complete: matched == words.len(),
-            value,
-        });
+        found.push(Candidate { matched, value });
     }
     found.sort_by(|a, b| {
         b.matched
@@ -133,15 +110,25 @@ pub fn candidates(reading: &str, words: &[String]) -> Vec<Candidate> {
 
 /// The one candidate worth retrying on Endora's own initiative, if there is one.
 ///
-/// Deliberately strict, because this is the half that **acts**: exactly one candidate may
-/// contain every word the call was aiming at. Two plausible names is not a search result,
-/// it is a guess, and a guess that actuates something is the failure mode
+/// **One candidate must match more of the request than every other.** Demanding that it
+/// match *every* word looked stricter and was simply wrong: it made the decision hostage
+/// to whether an unrelated entity elsewhere happens to share a word with the request.
+/// Live, "the guest bedroom left lamp" would not act on `Guest Bedroom Left`, because a
+/// **living room lamp** exists in another room and kept the match from being "complete".
+///
+/// What actually makes a retry safe is that nothing else comes close. Two names tied at
+/// the top is a coin flip, and a coin flip that actuates something is the failure mode
 /// [ADR 0024](../../docs/adr/0024-reversibility-bands.md) exists to prevent.
+///
+/// A single shared word is a coincidence rather than a match, so it only counts when
+/// nothing else in the reading resembles the request at all.
 #[must_use]
 pub fn only_real_match(found: &[Candidate]) -> Option<&Candidate> {
-    let mut complete = found.iter().filter(|c| c.complete);
-    let first = complete.next()?;
-    complete.next().is_none().then_some(first)
+    let best = found.first()?;
+    if found.iter().filter(|c| c.matched == best.matched).count() > 1 {
+        return None; // a tie is a guess
+    }
+    (best.matched >= 2 || found.len() == 1).then_some(best)
 }
 
 /// Rewrites a failed call to aim at `name`, by putting it in `field` and **dropping** the
