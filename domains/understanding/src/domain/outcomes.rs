@@ -65,6 +65,7 @@ pub struct Outcome {
     at: Timestamp,
     motivating_belief: Option<BeliefId>,
     reaction: Option<Reaction>,
+    changed: Option<bool>,
 }
 
 impl Outcome {
@@ -76,6 +77,10 @@ impl Outcome {
     ///
     /// # Errors
     /// [`DomainError::EmptyField`] if `capability` is blank.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "explicit dependencies, no hidden state"
+    )]
     pub fn record(
         id: OutcomeId,
         capability: &str,
@@ -84,6 +89,7 @@ impl Outcome {
         observation: Option<&str>,
         at: Timestamp,
         motivating_belief: Option<BeliefId>,
+        changed: Option<bool>,
     ) -> Result<Self, DomainError> {
         let capability = require_non_empty("outcome.capability", capability)?;
         Ok(Self {
@@ -95,6 +101,7 @@ impl Outcome {
             at,
             motivating_belief,
             reaction: None,
+            changed,
         })
     }
 
@@ -110,6 +117,7 @@ impl Outcome {
         at: Timestamp,
         motivating_belief: Option<BeliefId>,
         reaction: Option<Reaction>,
+        changed: Option<bool>,
     ) -> Self {
         Self {
             id,
@@ -120,6 +128,7 @@ impl Outcome {
             at,
             motivating_belief,
             reaction,
+            changed,
         }
     }
 
@@ -183,6 +192,14 @@ impl Outcome {
     pub const fn reaction(&self) -> Option<Reaction> {
         self.reaction
     }
+
+    /// Whether the world actually moved: `Some(false)` means Endora read the state
+    /// before and after and they were identical, whatever the tool claimed (ADR 0039).
+    /// `None` means there was nothing to compare — no reader, or no before-reading.
+    #[must_use]
+    pub const fn changed(&self) -> Option<bool> {
+        self.changed
+    }
 }
 
 #[cfg(test)]
@@ -202,6 +219,7 @@ mod tests {
             "action_done",
             None,
             at(1_000),
+            None,
             None,
         )
         .expect("a named capability is valid")
@@ -223,6 +241,7 @@ mod tests {
             "action_done",
             Some("kitchen switch: on"),
             at(1_000),
+            None,
             None,
         )
         .expect("valid");
@@ -260,6 +279,7 @@ mod tests {
             None,
             at(1),
             Some(BeliefId::new(7)),
+            None,
         )
         .expect("valid");
         assert_eq!(outcome.motivating_belief(), Some(BeliefId::new(7)));
@@ -268,7 +288,17 @@ mod tests {
     #[test]
     fn a_nameless_capability_is_rejected() {
         assert!(
-            Outcome::record(OutcomeId::new(1), "  ", "{}", "done", None, at(1), None).is_err(),
+            Outcome::record(
+                OutcomeId::new(1),
+                "  ",
+                "{}",
+                "done",
+                None,
+                at(1),
+                None,
+                None
+            )
+            .is_err(),
             "an outcome with no capability names nothing and can't be reasoned over"
         );
     }

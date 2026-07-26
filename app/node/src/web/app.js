@@ -15,6 +15,7 @@ let TUNE_SCHED = { enabled: false, hour_utc: 4 }; // nightly self-improving mode
 let UNDERSTANDING = [];        // Endora's beliefs about the person (the home surface)
 let OUTCOMES = [];             // what Endora DID, and what it saw afterwards (ADR 0035)
 let INTENTIONS = [];           // what Endora is pursuing, and has pursued (ADR 0036)
+let REPAIRS = [];              // tooling Endora has noticed keeps not working (ADR 0039)
 let LAST_ACTIVITY = [];        // what Endora did behind the scenes on the last turn
 let LAST_ACTIVITY_MSG = null;  // the butler message id that activity belongs to
 let STEP_LIST = [];            // the live action trail for the turn currently streaming
@@ -119,6 +120,7 @@ async function reload() {
   try { UNDERSTANDING = await api("GET", "/v1/understanding"); } catch (_) { UNDERSTANDING = []; }
   try { OUTCOMES = await api("GET", "/v1/outcomes"); } catch (_) { OUTCOMES = []; }
   try { INTENTIONS = await api("GET", "/v1/intentions"); } catch (_) { INTENTIONS = []; }
+  try { REPAIRS = await api("GET", "/v1/repairs"); } catch (_) { REPAIRS = []; }
   render();
 }
 
@@ -1193,6 +1195,7 @@ function viewUnderstanding() {
     ${setup}
     ${groups || `<div class="empty">Nothing yet. Talk with Endora and it will start to understand you — you'll see it here.</div>`}
     ${viewIntention()}
+    ${viewRepairs()}
     ${viewOutcomes()}`;
 }
 
@@ -1220,6 +1223,27 @@ function viewIntention() {
       </div>
       <button class="ghost" data-act="dropintention::${current.id}" title="stop working on this">Leave it</button>
     </div></div>`;
+}
+
+// Tooling Endora has noticed keeps not working (ADR 0039).
+//
+// Derived from what it observed, never stored — so there is no badge, no count to clear
+// and nothing to dismiss. It states the pattern and asks; it does not guess the answer,
+// because guessing would mean parsing one server's format, which is the per-integration
+// patching ADR 0038 exists to stop.
+function viewRepairs() {
+  if (!(REPAIRS || []).length) return "";
+  const rows = REPAIRS.map((r) => `
+    <div class="card"><div class="row">
+      <div class="grow">
+        <div class="title">${esc(r.capability)}</div>
+        <div class="sub">${r.attempts} attempts aimed at “${esc(r.target)}” reported success and changed nothing. Did you mean something else?</div>
+      </div>
+    </div></div>`).join("");
+  return `
+    <h3 style="margin-top:22px;">Something Endora can't get working</h3>
+    <div class="note" style="margin-bottom:10px;">It checked before and after each time. Nothing moved — so the target is probably named differently than it thinks.</div>
+    ${rows}`;
 }
 
 // What Endora has actually DONE, and what it saw afterwards (ADR 0035).
