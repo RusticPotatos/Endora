@@ -28,6 +28,13 @@ pub struct Candidate {
     pub value: String,
     /// How many of the asked-for words it contains — its score against the request.
     pub matched: usize,
+    /// How many of **its own** words the request did not account for.
+    ///
+    /// `Kitchen Main Light` and `Kitchen Main Light LED` both contain all three words of
+    /// "kitchen main light", so they score identically — but the first is exactly what
+    /// was asked for and the second is that plus something else. Leftover words are how
+    /// a tight match is told from a loose one (ADR 0048).
+    pub extra: usize,
 }
 
 /// The words a call was aiming at: the values of its **scalar string** fields, split into
@@ -146,11 +153,21 @@ pub fn candidates(reading: &str, words: &[String]) -> Vec<Candidate> {
         if found.iter().any(|c| c.value.eq_ignore_ascii_case(&value)) {
             continue;
         }
-        found.push(Candidate { matched, value });
+        let extra = value
+            .split(|c: char| !c.is_alphanumeric())
+            .filter(|w| !w.is_empty())
+            .filter(|w| !words.iter().any(|asked| asked.eq_ignore_ascii_case(w)))
+            .count();
+        found.push(Candidate {
+            matched,
+            extra,
+            value,
+        });
     }
     found.sort_by(|a, b| {
         b.matched
             .cmp(&a.matched)
+            .then_with(|| a.extra.cmp(&b.extra))
             .then_with(|| a.value.len().cmp(&b.value.len()))
             .then_with(|| a.value.cmp(&b.value))
     });
@@ -174,8 +191,16 @@ pub fn candidates(reading: &str, words: &[String]) -> Vec<Candidate> {
 #[must_use]
 pub fn only_real_match(found: &[Candidate]) -> Option<&Candidate> {
     let best = found.first()?;
-    if found.iter().filter(|c| c.matched == best.matched).count() > 1 {
-        return None; // a tie is a guess
+    // A tie is a guess — but two candidates only tie when they match the request equally
+    // well AND account for their own names equally well. `Kitchen Main Light` and
+    // `Kitchen Main Light LED` are not tied: one is what was asked for, the other is that
+    // plus a part nobody mentioned (ADR 0048).
+    let equally_good = found
+        .iter()
+        .filter(|c| c.matched == best.matched && c.extra == best.extra)
+        .count();
+    if equally_good > 1 {
+        return None;
     }
     (best.matched >= 2 || found.len() == 1).then_some(best)
 }
@@ -463,5 +488,41 @@ mod tests {
         // change — the caller keeps using `target_words`.
         let words = target_words(r#"{"area":"kitchen","device_class":["table"]}"#);
         assert_eq!(words, vec!["kitchen".to_owned()]);
+    }
+
+    #[test]
+    fn the_thing_asked_for_beats_the_thing_that_merely_contains_it() {
+        // Live: "kitchen main light" matched the light, its LED switch, and its cloud
+        // sensor — all three containing every asked-for word. Operability could not break
+        // it, because the LED is a switch and perfectly operable. What separates them is
+        // that one IS the request and the other is the request plus a word nobody said.
+        let reading = "names: Kitchen Main Light\n\
+                       names: Kitchen Main Light LED\n\
+                       names: Kitchen Main Light Cloud connection";
+        let words = target_words(r#"{"name":"main light","area":"kitchen"}"#);
+        let found = candidates(reading, &words);
+        let best = only_real_match(&found).expect("refused an exact name");
+        assert_eq!(best.value, "Kitchen Main Light");
+        assert_eq!(best.extra, 0, "the exact name has nothing left over");
+    }
+
+    #[test]
+    fn two_equally_tight_names_are_still_a_tie() {
+        // The rule breaks looseness, not ties. Two candidates that are each exactly what
+        // was asked for remain a genuine ambiguity.
+        let reading = "names: Kitchen Lamp\nnames: Lamp Kitchen";
+        let words = target_words(r#"{"name":"kitchen lamp"}"#);
+        let found = candidates(reading, &words);
+        assert!(only_real_match(&found).is_none(), "{found:?}");
+    }
+
+    #[test]
+    fn a_looser_match_still_wins_when_it_is_the_only_one() {
+        // Preferring tightness must not stop a single sensible answer being used.
+        let reading = "names: Guest Bedroom Left\nnames: Garage Main";
+        let words = target_words(r#"{"area":"guest bedroom left","name":"lamp"}"#);
+        let found = candidates(reading, &words);
+        let best = only_real_match(&found).expect("no match");
+        assert_eq!(best.value, "Guest Bedroom Left");
     }
 }
