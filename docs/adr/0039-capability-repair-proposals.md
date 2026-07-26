@@ -83,6 +83,34 @@ A confirmed alias enters the turn as context, the way understanding does. The ru
 gets acted on* can act on the wrong thing, and it would hide the model's mistake from the
 eval battery that exists to measure it (ADR 0028's argument, unchanged).
 
+## The answer path (added 2026-07-26)
+
+The first slice reported findings and offered no way to respond — a card ending in a
+rhetorical question. Stating a problem is not asking about one.
+
+A repair now carries a control: **what is it actually called?** The answer is stored as a
+`TargetAlias` — *on `home-assistant`, "kitchen main" means `Kitchen Main`* — keyed by
+**server** rather than tool, since an entity's name belongs to the server and one answer
+should not have to be repeated for every tool that server exposes.
+
+It reaches the turn as **context**, the way a belief does, and explicitly **not** as a
+substitution. The runner never rewrites the target a model asked for: that can act on the
+wrong thing, and it would hide the model's mistake from the battery that exists to measure
+it ([0028](0028-native-tool-calling-turn.md)).
+
+**This is a workaround and should be named as one.** An alias in Home Assistant fixes the
+problem for every client — voice assistants included — while an alias here only ever helps
+Endora. It is the right first rung because it is internal and reversible, not because it
+is the best repair.
+
+### The destination
+
+The eventual step is Endora making the fix itself: proposing the change to the server's
+own configuration and, once the person opens that capability and widens the envelope,
+applying it. That is squarely the self-managing agent this project is aiming at, and it is
+deliberately not this ADR — writing to a third-party server needs its own decision, its
+own reversibility story, and its own gates.
+
 ## Consequences
 
 - Endora surfaces the thing the person would otherwise have to diagnose — the first time

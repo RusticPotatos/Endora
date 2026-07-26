@@ -2199,6 +2199,7 @@ fn nightly_focus(
 pub fn butler_context(
     beliefs: &impl BeliefRepository,
     outcomes: &impl OutcomeRepository,
+    aliases: &impl endora_capabilities::TargetAliasRepository,
     capabilities: &dyn CapabilityRunner,
     clock: &impl Clock,
 ) -> Result<ButlerContext, AppError> {
@@ -2243,6 +2244,12 @@ pub fn butler_context(
         now: format_datetime_utc(clock.now().unix_millis()),
         conversation_summary: None,
         track_record: track_record(&recent),
+        // What the person has said these targets are really called (ADR 0039).
+        target_aliases: aliases
+            .aliases()?
+            .iter()
+            .map(endora_capabilities::TargetAlias::as_context)
+            .collect(),
     })
 }
 

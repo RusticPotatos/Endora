@@ -2,7 +2,7 @@
 
 use endora_kernel::{Decision, RepositoryError, Reversibility};
 
-pub use crate::domain::{AutonomyEnvelope, McpServer, McpTransport};
+pub use crate::domain::{AutonomyEnvelope, McpServer, McpTransport, TargetAlias};
 
 /// An optional **deep model** — a bigger/cloud AI the person configures for hard
 /// questions the local model can't handle well (like a phone escalating to a bigger
@@ -241,6 +241,28 @@ pub trait CapabilityConfigRepository {
     /// # Errors
     /// [`RepositoryError`] if the backend fails.
     fn set_confirm(&self, id: &str, confirm: bool) -> Result<(), RepositoryError>;
+}
+
+/// Stores what the person said a server's targets are really called (ADR 0039).
+pub trait TargetAliasRepository {
+    /// Every alias, so the turn can be grounded in all of them.
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if the backend fails or stored data is corrupt.
+    fn aliases(&self) -> Result<Vec<TargetAlias>, RepositoryError>;
+
+    /// Records one, replacing any earlier answer for the same server and wording — the
+    /// person may correct themselves, and the latest word wins.
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if the backend fails.
+    fn set_alias(&self, alias: &TargetAlias) -> Result<(), RepositoryError>;
+
+    /// Forgets one. Memory rights apply to what Endora knows about its tools too.
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if the backend fails.
+    fn forget_alias(&self, server: &str, said: &str) -> Result<(), RepositoryError>;
 }
 
 /// Persists the **MCP servers** the catalog draws tools from (ADR 0021). The stored
