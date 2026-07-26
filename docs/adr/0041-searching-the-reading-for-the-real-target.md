@@ -52,20 +52,20 @@ at. It always shows what it found; it retries only when exactly one thing matche
 - **Shortlist — always.** The failure result carries the names that resemble the request,
   instead of the whole reading. Copying from three lines is a different task from
   searching five kilobytes. Nothing acts, so this needs no threshold at all.
-- **Retry — only when unambiguous.** Exactly one candidate may contain **every** word the
-  call was aiming at. Two plausible names is not a search result, it is a guess, and a
-  guess that actuates something is precisely what [0024](0024-reversibility-bands.md)
-  exists to prevent.
+- **Retry — only when unambiguous.** One candidate must match **more of the request than
+  every other**. A tie at the top is not a search result, it is a coin flip, and a coin
+  flip that actuates something is precisely what [0024](0024-reversibility-bands.md)
+  exists to prevent. A single shared word counts only when nothing else in the reading
+  resembles the request at all — one word in common is a coincidence.
 
-Words the server **never uses** are excluded before that test (added the same day, from
-the first live run). "Turn on the guest bedroom left lamp" found `Guest Bedroom Left` and
-then refused to use it, because nothing in the house is called a *lamp* and the match was
-therefore not complete. The person's vocabulary is not the server's, and a word appearing
-nowhere in the reading cannot tell one candidate from another.
+**Ranking, not completeness** (corrected twice on the day of writing, both times live).
+The first rule demanded a candidate contain *every* word the call was aiming at. That
+looked stricter and was simply wrong: it made the decision hostage to whether some
+unrelated entity elsewhere happens to share a word with the request. "The guest bedroom
+left lamp" would not act on `Guest Bedroom Left` — matching three words of four — because
+a **living room lamp** exists in a different room.
 
-That stays safe because **uniqueness**, not completeness, is what makes a retry safe:
-"the garage lamp" also loses *lamp*, and is left with *garage*, which matches several
-things — so nothing is retried, exactly as before.
+What makes a retry safe was never completeness. It is that **nothing else comes close**.
 
 ### Pure text, so it belongs to no integration
 
