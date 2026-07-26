@@ -2126,6 +2126,39 @@ impl CapabilityRunner for McpRunner {
         (id != reader && self.find(&reader).is_some()).then_some(reader)
     }
 
+    fn read_back_input(&self, action_id: &str, action_input: &str) -> String {
+        const WHOLE: &str = "{}";
+        let Some(reader_id) = self.verifier(action_id) else {
+            return WHOLE.to_owned();
+        };
+        let Some((_, reader)) = self.find(&reader_id) else {
+            return WHOLE.to_owned();
+        };
+        // Whatever targeting arguments the READER also accepts, taken from the action's
+        // own input. Schema against schema — nothing here knows what an "area" is.
+        let (Some(schema), Ok(args)) = (
+            reader.input_schema.as_ref(),
+            serde_json::from_str::<Value>(action_input),
+        ) else {
+            return WHOLE.to_owned();
+        };
+        let (Some(props), Some(args)) = (
+            schema.get("properties").and_then(Value::as_object),
+            args.as_object(),
+        ) else {
+            return WHOLE.to_owned();
+        };
+        let scoped: serde_json::Map<String, Value> = args
+            .iter()
+            .filter(|(key, value)| props.contains_key(*key) && !value.is_null())
+            .map(|(key, value)| ((*key).clone(), (*value).clone()))
+            .collect();
+        if scoped.is_empty() {
+            return WHOLE.to_owned();
+        }
+        Value::Object(scoped).to_string()
+    }
+
     fn run(&self, id: &str, input_json: &str) -> Result<String, String> {
         let (conn, tool) = self
             .find(id)
@@ -2334,6 +2367,13 @@ impl CapabilityRunner for CompositeRunner {
     fn verifier(&self, id: &str) -> Option<String> {
         self.owner(id)?.verifier(id)
     }
+
+    fn read_back_input(&self, action_id: &str, action_input: &str) -> String {
+        self.owner(action_id).map_or_else(
+            || "{}".to_owned(),
+            |o| o.read_back_input(action_id, action_input),
+        )
+    }
 }
 
 /// A per-turn overlay that lifts an inner source's deny-by-default for tools the
@@ -2404,6 +2444,10 @@ impl CapabilityRunner for OpenerRunner {
 
     fn verifier(&self, id: &str) -> Option<String> {
         self.inner.verifier(id)
+    }
+
+    fn read_back_input(&self, action_id: &str, action_input: &str) -> String {
+        self.inner.read_back_input(action_id, action_input)
     }
 
     fn run(&self, id: &str, input_json: &str) -> Result<String, String> {
@@ -2488,6 +2532,10 @@ impl CapabilityRunner for ReversibleOnlyRunner {
 
     fn verifier(&self, id: &str) -> Option<String> {
         self.inner.verifier(id)
+    }
+
+    fn read_back_input(&self, action_id: &str, action_input: &str) -> String {
+        self.inner.read_back_input(action_id, action_input)
     }
 
     fn run(&self, id: &str, input_json: &str) -> Result<String, String> {
@@ -3143,6 +3191,20 @@ mod tests {
         }
     }
 
+    /// A tool that advertises the arguments it takes, so schema-against-schema logic
+    /// has something real to match.
+    fn schema_tool(name: &str, fields: &[&str]) -> McpToolInfo {
+        let props: serde_json::Map<String, Value> = fields
+            .iter()
+            .map(|f| ((*f).to_owned(), serde_json::json!({ "type": "string" })))
+            .collect();
+        McpToolInfo {
+            name: name.to_owned(),
+            description: format!("does {name}"),
+            input_schema: Some(serde_json::json!({ "type": "object", "properties": props })),
+        }
+    }
+
     #[test]
     fn mcp_runner_namespaces_tools_is_deny_by_default_and_routes() {
         let transport = FakeTransport {
@@ -3449,6 +3511,84 @@ mod tests {
         );
         // A reader never verifies itself.
         assert_eq!(mcp.verifier("home-assistant.GetLiveContext"), None);
+    }
+
+    #[test]
+    fn the_read_back_is_scoped_to_what_the_action_targeted() {
+        // The live failure: "turn the kitchen main off" read state back with no
+        // arguments, got every device in the house, and the butler answered about the
+        // GARAGE — the first thing in the dump that happened to be on.
+        //
+        // Home Assistant's GetLiveContext accepts name/domain/area filters, and the turn
+        // was passing none of them.
+        let mcp = McpRunner::connect_with_readers(vec![(
+            "home-assistant".to_owned(),
+            Box::new(FakeTransport {
+                tools: vec![
+                    schema_tool("HassTurnOff", &["name", "area", "domain"]),
+                    schema_tool("GetLiveContext", &["name", "area", "domain"]),
+                ],
+                healthy: true,
+            }) as Box<dyn McpClient>,
+            "GetLiveContext".to_owned(),
+        )]);
+
+        let scoped = mcp.read_back_input(
+            "home-assistant.HassTurnOff",
+            r#"{"area":"kitchen","name":"main"}"#,
+        );
+        let parsed: Value = serde_json::from_str(&scoped).unwrap();
+        assert_eq!(parsed["area"], "kitchen");
+        assert_eq!(parsed["name"], "main");
+    }
+
+    #[test]
+    fn a_reader_only_gets_arguments_it_understands() {
+        // Schema against schema: an argument the reader does not accept must not be
+        // forwarded, or the read-back fails and the action goes unverified.
+        let mcp = McpRunner::connect_with_readers(vec![(
+            "home-assistant".to_owned(),
+            Box::new(FakeTransport {
+                tools: vec![
+                    schema_tool("HassTurnOff", &["name", "brightness"]),
+                    schema_tool("GetLiveContext", &["name"]),
+                ],
+                healthy: true,
+            }) as Box<dyn McpClient>,
+            "GetLiveContext".to_owned(),
+        )]);
+
+        let scoped = mcp.read_back_input(
+            "home-assistant.HassTurnOff",
+            r#"{"name":"kitchen","brightness":40}"#,
+        );
+        let parsed: Value = serde_json::from_str(&scoped).unwrap();
+        assert_eq!(parsed["name"], "kitchen");
+        assert!(
+            parsed.get("brightness").is_none(),
+            "an argument the reader can't take was forwarded: {scoped}"
+        );
+    }
+
+    #[test]
+    fn an_untargeted_action_still_reads_the_whole_state() {
+        // No overlap, no scoping — the whole reading, which is the old behaviour and
+        // the right fallback.
+        let mcp = McpRunner::connect_with_readers(vec![(
+            "home-assistant".to_owned(),
+            Box::new(FakeTransport {
+                tools: vec![
+                    schema_tool("HassTurnOff", &["name"]),
+                    schema_tool("GetLiveContext", &["name"]),
+                ],
+                healthy: true,
+            }) as Box<dyn McpClient>,
+            "GetLiveContext".to_owned(),
+        )]);
+        assert_eq!(
+            mcp.read_back_input("home-assistant.HassTurnOff", "{}"),
+            "{}"
+        );
     }
 
     #[test]
