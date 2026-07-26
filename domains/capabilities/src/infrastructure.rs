@@ -2777,6 +2777,130 @@ impl CapabilityRunner for ReversibleOnlyRunner {
     }
 }
 
+/// Searches a server's own reading for the target a call failed to name, and retries when
+/// exactly one thing matches (ADR 0041).
+///
+/// A failed action already causes Endora to read the state back (ADR 0034), so the list of
+/// names that really exist is in hand at the moment it is most useful. Until now that
+/// whole reading was handed to the model, which then had to find one line in it and copy
+/// it exactly. Measured across fourteen consecutive attempts at a light called
+/// `Kitchen Table` — with `names: Kitchen Table` in the reading every time — it never once
+/// sent that string. It permuted the *arguments* instead: `domain` flipped between `light`
+/// and `switch`, an invented floor, the noun moved into `device_class`.
+///
+/// So the search runs here, in code:
+///
+/// - **always**, a shortlist of resembling names replaces "here is the whole house", so
+///   the model copies from three lines instead of searching five kilobytes;
+/// - **only when exactly one** candidate contains every word the call was aiming at, the
+///   call is retried against it. Two plausible names is a guess, and a guess that actuates
+///   something is what ADR 0024 exists to prevent.
+///
+/// Recovery-only, like [`AliasRunner`] and for the same reasons: it cannot hijack a
+/// working call, it is bounded, and it says what it did so the model, the outcome record
+/// and the person all see the substitution.
+///
+/// It never widens a call. Kind filters are kept; only scalars the real name already
+/// contains are dropped, because `area: "kitchen"` adds nothing to `name: "Kitchen Table"`.
+pub struct TargetSearchRunner {
+    inner: Arc<dyn CapabilityRunner + Send + Sync>,
+}
+
+/// How many places a real name may be tried. The call does not say which of its fields is
+/// the name — that would be per-server knowledge — so a couple of placements are tried and
+/// the first that works wins. A placement that is wrong fails to match and changes
+/// nothing, which is why searching this way is safe.
+const MAX_PLACEMENTS: usize = 3;
+
+impl TargetSearchRunner {
+    /// Wraps `inner` so failed calls search its own reading before giving up.
+    #[must_use]
+    pub fn new(inner: Arc<dyn CapabilityRunner + Send + Sync>) -> Self {
+        Self { inner }
+    }
+
+    /// This server's state as it is right now, via the tool the person nominated as its
+    /// reader (ADR 0038). `None` when nobody nominated one — the honest silence, and the
+    /// reason this whole mechanism needs no per-server code.
+    fn reading(&self, id: &str) -> Option<String> {
+        let verifier = self.inner.verifier(id)?;
+        if verifier == id {
+            return None; // a read that failed has nothing to look itself up in
+        }
+        self.inner.run(&verifier, "{}").ok()
+    }
+
+    /// The fields a real name could be placed in: those holding a fragment of it. Most
+    /// specific first, then alphabetical, so the order is deterministic.
+    fn placements(input_json: &str, name: &str) -> Vec<String> {
+        let lowered = name.to_lowercase();
+        let mut fields: Vec<(usize, String)> = crate::target_search::target_fields(input_json)
+            .into_iter()
+            .filter(|(_, value)| !value.eq_ignore_ascii_case(name))
+            .filter(|(_, value)| crate::target_search::is_fragment_of(value, &lowered))
+            .map(|(field, value)| (value.split_whitespace().count(), field))
+            .collect();
+        fields.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+        fields.into_iter().map(|(_, field)| field).collect()
+    }
+}
+
+impl CapabilityRunner for TargetSearchRunner {
+    fn available(&self) -> Vec<crate::application::CapabilitySpec> {
+        self.inner.available()
+    }
+
+    fn decision(&self, id: &str) -> Option<Decision> {
+        self.inner.decision(id)
+    }
+
+    fn verifier(&self, id: &str) -> Option<String> {
+        self.inner.verifier(id)
+    }
+
+    fn read_back_input(&self, action_id: &str, action_input: &str) -> String {
+        self.inner.read_back_input(action_id, action_input)
+    }
+
+    fn run(&self, id: &str, input_json: &str) -> Result<String, String> {
+        let first = self.inner.run(id, input_json);
+        let Err(original) = first else {
+            return first;
+        };
+        let Some(reading) = self.reading(id) else {
+            return Err(original);
+        };
+        let words = crate::target_search::target_words(input_json);
+        let found = crate::target_search::candidates(&reading, &words);
+        // Only an unambiguous match may be acted on. Everything else is shown.
+        let Some(best) = crate::target_search::only_real_match(&found) else {
+            return Err(format!(
+                "{original}{}",
+                crate::target_search::shortlist(&found)
+            ));
+        };
+        for field in Self::placements(input_json, &best.value)
+            .into_iter()
+            .take(MAX_PLACEMENTS)
+        {
+            let retry = crate::target_search::retarget(input_json, &field, &best.value);
+            if let Ok(out) = self.inner.run(id, &retry) {
+                // Say what was substituted, exactly as the alias recovery does. Nothing
+                // about this is hidden from the model, the record, or the person.
+                return Ok(format!(
+                    "(The first attempt failed. Endora looked up what actually exists and \
+                     retried against '{}'.)\n{out}",
+                    best.value
+                ));
+            }
+        }
+        Err(format!(
+            "{original}{}",
+            crate::target_search::shortlist(&found)
+        ))
+    }
+}
+
 /// Hides the capabilities the person has **withdrawn** — turned off — from every
 /// source, and refuses to run them (ADR 0040).
 ///
@@ -4423,5 +4547,165 @@ mod tests {
             "ran home.HassTurnOn"
         );
         assert_eq!(runner.decision("home.HassTurnOn"), Some(Decision::Confirm));
+    }
+
+    /// A server that behaves like the live one: it matches a name only when it is exactly
+    /// right, and it has a reader that reports what exists.
+    struct House {
+        calls: std::sync::Mutex<Vec<String>>,
+    }
+
+    impl CapabilityRunner for House {
+        fn available(&self) -> Vec<crate::application::CapabilitySpec> {
+            Vec::new()
+        }
+        fn decision(&self, _id: &str) -> Option<Decision> {
+            Some(Decision::Act)
+        }
+        fn verifier(&self, id: &str) -> Option<String> {
+            (id != "home.GetLiveContext").then(|| "home.GetLiveContext".to_owned())
+        }
+        fn read_back_input(&self, _id: &str, _input: &str) -> String {
+            "{}".to_owned()
+        }
+        fn run(&self, id: &str, input: &str) -> Result<String, String> {
+            if id == "home.GetLiveContext" {
+                return Ok(
+                    "{\"result\": \"- names: Kitchen Main Light\\n  domain: light\\n\
+                           - names: Kitchen Table\\n  domain: light\\n\
+                           - names: Garage Main\\n  domain: light\\n\"}"
+                        .to_owned(),
+                );
+            }
+            self.calls.lock().unwrap().push(input.to_owned());
+            let v: Value = serde_json::from_str(input).unwrap();
+            // Matches by name, exactly — like the real thing.
+            if v.get("name").and_then(Value::as_str) == Some("Kitchen Table") {
+                return Ok("turned on Kitchen Table".to_owned());
+            }
+            Err("MatchFailedError no_match_reason=NAME".to_owned())
+        }
+    }
+
+    fn house() -> (Arc<House>, TargetSearchRunner) {
+        let inner = Arc::new(House {
+            calls: std::sync::Mutex::new(Vec::new()),
+        });
+        let runner =
+            TargetSearchRunner::new(Arc::clone(&inner) as Arc<dyn CapabilityRunner + Send + Sync>);
+        (inner, runner)
+    }
+
+    #[test]
+    fn it_finds_the_name_the_model_spent_fourteen_attempts_failing_to_guess() {
+        // The live failure, end to end: the model asks for "table" in the kitchen, the
+        // server refuses, and the name it needed was in the reading all along.
+        let (inner, runner) = house();
+        let out = runner
+            .run(
+                "home.HassTurnOn",
+                r#"{"name":"table","area":"kitchen","domain":["light"]}"#,
+            )
+            .expect("the search did not recover the call");
+        assert!(out.contains("turned on Kitchen Table"), "{out}");
+        assert!(
+            out.contains("Kitchen Table"),
+            "the substitution is disclosed: {out}"
+        );
+        let calls = inner.calls.lock().unwrap();
+        assert!(
+            calls.iter().any(|c| c.contains("Kitchen Table")),
+            "never retried with the real name: {calls:?}"
+        );
+    }
+
+    #[test]
+    fn a_working_call_is_never_touched() {
+        // Recovery only. It must not be able to hijack a call that was already right.
+        let (inner, runner) = house();
+        let out = runner
+            .run("home.HassTurnOn", r#"{"name":"Kitchen Table"}"#)
+            .unwrap();
+        assert_eq!(out, "turned on Kitchen Table", "rewrote a working call");
+        assert_eq!(
+            inner.calls.lock().unwrap().len(),
+            1,
+            "retried unnecessarily"
+        );
+    }
+
+    #[test]
+    fn an_ambiguous_search_shows_the_names_and_acts_on_none_of_them() {
+        // "kitchen" resembles two lights. Picking one would be a coin flip that actuates
+        // something, so it hands over the shortlist and stops.
+        let (inner, runner) = house();
+        let err = runner
+            .run("home.HassTurnOn", r#"{"area":"kitchen"}"#)
+            .expect_err("acted on an ambiguous match");
+        assert!(err.contains("Kitchen Table"), "{err}");
+        assert!(err.contains("Kitchen Main Light"), "{err}");
+        assert!(err.contains("EXACTLY"), "does not say to copy it: {err}");
+        assert_eq!(
+            inner.calls.lock().unwrap().len(),
+            1,
+            "retried on a guess: {:?}",
+            inner.calls.lock().unwrap()
+        );
+    }
+
+    #[test]
+    fn nothing_resembling_it_leaves_the_original_failure_alone() {
+        let (_, runner) = house();
+        let err = runner
+            .run("home.HassTurnOn", r#"{"name":"greenhouse"}"#)
+            .expect_err("invented a match");
+        assert!(err.contains("MatchFailedError"), "{err}");
+        assert!(
+            !err.contains("[candidates]"),
+            "offered nothing as something: {err}"
+        );
+    }
+
+    #[test]
+    fn a_server_with_no_nominated_reader_searches_nothing() {
+        // No reader means no reading, which means no candidates — the same honest silence
+        // ADR 0038 chose, and the reason this needs no per-server code.
+        struct Blind;
+        impl CapabilityRunner for Blind {
+            fn available(&self) -> Vec<crate::application::CapabilitySpec> {
+                Vec::new()
+            }
+            fn decision(&self, _id: &str) -> Option<Decision> {
+                Some(Decision::Act)
+            }
+            fn verifier(&self, _id: &str) -> Option<String> {
+                None
+            }
+            fn read_back_input(&self, _id: &str, _input: &str) -> String {
+                "{}".to_owned()
+            }
+            fn run(&self, _id: &str, _input: &str) -> Result<String, String> {
+                Err("nope".to_owned())
+            }
+        }
+        let runner = TargetSearchRunner::new(Arc::new(Blind));
+        assert_eq!(
+            runner.run("x.Y", r#"{"name":"table"}"#).unwrap_err(),
+            "nope"
+        );
+    }
+
+    #[test]
+    fn the_retry_is_bounded_however_many_fields_the_call_carried() {
+        let (inner, runner) = house();
+        let _ = runner.run(
+            "home.HassTurnOn",
+            r#"{"name":"table","area":"kitchen","floor":"kitchen table","zone":"table"}"#,
+        );
+        assert!(
+            inner.calls.lock().unwrap().len() <= 1 + MAX_PLACEMENTS,
+            "unbounded retrying: {:?}",
+            inner.calls.lock().unwrap()
+        );
     }
 }
