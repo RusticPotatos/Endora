@@ -33,7 +33,7 @@ pub struct Candidate {
     /// `Kitchen Main Light` and `Kitchen Main Light LED` both contain all three words of
     /// "kitchen main light", so they score identically — but the first is exactly what
     /// was asked for and the second is that plus something else. Leftover words are how
-    /// a tight match is told from a loose one (ADR 0048).
+    /// a tight match is told from a loose one (ADR 0041).
     pub extra: usize,
 }
 
@@ -62,7 +62,7 @@ pub fn target_words(input_json: &str) -> Vec<String> {
 }
 
 /// The words a call was aiming at, counting **kind filters the service does not recognise**
-/// as part of the target rather than as categories (ADR 0046).
+/// as part of the target rather than as categories (ADR 0041).
 ///
 /// `target_words` skips arrays for a good reason — `domain: ["light"]` restricts which
 /// sorts of thing count, it does not point at one. But that reasoning only holds while the
@@ -194,7 +194,7 @@ pub fn only_real_match(found: &[Candidate]) -> Option<&Candidate> {
     // A tie is a guess — but two candidates only tie when they match the request equally
     // well AND account for their own names equally well. `Kitchen Main Light` and
     // `Kitchen Main Light LED` are not tied: one is what was asked for, the other is that
-    // plus a part nobody mentioned (ADR 0048).
+    // plus a part nobody mentioned (ADR 0041).
     let equally_good = found
         .iter()
         .filter(|c| c.matched == best.matched && c.extra == best.extra)

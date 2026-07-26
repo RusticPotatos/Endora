@@ -2832,7 +2832,7 @@ pub trait NativeChannel: Send + Sync {
     /// channel cannot express that particular tool — the caller falls back.
     fn act(&self, tool: &str, id: &str) -> Option<Result<String, String>>;
 
-    /// Whether `tool` could actually operate this thing (ADR 0047).
+    /// Whether `tool` could actually operate this thing (ADR 0041).
     ///
     /// Direct reach sees everything a service holds, which includes things that are not
     /// controls: diagnostics, configuration entries, connection indicators. Those share
@@ -2865,7 +2865,7 @@ pub trait NativeChannel: Send + Sync {
     }
 
     /// The words this service uses as **categories** — the sorts of thing it has, as
-    /// opposed to the names of particular things (ADR 0046).
+    /// opposed to the names of particular things (ADR 0041).
     ///
     /// Empty by default and empty for any service Endora cannot ask, in which case
     /// nothing downstream changes: guessing at what counts as a category would make an
@@ -3110,7 +3110,7 @@ impl CapabilityRunner for TargetSearchRunner {
             return Err(original);
         };
         // A kind filter the service has never used as a category is not a category — it
-        // is part of what the person named (ADR 0046). Only a service that can say so
+        // is part of what the person named (ADR 0041). Only a service that can say so
         // changes anything here.
         let words = match self.channel(id).and_then(|c| c.categories().ok()) {
             Some(known) if !known.is_empty() => {
@@ -3121,7 +3121,7 @@ impl CapabilityRunner for TargetSearchRunner {
         let found = crate::target_search::candidates(&reading, &words);
         // Only an unambiguous match may be acted on. Everything else is shown — unless
         // the tie is only between a thing and its own diagnostics, which is not a real
-        // ambiguity (ADR 0047).
+        // ambiguity (ADR 0041).
         let settled = crate::target_search::only_real_match(&found)
             .or_else(|| self.only_one_that_can_be_acted_on(id, &found));
         let Some(best) = settled else {
