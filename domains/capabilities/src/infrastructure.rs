@@ -2474,6 +2474,108 @@ impl CapabilityRunner for CompositeRunner {
     }
 }
 
+/// Retries a **failed** call once with the person's confirmed target aliases applied
+/// (ADR 0039).
+///
+/// Endora asks what a target is really called; the answer used to reach the model as
+/// context and nothing more. Measured, that does not work: with `"table" means "Kitchen
+/// Table"` in its prompt, the model still sent `name: "table"` and Home Assistant still
+/// answered `no_match_reason=NAME`. Grounding is advice, and this model takes advice
+/// about a third of the time.
+///
+/// So the alias becomes deterministic — but only as **recovery**, never as pre-emption:
+///
+/// - it fires only after a call has already **failed**, so it can never hijack a working
+///   one or redirect an action that was about to hit the right thing;
+/// - it uses only what the person **confirmed**, which is the authoritative source in
+///   ADR 0038's ranking;
+/// - it retries **once**;
+/// - and it **says so** in the result, so the substitution is visible to the model, to
+///   the outcome record, and to the person in the disclosure.
+///
+/// That last point is what keeps it honest. The model's mistake still happened, is still
+/// recorded, and is still measurable — the eval sees the same failure it always did. What
+/// changes is that the person's light comes on.
+pub struct AliasRunner {
+    inner: Arc<dyn CapabilityRunner + Send + Sync>,
+    /// `(server, said, means)`, as the person confirmed them.
+    aliases: Vec<(String, String, String)>,
+}
+
+impl AliasRunner {
+    /// Wraps `inner` with the confirmed aliases.
+    #[must_use]
+    pub fn new(
+        inner: Arc<dyn CapabilityRunner + Send + Sync>,
+        aliases: Vec<(String, String, String)>,
+    ) -> Self {
+        Self { inner, aliases }
+    }
+
+    /// The input with any confirmed alias applied, or `None` when nothing matched.
+    ///
+    /// Matches a whole string **value** only — never a fragment, and never a field name.
+    /// Replacing inside a value would let `"table"` rewrite `"comfortable"`, and a person
+    /// who said what one thing is called has not licensed edits to everything containing
+    /// that word.
+    fn apply(&self, id: &str, input_json: &str) -> Option<String> {
+        let server = id.split_once('.').map(|(s, _)| s)?;
+        let mut args: Value = serde_json::from_str(input_json).ok()?;
+        let obj = args.as_object_mut()?;
+        let mut changed = false;
+        for value in obj.values_mut() {
+            let Some(text) = value.as_str() else { continue };
+            let hit = self
+                .aliases
+                .iter()
+                .find(|(srv, said, _)| srv == server && said.eq_ignore_ascii_case(text.trim()));
+            if let Some((_, _, means)) = hit {
+                *value = Value::String(means.clone());
+                changed = true;
+            }
+        }
+        changed.then(|| args.to_string())
+    }
+}
+
+impl CapabilityRunner for AliasRunner {
+    fn available(&self) -> Vec<crate::application::CapabilitySpec> {
+        self.inner.available()
+    }
+
+    fn decision(&self, id: &str) -> Option<Decision> {
+        self.inner.decision(id)
+    }
+
+    fn verifier(&self, id: &str) -> Option<String> {
+        self.inner.verifier(id)
+    }
+
+    fn read_back_input(&self, action_id: &str, action_input: &str) -> String {
+        self.inner.read_back_input(action_id, action_input)
+    }
+
+    fn run(&self, id: &str, input_json: &str) -> Result<String, String> {
+        let first = self.inner.run(id, input_json);
+        let Err(original) = first else {
+            return first;
+        };
+        let Some(retry_input) = self.apply(id, input_json) else {
+            return Err(original);
+        };
+        match self.inner.run(id, &retry_input) {
+            // Say what was substituted. The model answers from this, the outcome record
+            // keeps it, and the person sees it — nothing about the recovery is hidden.
+            Ok(out) => Ok(format!(
+                "(Endora retried using the name you gave it: {retry_input}. The first \
+                 attempt failed.)\n{out}"
+            )),
+            // The alias did not help either; the original failure is the honest answer.
+            Err(_) => Err(original),
+        }
+    }
+}
+
 /// A per-turn overlay that lifts an inner source's deny-by-default for tools the
 /// person has **opened** (ADR 0024). An opened tool moves from
 /// [`Block`](Decision::Block) to [`Confirm`](Decision::Confirm) — confirm-each-use —
@@ -3566,6 +3668,115 @@ mod tests {
             "create_event({})"
         );
         assert!(composite.run("missing", "{}").is_err());
+    }
+
+    #[test]
+    fn a_confirmed_alias_recovers_a_call_that_failed_on_the_name() {
+        // The live case, after hours of it: the entity is `Kitchen Table`, the model kept
+        // sending `name: "table"`, and Home Assistant kept answering
+        // no_match_reason=NAME. With the alias in its prompt it STILL sent "table" —
+        // grounding is advice, and this model takes advice about a third of the time.
+        struct OnlyKnowsTheRealName;
+        impl CapabilityRunner for OnlyKnowsTheRealName {
+            fn available(&self) -> Vec<crate::application::CapabilitySpec> {
+                vec![crate::application::CapabilitySpec {
+                    id: "home-assistant.HassTurnOn".to_owned(),
+                    description: String::new(),
+                    configured: true,
+                    autonomous: true,
+                    input_schema: None,
+                    reversibility: Reversibility::Irreversible,
+                }]
+            }
+            fn run(&self, _id: &str, input: &str) -> Result<String, String> {
+                if input.contains("Kitchen Table") {
+                    return Ok("action_done".to_owned());
+                }
+                Err("no_match_reason=NAME".to_owned())
+            }
+        }
+
+        let runner = AliasRunner::new(
+            Arc::new(OnlyKnowsTheRealName),
+            vec![(
+                "home-assistant".to_owned(),
+                "table".to_owned(),
+                "Kitchen Table".to_owned(),
+            )],
+        );
+
+        let out = runner
+            .run("home-assistant.HassTurnOn", r#"{"name":"table"}"#)
+            .expect("the alias recovers it");
+        assert!(out.contains("action_done"));
+        // And it says what it did — the substitution is visible to the model, the outcome
+        // record and the person. Recovering silently would hide the model's mistake.
+        assert!(
+            out.contains("retried") && out.contains("Kitchen Table"),
+            "the retry was silent: {out}"
+        );
+    }
+
+    #[test]
+    fn an_alias_never_touches_a_call_that_worked() {
+        // Recovery, never pre-emption: it fires only after a failure, so it can never
+        // redirect a call that was about to hit the right thing.
+        struct AlwaysWorks;
+        impl CapabilityRunner for AlwaysWorks {
+            fn available(&self) -> Vec<crate::application::CapabilitySpec> {
+                Vec::new()
+            }
+            fn run(&self, _id: &str, input: &str) -> Result<String, String> {
+                Ok(format!("ran with {input}"))
+            }
+        }
+        let runner = AliasRunner::new(
+            Arc::new(AlwaysWorks),
+            vec![(
+                "home-assistant".to_owned(),
+                "table".to_owned(),
+                "Kitchen Table".to_owned(),
+            )],
+        );
+        let out = runner
+            .run("home-assistant.HassTurnOn", r#"{"name":"table"}"#)
+            .unwrap();
+        assert!(
+            out.contains(r#""table""#),
+            "a working call was rewritten: {out}"
+        );
+        assert!(!out.contains("Kitchen Table"));
+    }
+
+    #[test]
+    fn an_alias_matches_a_whole_value_not_a_fragment() {
+        // "table" must not rewrite "comfortable". Saying what one thing is called is not
+        // licence to edit every value containing that word.
+        struct Fails;
+        impl CapabilityRunner for Fails {
+            fn available(&self) -> Vec<crate::application::CapabilitySpec> {
+                Vec::new()
+            }
+            fn run(&self, _id: &str, _input: &str) -> Result<String, String> {
+                Err("nope".to_owned())
+            }
+        }
+        let runner = AliasRunner::new(
+            Arc::new(Fails),
+            vec![(
+                "home-assistant".to_owned(),
+                "table".to_owned(),
+                "Kitchen Table".to_owned(),
+            )],
+        );
+        // No whole-value match, so no retry input exists and the original error stands.
+        assert_eq!(
+            runner.run(
+                "home-assistant.HassTurnOn",
+                r#"{"name":"comfortable chair"}"#
+            ),
+            Err("nope".to_owned())
+        );
     }
 
     #[test]
