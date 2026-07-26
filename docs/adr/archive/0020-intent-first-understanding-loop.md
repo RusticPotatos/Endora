@@ -4,7 +4,7 @@
 
 Accepted (2026-07-20). **Supersedes the goal-centric framing** of earlier ADRs where it
 conflicts. The canonical statement of direction is
-[docs/direction-reset.md](../direction-reset.md); this ADR records the decision and its
+[docs/direction-reset.md](../../direction-reset.md); this ADR records the decision and its
 architectural consequences. The invariant of
 [ADR 0005](0005-models-propose-policy-authorizes.md) / [ADR 0010](0010-autonomy-model.md)
 (*models propose, policy authorizes*) is reaffirmed, not changed.

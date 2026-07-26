@@ -1,8 +1,8 @@
-//! A best-effort lookup against the **community MCP registry** (ADR 0021).
+//! A best-effort lookup against the **community MCP registry** (ADR 0054).
 //!
 //! Discovery only — it never installs anything. Results are suggestions the person
 //! reviews and edits before registering, and anything registered is still
-//! deny-by-default (its tools are blocked until allowed, ADR 0024).
+//! deny-by-default (its tools are blocked until allowed, ADR 0051).
 //!
 //! Deliberately lenient about the response shape: it accepts a bare array or an
 //! object wrapping one, and reads whatever name/description/link it can find. A

@@ -1,4 +1,4 @@
-//! A **synchronous** stdio MCP client (ADR 0021).
+//! A **synchronous** stdio MCP client (ADR 0054).
 //!
 //! Speaks the MCP stdio transport — newline-delimited JSON-RPC 2.0 — to a local
 //! subprocess: `initialize` + `notifications/initialized`, then `tools/list` and
@@ -25,7 +25,7 @@ use crate::infrastructure::{McpClient, McpToolInfo};
 
 /// The MCP protocol revision this client speaks.
 const PROTOCOL_VERSION: &str = "2024-11-05";
-/// How long to wait for any single server reply before giving up (ADR 0021 health:
+/// How long to wait for any single server reply before giving up (ADR 0054 health:
 /// a hung server fails this call rather than hanging the turn).
 const CALL_TIMEOUT: Duration = Duration::from_secs(20);
 /// A longer budget for the initial `initialize` reply: a `npx …` server downloads
@@ -204,7 +204,7 @@ fn assist_targets(list: &Value) -> Vec<String> {
 /// like me to perform an action?"* — after already having performed it.
 ///
 /// This describes **what the tool returned**, not what the butler should say. The
-/// butler still writes its own reply in its own voice; ADR 0028's objection is to
+/// butler still writes its own reply in its own voice; ADR 0053's objection is to
 /// replacing that voice with canned strings, not to a tool adapter making its own
 /// output legible — which is exactly what the built-in capabilities' `summarize`
 /// already does. A model cannot be grounded in a result it cannot parse.
@@ -339,7 +339,7 @@ impl Drop for StdioIo {
     }
 }
 
-/// A connected local MCP server, spoken to over stdio (ADR 0021). Constructing one
+/// A connected local MCP server, spoken to over stdio (ADR 0054). Constructing one
 /// spawns the subprocess and completes the handshake; a shared [`Mutex`] serializes
 /// the request/response cycle so it is `Send + Sync` behind [`McpClient`].
 pub struct StdioMcpClient {

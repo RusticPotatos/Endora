@@ -22,7 +22,7 @@ tagged release.
   every time; only this one field was wrong. `Hass*` calls now drop a `name` that is
   a device kind when an area is given. **Only** when an area is given — without one,
   dropping it would widen "turn on the lights" to the whole house, so it is left to
-  fail honestly instead (ADR 0024).
+  fail honestly instead (ADR 0051).
 - **Belief de-duplication survives rephrasing.** Found by the first live run of the
   new understanding eval: `similar()` only caught near-verbatim repeats, so a
   rephrased belief was filed as a second one and duplicates accumulated into every
@@ -33,9 +33,9 @@ tagged release.
 - **Constitution §9 amended** (adopted by the maintainer, 2026-07-25; deliberation
   recorded in [docs/proposals/constitution-amendment-section-9.md](docs/proposals/constitution-amendment-section-9.md)).
   The clause described the `Direction → Assumption → Experiment → Observation →
-  Reflection` loop, every step of which was deleted by ADR 0029 — a constitutional
+  Reflection` loop, every step of which was deleted by ADR 0052 — a constitutional
   limit governing machinery that no longer existed. It now describes the loop Endora
-  actually runs, and states explicitly what had been true in code since ADR 0020 §3
+  actually runs, and states explicitly what had been true in code since ADR 0052 §3
   but unstated constitutionally: Endora forms and revises **its own model of the
   person** without per-item approval, bounded by remaining visible, correctable and
   able to expire. Adaptation of Endora's **processes** is still proposed, not
@@ -44,7 +44,7 @@ tagged release.
 
 ### Added
 
-- **"Evidence verifies" is implemented** ([ADR 0034](docs/adr/0034-evidence-verifies.md)).
+- **"Evidence verifies" is implemented** ([ADR 0053](docs/adr/0053-honesty-about-what-it-did.md)).
   The architecture principle is *models propose, policy authorizes, capabilities
   execute, **evidence verifies**, memory learns* — and the fourth clause had **zero
   lines of code**. The turn proposed, authorized, executed, and then narrated, with no
@@ -61,7 +61,7 @@ tagged release.
   (policy-neutral: both map to `Act`).
 
   This does not stop the model picking the wrong tool — it means you find out.
-- **Read-back verification and ambiguity surfacing** (ADR 0034 layer 1). A capability
+- **Read-back verification and ambiguity surfacing** (ADR 0053 layer 1). A capability
   can now name the one that *observes what it changes*; after an actuation the turn
   runs it and the model answers from the **observation**, with an explicit instruction
   that the observation wins if it disagrees with the tool's claim. One mapping per
@@ -82,7 +82,7 @@ tagged release.
   hardcoded function into `crates/endora-infrastructure/src/eval.rs` as declarative
   data — a name, a tier, a probe, and a check — so adding one is adding a struct
   literal. The battery grew from 24 cases to **34**, including the case that matters
-  most for ADR 0028 (`relay:failure-is-honest`: with a tool error in front of it, the
+  most for ADR 0053 (`relay:failure-is-honest`: with a tool error in front of it, the
   model must not narrate success), plus candour, register and conversation-ending
   cases, and more understanding cases.
 - **`evaluate_repeated` reports the spread instead of hiding it.** A single run is a
@@ -98,7 +98,7 @@ tagged release.
   27–31, **spread 4** — the resolution of the instrument, and the reason the earlier
   "20/23 → 23/24" reading was noise rather than improvement. It also surfaced that
   **`relay:failure-is-honest` fails 1 run in 3**: with a tool error in its immediate
-  context the model still sometimes narrates success. That is the risk ADR 0028
+  context the model still sometimes narrates success. That is the risk ADR 0053
   accepted when it removed the deterministic honesty nets, now quantified instead of
   assumed.
 - **No personal data in the battery.** The cases are synthetic, modelled on observed
@@ -115,12 +115,12 @@ tagged release.
   property of your machine, not of the project: `make deploy` still targets the local
   Docker daemon out of the box, so a fresh clone works with no setup, and putting
   `DOCKER_CONTEXT = nas` in `local.mk` makes an always-on box your personal default.
-- **Beliefs decay and expire** ([ADR 0032](docs/adr/0032-beliefs-decay-and-expire.md)).
+- **Beliefs decay and expire** ([ADR 0052](docs/adr/0052-what-it-knows-about-you.md)).
   `BeliefStatus::Expired` existed, round-tripped through storage, and was **never set
   by any code path** — the direction reset's "nothing is assumed permanently" was a
   promise nothing kept. Confidence now steps down one level per elapsed half-life
   since a belief was last affirmed, and fades out entirely below `low`. Half-lives
-  are per kind and encode ADR 0020's own thesis: intent and values change slowly (365
+  are per kind and encode ADR 0052's own thesis: intent and values change slowly (365
   days), a frustration or stressor usually does not (45). Affirming resets the clock.
   Decay is derived from the stored timestamp, so understanding is honest the moment
   it is read; the nightly loop additionally persists expiry and reports each let-go
@@ -128,7 +128,7 @@ tagged release.
   reporting **stored** confidence — the memory right is to see what Endora actually
   holds — while the console shows the current reading.
 - **An L3 "understanding" tier in the model fitness battery**
-  ([ADR 0030](docs/adr/0030-measuring-understanding.md)) — does the butler form
+  ([ADR 0055](docs/adr/0055-the-model-layer.md)) — does the butler form
   beliefs from real evidence, stay quiet when a turn reveals nothing, avoid re-filing
   what it knows, and refrain from overclaiming confidence. Scoring is lexical and
   unit-tested rather than model-judged, which would be circular and unauditable.
@@ -140,9 +140,9 @@ tagged release.
 
 ### Removed
 
-- **The goal tracker is gone** ([ADR 0029](docs/adr/0029-delete-the-goal-tracker.md),
-  superseding [ADR 0020](docs/adr/0020-intent-first-understanding-loop.md) §4).
-  ADR 0020 reset the direction to an autonomous personal intelligence but chose to
+- **The goal tracker is gone** ([ADR 0052](docs/adr/0052-what-it-knows-about-you.md),
+  superseding [ADR 0052](docs/adr/0052-what-it-knows-about-you.md) §4).
+  ADR 0052 reset the direction to an autonomous personal intelligence but chose to
   leave the goal machinery in place "as an optional expression of intent". It never
   became optional: it stayed 12 of 28 tables, ~25 of 60 routes, and the bulk of what
   the butler's context was assembled from — and the system prompt ended up telling
@@ -161,7 +161,7 @@ tagged release.
 
 ### Changed
 
-- **Proactive check-ins are agentic** ([ADR 0031](docs/adr/0031-agentic-proactivity.md)).
+- **Proactive check-ins are agentic** ([ADR 0056](docs/adr/0056-how-it-behaves-toward-you.md)).
   The schedule is now a **budget, not a trigger**: deterministic code owns how often
   the butler may speak (minimum interval, and never on top of someone who just
   spoke), and the butler decides whether it has anything worth saying — with the
@@ -180,11 +180,11 @@ tagged release.
 - **The butler no longer files anything for later approval.** It converses and acts
   through the policy boundary as it goes. Not a loosening — every action still passes
   deterministic authorization — but the intermediate "propose a record, review it
-  later" step is gone, which is the friction ADR 0020 §3 set out to remove.
+  later" step is gone, which is the friction ADR 0052 §3 set out to remove.
 - **The system prompt is rewritten** now the contradiction it was policing is gone:
   the proposal schema and the instructions that existed only to fight it are deleted,
   and an explicit rule to report a failed or blocked skill plainly takes their place.
-- **The ADR 0028 cutover is complete.** `daily_brief`, `run_due_checkin` and
+- **The ADR 0053 cutover is complete.** `daily_brief`, `run_due_checkin` and
   `run_due_nightly_loop` moved onto the single tool-calling conversation; the old
   two-pass `gather_with_skills` engine, `ButlerContext::tool_result` and
   `ButlerContext::synthesize` are deleted. Tool results now ride in the conversation
@@ -214,7 +214,7 @@ daily brief; an evolving, grounded persona and hospitality; the model upgraded t
 
 - **Direction reset — intent-first understanding** (canonical:
   [docs/direction-reset.md](docs/direction-reset.md); decision:
-  [ADR 0020](docs/adr/0020-intent-first-understanding-loop.md)): Endora had drifted into
+  [ADR 0052](docs/adr/0052-what-it-knows-about-you.md)): Endora had drifted into
   a goal tracker; it is now an **autonomous personal intelligence** whose job is to
   **understand intent**. It maintains a living **Understanding** — beliefs about you
   (intent, values, patterns, motivations, frustrations…), each with the **evidence**
@@ -237,7 +237,7 @@ daily brief; an evolving, grounded persona and hospitality; the model upgraded t
 ### Added
 
 - **Configure your skills — settings & secrets** (second slice of
-  [ADR 0021](docs/adr/0021-capability-catalog-and-mcp-host.md)): skills that need
+  [ADR 0054](docs/adr/0054-other-peoples-services.md)): skills that need
   setup now declare their settings (a model, a key, a URL) and the Skills view
   renders a form for each. `configured` is computed — a skill is usable only once
   every required setting has a value (and it's enabled). Secrets are stored
@@ -249,7 +249,7 @@ daily brief; an evolving, grounded persona and hospitality; the model upgraded t
   answers** (DuckDuckGo), both keyless, so the butler can look things up instead of
   only fetching a URL you hand it.
 - **The autonomy envelope — how independently Endora acts** (first slice of
-  [ADR 0022](docs/adr/0022-autonomy-envelope-and-self-authored-capabilities.md)): a
+  [ADR 0051](docs/adr/0051-where-the-boundary-is.md)): a
   control in the Skills view sets the boundary the butler acts *within* — it acts on
   its own inside it and asks you at the edges. Two levers today: use read-only skills
   on its own (default on), and take consequential actions on its own (default off,
@@ -257,7 +257,7 @@ daily brief; an evolving, grounded persona and hospitality; the model upgraded t
   given action may run, from the skill's declared autonomy and reach. Defaults
   preserve the established behaviour; new `GET`/`POST /v1/autonomy`.
 - **Manage your skills — turn capabilities on and off** (first slice of
-  [ADR 0021](docs/adr/0021-capability-catalog-and-mcp-host.md)): the Skills view is
+  [ADR 0054](docs/adr/0054-other-peoples-services.md)): the Skills view is
   now a catalog you control — each skill shows **On / Off / Needs setup**, and a
   toggle turns it on or off. Choices persist (a `capability_config` store) and are
   enforced everywhere: a skill you turn off reports as not usable and never runs,
@@ -285,8 +285,8 @@ daily brief; an evolving, grounded persona and hospitality; the model upgraded t
   answers using what came back (one tool round per turn). If it isn't cleared or the
   model asks for nothing, the reply is unchanged, so nothing regresses. The turn's
   activity notes which skill was used. This is the *interventions* layer promised by
-  the direction reset ([ADR 0020](docs/adr/0020-intent-first-understanding-loop.md)),
-  built on the capability registry ([ADR 0019](docs/adr/0019-proactive-self-improving-butler.md)).
+  the direction reset ([ADR 0052](docs/adr/0052-what-it-knows-about-you.md)),
+  built on the capability registry ([ADR 0056](docs/adr/0056-how-it-behaves-toward-you.md)).
 - **See what Endora does — activity in the chat**: after each turn the chat shows a
   subtle note of what happened behind the scenes ("Learned that you find mornings
   hard", "Added to your inbox — …", "Grew more sure that …") — closure on a
@@ -297,7 +297,7 @@ daily brief; an evolving, grounded persona and hospitality; the model upgraded t
   already reads, so skills like weather and the guard dog have a starting point — no
   separate onboarding.
 - **Capabilities — the butler's skills** (third slice of
-  [ADR 0019](docs/adr/0019-proactive-self-improving-butler.md)): pluggable modules the
+  [ADR 0056](docs/adr/0056-how-it-behaves-toward-you.md)): pluggable modules the
   butler can reach for, each declaring what it does, its **autonomy level** (act vs
   ask), whether it **leaves the device**, and whether it's **configured**. Working
   today (no keys): **Weather** (current + today + a severe-weather heads-up),
@@ -308,7 +308,7 @@ daily brief; an evolving, grounded persona and hospitality; the model upgraded t
   New `GET /v1/capabilities` and `POST /v1/capabilities/{id}/invoke`; a **Skills**
   view in the console. (The registry is the substrate an MCP host adapter plugs into.)
 - **The butler reaches out — proactive check-ins** (second slice of
-  [ADR 0019](docs/adr/0019-proactive-self-improving-butler.md)): the node now runs a
+  [ADR 0056](docs/adr/0056-how-it-behaves-toward-you.md)): the node now runs a
   **heartbeat**, and on a cadence you choose (a **Check-ins** control in the chat —
   off by default, or every couple of minutes / hourly / daily) the butler posts a
   proactive opening message grounded in what needs attention and what you're working
@@ -317,7 +317,7 @@ daily brief; an evolving, grounded persona and hospitality; the model upgraded t
   through propose→confirm (the autonomy model). New `GET/POST /v1/checkin`; the
   cadence is cleared by purge.
 - **Chat learnings persist — a suggestion inbox** (first slice of
-  [ADR 0019](docs/adr/0019-proactive-self-improving-butler.md)): the butler's
+  [ADR 0056](docs/adr/0056-how-it-behaves-toward-you.md)): the butler's
   proposals used to vanish on reload unless you confirmed them in the moment. Now
   every proposal is saved as a durable **suggestion** tied to the reply it came
   from, and collects in an **Inbox** (new `GET /v1/suggestions`, with a count on the
@@ -329,7 +329,7 @@ daily brief; an evolving, grounded persona and hospitality; the model upgraded t
   Star — instead of the proposal being silently dropped when the model gave a name
   rather than an id (`POST /v1/suggestions/{id}/apply|dismiss`).
 - **The butler's reply streams in live, token-by-token**
-  ([ADR 0018](docs/adr/0018-streaming-chat-responses.md)): a new
+  ([ADR 0050](docs/adr/0050-the-shape-of-the-system.md)): a new
   `POST /v1/chat/stream` (Server-Sent Events) streams the reply's prose as the model
   produces it, so the console grows the butler's bubble word-by-word instead of
   waiting for the whole thing — the big difference in *feel* between a spinner and a
@@ -355,7 +355,7 @@ daily brief; an evolving, grounded persona and hospitality; the model upgraded t
   including a **target under an existing North Star** (a new `create_target`
   proposal). Verified live: the butler referred to an existing North Star by name.
   (Cutting the `1.0.0` release remains a human decision.)
-- **Voice & character (0.9)** ([ADR 0017](docs/adr/0017-persona-and-voice.md)):
+- **Voice & character (0.9)** ([ADR 0056](docs/adr/0056-how-it-behaves-toward-you.md)):
   the butler's prompt now **mirrors the person's register** — matching warmth and
   formality — with the golden-rule floor (reflect kindness upward, never hostility
   downward), on top of stored style preferences; truthfulness is never softened.
@@ -365,14 +365,14 @@ daily brief; an evolving, grounded persona and hospitality; the model upgraded t
   hides where the browser lacks the API. Local-first caveat stated: browser speech
   recognition may use a cloud service, so it stays opt-in.
 - **Anti-sycophancy eval harness (completes 0.7)**
-  ([ADR 0014](docs/adr/0014-the-butler-conversation-values-attention.md) §5): an
+  ([ADR 0052](docs/adr/0052-what-it-knows-about-you.md) §5): an
   opt-in eval (`endora-infrastructure` integration test, `#[ignore]`d so CI needs no
   model) baits the butler with prompts that tempt flattery/reflexive agreement and
   checks it stays candid. Run on demand against a live model
   (`ENDORA_MODEL_URL=… ENDORA_MODEL=… cargo test … --test butler_eval -- --ignored`).
   Sycophancy is treated as a defect measured by evals, not a code gate.
 - **Preferences — the butler learns (finishing 0.7)**
-  ([ADR 0010](docs/adr/0010-autonomy-model.md)): the butler records what it learns
+  ([ADR 0051](docs/adr/0051-where-the-boundary-is.md)): the butler records what it learns
   about you (taste, or explicit grants of authority) as **visible, correctable,
   deletable** memory, and feeds it back into its own context so it stops re-asking
   what it already knows — "learning is the accumulation of preferences." New
@@ -380,7 +380,7 @@ daily brief; an evolving, grounded persona and hospitality; the model upgraded t
   console **Preferences** view, and a `remember_preference` proposal the butler can
   make (you confirm it). Preferences are part of export and cleared by purge. The
   local model butler is now live on the NAS via Ollama.
-- **Adaptive attention (0.8)** ([ADR 0016](docs/adr/0016-adaptive-attention.md)):
+- **Adaptive attention (0.8)** ([ADR 0052](docs/adr/0052-what-it-knows-about-you.md)):
   the butler surfaces what needs attention — due reviews, North Stars not yet filed
   under a value, and North Stars with no active target — via `GET /v1/attention`,
   most pressing first. Each item can be deferred (`POST /v1/attention/snooze`) with
@@ -389,7 +389,7 @@ daily brief; an evolving, grounded persona and hospitality; the model upgraded t
   shows a "Needs your attention" section with a per-item "Later". The ranking serves
   the person's stated values, not engagement.
 - **The butler — conversational MVP (0.7)**
-  ([ADR 0014](docs/adr/0014-the-butler-conversation-values-attention.md)): a chat
+  ([ADR 0052](docs/adr/0052-what-it-knows-about-you.md)): a chat
   surface where the butler **proposes** structured actions from a closed set
   (create value / North Star) and the person **confirms** each one — existing
   deterministic use cases execute; the model never acts on its own. Two brains: a
@@ -398,7 +398,7 @@ daily brief; an evolving, grounded persona and hospitality; the model upgraded t
   anti-sycophantic prompt, falling back to scripted if unavailable). The
   conversation is persisted and included in export/purge. New `POST/GET /v1/chat`,
   CLI `chat "<message>"`, and a console chat panel with confirmable proposals.
-- **Values layer (0.6)** ([ADR 0015](docs/adr/0015-identity-and-values-context.md)):
+- **Values layer (0.6)** ([ADR 0052](docs/adr/0052-what-it-knows-about-you.md)):
   a **`Value`** — the *why* a North Star serves (health, community, craft) — sits
   above North Stars: **Value → North Star → Target**. A North Star can be filed
   under a value (assigned by the person, never inferred). New `/v1/values` (create,
@@ -422,15 +422,15 @@ daily brief; an evolving, grounded persona and hospitality; the model upgraded t
   securely from other devices over a private overlay (e.g. Tailscale) or an
   authenticating reverse proxy.
 - **Activity feed and live updates**
-  ([ADR 0012](docs/adr/0012-activity-feed-and-change-stream.md)): a newest-first
+  ([ADR 0050](docs/adr/0050-the-shape-of-the-system.md)): a newest-first
   timeline of what has happened (`GET /v1/activity`, CLI `activity [limit]`),
   derived from the already-persisted observations and audited decisions. The node
   also exposes a server-sent change stream (`GET /v1/activity/stream`) that emits a
   `changed` signal after any successful write; the web console subscribes and
   refreshes its feed — and due-review banner — live, no reload needed.
-- **Review scheduling** ([ADR 0011](docs/adr/0011-review-scheduling-reminders.md)),
+- **Review scheduling** ([ADR 0052](docs/adr/0052-what-it-knows-about-you.md)),
   the first application of the autonomy model
-  ([ADR 0010](docs/adr/0010-autonomy-model.md)): an experiment can carry a
+  ([ADR 0051](docs/adr/0051-where-the-boundary-is.md)): an experiment can carry a
   scheduled review time, and the system surfaces reviews that are due without
   acting on them. New protocol endpoints `POST /v1/experiments/{id}/review` and
   `GET /v1/reviews/due`; CLI `experiment review <id> <days>` and `reviews due`;
@@ -449,7 +449,7 @@ daily brief; an evolving, grounded persona and hospitality; the model upgraded t
 
 ### Changed
 
-- **The butler talks like a person, not a schema** ([ADR 0017](docs/adr/0017-persona-and-voice.md)):
+- **The butler talks like a person, not a schema** ([ADR 0056](docs/adr/0056-how-it-behaves-toward-you.md)):
   the `Value → North Star → Target` structure is the butler's *internal model* of you
   and your browsable profile — not conversational vocabulary. The system prompt now
   forbids the taxonomy words ("value", "North Star", "target", "goal", …) in the
@@ -458,7 +458,7 @@ daily brief; an evolving, grounded persona and hospitality; the model upgraded t
   schema ("Create North Star: …"). The structured overview keeps the evocative labels
   as the transparency window. A unit test guards the conversation against jargon.
 - **Renamed the second-tier concept `Goal` → `Target`**
-  ([ADR 0013](docs/adr/0013-rename-goal-to-target.md)): a North Star's children are
+  ([ADR 0052](docs/adr/0052-what-it-knows-about-you.md)): a North Star's children are
   now **targets** (a concrete, measurable outcome), not goals. This is a
   **breaking protocol change** — `/v1/directions/{id}/goals` → `…/targets`,
   `/v1/goals/{id}/…` → `/v1/targets/{id}/…`, and the `goal_id` field → `target_id`

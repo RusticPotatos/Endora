@@ -73,7 +73,7 @@ to a cloud service (e.g. Chrome), which crosses the local-first line — so voic
 **off by default and opt-in**. (2) Browsers only grant microphone access on a
 **secure context** (HTTPS or `localhost`), so speaking *to* it over a plain-HTTP LAN
 address is blocked by the browser; text-to-speech (it speaking to you) is not. The
-console says so, and [docs/hosting.md](../hosting.md) documents giving the console an
+console says so, and [docs/hosting.md](../../hosting.md) documents giving the console an
 HTTPS origin (e.g. `tailscale serve` or a TLS proxy). A fully local STT/TTS path (a
 model on the node/host) is possible later behind the same client seam.
 

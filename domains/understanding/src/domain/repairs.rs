@@ -1,6 +1,6 @@
-//! Repair proposals — Endora noticing that its own tooling is wrong (ADR 0039).
+//! Repair proposals — Endora noticing that its own tooling is wrong (ADR 0054).
 //!
-//! The observation half of [ADR 0038](../../../docs/adr/0038-capability-profiles.md).
+//! The observation half of [ADR 0054](../../../docs/adr/0038-capability-profiles.md).
 //! Every action leaves an [`Outcome`](crate::domain::Outcome) carrying what the tool
 //! claimed and whether the world actually moved; this reads that history back and says
 //! when a capability keeps reporting success while changing nothing.
@@ -8,7 +8,7 @@
 //! Three properties, all deliberate:
 //!
 //! - **Derived, never stored.** A proposal is computed from outcomes on read. There is
-//!   no table, no row to dismiss, nothing to groom — which is how ADR 0029's approval
+//!   no table, no row to dismiss, nothing to groom — which is how ADR 0052's approval
 //!   queue is made impossible rather than merely discouraged. When the outcomes age out,
 //!   or an action finally changes something, the proposal stops being derived.
 //! - **Deterministic.** Arithmetic over stored records, with no model in the path. The
@@ -16,7 +16,7 @@
 //!   verification; it is not fit to decide what is broken.
 //! - **A question, not a repair.** It reports the pattern and asks. It does not parse
 //!   the reading to guess an answer — that would mean understanding one server's text
-//!   format, which is the per-integration patching ADR 0038 exists to stop.
+//!   format, which is the per-integration patching ADR 0054 exists to stop.
 
 use crate::domain::Outcome;
 
@@ -26,7 +26,7 @@ use crate::domain::Outcome;
 const ENOUGH_TO_BE_A_PATTERN: usize = 2;
 
 /// What would actually fix a finding — which is a different question from what went
-/// wrong, and the only one the person can answer (ADR 0040).
+/// wrong, and the only one the person can answer (ADR 0054).
 ///
 /// The two are told apart by **how wide the failure is**, which needs no knowledge of
 /// any particular server:
@@ -41,12 +41,12 @@ pub enum Remedy {
 }
 
 /// How many **different** targets a capability must have failed on before the tool
-/// itself is the more likely explanation than any one name (ADR 0040). Two, for the same
+/// itself is the more likely explanation than any one name (ADR 0054). Two, for the same
 /// reason as above: one target failing repeatedly is exactly the alias case, and it must
 /// keep deriving the alias question rather than being escalated into a withdrawal.
 const ENOUGH_TARGETS_TO_BLAME_THE_TOOL: usize = 2;
 
-/// A capability that keeps reporting success while changing nothing (ADR 0039).
+/// A capability that keeps reporting success while changing nothing (ADR 0054).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RepairProposal {
     /// The capability that keeps not working.
@@ -75,7 +75,7 @@ pub struct RepairProposal {
 ///
 /// An unverified success is still not evidence: `changed == None` on a call that
 /// *succeeded* means there was nothing to compare, and silence is the honest answer
-/// (ADR 0038).
+/// (ADR 0054).
 ///
 /// Grouped by capability **and target**, because "this tool never works" and "this tool
 /// never works *on the kitchen*" are different findings and only the second is
@@ -103,7 +103,7 @@ pub fn repair_proposals(outcomes: &[Outcome]) -> Vec<RepairProposal> {
         }
     }
     // A capability whose failures span several different targets and which has never
-    // once worked is not being mis-aimed — it is the wrong tool (ADR 0040). One finding
+    // once worked is not being mis-aimed — it is the wrong tool (ADR 0054). One finding
     // stands for all of its targets, and its per-target findings are suppressed so the
     // person is asked one question rather than the same question per noun.
     let mut wholly_broken: std::collections::BTreeMap<String, usize> =
@@ -182,7 +182,7 @@ fn group_by_capability(
 /// marker on the claim, never any server's error format.
 ///
 /// The **unambiguous** half of the evidence, and the only half a withdrawal may rest on
-/// (ADR 0040). "Changed nothing" is ambiguous in ways this is not: switching off an
+/// (ADR 0054). "Changed nothing" is ambiguous in ways this is not: switching off an
 /// already-off light legitimately changes nothing, and a read-back scoped to the wrong
 /// thing reports no change on an action that plainly worked. Live, five `HassTurnOn`
 /// calls that really did turn lights on were all recorded `changed: false` — enough,
@@ -364,7 +364,7 @@ mod tests {
     fn a_success_nobody_could_verify_is_still_not_evidence() {
         // `changed: None` on a call that SUCCEEDED means there was nothing to compare —
         // no reader nominated, or no before-reading — not that something is wrong.
-        // Silence is the honest answer, not a guess (ADR 0038).
+        // Silence is the honest answer, not a guess (ADR 0054).
         let history = [
             outcome(1, "home.HassTurnOff", r#"{"area":"kitchen"}"#, None),
             outcome(2, "home.HassTurnOff", r#"{"area":"kitchen"}"#, None),
@@ -580,7 +580,7 @@ mod tests {
     #[test]
     fn an_unverified_success_still_counts_as_the_tool_working() {
         // `changed: None` on a call that did not error means nobody could check, not
-        // that it failed (ADR 0038's honest silence). It is not evidence of a problem
+        // that it failed (ADR 0054's honest silence). It is not evidence of a problem
         // anywhere else in this derivation, and it must not support a withdrawal here.
         let history = [
             claimed(
@@ -656,7 +656,7 @@ mod tests {
 
     #[test]
     fn the_derivation_knows_nothing_about_any_particular_server() {
-        // The whole point of ADR 0040: the same finding derives for a calendar, a
+        // The whole point of ADR 0054: the same finding derives for a calendar, a
         // filesystem, anything — because the rule is about the shape of the history,
         // not about names Endora was taught.
         let history = [

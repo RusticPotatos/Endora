@@ -2,7 +2,7 @@
 
 > This document supersedes previous assumptions about the product direction.
 > If implementation details conflict with this document, prefer this document.
-> Adopted 2026-07-20 (see [ADR 0020](adr/0020-intent-first-understanding-loop.md)).
+> Adopted 2026-07-20 (see [ADR 0052](adr/0052-what-it-knows-about-you.md)).
 
 ## Why we are resetting
 

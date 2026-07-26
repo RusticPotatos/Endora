@@ -71,7 +71,7 @@ recorded as an [ADR](docs/adr/README.md).
 ## How it's built
 
 Rust, a domain-first modular monolith organized **by responsibility**, not by layer —
-Responsibility-Oriented Clean Architecture (ROCA, [ADR 0026](docs/adr/0026-package-by-bounded-context.md)).
+Responsibility-Oriented Clean Architecture (ROCA, [ADR 0050](docs/adr/0050-the-shape-of-the-system.md)).
 One authoritative backend (the **node**) holds all state and authority; clients are
 thin. The model sits *behind* the policy boundary.
 

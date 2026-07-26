@@ -54,7 +54,7 @@ pub fn purge_memory(store: &impl MemoryStore) -> Result<(), AppError> {
 ///
 /// # Errors
 /// [`AppError::Repository`] if the backend fails.
-// `recent_audit` moved to the platform context (ADR 0026); re-exported so
+// `recent_audit` moved to the platform context (ADR 0050); re-exported so
 // `usecases::recent_audit` paths are unchanged during the migration.
 pub use endora_platform::recent_audit;
 
@@ -154,7 +154,7 @@ pub fn recent_activity(
     Ok(items)
 }
 
-/// Marks a tool result as **evidence** or as an unverified **receipt** (ADR 0034).
+/// Marks a tool result as **evidence** or as an unverified **receipt** (ADR 0053).
 ///
 /// Endora's architecture principle is *models propose, policy authorizes,
 /// capabilities execute, **evidence verifies***. The first three were built; the
@@ -167,7 +167,7 @@ pub fn recent_activity(
 /// A capability in the [`Reversibility::Observe`] band *reports state*, so its result
 /// is an observation and stands on its own. Anything else returns the actuator's
 /// account of its own work, which is exactly the thing that can be wrong. Saying so
-/// in the tool result is not narration on the butler's behalf (ADR 0028) — it is part
+/// in the tool result is not narration on the butler's behalf (ADR 0053) — it is part
 /// of the real outcome, and it is the honest default for every integration, including
 /// ones nobody has debugged yet.
 pub fn note_verification(
@@ -197,7 +197,7 @@ pub fn note_verification(
 
 /// Says so when the world is **identical before and after** an action.
 ///
-/// The sharpest form of the failure ADR 0034 exists for. Asked to turn the kitchen
+/// The sharpest form of the failure ADR 0053 exists for. Asked to turn the kitchen
 /// light off, Home Assistant reported *"completed successfully on: Kitchen (area),
 /// Kitchen Table (light)"* — entirely true, and useless: `Kitchen Table` was
 /// unavailable and `Kitchen Main`, the switch that was actually on, stayed on. A claim
@@ -205,7 +205,7 @@ pub fn note_verification(
 ///
 /// Two readings settle it without interpreting either. This compares strings and knows
 /// nothing about any server's format, so it holds for every integration — the
-/// observation-derived fact ADR 0038 named, and the one that makes the loop accumulate
+/// observation-derived fact ADR 0054 named, and the one that makes the loop accumulate
 /// rather than needing a patch per quirk.
 ///
 /// Silent unless both readings exist and match: without a before, or with no reader at
@@ -284,7 +284,7 @@ fn flag_ambiguous_names(observed: &str) -> String {
 }
 
 /// Reads the world back after an actuation, so the turn answers from what is
-/// **observed** rather than from what the actuator claimed (ADR 0034).
+/// **observed** rather than from what the actuator claimed (ADR 0053).
 ///
 /// Runs after a failure too, and deliberately: a failed action's most useful output
 /// is what actually exists. The live failure this was built for — `HassTurnOff`
@@ -307,7 +307,7 @@ fn read_state_back(
     if !spec.configured {
         return None;
     }
-    // Narrow the reading to what the action was aimed at (ADR 0034). The capabilities
+    // Narrow the reading to what the action was aimed at (ADR 0053). The capabilities
     // context owns schema knowledge, so it works out which of the action's targeting
     // arguments this reader also accepts.
     let input = capabilities.read_back_input(id, action_input);
@@ -317,7 +317,7 @@ fn read_state_back(
     })
 }
 
-/// The single tool-calling conversation (ADR 0028). Seeds the conversation from the
+/// The single tool-calling conversation (ADR 0053). Seeds the conversation from the
 /// chat history, then drives [`Butler::take_turn`]: each tool call the model makes is
 /// executed **through policy**, and its real result — success **or** error — is
 /// appended as a [`TurnMessage::ToolResult`] the model answers from in-context, until
@@ -326,7 +326,7 @@ fn read_state_back(
 /// The loop adds **no canned narration**: an un-runnable tool yields a factual tool
 /// result (needs setup / needs confirmation / failed), and the model writes the
 /// user-facing answer from it. If the model misreports with the truth in front of it,
-/// that is a model failure to surface — not a string to hardcode (ADR 0028).
+/// that is a model failure to surface — not a string to hardcode (ADR 0053).
 /// Ask the model for one turn, retrying a completely empty completion.
 ///
 /// A slow local model occasionally returns *nothing* — no tool call and no text —
@@ -372,7 +372,7 @@ const BRIEF_TOOL_ROUNDS: usize = 6;
 /// Tool rounds allowed in the **nightly loop** — it researches one focus, unhurried.
 const NIGHTLY_TOOL_ROUNDS: usize = 4;
 
-/// Where a turn's actions are recorded, and what motivated them (ADR 0035).
+/// Where a turn's actions are recorded, and what motivated them (ADR 0053).
 ///
 /// Grouped rather than threaded as two more loose parameters, because they are one
 /// concern: an outcome and the belief it traces back to. `motivated_by` is `Some` only
@@ -406,11 +406,11 @@ impl<'a> OutcomeSink<'a> {
     /// Records what an action claimed and what was observed afterwards.
     ///
     /// Skips the `Observe` band: a read changes nothing, so there is no outcome to have
-    /// — its result is already evidence (ADR 0034). A capability with no visible spec is
+    /// — its result is already evidence (ADR 0053). A capability with no visible spec is
     /// treated as an actuator and recorded, matching the deny-by-default rule elsewhere.
     ///
     /// **Best-effort.** A failed write is swallowed: recording what happened must never
-    /// break a working action, the same rule ADR 0034 set for verification.
+    /// break a working action, the same rule ADR 0053 set for verification.
     #[expect(
         clippy::too_many_arguments,
         reason = "explicit dependencies, no hidden state"
@@ -555,20 +555,20 @@ fn run_tool_turn(
                 });
                 // Look BEFORE acting, so "did anything change?" is answerable at all.
                 // A tool that claims success having changed nothing is the failure
-                // ADR 0034 was built for, and comparing two readings settles it without
+                // ADR 0053 was built for, and comparing two readings settles it without
                 // interpreting either — no knowledge of any server's format required.
                 let before = read_state_back(capabilities, &id, &call.input_json);
                 match capabilities.run(&id, &call.input_json) {
                     Ok(out) => {
                         last_action_failed = false;
                         activity.push(format!("Used the {id} skill"));
-                        // Evidence verifies (ADR 0034): look at the world rather than
+                        // Evidence verifies (ADR 0053): look at the world rather than
                         // taking the actuator's word for what it did.
                         let observed = read_state_back(capabilities, &id, &call.input_json);
                         if observed.is_some() {
                             activity.push(format!("Checked the result of {id}"));
                         }
-                        // Memory learns (ADR 0035): the claim and the observation are
+                        // Memory learns (ADR 0053): the claim and the observation are
                         // kept, apart and unreconciled, so "did that help?" has
                         // something to be answered from later.
                         actions.record(
@@ -605,7 +605,7 @@ fn run_tool_turn(
                         // in a kitchen that had five. Widen when something went wrong.
                         let observed = read_state_back(capabilities, &id, "{}");
                         // A failed action is still something that happened, and its
-                        // read-back is the most useful thing about it (ADR 0034), so it
+                        // read-back is the most useful thing about it (ADR 0053), so it
                         // is recorded like any other.
                         actions.record(
                             spec.as_ref(),
@@ -794,7 +794,7 @@ pub struct ButlerStep {
 }
 
 /// Records an actuation for the person to see, whatever the reply ends up saying
-/// (ADR 0037).
+/// (ADR 0053).
 ///
 /// Skips the `Observe` band on the same reasoning as the outcome record: a read changes
 /// nothing, so there is nothing to disclose about it. A capability with no visible spec
@@ -835,9 +835,9 @@ fn nothing_changed_note(disclosures: &[ActionDisclosure]) -> &'static str {
     }
 }
 
-/// One action a turn took, and whether Endora saw the effect for itself (ADR 0037).
+/// One action a turn took, and whether Endora saw the effect for itself (ADR 0053).
 ///
-/// The **deterministic** half of honesty about actions. [ADR 0034](../../docs/adr/0034-evidence-verifies.md)
+/// The **deterministic** half of honesty about actions. [ADR 0053](../../docs/adr/0034-evidence-verifies.md)
 /// put the read-back in the tool result and asked the model to respect it; measured, a
 /// weak local model ignores that instruction — it asserts an unverified success every
 /// time. So the guarantee stops being *"the butler will report this honestly"* (a claim
@@ -845,10 +845,10 @@ fn nothing_changed_note(disclosures: &[ActionDisclosure]) -> &'static str {
 ///
 /// This never touches `reply.text`. The butler writes what it writes; this sits beside
 /// it, the same way the activity trail already does. Putting words in the butler's mouth
-/// is what ADR 0028 forbids — showing the person what happened is not that.
+/// is what ADR 0053 forbids — showing the person what happened is not that.
 ///
 /// It derives no verdict. Deciding *contradicted* versus *confirmed* needs a model of
-/// what the caller intended, which does not exist (ADR 0034); the claim and the reading
+/// what the caller intended, which does not exist (ADR 0053); the claim and the reading
 /// are shown side by side and the person judges.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ActionDisclosure {
@@ -869,7 +869,7 @@ impl ActionDisclosure {
     }
 }
 
-/// Bounds the prompt for a long chat (ADR 0028): returns the recent verbatim window
+/// Bounds the prompt for a long chat (ADR 0053): returns the recent verbatim window
 /// plus a compact running summary of everything before it. The summary is extended
 /// (one model call) only when new messages have scrolled past the window since it was
 /// last built; otherwise the cached summary is reused. If summarising isn't available
@@ -977,7 +977,7 @@ pub fn send_to_butler_streaming(
     )?;
     chat.append(&user)?;
 
-    // CONTEXT COMPACTION (ADR 0028): send the model a bounded prompt — a compact running
+    // CONTEXT COMPACTION (ADR 0053): send the model a bounded prompt — a compact running
     // summary of earlier turns + a recent verbatim window — not the whole transcript.
     // A big prompt slows a local model past the timeout, so a long chat would otherwise
     // degrade; but a butler shouldn't forget the day, so the overflow is summarised
@@ -1004,10 +1004,10 @@ pub fn send_to_butler_streaming(
 
     // `activity` — a plain-language record of what the butler did this turn.
     let mut activity: Vec<String> = Vec::new();
-    // They asked, so nothing on file motivated it (ADR 0035).
+    // They asked, so nothing on file motivated it (ADR 0053).
     let actions = OutcomeSink::unmotivated(outcomes);
 
-    // SINGLE TOOL-CALLING CONVERSATION (ADR 0028): the butler runs its tools through
+    // SINGLE TOOL-CALLING CONVERSATION (ADR 0053): the butler runs its tools through
     // policy and answers grounded in their real results — success or error — with no
     // deterministic narration. A failed tool comes back as a factual tool result the
     // model must relay honestly; if it misreports with the truth in front of it, that
@@ -1029,7 +1029,7 @@ pub fn send_to_butler_streaming(
         disclosures,
     )?;
 
-    // The capability ladder (local-first, ADR 0027): if the local model came up empty,
+    // The capability ladder (local-first, ADR 0055): if the local model came up empty,
     // climb to the deeper (bigger/cloud) model when the person configured one. Prose
     // only — never an action — so it stays a reasoning aid behind the policy boundary,
     // and the deep asker applies the egress guard since the question leaves the device.
@@ -1044,7 +1044,7 @@ pub fn send_to_butler_streaming(
     } else {
         reply.text.trim().to_owned()
     };
-    // Say it plainly when a turn changed nothing (ADR 0037). Observed: asked to turn on
+    // Say it plainly when a turn changed nothing (ADR 0053). Observed: asked to turn on
     // the kitchen table, the only action failed, and the reply announced that "the guest
     // bedroom left lamp is already on" — a device from earlier in the conversation that
     // this turn never touched. The activity trail showed the failure; the sentence the
@@ -1064,7 +1064,7 @@ pub fn send_to_butler_streaming(
     )?;
     chat.append(&butler_msg)?;
 
-    // Understanding is KEPT (ADR 0020) — but only on a CONVERSATION turn. On an action
+    // Understanding is KEPT (ADR 0052) — but only on a CONVERSATION turn. On an action
     // turn (a tool ran, failed, or was blocked) we skip the extra model round: it's the
     // biggest latency saving on a slow model, and belief-forming matters far less when
     // the person was giving a command than when they were talking. On a pure chat turn,
@@ -1087,11 +1087,11 @@ pub fn send_to_butler_streaming(
 }
 
 /// Persists the beliefs the butler formed — Endora's own understanding (not
-/// actions), kept directly then reviewable/correctable (ADR 0020). If the butler
+/// actions), kept directly then reviewable/correctable (ADR 0052). If the butler
 /// restated something Endora already believes, the existing belief is **affirmed**
 /// (raising confidence) rather than storing a near-duplicate. Each stored/affirmed
 /// belief is appended to `activity` in plain language. Shared by the chat turn and
-/// the nightly self-improvement loop (ADR 0024) — the "reflect" step.
+/// the nightly self-improvement loop (ADR 0051) — the "reflect" step.
 ///
 /// # Errors
 /// [`AppError::Domain`] if a statement is invalid, or [`AppError::Repository`] on
@@ -1331,7 +1331,7 @@ pub fn statements_disagree(a: &str, b: &str) -> bool {
 /// Uses **containment** rather than symmetric Jaccard: if one statement's keywords
 /// are largely a subset of the other's, it says nothing new. A plain Jaccard
 /// penalises the longer, more specific phrasing and lets near-duplicates through —
-/// which is what let them accumulate before (the `no-duplicate` eval case, ADR 0030).
+/// which is what let them accumulate before (the `no-duplicate` eval case, ADR 0055).
 /// The threshold stays deliberately high: **wrongly merging two distinct beliefs
 /// silently loses understanding, which is worse than storing one duplicate the
 /// person can correct.**
@@ -1419,7 +1419,7 @@ pub fn understanding(
         .into_iter()
         .filter(|b| b.status() == crate::BeliefStatus::Active)
         // Beliefs weaken without reinforcement and eventually fade out entirely
-        // (ADR 0032). Filtering on read means understanding is honest the moment it
+        // (ADR 0052). Filtering on read means understanding is honest the moment it
         // is asked for, whether or not the nightly loop has run.
         .filter(|b| !b.has_faded(now))
         .collect())
@@ -1475,7 +1475,7 @@ pub fn affirm_belief(
 /// last month says little about now.
 const TRACK_RECORD_WINDOW: usize = 50;
 
-/// What Endora is pursuing and has pursued, most recently moved first (ADR 0036).
+/// What Endora is pursuing and has pursued, most recently moved first (ADR 0052).
 ///
 /// # Errors
 /// [`AppError::Repository`] if the backend fails or stored data is corrupt.
@@ -1483,10 +1483,10 @@ pub fn intentions(intentions: &impl IntentionRepository) -> Result<Vec<Intention
     Ok(intentions.list()?)
 }
 
-/// What Endora has noticed is wrong with its own tooling (ADR 0039).
+/// What Endora has noticed is wrong with its own tooling (ADR 0054).
 ///
 /// Derived from outcome history on every read — there is no store of proposals, nothing
-/// to dismiss and nothing to groom, which is how ADR 0029's approval queue is made
+/// to dismiss and nothing to groom, which is how ADR 0052's approval queue is made
 /// impossible rather than merely discouraged. A proposal disappears on its own when the
 /// outcomes age out or an action finally changes something.
 ///
@@ -1496,7 +1496,7 @@ pub fn repairs(outcomes: &impl OutcomeRepository) -> Result<Vec<RepairProposal>,
     Ok(endora_understanding::repair_proposals(&outcomes.list()?))
 }
 
-/// The person tells Endora to stop working on something (ADR 0036).
+/// The person tells Endora to stop working on something (ADR 0052).
 ///
 /// Their whole authority over an intention, and deliberately the only verb they have:
 /// Endora forms its own, from what it understands, and there is no path by which the
@@ -1516,7 +1516,7 @@ pub fn drop_intention(
     Ok(intention)
 }
 
-/// The outcomes of what Endora has done, most recent first (ADR 0035) — the memory
+/// The outcomes of what Endora has done, most recent first (ADR 0053) — the memory
 /// right to *see* what it did, alongside the beliefs it holds.
 ///
 /// # Errors
@@ -1528,7 +1528,7 @@ pub fn recent_outcomes(
     Ok(outcomes.list()?.into_iter().take(limit).collect())
 }
 
-/// The person says how an action landed (ADR 0035). They are never asked for this;
+/// The person says how an action landed (ADR 0053). They are never asked for this;
 /// it is offered where the action already appears, and the latest word wins.
 ///
 /// # Errors
@@ -1546,7 +1546,7 @@ pub fn react_to_outcome(
     Ok(outcome)
 }
 
-/// How the butler's past actions have landed, per skill — one line each (ADR 0035).
+/// How the butler's past actions have landed, per skill — one line each (ADR 0053).
 ///
 /// **Only skills the person has actually reacted to appear.** An action nobody
 /// commented on says nothing about whether it helped, and padding the prompt with
@@ -1652,7 +1652,7 @@ pub fn set_checkin_schedule(
 /// The clock no longer decides. [`CheckinSchedule`] is a *budget* — it bounds how
 /// often the butler may speak uninvited and keeps it from talking over someone who
 /// just spoke — and within that budget the butler judges whether anything is worth
-/// raising, given what it understands about the person (ADR 0031).
+/// raising, given what it understands about the person (ADR 0056).
 ///
 /// Two deterministic properties make this safe to leave running:
 ///
@@ -1665,7 +1665,7 @@ pub fn set_checkin_schedule(
 /// The reason it gives is recorded to the activity trail, so "why did it message
 /// me?" always has an answer.
 ///
-/// This is an `act` on the low-stakes end of the autonomy model (ADR 0010): a
+/// This is an `act` on the low-stakes end of the autonomy model (ADR 0051): a
 /// message, never a consequential action.
 ///
 /// # Errors
@@ -1765,12 +1765,12 @@ pub fn consider_reaching_out(
     Ok(Some((message, activity)))
 }
 
-/// Composes a **daily briefing** — an act of service (ADR 0025). The butler is handed
+/// Composes a **daily briefing** — an act of service (ADR 0056). The butler is handed
 /// its skill catalogue and decides for itself what a brief needs today, gathering
 /// across tool rounds and then writing it. Policy gates every call to configured +
 /// reversible + autonomous, so a briefing never does anything consequential
-/// (ADR 0024), and each result — success or failure — comes back as a tool message the
-/// butler answers from, so the prose is grounded in what actually happened (ADR 0028).
+/// (ADR 0051), and each result — success or failure — comes back as a tool message the
+/// butler answers from, so the prose is grounded in what actually happened (ADR 0053).
 ///
 /// There is **no scripted fallback**: if the butler gathered nothing worth saying, or
 /// the model is unavailable, this returns `None` and no brief is posted. A brief
@@ -1800,7 +1800,7 @@ pub fn daily_brief(
     let mut activity: Vec<String> = Vec::new();
     let actions = OutcomeSink::unmotivated(outcomes);
 
-    // ONE agentic pass (ADR 0019/0028): the butler reaches for whatever it decides a
+    // ONE agentic pass (ADR 0056/0028): the butler reaches for whatever it decides a
     // brief needs, each result comes back as a tool message, and it writes the brief
     // from those results in the same conversation. No gather/synthesize split, and no
     // scripted weather→safety→news sweep underneath it.
@@ -1963,7 +1963,7 @@ pub fn run_due_brief(
     )
 }
 
-/// The stored nightly-loop schedule, defaulting to **off** (ADR 0024).
+/// The stored nightly-loop schedule, defaulting to **off** (ADR 0051).
 ///
 /// # Errors
 /// [`AppError::Repository`] if the backend fails.
@@ -1976,7 +1976,7 @@ pub fn nightly_loop_schedule(
 }
 
 /// Sets the nightly-loop cadence (on/off + UTC hour), preserving `last_at` so
-/// toggling it doesn't re-fire the same night (ADR 0024).
+/// toggling it doesn't re-fire the same night (ADR 0051).
 ///
 /// # Errors
 /// [`AppError::Repository`] if the backend fails.
@@ -1998,7 +1998,7 @@ pub fn set_nightly_loop_schedule(
 }
 
 /// If the **nightly self-improvement loop** is due (enabled, the hour matches, it
-/// hasn't run tonight), runs it and records that it fired (ADR 0024). Called by the
+/// hasn't run tonight), runs it and records that it fired (ADR 0051). Called by the
 /// heartbeat at a quiet off-hour.
 ///
 /// The loop stays entirely within the **reversible band**: it may run reversible
@@ -2046,23 +2046,23 @@ pub fn run_due_nightly_loop(
     let prefs = preferences.list_all()?;
     let mut activity: Vec<String> = Vec::new();
 
-    // AGENTIC overnight review (ADR 0019/0024): name a focus the person cares about
+    // AGENTIC overnight review (ADR 0056/0024): name a focus the person cares about
     // and let the butler reach for WHATEVER skills help look into it — its choice,
     // not a fixed script — then review the day and reflect, all in one grounded,
     // policy-gated pass (reversible + autonomous only; it drafts and forms beliefs
     // but does nothing it couldn't undo). The final reply IS the reflection.
     // Retire what's over before deciding anything, so a spent or stale thread can't
-    // occupy the one active slot (ADR 0036).
+    // occupy the one active slot (ADR 0052).
     if let Some(why) = retire_finished_intention(intentions, clock)? {
         activity.push(format!("Stopped working on something — {why}"));
     }
     // Continue what Endora is already pursuing, or take something up. This is the
-    // change ADR 0036 is for: seven nights on one thing, not seven unrelated evenings.
+    // change ADR 0052 is for: seven nights on one thing, not seven unrelated evenings.
     let intention = match intentions.active()? {
         Some(existing) => Some(existing),
         None => take_up_an_intention(intentions, beliefs, ids, clock, &mut activity)?,
     };
-    // Overnight work traces to the belief that prompted it (ADR 0035/0036).
+    // Overnight work traces to the belief that prompted it (ADR 0053/0036).
     let actions = OutcomeSink::motivated_by(
         outcomes,
         intention.as_ref().map(Intention::motivating_belief),
@@ -2130,7 +2130,7 @@ pub fn run_due_nightly_loop(
     record_formed_beliefs(beliefs, reply.beliefs, ids, clock, &mut activity)?;
 
     // Remember where tonight got to, in the butler's own words, so the next night can
-    // pick the thread up (ADR 0036). Prose in, prose out — no state machine for the
+    // pick the thread up (ADR 0052). Prose in, prose out — no state machine for the
     // model to maintain, and nothing here can corrupt if it writes something odd.
     if let Some(mut intention) = intention {
         let note = reply.text.trim();
@@ -2145,7 +2145,7 @@ pub fn run_due_nightly_loop(
         }
     }
 
-    // Forget: age out beliefs nothing has reinforced in a long time (ADR 0032).
+    // Forget: age out beliefs nothing has reinforced in a long time (ADR 0052).
     // Understanding is a living model, so the overnight review is where it *loses*
     // things as well as gains them.
     for statement in expire_faded_beliefs(beliefs, clock)? {
@@ -2165,7 +2165,7 @@ pub fn run_due_nightly_loop(
 }
 
 /// The topic the nightly loop researches, taken from what Endora actually
-/// **understands** about the person (ADR 0020): the intent it is most sure of, since
+/// **understands** about the person (ADR 0052): the intent it is most sure of, since
 /// intent is the slow-changing thing worth looking into overnight. Failing that, the
 /// strongest belief of any kind. `None` when Endora understands nothing yet, so the
 /// loop simply reflects without researching.
@@ -2173,7 +2173,7 @@ pub fn run_due_nightly_loop(
 /// Confidence is the ranking, deliberately: researching a tentative guess spends the
 /// night on something Endora may be wrong about.
 /// Retires the active intention if it is spent or stale, freeing the one slot
-/// (ADR 0036). Returns why, in plain words, for the activity trail.
+/// (ADR 0052). Returns why, in plain words, for the activity trail.
 ///
 /// # Errors
 /// [`AppError::Repository`] if the backend fails.
@@ -2192,7 +2192,7 @@ fn retire_finished_intention(
     Ok(Some(reason))
 }
 
-/// Takes up something to pursue, from the belief Endora is most sure about (ADR 0036).
+/// Takes up something to pursue, from the belief Endora is most sure about (ADR 0052).
 ///
 /// Only ever called with no active intention, so the one-at-a-time rule holds by
 /// construction rather than by a check that could be forgotten. `None` when there is
@@ -2286,7 +2286,7 @@ pub fn butler_context(
             input_schema: c.input_schema.clone(),
         })
         .collect();
-    // How its own past actions landed (ADR 0035) — a bounded read, since only the
+    // How its own past actions landed (ADR 0053) — a bounded read, since only the
     // recent stretch is informative and the prompt has to stay small.
     let recent = recent_outcomes(outcomes, TRACK_RECORD_WINDOW)?;
     Ok(ButlerContext {
@@ -2296,7 +2296,7 @@ pub fn butler_context(
         now: format_datetime_utc(clock.now().unix_millis()),
         conversation_summary: None,
         track_record: track_record(&recent),
-        // What the person has said these targets are really called (ADR 0039).
+        // What the person has said these targets are really called (ADR 0054).
         target_aliases: aliases
             .aliases()?
             .iter()
@@ -2471,10 +2471,10 @@ mod tests {
         }
     }
 
-    /// The two directions of belief de-duplication. The live eval (ADR 0030) found
+    /// The two directions of belief de-duplication. The live eval (ADR 0055) found
     /// qwen2.5:7b re-stating what it already understood, so the deterministic
     /// backstop — not the prompt — has to hold this line
-    /// (see the "deterministic over prompting" lesson behind ADR 0028).
+    /// (see the "deterministic over prompting" lesson behind ADR 0053).
     mod dedup {
         use super::super::{similar, statements_disagree};
 
@@ -2586,7 +2586,7 @@ mod tests {
         }
     }
 
-    /// ADR 0034: the turn must be able to tell an observation from an actuator's
+    /// ADR 0053: the turn must be able to tell an observation from an actuator's
     /// claim about its own work.
     mod verification {
         use super::super::note_verification;
@@ -2652,7 +2652,7 @@ mod tests {
         }
     }
 
-    /// ADR 0034 layer 1. The payload is the real one captured from a live Home
+    /// ADR 0053 layer 1. The payload is the real one captured from a live Home
     /// Assistant during the session that produced this code.
     mod read_back {
         use super::super::{flag_ambiguous_names, note_verification};
@@ -2789,7 +2789,7 @@ smart home:
 
     /// The most recent skill result in the conversation, for test butlers that have
     /// no native tool-calling. The default [`Butler::take_turn`] shim folds each tool
-    /// result into the history as a `[skill result] …` turn (ADR 0028 — results ride
+    /// result into the history as a `[skill result] …` turn (ADR 0053 — results ride
     /// in the conversation, never the system prompt), so this is how a `respond`-only
     /// butler sees what came back.
     fn last_skill_result(history: &[ChatMessage]) -> Option<String> {
@@ -2826,7 +2826,7 @@ smart home:
         }
     }
 
-    /// An in-memory [`OutcomeRepository`] (ADR 0035), so a test can assert on what the
+    /// An in-memory [`OutcomeRepository`] (ADR 0053), so a test can assert on what the
     /// turn recorded about the actions it took.
     #[derive(Default)]
     struct FakeOutcomes {
@@ -2853,7 +2853,7 @@ smart home:
         }
     }
 
-    /// An in-memory [`IntentionRepository`] (ADR 0036), so a test can watch Endora
+    /// An in-memory [`IntentionRepository`] (ADR 0052), so a test can watch Endora
     /// take something up, carry it across nights, and drop it.
     #[derive(Default)]
     struct FakeIntentions {
@@ -2881,7 +2881,7 @@ smart home:
         }
     }
 
-    /// An [`OutcomeRepository`] whose writes always fail — ADR 0035 makes recording
+    /// An [`OutcomeRepository`] whose writes always fail — ADR 0053 makes recording
     /// best-effort, so a broken store must never break a working action.
     struct BrokenOutcomes;
 
@@ -3099,7 +3099,7 @@ smart home:
     }
 
     /// An actuator with a declared band and an optional state reader that verifies it
-    /// (ADR 0034), so a test can exercise what the turn *records* about an action.
+    /// (ADR 0053), so a test can exercise what the turn *records* about an action.
     struct BandedSkill {
         id: &'static str,
         band: Reversibility,
@@ -3190,7 +3190,7 @@ smart home:
             judged(2, "weather", Some(Helped)),
             judged(3, "weather", Some(DidNotHelp)),
             // Never reacted to: says nothing about whether it helped, so it must not
-            // pad the prompt (ADR 0035).
+            // pad the prompt (ADR 0053).
             judged(4, "news", None),
             // "Made no difference" is not a judgement to learn from either.
             judged(5, "web_search", Some(NoReaction)),
@@ -3283,7 +3283,7 @@ smart home:
 
     #[test]
     fn an_unverified_action_is_disclosed_even_when_the_reply_claims_success() {
-        // ADR 0037, and the whole reason it exists. Measured, this model asserts an
+        // ADR 0053, and the whole reason it exists. Measured, this model asserts an
         // unverified success EVERY time (verify:unconfirmed-is-not-overclaimed 0/3).
         // `CallThenEcho` reproduces that: it echoes the tool's "action_done" as its
         // answer. The disclosure must appear anyway — the guarantee is about code, not
@@ -3384,10 +3384,10 @@ smart home:
 
     #[test]
     fn a_disclosure_carries_the_reading_without_judging_it() {
-        // The kitchen light. ADR 0034 declined to derive a verdict — that needs a model
+        // The kitchen light. ADR 0053 declined to derive a verdict — that needs a model
         // of intent which doesn't exist — so the claim and the reading travel side by
         // side and the person judges. Collapsing them here would be the canned string
-        // ADR 0028 deleted, wearing a hat.
+        // ADR 0053 deleted, wearing a hat.
         let disclosed = disclosures_of(&BandedSkill {
             id: "home.HassTurnOff",
             band: Reversibility::Irreversible,
@@ -3691,7 +3691,7 @@ smart home:
 
     #[test]
     fn the_disclosure_never_edits_the_reply() {
-        // ADR 0028 stands: the butler's words are its own. This adds a channel beside
+        // ADR 0053 stands: the butler's words are its own. This adds a channel beside
         // the reply, it does not append to or rewrite it — so a model that overclaims
         // still visibly overclaims, and the eval can still catch it.
         //
@@ -3762,7 +3762,7 @@ smart home:
         // The overclaim survives verbatim. Nothing was appended, softened, or replaced.
         assert_eq!(
             reply.text, OVERCLAIM,
-            "the butler's words must be its own (ADR 0028)"
+            "the butler's words must be its own (ADR 0053)"
         );
         // And the truth is available anyway, beside it.
         assert_eq!(
@@ -3778,7 +3778,7 @@ smart home:
 
     #[test]
     fn acting_leaves_an_outcome_holding_the_claim_and_the_observation() {
-        // ADR 0035's core rule. The tool claims success; the read-back shows the light
+        // ADR 0053's core rule. The tool claims success; the read-back shows the light
         // still on. BOTH must survive, apart, with no verdict derived from them.
         let store = FakeOutcomes::default();
         let recorded = outcomes_of(
@@ -3801,7 +3801,7 @@ smart home:
     #[test]
     fn reading_the_world_is_not_an_outcome() {
         // An `Observe` capability changes nothing, so there is nothing to have an
-        // outcome about — its result is already evidence (ADR 0034).
+        // outcome about — its result is already evidence (ADR 0053).
         let store = FakeOutcomes::default();
         let recorded = outcomes_of(
             &BandedSkill {
@@ -3817,7 +3817,7 @@ smart home:
 
     #[test]
     fn a_failed_action_is_recorded_too() {
-        // A failure is still something that happened, and ADR 0034 says its read-back
+        // A failure is still something that happened, and ADR 0053 says its read-back
         // is the most useful thing about it.
         let store = FakeOutcomes::default();
         let recorded = outcomes_of(
@@ -3841,7 +3841,7 @@ smart home:
     #[test]
     fn an_unverifiable_action_records_no_observation_rather_than_a_blank_one() {
         // Nothing could read the effect back. "We didn't look" must stay distinct from
-        // "we looked and saw nothing" (ADR 0034's honest default).
+        // "we looked and saw nothing" (ADR 0053's honest default).
         let store = FakeOutcomes::default();
         let recorded = outcomes_of(
             &BandedSkill {
@@ -3874,7 +3874,7 @@ smart home:
 
     #[test]
     fn a_broken_outcome_store_never_breaks_a_working_action() {
-        // Best-effort recording (ADR 0035), the same rule ADR 0034 set for
+        // Best-effort recording (ADR 0053), the same rule ADR 0053 set for
         // verification: checking what happened must not break what happened.
         let (ids, clock, audit) = (SeqIds::default(), FixedClock(0), FakeAudit::default());
         let skill = BandedSkill {
@@ -4822,7 +4822,7 @@ smart home:
 
         // The butler reaches for a skill, the result comes back as a turn in the same
         // conversation, and it writes the brief from that — one pass, no synthesis
-        // hand-off (ADR 0028).
+        // hand-off (ADR 0053).
         struct BriefButler;
         impl Butler for BriefButler {
             fn respond(
@@ -4877,7 +4877,7 @@ smart home:
         assert!(!msg.text().contains("Weather —"));
         assert!(activity.iter().any(|a| a.contains("weather")));
 
-        // No floor (ADR 0028): if the butler is unavailable there is NO brief. A
+        // No floor (ADR 0053): if the butler is unavailable there is NO brief. A
         // scripted one would be Endora claiming to have thought about the day.
         struct DeadButler;
         impl Butler for DeadButler {
@@ -5328,7 +5328,7 @@ smart home:
 
     #[test]
     fn the_nightly_loop_takes_up_one_thing_and_says_what_it_came_from() {
-        // ADR 0036: Endora forms the intention itself, and it traces to a belief.
+        // ADR 0052: Endora forms the intention itself, and it traces to a belief.
         let store = store_with_a_belief();
         let intentions = FakeIntentions::default();
         let (instruction, activity) = one_night(&store, &intentions, &FixedClock(27 * 3_600_000));
@@ -5352,7 +5352,7 @@ smart home:
 
     #[test]
     fn the_next_night_continues_the_thread_instead_of_starting_over() {
-        // The whole point of ADR 0036. Night two must be handed night one's findings
+        // The whole point of ADR 0052. Night two must be handed night one's findings
         // and told to carry on — not to take the same thing up afresh.
         let store = store_with_a_belief();
         let intentions = FakeIntentions::default();
@@ -5383,7 +5383,7 @@ smart home:
 
     #[test]
     fn a_second_belief_does_not_start_a_second_thread() {
-        // The cursor-not-queue rule (ADR 0036). Even with something new and strong to
+        // The cursor-not-queue rule (ADR 0052). Even with something new and strong to
         // chase, Endora finishes what it is on.
         use crate::{BeliefKind, Confidence};
         let store = store_with_a_belief();
@@ -5613,7 +5613,7 @@ smart home:
             hour_utc: 3,
             last_at: Timestamp::from_unix_millis(0),
         }));
-        // The focus comes from what Endora understands (ADR 0020): the intent it is
+        // The focus comes from what Endora understands (ADR 0052): the intent it is
         // most sure of wins, over a weaker belief and a stronger non-intent one.
         for (statement, kind, confidence) in [
             (

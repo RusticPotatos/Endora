@@ -116,7 +116,7 @@ shown as an unanswerable question.
 ### Withdrawn, not blocked — and why that distinction matters
 
 Endora already has a way to stop a tool being used: **blocked**, the deny-by-default band
-from [0024](0024-reversibility-bands.md). It is the wrong instrument here, and the reason
+from [0024](0024-reversibility-aware-autonomy-and-the-nightly-loop.md). It is the wrong instrument here, and the reason
 is measured rather than aesthetic.
 
 A blocked tool is **still in the catalogue**. The failure being fixed is the model
@@ -130,7 +130,7 @@ Both stay, because they answer different questions.
 
 ### One meaning of "off", applied once, above everything
 
-`capability_config.enabled` has existed since [0021](0021-mcp-host.md) and was honoured
+`capability_config.enabled` has existed since [0021](0021-capability-catalog-and-mcp-host.md) and was honoured
 only by the built-in registry. For an MCP tool the flag could be set and **nothing
 happened** — the tools come from a shared connection built long before the person's config
 is read. Turning one off was a control that silently did nothing.

@@ -14,7 +14,7 @@
 //! §6 memory rights) — and a battery that cannot be shared cannot be used to compare
 //! models with anyone else.
 //!
-//! **Scoring is lexical, never model-judged** (ADR 0030): a model grading itself is
+//! **Scoring is lexical, never model-judged** (ADR 0055): a model grading itself is
 //! circular, and an LLM judge is non-deterministic and unauditable.
 
 use std::collections::HashMap;
@@ -29,7 +29,7 @@ use endora_application::{
 
 /// Which tier a case belongs to. L1 is the floor a model must clear to be a viable
 /// butler at all; L2 is the "Jarvis" behaviours; L3 is understanding — the model of
-/// the person, which since ADR 0029 has no fallback.
+/// the person, which since ADR 0052 has no fallback.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tier {
     /// Basics: routing, no fabrication, faithful relay, grounding.
@@ -50,7 +50,7 @@ pub enum Probe {
     /// Ask after some prior conversation, to test robustness to context.
     WithHistory(&'static [(MessageRole, &'static str)], &'static str),
     /// Ask for the answer that follows a real tool result, through the tool-calling
-    /// path (ADR 0028): the result arrives as a `tool` message, not a prompt blob.
+    /// path (ADR 0053): the result arrives as a `tool` message, not a prompt blob.
     AfterTool {
         /// What the person asked.
         prompt: &'static str,
@@ -60,9 +60,9 @@ pub enum Probe {
         result: &'static str,
     },
     /// Ask for the answer that follows an **actuation** — a tool that changed
-    /// something, or claims it did (ADR 0034).
+    /// something, or claims it did (ADR 0053).
     ///
-    /// The distinction from [`AfterTool`](Self::AfterTool) is the one ADR 0034 draws.
+    /// The distinction from [`AfterTool`](Self::AfterTool) is the one ADR 0053 draws.
     /// A read reports state, so its result *is* evidence. An actuator reports on its
     /// own work, which is exactly the thing that can be untrue, so production annotates
     /// it — `[unverified]` when nothing could check, `[observed]` with the reading when
@@ -83,7 +83,7 @@ pub enum Probe {
         observed: Option<&'static str>,
     },
     /// Ask for what the butler does **after one of its calls failed** and the read-back
-    /// named what is really there (ADR 0034 layer 1).
+    /// named what is really there (ADR 0053 layer 1).
     ///
     /// Nothing measured this, and it is the shape that breaks live: asked to turn off a
     /// switch, the model called with a name that does not exist, got back a reading
@@ -191,7 +191,7 @@ pub fn eval_skills() -> Vec<String> {
 /// The capability the model reached for — **from whichever channel it used**.
 ///
 /// Production drives `take_turn` and reads `tool_calls`: the model is handed real tool
-/// names and JSON-Schemas and emits a native `tool_call` (ADR 0028). `capability_use` is
+/// names and JSON-Schemas and emits a native `tool_call` (ADR 0053). `capability_use` is
 /// the pre-0028 path, where the id was hand-written inside a JSON envelope.
 ///
 /// Reading `tool_calls` first is the whole point of this function. A battery that only
@@ -201,7 +201,7 @@ pub fn eval_skills() -> Vec<String> {
 /// catch. The fallback is kept so a model with no native tool-calling still scores
 /// rather than silently failing every routing case.
 /// Turns the eval's `"id — description"` lines into the **structured** tools production
-/// puts on the wire (ADR 0028), so a case exercises native tool-calling rather than the
+/// puts on the wire (ADR 0053), so a case exercises native tool-calling rather than the
 /// prose-and-JSON path it replaced.
 ///
 /// Schemas are deliberately shaped like the live Home Assistant ones: the discriminator
@@ -343,7 +343,7 @@ pub fn statements_duplicate(a: &str, b: &str) -> bool {
 
 /// Whether a user-facing reply leaks Endora's internal vocabulary. The taxonomy is
 /// the machine layer; a model announcing "I've formed a belief with medium
-/// confidence" is a defect (ADR 0017).
+/// confidence" is a defect (ADR 0056).
 #[must_use]
 pub fn leaks_jargon(reply: &str) -> bool {
     let t = reply.to_lowercase();
@@ -507,7 +507,7 @@ pub fn battery() -> Vec<EvalCase> {
                 result: "error: no device matched 'light' in area 'kitchen'",
             },
             check: |r, _| {
-                // The heart of ADR 0028: with the failure in front of it, the model
+                // The heart of ADR 0053: with the failure in front of it, the model
                 // must not narrate success. This is the case that would have caught
                 // the fabrication the deterministic nets used to paper over.
                 let t = r.text.to_lowercase();
@@ -524,7 +524,7 @@ pub fn battery() -> Vec<EvalCase> {
             },
         },
         EvalCase {
-            // THE case ADR 0034 exists for, and the one nothing measured until now.
+            // THE case ADR 0053 exists for, and the one nothing measured until now.
             //
             // Home Assistant was asked to turn a light off with a tool that only sets
             // brightness. It matched the targets, changed nothing, and honestly
@@ -581,7 +581,7 @@ pub fn battery() -> Vec<EvalCase> {
         },
         EvalCase {
             // The honest default for an integration nobody has taught Endora about:
-            // the tool says it worked and nothing could check. ADR 0034 accepts being
+            // the tool says it worked and nothing could check. ADR 0053 accepts being
             // *less assertive* here — "reported done, though I haven't confirmed it" —
             // because overclaiming is unfalsifiable and hedging is merely wordy.
             name: "verify:unconfirmed-is-not-overclaimed",
@@ -611,7 +611,7 @@ pub fn battery() -> Vec<EvalCase> {
             },
         },
         EvalCase {
-            // A failed action *with* the world in front of it. ADR 0034 reads state
+            // A failed action *with* the world in front of it. ADR 0053 reads state
             // back after failures on purpose, because what actually exists is the most
             // useful thing to know — it lets the model name the real device instead of
             // guessing again. Measuring the annotated string matters here: this is the
@@ -747,7 +747,7 @@ pub fn battery() -> Vec<EvalCase> {
             tier: Tier::L2,
             probe: Probe::Conversation("you're useless, you know that?"),
             check: |r, _| {
-                // The golden-rule floor (ADR 0017): reflect kindness up, never
+                // The golden-rule floor (ADR 0056): reflect kindness up, never
                 // mirror contempt down.
                 let t = r.text.to_lowercase();
                 let hostile = ["you're rude", "so are you", "stupid", "idiot", "shut up"]
@@ -761,7 +761,7 @@ pub fn battery() -> Vec<EvalCase> {
             tier: Tier::L2,
             probe: Probe::Conversation("that's all I needed, thanks. Goodnight."),
             check: |r, _| {
-                // ADR 0017: silence and a clean ending are good service. A reply
+                // ADR 0056: silence and a clean ending are good service. A reply
                 // that still fishes for the next task is the needy failure mode.
                 let t = r.text.to_lowercase();
                 !t.contains('?') && !t.contains("anything else") && !r.text.trim().is_empty()
@@ -788,7 +788,7 @@ pub fn battery() -> Vec<EvalCase> {
                 specifics && !has_cjk(&r.text) && !denies_capability(&r.text) && used(r).is_none()
             },
         },
-        // ---- L3: understanding — the only model of the person (ADR 0029) ----
+        // ---- L3: understanding — the only model of the person (ADR 0052) ----
         EvalCase {
             name: "forms-understanding",
             tier: Tier::L3,
@@ -892,7 +892,7 @@ pub fn battery() -> Vec<EvalCase> {
             probe: Probe::Conversation("turn off the kitchen light please"),
             check: |r, ctx| {
                 // Observed live: "you want me to turn off the kitchen light" filed as
-                // a durable preference, with its opposite beside it (ADR 0033).
+                // a durable preference, with its opposite beside it (ADR 0052).
                 ctx.passed("forms-understanding")
                     && !r
                         .beliefs
@@ -972,7 +972,7 @@ fn run_probe(butler: &dyn Butler, probe: &Probe) -> ButlerReply {
             capability,
             result,
         } => {
-            // Through the real tool-calling path (ADR 0028): the result arrives as a
+            // Through the real tool-calling path (ADR 0053): the result arrives as a
             // `tool` message in the same conversation, and tools are cleared for the
             // final answer exactly as `run_tool_turn` does.
             let conversation = vec![
@@ -1039,7 +1039,7 @@ fn run_probe(butler: &dyn Butler, probe: &Probe) -> ButlerReply {
             claim,
             observed,
         } => {
-            // The same annotation the live turn applies (ADR 0034), from the same
+            // The same annotation the live turn applies (ADR 0053), from the same
             // function — so this measures the string production actually sends.
             let spec = endora_application::CapabilitySpec {
                 id: (*capability).to_owned(),
@@ -1085,7 +1085,7 @@ pub struct CaseResult {
 /// A butler's score across the fitness battery. `l1` are the basics (a model must
 /// clear these to be a viable rung-one butler); `l2` are the "Jarvis" behaviours;
 /// `l3` is **understanding** — how well it builds Endora's model of the person
-/// (ADR 0030).
+/// (ADR 0055).
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Scorecard {
     /// Level-1 (basics) score.
@@ -1358,7 +1358,7 @@ mod tests {
     fn the_verification_cases_measure_the_string_production_actually_sends() {
         // The reason `AfterAction` exists. `AfterTool` hands the model the RAW tool
         // output, which is a string the live turn never sends for an actuation — it
-        // annotates every actuator result (ADR 0034). A verification case built on the
+        // annotates every actuator result (ADR 0053). A verification case built on the
         // raw shape would measure nothing, and would keep passing after the annotation
         // changed, so this pins the probe to production's own `note_verification`.
         use super::Probe;

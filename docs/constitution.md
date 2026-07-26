@@ -45,7 +45,7 @@ lives away from them.**
   is decided by **deterministic policy code**, never by the model.
 - **The language model is never the final enforcement boundary.** No privileged
   capability is ever exposed directly to a model. See
-  [ADR&nbsp;0005](adr/0005-models-propose-policy-authorizes.md).
+  [ADR&nbsp;0005](adr/0051-where-the-boundary-is.md).
 
 ## 4. Honesty about uncertainty
 

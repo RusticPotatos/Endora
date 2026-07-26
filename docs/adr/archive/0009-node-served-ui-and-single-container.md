@@ -11,7 +11,7 @@ gap to a usable product is not features but a **GUI** and a **one-command
 install** — "nobody logs reflections via `curl`." The architecture already treats
 clients as thin and replaceable over the versioned protocol
 ([ADR 0003](0003-http-json-openapi-protocol.md),
-[architecture.md](../architecture.md)), so a browser UI is just another client.
+[architecture.md](../../architecture.md)), so a browser UI is just another client.
 
 The question is *how* to add a UI and *how* to package the whole thing so it
 installs in one step, without contradicting local-first or the thin-client model.
@@ -46,7 +46,7 @@ Consequences of "same-origin, embedded, web-first":
   extra files and the page can't drift from the server that serves it.
 - A plain HTML/JS console is less rich than a framework SPA. Acceptable for 0.2;
   richer interactions can come with a build step later.
-- The API remains **unauthenticated** (see [SECURITY.md](../../SECURITY.md)); a
+- The API remains **unauthenticated** (see [SECURITY.md](../../../SECURITY.md)); a
   browser UI does not change that, and the deployment note (keep it on
   loopback/private) still applies. Authentication stays pre-1.0 work.
 
