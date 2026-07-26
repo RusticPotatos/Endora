@@ -193,6 +193,34 @@ pub fn note_verification(
     )
 }
 
+/// Says so when the world is **identical before and after** an action.
+///
+/// The sharpest form of the failure ADR 0034 exists for. Asked to turn the kitchen
+/// light off, Home Assistant reported *"completed successfully on: Kitchen (area),
+/// Kitchen Table (light)"* — entirely true, and useless: `Kitchen Table` was
+/// unavailable and `Kitchen Main`, the switch that was actually on, stayed on. A claim
+/// can be accurate about what it touched and still change nothing.
+///
+/// Two readings settle it without interpreting either. This compares strings and knows
+/// nothing about any server's format, so it holds for every integration — the
+/// observation-derived fact ADR 0038 named, and the one that makes the loop accumulate
+/// rather than needing a patch per quirk.
+///
+/// Silent unless both readings exist and match: without a before, or with no reader at
+/// all, there is nothing to claim and the honest answer is to say nothing.
+fn note_unchanged(before: Option<&str>, after: Option<&str>) -> String {
+    let (Some(before), Some(after)) = (before, after) else {
+        return String::new();
+    };
+    if before.trim() != after.trim() {
+        return String::new();
+    }
+    "\n\n[unchanged] Endora read the state before and after, and it is identical — \
+     whatever the tool reported, nothing actually changed. Say that plainly, and if \
+     something in the reading looks like what they meant, name it and ask."
+        .to_owned()
+}
+
 /// Points out when one name refers to **more than one thing**.
 ///
 /// This is the defect that produced a whole afternoon of wrong diagnoses. A Home
@@ -494,6 +522,11 @@ fn run_tool_turn(
                     label: progress_label(&id),
                     output: None,
                 });
+                // Look BEFORE acting, so "did anything change?" is answerable at all.
+                // A tool that claims success having changed nothing is the failure
+                // ADR 0034 was built for, and comparing two readings settles it without
+                // interpreting either — no knowledge of any server's format required.
+                let before = read_state_back(capabilities, &id, &call.input_json);
                 match capabilities.run(&id, &call.input_json) {
                     Ok(out) => {
                         activity.push(format!("Used the {id} skill"));
@@ -518,7 +551,8 @@ fn run_tool_turn(
                         disclose(disclosures, spec.as_ref(), &id, &out, observed.as_deref());
                         (
                             StepStatus::Done,
-                            note_verification(&out, spec.as_ref(), observed.as_deref()),
+                            note_verification(&out, spec.as_ref(), observed.as_deref())
+                                + &note_unchanged(before.as_deref(), observed.as_deref()),
                         )
                     }
                     Err(e) => {
@@ -3180,6 +3214,84 @@ smart home:
             !disclosed[0].was_observed(),
             "and it is shown as unconfirmed, which is the point"
         );
+    }
+
+    #[test]
+    fn a_claim_of_success_that_changed_nothing_is_called_out() {
+        // The live case, exactly. Home Assistant reported "completed successfully on:
+        // Kitchen (area), Kitchen Table (light)" — true, and useless: Kitchen Table was
+        // unavailable and Kitchen Main, the switch actually on, stayed on. Two readings
+        // settle it; neither has to be understood.
+        struct ActsButChangesNothing;
+        impl CapabilityRunner for ActsButChangesNothing {
+            fn available(&self) -> Vec<endora_capabilities::CapabilitySpec> {
+                ["home.HassTurnOff", "home.GetLiveContext"]
+                    .into_iter()
+                    .map(|id| endora_capabilities::CapabilitySpec {
+                        id: id.to_owned(),
+                        description: String::new(),
+                        configured: true,
+                        autonomous: true,
+                        input_schema: None,
+                        reversibility: if id.ends_with("GetLiveContext") {
+                            Reversibility::Observe
+                        } else {
+                            Reversibility::Irreversible
+                        },
+                    })
+                    .collect()
+            }
+            fn verifier(&self, id: &str) -> Option<String> {
+                (id == "home.HassTurnOff").then(|| "home.GetLiveContext".to_owned())
+            }
+            fn run(&self, id: &str, _input: &str) -> Result<String, String> {
+                if id == "home.GetLiveContext" {
+                    // Identical every time — the switch never moves.
+                    return Ok("Kitchen Main | switch | state: on".to_owned());
+                }
+                Ok("The action completed successfully on: Kitchen (area).".to_owned())
+            }
+        }
+
+        let (ids, clock, audit) = (SeqIds::default(), FixedClock(0), FakeAudit::default());
+        let reply = super::run_tool_turn(
+            &CallThenEcho {
+                capability: "home.HassTurnOff",
+            },
+            &ActsButChangesNothing,
+            &audit,
+            &OutcomeSink::unmotivated(&FakeOutcomes::default()),
+            &ids,
+            &clock,
+            &one_user_turn("turn the kitchen light off"),
+            &[],
+            &ButlerContext::default(),
+            6,
+            &mut |_| {},
+            &mut Vec::new(),
+            &mut Vec::new(),
+        )
+        .expect("the turn answers");
+
+        // `CallThenEcho` echoes the tool result, so the note reaches the model.
+        assert!(
+            reply.text.contains("[unchanged]"),
+            "a success that changed nothing went unremarked: {}",
+            reply.text
+        );
+    }
+
+    #[test]
+    fn a_real_change_is_not_called_unchanged() {
+        // The note must stay silent when something did move, or it becomes noise the
+        // model learns to ignore.
+        assert_eq!(
+            super::note_unchanged(Some("light: on"), Some("light: off")),
+            ""
+        );
+        // And silent when there is nothing to compare.
+        assert_eq!(super::note_unchanged(None, Some("light: off")), "");
+        assert_eq!(super::note_unchanged(Some("light: on"), None), "");
     }
 
     #[test]
