@@ -183,7 +183,7 @@ function viewAudit() {
     <div class="card"><div class="sub mono">${new Date(a.at_ms).toLocaleString()}</div>
       <div>${esc(a.summary)}</div></div>`);
   return `
-    ${crumbs([{ label: "Messages", act: "go:chat" }, { label: "Activity" }])}
+    ${crumbs([{ label: "Home", act: "go:chat" }, { label: "Activity" }])}
     <h2>Recent activity</h2>
     ${activityFeed()}
     <h2 style="margin-top:22px;">Audit trail (newest first)</h2>
@@ -219,6 +219,13 @@ function speak(text) {
   // iOS sometimes pauses the queue; a nudge keeps it going.
   if (TTS.paused) TTS.resume();
 }
+function readAloud(text) {
+  if (!TTS || !text) { flash("This browser can't read text aloud.", "err"); return; }
+  TTS.cancel();
+  TTS.speak(new SpeechSynthesisUtterance(text));
+  if (TTS.paused) TTS.resume();
+}
+
 function listen() {
   if (!STT) { flash("Speech recognition isn't available in this browser (try Chrome/Edge).", "err"); return; }
   if (!window.isSecureContext) {
@@ -726,7 +733,7 @@ function viewSettings() {
   // a pile of toggles with a "Manage" list buried under it; this is the Manage list all
   // the way down, so every category is findable in one glance.
   return `
-    ${crumbs([{ label: "Messages", act: "go:chat" }, { label: "Settings" }])}
+    ${crumbs([{ label: "Home", act: "go:chat" }, { label: "Settings" }])}
     <h2>Settings</h2>
     <div class="card nav-list">
       ${nav("go:display", "prefs", "Preferences", "reading replies aloud, vibration, showing actions")}
@@ -746,6 +753,65 @@ function viewSettings() {
     </div>`;
 }
 
+// Things the butler said WITHOUT being asked — check-ins, the daily brief, the
+// overnight note — collected like voicemail: read them, or have them read to you.
+//
+// Derived, not stored: a butler message is unprompted when the message before it is
+// not the person's. A reply always follows something you said; a check-in does not.
+// So the inbox needs no new table and no flag anyone has to remember to set — the
+// same reason repair proposals are derived (ADR 0039).
+function unpromptedMessages() {
+  const list = DB.messages || [];
+  const out = [];
+  for (let i = 0; i < list.length; i++) {
+    if (list[i].role !== "butler") continue;
+    const before = i > 0 ? list[i - 1] : null;
+    if (before && before.role === "user") continue; // a reply, not an approach
+    out.push(list[i]);
+  }
+  return out.reverse(); // newest first, like an inbox
+}
+
+// How much of the inbox has been seen. Kept on the device rather than the server: it
+// is a reading marker, not something Endora knows about the person, and it should not
+// end up in an export of their memory.
+function inboxSeenAt() {
+  return Number(localStorage.getItem("endora.inboxSeen") || 0);
+}
+
+function unreadCount() {
+  const seen = inboxSeenAt();
+  return unpromptedMessages().filter((m) => (m.at_ms || 0) > seen).length;
+}
+
+function viewInbox() {
+  const msgs = unpromptedMessages();
+  const seen = inboxSeenAt();
+  const rows = msgs.map((m) => {
+    const unread = (m.at_ms || 0) > seen;
+    return `
+    <div class="card"${unread ? ` style="border-color: color-mix(in srgb, var(--accent) 45%, var(--line));"` : ""}>
+      <div class="row" style="align-items:flex-start;gap:10px;">
+        <div class="grow">
+          <div class="sub">${esc(new Date(m.at_ms).toLocaleString())}${unread ? ` · <strong>new</strong>` : ""}</div>
+          <div class="title" style="font-weight:400;white-space:pre-wrap;">${esc(m.text)}</div>
+        </div>
+        <button class="ghost" data-act="play:msg:${m.id}" title="read this aloud">${icon("speakerOn", 15)}</button>
+      </div>
+    </div>`;
+  });
+  // Opening the inbox is what marks it read — nothing to click, and it cannot mark
+  // something read that arrived after this render.
+  if (msgs.length) {
+    localStorage.setItem("endora.inboxSeen", String(msgs[0].at_ms || Date.now()));
+  }
+  return `
+    ${crumbs([{ label: "Home", act: "go:chat" }, { label: "Messages" }])}
+    <h2>Messages</h2>
+    <div class="note" style="margin-bottom:10px;">Things Endora brought to you on its own — check-ins, your brief, and what it looked into overnight. Replies to what you asked stay in the conversation.</div>
+    ${listOr(rows, "Nothing yet. When Endora has something worth saying unprompted, it lands here.")}`;
+}
+
 // The plain on/off preferences. Their own screen, so Settings can stay a list.
 function viewDisplay() {
   const row = (on, act, label, note) => `
@@ -754,7 +820,7 @@ function viewDisplay() {
       <button class="${on ? "primary" : "ghost"}" data-act="${act}">${on ? "On" : "Off"}</button>
     </div>`;
   return `
-    ${crumbs([{ label: "Messages", act: "go:chat" }, { label: "Settings", act: "go:settings" }, { label: "Preferences" }])}
+    ${crumbs([{ label: "Home", act: "go:chat" }, { label: "Settings", act: "go:settings" }, { label: "Preferences" }])}
     <h2>Preferences</h2>
     <div class="card" style="display:flex;flex-direction:column;gap:14px;">
       ${row(SPEAK, "toggle:speak", "Read replies aloud", TTS ? "" : "not supported in this browser")}
@@ -765,13 +831,13 @@ function viewDisplay() {
 
 function viewModels() {
   return `
-    ${crumbs([{ label: "Messages", act: "go:chat" }, { label: "Settings", act: "go:settings" }, { label: "Models" }])}
+    ${crumbs([{ label: "Home", act: "go:chat" }, { label: "Settings", act: "go:settings" }, { label: "Models" }])}
     ${modelsSection()}`;
 }
 
 function viewProactive() {
   return `
-    ${crumbs([{ label: "Messages", act: "go:chat" }, { label: "Settings", act: "go:settings" }, { label: "Reaching out" }])}
+    ${crumbs([{ label: "Home", act: "go:chat" }, { label: "Settings", act: "go:settings" }, { label: "Reaching out" }])}
     ${proactivitySection()}`;
 }
 
@@ -786,7 +852,7 @@ function viewPrefs() {
       <button class="ghost danger" data-act="delete:pref:${p.id}" title="forget this">${icon("purge",15)}</button>
     </div></div>`);
   return `
-    ${crumbs([{ label: "Messages", act: "go:chat" }, { label: "Preferences" }])}
+    ${crumbs([{ label: "Home", act: "go:chat" }, { label: "Preferences" }])}
     <h2>What the butler knows about you</h2>
     ${listOr(rows, "Nothing yet. The butler will propose things to remember as you talk — or add one below.")}
     <div class="form">
@@ -945,7 +1011,7 @@ function viewSkills() {
     ${mcpBrowse}
     ${mcpAddForm}`;
   return `
-    ${crumbs([{ label: "Messages", act: "go:chat" }, { label: "Skills" }])}
+    ${crumbs([{ label: "Home", act: "go:chat" }, { label: "Skills" }])}
     <h2>What Endora can do</h2>
 
     ${envelope}
@@ -976,7 +1042,7 @@ function viewLearning() {
       <div class="card"><div class="title">${esc(b.statement)}</div>
         ${b.evidence ? `<div class="sub">because ${esc(b.evidence)}</div>` : ""}</div>`);
   return `
-    ${crumbs([{ label: "Messages", act: "go:chat" }, { label: "Learning" }])}
+    ${crumbs([{ label: "Home", act: "go:chat" }, { label: "Learning" }])}
     <h2>What Endora is learning</h2>
     <div class="note">It pays attention as you talk, and looks into things on its own, to grow more useful over time.</div>
     <h3>Most recently</h3>
@@ -1494,6 +1560,7 @@ function render() {
     : v === "skills" ? viewSkills()
     : v === "prefs" ? viewPrefs()
     : v === "settings" ? viewSettings()
+    : v === "inbox" ? viewInbox()
     : v === "display" ? viewDisplay()
     : v === "models" ? viewModels()
     : v === "proactive" ? viewProactive()
@@ -1783,6 +1850,11 @@ async function dispatch(act) {
       catch (e) { flash("Couldn't note that: " + e.message, "err"); }
       return reload();
     }
+    if (verb === "play" && noun === "msg") {
+      const m = (DB.messages || []).find((x) => String(x.id) === String(id));
+      if (m) readAloud(m.text);
+      return;
+    }
     // Answer what Endora asked about a target it can't hit (ADR 0039). This is the
     // confirmed source — Endora never fills it in from a server's own text.
     if (verb === "alias") {
@@ -1976,8 +2048,15 @@ function setupHeader(health) {
     // A short, focused menu: the everyday destinations. Everything else
     // (Skills, preferences, export) lives inside Settings.
     menu.innerHTML =
-      item("go:understanding", "sparkle", "Home") +
-      item("go:chat", "chat", "Messages") +
+      item("go:chat", "chat", "Home") +
+      item(
+        "go:inbox",
+        "chat",
+        "Messages",
+        // A count only when there is something unread — a badge showing "0" is just
+        // furniture, and one that never clears is a nag.
+        unreadCount() ? `<span class="pill active">${unreadCount()}</span>` : "",
+      ) +
       item("go:settings", "prefs", "Settings") +
       `<div class="divider"></div>` +
       "";
