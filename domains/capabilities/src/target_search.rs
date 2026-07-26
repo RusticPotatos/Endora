@@ -54,6 +54,55 @@ pub fn target_words(input_json: &str) -> Vec<String> {
     words
 }
 
+/// The words a call was aiming at, counting **kind filters the service does not recognise**
+/// as part of the target rather than as categories (ADR 0046).
+///
+/// `target_words` skips arrays for a good reason — `domain: ["light"]` restricts which
+/// sorts of thing count, it does not point at one. But that reasoning only holds while the
+/// array actually holds a *sort*. Observed live:
+///
+/// ```text
+/// "turn on the kitchen table"
+///   -> {area: "kitchen", device_class: ["table"], domain: ["light"]}
+/// ```
+///
+/// There is no category called `table`. The model split the name into a room and a kind,
+/// the service ignored the kind it had never heard of, and what remained was "every light
+/// in the kitchen" — which is what it switched on, both of them, reporting success.
+///
+/// So a filter value the service has never used as a category is treated as what it plainly
+/// is: part of what the person named. `categories` comes from the service itself, so
+/// nothing here decides what a category is.
+#[must_use]
+pub fn target_words_with_kinds(input_json: &str, categories: &[String]) -> Vec<String> {
+    let mut words = target_words(input_json);
+    let Ok(serde_json::Value::Object(obj)) = serde_json::from_str::<serde_json::Value>(input_json)
+    else {
+        return words;
+    };
+    for value in obj.values() {
+        let Some(items) = value.as_array() else {
+            continue;
+        };
+        for item in items.iter().filter_map(serde_json::Value::as_str) {
+            let known = categories
+                .iter()
+                .any(|c| c.eq_ignore_ascii_case(item.trim()));
+            if known {
+                continue;
+            }
+            words.extend(
+                item.split_whitespace()
+                    .map(str::to_lowercase)
+                    .filter(|w| w.chars().any(char::is_alphanumeric)),
+            );
+        }
+    }
+    words.sort();
+    words.dedup();
+    words
+}
+
 /// The scalar string fields a call carried, as `(field, value)` — the places a real name
 /// could be put on a retry.
 #[must_use]
@@ -374,5 +423,45 @@ mod tests {
         let reading = "- names: Garage Main";
         let found = candidates(reading, &target_words(r#"{"name":"greenhouse mister"}"#));
         assert!(found.is_empty(), "{found:?}");
+    }
+
+    #[test]
+    fn a_kind_the_service_never_uses_is_part_of_the_target() {
+        // Live: "turn on the kitchen table" became
+        //   {area:"kitchen", device_class:["table"], domain:["light"]}
+        // There is no category called `table`. Ignoring it left "every light in the
+        // kitchen", which is what got switched on — both of them.
+        let categories = vec!["light".to_owned(), "switch".to_owned(), "scene".to_owned()];
+        let words = target_words_with_kinds(
+            r#"{"area":"kitchen","device_class":["table"],"domain":["light"]}"#,
+            &categories,
+        );
+        assert!(words.contains(&"table".to_owned()), "{words:?}");
+        assert!(words.contains(&"kitchen".to_owned()), "{words:?}");
+        assert!(
+            !words.contains(&"light".to_owned()),
+            "a real category became part of the target: {words:?}"
+        );
+    }
+
+    #[test]
+    fn real_kind_filters_are_still_only_filters() {
+        // The original reasoning stands wherever the array really does hold a sort: it
+        // restricts which things count and must not make every light a candidate.
+        let categories = vec!["light".to_owned(), "switch".to_owned()];
+        let words = target_words_with_kinds(
+            r#"{"name":"table","domain":["light"],"device_class":["switch"]}"#,
+            &categories,
+        );
+        assert_eq!(words, vec!["table".to_owned()]);
+    }
+
+    #[test]
+    fn without_a_vocabulary_nothing_changes() {
+        // A service Endora has no direct reach into cannot say what a category is, and
+        // guessing would make every `domain: ["light"]` pollute the search. No list, no
+        // change — the caller keeps using `target_words`.
+        let words = target_words(r#"{"area":"kitchen","device_class":["table"]}"#);
+        assert_eq!(words, vec!["kitchen".to_owned()]);
     }
 }

@@ -9,7 +9,18 @@
 //! So the fixture is the actual reading, captured from the running system. A synthetic
 //! one cannot catch this class of bug, which is the whole reason these tests exist.
 
-use endora_capabilities::{candidates, only_real_match, retarget, target_words};
+use endora_capabilities::{
+    candidates, only_real_match, retarget, target_words, target_words_with_kinds,
+};
+
+/// The kinds this house actually has, as Home Assistant reports them — domains plus the
+/// device classes in use. Read off the service, never a list in Endora's source.
+fn kinds() -> Vec<String> {
+    ["light", "switch", "scene", "media_player", "sensor"]
+        .into_iter()
+        .map(str::to_owned)
+        .collect()
+}
 
 /// The live `GetLiveContext` result, exactly as it was stored in an outcome record.
 const HOUSE: &str = include_str!("fixtures/live-house-reading.txt");
@@ -93,4 +104,35 @@ fn the_retry_it_would_send_is_aimed_at_exactly_one_thing() {
         serde_json::json!(["light"]),
         "dropped a filter: {retry}"
     );
+}
+
+#[test]
+fn the_phrase_that_switched_on_two_lights_now_finds_one() {
+    // "turn on the kitchen table" became
+    //   {area:"kitchen", device_class:["table"], domain:["light"]}
+    // — no name at all. There is no category called `table`, so Home Assistant ignored
+    // it and acted on every light in the Kitchen: the main light AND the table.
+    let input = r#"{"area":"kitchen","device_class":["table"],"domain":["light"]}"#;
+
+    // What it did before: only "kitchen" to go on, which resembles half the room.
+    let vague = candidates(HOUSE, &target_words(input));
+    assert!(
+        only_real_match(&vague).is_none(),
+        "the old reading should not have been actionable: {vague:?}"
+    );
+
+    // With the house's own vocabulary, `table` is plainly not a kind — it is the thing.
+    let found = candidates(HOUSE, &target_words_with_kinds(input, &kinds()));
+    let best = only_real_match(&found).expect("still cannot tell which thing was meant");
+    assert_eq!(best.value, "Kitchen Table");
+}
+
+#[test]
+fn a_real_kind_still_narrows_rather_than_naming() {
+    // The rule must not fire on ordinary filters, or every light in the house becomes a
+    // candidate whenever someone says "light".
+    let input = r#"{"name":"garage main","domain":["light"],"device_class":["switch"]}"#;
+    let found = candidates(HOUSE, &target_words_with_kinds(input, &kinds()));
+    let best = only_real_match(&found).expect("a plainly named thing was not found");
+    assert_eq!(best.value, "Garage Main");
 }
