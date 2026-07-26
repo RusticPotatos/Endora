@@ -2228,6 +2228,16 @@ fn coerce_args_to_schema(input_json: &str, schema: Option<&serde_json::Value>) -
             }
         }
     }
+    // A kind filter that merely repeats another one is a duplication, not a narrowing.
+    // Live: HassTurnOff{area:"kitchen", domain:["switch"], device_class:["switch"]} —
+    // the same word twice. `Kitchen Main Light` is domain `switch` with no matching
+    // device_class, so the pair excluded everything and Home Assistant reported the
+    // AREA as unmatched even though it exists.
+    //
+    // Dropping the duplicate cannot widen what the call can touch: the filter it
+    // duplicates is still there, so the blast radius is unchanged. That is the whole
+    // reason this is safe to do silently, where dropping a filter in general is not.
+    drop_duplicated_kind_filters(obj);
     // An empty value is not a filter, it is noise — and some servers reject it outright
     // (`floor: ""` came back as "invalid slot info", failing the call). Dropping empties
     // also clears anything emptied by the enum check above.
@@ -2238,6 +2248,41 @@ fn coerce_args_to_schema(input_json: &str, schema: Option<&serde_json::Value>) -
         _ => true,
     });
     args.to_string()
+}
+
+/// Removes an array-valued filter whose values are already covered by another one.
+///
+/// Only exact duplicates go: `domain: ["switch"]` alongside `device_class: ["switch"]`
+/// keeps one and drops the other, while `domain: ["light"]` alongside
+/// `device_class: ["outlet"]` is a real narrowing and both stay. Scalars are never
+/// touched — they name the target rather than restricting its kind.
+///
+/// The keeper is chosen by name order so the result is deterministic, and the filter
+/// that survives constrains exactly as much as the pair did.
+fn drop_duplicated_kind_filters(obj: &mut serde_json::Map<String, serde_json::Value>) {
+    let arrays: Vec<(String, Vec<String>)> = obj
+        .iter()
+        .filter_map(|(k, v)| {
+            let items: Vec<String> = v
+                .as_array()?
+                .iter()
+                .filter_map(|i| i.as_str().map(str::to_lowercase))
+                .collect();
+            (!items.is_empty()).then(|| (k.clone(), items))
+        })
+        .collect();
+    let mut drop: Vec<String> = Vec::new();
+    for (i, (key, values)) in arrays.iter().enumerate() {
+        let duplicated_earlier = arrays[..i]
+            .iter()
+            .any(|(other, other_values)| other_values == values && !drop.contains(other));
+        if duplicated_earlier {
+            drop.push(key.clone());
+        }
+    }
+    for key in drop {
+        obj.remove(&key);
+    }
 }
 
 /// The values a schema permits for a field, from `enum` — directly, or on an array's
@@ -3596,6 +3641,55 @@ mod tests {
             parsed.get("floor").is_none(),
             "an empty filter was sent: {out}"
         );
+    }
+
+    #[test]
+    fn a_kind_filter_that_merely_repeats_another_is_dropped() {
+        // Live: HassTurnOff{area:"kitchen", domain:["switch"], device_class:["switch"]}
+        // — the same word twice. `Kitchen Main Light` is domain `switch` with no
+        // matching device_class, so the pair excluded everything and Home Assistant
+        // reported the AREA unmatched even though it exists.
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "area": { "type": "string" },
+                "domain": { "type": "array", "items": { "type": "string" } },
+                "device_class": { "type": "array", "items": { "type": "string" } }
+            }
+        });
+        let out = coerce_args_to_schema(
+            r#"{"area":"kitchen","domain":["switch"],"device_class":["switch"]}"#,
+            Some(&schema),
+        );
+        let parsed: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(parsed["area"], "kitchen", "the target is untouched");
+        // Exactly one of the duplicated pair survives, so the call constrains the same
+        // amount it always did — dropping it cannot widen the blast radius.
+        let kept = ["domain", "device_class"]
+            .iter()
+            .filter(|k| parsed.get(**k).is_some())
+            .count();
+        assert_eq!(kept, 1, "one filter should remain: {out}");
+    }
+
+    #[test]
+    fn genuinely_different_kind_filters_both_survive() {
+        // domain:["light"] with device_class:["outlet"] is a real narrowing, not a
+        // duplication. Dropping either would change what the call can touch.
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "domain": { "type": "array", "items": { "type": "string" } },
+                "device_class": { "type": "array", "items": { "type": "string" } }
+            }
+        });
+        let out = coerce_args_to_schema(
+            r#"{"domain":["light"],"device_class":["outlet"]}"#,
+            Some(&schema),
+        );
+        let parsed: Value = serde_json::from_str(&out).unwrap();
+        assert!(parsed.get("domain").is_some(), "{out}");
+        assert!(parsed.get("device_class").is_some(), "{out}");
     }
 
     #[test]
