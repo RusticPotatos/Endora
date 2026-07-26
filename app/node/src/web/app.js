@@ -1,6 +1,15 @@
 "use strict";
 
-let DB = null;                 // latest /v1/export snapshot
+let DB = null;                 // latest /v1/export snapshot — NULL until one lands
+
+// The conversation, safely. `DB` is null before the first export and stays null when
+// the node is unreachable, so anything that runs on every render — the menu badge, in
+// particular — must not assume a snapshot exists. Reading `DB.messages` there threw
+// "null is not an object", and that error then replaced the real one on screen: the
+// person saw a JavaScript failure instead of "couldn't reach the node".
+function messages() {
+  return (DB && DB.messages) || [];
+}
 let ACTIVITY = [];             // latest /v1/activity feed (newest first)
 let CHECKIN = { enabled: false, interval_ms: 0 }; // proactive check-in cadence
 let CAPS = [];                 // the butler's capabilities/skills (modules)
@@ -113,7 +122,7 @@ async function reload() {
     const hist = await api("GET", "/v1/chat");
     const byId = {};
     for (const m of hist) if (m.actions) byId[m.id] = m.actions;
-    for (const m of (DB.messages || [])) if (byId[m.id]) m.actions = byId[m.id];
+    for (const m of messages()) if (byId[m.id]) m.actions = byId[m.id];
   } catch (_) {}
   ACTIVITY = activity;
   CHECKIN = checkin;
@@ -255,7 +264,7 @@ function listen() {
 // the world runs through the policy boundary as it happens — there is no queue
 // of proposals for you to approve afterwards.
 function viewChat() {
-  const list = DB.messages || [];
+  const list = messages();
   const msgs = list.map((m) => {
     const mine = m.role === "user";
     const bubble = `<div class="row" style="justify-content:${mine ? "flex-end" : "flex-start"}; margin:6px 0;">
@@ -761,7 +770,7 @@ function viewSettings() {
 // So the inbox needs no new table and no flag anyone has to remember to set — the
 // same reason repair proposals are derived (ADR 0039).
 function unpromptedMessages() {
-  const list = DB.messages || [];
+  const list = messages();
   const out = [];
   for (let i = 0; i < list.length; i++) {
     if (list[i].role !== "butler") continue;
@@ -1851,7 +1860,7 @@ async function dispatch(act) {
       return reload();
     }
     if (verb === "play" && noun === "msg") {
-      const m = (DB.messages || []).find((x) => String(x.id) === String(id));
+      const m = messages().find((x) => String(x.id) === String(id));
       if (m) readAloud(m.text);
       return;
     }
