@@ -41,6 +41,13 @@ pub struct HomeAssistant {
     /// acting are one grant; editing the service's own configuration is another, and it
     /// is off until deliberately turned on.
     may_write: bool,
+    /// The other names the person has confirmed for things here, as `(said, means)`.
+    ///
+    /// A thing answers to more than one name, and Endora only knew the service's own
+    /// (ADR 0054). Live: writing aliases into Home Assistant made its Assist view list
+    /// them *instead of* the friendly name, so `Kitchen Table` — the very name the
+    /// confirmed alias resolved to — stopped being a name the service recognised.
+    aliases: Vec<(String, String)>,
 }
 
 impl HomeAssistant {
@@ -59,7 +66,30 @@ impl HomeAssistant {
             base,
             token,
             may_write,
+            aliases: Vec::new(),
         })
+    }
+
+    /// Adds the names the person has confirmed, so this channel knows a thing by every
+    /// name it answers to rather than only the one the service prints.
+    #[must_use]
+    pub fn also_known_as(mut self, aliases: Vec<(String, String)>) -> Self {
+        self.aliases = aliases;
+        self
+    }
+
+    /// Every name each entity answers to: the service's own, plus any the person
+    /// confirmed for it. Ordered so the service's name comes first.
+    fn names_of(&self, entity: &Entity) -> Vec<String> {
+        let mut names = vec![entity.name.clone()];
+        for (said, means) in &self.aliases {
+            if means.eq_ignore_ascii_case(&entity.name)
+                && !names.iter().any(|n| n.eq_ignore_ascii_case(said))
+            {
+                names.push(said.clone());
+            }
+        }
+        names
     }
 
     /// Every entity Home Assistant knows about — **not** only the ones exposed to
@@ -455,7 +485,12 @@ impl crate::infrastructure::NativeChannel for HomeAssistant {
         Ok(self
             .entities()?
             .into_iter()
-            .map(|e| (e.id, e.name))
+            .flat_map(|e| {
+                self.names_of(&e)
+                    .into_iter()
+                    .map(move |n| (e.id.clone(), n))
+                    .collect::<Vec<_>>()
+            })
             .collect())
     }
 
@@ -467,10 +502,19 @@ impl crate::infrastructure::NativeChannel for HomeAssistant {
         // "kitchen" and "table", so it would compete with `Kitchen Table` as a candidate
         // and turn an unambiguous match into a tie that refuses to act. The id is looked
         // up separately, through `known`, which is exactly what it is for.
+        // One line per NAME, not per thing. A thing that answers to three names has three
+        // chances to be matched exactly, and none of them is diluted by the others — the
+        // failure this fixes was `table light` losing because it was read as part of
+        // "kitchen table light, table, table light".
         Ok(self
             .entities()?
-            .into_iter()
-            .map(|e| format!("names: {}\n  state: {}", e.name, e.state))
+            .iter()
+            .flat_map(|e| {
+                self.names_of(e)
+                    .into_iter()
+                    .map(|n| format!("names: {n}\n  state: {}", e.state))
+                    .collect::<Vec<_>>()
+            })
             .collect::<Vec<_>>()
             .join("\n"))
     }
@@ -676,5 +720,60 @@ mod tests {
         // is worse than none.
         assert_eq!(service_for("home-assistant.HassLightSet"), None);
         assert_eq!(service_for("home-assistant.HassBroadcast"), None);
+    }
+
+    fn house() -> HomeAssistant {
+        let mut settings = crate::infrastructure::CapabilitySettings::new();
+        settings.insert("url".to_owned(), "http://ha.local:8123".to_owned());
+        settings.insert("token".to_owned(), "abc".to_owned());
+        HomeAssistant::from_settings(&settings)
+            .unwrap()
+            .also_known_as(vec![
+                ("table light".to_owned(), "Kitchen Table".to_owned()),
+                ("table".to_owned(), "Kitchen Table".to_owned()),
+                ("ceiling light".to_owned(), "Kitchen Main Light".to_owned()),
+            ])
+    }
+
+    fn entity(name: &str) -> Entity {
+        Entity {
+            id: "light.x".to_owned(),
+            name: name.to_owned(),
+            state: "on".to_owned(),
+            kinds: vec!["light".to_owned()],
+        }
+    }
+
+    #[test]
+    fn a_thing_is_known_by_every_name_it_answers_to() {
+        // Live: writing aliases into Home Assistant made its Assist view list them
+        // INSTEAD of the friendly name, so `Kitchen Table` — the name the confirmed alias
+        // resolves to — stopped being a name the service recognised. Endora has to hold
+        // both, or the retry substitutes a name nothing answers to.
+        let names = house().names_of(&entity("Kitchen Table"));
+        assert_eq!(
+            names[0], "Kitchen Table",
+            "the service's own name comes first"
+        );
+        assert!(names.contains(&"table light".to_owned()), "{names:?}");
+        assert!(names.contains(&"table".to_owned()), "{names:?}");
+        assert!(
+            !names.contains(&"ceiling light".to_owned()),
+            "took another thing's name"
+        );
+    }
+
+    #[test]
+    fn a_thing_nobody_renamed_keeps_exactly_one_name() {
+        assert_eq!(
+            house().names_of(&entity("Garage Main")),
+            vec!["Garage Main".to_owned()]
+        );
+    }
+
+    #[test]
+    fn a_confirmed_name_matching_the_service_name_is_not_listed_twice() {
+        let names = house().names_of(&entity("table light"));
+        assert_eq!(names.len(), 1, "{names:?}");
     }
 }

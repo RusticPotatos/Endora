@@ -1203,8 +1203,18 @@ fn native_channels(
     let Some(home) = endora_capabilities::HomeAssistant::from_settings(home_settings) else {
         return Vec::new();
     };
+    // The channel is told every name a thing answers to, not just the service's own
+    // (ADR 0054). The same confirmed aliases the retry uses.
+    let server = endora_capabilities::paired_server(home_settings);
+    let named: Vec<(String, String)> = endora_capabilities::TargetAliasRepository::aliases(config)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|a| a.server == server)
+        .map(|a| (a.said, a.means))
+        .collect();
+    let home = home.also_known_as(named);
     vec![(
-        endora_capabilities::paired_server(home_settings),
+        server,
         Arc::new(home) as Arc<dyn endora_capabilities::NativeChannel>,
     )]
 }
