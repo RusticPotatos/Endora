@@ -25,16 +25,40 @@ use crate::domain::Outcome;
 /// changes nothing often enough (turning off an already-off light) that one is noise.
 const ENOUGH_TO_BE_A_PATTERN: usize = 2;
 
+/// What would actually fix a finding — which is a different question from what went
+/// wrong, and the only one the person can answer (ADR 0040).
+///
+/// The two are told apart by **how wide the failure is**, which needs no knowledge of
+/// any particular server:
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Remedy {
+    /// The tool works, but not on this. Something else it was aimed at succeeded, so
+    /// what it was called is the likely problem — ask what the thing is really named.
+    NameTheTarget,
+    /// The tool has never worked on anything. No name fixes that; the useful answer is
+    /// to stop offering it, so the model reaches for something that does work.
+    StopOfferingIt,
+}
+
+/// How many **different** targets a capability must have failed on before the tool
+/// itself is the more likely explanation than any one name (ADR 0040). Two, for the same
+/// reason as above: one target failing repeatedly is exactly the alias case, and it must
+/// keep deriving the alias question rather than being escalated into a withdrawal.
+const ENOUGH_TARGETS_TO_BLAME_THE_TOOL: usize = 2;
+
 /// A capability that keeps reporting success while changing nothing (ADR 0039).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RepairProposal {
     /// The capability that keeps not working.
     pub capability: String,
     /// What its calls were aimed at, in the person's own words where they gave any —
-    /// the target values from the action's arguments, not the whole input.
+    /// the target values from the action's arguments, not the whole input. **Empty**
+    /// when the finding is about the capability itself rather than one of its targets.
     pub target: String,
     /// How many times it reported success and changed nothing.
     pub attempts: usize,
+    /// What would fix it, derived from how wide the failure is.
+    pub remedy: Remedy,
 }
 
 /// Reads outcome history back and reports capabilities that keep not working.
@@ -60,22 +84,60 @@ pub struct RepairProposal {
 pub fn repair_proposals(outcomes: &[Outcome]) -> Vec<RepairProposal> {
     let mut counts: std::collections::BTreeMap<(String, String), usize> =
         std::collections::BTreeMap::new();
+    let mut ever_worked: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     for outcome in outcomes {
         if !is_not_working(outcome) {
+            ever_worked.insert(outcome.capability().to_owned());
             continue;
         }
         let key = (outcome.capability().to_owned(), target_of(outcome.input()));
         *counts.entry(key).or_default() += 1;
     }
+    // A capability whose failures span several different targets and which has never
+    // once worked is not being mis-aimed — it is the wrong tool (ADR 0040). One finding
+    // stands for all of its targets, and its per-target findings are suppressed so the
+    // person is asked one question rather than the same question per noun.
+    let mut wholly_broken: std::collections::BTreeMap<String, usize> =
+        std::collections::BTreeMap::new();
+    for (capability, targets) in group_by_capability(&counts) {
+        if ever_worked.contains(&capability) {
+            continue;
+        }
+        // Width is counted over targets that are each already a pattern. A target that
+        // failed once is noise everywhere else in this derivation and must not become
+        // evidence about the tool by being counted here — otherwise one bad attempt at
+        // the garage escalates a plain alias question into "stop offering this".
+        let repeatedly: Vec<&(String, usize)> = targets
+            .iter()
+            .filter(|(_, n)| *n >= ENOUGH_TO_BE_A_PATTERN)
+            .collect();
+        if repeatedly.len() < ENOUGH_TARGETS_TO_BLAME_THE_TOOL {
+            continue;
+        }
+        wholly_broken.insert(capability, targets.iter().map(|(_, n)| *n).sum());
+    }
     let mut proposals: Vec<RepairProposal> = counts
         .into_iter()
-        .filter(|(_, attempts)| *attempts >= ENOUGH_TO_BE_A_PATTERN)
+        .filter(|((capability, _), attempts)| {
+            *attempts >= ENOUGH_TO_BE_A_PATTERN && !wholly_broken.contains_key(capability)
+        })
         .map(|((capability, target), attempts)| RepairProposal {
             capability,
             target,
             attempts,
+            remedy: Remedy::NameTheTarget,
         })
         .collect();
+    proposals.extend(
+        wholly_broken
+            .into_iter()
+            .map(|(capability, attempts)| RepairProposal {
+                capability,
+                target: String::new(),
+                attempts,
+                remedy: Remedy::StopOfferingIt,
+            }),
+    );
     // Worst first — the thing that has wasted the most attempts is the thing worth
     // asking about. The key breaks ties so the order is stable.
     proposals.sort_by(|a, b| {
@@ -85,6 +147,22 @@ pub fn repair_proposals(outcomes: &[Outcome]) -> Vec<RepairProposal> {
             .then_with(|| a.target.cmp(&b.target))
     });
     proposals
+}
+
+/// Regroups the per-target failure counts by capability, so the width of a failure can
+/// be read off: how many distinct targets, and how many attempts across all of them.
+fn group_by_capability(
+    counts: &std::collections::BTreeMap<(String, String), usize>,
+) -> std::collections::BTreeMap<String, Vec<(String, usize)>> {
+    let mut by_capability: std::collections::BTreeMap<String, Vec<(String, usize)>> =
+        std::collections::BTreeMap::new();
+    for ((capability, target), attempts) in counts {
+        by_capability
+            .entry(capability.clone())
+            .or_default()
+            .push((target.clone(), *attempts));
+    }
+    by_capability
 }
 
 /// Whether this outcome is evidence the capability is not doing its job: it either
@@ -172,7 +250,7 @@ fn target_of(input: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{RepairProposal, repair_proposals};
+    use super::{Remedy, RepairProposal, repair_proposals};
     use crate::domain::Outcome;
     use endora_kernel::ids::{OutcomeId, Timestamp};
 
@@ -222,6 +300,7 @@ mod tests {
                 capability: "home.HassTurnOff".to_owned(),
                 target: "kitchen".to_owned(),
                 attempts: 2,
+                remedy: Remedy::NameTheTarget,
             }]
         );
     }
@@ -369,5 +448,199 @@ mod tests {
         let proposals = repair_proposals(&history);
         assert_eq!(proposals[0].capability, "b");
         assert_eq!(proposals[0].attempts, 3);
+    }
+
+    #[test]
+    fn a_tool_that_has_never_worked_on_anything_is_the_tool_and_not_the_name() {
+        // The live case this exists for. `HassLightSet` sets brightness or colour, so
+        // it can never switch a light — and the model kept reaching for it. Attempts at
+        // the kitchen table and at the bedroom both failed, and it has never once
+        // succeeded. No name fixes that, so asking "what is the table really called?"
+        // wastes the person's answer.
+        let history = [
+            claimed(
+                1,
+                "home.HassLightSet",
+                r#"{"name":"table"}"#,
+                "error: no",
+                None,
+            ),
+            claimed(
+                2,
+                "home.HassLightSet",
+                r#"{"name":"table"}"#,
+                "error: no",
+                None,
+            ),
+            claimed(
+                3,
+                "home.HassLightSet",
+                r#"{"name":"bedroom"}"#,
+                "error: no",
+                None,
+            ),
+            claimed(
+                4,
+                "home.HassLightSet",
+                r#"{"name":"bedroom"}"#,
+                "error: no",
+                None,
+            ),
+        ];
+        let proposals = repair_proposals(&history);
+        assert_eq!(
+            proposals.len(),
+            1,
+            "one question, not one per noun: {proposals:?}"
+        );
+        assert_eq!(proposals[0].remedy, Remedy::StopOfferingIt);
+        assert_eq!(proposals[0].attempts, 4, "counts every wasted attempt");
+        assert!(
+            proposals[0].target.is_empty(),
+            "the finding is about the tool, so it names no target: {proposals:?}"
+        );
+    }
+
+    #[test]
+    fn a_tool_that_works_somewhere_is_never_withdrawn() {
+        // The distinction that keeps this honest. The same wide failure pattern, plus
+        // one success: the tool demonstrably works, so the targets are the problem and
+        // the person should be asked about names instead.
+        let history = [
+            claimed(
+                1,
+                "home.HassTurnOn",
+                r#"{"name":"table"}"#,
+                "error: no",
+                None,
+            ),
+            claimed(
+                2,
+                "home.HassTurnOn",
+                r#"{"name":"table"}"#,
+                "error: no",
+                None,
+            ),
+            claimed(
+                3,
+                "home.HassTurnOn",
+                r#"{"name":"bedroom"}"#,
+                "error: no",
+                None,
+            ),
+            claimed(
+                4,
+                "home.HassTurnOn",
+                r#"{"name":"bedroom"}"#,
+                "error: no",
+                None,
+            ),
+            outcome(
+                5,
+                "home.HassTurnOn",
+                r#"{"name":"Garage Main"}"#,
+                Some(true),
+            ),
+        ];
+        let proposals = repair_proposals(&history);
+        assert!(
+            proposals.iter().all(|p| p.remedy == Remedy::NameTheTarget),
+            "a tool that works somewhere must not be withdrawn: {proposals:?}"
+        );
+        assert_eq!(proposals.len(), 2, "{proposals:?}");
+    }
+
+    #[test]
+    fn an_unverified_success_still_counts_as_the_tool_working() {
+        // `changed: None` on a call that did not error means nobody could check, not
+        // that it failed (ADR 0038's honest silence). It is not evidence of a problem
+        // anywhere else in this derivation, and it must not support a withdrawal here.
+        let history = [
+            claimed(
+                1,
+                "cal.CreateEvent",
+                r#"{"title":"one"}"#,
+                "error: no",
+                None,
+            ),
+            claimed(
+                2,
+                "cal.CreateEvent",
+                r#"{"title":"one"}"#,
+                "error: no",
+                None,
+            ),
+            claimed(
+                3,
+                "cal.CreateEvent",
+                r#"{"title":"two"}"#,
+                "error: no",
+                None,
+            ),
+            claimed(
+                4,
+                "cal.CreateEvent",
+                r#"{"title":"two"}"#,
+                "error: no",
+                None,
+            ),
+            outcome(5, "cal.CreateEvent", r#"{"title":"three"}"#, None),
+        ];
+        let proposals = repair_proposals(&history);
+        assert!(
+            proposals.iter().all(|p| p.remedy == Remedy::NameTheTarget),
+            "an unverified success is still a success: {proposals:?}"
+        );
+    }
+
+    #[test]
+    fn one_bad_target_does_not_escalate_into_withdrawing_the_tool() {
+        // Width is counted over targets that are each already a pattern. Two failures
+        // at the kitchen and a single stray one at the garage is the alias case, and
+        // must stay the alias question.
+        let history = [
+            claimed(
+                1,
+                "home.HassTurnOff",
+                r#"{"area":"kitchen"}"#,
+                "error: no",
+                None,
+            ),
+            claimed(
+                2,
+                "home.HassTurnOff",
+                r#"{"area":"kitchen"}"#,
+                "error: no",
+                None,
+            ),
+            claimed(
+                3,
+                "home.HassTurnOff",
+                r#"{"area":"garage"}"#,
+                "error: no",
+                None,
+            ),
+        ];
+        let proposals = repair_proposals(&history);
+        assert_eq!(proposals.len(), 1, "{proposals:?}");
+        assert_eq!(proposals[0].remedy, Remedy::NameTheTarget);
+        assert_eq!(proposals[0].target, "kitchen");
+    }
+
+    #[test]
+    fn the_derivation_knows_nothing_about_any_particular_server() {
+        // The whole point of ADR 0040: the same finding derives for a calendar, a
+        // filesystem, anything — because the rule is about the shape of the history,
+        // not about names Endora was taught.
+        let history = [
+            claimed(1, "files.Move", r#"{"path":"a.txt"}"#, "error: nope", None),
+            claimed(2, "files.Move", r#"{"path":"a.txt"}"#, "error: nope", None),
+            claimed(3, "files.Move", r#"{"path":"b.txt"}"#, "error: nope", None),
+            claimed(4, "files.Move", r#"{"path":"b.txt"}"#, "error: nope", None),
+        ];
+        let proposals = repair_proposals(&history);
+        assert_eq!(proposals.len(), 1, "{proposals:?}");
+        assert_eq!(proposals[0].capability, "files.Move");
+        assert_eq!(proposals[0].remedy, Remedy::StopOfferingIt);
     }
 }

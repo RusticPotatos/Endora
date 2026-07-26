@@ -10,4 +10,4 @@ pub use beliefs::{Belief, BeliefKind, BeliefStatus, Confidence};
 pub use intentions::{Intention, IntentionState};
 pub use outcomes::{Outcome, Reaction};
 pub use preferences::{Preference, PreferenceKind};
-pub use repairs::{RepairProposal, repair_proposals};
+pub use repairs::{Remedy, RepairProposal, repair_proposals};
