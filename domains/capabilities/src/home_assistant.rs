@@ -34,6 +34,10 @@ pub struct Entity {
 pub struct HomeAssistant {
     base: String,
     token: String,
+    /// Whether the person has allowed Endora to write names back (ADR 0043). Seeing and
+    /// acting are one grant; editing the service's own configuration is another, and it
+    /// is off until deliberately turned on.
+    may_write: bool,
 }
 
 impl HomeAssistant {
@@ -44,7 +48,15 @@ impl HomeAssistant {
     pub fn from_settings(settings: &crate::infrastructure::CapabilitySettings) -> Option<Self> {
         let base = settings.get("url")?.trim().trim_end_matches('/').to_owned();
         let token = settings.get("token")?.trim().to_owned();
-        (!base.is_empty() && !token.is_empty()).then_some(Self { base, token })
+        let may_write = settings
+            .get("write_names")
+            .map(|v| v.trim().to_lowercase())
+            .is_some_and(|v| ["on", "yes", "true", "1"].contains(&v.as_str()));
+        (!base.is_empty() && !token.is_empty()).then_some(Self {
+            base,
+            token,
+            may_write,
+        })
     }
 
     /// Every entity Home Assistant knows about — **not** only the ones exposed to
@@ -133,6 +145,172 @@ impl HomeAssistant {
     }
 }
 
+/// What an alias write changed, kept so it can be put back (ADR 0043).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AliasWrite {
+    /// The entity whose names were edited.
+    pub entity: String,
+    /// The alias that was added.
+    pub added: String,
+    /// Every alias it had **before** — the undo.
+    pub was: Vec<String>,
+}
+
+impl HomeAssistant {
+    /// Teaches Home Assistant that `alias` is another name for `entity`, so the service
+    /// itself resolves it from then on — for every client, voice assistants included, and
+    /// not only inside Endora (ADR 0043).
+    ///
+    /// Strictly **additive**. Existing aliases are read first and preserved, the new one
+    /// is appended, and the prior list is returned so the edit can be undone. A rename or
+    /// a removal is a different, destructive thing and this cannot do it.
+    ///
+    /// # Errors
+    /// A human-readable message if Home Assistant cannot be reached, refuses the edit, or
+    /// does not know the entity.
+    pub fn add_alias(&self, entity: &str, alias: &str) -> Result<AliasWrite, String> {
+        let alias = alias.trim();
+        if alias.is_empty() {
+            return Err("an empty alias is not a name".to_owned());
+        }
+        let mut socket = self.connect_ws()?;
+        let entry = ws_call(
+            &mut socket,
+            1,
+            &json!({ "type": "config/entity_registry/get", "entity_id": entity }),
+        )?;
+        let was: Vec<String> = entry["aliases"]
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .filter_map(|v| v.as_str().map(str::to_owned))
+                    .collect()
+            })
+            .unwrap_or_default();
+        if was.iter().any(|a| a.eq_ignore_ascii_case(alias)) {
+            return Ok(AliasWrite {
+                entity: entity.to_owned(),
+                added: alias.to_owned(),
+                was,
+            });
+        }
+        let mut now = was.clone();
+        now.push(alias.to_owned());
+        ws_call(
+            &mut socket,
+            2,
+            &json!({
+                "type": "config/entity_registry/update",
+                "entity_id": entity,
+                "aliases": now,
+            }),
+        )?;
+        Ok(AliasWrite {
+            entity: entity.to_owned(),
+            added: alias.to_owned(),
+            was,
+        })
+    }
+
+    /// Puts an entity's aliases back exactly as they were — the undo for
+    /// [`add_alias`](Self::add_alias).
+    ///
+    /// # Errors
+    /// A human-readable message if Home Assistant cannot be reached or refuses the edit.
+    pub fn restore_aliases(&self, undo: &AliasWrite) -> Result<(), String> {
+        let mut socket = self.connect_ws()?;
+        ws_call(
+            &mut socket,
+            1,
+            &json!({
+                "type": "config/entity_registry/update",
+                "entity_id": undo.entity,
+                "aliases": undo.was,
+            }),
+        )?;
+        Ok(())
+    }
+
+    /// Opens an authenticated WebSocket to Home Assistant.
+    ///
+    /// The entity registry is **not** on the REST API — the naming of things lives behind
+    /// the same socket Home Assistant's own front end uses, which is why owning the names
+    /// needs this and reading and acting did not.
+    fn connect_ws(&self) -> Result<Socket, String> {
+        let url = ws_url(&self.base);
+        let (mut socket, _) = tungstenite::connect(&url).map_err(|e| format!("{url}: {e}"))?;
+        // Home Assistant greets first, then wants the token, then says ok.
+        let greeting = read_json(&mut socket)?;
+        if greeting["type"] != "auth_required" {
+            return Err(format!(
+                "expected an auth request from Home Assistant, got {}",
+                greeting["type"]
+            ));
+        }
+        send_json(
+            &mut socket,
+            &json!({ "type": "auth", "access_token": self.token }),
+        )?;
+        let accepted = read_json(&mut socket)?;
+        if accepted["type"] != "auth_ok" {
+            return Err("Home Assistant refused the access token".to_owned());
+        }
+        Ok(socket)
+    }
+}
+
+type Socket = tungstenite::WebSocket<tungstenite::stream::MaybeTlsStream<std::net::TcpStream>>;
+
+/// The WebSocket address for a Home Assistant base URL.
+fn ws_url(base: &str) -> String {
+    let base = base.trim_end_matches('/');
+    let swapped = match base.split_once("://") {
+        Some(("https", rest)) => format!("wss://{rest}"),
+        Some((_, rest)) => format!("ws://{rest}"),
+        None => format!("ws://{base}"),
+    };
+    format!("{swapped}/api/websocket")
+}
+
+/// Sends one command and returns its `result`, skipping the events Home Assistant
+/// interleaves on the same socket.
+fn ws_call(socket: &mut Socket, id: u64, command: &Value) -> Result<Value, String> {
+    let mut command = command.clone();
+    command["id"] = json!(id);
+    send_json(socket, &command)?;
+    // Bounded: a reply that never arrives must not hang a turn.
+    for _ in 0..32 {
+        let message = read_json(socket)?;
+        if message["id"].as_u64() != Some(id) || message["type"] != "result" {
+            continue;
+        }
+        if message["success"] == json!(false) {
+            let why = message["error"]["message"]
+                .as_str()
+                .unwrap_or("Home Assistant refused it");
+            return Err(why.to_owned());
+        }
+        return Ok(message["result"].clone());
+    }
+    Err("Home Assistant never answered".to_owned())
+}
+
+fn send_json(socket: &mut Socket, value: &Value) -> Result<(), String> {
+    socket
+        .send(tungstenite::Message::Text(value.to_string().into()))
+        .map_err(|e| e.to_string())
+}
+
+fn read_json(socket: &mut Socket) -> Result<Value, String> {
+    loop {
+        let message = socket.read().map_err(|e| e.to_string())?;
+        let tungstenite::Message::Text(text) = message else {
+            continue; // pings and frames Home Assistant sends for its own reasons
+        };
+        return serde_json::from_str(&text).map_err(|e| e.to_string());
+    }
+}
+
 /// Turns Home Assistant's answer to a service call into a sentence.
 ///
 /// The answer is the list of entities whose state it changed. Empty means the call was
@@ -212,6 +390,33 @@ impl crate::infrastructure::NativeChannel for HomeAssistant {
         let (domain, service) = service_for(tool)?;
         Some(self.call_service(domain, service, entity))
     }
+
+    fn teach(&self, name: &str, alias: &str) -> Option<Result<String, String>> {
+        if !self.may_write {
+            return None;
+        }
+        let entity = match self.entities() {
+            Ok(all) => all
+                .into_iter()
+                .find(|e| e.name.eq_ignore_ascii_case(name.trim()))?,
+            Err(e) => return Some(Err(e)),
+        };
+        Some(self.add_alias(&entity.id, alias).map(|write| {
+            if write.was.iter().any(|a| a.eq_ignore_ascii_case(alias)) {
+                format!("{} already answers to '{alias}'.", write.entity)
+            } else {
+                format!(
+                    "Home Assistant now knows {} as '{alias}' (it was: {}).",
+                    write.entity,
+                    if write.was.is_empty() {
+                        "no other names".to_owned()
+                    } else {
+                        write.was.join(", ")
+                    }
+                )
+            }
+        }))
+    }
 }
 
 #[cfg(test)]
@@ -234,6 +439,28 @@ mod tests {
         );
         settings.insert("token".to_owned(), "abc".to_owned());
         assert!(HomeAssistant::from_settings(&settings).is_some());
+    }
+
+    #[test]
+    fn the_socket_address_follows_the_base_url() {
+        assert_eq!(
+            ws_url("http://ha.local:8123"),
+            "ws://ha.local:8123/api/websocket"
+        );
+        assert_eq!(
+            ws_url("https://ha.example.com/"),
+            "wss://ha.example.com/api/websocket"
+        );
+        assert_eq!(ws_url("ha.local:8123"), "ws://ha.local:8123/api/websocket");
+    }
+
+    #[test]
+    fn an_empty_alias_is_refused_before_anything_is_opened() {
+        let mut settings = crate::infrastructure::CapabilitySettings::new();
+        settings.insert("url".to_owned(), "http://ha.local:8123".to_owned());
+        settings.insert("token".to_owned(), "abc".to_owned());
+        let home = HomeAssistant::from_settings(&settings).unwrap();
+        assert!(home.add_alias("light.x", "   ").is_err());
     }
 
     #[test]
