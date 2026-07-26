@@ -258,7 +258,11 @@ fn flag_ambiguous_names(observed: &str) -> String {
 /// Best-effort: if the read fails there is simply no observation, and the result
 /// falls back to being marked unverified. Verification must never turn a working
 /// action into a broken turn.
-fn read_state_back(capabilities: &dyn CapabilityRunner, id: &str) -> Option<String> {
+fn read_state_back(
+    capabilities: &dyn CapabilityRunner,
+    id: &str,
+    action_input: &str,
+) -> Option<String> {
     let verifier = capabilities.verifier(id)?;
     let spec = capabilities
         .available()
@@ -267,7 +271,11 @@ fn read_state_back(capabilities: &dyn CapabilityRunner, id: &str) -> Option<Stri
     if !spec.configured {
         return None;
     }
-    capabilities.run(&verifier, "{}").ok().map(|observed| {
+    // Narrow the reading to what the action was aimed at (ADR 0034). The capabilities
+    // context owns schema knowledge, so it works out which of the action's targeting
+    // arguments this reader also accepts.
+    let input = capabilities.read_back_input(id, action_input);
+    capabilities.run(&verifier, &input).ok().map(|observed| {
         let flagged = flag_ambiguous_names(&observed);
         format!("{observed}{flagged}")
     })
@@ -491,7 +499,7 @@ fn run_tool_turn(
                         activity.push(format!("Used the {id} skill"));
                         // Evidence verifies (ADR 0034): look at the world rather than
                         // taking the actuator's word for what it did.
-                        let observed = read_state_back(capabilities, &id);
+                        let observed = read_state_back(capabilities, &id, &call.input_json);
                         if observed.is_some() {
                             activity.push(format!("Checked the result of {id}"));
                         }
@@ -519,7 +527,7 @@ fn run_tool_turn(
                         // Read back on failure too: a failed action's most useful
                         // output is what actually exists, which is what lets the
                         // model retry against reality instead of guessing again.
-                        let observed = read_state_back(capabilities, &id);
+                        let observed = read_state_back(capabilities, &id, &call.input_json);
                         // A failed action is still something that happened, and its
                         // read-back is the most useful thing about it (ADR 0034), so it
                         // is recorded like any other.
