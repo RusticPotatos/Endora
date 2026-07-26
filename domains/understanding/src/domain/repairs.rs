@@ -97,21 +97,74 @@ fn is_not_working(outcome: &Outcome) -> bool {
     outcome.changed() == Some(false) || outcome.claim().trim_start().starts_with("error:")
 }
 
-/// The human-meaningful part of an action's arguments — the string values, which are
-/// what name a thing ("kitchen", "main"). Numbers and flags say *how*, not *what*.
+/// What an action was aimed at, in words a person would recognise.
 ///
-/// Deliberately crude and format-agnostic: it never learns a server's argument names, so
-/// a calendar's `title` groups exactly as Home Assistant's `area` does. Values are sorted
-/// and lowercased so `{area, name}` and `{name, area}` are the same target.
+/// The **values** a call carried, never the field names: `{"area":"kitchen","name":""}`
+/// is aimed at `kitchen`, not at `area name kitchen`. Keeping the keys made two calls
+/// with the same target read as different findings whenever the model filled a different
+/// set of fields — which it does constantly — and produced text nobody could read.
+///
+/// Array values are skipped for the same reason the read-back ignores them: a scalar
+/// points at something, an array restricts which kinds count. `domain: ["light"]` is not
+/// part of what was aimed at.
+///
+/// Deliberately format-agnostic — it never learns a server's argument names, so a
+/// calendar's `title` groups exactly as Home Assistant's `area` does.
 fn target_of(input: &str) -> String {
-    let mut values: Vec<String> = input
-        .split(['{', '}', ',', ':'])
-        .filter_map(|part| {
-            let trimmed = part.trim().trim_matches('"').trim();
-            (!trimmed.is_empty() && trimmed.chars().any(char::is_alphabetic))
-                .then(|| trimmed.to_lowercase())
-        })
-        .collect();
+    let mut values: Vec<String> = Vec::new();
+    let bytes: Vec<char> = input.chars().collect();
+    let mut i = 0;
+    while i < bytes.len() {
+        // Find a quoted token.
+        if bytes[i] != '"' {
+            i += 1;
+            continue;
+        }
+        let start = i + 1;
+        let mut end = start;
+        while end < bytes.len() && bytes[end] != '"' {
+            end += 1;
+        }
+        let token: String = bytes[start..end].iter().collect();
+        // What follows decides whether that token was a key or a value.
+        let mut after = end + 1;
+        while after < bytes.len() && bytes[after].is_whitespace() {
+            after += 1;
+        }
+        let is_key = after < bytes.len() && bytes[after] == ':';
+        if is_key {
+            // Step over the value, skipping arrays wholesale.
+            let mut v = after + 1;
+            while v < bytes.len() && bytes[v].is_whitespace() {
+                v += 1;
+            }
+            if v < bytes.len() && bytes[v] == '[' {
+                let mut depth = 0;
+                while v < bytes.len() {
+                    match bytes[v] {
+                        '[' => depth += 1,
+                        ']' => {
+                            depth -= 1;
+                            if depth == 0 {
+                                break;
+                            }
+                        }
+                        _ => {}
+                    }
+                    v += 1;
+                }
+                i = v + 1;
+                continue;
+            }
+            i = end + 1;
+            continue;
+        }
+        let trimmed = token.trim();
+        if !trimmed.is_empty() && trimmed.chars().any(char::is_alphabetic) {
+            values.push(trimmed.to_lowercase());
+        }
+        i = end + 1;
+    }
     values.sort();
     values.dedup();
     values.join(" ")
@@ -167,7 +220,7 @@ mod tests {
             proposals,
             vec![RepairProposal {
                 capability: "home.HassTurnOff".to_owned(),
-                target: "area kitchen".to_owned(),
+                target: "kitchen".to_owned(),
                 attempts: 2,
             }]
         );
@@ -246,7 +299,39 @@ mod tests {
         ];
         let proposals = repair_proposals(&history);
         assert_eq!(proposals.len(), 1, "{proposals:?}");
-        assert_eq!(proposals[0].target, "area kitchen");
+        assert_eq!(proposals[0].target, "kitchen");
+    }
+
+    #[test]
+    fn the_target_reads_as_what_was_aimed_at_not_as_field_names() {
+        // Seen live: targets came out as
+        //   "[\"light\"] area device_class domain floor kitchen main light name"
+        // — field names, array syntax and all. Unreadable, and it split one finding
+        // into several whenever the model filled a different set of fields.
+        let history = [
+            claimed(
+                1,
+                "c",
+                r#"{"floor":"","name":"main light","area":"kitchen","device_class":["light"],"domain":["light"]}"#,
+                "error: nope",
+                None,
+            ),
+            claimed(
+                2,
+                "c",
+                r#"{"name":"main light","area":"kitchen"}"#,
+                "error: nope",
+                None,
+            ),
+        ];
+        let proposals = repair_proposals(&history);
+        assert_eq!(
+            proposals.len(),
+            1,
+            "the same target split into separate findings: {proposals:?}"
+        );
+        assert_eq!(proposals[0].target, "kitchen main light");
+        assert_eq!(proposals[0].attempts, 2);
     }
 
     #[test]
