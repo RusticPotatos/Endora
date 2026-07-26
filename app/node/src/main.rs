@@ -41,14 +41,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let synth_model = std::env::var("ENDORA_SYNTH_MODEL").ok();
     let fallback: Arc<dyn Butler + Send + Sync> = match (router_model, synth_model) {
         (Some(router), Some(synth)) => {
-            println!("butler: mixture — router={router}, synth={synth} via {model_url}");
+            println!("butler fallback: mixture — router={router}, synth={synth} via {model_url}");
             Arc::new(MixtureButler::new(
                 LlmButler::new(model_url.clone(), router),
                 LlmButler::new(model_url.clone(), synth),
             ))
         }
         _ => {
-            println!("butler: single model {model} via {model_url}");
+            println!("butler fallback: single model {model} via {model_url}");
             Arc::new(LlmButler::new(model_url.clone(), model.clone()))
         }
     };
@@ -58,6 +58,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // changes, falling back to the environment brain above when nothing is stored.
     let store = Arc::new(SqliteStore::open(&db_path)?);
     let model_config = Arc::new(ConfigStore::new(store.db()));
+    // Say which brain is actually IN EFFECT, not merely which one the environment
+    // would supply. The stored configuration wins, so announcing the environment's
+    // mixture while a stored single model does the work is a lie the logs tell — and
+    // it cost an afternoon of diagnosing the wrong model.
+    match endora_capabilities::ButlerModelConfigRepository::get(model_config.as_ref()) {
+        Ok(Some(cfg)) if cfg.mixture => println!(
+            "butler in effect: stored mixture — router={}, synth={}",
+            cfg.router.model, cfg.synth.model
+        ),
+        Ok(Some(cfg)) => println!("butler in effect: stored single model {}", cfg.single.model),
+        _ => println!("butler in effect: the fallback above (nothing stored)"),
+    }
     let butler: Arc<dyn Butler + Send + Sync> =
         Arc::new(ConfigurableButler::new(model_config, fallback));
 

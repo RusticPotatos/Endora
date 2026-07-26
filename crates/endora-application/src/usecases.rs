@@ -479,14 +479,35 @@ fn run_tool_turn(
         })
         .collect();
     let mut failures = 0usize;
+    // Whether the most recent action errored — see the recovery branch below.
+    let mut last_action_failed = false;
     // Tool calls already made this turn (capability + input), to stop the model from
     // looping the same call — especially a read-only one that succeeds every time and
     // so never trips the failure cap.
     let mut seen: std::collections::HashSet<(String, String)> = std::collections::HashSet::new();
     for round in 0..=max_rounds {
         let reply = take_turn_retrying_empty(butler, &conversation, prefs, context)?;
-        // No tool call → the final answer, grounded in the tool results so far.
+        // No tool call → the final answer, grounded in the tool results so far — unless
+        // the last thing that happened was a FAILED action and there is budget left.
+        //
+        // Observed live, twice: one call failed, the read-back came back naming what is
+        // really there, and the model answered "Let's try again… Here is the request:"
+        // and stopped. It wrote the preamble to a tool call instead of making one, and
+        // the loop took that prose as its final word.
+        //
+        // This is loop policy, not persuasion: nothing is added to the prompt and the
+        // model is told nothing. It simply is not taken at its word that it is finished
+        // while the only thing it has done is fail. The existing round and failure caps
+        // still bound everything, so a model that really is done just answers again.
         if reply.tool_calls.is_empty() {
+            if last_action_failed && round < max_rounds && failures < MAX_TOOL_FAILURES {
+                last_action_failed = false;
+                conversation.push(TurnMessage::Assistant {
+                    text: reply.text.clone(),
+                    tool_calls: Vec::new(),
+                });
+                continue;
+            }
             return Ok(reply);
         }
         // Out of rounds with tools still pending — fall through to a forced answer.
@@ -539,6 +560,7 @@ fn run_tool_turn(
                 let before = read_state_back(capabilities, &id, &call.input_json);
                 match capabilities.run(&id, &call.input_json) {
                     Ok(out) => {
+                        last_action_failed = false;
                         activity.push(format!("Used the {id} skill"));
                         // Evidence verifies (ADR 0034): look at the world rather than
                         // taking the actuator's word for what it did.
@@ -568,6 +590,7 @@ fn run_tool_turn(
                     }
                     Err(e) => {
                         failures += 1;
+                        last_action_failed = true;
                         activity.push(format!("Tried the {id} skill, but it failed"));
                         // Read back on failure too: a failed action's most useful
                         // output is what actually exists, which is what lets the
@@ -3360,6 +3383,193 @@ smart home:
             reads_back: None,
         });
         assert!(disclosed.is_empty(), "a read was disclosed: {disclosed:?}");
+    }
+
+    #[test]
+    fn a_turn_does_not_end_on_a_failed_action_while_budget_remains() {
+        // Observed live twice: one call failed, the read-back named what is really
+        // there, and the model answered "Let's try again… Here is the request:" — the
+        // preamble to a tool call, with no call. The loop took that as its final word.
+        struct FailsThenNarratesThenRecovers {
+            turns: std::cell::Cell<usize>,
+        }
+        impl Butler for FailsThenNarratesThenRecovers {
+            fn respond(
+                &self,
+                _h: &[ChatMessage],
+                _p: &[Preference],
+                _c: &ButlerContext,
+            ) -> Result<ButlerReply, ProposalError> {
+                Ok(ButlerReply::default())
+            }
+            fn take_turn(
+                &self,
+                _conversation: &[crate::TurnMessage],
+                _p: &[Preference],
+                _c: &ButlerContext,
+            ) -> Result<ButlerReply, ProposalError> {
+                let n = self.turns.get();
+                self.turns.set(n + 1);
+                match n {
+                    // Calls with the wrong target; it fails.
+                    0 => Ok(ButlerReply {
+                        tool_calls: vec![crate::ToolCall {
+                            id: "c".to_owned(),
+                            capability: "home.HassTurnOff".to_owned(),
+                            input_json: r#"{"name":"wrong"}"#.to_owned(),
+                        }],
+                        ..ButlerReply::default()
+                    }),
+                    // Narrates a plan instead of acting — the live failure.
+                    1 => Ok(ButlerReply {
+                        text: "Let's try again. Here is the request:".to_owned(),
+                        ..ButlerReply::default()
+                    }),
+                    // Given another round, actually corrects itself.
+                    _ => Ok(ButlerReply {
+                        text: "Turned it off.".to_owned(),
+                        tool_calls: vec![crate::ToolCall {
+                            id: "c2".to_owned(),
+                            capability: "home.HassTurnOff".to_owned(),
+                            input_json: r#"{"name":"Kitchen Main Light"}"#.to_owned(),
+                        }],
+                        ..ButlerReply::default()
+                    }),
+                }
+            }
+        }
+
+        struct FailsTheWrongName;
+        impl CapabilityRunner for FailsTheWrongName {
+            fn available(&self) -> Vec<endora_capabilities::CapabilitySpec> {
+                vec![endora_capabilities::CapabilitySpec {
+                    id: "home.HassTurnOff".to_owned(),
+                    description: String::new(),
+                    configured: true,
+                    autonomous: true,
+                    input_schema: None,
+                    reversibility: Reversibility::Irreversible,
+                }]
+            }
+            fn run(&self, _id: &str, input: &str) -> Result<String, String> {
+                if input.contains("wrong") {
+                    return Err("no_match_reason=NAME".to_owned());
+                }
+                Ok("action_done".to_owned())
+            }
+        }
+
+        let (ids, clock, audit) = (SeqIds::default(), FixedClock(0), FakeAudit::default());
+        let mut activity = Vec::new();
+        let reply = super::run_tool_turn(
+            &FailsThenNarratesThenRecovers {
+                turns: std::cell::Cell::new(0),
+            },
+            &FailsTheWrongName,
+            &audit,
+            &OutcomeSink::unmotivated(&FakeOutcomes::default()),
+            &ids,
+            &clock,
+            &one_user_turn("turn the kitchen switch off"),
+            &[],
+            &ButlerContext::default(),
+            6,
+            &mut |_| {},
+            &mut activity,
+            &mut Vec::new(),
+        )
+        .expect("the turn answers");
+
+        // It got a second chance and used it, rather than the turn ending on prose.
+        assert!(
+            activity.iter().filter(|a| a.contains("Used the")).count() == 1,
+            "the corrected call never ran: {activity:?}"
+        );
+        assert!(
+            !reply.text.contains("Here is the request"),
+            "the turn ended on the narration: {}",
+            reply.text
+        );
+    }
+
+    #[test]
+    fn a_turn_that_simply_has_nothing_more_to_do_still_ends() {
+        // The recovery branch must not become a loop. A model that answers plainly
+        // after a failure gets its second chance, answers again, and that stands.
+        struct FailsThenAnswers {
+            turns: std::cell::Cell<usize>,
+        }
+        impl Butler for FailsThenAnswers {
+            fn respond(
+                &self,
+                _h: &[ChatMessage],
+                _p: &[Preference],
+                _c: &ButlerContext,
+            ) -> Result<ButlerReply, ProposalError> {
+                Ok(ButlerReply::default())
+            }
+            fn take_turn(
+                &self,
+                _conversation: &[crate::TurnMessage],
+                _p: &[Preference],
+                _c: &ButlerContext,
+            ) -> Result<ButlerReply, ProposalError> {
+                let n = self.turns.get();
+                self.turns.set(n + 1);
+                if n == 0 {
+                    return Ok(ButlerReply {
+                        tool_calls: vec![crate::ToolCall {
+                            id: "c".to_owned(),
+                            capability: "home.HassTurnOff".to_owned(),
+                            input_json: r#"{"name":"wrong"}"#.to_owned(),
+                        }],
+                        ..ButlerReply::default()
+                    });
+                }
+                Ok(ButlerReply {
+                    text: "I couldn't find that one, sir.".to_owned(),
+                    ..ButlerReply::default()
+                })
+            }
+        }
+
+        struct AlwaysFails;
+        impl CapabilityRunner for AlwaysFails {
+            fn available(&self) -> Vec<endora_capabilities::CapabilitySpec> {
+                vec![endora_capabilities::CapabilitySpec {
+                    id: "home.HassTurnOff".to_owned(),
+                    description: String::new(),
+                    configured: true,
+                    autonomous: true,
+                    input_schema: None,
+                    reversibility: Reversibility::Irreversible,
+                }]
+            }
+            fn run(&self, _id: &str, _input: &str) -> Result<String, String> {
+                Err("no_match_reason=NAME".to_owned())
+            }
+        }
+
+        let (ids, clock, audit) = (SeqIds::default(), FixedClock(0), FakeAudit::default());
+        let reply = super::run_tool_turn(
+            &FailsThenAnswers {
+                turns: std::cell::Cell::new(0),
+            },
+            &AlwaysFails,
+            &audit,
+            &OutcomeSink::unmotivated(&FakeOutcomes::default()),
+            &ids,
+            &clock,
+            &one_user_turn("turn it off"),
+            &[],
+            &ButlerContext::default(),
+            6,
+            &mut |_| {},
+            &mut Vec::new(),
+            &mut Vec::new(),
+        )
+        .expect("the turn answers");
+        assert_eq!(reply.text, "I couldn't find that one, sir.");
     }
 
     #[test]
