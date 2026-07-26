@@ -132,7 +132,7 @@ pub fn default_capabilities() -> Vec<Arc<dyn Capability>> {
 
 /// A **direct** HTTP agent — no egress proxy. Used for trusted internal calls (the
 /// local vision model), which must never be routed through a VPN/proxy.
-fn agent() -> ureq::Agent {
+pub(crate) fn agent() -> ureq::Agent {
     ureq::Agent::config_builder()
         .timeout_global(Some(Duration::from_secs(15)))
         .build()
@@ -1494,6 +1494,11 @@ const HA_SETTINGS: &[SettingSpec] = &[
         label: "Long-lived access token",
         secret: true,
     },
+    SettingSpec {
+        key: "mcp_server",
+        label: "Name of the matching MCP server (blank = home-assistant)",
+        secret: false,
+    },
 ];
 
 /// Reads Home Assistant state so the butler can learn the home's routines (lights,
@@ -2777,6 +2782,37 @@ impl CapabilityRunner for ReversibleOnlyRunner {
     }
 }
 
+/// A server's **own** interface, richer than the tool surface it exposes to a model
+/// (ADR 0042).
+///
+/// A tool catalogue is a product decision by whoever wrote the server, and it is often
+/// the *voice assistant* view: fuzzy names, no identifiers. The same service usually has
+/// an API underneath where things have ids and cannot be mistaken for one another. Where
+/// Endora is given that reach, it should use it — and nothing above this port learns
+/// which service it is talking to.
+///
+/// Deliberately three methods. This is not "run arbitrary API calls": it is *see what
+/// exists*, and *act on exactly one of them*.
+pub trait NativeChannel: Send + Sync {
+    /// Everything the server knows about, as `(id, name)` — the unambiguous identifier
+    /// and the name a person would say.
+    ///
+    /// # Errors
+    /// A human-readable message if the service cannot be reached.
+    fn known(&self) -> Result<Vec<(String, String)>, String>;
+
+    /// The same knowledge rendered as text, so the target search reads it exactly as it
+    /// reads any other reading.
+    ///
+    /// # Errors
+    /// A human-readable message if the service cannot be reached.
+    fn reading(&self) -> Result<String, String>;
+
+    /// Does what `tool` was trying to do, to exactly one thing, by id. `None` when this
+    /// channel cannot express that particular tool — the caller falls back.
+    fn act(&self, tool: &str, id: &str) -> Option<Result<String, String>>;
+}
+
 /// Searches a server's own reading for the target a call failed to name, and retries when
 /// exactly one thing matches (ADR 0041).
 ///
@@ -2804,6 +2840,10 @@ impl CapabilityRunner for ReversibleOnlyRunner {
 /// contains are dropped, because `area: "kitchen"` adds nothing to `name: "Kitchen Table"`.
 pub struct TargetSearchRunner {
     inner: Arc<dyn CapabilityRunner + Send + Sync>,
+    /// Direct reach into a server, by server name (ADR 0042). Where one exists, it is
+    /// both the better reading — everything, not only what the tool surface exposes —
+    /// and the better way to act, because an id cannot be mis-matched.
+    channels: Vec<(String, Arc<dyn NativeChannel>)>,
 }
 
 /// How many places a real name may be tried. The call does not say which of its fields is
@@ -2816,18 +2856,73 @@ impl TargetSearchRunner {
     /// Wraps `inner` so failed calls search its own reading before giving up.
     #[must_use]
     pub fn new(inner: Arc<dyn CapabilityRunner + Send + Sync>) -> Self {
-        Self { inner }
+        Self {
+            inner,
+            channels: Vec::new(),
+        }
+    }
+
+    /// Wraps `inner`, with direct reach into the named servers (ADR 0042).
+    #[must_use]
+    pub fn with_channels(
+        inner: Arc<dyn CapabilityRunner + Send + Sync>,
+        channels: Vec<(String, Arc<dyn NativeChannel>)>,
+    ) -> Self {
+        Self { inner, channels }
+    }
+
+    /// The direct reach for whichever server owns `id`, if any.
+    fn channel(&self, id: &str) -> Option<&Arc<dyn NativeChannel>> {
+        let (server, _) = id.split_once('.')?;
+        self.channels
+            .iter()
+            .find(|(name, _)| name == server)
+            .map(|(_, channel)| channel)
     }
 
     /// This server's state as it is right now, via the tool the person nominated as its
     /// reader (ADR 0038). `None` when nobody nominated one — the honest silence, and the
     /// reason this whole mechanism needs no per-server code.
     fn reading(&self, id: &str) -> Option<String> {
+        // Direct reach first: it reports everything the service knows, where the tool
+        // surface reports only what that surface was configured to expose.
+        if let Some(channel) = self.channel(id) {
+            if let Ok(reading) = channel.reading() {
+                return Some(reading);
+            }
+        }
         let verifier = self.inner.verifier(id)?;
         if verifier == id {
             return None; // a read that failed has nothing to look itself up in
         }
         self.inner.run(&verifier, "{}").ok()
+    }
+
+    /// Acts on the matched name through the server's own interface, by id.
+    ///
+    /// `None` when this channel cannot express the tool, or does not know the name — the
+    /// caller falls back to retrying the tool itself, so direct reach is an improvement
+    /// and never a new way to fail.
+    fn act_directly(
+        &self,
+        channel: &Arc<dyn NativeChannel>,
+        tool: &str,
+        name: &str,
+    ) -> Option<Result<String, String>> {
+        let known = channel.known().ok()?;
+        let (entity, _) = known
+            .iter()
+            .find(|(_, known_name)| known_name.eq_ignore_ascii_case(name))?;
+        match channel.act(tool, entity)? {
+            // Say so. A person reading the trail should see that Endora went around the
+            // tool surface, and exactly what it acted on (ADR 0037).
+            Ok(out) => Some(Ok(format!(
+                "(The first attempt failed. Endora looked up what actually exists and \
+                 acted on '{name}' directly, as {entity}.)\n{out}"
+            ))),
+            // Falling back is the honest move: the tool retry may still work.
+            Err(_) => None,
+        }
     }
 
     /// The fields a real name could be placed in.
@@ -2903,6 +2998,14 @@ impl CapabilityRunner for TargetSearchRunner {
                 crate::target_search::shortlist(&found)
             ));
         };
+        // Direct reach, where it exists: resolve the name to the service's own id and
+        // act on exactly that (ADR 0042). An id cannot be mis-matched, so this is the end
+        // of the guessing rather than a better guess.
+        if let Some(channel) = self.channel(id) {
+            if let Some(result) = self.act_directly(channel, id, &best.value) {
+                return result;
+            }
+        }
         for field in Self::placements(input_json, &best.value)
             .into_iter()
             .take(MAX_PLACEMENTS)
@@ -4759,5 +4862,107 @@ mod tests {
                 .any(|c| c.contains(r#""name":"Guest Bedroom Left""#)),
             "never tried the name in a field that could hold it: {calls:?}"
         );
+    }
+
+    /// A service with its own interface: things have ids, and acting by id cannot miss.
+    struct Direct {
+        acted: std::sync::Mutex<Vec<String>>,
+    }
+
+    impl NativeChannel for Direct {
+        fn known(&self) -> Result<Vec<(String, String)>, String> {
+            Ok(vec![
+                ("light.kitchen_table".to_owned(), "Kitchen Table".to_owned()),
+                (
+                    "switch.kitchen_main".to_owned(),
+                    "Kitchen Main Light".to_owned(),
+                ),
+                (
+                    "light.hidden_from_assist".to_owned(),
+                    "Pantry Strip".to_owned(),
+                ),
+            ])
+        }
+        fn reading(&self) -> Result<String, String> {
+            // Ids are deliberately absent: `light.kitchen_table` shares its words with
+            // `Kitchen Table` and would compete with it as a candidate.
+            Ok("names: Kitchen Table\nnames: Kitchen Main Light\nnames: Pantry Strip".to_owned())
+        }
+        fn act(&self, tool: &str, id: &str) -> Option<Result<String, String>> {
+            if !tool.ends_with("HassTurnOn") {
+                return None;
+            }
+            self.acted.lock().unwrap().push(id.to_owned());
+            Some(Ok(format!("called turn_on on {id}")))
+        }
+    }
+
+    fn with_direct() -> (Arc<Direct>, TargetSearchRunner) {
+        let direct = Arc::new(Direct {
+            acted: std::sync::Mutex::new(Vec::new()),
+        });
+        // Wrapping the server itself, not the plain search runner — nesting two of them
+        // would let the inner one recover first, and the outer would never see a failure.
+        let server = Arc::new(House {
+            calls: std::sync::Mutex::new(Vec::new()),
+        });
+        let runner = TargetSearchRunner::with_channels(
+            server as Arc<dyn CapabilityRunner + Send + Sync>,
+            vec![(
+                "home".to_owned(),
+                Arc::clone(&direct) as Arc<dyn NativeChannel>,
+            )],
+        );
+        (direct, runner)
+    }
+
+    #[test]
+    fn direct_reach_acts_by_id_rather_than_retrying_a_name() {
+        // The end of the guessing. The model asked for "table"; the service's own
+        // interface has `light.kitchen_table`, which cannot be mis-matched.
+        let (direct, runner) = with_direct();
+        let out = runner
+            .run("home.HassTurnOn", r#"{"name":"table","area":"kitchen"}"#)
+            .expect("direct reach did not act");
+        assert!(out.contains("light.kitchen_table"), "{out}");
+        assert_eq!(
+            *direct.acted.lock().unwrap(),
+            vec!["light.kitchen_table".to_owned()]
+        );
+    }
+
+    #[test]
+    fn it_can_find_what_the_tool_surface_never_exposed() {
+        // The reason direct reach is worth having beyond exactness: `Pantry Strip` is not
+        // in the tool surface's reading at all, so nothing Endora did before could find
+        // it however hard it searched.
+        let (direct, runner) = with_direct();
+        let out = runner
+            .run("home.HassTurnOn", r#"{"name":"pantry strip"}"#)
+            .expect("could not reach something hidden from the tool surface");
+        assert!(out.contains("light.hidden_from_assist"), "{out}");
+        assert_eq!(direct.acted.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn a_tool_the_channel_cannot_express_falls_back_to_the_retry() {
+        // Direct reach is an improvement, never a new way to fail: the fake channel only
+        // expresses turning on, so turning off goes back through the tool.
+        let (direct, runner) = with_direct();
+        let out = runner.run("home.HassTurnOff", r#"{"name":"table","area":"kitchen"}"#);
+        assert!(direct.acted.lock().unwrap().is_empty(), "acted anyway");
+        assert!(out.is_err() || out.unwrap().contains("Kitchen Table"));
+    }
+
+    #[test]
+    fn direct_reach_still_refuses_an_ambiguous_match() {
+        // Exactness does not lower the bar for acting. "kitchen" resembles two things,
+        // and having ids available does not make choosing between them safe.
+        let (direct, runner) = with_direct();
+        let err = runner
+            .run("home.HassTurnOn", r#"{"area":"kitchen"}"#)
+            .expect_err("acted on an ambiguous match");
+        assert!(err.contains("Kitchen Table"), "{err}");
+        assert!(direct.acted.lock().unwrap().is_empty(), "acted on a guess");
     }
 }

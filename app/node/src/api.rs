@@ -1137,13 +1137,13 @@ fn build_runner(
     // Confirmed answers first, then observed ones — ADR 0038's trust ranking, expressed
     // as the order of recovery: the alias the person gave is tried before Endora goes
     // looking through the server's own reading for a name that resembles the request.
-    let recovers = endora_capabilities::TargetSearchRunner::new(Arc::new(
-        endora_capabilities::AliasRunner::new(
+    let recovers = endora_capabilities::TargetSearchRunner::with_channels(
+        Arc::new(endora_capabilities::AliasRunner::new(
             Arc::new(mcp_source) as Arc<dyn endora_capabilities::CapabilityRunner + Send + Sync>,
             aliases,
-        ),
-    )
-        as Arc<dyn endora_capabilities::CapabilityRunner + Send + Sync>);
+        )) as Arc<dyn endora_capabilities::CapabilityRunner + Send + Sync>,
+        native_channels(config),
+    );
     let composite = endora_capabilities::CompositeRunner::new(vec![
         Arc::new(registry) as Arc<dyn endora_capabilities::CapabilityRunner + Send + Sync>,
         Arc::new(recovers) as Arc<dyn endora_capabilities::CapabilityRunner + Send + Sync>,
@@ -1174,6 +1174,31 @@ fn build_reversible_only_runner(
         capabilities,
         mcp,
     )))
+}
+
+/// The servers Endora has **direct reach** into (ADR 0042) — its own connection to a
+/// service, alongside whatever tool surface that service exposes to the model.
+///
+/// Home Assistant's is built from the URL and long-lived token already stored against the
+/// `home_assistant` skill, so nothing has to be entered twice. Absent either, there is no
+/// channel and everything behaves exactly as it did before.
+///
+/// The server name must match the MCP server's, since that is how a failing tool id is
+/// traced back to the service that owns it.
+fn native_channels(
+    config: &endora_capabilities::ConfigStore,
+) -> Vec<(String, Arc<dyn endora_capabilities::NativeChannel>)> {
+    let settings = settings_map(config);
+    let Some(home_settings) = settings.get("home_assistant") else {
+        return Vec::new();
+    };
+    let Some(home) = endora_capabilities::HomeAssistant::from_settings(home_settings) else {
+        return Vec::new();
+    };
+    vec![(
+        endora_capabilities::paired_server(home_settings),
+        Arc::new(home) as Arc<dyn endora_capabilities::NativeChannel>,
+    )]
 }
 
 /// Loads all capability settings, grouped by capability id, for the runner.

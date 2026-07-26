@@ -15,6 +15,7 @@
 
 pub mod application;
 pub mod domain;
+pub mod home_assistant;
 pub mod infrastructure;
 pub mod mcp_http;
 pub mod mcp_registry;
@@ -29,11 +30,12 @@ pub use application::{
     ModelSlot, ModelTuneSchedule, ModelTuneScheduleRepository, Sampling, TargetAlias,
     TargetAliasRepository,
 };
+pub use home_assistant::{HomeAssistant, paired_server};
 pub use infrastructure::{
     AliasRunner, Capability, CapabilityError, CapabilityInfo, CapabilitySettings, CompositeRunner,
-    McpClient, McpRunner, McpToolInfo, OpenerRunner, RegistryRunner, ReversibleOnlyRunner,
-    SettingSpec, TargetSearchRunner, WithdrawnRunner, default_capabilities, redact_pii_in_value,
-    scan_outbound_secret,
+    McpClient, McpRunner, McpToolInfo, NativeChannel, OpenerRunner, RegistryRunner,
+    ReversibleOnlyRunner, SettingSpec, TargetSearchRunner, WithdrawnRunner, default_capabilities,
+    redact_pii_in_value, scan_outbound_secret,
 };
 pub use mcp_http::HttpMcpClient;
 pub use mcp_stdio::StdioMcpClient;

@@ -75,3 +75,4 @@ of an existing record and take the next number.
 | [0039](0039-capability-repair-proposals.md) | Capability repair proposals: noticing its own tooling is wrong | Accepted |
 | [0040](0040-withdrawing-a-capability-that-never-works.md) | Withdrawing a capability that never works | Accepted |
 | [0041](0041-searching-the-reading-for-the-real-target.md) | Searching the reading for the real target | Accepted |
+| [0042](0042-direct-reach-into-a-service.md) | Direct reach into a service | Accepted |
