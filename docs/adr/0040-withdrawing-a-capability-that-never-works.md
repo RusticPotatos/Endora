@@ -50,12 +50,16 @@ knows nothing about any particular server:
 | what the history shows | what it means | what is asked |
 | --- | --- | --- |
 | fails on **one** target, works on others | the name is wrong | *what is it really called?* → alias |
-| fails on **several** targets, has **never** worked | the tool is wrong | *stop offering it?* → withdrawal |
+| **refuses** on **several** targets, has **never** worked | the tool is wrong | *stop offering it?* → withdrawal |
 
 That is the whole rule. It reads the same for a calendar, a filesystem or a light, which
 is the property that made it worth building instead of hiding `HassLightSet` by name.
 
 Deliberately conservative, because the consequence is a tool disappearing:
+
+- **only an outright refusal counts.** See below — the first version of this rule counted
+  "changed nothing" too, and production immediately proposed withdrawing the most useful
+  tool in the house.
 
 - **width is counted over targets that are each already a pattern.** One stray failure at
   the garage must not escalate a plain alias question into a withdrawal.
@@ -65,6 +69,49 @@ Deliberately conservative, because the consequence is a tool disappearing:
 - **it proposes.** The person turns the tool off; Endora never does. Same boundary as
   everywhere else — [models propose, policy authorizes](0005-models-propose-policy-authorizes.md),
   and here the *derivation* proposes too.
+
+### Only unambiguous evidence (corrected 2026-07-26, from production)
+
+The first version of this rule treated the two kinds of failure ADR 0039 counts as
+interchangeable: an outright `error:` and a "reported success, changed nothing". Deployed,
+it immediately proposed **withdrawing `HassTurnOn`** — the most useful tool in the house —
+on 15 attempts.
+
+The records show why:
+
+```
+home-assistant.HassTurnOn   ERROR   changed: None    ×9
+home-assistant.HassTurnOn   ok      changed: false   ×5
+```
+
+Those five worked. One of them is the call that turned on every light in the house. They
+read as `changed: false` because the read-back was scoped to something the action did not
+touch — so every one was counted as a failure, and none of them registered as the tool
+having ever worked.
+
+The two evidence streams are therefore **not** interchangeable, and the asymmetry is the
+point:
+
+- **"changed nothing" is ambiguous.** Switching off an already-off light legitimately
+  changes nothing, and a mis-scoped read-back reports no change on an action that plainly
+  worked. Good enough to ask *what is this really called?* — being wrong costs a sentence.
+- **"I cannot do this" is not ambiguous.** It is the capability itself reporting it did
+  nothing, via Endora's own marker rather than any server's error format.
+
+So a **withdrawal counts only refusals**, and **any** non-error result disqualifies the
+capability entirely — including an unverified one. A no-op history still derives the alias
+question, exactly as ADR 0039 built it. The strength of the evidence now matches the
+strength of the claim.
+
+The underlying read-back defect is real and separate; this rule means it can no longer
+cost anyone a working tool.
+
+### A finding nobody can answer is not a finding
+
+Also live: `{"area":null,"name":null}` derived *"2 attempts aimed at "" didn't work — what
+is it actually called?"*. There is no *it*. The failure was the model not saying what it
+meant, which the runner already refuses. A finding with no target is dropped rather than
+shown as an unanswerable question.
 
 ### Withdrawn, not blocked — and why that distinction matters
 
@@ -109,9 +156,10 @@ answering *is* the retirement.
 - The wrong-tool failure has a remedy that arrives with any server, not just this one.
   Nothing in the derivation names Home Assistant.
 - Turning off an MCP tool works. It previously appeared to and did not.
-- **A withdrawal can be wrong.** A tool might have failed twice on names the person could
+- **A withdrawal can be wrong.** A tool might have refused twice on names the person could
   have fixed with an alias. Cost: they turn it back on, one click, nothing lost — and the
-  card says where. This is why success disqualifies and why width is counted strictly.
+  card says where. This is why success disqualifies, why width is counted strictly, and
+  why only refusals count.
 - Withdrawing a tool **removes a capability**. Turning off `HassLightSet` means no
   brightness control, and the proposal has to say so rather than presenting it as free.
 - The `reject_no_op_light_set` hardcode **stays**, and is now load-bearing in a second
