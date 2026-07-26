@@ -11,7 +11,9 @@ use endora_kernel::ids::{
 };
 use endora_kernel::{Decision, Reversibility};
 use endora_platform::AuditRecord;
-use endora_understanding::{Belief, Intention, Outcome, Preference, PreferenceKind, Reaction};
+use endora_understanding::{
+    Belief, Intention, Outcome, Preference, PreferenceKind, Reaction, RepairProposal,
+};
 
 use endora_capabilities::CapabilityRunner;
 use endora_conversation::ChatRepository;
@@ -208,6 +210,12 @@ pub fn note_verification(
 ///
 /// Silent unless both readings exist and match: without a before, or with no reader at
 /// all, there is nothing to claim and the honest answer is to say nothing.
+fn did_change(before: Option<&str>, after: Option<&str>) -> Option<bool> {
+    let (before, after) = (before?, after?);
+    Some(before.trim() != after.trim())
+}
+
+/// The tool-result note for [`did_change`] — see it for why two readings settle this.
 fn note_unchanged(before: Option<&str>, after: Option<&str>) -> String {
     let (Some(before), Some(after)) = (before, after) else {
         return String::new();
@@ -414,6 +422,7 @@ impl<'a> OutcomeSink<'a> {
         input: &str,
         claim: &str,
         observation: Option<&str>,
+        changed: Option<bool>,
         ids: &impl IdSource,
         clock: &impl Clock,
     ) {
@@ -428,6 +437,7 @@ impl<'a> OutcomeSink<'a> {
             observation,
             clock.now(),
             self.motivated_by,
+            changed,
         ) else {
             return;
         };
@@ -545,6 +555,7 @@ fn run_tool_turn(
                             &call.input_json,
                             &out,
                             observed.as_deref(),
+                            did_change(before.as_deref(), observed.as_deref()),
                             ids,
                             clock,
                         );
@@ -579,6 +590,10 @@ fn run_tool_turn(
                             &call.input_json,
                             &format!("error: {e}"),
                             observed.as_deref(),
+                            // The failure read-back is deliberately unscoped, so it is
+                            // not comparable with the scoped `before` — and an action
+                            // that errored made no claim to check anyway.
+                            None,
                             ids,
                             clock,
                         );
@@ -1414,6 +1429,19 @@ const TRACK_RECORD_WINDOW: usize = 50;
 /// [`AppError::Repository`] if the backend fails or stored data is corrupt.
 pub fn intentions(intentions: &impl IntentionRepository) -> Result<Vec<Intention>, AppError> {
     Ok(intentions.list()?)
+}
+
+/// What Endora has noticed is wrong with its own tooling (ADR 0039).
+///
+/// Derived from outcome history on every read — there is no store of proposals, nothing
+/// to dismiss and nothing to groom, which is how ADR 0029's approval queue is made
+/// impossible rather than merely discouraged. A proposal disappears on its own when the
+/// outcomes age out or an action finally changes something.
+///
+/// # Errors
+/// [`AppError::Repository`] if the backend fails or stored data is corrupt.
+pub fn repairs(outcomes: &impl OutcomeRepository) -> Result<Vec<RepairProposal>, AppError> {
+    Ok(endora_understanding::repair_proposals(&outcomes.list()?))
 }
 
 /// The person tells Endora to stop working on something (ADR 0036).
@@ -3085,6 +3113,7 @@ smart home:
             "done",
             None,
             Timestamp::from_unix_millis(id as i64),
+            None,
             None,
         )
         .expect("valid");

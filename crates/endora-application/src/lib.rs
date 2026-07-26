@@ -49,7 +49,7 @@ pub use endora_scheduling::{
 pub use endora_understanding::{
     Belief, BeliefKind, BeliefRepository, BeliefStatus, Confidence, Intention, IntentionRepository,
     IntentionState, Outcome, OutcomeRepository, Preference, PreferenceKind, PreferenceRepository,
-    Reaction,
+    Reaction, RepairProposal,
 };
 pub use ports::{
     Butler, ButlerContext, ButlerReply, CapabilityTool, Clock, ConversationSummary,

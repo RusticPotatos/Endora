@@ -89,7 +89,8 @@ CREATE TABLE IF NOT EXISTS outcomes (
     observation       TEXT,
     at_ms             INTEGER NOT NULL,
     motivating_belief TEXT,
-    reaction          TEXT
+    reaction          TEXT,
+    changed           INTEGER
 ) STRICT;
 CREATE TABLE IF NOT EXISTS capability_config (
     id                TEXT PRIMARY KEY,
@@ -254,6 +255,9 @@ impl SqliteStore {
                 "reader_tool",
                 "TEXT NOT NULL DEFAULT ''",
             )?;
+            // Whether an action actually moved the world (ADR 0039). Existing rows read
+            // back NULL — nothing to compare — which is the honest default.
+            ensure_column(&conn, "outcomes", "changed", "INTEGER")?;
         }
         Ok(Self { db })
     }
@@ -436,7 +440,8 @@ fn all_intentions(conn: &Connection) -> Result<Vec<Intention>, RepositoryError> 
 fn all_outcomes(conn: &Connection) -> Result<Vec<Outcome>, RepositoryError> {
     let mut stmt = conn
         .prepare(
-            "SELECT id, capability, input, claim, observation, at_ms, motivating_belief, reaction \
+            "SELECT id, capability, input, claim, observation, at_ms, motivating_belief, reaction, \
+             changed \
              FROM outcomes ORDER BY at_ms DESC, rowid DESC",
         )
         .map_err(backend)?;
@@ -451,12 +456,13 @@ fn all_outcomes(conn: &Connection) -> Result<Vec<Outcome>, RepositoryError> {
                 r.get::<_, i64>(5)?,
                 r.get::<_, Option<String>>(6)?,
                 r.get::<_, Option<String>>(7)?,
+                r.get::<_, Option<i64>>(8)?,
             ))
         })
         .map_err(backend)?;
     let mut out = Vec::new();
     for row in rows {
-        let (id, capability, input, claim, observation, at_ms, belief, reaction) =
+        let (id, capability, input, claim, observation, at_ms, belief, reaction, changed) =
             row.map_err(backend)?;
         let reaction = reaction
             .map(|r| {
@@ -476,6 +482,7 @@ fn all_outcomes(conn: &Connection) -> Result<Vec<Outcome>, RepositoryError> {
             Timestamp::from_unix_millis(at_ms),
             motivating_belief,
             reaction,
+            changed.map(|c| c != 0),
         ));
     }
     Ok(out)

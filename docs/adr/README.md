@@ -72,3 +72,4 @@ of an existing record and take the next number.
 | [0036](0036-durable-intentions.md) | Durable intentions: work that outlives a turn | Accepted |
 | [0037](0037-disclosure-not-persuasion.md) | Disclosure, not persuasion: an unverified action is always visible | Accepted |
 | [0038](0038-capability-profiles.md) | Capability profiles: learning what a tool does, instead of patching each one | Accepted |
+| [0039](0039-capability-repair-proposals.md) | Capability repair proposals: noticing its own tooling is wrong | Accepted |
