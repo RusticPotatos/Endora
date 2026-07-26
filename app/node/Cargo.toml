@@ -31,7 +31,7 @@ tokio = { version = "1.53.0", features = ["rt-multi-thread", "macros", "net", "s
 # Optional self-signed HTTPS (ENDORA_TLS=1) so the console is a secure context —
 # needed for browser mic/voice on a LAN address without a domain or proxy.
 axum-server = { version = "0.7.2", features = ["tls-rustls"] }
-rcgen = "0.13.2"
+rcgen = "0.14.7"
 rustls = { version = "0.23.23", features = ["ring"] }
 
 [lints]
