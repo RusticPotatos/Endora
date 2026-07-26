@@ -64,6 +64,7 @@ const ICONS = {
   scale: '<path d="M12 4v16M7 20h10"/><path d="M4 8h16M4 8l-2.2 5a2.6 2.6 0 0 0 4.4 0zM20 8l-2.2 5a2.6 2.6 0 0 0 4.4 0z"/><path d="M8 5h8"/>',
   sparkle: '<path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8z"/>',
   menu: '<line x1="4" y1="7" x2="20" y2="7"/><line x1="4" y1="12" x2="20" y2="12"/><line x1="4" y1="17" x2="20" y2="17"/>',
+  inbox: '<path d="M3.5 13.5L6 5h12l2.5 8.5v5.5h-17z"/><path d="M3.5 13.5H9a3 3 0 0 0 6 0h5.5"/>',
   skills: '<path d="M12 3l2.5 5 5.5.8-4 3.9 1 5.5-5-2.6-5 2.6 1-5.5-4-3.9 5.5-.8z"/>',
   gear: '<circle cx="12" cy="12" r="3.2"/><path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M18.4 5.6l-2.1 2.1M7.7 16.3l-2.1 2.1"/>',
   check: '<path d="M5 13l4 4L19 7"/>',
@@ -778,9 +779,20 @@ function unpromptedMessages() {
     if (list[i].role !== "butler") continue;
     const before = i > 0 ? list[i - 1] : null;
     if (before && before.role === "user") continue; // a reply, not an approach
+    if (isDegraded(list[i].text)) continue; // a failure, not an approach
     out.push(list[i]);
   }
-  return out.reverse(); // newest first, like an inbox
+  return out.reverse(); // newest first: the latest at the top, older below
+}
+
+// Whether a message is the butler reporting it could not reach its model.
+//
+// Those are real and belong in the conversation, but an inbox is what Endora chose to
+// say to you — and "I couldn't reach my language model" is the opposite: it is what
+// happened when it could not choose anything. Four of the twenty items in this inbox
+// were that sentence, which is how an inbox becomes something nobody opens.
+function isDegraded(text) {
+  return (text || "").startsWith("Sorry — I couldn't reach my language model");
 }
 
 // How much of the inbox has been seen. Kept on the device rather than the server: it
@@ -2139,7 +2151,7 @@ function setupHeader(health) {
       item("go:chat", "chat", "Home") +
       item(
         "go:inbox",
-        "chat",
+        "inbox",
         "Inbox",
         // A count only when there is something unread — a badge showing "0" is just
         // furniture, and one that never clears is a nag.
