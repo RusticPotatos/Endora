@@ -2832,6 +2832,19 @@ pub trait NativeChannel: Send + Sync {
     /// channel cannot express that particular tool — the caller falls back.
     fn act(&self, tool: &str, id: &str) -> Option<Result<String, String>>;
 
+    /// Whether `tool` could actually operate this thing (ADR 0047).
+    ///
+    /// Direct reach sees everything a service holds, which includes things that are not
+    /// controls: diagnostics, configuration entries, connection indicators. Those share
+    /// their device's name almost exactly, so they tie with it in a search and turn a
+    /// clear request into an ambiguous one.
+    ///
+    /// True by default — a channel that cannot tell says so by not narrowing anything.
+    fn actionable(&self, tool: &str, id: &str) -> bool {
+        let _ = (tool, id);
+        true
+    }
+
     /// Teaches the service that `alias` is another name for the thing it currently calls
     /// `name`, so the service itself resolves it from then on — for every client, not
     /// only for Endora (ADR 0043).
@@ -2973,6 +2986,38 @@ impl TargetSearchRunner {
         self.inner.run(&verifier, "{}").ok()
     }
 
+    /// The one candidate among the joint-best that the tool could actually operate.
+    ///
+    /// Live: "turn off the kitchen main light" tied three ways — `Kitchen Main Light`, its
+    /// `LED` configuration entry, and its `Cloud connection` indicator. All three carry
+    /// the device's name, and two of them are not controls at all. Reading the tie as
+    /// genuine ambiguity meant refusing a request that had exactly one sensible answer.
+    ///
+    /// Only ever **narrows a tie**: it cannot overrule a clear winner, and if more than
+    /// one operable thing remains the ambiguity was real and nothing is acted on.
+    fn only_one_that_can_be_acted_on<'a>(
+        &self,
+        tool: &str,
+        found: &'a [crate::target_search::Candidate],
+    ) -> Option<&'a crate::target_search::Candidate> {
+        let channel = self.channel(tool)?;
+        let best = found.first()?;
+        let tied: Vec<&crate::target_search::Candidate> =
+            found.iter().filter(|c| c.matched == best.matched).collect();
+        if tied.len() < 2 {
+            return None; // not a tie; `only_real_match` already had its say
+        }
+        let known = channel.known().ok()?;
+        let mut operable = tied.into_iter().filter(|candidate| {
+            known
+                .iter()
+                .find(|(_, name)| name.eq_ignore_ascii_case(&candidate.value))
+                .is_some_and(|(id, _)| channel.actionable(tool, id))
+        });
+        let only = operable.next()?;
+        operable.next().is_none().then_some(only)
+    }
+
     /// Acts on the matched name through the server's own interface, by id.
     ///
     /// `None` when this channel cannot express the tool, or does not know the name — the
@@ -3074,8 +3119,12 @@ impl CapabilityRunner for TargetSearchRunner {
             _ => crate::target_search::target_words(input_json),
         };
         let found = crate::target_search::candidates(&reading, &words);
-        // Only an unambiguous match may be acted on. Everything else is shown.
-        let Some(best) = crate::target_search::only_real_match(&found) else {
+        // Only an unambiguous match may be acted on. Everything else is shown — unless
+        // the tie is only between a thing and its own diagnostics, which is not a real
+        // ambiguity (ADR 0047).
+        let settled = crate::target_search::only_real_match(&found)
+            .or_else(|| self.only_one_that_can_be_acted_on(id, &found));
+        let Some(best) = settled else {
             return Err(format!(
                 "{original}{}",
                 crate::target_search::shortlist(&found)
@@ -4969,7 +5018,12 @@ mod tests {
         fn reading(&self) -> Result<String, String> {
             // Ids are deliberately absent: `light.kitchen_table` shares its words with
             // `Kitchen Table` and would compete with it as a candidate.
-            Ok("names: Kitchen Table\nnames: Kitchen Main Light\nnames: Pantry Strip".to_owned())
+            Ok("names: Kitchen Table\n\
+                names: Kitchen Main Light\n\
+                names: Kitchen Main Light LED\n\
+                names: Kitchen Main Light Cloud connection\n\
+                names: Pantry Strip"
+                .to_owned())
         }
         fn act(&self, tool: &str, id: &str) -> Option<Result<String, String>> {
             if !tool.ends_with("HassTurnOn") {
@@ -4977,6 +5031,10 @@ mod tests {
             }
             self.acted.lock().unwrap().push(id.to_owned());
             Some(Ok(format!("called turn_on on {id}")))
+        }
+
+        fn actionable(&self, _tool: &str, id: &str) -> bool {
+            id.starts_with("light.") || id.starts_with("switch.")
         }
     }
 
@@ -5130,5 +5188,35 @@ mod tests {
             v.get("area").is_none(),
             "kept a guess about the same target: {applied}"
         );
+    }
+
+    #[test]
+    fn a_thing_and_its_own_diagnostics_are_not_a_real_ambiguity() {
+        // Live: "turn off the kitchen main light" tied three ways — the light, its LED
+        // configuration entry, and its cloud-connection indicator. All three carry the
+        // device's name; two of them are not controls at all. Reading that as ambiguity
+        // meant refusing a request with exactly one sensible answer.
+        let (direct, runner) = with_direct();
+        let out = runner
+            .run("home.HassTurnOn", r#"{"name":"kitchen main light"}"#)
+            .expect("refused a request with one operable answer");
+        assert!(out.contains("switch.kitchen_main"), "{out}");
+        assert_eq!(
+            *direct.acted.lock().unwrap(),
+            vec!["switch.kitchen_main".to_owned()],
+            "acted on a diagnostic"
+        );
+    }
+
+    #[test]
+    fn a_tie_between_two_real_things_still_acts_on_neither() {
+        // Narrowing a tie must not become a way to break one. Two operable candidates is
+        // the ambiguity this whole path exists to refuse.
+        let (direct, runner) = with_direct();
+        let err = runner
+            .run("home.HassTurnOn", r#"{"area":"kitchen"}"#)
+            .expect_err("acted on a genuine ambiguity");
+        assert!(err.contains("Kitchen Table"), "{err}");
+        assert!(direct.acted.lock().unwrap().is_empty(), "acted on a guess");
     }
 }
