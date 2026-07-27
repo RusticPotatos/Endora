@@ -284,6 +284,33 @@ pub trait Butler {
         Ok(reply)
     }
 
+    /// [`take_turn`](Self::take_turn), streaming the answer's prose to `on_token` as it
+    /// arrives.
+    ///
+    /// The default answers in one piece and hands the whole thing over, so every butler
+    /// works with a streaming caller — the same shape as
+    /// [`respond_streaming`](Self::respond_streaming). A model-backed butler overrides it
+    /// to stream for real.
+    ///
+    /// A round that turns out to be **tool calls** has no prose to stream, and emits
+    /// nothing. Only the round that answers produces tokens.
+    ///
+    /// # Errors
+    /// [`ProposalError`] if a backing model is unreachable or returns nothing.
+    fn take_turn_streaming(
+        &self,
+        conversation: &[TurnMessage],
+        preferences: &[Preference],
+        context: &ButlerContext,
+        on_token: &mut dyn FnMut(&str),
+    ) -> Result<ButlerReply, ProposalError> {
+        let reply = self.take_turn(conversation, preferences, context)?;
+        if reply.tool_calls.is_empty() && !reply.text.is_empty() {
+            on_token(&reply.text);
+        }
+        Ok(reply)
+    }
+
     /// One step of the **single tool-calling conversation** (ADR 0053): given the
     /// conversation so far — including assistant tool-call turns and their
     /// [`TurnMessage::ToolResult`]s — produce the next assistant turn. A reply with
