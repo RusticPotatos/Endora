@@ -27,6 +27,22 @@ budget and a failure cap. No scripted pre-gather, no deterministic narration, no
 "decide then act" phases. What the model asks for, policy authorizes, and the result goes back
 into the same conversation.
 
+### The answer streams; the tool rounds do not
+
+A turn is several rounds, and only the last one produces prose. Streaming is therefore
+per-round: `content` deltas are relayed as they arrive, and a round that turns out to be
+**tool calls** emits nothing — its fragments are a machine format, and while it is working
+the person should be watching the action trail, not the model thinking out loud.
+
+Two properties keep it honest. The turn tracks what actually reached the person, so the
+notes it appends afterwards are sent as a **suffix** and the reply never arrives twice. And
+a streamed round is reassembled into exactly the shape a one-shot round returns, then parsed
+by the same code — so streamed and non-streamed turns cannot drift apart in how they are
+understood.
+
+The port keeps a default that answers in one piece, so a butler without native streaming
+still works with a streaming caller; only the model-backed one overrides it.
+
 ### Evidence verifies. An unobserved effect is never reported as fact.
 
 An actuator's own receipt is a **claim**, not evidence. After an action, Endora reads the
