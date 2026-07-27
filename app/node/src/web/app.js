@@ -24,6 +24,7 @@ let TUNE_SCHED = { enabled: false, hour_utc: 4 }; // nightly self-improving mode
 let UNDERSTANDING = [];        // Endora's beliefs about the person (the home surface)
 let OUTCOMES = [];             // what Endora DID, and what it saw afterwards (ADR 0053)
 let INTENTIONS = [];           // what Endora is pursuing, and has pursued (ADR 0052)
+let MCP_NEEDS = { fields: [], docs: "" }; // what the chosen catalogue entry says it needs
 let LAST_VIEW = null;          // which screen was showing, so a change can reset the scroll
 let REPAIRS = [];              // tooling Endora has noticed keeps not working (ADR 0054)
 let CONFIG_WRITES = [];        // changes Endora made to your services' own settings (ADR 0054)
@@ -484,6 +485,32 @@ async function mcpSearch() {
     }
 }
 
+// The variables the chosen entry declares, as real form fields.
+//
+// Nothing is invented: this renders only what the registry says the server needs. When it
+// declares nothing — which is common — the section stays empty and the Advanced box below
+// is the way in, with the server's own docs alongside it.
+function renderMcpNeeds() {
+  const host = document.getElementById("mcp-needs");
+  if (!host) return;
+  const fields = MCP_NEEDS.fields || [];
+  if (!fields.length) {
+    host.innerHTML = MCP_NEEDS.docs
+      ? `<div class="sub">This server didn't say what it needs. Check <a href="${esc(MCP_NEEDS.docs)}" target="_blank" rel="noopener">its docs</a>, then add any variables under Advanced.</div>`
+      : "";
+    return;
+  }
+  host.innerHTML = `
+    <div class="sub" style="margin-bottom:6px;">What this server needs${MCP_NEEDS.docs ? ` · <a href="${esc(MCP_NEEDS.docs)}" target="_blank" rel="noopener">its docs</a>` : ""}</div>
+    ${fields.map((f) => `
+      <div class="field">
+        <label>${esc(f.label || f.key)}${f.secret ? ` <span class="sub" style="font-weight:400;">· kept secret, never shown again</span>` : ""}</label>
+        <input id="mcp-need-${esc(f.key)}" data-need="${esc(f.key)}"
+               type="${f.secret ? "password" : "text"}" autocomplete="off"
+               placeholder="${esc(f.placeholder || "")}" />
+      </div>`).join("")}`;
+}
+
 // A short, safe name for a server, from whatever the registry calls it.
 //
 // Registry ids are reverse-DNS with a path — `io.github.XavierFabregat/spotify-mcp` —
@@ -507,10 +534,12 @@ function mcpUseCatalog(i) {
   if (t) { t.value = e.transport === "http" ? "http" : "stdio"; mcpTransportChange(t.value); }
   set("mcp-command", e.command || "");
   set("mcp-args", (e.args || []).join("\n"));
-  // Fields the entry says it needs: env vars become KEY= lines to fill in; arg/url
-  // fields are hinted so the person knows what to add.
-  const envLines = (e.fields || []).filter((f) => f.target === "env").map((f) => `${f.key}=`);
-  set("mcp-env", envLines.join("\n"));
+  // What this entry says it needs, rendered as real inputs below — one per variable,
+  // masked where it is a credential. A textarea of KEY=value is the wrong instrument for
+  // a secret: the value sits in plain view and a mistyped key fails silently.
+  MCP_NEEDS = { fields: (e.fields || []).filter((f) => f.target === "env"), docs: e.docs || "" };
+  renderMcpNeeds();
+  set("mcp-env", "");
   set("mcp-url", e.url || "");
   set("mcp-auth", "");
   const needs = (e.fields || []).filter((f) => f.target !== "env");
@@ -1007,7 +1036,7 @@ function viewSkills() {
           <div class="grow">
             <div class="title">${esc(s.name)} ${health} <span class="pill">${esc(s.transport)}</span>${s.auth_set ? ` <span class="pill concluded">token set</span>` : ""}${(s.env_keys || []).length ? ` <span class="pill concluded">${(s.env_keys || []).length} env</span>` : ""}</div>
             <div class="sub">${esc(addr)}</div>
-            ${s.tools_live === 0 ? `<div class="sub" style="margin-top:4px;color:var(--danger,#c33);"><strong>Connected to nothing — no tools.</strong> Endora can't use this server, and it will say it did things it couldn't. Retrying every couple of minutes; check the command or endpoint is reachable.</div>` : ""}
+            ${s.tools_live === 0 ? `<div class="sub" style="margin-top:4px;color:var(--danger,#c33);"><strong>Connected to nothing — no tools.</strong> Endora can't use this server. Most often that's a missing or wrong environment variable rather than a broken server${(s.env_keys || []).length ? ` — it has ${(s.env_keys || []).map(esc).join(", ")} set` : " — it has none set"}. ${s.transport === "stdio" ? "Some servers also need a one-time setup with a browser before they can run headless; check their docs." : "Check the endpoint is reachable."} Retrying every couple of minutes.</div>` : ""}
           </div>
           <div class="row" style="gap:6px;">
             <button class="ghost" data-act="mcp:edit:${esc(s.name)}" title="Load this server into the form below to change its URL or settings">Edit</button>
@@ -1051,8 +1080,13 @@ function viewSkills() {
         <div class="field"><label>Command</label><input id="mcp-command" placeholder="e.g. npx" /></div>
         <div class="field"><label>Arguments <span class="sub" style="font-weight:400;">· one per line</span></label>
           <textarea id="mcp-args" rows="3" placeholder="-y&#10;@modelcontextprotocol/server-filesystem&#10;/data"></textarea></div>
-        <div class="field"><label>Environment <span class="sub" style="font-weight:400;">· KEY=value per line, for credentials</span></label>
-          <textarea id="mcp-env" rows="2" placeholder="TOKEN=… (only if this server needs one)"></textarea></div>
+        <div id="mcp-needs"></div>
+        <details class="steps" style="margin-top:6px;">
+          <summary>Advanced · other environment variables</summary>
+          <div class="field" style="margin-top:6px;">
+            <label>KEY=value, one per line</label>
+            <textarea id="mcp-env" rows="2" placeholder="TOKEN=… (only if this server needs one)"></textarea></div>
+        </details>
       </div>
       <div id="mcp-http-fields" style="display:none;">
         <div class="field"><label>Endpoint URL</label><input id="mcp-url" placeholder="http://mcp-gateway:8080/" /></div>
@@ -1851,14 +1885,25 @@ async function dispatch(act) {
         const command = val("mcp-command");
         const args = val("mcp-args").split("\n").map((a) => a.trim()).filter(Boolean);
         if (!command) { flash("Enter a command.", "err"); return; }
-        // KEY=value per line → an environment for the child process (credentials).
+        // The declared fields first, then anything typed under Advanced — so a raw line
+        // can still override a declared one rather than being silently ignored.
         const env = {};
+        for (const el of document.querySelectorAll("[data-need]")) {
+          const v = (el.value || "").trim();
+          if (v) env[el.getAttribute("data-need")] = v;
+        }
         for (const line of val("mcp-env").split("\n")) {
           const i = line.indexOf("=");
           if (i <= 0) continue;
           const k = line.slice(0, i).trim();
           if (k) env[k] = line.slice(i + 1).trim();
         }
+        // A declared variable left blank is the likeliest reason a server connects to
+        // nothing, and it is worth catching here rather than two minutes later.
+        const missing = (MCP_NEEDS.fields || [])
+          .filter((f) => !env[f.key])
+          .map((f) => f.label || f.key);
+        if (missing.length && !confirm(`${missing.join(", ")} left blank.\n\nThis server said it needs ${missing.length === 1 ? "it" : "them"} — it will probably connect with no tools. Save anyway?`)) return;
         body = { name, transport: "stdio", command, args, env };
       }
       const trustEl = document.getElementById("mcp-trust");
