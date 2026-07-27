@@ -3010,6 +3010,23 @@ impl CapabilityRunner for TargetSearchRunner {
     }
 
     fn read_back_input(&self, action_id: &str, action_input: &str) -> String {
+        // Where there is direct reach, verification reads the WHOLE service, both before
+        // and after (ADR 0053).
+        //
+        // Scoping the read to the action's arguments assumes those arguments name the
+        // right thing — and this layer exists precisely because they often do not. Live:
+        // a call aimed at "living room" was corrected to `light.kitchen_table` and acted
+        // on it, while the read-back kept looking at the living room. Both readings were
+        // identical, so a light the person watched come on was recorded as no change, and
+        // the butler said it had failed.
+        //
+        // Reading everything cannot be aimed at the wrong thing. It can register an
+        // unrelated change as this action's — which is the safe direction to be wrong,
+        // since a false "nothing happened" is what causes false denials and nearly caused
+        // the most useful tool in the house to be withdrawn.
+        if self.channel(action_id).is_some() {
+            return "{}".to_owned();
+        }
         self.inner.read_back_input(action_id, action_input)
     }
 
@@ -5058,5 +5075,28 @@ mod tests {
             .expect_err("acted on a genuine ambiguity");
         assert!(err.contains("Kitchen Table"), "{err}");
         assert!(direct.acted.lock().unwrap().is_empty(), "acted on a guess");
+    }
+
+    #[test]
+    fn direct_reach_verifies_against_the_whole_service() {
+        // Live: a call aimed at "living room" was corrected to `light.kitchen_table` and
+        // acted on it, while the read-back kept looking at the living room. Both readings
+        // matched, so a light the person watched come on was recorded as no change.
+        let (_, runner) = with_direct();
+        assert_eq!(
+            runner.read_back_input("home.HassTurnOn", r#"{"area":"living room"}"#),
+            "{}",
+            "verification still aimed where the model pointed"
+        );
+    }
+
+    #[test]
+    fn without_direct_reach_the_scoped_read_back_is_untouched() {
+        let (_, runner) = house();
+        assert_eq!(
+            runner.read_back_input("home.HassTurnOn", r#"{"area":"kitchen"}"#),
+            "{}",
+            "the inner runner decides when there is no channel"
+        );
     }
 }
