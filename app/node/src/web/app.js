@@ -484,13 +484,25 @@ async function mcpSearch() {
     }
 }
 
+// A short, safe name for a server, from whatever the registry calls it.
+//
+// Registry ids are reverse-DNS with a path — `io.github.XavierFabregat/spotify-mcp` —
+// and a name is NOT just a label: tools are namespaced `server.tool` and resolved on the
+// FIRST dot, so a name containing dots resolves to a server called "io" and every one of
+// its tools silently disappears. The last path segment is both safe and what a person
+// would have typed anyway.
+function shortServerName(id) {
+  const last = String(id).split("/").pop() || "";
+  return last.replace(/[^A-Za-z0-9_-]/g, "-").replace(/-+/g, "-").replace(/^-|-$/g, "");
+}
+
 // Prefill the add form from a catalog entry. Everything stays editable — the entry
 // is a starting point, not a fixed recipe.
 function mcpUseCatalog(i) {
   const e = MCP_CATALOG[i];
   if (!e) return;
   const set = (id, v) => { const el = document.getElementById(id); if (el) el.value = v; };
-  set("mcp-name", e.id || e.name || "");
+  set("mcp-name", shortServerName(e.id || e.name || ""));
   const t = document.getElementById("mcp-transport");
   if (t) { t.value = e.transport === "http" ? "http" : "stdio"; mcpTransportChange(t.value); }
   set("mcp-command", e.command || "");
@@ -1040,7 +1052,7 @@ function viewSkills() {
         <div class="field"><label>Arguments <span class="sub" style="font-weight:400;">· one per line</span></label>
           <textarea id="mcp-args" rows="3" placeholder="-y&#10;@modelcontextprotocol/server-filesystem&#10;/data"></textarea></div>
         <div class="field"><label>Environment <span class="sub" style="font-weight:400;">· KEY=value per line, for credentials</span></label>
-          <textarea id="mcp-env" rows="2" placeholder="GITHUB_TOKEN=ghp_…"></textarea></div>
+          <textarea id="mcp-env" rows="2" placeholder="TOKEN=… (only if this server needs one)"></textarea></div>
       </div>
       <div id="mcp-http-fields" style="display:none;">
         <div class="field"><label>Endpoint URL</label><input id="mcp-url" placeholder="http://mcp-gateway:8080/" /></div>
@@ -1821,7 +1833,13 @@ async function dispatch(act) {
       const name = val("mcp-name");
       const transport = (document.getElementById("mcp-transport") || {}).value || "stdio";
       if (!name) { flash("Enter a name.", "err"); return; }
-      if (name.includes(":")) { flash("The name can't contain a colon.", "err"); return; }
+      // A name is the namespace for every tool the server exposes (`server.tool`), and
+      // both of these break resolving it — a dot splits the namespace in the wrong place
+      // and hides every tool.
+      if (/[.:]/.test(name)) {
+        flash("The name can't contain a dot or a colon — it's the prefix for this server's tools.", "err");
+        return;
+      }
       let body;
       if (transport === "http") {
         const url = val("mcp-url");
