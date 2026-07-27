@@ -522,6 +522,24 @@ async fn register_mcp_server(
     Json(req): Json<McpServerRequest>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     use endora_capabilities::{McpServer, McpServerRegistry, McpTransport};
+    // A server's name is the namespace for every tool it exposes (`server.tool`), and a
+    // tool id is resolved on its FIRST separator. A name containing one therefore points
+    // at a server that does not exist, and every tool from it silently disappears —
+    // observed with a registry id, `io.github.XavierFabregat/spotify-mcp`, which resolves
+    // to a server called "io".
+    //
+    // Checked here rather than only in the console, because the console is not the only
+    // way in.
+    if req.name.contains(['.', ':']) {
+        return Err(ApiError(AppError::BadRequest {
+            message: format!(
+                "'{}' can't be a server name: it is the prefix for this server's tools, \
+                 and a dot or colon in it hides every one of them. Try something short, \
+                 like 'spotify-mcp'.",
+                req.name
+            ),
+        }));
+    }
     let config = state.config.clone();
     let mcp = state.mcp.clone();
     blocking(move || {

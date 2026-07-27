@@ -2325,16 +2325,42 @@ fn drop_duplicated_kind_filters(obj: &mut serde_json::Map<String, serde_json::Va
 /// Schema-driven on purpose: this is what lets Endora keep a model's slips from failing
 /// a whole call without knowing anything about the server it is talking to (ADR 0054).
 fn permitted_values(field: Option<&serde_json::Value>) -> Option<Vec<String>> {
-    let field = field?;
-    let list = field
-        .get("enum")
-        .or_else(|| field.get("items").and_then(|i| i.get("enum")))?;
-    let values: Vec<String> = list
-        .as_array()?
-        .iter()
-        .filter_map(|v| v.as_str().map(ToOwned::to_owned))
-        .collect();
+    let values = collect_enum(field?);
     (!values.is_empty()).then_some(values)
+}
+
+/// Every value an `enum` anywhere in this schema fragment permits.
+///
+/// A schema says "one of these" in more shapes than one: directly, on an array's `items`,
+/// and — the shape that got through — nested inside `anyOf` / `oneOf` / `allOf`, which is
+/// how a generated schema usually expresses "a string from this list, or null".
+///
+/// Looking only at the top two levels missed it, so a value the server would reject was
+/// sent anyway. Live: `device_class: ["light"]` — not a device class, and Home Assistant
+/// answered `'light' is not one of ['awning', 'blind', 'curtain', …]`, failing the whole
+/// call. Endora had the list in the tool's own schema the entire time.
+fn collect_enum(field: &serde_json::Value) -> Vec<String> {
+    let mut values: Vec<String> = Vec::new();
+    if let Some(list) = field.get("enum").and_then(serde_json::Value::as_array) {
+        values.extend(
+            list.iter()
+                .filter_map(|v| v.as_str().map(ToOwned::to_owned)),
+        );
+    }
+    for key in ["items", "anyOf", "oneOf", "allOf", "prefixItems"] {
+        match field.get(key) {
+            Some(serde_json::Value::Array(branches)) => {
+                for branch in branches {
+                    values.extend(collect_enum(branch));
+                }
+            }
+            Some(nested) => values.extend(collect_enum(nested)),
+            None => {}
+        }
+    }
+    values.sort();
+    values.dedup();
+    values
 }
 
 /// Merges several [`CapabilityRunner`] sources — the built-in registry and any MCP
@@ -5142,5 +5168,52 @@ mod tests {
     fn a_service_with_nothing_to_say_about_them_says_nothing() {
         let (_, plain) = house();
         assert!(plain.about_the_person().is_empty());
+    }
+
+    #[test]
+    fn an_enum_nested_in_any_of_is_still_a_list_of_permitted_values() {
+        // The shape that got through. A generated schema usually says "a string from this
+        // list, or null" as an anyOf, and looking only at the top two levels missed it —
+        // so `device_class: ["light"]` was sent, and Home Assistant answered
+        // `'light' is not one of ['awning', 'blind', ...]`, failing the whole call.
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "device_class": {
+                    "anyOf": [
+                        { "type": "array", "items": { "enum": ["door", "garage"] } },
+                        { "type": "null" }
+                    ]
+                }
+            }
+        });
+        let out = coerce_args_to_schema(
+            r#"{"device_class":["light"],"name":"front"}"#,
+            Some(&schema),
+        );
+        let v: Value = serde_json::from_str(&out).unwrap();
+        assert!(
+            v.get("device_class").is_none(),
+            "sent a value the schema rejects: {out}"
+        );
+        assert_eq!(v["name"], "front", "dropped something valid: {out}");
+    }
+
+    #[test]
+    fn a_permitted_value_nested_the_same_way_survives() {
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "device_class": {
+                    "anyOf": [
+                        { "type": "array", "items": { "enum": ["door", "garage"] } },
+                        { "type": "null" }
+                    ]
+                }
+            }
+        });
+        let out = coerce_args_to_schema(r#"{"device_class":["garage"]}"#, Some(&schema));
+        let v: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["device_class"], serde_json::json!(["garage"]));
     }
 }
