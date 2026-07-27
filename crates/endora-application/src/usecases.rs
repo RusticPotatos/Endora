@@ -1073,14 +1073,8 @@ pub fn send_to_butler_streaming(
     // model must relay honestly; if it misreports with the truth in front of it, that
     // is a model failure to surface, not a canned string to hardcode. The proactive
     // flows (check-in, brief, nightly loop) run on this same loop.
-    // Remember what actually reached the person, so the final send is only what they
-    // have not already seen. Without this the whole reply arrives a second time.
-    let streamed = std::cell::RefCell::new(String::new());
     let reply = {
-        let mut relay = |chunk: &str| {
-            streamed.borrow_mut().push_str(chunk);
-            on_token(chunk);
-        };
+        let mut relay = |chunk: &str| on_token(chunk);
         run_tool_turn(
             butler,
             capabilities,
@@ -1103,6 +1097,10 @@ pub fn send_to_butler_streaming(
     // climb to the deeper (bigger/cloud) model when the person configured one. Prose
     // only — never an action — so it stays a reasoning aid behind the policy boundary,
     // and the deep asker applies the egress guard since the question leaves the device.
+    // Whether the answering round spoke for itself. When it did, that text has already
+    // reached the person token by token; when it did not, whatever stands in for it is
+    // new to them.
+    let answered_in_its_own_words = !reply.text.trim().is_empty();
     let reply_text = if reply.text.trim().is_empty() {
         match deep.and_then(|d| d.ask(text)).map(|a| a.trim().to_owned()) {
             Some(answer) if !answer.is_empty() => {
@@ -1130,13 +1128,25 @@ pub fn send_to_butler_streaming(
     // Deterministic, and it does not rewrite what the model said: it appends what is
     // true. Whether the model narrates well is not something Endora can fix, but whether
     // the person is told nothing happened is.
-    let reply_text = format!("{reply_text}{}", nothing_changed_note(disclosures));
+    let appended = nothing_changed_note(disclosures);
+    let reply_text = format!("{reply_text}{appended}");
     // `take_turn` is non-streaming, so deliver the final answer at once.
-    let already = streamed.into_inner();
-    let already = already.trim();
-    let unseen = reply_text.strip_prefix(already).unwrap_or(&reply_text);
-    if !unseen.is_empty() {
-        on_token(unseen);
+    // Send only what the person has not already seen.
+    //
+    // Diffing against everything streamed does not work: the model often writes a line
+    // before calling a tool ("let me check the kitchen"), which reaches the person and is
+    // then NOT part of the final answer — so the accumulated stream is no longer a prefix
+    // of the reply, and the whole answer would arrive a second time.
+    //
+    // The signal is simpler than a diff. If the answering round produced text, that text
+    // is exactly what streamed, and only the notes appended after it are new. If it
+    // produced nothing, whatever stands in for it was never streamed at all.
+    if answered_in_its_own_words {
+        if !appended.is_empty() {
+            on_token(&appended);
+        }
+    } else {
+        on_token(&reply_text);
     }
     let butler_msg = ChatMessage::new(
         MessageId::new(ids.new_id()),
@@ -5920,5 +5930,105 @@ mod tests {
         let seen = chunks.into_inner();
         assert!(seen.len() > 1, "arrived as one lump: {seen:?}");
         assert_eq!(seen.concat(), reply.text, "the pieces are the whole reply");
+    }
+
+    /// A butler that says a line before calling a tool, then answers — the shape that
+    /// exposed the duplication.
+    struct ThinksAloudThenAnswers {
+        round: std::cell::Cell<u8>,
+    }
+
+    impl Butler for ThinksAloudThenAnswers {
+        fn respond(
+            &self,
+            _history: &[ChatMessage],
+            _preferences: &[Preference],
+            _context: &ButlerContext,
+        ) -> Result<ButlerReply, ProposalError> {
+            Ok(ButlerReply::default())
+        }
+        fn take_turn(
+            &self,
+            _conversation: &[crate::TurnMessage],
+            _preferences: &[Preference],
+            _context: &ButlerContext,
+        ) -> Result<ButlerReply, ProposalError> {
+            unreachable!("the streaming round is used")
+        }
+        fn take_turn_streaming(
+            &self,
+            _conversation: &[crate::TurnMessage],
+            _preferences: &[Preference],
+            _context: &ButlerContext,
+            on_token: &mut dyn FnMut(&str),
+        ) -> Result<ButlerReply, ProposalError> {
+            if self.round.get() == 0 {
+                self.round.set(1);
+                // A line the person sees, which is NOT part of the final answer.
+                on_token("Let me check. ");
+                return Ok(ButlerReply {
+                    text: "Let me check. ".to_owned(),
+                    tool_calls: vec![crate::ToolCall {
+                        id: "1".to_owned(),
+                        capability: "noop".to_owned(),
+                        input_json: "{}".to_owned(),
+                    }],
+                    ..ButlerReply::default()
+                });
+            }
+            on_token("It is on.");
+            Ok(ButlerReply {
+                text: "It is on.".to_owned(),
+                ..ButlerReply::default()
+            })
+        }
+    }
+
+    #[test]
+    fn a_line_before_a_tool_call_does_not_make_the_answer_arrive_twice() {
+        // Diffing against everything streamed does not work: a model that writes "let me
+        // check" before calling a tool breaks the prefix, so the whole answer would be
+        // sent a second time after the person had already watched it arrive.
+        //
+        // Against the WHOLE turn, not just the tool loop — the second send happens after
+        // the loop returns, which is where the duplication lived.
+        let store = FakeStore::default();
+        let (ids, clock) = (SeqIds::default(), FixedClock(4_000));
+        let mut streamed = String::new();
+        let (msg, _activity) = super::send_to_butler_streaming(
+            &store,
+            &store,
+            &store,
+            &FakeOutcomes::default(),
+            &NoCapabilities,
+            &ThinksAloudThenAnswers {
+                round: std::cell::Cell::new(0),
+            },
+            &FakeAudit::default(),
+            None,
+            None,
+            &ids,
+            &clock,
+            &ButlerContext::default(),
+            "is the light on?",
+            &mut |t| streamed.push_str(t),
+            &mut |_| {},
+            &mut Vec::new(),
+        )
+        .expect("the turn failed");
+        assert!(
+            streamed.contains("Let me check."),
+            "the preamble reached them: {streamed}"
+        );
+        assert_eq!(
+            streamed.matches("It is on.").count(),
+            1,
+            "the answer arrived twice: {streamed}"
+        );
+        assert_eq!(
+            msg.text(),
+            "It is on.",
+            "the stored reply is the answer alone"
+        );
     }
 }

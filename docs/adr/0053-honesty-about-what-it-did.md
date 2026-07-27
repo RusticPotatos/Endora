@@ -34,11 +34,18 @@ per-round: `content` deltas are relayed as they arrive, and a round that turns o
 **tool calls** emits nothing — its fragments are a machine format, and while it is working
 the person should be watching the action trail, not the model thinking out loud.
 
-Two properties keep it honest. The turn tracks what actually reached the person, so the
-notes it appends afterwards are sent as a **suffix** and the reply never arrives twice. And
-a streamed round is reassembled into exactly the shape a one-shot round returns, then parsed
-by the same code — so streamed and non-streamed turns cannot drift apart in how they are
-understood.
+A round that calls a tool often writes a line first — *"let me check the kitchen"* — and
+that line reaches the person. It is not part of the answer, which means **what was streamed
+is not a prefix of the reply**, and diffing the two to find "what they have not seen yet"
+sends the whole answer a second time. Observed as `Let me check. It is on.It is on.`
+
+The signal is simpler than a diff: if the answering round produced text, that text is
+exactly what streamed and only the notes appended after it are new; if it produced nothing,
+whatever stands in for it was never streamed at all.
+
+A streamed round is also reassembled into exactly the shape a one-shot round returns and
+parsed by the same code, so streamed and non-streamed turns cannot drift apart in how they
+are understood.
 
 The port keeps a default that answers in one piece, so a butler without native streaming
 still works with a streaming caller; only the model-backed one overrides it.
