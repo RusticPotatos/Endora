@@ -200,6 +200,108 @@ impl LlmButler {
     /// reply (the internal JSON envelope is never streamed to the caller — only
     /// the growing `reply` string is). Returns the fully-parsed reply
     /// (authoritative text + proposals) once the stream ends.
+    /// One tool-calling round, streamed: forwards `content` deltas as they arrive and
+    /// accumulates everything so the finished round is parsed exactly as the one-shot
+    /// path parses it.
+    ///
+    /// Content and tool-call deltas arrive interleaved on the same stream. Only content
+    /// is forwarded — a round that is choosing a tool has nothing to say yet, and
+    /// emitting its fragments would show the person the model thinking out loud in a
+    /// format meant for a machine.
+    fn stream_turn(
+        &self,
+        conversation: &[endora_application::TurnMessage],
+        preferences: &[Preference],
+        context: &ButlerContext,
+        on_token: &mut dyn FnMut(&str),
+    ) -> Result<ButlerReply, ProposalError> {
+        let mut body = build_turn_request(
+            &self.model,
+            &self.sampling,
+            conversation,
+            preferences,
+            context,
+        );
+        body["stream"] = Value::Bool(true);
+        let body = self.with_keep_alive(body);
+        let url = format!("{}/chat/completions", self.base_url);
+        let mut req = self.agent.post(&url);
+        if !self.api_key.is_empty() {
+            req = req.header("Authorization", &format!("Bearer {}", self.api_key));
+        }
+        let response = req
+            .send_json(&body)
+            .map_err(|e| ProposalError::Unavailable(e.to_string()))?;
+        if response.status().as_u16() >= 300 {
+            return Err(ProposalError::Unavailable(format!(
+                "endpoint returned status {}",
+                response.status()
+            )));
+        }
+        let reader = std::io::BufReader::new(response.into_body().into_reader());
+        let mut text = String::new();
+        // Tool calls arrive in fragments, each carrying an index; arguments are
+        // concatenated per index and only make sense once the stream ends.
+        let mut calls: std::collections::BTreeMap<u64, (String, String, String)> =
+            std::collections::BTreeMap::new();
+        for line in std::io::BufRead::lines(reader) {
+            let Ok(line) = line else { break };
+            let Some(data) = line.strip_prefix("data: ") else {
+                continue;
+            };
+            if data.trim() == "[DONE]" {
+                break;
+            }
+            let Ok(chunk) = serde_json::from_str::<Value>(data) else {
+                continue;
+            };
+            let delta = &chunk["choices"][0]["delta"];
+            if let Some(piece) = delta["content"].as_str() {
+                if !piece.is_empty() {
+                    text.push_str(piece);
+                    on_token(piece);
+                }
+            }
+            let Some(fragments) = delta["tool_calls"].as_array() else {
+                continue;
+            };
+            for fragment in fragments {
+                let index = fragment["index"].as_u64().unwrap_or(0);
+                let entry = calls.entry(index).or_default();
+                if let Some(id) = fragment["id"].as_str() {
+                    entry.0.push_str(id);
+                }
+                if let Some(name) = fragment["function"]["name"].as_str() {
+                    entry.1.push_str(name);
+                }
+                if let Some(args) = fragment["function"]["arguments"].as_str() {
+                    entry.2.push_str(args);
+                }
+            }
+        }
+        if text.trim().is_empty() && calls.is_empty() {
+            return Err(ProposalError::Unavailable("empty stream".to_owned()));
+        }
+        // Rebuild the shape the one-shot path already knows how to read, so streamed and
+        // non-streamed rounds cannot drift apart in how they are understood.
+        let assembled = json!({
+            "choices": [{
+                "message": {
+                    "content": text,
+                    "tool_calls": calls
+                        .into_values()
+                        .map(|(id, name, arguments)| json!({
+                            "id": id,
+                            "type": "function",
+                            "function": { "name": name, "arguments": arguments },
+                        }))
+                        .collect::<Vec<_>>(),
+                }
+            }]
+        });
+        parse_model_reply(&assembled, context)
+    }
+
     fn try_model_streaming(
         &self,
         history: &[ChatMessage],
@@ -352,6 +454,23 @@ impl Butler for LlmButler {
                 on_token(&reply.text);
                 Ok(reply)
             })
+    }
+
+    fn take_turn_streaming(
+        &self,
+        conversation: &[endora_application::TurnMessage],
+        preferences: &[Preference],
+        context: &ButlerContext,
+        on_token: &mut dyn FnMut(&str),
+    ) -> Result<ButlerReply, ProposalError> {
+        // The tool-calling round, streamed. A round that turns out to be tool calls
+        // carries no prose, so nothing is emitted and the person sees the action trail
+        // instead — which is what they want while it is working anyway.
+        //
+        // Falls back to the one-shot round if streaming fails for any reason, so a
+        // stream that dies mid-flight still produces an answer.
+        self.stream_turn(conversation, preferences, context, on_token)
+            .or_else(|_| self.take_turn(conversation, preferences, context))
     }
 
     fn take_turn(
