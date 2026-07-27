@@ -381,6 +381,19 @@ pub trait CapabilityRunner {
     /// The skills currently available (for grounding the butler).
     fn available(&self) -> Vec<CapabilitySpec>;
 
+    /// What the person's own services can say about them **right now** — one short line
+    /// each, e.g. `morgan is not home`.
+    ///
+    /// Live state, not a belief: it is true this minute and worthless tomorrow, which is
+    /// why it goes into the turn's context rather than into understanding. A butler that
+    /// does not know whether someone is in the house is guessing every time it decides
+    /// whether to speak.
+    ///
+    /// Empty by default. A service that has nothing to say about the person says nothing.
+    fn about_the_person(&self) -> Vec<String> {
+        Vec::new()
+    }
+
     /// Runs a capability with JSON input, returning its JSON output or an error
     /// message. Only ever called for capabilities the policy layer has cleared.
     fn run(&self, id: &str, input_json: &str) -> Result<String, String>;
