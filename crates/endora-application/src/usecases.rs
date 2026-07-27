@@ -215,6 +215,15 @@ fn did_change(before: Option<&str>, after: Option<&str>) -> Option<bool> {
     Some(before.trim() != after.trim())
 }
 
+/// How long to let a service settle before looking a second time.
+///
+/// Long enough for a smart-home integration to report a state change back (they are
+/// typically well under half a second on a local network), short enough that a person
+/// waiting on a reply does not notice. Paid only when the first reading suggested nothing
+/// happened — which is either a real no-op, where the wait is the cost of being sure, or a
+/// race, where it is the difference between the truth and a false record.
+const SETTLE_BEFORE_LOOKING_AGAIN: std::time::Duration = std::time::Duration::from_millis(700);
+
 /// The tool-result note when the world **did** move.
 ///
 /// `note_unchanged` has always spoken up when nothing happened, and said nothing when
@@ -531,6 +540,23 @@ fn run_tool_turn(
                         // Evidence verifies (ADR 0053): look at the world rather than
                         // taking the actuator's word for what it did.
                         let observed = read_state_back(capabilities, &id, &call.input_json);
+                        // …but look again if it seems nothing moved. A service that
+                        // updates state asynchronously answers the call first and changes
+                        // the world a moment later, so the first reading races the change
+                        // and loses. Observed: a light the person watched go off was
+                        // recorded `changed: false`, and the butler then told them it
+                        // could not turn it off — Endora asserting a falsehood and the
+                        // model faithfully repeating it.
+                        //
+                        // Only on the "looks unchanged" path, so a change seen straight
+                        // away costs nothing, and only once.
+                        let observed =
+                            if did_change(before.as_deref(), observed.as_deref()) == Some(false) {
+                                std::thread::sleep(SETTLE_BEFORE_LOOKING_AGAIN);
+                                read_state_back(capabilities, &id, &call.input_json).or(observed)
+                            } else {
+                                observed
+                            };
                         if observed.is_some() {
                             activity.push(format!("Checked the result of {id}"));
                         }
