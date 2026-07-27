@@ -215,6 +215,29 @@ fn did_change(before: Option<&str>, after: Option<&str>) -> Option<bool> {
     Some(before.trim() != after.trim())
 }
 
+/// The tool-result note when the world **did** move.
+///
+/// `note_unchanged` has always spoken up when nothing happened, and said nothing when
+/// something did — which leaves the model with only the service's own sentence to go on.
+/// Live, that sentence is often a hedge ("Home Assistant accepted this; its reply says
+/// nothing about the result"), because Home Assistant answers before its integrations
+/// report back. Endora had already compared two readings and knew the answer; it just was
+/// not saying it.
+///
+/// Stating the verdict is not narration on the model's behalf (ADR 0053) — it is reporting
+/// an observation Endora made, which is the one thing it is entitled to assert.
+fn note_changed(before: Option<&str>, after: Option<&str>) -> String {
+    let (Some(before), Some(after)) = (before, after) else {
+        return String::new();
+    };
+    if before.trim() == after.trim() {
+        return String::new();
+    }
+    "\n\n[changed] Endora read the state before and after, and it is different — this \
+     worked. Say so plainly; do not hedge about it."
+        .to_owned()
+}
+
 /// The tool-result note for [`did_change`] — see it for why two readings settle this.
 fn note_unchanged(before: Option<&str>, after: Option<&str>) -> String {
     let (Some(before), Some(after)) = (before, after) else {
@@ -528,7 +551,8 @@ fn run_tool_turn(
                         (
                             StepStatus::Done,
                             note_verification(&out, spec.as_ref(), observed.as_deref())
-                                + &note_unchanged(before.as_deref(), observed.as_deref()),
+                                + &note_unchanged(before.as_deref(), observed.as_deref())
+                                + &note_changed(before.as_deref(), observed.as_deref()),
                         )
                     }
                     Err(e) => {
@@ -757,6 +781,34 @@ fn disclose(
         claimed: claimed.trim().to_owned(),
         observed: observed.map(|o| o.trim().to_owned()),
     });
+}
+
+/// What to say when the model produced no words but the turn did something.
+///
+/// Observed: a light was switched on by direct reach, the model returned an empty reply,
+/// and Endora answered "I'm not sure how to help with that yet" — an apology for work it
+/// had just completed. The person then cannot tell whether to try again.
+///
+/// The tool's own report is quoted and attributed rather than paraphrased, because Endora
+/// is entitled to say what a tool told it and not to invent a summary of it.
+fn acted_note(disclosures: &[ActionDisclosure]) -> Option<String> {
+    let done: Vec<&ActionDisclosure> = disclosures
+        .iter()
+        .filter(|d| !d.claimed.trim_start().starts_with("error:"))
+        .collect();
+    let first = done.first()?;
+    // The claim's opening line: enough to say what happened, without pasting a reading.
+    let said = first
+        .claimed
+        .lines()
+        .find(|l| !l.trim().is_empty())
+        .unwrap_or("it reported success")
+        .trim();
+    let more = match done.len() {
+        1 => String::new(),
+        n => format!(" ({} actions in all — the trail below has each one.)", n),
+    };
+    Some(format!("Done. {} reported: {said}{more}", first.skill))
 }
 
 /// The line to append when a turn tried to change something and changed nothing.
@@ -1017,7 +1069,14 @@ pub fn send_to_butler_streaming(
                 activity.push("Asked the deep model (the local model came up empty)".to_owned());
                 answer
             }
-            _ => "I'm not sure how to help with that yet — can you say a bit more?".to_owned(),
+            // Nothing from either model. If the turn ACTED, apologising is simply false —
+            // it did something and knows what. ADR 0053 rejected deterministic narration
+            // because code-written sentences got contradicted by the model; there is
+            // nothing to contradict when the model produced no sentence at all, which is
+            // what makes this safe rather than a relapse.
+            _ => acted_note(disclosures).unwrap_or_else(|| {
+                "I'm not sure how to help with that yet — can you say a bit more?".to_owned()
+            }),
         }
     } else {
         reply.text.trim().to_owned()
@@ -5685,5 +5744,50 @@ mod tests {
         let note = super::nothing_changed_note(&failed);
         assert!(note.contains("Nothing was changed"), "{note}");
         assert!(!note.contains("look like"), "invented a suggestion: {note}");
+    }
+
+    #[test]
+    fn a_turn_that_acted_never_apologises_for_it() {
+        // Live: a light was switched on by direct reach, the model returned an empty
+        // reply, and Endora answered "I'm not sure how to help with that yet" — an apology
+        // for work it had just completed.
+        let done = vec![super::ActionDisclosure {
+            skill: "home-assistant.HassTurnOn".to_owned(),
+            claimed: "Home Assistant accepted 'turn on' on light.kitchen_table.".to_owned(),
+            observed: None,
+        }];
+        let said = super::acted_note(&done).expect("said nothing about work it had done");
+        assert!(said.starts_with("Done."), "{said}");
+        assert!(said.contains("light.kitchen_table"), "{said}");
+        assert!(
+            said.contains("home-assistant.HassTurnOn"),
+            "attributes it: {said}"
+        );
+    }
+
+    #[test]
+    fn a_turn_that_only_failed_has_nothing_to_report() {
+        // The apology is right here — and the "(Nothing was changed)" note carries the
+        // rest of the story.
+        let failed = vec![super::ActionDisclosure {
+            skill: "home.HassTurnOn".to_owned(),
+            claimed: "error: MatchFailedError".to_owned(),
+            observed: None,
+        }];
+        assert!(super::acted_note(&failed).is_none());
+        assert!(super::acted_note(&[]).is_none());
+    }
+
+    #[test]
+    fn a_reading_that_moved_is_reported_as_having_worked() {
+        // The hedge this replaces: Home Assistant answers before its integrations report
+        // back, so its own sentence says nothing about the outcome. Endora compared two
+        // readings and knew.
+        let note = super::note_changed(Some("state: off"), Some("state: on"));
+        assert!(note.contains("[changed]"), "{note}");
+        assert!(note.contains("do not hedge"), "{note}");
+        // Identical readings, or a missing one, assert nothing.
+        assert_eq!(super::note_changed(Some("same"), Some("same")), "");
+        assert_eq!(super::note_changed(None, Some("state: on")), "");
     }
 }
