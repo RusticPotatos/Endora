@@ -2369,6 +2369,13 @@ impl CapabilityRunner for CompositeRunner {
         self.sources.iter().flat_map(|s| s.available()).collect()
     }
 
+    fn about_the_person(&self) -> Vec<String> {
+        self.sources
+            .iter()
+            .flat_map(|s| s.about_the_person())
+            .collect()
+    }
+
     fn decision(&self, id: &str) -> Option<Decision> {
         self.owner(id)?.decision(id)
     }
@@ -2746,6 +2753,14 @@ pub trait NativeChannel: Send + Sync {
         None
     }
 
+    /// What this service can say about the person **right now**, in one short line.
+    ///
+    /// `None` — the default — from a service that knows nothing about them. A smart home
+    /// knows whether they are in it; a calendar would know whether they are busy.
+    fn about_the_person(&self) -> Option<String> {
+        None
+    }
+
     /// A reason this call cannot do anything, so it is refused rather than sent
     /// (ADR 0054).
     ///
@@ -2999,6 +3014,13 @@ impl TargetSearchRunner {
 impl CapabilityRunner for TargetSearchRunner {
     fn available(&self) -> Vec<crate::application::CapabilitySpec> {
         self.inner.available()
+    }
+
+    fn about_the_person(&self) -> Vec<String> {
+        self.channels
+            .iter()
+            .filter_map(|(_, channel)| channel.about_the_person())
+            .collect()
     }
 
     fn decision(&self, id: &str) -> Option<Decision> {
@@ -4890,6 +4912,10 @@ mod tests {
             Some(Ok(format!("called turn_on on {id}")))
         }
 
+        fn about_the_person(&self) -> Option<String> {
+            Some("rustic is not home".to_owned())
+        }
+
         fn actionable(&self, _tool: &str, id: &str) -> bool {
             id.starts_with("light.") || id.starts_with("switch.")
         }
@@ -5098,5 +5124,23 @@ mod tests {
             "{}",
             "the inner runner decides when there is no channel"
         );
+    }
+
+    #[test]
+    fn what_a_service_knows_about_the_person_reaches_the_turn() {
+        // The house was already reporting `person.rustic -> not_home` in a reading Endora
+        // fetches for other reasons, and nothing ever looked at it. A butler that does not
+        // know whether anyone is in is guessing every time it decides whether to speak.
+        let (_, runner) = with_direct();
+        assert_eq!(
+            runner.about_the_person(),
+            vec!["rustic is not home".to_owned()]
+        );
+    }
+
+    #[test]
+    fn a_service_with_nothing_to_say_about_them_says_nothing() {
+        let (_, plain) = house();
+        assert!(plain.about_the_person().is_empty());
     }
 }
