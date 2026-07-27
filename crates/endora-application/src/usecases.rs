@@ -315,10 +315,11 @@ fn take_turn_retrying_empty(
     conversation: &[TurnMessage],
     prefs: &[Preference],
     context: &ButlerContext,
+    on_token: &mut dyn FnMut(&str),
 ) -> Result<ButlerReply, AppError> {
     const MAX_EMPTY_RETRIES: usize = 2;
     let mut reply = butler
-        .take_turn(conversation, prefs, context)
+        .take_turn_streaming(conversation, prefs, context, on_token)
         .map_err(|e| AppError::Model {
             message: e.to_string(),
         })?;
@@ -326,8 +327,10 @@ fn take_turn_retrying_empty(
     while reply.tool_calls.is_empty() && reply.text.trim().is_empty() && retries < MAX_EMPTY_RETRIES
     {
         retries += 1;
+        // A retry only happens when the round produced NOTHING, so nothing was streamed
+        // and there is nothing for the person to see rewritten.
         reply = butler
-            .take_turn(conversation, prefs, context)
+            .take_turn_streaming(conversation, prefs, context, on_token)
             .map_err(|e| AppError::Model {
                 message: e.to_string(),
             })?;
@@ -436,6 +439,7 @@ fn run_tool_turn(
     context: &ButlerContext,
     max_rounds: usize,
     on_step: &mut dyn FnMut(ButlerStep),
+    on_token: &mut dyn FnMut(&str),
     activity: &mut Vec<String>,
     disclosures: &mut Vec<ActionDisclosure>,
 ) -> Result<ButlerReply, AppError> {
@@ -461,7 +465,7 @@ fn run_tool_turn(
     // so never trips the failure cap.
     let mut seen: std::collections::HashSet<(String, String)> = std::collections::HashSet::new();
     for round in 0..=max_rounds {
-        let reply = take_turn_retrying_empty(butler, &conversation, prefs, context)?;
+        let reply = take_turn_retrying_empty(butler, &conversation, prefs, context, on_token)?;
         // No tool call → the final answer, grounded in the tool results so far — unless
         // the last thing that happened was a FAILED action and there is budget left.
         //
@@ -691,7 +695,7 @@ fn run_tool_turn(
     // calling yet another tool and leaving the turn without an answer.
     let mut final_ctx = context.clone();
     final_ctx.tools = Vec::new();
-    take_turn_retrying_empty(butler, &conversation, prefs, &final_ctx)
+    take_turn_retrying_empty(butler, &conversation, prefs, &final_ctx, on_token)
 }
 
 /// Sends a message to the butler and records both turns.
@@ -1069,21 +1073,31 @@ pub fn send_to_butler_streaming(
     // model must relay honestly; if it misreports with the truth in front of it, that
     // is a model failure to surface, not a canned string to hardcode. The proactive
     // flows (check-in, brief, nightly loop) run on this same loop.
-    let reply = run_tool_turn(
-        butler,
-        capabilities,
-        audit,
-        &actions,
-        ids,
-        clock,
-        &history,
-        &prefs,
-        context,
-        CHAT_TOOL_ROUNDS,
-        on_step,
-        &mut activity,
-        disclosures,
-    )?;
+    // Remember what actually reached the person, so the final send is only what they
+    // have not already seen. Without this the whole reply arrives a second time.
+    let streamed = std::cell::RefCell::new(String::new());
+    let reply = {
+        let mut relay = |chunk: &str| {
+            streamed.borrow_mut().push_str(chunk);
+            on_token(chunk);
+        };
+        run_tool_turn(
+            butler,
+            capabilities,
+            audit,
+            &actions,
+            ids,
+            clock,
+            &history,
+            &prefs,
+            context,
+            CHAT_TOOL_ROUNDS,
+            on_step,
+            &mut relay,
+            &mut activity,
+            disclosures,
+        )?
+    };
 
     // The capability ladder (local-first, ADR 0055): if the local model came up empty,
     // climb to the deeper (bigger/cloud) model when the person configured one. Prose
@@ -1118,7 +1132,12 @@ pub fn send_to_butler_streaming(
     // the person is told nothing happened is.
     let reply_text = format!("{reply_text}{}", nothing_changed_note(disclosures));
     // `take_turn` is non-streaming, so deliver the final answer at once.
-    on_token(&reply_text);
+    let already = streamed.into_inner();
+    let already = already.trim();
+    let unseen = reply_text.strip_prefix(already).unwrap_or(&reply_text);
+    if !unseen.is_empty() {
+        on_token(unseen);
+    }
     let butler_msg = ChatMessage::new(
         MessageId::new(ids.new_id()),
         MessageRole::Butler,
@@ -1803,6 +1822,7 @@ pub fn consider_reaching_out(
         &ask_ctx,
         CHECKIN_TOOL_ROUNDS,
         &mut |_step| {},
+        &mut |_token: &str| {},
         &mut activity,
         &mut Vec::new(),
     )
@@ -1893,6 +1913,7 @@ pub fn daily_brief(
         &brief_ctx,
         BRIEF_TOOL_ROUNDS,
         &mut |_step| {},
+        &mut |_token: &str| {},
         &mut activity,
         &mut Vec::new(),
     )
@@ -2185,6 +2206,7 @@ pub fn run_due_nightly_loop(
         &review_ctx,
         NIGHTLY_TOOL_ROUNDS,
         &mut |_step| {},
+        &mut |_token: &str| {},
         &mut activity,
         &mut Vec::new(),
     )?;
@@ -3181,6 +3203,7 @@ mod tests {
             &ButlerContext::default(),
             6,
             &mut |_| {},
+            &mut |_token: &str| {},
             &mut Vec::new(),
             &mut Vec::new(),
         );
@@ -3299,6 +3322,7 @@ mod tests {
             &ButlerContext::default(),
             6,
             &mut |_| {},
+            &mut |_token: &str| {},
             &mut Vec::new(),
             &mut disclosed,
         );
@@ -3380,6 +3404,7 @@ mod tests {
             &ButlerContext::default(),
             6,
             &mut |_| {},
+            &mut |_token: &str| {},
             &mut Vec::new(),
             &mut Vec::new(),
         )
@@ -3528,6 +3553,7 @@ mod tests {
             &ButlerContext::default(),
             6,
             &mut |_| {},
+            &mut |_token: &str| {},
             &mut activity,
             &mut Vec::new(),
         )
@@ -3618,6 +3644,7 @@ mod tests {
             &ButlerContext::default(),
             6,
             &mut |_| {},
+            &mut |_token: &str| {},
             &mut Vec::new(),
             &mut Vec::new(),
         )
@@ -3686,6 +3713,7 @@ mod tests {
             &ButlerContext::default(),
             6,
             &mut |_| {},
+            &mut |_token: &str| {},
             &mut Vec::new(),
             &mut disclosed,
         );
@@ -3778,6 +3806,7 @@ mod tests {
             &ButlerContext::default(),
             6,
             &mut |_| {},
+            &mut |_token: &str| {},
             &mut Vec::new(),
             &mut disclosed,
         )
@@ -3922,6 +3951,7 @@ mod tests {
             &ButlerContext::default(),
             6,
             &mut |_| {},
+            &mut |_token: &str| {},
             &mut activity,
             &mut Vec::new(),
         )
@@ -4151,6 +4181,7 @@ mod tests {
             &ButlerContext::default(),
             6,
             &mut |s| steps.push(s),
+            &mut |_token: &str| {},
             &mut activity,
             &mut Vec::new(),
         )
@@ -4187,6 +4218,7 @@ mod tests {
             &ButlerContext::default(),
             6,
             &mut |_| {},
+            &mut |_token: &str| {},
             &mut activity,
             &mut Vec::new(),
         )
@@ -4249,6 +4281,7 @@ mod tests {
             &ButlerContext::default(),
             6,
             &mut |_| {},
+            &mut |_token: &str| {},
             &mut activity,
             &mut Vec::new(),
         )
@@ -4306,6 +4339,7 @@ mod tests {
             &ButlerContext::default(),
             6,
             &mut |_| {},
+            &mut |_token: &str| {},
             &mut activity,
             &mut Vec::new(),
         )
@@ -4390,6 +4424,7 @@ mod tests {
             &ButlerContext::default(),
             3,
             &mut |_| {},
+            &mut |_token: &str| {},
             &mut activity,
             &mut Vec::new(),
         )
@@ -4492,6 +4527,7 @@ mod tests {
             &ButlerContext::default(),
             3,
             &mut |_| {},
+            &mut |_token: &str| {},
             &mut activity,
             &mut Vec::new(),
         )
@@ -5815,5 +5851,74 @@ mod tests {
         // Identical readings, or a missing one, assert nothing.
         assert_eq!(super::note_changed(Some("same"), Some("same")), "");
         assert_eq!(super::note_changed(None, Some("state: on")), "");
+    }
+
+    /// A butler that answers in pieces, the way a streaming endpoint does.
+    struct SpeaksInPieces;
+
+    impl Butler for SpeaksInPieces {
+        fn respond(
+            &self,
+            _history: &[ChatMessage],
+            _preferences: &[Preference],
+            _context: &ButlerContext,
+        ) -> Result<ButlerReply, ProposalError> {
+            Ok(ButlerReply::default())
+        }
+        fn take_turn(
+            &self,
+            _conversation: &[crate::TurnMessage],
+            _preferences: &[Preference],
+            _context: &ButlerContext,
+        ) -> Result<ButlerReply, ProposalError> {
+            Ok(ButlerReply {
+                text: "Good evening, sir.".to_owned(),
+                ..ButlerReply::default()
+            })
+        }
+        fn take_turn_streaming(
+            &self,
+            _conversation: &[crate::TurnMessage],
+            _preferences: &[Preference],
+            _context: &ButlerContext,
+            on_token: &mut dyn FnMut(&str),
+        ) -> Result<ButlerReply, ProposalError> {
+            for piece in ["Good ", "evening, ", "sir."] {
+                on_token(piece);
+            }
+            Ok(ButlerReply {
+                text: "Good evening, sir.".to_owned(),
+                ..ButlerReply::default()
+            })
+        }
+    }
+
+    #[test]
+    fn the_reply_reaches_the_person_in_pieces() {
+        // The turn used to hand the whole finished reply over in one call, so a streaming
+        // client received a single lump and nothing appeared until the model had stopped
+        // thinking. Each piece is now relayed as it arrives.
+        let (ids, clock, audit) = (SeqIds::default(), FixedClock(4_000), FakeAudit::default());
+        let chunks = std::cell::RefCell::new(Vec::<String>::new());
+        let reply = super::run_tool_turn(
+            &SpeaksInPieces,
+            &NoCapabilities,
+            &audit,
+            &OutcomeSink::unmotivated(&FakeOutcomes::default()),
+            &ids,
+            &clock,
+            &one_user_turn("evening"),
+            &[],
+            &ButlerContext::default(),
+            6,
+            &mut |_| {},
+            &mut |t: &str| chunks.borrow_mut().push(t.to_owned()),
+            &mut Vec::new(),
+            &mut Vec::new(),
+        )
+        .expect("the turn failed");
+        let seen = chunks.into_inner();
+        assert!(seen.len() > 1, "arrived as one lump: {seen:?}");
+        assert_eq!(seen.concat(), reply.text, "the pieces are the whole reply");
     }
 }
