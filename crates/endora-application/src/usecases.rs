@@ -2388,6 +2388,9 @@ pub fn butler_context(
         understanding,
         capabilities: skills,
         tools,
+        // Live, and cheap: the services already read for other reasons know whether the
+        // person is in the house.
+        present: capabilities.about_the_person(),
         now: format_datetime_utc(clock.now().unix_millis()),
         conversation_summary: None,
         track_record: track_record(&recent),

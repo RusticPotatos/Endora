@@ -447,6 +447,15 @@ const SWITCHABLE: &[&str] = &[
     "water_heater",
 ];
 
+/// One person's presence, in words.
+fn describe_presence(name: &str, state: &str) -> String {
+    match state {
+        "home" => format!("{name} is home"),
+        "not_home" | "unknown" | "unavailable" => format!("{name} is not home"),
+        place => format!("{name} is at {place}"),
+    }
+}
+
 /// The MCP server this instance is the direct counterpart of.
 ///
 /// Data rather than a constant in the wiring: whoever registers the MCP server chooses
@@ -526,6 +535,20 @@ impl crate::infrastructure::NativeChannel for HomeAssistant {
         entity
             .split_once('.')
             .is_some_and(|(domain, _)| SWITCHABLE.contains(&domain))
+    }
+
+    fn about_the_person(&self) -> Option<String> {
+        // A house knows whether someone is in it. Home Assistant keeps that as `person.*`
+        // entities whose state is `home`, `not_home`, or the name of a place — which is
+        // already in the reading Endora fetches, and was going unused.
+        let people: Vec<String> = self
+            .entities()
+            .ok()?
+            .into_iter()
+            .filter(|e| e.id.starts_with("person."))
+            .map(|e| describe_presence(&e.name, &e.state))
+            .collect();
+        (!people.is_empty()).then(|| people.join("; "))
     }
 
     fn refuse(&self, tool: &str, input_json: &str) -> Option<String> {
@@ -817,6 +840,22 @@ mod tests {
     fn a_confirmed_name_matching_the_service_name_is_not_listed_twice() {
         let names = house().names_of(&entity("table light"));
         assert_eq!(names.len(), 1, "{names:?}");
+    }
+
+    #[test]
+    fn presence_reads_as_a_sentence_not_a_state_string() {
+        assert_eq!(describe_presence("rustic", "home"), "john is home");
+        assert_eq!(
+            describe_presence("rustic", "not_home"),
+            "john is not home"
+        );
+        // A named zone is a place, and reads better as one than as "not_home".
+        assert_eq!(describe_presence("rustic", "Office"), "john is at Office");
+        // A tracker that has lost the person says so plainly rather than inventing a place.
+        assert_eq!(
+            describe_presence("rustic", "unavailable"),
+            "john is not home"
+        );
     }
 
     #[test]

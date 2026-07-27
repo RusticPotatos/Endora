@@ -1209,6 +1209,15 @@ fn build_butler_request(
             system.push_str(&format!("\n- {u}"));
         }
     }
+    // Where the person is, right now. Live state, so it sits with what the butler knows
+    // rather than with what it must do — but it is the difference between a check-in that
+    // reads the room and one that interrupts someone who is out.
+    if !context.present.is_empty() {
+        system.push_str("\nRight now:");
+        for line in &context.present {
+            system.push_str(&format!("\n- {line}"));
+        }
+    }
     // What things are actually called here (ADR 0054). Endora asked after watching the
     // same target fail repeatedly, and this is the person's answer — grounding, not an
     // instruction, so it sits with what the butler knows rather than what it must do.

@@ -187,6 +187,13 @@ pub struct ButlerContext {
     /// for, because that could act on the wrong thing and would hide the mistake from
     /// the battery that exists to measure it (ADR 0053).
     pub target_aliases: Vec<String>,
+    /// What the person's own services say about them **right now** — one line each,
+    /// e.g. `john is not home`.
+    ///
+    /// Live state rather than a belief: true this minute and worthless tomorrow, so it
+    /// belongs to the turn and never to understanding. It is what lets the butler know
+    /// whether anyone is there before it decides to speak.
+    pub present: Vec<String>,
     /// How the butler's own past actions have landed, per skill — built from the
     /// outcomes it recorded and what the person said about them (ADR 0053).
     ///
