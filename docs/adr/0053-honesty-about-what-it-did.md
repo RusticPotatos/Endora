@@ -60,6 +60,32 @@ deterministic; persuasion is not attempted. Concretely:
   *already as asked*; reading it as an outcome once put a false claim in the record about a
   light the person had watched turn off.
 
+### Endora asserts what it observed, and only that
+
+Being careful about the service's reply left a gap on the other side: the read-back said so
+when nothing changed, and said **nothing** when something did. So the model was left with
+only the service's hedge — "accepted; its reply says nothing about the result" — and had to
+guess. Endora had already compared two readings and knew.
+
+It now states both verdicts. That is not narration on the model's behalf: it is reporting an
+observation Endora made, which is the one thing it is entitled to assert.
+
+### An apology is a claim too
+
+When the model returned **no words at all**, Endora answered "I'm not sure how to help with
+that yet" — on a turn where it had just switched a light on. The generic fallback was
+asserting something false about work that had succeeded, and left the person unable to tell
+whether to try again.
+
+If the turn acted, the fallback now says what happened, quoting and attributing the tool's
+own report rather than paraphrasing it.
+
+**Why this is not the deterministic narration rejected above.** That was rejected because
+code-written sentences got contradicted by the model. There is nothing to contradict when
+the model produced no sentence at all. The distinction is exactly the presence of a reply:
+where there is one, Endora appends facts and never edits it; where there is none, silence
+would be its own claim.
+
 ## Consequences
 
 - The person can always answer "did that actually happen?" without trusting the prose.
