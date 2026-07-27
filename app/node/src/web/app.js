@@ -24,6 +24,7 @@ let TUNE_SCHED = { enabled: false, hour_utc: 4 }; // nightly self-improving mode
 let UNDERSTANDING = [];        // Endora's beliefs about the person (the home surface)
 let OUTCOMES = [];             // what Endora DID, and what it saw afterwards (ADR 0053)
 let INTENTIONS = [];           // what Endora is pursuing, and has pursued (ADR 0052)
+let LAST_VIEW = null;          // which screen was showing, so a change can reset the scroll
 let REPAIRS = [];              // tooling Endora has noticed keeps not working (ADR 0054)
 let CONFIG_WRITES = [];        // changes Endora made to your services' own settings (ADR 0054)
 let LAST_ACTIVITY = [];        // what Endora did behind the scenes on the last turn
@@ -1657,7 +1658,17 @@ function render() {
     const thread = document.getElementById("chat-thread");
     const last = thread && thread.lastElementChild;
     if (last) requestAnimationFrame(() => scrollBubbleIntoView(last));
+  } else if (v !== LAST_VIEW) {
+    // Every other screen is a list with the newest thing FIRST, so it opens at the
+    // top. Without this the window simply keeps whatever scroll position the last
+    // screen had — arrive from the bottom of a long conversation and the inbox opens
+    // at its oldest message.
+    //
+    // Only when the screen actually changes. Doing it on every render would yank
+    // someone back to the top mid-read whenever a live update arrived.
+    requestAnimationFrame(() => window.scrollTo({ top: 0 }));
   }
+  LAST_VIEW = v;
 }
 
 // Reflect the activity toggle's state in the menu.
