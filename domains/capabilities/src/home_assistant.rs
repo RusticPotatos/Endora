@@ -168,6 +168,22 @@ impl HomeAssistant {
         Ok(String::from_utf8_lossy(&buf).into_owned())
     }
 
+    fn delete(&self, path: &str) -> Result<String, String> {
+        use std::io::Read;
+        let mut resp = crate::infrastructure::agent()
+            .delete(&format!("{}{path}", self.base))
+            .header("Authorization", &format!("Bearer {}", self.token))
+            .call()
+            .map_err(|e| e.to_string())?;
+        let mut buf = Vec::new();
+        resp.body_mut()
+            .as_reader()
+            .take(64 * 1024)
+            .read_to_end(&mut buf)
+            .map_err(|e| e.to_string())?;
+        Ok(String::from_utf8_lossy(&buf).into_owned())
+    }
+
     fn post(&self, path: &str, body: &Value) -> Result<String, String> {
         use std::io::Read;
         let mut resp = crate::infrastructure::agent()
@@ -329,37 +345,25 @@ impl HomeAssistant {
                 "a group holds one sort of thing, and {odd} is not a {domain}"
             ));
         }
-        let mut socket = self.connect_ws()?;
-        let started = ws_call(
-            &mut socket,
-            1,
-            &json!({ "type": "config_entries/flow/init", "handler": "group" }),
+        // Config flows are REST, not the socket the registry uses — a helper is created
+        // by walking a short form, not by writing a row.
+        let started = self.post(
+            "/api/config/config_entries/flow",
+            &json!({ "handler": "group", "show_advanced_options": false }),
         )?;
+        let started: Value = serde_json::from_str(&started).map_err(|e| e.to_string())?;
         let flow = started["flow_id"]
             .as_str()
-            .ok_or("Home Assistant did not start a group flow")?
+            .ok_or_else(|| format!("Home Assistant did not start a group flow: {started}"))?
             .to_owned();
+        let step = format!("/api/config/config_entries/flow/{flow}");
         // Pick the kind of group; the menu is keyed by domain.
-        ws_call(
-            &mut socket,
-            2,
-            &json!({
-                "type": "config_entries/flow/configure",
-                "flow_id": flow,
-                "user_input": { "next_step_id": domain },
-            }),
+        self.post(&step, &json!({ "next_step_id": domain }))?;
+        let made = self.post(
+            &step,
+            &json!({ "name": name, "entities": entities, "hide_members": false }),
         )?;
-        let made = ws_call(
-            &mut socket,
-            3,
-            &json!({
-                "type": "config_entries/flow/configure",
-                "flow_id": flow,
-                "user_input": { "name": name, "entities": entities, "hide_members": false },
-            }),
-        )?;
-        // The new entry's id is what undoing it needs; the entity id is what acting on it
-        // needs, and it follows from the name Home Assistant was given.
+        let made: Value = serde_json::from_str(&made).map_err(|e| e.to_string())?;
         made["result"]["entry_id"]
             .as_str()
             .map(ToOwned::to_owned)
@@ -371,12 +375,7 @@ impl HomeAssistant {
     /// # Errors
     /// A human-readable message if Home Assistant cannot be reached or refuses.
     pub fn remove_entry(&self, entry_id: &str) -> Result<(), String> {
-        let mut socket = self.connect_ws()?;
-        ws_call(
-            &mut socket,
-            1,
-            &json!({ "type": "config_entries/remove", "entry_id": entry_id }),
-        )?;
+        self.delete(&format!("/api/config/config_entries/entry/{entry_id}"))?;
         Ok(())
     }
 
