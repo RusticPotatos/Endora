@@ -100,6 +100,14 @@ pub enum AdoptionDecision {
 /// incumbent but a **cloud** one does is that cloud model *proposed*, never
 /// auto-adopted. Ties do not beat the incumbent (strictly greater required).
 ///
+/// **A win smaller than the instrument's noise is not a win.** The layer scores each
+/// candidate once, and a single run of this battery is not repeatable to a point: run
+/// three times, the same model lands in a range of one to two. Adopting on "strictly
+/// greater" therefore adopts on noise — and did, live: it switched the butler to
+/// `qwen2.5:14b` on 35 against 34, a model measured at **1.8x slower** for a difference
+/// that vanishes on a second run. A margin is the cheapest honest fix; the alternative,
+/// repeating every candidate's battery on the heartbeat, costs far more than it settles.
+///
 /// **The understanding floor (ADR 0055):** a candidate that wins on total but scores
 /// *lower* on L3 than the incumbent is never auto-adopted — it is proposed instead.
 /// Since ADR 0052, understanding is the only model Endora keeps of a person, so a
@@ -108,7 +116,7 @@ pub enum AdoptionDecision {
 #[must_use]
 pub fn decide_adoption(incumbent: &Scorecard, scored: &[ScoredCandidate]) -> AdoptionDecision {
     let incumbent_total = incumbent.total();
-    let beats = |s: &&ScoredCandidate| s.score.total() > incumbent_total;
+    let beats = |s: &&ScoredCandidate| s.score.total() >= incumbent_total + CLEARLY_BETTER;
     let keeps_understanding = |s: &&ScoredCandidate| s.score.l3 >= incumbent.l3;
 
     if let Some(best_local) = scored
@@ -137,6 +145,14 @@ pub fn decide_adoption(incumbent: &Scorecard, scored: &[ScoredCandidate]) -> Ado
 
     AdoptionDecision::Keep
 }
+
+/// How much better a candidate must score before it is worth swapping to.
+///
+/// Three, because the battery's own spread across repeated runs is one to two: anything
+/// inside that is the instrument moving, not the model. Deliberately a plain constant —
+/// it is a statement about the measurement, and it should be re-read whenever the battery
+/// changes shape.
+const CLEARLY_BETTER: usize = 3;
 
 /// The result of one model-layer run.
 #[derive(Debug, Clone, PartialEq)]
@@ -306,7 +322,8 @@ mod tests {
     fn prefers_a_winning_local_over_a_higher_cloud() {
         // A cloud model scores highest, but a local also beats the incumbent —
         // policy is to exhaust local first, so the local is adopted, not the cloud.
-        let cands = vec![scored(cloud("gpt"), 15), scored(local("qwen"), 14)];
+        // Both clear the margin; the point of the case is the ORDER, not the threshold.
+        let cands = vec![scored(cloud("gpt"), 20), scored(local("qwen"), 18)];
         match decide_adoption(&card(12), &cands) {
             AdoptionDecision::Adopt { name, .. } => assert_eq!(name, "qwen"),
             other => panic!("expected Adopt(qwen), got {other:?}"),
@@ -315,8 +332,8 @@ mod tests {
 
     #[test]
     fn proposes_cloud_only_when_no_local_wins() {
-        // No local beats the incumbent (13); a cloud does ⇒ propose it, don't adopt.
-        let cands = vec![scored(local("qwen"), 13), scored(cloud("gpt"), 15)];
+        // No local clears the margin over the incumbent (13); a cloud does ⇒ propose it.
+        let cands = vec![scored(local("qwen"), 13), scored(cloud("gpt"), 18)];
         match decide_adoption(&card(13), &cands) {
             AdoptionDecision::Propose {
                 name,
@@ -325,10 +342,30 @@ mod tests {
                 ..
             } => {
                 assert_eq!(name, "gpt");
-                assert_eq!(score, 15);
+                assert_eq!(score, 18);
                 assert_eq!(incumbent, 13);
             }
             other => panic!("expected Propose(gpt), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_win_inside_the_instruments_noise_is_not_a_win() {
+        // Live, and it swapped the person's butler unasked: 35 against 34 on a single run
+        // of a battery whose own spread across repeated runs is one to two. The adopted
+        // model was measured 1.8x slower for a difference that vanishes on a re-run.
+        let cands = vec![scored(local("qwen2.5:14b"), 35)];
+        assert_eq!(
+            decide_adoption(&card(34), &cands),
+            AdoptionDecision::Keep,
+            "adopted on noise"
+        );
+        // Two points is still inside the spread.
+        assert_eq!(decide_adoption(&card(33), &cands), AdoptionDecision::Keep);
+        // Three is the point at which the difference outlives a re-run.
+        match decide_adoption(&card(32), &cands) {
+            AdoptionDecision::Adopt { name, .. } => assert_eq!(name, "qwen2.5:14b"),
+            other => panic!("a clear win should be adopted, got {other:?}"),
         }
     }
 
