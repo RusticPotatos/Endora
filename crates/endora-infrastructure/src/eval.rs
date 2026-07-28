@@ -250,6 +250,46 @@ fn used(reply: &ButlerReply) -> Option<&str> {
         .or_else(|| reply.capability_use.as_ref().map(|u| u.capability.as_str()))
 }
 
+/// The arguments the model sent with its call, lowercased. Empty when it called nothing.
+///
+/// The battery scored *which* tool was chosen and never *how it was aimed*, which is how
+/// every case below could pass while the live house kept acting on the wrong thing.
+fn called_with(reply: &ButlerReply) -> String {
+    reply
+        .tool_calls
+        .first()
+        .map(|c| c.input_json.to_lowercase())
+        .unwrap_or_default()
+}
+
+/// Whether the call names a particular thing, rather than only a room and some filters.
+///
+/// Reads the arguments as text on purpose: the field a service uses for "which one"
+/// differs per server, and a case that hardcoded `name` would measure Home Assistant's
+/// schema instead of the model's aim.
+fn names_a_thing(args: &str, thing: &str) -> bool {
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(args) else {
+        return false;
+    };
+    v.as_object().is_some_and(|o| {
+        o.iter().any(|(field, value)| {
+            !matches!(field.as_str(), "area" | "floor" | "domain" | "device_class")
+                && value.as_str().is_some_and(|s| s.contains(thing))
+        })
+    })
+}
+
+/// Whether the text names a tool it was offered — the shape of describing a call instead
+/// of making one.
+fn names_an_offered_tool(text: &str, tools: &[&str]) -> bool {
+    let lowered = text.to_lowercase();
+    tools.iter().any(|line| {
+        let id = line.split_whitespace().next().unwrap_or_default();
+        let bare = id.rsplit('.').next().unwrap_or(id).to_lowercase();
+        bare.len() > 3 && lowered.contains(&bare)
+    })
+}
+
 /// Whether the text states a temperature-like live fact — the signature of a
 /// fabricated weather answer.
 fn states_a_temperature(text: &str) -> bool {
@@ -689,6 +729,48 @@ pub fn battery() -> Vec<EvalCase> {
                 // here, so the fix must not have taught it to always avoid it.
                 used(r).is_some_and(|t| t.ends_with("HassLightSet"))
             },
+        },
+        EvalCase {
+            // Live, 2026-07-26: "turn on the kitchen table" arrived as
+            //   {area:"kitchen", device_class:["table"], domain:["light"]}
+            // — no name at all. `table` is not a device class, Home Assistant ignored it,
+            // and the call acted on EVERY light in the kitchen while reporting success.
+            //
+            // The three cases above all passed while this was happening, because they
+            // scored which tool was chosen and never how it was aimed.
+            name: "select:aims-at-a-thing-not-a-room",
+            tier: Tier::L1,
+            probe: Probe::WithTools(hass_only(), "turn on the kitchen table"),
+            check: |r, _| {
+                used(r).is_some_and(|t| t.ends_with("HassTurnOn"))
+                    && names_a_thing(&called_with(r), "table")
+            },
+        },
+        EvalCase {
+            // Live, 2026-07-26: "turn off the table light" arrived with
+            // `area: "living room"` — a room the person never mentioned, for a light that
+            // is in the kitchen. Home Assistant refused on the area and never looked at
+            // the name, so the confirmed alias never got a chance.
+            name: "select:no-invented-room",
+            tier: Tier::L1,
+            probe: Probe::WithTools(hass_only(), "turn off the table light"),
+            check: |r, _| {
+                let args = called_with(r);
+                used(r).is_some()
+                    && !["living room", "bedroom", "garage"]
+                        .iter()
+                        .any(|room| args.contains(room))
+            },
+        },
+        EvalCase {
+            // Live, 2026-07-27: asked for news, weather and traffic, the butler replied
+            //   "here are the appropriate function calls: 1. **GetWeather** ..."
+            // and called nothing. The person got an essay about function names instead of
+            // their weather.
+            name: "select:calls-instead-of-describing",
+            tier: Tier::L1,
+            probe: Probe::WithSkills("what's the weather?"),
+            check: |r, _| used(r).is_some() || !names_an_offered_tool(&r.text, EVAL_SKILL_LINES),
         },
         EvalCase {
             name: "brief-intent",
