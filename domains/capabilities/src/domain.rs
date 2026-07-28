@@ -25,22 +25,66 @@ pub struct ConfigWrite {
     pub was: Vec<String>,
     /// Whether it has since been put back.
     pub undone: bool,
+    /// What sort of change this was, because undoing them differs.
+    pub kind: WriteKind,
+}
+
+/// The sorts of change Endora makes to a service's configuration (ADR 0054).
+///
+/// Stored rather than derived. Add-versus-remove can be read off the prior value, but
+/// these are different *acts* with different undos, and guessing would be dangerous: a
+/// collection is created with no prior value, which reads exactly like adding a name —
+/// so undoing it as one would strip every name off the thing it points at.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WriteKind {
+    /// Another name for something that already exists. Undone by putting the old names
+    /// back.
+    Name,
+    /// A new thing standing for several existing ones. Undone by removing it.
+    Collection,
+}
+
+impl WriteKind {
+    /// How it is stored.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Name => "name",
+            Self::Collection => "collection",
+        }
+    }
+
+    /// Reads one back, defaulting to a name — which is what every row written before
+    /// collections existed is.
+    #[must_use]
+    pub fn read(raw: &str) -> Self {
+        if raw == "collection" {
+            Self::Collection
+        } else {
+            Self::Name
+        }
+    }
 }
 
 impl ConfigWrite {
     /// Whether this write **removed** the name rather than adding it.
     ///
-    /// Derived rather than stored: a name that was already in the prior list and is the
-    /// subject of the write can only have been taken away. That keeps one table, one undo
-    /// (replay `was`), and no flag that could disagree with the data next to it.
+    /// Derived, within a name change: a name already in the prior list can only have been
+    /// taken away. That keeps one table and one undo for both directions.
+    ///
+    /// A collection is never a removal — it has no prior value to be in — which is why
+    /// the *kind* is stored even though this is not.
     #[must_use]
     pub fn is_removal(&self) -> bool {
-        self.was.iter().any(|a| a.eq_ignore_ascii_case(&self.added))
+        self.kind == WriteKind::Name && self.was.iter().any(|a| a.eq_ignore_ascii_case(&self.added))
     }
 
     /// A one-line account of what changed, for the trail and the console.
     #[must_use]
     pub fn describe(&self) -> String {
+        if self.kind == WriteKind::Collection {
+            return format!("{} now stands for {}", self.added, self.target);
+        }
         if self.is_removal() {
             return format!("{} no longer answers to '{}'", self.target, self.added);
         }
@@ -358,7 +402,7 @@ mod tests {
 
     #[test]
     fn a_write_tells_an_addition_from_a_removal_by_what_was_there_before() {
-        use super::ConfigWrite;
+        use super::{ConfigWrite, WriteKind};
         // Derived, not stored: a name already in the prior list can only have been taken
         // away. One table, one undo, and no flag that could disagree with the data.
         let added = ConfigWrite {
@@ -369,6 +413,7 @@ mod tests {
             added: "table".to_owned(),
             was: vec!["table light".to_owned()],
             undone: false,
+            kind: WriteKind::Name,
         };
         assert!(!added.is_removal());
         assert!(

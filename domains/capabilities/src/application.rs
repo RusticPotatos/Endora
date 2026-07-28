@@ -2,7 +2,9 @@
 
 use endora_kernel::{Decision, RepositoryError, Reversibility};
 
-pub use crate::domain::{AutonomyEnvelope, ConfigWrite, McpServer, McpTransport, TargetAlias};
+pub use crate::domain::{
+    AutonomyEnvelope, ConfigWrite, McpServer, McpTransport, TargetAlias, WriteKind,
+};
 
 /// An optional **deep model** — a bigger/cloud AI the person configures for hard
 /// questions the local model can't handle well (like a phone escalating to a bigger
