@@ -2430,7 +2430,7 @@ fn nightly_focus(
 pub fn butler_context(
     beliefs: &impl BeliefRepository,
     outcomes: &impl OutcomeRepository,
-    aliases: &impl endora_capabilities::TargetAliasRepository,
+    aliases: &(impl endora_capabilities::TargetAliasRepository + endora_capabilities::ConfigWriteLog),
     capabilities: &dyn CapabilityRunner,
     clock: &impl Clock,
 ) -> Result<ButlerContext, AppError> {
@@ -2478,14 +2478,46 @@ pub fn butler_context(
         now: format_datetime_utc(clock.now().unix_millis()),
         conversation_summary: None,
         track_record: track_record(&recent),
-        // What the person has said these targets are really called (ADR 0054).
+        // What the person has said these targets are really called, and what Endora has
+        // since made to stand for several of them (ADR 0054).
         target_aliases: aliases
             .aliases()?
             .iter()
             .map(endora_capabilities::TargetAlias::as_context)
+            .chain(collections_worth_naming(aliases))
             .collect(),
     })
 }
+
+/// The collections Endora has made, as lines the butler can act on.
+///
+/// A group is useless if the model does not know it exists. Live: "All Lights" was created
+/// and worked perfectly when named — and "turn off all lights" still produced a call aimed
+/// at nothing, because nothing told the model there was now one thing to name.
+///
+/// This is grounding, exactly as a confirmed alias is: what a thing is called here. Only
+/// collections Endora made and that have not been undone, so the list stays short and
+/// every line is something that really exists.
+fn collections_worth_naming(log: &impl endora_capabilities::ConfigWriteLog) -> Vec<String> {
+    log.writes(COLLECTIONS_SHOWN)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|w| w.kind == endora_capabilities::WriteKind::Collection && !w.undone)
+        .map(|w| {
+            format!(
+                "on {}, \"{}\" is one thing standing for {} others — name it to act on \
+                 them all at once",
+                w.server,
+                w.added,
+                w.was.len()
+            )
+        })
+        .collect()
+}
+
+/// How far back to look for collections. They are rare and long-lived; this only bounds
+/// the read.
+const COLLECTIONS_SHOWN: usize = 50;
 
 /// Records a preference the butler should keep in mind. In this build every
 /// preference is created by explicit confirmation, so it is always a *stated*
