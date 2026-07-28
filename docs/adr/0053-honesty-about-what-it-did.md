@@ -132,6 +132,34 @@ the model produced no sentence at all. The distinction is exactly the presence o
 where there is one, Endora appends facts and never edits it; where there is none, silence
 would be its own claim.
 
+### Honesty about what it *says*, not only what it did
+
+Everything above verifies **actions**. Nothing verifies **answers** — and the asymmetry
+shows. Asked "how many lights are on", with a reading listing every one of them, the butler
+replied that the kitchen lights were on and the ceiling light too: true, not a count, and
+silent about four more that were also on. Asked "how long have they been on today", with a
+reading carrying no timestamps at all, it produced a confident paragraph about something
+else entirely.
+
+Two different faults, and only one of them is the model's:
+
+- **The count was answerable and was not answered.** The reading held it. That is a
+  question of whether the butler does the work, and it belongs in the battery, where it is
+  gradeable: a "how many" must contain a number, and the right one.
+- **The duration was unanswerable and was answered anyway.** The reading carried no time,
+  because Endora was discarding what the service already reports. A reading without time
+  can settle "is it on?" and never "how long has it been on?", and a butler asked the
+  second question improvises rather than declining.
+
+So a reading now carries **when each thing last changed**, where the service says — a
+property of the port, not of any one service — and the battery grades both behaviours: a
+count must be a count, and a question the reading cannot answer must be declined rather
+than furnished.
+
+The general rule this points at, and does not yet reach: Endora holds the exact reading an
+answer should come from, so a claim about state is checkable in principle the same way an
+action's effect is. That would be the honest completion of this ADR.
+
 ## Consequences
 
 - The person can always answer "did that actually happen?" without trusting the prose.
