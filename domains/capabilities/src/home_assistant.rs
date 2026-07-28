@@ -297,6 +297,89 @@ impl HomeAssistant {
         })
     }
 
+    /// Creates a **group helper** holding the given entities, and returns its new id.
+    ///
+    /// Home Assistant makes helpers through a config *flow* — a short conversation rather
+    /// than a single write: start the flow, choose the sort of group, then supply the name
+    /// and members. Three round trips on the socket already open for the registry.
+    ///
+    /// # Errors
+    /// A human-readable message if Home Assistant cannot be reached or refuses a step.
+    pub fn create_group(&self, name: &str, entities: &[String]) -> Result<String, String> {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err("a group needs a name".to_owned());
+        }
+        if entities.is_empty() {
+            return Err("a group of nothing is not a group".to_owned());
+        }
+        // Every member has to be the same sort of thing, and that sort decides which
+        // group Home Assistant makes. Taken from the members themselves rather than
+        // guessed.
+        let domain = entities
+            .first()
+            .and_then(|e| e.split_once('.'))
+            .map(|(d, _)| d.to_owned())
+            .ok_or("those do not look like entity ids")?;
+        if let Some(odd) = entities
+            .iter()
+            .find(|e| !e.starts_with(&format!("{domain}.")))
+        {
+            return Err(format!(
+                "a group holds one sort of thing, and {odd} is not a {domain}"
+            ));
+        }
+        let mut socket = self.connect_ws()?;
+        let started = ws_call(
+            &mut socket,
+            1,
+            &json!({ "type": "config_entries/flow/init", "handler": "group" }),
+        )?;
+        let flow = started["flow_id"]
+            .as_str()
+            .ok_or("Home Assistant did not start a group flow")?
+            .to_owned();
+        // Pick the kind of group; the menu is keyed by domain.
+        ws_call(
+            &mut socket,
+            2,
+            &json!({
+                "type": "config_entries/flow/configure",
+                "flow_id": flow,
+                "user_input": { "next_step_id": domain },
+            }),
+        )?;
+        let made = ws_call(
+            &mut socket,
+            3,
+            &json!({
+                "type": "config_entries/flow/configure",
+                "flow_id": flow,
+                "user_input": { "name": name, "entities": entities, "hide_members": false },
+            }),
+        )?;
+        // The new entry's id is what undoing it needs; the entity id is what acting on it
+        // needs, and it follows from the name Home Assistant was given.
+        made["result"]["entry_id"]
+            .as_str()
+            .map(ToOwned::to_owned)
+            .ok_or_else(|| format!("Home Assistant made no group: {made}"))
+    }
+
+    /// Removes a helper Endora created, by its config entry id.
+    ///
+    /// # Errors
+    /// A human-readable message if Home Assistant cannot be reached or refuses.
+    pub fn remove_entry(&self, entry_id: &str) -> Result<(), String> {
+        let mut socket = self.connect_ws()?;
+        ws_call(
+            &mut socket,
+            1,
+            &json!({ "type": "config_entries/remove", "entry_id": entry_id }),
+        )?;
+        Ok(())
+    }
+
     /// Puts an entity's aliases back exactly as they were — the undo for
     /// [`add_alias`](Self::add_alias).
     ///
@@ -633,8 +716,35 @@ impl crate::infrastructure::NativeChannel for HomeAssistant {
                 added: write.added,
                 was: write.was,
                 undone: false,
+                kind: crate::domain::WriteKind::Name,
             }
         }))
+    }
+
+    fn collect(
+        &self,
+        name: &str,
+        ids: &[String],
+    ) -> Option<Result<crate::domain::ConfigWrite, String>> {
+        if !self.may_write {
+            return None;
+        }
+        Some(
+            self.create_group(name, ids)
+                .map(|entry_id| crate::domain::ConfigWrite {
+                    id: 0,
+                    at_ms: 0,
+                    server: String::new(),
+                    // The entry id, because that is what removing it needs. The members
+                    // are the prior value: nothing existed before, and they are what the
+                    // collection was made of.
+                    target: entry_id,
+                    added: name.to_owned(),
+                    was: ids.to_vec(),
+                    undone: false,
+                    kind: crate::domain::WriteKind::Collection,
+                }),
+        )
     }
 
     fn forget(
@@ -661,6 +771,7 @@ impl crate::infrastructure::NativeChannel for HomeAssistant {
                     added: write.added,
                     was: write.was,
                     undone: false,
+                    kind: crate::domain::WriteKind::Name,
                 }),
         )
     }
@@ -668,6 +779,15 @@ impl crate::infrastructure::NativeChannel for HomeAssistant {
     fn undo(&self, write: &crate::domain::ConfigWrite) -> Option<Result<String, String>> {
         if !self.may_write {
             return None;
+        }
+        // A collection is undone by removing it. Replaying its members as names would
+        // strip every name off whatever it points at — which is why the kind is stored
+        // rather than guessed from the prior value.
+        if write.kind == crate::domain::WriteKind::Collection {
+            return Some(
+                self.remove_entry(&write.target)
+                    .map(|()| format!("'{}' is gone.", write.added)),
+            );
         }
         let restore = AliasWrite {
             entity: write.target.clone(),
