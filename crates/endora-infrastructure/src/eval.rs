@@ -1184,6 +1184,13 @@ pub struct Scorecard {
     pub l3_max: usize,
     /// Per-case pass/fail, in order.
     pub cases: Vec<CaseResult>,
+    /// How long the whole battery took, in milliseconds.
+    ///
+    /// The same work for every candidate, so it compares directly — and it is the one
+    /// thing about a model the person feels on every single turn. Adoption ignored it
+    /// entirely until a model measured 1.8x slower was adopted for a point of score
+    /// (ADR 0055).
+    pub took_ms: u64,
 }
 
 impl Scorecard {
@@ -1209,6 +1216,7 @@ impl Scorecard {
 /// number.
 #[must_use]
 pub fn evaluate(butler: &dyn Butler) -> Scorecard {
+    let started = std::time::Instant::now();
     let cases = battery();
     let mut replies: HashMap<&'static str, ButlerReply> = HashMap::new();
     let mut passed: HashMap<&'static str, bool> = HashMap::new();
@@ -1256,6 +1264,7 @@ pub fn evaluate(butler: &dyn Butler) -> Scorecard {
         l3,
         l3_max,
         cases: results,
+        took_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
     }
 }
 
