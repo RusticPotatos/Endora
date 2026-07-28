@@ -108,6 +108,12 @@ pub enum AdoptionDecision {
 /// that vanishes on a second run. A margin is the cheapest honest fix; the alternative,
 /// repeating every candidate's battery on the heartbeat, costs far more than it settles.
 ///
+/// **The speed floor:** a candidate that wins on total but is **materially slower** is
+/// never auto-adopted either. Score says nothing about how long a turn takes, and latency
+/// is the one property of a model the person feels on every single turn — the swap that
+/// prompted this was 1.8x slower for a point. Same shape as the understanding floor, and
+/// for the same reason: it is a *trade*, and a trade is the person's to make.
+///
 /// **The understanding floor (ADR 0055):** a candidate that wins on total but scores
 /// *lower* on L3 than the incumbent is never auto-adopted — it is proposed instead.
 /// Since ADR 0052, understanding is the only model Endora keeps of a person, so a
@@ -118,12 +124,14 @@ pub fn decide_adoption(incumbent: &Scorecard, scored: &[ScoredCandidate]) -> Ado
     let incumbent_total = incumbent.total();
     let beats = |s: &&ScoredCandidate| s.score.total() >= incumbent_total + CLEARLY_BETTER;
     let keeps_understanding = |s: &&ScoredCandidate| s.score.l3 >= incumbent.l3;
+    let stays_quick = |s: &&ScoredCandidate| !much_slower_than(&s.score, incumbent);
 
     if let Some(best_local) = scored
         .iter()
         .filter(|s| is_local(&s.candidate.config))
         .filter(beats)
         .filter(keeps_understanding)
+        .filter(stays_quick)
         .max_by_key(|s| s.score.total())
     {
         return AdoptionDecision::Adopt {
@@ -144,6 +152,21 @@ pub fn decide_adoption(incumbent: &Scorecard, scored: &[ScoredCandidate]) -> Ado
     }
 
     AdoptionDecision::Keep
+}
+
+/// Whether a candidate takes long enough more than the incumbent to be felt.
+///
+/// The battery is identical work for every candidate, so its elapsed time compares
+/// directly. A quarter again as long is the threshold: below that it is within the noise
+/// of a shared machine, and above it every turn of every day is noticeably slower.
+///
+/// A missing timing — an older scorecard, or a stubbed one in a test — is treated as *not*
+/// slower, so this can only ever hold a swap back on evidence, never on an absence of it.
+fn much_slower_than(candidate: &Scorecard, incumbent: &Scorecard) -> bool {
+    if candidate.took_ms == 0 || incumbent.took_ms == 0 {
+        return false;
+    }
+    candidate.took_ms * 4 > incumbent.took_ms * 5
 }
 
 /// How much better a candidate must score before it is worth swapping to.
@@ -262,6 +285,7 @@ mod tests {
             l3,
             l3_max: 8,
             cases: Vec::new(),
+            took_ms: 0,
         }
     }
 
@@ -488,5 +512,47 @@ mod tests {
         assert!(!leaks_jargon(
             "I'm understanding you better each time we talk."
         ));
+    }
+
+    /// A scorecard that also says how long the battery took.
+    fn card_taking(total: usize, took_ms: u64) -> Scorecard {
+        Scorecard {
+            took_ms,
+            ..card(total)
+        }
+    }
+
+    #[test]
+    fn a_clearly_better_but_much_slower_model_is_proposed_not_adopted() {
+        // The measured case: qwen2.5:14b is genuinely a shade better on some cases and
+        // 1.8x slower on every turn of every day. Score alone cannot see that, and the
+        // trade is the person's to make.
+        let mut slow = scored(local("qwen2.5:14b"), 40);
+        slow.score.took_ms = 480_000;
+        match decide_adoption(&card_taking(32, 260_000), &[slow]) {
+            AdoptionDecision::Propose { name, .. } => assert_eq!(name, "qwen2.5:14b"),
+            other => panic!("expected it to be proposed, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_clearly_better_model_that_keeps_up_is_adopted() {
+        let mut quick = scored(local("qwen3:8b"), 40);
+        quick.score.took_ms = 270_000;
+        match decide_adoption(&card_taking(32, 260_000), &[quick]) {
+            AdoptionDecision::Adopt { name, .. } => assert_eq!(name, "qwen3:8b"),
+            other => panic!("expected it to be adopted, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_missing_timing_never_holds_a_swap_back() {
+        // An older scorecard carries no timing. Absence of evidence must not read as
+        // evidence of slowness, or the floor would block every swap it cannot measure.
+        let unknown = scored(local("qwen3:8b"), 40);
+        match decide_adoption(&card_taking(32, 260_000), &[unknown]) {
+            AdoptionDecision::Adopt { name, .. } => assert_eq!(name, "qwen3:8b"),
+            other => panic!("expected it to be adopted, got {other:?}"),
+        }
     }
 }
