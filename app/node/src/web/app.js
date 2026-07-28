@@ -25,6 +25,7 @@ let UNDERSTANDING = [];        // Endora's beliefs about the person (the home su
 let OUTCOMES = [];             // what Endora DID, and what it saw afterwards (ADR 0053)
 let INTENTIONS = [];           // what Endora is pursuing, and has pursued (ADR 0052)
 let MCP_NEEDS = { fields: [], docs: "" }; // what the chosen catalogue entry says it needs
+let WORTH_KNOWING = { models: [], fits_gb: 12, asked: false }; // hub models that would fit
 let LAST_VIEW = null;          // which screen was showing, so a change can reset the scroll
 let REPAIRS = [];              // tooling Endora has noticed keeps not working (ADR 0054)
 let CONFIG_WRITES = [];        // changes Endora made to your services' own settings (ADR 0054)
@@ -915,7 +916,36 @@ function viewDisplay() {
 function viewModels() {
   return `
     ${crumbs([{ label: "Home", act: "go:chat" }, { label: "Settings", act: "go:settings" }, { label: "Models" }])}
-    ${modelsSection()}`;
+    ${modelsSection()}
+    ${worthKnowingSection()}`;
+}
+
+// Models the hub has that would fit this machine (ADR 0055).
+//
+// Reports; it does not fetch. Endora doesn't manage the model runtime — it says what
+// exists and hands over the command to run. And it asks rather than guessing how much
+// card there is, because it runs in a container and cannot see it.
+function worthKnowingSection() {
+  const rows = (WORTH_KNOWING.models || []).map((m) => `
+    <div class="card"><div class="row" style="align-items:flex-start;gap:10px;">
+      <div class="grow">
+        <div class="title" style="font-weight:500;">${esc(m.id)}</div>
+        <div class="sub">about ${m.about_gb} GB at 4-bit · updated ${esc(m.updated)} · ${Number(m.downloads).toLocaleString()} downloads</div>
+        <div class="sub" style="margin-top:4px;"><code>${esc(m.how_to_get_it)}</code></div>
+      </div>
+    </div></div>`).join("");
+  return `
+    <h3 style="margin-top:22px;">Worth knowing about</h3>
+    <div class="note" style="margin-bottom:10px;">Recent models that would fit your card, most-used first. Endora doesn't download anything — run the command yourself, then it'll be scored with the rest next time the model layer runs. Sizes are estimated from the name.</div>
+    <div class="card">
+      <div class="row" style="gap:8px;align-items:center;">
+        <label class="sub" for="vram-gb">Card size</label>
+        <input id="vram-gb" type="number" min="2" max="200" value="${WORTH_KNOWING.fits_gb || 12}" style="width:5.5em;" />
+        <span class="sub">GB</span>
+        <button class="ghost" data-act="models:look">${icon("sparkle", 14)} Look</button>
+      </div>
+    </div>
+    ${WORTH_KNOWING.asked ? listOr(rows, "Nothing recent that fits — which is a fine answer.") : ""}`;
 }
 
 function viewProactive() {
@@ -1857,6 +1887,16 @@ async function dispatch(act) {
       try { await api("POST", `/v1/capabilities/${id}/confirm`, { confirm: wantConfirm }); flash(wantConfirm ? "Endora will ask before using this." : "Endora may use this on its own.", "ok"); }
       catch (e) { flash("Couldn't change that skill: " + e.message, "err"); }
       return reload();
+    }
+    // Ask the hub what exists that would fit. Never fetches — see worthKnowingSection.
+    if (verb === "models" && noun === "look") {
+      const gb = Number((document.getElementById("vram-gb") || {}).value || 12);
+      try {
+        const r = await api("GET", `/v1/models/worth-knowing?fits_gb=${gb}`);
+        WORTH_KNOWING = { models: r.models || [], fits_gb: r.fits_gb || gb, asked: true };
+        flash(`${(r.models || []).length} that would fit.`, "ok");
+      } catch (e) { flash("Couldn't reach the hub: " + e.message, "err"); }
+      return render();
     }
     // Search the MCP catalog (curated + community registry).
     if (verb === "mcp" && noun === "search") { await mcpSearch(); return; }
