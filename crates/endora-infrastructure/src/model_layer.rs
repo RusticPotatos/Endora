@@ -70,8 +70,11 @@ pub fn is_local(config: &ButlerModelConfig) -> bool {
 /// The layer's decision after scoring candidates against the incumbent.
 #[derive(Debug, Clone, PartialEq)]
 pub enum AdoptionDecision {
-    /// No candidate beat the incumbent — keep the current model.
-    Keep,
+    /// No candidate cleared the bar — keep the current model, and say why.
+    Keep {
+        /// What stopped a swap, so a quiet run reads differently from a near miss.
+        why: Held,
+    },
     /// A better **local** model won — adopt it automatically (write its config).
     Adopt {
         /// The candidate's name.
@@ -90,6 +93,8 @@ pub enum AdoptionDecision {
         score: usize,
         /// The incumbent's total score.
         incumbent: usize,
+        /// Which floor stopped it being adopted outright.
+        held_by: Held,
     },
 }
 
@@ -143,15 +148,33 @@ pub fn decide_adoption(incumbent: &Scorecard, scored: &[ScoredCandidate]) -> Ado
     // Nothing may be adopted outright. Anything that still beats the incumbent —
     // a cloud model, or a local one that would cost understanding — is proposed.
     if let Some(best) = scored.iter().filter(beats).max_by_key(|s| s.score.total()) {
+        // Which floor stopped it, checked in the order the filters above apply.
+        let held_by = if !is_local(&best.candidate.config) {
+            Held::NeedsAKey
+        } else if !keeps_understanding(&best) {
+            Held::WouldCostUnderstanding
+        } else {
+            Held::WouldBeSlower
+        };
         return AdoptionDecision::Propose {
             name: best.candidate.name.clone(),
             config: best.candidate.config.clone(),
             score: best.score.total(),
             incumbent: incumbent_total,
+            held_by,
         };
     }
 
-    AdoptionDecision::Keep
+    // Nothing cleared the margin. Say whether anything even came close, so a quiet run is
+    // distinguishable from a run that found a near-miss.
+    let anything_higher = scored.iter().any(|s| s.score.total() > incumbent_total);
+    AdoptionDecision::Keep {
+        why: if anything_higher {
+            Held::InsideTheNoise
+        } else {
+            Held::NothingBetter
+        },
+    }
 }
 
 /// Whether a candidate takes long enough more than the incumbent to be felt.
@@ -177,13 +200,49 @@ fn much_slower_than(candidate: &Scorecard, incumbent: &Scorecard) -> bool {
 /// changes shape.
 const CLEARLY_BETTER: usize = 3;
 
+/// Why the layer did not simply swap to the best-scoring candidate.
+///
+/// The layer has three floors now — margin, understanding, speed — and until this existed
+/// it reported only its *outcome*. "Kept" told the person nothing about whether anything
+/// had come close, which floor stopped it, or whether the run had found anything at all.
+/// A judgement nobody can inspect is indistinguishable from one nobody made.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Held {
+    /// Nothing scored higher than what is already running.
+    NothingBetter,
+    /// Something scored higher, but by less than the battery moves between runs.
+    InsideTheNoise,
+    /// It wins overall and understands the person less well (ADR 0052's floor).
+    WouldCostUnderstanding,
+    /// It wins overall and is materially slower — felt on every turn.
+    WouldBeSlower,
+    /// Only a model needing a key won, and those are never adopted outright.
+    NeedsAKey,
+}
+
+impl Held {
+    /// The reason in the person's words, for the activity trail.
+    #[must_use]
+    pub const fn as_words(self) -> &'static str {
+        match self {
+            Self::NothingBetter => "nothing scored better",
+            Self::InsideTheNoise => "the difference is inside the battery's own spread",
+            Self::WouldCostUnderstanding => "it understands you less well",
+            Self::WouldBeSlower => "it is noticeably slower",
+            Self::NeedsAKey => "it needs a key, so it is yours to approve",
+        }
+    }
+}
+
 /// The result of one model-layer run.
 #[derive(Debug, Clone, PartialEq)]
 pub enum AdoptionOutcome {
-    /// Kept the incumbent; the layer scored candidates but none won.
+    /// Kept the incumbent; the layer scored candidates and none cleared the bar.
     Kept {
         /// The incumbent's total score.
         incumbent: usize,
+        /// Why nothing was swapped in.
+        why: Held,
     },
     /// Auto-adopted a better local model (its config was written).
     Adopted {
@@ -192,12 +251,15 @@ pub enum AdoptionOutcome {
         /// Its total score.
         score: usize,
     },
-    /// Proposed a better cloud model for the person to confirm.
+    /// Proposed a better model for the person to confirm — it won, and a floor stopped
+    /// it being taken up automatically.
     Proposed {
         /// The proposed candidate's name.
         name: String,
         /// Its total score.
         score: usize,
+        /// Which floor stopped it being adopted outright.
+        held_by: Held,
     },
 }
 
@@ -230,7 +292,8 @@ pub fn run_model_layer(
         .collect();
 
     let outcome = match decide_adoption(&incumbent_card, &scored) {
-        AdoptionDecision::Keep => AdoptionOutcome::Kept {
+        AdoptionDecision::Keep { why } => AdoptionOutcome::Kept {
+            why,
             incumbent: incumbent_score,
         },
         AdoptionDecision::Adopt { name, config } => {
@@ -245,6 +308,7 @@ pub fn run_model_layer(
             name,
             config,
             score,
+            held_by,
             ..
         } => {
             if let Some(s) = scored.iter().find(|s| s.candidate.name == name) {
@@ -257,7 +321,11 @@ pub fn run_model_layer(
                     incumbent_score,
                 );
             }
-            AdoptionOutcome::Proposed { name, score }
+            AdoptionOutcome::Proposed {
+                name,
+                score,
+                held_by,
+            }
         }
     };
     Ok((outcome, scored))
@@ -330,7 +398,12 @@ mod tests {
     #[test]
     fn keeps_the_incumbent_when_nothing_beats_it() {
         let cands = vec![scored(local("a"), 12), scored(cloud("b"), 13)];
-        assert_eq!(decide_adoption(&card(13), &cands), AdoptionDecision::Keep);
+        assert_eq!(
+            decide_adoption(&card(13), &cands),
+            AdoptionDecision::Keep {
+                why: Held::NothingBetter
+            }
+        );
     }
 
     #[test]
@@ -381,11 +454,18 @@ mod tests {
         let cands = vec![scored(local("qwen2.5:14b"), 35)];
         assert_eq!(
             decide_adoption(&card(34), &cands),
-            AdoptionDecision::Keep,
+            AdoptionDecision::Keep {
+                why: Held::InsideTheNoise
+            },
             "adopted on noise"
         );
         // Two points is still inside the spread.
-        assert_eq!(decide_adoption(&card(33), &cands), AdoptionDecision::Keep);
+        assert_eq!(
+            decide_adoption(&card(33), &cands),
+            AdoptionDecision::Keep {
+                why: Held::InsideTheNoise
+            }
+        );
         // Three is the point at which the difference outlives a re-run.
         match decide_adoption(&card(32), &cands) {
             AdoptionDecision::Adopt { name, .. } => assert_eq!(name, "qwen2.5:14b"),
@@ -396,7 +476,12 @@ mod tests {
     #[test]
     fn ties_do_not_beat_the_incumbent() {
         let cands = vec![scored(local("a"), 13), scored(cloud("b"), 13)];
-        assert_eq!(decide_adoption(&card(13), &cands), AdoptionDecision::Keep);
+        assert_eq!(
+            decide_adoption(&card(13), &cands),
+            AdoptionDecision::Keep {
+                why: Held::NothingBetter
+            }
+        );
     }
 
     #[test]
@@ -451,7 +536,9 @@ mod tests {
         let cands = vec![scored_with_l3(local("kind-but-useless"), 9, 8)];
         assert_eq!(
             decide_adoption(&card_with_l3(14, 4), &cands),
-            AdoptionDecision::Keep
+            AdoptionDecision::Keep {
+                why: Held::NothingBetter
+            }
         );
     }
 
@@ -553,6 +640,55 @@ mod tests {
         match decide_adoption(&card_taking(32, 260_000), &[unknown]) {
             AdoptionDecision::Adopt { name, .. } => assert_eq!(name, "qwen3:8b"),
             other => panic!("expected it to be adopted, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_kept_run_says_whether_anything_came_close() {
+        // "Kept" on its own is indistinguishable from a run that found nothing and one
+        // that found a near miss. The person deserves to know which.
+        let near = vec![scored(local("qwen3:8b"), 35)];
+        assert_eq!(
+            decide_adoption(&card(34), &near),
+            AdoptionDecision::Keep {
+                why: Held::InsideTheNoise
+            },
+            "a near miss should say so"
+        );
+        let nothing = vec![scored(local("qwen3:8b"), 30)];
+        assert_eq!(
+            decide_adoption(&card(34), &nothing),
+            AdoptionDecision::Keep {
+                why: Held::NothingBetter
+            }
+        );
+    }
+
+    #[test]
+    fn a_proposal_names_the_floor_that_stopped_it() {
+        // Three floors, three different things to tell the person — and each is a trade
+        // only they can weigh.
+        let mut slow = scored(local("slowcoach"), 40);
+        slow.score.took_ms = 480_000;
+        match decide_adoption(&card_taking(32, 260_000), &[slow]) {
+            AdoptionDecision::Propose { held_by, .. } => {
+                assert_eq!(held_by, Held::WouldBeSlower);
+            }
+            other => panic!("expected a proposal, got {other:?}"),
+        }
+
+        let shallow = vec![scored_with_l3(local("forgetful"), 40, 2)];
+        match decide_adoption(&card_with_l3(30, 8), &shallow) {
+            AdoptionDecision::Propose { held_by, .. } => {
+                assert_eq!(held_by, Held::WouldCostUnderstanding);
+            }
+            other => panic!("expected a proposal, got {other:?}"),
+        }
+
+        let paid = vec![scored(cloud("gpt"), 40)];
+        match decide_adoption(&card(30), &paid) {
+            AdoptionDecision::Propose { held_by, .. } => assert_eq!(held_by, Held::NeedsAKey),
+            other => panic!("expected a proposal, got {other:?}"),
         }
     }
 }
