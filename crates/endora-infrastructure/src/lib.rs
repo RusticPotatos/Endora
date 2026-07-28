@@ -13,6 +13,7 @@ pub mod clock;
 pub mod eval;
 pub mod ids;
 pub mod model_layer;
+pub mod model_watch;
 pub mod sqlite;
 
 pub use butler::{
