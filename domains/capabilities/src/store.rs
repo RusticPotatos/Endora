@@ -89,7 +89,8 @@ pub fn migrate(db: &Db) -> Result<(), RepositoryError> {
                 target  TEXT NOT NULL,
                 added   TEXT NOT NULL,
                 was     TEXT NOT NULL,
-                undone  INTEGER NOT NULL DEFAULT 0
+                undone  INTEGER NOT NULL DEFAULT 0,
+                kind    TEXT NOT NULL DEFAULT 'name'
             ) STRICT;
             CREATE TABLE IF NOT EXISTS mcp_servers (
                 name    TEXT PRIMARY KEY,
@@ -471,8 +472,8 @@ impl crate::application::ConfigWriteLog for ConfigStore {
             .lock()?
             .execute(
                 "INSERT OR REPLACE INTO config_writes \
-                 (id, at_ms, server, target, added, was, undone) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                 (id, at_ms, server, target, added, was, undone, kind) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
                 params![
                     write.id.to_string(),
                     write.at_ms,
@@ -481,6 +482,7 @@ impl crate::application::ConfigWriteLog for ConfigStore {
                     write.added,
                     was,
                     i64::from(write.undone),
+                    write.kind.as_str(),
                 ],
             )
             .map_err(backend)?;
@@ -491,8 +493,8 @@ impl crate::application::ConfigWriteLog for ConfigStore {
         let conn = self.db.lock()?;
         let mut stmt = conn
             .prepare(
-                "SELECT id, at_ms, server, target, added, was, undone FROM config_writes \
-                 ORDER BY at_ms DESC LIMIT ?1",
+                "SELECT id, at_ms, server, target, added, was, undone, kind \
+                 FROM config_writes ORDER BY at_ms DESC LIMIT ?1",
             )
             .map_err(backend)?;
         let rows = stmt
@@ -505,12 +507,13 @@ impl crate::application::ConfigWriteLog for ConfigStore {
                     r.get::<_, String>(4)?,
                     r.get::<_, String>(5)?,
                     r.get::<_, i64>(6)?,
+                    r.get::<_, String>(7)?,
                 ))
             })
             .map_err(backend)?;
         let mut out = Vec::new();
         for row in rows {
-            let (id, at_ms, server, target, added, was, undone) = row.map_err(backend)?;
+            let (id, at_ms, server, target, added, was, undone, kind) = row.map_err(backend)?;
             out.push(ConfigWrite {
                 id: id.parse().map_err(|_| corrupt("unreadable id"))?,
                 at_ms,
@@ -519,6 +522,7 @@ impl crate::application::ConfigWriteLog for ConfigStore {
                 added,
                 was: serde_json::from_str(&was).unwrap_or_default(),
                 undone: undone != 0,
+                kind: crate::domain::WriteKind::read(&kind),
             });
         }
         Ok(out)
@@ -989,6 +993,7 @@ mod tests {
             added: "table".to_owned(),
             was: vec!["kitchen table light".to_owned()],
             undone: false,
+            kind: crate::domain::WriteKind::Name,
         };
         store_at(&path).record(&write).unwrap();
         // A second store over the same file, the way it would be after a restart.
@@ -1016,6 +1021,7 @@ mod tests {
                 added: "lamp".to_owned(),
                 was: Vec::new(),
                 undone: false,
+                kind: crate::domain::WriteKind::Name,
             })
             .unwrap();
         store.mark_undone(7).unwrap();
@@ -1042,9 +1048,48 @@ mod tests {
                 added: "new".to_owned(),
                 was: awkward.clone(),
                 undone: false,
+                kind: crate::domain::WriteKind::Name,
             })
             .unwrap();
         assert_eq!(store.write(9).unwrap().unwrap().was, awkward);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn a_collection_is_never_undone_as_if_it_were_a_name() {
+        // The hazard the stored kind exists for. A collection is created with no prior
+        // value, which reads exactly like adding a name — so undoing it as one would
+        // replay an empty list and strip every name off whatever it points at.
+        use crate::application::{ConfigWrite, ConfigWriteLog};
+        use crate::domain::WriteKind;
+        let path = temp_db_path("kinds");
+        let store = store_at(&path);
+        let collection = ConfigWrite {
+            id: 11,
+            at_ms: 1,
+            server: "home-assistant".to_owned(),
+            target: "01JABCDEF".to_owned(),
+            added: "All Lights".to_owned(),
+            was: vec!["light.kitchen_table".to_owned(), "light.garage".to_owned()],
+            undone: false,
+            kind: WriteKind::Collection,
+        };
+        store.record(&collection).unwrap();
+        let back = store.write(11).unwrap().expect("the change was not kept");
+        assert_eq!(
+            back.kind,
+            WriteKind::Collection,
+            "came back as the wrong sort"
+        );
+        assert!(
+            !back.is_removal(),
+            "a collection is not a name being taken away"
+        );
+        assert!(
+            back.describe().contains("stands for"),
+            "{}",
+            back.describe()
+        );
         let _ = std::fs::remove_file(&path);
     }
 }

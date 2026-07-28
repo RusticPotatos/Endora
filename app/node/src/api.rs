@@ -794,6 +794,7 @@ pub fn app(state: AppState) -> Router {
                 .delete(forget_alias_everywhere),
         )
         .route("/v1/aliases/upstream", post(push_aliases_upstream))
+        .route("/v1/collections", post(make_a_collection))
         .route("/v1/config-writes", get(list_config_writes))
         .route("/v1/config-writes/{id}/undo", post(undo_config_write))
         .route("/v1/outcomes/{id}/reaction", post(react_to_outcome))
@@ -1895,6 +1896,75 @@ async fn forget_alias_everywhere(
     .await?;
     let _ = state.changes.send(());
     Ok(Json(json!({ "ok": true, "upstream": upstream })))
+}
+
+#[derive(Deserialize)]
+struct CollectionRequest {
+    server: String,
+    name: String,
+    /// What the collection stands for — matched against the names the service knows, so
+    /// the caller says "every light" in the words a person uses rather than in ids.
+    of: Vec<String>,
+}
+
+/// Makes one thing that stands for many, in the service that owns them (ADR 0054).
+///
+/// The general answer to a request no amount of aiming can express. "All the lights" is
+/// not a target and never can be; a collection *is* one, and once it exists nothing about
+/// acting on it is special.
+async fn make_a_collection(
+    State(state): State<AppState>,
+    Json(req): Json<CollectionRequest>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let config = state.config.clone();
+    let ids = state.ids.clone();
+    let clock = state.clock.clone();
+    let said = blocking(move || {
+        let channels = native_channels(config.as_ref());
+        let Some((_, channel)) = channels.iter().find(|(name, _)| *name == req.server) else {
+            return Err(AppError::BadRequest {
+                message: format!("Endora has no direct reach into {}", req.server),
+            });
+        };
+        // Resolve the person's words to the service's own ids. Nothing is invented: a
+        // name that matches nothing is reported rather than guessed at.
+        let known = channel.known().map_err(|why| AppError::BadRequest { message: why })?;
+        let mut members: Vec<String> = Vec::new();
+        let mut unknown: Vec<String> = Vec::new();
+        for wanted in &req.of {
+            match known
+                .iter()
+                .find(|(_, name)| name.eq_ignore_ascii_case(wanted.trim()))
+            {
+                Some((id, _)) if !members.contains(id) => members.push(id.clone()),
+                Some(_) => {}
+                None => unknown.push(wanted.clone()),
+            }
+        }
+        if !unknown.is_empty() {
+            return Err(AppError::BadRequest {
+                message: format!("{} isn't anything this service knows", unknown.join(", ")),
+            });
+        }
+        match channel.collect(&req.name, &members) {
+            Some(Ok(mut write)) => {
+                write.id = endora_application::IdSource::new_id(ids.as_ref());
+                write.at_ms = clock.now().unix_millis();
+                write.server = req.server;
+                let described = write.describe();
+                endora_capabilities::ConfigWriteLog::record(config.as_ref(), &write)
+                    .map_err(AppError::Repository)?;
+                Ok(json!({ "made": described, "id": write.id.to_string(), "members": members.len() }))
+            }
+            Some(Err(why)) => Err(AppError::BadRequest { message: why }),
+            None => Err(AppError::BadRequest {
+                message: "Endora is not allowed to change this service's settings".to_owned(),
+            }),
+        }
+    })
+    .await?;
+    let _ = state.changes.send(());
+    Ok(Json(said))
 }
 
 /// Every change Endora has made to a service's own configuration (ADR 0054).

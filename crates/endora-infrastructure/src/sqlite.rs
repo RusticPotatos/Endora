@@ -172,7 +172,8 @@ CREATE TABLE IF NOT EXISTS config_writes (
     target  TEXT NOT NULL,
     added   TEXT NOT NULL,
     was     TEXT NOT NULL,
-    undone  INTEGER NOT NULL DEFAULT 0
+    undone  INTEGER NOT NULL DEFAULT 0,
+    kind    TEXT NOT NULL DEFAULT 'name'
 ) STRICT;
 CREATE TABLE IF NOT EXISTS mcp_servers (
     name    TEXT PRIMARY KEY,
@@ -229,6 +230,16 @@ impl SqliteStore {
             // database sheds it rather than carrying dead tables forever.
             drop_goal_tracker(&conn)?;
             conn.execute_batch(SCHEMA).map_err(backend)?;
+            // What sort of change a config write was (ADR 0054). Existing rows are all
+            // name changes, which is what the default says — and adding it here as well
+            // as in SCHEMA is the point: `CREATE TABLE IF NOT EXISTS` does nothing to a
+            // table that already exists, which has now shipped two live bugs.
+            ensure_column(
+                &conn,
+                "config_writes",
+                "kind",
+                "TEXT NOT NULL DEFAULT 'name'",
+            )?;
             // Per-capability irreversible-band opener (ADR 0051); existing rows
             // default to closed (0) — the un-undoable stays blocked until opened.
             ensure_column(

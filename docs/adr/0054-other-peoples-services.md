@@ -141,6 +141,30 @@ That log survives "forget everything": it is not knowledge about the person, it 
 for a change that still exists inside somebody else's service, and deleting the receipt does
 not undo the change.
 
+### One thing that stands for many
+
+Some requests cannot be aimed. "Turn off all the lights" produces a call aimed at nothing,
+which is **indistinguishable** from a model that failed to say what it meant — so it is
+refused, correctly, and the person cannot have what they asked for. Every mechanism here
+makes calls narrower; a collective request had nowhere to go.
+
+The answer is not to fan out across many ids at action time. That is the one move all of
+this exists to prevent, and it half-applies when something fails partway.
+
+Instead the service is asked to **hold a collection once**: a group, a list, whatever that
+service calls one thing standing for several. After that there is nothing special about it —
+it has a name and an id and is hit exactly like anything else. A dangerous runtime fan-out
+becomes a one-time, reversible configuration change plus an ordinary single-target action.
+
+It also means the person can see it. A group is visible in their own service, editable
+there, and gone the moment they remove it.
+
+**What is stored, and why.** A collection is created with **no prior value**, which reads
+exactly like adding a name — so undoing it as one would replay an empty list and strip
+every name off whatever it points at. Add-versus-remove stays derived, but the *kind* of
+change is recorded, because those are different acts with different undos and guessing
+between them is destructive.
+
 ### A quirk that widens is not a quirk worth keeping
 
 One of the original per-integration patches dropped a `name` that was merely a device-kind
