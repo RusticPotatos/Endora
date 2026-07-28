@@ -310,6 +310,88 @@ fn read_state_back(
 /// activity log. Retrying is cheap (an empty completion returns near-instantly) and,
 /// because sampling is non-deterministic, usually turns the retry into a real tool
 /// call or answer. Bounded so a persistently mute model still returns promptly.
+/// Whether a reply is not an answer at all — the model responding to its own plumbing
+/// rather than to the person.
+///
+/// Two shapes, one meaning. Both were observed within an hour of each other:
+///
+/// ```text
+/// "here are the appropriate function calls: 1. **GetWeather** ..."   (named, called none)
+/// "None of the functions provided pertain to the 'news' domain."     (protocol words)
+/// ```
+///
+/// Treating this as **no reply** rather than as a bad one is what keeps it to a single
+/// idea: every path already knows what to do when the model says nothing. The turn
+/// retries; a check-in stays quiet; a chat answer falls back. None of them needed a new
+/// mechanism, only a truer notion of "nothing".
+fn not_an_answer(reply: &ButlerReply, context: &ButlerContext) -> bool {
+    reply.tool_calls.is_empty()
+        && (reply.text.trim().is_empty()
+            || only_described_a_tool(reply, context)
+            || sounds_like_plumbing(&reply.text))
+}
+
+/// Whether a message is about Endora's plumbing rather than about the person.
+///
+/// A deliberate, narrow heuristic — and named as one. These are words from the tool
+/// protocol, and a butler telling someone about their morning has no reason to reach for
+/// any of them. It is scoped to the **unprompted** path only, where silence is already
+/// the default and a false positive costs one skipped message.
+///
+/// A reply the person actually asked for is never filtered: they can see the question
+/// they asked, and suppressing an answer would be worse than an awkward one.
+fn sounds_like_plumbing(text: &str) -> bool {
+    const PLUMBING: &[&str] = &[
+        "function call",
+        "functions provided",
+        "exposed entities",
+        "no exposed",
+        "json object",
+        "placeholder argument",
+        "the 'news' domain",
+        "tool call",
+    ];
+    let lowered = text.to_lowercase();
+    PLUMBING.iter().any(|marker| lowered.contains(marker))
+}
+
+/// Whether the model wrote *about* the tools instead of using one.
+///
+/// Observed, in answer to "I usually want news weather traffic":
+///
+/// ```text
+/// Based on your request ... here are the appropriate function calls:
+/// 1. **GetWeather** - To fetch the current weather.
+/// 2. **GetTraffic** - To get traffic updates.
+/// Here are the JSON objects for these functions with placeholder arguments:
+/// ```
+///
+/// Nothing ran. A weak model asked to answer with tools available sometimes narrates the
+/// call it would make rather than making it, and the person gets an essay about function
+/// names instead of their weather.
+///
+/// The signal is taken from the **catalogue offered this turn**, not from a list of
+/// suspicious words: naming a tool it was handed, while calling none of them, is
+/// describing rather than doing. A reply that mentions no offered tool is left alone
+/// however it is phrased.
+fn only_described_a_tool(reply: &ButlerReply, context: &ButlerContext) -> bool {
+    if !reply.tool_calls.is_empty() {
+        return false;
+    }
+    let text = reply.text.to_lowercase();
+    context.tools.iter().any(|tool| {
+        // The bare name, since the model writes `GetWeather` rather than
+        // `home-assistant.GetWeather`.
+        let bare = tool
+            .id
+            .rsplit('.')
+            .next()
+            .unwrap_or(&tool.id)
+            .to_lowercase();
+        bare.len() > 3 && text.contains(&bare)
+    })
+}
+
 fn take_turn_retrying_empty(
     butler: &dyn Butler,
     conversation: &[TurnMessage],
@@ -324,8 +406,7 @@ fn take_turn_retrying_empty(
             message: e.to_string(),
         })?;
     let mut retries = 0;
-    while reply.tool_calls.is_empty() && reply.text.trim().is_empty() && retries < MAX_EMPTY_RETRIES
-    {
+    while not_an_answer(&reply, context) && retries < MAX_EMPTY_RETRIES {
         retries += 1;
         // A retry only happens when the round produced NOTHING, so nothing was streamed
         // and there is nothing for the person to see rewritten.
@@ -1837,11 +1918,14 @@ pub fn consider_reaching_out(
         &mut Vec::new(),
     )
     .ok();
+    // Nothing worth saying — the common and correct case — and a reply that is really
+    // about the plumbing counts as nothing (ADR 0056: silence is the default here, so the
+    // cost of being strict is one skipped window).
     let text = reply
         .as_ref()
+        .filter(|r| !not_an_answer(r, &ask_ctx))
         .map(|r| r.text.trim().to_owned())
         .filter(|t| !t.is_empty());
-    // Nothing worth saying — the common and correct case. Stay quiet.
     let Some(text) = text else {
         activity.push("Considered reaching out, and had nothing worth saying".to_owned());
         return Ok(None);
@@ -6033,5 +6117,78 @@ mod tests {
             "It is on.",
             "the stored reply is the answer alone"
         );
+    }
+
+    /// A context offering the tools the live turn offered.
+    fn offering(ids: &[&str]) -> ButlerContext {
+        ButlerContext {
+            tools: ids
+                .iter()
+                .map(|id| crate::CapabilityTool {
+                    id: (*id).to_owned(),
+                    description: String::new(),
+                    input_schema: None,
+                })
+                .collect(),
+            ..ButlerContext::default()
+        }
+    }
+
+    fn said(text: &str) -> ButlerReply {
+        ButlerReply {
+            text: text.to_owned(),
+            ..ButlerReply::default()
+        }
+    }
+
+    #[test]
+    fn naming_a_tool_instead_of_calling_it_is_not_an_answer() {
+        // Live, in answer to "I usually want news weather traffic". Nothing ran.
+        let ctx = offering(&["home-assistant.GetWeather", "home-assistant.GetTraffic"]);
+        let described = said(
+            "Based on your request, here are the appropriate function calls:\n             1. **GetWeather** - To fetch the current weather.",
+        );
+        assert!(super::not_an_answer(&described, &ctx));
+    }
+
+    #[test]
+    fn talking_about_the_protocol_is_not_an_answer() {
+        // Live, unprompted an hour later, straight into the person's inbox.
+        let plumbing = said(
+            "None of the functions provided pertain to the 'news' domain, hence no \
+             exposed entities were found.",
+        );
+        assert!(super::not_an_answer(&plumbing, &offering(&[])));
+    }
+
+    #[test]
+    fn an_ordinary_reply_is_left_alone() {
+        let ctx = offering(&["home-assistant.GetWeather", "home-assistant.HassTurnOn"]);
+        // Mentions no offered tool and no protocol words, however it is phrased.
+        assert!(!super::not_an_answer(
+            &said("It is 14 degrees and clear."),
+            &ctx
+        ));
+        // Short words are not matched, so a tool called `Get` could never swallow prose.
+        assert!(!super::not_an_answer(
+            &said("I will get the door."),
+            &offering(&["x.Get"])
+        ));
+    }
+
+    #[test]
+    fn a_reply_that_actually_called_something_is_always_an_answer() {
+        // Naming a tool it also USED is just explaining itself, which is welcome.
+        let ctx = offering(&["home-assistant.GetWeather"]);
+        let acted = ButlerReply {
+            text: "I used GetWeather: it is 14 degrees.".to_owned(),
+            tool_calls: vec![crate::ToolCall {
+                id: "1".to_owned(),
+                capability: "home-assistant.GetWeather".to_owned(),
+                input_json: "{}".to_owned(),
+            }],
+            ..ButlerReply::default()
+        };
+        assert!(!super::not_an_answer(&acted, &ctx));
     }
 }
