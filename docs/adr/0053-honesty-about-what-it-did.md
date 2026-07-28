@@ -50,6 +50,29 @@ are understood.
 The port keeps a default that answers in one piece, so a butler without native streaming
 still works with a streaming caller; only the model-backed one overrides it.
 
+### Answering the plumbing is not answering
+
+A weak model asked to answer with tools available sometimes replies **about** the tools
+instead of using them. Both shapes were observed within an hour:
+
+```text
+"here are the appropriate function calls: 1. **GetWeather** ..."   named them, called none
+"None of the functions provided pertain to the 'news' domain."     protocol words, unprompted
+```
+
+The second arrived unprompted and landed in the person's inbox.
+
+This is treated as **no reply**, not as a bad one — which is what keeps it a single idea
+rather than a new mechanism per path. Every path already knows what to do with nothing: the
+turn retries, a check-in stays quiet ([0056](0056-how-it-behaves-toward-you.md)), a chat
+answer falls back. None of them needed changing; only the notion of "nothing" did.
+
+Two signals, and the first is the principled one: **naming a tool it was offered while
+calling none of them**, taken from the catalogue of that turn rather than from a list of
+suspicious words. The second is a short list of protocol phrases, and is a heuristic — named
+as one. It earns its place because a reply the person *asked for* is never suppressed, only
+retried; suppression happens solely where silence is already the correct default.
+
 ### Evidence verifies. An unobserved effect is never reported as fact.
 
 An actuator's own receipt is a **claim**, not evidence. After an action, Endora reads the
