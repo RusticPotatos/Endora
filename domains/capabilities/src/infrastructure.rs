@@ -2830,6 +2830,32 @@ pub trait NativeChannel: Send + Sync {
         Ok(Vec::new())
     }
 
+    /// Makes **one thing that stands for many** — so a request meaning "all of them" can
+    /// be an ordinary single-target action (ADR 0054).
+    ///
+    /// This is the general answer to a request no amount of aiming can express. "Turn off
+    /// all the lights" produces a call aimed at nothing, which is indistinguishable from a
+    /// model that failed to say what it meant — so it is refused, correctly, and the
+    /// person cannot have the thing they asked for.
+    ///
+    /// Rather than teaching Endora to fan out across many ids at action time — the one
+    /// move every guard here exists to prevent — the service is asked to hold a collection
+    /// once. After that there is nothing special about it: it is a thing with a name and
+    /// an id, hit exactly like any other.
+    ///
+    /// `None` from a service that cannot hold one, which is the default.
+    ///
+    /// # Errors
+    /// Through the inner `Result`, a human-readable message if the service refuses.
+    fn collect(
+        &self,
+        name: &str,
+        ids: &[String],
+    ) -> Option<Result<crate::domain::ConfigWrite, String>> {
+        let _ = (name, ids);
+        None
+    }
+
     /// Takes a name away again — the other half of [`teach`](Self::teach), so a name can
     /// be untold and not only added (ADR 0054).
     ///
