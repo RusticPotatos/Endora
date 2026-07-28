@@ -86,7 +86,7 @@ pub fn sightings_from(json: &Value, vram_gb: u32) -> Vec<ModelSighting> {
         .collect();
     // Most-used first among those that fit: recency got them into the list, and of the
     // recent ones the person wants the ones somebody has actually run.
-    out.sort_by(|a, b| b.downloads.cmp(&a.downloads));
+    out.sort_by_key(|s| std::cmp::Reverse(s.downloads));
     out.dedup_by(|a, b| a.id == b.id);
     out
 }
