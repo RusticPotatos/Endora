@@ -28,6 +28,12 @@ pub struct Entity {
     pub name: String,
     /// Its state right now, for the reading.
     pub state: String,
+    /// When it last changed, as the service reports it. Empty when it does not say.
+    ///
+    /// A reading without time can answer "is it on?" and never "how long has it been on?"
+    /// — and a butler asked the second question improvises rather than declining. The
+    /// service already carries this; Endora was discarding it.
+    pub since: String,
     /// What sort of thing it is: its domain (`light`) and its device class where it has
     /// one. The vocabulary of *kinds*, as opposed to names (ADR 0054).
     pub kinds: Vec<String>,
@@ -121,6 +127,7 @@ impl HomeAssistant {
                         .unwrap_or(id)
                         .to_owned(),
                     state: e["state"].as_str().unwrap_or("?").to_owned(),
+                    since: e["last_changed"].as_str().unwrap_or_default().to_owned(),
                     kinds,
                 })
             })
@@ -529,6 +536,21 @@ const SWITCHABLE: &[&str] = &[
     "water_heater",
 ];
 
+/// The time-of-day part of an ISO timestamp, which is all a reading needs.
+///
+/// A full timestamp is noise in a prompt a local model has to read; `14:32` says the same
+/// thing in five characters. Anything that is not a timestamp comes back empty rather than
+/// mangled, so a service reporting something unexpected simply contributes no time.
+fn clock_time(iso: &str) -> String {
+    let Some((date, rest)) = iso.split_once('T') else {
+        return String::new();
+    };
+    if date.len() != 10 || rest.len() < 5 {
+        return String::new();
+    }
+    rest.chars().take(5).collect()
+}
+
 /// One person's presence, in words.
 fn describe_presence(name: &str, state: &str) -> String {
     match state {
@@ -603,7 +625,14 @@ impl crate::infrastructure::NativeChannel for HomeAssistant {
             .flat_map(|e| {
                 self.names_of(e)
                     .into_iter()
-                    .map(|n| format!("names: {n}\n  state: {}", e.state))
+                    .map(|n| {
+                        let since = clock_time(&e.since);
+                        if since.is_empty() {
+                            format!("names: {n}\n  state: {}", e.state)
+                        } else {
+                            format!("names: {n}\n  state: {}\n  since: {since}", e.state)
+                        }
+                    })
                     .collect::<Vec<_>>()
             })
             .collect::<Vec<_>>()
@@ -924,8 +953,21 @@ mod tests {
             id: "light.x".to_owned(),
             name: name.to_owned(),
             state: "on".to_owned(),
+            since: String::new(),
             kinds: vec!["light".to_owned()],
         }
+    }
+
+    #[test]
+    fn a_reading_carries_when_something_last_changed() {
+        // A reading without time can answer "is it on?" and never "how long has it been
+        // on?" — and asked the second question, the butler improvises rather than saying
+        // it cannot tell.
+        assert_eq!(clock_time("2026-07-28T14:32:07.123456+00:00"), "14:32");
+        // Anything that is not a timestamp contributes nothing rather than being mangled.
+        assert_eq!(clock_time("unavailable"), "");
+        assert_eq!(clock_time(""), "");
+        assert_eq!(clock_time("2026-07-28T"), "");
     }
 
     #[test]
