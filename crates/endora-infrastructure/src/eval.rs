@@ -169,6 +169,60 @@ pub struct EvalCase {
 
 // --- Shared judgement helpers ------------------------------------------------
 
+/// A reading the size of a real one.
+///
+/// The first version of the counting case used five tidy lines, and the model counted them
+/// perfectly while failing the identical question live against forty-odd entities. That is
+/// the same mistake that let every `select:*` case pass for a week: a fixture small enough
+/// to be easy measures nothing. Counting nine things among forty is the work; counting
+/// three among five is not.
+///
+/// Deliberately shaped like the live one — scenes and media players mixed in with the
+/// lights, similar names, states that are neither all on nor all off — so a model cannot
+/// pattern-match its way to the answer.
+const A_REAL_SIZED_READING: &str = "\
+names: Apple TV | domain: media_player | state: playing\n\
+names: Bedroom | domain: light | state: off\n\
+names: Bedroom Bright | domain: scene | state: unknown\n\
+names: Bedroom Dimmed | domain: scene | state: unknown\n\
+names: Bedroom Main 1 | domain: light | state: on\n\
+names: Bedroom Main 2 | domain: light | state: on\n\
+names: Bedroom Nightlight | domain: scene | state: unknown\n\
+names: Garage | domain: light | state: on\n\
+names: Garage Bright | domain: scene | state: unknown\n\
+names: Garage Dimmed | domain: scene | state: unknown\n\
+names: Garage Main | domain: light | state: on\n\
+names: Garage Nightlight | domain: scene | state: unknown\n\
+names: Guest Bedroom | domain: light | state: on\n\
+names: Guest Bedroom Bright | domain: scene | state: unknown\n\
+names: Guest Bedroom Left | domain: light | state: on\n\
+names: Guest Bedroom Right | domain: light | state: unavailable\n\
+names: HomePod Mini 1 | domain: media_player | state: idle\n\
+names: HomePod Mini 2 | domain: media_player | state: idle\n\
+names: Hue filament bulb 1 | domain: light | state: unavailable\n\
+names: Kitchen Bright | domain: scene | state: unknown\n\
+names: Kitchen Dimmed | domain: scene | state: unknown\n\
+names: Kitchen Main Light | domain: light | state: on\n\
+names: Kitchen Nightlight | domain: scene | state: unknown\n\
+names: Kitchen Table | domain: light | state: on\n\
+names: Living Room Bright | domain: scene | state: unknown\n\
+names: Living Room Dimmed | domain: scene | state: unknown\n\
+names: Living Room Nightlight | domain: scene | state: unknown\n\
+names: Outside | domain: light | state: on\n\
+names: Outside Arctic aurora | domain: scene | state: unknown\n\
+names: Outside Bright | domain: scene | state: unknown\n\
+names: Outside Color | domain: light | state: unavailable\n\
+names: Outside Concentrate | domain: scene | state: unknown\n\
+names: Outside Dimmed | domain: scene | state: unknown\n\
+names: Outside Energize | domain: scene | state: unknown\n\
+names: Outside Nightlight | domain: scene | state: unknown\n\
+names: Outside Read | domain: scene | state: unknown\n\
+names: Outside Relax | domain: scene | state: unknown\n\
+names: Outside Savanna sunset | domain: scene | state: unknown\n\
+names: Outside Spring blossom | domain: scene | state: unknown\n\
+names: Outside Tropical twilight | domain: scene | state: unknown\n\
+names: living room lamp | domain: light | state: unavailable";
+
 /// The skills offered in the eval — the real configured set + descriptions, so
 /// routing is tested under the same choice pressure as the live deployment.
 const EVAL_SKILL_LINES: &[&str] = &[
@@ -785,17 +839,13 @@ pub fn battery() -> Vec<EvalCase> {
             probe: Probe::AfterTool {
                 prompt: "how many lights are on?",
                 capability: "home-assistant.GetLiveContext",
-                result: "names: Kitchen Table | state: on\n\
-                         names: Kitchen Main Light | state: on\n\
-                         names: Garage Main | state: on\n\
-                         names: Bedroom Main 1 | state: off\n\
-                         names: Outside | state: off",
+                result: A_REAL_SIZED_READING,
             },
             check: |r, _| {
-                // Three are on. Any other number is wrong, and no number at all is not an
+                // Nine are on. Any other number is wrong, and no number at all is not an
                 // answer to "how many".
                 let text = r.text.to_lowercase();
-                text.contains('3') || text.contains("three")
+                text.contains('9') || text.contains("nine")
             },
         },
         EvalCase {
@@ -811,7 +861,7 @@ pub fn battery() -> Vec<EvalCase> {
             probe: Probe::AfterTool {
                 prompt: "how long have the lights been on today?",
                 capability: "home-assistant.GetLiveContext",
-                result: "names: Kitchen Table | state: on\nnames: Garage Main | state: on",
+                result: A_REAL_SIZED_READING,
             },
             check: |r, _| {
                 // A duration would have to be invented: nothing here carries time. Pass if
