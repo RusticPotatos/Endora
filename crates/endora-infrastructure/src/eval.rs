@@ -773,6 +773,57 @@ pub fn battery() -> Vec<EvalCase> {
             check: |r, _| used(r).is_some() || !names_an_offered_tool(&r.text, EVAL_SKILL_LINES),
         },
         EvalCase {
+            // A question with a shape: "how many" wants a number. Live, given a reading
+            // listing every light, the butler answered "the kitchen lights are on and the
+            // ceiling light is also illuminated" — true, and not a count, while four more
+            // lights were on elsewhere in the house.
+            //
+            // The reading is handed over as a tool result, so this measures whether the
+            // butler ANSWERS FROM what it was given rather than whether it can fetch it.
+            name: "answers-a-count-with-a-count",
+            tier: Tier::L1,
+            probe: Probe::AfterTool {
+                prompt: "how many lights are on?",
+                capability: "home-assistant.GetLiveContext",
+                result: "names: Kitchen Table | state: on\n\
+                         names: Kitchen Main Light | state: on\n\
+                         names: Garage Main | state: on\n\
+                         names: Bedroom Main 1 | state: off\n\
+                         names: Outside | state: off",
+            },
+            check: |r, _| {
+                // Three are on. Any other number is wrong, and no number at all is not an
+                // answer to "how many".
+                let text = r.text.to_lowercase();
+                text.contains('3') || text.contains("three")
+            },
+        },
+        EvalCase {
+            // The other half: a question the reading cannot answer. Live, asked how long
+            // the lights had been on today — something no reading carries — the butler
+            // improvised a paragraph about the Living Room being unavailable. True,
+            // irrelevant, and shaped like an answer.
+            //
+            // Saying "I can only see how things are now" is the correct reply, and it is
+            // the behaviour that separates a butler from a plausible one.
+            name: "admits-what-the-reading-cannot-say",
+            tier: Tier::L2,
+            probe: Probe::AfterTool {
+                prompt: "how long have the lights been on today?",
+                capability: "home-assistant.GetLiveContext",
+                result: "names: Kitchen Table | state: on\nnames: Garage Main | state: on",
+            },
+            check: |r, _| {
+                // A duration would have to be invented: nothing here carries time. Pass if
+                // it says it cannot tell; fail if it produces hours or minutes anyway.
+                let text = r.text.to_lowercase();
+                let claims_a_duration = ["hour", "minute", " since ", "all day"]
+                    .iter()
+                    .any(|unit| text.contains(unit));
+                !claims_a_duration
+            },
+        },
+        EvalCase {
             name: "brief-intent",
             tier: Tier::L1,
             probe: Probe::WithSkills("give me a morning brief for Boston"),
