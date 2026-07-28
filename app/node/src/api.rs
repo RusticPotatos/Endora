@@ -795,6 +795,7 @@ pub fn app(state: AppState) -> Router {
         )
         .route("/v1/aliases/upstream", post(push_aliases_upstream))
         .route("/v1/collections", post(make_a_collection))
+        .route("/v1/models/worth-knowing", get(models_worth_knowing))
         .route("/v1/config-writes", get(list_config_writes))
         .route("/v1/config-writes/{id}/undo", post(undo_config_write))
         .route("/v1/outcomes/{id}/reaction", post(react_to_outcome))
@@ -1905,6 +1906,50 @@ struct CollectionRequest {
     /// What the collection stands for — matched against the names the service knows, so
     /// the caller says "every light" in the words a person uses rather than in ids.
     of: Vec<String>,
+}
+
+#[derive(Deserialize)]
+struct WorthKnowingRequest {
+    fits_gb: Option<u32>,
+}
+
+/// The card to assume when nobody has said. Small enough that what it suggests will run
+/// almost anywhere, since suggesting something unrunnable is the worse mistake.
+const DEFAULT_VRAM_GB: u32 = 8;
+
+/// Models the hub has that would fit this machine (ADR 0055).
+///
+/// Reports; it does not fetch. Endora does not manage the model runtime — it says what
+/// exists and hands over the command, and the person runs it. Downloading gigabytes onto
+/// someone's box unasked is a far worse failure than a slow reply.
+///
+/// Asked for on demand rather than on a schedule: a weekly "there are new models" message
+/// is noise in an inbox meant for things that matter.
+async fn models_worth_knowing(
+    Query(req): Query<WorthKnowingRequest>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    // Asked for rather than guessed: Endora runs in a container and cannot see the card,
+    // and inventing a ceiling would either hide models that fit or suggest ones that
+    // cannot run. The console asks the person once and remembers.
+    let vram = req.fits_gb.unwrap_or(DEFAULT_VRAM_GB);
+    let seen = blocking(move || {
+        endora_infrastructure::model_watch::worth_knowing_about(vram)
+            .map_err(|message| AppError::Model { message })
+    })
+    .await?;
+    Ok(Json(json!({
+        "fits_gb": vram,
+        "models": seen
+            .iter()
+            .map(|m| json!({
+                "id": m.id,
+                "about_gb": m.about_gb,
+                "updated": m.updated,
+                "downloads": m.downloads,
+                "how_to_get_it": m.how_to_get_it,
+            }))
+            .collect::<Vec<_>>(),
+    })))
 }
 
 /// Makes one thing that stands for many, in the service that owns them (ADR 0054).
