@@ -3028,16 +3028,26 @@ fn run_model_tune(
                     ),
                 );
             }
+            // Say WHY, not just what. The layer has three floors now, and an outcome
+            // without a reason is a judgement nobody can check (ADR 0055). The scores are
+            // out of the battery's own total rather than a number frozen in this string.
             let msg = match outcome {
                 AdoptionOutcome::Adopted { name, score } => {
-                    format!("adopted a better local model: {name} ({score}/15)")
+                    format!("adopted a better local model: {name}, scoring {score}")
                 }
-                AdoptionOutcome::Proposed { name, score } => {
-                    format!("proposes cloud model {name} ({score}/15) — awaiting your ok")
-                }
-                AdoptionOutcome::Kept { incumbent } => {
-                    format!("kept the current model (still best at {incumbent}/15)")
-                }
+                AdoptionOutcome::Proposed {
+                    name,
+                    score,
+                    held_by,
+                } => format!(
+                    "{name} scored {score} and is worth considering, but {} — so it is \
+                     yours to decide",
+                    held_by.as_words()
+                ),
+                AdoptionOutcome::Kept { incumbent, why } => format!(
+                    "kept the current model, scoring {incumbent}: {}",
+                    why.as_words()
+                ),
             };
             record_event(events, clock, &format!("Model layer: {msg}"));
         }
