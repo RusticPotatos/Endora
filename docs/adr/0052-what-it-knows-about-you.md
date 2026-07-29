@@ -54,6 +54,53 @@ person's only verb is *stop*.
 There is deliberately **no "add"**. A console that let you file work would rebuild [0029]'s
 goal tracker with a new name.
 
+### A settled belief stops asking
+
+Every belief card offered *That's right / Not quite*, forever, regardless of how sure Endora
+was or how many times the person had already confirmed it. One screen held a dozen
+high-confidence, repeatedly-affirmed cards, all still asking. That is the queue this document
+exists to prevent, wearing a different costume: a list of chores that never empties, because
+answering an item does not remove it.
+
+A belief that is **held with high confidence and has been reinforced at least once since it
+was formed** is settled, and settled beliefs are not asked about.
+
+The asymmetry is the whole rule. **Affirming a settled belief adds nothing** — confidence is
+already at the top — so the prompt is pure cost. **Correcting one always matters**, however
+sure Endora was, so correction stays available on every belief, always. Settledness is judged
+on the *decayed* confidence, so a belief that fades becomes a question again on its own:
+what buys silence is being sure now, not having once been sure.
+
+### Rules apply backwards, not only forwards
+
+Every guard on understanding ran **at formation only** — which quietly means the model of the
+person is frozen at the quality of the rules on the day each row was written. A card reading
+*you want me to turn off the kitchen light — because turn off the kitchen light entity* sat
+there long after the rule rejecting exactly that shape shipped, and was never going to leave.
+
+So the rules are re-applied to what is already stored: an instruction-shaped statement is
+retired, and a statement that repeats an older one is retired while the older one is
+**affirmed** — the same thought arriving twice is evidence for it, not litter.
+
+Retired as **expired**, never as *corrected*: the person did not say it was wrong, and
+recording that they did would put words in their mouth.
+
+This is the same lesson [0054](0054-other-peoples-services.md) drew about inherited patches,
+pointed at data instead of code: *anything that survives long enough to be inherited should
+be re-read against the rules that arrived after it.*
+
+Two matching faults were fixed alongside, both of which had put three cards saying the same
+thing on one screen:
+
+- the batch of beliefs formed in a single turn did not see **its own writes**, so two
+  paraphrases of one thought both landed;
+- duplicate detection compared **whole statements**, so a wordier paraphrase — *finds it more
+  convenient and accurate to measure temperature in Fahrenheit* versus *prefers temperatures
+  in Fahrenheit* — looked like a different belief. It now compares what a statement is
+  **about**, with stance words removed. Polarity words are stripped too, which is safe only
+  because disagreement is checked first: subject decides whether two statements concern the
+  same thing, disagreement decides whether they say opposite things about it.
+
 ### Attention is computed, never pushed
 
 What deserves attention is a **read projection** over facts already stored, plus a little
@@ -77,6 +124,10 @@ deferral state. Nothing accumulates; nothing needs clearing. The same instinct p
   system's administrator.
 - **An approval queue for proposals.** [0029]'s specific mistake; anything with a badge and
   a count is the same mistake returning.
+- **Asking about everything, in case.** A confirmation prompt on a settled belief is a chore
+  with no possible payoff, and a screen of them is the queue by another name.
+- **Deleting beliefs the rules would no longer form.** Expiring them keeps what Endora
+  dropped on its own visible, which is the difference between a model and a black box.
 - **Letting the person edit beliefs freely as a primary flow.** Correction, yes. Curation as
   a chore, no.
 - **Merging contradictory beliefs** into one averaged statement.
