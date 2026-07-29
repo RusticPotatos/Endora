@@ -1285,15 +1285,24 @@ mod standing_trouble_tests {
     }
 
     #[test]
-    fn every_way_a_service_says_it_cannot_see_something_counts() {
+    fn only_words_that_can_mean_nothing_else_count_as_trouble() {
         // Services differ on the word and there is no protocol question that settles it,
         // so this is a heuristic — one that can only ever produce a question, never an
         // action. A real reading, however unusual, must never be mistaken for absence.
-        for absent in ["unavailable", "unknown", "offline", "UNAVAILABLE", "  ", ""] {
+        for absent in ["unavailable", "offline", "UNAVAILABLE", " disconnected "] {
             assert!(crate::domain::not_answering(absent), "{absent:?}");
         }
         for present in ["on", "off", "72", "idle", "0", "closed", "unlocked"] {
             assert!(!crate::domain::not_answering(present), "{present:?}");
+        }
+        // From the first live reading, which flagged 28 things against 7 real ones. Every
+        // false positive was a scene, whose state is when it was last activated —
+        // `unknown` means "not since the restart", the healthiest answer available.
+        for healthy in ["unknown", "none", "null", "error", "", "  "] {
+            assert!(
+                !crate::domain::not_answering(healthy),
+                "a word that also means 'hasn't happened yet' is not trouble: {healthy:?}"
+            );
         }
     }
 
