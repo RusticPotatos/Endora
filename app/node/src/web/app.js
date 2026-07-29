@@ -26,6 +26,7 @@ let OUTCOMES = [];             // what Endora DID, and what it saw afterwards (A
 let INTENTIONS = [];           // what Endora is pursuing, and has pursued (ADR 0052)
 let MCP_NEEDS = { fields: [], docs: "" }; // what the chosen catalogue entry says it needs
 let WORTH_KNOWING = { models: [], fits_gb: 12, asked: false }; // hub models that would fit
+let CHAT_DAY = null;           // which day's conversation is showing; null = today
 let LAST_VIEW = null;          // which screen was showing, so a change can reset the scroll
 let REPAIRS = [];              // tooling Endora has noticed keeps not working (ADR 0054)
 let CONFIG_WRITES = [];        // changes Endora made to your services' own settings (ADR 0054)
@@ -269,8 +270,47 @@ function listen() {
 // The butler chat: the conversation and an input. Anything the butler does in
 // the world runs through the policy boundary as it happens — there is no queue
 // of proposals for you to approve afterwards.
+// Which local day a moment falls in, as YYYY-MM-DD.
+//
+// Computed on the CLIENT because the server has no idea what timezone you are in — it
+// stores a moment, and only the browser knows which day that was where you are.
+function dayOf(at) {
+  const d = new Date(at);
+  const local = new Date(d.getTime() - d.getTimezoneOffset() * 60000);
+  return local.toISOString().slice(0, 10);
+}
+
+// The days that actually have conversation, oldest first.
+//
+// Derived, never stored: a message already carries the moment it happened, so a "day" is
+// a filter and not a thing to archive. No job to run at midnight, nothing to migrate,
+// nothing to go wrong while you sleep — and no day can be lost, because none was ever
+// moved.
+function chatDays() {
+  const seen = [];
+  for (const m of messages()) {
+    const day = dayOf(m.at_ms);
+    if (!seen.includes(day)) seen.push(day);
+  }
+  return seen.sort();
+}
+
+// A day in words, for the header.
+function dayInWords(day) {
+  if (day === dayOf(Date.now())) return "Today";
+  const yesterday = dayOf(Date.now() - 86400000);
+  if (day === yesterday) return "Yesterday";
+  return new Date(`${day}T12:00:00`).toLocaleDateString(undefined, {
+    weekday: "long", month: "short", day: "numeric",
+  });
+}
+
 function viewChat() {
-  const list = messages();
+  const days = chatDays();
+  const today = dayOf(Date.now());
+  // Default to today even before it has anything in it, so a new day starts clean.
+  const showing = CHAT_DAY || today;
+  const list = messages().filter((m) => dayOf(m.at_ms) === showing);
   const msgs = list.map((m) => {
     const mine = m.role === "user";
     const bubble = `<div class="row" style="justify-content:${mine ? "flex-end" : "flex-start"}; margin:6px 0;">
@@ -287,7 +327,8 @@ function viewChat() {
   //
   // Unless the person STOPPED it. Then no reply is coming, and the dots would sit
   // there forever waiting for something that was cancelled. Say what happened.
-  const awaiting = list.length > 0 && list[list.length - 1].role === "user";
+  // Only today can be awaiting a reply; an older day is finished by definition.
+  const awaiting = showing === today && list.length > 0 && list[list.length - 1].role === "user";
   const pending = awaiting
     ? (CHAT_STOPPED
         ? `<div class="row" style="justify-content:flex-start; margin:6px 0;">
@@ -326,9 +367,25 @@ function viewChat() {
         ? `<button class="ghost" data-act="chat:mic" title="dictate into the box — you still press send">${icon("mic")}<span>Dictate</span></button>`
         : `<button data-act="chat:mic" title="voice input needs HTTPS or localhost">${icon("mic")}<span>needs HTTPS</span></button>`)
     : "";
+  // A way back through the days that have conversation. Only shown once there IS a
+  // yesterday — on a fresh install it would be a control that does nothing.
+  const older = days.filter((d) => d < showing).pop();
+  const newer = days.filter((d) => d > showing).shift();
+  const dayBar = days.length > 1 || showing !== today
+    ? `<div class="row" style="gap:8px;align-items:center;justify-content:center;padding:4px 0;">
+         ${older ? `<button class="ghost" data-act="chat:day:${older}" title="${esc(dayInWords(older))}"><span style="display:inline-block;transform:rotate(180deg);">${icon("chevron", 14)}</span></button>` : ""}
+         <span class="sub">${esc(dayInWords(showing))}${showing === today ? "" : ` · ${list.length} message${list.length === 1 ? "" : "s"}`}</span>
+         ${newer ? `<button class="ghost" data-act="chat:day:${newer}">${icon("chevron", 14)}</button>` : ""}
+         ${showing === today ? "" : `<button class="ghost" data-act="chat:day:${today}">Today</button>`}
+       </div>`
+    : "";
+  const emptyToday = `<div class="empty">${showing === today && days.length > 1
+      ? "A new day. Yesterday's conversation is a tap back."
+      : "Say anything — Endora is listening."}</div>`;
   return `
     <div class="chat">
-      <div id="chat-thread" class="chat-thread">${(msgs || (CHAT_STREAMING ? "" : `<div class="empty">Say anything — Endora is listening.</div>`)) + (CHAT_STREAMING ? liveTurn : pending) + activity}</div>
+      ${dayBar}
+      <div id="chat-thread" class="chat-thread">${(msgs || (CHAT_STREAMING ? "" : emptyToday)) + (CHAT_STREAMING ? liveTurn : pending) + activity}</div>
       <div class="composer">
         <textarea id="chat-input" rows="1" placeholder="Talk to your butler…"></textarea>
         <div class="composer-actions">
@@ -1581,6 +1638,8 @@ function sendChat() {
   if (!msg) return;
   // A new turn: whatever was stopped before is history.
   CHAT_STOPPED = false;
+  // Talking always happens today, so a reply can never land in a day you were reading.
+  CHAT_DAY = null;
   const thread = document.getElementById("chat-thread");
   if (thread && thread.querySelector(".empty")) thread.innerHTML = "";
   // Deep mode on: route to the bigger model instead of the everyday butler. Keep the
@@ -1887,6 +1946,12 @@ async function dispatch(act) {
       try { await api("POST", `/v1/capabilities/${id}/confirm`, { confirm: wantConfirm }); flash(wantConfirm ? "Endora will ask before using this." : "Endora may use this on its own.", "ok"); }
       catch (e) { flash("Couldn't change that skill: " + e.message, "err"); }
       return reload();
+    }
+    // Step to another day's conversation. Nothing is loaded or archived — the messages
+    // are all here and a day is just which of them to show.
+    if (verb === "chat" && noun === "day") {
+      CHAT_DAY = id === dayOf(Date.now()) ? null : id;
+      return render();
     }
     // Ask the hub what exists that would fit. Never fetches — see worthKnowingSection.
     if (verb === "models" && noun === "look") {
