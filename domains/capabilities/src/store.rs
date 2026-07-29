@@ -9,7 +9,8 @@ use crate::application::{
     AutonomyEnvelope, AutonomyEnvelopeRepository, ButlerModelConfig, ButlerModelConfigRepository,
     CapabilityConfigRepository, CapabilitySettingsRepository, ConfigWrite, DeepModel,
     DeepModelRepository, McpServer, McpServerRegistry, McpTransport, ModelSlot, ModelTuneSchedule,
-    ModelTuneScheduleRepository, Sampling, TargetAlias, TargetAliasRepository,
+    ModelTuneScheduleRepository, Sampling, StandingTrouble, StandingTroubleRepository, TargetAlias,
+    TargetAliasRepository,
 };
 
 /// Creates the capabilities config tables if absent (idempotent).
@@ -75,6 +76,14 @@ pub fn migrate(db: &Db) -> Result<(), RepositoryError> {
                 enabled  INTEGER NOT NULL,
                 hour_utc INTEGER NOT NULL,
                 last_ms  INTEGER NOT NULL
+            ) STRICT;
+            CREATE TABLE IF NOT EXISTS standing_trouble (
+                server   TEXT NOT NULL,
+                thing    TEXT NOT NULL,
+                trouble  TEXT NOT NULL,
+                since_ms INTEGER NOT NULL,
+                accepted INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (server, thing, trouble)
             ) STRICT;
             CREATE TABLE IF NOT EXISTS target_aliases (
                 server TEXT NOT NULL,
@@ -590,6 +599,73 @@ impl TargetAliasRepository for ConfigStore {
     }
 }
 
+impl StandingTroubleRepository for ConfigStore {
+    fn note_trouble(&self, trouble: &StandingTrouble) -> Result<(), RepositoryError> {
+        // `DO NOTHING` is the whole design: this runs every time the thing is seen in
+        // trouble, and only the first one sets the clock. Overwriting `since_ms` would
+        // reset the duration on every heartbeat and no problem would ever get old enough
+        // to be worth saying.
+        self.db
+            .lock()?
+            .execute(
+                "INSERT INTO standing_trouble (server, thing, trouble, since_ms, accepted) \
+                 VALUES (?1, ?2, ?3, ?4, 0) ON CONFLICT DO NOTHING",
+                params![
+                    trouble.server,
+                    trouble.thing,
+                    trouble.trouble,
+                    trouble.since_ms
+                ],
+            )
+            .map_err(backend)?;
+        Ok(())
+    }
+
+    fn clear_trouble(&self, server: &str, thing: &str) -> Result<(), RepositoryError> {
+        self.db
+            .lock()?
+            .execute(
+                "DELETE FROM standing_trouble WHERE server = ?1 AND thing = ?2",
+                params![server, thing],
+            )
+            .map_err(backend)?;
+        Ok(())
+    }
+
+    fn troubles(&self) -> Result<Vec<StandingTrouble>, RepositoryError> {
+        let conn = self.db.lock()?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT server, thing, trouble, since_ms, accepted FROM standing_trouble \
+                 ORDER BY since_ms ASC, thing ASC",
+            )
+            .map_err(backend)?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok(StandingTrouble {
+                    server: r.get(0)?,
+                    thing: r.get(1)?,
+                    trouble: r.get(2)?,
+                    since_ms: r.get(3)?,
+                    accepted: r.get::<_, i64>(4)? != 0,
+                })
+            })
+            .map_err(backend)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(backend)
+    }
+
+    fn accept_trouble(&self, server: &str, thing: &str) -> Result<(), RepositoryError> {
+        self.db
+            .lock()?
+            .execute(
+                "UPDATE standing_trouble SET accepted = 1 WHERE server = ?1 AND thing = ?2",
+                params![server, thing],
+            )
+            .map_err(backend)?;
+        Ok(())
+    }
+}
+
 impl McpServerRegistry for ConfigStore {
     fn list(&self) -> Result<Vec<McpServer>, RepositoryError> {
         let conn = self.db.lock()?;
@@ -1091,5 +1167,160 @@ mod tests {
             back.describe()
         );
         let _ = std::fs::remove_file(&path);
+    }
+}
+
+#[cfg(test)]
+mod standing_trouble_tests {
+    use super::*;
+
+    fn store() -> ConfigStore {
+        let db = endora_persistence::Db::open_in_memory().unwrap();
+        migrate(&db).unwrap();
+        ConfigStore::new(db)
+    }
+
+    fn seen(server: &str, thing: &str, at_ms: i64) -> StandingTrouble {
+        StandingTrouble {
+            server: server.to_owned(),
+            thing: thing.to_owned(),
+            trouble: "unavailable".to_owned(),
+            since_ms: at_ms,
+            accepted: false,
+        }
+    }
+
+    #[test]
+    fn the_clock_starts_when_it_is_first_seen_and_does_not_restart() {
+        // Every heartbeat re-reports the same trouble. If a later sighting moved `since_ms`
+        // forward, nothing would ever be old enough to be worth mentioning and the whole
+        // mechanism would report "since earlier today" forever.
+        let store = store();
+        store
+            .note_trouble(&seen("house", "Living Room Lamp", 1_000))
+            .unwrap();
+        store
+            .note_trouble(&seen("house", "Living Room Lamp", 999_000))
+            .unwrap();
+        let open = store.troubles().unwrap();
+        assert_eq!(open.len(), 1, "{open:?}");
+        assert_eq!(open[0].since_ms, 1_000);
+    }
+
+    #[test]
+    fn a_thing_that_answers_again_leaves_nothing_behind() {
+        // The anti-queue guarantee, made structural: the store holds what is wrong *now*,
+        // so it is bounded by the state of the house rather than by uptime. A device that
+        // recovers is not history to be groomed — it is simply no longer a problem.
+        let store = store();
+        store
+            .note_trouble(&seen("house", "Porch Light", 1_000))
+            .unwrap();
+        store.accept_trouble("house", "Porch Light").unwrap();
+        store.clear_trouble("house", "Porch Light").unwrap();
+        assert!(store.troubles().unwrap().is_empty());
+
+        // And if it goes wrong again later it is a fresh problem with a fresh clock,
+        // not a resurrected old one that the person already answered.
+        store
+            .note_trouble(&seen("house", "Porch Light", 500_000))
+            .unwrap();
+        let open = store.troubles().unwrap();
+        assert_eq!(open[0].since_ms, 500_000);
+        assert!(
+            !open[0].accepted,
+            "an old answer must not silence a new fault"
+        );
+    }
+
+    fn reading(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
+        pairs
+            .iter()
+            .map(|(a, b)| ((*a).to_owned(), (*b).to_owned()))
+            .collect()
+    }
+
+    const DAY: i64 = 86_400_000;
+
+    #[test]
+    fn nothing_is_said_until_it_has_been_wrong_long_enough() {
+        // A device that goes quiet for an evening and comes back is not a problem, and a
+        // butler that mentions it is the kind you stop reading. The clock has to run first.
+        let store = store();
+        let seen = reading(&[("Living Room Lamp", "unavailable"), ("Kitchen Main", "on")]);
+        crate::application::watch_for_trouble(&store, "house", &seen, 0).unwrap();
+
+        let open = store.troubles().unwrap();
+        assert!(crate::application::worth_raising(&open, DAY).is_empty());
+        let after_four_days = crate::application::worth_raising(&open, 4 * DAY);
+        assert_eq!(after_four_days.len(), 1);
+        assert_eq!(
+            after_four_days[0].statement(4 * DAY),
+            "Living Room Lamp has not answered for 4 days"
+        );
+    }
+
+    #[test]
+    fn a_reading_that_shows_it_well_again_ends_the_matter() {
+        // The store tracks the present, not a history. This is the whole anti-queue
+        // argument: it cannot grow with uptime, only with what is actually wrong.
+        let store = store();
+        crate::application::watch_for_trouble(
+            &store,
+            "house",
+            &reading(&[("Porch Light", "unavailable")]),
+            0,
+        )
+        .unwrap();
+        assert_eq!(store.troubles().unwrap().len(), 1);
+
+        crate::application::watch_for_trouble(
+            &store,
+            "house",
+            &reading(&[("Porch Light", "off")]),
+            5 * DAY,
+        )
+        .unwrap();
+        assert!(store.troubles().unwrap().is_empty());
+    }
+
+    #[test]
+    fn every_way_a_service_says_it_cannot_see_something_counts() {
+        // Services differ on the word and there is no protocol question that settles it,
+        // so this is a heuristic — one that can only ever produce a question, never an
+        // action. A real reading, however unusual, must never be mistaken for absence.
+        for absent in ["unavailable", "unknown", "offline", "UNAVAILABLE", "  ", ""] {
+            assert!(crate::domain::not_answering(absent), "{absent:?}");
+        }
+        for present in ["on", "off", "72", "idle", "0", "closed", "unlocked"] {
+            assert!(!crate::domain::not_answering(present), "{present:?}");
+        }
+    }
+
+    #[test]
+    fn accepting_one_keeps_it_without_raising_it() {
+        let store = store();
+        store
+            .note_trouble(&seen("house", "Shed Sensor", 1_000))
+            .unwrap();
+        store
+            .note_trouble(&seen("house", "Attic Fan", 2_000))
+            .unwrap();
+        store.accept_trouble("house", "Shed Sensor").unwrap();
+        let open = store.troubles().unwrap();
+        assert_eq!(open.len(), 2, "accepting is not forgetting: {open:?}");
+        assert!(
+            open.iter()
+                .find(|t| t.thing == "Shed Sensor")
+                .unwrap()
+                .accepted
+        );
+        assert!(
+            !open
+                .iter()
+                .find(|t| t.thing == "Attic Fan")
+                .unwrap()
+                .accepted
+        );
     }
 }
