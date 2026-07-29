@@ -59,6 +59,42 @@ A failure notice is not an approach and does not land there. An inbox is what En
 to say; "I couldn't reach my language model" is what happened when it could not choose
 anything.
 
+### Silence is the default, and two paths were bypassing it
+
+An unprompted turn that has nothing to say says nothing. Two paths reached the person's chat
+anyway, and between them they were the *entire* proactive output of one day:
+
+```text
+00:00  the night loop ran, could not reach the model, and posted
+       "Give me a moment and try again" — into an empty room
+04:18  the check-in posted "None of the functions listed involve a
+       'person' domain, so there's no need to call any."
+11:01  the daily brief posted an actual brief          ← the only one that belonged
+```
+
+Neither was caught, for different reasons worth keeping apart:
+
+- **The apology was a real answer** by every test available: non-empty, naming no tool, using
+  no protocol words. What makes it not an answer is that *the model was never reached* — so
+  that is now carried as a **flag on the reply**, not inferred from its words. A phrase to
+  match on would mean the same sentence written twice in different crates, drifting apart.
+  Asked a question, the person is owed the truth that it failed; unprompted, nobody asked.
+- **The protocol prose missed a suppression list by one word.** The list held "functions
+  provided"; the leak said "functions listed". A list of exact phrases will always fail this
+  way, so the marker is now the bare word — a butler has no reason to say *functions*.
+
+### A butler must be able to answer "what did you do while I was out?"
+
+Asked exactly that, and then "nothing proactive done today?", the butler replied **"No
+specific activities were recorded today"** — on a day it had posted three unprompted
+messages, one of them a real brief four hours earlier.
+
+Every part of the answer was stored: the messages it sent, the outcomes it recorded, the
+schedules that fired. None of it was reachable from a turn, so the most important question a
+proactive butler can be asked is the one it cannot answer. Being proactive and being unable
+to account for it is worse than not being proactive, because the person cannot tell the
+difference between a quiet day and a broken one.
+
 ### A problem statement, not a status line
 
 The failure this section exists for is a butler that **observes correctly and helps nobody**.
