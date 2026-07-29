@@ -126,6 +126,30 @@ impl ChatStore {
     }
 }
 
+/// Decodes message rows, so every query that returns messages decodes them identically —
+/// a second hand-rolled copy is how two reads start disagreeing about what is corrupt.
+fn rows_into_messages<I>(rows: I) -> Result<Vec<ChatMessage>, RepositoryError>
+where
+    I: Iterator<Item = Result<(String, String, String, i64), rusqlite::Error>>,
+{
+    let mut out = Vec::new();
+    for row in rows {
+        let (id, role, body, at_ms) = row.map_err(backend)?;
+        let role = MessageRole::from_name(&role)
+            .ok_or_else(|| RepositoryError::Corrupt(format!("unknown message role {role:?}")))?;
+        out.push(
+            ChatMessage::new(
+                MessageId::new(parse_id(&id)?),
+                role,
+                &body,
+                Timestamp::from_unix_millis(at_ms),
+            )
+            .map_err(corrupt)?,
+        );
+    }
+    Ok(out)
+}
+
 impl ChatRepository for ChatStore {
     fn append(&self, message: &ChatMessage) -> Result<(), RepositoryError> {
         let conn = self.db.lock()?;
@@ -140,6 +164,51 @@ impl ChatRepository for ChatStore {
         )
         .map_err(backend)?;
         Ok(())
+    }
+
+    fn between(&self, from_ms: i64, to_ms: i64) -> Result<Vec<ChatMessage>, RepositoryError> {
+        let conn = self.db.lock()?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, role, body, at_ms FROM messages \
+                 WHERE at_ms >= ?1 AND at_ms < ?2 ORDER BY at_ms, rowid",
+            )
+            .map_err(backend)?;
+        let rows = stmt
+            .query_map(params![from_ms, to_ms], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, i64>(3)?,
+                ))
+            })
+            .map_err(backend)?;
+        rows_into_messages(rows)
+    }
+
+    fn days(&self, offset_minutes: i64) -> Result<Vec<(String, usize)>, RepositoryError> {
+        let conn = self.db.lock()?;
+        // Grouped on the CALLER's midnights: the stored instant is shifted by their
+        // distance from UTC before the date is taken, so the days line up with the ones
+        // they actually lived through.
+        let mut stmt = conn
+            .prepare(
+                "SELECT date((at_ms / 1000) + (?1 * 60), 'unixepoch') AS day, COUNT(*) \
+                 FROM messages GROUP BY day ORDER BY day",
+            )
+            .map_err(backend)?;
+        let rows = stmt
+            .query_map(params![offset_minutes], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
+            })
+            .map_err(backend)?;
+        let mut out = Vec::new();
+        for row in rows {
+            let (day, count) = row.map_err(backend)?;
+            out.push((day, usize::try_from(count).unwrap_or(0)));
+        }
+        Ok(out)
     }
 
     fn list(&self) -> Result<Vec<ChatMessage>, RepositoryError> {
