@@ -780,6 +780,7 @@ pub fn app(state: AppState) -> Router {
         .route("/app.js", get(console_js))
         .route("/health", get(health))
         .route("/v1/chat", post(send_chat).get(chat_history))
+        .route("/v1/chat/days", get(chat_days))
         .route("/v1/chat/stream", post(stream_chat))
         .route("/v1/checkin", get(get_checkin).post(set_checkin))
         .route("/v1/understanding", get(list_understanding))
@@ -1595,12 +1596,59 @@ fn sources_from_steps(steps: &[serde_json::Value]) -> Vec<String> {
 /// The whole conversation with the butler, oldest first — each butler message
 /// carrying its persisted action trail (steps + sources) when it has one, so the
 /// console can render the expandable actions + Sources for past replies too.
+#[derive(Deserialize)]
+struct HistoryWindow {
+    /// Inclusive start, in milliseconds. Omitted means everything.
+    from: Option<i64>,
+    /// Exclusive end, in milliseconds.
+    to: Option<i64>,
+}
+
+/// The local days that have conversation, so the console can offer a way back without
+/// holding every message it might need.
+///
+/// `offset_minutes` is the caller's distance from UTC. The server stores instants and is
+/// told where the caller's midnights fall rather than guessing — which also means it stays
+/// right when they travel.
+async fn chat_days(
+    State(state): State<AppState>,
+    Query(req): Query<DaysRequest>,
+) -> Result<Json<Vec<serde_json::Value>>, ApiError> {
+    let chat = state.chat.clone();
+    let offset = req.offset_minutes.unwrap_or(0);
+    let days = blocking(move || {
+        endora_conversation::ChatRepository::days(chat.as_ref(), offset)
+            .map_err(AppError::Repository)
+    })
+    .await?;
+    Ok(Json(
+        days.into_iter()
+            .map(|(day, messages)| json!({ "day": day, "messages": messages }))
+            .collect(),
+    ))
+}
+
+#[derive(Deserialize)]
+struct DaysRequest {
+    offset_minutes: Option<i64>,
+}
+
 async fn chat_history(
     State(state): State<AppState>,
+    Query(window): Query<HistoryWindow>,
 ) -> Result<Json<Vec<serde_json::Value>>, ApiError> {
     let chat = state.chat.clone();
     let (messages, actions) = blocking(move || {
-        let msgs = usecases::chat_history(chat.as_ref())?;
+        // A console asks for the stretch it is showing. Everything, only when nobody
+        // said — which keeps every existing caller working and stops being the default
+        // the moment the browser knows what day it is.
+        let msgs = match (window.from, window.to) {
+            (Some(from), Some(to)) => {
+                endora_conversation::ChatRepository::between(chat.as_ref(), from, to)
+                    .map_err(AppError::Repository)?
+            }
+            _ => usecases::chat_history(chat.as_ref())?,
+        };
         let acts = chat.all_actions().map_err(AppError::Repository)?;
         Ok::<_, AppError>((msgs, acts))
     })
