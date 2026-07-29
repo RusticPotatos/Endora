@@ -1257,6 +1257,7 @@ function viewUnderstanding() {
         <div class="grow">
           <div class="title">${esc(b.statement)} <span class="pill ${b.confidence === "high" ? "active" : b.confidence === "low" ? "pending" : ""}">${b.settled ? "settled" : b.confidence + " confidence"}</span></div>
           ${b.evidence ? `<div class="sub">because ${esc(b.evidence)}</div>` : ""}
+          ${b.contradicts ? `<div class="sub" style="margin-top:6px;color:var(--warn,#c9a227);">This sits oddly with something else I think: &ldquo;${esc(b.contradicts)}&rdquo; — one of us is wrong.</div>` : ""}
         </div>
         ${b.settled
           ? `<button class="ghost" data-act="correct:belief:${b.id}" title="not quite">Not quite</button>`

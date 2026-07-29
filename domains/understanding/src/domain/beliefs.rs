@@ -270,6 +270,12 @@ impl Belief {
     /// Judged on the **decayed** confidence, so a settled belief that fades with time
     /// becomes a question again by itself. That is the right way round: what stops Endora
     /// asking is being sure *now*, not having once been sure.
+    ///
+    /// Says nothing about **contradiction**, which is not a property of one belief. A
+    /// belief that disagrees with another one Endora holds is never settled however sure
+    /// it is — being confidently sure of both sides is the one case where the person's
+    /// answer is the only thing that can resolve anything. That check belongs where both
+    /// beliefs are in view.
     #[must_use]
     pub fn is_settled(&self, now: Timestamp) -> bool {
         self.confidence_at(now) == Some(Confidence::High)
