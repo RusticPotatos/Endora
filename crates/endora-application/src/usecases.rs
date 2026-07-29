@@ -175,6 +175,36 @@ pub fn note_verification(
     spec: Option<&crate::CapabilitySpec>,
     observation: Option<&str>,
 ) -> String {
+    note_verification_against(output, spec, None, observation)
+}
+
+/// As [`note_verification`], but knowing what the world looked like **before**.
+///
+/// Only the nominated reader of a server is classified as observing; every other tool on
+/// it is treated as an actuator, because the server says nothing trustworthy about which
+/// is which and deny-by-default is right for *authorization* (ADR 0054). Reusing that
+/// classification for *verification* is where it goes wrong. Observed live: a call asking
+/// Home Assistant for the **time** came back with five kilobytes of every device in the
+/// house attached, under the instruction "answer from the OBSERVATION". The model was told
+/// to answer "what time is it" from a list of lamps, three times in one turn, and the
+/// morning briefing it eventually produced was one sentence about a bedroom light.
+///
+/// The fix is not to guess which tools actuate. It is that **an observation showing nothing
+/// moved has nothing to show**: [`note_unchanged`] already states that verdict in one
+/// sentence, which is the sharp signal [0053](../../docs/adr/0053-honesty-about-what-it-did.md)
+/// actually cares about. Pasting the reading as well adds no information, floods the
+/// context, and misdirects the answer.
+///
+/// So the reading travels when it differs from what was there before — when something
+/// genuinely moved and the detail is the evidence — and not otherwise. Nothing about the
+/// honesty guarantee changes: every call is still read back, and every verdict is still
+/// reported.
+fn note_verification_against(
+    output: &str,
+    spec: Option<&crate::CapabilitySpec>,
+    before: Option<&str>,
+    observation: Option<&str>,
+) -> String {
     let observes = spec.is_some_and(|s| s.reversibility == Reversibility::Observe);
     if observes {
         return output.to_owned();
@@ -187,6 +217,15 @@ pub fn note_verification(
              checked."
         );
     };
+    if before.is_some_and(|b| b.trim() == observed.trim()) {
+        // Identical to what was there before, so the reading is not evidence of anything
+        // this call did. `note_unchanged` supplies the verdict; repeating the whole world
+        // here would only bury it.
+        return format!(
+            "{output}\n\n[observed] Endora read the state back and it is unchanged from \
+             before the call."
+        );
+    }
     format!(
         "{output}\n\n[observed] Endora then read the state back. This is what the world \
          actually looks like now:\n{observed}\n\nAnswer from the OBSERVATION, not from \
@@ -595,7 +634,12 @@ fn run_tool_turn(
             }
             // Don't loop the same call: if this exact tool + input already ran this
             // turn, hand back a nudge instead of re-running it.
-            if !seen.insert((id.clone(), call.input_json.clone())) {
+            // Compared by what the arguments *mean*, not how they are spelled. The
+            // capabilities context owns tool-argument knowledge; this layer only asks.
+            if !seen.insert((
+                id.clone(),
+                endora_capabilities::same_call_as(&call.input_json),
+            )) {
                 conversation.push(TurnMessage::ToolResult {
                     call_id: call.id.clone(),
                     content: "you already called this with the same input this turn — use the \
@@ -661,8 +705,12 @@ fn run_tool_turn(
                         disclose(disclosures, spec.as_ref(), &id, &out, observed.as_deref());
                         (
                             StepStatus::Done,
-                            note_verification(&out, spec.as_ref(), observed.as_deref())
-                                + &note_unchanged(before.as_deref(), observed.as_deref())
+                            note_verification_against(
+                                &out,
+                                spec.as_ref(),
+                                before.as_deref(),
+                                observed.as_deref(),
+                            ) + &note_unchanged(before.as_deref(), observed.as_deref())
                                 + &note_changed(before.as_deref(), observed.as_deref()),
                         )
                     }
@@ -887,6 +935,11 @@ fn disclose(
     if spec.is_some_and(|s| s.reversibility == Reversibility::Observe) {
         return;
     }
+    // Deliberately NOT trimmed down when the reading is unchanged, unlike what the model
+    // is sent. The two have opposite needs: the model gets a reading it must not answer
+    // from, and a person gets the evidence. "The switch is still on" next to a claim of
+    // `action_done` is the whole disclosure — replacing it with "nothing changed" would
+    // take away the fact and leave the verdict, which is the wrong way round (ADR 0053).
     disclosures.push(ActionDisclosure {
         skill: skill.to_owned(),
         claimed: claimed.trim().to_owned(),
@@ -6684,5 +6737,104 @@ mod re_reading_what_is_stored {
         fn now(&self) -> Timestamp {
             Timestamp::from_unix_millis(self.0)
         }
+    }
+}
+
+#[cfg(test)]
+mod what_a_read_gets_back {
+    use super::*;
+    use crate::Reversibility;
+
+    fn actuator() -> crate::CapabilitySpec {
+        crate::CapabilitySpec {
+            id: "home-assistant.GetDateTime".to_owned(),
+            description: String::new(),
+            configured: true,
+            autonomous: false,
+            reversibility: Reversibility::Irreversible,
+            input_schema: None,
+        }
+    }
+
+    /// The reading that was actually attached to a request for the time.
+    const THE_WHOLE_HOUSE: &str = "Live Context: An overview of the areas and the devices \
+        in this smart home:\n- names: All Lights\n  domain: light\n  state: 'on'\n\
+        - names: Apple TV\n  domain: media_player\n  state: 'off'";
+
+    #[test]
+    fn a_call_that_moved_nothing_does_not_drag_the_world_along() {
+        // Live: asking Home Assistant for the time came back with five kilobytes of every
+        // device in the house, under "answer from the OBSERVATION" — three times in one
+        // turn. The briefing that followed was one sentence about a bedroom light.
+        let out = note_verification_against(
+            "{\"time\": \"05:40:30\"}",
+            Some(&actuator()),
+            Some(THE_WHOLE_HOUSE),
+            Some(THE_WHOLE_HOUSE),
+        );
+        assert!(!out.contains("Apple TV"), "pasted the house: {out}");
+        assert!(out.contains("unchanged from before"), "{out}");
+        // The verdict itself is untouched — that is the signal ADR 0053 exists for, and
+        // it is still stated, in a sentence rather than in five kilobytes.
+        let verdict = note_unchanged(Some(THE_WHOLE_HOUSE), Some(THE_WHOLE_HOUSE));
+        assert!(verdict.contains("[unchanged]"));
+    }
+
+    #[test]
+    fn a_call_that_moved_something_still_carries_the_evidence() {
+        // The whole point of reading back. When the world differs, the detail *is* the
+        // evidence and it must reach the model.
+        let after = THE_WHOLE_HOUSE.replace("state: 'on'", "state: 'off'");
+        let out = note_verification_against(
+            "turned it off",
+            Some(&actuator()),
+            Some(THE_WHOLE_HOUSE),
+            Some(&after),
+        );
+        assert!(out.contains("Answer from the OBSERVATION"), "{out}");
+        assert!(out.contains("Apple TV"), "{out}");
+    }
+
+    #[test]
+    fn nothing_to_compare_against_still_carries_the_reading() {
+        // A reader that failed before the call and worked after leaves no comparison, and
+        // the safe default is to show what was seen rather than to assert it means nothing.
+        let out = note_verification_against("done", Some(&actuator()), None, Some(THE_WHOLE_HOUSE));
+        assert!(out.contains("Answer from the OBSERVATION"), "{out}");
+    }
+}
+
+#[cfg(test)]
+mod one_call_two_spellings {
+    use endora_capabilities::same_call_as;
+
+    #[test]
+    fn punctuation_does_not_make_it_a_different_call() {
+        // Live, in one morning briefing: four rounds spent on two pairs of identical
+        // calls, none caught, because the guard compared raw text.
+        assert_eq!(same_call_as("{}"), same_call_as("{ }"));
+        assert_eq!(same_call_as("{}"), same_call_as("\n  {}\n"));
+        assert_eq!(
+            same_call_as(r#"{"a":1,"b":2}"#),
+            same_call_as(r#"{ "b": 2, "a": 1 }"#)
+        );
+    }
+
+    #[test]
+    fn genuinely_different_arguments_stay_different() {
+        // The guard must never collapse two calls that ask for different things — that
+        // would silently drop work the model actually needed.
+        assert_ne!(
+            same_call_as(r#"{"domain":["weather"]}"#),
+            same_call_as(r#"{"domain":["light"]}"#)
+        );
+        assert_ne!(same_call_as("{}"), same_call_as(r#"{"domain":[]}"#));
+    }
+
+    #[test]
+    fn arguments_that_will_not_parse_are_left_alone() {
+        // No worse than before: unparseable text compares as text.
+        assert_eq!(same_call_as("not json"), "not json");
+        assert_ne!(same_call_as("not json"), same_call_as("other junk"));
     }
 }
