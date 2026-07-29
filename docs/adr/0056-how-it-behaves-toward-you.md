@@ -113,10 +113,35 @@ The skill stays for detail — a wider window, the full list — and a short acc
 day sits in every turn. Short, because everything in a turn's context is paid for on every
 turn, which is the same reason a clock reading must not arrive with five kilobytes of house.
 
-This is the pattern, again: *the guarantee lives in code, and the model's job is to say it
-nicely.* The measured version of "ask the model to reach for the right tool" is roughly the
-same as the measured version of every other instruction — which is why nothing important
-depends on it.
+**And it ignored that too.** Asked again on the deployed node, with all eleven of the day's
+entries sitting in its context under an instruction to answer from exactly them, the butler
+repeated word for word the sentence it had produced the previous day: *"no specific activities
+were recorded."* It was copying its own earlier answer out of the transcript.
+
+Three attempts, each a better *place* to put the facts, and all three still asking the model
+to use them:
+
+| where the facts went | what happened |
+| --- | --- |
+| a skill it could call | called `HassTurnOn` and tried to switch on a light |
+| stated in the turn's context | ignored; repeated yesterday's answer verbatim |
+| **appended to the reply** | the record is there whatever the sentence says |
+
+So the answer is the mechanism this project already uses for exactly this shape: **a claim and
+the record disagree, so the record is appended** ([0053](0053-honesty-about-what-it-did.md)).
+Nothing is rewritten and nothing is judged. The account goes next to the sentence and the
+person can see which to believe — the same move as putting a reading next to a tool's receipt.
+
+The trigger is a claim about activity *in general*, on a deliberately tiny vocabulary —
+`activity`, `activities`, `proactive`, `recorded` — words rare in ordinary butler prose and
+precisely what appears when this question is answered badly. A heuristic, named as one, and
+cheap both ways: a false positive appends true facts, a false negative leaves things as they
+were.
+
+This is the pattern, and it is worth stating without hedging: *anything that matters cannot
+depend on the model doing something.* Not on it calling the right tool, not on it reading the
+context it was given, not on it declining to repeat itself. Three placements failed before the
+one that does not ask.
 
 Three details that carry the point:
 
