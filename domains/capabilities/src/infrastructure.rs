@@ -2802,6 +2802,26 @@ pub trait NativeChannel: Send + Sync {
         true
     }
 
+    /// Takes something out of the service's own view, or puts it back (ADR 0056).
+    ///
+    /// The remedy for a thing that has not answered in days and that the person has
+    /// confirmed is gone. **Hidden, never deleted**: deleting is destructive, irreversible
+    /// from Endora's side, and presumes an opinion about somebody else's house that a
+    /// tapped answer does not license. Hiding is the smallest change that makes the
+    /// catalogue true again, and it undoes exactly.
+    ///
+    /// `None` from a channel that cannot do it, which is the default.
+    ///
+    /// # Errors
+    /// Through the inner `Result`, a human-readable message if the service refuses.
+    fn hide(
+        &self,
+        _name: &str,
+        _hidden: bool,
+    ) -> Option<Result<crate::domain::ConfigWrite, String>> {
+        None
+    }
+
     /// Teaches the service that `alias` is another name for the thing it currently calls
     /// `name`, so the service itself resolves it from then on — for every client, not
     /// only for Endora (ADR 0054).

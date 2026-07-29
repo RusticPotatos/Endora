@@ -59,6 +59,52 @@ A failure notice is not an approach and does not land there. An inbox is what En
 to say; "I couldn't reach my language model" is what happened when it could not choose
 anything.
 
+### A problem statement, not a status line
+
+The failure this section exists for is a butler that **observes correctly and helps nobody**.
+Endora could see that thirteen devices were unavailable and never once asked whether they
+were still wanted. Reporting the count would only have added an item to somebody's day.
+
+The difference between a status line and a problem statement is **duration** and **a place
+for the answer to go**:
+
+> ~~13 entities unavailable~~
+> *Living Room Lamp hasn't answered for 9 days, in home-assistant. Still yours?*
+
+The second is only sayable if Endora noticed nine days ago. It reads state constantly and
+stored none of it, so "since when" — the one fact that turns an observation into a problem —
+did not exist anywhere.
+
+**What is stored is one row per thing that is wrong right now**, created the first time it is
+seen that way and **deleted the moment it answers again**. That is the anti-queue guarantee
+from [0052](0052-what-it-knows-about-you.md) made structural rather than promised, by a
+different route than the derived findings in [0054](0054-other-peoples-services.md): the
+store is bounded by *the state of the world*, never by how long Endora has been running. It
+cannot grow into a backlog because recovering removes the row, including any answer the
+person had given about it — a device that comes back is a different situation from one that
+never did.
+
+Deliberately not a state log. History would answer more questions and would grow forever;
+"since when" answers the one question that matters here and costs a row per open problem.
+
+**Nothing is said until it has been wrong for three days**, which is chosen to survive the
+ordinary reasons something goes quiet without being broken: a weekend away, a router reboot,
+a battery swap, a hub upgrade. Interrupting about a device that was going to come back on its
+own is exactly what makes a butler tiring.
+
+**Both answers end it, and one of them acts.** *It's gone* hides the thing in the service that
+owns it — never deletes it, logged with its prior value, undoable from the same change log as
+every other configuration write ([0054](0054-other-peoples-services.md)). *It's fine* records
+that this is the person's business and stops it being raised, while leaving it visible.
+
+There is deliberately **no "remind me later"**. That is how a queue starts.
+
+Whether a value means "I cannot see this" is a **heuristic** over the words services use —
+`unavailable`, `unknown`, `offline`, and an empty reading — and is named as one. What makes it
+acceptable is the blast radius: a wrong classification can only ever produce a *question*,
+never an action. Getting it wrong costs one tap; getting the opposite wrong costs a device
+quietly staying broken.
+
 ## Consequences
 
 - Endora can be quiet for a day without that being a bug, and can speak without that being an
@@ -70,7 +116,24 @@ anything.
 - **The persona is prompt-shaped, so it inherits the model's reliability.** Anything that must
   be true is not left to tone ([0053](0053-honesty-about-what-it-did.md)).
 
+- Endora can now say *since when*, which is the difference between noticing and helping.
+- **It stores something about the world for the first time.** Small, bounded by what is
+  currently wrong, and deleted on recovery — but it is state, and state is what the rest of
+  this architecture works hard to avoid.
+- A device the person hides is hidden in **their** service, for every client, not just for
+  Endora — and is undone from the same place as every other configuration change.
+
 ## Rejected
+
+- **Reporting the count.** "13 entities unavailable" is a chore with no duration and no
+  remedy, which is the shape of every notification nobody acts on.
+- **Keeping a state log.** It answers more questions and grows forever; "since when" answers
+  the one that matters and costs a row per open problem.
+- **Deleting what the person says is gone.** Destructive, irreversible from Endora's side,
+  and a far larger grant than one tap licenses. Hiding is the smallest change that makes the
+  catalogue true.
+- **"Remind me later."** A deferral is a queue with a timer.
+- **Trusting a service to declare which of its values mean "absent".**
 
 - **Scripted check-ins and briefs.** Deleted; they said the same thing forever.
 - **A fixed interruption schedule.** A clock may decide when it *may* speak, never that it

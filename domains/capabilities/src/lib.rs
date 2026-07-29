@@ -28,7 +28,8 @@ pub use application::{
     CapabilityConfigRepository, CapabilityRunner, CapabilitySettingsRepository, CapabilitySpec,
     CapabilityUse, ConfigWrite, ConfigWriteLog, DeepModel, DeepModelRepository, McpServer,
     McpServerRegistry, McpTransport, ModelSlot, ModelTuneSchedule, ModelTuneScheduleRepository,
-    Sampling, TargetAlias, TargetAliasRepository, WriteKind,
+    Sampling, StandingTrouble, StandingTroubleRepository, TargetAlias, TargetAliasRepository,
+    WriteKind, watch_for_trouble, worth_raising,
 };
 pub use home_assistant::{HomeAssistant, paired_server};
 pub use infrastructure::{
