@@ -1600,6 +1600,16 @@ const ANTONYMS: &[(&str, &str)] = &[
 /// disagreement instead of surfacing it.
 #[must_use]
 pub fn statements_disagree(a: &str, b: &str) -> bool {
+    // Two statements can only contradict each other if they are **about** the same thing.
+    // Without this, negation asymmetry alone counts: "you find it more convenient to
+    // measure temperature in Celsius rather than Fahrenheit" was read as disagreeing with
+    // every other belief Endora held, including "you want to know where I found the event
+    // information". Harmless while the answer only fed duplicate detection, which also
+    // required overlap; put on screen, it accused every card of contradicting one belief
+    // about thermometers.
+    if !about_the_same_thing(a, b) {
+        return false;
+    }
     let (ta, tb) = (polarity_tokens(a), polarity_tokens(b));
     let negated = |t: &[String]| t.iter().any(|w| NEGATIONS.contains(&w.as_str()));
     if negated(&ta) != negated(&tb) {
@@ -1639,6 +1649,21 @@ fn similar(a: &str, b: &str) -> bool {
     let shared = ka.iter().filter(|w| kb.contains(w)).count() as f64;
     let smaller = ka.len().min(kb.len()) as f64;
     shared / smaller >= 0.75
+}
+
+/// Whether two statements concern the same subject at all — the precondition for them
+/// being able to agree or disagree.
+///
+/// Half of the shorter statement's subject words, which is a much weaker bar than
+/// [`similar`]'s: *you like running* and *you hate running* are about the same thing
+/// without being the same belief, and that gap is precisely where contradiction lives.
+fn about_the_same_thing(a: &str, b: &str) -> bool {
+    let (sa, sb) = (subject_words(a), subject_words(b));
+    if sa.is_empty() || sb.is_empty() {
+        return false;
+    }
+    let shared = sa.iter().filter(|w| sb.contains(w)).count() as f64;
+    shared / sa.len().min(sb.len()) as f64 >= 0.5
 }
 
 /// Words that describe **having a stance** rather than what the stance is about.
@@ -6485,6 +6510,31 @@ mod three_cards_for_one_fact {
         assert!(similar(
             plain,
             "You find it more convenient and accurate to measure temperature in Fahrenheit"
+        ));
+    }
+
+    #[test]
+    fn a_contradiction_needs_the_two_to_be_about_the_same_thing() {
+        // Live, on the deployed instance: this one belief was reported as contradicting
+        // every other belief Endora held, because negation asymmetry alone counted and
+        // nothing checked the two were even on the same topic.
+        let celsius = "You find it more convenient and accurate to measure temperature in Celsius \
+             rather than Fahrenheit.";
+        for unrelated in [
+            "You want to know where I found the event information",
+            "you usually want news, weather, and traffic",
+            "you prefer to run after work on Tuesdays and Thursdays",
+            "You like a positive, friendly greeting at the beginning of each day.",
+        ] {
+            assert!(
+                !statements_disagree(celsius, unrelated),
+                "claimed a contradiction with an unrelated belief: {unrelated:?}"
+            );
+        }
+        // The one it genuinely does disagree with is still caught.
+        assert!(statements_disagree(
+            celsius,
+            "you prefer temperatures in Fahrenheit"
         ));
     }
 
