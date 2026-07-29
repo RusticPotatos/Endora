@@ -2402,6 +2402,13 @@ impl CapabilityRunner for CompositeRunner {
             .collect()
     }
 
+    fn current_states(&self) -> Vec<(String, String)> {
+        self.sources
+            .iter()
+            .flat_map(|s| s.current_states())
+            .collect()
+    }
+
     fn decision(&self, id: &str) -> Option<Decision> {
         self.owner(id)?.decision(id)
     }
@@ -2779,6 +2786,17 @@ pub trait NativeChannel: Send + Sync {
         None
     }
 
+    /// What this service says is true right now, as `(name, state)`.
+    ///
+    /// The facts an answer about state should agree with. A service that cannot be asked
+    /// says nothing, and nothing downstream changes.
+    ///
+    /// # Errors
+    /// A human-readable message if the service cannot be reached.
+    fn states(&self) -> Result<Vec<(String, String)>, String> {
+        Ok(Vec::new())
+    }
+
     /// What this service can say about the person **right now**, in one short line.
     ///
     /// `None` — the default — from a service that knows nothing about them. A smart home
@@ -3072,6 +3090,13 @@ impl CapabilityRunner for TargetSearchRunner {
         self.channels
             .iter()
             .filter_map(|(_, channel)| channel.about_the_person())
+            .collect()
+    }
+
+    fn current_states(&self) -> Vec<(String, String)> {
+        self.channels
+            .iter()
+            .flat_map(|(_, channel)| channel.states().unwrap_or_default())
             .collect()
     }
 

@@ -922,6 +922,47 @@ fn acted_note(disclosures: &[ActionDisclosure]) -> Option<String> {
     Some(format!("Done. {} reported: {said}{more}", first.skill))
 }
 
+/// The facts behind an answer, for the things it named.
+///
+/// ADR 0053 verifies what Endora **did** and has never verified what it **says**. On a turn
+/// that answers a question, Endora is holding the very reading the answer came from — so
+/// the facts were available all along and simply never shown. Live, that gap produced
+/// "the kitchen table light is already on" about a light that was off, and "several lights
+/// are on" when the reading listed exactly nine.
+///
+/// This does not judge the prose. It **discloses** — the same move the action trail makes,
+/// applied to an answer: whatever the reply named, here is what the service says about it,
+/// so the person can see in one glance whether the two agree. Correcting the model would
+/// mean understanding the sentence; showing the facts does not.
+///
+/// Only names the reply actually mentions, longest first so `Kitchen Main Light` is
+/// matched before `Kitchen`, and capped — a wall of state is its own kind of noise.
+fn facts_behind(text: &str, mut states: Vec<(String, String)>) -> String {
+    const SHOWN: usize = 5;
+    const WORTH_MATCHING: usize = 4;
+    let lowered = text.to_lowercase();
+    states.sort_by_key(|(name, _)| std::cmp::Reverse(name.len()));
+    let mut said: Vec<String> = Vec::new();
+    let mut covered = String::new();
+    for (name, state) in states {
+        if name.len() < WORTH_MATCHING || said.len() >= SHOWN {
+            continue;
+        }
+        let lowered_name = name.to_lowercase();
+        // Skip a name already contained in a longer one that was matched, so a reply
+        // mentioning `Kitchen Main Light` does not also report `Kitchen`.
+        if !lowered.contains(&lowered_name) || covered.contains(&lowered_name) {
+            continue;
+        }
+        covered.push_str(&lowered_name);
+        said.push(format!("{name} is {state}"));
+    }
+    if said.is_empty() {
+        return String::new();
+    }
+    format!("\n\n[state] {}", said.join(" · "))
+}
+
 /// The line to append when a turn tried to change something and changed nothing.
 ///
 /// Empty in every other case — including a turn that took no action at all, where there
@@ -1209,7 +1250,13 @@ pub fn send_to_butler_streaming(
     // Deterministic, and it does not rewrite what the model said: it appends what is
     // true. Whether the model narrates well is not something Endora can fix, but whether
     // the person is told nothing happened is.
-    let appended = nothing_changed_note(disclosures);
+    let mut appended = nothing_changed_note(disclosures);
+    // On a turn that answered rather than acted, show the facts behind whatever it named
+    // (ADR 0053). Scoped to answers because that is where a claim about state goes
+    // unchecked, and because an acting turn already discloses its own before-and-after.
+    if disclosures.is_empty() {
+        appended.push_str(&facts_behind(&reply_text, capabilities.current_states()));
+    }
     let reply_text = format!("{reply_text}{appended}");
     // `take_turn` is non-streaming, so deliver the final answer at once.
     // Send only what the person has not already seen.
@@ -6222,5 +6269,60 @@ mod tests {
             ..ButlerReply::default()
         };
         assert!(!super::not_an_answer(&acted, &ctx));
+    }
+
+    fn house() -> Vec<(String, String)> {
+        [
+            ("Kitchen Table", "off"),
+            ("Kitchen Main Light", "on"),
+            ("Kitchen", "on"),
+            ("Garage Main", "on"),
+            ("Outside Color", "unavailable"),
+        ]
+        .into_iter()
+        .map(|(n, s)| (n.to_owned(), s.to_owned()))
+        .collect()
+    }
+
+    #[test]
+    fn an_answer_carries_the_facts_it_spoke_about() {
+        // Live: "the kitchen table light is already on" about a light that was off. The
+        // reading said so at the time and nothing showed it.
+        let note = super::facts_behind("The kitchen table light is already on.", house());
+        assert!(note.contains("Kitchen Table is off"), "{note}");
+    }
+
+    #[test]
+    fn a_longer_name_wins_over_the_one_inside_it() {
+        // A reply about the ceiling light must not also report the whole room, or the
+        // facts become their own noise.
+        let note = super::facts_behind("Kitchen Main Light is on.", house());
+        assert!(note.contains("Kitchen Main Light is on"), "{note}");
+        assert_eq!(note.matches("Kitchen").count(), 1, "reported twice: {note}");
+    }
+
+    #[test]
+    fn an_answer_that_named_nothing_is_left_alone() {
+        // Most replies are not about state, and appending a wall of it would be noise.
+        assert_eq!(super::facts_behind("Good evening, sir.", house()), "");
+        assert_eq!(
+            super::facts_behind("The kitchen table light is off.", Vec::new()),
+            ""
+        );
+    }
+
+    #[test]
+    fn a_vague_answer_is_shown_the_things_it_gestured_at() {
+        // "Several lights are on" is not false, and it is not an answer either. Whatever
+        // it did name gets its actual state put beside the vagueness.
+        let note = super::facts_behind(
+            "There are several lights on in your home, including the kitchen and garage.",
+            house(),
+        );
+        assert!(note.contains("Kitchen is on"), "{note}");
+        // And only what it named: "garage" is not "Garage Main", so that is not claimed
+        // to be what the reply meant. Guessing at a half-mentioned name is how a
+        // disclosure starts inventing.
+        assert!(!note.contains("Garage Main"), "{note}");
     }
 }
