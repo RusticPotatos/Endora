@@ -207,6 +207,25 @@ pub struct ButlerContext {
     /// belongs to the turn and never to understanding. It is what lets the butler know
     /// whether anyone is there before it decides to speak.
     pub present: Vec<String>,
+    /// What **Endora itself** has done lately — messages it started, actions it took and
+    /// whether they changed anything (ADR 0056). Newest last, and deliberately short.
+    ///
+    /// This began as a skill the butler could reach for, which is the right shape and did
+    /// not work: asked "did you do anything while I was out?", a 7B model called
+    /// `HassTurnOn` and tried to switch on a light. Tool *choice* is the least reliable
+    /// thing a small model does, and this is the one question a proactive butler must not
+    /// get wrong.
+    ///
+    /// So the answer is put where it cannot be missed, exactly as [`present`](Self::present)
+    /// is: stated facts the butler reads rather than a call it has to decide to make. The
+    /// skill remains for detail — a wider window, the full list — and this covers the
+    /// question as it is actually asked.
+    ///
+    /// Kept to a few lines. The reason it is not the whole digest is the same reason a
+    /// clock reading must not arrive with five kilobytes of house
+    /// ([0053](../../docs/adr/0053-honesty-about-what-it-did.md)): everything in a turn's
+    /// context is paid for on every turn.
+    pub did_lately: Vec<String>,
     /// How the butler's own past actions have landed, per skill — built from the
     /// outcomes it recorded and what the person said about them (ADR 0053).
     ///

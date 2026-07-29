@@ -1299,6 +1299,7 @@ async fn send_chat(
             understanding.as_ref(),
             understanding.as_ref(),
             config.as_ref(),
+            chat.as_ref(),
             &runner,
             clock.as_ref(),
         )?;
@@ -1352,6 +1353,7 @@ async fn brief(State(state): State<AppState>) -> Result<Json<serde_json::Value>,
             understanding.as_ref(),
             understanding.as_ref(),
             config.as_ref(),
+            chat.as_ref(),
             &runner,
             clock.as_ref(),
         )?;
@@ -1436,6 +1438,7 @@ async fn stream_chat(
                 understanding.as_ref(),
                 understanding.as_ref(),
                 config.as_ref(),
+                chat.as_ref(),
                 &runner,
                 clock.as_ref(),
             ) {
@@ -3693,6 +3696,7 @@ pub fn spawn_heartbeat(state: AppState) {
                     understanding.as_ref(),
                     understanding.as_ref(),
                     config.as_ref(),
+                    chat.as_ref(),
                     &runner,
                     clock.as_ref(),
                 )?;
