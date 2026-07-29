@@ -2193,6 +2193,30 @@ impl CapabilityRunner for McpRunner {
     }
 }
 
+/// Reduces a call's arguments to what they **mean**, so that two spellings of one call
+/// are recognised as one call (ADR 0053).
+///
+/// The turn loop refuses to run the same tool with the same input twice, and was being
+/// beaten by punctuation and key order. Observed live in one morning briefing: two
+/// identical requests for the whole house, and before them two identical failing attempts
+/// to get weather out of the smart home — four rounds spent, of which two were free, on a
+/// turn whose answer then had no room left to be any good.
+///
+/// Key order is not incidental here: the same model emits
+/// `{"area":"","domain":["light"],"name":""}` and
+/// `{"domain":["light"],"name":"","area":""}` for the same intent, run to run.
+///
+/// Arguments that will not parse fall back to the raw text — exactly what the guard
+/// compared before, so nothing gets worse.
+#[must_use]
+pub fn same_call_as(input_json: &str) -> String {
+    // `serde_json`'s map is ordered by key unless `preserve_order` is enabled, which it is
+    // not here, so re-serialising a parsed value is already canonical.
+    serde_json::from_str::<Value>(input_json)
+        .as_ref()
+        .map_or_else(|_| input_json.trim().to_owned(), Value::to_string)
+}
+
 /// Nudges tool arguments toward the tool's input schema for the common small-model
 /// slip of passing a scalar where an array is wanted: for each top-level property the
 /// schema types as `array`, a non-array value is wrapped in a one-element array. Only
