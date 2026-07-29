@@ -1736,6 +1736,7 @@ fn belief_json(b: &Belief, now: endora_application::Timestamp) -> serde_json::Va
         "confidence": confidence.name(),
         "evidence": b.evidence(),
         "last_affirmed_ms": b.last_affirmed_at().unix_millis(),
+        "settled": b.is_settled(now),
     })
 }
 
@@ -3359,6 +3360,21 @@ async fn invoke_capability(
     }
 }
 
+/// Re-reads stored beliefs against the rules as they stand today (ADR 0052).
+///
+/// Runs on the heartbeat rather than on read, so the store converges once and the screen
+/// stays a plain rendering of what is held. Failures are logged and dropped: this is
+/// housekeeping, and a butler that cannot tidy is still a butler.
+fn tidy_understanding(state: &AppState) {
+    let understanding = state.understanding.clone();
+    let clock = state.clock.clone();
+    match usecases::tidy_understanding(understanding.as_ref(), clock.as_ref()) {
+        Ok(0) => {}
+        Ok(n) => eprintln!("understanding: retired {n} belief(s) the rules no longer form"),
+        Err(e) => eprintln!("understanding: could not tidy: {e}"),
+    }
+}
+
 /// Spawns the butler's **heartbeat**: a background loop that periodically checks
 /// whether a proactive check-in is due (per the person's cadence) and, if so, has
 /// the butler post one. Only messages — nothing consequential — so it stays on the
@@ -3384,6 +3400,7 @@ pub fn spawn_heartbeat(state: AppState) {
             if ticks.is_multiple_of(4) {
                 reconnect_empty_mcp_servers(&state);
                 withdraw_what_never_works(&state);
+                tidy_understanding(&state);
             }
             let events = state.events.clone();
             let chat = state.chat.clone();

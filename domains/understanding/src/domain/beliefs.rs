@@ -250,6 +250,32 @@ impl Belief {
         }
     }
 
+    /// Whether this is **settled** — held with high confidence and reinforced at least
+    /// once since it was formed (ADR 0052).
+    ///
+    /// Written after a screen of cards, every one of them high-confidence and confirmed
+    /// more than once, all still offering *That's right / Not quite*. Asking about
+    /// something already settled is the queue behaviour this context exists to prevent,
+    /// wearing a different costume: it is a list of chores that never empties, because
+    /// answering an item does not remove it.
+    ///
+    /// The asymmetry is the point. **Affirming a settled belief adds nothing** — the
+    /// confidence is already at the top and the evidence already exists — so the prompt is
+    /// pure cost. **Correcting one always matters**, however sure Endora was, so that stays
+    /// available everywhere and forever.
+    ///
+    /// `last_affirmed_at > created_at` is exactly "reinforced since forming": both are set
+    /// to the same instant at birth, and only [`affirm`](Self::affirm) moves the second.
+    ///
+    /// Judged on the **decayed** confidence, so a settled belief that fades with time
+    /// becomes a question again by itself. That is the right way round: what stops Endora
+    /// asking is being sure *now*, not having once been sure.
+    #[must_use]
+    pub fn is_settled(&self, now: Timestamp) -> bool {
+        self.confidence_at(now) == Some(Confidence::High)
+            && self.last_affirmed_at.unix_millis() > self.created_at.unix_millis()
+    }
+
     /// The person confirmed it: raise confidence and mark it freshly affirmed.
     pub fn affirm(&mut self, at: Timestamp) {
         self.confidence = self.confidence.raised();
