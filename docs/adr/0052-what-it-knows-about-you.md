@@ -81,6 +81,17 @@ quietly treated as the winner.
 
 That check cannot live on a belief, because contradiction is not a property of one.
 
+**And a contradiction requires a shared subject.** Putting disagreement on screen immediately
+showed that it was decided from negation and antonyms alone, with nothing asking whether the
+two statements were even on the same topic: the Celsius belief was reported as contradicting
+*every* other belief Endora held, including one about where it found some event listings.
+That fault had existed all along and was invisible, because the answer only ever fed
+duplicate detection — which independently required word overlap, and so masked it.
+
+The bar for "about the same thing" is deliberately much weaker than the bar for "the same
+belief": *you like running* and *you hate running* are about the same thing without being
+the same belief, and that gap is exactly where contradiction lives.
+
 ### Rules apply backwards, not only forwards
 
 Every guard on understanding ran **at formation only** — which quietly means the model of the
