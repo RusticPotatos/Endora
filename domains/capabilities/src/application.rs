@@ -396,6 +396,19 @@ pub trait CapabilityRunner {
         Vec::new()
     }
 
+    /// What the services currently say is true, as `(name, state)` — the facts an answer
+    /// about state should agree with (ADR 0053).
+    ///
+    /// Verification covers what Endora **did**: read the world before and after, compare,
+    /// record both. It has never covered what Endora **says**. Yet on a turn that answers
+    /// a question, Endora is holding the very reading the answer came from, so the facts
+    /// behind the prose are available and were simply never shown.
+    ///
+    /// Empty by default, and empty for any service that cannot be asked.
+    fn current_states(&self) -> Vec<(String, String)> {
+        Vec::new()
+    }
+
     /// Runs a capability with JSON input, returning its JSON output or an error
     /// message. Only ever called for capabilities the policy layer has cleared.
     fn run(&self, id: &str, input_json: &str) -> Result<String, String>;

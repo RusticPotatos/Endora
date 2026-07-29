@@ -648,6 +648,14 @@ impl crate::infrastructure::NativeChannel for HomeAssistant {
             .is_some_and(|(domain, _)| SWITCHABLE.contains(&domain))
     }
 
+    fn states(&self) -> Result<Vec<(String, String)>, String> {
+        Ok(self
+            .entities()?
+            .into_iter()
+            .map(|e| (e.name, e.state))
+            .collect())
+    }
+
     fn about_the_person(&self) -> Option<String> {
         // A house knows whether someone is in it. Home Assistant keeps that as `person.*`
         // entities whose state is `home`, `not_home`, or the name of a place — which is

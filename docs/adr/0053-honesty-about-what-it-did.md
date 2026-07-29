@@ -156,9 +156,30 @@ property of the port, not of any one service — and the battery grades both beh
 count must be a count, and a question the reading cannot answer must be declined rather
 than furnished.
 
-The general rule this points at, and does not yet reach: Endora holds the exact reading an
-answer should come from, so a claim about state is checkable in principle the same way an
-action's effect is. That would be the honest completion of this ADR.
+### An answer carries the facts it spoke about
+
+Endora holds the exact reading an answer came from, so the facts behind the prose were
+available all along and simply never shown. An answering turn now appends them, for
+whatever the reply named:
+
+```text
+The kitchen table light is already on.
+
+[state] Kitchen Table is off
+```
+
+**It discloses; it does not correct.** Judging the sentence would mean understanding it,
+which is the model's job and the thing that cannot be relied on. Showing the facts needs
+no understanding at all, and it is the same move the action trail makes — put the truth
+next to the claim and let the person see whether they agree.
+
+Deliberately narrow. Only names the reply actually used, longest first so a reply about
+`Kitchen Main Light` does not also report `Kitchen`, capped at a handful, and **only on
+turns that acted on nothing** — an acting turn already discloses its own before-and-after,
+and answers are where a claim about state went unchecked.
+
+A half-mentioned name is not a match: "garage" is not `Garage Main`, and guessing at the
+difference is how a disclosure starts inventing.
 
 ## Consequences
 
