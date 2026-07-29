@@ -109,6 +109,19 @@ pub struct ButlerReply {
     /// assigned it (ADR 0053). The single-conversation loop runs these and appends
     /// their results as `role:tool` turns keyed by that id. Empty when it just talks.
     pub tool_calls: Vec<ToolCall>,
+    /// The model could not be reached, so this text is Endora apologising rather than the
+    /// butler answering (ADR 0056).
+    ///
+    /// A flag rather than a phrase to match on: the apology is a real sentence a person
+    /// should sometimes see, and recognising it by its words would mean two copies of the
+    /// same string in different crates, drifting.
+    ///
+    /// It matters because the consequence differs by path. Asked a question, the person is
+    /// owed the truth that it failed. **Unprompted, nobody asked anything** — and at
+    /// midnight the night loop posted "Give me a moment and try again" into an empty room.
+    /// Silence is the default for a turn nobody requested, and a degraded turn has by
+    /// definition produced no answer to override it.
+    pub degraded: bool,
 }
 
 /// One tool call the model made through the endpoint's native tool-calling API — the
