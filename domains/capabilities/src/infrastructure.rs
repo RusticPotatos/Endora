@@ -2681,6 +2681,17 @@ impl ReversibleOnlyRunner {
 }
 
 impl CapabilityRunner for ReversibleOnlyRunner {
+    // Clamping what may ACT unattended says nothing about what may be known. Presence
+    // matters most on exactly these turns — whether anyone is home is half of whether to
+    // speak at all — so dropping it here would have been the worst place to drop it.
+    fn about_the_person(&self) -> Vec<String> {
+        self.inner.about_the_person()
+    }
+
+    fn current_states(&self) -> Vec<(String, String)> {
+        self.inner.current_states()
+    }
+
     fn available(&self) -> Vec<crate::application::CapabilitySpec> {
         self.inner
             .available()
@@ -3234,6 +3245,20 @@ impl WithdrawnRunner {
 }
 
 impl CapabilityRunner for WithdrawnRunner {
+    // Withdrawal is about which TOOLS are offered. What the services know about the person
+    // and about the world is not a tool and is not withheld — but a default that returns
+    // nothing looks identical to a service having nothing to say, so forgetting to forward
+    // these is silent. Both were: presence never reached a turn, and neither did the facts
+    // behind an answer, while the unit tests passed because they exercised the inner
+    // runner directly.
+    fn about_the_person(&self) -> Vec<String> {
+        self.inner.about_the_person()
+    }
+
+    fn current_states(&self) -> Vec<(String, String)> {
+        self.inner.current_states()
+    }
+
     fn available(&self) -> Vec<crate::application::CapabilitySpec> {
         self.inner
             .available()
@@ -4993,6 +5018,13 @@ mod tests {
             Some("morgan is not home".to_owned())
         }
 
+        fn states(&self) -> Result<Vec<(String, String)>, String> {
+            Ok(vec![
+                ("Kitchen Table".to_owned(), "off".to_owned()),
+                ("Kitchen Main Light".to_owned(), "on".to_owned()),
+            ])
+        }
+
         fn actionable(&self, _tool: &str, id: &str) -> bool {
             id.starts_with("light.") || id.starts_with("switch.")
         }
@@ -5266,5 +5298,37 @@ mod tests {
         let out = coerce_args_to_schema(r#"{"device_class":["garage"]}"#, Some(&schema));
         let v: Value = serde_json::from_str(&out).unwrap();
         assert_eq!(v["device_class"], serde_json::json!(["garage"]));
+    }
+
+    #[test]
+    fn what_the_services_know_survives_the_whole_stack() {
+        // The bug this exists for: `about_the_person` and `current_states` are answered by
+        // the channel runner in the middle of the stack, and every wrapper above it has to
+        // pass them through. Two did not — so presence never reached a turn and neither
+        // did the facts behind an answer, while the unit tests passed because they poked
+        // the inner runner directly.
+        //
+        // A defaulted port method that returns nothing is indistinguishable from a service
+        // having nothing to say, which is what made it silent. This asserts through the
+        // composed stack, the way production builds it.
+        let (_, inner) = with_direct();
+        let composed = ReversibleOnlyRunner::new(Arc::new(WithdrawnRunner::new(
+            Arc::new(CompositeRunner::new(vec![
+                Arc::new(inner) as Arc<dyn CapabilityRunner + Send + Sync>
+            ])) as Arc<dyn CapabilityRunner + Send + Sync>,
+            std::collections::HashSet::new(),
+        )));
+        assert_eq!(
+            composed.about_the_person(),
+            vec!["morgan is not home".to_owned()],
+            "presence was dropped somewhere in the stack"
+        );
+        assert!(
+            composed
+                .current_states()
+                .iter()
+                .any(|(name, _)| name == "Kitchen Table"),
+            "the facts behind an answer were dropped somewhere in the stack"
+        );
     }
 }
