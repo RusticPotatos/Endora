@@ -164,22 +164,28 @@ impl StandingTrouble {
 /// What makes a heuristic acceptable here is the blast radius: a wrong classification can
 /// only ever produce **a question**, never an action. Getting it wrong costs one tap on
 /// "it's fine"; getting the opposite wrong costs a device quietly staying broken.
-const NOT_A_READING: &[&str] = &[
-    "unavailable",
-    "unknown",
-    "offline",
-    "disconnected",
-    "unreachable",
-    "none",
-    "null",
-    "error",
-];
+///
+/// **Only words that can mean nothing else.** The first list was wider — `unknown`, `none`,
+/// `null`, `error` and an empty reading — and the first live reading refuted it: 28 things
+/// were flagged against 7 real ones, and every single false positive was a *scene*, whose
+/// state in Home Assistant is when it was last activated. `unknown` there means "not since
+/// the last restart", which is the healthiest possible answer. Three days later the person
+/// would have been asked about 28 working things, which is exactly the pile of chores this
+/// was built to avoid, at scale.
+///
+/// So a word that means "hasn't happened yet" as often as it means "cannot be reached" is
+/// not evidence of anything. `error` went too: a thing reporting an error **is** answering,
+/// which is a different problem with a different remedy.
+///
+/// The cost is missing a device that only ever reports `unknown`. Accepted — those almost
+/// always report `unavailable` as well, and a missed problem is recoverable while a butler
+/// that cries wolf 28 times is not.
+const NOT_A_READING: &[&str] = &["unavailable", "offline", "disconnected", "unreachable"];
 
 /// Whether a state value is a service admitting it cannot see the thing.
 #[must_use]
 pub fn not_answering(state: &str) -> bool {
-    let value = state.trim().to_lowercase();
-    value.is_empty() || NOT_A_READING.contains(&value.as_str())
+    NOT_A_READING.contains(&state.trim().to_lowercase().as_str())
 }
 
 /// How long something must be wrong before it is worth mentioning (ADR 0056).
