@@ -1080,6 +1080,46 @@ fn contains_all_words(words: &[String], wanted: &[String]) -> bool {
     words.windows(wanted.len()).any(|run| run == wanted)
 }
 
+/// Appends what Endora actually did, when the reply makes a claim about its own activity.
+///
+/// The third attempt at this, and the first that does not depend on the model. Asked "did you
+/// do anything while I was out?", the butler:
+///
+/// 1. answered out of the house's lights — so Endora's record became a **skill**;
+/// 2. reached past that skill and called `HassTurnOn`, trying to switch a light on — so the
+///    account was **stated in the turn's context** instead;
+/// 3. ignored the context and repeated, word for word, the answer it had given the previous
+///    day: *"no specific activities were recorded."*
+///
+/// Eleven things were in the record at that moment, including the three messages it had sent
+/// unprompted. Each fix was a better place to put the facts, and all three were still asking
+/// the model to use them.
+///
+/// So this is the mechanism [0053](../../docs/adr/0053-honesty-about-what-it-did.md) already
+/// uses for exactly this shape of problem: **a claim and the record disagree, so the record is
+/// appended.** Nothing is rewritten and nothing is judged — the account is put next to the
+/// sentence and the person can see which to believe.
+///
+/// The trigger is a claim *about activity in general*, matched on a deliberately tiny
+/// vocabulary — `activity`, `activities`, `proactive`, `recorded` — words that are rare in
+/// ordinary butler prose and are precisely what appears when this question is answered badly.
+/// A heuristic, and named as one; both ways of being wrong are cheap. A false positive appends
+/// true facts to a reply that did not need them; a false negative leaves things as they were.
+fn account_behind(text: &str, did_lately: &[String]) -> String {
+    const CLAIMS_ABOUT_ACTIVITY: &[&str] = &["activity", "activities", "proactive", "recorded"];
+    if did_lately.is_empty() {
+        return String::new();
+    }
+    let words = words_of(text);
+    if !CLAIMS_ABOUT_ACTIVITY
+        .iter()
+        .any(|marker| words.iter().any(|w| w == marker))
+    {
+        return String::new();
+    }
+    format!("\n\n[did] {}", did_lately.join("\n"))
+}
+
 /// The line to append when a turn tried to change something and changed nothing.
 ///
 /// Empty in every other case — including a turn that took no action at all, where there
@@ -1373,6 +1413,7 @@ pub fn send_to_butler_streaming(
     // unchecked, and because an acting turn already discloses its own before-and-after.
     if disclosures.is_empty() {
         appended.push_str(&facts_behind(&reply_text, capabilities.current_states()));
+        appended.push_str(&account_behind(&reply_text, &context.did_lately));
     }
     let reply_text = format!("{reply_text}{appended}");
     // `take_turn` is non-streaming, so deliver the final answer at once.
@@ -7367,5 +7408,60 @@ mod accounting_for_itself {
         let checkin = report.find("04:18").expect("the check-in");
         let brief = report.find("11:01").expect("the brief");
         assert!(checkin < brief, "oldest first, got: {report}");
+    }
+}
+
+#[cfg(test)]
+mod the_record_next_to_the_claim {
+    use super::*;
+
+    fn did() -> Vec<String> {
+        vec![
+            "11:01 — I wrote to you unprompted: \"Good morning, sir.…\"".to_owned(),
+            "21:33 — tried home-assistant.HassTurnOn and it failed".to_owned(),
+        ]
+    }
+
+    #[test]
+    fn denying_activity_gets_the_record_attached() {
+        // The exact live sentence, given verbatim twice on two different days, with eleven
+        // things in the record at the time.
+        let denial = "I checked, but no specific activities were recorded while you were \
+                      out. Would you like to hear about any events happening nearby?";
+        let shown = account_behind(denial, &did());
+        assert!(shown.contains("[did]"), "{shown}");
+        assert!(shown.contains("I wrote to you unprompted"), "{shown}");
+        assert!(shown.contains("HassTurnOn and it failed"), "{shown}");
+    }
+
+    #[test]
+    fn hedging_about_proactive_actions_also_gets_it() {
+        // The other live shape: "It seems like you're asking about whether any proactive
+        // actions were taken today. However, to provide a more accurate response…"
+        let hedge = "It seems like you're asking about whether any proactive actions were \
+                     taken today. Could you please specify the area or domain?";
+        assert!(account_behind(hedge, &did()).contains("[did]"));
+    }
+
+    #[test]
+    fn an_ordinary_reply_gets_nothing_attached() {
+        // The vocabulary is tiny on purpose: these words are rare in butler prose, so a
+        // normal answer is left alone.
+        for ordinary in [
+            "The kitchen table light is already on.",
+            "Good evening, sir. I hope you had a productive day.",
+            "I turned the garage light off for you.",
+            "It's 9:41 in the evening.",
+        ] {
+            assert_eq!(account_behind(ordinary, &did()), "", "{ordinary}");
+        }
+    }
+
+    #[test]
+    fn with_nothing_to_report_nothing_is_attached() {
+        // No record, no disclosure — appending an empty account would be its own kind of
+        // noise, and the reply denying activity would then be correct anyway.
+        let denial = "No specific activities were recorded.";
+        assert_eq!(account_behind(denial, &[]), "");
     }
 }
