@@ -334,7 +334,8 @@ function viewChat() {
     // A butler reply carries its persisted action trail + sources (if any), so
     // you can expand a PAST answer to see what it did and where it came from.
     if (!mine && m.actions) {
-      return bubble + actionsTakenHtml(m.actions.actions_taken) + stepsHtml(m.actions.steps) + sourcesHtml(m.actions.sources);
+      return bubble + activityHtml(m.actions.activity) + actionsTakenHtml(m.actions.actions_taken)
+        + stepsHtml(m.actions.steps) + sourcesHtml(m.actions.sources);
     }
     return bubble;
   }).join("");
@@ -364,11 +365,10 @@ function viewChat() {
     liveTurn = users +
       `<div class="row" style="justify-content:flex-start; margin:6px 0;" id="chat-live"><div class="bubble butler">${replyInner}</div></div>`;
   }
-  // A subtle note of what Endora did behind the scenes on the latest turn —
-  // what it looked up and what it learned — so you can see what the turn did.
-  const last = list[list.length - 1];
-  const showActivity = SHOW_ACTIVITY && LAST_ACTIVITY.length && last && last.role === "butler" && last.id === LAST_ACTIVITY_MSG;
-  const activity = showActivity
+  // The in-flight turn only. Every finished turn renders its own note from the stored
+  // record above, which is what makes it survive coming back to the chat; this is for the
+  // moment between the stream ending and the reply appearing in the persisted history.
+  const streamingActivity = SHOW_ACTIVITY && CHAT_STREAMING && LAST_ACTIVITY.length
     ? `<div class="activity">${icon("sparkle", 13)} ${LAST_ACTIVITY.map(esc).join(" · ")}</div>`
     : "";
   const speakBtn = TTS
@@ -401,7 +401,7 @@ function viewChat() {
   return `
     <div class="chat">
       ${dayBar}
-      <div id="chat-thread" class="chat-thread">${(msgs || (CHAT_STREAMING ? "" : emptyToday)) + (CHAT_STREAMING ? liveTurn : pending) + activity}</div>
+      <div id="chat-thread" class="chat-thread">${(msgs || (CHAT_STREAMING ? "" : emptyToday)) + (CHAT_STREAMING ? liveTurn : pending) + streamingActivity}</div>
       <div class="composer">
         <textarea id="chat-input" rows="1" placeholder="Talk to your butler…"></textarea>
         <div class="composer-actions">
