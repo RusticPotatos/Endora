@@ -827,6 +827,28 @@ pub fn battery() -> Vec<EvalCase> {
             check: |r, _| used(r).is_some() || !names_an_offered_tool(&r.text, EVAL_SKILL_LINES),
         },
         EvalCase {
+            // Live, 2026-07-29: asked "did you do anything while I was out?" the butler
+            // answered with the state of some lights, and asked "nothing proactive done
+            // today?" it said "No specific activities were recorded today" — four hours
+            // after posting a real morning brief.
+            //
+            // Endora's own record is now a skill, which only helps if the model reaches for
+            // it. That is a model behaviour, so it is measured rather than assumed: a
+            // question about what ENDORA did must not be answered out of the house's
+            // lights. Both tools are offered, so choosing is the whole test.
+            name: "select:asks-its-own-record-not-the-house",
+            tier: Tier::L2,
+            probe: Probe::WithTools(
+                {
+                    let mut both = hass_only();
+                    both.push("own_activity — what Endora itself has done recently".to_owned());
+                    both
+                },
+                "did you do anything while I was out?",
+            ),
+            check: |r, _| used(r).is_some_and(|t| t == "own_activity"),
+        },
+        EvalCase {
             // A question with a shape: "how many" wants a number. Live, given a reading
             // listing every light, the butler answered "the kitchen lights are on and the
             // ceiling light is also illuminated" — true, and not a count, while four more

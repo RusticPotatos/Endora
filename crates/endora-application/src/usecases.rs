@@ -7024,3 +7024,309 @@ mod what_reaches_an_empty_room {
         assert!(!not_an_answer(&real, &offering_nothing()));
     }
 }
+
+/// How far back "while I was out" reaches, when nobody says.
+///
+/// A day, because the question is asked on returning and the answer people want is "since I
+/// last paid attention", not "since the beginning".
+pub const A_DAY_MS: i64 = 86_400_000;
+
+/// At most this many of any one kind of thing, so the answer stays an answer.
+const ENOUGH_OF_ANY_ONE_THING: usize = 5;
+
+/// What Endora has actually been doing, read from its own record (ADR 0056).
+///
+/// Asked "did you do anything while I was out?" and then "nothing proactive done today?",
+/// the butler replied **"No specific activities were recorded today"** — on a day it had
+/// posted three unprompted messages, one of them a real morning brief four hours earlier.
+/// Every part of the true answer was stored; none of it was reachable from a turn, so the
+/// most important question a proactive butler can be asked was the one it could not answer.
+///
+/// Being proactive and unable to account for it is worse than not being proactive: the
+/// person cannot tell a quiet day from a broken one.
+///
+/// Deterministic, and assembled here rather than asked of the model — this is a **report of
+/// stored facts**, which is the one thing Endora is entitled to assert
+/// ([0053](../../docs/adr/0053-honesty-about-what-it-did.md)). The model's job is to say it
+/// nicely, not to remember it.
+///
+/// # Errors
+/// [`AppError::Repository`] on a backend failure.
+pub fn what_it_has_been_doing(
+    chat: &impl ChatRepository,
+    outcomes: &impl OutcomeRepository,
+    writes: &impl endora_capabilities::ConfigWriteLog,
+    troubles: &impl endora_capabilities::StandingTroubleRepository,
+    since_ms: i64,
+    now_ms: i64,
+) -> Result<String, AppError> {
+    let mut lines: Vec<String> = Vec::new();
+
+    // Messages Endora started itself. There is no stored flag for "proactive", so it is
+    // read from adjacency: a butler message whose predecessor is not the person's is one
+    // nobody asked for. A butler message at the very start of the window has no visible
+    // predecessor and is counted, which is right far more often than not — the alternative
+    // is silently dropping the brief that opened the day.
+    let history = chat.between(since_ms, now_ms)?;
+    let mut spoke_first: Vec<&ChatMessage> = Vec::new();
+    for (i, message) in history.iter().enumerate() {
+        if message.role() != MessageRole::Butler {
+            continue;
+        }
+        let asked_for = i > 0 && history[i - 1].role() == MessageRole::User;
+        if !asked_for {
+            spoke_first.push(message);
+        }
+    }
+    for message in spoke_first.iter().take(ENOUGH_OF_ANY_ONE_THING) {
+        lines.push(format!(
+            "{} — I wrote to you unprompted: \"{}\"",
+            clock_time_of(message.at().unix_millis()),
+            first_sentence_of(message.text())
+        ));
+    }
+
+    // What it did, kept as claim-and-observation rather than a verdict, exactly as stored.
+    let acted: Vec<_> = outcomes
+        .list()?
+        .into_iter()
+        .filter(|o| o.at().unix_millis() >= since_ms)
+        .collect();
+    let (worked, failed): (Vec<_>, Vec<_>) = acted
+        .iter()
+        .partition(|o| !o.claim().trim_start().starts_with("error:"));
+    for outcome in worked.iter().take(ENOUGH_OF_ANY_ONE_THING) {
+        let verdict = match outcome.changed() {
+            Some(true) => "and I saw it change",
+            Some(false) => "but nothing changed when I looked",
+            None => "though I could not check",
+        };
+        lines.push(format!(
+            "{} — used {} {verdict}",
+            clock_time_of(outcome.at().unix_millis()),
+            outcome.capability()
+        ));
+    }
+    for outcome in failed.iter().take(ENOUGH_OF_ANY_ONE_THING) {
+        lines.push(format!(
+            "{} — tried {} and it failed",
+            clock_time_of(outcome.at().unix_millis()),
+            outcome.capability()
+        ));
+    }
+
+    // Changes it made inside somebody else's service, which are the consequential ones.
+    for write in writes
+        .writes(ENOUGH_OF_ANY_ONE_THING)?
+        .iter()
+        .filter(|w| w.at_ms >= since_ms)
+    {
+        lines.push(format!(
+            "{} — changed {} in {}",
+            clock_time_of(write.at_ms),
+            write.target,
+            write.server
+        ));
+    }
+
+    // Things it started watching. Not the ones it is *raising* — those are a question the
+    // person answers, and this is a report of what happened.
+    for trouble in troubles
+        .troubles()?
+        .iter()
+        .filter(|t| t.since_ms >= since_ms)
+        .take(ENOUGH_OF_ANY_ONE_THING)
+    {
+        lines.push(format!(
+            "{} — noticed {} stopped answering",
+            clock_time_of(trouble.since_ms),
+            trouble.thing
+        ));
+    }
+
+    if lines.is_empty() {
+        // The honest empty answer, and deliberately not "no activities were recorded".
+        // Nothing happening and nothing being *recorded* are different claims, and the
+        // second one was made falsely.
+        return Ok(
+            "Nothing. I did not write to you, act on anything, change any settings, or \
+             notice anything stop answering in that time."
+                .to_owned(),
+        );
+    }
+    lines.sort();
+    Ok(lines.join("\n"))
+}
+
+/// `HH:MM` in UTC, matching how the rest of the system reports times.
+fn clock_time_of(ms: i64) -> String {
+    let secs = ms.rem_euclid(A_DAY_MS) / 1000;
+    format!("{:02}:{:02}", secs / 3600, (secs % 3600) / 60)
+}
+
+/// The first sentence, so a quoted brief does not become the whole report.
+fn first_sentence_of(text: &str) -> String {
+    const ENOUGH: usize = 90;
+    let trimmed = text.trim();
+    let end = trimmed
+        .find(['.', '!', '?'])
+        .map_or(trimmed.len(), |i| i + 1);
+    let cut = end.min(ENOUGH);
+    let mut out: String = trimmed.chars().take(cut).collect();
+    if cut < trimmed.chars().count() {
+        out.push('…');
+    }
+    out
+}
+
+#[cfg(test)]
+mod accounting_for_itself {
+    use super::*;
+    use endora_kernel::{RepositoryError, Timestamp};
+
+    struct Said(Vec<ChatMessage>);
+    impl ChatRepository for Said {
+        fn append(&self, _m: &ChatMessage) -> Result<(), RepositoryError> {
+            Ok(())
+        }
+        fn list(&self) -> Result<Vec<ChatMessage>, RepositoryError> {
+            Ok(self.0.clone())
+        }
+        fn between(&self, from_ms: i64, to_ms: i64) -> Result<Vec<ChatMessage>, RepositoryError> {
+            Ok(self
+                .0
+                .iter()
+                .filter(|m| m.at().unix_millis() >= from_ms && m.at().unix_millis() <= to_ms)
+                .cloned()
+                .collect())
+        }
+        fn days(&self, _offset_minutes: i64) -> Result<Vec<(String, usize)>, RepositoryError> {
+            Ok(Vec::new())
+        }
+    }
+
+    struct Nothing;
+    impl OutcomeRepository for Nothing {
+        fn save(&self, _o: &Outcome) -> Result<(), RepositoryError> {
+            Ok(())
+        }
+        fn get(&self, _id: crate::OutcomeId) -> Result<Option<Outcome>, RepositoryError> {
+            Ok(None)
+        }
+        fn list(&self) -> Result<Vec<Outcome>, RepositoryError> {
+            Ok(Vec::new())
+        }
+    }
+    impl endora_capabilities::ConfigWriteLog for Nothing {
+        fn record(&self, _w: &endora_capabilities::ConfigWrite) -> Result<(), RepositoryError> {
+            Ok(())
+        }
+        fn writes(
+            &self,
+            _limit: usize,
+        ) -> Result<Vec<endora_capabilities::ConfigWrite>, RepositoryError> {
+            Ok(Vec::new())
+        }
+        fn write(
+            &self,
+            _id: u128,
+        ) -> Result<Option<endora_capabilities::ConfigWrite>, RepositoryError> {
+            Ok(None)
+        }
+        fn mark_undone(&self, _id: u128) -> Result<(), RepositoryError> {
+            Ok(())
+        }
+    }
+    impl endora_capabilities::StandingTroubleRepository for Nothing {
+        fn note_trouble(
+            &self,
+            _t: &endora_capabilities::StandingTrouble,
+        ) -> Result<(), RepositoryError> {
+            Ok(())
+        }
+        fn clear_trouble(&self, _s: &str, _t: &str) -> Result<(), RepositoryError> {
+            Ok(())
+        }
+        fn troubles(&self) -> Result<Vec<endora_capabilities::StandingTrouble>, RepositoryError> {
+            Ok(Vec::new())
+        }
+        fn accept_trouble(&self, _s: &str, _t: &str) -> Result<(), RepositoryError> {
+            Ok(())
+        }
+    }
+
+    fn message(role: MessageRole, text: &str, at_ms: i64) -> ChatMessage {
+        ChatMessage::new(
+            crate::MessageId::new(at_ms as u128),
+            role,
+            text,
+            Timestamp::from_unix_millis(at_ms),
+        )
+        .expect("valid message")
+    }
+
+    /// 11:01 and 04:18 on the day the real failure happened.
+    const BRIEF_AT: i64 = 39_660_000;
+    const CHECKIN_AT: i64 = 15_480_000;
+
+    #[test]
+    fn the_brief_it_posted_is_in_the_answer() {
+        // The live failure: asked "nothing proactive done today?", it said "No specific
+        // activities were recorded today" — four hours after posting a real brief.
+        let said = Said(vec![
+            message(
+                MessageRole::Butler,
+                "Good morning, sir. The kitchen and garage lights are on, while others like the bedroom are off.",
+                BRIEF_AT,
+            ),
+            message(MessageRole::User, "Good afternoon", BRIEF_AT + 1_000),
+            message(
+                MessageRole::Butler,
+                "It's good afternoon! How can I assist you?",
+                BRIEF_AT + 2_000,
+            ),
+        ]);
+        let report = what_it_has_been_doing(&said, &Nothing, &Nothing, &Nothing, 0, A_DAY_MS)
+            .expect("report");
+
+        assert!(report.contains("11:01"), "{report}");
+        assert!(report.contains("unprompted"), "{report}");
+        assert!(report.contains("Good morning, sir."), "{report}");
+        // The reply it gave when ASKED is not something it did unprompted, and must not be
+        // reported as though it were.
+        assert!(!report.contains("good afternoon! How can"), "{report}");
+    }
+
+    #[test]
+    fn a_quiet_day_says_so_without_claiming_nothing_was_recorded() {
+        // "No specific activities were recorded today" was false, and would have been a
+        // different claim from "nothing happened" even if it were true. Endora reports what
+        // it did, not what its own storage managed to capture.
+        let report =
+            what_it_has_been_doing(&Said(Vec::new()), &Nothing, &Nothing, &Nothing, 0, A_DAY_MS)
+                .expect("report");
+        assert!(report.starts_with("Nothing."), "{report}");
+        assert!(!report.to_lowercase().contains("recorded"), "{report}");
+    }
+
+    #[test]
+    fn two_unprompted_messages_are_both_reported_oldest_first() {
+        let said = Said(vec![
+            message(
+                MessageRole::Butler,
+                "None of the functions listed involve a person domain.",
+                CHECKIN_AT,
+            ),
+            message(
+                MessageRole::Butler,
+                "Good morning, sir. The kitchen lights are on.",
+                BRIEF_AT,
+            ),
+        ]);
+        let report = what_it_has_been_doing(&said, &Nothing, &Nothing, &Nothing, 0, A_DAY_MS)
+            .expect("report");
+        let checkin = report.find("04:18").expect("the check-in");
+        let brief = report.find("11:01").expect("the brief");
+        assert!(checkin < brief, "oldest first, got: {report}");
+    }
+}
