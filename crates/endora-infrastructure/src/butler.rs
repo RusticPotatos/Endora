@@ -1219,6 +1219,18 @@ fn build_butler_request(
             system.push_str(&format!("\n- {line}"));
         }
     }
+    // What Endora itself has done lately (ADR 0056). Stated, not fetched: asked what it had
+    // done while the person was out, the model reached for a light switch. These are facts
+    // the butler reads, and the question they answer is one it must not get wrong.
+    if !context.did_lately.is_empty() {
+        system.push_str(
+            "\nWhat YOU have done in the last day — answer any question about your own \
+             activity from exactly this, and say plainly if it says nothing happened:",
+        );
+        for line in &context.did_lately {
+            system.push_str(&format!("\n- {line}"));
+        }
+    }
     // What things are actually called here (ADR 0054). Endora asked after watching the
     // same target fail repeatedly, and this is the person's answer — grounding, not an
     // instruction, so it sits with what the butler knows rather than what it must do.
