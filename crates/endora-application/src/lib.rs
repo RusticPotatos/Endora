@@ -57,7 +57,8 @@ pub use ports::{
     ProposalError, RepositoryError, ToolCall, TurnMessage,
 };
 pub use usecases::{
-    ActivityItem, ActivityKind, note_verification, reads_as_an_instruction, statements_disagree,
+    ActivityItem, ActivityKind, note_verification, reads_as_an_instruction, says_the_same_thing,
+    statements_disagree,
 };
 
 /// Human-readable identity of this build, suitable for a node/CLI banner.

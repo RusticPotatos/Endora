@@ -2193,6 +2193,60 @@ impl CapabilityRunner for McpRunner {
     }
 }
 
+/// Passes one method of [`CapabilityRunner`](crate::application::CapabilityRunner) straight
+/// through to a wrapped runner. See [`forwards_to_inner!`].
+macro_rules! forward_one_to_inner {
+    ($field:ident, about_the_person) => {
+        fn about_the_person(&self) -> Vec<String> {
+            self.$field.about_the_person()
+        }
+    };
+    ($field:ident, current_states) => {
+        fn current_states(&self) -> Vec<(String, String)> {
+            self.$field.current_states()
+        }
+    };
+    ($field:ident, decision) => {
+        fn decision(&self, id: &str) -> Option<Decision> {
+            self.$field.decision(id)
+        }
+    };
+    ($field:ident, verifier) => {
+        fn verifier(&self, id: &str) -> Option<String> {
+            self.$field.verifier(id)
+        }
+    };
+    ($field:ident, read_back_input) => {
+        fn read_back_input(&self, action_id: &str, action_input: &str) -> String {
+            self.$field.read_back_input(action_id, action_input)
+        }
+    };
+}
+
+/// Declares which of the port's **defaultable** methods a decorator simply passes along.
+///
+/// Runners are layered, and every method a wrapper does not answer itself has to be handed
+/// down. Five of the seven have a default, and a default that returns nothing is
+/// **indistinguishable from a service having nothing to say** — so forgetting one fails
+/// silently and looks exactly like working. Two were forgotten this way: presence never
+/// reached a turn and neither did the facts behind an answer, with every unit test passing
+/// because they exercised the runner that answers rather than the stack production builds.
+///
+/// Two more were latent at the time of writing: `AliasRunner` and `OpenerRunner` never
+/// passed presence or states along, and got away with it only because the runner *above*
+/// them happened to answer first. Moving them in the stack would have broken it.
+///
+/// Writing it out per decorator is what made that possible. Here, adding a method to the
+/// port means adding one arm to [`forward_one_to_inner!`], and every decorator that lists it
+/// forwards it correctly by construction. What a decorator genuinely overrides it still
+/// writes by hand, right next to this — so the difference between "changes this" and "passes
+/// this along" is visible in one place.
+macro_rules! forwards_to_inner {
+    ($field:ident : $($method:ident),+ $(,)?) => {
+        $( forward_one_to_inner!($field, $method); )+
+    };
+}
+
 /// Reduces a call's arguments to what they **mean**, so that two spellings of one call
 /// are recognised as one call (ADR 0053).
 ///
@@ -2536,20 +2590,13 @@ impl AliasRunner {
 }
 
 impl CapabilityRunner for AliasRunner {
+    // Only rewrites the arguments of a call; everything else passes through. The
+    // first two were missing here and got away with it because the runner above
+    // answered them first.
+    forwards_to_inner!(inner: about_the_person, current_states, decision, verifier, read_back_input);
+
     fn available(&self) -> Vec<crate::application::CapabilitySpec> {
         self.inner.available()
-    }
-
-    fn decision(&self, id: &str) -> Option<Decision> {
-        self.inner.decision(id)
-    }
-
-    fn verifier(&self, id: &str) -> Option<String> {
-        self.inner.verifier(id)
-    }
-
-    fn read_back_input(&self, action_id: &str, action_input: &str) -> String {
-        self.inner.read_back_input(action_id, action_input)
     }
 
     fn run(&self, id: &str, input_json: &str) -> Result<String, String> {
@@ -2611,6 +2658,9 @@ impl OpenerRunner {
 }
 
 impl CapabilityRunner for OpenerRunner {
+    // Only widens what may run; it has no opinion on what the services can see.
+    forwards_to_inner!(inner: about_the_person, current_states, verifier, read_back_input);
+
     fn available(&self) -> Vec<crate::application::CapabilitySpec> {
         self.inner
             .available()
@@ -2637,14 +2687,6 @@ impl CapabilityRunner for OpenerRunner {
             }),
             other => Some(other),
         }
-    }
-
-    fn verifier(&self, id: &str) -> Option<String> {
-        self.inner.verifier(id)
-    }
-
-    fn read_back_input(&self, action_id: &str, action_input: &str) -> String {
-        self.inner.read_back_input(action_id, action_input)
     }
 
     fn run(&self, id: &str, input_json: &str) -> Result<String, String> {
@@ -2705,16 +2747,12 @@ impl ReversibleOnlyRunner {
 }
 
 impl CapabilityRunner for ReversibleOnlyRunner {
+    // Unattended turns narrow what may ACT. Seeing is not acting.
+    forwards_to_inner!(inner: about_the_person, current_states, verifier, read_back_input);
+
     // Clamping what may ACT unattended says nothing about what may be known. Presence
     // matters most on exactly these turns — whether anyone is home is half of whether to
     // speak at all — so dropping it here would have been the worst place to drop it.
-    fn about_the_person(&self) -> Vec<String> {
-        self.inner.about_the_person()
-    }
-
-    fn current_states(&self) -> Vec<(String, String)> {
-        self.inner.current_states()
-    }
 
     fn available(&self) -> Vec<crate::application::CapabilitySpec> {
         self.inner
@@ -2736,14 +2774,6 @@ impl CapabilityRunner for ReversibleOnlyRunner {
             Decision::Act if !self.may_run_unattended(id) => Some(Decision::Confirm),
             other => Some(other),
         }
-    }
-
-    fn verifier(&self, id: &str) -> Option<String> {
-        self.inner.verifier(id)
-    }
-
-    fn read_back_input(&self, action_id: &str, action_input: &str) -> String {
-        self.inner.read_back_input(action_id, action_input)
     }
 
     fn run(&self, id: &str, input_json: &str) -> Result<String, String> {
@@ -3137,6 +3167,10 @@ impl TargetSearchRunner {
 }
 
 impl CapabilityRunner for TargetSearchRunner {
+    // Presence, states and the read-back scope are ANSWERED here, from this runner's own
+    // channels, so they are written out below rather than forwarded.
+    forwards_to_inner!(inner: decision, verifier);
+
     fn available(&self) -> Vec<crate::application::CapabilitySpec> {
         self.inner.available()
     }
@@ -3153,14 +3187,6 @@ impl CapabilityRunner for TargetSearchRunner {
             .iter()
             .flat_map(|(_, channel)| channel.states().unwrap_or_default())
             .collect()
-    }
-
-    fn decision(&self, id: &str) -> Option<Decision> {
-        self.inner.decision(id)
-    }
-
-    fn verifier(&self, id: &str) -> Option<String> {
-        self.inner.verifier(id)
     }
 
     fn read_back_input(&self, action_id: &str, action_input: &str) -> String {
@@ -3290,18 +3316,8 @@ impl WithdrawnRunner {
 
 impl CapabilityRunner for WithdrawnRunner {
     // Withdrawal is about which TOOLS are offered. What the services know about the person
-    // and about the world is not a tool and is not withheld — but a default that returns
-    // nothing looks identical to a service having nothing to say, so forgetting to forward
-    // these is silent. Both were: presence never reached a turn, and neither did the facts
-    // behind an answer, while the unit tests passed because they exercised the inner
-    // runner directly.
-    fn about_the_person(&self) -> Vec<String> {
-        self.inner.about_the_person()
-    }
-
-    fn current_states(&self) -> Vec<(String, String)> {
-        self.inner.current_states()
-    }
+    // and about the world is not a tool and is not withheld.
+    forwards_to_inner!(inner: about_the_person, current_states, read_back_input);
 
     fn available(&self) -> Vec<crate::application::CapabilitySpec> {
         self.inner
@@ -3328,13 +3344,10 @@ impl CapabilityRunner for WithdrawnRunner {
         Some(verifier)
     }
 
-    fn read_back_input(&self, action_id: &str, action_input: &str) -> String {
-        self.inner.read_back_input(action_id, action_input)
-    }
-
     fn run(&self, id: &str, input_json: &str) -> Result<String, String> {
         // Refused here too, so a model naming it from earlier in the conversation — or a
         // direct call — cannot route around the narrowed catalogue.
+
         if self.withdrawn.contains(id) {
             return Err(format!("'{id}' is turned off"));
         }
@@ -5342,6 +5355,124 @@ mod tests {
         let out = coerce_args_to_schema(r#"{"device_class":["garage"]}"#, Some(&schema));
         let v: Value = serde_json::from_str(&out).unwrap();
         assert_eq!(v["device_class"], serde_json::json!(["garage"]));
+    }
+
+    /// A runner at the bottom of the stack that records which port methods reach it.
+    ///
+    /// The backstop for [`forwards_to_inner!`]. The macro stops a decorator forgetting to
+    /// pass a method along; this proves the whole layered chain is actually transparent,
+    /// including the runners that aggregate rather than wrap and so cannot use the macro.
+    #[derive(Default)]
+    struct RecordsWhatReachesIt {
+        reached: std::sync::Mutex<std::collections::BTreeSet<&'static str>>,
+    }
+
+    impl RecordsWhatReachesIt {
+        fn note(&self, method: &'static str) {
+            self.reached.lock().unwrap().insert(method);
+        }
+    }
+
+    /// The one skill the recorder claims. `CompositeRunner` routes by **which child offers
+    /// the id**, so a recorder that offers nothing is never asked anything — the first run
+    /// of this test failed that way and the setup was at fault, not the code.
+    const A_SKILL_IT_OFFERS: &str = "recorder.thing";
+
+    impl CapabilityRunner for RecordsWhatReachesIt {
+        fn available(&self) -> Vec<crate::application::CapabilitySpec> {
+            vec![crate::application::CapabilitySpec {
+                id: A_SKILL_IT_OFFERS.to_owned(),
+                description: String::new(),
+                configured: true,
+                autonomous: true,
+                reversibility: Reversibility::Observe,
+                input_schema: None,
+            }]
+        }
+
+        fn run(&self, _id: &str, _input_json: &str) -> Result<String, String> {
+            Ok(String::new())
+        }
+
+        fn about_the_person(&self) -> Vec<String> {
+            self.note("about_the_person");
+            Vec::new()
+        }
+
+        fn current_states(&self) -> Vec<(String, String)> {
+            self.note("current_states");
+            Vec::new()
+        }
+
+        fn decision(&self, _id: &str) -> Option<Decision> {
+            self.note("decision");
+            Some(Decision::Act)
+        }
+
+        fn verifier(&self, _id: &str) -> Option<String> {
+            self.note("verifier");
+            None
+        }
+
+        fn read_back_input(&self, _action_id: &str, _action_input: &str) -> String {
+            self.note("read_back_input");
+            String::new()
+        }
+    }
+
+    /// Every method of the port that has a **default**, and so can be dropped silently.
+    ///
+    /// `available` and `run` are deliberately absent: they are required methods, so the
+    /// compiler already refuses to let a decorator forget them. These five are the whole
+    /// risk surface, and both real occurrences of this bug were among them.
+    const CAN_BE_DROPPED_SILENTLY: [&str; 5] = [
+        "about_the_person",
+        "current_states",
+        "decision",
+        "read_back_input",
+        "verifier",
+    ];
+
+    #[test]
+    fn every_defaultable_method_survives_the_wrapper_chain() {
+        // The mechanism version of the test below. That one names two methods, which means
+        // it only ever catches the two bugs that already happened; this one asserts the
+        // chain is transparent for the whole risk surface, so a sixth defaultable method
+        // added to the port is covered the moment it is listed in one place.
+        let bottom = Arc::new(RecordsWhatReachesIt::default());
+        let chain: Arc<dyn CapabilityRunner + Send + Sync> =
+            Arc::new(ReversibleOnlyRunner::new(Arc::new(WithdrawnRunner::new(
+                Arc::new(CompositeRunner::new(vec![Arc::new(AliasRunner::new(
+                    Arc::new(OpenerRunner::new(
+                        Arc::clone(&bottom) as Arc<dyn CapabilityRunner + Send + Sync>,
+                        std::collections::HashSet::new(),
+                        false,
+                    )),
+                    Vec::new(),
+                ))
+                    as Arc<dyn CapabilityRunner + Send + Sync>]))
+                    as Arc<dyn CapabilityRunner + Send + Sync>,
+                std::collections::HashSet::new(),
+            ))));
+
+        // Call each one at the TOP, the only place production ever calls them.
+        let _ = chain.about_the_person();
+        let _ = chain.current_states();
+        let _ = chain.decision(A_SKILL_IT_OFFERS);
+        let _ = chain.verifier(A_SKILL_IT_OFFERS);
+        let _ = chain.read_back_input(A_SKILL_IT_OFFERS, "{}");
+
+        let reached = bottom.reached.lock().unwrap().clone();
+        let missing: Vec<&str> = CAN_BE_DROPPED_SILENTLY
+            .iter()
+            .copied()
+            .filter(|m| !reached.contains(m))
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "these never reached the bottom of the stack, so a service answering them \
+             would be silently ignored: {missing:?}"
+        );
     }
 
     #[test]
