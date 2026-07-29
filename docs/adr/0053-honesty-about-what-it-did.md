@@ -85,6 +85,44 @@ result is an **observation**.
   reading back with the same target fails identically and tells nobody anything.
 - No reader, no observation, and results stay marked unverified. Silence is the honest answer.
 
+### An observation that shows nothing moved has nothing to show
+
+Only a server's **nominated reader** is classified as observing; every other tool on it is
+treated as an actuator, because the server says nothing trustworthy about which is which and
+deny-by-default is right for *authorization* ([0054](0054-other-peoples-services.md)).
+Reusing that classification for **verification** is where it goes wrong.
+
+Observed live, in a morning briefing: a call asking Home Assistant for the **time** was
+verified by reading the whole house, and came back to the model with five kilobytes of every
+device attached, under the instruction *"answer from the OBSERVATION"*. Three such readings
+landed in one turn. The briefing that followed was one sentence about a bedroom light — the
+model had been handed a house and asked what time it was.
+
+The fix is **not** to guess which tools actuate. It is that a reading identical to the one
+taken moments earlier is not evidence of anything the call did, and the *unchanged* verdict
+already states that in one sentence — which is the sharp signal this document exists for.
+So the reading travels to the model when it **differs** from what was there before, and not
+otherwise. Every call is still read back; every verdict is still reported.
+
+**The person's trail keeps the reading either way**, and the asymmetry is deliberate: the
+model is being stopped from answering out of an irrelevant reading, while the person is being
+shown the evidence. *The switch is still on*, next to a claim of `action_done`, is the whole
+disclosure — replacing it with "nothing changed" would take away the fact and leave only the
+verdict, which is exactly backwards.
+
+### Two spellings of one call are one call
+
+The turn loop refuses to run the same tool with the same input twice — and was being beaten
+by punctuation and key order. The same model emits `{"area":"","domain":["light"]}` and
+`{"domain":["light"],"area":""}` for one intent, run to run.
+
+Four rounds of that one briefing went to two pairs of identical calls: two failing attempts
+to get weather out of the smart home, then two full readings of the house. Half of them were
+free, on a turn whose answer then had no room left to be any good.
+
+Calls are compared by what their arguments **mean**. Unparseable arguments compare as text,
+exactly as before.
+
 ### Claim and observation are stored apart, and never reconciled
 
 Every action leaves an **outcome**: what the tool claimed, what Endora observed, and whether
