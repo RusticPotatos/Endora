@@ -1675,7 +1675,8 @@ pub fn statements_disagree(a: &str, b: &str) -> bool {
 }
 
 /// Whether two belief statements are effectively the same (a paraphrase), by
-/// stemmed keyword overlap — so "you want more energy so you can travel when you
+/// stemmed keyword overlap — public so the live smoke check can assert the same rule the
+/// tidy pass applies, rather than a second implementation of it that can drift — so "you want more energy so you can travel when you
 /// retire" and "you're motivated by being able to travel in retirement" are one
 /// belief, not two.
 ///
@@ -1691,6 +1692,12 @@ pub fn statements_disagree(a: &str, b: &str) -> bool {
 /// much wording they share. Two contradictory beliefs are the most informative thing
 /// understanding can contain — they mean Endora is wrong about something — and
 /// collapsing them into one keeps whichever arrived first and destroys the signal.
+#[must_use]
+pub fn says_the_same_thing(a: &str, b: &str) -> bool {
+    similar(a, b)
+}
+
+/// See [`says_the_same_thing`] for the public form.
 fn similar(a: &str, b: &str) -> bool {
     if statements_disagree(a, b) {
         return false;
