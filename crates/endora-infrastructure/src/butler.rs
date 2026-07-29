@@ -73,6 +73,7 @@ fn degraded_reply() -> ButlerReply {
         text: "Sorry — I couldn't reach my language model just now, so I didn't follow that \
                properly. Give me a moment and try again."
             .to_owned(),
+        degraded: true,
         ..ButlerReply::default()
     }
 }
