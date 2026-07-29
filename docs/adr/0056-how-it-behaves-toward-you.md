@@ -99,11 +99,27 @@ that this is the person's business and stops it being raised, while leaving it v
 
 There is deliberately **no "remind me later"**. That is how a queue starts.
 
-Whether a value means "I cannot see this" is a **heuristic** over the words services use —
-`unavailable`, `unknown`, `offline`, and an empty reading — and is named as one. What makes it
-acceptable is the blast radius: a wrong classification can only ever produce a *question*,
-never an action. Getting it wrong costs one tap; getting the opposite wrong costs a device
-quietly staying broken.
+Whether a value means "I cannot see this" is a **heuristic** over the words services use, and
+is named as one. What makes it acceptable is the blast radius: a wrong classification can only
+ever produce a *question*, never an action. Getting it wrong costs one tap; getting the
+opposite wrong costs a device quietly staying broken.
+
+**The first list was too wide, and the first live reading said so.** It included `unknown`,
+`none`, `null`, `error` and an empty reading, and flagged **28 things against 7 real ones** —
+every false positive a *scene*, whose state in Home Assistant is when it was last activated.
+`unknown` there means "not since the last restart", which is the healthiest answer available.
+Three days later the person would have been asked about 28 working things: the exact pile of
+chores this section exists to prevent, at scale, and produced by the mechanism meant to
+prevent it.
+
+So the rule tightened to words that **can mean nothing else** — `unavailable`, `offline`,
+`disconnected`, `unreachable`. A word that means "hasn't happened yet" as often as it means
+"cannot be reached" is not evidence. `error` went too: a thing reporting an error *is*
+answering, which is a different problem with a different remedy.
+
+The cost is missing a device that only ever says `unknown`. Accepted: those almost always say
+`unavailable` too, and a missed problem is recoverable where a butler that cries wolf 28 times
+is not.
 
 ## Consequences
 
