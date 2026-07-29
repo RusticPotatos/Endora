@@ -366,19 +366,27 @@ fn read_state_back(
 fn not_an_answer(reply: &ButlerReply, context: &ButlerContext) -> bool {
     reply.tool_calls.is_empty()
         && (reply.text.trim().is_empty()
+            // The model was unreachable, so there is no answer here to keep — only an
+            // apology for its absence. Retried where someone is waiting; silent where
+            // nobody asked (ADR 0056).
+            || reply.degraded
             || only_described_a_tool(reply, context)
             || sounds_like_plumbing(&reply.text))
 }
 
 /// Whether a message is about Endora's plumbing rather than about the person.
 ///
-/// A deliberate, narrow heuristic — and named as one. These are words from the tool
-/// protocol, and a butler telling someone about their morning has no reason to reach for
-/// any of them. It is scoped to the **unprompted** path only, where silence is already
-/// the default and a false positive costs one skipped message.
+/// A deliberate, narrow heuristic — and named as one. Two kinds of phrase, both of which
+/// mean the reply is about the machinery rather than about the person: words from the tool
+/// protocol, and the model disclaiming its own nature.
 ///
-/// A reply the person actually asked for is never filtered: they can see the question
-/// they asked, and suppressing an answer would be worse than an awkward one.
+/// The consequence differs by path, and neither loses an answer:
+///
+/// - **unprompted** (a check-in, a brief) — suppressed, because silence is already the
+///   default there and a false positive costs one skipped message;
+/// - **asked for** — *retried*, bounded, and if the retries run out the person sees the
+///   reply anyway. Suppressing an answer someone asked for would be worse than an awkward
+///   one, so nothing is ever withheld.
 fn sounds_like_plumbing(text: &str) -> bool {
     const PLUMBING: &[&str] = &[
         "function call",
@@ -389,6 +397,24 @@ fn sounds_like_plumbing(text: &str) -> bool {
         "placeholder argument",
         "the 'news' domain",
         "tool call",
+        // Bare, because a butler has no reason to say it. Live, posted unprompted at
+        // 04:18: "None of the functions listed involve a 'person' domain, so there's no
+        // need…" — the list held "functions provided" and missed this by one word, which
+        // is what a list of exact phrases will always do.
+        "functions",
+        // Breaking the frame is the same failure wearing different clothes: the reply is
+        // about what the model is rather than about what was asked. Live, to "How has your
+        // day been": "I'm an AI assistant without personal experiences, so I don't have a
+        // day to reflect on." A butler with a persona floor (ADR 0056) does not answer a
+        // pleasantry by disclaiming its own nature, and asking the prompt to prevent it is
+        // the kind of guarantee this architecture keeps in code instead.
+        "i'm an ai assistant",
+        "i am an ai assistant",
+        "as an ai language model",
+        "as an ai assistant",
+        "i don't have personal experiences",
+        "without personal experiences",
+        "i do not have feelings",
     ];
     let lowered = text.to_lowercase();
     PLUMBING.iter().any(|marker| lowered.contains(marker))
@@ -993,27 +1019,65 @@ fn acted_note(disclosures: &[ActionDisclosure]) -> Option<String> {
 fn facts_behind(text: &str, mut states: Vec<(String, String)>) -> String {
     const SHOWN: usize = 5;
     const WORTH_MATCHING: usize = 4;
-    let lowered = text.to_lowercase();
+    let words = words_of(text);
+    // A reply that asserts nothing about state needs no facts about state. Live, under a
+    // greeting — "How can I assist you with your home automation setup?" — this appended
+    // `[state] Home is 0`, because the house contains something called `Home` and the word
+    // "home" was in the sentence. Technically an exact match, and completely meaningless.
+    //
+    // The vocabulary for "is this about state?" comes from the **reading**, never from a
+    // list of English words: whatever values this service just reported are exactly the
+    // words a reply asserting state would use. A service that reports `open`/`closed` is
+    // handled by the same code as one reporting `on`/`off`, and one whose vocabulary
+    // Endora has never seen contributes nothing — the same rule as ADR 0054's categories.
+    let asserts_a_state = states
+        .iter()
+        .any(|(_, state)| contains_all_words(&words, &words_of(state)));
+    if !asserts_a_state {
+        return String::new();
+    }
     states.sort_by_key(|(name, _)| std::cmp::Reverse(name.len()));
     let mut said: Vec<String> = Vec::new();
-    let mut covered = String::new();
+    let mut covered: Vec<String> = Vec::new();
     for (name, state) in states {
         if name.len() < WORTH_MATCHING || said.len() >= SHOWN {
             continue;
         }
-        let lowered_name = name.to_lowercase();
-        // Skip a name already contained in a longer one that was matched, so a reply
-        // mentioning `Kitchen Main Light` does not also report `Kitchen`.
-        if !lowered.contains(&lowered_name) || covered.contains(&lowered_name) {
+        let name_words = words_of(&name);
+        // Whole words, not a substring: `Home` must not match "homework", and `Den` must
+        // not match "identify". The previous version compared raw substrings.
+        if !contains_all_words(&words, &name_words) {
             continue;
         }
-        covered.push_str(&lowered_name);
+        // Skip a name already contained in a longer one that was matched, so a reply
+        // mentioning `Kitchen Main Light` does not also report `Kitchen`.
+        if name_words.iter().all(|w| covered.contains(w)) {
+            continue;
+        }
+        covered.extend(name_words);
         said.push(format!("{name} is {state}"));
     }
     if said.is_empty() {
         return String::new();
     }
     format!("\n\n[state] {}", said.join(" · "))
+}
+
+/// Splits text into lowercase alphanumeric words, so matching happens on whole words.
+fn words_of(text: &str) -> Vec<String> {
+    text.to_lowercase()
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .map(str::to_owned)
+        .collect()
+}
+
+/// Whether `words` contains `wanted` as a **contiguous run** of whole words.
+fn contains_all_words(words: &[String], wanted: &[String]) -> bool {
+    if wanted.is_empty() || wanted.len() > words.len() {
+        return false;
+    }
+    words.windows(wanted.len()).any(|run| run == wanted)
 }
 
 /// The line to append when a turn tried to change something and changed nothing.
@@ -6843,5 +6907,120 @@ mod one_call_two_spellings {
         // No worse than before: unparseable text compares as text.
         assert_eq!(same_call_as("not json"), "not json");
         assert_ne!(same_call_as("not json"), same_call_as("other junk"));
+    }
+}
+
+#[cfg(test)]
+mod facts_only_where_they_mean_something {
+    use super::*;
+
+    fn house() -> Vec<(String, String)> {
+        [
+            ("Home", "0"),
+            ("Kitchen Table", "off"),
+            ("Kitchen Main Light", "on"),
+            ("Bedroom", "off"),
+        ]
+        .into_iter()
+        .map(|(a, b)| (a.to_owned(), b.to_owned()))
+        .collect()
+    }
+
+    #[test]
+    fn a_greeting_gets_no_facts_attached_to_it() {
+        // Live, under "It's good afternoon! How can I assist you today?": `[state] Home is
+        // 0`. The house contains something called `Home`, the sentence contained the word
+        // "home", and the disclosure was both an exact match and meaningless.
+        let greeting = "It's good afternoon! How can I assist you today? Do you need help \
+                        with any specific tasks or information related to your home \
+                        automation setup?";
+        assert_eq!(facts_behind(greeting, house()), "");
+    }
+
+    #[test]
+    fn a_reply_that_asserts_a_state_still_carries_the_facts() {
+        // The reason the disclosure exists: the model said "already on" about something the
+        // reading says is off, and the person can see both.
+        let claim = "The kitchen table light is already on.";
+        let shown = facts_behind(claim, house());
+        assert!(shown.contains("Kitchen Table is off"), "{shown}");
+        // Longest first, and a name inside a matched longer one is not repeated.
+        assert!(!shown.contains("Home is 0"), "{shown}");
+    }
+
+    #[test]
+    fn a_name_is_matched_as_words_not_as_letters() {
+        // `Home` must not match "homework", and the state word must be a word too —
+        // "information" contains "on" and asserts nothing.
+        let states = vec![("Home".to_owned(), "0".to_owned())];
+        assert_eq!(
+            facts_behind("I finished my homework, 0 problems", states.clone()),
+            ""
+        );
+        assert!(facts_behind("home is 0 right now", states).contains("Home is 0"));
+    }
+
+    #[test]
+    fn the_vocabulary_comes_from_the_reading_not_from_english() {
+        // A service reporting open/closed is handled by the same code as one reporting
+        // on/off, with nothing anywhere naming either pair.
+        let garage = vec![("Garage Door".to_owned(), "closed".to_owned())];
+        let shown = facts_behind("The garage door is open.", garage.clone());
+        assert_eq!(shown, "", "'open' is not a value this service reported");
+        assert!(
+            facts_behind("The garage door is closed, I think.", garage)
+                .contains("Garage Door is closed")
+        );
+    }
+}
+
+#[cfg(test)]
+mod what_reaches_an_empty_room {
+    use super::*;
+
+    fn offering_nothing() -> ButlerContext {
+        ButlerContext::default()
+    }
+
+    #[test]
+    fn an_apology_for_an_unreachable_model_is_not_an_answer() {
+        // Live, 00:00:14: the night loop ran, could not reach the model, and posted "Give
+        // me a moment and try again" into an empty room. Nobody had asked anything.
+        let degraded = ButlerReply {
+            text: "Sorry — I couldn't reach my language model just now.".to_owned(),
+            degraded: true,
+            ..ButlerReply::default()
+        };
+        assert!(not_an_answer(&degraded, &offering_nothing()));
+
+        // The same sentence, when it is genuinely the butler's answer, is kept — the flag
+        // is what distinguishes them, not the words.
+        let genuine = ButlerReply {
+            text: "Sorry — I couldn't reach my language model just now.".to_owned(),
+            ..ButlerReply::default()
+        };
+        assert!(!not_an_answer(&genuine, &offering_nothing()));
+    }
+
+    #[test]
+    fn protocol_prose_posted_unprompted_is_not_an_answer() {
+        // Live, 04:18, in the person's chat: the check-in's whole contribution for the day.
+        // The suppression list held "functions provided" and missed this by one word.
+        let leaked = ButlerReply {
+            text: "None of the functions listed involve a 'person' domain, so there's no \
+                   need to call any."
+                .to_owned(),
+            ..ButlerReply::default()
+        };
+        assert!(not_an_answer(&leaked, &offering_nothing()));
+    }
+
+    #[test]
+    fn an_ordinary_reply_is_still_an_answer() {
+        let real = ButlerReply {
+            text: "Good morning, sir. The kitchen and garage lights are on.".to_owned(),
+            ..ButlerReply::default()
+        };
+        assert!(!not_an_answer(&real, &offering_nothing()));
     }
 }

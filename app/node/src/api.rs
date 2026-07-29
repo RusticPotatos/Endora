@@ -1508,8 +1508,18 @@ async fn stream_chat(
                             })
                         })
                         .collect();
-                    let actions =
-                        json!({ "steps": steps, "sources": sources, "actions_taken": disclosures });
+                    // `activity` is stored with the rest, not only streamed. It was sent
+                    // over the live stream and nowhere else, so the note of what Endora
+                    // learned existed for exactly as long as the person stayed on the
+                    // screen and vanished on any reload or view change — the one part of
+                    // the trail that did not survive, and the part that says what the turn
+                    // changed about its understanding.
+                    let actions = json!({
+                        "steps": steps,
+                        "sources": sources,
+                        "actions_taken": disclosures,
+                        "activity": activity,
+                    });
                     let _ =
                         chat.save_actions(&reply.id().value().to_string(), &actions.to_string());
                     // A successful write nudges the change stream, like other writes.
