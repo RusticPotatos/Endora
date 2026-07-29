@@ -2677,6 +2677,24 @@ mod tests {
     }
 
     impl ChatRepository for FakeStore {
+        fn between(
+            &self,
+            from_ms: i64,
+            to_ms: i64,
+        ) -> Result<Vec<ChatMessage>, endora_kernel::RepositoryError> {
+            Ok(ChatRepository::list(self)?
+                .into_iter()
+                .filter(|m| m.at().unix_millis() >= from_ms && m.at().unix_millis() < to_ms)
+                .collect())
+        }
+
+        fn days(
+            &self,
+            _offset: i64,
+        ) -> Result<Vec<(String, usize)>, endora_kernel::RepositoryError> {
+            Ok(Vec::new())
+        }
+
         fn append(&self, message: &ChatMessage) -> Result<(), RepositoryError> {
             self.messages.borrow_mut().push(message.clone());
             Ok(())

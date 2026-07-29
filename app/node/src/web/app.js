@@ -27,6 +27,8 @@ let INTENTIONS = [];           // what Endora is pursuing, and has pursued (ADR 
 let MCP_NEEDS = { fields: [], docs: "" }; // what the chosen catalogue entry says it needs
 let WORTH_KNOWING = { models: [], fits_gb: 12, asked: false }; // hub models that would fit
 let CHAT_DAY = null;           // which day's conversation is showing; null = today
+let CHAT_MSGS = [];            // just that day's messages, fetched rather than filtered
+let CHAT_DAYS = [];            // [{day, messages}] — which days have anything, for the bar
 let LAST_VIEW = null;          // which screen was showing, so a change can reset the scroll
 let REPAIRS = [];              // tooling Endora has noticed keeps not working (ADR 0054)
 let CONFIG_WRITES = [];        // changes Endora made to your services' own settings (ADR 0054)
@@ -124,12 +126,9 @@ async function reload() {
   DB = db;
   // Attach each butler reply's persisted action trail (steps + sources) from the
   // chat endpoint, so past answers keep their expandable actions after a reload.
-  try {
-    const hist = await api("GET", "/v1/chat");
-    const byId = {};
-    for (const m of hist) if (m.actions) byId[m.id] = m.actions;
-    for (const m of messages()) if (byId[m.id]) m.actions = byId[m.id];
-  } catch (_) {}
+  // Just the day being shown, with its action trails already attached — rather than
+  // every message there has ever been so the browser can throw most of them away.
+  await loadChatDay(CHAT_DAY);
   ACTIVITY = activity;
   CHECKIN = checkin;
   CAPS = caps;
@@ -287,12 +286,27 @@ function dayOf(at) {
 // nothing to go wrong while you sleep — and no day can be lost, because none was ever
 // moved.
 function chatDays() {
-  const seen = [];
-  for (const m of messages()) {
-    const day = dayOf(m.at_ms);
-    if (!seen.includes(day)) seen.push(day);
-  }
-  return seen.sort();
+  return (CHAT_DAYS || []).map((d) => d.day);
+}
+
+// The moment a local day starts, and the one after it — the window the server is asked
+// for. The browser knows where its own midnight falls; the server never has to.
+function dayWindow(day) {
+  const from = new Date(`${day}T00:00:00`).getTime();
+  return { from, to: from + 86400000 };
+}
+
+// Load one day's conversation, and which days exist. Everything the console shows comes
+// from these two, so a five-year-old install costs exactly as much as a fresh one.
+async function loadChatDay(day) {
+  const showing = day || dayOf(Date.now());
+  const { from, to } = dayWindow(showing);
+  try {
+    CHAT_MSGS = await api("GET", `/v1/chat?from=${from}&to=${to}`);
+  } catch (_) { CHAT_MSGS = []; }
+  try {
+    CHAT_DAYS = await api("GET", `/v1/chat/days?offset_minutes=${-new Date().getTimezoneOffset()}`);
+  } catch (_) { CHAT_DAYS = []; }
 }
 
 // A day in words, for the header.
@@ -310,7 +324,7 @@ function viewChat() {
   const today = dayOf(Date.now());
   // Default to today even before it has anything in it, so a new day starts clean.
   const showing = CHAT_DAY || today;
-  const list = messages().filter((m) => dayOf(m.at_ms) === showing);
+  const list = CHAT_MSGS || [];
   const msgs = list.map((m) => {
     const mine = m.role === "user";
     const bubble = `<div class="row" style="justify-content:${mine ? "flex-end" : "flex-start"}; margin:6px 0;">
@@ -1951,6 +1965,7 @@ async function dispatch(act) {
     // are all here and a day is just which of them to show.
     if (verb === "chat" && noun === "day") {
       CHAT_DAY = id === dayOf(Date.now()) ? null : id;
+      await loadChatDay(CHAT_DAY);
       return render();
     }
     // Ask the hub what exists that would fit. Never fetches — see worthKnowingSection.
