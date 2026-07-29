@@ -1323,7 +1323,10 @@ fn record_formed_beliefs(
     clock: &impl Clock,
     activity: &mut Vec<String>,
 ) -> Result<(), AppError> {
-    let existing = beliefs.list()?;
+    // Grows as the batch stores. Read once and left alone, a turn that forms two
+    // paraphrases of one thought stores both — which is exactly how three cards saying
+    // "Fahrenheit" ended up on one screen, each asking to be confirmed on its own.
+    let mut existing = beliefs.list()?;
     for belief in formed {
         // A command the person gave is not a fact about them. Dropping these keeps
         // the model of the person from filling up with spent instructions.
@@ -1338,6 +1341,9 @@ fn record_formed_beliefs(
             activity.push(format!("Grew more sure that {}", prior.statement()));
             prior.affirm(clock.now());
             beliefs.save(&prior)?;
+            if let Some(slot) = existing.iter_mut().find(|b| b.id() == prior.id()) {
+                *slot = prior;
+            }
             continue;
         }
         // Surface a disagreement rather than resolving it. Endora holding two
@@ -1367,8 +1373,70 @@ fn record_formed_beliefs(
             clock.now(),
         )?;
         beliefs.save(&stored)?;
+        existing.push(stored);
     }
     Ok(())
+}
+
+/// Re-reads what is already stored against the rules as they stand today (ADR 0052).
+///
+/// Every guard on understanding ran **at formation only**, which quietly means the model
+/// of the person is frozen at the quality of the rules on the day each belief was formed.
+/// Observed: a card reading *you want me to turn off the kitchen light — because turn off
+/// the kitchen light entity*, sitting there long after the rule that rejects exactly that
+/// shape shipped. It was never going to leave, because nothing ever looked at it again.
+///
+/// Two rules, both already written and both applied here to the past rather than the
+/// future:
+///
+/// - a statement that reads as an **instruction** is a spent command, not a fact about a
+///   person, and is expired;
+/// - a statement that says what an **older** one already says is expired, and the older one
+///   is affirmed — the same thought arriving twice is genuinely evidence for it.
+///
+/// [`BeliefStatus::Expired`] rather than deletion or `Corrected`: the person did not say it
+/// was wrong, so claiming they did would put words in their mouth, and a belief Endora
+/// dropped on its own is worth being able to see.
+///
+/// Returns how many it retired, for the activity trail.
+///
+/// # Errors
+/// [`AppError::Repository`] on a backend failure.
+pub fn tidy_understanding(
+    beliefs: &impl BeliefRepository,
+    clock: &impl Clock,
+) -> Result<usize, AppError> {
+    let mut held: Vec<Belief> = beliefs
+        .list()?
+        .into_iter()
+        .filter(|b| b.status() == crate::BeliefStatus::Active)
+        .collect();
+    // Oldest first, so the belief that survives a merge is the one that has been held
+    // longest — it carries the earlier evidence and the longer history of affirmation.
+    held.sort_by_key(|b| b.created_at().unix_millis());
+    let mut kept: Vec<Belief> = Vec::new();
+    let mut retired = 0;
+    for mut belief in held {
+        if reads_as_an_instruction(belief.statement()) {
+            belief.expire();
+            beliefs.save(&belief)?;
+            retired += 1;
+            continue;
+        }
+        if let Some(older) = kept
+            .iter_mut()
+            .find(|k| similar(k.statement(), belief.statement()))
+        {
+            older.affirm(clock.now());
+            beliefs.save(older)?;
+            belief.expire();
+            beliefs.save(&belief)?;
+            retired += 1;
+            continue;
+        }
+        kept.push(belief);
+    }
+    Ok(retired)
 }
 
 /// Verbs that name a change to the world rather than something about the person.
@@ -1564,13 +1632,68 @@ fn similar(a: &str, b: &str) -> bool {
     if statements_disagree(a, b) {
         return false;
     }
-    let (ka, kb) = (keywords(a), keywords(b));
+    let (ka, kb) = (subject_words(a), subject_words(b));
     if ka.is_empty() || kb.is_empty() {
         return normalized(a) == normalized(b);
     }
     let shared = ka.iter().filter(|w| kb.contains(w)).count() as f64;
     let smaller = ka.len().min(kb.len()) as f64;
     shared / smaller >= 0.75
+}
+
+/// Words that describe **having a stance** rather than what the stance is about.
+///
+/// Three cards said the same thing on one screen — *prefer temperatures in Fahrenheit*,
+/// *prefer temperature measurements in Fahrenheit*, *find it more convenient and accurate
+/// to measure temperature in Fahrenheit*. Only the first two matched, because the third
+/// spends most of its words on how strongly the person feels and only two on the subject.
+/// Comparing everything means a wordier paraphrase looks like a different belief.
+///
+/// Polarity words are stripped **too** — `like` alongside `hate` — which is deliberate and
+/// only safe because of the division of labour above: [`subject_words`] decides whether two
+/// statements are about the same thing, and [`statements_disagree`] (checked first) decides
+/// whether they say opposite things about it. Keeping only the positive ones here would
+/// merge *you like running* with *you hate running* whenever disagreement missed it.
+const STANCE_WORDS: &[&str] = &[
+    "prefer",
+    "want",
+    "like",
+    "love",
+    "enjoy",
+    "hate",
+    "dislik",
+    "avoid",
+    "find",
+    "feel",
+    "think",
+    "believ",
+    "convenient",
+    "accurat",
+    "comfort",
+    "usual",
+    "typical",
+    "general",
+    "realli",
+    "more",
+    "most",
+    "veri",
+    "would",
+    "rather",
+];
+
+/// What a statement is **about**, with the stance words removed.
+///
+/// Falls back to the full keywords when nothing survives: *you'd really rather not* is all
+/// stance and no subject, and comparing two empty sets would merge every such statement
+/// with every other.
+fn subject_words(s: &str) -> Vec<String> {
+    let all = keywords(s);
+    let subject: Vec<String> = all
+        .iter()
+        .filter(|w| !STANCE_WORDS.contains(&w.as_str()))
+        .cloned()
+        .collect();
+    if subject.is_empty() { all } else { subject }
 }
 
 /// A short, human present-tense label for a skill in progress — what the butler
@@ -6342,5 +6465,174 @@ mod tests {
         // to be what the reply meant. Guessing at a half-mentioned name is how a
         // disclosure starts inventing.
         assert!(!note.contains("Garage Main"), "{note}");
+    }
+}
+
+#[cfg(test)]
+mod three_cards_for_one_fact {
+    use super::*;
+
+    #[test]
+    fn a_wordier_way_of_saying_the_same_thing_is_the_same_belief() {
+        // All three of these were on one screen at once, each asking to be confirmed
+        // separately. The third is the one plain overlap missed: it spends most of its
+        // words on how strongly the person feels and only two on the subject.
+        let plain = "you prefer temperatures in Fahrenheit";
+        assert!(similar(
+            plain,
+            "You prefer temperature measurements in Fahrenheit."
+        ));
+        assert!(similar(
+            plain,
+            "You find it more convenient and accurate to measure temperature in Fahrenheit"
+        ));
+    }
+
+    #[test]
+    fn stripping_the_stance_does_not_merge_opposites() {
+        // The cost of ignoring stance words: two statements about the same subject look
+        // identical whether they agree or not. That is safe only because disagreement is
+        // checked first, so this is the test that holds the whole trade together.
+        assert!(!similar("you like running", "you hate running"));
+        assert!(!similar(
+            "you prefer temperatures in Fahrenheit",
+            "you do not want temperatures in Fahrenheit"
+        ));
+        // And different subjects stay different however similarly they are framed.
+        assert!(!similar("you prefer coffee", "you prefer tea"));
+    }
+}
+
+#[cfg(test)]
+mod re_reading_what_is_stored {
+    use super::*;
+    use endora_kernel::Timestamp;
+    use std::sync::Mutex;
+
+    #[derive(Default)]
+    struct Remembered(Mutex<Vec<Belief>>);
+
+    impl BeliefRepository for Remembered {
+        fn save(&self, belief: &Belief) -> Result<(), endora_kernel::RepositoryError> {
+            let mut held = self.0.lock().unwrap();
+            if let Some(slot) = held.iter_mut().find(|b| b.id() == belief.id()) {
+                *slot = belief.clone();
+            } else {
+                held.push(belief.clone());
+            }
+            Ok(())
+        }
+        fn get(&self, id: BeliefId) -> Result<Option<Belief>, endora_kernel::RepositoryError> {
+            Ok(self
+                .0
+                .lock()
+                .unwrap()
+                .iter()
+                .find(|b| b.id() == id)
+                .cloned())
+        }
+        fn list(&self) -> Result<Vec<Belief>, endora_kernel::RepositoryError> {
+            Ok(self.0.lock().unwrap().clone())
+        }
+    }
+
+    fn stored(id: u128, statement: &str, created_ms: i64) -> Belief {
+        Belief::from_parts(
+            BeliefId::new(id),
+            statement.to_owned(),
+            crate::BeliefKind::Preference,
+            crate::Confidence::High,
+            "because you said so".to_owned(),
+            Timestamp::from_unix_millis(created_ms),
+            Timestamp::from_unix_millis(created_ms),
+            crate::BeliefStatus::Active,
+        )
+    }
+
+    fn still_held(repo: &Remembered) -> Vec<String> {
+        repo.list()
+            .unwrap()
+            .into_iter()
+            .filter(|b| b.status() == crate::BeliefStatus::Active)
+            .map(|b| b.statement().to_owned())
+            .collect()
+    }
+
+    #[test]
+    fn a_belief_the_rules_would_no_longer_form_does_not_get_to_stay() {
+        // The card that prompted this: stored before the rule against instruction-shaped
+        // statements existed, and untouchable afterwards because guards only ever ran at
+        // formation. Rules improving has to reach backwards or the store is frozen at the
+        // quality of the day each row was written.
+        let repo = Remembered::default();
+        repo.save(&stored(
+            1,
+            "you want me to turn off the kitchen light",
+            1_000,
+        ))
+        .unwrap();
+        repo.save(&stored(2, "you run on Tuesdays and Thursdays", 2_000))
+            .unwrap();
+
+        let retired = tidy_understanding(&repo, &FixedClock(9_000)).unwrap();
+
+        assert_eq!(retired, 1);
+        assert_eq!(still_held(&repo), vec!["you run on Tuesdays and Thursdays"]);
+        // Expired, not corrected: the person never said it was wrong, and saying they did
+        // would put words in their mouth.
+        let dropped = repo.get(BeliefId::new(1)).unwrap().unwrap();
+        assert_eq!(dropped.status(), crate::BeliefStatus::Expired);
+    }
+
+    #[test]
+    fn three_ways_of_saying_one_thing_become_one_thing_the_oldest() {
+        // Exactly what was on screen: three Fahrenheit cards, each asking separately.
+        let repo = Remembered::default();
+        repo.save(&stored(1, "you prefer temperatures in Fahrenheit", 1_000))
+            .unwrap();
+        repo.save(&stored(
+            2,
+            "You prefer temperature measurements in Fahrenheit.",
+            2_000,
+        ))
+        .unwrap();
+        repo.save(&stored(
+            3,
+            "You find it more convenient and accurate to measure temperature in Fahrenheit",
+            3_000,
+        ))
+        .unwrap();
+
+        let retired = tidy_understanding(&repo, &FixedClock(9_000)).unwrap();
+
+        assert_eq!(retired, 2);
+        assert_eq!(
+            still_held(&repo),
+            vec!["you prefer temperatures in Fahrenheit"]
+        );
+        // The survivor is the oldest, and the duplicates count as evidence for it rather
+        // than being thrown away — the same thought arriving three times is why it is
+        // worth being sure about.
+        let survivor = repo.get(BeliefId::new(1)).unwrap().unwrap();
+        assert!(survivor.last_affirmed_at().unix_millis() > survivor.created_at().unix_millis());
+    }
+
+    #[test]
+    fn two_beliefs_that_disagree_are_both_left_alone() {
+        // Merging these would silently pick a winner. Endora holding both is the honest
+        // state, and which one is true is the person's call (ADR 0052).
+        let repo = Remembered::default();
+        repo.save(&stored(1, "you like running", 1_000)).unwrap();
+        repo.save(&stored(2, "you hate running", 2_000)).unwrap();
+
+        assert_eq!(tidy_understanding(&repo, &FixedClock(9_000)).unwrap(), 0);
+        assert_eq!(still_held(&repo).len(), 2);
+    }
+
+    struct FixedClock(i64);
+    impl Clock for FixedClock {
+        fn now(&self) -> Timestamp {
+            Timestamp::from_unix_millis(self.0)
+        }
     }
 }

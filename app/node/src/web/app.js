@@ -1255,11 +1255,13 @@ function viewUnderstanding() {
     const rows = byKind[k].map((b) => `
       <div class="card"><div class="row">
         <div class="grow">
-          <div class="title">${esc(b.statement)} <span class="pill ${b.confidence === "high" ? "active" : b.confidence === "low" ? "pending" : ""}">${b.confidence} confidence</span></div>
+          <div class="title">${esc(b.statement)} <span class="pill ${b.confidence === "high" ? "active" : b.confidence === "low" ? "pending" : ""}">${b.settled ? "settled" : b.confidence + " confidence"}</span></div>
           ${b.evidence ? `<div class="sub">because ${esc(b.evidence)}</div>` : ""}
         </div>
-        <button class="ghost" data-act="affirm:belief:${b.id}" title="that's right">That's right</button>
-        <button class="ghost" data-act="correct:belief:${b.id}" title="not quite">Not quite</button>
+        ${b.settled
+          ? `<button class="ghost" data-act="correct:belief:${b.id}" title="not quite">Not quite</button>`
+          : `<button class="ghost" data-act="affirm:belief:${b.id}" title="that's right">That's right</button>
+             <button class="ghost" data-act="correct:belief:${b.id}" title="not quite">Not quite</button>`}
       </div></div>`).join("");
     return `<h3 style="margin-top:16px;">${BELIEF_KIND_LABEL[k] || k}</h3>${rows}`;
   }).join("");
