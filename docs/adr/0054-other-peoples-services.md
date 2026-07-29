@@ -179,6 +179,21 @@ The general lesson: a patch that survives long enough to be inherited should be 
 against the rules that arrived after it. This one had become the thing it was protecting
 against.
 
+### The cost of a stack of decorators
+
+Runners are layered — withdrawal over composition over search over aliases over openers —
+and every port method has to be forwarded by every wrapper above the one that answers it.
+A defaulted method that returns nothing is **indistinguishable from a service having
+nothing to say**, so forgetting to forward one fails silently and looks exactly like
+working correctly.
+
+Both of the last two additions were dropped this way. Presence never reached a turn;
+neither did the facts behind an answer. Unit tests passed throughout, because they
+exercised the runner that answers rather than the stack that production builds.
+
+The guard is a test that asserts **through the composed stack**. It is the only kind that
+can catch this, and it should be extended whenever a port gains a method.
+
 ### Quirks are allowed, behind a boundary
 
 Some knowledge genuinely cannot generalise. It stays code — in that integration's **named
