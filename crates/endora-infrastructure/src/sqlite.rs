@@ -175,6 +175,14 @@ CREATE TABLE IF NOT EXISTS config_writes (
     undone  INTEGER NOT NULL DEFAULT 0,
     kind    TEXT NOT NULL DEFAULT 'name'
 ) STRICT;
+CREATE TABLE IF NOT EXISTS standing_trouble (
+    server   TEXT NOT NULL,
+    thing    TEXT NOT NULL,
+    trouble  TEXT NOT NULL,
+    since_ms INTEGER NOT NULL,
+    accepted INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (server, thing, trouble)
+) STRICT;
 CREATE TABLE IF NOT EXISTS mcp_servers (
     name    TEXT PRIMARY KEY,
     kind    TEXT NOT NULL,

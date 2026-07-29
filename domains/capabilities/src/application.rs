@@ -3,7 +3,8 @@
 use endora_kernel::{Decision, RepositoryError, Reversibility};
 
 pub use crate::domain::{
-    AutonomyEnvelope, ConfigWrite, McpServer, McpTransport, TargetAlias, WriteKind,
+    AutonomyEnvelope, ConfigWrite, McpServer, McpTransport, StandingTrouble, TargetAlias,
+    WORTH_SAYING_AFTER_DAYS, WriteKind, not_answering, worth_raising,
 };
 
 /// An optional **deep model** — a bigger/cloud AI the person configures for hard
@@ -277,6 +278,39 @@ pub trait ConfigWriteLog {
     fn mark_undone(&self, id: u128) -> Result<(), RepositoryError>;
 }
 
+/// What is currently wrong in the services, and since when (ADR 0056).
+///
+/// Deliberately not a log. There is one row per thing-that-is-wrong-right-now, created the
+/// first time it is seen and **deleted the moment it is well again** — so the store is
+/// bounded by the state of the world rather than by how long Endora has been watching it.
+pub trait StandingTroubleRepository {
+    /// Records that something is in trouble, keeping the earliest sighting. Called every
+    /// time it is seen that way; only the first one sets the clock.
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if the backend fails.
+    fn note_trouble(&self, trouble: &StandingTrouble) -> Result<(), RepositoryError>;
+
+    /// Forgets a thing that is well again — including anything the person had accepted,
+    /// because a device that comes back is a different situation from one that never did.
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if the backend fails.
+    fn clear_trouble(&self, server: &str, thing: &str) -> Result<(), RepositoryError>;
+
+    /// Everything currently wrong, oldest first.
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if the backend fails.
+    fn troubles(&self) -> Result<Vec<StandingTrouble>, RepositoryError>;
+
+    /// Marks one as the person's business rather than a problem, so it stops being raised.
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if the backend fails.
+    fn accept_trouble(&self, server: &str, thing: &str) -> Result<(), RepositoryError>;
+}
+
 /// Stores what the person said a server's targets are really called (ADR 0054).
 pub trait TargetAliasRepository {
     /// Every alias, so the turn can be grounded in all of them.
@@ -464,4 +498,41 @@ pub trait CapabilityRunner {
             }
         })
     }
+}
+
+/// Brings the record of what is wrong into line with a fresh reading of one service
+/// (ADR 0056).
+///
+/// Called with everything the service just reported. Anything that is not answering gets
+/// its clock started (or left alone, if it was already running); **everything else is
+/// cleared**, which is what keeps the store equal to the present rather than to a history.
+/// A thing that recovers leaves nothing behind — including any answer the person had given
+/// about it, because a device that comes back is a different situation from one that never
+/// did.
+///
+/// Deliberately takes the reading rather than fetching it: the caller already has one, and
+/// this way the whole rule is testable without a service.
+///
+/// # Errors
+/// [`RepositoryError`] if the backend fails.
+pub fn watch_for_trouble(
+    repo: &impl StandingTroubleRepository,
+    server: &str,
+    reading: &[(String, String)],
+    now_ms: i64,
+) -> Result<(), RepositoryError> {
+    for (thing, state) in reading {
+        if not_answering(state) {
+            repo.note_trouble(&StandingTrouble {
+                server: server.to_owned(),
+                thing: thing.clone(),
+                trouble: state.trim().to_lowercase(),
+                since_ms: now_ms,
+                accepted: false,
+            })?;
+            continue;
+        }
+        repo.clear_trouble(server, thing)?;
+    }
+    Ok(())
 }

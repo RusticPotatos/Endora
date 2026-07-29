@@ -31,6 +31,7 @@ let CHAT_MSGS = [];            // just that day's messages, fetched rather than 
 let CHAT_DAYS = [];            // [{day, messages}] — which days have anything, for the bar
 let LAST_VIEW = null;          // which screen was showing, so a change can reset the scroll
 let REPAIRS = [];              // tooling Endora has noticed keeps not working (ADR 0054)
+let TROUBLE = [];              // things in your world that stopped answering (ADR 0056)
 let CONFIG_WRITES = [];        // changes Endora made to your services' own settings (ADR 0054)
 let LAST_ACTIVITY = [];        // what Endora did behind the scenes on the last turn
 let LAST_ACTIVITY_MSG = null;  // the butler message id that activity belongs to
@@ -137,6 +138,7 @@ async function reload() {
   try { OUTCOMES = await api("GET", "/v1/outcomes"); } catch (_) { OUTCOMES = []; }
   try { INTENTIONS = await api("GET", "/v1/intentions"); } catch (_) { INTENTIONS = []; }
   try { REPAIRS = await api("GET", "/v1/repairs"); } catch (_) { REPAIRS = []; }
+  try { TROUBLE = await api("GET", "/v1/standing-trouble"); } catch (_) { TROUBLE = []; }
   try { CONFIG_WRITES = await api("GET", "/v1/config-writes"); } catch (_) { CONFIG_WRITES = []; }
   render();
 }
@@ -1294,6 +1296,7 @@ function viewUnderstanding() {
     ${setup}
     ${groups || `<div class="empty">Nothing yet. Talk with Endora and it will start to understand you — you'll see it here.</div>`}
     ${viewIntention()}
+    ${viewStandingTrouble()}
     ${viewRepairs()}
     ${viewConfigWrites()}
     ${viewOutcomes()}`;
@@ -1361,6 +1364,35 @@ function viewRepairs() {
   return `
     <h3 style="margin-top:22px;">Something Endora can't get working</h3>
     <div class="note" style="margin-bottom:10px;">It checked before and after each time. Nothing moved — so either it's aiming at the wrong name, or reaching for the wrong tool.</div>
+    ${rows}`;
+}
+
+// Things in YOUR world that stopped answering — as opposed to Endora's own tooling
+// (ADR 0056).
+//
+// The same shape as a repair finding and deliberately so: a deterministic trigger, a
+// specific remedy, and answering is the dismissal. What is different is the subject. A
+// butler that reports "13 entities unavailable" has added an item to your day; one that
+// says "these have not answered since Tuesday — gone, or shall I hide them?" has removed
+// one. The difference is not the observation, it is having watched long enough to say
+// since when, and having somewhere for the answer to go.
+//
+// Nothing accumulates: the record exists only while the thing is still not answering, so
+// a device that comes back takes its own row with it.
+function viewStandingTrouble() {
+  if (!(TROUBLE || []).length) return "";
+  const rows = TROUBLE.map((t) => `
+    <div class="card"><div class="row">
+      <div class="grow">
+        <div class="title">${esc(t.thing)}</div>
+        <div class="sub">Hasn't answered ${t.days === 1 ? "since yesterday" : `for ${t.days} days`}, in ${esc(t.server)}. Still yours?</div>
+      </div>
+      <button class="ghost" data-act="trouble:gone:${esc(t.server)}:${esc(t.thing)}" title="Hide it in the service that owns it. Nothing is deleted, and you can put it back.">It's gone</button>
+      <button class="ghost" data-act="trouble:fine:${esc(t.server)}:${esc(t.thing)}" title="Leave it exactly as it is and stop mentioning it.">It's fine</button>
+    </div></div>`).join("");
+  return `
+    <h3 style="margin-top:22px;">Things that stopped answering</h3>
+    <div class="note" style="margin-bottom:10px;">Endora watches your services and keeps track of when something went quiet. Hiding is never deleting — it comes back from the change log below.</div>
     ${rows}`;
 }
 
@@ -2163,6 +2195,22 @@ async function dispatch(act) {
         await api("POST", "/v1/aliases", { server, said: id, means });
         flash(`Noted — “${id}” means “${means}”.`, "ok");
       } catch (e) { flash("Couldn't note that: " + e.message, "err"); }
+      return reload();
+    }
+    // Answer a problem statement about something in your world (ADR 0056). Both answers
+    // end it: one changes the service, the other says it is meant to be like that. There
+    // is deliberately no "remind me later" — that is how a queue starts.
+    if (verb === "trouble") {
+      // Re-split from the raw action: a thing's name is the last field and may itself
+      // contain a colon, so the fixed four-way destructure above would truncate it.
+      const parts = act.split(":");
+      const answer = String(noun || "");
+      const server = parts[2] || "";
+      const thing = parts.slice(3).join(":");
+      try {
+        const said = await api("POST", "/v1/standing-trouble/answer", { server, thing, answer });
+        flash(said.done ? said.done.charAt(0).toUpperCase() + said.done.slice(1) : "Noted.", "ok");
+      } catch (e) { flash("Couldn't do that: " + e.message, "err"); }
       return reload();
     }
     // Stop working on something. The person's ONLY verb over an intention — there is
