@@ -1728,16 +1728,37 @@ async fn set_checkin(
 /// not the value frozen at the moment it was formed. Showing the stored one would
 /// present a year-old guess as current.
 fn belief_json(b: &Belief, now: endora_application::Timestamp) -> serde_json::Value {
+    belief_json_contested(b, now, None)
+}
+
+/// As [`belief_json`], but told whether this belief **contradicts another one Endora
+/// holds** — which is not a property of a belief on its own, so it cannot be answered in
+/// the domain (ADR 0052).
+///
+/// Contradiction defeats settledness. Two beliefs, both high-confidence, both repeatedly
+/// affirmed, saying opposite things — observed live, Fahrenheit against Celsius — is the
+/// one situation where a confirmation prompt has an obvious payoff: Endora is definitely
+/// wrong about one of them, and only the person knows which. Suppressing the question
+/// there would be the settledness rule eating the case it should care most about.
+fn belief_json_contested(
+    b: &Belief,
+    now: endora_application::Timestamp,
+    contradicts: Option<&str>,
+) -> serde_json::Value {
     let confidence = b.confidence_at(now).unwrap_or(b.confidence());
-    json!({
+    let mut value = json!({
         "id": b.id().value().to_string(),
         "statement": b.statement(),
         "kind": b.kind().name(),
         "confidence": confidence.name(),
         "evidence": b.evidence(),
         "last_affirmed_ms": b.last_affirmed_at().unix_millis(),
-        "settled": b.is_settled(now),
-    })
+        "settled": b.is_settled(now) && contradicts.is_none(),
+    });
+    if let Some(other) = contradicts {
+        value["contradicts"] = json!(other);
+    }
+    value
 }
 
 /// Serializes a belief **exactly as stored**, for the export. The memory right is to
@@ -1763,7 +1784,24 @@ async fn list_understanding(
     let now = clock.now();
     let items =
         blocking(move || usecases::understanding(understanding.as_ref(), clock.as_ref())).await?;
-    Ok(Json(items.iter().map(|b| belief_json(b, now)).collect()))
+    // Endora holding two opposite beliefs means it is wrong about one of them, which is
+    // the most useful thing understanding can say — and which one is the person's call,
+    // not the butler's (ADR 0052). Shown on both cards, so neither is quietly the winner.
+    Ok(Json(
+        items
+            .iter()
+            .map(|b| {
+                let against = items
+                    .iter()
+                    .find(|o| {
+                        o.id() != b.id()
+                            && usecases::statements_disagree(o.statement(), b.statement())
+                    })
+                    .map(Belief::statement);
+                belief_json_contested(b, now, against)
+            })
+            .collect(),
+    ))
 }
 
 fn parse_belief_id(id: &str) -> Result<BeliefId, ApiError> {

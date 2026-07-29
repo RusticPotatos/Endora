@@ -71,6 +71,16 @@ sure Endora was, so correction stays available on every belief, always. Settledn
 on the *decayed* confidence, so a belief that fades becomes a question again on its own:
 what buys silence is being sure now, not having once been sure.
 
+**Contradiction defeats settledness.** Live, immediately after the above shipped: *you
+prefer temperatures in Fahrenheit* and *you find it more convenient and accurate to measure
+temperature in Celsius* — both high-confidence, both reinforced, both now silent. Endora is
+definitely wrong about one of them and only the person knows which, so that is the case
+where a prompt has the clearest possible payoff. A belief that disagrees with another active
+belief is never settled, and the disagreement is shown on **both** cards so neither is
+quietly treated as the winner.
+
+That check cannot live on a belief, because contradiction is not a property of one.
+
 ### Rules apply backwards, not only forwards
 
 Every guard on understanding ran **at formation only** — which quietly means the model of the
