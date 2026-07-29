@@ -43,6 +43,49 @@ develop   → integration branch
 We prefer **test-driven development**. Write tests that define new behavior
 *before* implementing it. Every behavioral change should come with tests.
 
+### The test tiers, and what each one is for
+
+Fast on purpose — the whole offline suite is **~10s for 460+ tests**, and it has to stay
+that way to be run constantly. Tiers are chosen to match how bugs have actually reached
+production here, not to fill in a pyramid.
+
+| tier | what it covers | where | cost |
+| --- | --- | --- | --- |
+| **unit** | pure logic, one thing at a time | `#[cfg(test)]` beside the code | ~10s |
+| **composition** | the stack **production builds**, not test doubles | same, but composing real runners and the real schema | ~0s |
+| **golden** | real captured data from a live system | `tests/` + `fixtures/` | ~0s |
+| **live smoke** | invariants on the **deployed** node | `tests/live_smoke.rs`, `#[ignore]`d | ~2s |
+| **eval battery** | model quality against the real turn machinery | `tests/*_eval.rs`, `#[ignore]`d | minutes |
+
+The first three run in `make ci`. The last two need something CI does not have — a deployed
+node, or a live model — so both are `#[ignore]`d and run deliberately.
+
+**Composition tests exist because two bugs got through with a green suite**, both times
+because the tests exercised a component while production composed a stack: port methods that
+no wrapper passed along, and a table that existed only in the test migration. If a test
+constructs its own wiring, it is not testing the wiring.
+
+**Golden tests exist because fixtures are only as imaginative as their author.** Three
+confident hypotheses about a name-matching failure were each supported by a tidy five-line
+fixture and each refuted the moment the test ran against a captured reading of a real house.
+Prefer captured data over invented data for anything that parses or ranks.
+
+**The live smoke check** asserts about real data using the **production rules**, imported
+rather than re-implemented — an invariant with its own copy of a rule is testing the copy.
+Run it after every deploy:
+
+```bash
+make deploy-check    # deploy, wait for the node, then smoke it
+make smoke           # just the smoke check (set ENDORA_URL in local.mk)
+```
+
+It does not judge whether a screen *reads* well; that still needs a person. The point is to
+make a screenshot the last line of defence rather than the first.
+
+**Budgets belong in tests, not in a performance tier.** A latency suite has never caught
+anything here, but volume degrading quality has: a tool that returned five kilobytes where a
+timestamp was wanted. Assert budgets — result sizes, round counts — inside the tiers above.
+
 ### Architecture rules (enforced in review)
 
 - **Domain-first.** Respect the layering Domain → Application → Infrastructure →
@@ -85,6 +128,9 @@ git diff --check
 Or run all of them at once with **`make ci`**. See the [Makefile](Makefile) for
 every developer task (`make help`); new machines start with `make bootstrap`.
 CI runs the same checks on Linux and macOS.
+
+If you deploy, follow it with **`make deploy-check`** (or `make smoke`). It is the only tier
+that sees real data, and it takes about two seconds.
 
 ## Commit messages
 

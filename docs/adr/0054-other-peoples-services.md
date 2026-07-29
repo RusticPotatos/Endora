@@ -191,8 +191,23 @@ Both of the last two additions were dropped this way. Presence never reached a t
 neither did the facts behind an answer. Unit tests passed throughout, because they
 exercised the runner that answers rather than the stack that production builds.
 
-The guard is a test that asserts **through the composed stack**. It is the only kind that
-can catch this, and it should be extended whenever a port gains a method.
+Two guards, because a promise is not a mechanism. The first version of this section said the
+composed-stack test "should be extended whenever a port gains a method" — which is a note
+asking a future person to remember, and the whole problem is that forgetting is silent.
+
+- **The forwarding is generated.** A decorator declares which of the port's defaultable
+  methods it simply passes along; adding a method to the port means adding one arm in *one*
+  place, and every decorator that lists it forwards it correctly by construction. What a
+  decorator genuinely overrides it still writes by hand, right beside that declaration, so
+  "changes this" and "passes this along" are visible together.
+- **A test proves the chain is transparent**, by putting a runner at the bottom that records
+  which methods reach it and calling every defaultable method at the top. This covers the
+  runners that *aggregate* rather than wrap and so cannot use the generated form.
+
+Writing the forwarding out by hand is what made the original bugs possible, and it had
+already produced two more latent ones: two runners in the middle of the stack never passed
+presence or states along, and got away with it only because the runner above them happened
+to answer first. Reordering the stack would have broken it silently.
 
 ### Quirks are allowed, behind a boundary
 
