@@ -967,3 +967,74 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod the_schema_production_actually_runs {
+    use super::SqliteStore;
+    use endora_capabilities::{
+        ConfigStore, ConfigWrite, ConfigWriteLog, StandingTrouble, StandingTroubleRepository,
+        TargetAlias, TargetAliasRepository, WriteKind,
+    };
+
+    /// Builds the stores exactly as `main.rs` does: one production [`SqliteStore`], with the
+    /// context stores layered over **its** `Db` handle. No test migration anywhere.
+    fn as_production_does() -> ConfigStore {
+        let store = SqliteStore::open_in_memory().expect("open the production store");
+        ConfigStore::new(store.db())
+    }
+
+    #[test]
+    fn every_table_the_api_writes_to_exists_in_the_production_schema() {
+        // Twice now, a table has existed only in `endora_capabilities::migrate` — which is
+        // called by tests and by nothing else. Both times every unit test passed and the
+        // live endpoint answered "internal error", because the tests migrated a schema
+        // production never runs.
+        //
+        // This test refuses that shortcut: it builds the stores the way the composition
+        // root does and then actually writes through every repository the HTTP layer
+        // exposes. A table missing from the production schema fails here instead of in
+        // somebody's house.
+        let config = as_production_does();
+
+        let write = ConfigWrite {
+            id: 1,
+            at_ms: 1_000,
+            server: "house".to_owned(),
+            target: "light.kitchen".to_owned(),
+            added: "kitchen main".to_owned(),
+            was: vec!["Kitchen".to_owned()],
+            undone: false,
+            kind: WriteKind::Name,
+        };
+        ConfigWriteLog::record(&config, &write).expect("config_writes");
+        assert_eq!(
+            ConfigWriteLog::writes(&config, 10)
+                .expect("read back")
+                .len(),
+            1
+        );
+        ConfigWriteLog::mark_undone(&config, 1).expect("undo a write");
+
+        config
+            .set_alias(&TargetAlias::new("house", "the lamp", "Living Room Lamp").unwrap())
+            .expect("target_aliases");
+        assert_eq!(config.aliases().expect("read back").len(), 1);
+
+        config
+            .note_trouble(&StandingTrouble {
+                server: "house".to_owned(),
+                thing: "Living Room Lamp".to_owned(),
+                trouble: "unavailable".to_owned(),
+                since_ms: 1_000,
+                accepted: false,
+            })
+            .expect("standing_trouble");
+        assert_eq!(config.troubles().expect("read back").len(), 1);
+        config
+            .accept_trouble("house", "Living Room Lamp")
+            .expect("accept");
+        config
+            .clear_trouble("house", "Living Room Lamp")
+            .expect("clear");
+    }
+}

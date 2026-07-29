@@ -21,6 +21,9 @@ WORKSPACE_FLAGS ?= --workspace --all-features
 # remote context to build+run there, e.g. `make deploy DOCKER_CONTEXT=nas`, or
 # once and for all in local.mk.
 DOCKER_CONTEXT ?=
+# Where `make smoke` looks for the deployed node. Override in local.mk to point at the
+# host you actually deploy to; the default is a local `make deploy`.
+ENDORA_URL ?= https://127.0.0.1:8787
 
 # Compose derives its project name from the working directory, so running a
 # deploy from a git worktree would invent a NEW project — a fresh empty volume,
@@ -97,6 +100,24 @@ deploy: ## Build + start the node via Compose (DOCKER_CONTEXT=nas to target a re
 	# ENDORA_BUILD stamps the deploy's git short SHA into the image, so /health
 	# and the console header show which build is live.
 	ENDORA_BUILD="$$(git rev-parse --short HEAD 2>/dev/null || echo dev)" $(COMPOSE) up -d --build
+
+.PHONY: smoke
+smoke: ## Assert invariants against the DEPLOYED node (ENDORA_URL, or https://127.0.0.1:8787)
+	# The tier CI cannot run: GitHub cannot reach your house. Run it after `make deploy`.
+	# It asserts about the live instance's real data using the production rules, which is
+	# where five of the last six bugs in this system were visible within a minute of the
+	# deploy that introduced them — nobody was looking. Set ENDORA_URL in local.mk to
+	# point at the deployed host.
+	ENDORA_URL="$(ENDORA_URL)" cargo test -p endora-infrastructure --test live_smoke -- --ignored --test-threads=1
+
+.PHONY: deploy-check
+deploy-check: deploy ## Deploy, wait for the node to come up, then smoke it
+	@printf 'waiting for %s' "$(ENDORA_URL)"; \
+	for i in $$(seq 1 30); do \
+		if curl -sk --max-time 3 "$(ENDORA_URL)/health" >/dev/null 2>&1; then echo " up"; break; fi; \
+		printf '.'; sleep 2; \
+	done
+	$(MAKE) smoke
 
 .PHONY: deploy-logs
 deploy-logs: ## Follow the deployed node's logs (respects DOCKER_CONTEXT)
