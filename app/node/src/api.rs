@@ -797,6 +797,8 @@ pub fn app(state: AppState) -> Router {
         .route("/v1/aliases/upstream", post(push_aliases_upstream))
         .route("/v1/collections", post(make_a_collection))
         .route("/v1/models/worth-knowing", get(models_worth_knowing))
+        .route("/v1/standing-trouble", get(list_standing_trouble))
+        .route("/v1/standing-trouble/answer", post(answer_standing_trouble))
         .route("/v1/config-writes", get(list_config_writes))
         .route("/v1/config-writes/{id}/undo", post(undo_config_write))
         .route("/v1/outcomes/{id}/reaction", post(react_to_outcome))
@@ -2087,6 +2089,109 @@ async fn make_a_collection(
                 endora_capabilities::ConfigWriteLog::record(config.as_ref(), &write)
                     .map_err(AppError::Repository)?;
                 Ok(json!({ "made": described, "id": write.id.to_string(), "members": members.len() }))
+            }
+            Some(Err(why)) => Err(AppError::BadRequest { message: why }),
+            None => Err(AppError::BadRequest {
+                message: "Endora is not allowed to change this service's settings".to_owned(),
+            }),
+        }
+    })
+    .await?;
+    let _ = state.changes.send(());
+    Ok(Json(said))
+}
+
+/// What has been wrong long enough to be worth saying, as problem statements (ADR 0056).
+async fn list_standing_trouble(
+    State(state): State<AppState>,
+) -> Result<Json<Vec<serde_json::Value>>, ApiError> {
+    let config = state.config.clone();
+    let now_ms = state.clock.now().unix_millis();
+    let open = blocking(move || {
+        endora_capabilities::StandingTroubleRepository::troubles(config.as_ref())
+            .map_err(AppError::Repository)
+    })
+    .await?;
+    Ok(Json(
+        endora_capabilities::worth_raising(&open, now_ms)
+            .into_iter()
+            .map(|t| {
+                json!({
+                    "server": t.server,
+                    "thing": t.thing,
+                    "trouble": t.trouble,
+                    "days": t.days_by(now_ms),
+                    "statement": t.statement(now_ms),
+                })
+            })
+            .collect::<Vec<_>>(),
+    ))
+}
+
+/// What the person said about one of them.
+#[derive(serde::Deserialize)]
+struct TroubleAnswer {
+    server: String,
+    thing: String,
+    /// `gone` — it is finished with, so take it out of the service's own view.
+    /// `fine` — it is meant to be like that, so stop raising it.
+    answer: String,
+}
+
+/// The person answers a problem statement, which is the only way one ends (ADR 0056).
+///
+/// Two answers, because a problem statement that cannot be acted on is a notification.
+/// *Gone* hides it in the service that owns it — never deletes it, and logged with its
+/// prior value so it puts back ([0054](../../docs/adr/0054-other-peoples-services.md)).
+/// *Fine* records that this is the person's business, and it stops being raised while
+/// staying visible.
+async fn answer_standing_trouble(
+    State(state): State<AppState>,
+    Json(req): Json<TroubleAnswer>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let config = state.config.clone();
+    let ids = state.ids.clone();
+    let clock = state.clock.clone();
+    let said = blocking(move || {
+        if req.answer == "fine" {
+            endora_capabilities::StandingTroubleRepository::accept_trouble(
+                config.as_ref(),
+                &req.server,
+                &req.thing,
+            )
+            .map_err(AppError::Repository)?;
+            return Ok(json!({ "done": format!("left {} alone", req.thing) }));
+        }
+        if req.answer != "gone" {
+            return Err(AppError::BadRequest {
+                message: format!("'{}' is not an answer to this", req.answer),
+            });
+        }
+        let channels = native_channels(config.as_ref());
+        let Some((_, channel)) = channels.iter().find(|(name, _)| *name == req.server) else {
+            return Err(AppError::BadRequest {
+                message: format!("Endora has no direct reach into {}", req.server),
+            });
+        };
+        match channel.hide(&req.thing, true) {
+            Some(Ok(mut write)) => {
+                write.id = endora_application::IdSource::new_id(ids.as_ref());
+                write.at_ms = clock.now().unix_millis();
+                write.server.clone_from(&req.server);
+                endora_capabilities::ConfigWriteLog::record(config.as_ref(), &write)
+                    .map_err(AppError::Repository)?;
+                // The problem is over: it is no longer in the service's own view, so
+                // there is nothing left to keep asking about. Answering is the dismissal.
+                endora_capabilities::StandingTroubleRepository::clear_trouble(
+                    config.as_ref(),
+                    &req.server,
+                    &req.thing,
+                )
+                .map_err(AppError::Repository)?;
+                Ok(
+                    json!({ "done": format!("hid {} in {}", req.thing, req.server),
+                           "id": write.id.to_string() }),
+                )
             }
             Some(Err(why)) => Err(AppError::BadRequest { message: why }),
             None => Err(AppError::BadRequest {
@@ -3398,6 +3503,37 @@ async fn invoke_capability(
     }
 }
 
+/// Notes what is not answering in each service Endora has direct reach into (ADR 0056).
+///
+/// The whole reason this runs at all: without it there is no *since when*, and without a
+/// duration there is no problem statement — only a status line saying thirteen things are
+/// unavailable, which is a chore rather than a service.
+///
+/// Reads through the channel rather than the tool surface, because a hidden or broken
+/// entity is exactly what a tool surface leaves out ([0054](../../docs/adr/0054-other-peoples-services.md)),
+/// and those are the ones this is about. A service that cannot be reached this tick is
+/// skipped rather than treated as everything being fine — inventing recovery from a failed
+/// read would clear every clock in the house on one bad network moment.
+fn watch_the_world(state: &AppState) {
+    let config = state.config.clone();
+    let now_ms = state.clock.now().unix_millis();
+    for (server, channel) in native_channels(config.as_ref()) {
+        match channel.states() {
+            Ok(reading) => {
+                if let Err(e) = endora_capabilities::watch_for_trouble(
+                    config.as_ref(),
+                    &server,
+                    &reading,
+                    now_ms,
+                ) {
+                    eprintln!("watching {server}: could not record what is wrong: {e}");
+                }
+            }
+            Err(e) => eprintln!("watching {server}: could not read it this time: {e}"),
+        }
+    }
+}
+
 /// Re-reads stored beliefs against the rules as they stand today (ADR 0052).
 ///
 /// Runs on the heartbeat rather than on read, so the store converges once and the screen
@@ -3439,6 +3575,7 @@ pub fn spawn_heartbeat(state: AppState) {
                 reconnect_empty_mcp_servers(&state);
                 withdraw_what_never_works(&state);
                 tidy_understanding(&state);
+                watch_the_world(&state);
             }
             let events = state.events.clone();
             let chat = state.chat.clone();

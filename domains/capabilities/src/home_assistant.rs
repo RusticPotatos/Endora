@@ -276,6 +276,61 @@ impl HomeAssistant {
         })
     }
 
+    /// Finds an entity id by the name the registry holds for it, including hidden ones.
+    ///
+    /// Separate from the ordinary reading because that reading is a list of *states*, and
+    /// a hidden entity has no entry in it — so showing something again could never find
+    /// its target if it went looking there.
+    ///
+    /// # Errors
+    /// A human-readable message if Home Assistant cannot be reached.
+    fn registry_entry_named(&self, name: &str) -> Result<Option<String>, String> {
+        let wanted = name.trim();
+        let mut socket = self.connect_ws()?;
+        let listed = ws_call(
+            &mut socket,
+            1,
+            &json!({ "type": "config/entity_registry/list" }),
+        )?;
+        Ok(listed.as_array().and_then(|all| {
+            all.iter()
+                .find(|e| {
+                    [e["name"].as_str(), e["original_name"].as_str()]
+                        .into_iter()
+                        .flatten()
+                        .any(|n| n.eq_ignore_ascii_case(wanted))
+                })
+                .and_then(|e| e["entity_id"].as_str().map(str::to_owned))
+        }))
+    }
+
+    /// Hides an entity from Home Assistant's own interface, or shows it again. Returns
+    /// **whether it was hidden before**, so the change can be put back exactly.
+    ///
+    /// # Errors
+    /// A human-readable message if Home Assistant cannot be reached or refuses the edit.
+    fn set_hidden(&self, entity: &str, hidden: bool) -> Result<bool, String> {
+        let mut socket = self.connect_ws()?;
+        let entry = ws_call(
+            &mut socket,
+            1,
+            &json!({ "type": "config/entity_registry/get", "entity_id": entity }),
+        )?;
+        let was = !entry["hidden_by"].is_null();
+        ws_call(
+            &mut socket,
+            2,
+            &json!({
+                "type": "config/entity_registry/update",
+                "entity_id": entity,
+                // `user` rather than `integration`: this is a person's decision, recorded
+                // as one, and it stays undoable from their own interface as well as ours.
+                "hidden_by": if hidden { json!("user") } else { Value::Null },
+            }),
+        )?;
+        Ok(was)
+    }
+
     /// Removes one alias, leaving the rest. The prior list comes back with it, so the
     /// removal undoes exactly as an addition does.
     ///
@@ -729,6 +784,35 @@ impl crate::infrastructure::NativeChannel for HomeAssistant {
     fn act(&self, tool: &str, entity: &str) -> Option<Result<String, String>> {
         let (domain, service) = service_for(tool)?;
         Some(self.call_service(domain, service, entity))
+    }
+
+    fn hide(&self, name: &str, hidden: bool) -> Option<Result<crate::domain::ConfigWrite, String>> {
+        if !self.may_write {
+            return None;
+        }
+        // Hidden entities drop out of `/api/states`, so the thing being un-hidden is not
+        // in the ordinary reading — the registry is the only place it still exists, and
+        // the only place both directions can be resolved from.
+        let entity = match self.registry_entry_named(name) {
+            Ok(Some(found)) => found,
+            Ok(None) => return Some(Err(format!("nothing here is called {name}"))),
+            Err(e) => return Some(Err(e)),
+        };
+        Some(
+            self.set_hidden(&entity, hidden)
+                .map(|was| crate::domain::ConfigWrite {
+                    id: 0, // the caller stamps identity and time; the adapter knows neither
+                    at_ms: 0,
+                    server: String::new(),
+                    target: entity,
+                    added: if hidden { "hidden" } else { "shown" }.to_owned(),
+                    // What it was, so the undo is a stored fact rather than an assumption
+                    // that everything started out visible (ADR 0054).
+                    was: vec![if was { "hidden" } else { "shown" }.to_owned()],
+                    undone: false,
+                    kind: crate::domain::WriteKind::Hidden,
+                }),
+        )
     }
 
     fn teach(&self, name: &str, alias: &str) -> Option<Result<crate::domain::ConfigWrite, String>> {

@@ -42,6 +42,9 @@ pub enum WriteKind {
     Name,
     /// A new thing standing for several existing ones. Undone by removing it.
     Collection,
+    /// Something taken out of the service's own view, because the person said it is gone.
+    /// Undone by showing it again.
+    Hidden,
 }
 
 impl WriteKind {
@@ -51,6 +54,7 @@ impl WriteKind {
         match self {
             Self::Name => "name",
             Self::Collection => "collection",
+            Self::Hidden => "hidden",
         }
     }
 
@@ -60,6 +64,8 @@ impl WriteKind {
     pub fn read(raw: &str) -> Self {
         if raw == "collection" {
             Self::Collection
+        } else if raw == "hidden" {
+            Self::Hidden
         } else {
             Self::Name
         }
@@ -98,6 +104,106 @@ impl ConfigWrite {
             self.target, self.added
         )
     }
+}
+
+/// Something in a service that has been wrong long enough to be worth saying (ADR 0056).
+///
+/// A butler that reports "13 entities unavailable" has added an item to someone's day. One
+/// that says "these three have not answered since Tuesday — gone, or shall I hide them?"
+/// has removed one. The difference is not the observation; it is having watched long
+/// enough to say *since when*, and having somewhere for the answer to go.
+///
+/// **It cannot accumulate.** A row exists only while the trouble is still true: the moment
+/// the thing answers again, the row is deleted. The store is bounded by what is currently
+/// wrong, never by how long Endora has been running — which is what stops this becoming
+/// the queue [0052](0052-what-it-knows-about-you.md) deleted.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StandingTrouble {
+    /// Which service it is in.
+    pub server: String,
+    /// What the service calls it.
+    pub thing: String,
+    /// What is wrong, in the service's own word for it — `unavailable`, `unknown`.
+    pub trouble: String,
+    /// When Endora first saw it this way. The whole point: without it there is no
+    /// "since Tuesday", and without that there is no problem statement, only a reading.
+    pub since_ms: i64,
+    /// The person has said this one is fine. Kept rather than deleted, so it is not
+    /// raised again the moment it is next read.
+    pub accepted: bool,
+}
+
+impl StandingTrouble {
+    /// How long it has been wrong, in whole days.
+    #[must_use]
+    pub const fn days_by(&self, now_ms: i64) -> i64 {
+        (now_ms - self.since_ms) / 86_400_000
+    }
+
+    /// The problem statement, in the person's words — an observation with a duration and a
+    /// question, which is what separates it from a status line.
+    #[must_use]
+    pub fn statement(&self, now_ms: i64) -> String {
+        let days = self.days_by(now_ms);
+        let how_long = match days {
+            0 => "since earlier today".to_owned(),
+            1 => "since yesterday".to_owned(),
+            n => format!("for {n} days"),
+        };
+        format!("{} has not answered {how_long}", self.thing)
+    }
+}
+
+/// Words a service uses to mean **"I cannot reach this"**, as opposed to a reading.
+///
+/// A heuristic, and named as one. There is no protocol-level way to ask "is this value a
+/// real measurement or an admission of failure?" — services answer with whatever word they
+/// use, and these are the words they use. The list is about English, not about any one
+/// service, which is what keeps it out of a named adapter.
+///
+/// What makes a heuristic acceptable here is the blast radius: a wrong classification can
+/// only ever produce **a question**, never an action. Getting it wrong costs one tap on
+/// "it's fine"; getting the opposite wrong costs a device quietly staying broken.
+const NOT_A_READING: &[&str] = &[
+    "unavailable",
+    "unknown",
+    "offline",
+    "disconnected",
+    "unreachable",
+    "none",
+    "null",
+    "error",
+];
+
+/// Whether a state value is a service admitting it cannot see the thing.
+#[must_use]
+pub fn not_answering(state: &str) -> bool {
+    let value = state.trim().to_lowercase();
+    value.is_empty() || NOT_A_READING.contains(&value.as_str())
+}
+
+/// How long something must be wrong before it is worth mentioning (ADR 0056).
+///
+/// Three days, chosen to survive the ordinary reasons a thing goes quiet without being
+/// broken: a weekend away, a router reboot, a battery being swapped, a hub upgrade. The
+/// cost of waiting is a few days' delay on a problem that has already lasted days; the cost
+/// of not waiting is Endora interrupting about a device that was going to come back on its
+/// own, which is the exact behaviour that makes a butler tiring.
+pub const WORTH_SAYING_AFTER_DAYS: i64 = 3;
+
+/// Which standing troubles are worth putting in front of the person right now.
+///
+/// Longest-standing first: the oldest is both the most likely to be genuinely finished with
+/// and the one whose duration makes the strongest case.
+#[must_use]
+pub fn worth_raising(troubles: &[StandingTrouble], now_ms: i64) -> Vec<&StandingTrouble> {
+    let mut out: Vec<&StandingTrouble> = troubles
+        .iter()
+        .filter(|t| !t.accepted)
+        .filter(|t| t.days_by(now_ms) >= WORTH_SAYING_AFTER_DAYS)
+        .collect();
+    out.sort_by_key(|t| t.since_ms);
+    out
 }
 
 /// The person's **autonomy envelope** (ADR 0051): the deterministic boundary the
