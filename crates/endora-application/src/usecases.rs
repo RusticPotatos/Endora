@@ -2749,7 +2749,12 @@ fn nightly_focus(
 pub fn butler_context(
     beliefs: &impl BeliefRepository,
     outcomes: &impl OutcomeRepository,
-    aliases: &(impl endora_capabilities::TargetAliasRepository + endora_capabilities::ConfigWriteLog),
+    aliases: &(
+         impl endora_capabilities::TargetAliasRepository
+         + endora_capabilities::ConfigWriteLog
+         + endora_capabilities::StandingTroubleRepository
+     ),
+    chat: &impl ChatRepository,
     capabilities: &dyn CapabilityRunner,
     clock: &impl Clock,
 ) -> Result<ButlerContext, AppError> {
@@ -2794,6 +2799,10 @@ pub fn butler_context(
         // Live, and cheap: the services already read for other reasons know whether the
         // person is in the house.
         present: capabilities.about_the_person(),
+        // What Endora itself has been doing, stated rather than fetched (ADR 0056). The
+        // skill version of this was shipped first and a 7B model answered "did you do
+        // anything while I was out?" by trying to turn a light on.
+        did_lately: recently_did(chat, outcomes, aliases, aliases, clock)?,
         now: format_datetime_utc(clock.now().unix_millis()),
         conversation_summary: None,
         track_record: track_record(&recent),
@@ -2806,6 +2815,36 @@ pub fn butler_context(
             .chain(collections_worth_naming(aliases))
             .collect(),
     })
+}
+
+/// The last few things Endora did, short enough to sit in every turn's context.
+///
+/// The same facts [`what_it_has_been_doing`] reports, trimmed to what fits: the most recent
+/// handful, newest last. A turn pays for its whole context, so this is a summary and the
+/// skill is the detail.
+fn recently_did(
+    chat: &impl ChatRepository,
+    outcomes: &impl OutcomeRepository,
+    writes: &impl endora_capabilities::ConfigWriteLog,
+    troubles: &impl endora_capabilities::StandingTroubleRepository,
+    clock: &impl Clock,
+) -> Result<Vec<String>, AppError> {
+    /// Enough to answer "did anything happen?" without becoming the prompt.
+    const FITS_IN_A_TURN: usize = 4;
+    let now_ms = clock.now().unix_millis();
+    let report =
+        what_it_has_been_doing(chat, outcomes, writes, troubles, now_ms - A_DAY_MS, now_ms)?;
+    // The empty answer is a sentence, not a list, and belongs here as one line: "nothing
+    // happened" is exactly what the butler needs to be able to say without guessing.
+    Ok(report
+        .lines()
+        .rev()
+        .take(FITS_IN_A_TURN)
+        .map(str::to_owned)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect())
 }
 
 /// The collections Endora has made, as lines the butler can act on.

@@ -102,9 +102,21 @@ which is the one thing Endora is entitled to assert
 ([0053](0053-honesty-about-what-it-did.md)). The model's job is to say it nicely, not to
 remember it.
 
-A skill rather than something appended to every turn. A digest injected into every
-conversation costs context in every conversation, which is exactly the failure that put five
-kilobytes of house behind a request for the time.
+**It is stated in the turn, not fetched by it.** The skill shipped first and did not work:
+asked *"did you do anything while I was out?"*, a 7B model called `HassTurnOn` and tried to
+switch on a light. Tool *choice* is the least reliable thing a small model does, and this is
+the one question a proactive butler must not get wrong — so the answer goes where it cannot
+be missed, exactly as **presence** does. Facts the butler reads, not a call it has to decide
+to make.
+
+The skill stays for detail — a wider window, the full list — and a short account of the last
+day sits in every turn. Short, because everything in a turn's context is paid for on every
+turn, which is the same reason a clock reading must not arrive with five kilobytes of house.
+
+This is the pattern, again: *the guarantee lives in code, and the model's job is to say it
+nicely.* The measured version of "ask the model to reach for the right tool" is roughly the
+same as the measured version of every other instruction — which is why nothing important
+depends on it.
 
 Three details that carry the point:
 
