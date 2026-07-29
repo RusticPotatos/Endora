@@ -91,9 +91,33 @@ messages, one of them a real brief four hours earlier.
 
 Every part of the answer was stored: the messages it sent, the outcomes it recorded, the
 schedules that fired. None of it was reachable from a turn, so the most important question a
-proactive butler can be asked is the one it cannot answer. Being proactive and being unable
-to account for it is worse than not being proactive, because the person cannot tell the
-difference between a quiet day and a broken one.
+proactive butler can be asked was the one it could not answer. Being proactive and being
+unable to account for it is worse than not being proactive, because the person cannot tell
+the difference between a quiet day and a broken one.
+
+**Its own record is a skill.** Endora reads back what it did — messages it started, actions
+it took with the verdict it observed, settings it changed, things it noticed stop answering —
+and the digest is **assembled deterministically**, because it is a report of stored facts,
+which is the one thing Endora is entitled to assert
+([0053](0053-honesty-about-what-it-did.md)). The model's job is to say it nicely, not to
+remember it.
+
+A skill rather than something appended to every turn. A digest injected into every
+conversation costs context in every conversation, which is exactly the failure that put five
+kilobytes of house behind a request for the time.
+
+Three details that carry the point:
+
+- **"Nothing" is stated as nothing happening**, never as nothing being *recorded*. Those are
+  different claims and the second one was made falsely. The empty answer names what did not
+  happen: it did not write, act, change any setting, or notice anything stop answering.
+- **Unprompted is read from adjacency** — a butler message whose predecessor is not the
+  person's — because nothing stores a "proactive" flag. A reply the person *asked for* is not
+  something Endora did on its own and must not be reported as though it were.
+- **Whether the model reaches for it is measured, not assumed.** A skill the model never
+  calls is worth nothing, so the battery scores a question about what *Endora* did being
+  answered from Endora's record rather than from the house's lights — both offered, choosing
+  is the test.
 
 ### A problem statement, not a status line
 

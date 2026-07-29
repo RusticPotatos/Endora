@@ -140,6 +140,22 @@ impl AppState {
         let mcp = Arc::new(std::sync::RwLock::new(Arc::new(connect_mcp(
             config.as_ref(),
         ))));
+        // Built before the struct literal takes ownership of the stores.
+        let capabilities = Arc::new({
+            let mut all = endora_infrastructure::default_capabilities();
+            // Endora's own record, as a skill it can reach for. Defined HERE because it
+            // reads across four contexts — chat, outcomes, config writes, standing
+            // trouble — and the composition root is the only place allowed to know all of
+            // them (ADR 0050). The digest itself is a use case in the orchestration layer;
+            // this is only the wiring.
+            all.push(Arc::new(WhatIHaveBeenDoing {
+                chat: chat.clone(),
+                understanding: understanding.clone(),
+                config: config.clone(),
+                clock: clock.clone(),
+            }) as Arc<dyn endora_capabilities::Capability>);
+            all
+        });
         Self {
             store,
             chat,
@@ -152,7 +168,7 @@ impl AppState {
             clock,
             butler,
             changes,
-            capabilities: Arc::new(endora_infrastructure::default_capabilities()),
+            capabilities,
             mcp,
             turn_lock: Arc::new(tokio::sync::Mutex::new(())),
             summary,
@@ -3510,6 +3526,74 @@ async fn invoke_capability(
             // Not an error the person did wrong — report it as a soft result.
             Ok(Json(json!({ "ok": false, "unavailable": m })))
         }
+    }
+}
+
+/// Endora's own recent work, as a capability the butler can reach for (ADR 0056).
+///
+/// Asked "did you do anything while I was out?", the butler answered with the state of some
+/// lights and then said "No specific activities were recorded today" — four hours after
+/// posting a real morning brief. Every part of the true answer was stored; nothing could
+/// reach it from a turn.
+///
+/// A skill rather than something appended to every turn's context. A digest injected into
+/// every conversation costs context on every conversation, which is precisely the failure
+/// that made a clock reading arrive with five kilobytes of house attached
+/// ([0053](../../docs/adr/0053-honesty-about-what-it-did.md)). This is asked for when it is
+/// wanted.
+struct WhatIHaveBeenDoing {
+    chat: Arc<endora_conversation::ChatStore>,
+    understanding: Arc<endora_understanding::UnderstandingStore>,
+    config: Arc<endora_capabilities::ConfigStore>,
+    clock: Arc<dyn endora_application::Clock + Send + Sync>,
+}
+
+impl endora_capabilities::Capability for WhatIHaveBeenDoing {
+    fn info(&self) -> endora_capabilities::CapabilityInfo {
+        endora_capabilities::CapabilityInfo {
+            id: "own_activity",
+            name: "What I have been doing",
+            description: "What Endora itself has done recently — messages it started, \
+                          actions it took and whether they changed anything, settings it \
+                          changed, and things it noticed stop answering. Use this for any \
+                          question about what YOU did or whether anything happened, \
+                          including \"what did you do while I was out\" and \"has anything \
+                          happened today\".",
+            category: "endora",
+            // Its own database. Nothing leaves the house to answer this.
+            reaches_external: false,
+            reversibility: endora_application::Reversibility::Observe,
+            configured: true,
+            needs: "",
+            settings: &[],
+        }
+    }
+
+    fn invoke(
+        &self,
+        input: &serde_json::Value,
+        _settings: &endora_capabilities::CapabilitySettings,
+    ) -> Result<serde_json::Value, endora_capabilities::CapabilityError> {
+        let now_ms = self.clock.now().unix_millis();
+        // A window may be asked for; a day is what "while I was out" means by default.
+        let hours = input["hours"].as_i64().filter(|h| *h > 0).unwrap_or(24);
+        let since_ms = now_ms - hours.saturating_mul(3_600_000);
+        let did = usecases::what_it_has_been_doing(
+            self.chat.as_ref(),
+            self.understanding.as_ref(),
+            self.config.as_ref(),
+            self.config.as_ref(),
+            since_ms,
+            now_ms,
+        )
+        .map_err(|e| endora_capabilities::CapabilityError::Unavailable(e.to_string()))?;
+        Ok(json!({ "hours": hours, "did": did }))
+    }
+
+    fn summarize(&self, output: &serde_json::Value) -> String {
+        // The digest is already written for a person to read; handing the model raw JSON
+        // is what a small local model relays worst.
+        output["did"].as_str().unwrap_or_default().to_owned()
     }
 }
 
