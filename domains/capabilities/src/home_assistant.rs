@@ -65,7 +65,7 @@ impl HomeAssistant {
     /// the whole feature simply stays off.
     #[must_use]
     pub fn from_settings(settings: &crate::infrastructure::CapabilitySettings) -> Option<Self> {
-        let base = settings.get("url")?.trim().trim_end_matches('/').to_owned();
+        let base = crate::infrastructure::as_url(settings.get("url")?);
         let token = settings.get("token")?.trim().to_owned();
         // Which notify service to reach the person through. Blank means never — being able
         // to interrupt somebody is granted, not inferred.

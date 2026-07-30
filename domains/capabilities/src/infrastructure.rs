@@ -159,6 +159,31 @@ pub fn default_capabilities() -> Vec<Arc<dyn Capability>> {
 
 // ---- helpers ---------------------------------------------------------------
 
+/// Reads a service address the person typed, and makes it a URL.
+///
+/// `192.168.1.14:8123` is what someone types when asked for their Home Assistant address,
+/// and it is not a URL — every request built from it fails with `http: invalid format`.
+///
+/// This was live and invisible. Endora's **direct reach** into the house had been dead:
+/// presence, live states, the standing-trouble watch and the facts behind an answer all
+/// silently returned nothing, while the MCP tools kept working because that server talks
+/// to Home Assistant on its own. Nothing looked broken, because a channel that cannot
+/// answer is indistinguishable from a service with nothing to say — the same trap
+/// [0054](../../docs/adr/0054-other-peoples-services.md) records about defaulted port
+/// methods, arriving this time through a text box.
+///
+/// **`http` rather than `https`** when the scheme is missing: these are addresses on the
+/// person's own network, typed as a bare host and port, and that is what such a service
+/// is almost always serving. Someone who needs TLS has a hostname and will type the
+/// scheme.
+pub(crate) fn as_url(typed: &str) -> String {
+    let address = typed.trim().trim_end_matches('/');
+    if address.is_empty() || address.contains("://") {
+        return address.to_owned();
+    }
+    format!("http://{address}")
+}
+
 /// A **direct** HTTP agent — no egress proxy. Used for trusted internal calls (the
 /// local vision model), which must never be routed through a VPN/proxy.
 pub(crate) fn agent() -> ureq::Agent {
@@ -1601,7 +1626,7 @@ impl Capability for HomeAssistantCapability {
     ) -> Result<Value, CapabilityError> {
         let base = settings
             .get("url")
-            .map(|s| s.trim().trim_end_matches('/'))
+            .map(|s| as_url(s))
             .filter(|s| !s.is_empty())
             .ok_or_else(|| {
                 CapabilityError::Unavailable(
@@ -5590,6 +5615,42 @@ mod tests {
                 .any(|(name, _)| name == "Kitchen Table"),
             "the facts behind an answer were dropped somewhere in the stack"
         );
+    }
+}
+
+#[cfg(test)]
+mod an_address_someone_typed {
+    use super::as_url;
+
+    #[test]
+    fn a_bare_host_and_port_becomes_a_url() {
+        // Live, and invisible: this is exactly what was in the settings, and every request
+        // built from it failed with `http: invalid format` — taking presence, live states
+        // and the standing-trouble watch down without anything appearing to be broken.
+        assert_eq!(as_url("192.168.1.14:8123"), "http://192.168.1.14:8123");
+        assert_eq!(
+            as_url("  homeassistant.local:8123  "),
+            "http://homeassistant.local:8123"
+        );
+    }
+
+    #[test]
+    fn a_scheme_someone_gave_is_never_overridden() {
+        // Someone who needs TLS has typed why, and guessing over them would be worse than
+        // the bug this fixes.
+        assert_eq!(as_url("https://ha.example.com"), "https://ha.example.com");
+        assert_eq!(
+            as_url("http://192.168.1.14:8123/"),
+            "http://192.168.1.14:8123"
+        );
+    }
+
+    #[test]
+    fn nothing_typed_stays_nothing() {
+        // An unset address must remain unset, so "you have not configured this" keeps
+        // being the message rather than a request to `http://`.
+        assert_eq!(as_url(""), "");
+        assert_eq!(as_url("   "), "");
     }
 }
 
