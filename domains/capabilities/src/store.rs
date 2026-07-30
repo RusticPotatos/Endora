@@ -45,10 +45,11 @@ pub fn migrate(db: &Db) -> Result<(), RepositoryError> {
                 auto_consequential INTEGER NOT NULL
             ) STRICT;
             CREATE TABLE IF NOT EXISTS deep_model (
-                id      INTEGER PRIMARY KEY CHECK (id = 0),
-                url     TEXT NOT NULL,
-                model   TEXT NOT NULL,
-                api_key TEXT NOT NULL
+                id       INTEGER PRIMARY KEY CHECK (id = 0),
+                url      TEXT NOT NULL,
+                model    TEXT NOT NULL,
+                api_key  TEXT NOT NULL,
+                escalate INTEGER NOT NULL DEFAULT 0
             ) STRICT;
             CREATE TABLE IF NOT EXISTS butler_model_config (
                 id            INTEGER PRIMARY KEY CHECK (id = 0),
@@ -171,13 +172,14 @@ impl DeepModelRepository for ConfigStore {
         self.db
             .lock()?
             .query_row(
-                "SELECT url, model, api_key FROM deep_model WHERE id = 0",
+                "SELECT url, model, api_key, escalate FROM deep_model WHERE id = 0",
                 [],
                 |r| {
                     Ok(DeepModel {
                         url: r.get(0)?,
                         model: r.get(1)?,
                         api_key: r.get(2)?,
+                        escalate: r.get::<_, i64>(3)? != 0,
                     })
                 },
             )
@@ -189,8 +191,9 @@ impl DeepModelRepository for ConfigStore {
         self.db
             .lock()?
             .execute(
-                "INSERT OR REPLACE INTO deep_model (id, url, model, api_key) VALUES (0, ?1, ?2, ?3)",
-                params![model.url, model.model, model.api_key],
+                "INSERT OR REPLACE INTO deep_model (id, url, model, api_key, escalate) \
+                 VALUES (0, ?1, ?2, ?3, ?4)",
+                params![model.url, model.model, model.api_key, model.escalate],
             )
             .map_err(backend)?;
         Ok(())

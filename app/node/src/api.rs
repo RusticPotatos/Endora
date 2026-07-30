@@ -2903,6 +2903,7 @@ async fn get_deep_model(
         "model": cfg.model,
         "configured": !cfg.url.is_empty() && !cfg.model.is_empty(),
         "key_set": !cfg.api_key.is_empty(),
+        "escalate": cfg.escalate,
     })))
 }
 
@@ -2912,6 +2913,10 @@ struct DeepModelRequest {
     model: String,
     #[serde(default)]
     api_key: Option<String>,
+    /// Whether Endora may fall back to it on its own. Absent means "leave as it is", so a
+    /// client that only edits the URL cannot silently turn phoning-out on or off.
+    #[serde(default)]
+    escalate: Option<bool>,
 }
 
 /// Configures the deep model. A blank/omitted `api_key` keeps any existing key, so
@@ -2937,6 +2942,7 @@ async fn set_deep_model(
                 url: req.url.trim().to_owned(),
                 model: req.model.trim().to_owned(),
                 api_key,
+                escalate: req.escalate.unwrap_or(existing.escalate),
             },
         )
         .map_err(AppError::Repository)?;
