@@ -1077,7 +1077,10 @@ function viewSkills() {
             <label class="sub" style="min-width:130px;">${esc(s.label)}${s.set ? ` <span class="pill concluded">set</span>` : ""}</label>
             <input id="setting-${c.id}-${s.key}" type="${s.secret ? "password" : "text"}" placeholder="${s.set ? "•••••• (unchanged)" : (s.secret ? "enter a value" : "")}" autocomplete="off" />
           </div>`).join("")}
-        <button class="primary" data-act="skillcfg:${c.id}">Save settings</button>
+        <div class="row" style="gap:8px;">
+          <button class="primary" data-act="skillcfg:${c.id}">Save settings</button>
+          <button class="ghost" data-act="skilltest:${c.id}" title="check these settings actually work">${icon("check", 14)} Test</button>
+        </div>
       </div>` : "";
     return `
       <div class="card">
@@ -2138,6 +2141,19 @@ async function dispatch(act) {
       try { await api("DELETE", "/v1/mcp/servers/" + encodeURIComponent(id)); flash("Server removed.", "ok"); }
       catch (e) { flash("Couldn't remove: " + e.message, "err"); }
       return reload();
+    }
+    // Prove a skill works with the settings it has. Read-only skills run themselves; one
+    // that can actuate refuses, because "press this to find out" must never be how someone
+    // discovers what a skill does. Home Assistant also sends a test notification, which is
+    // the only honest way to check a nominated notify service — a misspelled one otherwise
+    // fails silently forever and looks exactly like "nothing worth saying happened".
+    if (verb === "skilltest") {
+      flash("Testing…", "ok");
+      try {
+        const r = await api("POST", `/v1/capabilities/${noun}/test`);
+        flash(r.said || (r.ok ? "Works." : "Didn't work."), r.ok ? "ok" : "err");
+      } catch (e) { flash("Couldn't test it: " + e.message, "err"); }
+      return;
     }
     // Save a skill's settings (ADR 0054). Only non-empty fields are sent, so a
     // blank secret leaves the stored value unchanged.
