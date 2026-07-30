@@ -130,6 +130,36 @@ anything changed. The two are never merged into a verdict, because a tool claimi
 while nothing changed is precisely the failure the record exists to catch. Merging them
 destroys the evidence.
 
+### How it has been landing is a number, and not a percentage
+
+The eval battery scores the **model** ([0055](0055-the-model-layer.md)). Nothing scored the
+**system**, which means "is it getting better?" had no answer. That matters more here than it
+would elsewhere, because reliability **compounds** — a step that works *p* of the time makes an
+n-step task *pⁿ* — so it is the quantity that decides how far autonomy can safely extend.
+
+Four numbers over the recent stretch, and **deliberately not blended into one score**:
+
+| bucket | meaning |
+| --- | --- |
+| **changed** | read before and after, and it differed. The only bucket *proven* to have worked |
+| **unchanged** | claimed success while the world stayed identical — the failure this document exists for |
+| **failed** | returned an error. Visible, and therefore the least dangerous |
+| **unchecked** | no reader, nothing to compare. Not a success and not a failure |
+
+A percentage would launder the two most informative buckets. Counting *unchecked* as a success
+is precisely how a system starts lying to itself about how well it works, and *unchanged* is a
+different kind of miss from an error — quieter, and worse.
+
+It names the **worst offender**, because a number nobody can act on is decoration. That is also
+where an honest caveat becomes visible instead of hidden: a tool Endora has no way to know is
+read-only counts as an actuator that never changes anything, since only a server's *nominated
+reader* is classified as observing ([0054](0054-other-peoples-services.md)). Rather than
+excluding such tools by guessing, the tally points at them by name — and the remedy is the
+existing one, nominating that tool as the server's reader.
+
+The smoke tier trips on **outright failures** exceeding half the stretch, and deliberately not
+on *unchanged*: a threshold on that bucket would fail forever for a reason that is not a fault.
+
 ### The interface discloses. The reply is not the record.
 
 What was done is shown **regardless of what the model says about it**. Disclosure is

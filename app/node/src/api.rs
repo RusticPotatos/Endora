@@ -813,6 +813,7 @@ pub fn app(state: AppState) -> Router {
         .route("/v1/aliases/upstream", post(push_aliases_upstream))
         .route("/v1/collections", post(make_a_collection))
         .route("/v1/models/worth-knowing", get(models_worth_knowing))
+        .route("/v1/reliability", get(how_it_has_been_landing))
         .route("/v1/standing-trouble", get(list_standing_trouble))
         .route("/v1/standing-trouble/answer", post(answer_standing_trouble))
         .route("/v1/config-writes", get(list_config_writes))
@@ -2128,6 +2129,37 @@ async fn make_a_collection(
     .await?;
     let _ = state.changes.send(());
     Ok(Json(said))
+}
+
+/// How Endora's recent actions actually landed (ADR 0053).
+///
+/// The battery scores the model; this scores the system. Without it, "more agentic" is a
+/// feeling — and reliability is what decides how far autonomy can safely extend, because it
+/// compounds.
+async fn how_it_has_been_landing(
+    State(state): State<AppState>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    /// Enough to be a trend, few enough that a bad week is still visible.
+    const RECENT: usize = 50;
+    let understanding = state.understanding.clone();
+    let all = blocking(move || {
+        endora_understanding::OutcomeRepository::list(understanding.as_ref())
+            .map_err(AppError::Repository)
+    })
+    .await?;
+    // Newest first, which is what the tally's window expects.
+    let mut newest = all;
+    newest.sort_by_key(|o| std::cmp::Reverse(o.at().unix_millis()));
+    let tally = endora_understanding::Reliability::over(&newest, RECENT);
+    Ok(Json(json!({
+        "considered": tally.considered,
+        "changed": tally.changed,
+        "unchanged": tally.unchanged,
+        "failed": tally.failed,
+        "unchecked": tally.unchecked,
+        "worst_offender": tally.worst_offender.as_ref().map(|(id, n)| json!({ "capability": id, "times": n })),
+        "in_words": tally.in_words(),
+    })))
 }
 
 /// What has been wrong long enough to be worth saying, as problem statements (ADR 0056).
