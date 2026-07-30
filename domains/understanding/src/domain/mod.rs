@@ -8,6 +8,6 @@ pub mod repairs;
 
 pub use beliefs::{Belief, BeliefKind, BeliefStatus, Confidence};
 pub use intentions::{Intention, IntentionState};
-pub use outcomes::{Outcome, Reaction};
+pub use outcomes::{Outcome, Reaction, Reliability};
 pub use preferences::{Preference, PreferenceKind};
 pub use repairs::{Remedy, RepairProposal, repair_proposals};

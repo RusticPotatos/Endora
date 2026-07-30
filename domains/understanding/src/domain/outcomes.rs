@@ -311,3 +311,170 @@ mod tests {
         assert_eq!(Reaction::from_name("bogus"), None);
     }
 }
+
+/// How the last stretch of Endora's actions actually landed (ADR 0053).
+///
+/// The eval battery scores the **model**; nothing scored the **system**. Without a number,
+/// "more agentic" is a feeling — and reliability is the thing that decides how far autonomy
+/// can safely extend, because it compounds: a step that works *p* of the time makes an
+/// n-step task *pⁿ*.
+///
+/// **Deliberately not a single success rate.** Blending these would launder the two most
+/// informative buckets into a percentage:
+///
+/// - a claim of success with **nothing changed** is the exact failure ADR 0053 was built for,
+///   and it is not the same kind of miss as an outright error;
+/// - **could not be checked** is genuinely unknown, and counting an unknown as a success is
+///   how a system starts lying to itself about how well it works.
+///
+/// One honest caveat, visible in the numbers rather than hidden: a tool Endora has no way to
+/// know is read-only counts as an actuator that changes nothing, because only a server's
+/// *nominated reader* is classified as observing (ADR 0054). That inflates `unchanged`, and
+/// `worst_offender` is what makes it obvious which tool is doing it.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Reliability {
+    /// How many outcomes this covers.
+    pub considered: usize,
+    /// Read the world before and after, and it differed. The only bucket that is **proven**
+    /// to have done what was asked.
+    pub changed: usize,
+    /// Reported success while the world stayed identical.
+    pub unchanged: usize,
+    /// Returned an error. Visible, and therefore the least dangerous kind of failure.
+    pub failed: usize,
+    /// No reader, so there was nothing to compare. Not a success and not a failure.
+    pub unchecked: usize,
+    /// The capability with the most "claimed success, changed nothing" outcomes, and how
+    /// many — so the number points at something rather than just being a number.
+    pub worst_offender: Option<(String, usize)>,
+}
+
+impl Reliability {
+    /// Tallies the `most_recent` outcomes, newest first in `outcomes`.
+    #[must_use]
+    pub fn over(outcomes: &[Outcome], most_recent: usize) -> Self {
+        let mut tally = Self::default();
+        let mut per_capability: std::collections::BTreeMap<&str, usize> =
+            std::collections::BTreeMap::new();
+        for outcome in outcomes.iter().take(most_recent) {
+            tally.considered += 1;
+            if outcome.claim().trim_start().starts_with("error:") {
+                tally.failed += 1;
+                continue;
+            }
+            match outcome.changed() {
+                Some(true) => tally.changed += 1,
+                Some(false) => {
+                    tally.unchanged += 1;
+                    *per_capability.entry(outcome.capability()).or_default() += 1;
+                }
+                None => tally.unchecked += 1,
+            }
+        }
+        tally.worst_offender = per_capability
+            .into_iter()
+            .max_by_key(|(_, n)| *n)
+            .map(|(id, n)| (id.to_owned(), n));
+        tally
+    }
+
+    /// One line for a person: what is known, in the order that matters.
+    #[must_use]
+    pub fn in_words(&self) -> String {
+        if self.considered == 0 {
+            return "Nothing to judge yet — no actions on record.".to_owned();
+        }
+        let mut parts = vec![format!("{} of {} verified", self.changed, self.considered)];
+        if self.unchanged > 0 {
+            parts.push(format!(
+                "{} claimed success but changed nothing",
+                self.unchanged
+            ));
+        }
+        if self.failed > 0 {
+            parts.push(format!("{} failed outright", self.failed));
+        }
+        if self.unchecked > 0 {
+            parts.push(format!("{} could not be checked", self.unchecked));
+        }
+        parts.join(" · ")
+    }
+}
+
+#[cfg(test)]
+mod how_the_last_stretch_landed {
+    use super::*;
+    fn outcome(id: u128, capability: &str, claim: &str, changed: Option<bool>) -> Outcome {
+        Outcome::record(
+            OutcomeId::new(id),
+            capability,
+            "{}",
+            claim,
+            changed.map(|_| "a reading"),
+            Timestamp::from_unix_millis(id as i64),
+            None,
+            changed,
+        )
+        .expect("valid outcome")
+    }
+
+    #[test]
+    fn the_four_buckets_stay_apart() {
+        // Blending these into one percentage would launder the two most informative ones:
+        // a claim of success that changed nothing is the failure ADR 0053 exists for, and
+        // "could not be checked" is genuinely unknown. Counting an unknown as a success is
+        // how a system starts lying to itself about how well it works.
+        let history = vec![
+            outcome(1, "home.HassTurnOff", "done", Some(true)),
+            outcome(2, "home.HassTurnOff", "done", Some(false)),
+            outcome(3, "home.HassTurnOn", "error: no matching entity", None),
+            outcome(4, "home.GetDateTime", "the time is 05:40", Some(false)),
+            outcome(5, "mail.Send", "sent", None),
+        ];
+        let tally = Reliability::over(&history, 50);
+
+        assert_eq!(tally.considered, 5);
+        assert_eq!(tally.changed, 1, "only a proven change counts as working");
+        assert_eq!(tally.unchanged, 2);
+        assert_eq!(tally.failed, 1);
+        assert_eq!(tally.unchecked, 1, "no reader is not a success");
+        assert_eq!(
+            tally.changed + tally.unchanged + tally.failed + tally.unchecked,
+            5
+        );
+    }
+
+    #[test]
+    fn it_names_what_keeps_changing_nothing() {
+        // A number nobody can act on is decoration. This is also how the read-tool caveat
+        // becomes visible rather than hidden: a tool Endora cannot know is read-only shows
+        // up here by name.
+        let history = vec![
+            outcome(1, "home.GetDateTime", "the time is 05:40", Some(false)),
+            outcome(2, "home.GetDateTime", "the time is 06:10", Some(false)),
+            outcome(3, "home.HassTurnOff", "done", Some(false)),
+        ];
+        let tally = Reliability::over(&history, 50);
+        assert_eq!(
+            tally.worst_offender,
+            Some(("home.GetDateTime".to_owned(), 2))
+        );
+    }
+
+    #[test]
+    fn with_nothing_on_record_it_says_so_rather_than_scoring_zero() {
+        // Zero out of zero is not a bad score, and showing "0% reliable" on a fresh install
+        // would be a false claim about a system that has not been asked to do anything.
+        let tally = Reliability::over(&[], 50);
+        assert_eq!(tally.considered, 0);
+        assert!(tally.in_words().starts_with("Nothing to judge yet"));
+    }
+
+    #[test]
+    fn only_the_recent_stretch_counts() {
+        let history: Vec<Outcome> = (1..=10)
+            .map(|i| outcome(i, "home.HassTurnOff", "done", Some(true)))
+            .collect();
+        assert_eq!(Reliability::over(&history, 3).considered, 3);
+    }
+}
