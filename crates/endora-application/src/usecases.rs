@@ -611,9 +611,9 @@ impl<'a> OutcomeSink<'a> {
         changed: Option<bool>,
         ids: &impl IdSource,
         clock: &impl Clock,
-    ) {
+    ) -> Option<OutcomeId> {
         if spec.is_some_and(|s| s.reversibility == Reversibility::Observe) {
-            return;
+            return None;
         }
         let Ok(outcome) = Outcome::record(
             OutcomeId::new(ids.new_id()),
@@ -625,9 +625,10 @@ impl<'a> OutcomeSink<'a> {
             self.motivated_by,
             changed,
         ) else {
-            return;
+            return None;
         };
         let _ = self.outcomes.save(&outcome);
+        Some(outcome.id())
     }
 }
 
@@ -780,7 +781,7 @@ fn run_tool_turn(
                         // Memory learns (ADR 0053): the claim and the observation are
                         // kept, apart and unreconciled, so "did that help?" has
                         // something to be answered from later.
-                        actions.record(
+                        let recorded = actions.record(
                             spec.as_ref(),
                             &id,
                             &call.input_json,
@@ -790,7 +791,14 @@ fn run_tool_turn(
                             ids,
                             clock,
                         );
-                        disclose(disclosures, spec.as_ref(), &id, &out, observed.as_deref());
+                        disclose(
+                            disclosures,
+                            spec.as_ref(),
+                            &id,
+                            &out,
+                            observed.as_deref(),
+                            recorded,
+                        );
                         (
                             StepStatus::Done,
                             note_verification_against(
@@ -821,7 +829,7 @@ fn run_tool_turn(
                         // A failed action is still something that happened, and its
                         // read-back is the most useful thing about it (ADR 0053), so it
                         // is recorded like any other.
-                        actions.record(
+                        let recorded = actions.record(
                             spec.as_ref(),
                             &id,
                             &call.input_json,
@@ -840,6 +848,7 @@ fn run_tool_turn(
                             &id,
                             &format!("error: {e}"),
                             observed.as_deref(),
+                            recorded,
                         );
                         let observed = observed.map_or_else(String::new, |o| {
                             format!(
@@ -1019,6 +1028,7 @@ fn disclose(
     skill: &str,
     claimed: &str,
     observed: Option<&str>,
+    outcome: Option<OutcomeId>,
 ) {
     if spec.is_some_and(|s| s.reversibility == Reversibility::Observe) {
         return;
@@ -1032,6 +1042,7 @@ fn disclose(
         skill: skill.to_owned(),
         claimed: claimed.trim().to_owned(),
         observed: observed.map(|o| o.trim().to_owned()),
+        outcome: outcome.map(|id| id.value().to_string()),
     });
 }
 
@@ -1260,6 +1271,14 @@ pub struct ActionDisclosure {
     /// What Endora observed afterwards, when the integration has a reader. `None` means
     /// nothing could check — which is the fact worth surfacing, not a gap to hide.
     pub observed: Option<String>,
+    /// The stored outcome this disclosure describes, so the person can say how it landed
+    /// from **where they already are** (ADR 0053).
+    ///
+    /// `None` when nothing was recorded — a read, or a failed write. The machinery for
+    /// judging an outcome was complete for months and had never once been used, because
+    /// the only place to do it was a section further down a screen nobody opens, which by
+    /// its own design never asked. A loop with no input is not a loop.
+    pub outcome: Option<String>,
 }
 
 impl ActionDisclosure {
@@ -6364,6 +6383,7 @@ mod tests {
             skill: "home.HassTurnOn".to_owned(),
             claimed: "error: MatchFailedError".to_owned(),
             observed: None,
+            outcome: None,
         }];
         assert!(super::nothing_changed_note(&failed).contains("Nothing was changed"));
     }
@@ -6377,11 +6397,13 @@ mod tests {
                 skill: "home.HassTurnOn".to_owned(),
                 claimed: "error: MatchFailedError".to_owned(),
                 observed: None,
+                outcome: None,
             },
             super::ActionDisclosure {
                 skill: "home.HassTurnOn".to_owned(),
                 claimed: "The action completed successfully on: Kitchen Table".to_owned(),
                 observed: None,
+                outcome: None,
             },
         ];
         assert_eq!(super::nothing_changed_note(&mixed), "");
@@ -6405,6 +6427,7 @@ mod tests {
                       anything. These exist:\n  - Kitchen Table\n  - Kitchen Bright"
                 .to_owned(),
             observed: None,
+            outcome: None,
         }];
         let note = super::nothing_changed_note(&failed);
         assert!(note.contains("Kitchen Table"), "{note}");
@@ -6418,6 +6441,7 @@ mod tests {
             skill: "home.HassTurnOff".to_owned(),
             claimed: "error: the server is unreachable".to_owned(),
             observed: None,
+            outcome: None,
         }];
         let note = super::nothing_changed_note(&failed);
         assert!(note.contains("Nothing was changed"), "{note}");
@@ -6433,6 +6457,7 @@ mod tests {
             skill: "home-assistant.HassTurnOn".to_owned(),
             claimed: "Home Assistant accepted 'turn on' on light.kitchen_table.".to_owned(),
             observed: None,
+            outcome: None,
         }];
         let said = super::acted_note(&done).expect("said nothing about work it had done");
         assert!(said.starts_with("Done."), "{said}");
@@ -6451,6 +6476,7 @@ mod tests {
             skill: "home.HassTurnOn".to_owned(),
             claimed: "error: MatchFailedError".to_owned(),
             observed: None,
+            outcome: None,
         }];
         assert!(super::acted_note(&failed).is_none());
         assert!(super::acted_note(&[]).is_none());

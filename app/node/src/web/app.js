@@ -336,7 +336,9 @@ function viewChat() {
     // A butler reply carries its persisted action trail + sources (if any), so
     // you can expand a PAST answer to see what it did and where it came from.
     if (!mine && m.actions) {
-      return bubble + activityHtml(m.actions.activity) + actionsTakenHtml(m.actions.actions_taken)
+      const newest = m.id === (list[list.length - 1] || {}).id;
+      return bubble + activityHtml(m.actions.activity)
+        + actionsTakenHtml(m.actions.actions_taken, newest)
         + stepsHtml(m.actions.steps) + sourcesHtml(m.actions.sources);
     }
     return bubble;
@@ -1612,16 +1614,32 @@ function readerRow(s) {
 // roughly two runs in three and asserts unverified success every time, so the reply
 // above this may well claim the opposite of what it says here. Both are shown; the
 // person judges. Nothing here edits the reply.
-function actionsTakenHtml(actions) {
+// `latest` adds the one question worth asking: did that help?
+//
+// It is shown on the NEWEST turn only, and never anywhere else. The machinery for judging
+// an outcome has existed for months and had never once been used, because the only place
+// to say so was a section further down a screen nobody opens — which, by its own design,
+// never asked. A loop with no input is not a loop.
+//
+// Still no badge, no counter, nothing that accumulates: the ask is gone by the next turn
+// whether or not it was answered, so ignoring it stays free. That is the anti-queue rule
+// (ADR 0052) kept, while actually asking once, where you already are.
+function actionsTakenHtml(actions, latest) {
   if (!actions || !actions.length) return "";
   const rows = actions.map((a) => {
+    const ask = (latest && a.outcome)
+      ? `<span class="step-more" style="margin-left:8px;">
+           <button class="ghost" data-act="react:helped:${a.outcome}" title="that helped" style="padding:1px 7px;font-size:12px;">Helped</button>
+           <button class="ghost" data-act="react:did_not_help:${a.outcome}" title="that didn't help" style="padding:1px 7px;font-size:12px;">Didn't</button>
+         </span>`
+      : "";
     const what = `<span class="step-more">${esc(a.skill)}</span>`;
     if (a.confirmed) {
       // Bounded: a read-back can run to thousands of characters, and pasting the whole
       // thing under the reply buries it. The full text is still in the step trail.
-      return `<div class="step-row">${icon("check", 13)}<span>${what} — Endora checked afterwards: ${esc(clip(a.observed, 240))}</span></div>`;
+      return `<div class="step-row">${icon("check", 13)}<span>${what} — Endora checked afterwards: ${esc(clip(a.observed, 240))}</span>${ask}</div>`;
     }
-    return `<div class="step-row">${icon("target", 13)}<span>${what} — reported ${esc(clip(a.claimed, 240))}, <strong>not confirmed</strong>. Endora couldn't check this one for itself.</span></div>`;
+    return `<div class="step-row">${icon("target", 13)}<span>${what} — reported ${esc(clip(a.claimed, 240))}, <strong>not confirmed</strong>. Endora couldn't check this one for itself.</span>${ask}</div>`;
   }).join("");
   return `<div class="row" style="justify-content:flex-start;margin:2px 0;"><div class="steps" style="padding:8px 10px;"><div class="step-list">${rows}</div></div></div>`;
 }

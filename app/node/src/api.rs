@@ -1525,6 +1525,7 @@ async fn stream_chat(
                                 "claimed": d.claimed,
                                 "observed": d.observed,
                                 "confirmed": d.was_observed(),
+                                "outcome": d.outcome,
                             })
                         })
                         .collect();
@@ -3638,6 +3639,31 @@ impl endora_capabilities::Capability for WhatIHaveBeenDoing {
     }
 }
 
+/// Sends one line to whatever the person nominated as how to reach them (ADR 0056).
+///
+/// Best-effort and silent on failure: a notification that cannot be delivered must never
+/// break the turn that produced it, the same rule verification has followed since ADR 0053.
+///
+/// Only the first sentence travels. The whole point is to say *there is something*, and a
+/// notification long enough to be the message itself is one the person stops reading.
+fn reach_out(config: &endora_capabilities::ConfigStore, message: &endora_application::ChatMessage) {
+    const ENOUGH_TO_KNOW_IT_MATTERS: usize = 140;
+    let text = message.text().trim();
+    let line: String = text.chars().take(ENOUGH_TO_KNOW_IT_MATTERS).collect();
+    let body = if text.chars().count() > ENOUGH_TO_KNOW_IT_MATTERS {
+        format!("{line}…")
+    } else {
+        line
+    };
+    for (server, channel) in native_channels(config) {
+        match channel.notify("Endora", &body) {
+            Some(Ok(())) => {}
+            Some(Err(why)) => eprintln!("reaching out via {server}: {why}"),
+            None => {} // nothing nominated here, which is the default
+        }
+    }
+}
+
 /// Notes what is not answering in each service Endora has direct reach into (ADR 0056).
 ///
 /// The whole reason this runs at all: without it there is no *since when*, and without a
@@ -3802,6 +3828,19 @@ pub fn spawn_heartbeat(state: AppState) {
                         clock.as_ref(),
                         "Ran the nightly self-improvement loop",
                     );
+                }
+                // Reach the person, if they nominated a way to be reached (ADR 0056).
+                //
+                // Every one of these is a message they did not ask for, which is exactly
+                // what a notification is for — and the rate limit is already the schedule
+                // they set, so this cannot become a firehose without them widening it.
+                //
+                // Deliberately NOT gated on presence. That would mean parsing free text a
+                // service wrote ("rustic is not home") to decide whether to interrupt, and
+                // a wrong guess either wakes someone or silently drops the alert they
+                // wanted. The schedule is the honest limit.
+                for message in [posted.as_ref(), briefed.as_ref()].into_iter().flatten() {
+                    reach_out(config.as_ref(), &message.0);
                 }
                 Ok::<_, AppError>(posted.is_some() || briefed.is_some() || reflected.is_some())
             })

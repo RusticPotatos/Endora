@@ -47,6 +47,9 @@ pub struct HomeAssistant {
     /// acting are one grant; editing the service's own configuration is another, and it
     /// is off until deliberately turned on.
     may_write: bool,
+    /// The notify service the person nominated as how to reach them, without its
+    /// `notify.` prefix. Empty means Endora never interrupts them through this service.
+    notify_service: String,
     /// The other names the person has confirmed for things here, as `(said, means)`.
     ///
     /// A thing answers to more than one name, and Endora only knew the service's own
@@ -64,6 +67,12 @@ impl HomeAssistant {
     pub fn from_settings(settings: &crate::infrastructure::CapabilitySettings) -> Option<Self> {
         let base = settings.get("url")?.trim().trim_end_matches('/').to_owned();
         let token = settings.get("token")?.trim().to_owned();
+        // Which notify service to reach the person through. Blank means never — being able
+        // to interrupt somebody is granted, not inferred.
+        let notify_service = settings
+            .get("notify_service")
+            .map(|v| v.trim().trim_start_matches("notify.").to_owned())
+            .unwrap_or_default();
         let may_write = settings
             .get("write_names")
             .map(|v| v.trim().to_lowercase())
@@ -72,6 +81,7 @@ impl HomeAssistant {
             base,
             token,
             may_write,
+            notify_service,
             aliases: Vec::new(),
         })
     }
@@ -784,6 +794,21 @@ impl crate::infrastructure::NativeChannel for HomeAssistant {
     fn act(&self, tool: &str, entity: &str) -> Option<Result<String, String>> {
         let (domain, service) = service_for(tool)?;
         Some(self.call_service(domain, service, entity))
+    }
+
+    fn notify(&self, title: &str, body: &str) -> Option<Result<(), String>> {
+        if self.notify_service.is_empty() {
+            return None;
+        }
+        // Home Assistant's own notify service, which is already delivering to this
+        // person's phone. Endora adds no push stack of its own.
+        Some(
+            self.post(
+                &format!("/api/services/notify/{}", self.notify_service),
+                &json!({ "title": title, "message": body }),
+            )
+            .map(|_| ()),
+        )
     }
 
     fn hide(&self, name: &str, hidden: bool) -> Option<Result<crate::domain::ConfigWrite, String>> {
