@@ -48,6 +48,39 @@ against the battery, and adopted **only if it clears the floor** — a determini
 applied by policy. The stored configuration wins over environment defaults, and the active
 model is visible.
 
+### A second model beats a bigger one, and the trigger is code
+
+The constraint this section exists for is arithmetic, not a property of any model.
+**Reliability compounds:** a model that obeys a procedural instruction about **one run in
+three** — the measured figure this architecture rests on — turns an n-step task into (1/3)ⁿ.
+Nothing about a longer chain is safe unless the steps stop being probabilistic.
+
+That is why every guarantee here has been moved into code: a deterministic gate is *p = 1* and
+does not compound downward. But some steps have to be a model, and for those there is a second
+lever. Two independent attempts fail together only at (1-p₁)(1-p₂), so **a different model is
+worth more than a bigger one** — and, unlike a bigger one, it exists today.
+
+So when the local model fails a deterministic check, Endora asks a stronger one **once**:
+
+- the check is the same `not_an_answer` used everywhere — empty, model unreachable, named a
+  tool without calling it, protocol or frame-break prose — **plus repeating its own last
+  answer**, which was observed live with the day's real record sitting in context;
+- the trigger is **code**, never the model's opinion of how it did. A model that could tell it
+  had failed would not have failed;
+- the local model is tried, and retried, first. Nothing leaves the box on a first stumble;
+- it is expressed on the **port** — "this butler knows a better one" — rather than threaded
+  through nine call sites that mostly do not care.
+
+**It is off by default, and that is not a reliability decision.** The deep model is usually
+somebody else's API, and until this existed it was reached only when the person pressed a
+button, so every use of it was them choosing to send that conversation off the box. Making the
+fallback automatic without asking would quietly convert a local butler into one that phones out
+whenever the small model stumbles — which it does often. Reliability is worth a great deal; it
+is not worth deciding this on somebody's behalf.
+
+**Every escalated reply says so**, rather than relying on the person to remember a setting they
+changed once. Which model answered is not a detail — it is where their words went.
+
 ## Consequences
 
 - The model can be swapped, upgraded or downgraded without touching the domain.
@@ -70,3 +103,9 @@ model is visible.
 - **Adopting a model because it scored well on a public leaderboard.** The fitness function is
   *this* system's turn machinery, not a benchmark.
 - **A confidence threshold** as an authorization mechanism, at any point.
+- **Escalating on the model's own judgement** that it needs help. A model able to tell it had
+  failed would not have failed.
+- **Escalating by default.** It is a change to where the person's words go, not a tuning knob.
+- **Waiting for a better local model** to fix procedural compliance. Measured: a 14B did not
+  beat the 7B on the battery, and every model tested scored 0/3 on verification. Scale buys
+  capability faster than it buys obedience.

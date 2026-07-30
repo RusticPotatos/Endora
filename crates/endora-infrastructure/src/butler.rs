@@ -17,7 +17,9 @@
 //! policy decides whether it runs (ADRs 0005/0024), the capability executes it, and the
 //! result — success or failure — comes back for the model to answer from.
 
-use endora_application::{BeliefKind, ChatMessage, Confidence, MessageRole, Preference};
+use endora_application::{
+    BeliefKind, ChatMessage, Confidence, DeepModel, DeepModelRepository, MessageRole, Preference,
+};
 use endora_application::{Butler, ButlerContext, ButlerReply, FormedBelief, ProposalError};
 use std::sync::{Arc, Mutex};
 
@@ -627,6 +629,12 @@ pub struct ConfigurableButler {
     repo: Arc<dyn ButlerModelConfigRepository + Send + Sync>,
     fallback: Arc<dyn Butler + Send + Sync>,
     cache: Mutex<Option<(ButlerModelConfig, Arc<dyn Butler + Send + Sync>)>>,
+    /// Where the **deep** model's configuration is read from, for the fallback the port
+    /// calls [`deeper`](Butler::deeper). `None` in tests and in any composition that has no
+    /// deep model at all.
+    deep: Option<Arc<dyn DeepModelRepository + Send + Sync>>,
+    /// The deep brain, rebuilt when its configuration changes — same shape as `cache`.
+    deep_cache: Mutex<Option<(DeepModel, Arc<dyn Butler + Send + Sync>)>>,
 }
 
 impl ConfigurableButler {
@@ -641,6 +649,8 @@ impl ConfigurableButler {
             repo,
             fallback,
             cache: Mutex::new(None),
+            deep: None,
+            deep_cache: Mutex::new(None),
         }
     }
 
@@ -655,6 +665,13 @@ impl ConfigurableButler {
         } else {
             !config.single.model.trim().is_empty()
         }
+    }
+
+    /// Attaches the deep model's configuration, enabling the fallback on the port.
+    #[must_use]
+    pub fn also_knowing(mut self, deep: Arc<dyn DeepModelRepository + Send + Sync>) -> Self {
+        self.deep = Some(deep);
+        self
     }
 
     /// The brain for this turn: the stored config if usable (cached, rebuilt on
@@ -705,6 +722,34 @@ pub fn butler_from_config(config: &ButlerModelConfig) -> Arc<dyn Butler + Send +
 }
 
 impl Butler for ConfigurableButler {
+    /// The deep model, **only** when the person has turned the automatic fallback on.
+    ///
+    /// The gate is deliberate and it is not about reliability. The deep model is usually
+    /// somebody else's API, and until this existed it was reached only when the person
+    /// pressed a button — so every use of it was them choosing to send that conversation
+    /// off the box. Falling back automatically is a change to where their words go, and
+    /// that is theirs to make (ADR 0055).
+    fn deeper(&self) -> Option<Arc<dyn Butler + Send + Sync>> {
+        let config = self.deep.as_ref()?.get().ok().flatten()?;
+        if !config.escalate || config.url.trim().is_empty() || config.model.trim().is_empty() {
+            return None;
+        }
+        let mut cache = self.deep_cache.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some((cached, brain)) = cache.as_ref() {
+            if *cached == config {
+                return Some(Arc::clone(brain));
+            }
+        }
+        let brain: Arc<dyn Butler + Send + Sync> = Arc::new(LlmButler::with_config(
+            config.url.clone(),
+            config.model.clone(),
+            config.api_key.clone(),
+            endora_application::Sampling::default(),
+        ));
+        *cache = Some((config, Arc::clone(&brain)));
+        Some(brain)
+    }
+
     fn respond(
         &self,
         history: &[ChatMessage],
