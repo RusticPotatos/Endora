@@ -19,6 +19,16 @@ pub struct DeepModel {
     pub model: String,
     /// API key sent as a bearer token (empty for keyless/local endpoints).
     pub api_key: String,
+    /// Whether Endora may fall back to this model **on its own** when the local one fails
+    /// a deterministic check (ADR 0055).
+    ///
+    /// **Off by default, and it stays a decision rather than an optimisation.** The deep
+    /// model is usually somebody else's API, and until now it was reached only when the
+    /// person pressed a button — so every use of it was a choice to send that conversation
+    /// off the box. Making the fallback automatic without asking would quietly convert a
+    /// local butler into one that phones out whenever the small model stumbles, which it
+    /// does often. Reliability is worth a lot; it is not worth deciding this for someone.
+    pub escalate: bool,
 }
 
 /// Persists the single [`DeepModel`] configuration.

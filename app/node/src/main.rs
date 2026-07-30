@@ -70,8 +70,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Ok(Some(cfg)) => println!("butler in effect: stored single model {}", cfg.single.model),
         _ => println!("butler in effect: the fallback above (nothing stored)"),
     }
-    let butler: Arc<dyn Butler + Send + Sync> =
-        Arc::new(ConfigurableButler::new(model_config, fallback));
+    // The deep model is attached as a FALLBACK, not as the brain: it is used only when the
+    // local one fails a deterministic check, and only if the person turned that on (ADR
+    // 0055). `ConfigStore` is both repositories, so this is the same handle.
+    let butler: Arc<dyn Butler + Send + Sync> = Arc::new(
+        ConfigurableButler::new(model_config.clone(), fallback).also_knowing(model_config),
+    );
 
     let state = AppState::new(
         store,

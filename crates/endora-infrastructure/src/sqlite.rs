@@ -122,10 +122,11 @@ CREATE TABLE IF NOT EXISTS night_loop_schedule (
     last_ms   INTEGER NOT NULL
 ) STRICT;
 CREATE TABLE IF NOT EXISTS deep_model (
-    id      INTEGER PRIMARY KEY CHECK (id = 0),
-    url     TEXT NOT NULL,
-    model   TEXT NOT NULL,
-    api_key TEXT NOT NULL
+    id       INTEGER PRIMARY KEY CHECK (id = 0),
+    url      TEXT NOT NULL,
+    model    TEXT NOT NULL,
+    api_key  TEXT NOT NULL,
+    escalate INTEGER NOT NULL DEFAULT 0
 ) STRICT;
 CREATE TABLE IF NOT EXISTS butler_model_config (
     id            INTEGER PRIMARY KEY CHECK (id = 0),
@@ -266,6 +267,14 @@ impl SqliteStore {
             )?;
             // Per-MCP-server credentials: a child-process environment (stdio) and a
             // bearer token (http). Secrets — stored, never returned by the API.
+            // `CREATE TABLE IF NOT EXISTS` never adds a column to a table that already
+            // exists, so a new column on an existing install arrives only here.
+            ensure_column(
+                &conn,
+                "deep_model",
+                "escalate",
+                "INTEGER NOT NULL DEFAULT 0",
+            )?;
             ensure_column(&conn, "mcp_servers", "env", "TEXT NOT NULL DEFAULT ''")?;
             ensure_column(&conn, "mcp_servers", "auth", "TEXT NOT NULL DEFAULT ''")?;
             // Auto-allow a server's tools on connect (default on). Opened tools stay
@@ -833,13 +842,27 @@ mod tests {
         let cfg = cfg_store(&store);
         let repo: &dyn DeepModelRepository = &cfg;
         assert!(repo.get().unwrap().is_none());
+        // Configuring a deep model must NOT enable the automatic fallback: it is reached
+        // only when the person presses a button until they say otherwise (ADR 0055).
         let cfg = DeepModel {
             url: "https://api.x.com/v1".to_owned(),
             model: "big-1".to_owned(),
             api_key: "secret".to_owned(),
+            escalate: false,
         };
         repo.set(&cfg).unwrap();
-        assert_eq!(repo.get().unwrap(), Some(cfg));
+        assert_eq!(repo.get().unwrap(), Some(cfg.clone()));
+        assert!(
+            !repo.get().unwrap().unwrap().escalate,
+            "phoning out must never be on by default"
+        );
+
+        let opted_in = DeepModel {
+            escalate: true,
+            ..cfg
+        };
+        repo.set(&opted_in).unwrap();
+        assert_eq!(repo.get().unwrap(), Some(opted_in));
     }
 
     #[test]
