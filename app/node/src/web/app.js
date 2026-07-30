@@ -1617,6 +1617,15 @@ function readerRow(s) {
 // roughly two runs in three and asserts unverified success every time, so the reply
 // above this may well claim the opposite of what it says here. Both are shown; the
 // person judges. Nothing here edits the reply.
+// A subtle note of what Endora did behind the scenes on THIS turn — what it looked up and
+// what it learned. Rendered per message from the stored record, so it is still there when
+// you come back to the chat (ADR 0056). It used to be drawn from a live stream event held
+// in memory, which meant the note existed only while you stayed on the screen.
+function activityHtml(activity) {
+  if (!SHOW_ACTIVITY || !Array.isArray(activity) || !activity.length) return "";
+  return `<div class="activity">${icon("sparkle", 13)} ${activity.map(esc).join(" · ")}</div>`;
+}
+
 // `latest` adds the one question worth asking: did that help?
 //
 // It is shown on the NEWEST turn only, and never anywhere else. The machinery for judging
