@@ -826,6 +826,7 @@ pub fn app(state: AppState) -> Router {
         .route("/v1/intentions/{id}/drop", post(drop_intention))
         .route("/v1/capabilities", get(list_capabilities))
         .route("/v1/capabilities/{id}/invoke", post(invoke_capability))
+        .route("/v1/capabilities/{id}/test", post(test_capability))
         .route("/v1/capabilities/{id}/enable", post(set_capability_enabled))
         .route("/v1/capabilities/{id}/open", post(set_capability_open))
         .route(
@@ -3567,6 +3568,62 @@ async fn invoke_capability(
         Err(CapabilityError::Unavailable(m)) => {
             // Not an error the person did wrong — report it as a soft result.
             Ok(Json(json!({ "ok": false, "unavailable": m })))
+        }
+    }
+}
+
+/// Proves a skill works with the settings it has, right now.
+///
+/// Both model endpoints have had a *Test connection* button since they existed; no skill
+/// ever has. So the only way to find out whether a URL, a token — or a newly nominated
+/// notify service — is right was to save it and wait for something that might not arrive
+/// for hours.
+///
+/// Read-only skills prove themselves by running, which is the default. A skill that can
+/// actuate refuses: "press this to find out" must never be how someone discovers what a
+/// skill does.
+async fn test_capability(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let Some(cap) = state
+        .capabilities
+        .iter()
+        .find(|c| c.info().id == id)
+        .cloned()
+    else {
+        return Err(ApiError(AppError::NotFound {
+            entity: "capability",
+        }));
+    };
+    let config = state.config.clone();
+    let events = state.events.clone();
+    let clock = state.clock.clone();
+    let told = id.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        let settings = settings_map(config.as_ref())
+            .remove(&told)
+            .unwrap_or_default();
+        cap.self_test(&settings)
+    })
+    .await
+    .map_err(|_| {
+        ApiError(AppError::Repository(RepositoryError::Backend(
+            "worker task failed".to_owned(),
+        )))
+    })?;
+    match result {
+        Ok(said) => {
+            record_event(
+                events.as_ref(),
+                clock.as_ref(),
+                &format!("Tested the {id} skill: {said}"),
+            );
+            Ok(Json(json!({ "ok": true, "said": said })))
+        }
+        // Not something the person did wrong — a soft result they can read and act on.
+        Err(CapabilityError::BadInput(m) | CapabilityError::Unavailable(m)) => {
+            Ok(Json(json!({ "ok": false, "said": m })))
         }
     }
 }
