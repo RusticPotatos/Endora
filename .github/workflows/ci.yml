@@ -47,5 +47,8 @@ jobs:
       - name: Tests
         run: cargo test --workspace --all-features
 
+      - name: Console screens render
+        run: node scripts/check-console.mjs
+
       - name: Whitespace / conflict-marker check
         run: git diff --check
