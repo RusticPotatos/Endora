@@ -98,6 +98,35 @@ pub trait Capability: Send + Sync {
         settings: &CapabilitySettings,
     ) -> Result<Value, CapabilityError>;
 
+    /// Proves this skill actually works, right now, with the settings it has been given.
+    ///
+    /// Both model endpoints have had a **Test connection** button since they existed; no
+    /// skill has ever had one. So the way to find out whether a URL, a token or a newly
+    /// nominated notify service is right has been to configure it and wait — and a
+    /// setting whose only feedback is a proactive message that may not arrive for hours is
+    /// a setting nobody can be confident in.
+    ///
+    /// The default is not a stub: **a read-only skill proves itself by running.** It is
+    /// invoked with no arguments and its own summary is returned, so every observing skill
+    /// gets a working test without writing one. A skill that can actuate refuses, because
+    /// "press this to find out" must never be how someone discovers what it does.
+    ///
+    /// Override it where a skill can prove *more* than that — a channel that can also
+    /// reach the person should show that it can.
+    ///
+    /// # Errors
+    /// [`CapabilityError`] if the skill cannot reach what it needs, or has no safe test.
+    fn self_test(&self, settings: &CapabilitySettings) -> Result<String, CapabilityError> {
+        if self.info().reversibility != Reversibility::Observe {
+            return Err(CapabilityError::Unavailable(
+                "this skill can change things, so there is no safe way to try it for you"
+                    .to_owned(),
+            ));
+        }
+        let out = self.invoke(&Value::Object(serde_json::Map::new()), settings)?;
+        Ok(self.summarize(&out))
+    }
+
     /// Renders a result into short, human-readable text for the butler to answer
     /// from. Small local models relay a clean sentence far better than raw JSON,
     /// so each skill that the butler speaks from overrides this. The default is
@@ -1531,6 +1560,37 @@ impl Capability for HomeAssistantCapability {
             configured: true,
             needs: "your Home Assistant URL and a long-lived access token",
             settings: HA_SETTINGS,
+        }
+    }
+
+    /// Proves the whole chain in one press: it can reach Home Assistant, it can read, and
+    /// — if a notify service has been nominated — it can reach the person.
+    ///
+    /// The notification is sent **because** the button was pressed, which is the only
+    /// honest way to test that path: a nominated service that is misspelled fails silently
+    /// forever otherwise, and the failure looks exactly like "nothing worth saying
+    /// happened" (ADR 0056).
+    fn self_test(&self, settings: &CapabilitySettings) -> Result<String, CapabilityError> {
+        let reading = self.invoke(&Value::Object(serde_json::Map::new()), settings)?;
+        let seen = reading
+            .get("count")
+            .and_then(Value::as_u64)
+            .map_or_else(|| self.summarize(&reading), |n| format!("{n} things"));
+        let Some(home) = crate::home_assistant::HomeAssistant::from_settings(settings) else {
+            return Ok(format!("Connected. Endora can see {seen}."));
+        };
+        match home.notify("Endora", "Test from Endora — this is how I'll reach you.") {
+            None => Ok(format!(
+                "Connected. Endora can see {seen}. No notify service is set, so it has no \
+                 way to reach you when you're away."
+            )),
+            Some(Ok(())) => Ok(format!(
+                "Connected. Endora can see {seen}, and it just sent a test notification — \
+                 check your phone."
+            )),
+            Some(Err(why)) => Err(CapabilityError::Unavailable(format!(
+                "Endora can see {seen}, but the notify service did not work: {why}"
+            ))),
         }
     }
 
@@ -5530,5 +5590,100 @@ mod tests {
                 .any(|(name, _)| name == "Kitchen Table"),
             "the facts behind an answer were dropped somewhere in the stack"
         );
+    }
+}
+
+#[cfg(test)]
+mod pressing_test_is_safe {
+    use super::*;
+
+    /// A skill that can change the world, and records whether it was run.
+    struct Actuator(std::sync::atomic::AtomicBool);
+    impl Capability for Actuator {
+        fn info(&self) -> CapabilityInfo {
+            CapabilityInfo {
+                id: "wire_transfer",
+                name: "Wire transfer",
+                description: "",
+                category: "",
+                reaches_external: true,
+                reversibility: Reversibility::Irreversible,
+                configured: true,
+                needs: "",
+                settings: &[],
+            }
+        }
+        fn invoke(
+            &self,
+            _input: &Value,
+            _settings: &CapabilitySettings,
+        ) -> Result<Value, CapabilityError> {
+            self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+            Ok(Value::Null)
+        }
+    }
+
+    /// A read-only skill, which proves itself by running.
+    struct Reader;
+    impl Capability for Reader {
+        fn info(&self) -> CapabilityInfo {
+            CapabilityInfo {
+                id: "weather",
+                name: "Weather",
+                description: "",
+                category: "",
+                reaches_external: true,
+                reversibility: Reversibility::Observe,
+                configured: true,
+                needs: "",
+                settings: &[],
+            }
+        }
+        fn invoke(
+            &self,
+            _input: &Value,
+            _settings: &CapabilitySettings,
+        ) -> Result<Value, CapabilityError> {
+            Ok(serde_json::json!({ "temp": 72 }))
+        }
+        fn summarize(&self, _o: &Value) -> String {
+            "72F, sunny".to_owned()
+        }
+    }
+
+    #[test]
+    fn a_skill_that_can_act_is_never_run_to_test_it() {
+        // "Press this to find out" must never be how someone discovers what a skill does.
+        // The wire transfer is the deliberately absurd case, and the rule is the same for
+        // every actuator: turning a light on to prove the light skill works is still an
+        // action nobody asked for.
+        let actuator = Actuator(std::sync::atomic::AtomicBool::new(false));
+        let answer = actuator.self_test(&CapabilitySettings::default());
+
+        assert!(answer.is_err(), "an actuator must refuse: {answer:?}");
+        assert!(
+            !actuator.0.load(std::sync::atomic::Ordering::SeqCst),
+            "it RAN — a test button that transfers money is worse than no test button"
+        );
+    }
+
+    #[test]
+    fn a_read_only_skill_proves_itself_by_running() {
+        // The default is not a stub: every observing skill gets a working test without
+        // anyone writing one.
+        assert_eq!(
+            Reader.self_test(&CapabilitySettings::default()).unwrap(),
+            "72F, sunny"
+        );
+    }
+
+    #[test]
+    fn a_skill_that_cannot_reach_its_service_says_so_rather_than_claiming_to_work() {
+        // Home Assistant with no URL configured — the exact case the button exists for.
+        let answer = HomeAssistantCapability.self_test(&CapabilitySettings::default());
+        let Err(CapabilityError::Unavailable(why)) = answer else {
+            panic!("expected an unavailable answer, got {answer:?}");
+        };
+        assert!(why.contains("URL"), "{why}");
     }
 }
