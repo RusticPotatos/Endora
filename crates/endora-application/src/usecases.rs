@@ -471,7 +471,7 @@ fn take_turn_retrying_empty(
             message: e.to_string(),
         })?;
     let mut retries = 0;
-    while not_an_answer(&reply, context) && retries < MAX_EMPTY_RETRIES {
+    while gave_nothing_useful(&reply, conversation, context) && retries < MAX_EMPTY_RETRIES {
         retries += 1;
         // A retry only happens when the round produced NOTHING, so nothing was streamed
         // and there is nothing for the person to see rewritten.
@@ -481,7 +481,69 @@ fn take_turn_retrying_empty(
                 message: e.to_string(),
             })?;
     }
+    // The local model has now failed the same deterministic check three times. Asking it a
+    // fourth time is the definition of not learning, so ask a different one — once
+    // (ADR 0055).
+    //
+    // Reliability compounds: two independent attempts at p₁ and p₂ fail together only at
+    // (1-p₁)(1-p₂), which is how a second model beats a bigger one without waiting for a
+    // bigger one to exist. What makes this safe rather than clever is that the **trigger is
+    // code**: a check Endora applied to the reply, never the model's own opinion of how it
+    // did.
+    if let Some(deeper) = butler
+        .deeper()
+        .filter(|_| gave_nothing_useful(&reply, conversation, context))
+    {
+        // Not streamed. The person has already seen whatever the local attempts emitted, and
+        // a second voice writing into the same bubble would read as one confused answer.
+        if let Ok(better) = deeper.take_turn(conversation, prefs, context) {
+            if !gave_nothing_useful(&better, conversation, context) {
+                return Ok(ButlerReply {
+                    escalated: true,
+                    ..better
+                });
+            }
+        }
+    }
     Ok(reply)
+}
+
+/// Whether a reply is worth keeping — [`not_an_answer`], plus saying the same thing again.
+///
+/// Repetition needs the conversation, which is why it lives here rather than in
+/// `not_an_answer`. Observed live: asked what it had done while the person was out, the
+/// butler reproduced **word for word** the answer it had given the previous day, with the
+/// day's real record sitting in its context. A reply that only repeats the last one has
+/// added nothing, and asking again is free where the person is waiting.
+fn gave_nothing_useful(
+    reply: &ButlerReply,
+    conversation: &[TurnMessage],
+    context: &ButlerContext,
+) -> bool {
+    not_an_answer(reply, context) || repeats_its_last_answer(reply, conversation)
+}
+
+/// Whether this reply is the butler's previous one again.
+///
+/// Compared on normalized words so trivial re-wording still counts, and only against the
+/// **most recent** butler turn — a butler that answers "it's off" twice about the same light
+/// on consecutive turns is correct, and only becomes suspect when nothing else was said in
+/// between.
+fn repeats_its_last_answer(reply: &ButlerReply, conversation: &[TurnMessage]) -> bool {
+    let text = reply.text.trim();
+    // Short confirmations are legitimately identical — "Done." twice is not a failure.
+    const LONG_ENOUGH_TO_BE_A_CLAIM: usize = 40;
+    if text.len() < LONG_ENOUGH_TO_BE_A_CLAIM || !reply.tool_calls.is_empty() {
+        return false;
+    }
+    conversation
+        .iter()
+        .rev()
+        .find_map(|m| match m {
+            TurnMessage::Assistant { text, .. } if !text.trim().is_empty() => Some(text.clone()),
+            _ => None,
+        })
+        .is_some_and(|last| words_of(&last) == words_of(text))
 }
 
 /// Tool rounds allowed in a **chat** turn. `run_tool_turn` already answers after one
@@ -1414,6 +1476,14 @@ pub fn send_to_butler_streaming(
     if disclosures.is_empty() {
         appended.push_str(&facts_behind(&reply_text, capabilities.current_states()));
         appended.push_str(&account_behind(&reply_text, &context.did_lately));
+    }
+    // Where the words went. Disclosed on every escalated turn rather than left to a
+    // setting the person configured once and will not remember (ADR 0055).
+    if reply.escalated {
+        appended.push_str(
+            "\n\n[deep] My local model could not answer that, so I asked the deep model \
+             instead — this conversation left the box.",
+        );
     }
     let reply_text = format!("{reply_text}{appended}");
     // `take_turn` is non-streaming, so deliver the final answer at once.
@@ -7463,5 +7533,133 @@ mod the_record_next_to_the_claim {
         // noise, and the reply denying activity would then be correct anyway.
         let denial = "No specific activities were recorded.";
         assert_eq!(account_behind(denial, &[]), "");
+    }
+}
+
+#[cfg(test)]
+mod when_the_local_model_will_not_do_it {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// A local model that always fails the deterministic check, whatever it is asked.
+    struct AlwaysNothing(AtomicUsize);
+    impl Butler for AlwaysNothing {
+        fn respond(
+            &self,
+            _h: &[ChatMessage],
+            _p: &[Preference],
+            _c: &ButlerContext,
+        ) -> Result<ButlerReply, crate::ProposalError> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Ok(ButlerReply::default())
+        }
+        fn deeper(&self) -> Option<std::sync::Arc<dyn Butler + Send + Sync>> {
+            Some(std::sync::Arc::new(Deeper))
+        }
+    }
+
+    /// The stronger model, which answers.
+    struct Deeper;
+    impl Butler for Deeper {
+        fn respond(
+            &self,
+            _h: &[ChatMessage],
+            _p: &[Preference],
+            _c: &ButlerContext,
+        ) -> Result<ButlerReply, crate::ProposalError> {
+            Ok(ButlerReply {
+                text: "The kitchen table light is off.".to_owned(),
+                ..ButlerReply::default()
+            })
+        }
+    }
+
+    /// A local model with nothing better to fall back to — the default.
+    struct Alone;
+    impl Butler for Alone {
+        fn respond(
+            &self,
+            _h: &[ChatMessage],
+            _p: &[Preference],
+            _c: &ButlerContext,
+        ) -> Result<ButlerReply, crate::ProposalError> {
+            Ok(ButlerReply::default())
+        }
+    }
+
+    #[test]
+    fn a_second_model_answers_after_the_local_one_keeps_failing() {
+        // Reliability compounds: two independent attempts fail together only at
+        // (1-p1)(1-p2). The trigger is a check Endora applied to the reply, never the
+        // model's opinion of how it did.
+        let local = AlwaysNothing(AtomicUsize::new(0));
+        let reply = take_turn_retrying_empty(
+            &local,
+            &[TurnMessage::User(
+                "is the kitchen table light on?".to_owned(),
+            )],
+            &[],
+            &ButlerContext::default(),
+            &mut |_| {},
+        )
+        .expect("a turn");
+
+        assert_eq!(reply.text, "The kitchen table light is off.");
+        assert!(reply.escalated, "an escalated reply must say so");
+        // The local model is tried, and retried, BEFORE anything leaves the box.
+        assert_eq!(local.0.load(Ordering::SeqCst), 3, "local attempts");
+    }
+
+    #[test]
+    fn with_no_fallback_the_local_answer_stands() {
+        let reply = take_turn_retrying_empty(
+            &Alone,
+            &[TurnMessage::User("hello".to_owned())],
+            &[],
+            &ButlerContext::default(),
+            &mut |_| {},
+        )
+        .expect("a turn");
+        assert!(reply.text.is_empty());
+        assert!(!reply.escalated);
+    }
+
+    #[test]
+    fn saying_the_same_thing_again_counts_as_saying_nothing() {
+        // Live: asked what it had done while the person was out, the butler reproduced
+        // word for word the answer it had given the previous day, with the day's real
+        // record in its context.
+        let said = "I checked, but no specific activities were recorded while you were out.";
+        let repeat = ButlerReply {
+            text: said.to_owned(),
+            ..ButlerReply::default()
+        };
+        let conversation = vec![
+            TurnMessage::Assistant {
+                text: said.to_owned(),
+                tool_calls: Vec::new(),
+            },
+            TurnMessage::User("did you do anything while I was out?".to_owned()),
+        ];
+        assert!(repeats_its_last_answer(&repeat, &conversation));
+
+        // A different answer is not a repeat, and a short confirmation is allowed to be
+        // identical — "Done." twice is not a failure.
+        let different = ButlerReply {
+            text: "I posted a brief at 11:01 and two actions failed.".to_owned(),
+            ..ButlerReply::default()
+        };
+        assert!(!repeats_its_last_answer(&different, &conversation));
+        let terse = ButlerReply {
+            text: "Done.".to_owned(),
+            ..ButlerReply::default()
+        };
+        assert!(!repeats_its_last_answer(
+            &terse,
+            &[TurnMessage::Assistant {
+                text: "Done.".to_owned(),
+                tool_calls: Vec::new()
+            }]
+        ));
     }
 }
