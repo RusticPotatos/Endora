@@ -54,6 +54,7 @@ production here, not to fill in a pyramid.
 | **unit** | pure logic, one thing at a time | `#[cfg(test)]` beside the code | ~10s |
 | **composition** | the stack **production builds**, not test doubles | same, but composing real runners and the real schema | ~0s |
 | **golden** | real captured data from a live system | `tests/` + `fixtures/` | ~0s |
+| **console render** | every screen of the web console, in Node | `scripts/check-console.mjs` | ~0s |
 | **live smoke** | invariants on the **deployed** node | `tests/live_smoke.rs`, `#[ignore]`d | ~2s |
 | **eval battery** | model quality against the real turn machinery | `tests/*_eval.rs`, `#[ignore]`d | minutes |
 
@@ -81,6 +82,25 @@ make smoke           # just the smoke check (set ENDORA_URL in local.mk)
 
 It does not judge whether a screen *reads* well; that still needs a person. The point is to
 make a screenshot the last line of defence rather than the first.
+
+**The console needs its own check, because nothing else looks at it.** Every guarantee in the
+Rust half is enforced by the compiler; the console has no type checker and no linker. A call
+to a function that had been deleted stayed syntactically perfect, passed `node --check`,
+passed CI, passed the smoke tier — and rendered a blank page on a phone.
+
+`make console-check` loads `app.js` and **calls every screen**. Two things make it work:
+
+- **Execution, not parsing.** A regex hunting "called but never defined" cannot be made sound
+  — a JavaScript regex literal like `/https?:\/\//` reads as a line comment to a naive
+  stripper, which swallows real code and reports all-clear on a broken file.
+- **Realistic state, not empty state.** The first version populated nothing and *failed to
+  catch the bug it was written for*: the missing call sat in a branch that only runs when a
+  message has an action trail. An empty state exercises the early returns and little else, so
+  every screen is given one representative item — shapes taken from the live node rather than
+  invented, for the same reason the golden tier exists.
+
+Stubs are explicit and minimal on purpose. A `Proxy` answering any unknown global would make
+everything pass, including the failure this is here to catch.
 
 **Budgets belong in tests, not in a performance tier.** A latency suite has never caught
 anything here, but volume degrading quality has: a tool that returned five kilobytes where a

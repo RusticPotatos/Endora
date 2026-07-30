@@ -181,8 +181,13 @@ function crumbs(parts) {
     `</div>`;
 }
 
+// Takes rows as an array OR as already-joined html, because callers do both and the
+// difference is invisible until it throws: `"".length` is 0, so a joined-string caller looks
+// fine while it has nothing to show and breaks the moment it has something. Found exactly
+// that way — the Models screen threw as soon as a model search returned a result.
 function listOr(items, emptyText) {
-  return items.length ? items.join("") : `<div class="empty">${esc(emptyText)}</div>`;
+  const html = Array.isArray(items) ? items.join("") : String(items ?? "");
+  return html ? html : `<div class="empty">${esc(emptyText)}</div>`;
 }
 
 // A North Star card, reused across the value groups on the home view.
@@ -2508,6 +2513,13 @@ function closeMenu() {
     await reload();
     subscribeToActivity();
   } catch (e) {
-    app.innerHTML = `<div class="msg show err">Couldn't reach the node: ${esc(e.message)}</div>`;
+    // Say which half failed. This catch covers reaching the node AND drawing the page, and
+    // it reported both as "couldn't reach the node" — so a missing function read as a
+    // network problem and sent the diagnosis in the wrong direction for a while.
+    const unreachable = e instanceof TypeError && /fetch|network|load failed/i.test(e.message);
+    app.innerHTML = unreachable
+      ? `<div class="msg show err">Couldn't reach the node: ${esc(e.message)}</div>`
+      : `<div class="msg show err">Endora is running, but the console failed to draw:
+           ${esc(e.message)}</div>`;
   }
 })();
