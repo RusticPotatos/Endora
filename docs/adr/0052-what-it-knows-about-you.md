@@ -54,6 +54,24 @@ person's only verb is *stop*.
 There is deliberately **no "add"**. A console that let you file work would rebuild [0029]'s
 goal tracker with a new name.
 
+**A night that produced no answer is not a night's work.** The one intention Endora has ever
+held — *"you want to run more often"* — reached five of its seven steps with its stored
+progress reading:
+
+```text
+Sorry — I couldn't reach my language model just now, so I didn't follow that properly.
+```
+
+An apology is non-empty, so it counted as a step, was written down as what happened, and was
+handed to the next night as the thread to pick up. Two things were being spent on nothing: the
+**step budget** that makes an intention retire itself rather than rot, and the **only record**
+of what Endora has been doing about the thing it decided to care about.
+
+The same predicate every other path already uses settles it — the notion of "nothing" that
+[0053](0053-honesty-about-what-it-did.md) had to get right for chat turns applies unchanged to
+a night. It is the third place that notion has had to reach: a chat retry, an unprompted
+message, and now progress on work that outlives a turn.
+
 ### A settled belief stops asking
 
 Every belief card offered *That's right / Not quite*, forever, regardless of how sure Endora
