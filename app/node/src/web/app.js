@@ -32,6 +32,7 @@ let CHAT_DAYS = [];            // [{day, messages}] — which days have anything
 let LAST_VIEW = null;          // which screen was showing, so a change can reset the scroll
 let REPAIRS = [];              // tooling Endora has noticed keeps not working (ADR 0054)
 let TROUBLE = [];              // things in your world that stopped answering (ADR 0056)
+let LANDING = null;            // how Endora's recent actions actually landed (ADR 0053)
 let CONFIG_WRITES = [];        // changes Endora made to your services' own settings (ADR 0054)
 let LAST_ACTIVITY = [];        // what Endora did behind the scenes on the last turn
 let LAST_ACTIVITY_MSG = null;  // the butler message id that activity belongs to
@@ -139,6 +140,7 @@ async function reload() {
   try { INTENTIONS = await api("GET", "/v1/intentions"); } catch (_) { INTENTIONS = []; }
   try { REPAIRS = await api("GET", "/v1/repairs"); } catch (_) { REPAIRS = []; }
   try { TROUBLE = await api("GET", "/v1/standing-trouble"); } catch (_) { TROUBLE = []; }
+  try { LANDING = await api("GET", "/v1/reliability"); } catch (_) { LANDING = null; }
   try { CONFIG_WRITES = await api("GET", "/v1/config-writes"); } catch (_) { CONFIG_WRITES = []; }
   render();
 }
@@ -1301,6 +1303,7 @@ function viewUnderstanding() {
     ${setup}
     ${groups || `<div class="empty">Nothing yet. Talk with Endora and it will start to understand you — you'll see it here.</div>`}
     ${viewIntention()}
+    ${viewHowItLands()}
     ${viewStandingTrouble()}
     ${viewRepairs()}
     ${viewConfigWrites()}
@@ -1370,6 +1373,28 @@ function viewRepairs() {
     <h3 style="margin-top:22px;">Something Endora can't get working</h3>
     <div class="note" style="margin-bottom:10px;">It checked before and after each time. Nothing moved — so either it's aiming at the wrong name, or reaching for the wrong tool.</div>
     ${rows}`;
+}
+
+// How Endora's own actions have actually landed (ADR 0053).
+//
+// Deliberately four numbers rather than one percentage. A claim of success that changed
+// nothing is not the same kind of miss as an outright error, and "couldn't be checked" is
+// genuinely unknown — counting an unknown as a success is how a system starts lying to
+// itself about how well it works.
+//
+// It names the worst offender because a number nobody can act on is decoration. That is also
+// where a tool Endora has no way to know is read-only shows up: it looks like an actuator
+// that never changes anything, which is exactly what it is from Endora's side.
+function viewHowItLands() {
+  if (!LANDING || !LANDING.considered) return "";
+  const worst = LANDING.worst_offender;
+  return `
+    <h3 style="margin-top:22px;">How its actions have landed</h3>
+    <div class="card">
+      <div class="title" style="font-weight:500;">${LANDING.changed} of ${LANDING.considered} verified as doing what was asked</div>
+      <div class="sub" style="margin-top:4px;">${esc(LANDING.in_words)}</div>
+      ${worst ? `<div class="sub" style="margin-top:6px;">Most often claims success and changes nothing: <b>${esc(worst.capability)}</b> (${worst.times}×). If that one only ever reads, tell Endora it's this server's reader in <a class="link" data-act="go:skills">Skills</a> — then it stops being treated as an action.</div>` : ""}
+    </div>`;
 }
 
 // Things in YOUR world that stopped answering — as opposed to Endora's own tooling

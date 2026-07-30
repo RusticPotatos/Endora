@@ -42,6 +42,7 @@ const WHAT_THE_INTERFACE_LOADS: &[&str] = &[
     "/v1/outcomes",
     "/v1/repairs",
     "/v1/standing-trouble",
+    "/v1/reliability",
     "/v1/config-writes",
     "/v1/autonomy",
     "/v1/audit",
@@ -211,5 +212,29 @@ fn it_is_not_asking_about_half_the_house() {
     assert!(
         count <= MOST_IT_MAY_EVER_RAISE,
         "raising {count} problems at once is a pile of chores, not a butler: {raised:#}"
+    );
+}
+
+#[test]
+#[ignore = "talks to a deployed node: run with `make smoke` after `make deploy`"]
+fn most_of_what_it_tries_is_not_failing_outright() {
+    // The tripwire for the system rather than the model. An outright error is the most
+    // visible kind of failure and the easiest to fix, so a majority of them means something
+    // is broken right now — a server down, a renamed entity, a withdrawn tool still being
+    // called — and not that the butler is having an off day.
+    //
+    // Deliberately NOT a check on `unchanged`: a tool Endora cannot know is read-only lands
+    // there permanently, so a threshold on it would fail forever for a reason that is not a
+    // fault (ADR 0053).
+    let landing = get("/v1/reliability");
+    let considered = landing["considered"].as_u64().unwrap_or_default();
+    if considered < 10 {
+        return; // too little to be a trend
+    }
+    let failed = landing["failed"].as_u64().unwrap_or_default();
+    assert!(
+        failed * 2 <= considered,
+        "{failed} of the last {considered} actions failed outright, which is something \
+         broken rather than a bad day: {landing:#}"
     );
 }

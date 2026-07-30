@@ -23,6 +23,6 @@ pub use application::{
 };
 pub use domain::{
     Belief, BeliefKind, BeliefStatus, Confidence, Intention, IntentionState, Outcome, Preference,
-    PreferenceKind, Reaction, Remedy, RepairProposal, repair_proposals,
+    PreferenceKind, Reaction, Reliability, Remedy, RepairProposal, repair_proposals,
 };
 pub use infrastructure::{UnderstandingStore, migrate};
