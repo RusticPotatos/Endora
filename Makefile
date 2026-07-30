@@ -138,6 +138,13 @@ watch: ## Re-run tests on file change (needs cargo-watch)
 ## Development: format, lint, test
 ## ----------------------------------------------------------------------------
 
+.PHONY: console-check
+console-check: ## Render every console screen in Node (catches a broken UI before a phone does)
+	# The Rust half is checked by the compiler; the console had nothing. A call to a
+	# function that no longer existed passed `node --check`, passed CI, deployed, and
+	# rendered a blank page. This loads app.js and actually calls every screen.
+	node scripts/check-console.mjs
+
 .PHONY: fmt
 fmt: ## Format the code in place
 	$(CARGO) fmt --all
@@ -163,7 +170,7 @@ diff-check: ## Fail on whitespace errors / leftover conflict markers
 	git diff --check
 
 .PHONY: ci
-ci: fmt-check clippy test diff-check ## Run every check exactly as CI does
+ci: fmt-check clippy test console-check diff-check ## Run every check exactly as CI does
 	@echo "All CI checks passed."
 
 ## ----------------------------------------------------------------------------
