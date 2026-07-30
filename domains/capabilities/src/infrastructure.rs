@@ -1504,6 +1504,11 @@ const HA_SETTINGS: &[SettingSpec] = &[
         label: "Let Endora write names back into Home Assistant (on/off)",
         secret: false,
     },
+    SettingSpec {
+        key: "notify_service",
+        label: "How Endora reaches you when you're away — a notify service, e.g.                 mobile_app_yourphone (blank = never)",
+        secret: false,
+    },
 ];
 
 /// Reads Home Assistant state so the butler can learn the home's routines (lights,
@@ -2830,6 +2835,26 @@ pub trait NativeChannel: Send + Sync {
     fn actionable(&self, tool: &str, id: &str) -> bool {
         let _ = (tool, id);
         true
+    }
+
+    /// Reaches the person when they are not looking at Endora (ADR 0056).
+    ///
+    /// **Nominated, never assumed.** The same shape as naming a server's reader: the person
+    /// says which of their own services is how they want to be reached, and Endora uses it.
+    /// `None` by default — from a channel that cannot, and from one that can but has not
+    /// been told to. Being able to interrupt somebody is a grant, not a capability that
+    /// switches itself on.
+    ///
+    /// This is deliberately **not** a notification feature built into Endora. A push stack
+    /// of its own would mean certificates, a service worker, a subscription store and a
+    /// third-party relay — all to duplicate something the person already has working on
+    /// their phone. Endora does not host the model ([0055](../../docs/adr/0055-the-model-layer.md))
+    /// and by the same reasoning it does not host a push service.
+    ///
+    /// # Errors
+    /// Through the inner `Result`, a human-readable message if the service refuses.
+    fn notify(&self, _title: &str, _body: &str) -> Option<Result<(), String>> {
+        None
     }
 
     /// Takes something out of the service's own view, or puts it back (ADR 0056).

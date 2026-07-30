@@ -218,6 +218,46 @@ The cost is missing a device that only ever says `unknown`. Accepted: those almo
 `unavailable` too, and a missed problem is recoverable where a butler that cries wolf 28 times
 is not.
 
+### Saying how it landed has to be asked where the person is
+
+Endora has recorded **109 outcomes and zero reactions**. The machinery was complete — a
+reaction type, an endpoint, a use case, buttons, and a feedback path that ranks skills by
+helped-versus-missed and puts that in the prompt. It had simply never had an input.
+
+The cause was a rule applied too literally. The ask lived on a screen the person opens
+occasionally, below several other sections, under a comment reading *"never solicited: no
+badge, no counter"*. That instinct is right — it is [0052](0052-what-it-knows-about-you.md)'s
+anti-queue rule — but taken far enough that the signal could never arrive. **A loop with no
+input is not a loop.**
+
+So the one question worth asking — *did that help?* — now sits on the action trail in the
+chat, on the **newest turn only**. Still no badge and nothing that accumulates: the ask is
+gone by the next turn whether or not it was answered, so ignoring it stays free. The rule is
+kept; it is asked exactly once, where the person already is.
+
+### Reaching someone who is not looking
+
+Being proactive is worth nothing if the person has to open the app to discover it. But a push
+stack of Endora's own would mean certificates, a service worker, a subscription store and a
+third-party relay — all to rebuild something already working on their phone.
+
+So it is the **nomination** pattern again, the same one that settled which tool reads a
+server's state: the person names a service of their own as how they want to be reached, and
+Endora uses it. Nothing is assumed and nothing is hosted here — the same line
+[0055](0055-the-model-layer.md) draws around the model, drawn around notifications.
+
+The trigger is every message Endora **started itself**, and deliberately nothing cleverer.
+The rate limit is already the schedule the person set, so it cannot become a firehose unless
+they widen it.
+
+It is **not** gated on presence, though the signal exists. That would mean parsing free text
+a service wrote — *"rustic is not home"* — to decide whether to interrupt someone, and being
+wrong either wakes them or silently swallows the alert they wanted. The schedule is the
+honest limit.
+
+Only the first sentence travels. The point is to say *there is something*; a notification
+long enough to be the message is one people stop reading.
+
 ## Consequences
 
 - Endora can be quiet for a day without that being a bug, and can speak without that being an
