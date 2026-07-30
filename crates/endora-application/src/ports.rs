@@ -109,6 +109,13 @@ pub struct ButlerReply {
     /// assigned it (ADR 0053). The single-conversation loop runs these and appends
     /// their results as `role:tool` turns keyed by that id. Empty when it just talks.
     pub tool_calls: Vec<ToolCall>,
+    /// This reply came from the **deep** model, because the local one failed a
+    /// deterministic check (ADR 0055).
+    ///
+    /// Carried so it can be disclosed. The deep model is usually a third party, so which
+    /// model answered is not a detail — it is where the person's words went, and they are
+    /// entitled to know every time rather than having to remember a setting.
+    pub escalated: bool,
     /// The model could not be reached, so this text is Endora apologising rather than the
     /// butler answering (ADR 0056).
     ///
@@ -348,6 +355,25 @@ pub trait Butler {
             on_token(&reply.text);
         }
         Ok(reply)
+    }
+
+    /// A stronger model to fall back to when this one fails a **deterministic check**
+    /// (ADR 0055). `None` by default, which means no fallback happens.
+    ///
+    /// Expressed on the port rather than threaded through every use case, because "this
+    /// butler knows a better one" is a fact about the butler. Nine call sites would
+    /// otherwise carry a parameter that only two of them care about.
+    ///
+    /// The reason it exists: reliability **compounds**. A model that obeys a procedural
+    /// instruction about one run in three turns an n-step task into (1/3)ⁿ, which is
+    /// arithmetic rather than a fact about any particular model. Two independent attempts
+    /// fail together only at (1-p₁)(1-p₂), so a *second* model beats a bigger one without
+    /// waiting for a bigger one to exist.
+    ///
+    /// What keeps it honest is that the trigger is **code** — a check Endora applied to the
+    /// reply — never the model's own opinion of how it did.
+    fn deeper(&self) -> Option<std::sync::Arc<dyn Butler + Send + Sync>> {
+        None
     }
 
     /// One step of the **single tool-calling conversation** (ADR 0053): given the
