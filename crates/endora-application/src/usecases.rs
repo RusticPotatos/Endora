@@ -2754,6 +2754,9 @@ pub fn run_due_nightly_loop(
         &mut Vec::new(),
     )?;
 
+    // Judged before the beliefs are moved out of the reply, and before anything is stored:
+    // a night that produced no answer must not leave a trace as though it had.
+    let worth_recording = !not_an_answer(&reply, &review_ctx);
     // Reflect: persist the understanding it formed (same path as a chat turn).
     record_formed_beliefs(beliefs, reply.beliefs, ids, clock, &mut activity)?;
 
@@ -2762,7 +2765,17 @@ pub fn run_due_nightly_loop(
     // model to maintain, and nothing here can corrupt if it writes something odd.
     if let Some(mut intention) = intention {
         let note = reply.text.trim();
-        if !note.is_empty() {
+        // A night that produced no answer is not a night's work. Endora's one long-running
+        // intention — "you want to run more often" — reached five of its seven steps with
+        // its stored progress reading *"Sorry, I couldn't reach my language model just
+        // now."* An apology is non-empty, so it counted as a step, was written down as
+        // what happened, and was handed to the next night as the thread to pick up.
+        //
+        // Two things were being spent on nothing: the step budget that makes an intention
+        // retire itself, and the only record of what Endora has been doing about the thing
+        // it decided to care about. The same predicate every other path already uses
+        // settles it (ADR 0052).
+        if !note.is_empty() && worth_recording {
             intention.progress(note, now);
             intentions.save(&intention)?;
             activity.push(format!(
@@ -7687,5 +7700,63 @@ mod when_the_local_model_will_not_do_it {
                 tool_calls: Vec::new()
             }]
         ));
+    }
+}
+
+#[cfg(test)]
+mod a_night_that_did_nothing {
+    use super::*;
+    use endora_kernel::Timestamp;
+
+    fn an_intention() -> Intention {
+        Intention::form(
+            crate::IntentionId::new(1),
+            "you want to run more often",
+            crate::BeliefId::new(2),
+            Timestamp::from_unix_millis(0),
+        )
+        .expect("a valid intention")
+    }
+
+    #[test]
+    fn an_apology_is_not_a_nights_work() {
+        // Live: Endora's one long-running intention reached five of its seven steps with
+        // its stored progress reading "Sorry — I couldn't reach my language model just
+        // now." Non-empty, so it counted as a step, was written down as what happened, and
+        // was handed to the next night as the thread to pick up.
+        let degraded = ButlerReply {
+            text: "Sorry — I couldn't reach my language model just now.".to_owned(),
+            degraded: true,
+            ..ButlerReply::default()
+        };
+        assert!(
+            not_an_answer(&degraded, &ButlerContext::default()),
+            "a degraded night must not count as progress"
+        );
+
+        // And the step budget is the thing being protected: seven nights is the whole
+        // lifetime of an intention, so a night spent on nothing is a seventh of it.
+        let mut spent = an_intention();
+        for _ in 0..7 {
+            spent.progress("looked into it", Timestamp::from_unix_millis(1));
+        }
+        assert!(
+            spent.is_exhausted(),
+            "seven steps spends it — which is why one wasted on an apology matters"
+        );
+    }
+
+    #[test]
+    fn a_real_night_still_counts() {
+        let real = ButlerReply {
+            text: "Found three routes near you under 5km; the river loop looks best.".to_owned(),
+            ..ButlerReply::default()
+        };
+        assert!(!not_an_answer(&real, &ButlerContext::default()));
+
+        let mut going = an_intention();
+        going.progress("Found three routes", Timestamp::from_unix_millis(1));
+        assert_eq!(going.steps_taken(), 1);
+        assert!(going.is_active());
     }
 }
