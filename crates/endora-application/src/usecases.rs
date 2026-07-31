@@ -496,18 +496,77 @@ fn take_turn_retrying_empty(
         .deeper()
         .filter(|_| gave_nothing_useful(&reply, conversation, context))
     {
+        // Nothing personal leaves under its own name (ADR 0051). Endora holds the values —
+        // the person's name, their city, the title of tonight's appointment — so it
+        // substitutes rather than trying to *detect* PII, which is what you do when you
+        // lack them. What comes back is put right locally, so the person reads their own
+        // words and the deep model never saw them.
+        let disguise = personal_values_in(context);
+        let hidden: Vec<TurnMessage> = conversation
+            .iter()
+            .map(|m| match m {
+                TurnMessage::User(text) => TurnMessage::User(disguise.hide(text)),
+                other => other.clone(),
+            })
+            .collect();
+        let hidden_ctx = ButlerContext {
+            present: context.present.iter().map(|l| disguise.hide(l)).collect(),
+            did_lately: context
+                .did_lately
+                .iter()
+                .map(|l| disguise.hide(l))
+                .collect(),
+            understanding: context
+                .understanding
+                .iter()
+                .map(|l| disguise.hide(l))
+                .collect(),
+            ..context.clone()
+        };
         // Not streamed. The person has already seen whatever the local attempts emitted, and
         // a second voice writing into the same bubble would read as one confused answer.
-        if let Ok(better) = deeper.take_turn(conversation, prefs, context) {
+        if let Ok(better) = deeper.take_turn(&hidden, prefs, &hidden_ctx) {
             if !gave_nothing_useful(&better, conversation, context) {
                 return Ok(ButlerReply {
                     escalated: true,
+                    text: disguise.restore(&better.text),
                     ..better
                 });
             }
         }
     }
     Ok(reply)
+}
+
+/// The values worth standing in for, gathered from what Endora already holds (ADR 0051).
+///
+/// Not a PII detector. Endora knows the person's name, their city and tonight's appointment
+/// because they are in its own record — and substituting values you hold is exact where
+/// pattern-matching for "something that looks personal" is a guess that fails silently.
+///
+/// Drawn from the lines the services contribute about the person, so a value that never
+/// reaches a turn is never in the table either.
+fn personal_values_in(context: &ButlerContext) -> crate::pseudonyms::Pseudonyms {
+    use std::collections::BTreeMap;
+    let mut kinds: BTreeMap<&str, Vec<String>> = BTreeMap::new();
+    for line in &context.present {
+        // "morgan is not home" — the name is what precedes the verb.
+        if let Some(name) = line.split(" is ").next().filter(|n| !n.contains(':')) {
+            kinds
+                .entry("person")
+                .or_default()
+                .push(name.trim().to_owned());
+        }
+        // "on the Family calendar: K. Novak & J. Ellis at 2026-07-31 18:30:00"
+        if let Some((_, rest)) = line.split_once("calendar: ") {
+            let title = rest.split(" at ").next().unwrap_or(rest);
+            kinds
+                .entry("event")
+                .or_default()
+                .push(title.trim().to_owned());
+        }
+    }
+    crate::pseudonyms::Pseudonyms::of(&kinds)
 }
 
 /// Whether a reply is worth keeping — [`not_an_answer`], plus saying the same thing again.
@@ -7810,6 +7869,88 @@ mod when_the_local_model_will_not_do_it {
         assert!(reply.escalated, "an escalated reply must say so");
         // The local model is tried, and retried, BEFORE anything leaves the box.
         assert_eq!(local.0.load(Ordering::SeqCst), 3, "local attempts");
+    }
+
+    /// A deep model that reports exactly what it was sent, so the test can inspect it.
+    struct Echoes(std::sync::Mutex<String>);
+    impl Butler for Echoes {
+        fn respond(
+            &self,
+            history: &[ChatMessage],
+            _p: &[Preference],
+            c: &ButlerContext,
+        ) -> Result<ButlerReply, crate::ProposalError> {
+            let saw = format!(
+                "{} | {}",
+                history
+                    .iter()
+                    .map(ChatMessage::text)
+                    .collect::<Vec<_>>()
+                    .join(" "),
+                c.present.join(" ")
+            );
+            *self.0.lock().unwrap() = saw.clone();
+            // Answer using the placeholders it was given, as a model would.
+            Ok(ButlerReply {
+                text: format!("Noted: {saw}"),
+                ..ButlerReply::default()
+            })
+        }
+    }
+
+    struct SilentWithDeeper(std::sync::Arc<Echoes>);
+    impl Butler for SilentWithDeeper {
+        fn respond(
+            &self,
+            _h: &[ChatMessage],
+            _p: &[Preference],
+            _c: &ButlerContext,
+        ) -> Result<ButlerReply, crate::ProposalError> {
+            Ok(ButlerReply::default())
+        }
+        fn deeper(&self) -> Option<std::sync::Arc<dyn Butler + Send + Sync>> {
+            Some(self.0.clone() as std::sync::Arc<dyn Butler + Send + Sync>)
+        }
+    }
+
+    #[test]
+    fn nothing_personal_reaches_the_deep_model_and_the_answer_comes_back_right() {
+        // The real brief facts. What leaves must not carry the name or the appointment;
+        // what the person reads must carry both (ADR 0051).
+        let deep = std::sync::Arc::new(Echoes(std::sync::Mutex::new(String::new())));
+        let local = SilentWithDeeper(deep.clone());
+        let context = ButlerContext {
+            present: vec![
+                "morgan is not home; on the Family calendar: K. Novak & J. Ellis at \
+                 2026-07-31 18:30:00"
+                    .to_owned(),
+            ],
+            ..ButlerContext::default()
+        };
+
+        let reply = take_turn_retrying_empty(
+            &local,
+            &[TurnMessage::User("what is on tonight?".to_owned())],
+            &[],
+            &context,
+            &mut |_| {},
+        )
+        .expect("a turn");
+
+        let sent = deep.0.lock().unwrap().clone();
+        for personal in ["rustic", "K. Novak", "Ellis"] {
+            assert!(
+                !sent.contains(personal),
+                "{personal} left the house: {sent}"
+            );
+        }
+        // And the person still reads their own words.
+        assert!(
+            reply.text.contains("K. Novak & J. Ellis"),
+            "{}",
+            reply.text
+        );
+        assert!(reply.escalated);
     }
 
     #[test]
