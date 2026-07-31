@@ -1231,6 +1231,7 @@ function viewSkills() {
     <h2>What Endora can do</h2>
 
     ${envelope}
+    ${viewConnect()}
     <h3>Skills</h3>
     ${listOr((CAPS || []).map(card), "No skills registered.")}
     ${mcpSection}`;
@@ -1314,7 +1315,6 @@ function viewUnderstanding() {
     ${setup}
     ${groups || `<div class="empty">Nothing yet. Talk with Endora and it will start to understand you — you'll see it here.</div>`}
     ${viewIntention()}
-    ${viewConnect()}
     ${viewHowItLands()}
     ${viewStandingTrouble()}
     ${viewRepairs()}
