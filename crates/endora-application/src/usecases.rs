@@ -1580,6 +1580,10 @@ fn record_formed_beliefs(
         if reads_as_an_instruction(&belief.statement) {
             continue;
         }
+        // Nor is Endora's own conduct evidence about the person (ADR 0052).
+        if is_about_endora_itself(&belief.evidence) {
+            continue;
+        }
         if let Some(mut prior) = existing
             .iter()
             .find(|b| similar(b.statement(), &belief.statement))
@@ -1664,7 +1668,8 @@ pub fn tidy_understanding(
     let mut kept: Vec<Belief> = Vec::new();
     let mut retired = 0;
     for mut belief in held {
-        if reads_as_an_instruction(belief.statement()) {
+        if reads_as_an_instruction(belief.statement()) || is_about_endora_itself(belief.evidence())
+        {
             belief.expire();
             beliefs.save(&belief)?;
             retired += 1;
@@ -1725,6 +1730,35 @@ pub fn reads_as_an_instruction(statement: &str) -> bool {
     polarity_tokens(&text)
         .iter()
         .any(|w| ACTION_VERBS.contains(&w.as_str()))
+}
+
+/// Whether the evidence for a belief is Endora describing **itself**.
+///
+/// Live, top of the understanding screen:
+///
+/// ```text
+/// you find it more convenient for the assistant to wait for instructions
+///   because I didn't do anything proactive since I rely on your instructions.
+/// ```
+///
+/// Endora had been passive — because its direct reach into the house was broken — and
+/// concluded from its own conduct that the person prefers passivity. It then carried that
+/// into every later turn as something it knew about them.
+///
+/// This is the sharpest possible violation of the rule that understanding admits **only
+/// facts about the person** (ADR 0052): a butler that mistakes its own behaviour for
+/// evidence will reinforce whatever it happens to be doing, including its own faults.
+///
+/// The discriminator is narrow — evidence whose **first word is "I"** is Endora as the
+/// subject. *"You asked 'where did you find this?' after I listed some events"* keeps its
+/// belief, because the person is the subject and Endora only appears in passing.
+fn is_about_endora_itself(evidence: &str) -> bool {
+    let mut words = evidence.split_whitespace();
+    let first = words
+        .next()
+        .unwrap_or_default()
+        .trim_matches(|c: char| !c.is_alphanumeric());
+    first.eq_ignore_ascii_case("i")
 }
 
 /// Normalizes a belief statement for duplicate detection: lowercase, collapse
@@ -7758,5 +7792,37 @@ mod a_night_that_did_nothing {
         going.progress("Found three routes", Timestamp::from_unix_millis(1));
         assert_eq!(going.steps_taken(), 1);
         assert!(going.is_active());
+    }
+}
+
+#[cfg(test)]
+mod its_own_behaviour_is_not_evidence_about_you {
+    use super::*;
+
+    #[test]
+    fn a_belief_drawn_from_endoras_own_conduct_is_refused() {
+        // Live, top of the understanding screen. Endora had been passive because its reach
+        // into the house was broken, and concluded the person prefers passivity — then
+        // carried that into every later turn as something it knew about them.
+        assert!(is_about_endora_itself(
+            "I didn't do anything proactive since I rely on your instructions."
+        ));
+        // A butler that mistakes its own behaviour for evidence reinforces whatever it
+        // happens to be doing, including its own faults.
+        assert!(is_about_endora_itself("I checked and found nothing"));
+    }
+
+    #[test]
+    fn evidence_about_the_person_survives_endora_appearing_in_it() {
+        // The discriminator is the SUBJECT, not the pronoun. These are all real evidence
+        // strings from the same screen, and every one of them is about the person.
+        for real in [
+            "You asked 'Where did you find this?' after I listed some upcoming events in New York.",
+            "you requested temperature in Fahrenheit",
+            "your request for an evening briefing suggests this",
+            "previous request",
+        ] {
+            assert!(!is_about_endora_itself(real), "{real}");
+        }
     }
 }

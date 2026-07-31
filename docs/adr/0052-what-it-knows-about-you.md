@@ -110,6 +110,32 @@ The bar for "about the same thing" is deliberately much weaker than the bar for 
 belief": *you like running* and *you hate running* are about the same thing without being
 the same belief, and that gap is exactly where contradiction lives.
 
+### Its own behaviour is not evidence about the person
+
+The sharpest violation of *"only facts about the person"* found so far, sitting at the top of
+the understanding screen:
+
+```text
+you find it more convenient for the assistant to wait for instructions
+  because I didn't do anything proactive since I rely on your instructions.
+```
+
+Endora had been passive because its direct reach into the house was broken, and concluded from
+its own conduct that the person prefers passivity — then carried that into every later turn as
+something it knew about them.
+
+**A butler that mistakes its own behaviour for evidence reinforces whatever it happens to be
+doing, including its own faults.** That is a feedback loop with no input from the person at
+all, which is the opposite of understanding them.
+
+The discriminator is the **subject** of the evidence, not the presence of a pronoun: evidence
+beginning with *"I"* is Endora talking about itself. *"You asked 'where did you find this?'
+after I listed some events"* keeps its belief, because the person is the subject and Endora
+appears only in passing.
+
+Applied at formation and by the backward sweep below, so the one already stored retires
+itself.
+
 ### Rules apply backwards, not only forwards
 
 Every guard on understanding ran **at formation only** — which quietly means the model of the
