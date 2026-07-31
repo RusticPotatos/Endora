@@ -286,6 +286,16 @@ impl HomeAssistant {
         })
     }
 
+    /// Removes a setup form that was started and not finished, so an abandoned attempt does
+    /// not sit in the person's own interface waiting for them.
+    ///
+    /// # Errors
+    /// A human-readable message if Home Assistant cannot be reached.
+    pub fn abandon_setup(&self, form: &str) -> Result<(), String> {
+        self.delete(&format!("/api/config/config_entries/flow/{form}"))?;
+        Ok(())
+    }
+
     /// Finds an entity id by the name the registry holds for it, including hidden ones.
     ///
     /// Separate from the ordinary reading because that reading is a list of *states*, and
@@ -658,6 +668,56 @@ pub fn service_for(tool: &str) -> Option<(&'static str, &'static str)> {
     }
 }
 
+/// Reads one step of a config flow into the shape the rest of the system speaks.
+///
+/// `Ok(None)` when the service says it is finished — a created entry. Anything with a form
+/// in it is another question to put to the person.
+fn read_form(raw: &str) -> Result<Option<crate::domain::SetupForm>, String> {
+    use crate::domain::{SetupField, SetupForm};
+    let step: Value = serde_json::from_str(raw).map_err(|e| e.to_string())?;
+    // An abort is the service declining, and its reason is the person's to read.
+    if step["type"] == "abort" {
+        let why = step["reason"]
+            .as_str()
+            .unwrap_or("it stopped without saying why");
+        return Err(format!("Home Assistant stopped: {why}"));
+    }
+    if step["type"] != "form" {
+        return Ok(None);
+    }
+    // Errors on a form are per-field complaints about what was just sent — surfaced rather
+    // than swallowed, because "wrong password" is the whole reason someone is looking.
+    if let Some(errors) = step["errors"].as_object().filter(|e| !e.is_empty()) {
+        let said: Vec<String> = errors
+            .iter()
+            .map(|(field, why)| format!("{field}: {}", why.as_str().unwrap_or("not accepted")))
+            .collect();
+        return Err(said.join(" · "));
+    }
+    let fields = step["data_schema"]
+        .as_array()
+        .map(|all| {
+            all.iter()
+                .filter_map(|f| {
+                    let name = f["name"].as_str()?.to_owned();
+                    Some(SetupField {
+                        secret: SetupField::looks_secret(&name),
+                        kind: f["type"].as_str().unwrap_or("string").to_owned(),
+                        required: f["required"].as_bool().unwrap_or(false),
+                        default: f["default"].as_str().map(ToOwned::to_owned),
+                        name,
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    Ok(Some(SetupForm {
+        id: step["flow_id"].as_str().unwrap_or_default().to_owned(),
+        step: step["step_id"].as_str().unwrap_or_default().to_owned(),
+        fields,
+    }))
+}
+
 impl crate::infrastructure::NativeChannel for HomeAssistant {
     fn known(&self) -> Result<Vec<(String, String)>, String> {
         Ok(self
@@ -794,6 +854,43 @@ impl crate::infrastructure::NativeChannel for HomeAssistant {
     fn act(&self, tool: &str, entity: &str) -> Option<Result<String, String>> {
         let (domain, service) = service_for(tool)?;
         Some(self.call_service(domain, service, entity))
+    }
+
+    fn begin_setup(&self, kind: &str) -> Option<Result<crate::domain::SetupForm, String>> {
+        if !self.may_write {
+            return None;
+        }
+        Some(
+            self.post(
+                "/api/config/config_entries/flow",
+                &json!({ "handler": kind.trim(), "show_advanced_options": false }),
+            )
+            .and_then(|raw| read_form(&raw))
+            .and_then(|form| {
+                form.ok_or_else(|| format!("{kind} had nothing to ask, so nothing was set up"))
+            }),
+        )
+    }
+
+    fn finish_setup(
+        &self,
+        form: &str,
+        answers: &[(String, String)],
+    ) -> Option<Result<Option<crate::domain::SetupForm>, String>> {
+        if !self.may_write {
+            return None;
+        }
+        let body: serde_json::Map<String, Value> = answers
+            .iter()
+            .map(|(k, v)| (k.clone(), Value::String(v.clone())))
+            .collect();
+        Some(
+            self.post(
+                &format!("/api/config/config_entries/flow/{form}"),
+                &Value::Object(body),
+            )
+            .and_then(|raw| read_form(&raw)),
+        )
     }
 
     fn notify(&self, title: &str, body: &str) -> Option<Result<(), String>> {
@@ -1234,6 +1331,86 @@ mod tests {
             house()
                 .refuse("home-assistant.HassLightSet", "{bad")
                 .is_none()
+        );
+    }
+}
+
+#[cfg(test)]
+mod a_form_the_service_asked_for {
+    use super::read_form;
+    use crate::domain::SetupField;
+
+    /// The real first step of Home Assistant's CalDAV flow, captured from a live house.
+    const CALDAV_STEP: &str = r#"{
+        "type": "form", "flow_id": "01KYTTT477W5ZGQKJSGD2X29VF", "handler": "caldav",
+        "step_id": "user", "errors": {},
+        "data_schema": [
+            { "name": "url", "type": "string", "required": true },
+            { "name": "username", "type": "string", "required": true },
+            { "name": "password", "type": "string", "required": false, "default": "" },
+            { "name": "verify_ssl", "type": "boolean", "required": false, "default": true }
+        ]
+    }"#;
+
+    #[test]
+    fn the_form_is_read_from_what_the_service_declares() {
+        // Endora knows nothing about calendars. This is the whole mechanism: a kind of
+        // thing nobody here has heard of works exactly like one that ships today.
+        let form = read_form(CALDAV_STEP).unwrap().expect("a form");
+        assert_eq!(form.step, "user");
+        let names: Vec<&str> = form.fields.iter().map(|f| f.name.as_str()).collect();
+        assert_eq!(names, vec!["url", "username", "password", "verify_ssl"]);
+        assert!(form.fields[0].required);
+        assert!(!form.fields[3].required);
+    }
+
+    #[test]
+    fn a_credential_is_recognised_so_it_is_never_shown() {
+        // A form Endora did not design can call a secret anything, so this is a heuristic —
+        // and it fails safe: a field wrongly treated as secret is masked and still submitted
+        // correctly, while the reverse puts somebody's password on a screen.
+        let form = read_form(CALDAV_STEP).unwrap().expect("a form");
+        let password = form.fields.iter().find(|f| f.name == "password").unwrap();
+        assert!(password.secret, "a password must never be echoed back");
+        assert!(!form.fields[0].secret, "a url is not a credential");
+
+        for named in [
+            "password",
+            "api_key",
+            "APIKey",
+            "access_token",
+            "client_secret",
+        ] {
+            assert!(SetupField::looks_secret(named), "{named}");
+        }
+        for named in ["url", "username", "host", "port", "calendar_name"] {
+            assert!(!SetupField::looks_secret(named), "{named}");
+        }
+    }
+
+    #[test]
+    fn a_finished_flow_is_not_another_question() {
+        // A created entry ends the conversation; anything else would loop the person
+        // through a form they already answered.
+        let made = r#"{ "type": "create_entry", "title": "iCloud",
+                        "result": { "entry_id": "abc" } }"#;
+        assert_eq!(read_form(made).unwrap(), None);
+    }
+
+    #[test]
+    fn what_the_service_refused_is_said_in_its_own_words() {
+        // "wrong password" is the entire reason somebody is looking at this screen, so a
+        // per-field complaint is surfaced rather than swallowed into "it didn't work".
+        let refused = r#"{ "type": "form", "flow_id": "1", "step_id": "user",
+                           "errors": { "base": "invalid_auth" }, "data_schema": [] }"#;
+        let why = read_form(refused).unwrap_err();
+        assert!(why.contains("invalid_auth"), "{why}");
+
+        let aborted = r#"{ "type": "abort", "reason": "already_configured" }"#;
+        assert!(
+            read_form(aborted)
+                .unwrap_err()
+                .contains("already_configured")
         );
     }
 }

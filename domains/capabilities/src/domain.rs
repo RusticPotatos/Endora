@@ -154,6 +154,52 @@ impl StandingTrouble {
     }
 }
 
+/// One field a service's own setup form is asking for (ADR 0054).
+///
+/// Endora does not know what a calendar, a mail account or a doorbell needs. The service
+/// does, and it will say — so the form is **rendered from what the service declares**, and
+/// adding a kind of thing Endora has never heard of needs no code here at all.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SetupField {
+    /// The key to send the answer back under.
+    pub name: String,
+    /// `string`, `boolean`, or whatever else the service names its type.
+    pub kind: String,
+    /// Whether the form will not be accepted without it.
+    pub required: bool,
+    /// What the service suggests, when it suggests anything.
+    pub default: Option<String>,
+    /// Whether the answer is a secret, so the interface never echoes it back and Endora
+    /// never writes it down.
+    pub secret: bool,
+}
+
+impl SetupField {
+    /// Whether a field name means a credential.
+    ///
+    /// A form Endora did not design can call a secret anything, so this is a heuristic —
+    /// and it is one that fails **safe**: a field wrongly treated as secret is masked in
+    /// the interface and still submitted correctly, while the reverse would put somebody's
+    /// password on a screen.
+    #[must_use]
+    pub fn looks_secret(name: &str) -> bool {
+        const CREDENTIAL_WORDS: &[&str] = &["password", "token", "secret", "api_key", "apikey"];
+        let lowered = name.to_lowercase();
+        CREDENTIAL_WORDS.iter().any(|w| lowered.contains(w))
+    }
+}
+
+/// A setup form in progress, as the service described it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SetupForm {
+    /// The service's own handle for this attempt, sent back with the answers.
+    pub id: String,
+    /// Which step of the form this is, in the service's words.
+    pub step: String,
+    /// What it is asking for.
+    pub fields: Vec<SetupField>,
+}
+
 /// Words a service uses to mean **"I cannot reach this"**, as opposed to a reading.
 ///
 /// A heuristic, and named as one. There is no protocol-level way to ask "is this value a
