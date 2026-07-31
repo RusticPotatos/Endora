@@ -1575,12 +1575,81 @@ const HA_SETTINGS: &[SettingSpec] = &[
         optional: false,
     },
     SettingSpec {
+        key: "busy_entity",
+        label: "How Endora can tell you don't want interrupting — an entity that's on when \
+                you're busy, e.g. binary_sensor.yourphone_focus (blank = always reach you)",
+        secret: false,
+        optional: true,
+    },
+    SettingSpec {
         key: "notify_service",
         label: "How Endora reaches you when you're away — a notify service, e.g.                 mobile_app_yourphone (blank = never)",
         secret: false,
         optional: true,
     },
 ];
+
+/// Presentation and plumbing, which say nothing about the thing itself.
+///
+/// `friendly_name` is already the name; `supported_features` is a bitmask; `attribution` and
+/// `description` are boilerplate a service attaches to every reading.
+const NOT_ABOUT_THE_THING: &[&str] = &[
+    "friendly_name",
+    "supported_features",
+    "attribution",
+    "icon",
+    "entity_picture",
+    "editable",
+    "device_class",
+    "hidden_by",
+    "assumed_state",
+    "restored",
+    "id",
+    "description",
+];
+
+/// The attributes of a thing that carry its meaning, when its **state does not**.
+///
+/// Connecting a calendar achieved nothing until this existed. A calendar's state is `off`,
+/// and its event — *"K. Novak & J. Ellis at 18:30"* — lives entirely in its attributes,
+/// so Endora read `Family: off` and had nothing to say about the person's evening. The same
+/// holds for weather (`clear-night`, with the temperature in an attribute) and for a media
+/// player (`playing`, with what is playing in one).
+///
+/// Deliberately **not a list of which attributes matter per kind of thing** — that would be
+/// per-integration knowledge, and there are hundreds of kinds. Three generic rules do it:
+///
+/// - a **scalar**, so lists and nested objects are left out (a TV's `source_list` is forty
+///   app names, and a forecast is an array of days);
+/// - **not empty**, so a calendar with no location does not report an empty one;
+/// - **short**, and dropped rather than truncated when it is not — a 500-character
+///   `description` clipped to sixty is still sixty characters of nothing.
+///
+/// Capped per thing, because everything here is paid for on every turn that reads it — the
+/// same budget that made a clock reading arriving with five kilobytes of house a bug
+/// ([0053](../../docs/adr/0053-honesty-about-what-it-did.md)).
+fn facts_worth_reading(attributes: &Value) -> serde_json::Map<String, Value> {
+    /// Long enough for a time, a title or a temperature; short enough that nothing
+    /// discursive gets in.
+    const SHORT_ENOUGH: usize = 60;
+    /// Enough to describe a thing, few enough that sixty things still fit in a reading.
+    const ENOUGH_PER_THING: usize = 8;
+    let Some(all) = attributes.as_object() else {
+        return serde_json::Map::new();
+    };
+    all.iter()
+        .filter(|(key, _)| !NOT_ABOUT_THE_THING.contains(&key.as_str()))
+        .filter(|(_, value)| !value.is_array() && !value.is_object() && !value.is_null())
+        .filter(|(_, value)| {
+            let shown = value
+                .as_str()
+                .map_or_else(|| value.to_string(), ToOwned::to_owned);
+            !shown.trim().is_empty() && shown.len() <= SHORT_ENOUGH
+        })
+        .take(ENOUGH_PER_THING)
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect()
+}
 
 /// Reads Home Assistant state so the butler can learn the home's routines (lights,
 /// presence, sensors). Read-only and reversible — it observes, it does not actuate;
@@ -1689,12 +1758,17 @@ impl Capability for HomeAssistantCapability {
                     .filter_map(|e| {
                         let id = e["entity_id"].as_str()?;
                         let name = e["attributes"]["friendly_name"].as_str().unwrap_or(id);
-                        Some(json!({
+                        let mut about = json!({
                             "entity": id,
                             "name": name,
                             "state": e["state"].as_str().unwrap_or("?"),
                             "changed": e["last_changed"].as_str().unwrap_or(""),
-                        }))
+                        });
+                        let facts = facts_worth_reading(&e["attributes"]);
+                        if !facts.is_empty() {
+                            about["about"] = Value::Object(facts);
+                        }
+                        Some(about)
                     })
                     .take(60)
                     .collect()
@@ -1715,11 +1789,29 @@ impl Capability for HomeAssistantCapability {
             .iter()
             .take(30)
             .map(|e| {
-                format!(
+                let said = format!(
                     "{}: {}",
                     e["name"].as_str().unwrap_or("?"),
                     e["state"].as_str().unwrap_or("?")
-                )
+                );
+                // The facts travel with it, because for many things the state alone says
+                // nothing: `Family: off` is a calendar with an event in an hour.
+                match e["about"].as_object().filter(|a| !a.is_empty()) {
+                    None => said,
+                    Some(about) => {
+                        let detail = about
+                            .iter()
+                            .map(|(k, v)| {
+                                format!(
+                                    "{k}={}",
+                                    v.as_str().map_or_else(|| v.to_string(), ToOwned::to_owned)
+                                )
+                            })
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        format!("{said} ({detail})")
+                    }
+                }
             })
             .collect::<Vec<_>>()
             .join("; ");
@@ -5840,5 +5932,76 @@ mod pressing_test_is_safe {
             panic!("expected an unavailable answer, got {answer:?}");
         };
         assert!(why.contains("URL"), "{why}");
+    }
+}
+
+#[cfg(test)]
+mod what_a_thing_is_actually_telling_you {
+    use super::facts_worth_reading;
+    use serde_json::json;
+
+    #[test]
+    fn a_calendars_meaning_is_entirely_in_its_attributes() {
+        // Captured from a live house. Connecting a calendar achieved nothing until this
+        // existed: the state is `off`, and the evening is in the attributes.
+        let family = json!({
+            "message": "K. Novak & J. Ellis",
+            "all_day": false,
+            "start_time": "2026-07-31 18:30:00",
+            "end_time": "2026-07-31 19:30:00",
+            "location": "",
+            "description": "-::~:~::~:~:~:~:~:~:~:~:~:~:~:~:~:~:~:~:~:~:~:~:~:~:~:~:~:~:~:~:~:~:~:~:~:~::~:~::-",
+            "friendly_name": "Family",
+            "supported_features": 1
+        });
+        let facts = facts_worth_reading(&family);
+        assert_eq!(facts["message"], "K. Novak & J. Ellis");
+        assert_eq!(facts["start_time"], "2026-07-31 18:30:00");
+        // An empty location is not a fact about the evening.
+        assert!(!facts.contains_key("location"));
+        // Boilerplate the service attaches to every reading.
+        assert!(
+            !facts.contains_key("description"),
+            "500 characters of tildes"
+        );
+        assert!(!facts.contains_key("friendly_name"), "already the name");
+        assert!(!facts.contains_key("supported_features"), "a bitmask");
+    }
+
+    #[test]
+    fn the_weather_is_a_temperature_not_a_word() {
+        // `clear-night` is the whole state. The temperature is an attribute, which is why
+        // a butler with a working weather entity still could not say how warm it was.
+        let forecast = json!({
+            "temperature": 73, "humidity": 72, "temperature_unit": "°F",
+            "attribution": "Weather forecast from met.no, delivered by the Norwegian Meteorological Institute",
+            "friendly_name": "Forecast Home", "supported_features": 3
+        });
+        let facts = facts_worth_reading(&forecast);
+        assert_eq!(facts["temperature"], 73);
+        assert_eq!(facts["temperature_unit"], "°F");
+        assert!(!facts.contains_key("attribution"), "boilerplate, and long");
+    }
+
+    #[test]
+    fn a_list_is_never_a_fact_about_the_thing() {
+        // An Apple TV's `source_list` is forty app names. Including it would put a page of
+        // noise beside every media player, on every turn that reads the house.
+        let apple_tv = json!({
+            "source_list": ["App Store", "Arcade", "Channels", "Computers", "Crunchyroll"],
+            "friendly_name": "Apple TV", "supported_features": 450_487
+        });
+        assert!(
+            facts_worth_reading(&apple_tv).is_empty(),
+            "nothing to say while it is off"
+        );
+    }
+
+    #[test]
+    fn nothing_discursive_gets_in_even_bounded() {
+        // Dropped rather than truncated: sixty characters of a paragraph is still sixty
+        // characters of nothing, and it costs the same as sixty useful ones.
+        let wordy = json!({ "note": "x".repeat(400) });
+        assert!(facts_worth_reading(&wordy).is_empty());
     }
 }
