@@ -250,10 +250,21 @@ The trigger is every message Endora **started itself**, and deliberately nothing
 The rate limit is already the schedule the person set, so it cannot become a firehose unless
 they widen it.
 
-It is **not** gated on presence, though the signal exists. That would mean parsing free text
-a service wrote — *"john is not home"* — to decide whether to interrupt someone, and being
-wrong either wakes them or silently swallows the alert they wanted. The schedule is the
-honest limit.
+It **is** gated on "not now", once there is something honest to gate on.
+
+The first version refused to, and the reasoning still holds for what was available then: the
+only signal was free text a service had written — *"john is not home"* — and deciding
+whether to interrupt somebody by parsing prose is a guess that fails in both directions. A
+**boolean entity** removes the objection entirely. Their phone's Focus mode is already on or
+off, already in the house, and already means precisely this.
+
+So it is the **nomination** pattern once more: the person names an entity that is on when they
+do not want interrupting, and it is read at the moment of interrupting rather than remembered.
+Blank means always reach them, which is where it ships.
+
+**Any doubt means reach them.** Unset, unreachable, unreadable — all of those notify. Treating
+a failed read as "busy" would let a broken sensor silently cancel every alert, and a
+notification nobody receives is worse than one that arrives at a bad time.
 
 Only the first sentence travels. The point is to say *there is something*; a notification
 long enough to be the message is one people stop reading.

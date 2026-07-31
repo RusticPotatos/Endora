@@ -47,6 +47,14 @@ pub struct HomeAssistant {
     /// acting are one grant; editing the service's own configuration is another, and it
     /// is off until deliberately turned on.
     may_write: bool,
+    /// The entity the person nominated as meaning "not now", empty when they did not.
+    ///
+    /// Notifications were deliberately **not** gated on presence when they were built,
+    /// because the only signal available was free text a service had written — *"rustic is
+    /// not home"* — and being wrong either wakes somebody or silently swallows the alert
+    /// they wanted. A **boolean entity** removes that objection entirely: their phone's
+    /// Focus mode is already on/off, already in the house, and already means exactly this.
+    busy_entity: String,
     /// The notify service the person nominated as how to reach them, without its
     /// `notify.` prefix. Empty means Endora never interrupts them through this service.
     notify_service: String,
@@ -69,6 +77,10 @@ impl HomeAssistant {
         let token = settings.get("token")?.trim().to_owned();
         // Which notify service to reach the person through. Blank means never — being able
         // to interrupt somebody is granted, not inferred.
+        let busy_entity = settings
+            .get("busy_entity")
+            .map(|v| v.trim().to_owned())
+            .unwrap_or_default();
         let notify_service = settings
             .get("notify_service")
             .map(|v| v.trim().trim_start_matches("notify.").to_owned())
@@ -81,6 +93,7 @@ impl HomeAssistant {
             base,
             token,
             may_write,
+            busy_entity,
             notify_service,
             aliases: Vec::new(),
         })
@@ -284,6 +297,22 @@ impl HomeAssistant {
             added: alias.to_owned(),
             was,
         })
+    }
+
+    /// Whether the person has said, through their own service, that this is not the moment.
+    ///
+    /// **False on any doubt** — unset, unreachable, unreadable. Refusing to interrupt on a
+    /// failed read would mean a broken sensor silently cancelling every alert, and a
+    /// notification nobody receives is worse than one that arrives at a bad time.
+    fn says_not_now(&self) -> bool {
+        if self.busy_entity.is_empty() {
+            return false;
+        }
+        self.get(&format!("/api/states/{}", self.busy_entity))
+            .ok()
+            .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
+            .and_then(|state| state["state"].as_str().map(str::to_owned))
+            .is_some_and(|state| state.eq_ignore_ascii_case("on"))
     }
 
     /// Removes a setup form that was started and not finished, so an abandoned attempt does
@@ -895,6 +924,13 @@ impl crate::infrastructure::NativeChannel for HomeAssistant {
 
     fn notify(&self, title: &str, body: &str) -> Option<Result<(), String>> {
         if self.notify_service.is_empty() {
+            return None;
+        }
+        // Nominated, and read at the moment of interrupting rather than remembered. A
+        // service that cannot be reached is NOT taken as "busy": failing to read it must
+        // not silently swallow the alert, which is the failure mode that makes people stop
+        // trusting notifications (ADR 0056).
+        if self.says_not_now() {
             return None;
         }
         // Home Assistant's own notify service, which is already delivering to this
