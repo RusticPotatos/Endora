@@ -374,11 +374,21 @@ pub struct McpServer {
     /// Whether the person has this server switched on. A disabled server contributes
     /// no tools to the catalog.
     pub enabled: bool,
-    /// Auto-allow this server's tools on connect. When set, every tool it exposes is
-    /// opened for use without per-tool clicking — but opened MCP tools are still
-    /// `Block`→`Confirm`, so the butler asks before each use (ADR 0051). The enabling
-    /// is done in code from this stored flag; it is never driven by model output. Off
-    /// keeps the stricter deny-by-default, where each tool stays blocked until allowed.
+    /// Auto-allow this server's tools on connect — **off by default**.
+    ///
+    /// It used to default **on**, which meant adding a server silently opened every tool
+    /// it exposed. The doc here said opened tools still confirm each use, and that stopped
+    /// being true once the person widened the envelope: opened plus
+    /// `auto_consequential` is `Act`, with no confirmation.
+    ///
+    /// Live, to "Good morning": `HassBroadcast` — a tool that plays audio through the
+    /// house — fired on a greeting. Nobody had chosen to open it. They had chosen to let
+    /// consequential skills act on their own, which is a real decision about *skills they
+    /// picked*, and this default quietly extended it to every tool a server happened to
+    /// expose.
+    ///
+    /// [0054](../../docs/adr/0054-other-peoples-services.md) says MCP tools are
+    /// deny-by-default and the person opens them individually. Now they are.
     pub trust_all: bool,
     /// The tool on this server that **reads its state** — the one Endora uses to check
     /// what an action actually did (ADR 0054). Empty means nobody has said.
@@ -434,7 +444,7 @@ impl McpServer {
             name,
             transport: McpTransport::Stdio { command, args, env },
             enabled: true,
-            trust_all: true,
+            trust_all: false,
             reader_tool: String::new(),
         })
     }
@@ -462,7 +472,7 @@ impl McpServer {
                 auth: auth.trim().to_owned(),
             },
             enabled: true,
-            trust_all: true,
+            trust_all: false,
             reader_tool: String::new(),
         })
     }

@@ -111,7 +111,7 @@ pub fn migrate(db: &Db) -> Result<(), RepositoryError> {
                 enabled INTEGER NOT NULL DEFAULT 1,
                 env     TEXT NOT NULL DEFAULT '',
                 auth    TEXT NOT NULL DEFAULT '',
-                trust_all INTEGER NOT NULL DEFAULT 1,
+                trust_all INTEGER NOT NULL DEFAULT 0,
                 reader_tool TEXT NOT NULL DEFAULT ''
             ) STRICT;",
         )
@@ -140,7 +140,7 @@ pub fn migrate(db: &Db) -> Result<(), RepositoryError> {
     // Auto-allow a server's tools on connect (default on). Opened tools are still
     // Block→Confirm, so this never removes the ask-before-each-use safety net.
     let _ = db.lock()?.execute(
-        "ALTER TABLE mcp_servers ADD COLUMN trust_all INTEGER NOT NULL DEFAULT 1",
+        "ALTER TABLE mcp_servers ADD COLUMN trust_all INTEGER NOT NULL DEFAULT 0",
         [],
     );
     // Which tool reads this server's state (ADR 0054). Existing rows read back blank —
@@ -933,23 +933,32 @@ mod tests {
     }
 
     #[test]
-    fn mcp_trust_all_defaults_on_round_trips_and_toggles() {
+    fn mcp_trust_all_defaults_off_round_trips_and_toggles() {
         use crate::application::{McpServer, McpServerRegistry, McpTransport};
 
         let db = Db::open_in_memory().unwrap();
         migrate(&db).unwrap();
         let store = ConfigStore::new(db);
 
-        // A freshly constructed server auto-allows its tools by default.
+        // A freshly registered server opens NOTHING. It used to open everything, and the
+        // doc claimed opened tools still confirm each use — which stopped being true the
+        // moment the person widened the envelope. Live, to "Good morning": `HassBroadcast`
+        // played audio through the house. Nobody had chosen to open it (ADR 0054).
         let ha = McpServer::http("home-assistant", "https://ha.local/mcp_server/sse").unwrap();
-        assert!(ha.trust_all);
+        assert!(
+            !ha.trust_all,
+            "adding a server must not open every tool it happens to expose"
+        );
         store.register(&ha).unwrap();
-        assert!(store.list().unwrap()[0].trust_all);
+        assert!(
+            !store.list().unwrap()[0].trust_all,
+            "and it stays closed once stored"
+        );
 
-        // Turning it off persists and leaves the transport untouched.
-        McpServerRegistry::set_trust_all(&store, "home-assistant", false).unwrap();
+        // Turning it ON is a decision, and it persists — leaving the transport untouched.
+        McpServerRegistry::set_trust_all(&store, "home-assistant", true).unwrap();
         let row = store.list().unwrap().into_iter().next().unwrap();
-        assert!(!row.trust_all);
+        assert!(row.trust_all);
         assert_eq!(
             row.transport,
             McpTransport::Http {
@@ -958,9 +967,9 @@ mod tests {
             }
         );
 
-        // And back on.
-        McpServerRegistry::set_trust_all(&store, "home-assistant", true).unwrap();
-        assert!(store.list().unwrap()[0].trust_all);
+        // And back off.
+        McpServerRegistry::set_trust_all(&store, "home-assistant", false).unwrap();
+        assert!(!store.list().unwrap()[0].trust_all);
     }
 
     #[test]

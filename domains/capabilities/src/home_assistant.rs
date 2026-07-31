@@ -670,6 +670,31 @@ fn describe_presence(name: &str, state: &str) -> String {
     }
 }
 
+/// What it is like outside, from the service's own forecast.
+///
+/// The weather skill takes a location as a *call argument*, so the model has to pass one and
+/// does not — it failed with `missing 'location'` while a correct forecast for this address
+/// sat unused in the house. A fact the butler reads needs neither.
+///
+/// The temperature is an attribute, not the state: a weather entity's state is `clear-night`,
+/// which is why this was invisible until entities carried their facts.
+fn describe_weather(e: &Entity) -> Option<String> {
+    if !e.id.starts_with("weather.") {
+        return None;
+    }
+    let degrees = e.facts.get("temperature")?;
+    // The service's own unit, because it knows which one this person reads in.
+    let unit = e
+        .facts
+        .get("temperature_unit")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    Some(format!(
+        "outside it is {degrees}{unit} and {}",
+        e.state.replace('-', " ")
+    ))
+}
+
 /// What a calendar entry says about the day, in a sentence.
 ///
 /// `None` for anything that is not a calendar, and for a calendar with nothing on it — an
@@ -860,6 +885,7 @@ impl crate::infrastructure::NativeChannel for HomeAssistant {
         // account established: asked what was on tonight with the event in the house, the
         // model answered about the living room lights (ADR 0056).
         said.extend(everything.iter().filter_map(describe_engagement));
+        said.extend(everything.iter().filter_map(describe_weather));
         (!said.is_empty()).then(|| said.join("; "))
     }
 
