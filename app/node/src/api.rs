@@ -2576,10 +2576,10 @@ fn capability_json(
             })
         })
         .collect();
-    let settings_complete = info
-        .settings
-        .iter()
-        .all(|s| settings.get(s.key).is_some_and(|v| !v.trim().is_empty()));
+    // The same question policy asks, answered by the same code. This used to be a second
+    // copy here, and when settings gained an "optional" flag only one of the two learned
+    // about it — so the console said "needs setup" for a skill policy considered ready.
+    let settings_complete = endora_capabilities::settings_complete(info, settings);
     json!({
         "id": info.id,
         "name": info.name,
