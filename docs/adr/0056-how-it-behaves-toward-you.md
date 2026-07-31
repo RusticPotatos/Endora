@@ -156,6 +156,34 @@ Three details that carry the point:
   answered from Endora's record rather than from the house's lights — both offered, choosing
   is the test.
 
+### A brief is assembled, not requested
+
+The brief was one instruction — *"reach for whatever's relevant to me right now"* — and four
+days of them read like *"the kitchen and garage lights are on"*. One arrived as *"the lights
+in the Living Room are currently unavailable, sir"*.
+
+Every fact worth having was **already in the turn**: what is on today, what it is like
+outside, what has stopped answering, what Endora did overnight. None of it needed the model to
+choose a tool. All of it was left to the model to choose a tool for.
+
+So the brief is now assembled from what Endora holds, and **appended** to whatever the model
+writes.
+
+The appending is the part that matters, and it took six placements to accept. The same facts
+were put in the system prompt, in the turn's grounding beside presence, and finally **verbatim
+in the request itself** under "you must include all of" — and the brief still came back about
+the living room lights. There is no seventh position; the fact was already as close as a fact
+can get.
+
+**Append, never rewrite.** Endora states what it knows and the model's sentence stands beside
+it, exactly as a reading stands beside a tool's receipt
+([0053](0053-honesty-about-what-it-did.md)). Nothing here judges the prose — showing the facts
+needs no judgement, which is precisely why it can be relied on and the alternative cannot.
+
+This is not the deterministic narration 0053 rejected. That was code writing sentences *about
+what a turn did* which the model then contradicted. This adds no claims: it reports the
+person's own calendar, their own forecast, their own broken devices, and Endora's own record.
+
 ### A problem statement, not a status line
 
 The failure this section exists for is a butler that **observes correctly and helps nobody**.
