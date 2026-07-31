@@ -813,6 +813,7 @@ pub fn app(state: AppState) -> Router {
         .route("/v1/aliases/upstream", post(push_aliases_upstream))
         .route("/v1/collections", post(make_a_collection))
         .route("/v1/models/worth-knowing", get(models_worth_knowing))
+        .route("/v1/context", get(what_the_butler_is_told))
         .route("/v1/reliability", get(how_it_has_been_landing))
         .route("/v1/connect/begin", post(begin_connecting))
         .route("/v1/connect/finish", post(finish_connecting))
@@ -2133,6 +2134,47 @@ async fn make_a_collection(
     .await?;
     let _ = state.changes.send(());
     Ok(Json(said))
+}
+
+/// Exactly what the butler is told before it answers.
+///
+/// Five separate times this session a fact was believed to be reaching a turn and was not —
+/// presence, the facts behind an answer, the activity account, the calendar — and each was
+/// diagnosed by inference because there was no way to look. Guessing lost every time.
+///
+/// So the turn's own grounding is readable. It is also the honest answer to "why did it say
+/// that?": if something is absent here, the model never had it, and no amount of prompting
+/// would have helped.
+async fn what_the_butler_is_told(
+    State(state): State<AppState>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let understanding = state.understanding.clone();
+    let config = state.config.clone();
+    let chat = state.chat.clone();
+    let clock = state.clock.clone();
+    let mcp = mcp_snapshot(&state);
+    let capabilities = state.capabilities.clone();
+    let told = blocking(move || {
+        let runner = build_runner(config.as_ref(), capabilities, mcp);
+        usecases::butler_context(
+            understanding.as_ref(),
+            understanding.as_ref(),
+            config.as_ref(),
+            chat.as_ref(),
+            &runner,
+            clock.as_ref(),
+        )
+    })
+    .await?;
+    Ok(Json(json!({
+        "now": told.now,
+        "right_now": told.present,
+        "what_it_has_been_doing": told.did_lately,
+        "understands": told.understanding,
+        "names_it_knows": told.target_aliases,
+        "how_its_actions_landed": told.track_record,
+        "skills_offered": told.capabilities.len(),
+    })))
 }
 
 /// How Endora's recent actions actually landed (ADR 0053).
