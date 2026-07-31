@@ -43,6 +43,7 @@ const WHAT_THE_INTERFACE_LOADS: &[&str] = &[
     "/v1/repairs",
     "/v1/standing-trouble",
     "/v1/reliability",
+    "/v1/context",
     "/v1/config-writes",
     "/v1/autonomy",
     "/v1/audit",
@@ -236,5 +237,23 @@ fn most_of_what_it_tries_is_not_failing_outright() {
         failed * 2 <= considered,
         "{failed} of the last {considered} actions failed outright, which is something \
          broken rather than a bad day: {landing:#}"
+    );
+}
+
+#[test]
+#[ignore = "talks to a deployed node: run with `make smoke` after `make deploy`"]
+fn the_butler_is_told_where_the_person_is() {
+    // Five separate times a fact was believed to be reaching a turn and was not — presence,
+    // the facts behind an answer, the activity account, the calendar. Each was diagnosed by
+    // inference, because there was no way to look.
+    //
+    // A service Endora has direct reach into knows whether anyone is in the house. If that
+    // is missing here, the model never had it, and the reply that follows is uninformed
+    // rather than unhelpful (ADR 0056).
+    let told = get("/v1/context");
+    let right_now = told["right_now"].as_array().cloned().unwrap_or_default();
+    assert!(
+        !right_now.is_empty(),
+        "the turn carries nothing about the person's world: {told:#}"
     );
 }
