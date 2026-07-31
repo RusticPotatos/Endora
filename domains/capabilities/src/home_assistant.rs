@@ -37,6 +37,11 @@ pub struct Entity {
     /// What sort of thing it is: its domain (`light`) and its device class where it has
     /// one. The vocabulary of *kinds*, as opposed to names (ADR 0054).
     pub kinds: Vec<String>,
+    /// The facts its state does not carry — a calendar's event, a forecast's temperature.
+    ///
+    /// A calendar's state is `off` whether the evening is empty or not, so an entity
+    /// without these is unreadable for a whole class of thing.
+    pub facts: serde_json::Map<String, Value>,
 }
 
 /// A configured connection to a Home Assistant instance.
@@ -151,6 +156,7 @@ impl HomeAssistant {
                         .to_owned(),
                     state: e["state"].as_str().unwrap_or("?").to_owned(),
                     since: e["last_changed"].as_str().unwrap_or_default().to_owned(),
+                    facts: crate::infrastructure::facts_worth_reading(&e["attributes"]),
                     kinds,
                 })
             })
@@ -664,6 +670,32 @@ fn describe_presence(name: &str, state: &str) -> String {
     }
 }
 
+/// What a calendar entry says about the day, in a sentence.
+///
+/// `None` for anything that is not a calendar, and for a calendar with nothing on it — an
+/// empty day is not a fact worth a line in every turn.
+fn describe_engagement(e: &Entity) -> Option<String> {
+    if !e.id.starts_with("calendar.") {
+        return None;
+    }
+    let what = e.facts.get("message")?.as_str()?.trim();
+    if what.is_empty() {
+        return None;
+    }
+    let when = e
+        .facts
+        .get("start_time")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    // The service's own words for the time, not a reformatting of them: Endora has no
+    // business deciding what "18:30" means in somebody's timezone when the service already
+    // wrote it in theirs.
+    Some(match when.is_empty() {
+        true => format!("on the {} calendar: {what}", e.name),
+        false => format!("on the {} calendar: {what} at {when}", e.name),
+    })
+}
+
 /// The MCP server this instance is the direct counterpart of.
 ///
 /// Data rather than a constant in the wiring: whoever registers the MCP server chooses
@@ -814,14 +846,21 @@ impl crate::infrastructure::NativeChannel for HomeAssistant {
         // A house knows whether someone is in it. Home Assistant keeps that as `person.*`
         // entities whose state is `home`, `not_home`, or the name of a place — which is
         // already in the reading Endora fetches, and was going unused.
-        let people: Vec<String> = self
-            .entities()
-            .ok()?
-            .into_iter()
+        let everything = self.entities().ok()?;
+        let mut said: Vec<String> = everything
+            .iter()
             .filter(|e| e.id.starts_with("person."))
             .map(|e| describe_presence(&e.name, &e.state))
             .collect();
-        (!people.is_empty()).then(|| people.join("; "))
+        // What is on today. A calendar is the plainest fact about somebody's day and it was
+        // invisible: its state is `off` whether the evening is empty or not, so a connected
+        // calendar changed nothing until it travelled as a fact the butler reads.
+        //
+        // Stated rather than fetched, for the reason three placements of the activity
+        // account established: asked what was on tonight with the event in the house, the
+        // model answered about the living room lights (ADR 0056).
+        said.extend(everything.iter().filter_map(describe_engagement));
+        (!said.is_empty()).then(|| said.join("; "))
     }
 
     fn refuse(&self, tool: &str, input_json: &str) -> Option<String> {
@@ -1205,6 +1244,7 @@ mod tests {
             state: "on".to_owned(),
             since: String::new(),
             kinds: vec!["light".to_owned()],
+            facts: serde_json::Map::new(),
         }
     }
 
@@ -1368,6 +1408,60 @@ mod tests {
                 .refuse("home-assistant.HassLightSet", "{bad")
                 .is_none()
         );
+    }
+}
+
+#[cfg(test)]
+mod what_is_on_today {
+    use super::{Entity, describe_engagement};
+
+    fn calendar(name: &str, message: &str, start: &str) -> Entity {
+        let mut facts = serde_json::Map::new();
+        if !message.is_empty() {
+            facts.insert(
+                "message".to_owned(),
+                serde_json::Value::String(message.to_owned()),
+            );
+        }
+        if !start.is_empty() {
+            facts.insert(
+                "start_time".to_owned(),
+                serde_json::Value::String(start.to_owned()),
+            );
+        }
+        Entity {
+            id: format!("calendar.{}", name.to_lowercase()),
+            name: name.to_owned(),
+            state: "off".to_owned(),
+            since: String::new(),
+            kinds: vec!["calendar".to_owned()],
+            facts,
+        }
+    }
+
+    #[test]
+    fn an_engagement_is_read_from_the_facts_not_the_state() {
+        // The live one. A calendar's state is `off` whether the evening is empty or not, so
+        // a connected calendar told the butler nothing until this existed.
+        let tonight = calendar("Family", "E. Werner & M. Battaglia", "2026-07-31 18:30:00");
+        let said = describe_engagement(&tonight).expect("an engagement");
+        assert!(said.contains("E. Werner & M. Battaglia"), "{said}");
+        assert!(said.contains("18:30"), "{said}");
+        // The service's own words for the time — Endora has no business deciding what
+        // "18:30" means in somebody's timezone when the service wrote it in theirs.
+        assert!(said.contains("2026-07-31 18:30:00"), "{said}");
+    }
+
+    #[test]
+    fn an_empty_day_is_not_a_line_in_every_turn() {
+        assert_eq!(describe_engagement(&calendar("Home", "", "")), None);
+    }
+
+    #[test]
+    fn only_a_calendar_is_read_this_way() {
+        let mut lamp = calendar("Family", "something", "now");
+        lamp.id = "light.kitchen".to_owned();
+        assert_eq!(describe_engagement(&lamp), None);
     }
 }
 

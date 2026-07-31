@@ -1628,7 +1628,7 @@ const NOT_ABOUT_THE_THING: &[&str] = &[
 /// Capped per thing, because everything here is paid for on every turn that reads it — the
 /// same budget that made a clock reading arriving with five kilobytes of house a bug
 /// ([0053](../../docs/adr/0053-honesty-about-what-it-did.md)).
-fn facts_worth_reading(attributes: &Value) -> serde_json::Map<String, Value> {
+pub(crate) fn facts_worth_reading(attributes: &Value) -> serde_json::Map<String, Value> {
     /// Long enough for a time, a title or a temperature; short enough that nothing
     /// discursive gets in.
     const SHORT_ENOUGH: usize = 60;
