@@ -81,6 +81,27 @@ Drop any one and this stops being safe autonomy and becomes a model acting on a 
 first application was withdrawing a tool that has never once worked
 ([0054](0054-other-peoples-services.md)).
 
+### What leaves the house is disguised, not merely scanned
+
+Escalating to a deep model means sending somebody else's service a name, a city and the title
+of tonight's appointment. The guard that claimed to prevent this replaced **email addresses
+and nothing else** — a promise much larger than the code behind it.
+
+Endora does not have to *detect* personal information, because it already holds it: the name
+is in the person's preferences, the city is in their preferences, the event title came from
+their own calendar. **Substituting values you hold is exact, where pattern-matching for
+"something that looks personal" is a guess that fails silently.**
+
+So values leave as placeholders and are put back locally. The person reads their own words;
+the remote model never saw them. A placeholder the model rewords is simply not restored and
+shows as itself — the safe direction to fail, since the reverse is the leak this prevents.
+
+**It hides values, not structure.** That an appointment exists at 18:30, and that the house is
+empty, still leave. No substitution can prevent that while a model is being asked to write
+about them, and saying otherwise would be the same kind of oversold promise as the guard this
+replaces. Someone who objects to the *shape* of their day reaching a third party needs a
+switch, not a cleverer disguise.
+
 ## Consequences
 
 - The interesting question is never "is the model confident?" but "what band is this, and
