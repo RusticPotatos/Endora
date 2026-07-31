@@ -2449,6 +2449,7 @@ pub fn daily_brief(
     chat: &impl ChatRepository,
     preferences: &impl PreferenceRepository,
     outcomes: &impl OutcomeRepository,
+    troubles: &impl endora_capabilities::StandingTroubleRepository,
     capabilities: &dyn CapabilityRunner,
     butler: &dyn Butler,
     audit: &dyn AuditLog,
@@ -2468,14 +2469,24 @@ pub fn daily_brief(
         now: format_datetime_utc(clock.now().unix_millis()),
         ..context.clone()
     };
+    // What Endora already knows, assembled here rather than asked for. A brief that
+    // depends on the model choosing the right tools is a brief that arrives as "the
+    // kitchen and garage lights are on" — which is what four days of them looked like.
+    // Only what has been wrong long enough to be worth raising, so a brief cannot become
+    // the pile of chores ADR 0056 forbids.
+    let open = troubles.troubles().unwrap_or_default();
+    let raisable = endora_capabilities::worth_raising(&open, clock.now().unix_millis());
+    let already_known = whats_worth_saying_this_morning(&brief_ctx, &raisable);
     let ask = [ChatMessage::new(
         MessageId::new(ids.new_id()),
         MessageRole::User,
-        "Put together my brief. Reach for whatever's relevant to me right now — the \
-         weather and any safety alerts where I'm based, news I'd care about, anything \
-         else you can look up — then give me a short, warm rundown of what you actually \
-         found. If a skill failed or you couldn't reach something, say so plainly rather \
-         than filling the gap.",
+        &format!(
+            "Put together my brief. Here is what you already know, which you must include \
+             all of:\n{already_known}\n\nThen reach for anything else relevant — news I'd \
+             care about, safety alerts where I'm based — and give me a short, warm rundown. \
+             If a skill failed or you couldn't reach something, say so plainly rather than \
+             filling the gap."
+        ),
         clock.now(),
     )?];
     let text = run_tool_turn(
@@ -2593,6 +2604,7 @@ pub fn run_due_brief(
     chat: &impl ChatRepository,
     preferences: &impl PreferenceRepository,
     outcomes: &impl OutcomeRepository,
+    troubles: &impl endora_capabilities::StandingTroubleRepository,
     briefs: &impl BriefScheduleRepository,
     capabilities: &dyn CapabilityRunner,
     butler: &dyn Butler,
@@ -2615,6 +2627,7 @@ pub fn run_due_brief(
         chat,
         preferences,
         outcomes,
+        troubles,
         capabilities,
         butler,
         audit,
@@ -3022,6 +3035,42 @@ fn recently_did(
         .into_iter()
         .rev()
         .collect())
+}
+
+/// The facts a morning brief is *for*, gathered from what Endora already holds.
+///
+/// The brief was one instruction — *"reach for whatever's relevant"* — and four days of them
+/// read like "the kitchen and garage lights are on". Every fact worth having was already in
+/// the turn: what is on today, what it is like outside, what has stopped answering, what
+/// Endora did overnight. None of it depended on the model choosing a tool, and all of it was
+/// left to the model to choose a tool for.
+///
+/// Assembled deterministically for the same reason the activity account is
+/// ([0056](../../docs/adr/0056-how-it-behaves-toward-you.md)): a report of stored facts is
+/// the one thing Endora is entitled to assert, and the model's job is to say it nicely.
+fn whats_worth_saying_this_morning(
+    context: &ButlerContext,
+    troubles: &[&endora_capabilities::StandingTrouble],
+) -> String {
+    let mut lines: Vec<String> = Vec::new();
+    // Where they are, what is on, what it is like outside — the services' own words.
+    lines.extend(context.present.iter().cloned());
+    // Things that have been wrong long enough to be worth a mention. Only the ones already
+    // judged worth raising, so the brief cannot become the pile of chores ADR 0056 forbids.
+    for trouble in troubles {
+        lines.push(trouble.statement(trouble.since_ms));
+    }
+    // What Endora itself has been doing, which is the question a proactive butler is asked
+    // first and could not answer at all until recently.
+    lines.extend(context.did_lately.iter().cloned());
+    if lines.is_empty() {
+        return "- nothing on today, nothing wrong, and nothing I did overnight".to_owned();
+    }
+    lines
+        .iter()
+        .map(|l| format!("- {l}"))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// The collections Endora has made, as lines the butler can act on.
@@ -5604,6 +5653,7 @@ mod tests {
             &store,
             &store,
             &FakeOutcomes::default(),
+            &crate::usecases::NoTrouble,
             &BriefSkills,
             &BriefButler,
             &audit,
@@ -5637,6 +5687,7 @@ mod tests {
                 &store,
                 &store,
                 &FakeOutcomes::default(),
+                &crate::usecases::NoTrouble,
                 &BriefSkills,
                 &DeadButler,
                 &audit,
@@ -7400,6 +7451,32 @@ fn first_sentence_of(text: &str) -> String {
         out.push('…');
     }
     out
+}
+
+/// A world with nothing wrong in it, for tests about something else.
+#[cfg(test)]
+#[derive(Default)]
+struct NoTrouble;
+
+#[cfg(test)]
+impl endora_capabilities::StandingTroubleRepository for NoTrouble {
+    fn note_trouble(
+        &self,
+        _t: &endora_capabilities::StandingTrouble,
+    ) -> Result<(), endora_kernel::RepositoryError> {
+        Ok(())
+    }
+    fn clear_trouble(&self, _s: &str, _t: &str) -> Result<(), endora_kernel::RepositoryError> {
+        Ok(())
+    }
+    fn troubles(
+        &self,
+    ) -> Result<Vec<endora_capabilities::StandingTrouble>, endora_kernel::RepositoryError> {
+        Ok(Vec::new())
+    }
+    fn accept_trouble(&self, _s: &str, _t: &str) -> Result<(), endora_kernel::RepositoryError> {
+        Ok(())
+    }
 }
 
 #[cfg(test)]
