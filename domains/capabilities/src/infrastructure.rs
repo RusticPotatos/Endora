@@ -28,6 +28,17 @@ pub struct SettingSpec {
     pub label: &'static str,
     /// Whether the value is a secret (never echoed back to the client).
     pub secret: bool,
+    /// Whether the skill works fine without it.
+    ///
+    /// Every setting used to be required, which quietly meant a skill with an optional one
+    /// could never be "configured". Home Assistant's `mcp_server` is documented as *blank =
+    /// home-assistant* and `notify_service` as *blank = never* — both are meant to be left
+    /// empty, and leaving them empty is what kept the whole skill reading **needs setup**
+    /// and out of the model's catalogue entirely.
+    ///
+    /// A field the interface itself describes as optional cannot also be the reason a skill
+    /// is switched off.
+    pub optional: bool,
 }
 
 /// A capability's stored settings, keyed by [`SettingSpec::key`]. Passed to
@@ -1300,6 +1311,7 @@ const IMAGE_MODEL_SETTING: &[SettingSpec] = &[SettingSpec {
     key: "model",
     label: "Vision model (a pulled Ollama model, e.g. moondream or llava)",
     secret: false,
+    optional: false,
 }];
 
 impl Capability for ImageReviewCapability {
@@ -1542,26 +1554,31 @@ const HA_SETTINGS: &[SettingSpec] = &[
         key: "url",
         label: "Home Assistant URL (e.g. http://homeassistant.local:8123)",
         secret: false,
+        optional: false,
     },
     SettingSpec {
         key: "token",
         label: "Long-lived access token",
         secret: true,
+        optional: false,
     },
     SettingSpec {
         key: "mcp_server",
         label: "Name of the matching MCP server (blank = home-assistant)",
         secret: false,
+        optional: true,
     },
     SettingSpec {
         key: "write_names",
         label: "Let Endora write names back into Home Assistant (on/off)",
         secret: false,
+        optional: false,
     },
     SettingSpec {
         key: "notify_service",
         label: "How Endora reaches you when you're away — a notify service, e.g.                 mobile_app_yourphone (blank = never)",
         secret: false,
+        optional: true,
     },
 ];
 
@@ -1803,6 +1820,7 @@ impl RegistryRunner {
 fn settings_complete(info: &CapabilityInfo, settings: &CapabilitySettings) -> bool {
     info.settings
         .iter()
+        .filter(|s| !s.optional)
         .all(|s| settings.get(s.key).is_some_and(|v| !v.trim().is_empty()))
 }
 
@@ -5614,6 +5632,43 @@ mod tests {
                 .iter()
                 .any(|(name, _)| name == "Kitchen Table"),
             "the facts behind an answer were dropped somewhere in the stack"
+        );
+    }
+}
+
+#[cfg(test)]
+mod a_field_that_may_be_left_blank {
+    use super::*;
+
+    #[test]
+    fn an_optional_setting_does_not_hold_a_skill_back() {
+        // Live: the Home Assistant skill read "needs setup" and was left out of the model's
+        // catalogue entirely, with a URL and a token both set — because `mcp_server` is
+        // documented as "blank = home-assistant" and had never been filled in. A field the
+        // interface itself describes as optional cannot also be the reason a skill is off.
+        let info = HomeAssistantCapability.info();
+        assert!(
+            info.settings.iter().any(|s| s.optional),
+            "this skill is the reason the flag exists"
+        );
+
+        let mut only_the_required: CapabilitySettings = CapabilitySettings::new();
+        for spec in info.settings.iter().filter(|s| !s.optional) {
+            only_the_required.insert(spec.key.to_owned(), "something".to_owned());
+        }
+        assert!(
+            settings_complete(&info, &only_the_required),
+            "filling in every REQUIRED field must be enough"
+        );
+    }
+
+    #[test]
+    fn a_required_setting_still_holds_it_back() {
+        // The flag must not become a way for a skill to claim it is ready with nothing set.
+        let info = HomeAssistantCapability.info();
+        assert!(
+            !settings_complete(&info, &CapabilitySettings::new()),
+            "no URL and no token is not configured"
         );
     }
 }
