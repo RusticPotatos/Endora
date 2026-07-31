@@ -2947,6 +2947,38 @@ pub trait NativeChannel: Send + Sync {
         true
     }
 
+    /// Begins connecting a new kind of thing to this service, returning **the service's own
+    /// setup form** (ADR 0054).
+    ///
+    /// Endora does not know what a calendar or a mail account needs, and deliberately does
+    /// not learn: the service declares its fields and Endora renders them. A kind of thing
+    /// nobody here has heard of works the same as one that ships today.
+    ///
+    /// `None` from a channel with no notion of setting things up.
+    ///
+    /// # Errors
+    /// Through the inner `Result`, a human-readable message if the service refuses.
+    fn begin_setup(&self, _kind: &str) -> Option<Result<crate::domain::SetupForm, String>> {
+        None
+    }
+
+    /// Answers a form from [`begin_setup`](Self::begin_setup).
+    ///
+    /// Returns the next form when the service wants more, and `None` inside the `Ok` when it
+    /// is finished. **Nothing here is stored.** A credential travels from the person's
+    /// keyboard to their own service and is not written down on the way — Endora is passing
+    /// a message, not keeping an account.
+    ///
+    /// # Errors
+    /// Through the inner `Result`, a human-readable message if the service refuses.
+    fn finish_setup(
+        &self,
+        _form: &str,
+        _answers: &[(String, String)],
+    ) -> Option<Result<Option<crate::domain::SetupForm>, String>> {
+        None
+    }
+
     /// Reaches the person when they are not looking at Endora (ADR 0056).
     ///
     /// **Nominated, never assumed.** The same shape as naming a server's reader: the person

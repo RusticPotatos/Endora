@@ -31,6 +31,7 @@ pub use application::{
     Sampling, StandingTrouble, StandingTroubleRepository, TargetAlias, TargetAliasRepository,
     WriteKind, watch_for_trouble, worth_raising,
 };
+pub use domain::{SetupField, SetupForm};
 pub use home_assistant::{HomeAssistant, paired_server};
 pub use infrastructure::{
     AliasRunner, Capability, CapabilityError, CapabilityInfo, CapabilitySettings, CompositeRunner,
