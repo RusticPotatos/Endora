@@ -209,6 +209,36 @@ already produced two more latent ones: two runners in the middle of the stack ne
 presence or states along, and got away with it only because the runner above them happened
 to answer first. Reordering the stack would have broken it silently.
 
+### Tools, skills, agents
+
+One word has been doing three jobs. What the console calls a "skill" is a **tool**: one call,
+one result. There is no layer above it, and the absence is why a brief could only ever be *a
+prompt asking the model to be the missing layer* — which failed six times in a row.
+
+| | what it is | who composes it | example |
+| --- | --- | --- | --- |
+| **tool** | one call, one result | nobody | `GetLiveContext`, `weather` |
+| **skill** | a **procedure** over tools, toward an outcome | **code**, from a recipe | the morning brief |
+| **agent** | chooses skills and tools against a goal | the **model**, within policy | the butler turn |
+
+The distinction matters because it says where the model belongs. An **agent** decides *what
+to do* — that is judgement, and it is what a model is for. A **skill** decides *how a known
+outcome is assembled* — that is procedure, and deciding it afresh every morning is the
+mistake. A brief needs no judgement about whether to include the calendar; it always should.
+
+**Where dynamism belongs.** The worry about a fixed procedure is real: a skill that cannot
+change is a skill that rots. But the axis is wrong. What must adapt is the **recipe** — what
+goes in, on the scale of weeks — not the **composition**, decided fresh each time. So a
+recipe becomes data, amended by evidence and the person's confirmation, which is
+[0051](0051-where-the-boundary-is.md)'s *models propose, policy authorizes* applied to
+procedure rather than to action. Execution stays deterministic until something says otherwise;
+the mechanisms that would say so — reactions, derived findings — already exist.
+
+**Not built yet, deliberately.** There is one recipe. A composition engine for a single
+instance is the speculative abstraction this project refuses, and its shape would be guessed
+from one example. The distinction is recorded now because it changes how the next thing is
+built; the machinery waits for a second skill to argue for it.
+
 ### Connecting a new kind of thing is the service's form, rendered
 
 The most useful thing Endora could gain is not another integration written here — it is a

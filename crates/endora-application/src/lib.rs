@@ -14,6 +14,7 @@
 
 pub mod error;
 pub mod ports;
+pub mod pseudonyms;
 pub mod usecases;
 
 pub use error::AppError;
