@@ -397,11 +397,13 @@ fn sounds_like_plumbing(text: &str) -> bool {
         "placeholder argument",
         "the 'news' domain",
         "tool call",
-        // Bare, because a butler has no reason to say it. Live, posted unprompted at
-        // 04:18: "None of the functions listed involve a 'person' domain, so there's no
-        // need…" — the list held "functions provided" and missed this by one word, which
-        // is what a list of exact phrases will always do.
-        "functions",
+        // Bare and singular, because a butler has no reason to say the word at all. Two
+        // live misses, each by less than a word: the list held "functions provided" and
+        // missed "None of the functions listed involve a 'person' domain"; then it held
+        // "functions" and missed "please provide me with a function name". An exact-phrase
+        // list will always fail this way, so the marker is the shortest thing that can
+        // only be plumbing.
+        "function",
         // Breaking the frame is the same failure wearing different clothes: the reply is
         // about what the model is rather than about what was asked. Live, to "How has your
         // day been": "I'm an AI assistant without personal experiences, so I don't have a
@@ -7318,6 +7320,25 @@ mod what_reaches_an_empty_room {
             ..ButlerReply::default()
         };
         assert!(not_an_answer(&leaked, &offering_nothing()));
+    }
+
+    #[test]
+    fn the_marker_is_the_shortest_thing_that_can_only_be_plumbing() {
+        // Two live misses, each by less than a word. The list held "functions provided" and
+        // missed "None of the functions listed involve a 'person' domain"; then it held
+        // "functions" and missed "please provide me with a function name". An exact-phrase
+        // list will always fail this way.
+        for leaked in [
+            "None of the functions listed involve a 'person' domain, so there's no need.",
+            "Sure, please provide me with a function name and the corresponding arguments.",
+            "Based on your request, here are the appropriate function calls.",
+        ] {
+            let reply = ButlerReply {
+                text: leaked.to_owned(),
+                ..ButlerReply::default()
+            };
+            assert!(not_an_answer(&reply, &offering_nothing()), "{leaked}");
+        }
     }
 
     #[test]
