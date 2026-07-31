@@ -2482,10 +2482,11 @@ pub fn daily_brief(
         MessageRole::User,
         &format!(
             "Put together my brief. Here is what you already know, which you must include \
-             all of:\n{already_known}\n\nThen reach for anything else relevant — news I'd \
+             all of:\n{}\n\nThen reach for anything else relevant — news I'd \
              care about, safety alerts where I'm based — and give me a short, warm rundown. \
              If a skill failed or you couldn't reach something, say so plainly rather than \
-             filling the gap."
+             filling the gap.",
+            already_known.as_deref().unwrap_or("- nothing yet")
         ),
         clock.now(),
     )?];
@@ -2506,6 +2507,12 @@ pub fn daily_brief(
         &mut Vec::new(),
     )
     .ok()
+    // Protocol prose is not a brief. Live, as the whole of one: "None of the functions
+    // provided relate to the error message received… Check for Calendar Integration."
+    // That shape is already recognised everywhere else; a brief had no reason to be the
+    // exception, and unlike a chat answer there is no question of withholding something
+    // the person asked for (ADR 0053).
+    .filter(|reply| !not_an_answer(reply, &brief_ctx))
     .map(|reply| reply.text.trim().to_owned())
     .filter(|t| !t.is_empty());
     // The facts go under whatever the model wrote, because six placements have now shown
@@ -2517,8 +2524,20 @@ pub fn daily_brief(
     // it knows and the model's sentence stands beside it, exactly as a reading stands beside
     // a tool's receipt (ADR 0053). Nothing here judges the prose — showing the facts needs no
     // judgement, which is why it can be relied on.
-    let text = text.map(|written| format!("{written}\n\n{already_known}"));
-    // Nothing worth saying (or no model) — stay quiet rather than post a hollow brief.
+    // The facts stand on their own when the model gives nothing usable. They ARE the
+    // brief; the prose is the greeting around them, and a morning with a calendar entry
+    // and a broken lamp is worth saying whether or not a sentence came back.
+    let text = match (text, already_known) {
+        (Some(written), Some(facts)) => Some(format!("{written}\n\n{facts}")),
+        (Some(written), None) => Some(written),
+        // The facts stand alone when the model gives nothing usable. They ARE the brief;
+        // the prose is the greeting around them, and a morning with a calendar entry and a
+        // broken lamp is worth saying whether or not a sentence came back.
+        (None, Some(facts)) => Some(facts),
+        // Nothing known and nothing said: no brief. A scripted one would be Endora
+        // claiming to have thought about the day (ADR 0053).
+        (None, None) => None,
+    };
     let Some(text) = text else {
         return Ok(None);
     };
@@ -3061,7 +3080,7 @@ fn recently_did(
 fn whats_worth_saying_this_morning(
     context: &ButlerContext,
     troubles: &[&endora_capabilities::StandingTrouble],
-) -> String {
+) -> Option<String> {
     let mut lines: Vec<String> = Vec::new();
     // Where they are, what is on, what it is like outside — the services' own words.
     lines.extend(context.present.iter().cloned());
@@ -3073,14 +3092,16 @@ fn whats_worth_saying_this_morning(
     // What Endora itself has been doing, which is the question a proactive butler is asked
     // first and could not answer at all until recently.
     lines.extend(context.did_lately.iter().cloned());
-    if lines.is_empty() {
-        return "- nothing on today, nothing wrong, and nothing I did overnight".to_owned();
-    }
-    lines
-        .iter()
-        .map(|l| format!("- {l}"))
-        .collect::<Vec<_>>()
-        .join("\n")
+    // `None` rather than "nothing to report": with no facts AND no model, there is no
+    // brief at all. Posting a cheerful nothing would be Endora claiming to have thought
+    // about the day, which is the floor ADR 0053 refuses to build.
+    (!lines.is_empty()).then(|| {
+        lines
+            .iter()
+            .map(|l| format!("- {l}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    })
 }
 
 /// The collections Endora has made, as lines the butler can act on.
