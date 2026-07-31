@@ -1817,7 +1817,14 @@ impl RegistryRunner {
 }
 
 /// Whether every setting a capability declares has a value — i.e. it is set up.
-fn settings_complete(info: &CapabilityInfo, settings: &CapabilitySettings) -> bool {
+/// Whether every setting a skill actually needs has a value.
+///
+/// Public because the interface asks the same question, and had been answering it with its
+/// own copy — which then did not learn that settings can be optional, so a skill stayed
+/// "needs setup" in the console after policy had already decided it was ready. One rule,
+/// one implementation.
+#[must_use]
+pub fn settings_complete(info: &CapabilityInfo, settings: &CapabilitySettings) -> bool {
     info.settings
         .iter()
         .filter(|s| !s.optional)
