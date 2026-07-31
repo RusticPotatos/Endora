@@ -2508,6 +2508,16 @@ pub fn daily_brief(
     .ok()
     .map(|reply| reply.text.trim().to_owned())
     .filter(|t| !t.is_empty());
+    // The facts go under whatever the model wrote, because six placements have now shown
+    // it will not use them (ADR 0056). They were put in the system prompt, in the turn's
+    // grounding, and finally verbatim in the request itself — and the brief still came back
+    // "the lights in the Living Room are currently unavailable, sir."
+    //
+    // This is the one thing that has ever worked: append, never rewrite. Endora states what
+    // it knows and the model's sentence stands beside it, exactly as a reading stands beside
+    // a tool's receipt (ADR 0053). Nothing here judges the prose — showing the facts needs no
+    // judgement, which is why it can be relied on.
+    let text = text.map(|written| format!("{written}\n\n{already_known}"));
     // Nothing worth saying (or no model) — stay quiet rather than post a hollow brief.
     let Some(text) = text else {
         return Ok(None);
