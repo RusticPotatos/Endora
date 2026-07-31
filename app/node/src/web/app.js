@@ -33,6 +33,7 @@ let LAST_VIEW = null;          // which screen was showing, so a change can rese
 let REPAIRS = [];              // tooling Endora has noticed keeps not working (ADR 0054)
 let TROUBLE = [];              // things in your world that stopped answering (ADR 0056)
 let LANDING = null;            // how Endora's recent actions actually landed (ADR 0053)
+let CONNECT = null;            // a setup form a service is asking us to fill in (ADR 0054)
 let CONFIG_WRITES = [];        // changes Endora made to your services' own settings (ADR 0054)
 let LAST_ACTIVITY = [];        // what Endora did behind the scenes on the last turn
 let LAST_ACTIVITY_MSG = null;  // the butler message id that activity belongs to
@@ -1313,6 +1314,7 @@ function viewUnderstanding() {
     ${setup}
     ${groups || `<div class="empty">Nothing yet. Talk with Endora and it will start to understand you — you'll see it here.</div>`}
     ${viewIntention()}
+    ${viewConnect()}
     ${viewHowItLands()}
     ${viewStandingTrouble()}
     ${viewRepairs()}
@@ -1404,6 +1406,58 @@ function viewHowItLands() {
       <div class="title" style="font-weight:500;">${LANDING.changed} of ${LANDING.considered} verified as doing what was asked</div>
       <div class="sub" style="margin-top:4px;">${esc(LANDING.in_words)}</div>
       ${worst ? `<div class="sub" style="margin-top:6px;">Most often claims success and changes nothing: <b>${esc(worst.capability)}</b> (${worst.times}×). If that one only ever reads, tell Endora it's this server's reader in <a class="link" data-act="go:skills">Skills</a> — then it stops being treated as an action.</div>` : ""}
+    </div>`;
+}
+
+// Connect something new to a service Endora already reaches (ADR 0054).
+//
+// Endora does not know what a calendar or a mail account needs — the service does, and it
+// says so. The form below is rendered from whatever came back, so a kind of thing nobody
+// here has heard of works exactly like one that ships today.
+//
+// The suggestions are a convenience, not a list of what is supported: anything the service
+// can set up can be typed in. They are what a butler is most likely to be asked for.
+const WORTH_CONNECTING = [
+  ["caldav", "Calendar", "iCloud, Fastmail, Nextcloud — anything CalDAV"],
+  ["local_calendar", "A calendar kept here", "no account needed"],
+  ["imap", "Email (read only)", "so it can tell you what arrived"],
+  ["mqtt", "Sensors over MQTT", "doors, motion, whatever you add"],
+];
+
+function viewConnect() {
+  if (CONNECT && CONNECT.fields) {
+    const fields = CONNECT.fields.map((f) => `
+      <div class="field">
+        <label>${esc(f.name)}${f.required ? "" : " <span class=\"sub\">(optional)</span>"}</label>
+        <input id="connect-${esc(f.name)}" type="${f.secret ? "password" : (f.kind === "boolean" ? "text" : "text")}"
+               autocomplete="off" value="${esc(f.default == null ? "" : String(f.default))}"
+               placeholder="${f.secret ? "never stored by Endora" : ""}" />
+      </div>`).join("");
+    return `
+      <h3 style="margin-top:22px;">Connecting ${esc(CONNECT.kind || "something")}</h3>
+      <div class="card">
+        <div class="note" style="margin-bottom:8px;">These are the questions <b>your own service</b> asked — Endora is passing them on. Anything you type here goes straight to it and is never written down here.</div>
+        ${fields}
+        <div class="row" style="gap:8px;justify-content:flex-end;">
+          <button class="ghost" data-act="connect:cancel">Cancel</button>
+          <button class="primary" data-act="connect:submit">Connect</button>
+        </div>
+      </div>`;
+  }
+  const buttons = WORTH_CONNECTING.map(([kind, label, why]) => `
+    <div class="row" style="align-items:center;gap:10px;margin-bottom:8px;">
+      <div class="grow"><div class="title" style="font-weight:500;">${esc(label)}</div><div class="sub">${esc(why)}</div></div>
+      <button class="ghost" data-act="connect:start:${esc(kind)}">Connect</button>
+    </div>`).join("");
+  return `
+    <h3 style="margin-top:22px;">Connect something to your home</h3>
+    <div class="note" style="margin-bottom:10px;">Endora sets it up in Home Assistant for you — you only sign in. Whatever you add here, it can use straight away.</div>
+    <div class="card">
+      ${buttons}
+      <div class="form" style="margin-top:6px;">
+        <input id="connect-other" placeholder="or something else, by its Home Assistant name" />
+        <button class="ghost" data-act="connect:other">Start</button>
+      </div>
     </div>`;
 }
 
@@ -2277,6 +2331,46 @@ async function dispatch(act) {
         flash(`Noted — “${id}” means “${means}”.`, "ok");
       } catch (e) { flash("Couldn't note that: " + e.message, "err"); }
       return reload();
+    }
+    // Connect something new (ADR 0054). Endora starts the service's own setup flow, shows
+    // whatever it asks for, and hands the answers straight back. Nothing typed here is kept.
+    if (verb === "connect") {
+      const server = (MCP_SERVERS.servers || []).some((x) => x.name === "home-assistant")
+        ? "home-assistant" : "home-assistant";
+      if (noun === "cancel") { CONNECT = null; return render(); }
+      if (noun === "start" || noun === "other") {
+        const kind = noun === "other"
+          ? ((document.getElementById("connect-other") || {}).value || "").trim()
+          : id;
+        if (!kind) { flash("Which kind of thing?", "err"); return; }
+        flash("Asking your home what it needs…", "ok");
+        try {
+          const form = await api("POST", "/v1/connect/begin", { server, kind });
+          CONNECT = Object.assign({ kind }, form);
+          return render();
+        } catch (e) { flash("Couldn't start that: " + e.message, "err"); return; }
+      }
+      if (noun === "submit" && CONNECT) {
+        const answers = {};
+        for (const f of CONNECT.fields || []) {
+          const el = document.getElementById(`connect-${f.name}`);
+          const v = el ? el.value.trim() : "";
+          if (v) answers[f.name] = v;
+        }
+        try {
+          const next = await api("POST", "/v1/connect/finish",
+            { server, form: CONNECT.form, answers });
+          if (next.done) {
+            CONNECT = null;
+            flash("Connected. Endora can use it now.", "ok");
+            return reload();
+          }
+          // Another step: same form, new questions.
+          CONNECT = Object.assign({ kind: CONNECT.kind }, next);
+          return render();
+        } catch (e) { flash(e.message, "err"); return; }
+      }
+      return;
     }
     // Answer a problem statement about something in your world (ADR 0056). Both answers
     // end it: one changes the service, the other says it is meant to be like that. There

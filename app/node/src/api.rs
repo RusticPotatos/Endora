@@ -814,6 +814,8 @@ pub fn app(state: AppState) -> Router {
         .route("/v1/collections", post(make_a_collection))
         .route("/v1/models/worth-knowing", get(models_worth_knowing))
         .route("/v1/reliability", get(how_it_has_been_landing))
+        .route("/v1/connect/begin", post(begin_connecting))
+        .route("/v1/connect/finish", post(finish_connecting))
         .route("/v1/standing-trouble", get(list_standing_trouble))
         .route("/v1/standing-trouble/answer", post(answer_standing_trouble))
         .route("/v1/config-writes", get(list_config_writes))
@@ -2162,6 +2164,111 @@ async fn how_it_has_been_landing(
         "worst_offender": tally.worst_offender.as_ref().map(|(id, n)| json!({ "capability": id, "times": n })),
         "in_words": tally.in_words(),
     })))
+}
+
+/// What kind of thing to connect, e.g. `caldav`.
+#[derive(serde::Deserialize)]
+struct BeginConnecting {
+    server: String,
+    kind: String,
+}
+
+/// Starts connecting something new to a service, returning **that service's own form**.
+///
+/// Endora renders whatever comes back rather than knowing what a calendar needs, so a kind
+/// of thing nobody here has heard of works exactly like one that ships today (ADR 0054).
+async fn begin_connecting(
+    State(state): State<AppState>,
+    Json(req): Json<BeginConnecting>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let config = state.config.clone();
+    let form = blocking(move || {
+        let channels = native_channels(config.as_ref());
+        let Some((_, channel)) = channels.iter().find(|(name, _)| *name == req.server) else {
+            return Err(AppError::BadRequest {
+                message: format!("Endora has no direct reach into {}", req.server),
+            });
+        };
+        match channel.begin_setup(&req.kind) {
+            Some(Ok(form)) => Ok(form),
+            Some(Err(why)) => Err(AppError::BadRequest { message: why }),
+            None => Err(AppError::BadRequest {
+                message: "Endora is not allowed to change this service's settings".to_owned(),
+            }),
+        }
+    })
+    .await?;
+    Ok(Json(form_json(&form)))
+}
+
+/// The answers to one step of a setup form.
+#[derive(serde::Deserialize)]
+struct FinishConnecting {
+    server: String,
+    form: String,
+    answers: std::collections::BTreeMap<String, String>,
+}
+
+/// Sends the person's answers to their own service.
+///
+/// **Nothing here is stored.** A credential travels from the keyboard to the service that
+/// will hold it and is not written down on the way — no setting, no log line, no event
+/// text. Endora is passing a message, not keeping an account.
+async fn finish_connecting(
+    State(state): State<AppState>,
+    Json(req): Json<FinishConnecting>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let config = state.config.clone();
+    let events = state.events.clone();
+    let clock = state.clock.clone();
+    let kind_said = req.server.clone();
+    let outcome = blocking(move || {
+        let channels = native_channels(config.as_ref());
+        let Some((_, channel)) = channels.iter().find(|(name, _)| *name == req.server) else {
+            return Err(AppError::BadRequest {
+                message: format!("Endora has no direct reach into {}", req.server),
+            });
+        };
+        let answers: Vec<(String, String)> = req.answers.into_iter().collect();
+        match channel.finish_setup(&req.form, &answers) {
+            Some(Ok(next)) => Ok(next),
+            Some(Err(why)) => Err(AppError::BadRequest { message: why }),
+            None => Err(AppError::BadRequest {
+                message: "Endora is not allowed to change this service's settings".to_owned(),
+            }),
+        }
+    })
+    .await?;
+    let _ = state.changes.send(());
+    match outcome {
+        // Only the fact is recorded, never the answers.
+        None => {
+            record_event(
+                events.as_ref(),
+                clock.as_ref(),
+                &format!("Connected something new to {kind_said}"),
+            );
+            Ok(Json(json!({ "done": true })))
+        }
+        Some(form) => Ok(Json(form_json(&form))),
+    }
+}
+
+/// A setup form as the interface needs it. A secret field is marked so the console masks it
+/// and never redisplays a value.
+fn form_json(form: &endora_capabilities::SetupForm) -> serde_json::Value {
+    json!({
+        "done": false,
+        "form": form.id,
+        "step": form.step,
+        "fields": form.fields.iter().map(|f| json!({
+            "name": f.name,
+            "kind": f.kind,
+            "required": f.required,
+            "default": f.default,
+            "secret": f.secret,
+        })).collect::<Vec<_>>(),
+    })
 }
 
 /// What has been wrong long enough to be worth saying, as problem statements (ADR 0056).
