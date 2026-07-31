@@ -209,6 +209,32 @@ already produced two more latent ones: two runners in the middle of the stack ne
 presence or states along, and got away with it only because the runner above them happened
 to answer first. Reordering the stack would have broken it silently.
 
+### Connecting a new kind of thing is the service's form, rendered
+
+The most useful thing Endora could gain is not another integration written here — it is a
+**calendar**, or a door sensor, or mail. Writing an adapter for each is the per-integration
+patching this document exists to stop, one layer up.
+
+But the service already knows what each of those needs, and will say. Home Assistant declares
+885 setup handlers, each with its own form: field names, types, which are required, what to
+default. So Endora **starts the service's own setup flow and renders whatever comes back**. A
+kind of thing nobody here has heard of works exactly like one that ships today, and adding
+support for something new needs no code at all.
+
+The interface offers a few suggestions because 885 opaque names is not a menu — but they are
+a convenience, not the supported set. Anything the service can set up can be typed in.
+
+**Nothing typed is stored.** A credential travels from the person's keyboard to the service
+that will hold it and is not written down on the way: no setting, no log line, no event text.
+Endora is passing a message, not keeping an account — which is also why this is the *service's*
+form and not one Endora designed. A field whose name looks like a credential is masked, a
+heuristic that fails safe: wrongly masking a field still submits it correctly, while the
+reverse puts a password on a screen.
+
+What the service refuses is reported **in its own words**. *"invalid_auth"* is the entire
+reason somebody is looking at that screen, and collapsing it into "it didn't work" would leave
+them guessing.
+
 ### Quirks are allowed, behind a boundary
 
 Some knowledge genuinely cannot generalise. It stays code — in that integration's **named
