@@ -810,9 +810,9 @@ function modelsSection() {
         <input id="deep-model" list="deep-models" placeholder="e.g. gpt-4o, claude-sonnet-5" value="${esc(dm.model || "")}" /></div>
       <label class="mix-toggle">
         <input id="deep-escalate" type="checkbox" ${dm.escalate ? "checked" : ""} />
-        <span>Let Endora <b>fall back to this on its own</b> when the local model can't answer.</span>
+        <span>Let Endora <b>use this on its own</b> — to fall back when the local model can't answer, and to word your daily brief.</span>
       </label>
-      <div class="sub" style="margin:-6px 0 2px;">Off by default. The local model is always tried first, three times. When this steps in, the reply says so — because it means that conversation left your device.</div>
+      <div class="sub" style="margin:-6px 0 2px;">Off by default. In chat the local model is always tried first, three times, and when this steps in the reply says so. Your name, place names and appointment titles are swapped for placeholders before anything leaves and put back here — but <b>the shape of your day still goes out</b>: that you have something at 6:30, that the house is empty. Nothing else travels: no beliefs, no device names.</div>
       <div class="row" style="justify-content:flex-end;"><button class="primary" data-act="deepsave">Save deep</button></div>
     </div>
 
