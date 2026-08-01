@@ -203,15 +203,29 @@ function activityFeed() {
     </div></div>`).join("");
 }
 
+// Everything Endora has actually done, in one place.
+//
+// These were spread over two screens for no reason a person would recognise: how its actions
+// landed, what it changed inside somebody else's service, and what it claimed against what it
+// saw all sat under "What Endora understands" — beside beliefs about the person, which they
+// have nothing to do with. Understanding is a model of you; this is a receipt.
+//
+// Read-only, apart from saying how an outcome landed. Nothing here is a task and nothing
+// accumulates that must be cleared: the record grows because things happened.
 function viewAudit() {
   const rows = (DB.audit || []).map((a) => `
     <div class="card"><div class="sub mono">${new Date(a.at_ms).toLocaleString()}</div>
       <div>${esc(a.summary)}</div></div>`);
   return `
-    ${crumbs([{ label: "Home", act: "go:chat" }, { label: "Activity" }])}
-    <h2>Recent activity</h2>
+    ${crumbs([{ label: "Home", act: "go:chat" }, { label: "The record" }])}
+    <h2>What Endora has done</h2>
+    <div class="note">Its own account of its work — what it tried, whether it checked, and what it changed. Nothing here needs anything from you.</div>
+    ${viewHowItLands()}
+    ${viewOutcomes()}
+    ${viewConfigWrites()}
+    <h3 style="margin-top:22px;">Everything, newest first</h3>
+    <div class="note">What it did, in its own words, and every decision policy made about it.</div>
     ${activityFeed()}
-    <h2 style="margin-top:22px;">Audit trail (newest first)</h2>
     ${listOr(rows, "No decisions recorded yet.")}`;
 }
 
@@ -818,7 +832,7 @@ function modelsSection() {
     </div>
 
     <h3>Auto-tune <span class="sub" style="font-weight:400;">· experimental</span></h3>
-    <div class="note">Scores the models on your endpoint and adopts the best local one on its own. Takes a few minutes and uses the GPU — watch <a class="link" data-act="go:audit">Activity</a> for the result.</div>
+    <div class="note">Scores the models on your endpoint and adopts the best local one on its own. Takes a few minutes and uses the GPU — watch <a class="link" data-act="go:audit">what it has done</a> for the result.</div>
     <div class="card model-card">
       <label class="mix-toggle">
         <input id="tune-nightly" type="checkbox" ${TUNE_SCHED.enabled ? "checked" : ""} />
@@ -884,10 +898,10 @@ function viewSettings() {
       ${nav("go:models", "sparkle", "Models", "which model answers, and the bigger one behind it")}
       ${nav("go:proactive", "target", "Reaching out", "check-ins, the daily brief, the overnight loop")}
       ${nav("go:skills", "skills", "Skills", "what Endora can do, and the servers it connects to")}
-      ${nav("go:understanding", "sparkle", "What Endora understands", "beliefs, what it's working on, what it did")}
+      ${nav("go:understanding", "sparkle", "What Endora understands about you", "beliefs, and what it's working on")}
       ${nav("go:learning", "target", "What Endora is learning")}
       ${nav("go:prefs", "prefs", "Things Endora remembers about you")}
-      ${nav("go:audit", "audit", "Activity & audit")}
+      ${nav("go:audit", "audit", "What Endora has done", "what it tried, what changed, every decision")}
       ${nav("export", "export", "Export my data")}
     </div>
     <div class="card nav-list" style="margin-top:14px;">
@@ -1315,10 +1329,7 @@ function viewUnderstanding() {
 
     ${setup}
     ${groups || `<div class="empty">Nothing yet. Talk with Endora and it will start to understand you — you'll see it here.</div>`}
-    ${viewIntention()}
-    ${viewHowItLands()}
-    ${viewConfigWrites()}
-    ${viewOutcomes()}`;
+    ${viewIntention()}`;
 }
 
 // What Endora is currently working on (ADR 0052).
