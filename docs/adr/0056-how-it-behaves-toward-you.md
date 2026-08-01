@@ -297,6 +297,15 @@ notification nobody receives is worse than one that arrives at a bad time.
 Only the first sentence travels. The point is to say *there is something*; a notification
 long enough to be the message is one people stop reading.
 
+**A notification needs somewhere to go.** The first one arrived, was tapped, and opened Home
+Assistant showing nothing — because `notify.mobile_app_*` delivers a notification and leaves
+no record behind. Nothing was broken; there was simply nowhere to land.
+
+The record lives in Endora, so that is where a tap belongs. The address is nominated like
+everything else here, because Endora binds to an interface and cannot know how a phone reaches
+it. Blank means the notification carries no link at all — never an empty one, since a tap
+target of nowhere is worse than none.
+
 ## Consequences
 
 - Endora can be quiet for a day without that being a bug, and can speak without that being an

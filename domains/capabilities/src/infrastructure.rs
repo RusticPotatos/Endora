@@ -1582,6 +1582,13 @@ const HA_SETTINGS: &[SettingSpec] = &[
         optional: true,
     },
     SettingSpec {
+        key: "open_on_tap",
+        label: "Where a tapped notification takes you — the address you reach Endora at, \
+                e.g. https://192.168.1.14:8787 (blank = it just opens Home Assistant)",
+        secret: false,
+        optional: true,
+    },
+    SettingSpec {
         key: "notify_service",
         label: "How Endora reaches you when you're away — a notify service, e.g.                 mobile_app_yourphone (blank = never)",
         secret: false,
