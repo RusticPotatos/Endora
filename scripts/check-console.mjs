@@ -169,6 +169,10 @@ runInContext(
                                downloads: 900, how_to_get_it: "ollama pull …" }],
                     fits_gb: 12, asked: true };
   MCP_NEEDS = { fields: [{ key: "API_KEY", label: "API key" }], docs: "" };
+  CONNECT = { kind: "caldav", form: "01ABC", step: "user", fields: [
+      { name: "url", kind: "string", required: true, default: null, secret: false },
+      { name: "username", kind: "string", required: true, default: null, secret: false },
+      { name: "password", kind: "string", required: false, default: "", secret: true } ] };
   LAST_ACTIVITY = ["Checked your home"];
   LAST_ACTIVITY_MSG = "2";
   STEP_LIST = [{ skill: "weather", status: "running", label: "Checking the weather" }];
@@ -201,6 +205,39 @@ for (const name of named) {
     }
   } catch (e) {
     failures.push(`${name}: threw — ${e.message}`);
+  }
+}
+
+// How many distinct sections one screen may stack before it stops being a screen and starts
+// being a filing cabinet.
+//
+// A ratchet, not a target. The number is where the worst screen already is — `viewUnderstanding`
+// stacks beliefs, an intention, how its actions landed, standing trouble, repairs, config
+// writes and outcomes, seven unrelated things at identical visual weight. Two of those were
+// added in a single week without anyone noticing what they were being added to, which is
+// exactly the failure a budget catches and a review does not.
+//
+// Counted from the **rendered** screen rather than the source, so a section contributed by a
+// nested call counts the same as one written inline — the person sees no difference.
+//
+// Lowering this is the point. Raising it should feel like a decision.
+const MOST_SECTIONS_ON_ONE_SCREEN = 6;
+
+for (const name of named.filter((n) => n.startsWith("view"))) {
+  const fn = context[name];
+  if (typeof fn !== "function") continue;
+  let rendered = "";
+  try {
+    rendered = String(fn() ?? "");
+  } catch {
+    continue; // already reported above
+  }
+  const sections = (rendered.match(/<h3/g) || []).length;
+  if (sections > MOST_SECTIONS_ON_ONE_SCREEN) {
+    failures.push(
+      `${name}: ${sections} sections on one screen (budget ${MOST_SECTIONS_ON_ONE_SCREEN}) — ` +
+        `split it rather than raising the number`,
+    );
   }
 }
 
