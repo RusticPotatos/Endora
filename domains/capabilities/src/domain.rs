@@ -615,6 +615,22 @@ mod tests {
 /// the car.
 pub const DWELL_MS: i64 = 5 * 60 * 1_000;
 
+/// One thing that really changed, and when.
+///
+/// The unit the transition log is made of. Deliberately about the **world**, not about
+/// Endora: what it was, what it is, and the moment it moved.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Transition {
+    /// Which thing, namespaced by the server that reported it.
+    pub key: String,
+    /// What it was before.
+    pub from: String,
+    /// What it became.
+    pub to: String,
+    /// When it changed — the first reading of the new state, not the pass that confirmed it.
+    pub at_ms: i64,
+}
+
 /// What Endora has last seen of one thing, and what it is currently reading.
 ///
 /// Two states rather than one, because "what it is" and "what it has just started saying" are
@@ -729,7 +745,7 @@ mod deciding_that_something_changed {
     //! times on a Tuesday, which is worse than having no record at all. So a reading has to
     //! *hold* before it counts as a change.
 
-    use super::{DWELL_MS, Change, Watched, note_reading};
+    use super::{Change, DWELL_MS, Watched, note_reading};
 
     fn watched(settled: &str, candidate: &str, since: i64) -> Watched {
         Watched {
@@ -777,8 +793,12 @@ mod deciding_that_something_changed {
     #[test]
     fn a_reading_that_holds_long_enough_becomes_a_transition() {
         let prior = watched("on", "off", 2_000);
-        let Change::Moved { from, to, at_ms, now } =
-            note_reading(Some(&prior), &prior.key, "off", 2_000 + DWELL_MS)
+        let Change::Moved {
+            from,
+            to,
+            at_ms,
+            now,
+        } = note_reading(Some(&prior), &prior.key, "off", 2_000 + DWELL_MS)
         else {
             panic!("expected a transition once it held");
         };
