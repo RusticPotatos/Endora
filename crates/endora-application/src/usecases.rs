@@ -7,12 +7,13 @@
 
 use endora_conversation::{ChatMessage, MessageRole};
 use endora_kernel::ids::{
-    AuditId, BeliefId, IntentionId, MessageId, OutcomeId, PreferenceId, Timestamp,
+    AuditId, BeliefId, IntentionId, MessageId, NotionId, OutcomeId, PreferenceId, Timestamp,
 };
 use endora_kernel::{Decision, Reversibility};
 use endora_platform::AuditRecord;
 use endora_understanding::{
-    Belief, Intention, Outcome, Preference, PreferenceKind, Reaction, RepairProposal,
+    Belief, Citation, Intention, Notion, Outcome, Preference, PreferenceKind, Reaction,
+    RepairProposal, Source,
 };
 
 use endora_capabilities::CapabilityRunner;
@@ -2886,6 +2887,165 @@ pub fn run_due_brief(
         clock,
         context,
     )
+}
+
+// ---------------------------------------------------------------------------
+// Notions — what Endora is still thinking about (ADR 0057).
+//
+// Everything here is pure and deterministic. A language model proposes the wording of a
+// notion; nothing in this section trusts it. The model's output is a claim *and a set of
+// pointers*, and only the pointers that turn out to name a real record — one that actually
+// speaks to what was claimed — survive to be stored.
+//
+// This is the same instinct as `facts_behind` further up, for the same reason: ADR 0053
+// measured this model following a direct instruction about verification roughly one run in
+// three, so a guarantee written into a prompt is not a guarantee.
+// ---------------------------------------------------------------------------
+
+/// One record a pass may cite, with enough of its text to check a claim against.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KnownRecord {
+    /// Which store it came from.
+    pub source: Source,
+    /// How it is identified there.
+    pub reference: String,
+    /// What it says, in whatever words the store holds.
+    pub text: String,
+}
+
+/// Everything a nightly pass is allowed to cite, gathered once from the stores.
+///
+/// Deliberately a **snapshot taken by the caller**, not a set of repository handles: the
+/// checking is then pure, so the rule that decides whether Endora may believe something about
+/// the person is testable without a database, and cannot quietly start reading somewhere new.
+#[derive(Debug, Clone, Default)]
+pub struct TheRecord {
+    entries: Vec<KnownRecord>,
+}
+
+impl TheRecord {
+    /// Builds a record set from what the caller read out of the stores.
+    #[must_use]
+    pub fn of(entries: Vec<KnownRecord>) -> Self {
+        Self { entries }
+    }
+
+    /// What a cited record says, or `None` if there is no such record.
+    #[must_use]
+    pub fn text_of(&self, source: Source, reference: &str) -> Option<&str> {
+        self.entries
+            .iter()
+            .find(|e| e.source == source && e.reference == reference)
+            .map(|e| e.text.as_str())
+    }
+
+    /// Everything in the set.
+    #[must_use]
+    pub fn entries(&self) -> &[KnownRecord] {
+        &self.entries
+    }
+}
+
+/// What a pass proposed, before anything has checked it.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ProposedNotion {
+    /// What the model thinks might be true about the person.
+    pub statement: String,
+    /// The records it says put the thought there.
+    pub citations: Vec<(Source, String)>,
+    /// What it says would settle the question.
+    pub settles_when: String,
+}
+
+/// Whether a record's text actually speaks to a statement.
+///
+/// Existence alone is far too weak a test. A model handed a list of ids can cite them
+/// perfectly while claiming something the records say nothing about, and the citations would
+/// all resolve — so the notion would be stored, fully sourced and entirely invented.
+///
+/// So overlap is required too: **two content words in common**, or — where the record is
+/// shorter than that — all of the words it has. The second clause is what lets a calendar
+/// entry reading `Gym` support a notion about the gym, which a flat two-word rule would
+/// refuse for having too little to say.
+///
+/// This does not establish that the record *supports* the claim, and nothing deterministic
+/// could. It establishes that the claim was made about the record rather than beside it,
+/// which is the difference between weak evidence and none.
+#[must_use]
+pub fn speaks_to(statement: &str, text: &str) -> bool {
+    let claimed = keywords(statement);
+    let said = keywords(text);
+    if said.is_empty() {
+        return false;
+    }
+    let shared = said.iter().filter(|w| claimed.contains(w)).count();
+    shared >= said.len().min(2)
+}
+
+/// Keeps only the citations that name a record which exists **and** speaks to the statement.
+///
+/// The heart of ADR 0057. A citation that fails either test is not weak evidence to be scored
+/// down — it is discarded, and a proposal left with nothing cannot become a notion at all.
+#[must_use]
+pub fn evidence_that_holds_up(proposed: &ProposedNotion, record: &TheRecord) -> Vec<Citation> {
+    let mut kept = Vec::new();
+    for (source, reference) in &proposed.citations {
+        let Some(text) = record.text_of(*source, reference) else {
+            continue; // names nothing that exists
+        };
+        if !speaks_to(&proposed.statement, text) {
+            continue; // exists, but says nothing about this
+        }
+        if let Ok(citation) = Citation::new(*source, reference) {
+            kept.push(citation);
+        }
+    }
+    kept
+}
+
+/// Forms a notion from a proposal, or `None` if the record does not bear it out.
+///
+/// `None` is the expected outcome most nights, and that is the design working rather than
+/// failing: a pass that proposes three things and stores none has correctly declined to
+/// write three unfounded statements about the person.
+#[must_use]
+pub fn form_a_notion(
+    id: NotionId,
+    proposed: &ProposedNotion,
+    record: &TheRecord,
+    now: Timestamp,
+) -> Option<Notion> {
+    let held_up = evidence_that_holds_up(proposed, record);
+    if held_up.is_empty() {
+        return None;
+    }
+    Notion::new(
+        id,
+        &proposed.statement,
+        held_up,
+        &proposed.settles_when,
+        now,
+    )
+    .ok()
+}
+
+/// New evidence for a notion already open — records that speak to it and are not already
+/// cited.
+///
+/// Advancing a notion needs **no model at all**: the statement is fixed, so whether a record
+/// speaks to it is the same arithmetic used to form it. That is what makes maturity mean
+/// something. A notion cannot be talked into being believed; it has to keep being met by
+/// records that arrive later, and a pass re-reading the same week finds nothing new because
+/// the domain refuses evidence it already holds.
+#[must_use]
+pub fn new_support_for(notion: &Notion, record: &TheRecord) -> Vec<Citation> {
+    record
+        .entries()
+        .iter()
+        .filter(|e| speaks_to(notion.statement(), &e.text))
+        .filter_map(|e| Citation::new(e.source, &e.reference).ok())
+        .filter(|c| !notion.citations().contains(c))
+        .collect()
 }
 
 /// The stored nightly-loop schedule, defaulting to **off** (ADR 0051).
@@ -8779,5 +8939,204 @@ mod who_words_the_brief {
         fn now(&self) -> endora_kernel::Timestamp {
             endora_kernel::Timestamp::from_unix_millis(self.0)
         }
+    }
+}
+
+#[cfg(test)]
+mod what_the_record_will_bear {
+    //! The guarantee ADR 0057 rests on: a language model proposes the wording of a notion,
+    //! and nothing here trusts it. These are the tests that decide whether this feature is
+    //! thinking or a fabrication store with citations on it.
+
+    use super::{
+        KnownRecord, ProposedNotion, Source, TheRecord, evidence_that_holds_up, form_a_notion,
+        new_support_for, speaks_to,
+    };
+    use endora_kernel::ids::{NotionId, Timestamp};
+    use endora_understanding::Citation;
+
+    fn at(ms: i64) -> Timestamp {
+        Timestamp::from_unix_millis(ms)
+    }
+
+    fn record() -> TheRecord {
+        TheRecord::of(vec![
+            KnownRecord {
+                source: Source::Reading,
+                reference: "calendar.rustic".to_owned(),
+                text: "Gym".to_owned(),
+            },
+            KnownRecord {
+                source: Source::Message,
+                reference: "msg-2".to_owned(),
+                text: "skipping the gym again this morning, too tired".to_owned(),
+            },
+            KnownRecord {
+                source: Source::Outcome,
+                reference: "outcome-7".to_owned(),
+                text: "HassTurnOff light.bedroom — changed 1".to_owned(),
+            },
+        ])
+    }
+
+    fn proposal(statement: &str, citations: &[(Source, &str)]) -> ProposedNotion {
+        ProposedNotion {
+            statement: statement.to_owned(),
+            citations: citations
+                .iter()
+                .map(|(s, r)| (*s, (*r).to_owned()))
+                .collect(),
+            settles_when: "whether next Monday's block survives".to_owned(),
+        }
+    }
+
+    #[test]
+    fn a_citation_that_names_nothing_is_discarded() {
+        // The plainest fabrication: an id the model made up. Not scored down — gone.
+        let kept = evidence_that_holds_up(
+            &proposal(
+                "you skip the gym when tired",
+                &[(Source::Message, "msg-999")],
+            ),
+            &record(),
+        );
+        assert!(kept.is_empty());
+    }
+
+    #[test]
+    fn a_real_record_that_says_nothing_about_the_claim_is_discarded() {
+        // The subtler and more likely failure. Handed a list of ids, a model can cite them
+        // perfectly while claiming something they say nothing about — every citation resolves
+        // and the notion is fully sourced and entirely invented. Existence is not enough.
+        let kept = evidence_that_holds_up(
+            &proposal(
+                "you skip the gym when tired",
+                &[(Source::Outcome, "outcome-7")], // a bedroom light
+            ),
+            &record(),
+        );
+        assert!(
+            kept.is_empty(),
+            "a light being switched off is not evidence about the gym"
+        );
+    }
+
+    #[test]
+    fn evidence_that_does_speak_to_the_claim_is_kept() {
+        let kept = evidence_that_holds_up(
+            &proposal(
+                "you skip the gym when tired",
+                &[
+                    (Source::Message, "msg-2"),
+                    (Source::Outcome, "outcome-7"),
+                    (Source::Message, "msg-999"),
+                ],
+            ),
+            &record(),
+        );
+        assert_eq!(kept, vec![Citation::new(Source::Message, "msg-2").unwrap()]);
+    }
+
+    #[test]
+    fn a_short_record_counts_when_all_of_it_matches() {
+        // A calendar entry reading "Gym" has one content word. A flat two-word rule would
+        // refuse it for having too little to say, which would throw away exactly the kind of
+        // terse record a calendar is made of.
+        assert!(speaks_to("the gym block gets cancelled", "Gym"));
+        assert!(!speaks_to("the gym block gets cancelled", "Dentist"));
+    }
+
+    #[test]
+    fn one_word_in_common_is_not_enough_for_a_wordy_record() {
+        // "tired" alone should not make a long message about something else into evidence.
+        assert!(!speaks_to(
+            "you skip the gym when tired",
+            "the delivery arrived late and the driver seemed tired of the rain"
+        ));
+    }
+
+    #[test]
+    fn an_empty_record_speaks_to_nothing() {
+        assert!(!speaks_to("you skip the gym when tired", "   "));
+    }
+
+    #[test]
+    fn a_proposal_the_record_does_not_bear_out_forms_nothing() {
+        // The expected outcome most nights, and the design working rather than failing.
+        assert!(
+            form_a_notion(
+                NotionId::new(1),
+                &proposal("you are unhappy at work", &[(Source::Message, "msg-2")]),
+                &record(),
+                at(0),
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn a_proposal_the_record_bears_out_becomes_a_notion() {
+        let formed = form_a_notion(
+            NotionId::new(1),
+            &proposal(
+                "you skip the gym when tired",
+                &[
+                    (Source::Message, "msg-2"),
+                    (Source::Reading, "calendar.rustic"),
+                ],
+            ),
+            &record(),
+            at(50),
+        )
+        .expect("the record bears this out");
+        assert_eq!(formed.support_count(), 2);
+        assert_eq!(formed.last_supported_at(), at(50));
+    }
+
+    #[test]
+    fn advancing_a_notion_needs_no_model_at_all() {
+        // The statement is already fixed, so whether a later record speaks to it is the same
+        // arithmetic that formed it. This is what makes maturity mean something: a notion
+        // cannot be talked into being believed.
+        let notion = form_a_notion(
+            NotionId::new(1),
+            &proposal("you skip the gym when tired", &[(Source::Message, "msg-2")]),
+            &record(),
+            at(0),
+        )
+        .expect("formed");
+
+        let found = new_support_for(&notion, &record());
+        assert_eq!(
+            found,
+            vec![Citation::new(Source::Reading, "calendar.rustic").unwrap()],
+            "the calendar entry is new; the message it already cites is not, and the bedroom \
+             light speaks to nothing"
+        );
+    }
+
+    #[test]
+    fn re_reading_the_same_records_finds_nothing_new() {
+        // Death by silence depends on this. A nightly pass that re-reads the same week must
+        // not renew every open notion, or nothing ever expires.
+        let mut notion = form_a_notion(
+            NotionId::new(1),
+            &proposal(
+                "you skip the gym when tired",
+                &[
+                    (Source::Message, "msg-2"),
+                    (Source::Reading, "calendar.rustic"),
+                ],
+            ),
+            &record(),
+            at(0),
+        )
+        .expect("formed");
+
+        for citation in new_support_for(&notion, &record()) {
+            notion.support(citation, at(1_000));
+        }
+        assert!(new_support_for(&notion, &record()).is_empty());
+        assert_eq!(notion.last_supported_at(), at(0), "the clock never moved");
     }
 }
