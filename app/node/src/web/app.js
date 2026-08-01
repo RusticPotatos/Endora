@@ -1192,6 +1192,12 @@ function viewSkills() {
         ${readerRow(s)}
         ${(s.tools || []).length
           ? `<details class="steps" style="margin-top:6px;"><summary>${(s.tools || []).length} tool${(s.tools || []).length === 1 ? "" : "s"}</summary>
+               ${(s.tools || []).length > 1 ? `
+                 <div class="row" style="gap:8px;align-items:center;margin:6px 0 2px;">
+                   <div class="grow sub">${(s.tools || []).filter((t) => t.opened).length} of ${(s.tools || []).length} allowed</div>
+                   <button class="ghost" data-act="mcp:tools:${esc(s.name)}:1">Allow all</button>
+                   <button class="ghost" data-act="mcp:tools:${esc(s.name)}:0">Block all</button>
+                 </div>` : ""}
                <div class="step-list">${(s.tools || []).map(toolRow).join("")}</div></details>`
           : ""}
       </div>`;
@@ -2435,6 +2441,21 @@ async function dispatch(act) {
         await api("POST", "/v1/aliases", { server, said: id, means });
         flash(`Noted — “${id}” means “${means}”.`, "ok");
       } catch (e) { flash("Couldn't note that: " + e.message, "err"); }
+      return reload();
+    }
+    // Allow or block every tool a server exposes, in one act.
+    //
+    // Deliberately NOT the auto-allow toggle above. That is a standing policy which opens
+    // whatever the server exposes including tools it gains later; this is a decision about
+    // the tools that exist now, and grants nothing in future.
+    if (verb === "mcp" && noun === "tools") {
+      const parts = act.split(":");
+      const server = parts[2] || "";
+      const open = parts[3] === "1";
+      try {
+        const said = await api("POST", `/v1/mcp/servers/${encodeURIComponent(server)}/tools/open`, { open });
+        flash(`${open ? "Allowed" : "Blocked"} all ${said.changed} tools on ${server}.`, "ok");
+      } catch (e) { flash("Couldn't do that: " + e.message, "err"); }
       return reload();
     }
     // Connect something new (ADR 0054). Endora starts the service's own setup flow, shows
