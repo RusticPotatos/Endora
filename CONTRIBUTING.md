@@ -102,7 +102,18 @@ passed CI, passed the smoke tier — and rendered a blank page on a phone.
 Stubs are explicit and minimal on purpose. A `Proxy` answering any unknown global would make
 everything pass, including the failure this is here to catch.
 
-It also holds a **budget: no screen may stack more than six sections.** A ratchet rather than a
+It also holds two budgets: **no screen may stack more than four sections**, and **no screen
+may show more than eight fields before the person opens anything.** The second is progressive
+disclosure made enforceable — fields inside a `<details>` are not counted, because they are
+opt-in and cost nothing until wanted, so folding something is a real improvement rather than a
+rearrangement.
+
+Both are measured on the screen **at rest**. The fixture deliberately puts a setup form
+in flight so the crash check exercises that branch; charging a screen for fields that appear
+only because someone is already using it would measure the wrong thing. Errors are checked
+with the richest state available, budgets with the plainest.
+
+The section budget began at six. A ratchet rather than a
 target — the number is where the worst screen already sits. Two sections were added to it in a
 single week without anyone noticing what they were being added to, which is the failure a
 budget catches and a review does not. Counted from the *rendered* screen, so a section

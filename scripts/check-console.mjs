@@ -224,6 +224,24 @@ for (const name of named) {
 // Lowering this is the point. Raising it should feel like a decision.
 const MOST_SECTIONS_ON_ONE_SCREEN = 4;
 
+/// How many form fields a screen may show before the person opens anything.
+///
+/// The companion to the section budget, and the one that encodes progressive disclosure:
+/// Models had ten fields in view for a thing most people configure once, because the deep
+/// model and the auto-tune schedule sat open beside the everyday one. Folding took it to
+/// three, and this stops it drifting back.
+///
+/// Fields inside a `<details>` are not counted — they are opt-in and cost nothing until
+/// wanted, which is exactly the distinction worth enforcing.
+const MOST_FIELDS_BEFORE_OPENING_ANYTHING = 8;
+
+// Budgets are measured on the screen **at rest** — what a person faces on arrival, not
+// mid-task. The fixture above deliberately puts a setup form in flight so the crash check
+// exercises that branch, and counting it here would charge the screen for fields that appear
+// only because someone is already using it. Errors are checked with the richest state
+// available; budgets with the plainest.
+runInContext("CONNECT = null;", context);
+
 for (const name of named.filter((n) => n.startsWith("view"))) {
   const fn = context[name];
   if (typeof fn !== "function") continue;
@@ -232,6 +250,17 @@ for (const name of named.filter((n) => n.startsWith("view"))) {
     rendered = String(fn() ?? "");
   } catch {
     continue; // already reported above
+  }
+  // What a person faces before opening anything. Fields inside a <details> are opt-in and
+  // cost nothing until wanted, which is the whole of progressive disclosure — so they are
+  // not counted, and folding something is a real improvement rather than a rearrangement.
+  const upFront = (rendered.replace(/<details[\s\S]*?<\/details>/g, "")
+    .match(/<input|<select|<textarea/g) || []).length;
+  if (upFront > MOST_FIELDS_BEFORE_OPENING_ANYTHING) {
+    failures.push(
+      `${name}: ${upFront} fields before opening anything ` +
+        `(budget ${MOST_FIELDS_BEFORE_OPENING_ANYTHING}) — fold the ones most people never touch`,
+    );
   }
   const sections = (rendered.match(/<h3/g) || []).length;
   if (sections > MOST_SECTIONS_ON_ONE_SCREEN) {
