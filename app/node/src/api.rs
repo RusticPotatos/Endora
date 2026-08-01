@@ -774,6 +774,33 @@ async fn set_mcp_trust(
         if known {
             McpServerRegistry::set_trust_all(config.as_ref(), &lookup, req.trust_all)
                 .map_err(AppError::Repository)?;
+            // Turning it off closes what turning it on opened.
+            //
+            // Auto-allow writes a per-tool `opened` flag for every tool the server exposes,
+            // and nothing was reversing them — so switching the server back to
+            // deny-by-default left twenty tools open, including one that plays audio
+            // through the house. The setting was a one-way door, and the way out was
+            // twenty-one separate actions.
+            //
+            // Every tool on the server is closed, not only the ones auto-allow opened,
+            // because nothing records which was which. That is the safe direction: the
+            // person reopens what they want, and the alternative is leaving something open
+            // that they believe they just closed.
+            if !req.trust_all {
+                let prefix = format!("{lookup}.");
+                for spec in
+                    endora_capabilities::CapabilityRunner::available(&*mcp.read().unwrap().clone())
+                {
+                    if spec.id.starts_with(&prefix) {
+                        let _ =
+                            endora_capabilities::CapabilityConfigRepository::set_open_irreversible(
+                                config.as_ref(),
+                                &spec.id,
+                                false,
+                            );
+                    }
+                }
+            }
             reconnect_mcp(config.as_ref(), mcp.as_ref());
         }
         Ok(known)
