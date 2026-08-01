@@ -2610,12 +2610,13 @@ pub fn daily_brief(
         _ => text,
     };
     let text = match (text, already_known) {
-        // Already said it: appending would print the same brief twice, which is what
-        // happened the first time this ran. The check is on the text, not on trust —
-        // a model that was told to use every fact and did needs nothing added.
-        (Some(written), Some(facts)) if worded_elsewhere && says_it_all(&written, &facts) => {
-            Some(written)
-        }
+        // Only what the writing left out. Appending everything printed the brief twice on
+        // its first live run; appending nothing would trust the model, which is what the
+        // appending exists to avoid.
+        (Some(written), Some(facts)) if worded_elsewhere => match not_yet_said(&written, &facts) {
+            missed if missed.is_empty() => Some(written),
+            missed => Some(format!("{written}\n\n{}", missed.join("\n"))),
+        },
         (Some(written), Some(facts)) => Some(format!("{written}\n\n{facts}")),
         (Some(written), None) => Some(written),
         // The facts stand alone when the model gives nothing usable. They ARE the brief;
@@ -3154,17 +3155,31 @@ fn recently_did(
         .collect())
 }
 
-/// Whether a written brief already contains everything the facts said.
+/// The facts a written brief has **not** already said, so nothing is printed twice.
 ///
-/// Compared on the **distinctive** part of each fact — what precedes the timestamp — because
-/// a model that rewords "at 2026-08-01 00:00:00" into "tomorrow morning" has still said it.
-/// Every fact must appear, so a brief that covers half of them still gets the full list.
-fn says_it_all(written: &str, facts: &str) -> bool {
-    facts.lines().filter(|l| !l.trim().is_empty()).all(|line| {
-        let said = line.trim().trim_start_matches("- ");
-        let distinctive = said.split(" at ").next().unwrap_or(said).trim();
-        distinctive.len() > 8 && written.contains(distinctive)
-    })
+/// Compared on **words, not phrasing**. An exact-substring check was tried and failed on the
+/// first live brief: the facts said *"rustic is not home; on the Family calendar: Yardwork"*
+/// and the model wrote *"rustic is not home right now. On the Family calendar, there's
+/// Yardwork"* — the same thing, and not the same string. Any check against model output that
+/// depends on wording is a check that will fail.
+///
+/// Content words only, and **all** of them must appear. The bias is deliberate: a fact
+/// wrongly thought missing is printed twice, which is untidy, where one wrongly thought
+/// covered is simply lost — and the whole reason the facts are appended is that losing them
+/// is what kept happening.
+fn not_yet_said(written: &str, facts: &str) -> Vec<String> {
+    let said = words_of(written);
+    facts
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .filter(|line| {
+            let fact = line.trim().trim_start_matches("- ");
+            let content: Vec<String> = words_of(fact).into_iter().filter(|w| w.len() > 3).collect();
+            // Nothing distinctive to match on: keep it rather than guess.
+            content.is_empty() || !content.iter().all(|w| said.contains(w))
+        })
+        .map(str::to_owned)
+        .collect()
 }
 
 /// Asks a stronger model to word a brief from facts that have already been gathered.
@@ -3227,8 +3242,16 @@ fn whats_worth_saying_this_morning(
     troubles: &[&endora_capabilities::StandingTrouble],
 ) -> Option<String> {
     let mut lines: Vec<String> = Vec::new();
-    // Where they are, what is on, what it is like outside — the services' own words.
-    lines.extend(context.present.iter().cloned());
+    // One fact per line. The services join theirs with "; ", which reads as a run-on in a
+    // brief and — more importantly — makes coverage all-or-nothing: a written brief that
+    // mentions two of three things could not be credited with either.
+    lines.extend(
+        context
+            .present
+            .iter()
+            .flat_map(|line| line.split("; "))
+            .map(str::to_owned),
+    );
     // Things that have been wrong long enough to be worth a mention. Only the ones already
     // judged worth raising, so the brief cannot become the pile of chores ADR 0056 forbids.
     for trouble in troubles {
@@ -8244,20 +8267,28 @@ mod who_words_the_brief {
     }
 
     #[test]
-    fn a_brief_is_not_printed_twice() {
-        // The first live run: the deep model echoed every fact, and Endora appended them
-        // underneath, so the brief said everything two ways.
-        let facts = "- rustic is not home; on the Family calendar: Yardwork at 2026-08-01\n- outside it is 80F and partlycloudy";
-        let echoed = "Good morning. rustic is not home; on the Family calendar: Yardwork \
-                      tomorrow. outside it is 80F and partlycloudy.";
+    fn only_what_the_writing_left_out_is_printed_again() {
+        // The real second live brief. The facts and the prose say the same things in
+        // different words, which is why an exact-substring check failed here.
+        let facts = "- rustic is not home\n                     - on the Family calendar: Yardwork in the morning - Elise and Michael\n                     - outside it is 77F and partly cloudy";
+        let written = "Good morning! Quick brief for you: rustic is not home right now. On                        the Family calendar, there's Yardwork in the morning - Elise and                        Michael at 2026-08-01. Outside it's 77F and partly cloudy.";
         assert!(
-            says_it_all(echoed, facts),
-            "everything is there, in its own words"
+            not_yet_said(written, facts).is_empty(),
+            "{:?}",
+            not_yet_said(written, facts)
         );
+    }
 
-        // Half a brief still gets the full list underneath.
-        let partial = "Good morning. rustic is not home.";
-        assert!(!says_it_all(partial, facts));
+    #[test]
+    fn a_fact_the_writing_dropped_is_still_shown() {
+        // The bias is deliberate. A fact wrongly thought missing is printed twice, which is
+        // untidy; one wrongly thought covered is lost, and losing them is what kept
+        // happening.
+        let facts = "- rustic is not home\n- the porch light has not answered for 4 days";
+        let written = "Good morning. rustic is not home right now.";
+        let missed = not_yet_said(written, facts);
+        assert_eq!(missed.len(), 1);
+        assert!(missed[0].contains("porch light"), "{missed:?}");
     }
 
     #[test]
