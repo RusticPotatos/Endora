@@ -2236,6 +2236,23 @@ pub struct McpToolInfo {
     pub input_schema: Option<serde_json::Value>,
 }
 
+/// One thing an MCP server says it can be read for (`resources/list`).
+///
+/// The standard half of the protocol Endora did not speak. A tool is something to *do*; a
+/// resource is something to *look at*, which is what the watch loop, the transition log and
+/// notions are all made of. Supporting it means a third-party integration can feed those
+/// without a line of Rust in this repository (ADR 0058).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct McpResource {
+    /// How the server addresses it. Opaque to Endora, and the only required field: a
+    /// resource nobody can name cannot be read, so it is not a resource.
+    pub uri: String,
+    /// A human name for it, if the server gave one.
+    pub name: String,
+    /// The one-line description the server advertises, if any.
+    pub description: String,
+}
+
 /// The boundary to a single MCP server (ADR 0054). The concrete transport — a local
 /// stdio subprocess, or a networked HTTP/SSE connection — lives behind this port, so
 /// neither the adapter nor the policy layer ever speaks the protocol. Synchronous to
@@ -2253,6 +2270,30 @@ pub trait McpClient: Send + Sync {
     /// # Errors
     /// A human-readable message if the call fails.
     fn call(&self, tool: &str, input_json: &str) -> Result<String, String>;
+
+    /// What the server offers to be read (`resources/list`).
+    ///
+    /// **An empty list is the ordinary answer.** Most MCP servers expose tools only, and a
+    /// server that does not implement the method at all must read as "nothing to watch"
+    /// rather than as a fault — otherwise every tools-only server would start reporting
+    /// trouble it does not have.
+    ///
+    /// # Errors
+    /// A human-readable message only if the server could not be reached at all.
+    fn list_resources(&self) -> Result<Vec<McpResource>, String> {
+        Ok(Vec::new())
+    }
+
+    /// Reads one resource by uri, returning its text.
+    ///
+    /// Unlike listing, a failure here is a real one: something was named and could not be
+    /// fetched, which is exactly what a watch loop exists to notice.
+    ///
+    /// # Errors
+    /// A human-readable message if the resource cannot be read.
+    fn read_resource(&self, _uri: &str) -> Result<String, String> {
+        Err("this server does not offer resources".to_owned())
+    }
 }
 
 /// One connected server: its name, its transport, and the tools it advertised.
@@ -2371,7 +2412,48 @@ fn compact_input_hint(schema: &serde_json::Value) -> Option<String> {
     Some(format!("call with input fields: {}", fields.join(", ")))
 }
 
+/// How many resources one server may contribute to a single watch pass.
+///
+/// The watch loop runs every two minutes, and reading a resource is a round trip. A server
+/// advertising thousands would otherwise turn a background tick into a stampede against
+/// somebody else's service. Bounded by the house rather than by uptime, the same argument
+/// that made standing trouble safe to store.
+const MOST_RESOURCES_READ_PER_SERVER: usize = 200;
+
 impl CapabilityRunner for McpRunner {
+    /// Every resource each connected server offers, read (ADR 0058).
+    ///
+    /// This is the whole point of speaking the resources half of MCP: what the watch loop
+    /// sees is no longer limited to integrations written in Rust in this repository. A
+    /// third-party server that publishes resources feeds trouble detection, the transition
+    /// log and notions with no code here at all.
+    ///
+    /// Two failures are swallowed on purpose, and they are different from each other. A
+    /// server with **no resources** is the ordinary case — most expose tools only — and must
+    /// never look like trouble, because absence is exactly what the watch loop raises. A
+    /// single **unreadable** resource is dropped so that one bad entry cannot cost the pass
+    /// every other reading it had; the read error is still an error at the transport, where a
+    /// caller asking for that one thing will see it.
+    fn current_states(&self) -> Vec<(String, String)> {
+        self.connections
+            .iter()
+            .flat_map(|c| {
+                c.transport
+                    .list_resources()
+                    .unwrap_or_default()
+                    .into_iter()
+                    .take(MOST_RESOURCES_READ_PER_SERVER)
+                    .filter_map(|r| {
+                        c.transport
+                            .read_resource(&r.uri)
+                            .ok()
+                            .map(|text| (r.uri, text))
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect()
+    }
+
     fn available(&self) -> Vec<crate::application::CapabilitySpec> {
         // The ids Endora treats as state readers, resolved once rather than per tool.
         let reader_ids: std::collections::HashSet<String> = self
@@ -4365,6 +4447,98 @@ mod tests {
         fn call(&self, tool: &str, input_json: &str) -> Result<String, String> {
             Ok(format!("{tool}({input_json})"))
         }
+    }
+
+    /// A stand-in MCP server that also offers **resources** — the standard half of the
+    /// protocol Endora did not speak (ADR 0058).
+    struct FakeWithResources {
+        resources: Vec<McpResource>,
+        unreadable: bool,
+    }
+
+    impl McpClient for FakeWithResources {
+        fn list_tools(&self) -> Result<Vec<McpToolInfo>, String> {
+            Ok(vec![tool("do_something")])
+        }
+        fn call(&self, tool: &str, input: &str) -> Result<String, String> {
+            Ok(format!("{tool}({input})"))
+        }
+        fn list_resources(&self) -> Result<Vec<McpResource>, String> {
+            Ok(self.resources.clone())
+        }
+        fn read_resource(&self, uri: &str) -> Result<String, String> {
+            if self.unreadable {
+                return Err("gone".to_owned());
+            }
+            Ok(format!("state of {uri}"))
+        }
+    }
+
+    fn resource(uri: &str) -> McpResource {
+        McpResource {
+            uri: uri.to_owned(),
+            name: uri.to_owned(),
+            description: String::new(),
+        }
+    }
+
+    #[test]
+    fn an_mcp_servers_resources_become_states_the_watch_loop_can_see() {
+        // The payoff of speaking the other half of MCP: a third-party server can now feed the
+        // watch loop, the transition log and notions with no Rust in this repository at all.
+        let runner = McpRunner::connect_with_readers(vec![(
+            "house".to_owned(),
+            Box::new(FakeWithResources {
+                resources: vec![resource("house://light.kitchen"), resource("house://door")],
+                unreadable: false,
+            }) as Box<dyn McpClient>,
+            String::new(),
+        )]);
+
+        let mut states = runner.current_states();
+        states.sort();
+        assert_eq!(
+            states,
+            vec![
+                (
+                    "house://door".to_owned(),
+                    "state of house://door".to_owned()
+                ),
+                (
+                    "house://light.kitchen".to_owned(),
+                    "state of house://light.kitchen".to_owned()
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_tools_only_server_reports_no_states_rather_than_failing() {
+        // The ordinary case. Most MCP servers have no resources, and that must never look
+        // like trouble — the watch loop treats absence as something to raise.
+        let runner = McpRunner::connect_with_readers(vec![(
+            "plain".to_owned(),
+            Box::new(FakeTransport {
+                tools: vec![tool("search")],
+                healthy: true,
+            }) as Box<dyn McpClient>,
+            String::new(),
+        )]);
+        assert!(runner.current_states().is_empty());
+    }
+
+    #[test]
+    fn a_resource_that_will_not_read_is_skipped_not_fatal() {
+        // One unreadable resource must not cost the watch loop every other reading it had.
+        let runner = McpRunner::connect_with_readers(vec![(
+            "house".to_owned(),
+            Box::new(FakeWithResources {
+                resources: vec![resource("house://gone")],
+                unreadable: true,
+            }) as Box<dyn McpClient>,
+            String::new(),
+        )]);
+        assert!(runner.current_states().is_empty());
     }
 
     fn tool(name: &str) -> McpToolInfo {
