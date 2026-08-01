@@ -205,6 +205,38 @@ pub fn channels_of(
         .collect()
 }
 
+/// Which of a trusted server's tools should be opened on connect.
+///
+/// `trust_all` means **"allow the tools I have not decided about"**, not "re-open everything,
+/// forever". A tool the person has already ruled on — either way — is left exactly as they
+/// left it.
+///
+/// Written after a standing flag quietly undid an explicit instruction. Voice broadcast was
+/// blocked at the person's request, and came back on: connect runs at every start-up and
+/// re-opened every tool on the trusted server unconditionally, so four deploys in an afternoon
+/// silently restored a capability they had said no to. Nothing announced it, because from the
+/// system's point of view nothing had gone wrong.
+///
+/// That is [0054](../../docs/adr/0054-other-peoples-services.md)'s own rule being broken from
+/// the inside: **confirmed beats declared**. A person's decision is confirmed; `trust_all` is a
+/// standing default, and a default that overwrites a decision is not a default.
+///
+/// New tools appearing on a trusted server are still opened, which is the whole point of the
+/// flag — they have no decision to overwrite.
+#[must_use]
+pub fn tools_to_open_on_connect(
+    available: &[String],
+    trusted_prefixes: &[String],
+    already_decided: &[String],
+) -> Vec<String> {
+    available
+        .iter()
+        .filter(|id| trusted_prefixes.iter().any(|p| id.starts_with(p)))
+        .filter(|id| !already_decided.iter().any(|d| d == *id))
+        .cloned()
+        .collect()
+}
+
 /// Builds the default set of capabilities the node offers. Read-only information
 /// skills are ready; the rest are declared but await configuration, so they show
 /// up as modules to enable rather than silently missing.
@@ -6289,5 +6321,66 @@ mod the_seam_a_local_integration_plugs_into {
         };
         assert_eq!(names_of(0), vec!["the lamp"]);
         assert_eq!(names_of(1), vec!["the panel"]);
+    }
+}
+
+#[cfg(test)]
+mod a_standing_default_never_overwrites_a_decision {
+    //! `trust_all` on connect (ADR 0054 — confirmed beats declared).
+    //!
+    //! Live: voice broadcast was blocked at the person's request and came back on, because
+    //! connect re-opened every tool on the trusted server at every start-up. Four deploys in
+    //! one afternoon restored a capability they had said no to, and nothing announced it.
+
+    use super::tools_to_open_on_connect;
+
+    fn ids(all: &[&str]) -> Vec<String> {
+        all.iter().map(|s| (*s).to_owned()).collect()
+    }
+
+    #[test]
+    fn a_tool_the_person_blocked_is_never_reopened() {
+        // The bug, exactly. `HassBroadcast` has a stored decision, so connect leaves it alone
+        // however many times the node restarts.
+        let open_these = tools_to_open_on_connect(
+            &ids(&["house.HassTurnOn", "house.HassBroadcast"]),
+            &ids(&["house."]),
+            &ids(&["house.HassBroadcast"]),
+        );
+        assert_eq!(open_these, vec!["house.HassTurnOn"]);
+    }
+
+    #[test]
+    fn a_tool_the_person_allowed_is_left_alone_too() {
+        // Not just blocks. Anything already ruled on is theirs, and rewriting it to the same
+        // value would still be the system overwriting a decision it did not make.
+        assert!(
+            tools_to_open_on_connect(
+                &ids(&["house.HassTurnOn"]),
+                &ids(&["house."]),
+                &ids(&["house.HassTurnOn"]),
+            )
+            .is_empty()
+        );
+    }
+
+    #[test]
+    fn a_new_tool_on_a_trusted_server_is_still_opened() {
+        // The point of the flag, and what must survive the fix: a server that grows a tool
+        // should not need a click for it.
+        let open_these = tools_to_open_on_connect(
+            &ids(&["house.HassTurnOn", "house.HassBrandNew"]),
+            &ids(&["house."]),
+            &ids(&["house.HassTurnOn"]),
+        );
+        assert_eq!(open_these, vec!["house.HassBrandNew"]);
+    }
+
+    #[test]
+    fn an_untrusted_server_is_not_touched_at_all() {
+        assert!(
+            tools_to_open_on_connect(&ids(&["elsewhere.DoAThing"]), &ids(&["house."]), &[],)
+                .is_empty()
+        );
     }
 }
