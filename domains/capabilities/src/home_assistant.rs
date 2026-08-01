@@ -60,6 +60,12 @@ pub struct HomeAssistant {
     /// they wanted. A **boolean entity** removes that objection entirely: their phone's
     /// Focus mode is already on/off, already in the house, and already means exactly this.
     busy_entity: String,
+    /// Where a tapped notification should take the person, empty when they have not said.
+    ///
+    /// Without it the push arrives, they tap it, and Home Assistant opens showing nothing —
+    /// because `notify.mobile_app_*` sends a notification and leaves no record anywhere. The
+    /// record lives in Endora, so that is where a tap belongs.
+    opens_at: String,
     /// The notify service the person nominated as how to reach them, without its
     /// `notify.` prefix. Empty means Endora never interrupts them through this service.
     notify_service: String,
@@ -86,6 +92,10 @@ impl HomeAssistant {
             .get("busy_entity")
             .map(|v| v.trim().to_owned())
             .unwrap_or_default();
+        let opens_at = settings
+            .get("open_on_tap")
+            .map(|v| v.trim().trim_end_matches('/').to_owned())
+            .unwrap_or_default();
         let notify_service = settings
             .get("notify_service")
             .map(|v| v.trim().trim_start_matches("notify.").to_owned())
@@ -99,6 +109,7 @@ impl HomeAssistant {
             token,
             may_write,
             busy_entity,
+            opens_at,
             notify_service,
             aliases: Vec::new(),
         })
@@ -1001,10 +1012,16 @@ impl crate::infrastructure::NativeChannel for HomeAssistant {
         // Home Assistant's own notify service, which is already delivering to this
         // person's phone. Endora adds no push stack of its own.
         Some(
-            self.post(
-                &format!("/api/services/notify/{}", self.notify_service),
-                &json!({ "title": title, "message": body }),
-            )
+            self.post(&format!("/api/services/notify/{}", self.notify_service), &{
+                let mut payload = json!({ "title": title, "message": body });
+                // Somewhere to go. The companion app opens this on tap; without it a
+                // person taps the notification and lands on a screen that knows nothing
+                // about the message they just read.
+                if !self.opens_at.is_empty() {
+                    payload["data"] = json!({ "url": self.opens_at });
+                }
+                payload
+            })
             .map(|_| ()),
         )
     }
@@ -1434,6 +1451,42 @@ mod tests {
                 .refuse("home-assistant.HassLightSet", "{bad")
                 .is_none()
         );
+    }
+}
+
+#[cfg(test)]
+mod where_a_tapped_notification_goes {
+    use crate::infrastructure::CapabilitySettings;
+
+    fn settings(pairs: &[(&str, &str)]) -> CapabilitySettings {
+        pairs
+            .iter()
+            .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
+            .collect()
+    }
+
+    #[test]
+    fn the_address_is_read_and_tidied() {
+        // A trailing slash would make the tapped URL "…8787//", which some clients refuse.
+        let home = super::HomeAssistant::from_settings(&settings(&[
+            ("url", "http://ha.local:8123"),
+            ("token", "t"),
+            ("open_on_tap", "  https://192.168.1.14:8787/  "),
+        ]))
+        .expect("configured");
+        assert_eq!(home.opens_at, "https://192.168.1.14:8787");
+    }
+
+    #[test]
+    fn no_address_means_no_link_rather_than_a_broken_one() {
+        // Blank is the shipped state, and it must not become "data": {"url": ""} — a tap
+        // target of nowhere is worse than none, because the app tries to follow it.
+        let home = super::HomeAssistant::from_settings(&settings(&[
+            ("url", "http://ha.local:8123"),
+            ("token", "t"),
+        ]))
+        .expect("configured");
+        assert!(home.opens_at.is_empty());
     }
 }
 
