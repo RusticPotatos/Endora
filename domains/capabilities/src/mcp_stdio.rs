@@ -21,7 +21,7 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 
-use crate::infrastructure::{McpClient, McpToolInfo};
+use crate::infrastructure::{McpClient, McpResource, McpToolInfo};
 
 /// The MCP protocol revision this client speaks.
 const PROTOCOL_VERSION: &str = "2024-11-05";
@@ -286,6 +286,82 @@ fn list_tools(io: &mut dyn LineIo, next_id: &mut u64) -> Result<Vec<McpToolInfo>
     Ok(tools_from_result(&result))
 }
 
+/// Parses a `resources/list` result. Shared with the HTTP transport so the wire shape lives
+/// in one place, exactly as `tools_from_result` does.
+pub(crate) fn resources_from_result(result: &Value) -> Vec<McpResource> {
+    result
+        .get("resources")
+        .and_then(Value::as_array)
+        .map(|all| {
+            all.iter()
+                .filter_map(|r| {
+                    // The uri is the only thing required: a resource nobody can address
+                    // cannot be read, so it is not a resource.
+                    let uri = r.get("uri")?.as_str()?.to_owned();
+                    Some(McpResource {
+                        uri,
+                        name: r
+                            .get("name")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default()
+                            .to_owned(),
+                        description: r
+                            .get("description")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default()
+                            .to_owned(),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Parses a `resources/read` result into text.
+///
+/// A resource may arrive in several parts. Text parts are joined; a `blob` is skipped, because
+/// binary has no reading a state comparison could use.
+pub(crate) fn contents_from_result(result: &Value) -> String {
+    result
+        .get("contents")
+        .and_then(Value::as_array)
+        .map(|all| {
+            all.iter()
+                .filter_map(|c| c.get("text").and_then(Value::as_str))
+                .collect::<Vec<_>>()
+                .join(" ")
+        })
+        .unwrap_or_default()
+}
+
+/// Lists what the server offers to be read (`resources/list`).
+///
+/// A server that does not implement the method answers with a JSON-RPC error, and that is
+/// **not** a failure — it is the majority of servers saying they only have tools. Returning
+/// an empty list keeps a tools-only server from looking broken.
+fn list_resources(io: &mut dyn LineIo, next_id: &mut u64) -> Result<Vec<McpResource>, String> {
+    let id = *next_id;
+    *next_id += 1;
+    match request(io, id, "resources/list", None, CALL_TIMEOUT) {
+        Ok(result) => Ok(resources_from_result(&result)),
+        Err(_) => Ok(Vec::new()),
+    }
+}
+
+/// Reads one resource (`resources/read`).
+fn read_resource(io: &mut dyn LineIo, next_id: &mut u64, uri: &str) -> Result<String, String> {
+    let id = *next_id;
+    *next_id += 1;
+    let result = request(
+        io,
+        id,
+        "resources/read",
+        Some(json!({ "uri": uri })),
+        CALL_TIMEOUT,
+    )?;
+    Ok(contents_from_result(&result))
+}
+
 /// Calls one tool (`tools/call`), returning its text content. `input_json` is the
 /// arguments object; blank/invalid input becomes `{}`.
 fn call_tool(
@@ -434,11 +510,33 @@ impl McpClient for StdioMcpClient {
         io.next_id = id;
         out
     }
+
+    fn list_resources(&self) -> Result<Vec<McpResource>, String> {
+        let mut io = self
+            .io
+            .lock()
+            .map_err(|_| "MCP client poisoned".to_owned())?;
+        let mut id = io.next_id;
+        let out = list_resources(&mut *io, &mut id);
+        io.next_id = id;
+        out
+    }
+
+    fn read_resource(&self, uri: &str) -> Result<String, String> {
+        let mut io = self
+            .io
+            .lock()
+            .map_err(|_| "MCP client poisoned".to_owned())?;
+        let mut id = io.next_id;
+        let out = read_resource(&mut *io, &mut id, uri);
+        io.next_id = id;
+        out
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{LineIo, call_tool, handshake, list_tools};
+    use super::{LineIo, call_tool, handshake, list_resources, list_tools, read_resource};
     use std::collections::VecDeque;
     use std::time::Duration;
 
@@ -504,6 +602,109 @@ mod tests {
             io.sent[3].contains("\"method\":\"tools/call\"") && io.sent[3].contains("\"id\":3")
         );
         assert!(io.sent[3].contains("read_file") && io.sent[3].contains("/x"));
+    }
+
+    // --- Resources (ADR 0058 amendment) ---
+    //
+    // MCP standardises `resources/list` and `resources/read`, which is the state read the
+    // watch loop needs. Endora spoke only the tools half of the protocol, so every service it
+    // wanted to *watch* had to be written in Rust here. These tests come first because the
+    // wire shape is the whole feature.
+
+    #[test]
+    fn a_server_lists_its_resources() {
+        let mut io = FakeIo::new(&[r#"{"jsonrpc":"2.0","id":1,"result":{"resources":[
+                {"uri":"house://light.kitchen","name":"Kitchen light","description":"a lamp","mimeType":"text/plain"},
+                {"uri":"house://person.morgan","name":"rustic"}
+            ]}}"#]);
+        let mut id = 1;
+        let found = list_resources(&mut io, &mut id).unwrap();
+        assert_eq!(found.len(), 2);
+        assert_eq!(found[0].uri, "house://light.kitchen");
+        assert_eq!(found[0].name, "Kitchen light");
+        assert_eq!(found[0].description, "a lamp");
+        assert_eq!(found[1].uri, "house://person.morgan");
+        assert!(
+            found[1].description.is_empty(),
+            "a missing description is empty, not a failure"
+        );
+        assert!(io.sent[0].contains("\"method\":\"resources/list\""));
+    }
+
+    #[test]
+    fn a_resource_without_a_uri_is_dropped() {
+        // A resource nobody can address cannot be read, so it is not a resource.
+        let mut io = FakeIo::new(&[
+            r#"{"jsonrpc":"2.0","id":1,"result":{"resources":[{"name":"nameless"}]}}"#,
+        ]);
+        let mut id = 1;
+        assert!(list_resources(&mut io, &mut id).unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_server_with_no_resources_is_not_an_error() {
+        // Most MCP servers expose tools only. Not supporting resources is the ordinary case
+        // and must read as "nothing to watch", never as a broken server — otherwise every
+        // tools-only server would start reporting trouble.
+        let mut io = FakeIo::new(&[r#"{"jsonrpc":"2.0","id":1,"result":{}}"#]);
+        let mut id = 1;
+        assert!(list_resources(&mut io, &mut id).unwrap().is_empty());
+
+        let mut io = FakeIo::new(&[
+            r#"{"jsonrpc":"2.0","id":1,"error":{"code":-32601,"message":"Method not found"}}"#,
+        ]);
+        let mut id = 1;
+        assert!(
+            list_resources(&mut io, &mut id).unwrap().is_empty(),
+            "an unimplemented method means no resources, not a failure"
+        );
+    }
+
+    #[test]
+    fn reading_a_resource_returns_its_text() {
+        let mut io = FakeIo::new(&[r#"{"jsonrpc":"2.0","id":1,"result":{"contents":[
+                {"uri":"house://light.kitchen","mimeType":"text/plain","text":"on"}
+            ]}}"#]);
+        let mut id = 1;
+        let text = read_resource(&mut io, &mut id, "house://light.kitchen").unwrap();
+        assert_eq!(text, "on");
+        assert!(io.sent[0].contains("\"method\":\"resources/read\""));
+        assert!(io.sent[0].contains("house://light.kitchen"));
+    }
+
+    #[test]
+    fn several_text_parts_are_joined_and_binary_ones_are_skipped() {
+        // A resource may come back in parts, and a blob has no text a state reader could use.
+        let mut io = FakeIo::new(&[r#"{"jsonrpc":"2.0","id":1,"result":{"contents":[
+                {"uri":"x","text":"on"},
+                {"uri":"x","blob":"aGVsbG8="},
+                {"uri":"x","text":"since 9am"}
+            ]}}"#]);
+        let mut id = 1;
+        assert_eq!(
+            read_resource(&mut io, &mut id, "x").unwrap(),
+            "on since 9am"
+        );
+    }
+
+    #[test]
+    fn a_resource_that_cannot_be_read_says_so() {
+        // Unlike listing, a failed *read* is a real failure: something was named and could
+        // not be fetched, which the watch loop should see rather than silently treat as empty.
+        let mut io = FakeIo::new(&[
+            r#"{"jsonrpc":"2.0","id":1,"error":{"code":-32002,"message":"no such resource"}}"#,
+        ]);
+        let mut id = 1;
+        let failed = read_resource(&mut io, &mut id, "house://gone");
+        // The exact wording is `request`'s, shared with every other call on this transport;
+        // what matters here is that the reason reaches the caller rather than being swallowed
+        // the way a failed *list* deliberately is.
+        assert!(
+            failed
+                .as_ref()
+                .is_err_and(|e| e.contains("no such resource")),
+            "expected the server's reason to surface, got {failed:?}"
+        );
     }
 
     #[test]

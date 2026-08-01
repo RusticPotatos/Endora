@@ -35,7 +35,7 @@ pub use domain::{SetupField, SetupForm};
 pub use home_assistant::{HomeAssistant, paired_server};
 pub use infrastructure::{
     AliasRunner, Capability, CapabilityError, CapabilityInfo, CapabilitySettings, CompositeRunner,
-    McpClient, McpRunner, McpToolInfo, NativeChannel, OpenerRunner, RegistryRunner,
+    McpClient, McpResource, McpRunner, McpToolInfo, NativeChannel, OpenerRunner, RegistryRunner,
     ReversibleOnlyRunner, SettingSpec, TargetSearchRunner, WithdrawnRunner, channels_of,
     default_capabilities, redact_pii_in_value, same_call_as, scan_outbound_secret,
     settings_complete, tools_to_open_on_connect,
