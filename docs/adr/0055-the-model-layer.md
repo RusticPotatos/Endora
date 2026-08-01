@@ -106,10 +106,33 @@ changed once. Which model answered is not a detail — it is where their words w
   policy-side guarantees. That is a feature: it forces honesty that a stronger model would let
   us skip until it mattered.
 
+### Bundling is a packaging decision, not an architectural one
+
+The rejection above is about **code**. Nothing in Endora may know what serves the model — not
+its format, not its lifecycle, not how to fetch one. That line stands.
+
+It does not follow that a deployment cannot ship one. A compose profile that starts a
+runtime alongside Endora and points it at the URL leaves Endora's code untouched: delete the
+service and everything works exactly as before against somebody else's endpoint. So the
+bundled runtime is **off unless asked for**, and exists for the person who wants a working
+butler before they want to configure anything.
+
+**The hardware detection belongs in the runtime, not here** — and that is settled by fact
+rather than preference. Endora's container has no GPU access and cannot see a card even when
+one is present; a container granted it reports the card immediately. Putting the choice in
+the sidecar is therefore both the only place it works and the place that keeps the boundary.
+
+**The ladder is not "the biggest that fits".** This project's own battery measured a 14B
+failing to beat the 7B, and every model tested scoring 0/3 on following an explicit
+instruction about verification. Size buys capability, not obedience — so the bundled choice
+is the biggest that runs *comfortably*, and it is a starting point. Improving on it is the
+adoption loop's job, gated on the battery rather than on specifications.
+
 ## Rejected
 
-- **Hosting or bundling the model.** Endora would become a model runtime with a butler
-  attached.
+- **Hosting or bundling the model *in Endora*.** It would become a model runtime with a
+  butler attached, and its lifetime would be tied to a vendor's. Still rejected — see the
+  distinction below, which is about packaging rather than code.
 - **A mixture of models** (a router plus a synthesiser). Measured on this hardware: it
   thrashes, and a 14B model is roughly 4× too slow. One 7B model, with guarantees in code.
 - **Judging models by feel.** Three confident hypotheses died to the battery.
