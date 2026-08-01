@@ -566,6 +566,64 @@ fn take_turn_retrying_empty(
     Ok(reply)
 }
 
+/// How long after an action a repeated request still counts as being about it.
+///
+/// Long enough to cover reading the reply, looking at the light and asking again; short
+/// enough that saying the same thing tomorrow evening is a new request rather than a verdict
+/// on yesterday's.
+const STILL_THE_SAME_ASK_MS: i64 = 10 * 60 * 1000;
+
+/// Marks what a person's **repeated request** says about the action before it (ADR 0052).
+///
+/// The reaction machinery has existed for months and has taken **zero** inputs across 116
+/// outcomes. It was asked for on a settings screen nobody opened, then in the chat where the
+/// person already is, and neither produced one. At some point that stops being a placement
+/// problem and becomes evidence that asking is the wrong instrument.
+///
+/// The signal was in the transcript the whole time. **Somebody who asks again has told you it
+/// did not work** — no button, no screen, nothing to remember.
+///
+/// **One direction only.** A repeat is evidence of failure; silence is *not* evidence of
+/// success. Somebody who says nothing may be satisfied, or may have given up and gone to the
+/// switch, and there is no way to tell them apart. So this derives `DidNotHelp` and never
+/// `Helped` — the same asymmetry that lets a refusal support withdrawing a tool while no
+/// number of quiet successes supports keeping one
+/// ([0054](../../docs/adr/0054-other-peoples-services.md)).
+///
+/// Only outcomes that **claimed success** are marked. One that already errored is visible as
+/// a failure without help from anybody, and recording a reaction on it would double-count.
+///
+/// # Errors
+/// [`AppError::Repository`] on a backend failure.
+fn note_what_the_repeat_says(
+    outcomes: &impl OutcomeRepository,
+    history: &[ChatMessage],
+    asking_again: &str,
+    now: Timestamp,
+) -> Result<usize, AppError> {
+    let Some(asked_before) = history.iter().rev().find(|m| m.role() == MessageRole::User) else {
+        return Ok(0);
+    };
+    let since = asked_before.at().unix_millis();
+    if now.unix_millis() - since > STILL_THE_SAME_ASK_MS {
+        return Ok(0);
+    }
+    if !says_the_same_thing(asked_before.text(), asking_again) {
+        return Ok(0);
+    }
+    let mut marked = 0;
+    for mut outcome in outcomes.list()? {
+        let after_the_ask = outcome.at().unix_millis() >= since;
+        let claimed_success = !outcome.claim().trim_start().starts_with("error:");
+        if after_the_ask && claimed_success && outcome.reaction().is_none() {
+            outcome.react(Reaction::DidNotHelp);
+            outcomes.save(&outcome)?;
+            marked += 1;
+        }
+    }
+    Ok(marked)
+}
+
 /// The values worth standing in for, gathered from what Endora already holds (ADR 0051).
 ///
 /// Not a PII detector. Endora knows the person's name, their city and tonight's appointment
@@ -1498,6 +1556,9 @@ pub fn send_to_butler_streaming(
         text,
         clock.now(),
     )?;
+    // Read the history BEFORE the new message joins it, so "what was asked last time" is the
+    // previous request rather than this one.
+    let asked_before = chat.list()?;
     chat.append(&user)?;
 
     // CONTEXT COMPACTION (ADR 0053): send the model a bounded prompt — a compact running
@@ -1527,6 +1588,16 @@ pub fn send_to_butler_streaming(
 
     // `activity` — a plain-language record of what the butler did this turn.
     let mut activity: Vec<String> = Vec::new();
+    // If this message is the last one again, the previous turn's actions did not work — and
+    // the person has just said so without being asked (ADR 0052).
+    if let Ok(n) = note_what_the_repeat_says(outcomes, &asked_before, text, clock.now()) {
+        if n > 0 {
+            activity.push(format!(
+                "You asked again, so I marked {n} thing{} as not having helped",
+                if n == 1 { "" } else { "s" }
+            ));
+        }
+    }
     // They asked, so nothing on file motivated it (ADR 0053).
     let actions = OutcomeSink::unmotivated(outcomes);
 
@@ -8077,6 +8148,199 @@ mod the_record_next_to_the_claim {
         // noise, and the reply denying activity would then be correct anyway.
         let denial = "No specific activities were recorded.";
         assert_eq!(account_behind(denial, &[]), "");
+    }
+}
+
+#[cfg(test)]
+mod asking_again_is_an_answer {
+    use super::*;
+    use endora_kernel::Timestamp;
+    use std::sync::Mutex;
+
+    #[derive(Default)]
+    struct Recorded(Mutex<Vec<Outcome>>);
+    impl OutcomeRepository for Recorded {
+        fn save(&self, o: &Outcome) -> Result<(), endora_kernel::RepositoryError> {
+            let mut held = self.0.lock().unwrap();
+            if let Some(slot) = held.iter_mut().find(|x| x.id() == o.id()) {
+                *slot = o.clone();
+            } else {
+                held.push(o.clone());
+            }
+            Ok(())
+        }
+        fn get(
+            &self,
+            id: crate::OutcomeId,
+        ) -> Result<Option<Outcome>, endora_kernel::RepositoryError> {
+            Ok(self
+                .0
+                .lock()
+                .unwrap()
+                .iter()
+                .find(|x| x.id() == id)
+                .cloned())
+        }
+        fn list(&self) -> Result<Vec<Outcome>, endora_kernel::RepositoryError> {
+            Ok(self.0.lock().unwrap().clone())
+        }
+    }
+
+    fn acted(id: u128, claim: &str, at_ms: i64) -> Outcome {
+        Outcome::record(
+            crate::OutcomeId::new(id),
+            "home.HassTurnOn",
+            "{}",
+            claim,
+            Some("a reading"),
+            Timestamp::from_unix_millis(at_ms),
+            None,
+            Some(true),
+        )
+        .expect("valid")
+    }
+
+    fn said(role: MessageRole, text: &str, at_ms: i64) -> ChatMessage {
+        ChatMessage::new(
+            crate::MessageId::new(at_ms as u128),
+            role,
+            text,
+            Timestamp::from_unix_millis(at_ms),
+        )
+        .expect("valid")
+    }
+
+    #[test]
+    fn a_repeated_request_marks_the_action_as_not_having_helped() {
+        // 116 outcomes carried zero reactions across two placements of the ask. The signal
+        // was in the transcript the whole time: somebody who asks again has told you.
+        let outcomes = Recorded::default();
+        outcomes.save(&acted(1, "turned it on", 2_000)).unwrap();
+        let history = vec![said(
+            MessageRole::User,
+            "turn on the kitchen table light",
+            1_000,
+        )];
+
+        let n = note_what_the_repeat_says(
+            &outcomes,
+            &history,
+            "turn on the kitchen table light",
+            Timestamp::from_unix_millis(60_000),
+        )
+        .unwrap();
+
+        assert_eq!(n, 1);
+        assert_eq!(
+            outcomes
+                .get(crate::OutcomeId::new(1))
+                .unwrap()
+                .unwrap()
+                .reaction(),
+            Some(Reaction::DidNotHelp)
+        );
+    }
+
+    #[test]
+    fn silence_is_never_taken_as_success() {
+        // One direction only. Somebody who says nothing may be satisfied, or may have given
+        // up and gone to the switch, and there is no way to tell them apart — so a
+        // different next message marks nothing at all.
+        let outcomes = Recorded::default();
+        outcomes.save(&acted(1, "turned it on", 2_000)).unwrap();
+        let history = vec![said(
+            MessageRole::User,
+            "turn on the kitchen table light",
+            1_000,
+        )];
+
+        let n = note_what_the_repeat_says(
+            &outcomes,
+            &history,
+            "what's the weather like?",
+            Timestamp::from_unix_millis(60_000),
+        )
+        .unwrap();
+        assert_eq!(n, 0);
+        assert_eq!(
+            outcomes
+                .get(crate::OutcomeId::new(1))
+                .unwrap()
+                .unwrap()
+                .reaction(),
+            None
+        );
+    }
+
+    #[test]
+    fn the_opposite_request_is_not_a_repeat() {
+        // "turn it off" after "turn it on" is a new intention, not a complaint — and
+        // marking it as failure would punish an action that worked.
+        let outcomes = Recorded::default();
+        outcomes.save(&acted(1, "turned it on", 2_000)).unwrap();
+        let history = vec![said(
+            MessageRole::User,
+            "turn on the kitchen table light",
+            1_000,
+        )];
+        assert_eq!(
+            note_what_the_repeat_says(
+                &outcomes,
+                &history,
+                "turn off the kitchen table light",
+                Timestamp::from_unix_millis(60_000),
+            )
+            .unwrap(),
+            0
+        );
+    }
+
+    #[test]
+    fn the_same_words_tomorrow_are_a_new_request() {
+        // A verdict on an action has to be near it in time, or every evening's "turn on the
+        // kitchen light" condemns yesterday's.
+        let outcomes = Recorded::default();
+        outcomes.save(&acted(1, "turned it on", 2_000)).unwrap();
+        let history = vec![said(
+            MessageRole::User,
+            "turn on the kitchen table light",
+            1_000,
+        )];
+        assert_eq!(
+            note_what_the_repeat_says(
+                &outcomes,
+                &history,
+                "turn on the kitchen table light",
+                Timestamp::from_unix_millis(86_400_000),
+            )
+            .unwrap(),
+            0
+        );
+    }
+
+    #[test]
+    fn an_action_that_already_errored_is_left_alone() {
+        // It is visible as a failure without anybody's help, and marking it would count the
+        // same miss twice.
+        let outcomes = Recorded::default();
+        outcomes
+            .save(&acted(1, "error: no matching entity", 2_000))
+            .unwrap();
+        let history = vec![said(
+            MessageRole::User,
+            "turn on the kitchen table light",
+            1_000,
+        )];
+        assert_eq!(
+            note_what_the_repeat_says(
+                &outcomes,
+                &history,
+                "turn on the kitchen table light",
+                Timestamp::from_unix_millis(60_000),
+            )
+            .unwrap(),
+            0
+        );
     }
 }
 
