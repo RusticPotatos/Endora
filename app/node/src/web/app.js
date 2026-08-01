@@ -1424,6 +1424,43 @@ const WORTH_CONNECTING = [
   ["mqtt", "Sensors over MQTT", "doors, motion, whatever you add"],
 ];
 
+// Endpoints Endora knows, so it stops asking for what it could have said.
+//
+// The form renders exactly what the service declares — and Home Assistant's CalDAV form
+// declares no default for `url`, so it asked for an address that Endora could name perfectly
+// well. Naming iCloud, Fastmail and Nextcloud in the description and then not offering their
+// endpoints is the gap.
+//
+// These are **suggestions**, not knowledge about the service: choosing one fills the fields
+// and every one stays editable, which is the same shape the model settings already use for
+// provider presets. Field names come from the live flows, not from memory.
+const KNOWN_PROVIDERS = {
+  caldav: [
+    ["iCloud", { url: "https://caldav.icloud.com" }],
+    ["Fastmail", { url: "https://caldav.fastmail.com" }],
+    ["Nextcloud", { url: "https://your-server/remote.php/dav" }],
+  ],
+  imap: [
+    ["iCloud", { server: "imap.mail.me.com", port: "993" }],
+    ["Gmail", { server: "imap.gmail.com", port: "993" }],
+    ["Fastmail", { server: "imap.fastmail.com", port: "993" }],
+    ["Outlook", { server: "outlook.office365.com", port: "993" }],
+  ],
+};
+
+// Fills the form from a chosen provider. Nothing is submitted and nothing is locked — this
+// is typing on the person's behalf, which they can undo by typing over it.
+function useProvider(kind, index) {
+  const chosen = (KNOWN_PROVIDERS[kind] || [])[index];
+  if (!chosen) return;
+  const [label, values] = chosen;
+  for (const [field, value] of Object.entries(values)) {
+    const el = document.getElementById(`connect-${field}`);
+    if (el) el.value = value;
+  }
+  flash(`Filled in what ${label} uses — check it and sign in.`, "ok");
+}
+
 function viewConnect() {
   if (CONNECT && CONNECT.fields) {
     const fields = CONNECT.fields.map((f) => `
@@ -1433,10 +1470,19 @@ function viewConnect() {
                autocomplete="off" value="${esc(f.default == null ? "" : String(f.default))}"
                placeholder="${f.secret ? "never stored by Endora" : ""}" />
       </div>`).join("");
+    const providers = KNOWN_PROVIDERS[CONNECT.kind] || [];
+    const presets = providers.length
+      ? `<div class="field"><label>Who is it with?</label>
+           <select onchange="useProvider('${esc(CONNECT.kind)}', this.value)">
+             <option value="">Choose to fill in the address…</option>
+             ${providers.map(([label], i) => `<option value="${i}">${esc(label)}</option>`).join("")}
+           </select></div>`
+      : "";
     return `
       <h3 style="margin-top:22px;">Connecting ${esc(CONNECT.kind || "something")}</h3>
       <div class="card">
         <div class="note" style="margin-bottom:8px;">These are the questions <b>your own service</b> asked — Endora is passing them on. Anything you type here goes straight to it and is never written down here.</div>
+        ${presets}
         ${fields}
         <div class="row" style="gap:8px;justify-content:flex-end;">
           <button class="ghost" data-act="connect:cancel">Cancel</button>
