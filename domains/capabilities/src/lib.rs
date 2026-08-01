@@ -29,7 +29,7 @@ pub use application::{
     CapabilityUse, ConfigWrite, ConfigWriteLog, DeepModel, DeepModelRepository, McpServer,
     McpServerRegistry, McpTransport, ModelSlot, ModelTuneSchedule, ModelTuneScheduleRepository,
     Sampling, StandingTrouble, StandingTroubleRepository, TargetAlias, TargetAliasRepository,
-    WriteKind, watch_for_trouble, worth_raising,
+    WriteKind, not_answering, watch_for_trouble, worth_raising,
 };
 pub use domain::{SetupField, SetupForm};
 pub use home_assistant::{HomeAssistant, paired_server};
