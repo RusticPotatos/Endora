@@ -26,7 +26,7 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 
-use crate::infrastructure::{McpClient, McpToolInfo};
+use crate::infrastructure::{McpClient, McpResource, McpToolInfo};
 use crate::mcp_stdio::{text_from_call_result, tools_from_result};
 
 /// The MCP protocol revision this client speaks.
@@ -341,6 +341,20 @@ impl McpClient for HttpMcpClient {
             Some(json!({ "name": tool, "arguments": args })),
         )?;
         text_from_call_result(&result, tool)
+    }
+
+    fn list_resources(&self) -> Result<Vec<McpResource>, String> {
+        // A server that does not implement the method is the ordinary case, not a fault —
+        // see the port's own note. Same shape as the stdio transport.
+        Ok(self
+            .request("resources/list", None)
+            .map(|r| crate::mcp_stdio::resources_from_result(&r))
+            .unwrap_or_default())
+    }
+
+    fn read_resource(&self, uri: &str) -> Result<String, String> {
+        let result = self.request("resources/read", Some(json!({ "uri": uri })))?;
+        Ok(crate::mcp_stdio::contents_from_result(&result))
     }
 }
 
