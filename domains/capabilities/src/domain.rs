@@ -602,3 +602,265 @@ mod tests {
         );
     }
 }
+
+/// How long a reading must hold before it counts as a change.
+///
+/// **Wi-Fi presence flaps.** A phone sleeps its radio and vanishes for ten minutes while its
+/// owner is on the sofa; an access point hands a device over and drops it for a beat. Written
+/// straight into the record, that gives Endora *"you left"* fourteen times on a Tuesday — a
+/// log worse than no log, because every later thing that reads it inherits the noise.
+///
+/// Five minutes matches what Home Assistant's own device trackers default to for the same
+/// reason, and is short enough that a real departure is recorded while the person is still in
+/// the car.
+pub const DWELL_MS: i64 = 5 * 60 * 1_000;
+
+/// One thing that really changed, and when.
+///
+/// The unit the transition log is made of. Deliberately about the **world**, not about
+/// Endora: what it was, what it is, and the moment it moved.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Transition {
+    /// Which thing, namespaced by the server that reported it.
+    pub key: String,
+    /// What it was before.
+    pub from: String,
+    /// What it became.
+    pub to: String,
+    /// When it changed — the first reading of the new state, not the pass that confirmed it.
+    pub at_ms: i64,
+}
+
+/// What Endora has last seen of one thing, and what it is currently reading.
+///
+/// Two states rather than one, because "what it is" and "what it has just started saying" are
+/// different questions and only the first is worth telling anybody.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Watched {
+    /// Which thing, namespaced by the server that reported it.
+    pub key: String,
+    /// The last reading that held long enough to be believed.
+    pub settled: String,
+    /// What it has been saying since [`candidate_since_ms`](Self::candidate_since_ms). Equal
+    /// to `settled` when nothing is in flight.
+    pub candidate: String,
+    /// When the current candidate first appeared.
+    pub candidate_since_ms: i64,
+}
+
+/// What one reading amounted to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Change {
+    /// Nothing worth writing down.
+    Nothing,
+    /// Something to remember about this thing, but no change to report: a first sighting, a
+    /// new candidate starting its clock, or a flap that resolved itself.
+    Noted(Watched),
+    /// It really moved.
+    Moved {
+        /// What it was.
+        from: String,
+        /// What it is now.
+        to: String,
+        /// **When it actually changed**, not when Endora grew confident of it.
+        at_ms: i64,
+        /// The thing's new resting state.
+        now: Watched,
+    },
+}
+
+/// Normalises a reading, so casing and padding never look like movement.
+fn as_read(state: &str) -> String {
+    state.trim().to_lowercase()
+}
+
+/// Decides what a single reading means for one thing.
+///
+/// The whole transition log is this function; everything around it is storage. It is pure and
+/// takes the clock as an argument, so every case below is a test rather than a wait.
+///
+/// A first sighting is deliberately **not** a change. Endora meeting an entity for the first
+/// time would otherwise write a transition for every entity in the house the first time it
+/// looks, and none of those happened.
+#[must_use]
+pub fn note_reading(prior: Option<&Watched>, key: &str, reading: &str, now_ms: i64) -> Change {
+    let reading = as_read(reading);
+    let Some(prior) = prior else {
+        return Change::Noted(Watched {
+            key: key.to_owned(),
+            settled: reading.clone(),
+            candidate: reading,
+            candidate_since_ms: now_ms,
+        });
+    };
+
+    // Back to where it started before settling: a flap that resolved itself, and nothing
+    // happened. Dropping the candidate is what stops a fortnight of half-changes accumulating.
+    if reading == prior.settled {
+        if prior.candidate == prior.settled {
+            return Change::Nothing;
+        }
+        return Change::Noted(Watched {
+            candidate: prior.settled.clone(),
+            candidate_since_ms: now_ms,
+            ..prior.clone()
+        });
+    }
+
+    // Something new, or something different again while the last one was still settling.
+    if reading != prior.candidate {
+        return Change::Noted(Watched {
+            candidate: reading,
+            candidate_since_ms: now_ms,
+            ..prior.clone()
+        });
+    }
+
+    // The same new reading as last time — has it held?
+    let held_for = now_ms - prior.candidate_since_ms;
+    if held_for < DWELL_MS {
+        return Change::Nothing;
+    }
+    Change::Moved {
+        from: prior.settled.clone(),
+        to: reading.clone(),
+        // The moment it changed, not the moment we believed it. A log that timestamps its own
+        // confidence is a log about Endora rather than about the house.
+        at_ms: prior.candidate_since_ms,
+        now: Watched {
+            settled: reading.clone(),
+            candidate: reading,
+            candidate_since_ms: prior.candidate_since_ms,
+            ..prior.clone()
+        },
+    }
+}
+
+#[cfg(test)]
+mod deciding_that_something_changed {
+    //! The transition state machine, written before it existed.
+    //!
+    //! Wi-Fi presence flaps: a phone sleeps its radio and vanishes for ten minutes while its
+    //! owner is on the sofa. Writing that into the record would give Endora "you left" fourteen
+    //! times on a Tuesday, which is worse than having no record at all. So a reading has to
+    //! *hold* before it counts as a change.
+
+    use super::{Change, DWELL_MS, Watched, note_reading};
+
+    fn watched(settled: &str, candidate: &str, since: i64) -> Watched {
+        Watched {
+            key: "house::light.kitchen".to_owned(),
+            settled: settled.to_owned(),
+            candidate: candidate.to_owned(),
+            candidate_since_ms: since,
+        }
+    }
+
+    #[test]
+    fn the_first_sighting_of_a_thing_is_not_a_change() {
+        // Endora has just met this entity. Recording "nothing → on" would put a transition in
+        // the log for every entity in the house the first time it looks, and none of them
+        // happened.
+        let change = note_reading(None, "house::light.kitchen", "on", 1_000);
+        let Change::Noted(now) = change else {
+            panic!("expected a first sighting to be noted, got {change:?}");
+        };
+        assert_eq!(now.settled, "on");
+        assert_eq!(now.candidate, "on");
+        assert_eq!(now.candidate_since_ms, 1_000);
+    }
+
+    #[test]
+    fn a_reading_that_has_not_moved_says_nothing() {
+        let prior = watched("on", "on", 1_000);
+        assert!(matches!(
+            note_reading(Some(&prior), &prior.key, "on", 9_999),
+            Change::Nothing
+        ));
+    }
+
+    #[test]
+    fn a_new_reading_starts_settling_rather_than_counting() {
+        let prior = watched("on", "on", 1_000);
+        let Change::Noted(now) = note_reading(Some(&prior), &prior.key, "off", 2_000) else {
+            panic!("expected it to start settling");
+        };
+        assert_eq!(now.settled, "on", "nothing has changed yet");
+        assert_eq!(now.candidate, "off");
+        assert_eq!(now.candidate_since_ms, 2_000);
+    }
+
+    #[test]
+    fn a_reading_that_holds_long_enough_becomes_a_transition() {
+        let prior = watched("on", "off", 2_000);
+        let Change::Moved {
+            from,
+            to,
+            at_ms,
+            now,
+        } = note_reading(Some(&prior), &prior.key, "off", 2_000 + DWELL_MS)
+        else {
+            panic!("expected a transition once it held");
+        };
+        assert_eq!(from, "on");
+        assert_eq!(to, "off");
+        assert_eq!(
+            at_ms, 2_000,
+            "timestamped when it actually changed, not when we grew confident"
+        );
+        assert_eq!(now.settled, "off");
+    }
+
+    #[test]
+    fn a_flap_that_goes_back_before_settling_never_happened() {
+        // The whole reason for the dwell. The phone dropped off Wi-Fi and came back.
+        let prior = watched("home", "not_home", 2_000);
+        let change = note_reading(Some(&prior), &prior.key, "home", 2_000 + DWELL_MS / 2);
+        let Change::Noted(now) = change else {
+            panic!("expected the flap to be forgotten, got {change:?}");
+        };
+        assert_eq!(now.settled, "home");
+        assert_eq!(now.candidate, "home", "the candidate is abandoned");
+    }
+
+    #[test]
+    fn a_reading_that_changes_again_while_settling_restarts_the_clock() {
+        // on → off → dim, all inside the dwell. Nothing has held, so nothing has happened.
+        let prior = watched("on", "off", 2_000);
+        let Change::Noted(now) = note_reading(Some(&prior), &prior.key, "dim", 3_000) else {
+            panic!("expected the clock to restart");
+        };
+        assert_eq!(now.settled, "on");
+        assert_eq!(now.candidate, "dim");
+        assert_eq!(now.candidate_since_ms, 3_000);
+    }
+
+    #[test]
+    fn one_tick_short_of_the_dwell_is_not_yet_a_change() {
+        let prior = watched("on", "off", 2_000);
+        assert!(matches!(
+            note_reading(Some(&prior), &prior.key, "off", 2_000 + DWELL_MS - 1),
+            Change::Nothing
+        ));
+    }
+
+    #[test]
+    fn a_clock_that_goes_backwards_commits_nothing() {
+        let prior = watched("on", "off", 10_000);
+        assert!(matches!(
+            note_reading(Some(&prior), &prior.key, "off", 1),
+            Change::Nothing
+        ));
+    }
+
+    #[test]
+    fn case_and_padding_do_not_make_a_change() {
+        // Services are inconsistent about this, and a transition log that records "On" → "on"
+        // would fill up with events nobody had.
+        let prior = watched("on", "on", 1_000);
+        assert!(matches!(
+            note_reading(Some(&prior), &prior.key, "  On ", 9_999),
+            Change::Nothing
+        ));
+    }
+}
