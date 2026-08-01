@@ -1273,27 +1273,19 @@ fn build_reversible_only_runner(
 fn native_channels(
     config: &endora_capabilities::ConfigStore,
 ) -> Vec<(String, Arc<dyn endora_capabilities::NativeChannel>)> {
-    let settings = settings_map(config);
-    let Some(home_settings) = settings.get("home_assistant") else {
-        return Vec::new();
-    };
-    let Some(home) = endora_capabilities::HomeAssistant::from_settings(home_settings) else {
-        return Vec::new();
-    };
-    // The channel is told every name a thing answers to, not just the service's own
-    // (ADR 0054). The same confirmed aliases the retry uses.
-    let server = endora_capabilities::paired_server(home_settings);
-    let named: Vec<(String, String)> = endora_capabilities::TargetAliasRepository::aliases(config)
-        .unwrap_or_default()
-        .into_iter()
-        .filter(|a| a.server == server)
-        .map(|a| (a.said, a.means))
-        .collect();
-    let home = home.also_known_as(named);
-    vec![(
-        server,
-        Arc::new(home) as Arc<dyn endora_capabilities::NativeChannel>,
-    )]
+    // Every declared skill is asked whether it speaks for a service Endora needs to watch;
+    // almost all of them say no. Nothing here knows an integration by name.
+    //
+    // It used to: this function reached for Home Assistant's settings directly and
+    // `return`ed an empty list if they were missing, so a second local integration could
+    // never have been reached even once it existed. Registration now runs off the same list
+    // every skill is already declared in, which makes adding one a single line there rather
+    // than a change to the composition root (ADR 0050 — the node composes, it does not know).
+    endora_capabilities::channels_of(
+        &endora_infrastructure::default_capabilities(),
+        &settings_map(config),
+        &endora_capabilities::TargetAliasRepository::aliases(config).unwrap_or_default(),
+    )
 }
 
 /// Loads all capability settings, grouped by capability id, for the runner.
