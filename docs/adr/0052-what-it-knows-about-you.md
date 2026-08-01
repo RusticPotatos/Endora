@@ -166,6 +166,27 @@ thing on one screen:
   because disagreement is checked first: subject decides whether two statements concern the
   same thing, disagreement decides whether they say opposite things about it.
 
+### A question belongs where the person already is
+
+Everything Endora wanted an answer about lived on a screen three taps from the conversation —
+menu, Settings, Understanding, scroll — among six unrelated things. **A question you have to go
+and find is a question that does not get answered**, and the evidence was already in: 109
+outcomes carried zero reactions, because the only place to judge one was a section further
+down a page nobody opens.
+
+So the one thing worth asking arrives in the chat.
+
+**One at a time, never a list.** Seven problem statements rendered together is the pile of
+chores this document exists to prevent, and putting the pile in the conversation would only
+make it harder to ignore. It is the same *cursor, not a queue* rule that governs intentions:
+one question, answering it is the dismissal, and the next appears when it appears.
+
+**No badge and no count, anywhere.** Both are how a queue announces itself, and a screen
+reading "3 waiting" is a chore list whatever its cards say.
+
+The person's own world comes before Endora's tooling — a lamp that stopped answering is
+theirs, a misfiring tool is Endora's problem to be honest about rather than theirs to solve.
+
 ### Attention is computed, never pushed
 
 What deserves attention is a **read projection** over facts already stored, plus a little
