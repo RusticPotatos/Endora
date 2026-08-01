@@ -265,10 +265,18 @@ fn connect_mcp(config: &endora_capabilities::ConfigStore) -> endora_capabilities
     // Block→Confirm — it still asks before each use (ADR 0051). This is deterministic
     // policy set in code from a stored flag, never routed from model output.
     if !trusted.is_empty() {
-        for spec in runner.available() {
-            if trusted.iter().any(|prefix| spec.id.starts_with(prefix)) {
-                let _ = config.set_open_irreversible(&spec.id, true);
-            }
+        // Only tools nobody has ruled on. This used to open every tool on a trusted server at
+        // every start-up, which silently restored a capability the person had blocked — see
+        // `tools_to_open_on_connect`.
+        let decided: Vec<String> = config
+            .opened_overrides()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect();
+        let available: Vec<String> = runner.available().iter().map(|s| s.id.clone()).collect();
+        for id in endora_capabilities::tools_to_open_on_connect(&available, &trusted, &decided) {
+            let _ = config.set_open_irreversible(&id, true);
         }
     }
     runner
