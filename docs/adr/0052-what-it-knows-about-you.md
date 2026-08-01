@@ -194,6 +194,32 @@ for the other.
 So the receipts moved to one place, and understanding kept only what it is for: beliefs, and
 the single intention. One section, from six.
 
+### Asking again is an answer
+
+The reaction machinery took **zero inputs across 116 outcomes**. It was asked for on a
+settings screen nobody opened, then moved into the chat where the person already is, and
+neither produced one. At some point that stops being a placement problem and becomes evidence
+that **asking is the wrong instrument**.
+
+The signal was in the transcript the whole time. *Somebody who asks again has told you it did
+not work* — no button, no screen, nothing to remember. So a repeated request marks the actions
+before it as not having helped.
+
+**One direction only.** A repeat is evidence of failure; silence is **not** evidence of
+success. Somebody who says nothing may be satisfied, or may have given up and gone to the
+switch, and nothing distinguishes them. So this derives *did not help* and never *helped* —
+the same asymmetry that lets a refusal support withdrawing a tool while no number of quiet
+successes supports keeping one ([0054](0054-other-peoples-services.md)).
+
+Three things keep it honest, each from a way it could be wrong: the opposite request is not a
+repeat (*off* after *on* is a new intention, not a complaint); the same words tomorrow are a
+new request, not a verdict on yesterday; and an action that already **errored** is left alone,
+because it is visible as a failure without anybody's help and marking it would count one miss
+twice.
+
+This is the same instinct as everything else here — *derive it, do not make them maintain it* —
+applied to the one mechanism that was still asking.
+
 ### A question belongs where the person already is
 
 Everything Endora wanted an answer about lived on a screen three taps from the conversation —
