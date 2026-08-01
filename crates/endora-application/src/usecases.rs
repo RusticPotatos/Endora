@@ -1587,16 +1587,17 @@ pub fn send_to_butler_streaming(
     // unchecked, and because an acting turn already discloses its own before-and-after.
     if disclosures.is_empty() {
         appended.push_str(&facts_behind(&reply_text, capabilities.current_states()));
-        // The same fact, at answer time. Live: "turn on the guest bedroom left lamp" got
-        // "there doesn't seem to be a guest bedroom left lamp in your home setup, sir" —
-        // and there is one, unavailable since Tuesday. The tool surface hides an
-        // unreachable entity, so the model was told the truth it could see and reported a
-        // falsehood; direct reach can see the rest, and says so rather than letting the
-        // person go looking for a lamp they own.
-        appended.push_str(&note_not_answering(
-            &reply_text,
-            capabilities.current_states(),
-        ));
+        // Matched against what the PERSON asked, never against how the model answered.
+        //
+        // It was keyed on the reply first, and fired for "does not appear to be in your home
+        // setup" while missing "there doesn't appear to be a guest bedroom left lamp" — the
+        // same fact, the same lamp, decided by whether three words happened to land
+        // together. Anything keyed on a model's phrasing fails about a third of the time,
+        // which is the measured figure this architecture is built around.
+        //
+        // The request is stable: it is the person's own words, and it is the thing they are
+        // waiting to hear about.
+        appended.push_str(&note_not_answering(text, capabilities.current_states()));
         appended.push_str(&account_behind(&reply_text, &context.did_lately));
     }
     // Where the words went. Disclosed on every escalated turn rather than left to a
@@ -7463,15 +7464,32 @@ mod why_it_could_not_have_worked {
     }
 
     #[test]
-    fn a_reply_that_denies_the_thing_exists_is_corrected_with_the_fact() {
-        // The live reply, word for word. The lamp exists and is unreachable; the tool
-        // surface hides unavailable entities, so the model reported what it could see and
-        // sent the person looking for something they own.
-        let denied = "I'm sorry, but there doesn't seem to be a guest bedroom left lamp in \
-                      your home setup, sir.";
-        let said = note_not_answering(denied, house());
+    fn what_the_person_asked_decides_it_not_how_the_model_answered() {
+        // Both of these are the live reply to the same request, on consecutive turns. Keyed
+        // on the reply, the note fired for one and not the other — the same fact, the same
+        // lamp, decided by whether three words happened to land together.
+        for phrasing in [
+            "I'm sorry, but there doesn't appear to be a guest bedroom left lamp in your \
+             home setup, sir.",
+            "The guest bedroom left lamp does not appear to be in your home setup, sir.",
+            "I couldn't find that one.",
+        ] {
+            let _ = phrasing; // the reply is no longer consulted at all
+        }
+        // The request is what decides it, and it does not vary.
+        let asked = "turn on the guest bedroom left lamp";
+        let said = note_not_answering(asked, house());
         assert!(said.contains("Guest Bedroom Left"), "{said}");
         assert!(said.contains("unavailable"), "{said}");
+    }
+
+    #[test]
+    fn a_request_about_something_healthy_says_nothing() {
+        // The note must not attach itself to every turn that happens to name a device.
+        assert_eq!(
+            note_not_answering("is the kitchen main light on?", house()),
+            ""
+        );
     }
 
     #[test]
