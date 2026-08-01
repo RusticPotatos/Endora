@@ -23,6 +23,8 @@ pub mod traits;
 
 pub use autonomy::AutonomyLevel;
 pub use error::{AppError, DomainError, RepositoryError};
-pub use ids::{AuditId, BeliefId, IntentionId, MessageId, OutcomeId, PreferenceId, Timestamp};
+pub use ids::{
+    AuditId, BeliefId, IntentionId, MessageId, NotionId, OutcomeId, PreferenceId, Timestamp,
+};
 pub use reversibility::{Decision, Reversibility};
 pub use traits::{Clock, IdSource};
