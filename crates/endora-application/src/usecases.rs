@@ -2588,6 +2588,23 @@ pub fn daily_brief(
     // The facts stand on their own when the model gives nothing usable. They ARE the
     // brief; the prose is the greeting around them, and a morning with a calendar entry
     // and a broken lamp is worth saying whether or not a sentence came back.
+    // The brief is worded by the deep model when the person has opted in (ADR 0055).
+    //
+    // Measured, not assumed: given exactly these facts the local model wrote "the lights in
+    // your bedroom are off", and the deep one wrote a brief that used every one of them.
+    // Six placements had already shown the facts were reaching the local model and being
+    // ignored, so this is a model-capability difference rather than a prompt to tune.
+    //
+    // **Gathering stays local.** Only the assembled facts leave, disguised — and only
+    // those: the deep model gets a context with nothing else in it, so beliefs, aliases and
+    // the track record never travel just because prose is wanted.
+    let text = match (butler.deeper(), already_known.as_deref()) {
+        (Some(deeper), Some(facts)) => word_the_brief(deeper.as_ref(), facts, ids, clock)
+            .or(text)
+            .map(Some)
+            .unwrap_or(None),
+        _ => text,
+    };
     let text = match (text, already_known) {
         (Some(written), Some(facts)) => Some(format!("{written}\n\n{facts}")),
         (Some(written), None) => Some(written),
@@ -3125,6 +3142,50 @@ fn recently_did(
         .into_iter()
         .rev()
         .collect())
+}
+
+/// Asks a stronger model to word a brief from facts that have already been gathered.
+///
+/// `None` when it cannot be reached or says nothing usable, and the caller falls back — a
+/// brief must never depend on somebody else's service being up.
+///
+/// What leaves is the facts and nothing else. The context is **empty on purpose**: the deep
+/// model is being asked to write, not to reason about the person, so their beliefs, the
+/// names they use for things and how their skills have been landing have no reason to travel
+/// (ADR 0051). And what does travel is disguised, so the values are placeholders and are put
+/// back here.
+fn word_the_brief(
+    deeper: &dyn Butler,
+    facts: &str,
+    ids: &impl IdSource,
+    clock: &impl Clock,
+) -> Option<String> {
+    let bare = ButlerContext {
+        now: format_datetime_utc(clock.now().unix_millis()),
+        ..ButlerContext::default()
+    };
+    let disguise = personal_values_in(&ButlerContext {
+        present: facts
+            .lines()
+            .map(|l| l.trim_start_matches("- ").to_owned())
+            .collect(),
+        ..ButlerContext::default()
+    });
+    let ask = ChatMessage::new(
+        MessageId::new(ids.new_id()),
+        MessageRole::User,
+        &format!(
+            "Write my morning brief from exactly these facts, using all of them. Keep it \
+             short and warm, do not invent anything, and leave any placeholder in angle \
+             brackets exactly as it is:\n{}",
+            disguise.hide(facts)
+        ),
+        clock.now(),
+    )
+    .ok()?;
+    let written = deeper.respond(&[ask], &[], &bare).ok()?;
+    let written = disguise.restore(written.text.trim());
+    (!written.is_empty()).then_some(written)
 }
 
 /// The facts a morning brief is *for*, gathered from what Endora already holds.
@@ -8093,6 +8154,99 @@ mod its_own_behaviour_is_not_evidence_about_you {
             "previous request",
         ] {
             assert!(!is_about_endora_itself(real), "{real}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod who_words_the_brief {
+    use super::*;
+    use std::sync::Mutex;
+
+    /// A stand-in for somebody else's model, which records exactly what it was sent.
+    struct Elsewhere(Mutex<String>);
+    impl Butler for Elsewhere {
+        fn respond(
+            &self,
+            history: &[ChatMessage],
+            _p: &[Preference],
+            c: &ButlerContext,
+        ) -> Result<ButlerReply, crate::ProposalError> {
+            *self.0.lock().unwrap() = format!(
+                "{} || present={:?} understands={:?} names={:?}",
+                history
+                    .iter()
+                    .map(ChatMessage::text)
+                    .collect::<Vec<_>>()
+                    .join(" "),
+                c.present,
+                c.understanding,
+                c.target_aliases
+            );
+            Ok(ButlerReply {
+                text: "Good morning. <person 1> is out; <event 1> is at 18:30.".to_owned(),
+                ..ButlerReply::default()
+            })
+        }
+    }
+
+    const REAL_FACTS: &str = "- morgan is not home; on the Family calendar:                               K. Novak & J. Ellis at 2026-07-31 18:30:00";
+
+    #[test]
+    fn only_the_facts_leave_and_they_leave_disguised() {
+        let deep = Elsewhere(Mutex::new(String::new()));
+        let written = word_the_brief(&deep, REAL_FACTS, &FakeIds::default(), &FixedClock(0))
+            .expect("a brief");
+
+        let sent = deep.0.lock().unwrap().clone();
+        for personal in ["rustic", "K. Novak", "Ellis"] {
+            assert!(
+                !sent.contains(personal),
+                "{personal} left the house: {sent}"
+            );
+        }
+        // The context is bare on purpose: writing prose is no reason for beliefs, the
+        // names the person uses, or how skills have landed to travel.
+        assert!(sent.contains("present=[]"), "{sent}");
+        assert!(sent.contains("understands=[]"), "{sent}");
+        assert!(sent.contains("names=[]"), "{sent}");
+
+        // And what the person reads is their own words again.
+        assert!(written.contains("rustic"), "{written}");
+        assert!(written.contains("K. Novak & J. Ellis"), "{written}");
+    }
+
+    #[test]
+    fn a_deep_model_that_says_nothing_does_not_become_the_brief() {
+        // A brief must never depend on somebody else's service being up.
+        struct Mute;
+        impl Butler for Mute {
+            fn respond(
+                &self,
+                _h: &[ChatMessage],
+                _p: &[Preference],
+                _c: &ButlerContext,
+            ) -> Result<ButlerReply, crate::ProposalError> {
+                Ok(ButlerReply::default())
+            }
+        }
+        assert_eq!(
+            word_the_brief(&Mute, REAL_FACTS, &FakeIds::default(), &FixedClock(0)),
+            None
+        );
+    }
+
+    #[derive(Default)]
+    struct FakeIds(std::sync::atomic::AtomicU64);
+    impl IdSource for FakeIds {
+        fn new_id(&self) -> u128 {
+            u128::from(self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst)) + 1
+        }
+    }
+    struct FixedClock(i64);
+    impl Clock for FixedClock {
+        fn now(&self) -> endora_kernel::Timestamp {
+            endora_kernel::Timestamp::from_unix_millis(self.0)
         }
     }
 }
