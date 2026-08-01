@@ -1164,7 +1164,11 @@ function viewSkills() {
           <div class="sub">${esc(t.description || "")}</div>
           <div class="sub">${t.enabled === false
             ? "Turned off — the butler isn't offered this tool at all."
-            : t.opened ? "Allowed — asks before every use, never on its own." : "Blocked — allow it to let the butler use it (still confirms each use)."}</div>
+            : t.opened
+              ? (AUTONOMY.auto_consequential
+                  ? "Allowed — and because you let consequential skills act on their own, it runs without asking."
+                  : "Allowed — asks before every use.")
+              : "Blocked — the butler can see it but cannot use it."}</div>
         </div>
         ${t.enabled === false
           ? `<button class="ghost" data-act="skill:enable:${t.id}:1">Offer it again</button>`
@@ -1246,7 +1250,7 @@ function viewSkills() {
     </details>`;
   const mcpSection = `
     <h3>MCP servers <span class="sub" style="font-weight:400;">· connect external tools</span></h3>
-    <div class="note">Tools from an MCP server are off-limits by default: the butler can see them, but each stays blocked until you allow it — and it still confirms every use.</div>
+    <div class="note">Tools from an MCP server are off-limits by default: the butler can see them, but each stays blocked until you allow it. Whether an allowed tool then asks first depends on your autonomy setting above.</div>
     ${servers.map(mcpServerCard).join("")}
     ${mcpBrowse}
     ${mcpAddForm}`;
@@ -1757,13 +1761,15 @@ function readerRow(s) {
   const opts = ['<option value="">— nobody has said —</option>']
     .concat(tools.map((t) => `<option value="${esc(t)}"${t === s.reader_tool ? " selected" : ""}>${esc(t)}</option>`))
     .join("");
+  // Stacked, not side by side. A `<select>` sizes itself to its longest option, and
+  // `HassMediaSearchAndPlay` is long enough to squeeze the label beside it down to one word
+  // per line — which is what it did on a real screen. Label above, control below, full
+  // width: the same shape as every other field, and nothing to squeeze.
   return `
-    <div class="row" style="gap:8px;align-items:center;margin-top:6px;">
-      <div class="grow">
-        <div class="title" style="font-size:13px;">Which tool reads this server's state?</div>
-        <div class="sub">Endora uses it to check what an action actually did, instead of taking the tool's word for it.</div>
-      </div>
-      <select data-reader-for="${esc(s.name)}" onchange="setReader(this)">${opts}</select>
+    <div class="field" style="margin-top:8px;">
+      <label>Which tool reads this server's state?</label>
+      <div class="sub" style="margin:-2px 0 4px;">Endora uses it to check what an action actually did, instead of taking the tool's word for it.</div>
+      <select data-reader-for="${esc(s.name)}" onchange="setReader(this)" style="width:100%;">${opts}</select>
     </div>`;
 }
 
