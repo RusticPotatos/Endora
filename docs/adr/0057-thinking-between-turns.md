@@ -72,6 +72,46 @@ This is the mechanism `facts_behind` already uses for the same reason and with t
 result: the model proposes the wording, the record decides what survives. It is the difference
 between a system that thinks and one that free-associates about somebody.
 
+### Evidence about the person must be attributable to the person
+
+**Other people live in the house.** That single fact breaks the obvious version of this
+design, and it broke the first implementation: within an hour of deploying, the context line
+Endora was reading said
+
+```text
+rustic is not home; on the Family calendar: Yardwork in the morning - Elise and Michael
+```
+
+A notion could cite that reading three times over and mature into a belief that *the person*
+does yardwork in the mornings. The same goes for every household record — a light, a door, a
+panel disarmed at six. With more than one resident, none of it is about any particular one of
+them, and the resulting belief would be confidently wrong *and invisible*, because the card
+reads perfectly well.
+
+So the sources are ranked by what they can actually prove, and only two can carry a notion
+into belief:
+
+| source | may corroborate | may carry |
+| --- | --- | --- |
+| what the person **said** | yes | **yes** |
+| what Endora already **believes** about them | yes | **yes** |
+| an **outcome** — what Endora did | yes | no |
+| a **reading** — the house | yes | no |
+
+Outcomes are excluded for a reason this repository already learned once: **an outcome is
+Endora's own conduct**, and [0052](0052-what-it-knows-about-you.md) found a belief formed from
+exactly that at the top of the understanding screen. Letting one carry a notion is that
+feedback loop with an extra step in it.
+
+Two things follow, both accepted deliberately:
+
+- **A pattern purely in household rhythm can never mature.** Bedtimes and departures cannot
+  become beliefs while nothing records *who*. That is the honest position, not a limitation to
+  be worked around — and per-person attribution is recoverable later (an alarm panel knows
+  which user disarmed it) as a deliberate step rather than an assumption.
+- **Endora does not accumulate a model of people who are not its person.** The housemates
+  never asked to be modelled, and this rule is what stops it happening as a side effect.
+
 ### Notions die by themselves
 
 A notion that goes a horizon without new supporting evidence **expires**, exactly as a belief
@@ -165,3 +205,10 @@ into, whose evidence *is* the chain.
   that the citation count does not already say.
 - **Hiding notions entirely.** Defensible on noise grounds, rejected on memory rights: this
   system does not hold private theories about the person it serves.
+- **Treating the household as one person.** The tempting shortcut, and the reason it is
+  rejected is not tidiness: it would have Endora forming beliefs about its person out of
+  somebody else's morning, and quietly building a model of housemates who never asked for one.
+- **Attributing a household event by guessing** — inferring who from the time of day, or from
+  who was last seen on the network. A wrong guess here does not produce a wrong reading, it
+  produces a wrong *belief about somebody*, which is the most expensive kind of error this
+  system can make.
