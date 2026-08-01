@@ -809,7 +809,9 @@ function modelsSection() {
       <div class="row" style="justify-content:flex-end;"><button class="primary" data-act="modelsave">Save everyday</button></div>
     </div>
 
-    <div class="card model-card" style="margin-top:14px;">
+    <details class="adv" style="margin-top:14px;">
+      <summary>Also use a stronger model for hard questions</summary>
+    <div class="card model-card">
       <div class="model-role">Deep${dm.configured ? ` · <span class="sub" style="font-weight:400;">using <b>${esc(dm.model || "")}</b></span>` : ` <span class="sub" style="font-weight:400;">· a bigger brain for hard questions</span>`}</div>
       <div class="sub" style="margin:-4px 0 2px;">Optional, opt-in per question. It leaves your device, so it passes the same egress guard.</div>
       <div class="field"><label>Provider preset</label>
@@ -830,8 +832,10 @@ function modelsSection() {
       <div class="sub" style="margin:-6px 0 2px;">Off by default. In chat the local model is always tried first, three times, and when this steps in the reply says so. Your name, place names and appointment titles are swapped for placeholders before anything leaves and put back here — but <b>the shape of your day still goes out</b>: that you have something at 6:30, that the house is empty. Nothing else travels: no beliefs, no device names.</div>
       <div class="row" style="justify-content:flex-end;"><button class="primary" data-act="deepsave">Save deep</button></div>
     </div>
+    </details>
 
-    <h3>Auto-tune <span class="sub" style="font-weight:400;">· experimental</span></h3>
+    <details class="adv" style="margin-top:14px;">
+      <summary>Auto-tune · experimental</summary>
     <div class="note">Scores the models on your endpoint and adopts the best local one on its own. Takes a few minutes and uses the GPU — watch <a class="link" data-act="go:audit">what it has done</a> for the result.</div>
     <div class="card model-card">
       <label class="mix-toggle">
@@ -844,7 +848,8 @@ function modelsSection() {
         <button class="ghost" data-act="modeltune">Run now</button>
         <button class="primary" data-act="tunesave">Save schedule</button>
       </div>
-    </div>`;
+    </div>
+    </details>`;
 }
 
 // When Endora reaches out on its own — the daily brief, the overnight review, and
@@ -899,7 +904,6 @@ function viewSettings() {
       ${nav("go:proactive", "target", "Reaching out", "check-ins, the daily brief, the overnight loop")}
       ${nav("go:skills", "skills", "Skills", "what Endora can do, and the servers it connects to")}
       ${nav("go:understanding", "sparkle", "What Endora understands about you", "beliefs, and what it's working on")}
-      ${nav("go:learning", "target", "What Endora is learning")}
       ${nav("go:prefs", "prefs", "Things Endora remembers about you")}
       ${nav("go:audit", "audit", "What Endora has done", "what it tried, what changed, every decision")}
       ${nav("export", "export", "Export my data")}
@@ -1202,9 +1206,13 @@ function viewSkills() {
       </div>
       <div id="mcp-catalog-results"></div>
     </div>`;
+  // Folded, because most people arrive at this screen to see what Endora can do — not to
+  // hand-configure a server. Browsing the catalogue above fills this in for you, so typing
+  // it out is the fallback rather than the front door.
   const mcpAddForm = `
+    <details class="adv">
+      <summary>Add a server by hand</summary>
     <div class="card">
-      <div class="title">Add a server</div>
       <div class="sub" style="margin:4px 0 8px;">A local command (stdio) or a networked endpoint (e.g. a Docker MCP Gateway). Its tools appear above, blocked until you allow each one.</div>
       <div class="field"><label>Name</label><input id="mcp-name" placeholder="e.g. filesystem" /></div>
       <div class="field"><label>Connection</label>
@@ -1230,11 +1238,12 @@ function viewSkills() {
           <input id="mcp-auth" type="password" autocomplete="off" placeholder="stored securely, never shown" /></div>
       </div>
       <label class="row" style="gap:8px;align-items:center;margin-top:4px;">
-        <input type="checkbox" id="mcp-trust" checked />
-        <span class="sub">Allow all its tools automatically — the butler still asks before each use.</span>
+        <input type="checkbox" id="mcp-trust" />
+        <span class="sub">Allow all its tools at once. Off by default — each tool stays blocked until you allow it, and if you have widened autonomy an allowed tool can act without asking.</span>
       </label>
       <div class="row" style="justify-content:flex-end;"><button class="primary" data-act="mcp:add">Save server</button></div>
-    </div>`;
+    </div>
+    </details>`;
   const mcpSection = `
     <h3>MCP servers <span class="sub" style="font-weight:400;">· connect external tools</span></h3>
     <div class="note">Tools from an MCP server are off-limits by default: the butler can see them, but each stays blocked until you allow it — and it still confirms every use.</div>
@@ -1261,28 +1270,6 @@ const BELIEF_KIND_LABEL = {
   stressor: "Stressors", relationship: "People who matter", other: "Other",
 };
 const BELIEF_KIND_ORDER = ["intent","value","motivation","pattern","preference","frustration","stressor","relationship","other"];
-// What Endora has been doing and learning, made visible: its own action log plus
-// how much it now understands. Read-only on purpose — this is the butler's work,
-// not a to-do list you manage.
-function viewLearning() {
-  const beliefs = (UNDERSTANDING || []).length;
-  const recent = (UNDERSTANDING || [])
-    .slice()
-    .sort((a, b) => (b.last_affirmed_ms || 0) - (a.last_affirmed_ms || 0))
-    .slice(0, 8)
-    .map((b) => `
-      <div class="card"><div class="title">${esc(b.statement)}</div>
-        ${b.evidence ? `<div class="sub">because ${esc(b.evidence)}</div>` : ""}</div>`);
-  return `
-    ${crumbs([{ label: "Home", act: "go:chat" }, { label: "Learning" }])}
-    <h2>What Endora is learning</h2>
-    <div class="note">It pays attention as you talk, and looks into things on its own, to grow more useful over time.</div>
-    <h3>Most recently</h3>
-    ${listOr(recent, "Nothing yet — talk with Endora and it will start to notice things.")}
-    <h3 style="margin-top:22px;">What it's been doing</h3>
-    ${activityFeed()}
-    <div class="note" style="margin-top:18px;">It holds <a class="link" data-act="go:understanding">${beliefs} belief${beliefs === 1 ? "" : "s"} about you</a> — review or correct them any time.</div>`;
-}
 
 function viewUnderstanding() {
   const byKind = {};
@@ -2066,7 +2053,6 @@ function render() {
     : v === "display" ? viewDisplay()
     : v === "models" ? viewModels()
     : v === "proactive" ? viewProactive()
-    : v === "learning" ? viewLearning()
     : v === "understanding" ? viewUnderstanding()
     : viewUnderstanding();
   // On the chat, jump to the newest message (kept clear of the sticky composer).

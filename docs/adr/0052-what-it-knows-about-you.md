@@ -166,6 +166,21 @@ thing on one screen:
   because disagreement is checked first: subject decides whether two statements concern the
   same thing, disagreement decides whether they say opposite things about it.
 
+### Most of a settings screen is for somebody who is not here
+
+The models screen showed **ten fields before you opened anything** — a provider, an endpoint,
+a key and a model for the everyday brain, and the same four again for a deep one that most
+people never configure, plus an experimental auto-tune schedule. All present, all equal, all
+demanding to be read.
+
+Folding what most people never touch took it to **three**. Nothing was removed: a
+`<details>` costs nothing until it is wanted, which is the difference between hiding something
+and not shouting it.
+
+This is enforced rather than intended, by the same instrument as the section budget and for
+the same reason — the person who let a screen grow to ten fields was the one who would have
+been reviewing it.
+
 ### Understanding is a model of you, not a filing cabinet
 
 The screen named *"What Endora understands"* had grown to hold how its actions had landed,
