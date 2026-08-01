@@ -184,6 +184,20 @@ CREATE TABLE IF NOT EXISTS standing_trouble (
     accepted INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (server, thing, trouble)
 ) STRICT;
+CREATE TABLE IF NOT EXISTS watched_things (
+    key                TEXT PRIMARY KEY,
+    settled            TEXT NOT NULL,
+    candidate          TEXT NOT NULL,
+    candidate_since_ms INTEGER NOT NULL
+) STRICT;
+CREATE TABLE IF NOT EXISTS transitions (
+    key      TEXT NOT NULL,
+    was      TEXT NOT NULL,
+    became   TEXT NOT NULL,
+    at_ms    INTEGER NOT NULL,
+    PRIMARY KEY (key, at_ms)
+) STRICT;
+CREATE INDEX IF NOT EXISTS idx_transitions_at ON transitions(at_ms);
 CREATE TABLE IF NOT EXISTS notions (
     id                TEXT PRIMARY KEY,
     statement         TEXT NOT NULL,
@@ -1077,6 +1091,56 @@ mod the_schema_production_actually_runs {
         config
             .clear_trouble("house", "Living Room Lamp")
             .expect("clear");
+    }
+
+    #[test]
+    fn the_transition_log_works_on_the_schema_production_runs() {
+        // Two more tables that exist in `endora_capabilities::migrate` — the shortcut that has
+        // now twice shipped a green suite and an "internal error" in the person's house. The
+        // watch loop writes to these every two minutes, so a divergence here would be silent
+        // until somebody read the log and found it empty (ADR 0058).
+        use endora_capabilities::{Transition, TransitionLog, Watched};
+
+        let store = SqliteStore::open_in_memory().expect("open the production store");
+        let config = ConfigStore::new(store.db());
+
+        TransitionLog::remember(
+            &config,
+            &Watched {
+                key: "house::person.john".to_owned(),
+                settled: "home".to_owned(),
+                candidate: "home".to_owned(),
+                candidate_since_ms: 1_000,
+            },
+        )
+        .expect("watched_things");
+        assert_eq!(
+            TransitionLog::watching(&config).expect("read back").len(),
+            1
+        );
+
+        TransitionLog::record(
+            &config,
+            &Transition {
+                key: "house::person.john".to_owned(),
+                from: "home".to_owned(),
+                to: "not_home".to_owned(),
+                at_ms: 2_000,
+            },
+        )
+        .expect("transitions");
+        assert_eq!(
+            TransitionLog::since(&config, 0).expect("read back").len(),
+            1
+        );
+
+        TransitionLog::forget_before(&config, 10_000).expect("prune");
+        assert!(
+            TransitionLog::since(&config, 0)
+                .expect("read back")
+                .is_empty(),
+            "the log forgets on its own"
+        );
     }
 
     #[test]

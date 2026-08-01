@@ -2,6 +2,8 @@
 
 use endora_kernel::{Decision, RepositoryError, Reversibility};
 
+use crate::domain::{Change, Transition, Watched, note_reading};
+
 pub use crate::domain::{
     AutonomyEnvelope, ConfigWrite, McpServer, McpTransport, StandingTrouble, TargetAlias,
     WORTH_SAYING_AFTER_DAYS, WriteKind, not_answering, worth_raising,
@@ -523,6 +525,100 @@ pub trait CapabilityRunner {
 /// Deliberately takes the reading rather than fetching it: the caller already has one, and
 /// this way the whole rule is testable without a service.
 ///
+/// How long the transition log keeps what it saw.
+///
+/// A fortnight, matching how long a notion may go unsupported (ADR 0057): the window a thought
+/// can be built from and the window it can die in are the same span, so a notion is never
+/// starved by a log that could not remember far enough back.
+pub const KEEP_TRANSITIONS_FOR_MS: i64 = 14 * 24 * 60 * 60 * 1_000;
+
+/// Where the transition log lives (ADR 0058).
+pub trait TransitionLog {
+    /// What Endora is currently watching, and what each thing last settled on.
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if the backend fails.
+    fn watching(&self) -> Result<Vec<Watched>, RepositoryError>;
+
+    /// Stores what is known about one thing, replacing any earlier row for it.
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if the backend fails.
+    fn remember(&self, watched: &Watched) -> Result<(), RepositoryError>;
+
+    /// Writes down a change that really happened.
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if the backend fails.
+    fn record(&self, transition: &Transition) -> Result<(), RepositoryError>;
+
+    /// Every change recorded at or after a moment, most recent first.
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if the backend fails.
+    fn since(&self, ms: i64) -> Result<Vec<Transition>, RepositoryError>;
+
+    /// Drops everything older than a moment.
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if the backend fails.
+    fn forget_before(&self, ms: i64) -> Result<(), RepositoryError>;
+}
+
+/// Notes one pass over a server's readings, returning the changes that really happened.
+///
+/// The counterpart to [`watch_for_trouble`], and the reason the watch loop is worth more than
+/// it was: that one only ever asks *"is this thing answering?"*, so a house could change all
+/// day and Endora would carry nothing out of it. This asks *"did something move?"* and keeps
+/// the answer.
+///
+/// A change is only written down once it has held for [`crate::domain::DWELL_MS`] — see
+/// [`note_reading`](crate::domain::note_reading), where all of that judgement lives
+/// and is tested.
+///
+/// **Prunes on every pass**, so the retention window is a guarantee rather than a hope and
+/// nothing accumulates for anybody to clear.
+///
+/// # Errors
+/// [`RepositoryError`] if the backend fails.
+pub fn watch_for_change(
+    log: &impl TransitionLog,
+    server: &str,
+    reading: &[(String, String)],
+    now_ms: i64,
+) -> Result<Vec<Transition>, RepositoryError> {
+    let watching = log.watching()?;
+    let mut moved = Vec::new();
+    for (thing, state) in reading {
+        // Namespaced, because a network controller and a home hub may both call something
+        // "phone" and they are not the same thing.
+        let key = format!("{server}::{thing}");
+        let prior = watching.iter().find(|w| w.key == key);
+        match note_reading(prior, &key, state, now_ms) {
+            Change::Nothing => {}
+            Change::Noted(now) => log.remember(&now)?,
+            Change::Moved {
+                from,
+                to,
+                at_ms,
+                now,
+            } => {
+                log.remember(&now)?;
+                let transition = Transition {
+                    key,
+                    from,
+                    to,
+                    at_ms,
+                };
+                log.record(&transition)?;
+                moved.push(transition);
+            }
+        }
+    }
+    log.forget_before(now_ms - KEEP_TRANSITIONS_FOR_MS)?;
+    Ok(moved)
+}
+
 /// # Errors
 /// [`RepositoryError`] if the backend fails.
 pub fn watch_for_trouble(
@@ -545,4 +641,165 @@ pub fn watch_for_trouble(
         repo.clear_trouble(server, thing)?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod keeping_a_record_of_what_moved {
+    //! `watch_for_change` (ADR 0058). Its sibling `watch_for_trouble` has no tests; this one
+    //! does, because a transition log that lies quietly is worse than no log — everything
+    //! downstream inherits the noise.
+
+    use super::{TransitionLog, watch_for_change};
+    use crate::domain::{DWELL_MS, Transition, Watched};
+    use endora_kernel::RepositoryError;
+    use std::cell::RefCell;
+
+    #[derive(Default)]
+    struct FakeLog {
+        watching: RefCell<Vec<Watched>>,
+        moved: RefCell<Vec<Transition>>,
+        pruned_before: RefCell<Option<i64>>,
+    }
+
+    impl TransitionLog for FakeLog {
+        fn watching(&self) -> Result<Vec<Watched>, RepositoryError> {
+            Ok(self.watching.borrow().clone())
+        }
+        fn remember(&self, w: &Watched) -> Result<(), RepositoryError> {
+            let mut all = self.watching.borrow_mut();
+            match all.iter_mut().find(|x| x.key == w.key) {
+                Some(existing) => *existing = w.clone(),
+                None => all.push(w.clone()),
+            }
+            Ok(())
+        }
+        fn record(&self, t: &Transition) -> Result<(), RepositoryError> {
+            self.moved.borrow_mut().push(t.clone());
+            Ok(())
+        }
+        fn since(&self, ms: i64) -> Result<Vec<Transition>, RepositoryError> {
+            Ok(self
+                .moved
+                .borrow()
+                .iter()
+                .filter(|t| t.at_ms >= ms)
+                .cloned()
+                .collect())
+        }
+        fn forget_before(&self, ms: i64) -> Result<(), RepositoryError> {
+            *self.pruned_before.borrow_mut() = Some(ms);
+            self.moved.borrow_mut().retain(|t| t.at_ms >= ms);
+            Ok(())
+        }
+    }
+
+    fn reading(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
+        pairs
+            .iter()
+            .map(|(a, b)| ((*a).to_owned(), (*b).to_owned()))
+            .collect()
+    }
+
+    #[test]
+    fn the_first_look_at_a_house_records_nothing_but_remembers_everything() {
+        // Otherwise Endora's first tick writes a transition for every entity in the house,
+        // and not one of them happened.
+        let log = FakeLog::default();
+        let moved = watch_for_change(
+            &log,
+            "house",
+            &reading(&[("light.kitchen", "on"), ("person.john", "home")]),
+            1_000,
+        )
+        .unwrap();
+        assert!(moved.is_empty());
+        assert_eq!(log.watching.borrow().len(), 2);
+    }
+
+    #[test]
+    fn a_change_that_holds_is_recorded_once_and_not_again() {
+        let log = FakeLog::default();
+        watch_for_change(&log, "house", &reading(&[("person.john", "home")]), 0).unwrap();
+        // It changes, but has not held yet.
+        let moved = watch_for_change(
+            &log,
+            "house",
+            &reading(&[("person.john", "not_home")]),
+            1_000,
+        )
+        .unwrap();
+        assert!(moved.is_empty(), "not yet settled");
+
+        // It holds.
+        let moved = watch_for_change(
+            &log,
+            "house",
+            &reading(&[("person.john", "not_home")]),
+            1_000 + DWELL_MS,
+        )
+        .unwrap();
+        assert_eq!(moved.len(), 1);
+        assert_eq!(moved[0].from, "home");
+        assert_eq!(moved[0].to, "not_home");
+        assert_eq!(moved[0].at_ms, 1_000, "when it happened");
+
+        // A later pass with the same reading must not record it a second time.
+        let moved = watch_for_change(
+            &log,
+            "house",
+            &reading(&[("person.john", "not_home")]),
+            9_000_000,
+        )
+        .unwrap();
+        assert!(moved.is_empty());
+        assert_eq!(log.moved.borrow().len(), 1);
+    }
+
+    #[test]
+    fn a_phone_that_flaps_produces_no_record_at_all() {
+        // The reason the dwell exists. Wi-Fi drops the device and picks it straight back up.
+        let log = FakeLog::default();
+        watch_for_change(&log, "house", &reading(&[("device.phone", "home")]), 0).unwrap();
+        for (state, at) in [("not_home", 1_000), ("home", 60_000), ("not_home", 61_000)] {
+            watch_for_change(&log, "house", &reading(&[("device.phone", state)]), at).unwrap();
+        }
+        assert!(
+            log.moved.borrow().is_empty(),
+            "nothing held long enough to have happened"
+        );
+    }
+
+    #[test]
+    fn two_servers_cannot_collide_on_a_name() {
+        // Both a network controller and a home hub may call something "phone".
+        let log = FakeLog::default();
+        watch_for_change(&log, "house", &reading(&[("phone", "home")]), 0).unwrap();
+        watch_for_change(&log, "network", &reading(&[("phone", "away")]), 0).unwrap();
+        let keys: Vec<String> = log
+            .watching
+            .borrow()
+            .iter()
+            .map(|w| w.key.clone())
+            .collect();
+        assert!(keys.contains(&"house::phone".to_owned()));
+        assert!(keys.contains(&"network::phone".to_owned()));
+    }
+
+    #[test]
+    fn the_log_forgets_on_its_own() {
+        // Bounded by the retention window rather than by uptime, the same argument that made
+        // standing trouble safe to store. Nothing here needs anybody to clear it.
+        let log = FakeLog::default();
+        watch_for_change(
+            &log,
+            "house",
+            &reading(&[("light.kitchen", "on")]),
+            5_000_000,
+        )
+        .unwrap();
+        assert_eq!(
+            *log.pruned_before.borrow(),
+            Some(5_000_000 - super::KEEP_TRANSITIONS_FOR_MS)
+        );
+    }
 }

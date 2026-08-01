@@ -12,6 +12,7 @@ use crate::application::{
     ModelTuneScheduleRepository, Sampling, StandingTrouble, StandingTroubleRepository, TargetAlias,
     TargetAliasRepository,
 };
+use crate::domain::{Transition, Watched};
 
 /// Creates the capabilities config tables if absent (idempotent).
 ///
@@ -113,7 +114,21 @@ pub fn migrate(db: &Db) -> Result<(), RepositoryError> {
                 auth    TEXT NOT NULL DEFAULT '',
                 trust_all INTEGER NOT NULL DEFAULT 0,
                 reader_tool TEXT NOT NULL DEFAULT ''
-            ) STRICT;",
+            ) STRICT;
+            CREATE TABLE IF NOT EXISTS watched_things (
+                key                TEXT PRIMARY KEY,
+                settled            TEXT NOT NULL,
+                candidate          TEXT NOT NULL,
+                candidate_since_ms INTEGER NOT NULL
+            ) STRICT;
+            CREATE TABLE IF NOT EXISTS transitions (
+                key      TEXT NOT NULL,
+                was      TEXT NOT NULL,
+                became   TEXT NOT NULL,
+                at_ms    INTEGER NOT NULL,
+                PRIMARY KEY (key, at_ms)
+            ) STRICT;
+            CREATE INDEX IF NOT EXISTS idx_transitions_at ON transitions(at_ms);",
         )
         .map_err(backend)?;
     // Additive migrations for databases created before these columns existed —
@@ -597,6 +612,94 @@ impl TargetAliasRepository for ConfigStore {
                 "DELETE FROM target_aliases WHERE server = ?1 AND said = ?2",
                 params![server, said],
             )
+            .map_err(backend)?;
+        Ok(())
+    }
+}
+
+impl crate::application::TransitionLog for ConfigStore {
+    fn watching(&self) -> Result<Vec<Watched>, RepositoryError> {
+        let conn = self.db.lock()?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT key, settled, candidate, candidate_since_ms FROM watched_things \
+                 ORDER BY key",
+            )
+            .map_err(backend)?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok(Watched {
+                    key: r.get(0)?,
+                    settled: r.get(1)?,
+                    candidate: r.get(2)?,
+                    candidate_since_ms: r.get(3)?,
+                })
+            })
+            .map_err(backend)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(backend)
+    }
+
+    fn remember(&self, watched: &Watched) -> Result<(), RepositoryError> {
+        self.db
+            .lock()?
+            .execute(
+                "INSERT OR REPLACE INTO watched_things \
+                 (key, settled, candidate, candidate_since_ms) VALUES (?1, ?2, ?3, ?4)",
+                params![
+                    watched.key,
+                    watched.settled,
+                    watched.candidate,
+                    watched.candidate_since_ms
+                ],
+            )
+            .map_err(backend)?;
+        Ok(())
+    }
+
+    fn record(&self, transition: &Transition) -> Result<(), RepositoryError> {
+        // `DO NOTHING` on conflict: the same thing cannot change twice in the same
+        // millisecond, so a duplicate is a re-run rather than a second event.
+        self.db
+            .lock()?
+            .execute(
+                "INSERT INTO transitions (key, was, became, at_ms) VALUES (?1, ?2, ?3, ?4) \
+                 ON CONFLICT(key, at_ms) DO NOTHING",
+                params![
+                    transition.key,
+                    transition.from,
+                    transition.to,
+                    transition.at_ms
+                ],
+            )
+            .map_err(backend)?;
+        Ok(())
+    }
+
+    fn since(&self, ms: i64) -> Result<Vec<Transition>, RepositoryError> {
+        let conn = self.db.lock()?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT key, was, became, at_ms FROM transitions WHERE at_ms >= ?1 \
+                 ORDER BY at_ms DESC",
+            )
+            .map_err(backend)?;
+        let rows = stmt
+            .query_map(params![ms], |r| {
+                Ok(Transition {
+                    key: r.get(0)?,
+                    from: r.get(1)?,
+                    to: r.get(2)?,
+                    at_ms: r.get(3)?,
+                })
+            })
+            .map_err(backend)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(backend)
+    }
+
+    fn forget_before(&self, ms: i64) -> Result<(), RepositoryError> {
+        self.db
+            .lock()?
+            .execute("DELETE FROM transitions WHERE at_ms < ?1", params![ms])
             .map_err(backend)?;
         Ok(())
     }
