@@ -239,6 +239,20 @@ instance is the speculative abstraction this project refuses, and its shape woul
 from one example. The distinction is recorded now because it changes how the next thing is
 built; the machinery waits for a second skill to argue for it.
 
+### Auto-allow has to be reversible
+
+Turning auto-allow **on** writes a per-tool `opened` flag for every tool a server exposes.
+Nothing reversed them, so turning it **off** left them all open — twenty of them on one
+server, including a tool that plays audio through the house. The setting was a one-way door,
+and the way back out was twenty-one separate actions.
+
+Turning it off now closes every tool on that server. **Every** one, not only those auto-allow
+opened, because nothing records which was which — and that is the safe direction: the person
+reopens what they want, where the alternative leaves something open that they believe they
+have just closed.
+
+The general rule: a switch that writes state elsewhere must unwrite it, or it is not a switch.
+
 ### Connecting a new kind of thing is the service's form, rendered
 
 The most useful thing Endora could gain is not another integration written here — it is a

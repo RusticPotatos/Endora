@@ -1184,7 +1184,7 @@ function viewSkills() {
             <button class="ghost danger" data-act="mcp:remove:${esc(s.name)}">Remove</button>
           </div>
         </div>
-        ${toggle(s.trust_all, `mcp:trust:${esc(s.name)}`, "Allow all its tools", "Auto-enables every tool this server exposes, so you don't allow them one by one. The butler still asks before each use.")}
+        ${toggle(s.trust_all, `mcp:trust:${esc(s.name)}`, "Allow all its tools", "Opens every tool this server exposes, so you don't allow them one by one — and if you have widened autonomy, an opened tool can act without asking. Turning this off closes them all again; reopen the ones you want.")}
         ${readerRow(s)}
         ${(s.tools || []).length
           ? `<details class="steps" style="margin-top:6px;"><summary>${(s.tools || []).length} tool${(s.tools || []).length === 1 ? "" : "s"}</summary>
