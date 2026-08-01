@@ -7,7 +7,7 @@ and numbered in sequence.
 
 ## What they add up to
 
-Seven accepted records, one proposed, forty-eight archived, and a handful of ideas underneath
+Seven accepted records, two proposed, forty-eight archived, and a handful of ideas underneath
 all of them. Read this before reading
 any individual record; each line is a rule the code actually follows, with the decision
 that established it.
@@ -44,6 +44,10 @@ that established it.
   hardcodes and a leak into the protocol adapter came from fixing one integration at a time.
   Genuine quirks are allowed — behind that integration's own named boundary, never in shared
   code.
+- **MCP unless Endora needs a relationship** ([0058](0058-how-an-integration-gets-in.md),
+  proposed). A tool protocol expresses "call this"; it cannot express watching a service,
+  supplying context, a setup flow, reversibility, or undo. Answers → MCP; relationship →
+  native; both → both, as Home Assistant does.
 - **Ranked trust: confirmed > observed > declared** ([0038](0054-other-peoples-services.md)).
   What the person said beats what Endora saw, which beats what the server claims about
   itself. A server announcing "I only read" is not evidence of anything.
@@ -123,6 +127,7 @@ of an existing record and take the next number.
 | [0055](0055-the-model-layer.md) | The model layer | 0008, 0027, 0030 |
 | [0056](0056-how-it-behaves-toward-you.md) | How it behaves toward you | 0017, 0019, 0025, 0031 |
 | [0057](0057-thinking-between-turns.md) | Thinking between turns | — (proposed) |
+| [0058](0058-how-an-integration-gets-in.md) | How an integration gets in | — (proposed) |
 
 The forty-eight decisions these consolidate are in [archive/](archive/) — kept in full,
 because the reasoning that produced a rule is the reason it survives an argument later.

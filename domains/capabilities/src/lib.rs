@@ -36,8 +36,9 @@ pub use home_assistant::{HomeAssistant, paired_server};
 pub use infrastructure::{
     AliasRunner, Capability, CapabilityError, CapabilityInfo, CapabilitySettings, CompositeRunner,
     McpClient, McpRunner, McpToolInfo, NativeChannel, OpenerRunner, RegistryRunner,
-    ReversibleOnlyRunner, SettingSpec, TargetSearchRunner, WithdrawnRunner, default_capabilities,
-    redact_pii_in_value, same_call_as, scan_outbound_secret, settings_complete,
+    ReversibleOnlyRunner, SettingSpec, TargetSearchRunner, WithdrawnRunner, channels_of,
+    default_capabilities, redact_pii_in_value, same_call_as, scan_outbound_secret,
+    settings_complete,
 };
 pub use mcp_http::HttpMcpClient;
 pub use mcp_stdio::StdioMcpClient;
