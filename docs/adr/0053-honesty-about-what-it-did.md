@@ -240,6 +240,16 @@ quiet an hour ago is exactly as unreachable as one that went quiet on Tuesday, a
 three-day threshold that decides what is worth *raising* has no business deciding what is
 worth *explaining*.
 
+**And at answer time, not only after an action.** The next live attempt never acted at all:
+the model read the house, did not find the lamp, and answered *"there doesn't seem to be a
+guest bedroom left lamp in your home setup, sir."* There is one. The tool surface hides an
+unreachable entity, so the model reported the truth it could see and sent the person looking
+for something they own — while direct reach, which sees everything, sat unconsulted.
+
+So a reply that names something unreachable carries the fact too. That is the claim-versus-record
+disclosure this document is built on, pointed at a claim about *existence* rather than about
+effect.
+
 Names match longest-first, for the same reason the facts disclosure does it: a call aimed at
 `Kitchen Main Light` must not be excused by something called `Kitchen`. And a target that *is*
 answering gets no excuse made for it — blaming a working device would be Endora inventing a
