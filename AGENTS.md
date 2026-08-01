@@ -52,6 +52,20 @@ edit this file, never a copy. For the full picture, read [README.md](README.md),
 - **No new dependency without justification** (especially in the domain).
 - Use **Conventional Commits** (`feat:`, `fix:`, `test:`, `refactor:`, `docs:`,
   `chore:`). Prefer a few coherent commits over many tiny ones.
+- **Edit files with tools that fail loudly.** Scripted string replacement (a `sed`
+  or Python one-liner over a source file) does *nothing* when its anchor does not
+  match, and reports success. Every instance from one session: a function inserted
+  into the wrong file; doc comments displaced onto the wrong items three times; a
+  Rust line-continuation mangled into a literal `\n`; and a second replacement
+  deleting the function the first had just added — which shipped a blank console
+  to a phone. Prefer an edit that refuses when the anchor is missing or ambiguous.
+  Where only a script is available, assert the anchor exists **and** re-read the
+  result before moving on.
+- **Think the design through before running it.** A checker that reported
+  all-clear on a broken file, and a duplicate-detector compared on exact strings
+  against model output, both cost far more to discover than they would have to
+  reason about. When something is going to be verified live, spend the minute
+  first.
 
 ## Before handoff
 
