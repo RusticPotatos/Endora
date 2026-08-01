@@ -246,9 +246,18 @@ guest bedroom left lamp in your home setup, sir."* There is one. The tool surfac
 unreachable entity, so the model reported the truth it could see and sent the person looking
 for something they own — while direct reach, which sees everything, sat unconsulted.
 
-So a reply that names something unreachable carries the fact too. That is the claim-versus-record
-disclosure this document is built on, pointed at a claim about *existence* rather than about
-effect.
+So a turn that asks about something unreachable carries the fact too. That is the
+claim-versus-record disclosure this document is built on, pointed at a claim about *existence*
+rather than about effect.
+
+**Matched against what the person asked, never against how the model answered.** It was keyed
+on the reply first, and fired for *"does not appear to be in your home setup"* while missing
+*"there doesn't appear to be a guest bedroom left lamp"* — the same fact, the same lamp, on
+consecutive turns, decided by whether three words happened to land together.
+
+That is the whole argument in miniature. A disclosure exists because the model's words cannot
+be relied on; keying it to those words hands back the reliability it was built to replace. The
+request does not vary, and it is the thing the person is waiting to hear about.
 
 Names match longest-first, for the same reason the facts disclosure does it: a call aimed at
 `Kitchen Main Light` must not be excused by something called `Kitchen`. And a target that *is*
