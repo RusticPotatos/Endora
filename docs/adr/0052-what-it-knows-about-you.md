@@ -166,6 +166,19 @@ thing on one screen:
   because disagreement is checked first: subject decides whether two statements concern the
   same thing, disagreement decides whether they say opposite things about it.
 
+### Understanding is a model of you, not a filing cabinet
+
+The screen named *"What Endora understands"* had grown to hold how its actions had landed,
+what it had changed inside somebody else's service, and what each tool claimed against what
+was observed — beside beliefs about the person, which they have nothing to do with.
+
+**Understanding is a model of the person. The rest is a receipt.** They belong on separate
+screens because they answer different questions, and a person looking for one is never looking
+for the other.
+
+So the receipts moved to one place, and understanding kept only what it is for: beliefs, and
+the single intention. One section, from six.
+
 ### A question belongs where the person already is
 
 Everything Endora wanted an answer about lived on a screen three taps from the conversation —
