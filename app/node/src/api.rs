@@ -860,6 +860,10 @@ pub fn app(state: AppState) -> Router {
         .route("/v1/capabilities/{id}/enable", post(set_capability_enabled))
         .route("/v1/capabilities/{id}/open", post(set_capability_open))
         .route(
+            "/v1/mcp/servers/{name}/tools/open",
+            post(set_every_tool_open),
+        )
+        .route(
             "/v1/capabilities/{id}/confirm",
             post(set_capability_confirm),
         )
@@ -2943,6 +2947,63 @@ struct OpenRequest {
 /// 0024). Opening only ever moves the un-undoable from *blocked* to
 /// *confirm-each-use* — the butler still never runs it on its own. Validated
 /// against the registry; nudges the change stream so open consoles refresh.
+/// Opens or blocks **every tool a server exposes right now**, in one act.
+///
+/// Not the same thing as auto-allow, and the difference is the whole reason this exists
+/// separately. Auto-allow is a **standing policy**: it opens whatever the server exposes,
+/// including tools it gains later, every time it connects — which is how a tool that plays
+/// audio through the house ended up open without anyone choosing it. This is a **deliberate
+/// act on the tools that exist now**, and it grants nothing in future.
+///
+/// Twenty tools is not a thing to tap twenty times, and the answer to that is a bulk action,
+/// not a default that decides for people (ADR 0054).
+async fn set_every_tool_open(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+    Json(req): Json<OpenRequest>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    use endora_capabilities::CapabilityRunner;
+    let prefix = format!("{name}.");
+    let ids: Vec<String> = mcp_snapshot(&state)
+        .available()
+        .into_iter()
+        .map(|s| s.id)
+        .filter(|id| id.starts_with(&prefix))
+        .collect();
+    if ids.is_empty() {
+        return Err(ApiError(AppError::NotFound {
+            entity: "MCP server",
+        }));
+    }
+    let events = state.events.clone();
+    let config = state.config.clone();
+    let clock = state.clock.clone();
+    let open = req.open;
+    let changed = blocking(move || {
+        let mut changed = 0;
+        for id in &ids {
+            config
+                .set_open_irreversible(id, open)
+                .map_err(AppError::Repository)?;
+            changed += 1;
+        }
+        record_event(
+            events.as_ref(),
+            clock.as_ref(),
+            &format!(
+                "{} all {changed} tools on {name}",
+                if open { "Allowed" } else { "Blocked" }
+            ),
+        );
+        Ok::<_, AppError>(changed)
+    })
+    .await?;
+    let _ = state.changes.send(());
+    Ok(Json(
+        json!({ "ok": true, "changed": changed, "open": open }),
+    ))
+}
+
 async fn set_capability_open(
     State(state): State<AppState>,
     Path(id): Path<String>,
