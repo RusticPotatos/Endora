@@ -19,8 +19,8 @@ pub struct DeepModel {
     pub model: String,
     /// API key sent as a bearer token (empty for keyless/local endpoints).
     pub api_key: String,
-    /// Whether Endora may fall back to this model **on its own** when the local one fails
-    /// a deterministic check (ADR 0055).
+    /// Whether Endora may reach this model **on its own** — falling back when the local one
+    /// fails a deterministic check, and wording the daily brief (ADR 0055).
     ///
     /// **Off by default, and it stays a decision rather than an optimisation.** The deep
     /// model is usually somebody else's API, and until now it was reached only when the
