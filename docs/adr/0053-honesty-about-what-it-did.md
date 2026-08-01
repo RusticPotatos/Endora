@@ -281,9 +281,24 @@ which is the model's job and the thing that cannot be relied on. Showing the fac
 no understanding at all, and it is the same move the action trail makes — put the truth
 next to the claim and let the person see whether they agree.
 
-Deliberately narrow. Only names the reply actually used, longest first so a reply about
-`Kitchen Main Light` does not also report `Kitchen`, capped at a handful, and **only on
-turns that acted on nothing** — an acting turn already discloses its own before-and-after,
+**Two ways a name gets in, gated differently on purpose.**
+
+*The person named it* — no gate. They asked about that thing, so its state is the answer they
+are waiting for, whatever the reply managed to say. Live: asked *"is the kitchen main light
+on?"*, the butler answered that it *"does not appear to be in your home setup"* while the light
+was on, and nothing contradicted it — because the reply contained no state word to trip the
+gate below.
+
+*The model mentioned it* — gated on the reply asserting a state, because prose wanders. That
+gate is what stops `[state] Home is 0` appearing under a greeting, and it is still doing that
+job: a request naming nothing brings nothing in.
+
+The asymmetry is the point. A request is short, deliberate and does not vary; a reply is
+neither. Gating both the same way meant either losing the answers people actually asked for or
+attaching facts to small talk.
+
+Deliberately narrow otherwise. Longest first so a turn about `Kitchen Main Light` does not also
+report `Kitchen`, capped at a handful, and **only on turns that acted on nothing** — an acting turn already discloses its own before-and-after,
 and answers are where a claim about state went unchecked.
 
 A half-mentioned name is not a match: "garage" is not `Garage Main`, and guessing at the

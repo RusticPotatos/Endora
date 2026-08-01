@@ -1182,10 +1182,11 @@ fn acted_note(disclosures: &[ActionDisclosure]) -> Option<String> {
 ///
 /// Only names the reply actually mentions, longest first so `Kitchen Main Light` is
 /// matched before `Kitchen`, and capped — a wall of state is its own kind of noise.
-fn facts_behind(text: &str, mut states: Vec<(String, String)>) -> String {
+fn facts_behind(asked: &str, reply: &str, mut states: Vec<(String, String)>) -> String {
     const SHOWN: usize = 5;
     const WORTH_MATCHING: usize = 4;
-    let words = words_of(text);
+    let in_request = words_of(asked);
+    let in_reply = words_of(reply);
     // A reply that asserts nothing about state needs no facts about state. Live, under a
     // greeting — "How can I assist you with your home automation setup?" — this appended
     // `[state] Home is 0`, because the house contains something called `Home` and the word
@@ -1196,12 +1197,9 @@ fn facts_behind(text: &str, mut states: Vec<(String, String)>) -> String {
     // words a reply asserting state would use. A service that reports `open`/`closed` is
     // handled by the same code as one reporting `on`/`off`, and one whose vocabulary
     // Endora has never seen contributes nothing — the same rule as ADR 0054's categories.
-    let asserts_a_state = states
+    let reply_asserts_a_state = states
         .iter()
-        .any(|(_, state)| contains_all_words(&words, &words_of(state)));
-    if !asserts_a_state {
-        return String::new();
-    }
+        .any(|(_, state)| contains_all_words(&in_reply, &words_of(state)));
     states.sort_by_key(|(name, _)| std::cmp::Reverse(name.len()));
     let mut said: Vec<String> = Vec::new();
     let mut covered: Vec<String> = Vec::new();
@@ -1209,14 +1207,26 @@ fn facts_behind(text: &str, mut states: Vec<(String, String)>) -> String {
         if name.len() < WORTH_MATCHING || said.len() >= SHOWN {
             continue;
         }
-        let name_words = words_of(&name);
         // Whole words, not a substring: `Home` must not match "homework", and `Den` must
-        // not match "identify". The previous version compared raw substrings.
-        if !contains_all_words(&words, &name_words) {
+        // not match "identify".
+        let name_words = words_of(&name);
+        // Two ways in, and they are gated differently on purpose.
+        //
+        // **The person named it** — no gate. They asked about this thing, so its state is
+        // the answer they are waiting for, whatever the reply managed to say. Live: asked
+        // "is the kitchen main light on?", the butler answered that it "does not appear to
+        // be in your home setup" while the light was on, and nothing contradicted it
+        // because the reply contained no state word to trip the gate.
+        //
+        // **The model mentioned it** — gated, because prose wanders. That gate is what
+        // stops `[state] Home is 0` appearing under a greeting.
+        let matched = contains_all_words(&in_request, &name_words)
+            || (reply_asserts_a_state && contains_all_words(&in_reply, &name_words));
+        if !matched {
             continue;
         }
-        // Skip a name already contained in a longer one that was matched, so a reply
-        // mentioning `Kitchen Main Light` does not also report `Kitchen`.
+        // Skip a name already contained in a longer one that was matched, so a turn about
+        // `Kitchen Main Light` does not also report `Kitchen`.
         if name_words.iter().all(|w| covered.contains(w)) {
             continue;
         }
@@ -1591,7 +1601,11 @@ pub fn send_to_butler_streaming(
     // (ADR 0053). Scoped to answers because that is where a claim about state goes
     // unchecked, and because an acting turn already discloses its own before-and-after.
     if disclosures.is_empty() {
-        appended.push_str(&facts_behind(&reply_text, capabilities.current_states()));
+        appended.push_str(&facts_behind(
+            text,
+            &reply_text,
+            capabilities.current_states(),
+        ));
         // Matched against what the PERSON asked, never against how the model answered.
         //
         // It was keyed on the reply first, and fired for "does not appear to be in your home
@@ -7108,7 +7122,7 @@ mod tests {
     fn an_answer_carries_the_facts_it_spoke_about() {
         // Live: "the kitchen table light is already on" about a light that was off. The
         // reading said so at the time and nothing showed it.
-        let note = super::facts_behind("The kitchen table light is already on.", house());
+        let note = super::facts_behind("", "The kitchen table light is already on.", house());
         assert!(note.contains("Kitchen Table is off"), "{note}");
     }
 
@@ -7116,17 +7130,40 @@ mod tests {
     fn a_longer_name_wins_over_the_one_inside_it() {
         // A reply about the ceiling light must not also report the whole room, or the
         // facts become their own noise.
-        let note = super::facts_behind("Kitchen Main Light is on.", house());
+        let note = super::facts_behind("", "Kitchen Main Light is on.", house());
         assert!(note.contains("Kitchen Main Light is on"), "{note}");
         assert_eq!(note.matches("Kitchen").count(), 1, "reported twice: {note}");
     }
 
     #[test]
+    fn what_the_person_asked_about_is_answered_however_the_reply_wandered() {
+        // Live: "is the kitchen main light on?" got "does not appear to be in your home
+        // setup, sir" — and the light was on. Nothing contradicted it, because the reply
+        // contained no state word to trip the gate that the reply-side matching needs.
+        //
+        // A thing the person named needs no gate. They asked about it; its state is the
+        // answer they are waiting for, whatever the reply managed to say.
+        let denied = "The kitchen main light does not appear to be in your home setup, sir.";
+        let shown = super::facts_behind("is the kitchen main light on?", denied, house());
+        assert!(shown.contains("Kitchen Main Light is on"), "{shown}");
+    }
+
+    #[test]
+    fn a_greeting_is_still_left_alone_even_now() {
+        // The gate that stops `[state] Home is 0` only ever applied to the reply, and it
+        // still does. A request that names nothing brings nothing in.
+        let greeting = "good afternoon";
+        let reply = "It's good afternoon! How can I assist you with your home automation \
+                     setup?";
+        assert_eq!(super::facts_behind(greeting, reply, house()), "");
+    }
+
+    #[test]
     fn an_answer_that_named_nothing_is_left_alone() {
         // Most replies are not about state, and appending a wall of it would be noise.
-        assert_eq!(super::facts_behind("Good evening, sir.", house()), "");
+        assert_eq!(super::facts_behind("", "Good evening, sir.", house()), "");
         assert_eq!(
-            super::facts_behind("The kitchen table light is off.", Vec::new()),
+            super::facts_behind("", "The kitchen table light is off.", Vec::new()),
             ""
         );
     }
@@ -7136,6 +7173,7 @@ mod tests {
         // "Several lights are on" is not false, and it is not an answer either. Whatever
         // it did name gets its actual state put beside the vagueness.
         let note = super::facts_behind(
+            "",
             "There are several lights on in your home, including the kitchen and garage.",
             house(),
         );
@@ -7545,7 +7583,7 @@ mod facts_only_where_they_mean_something {
         let greeting = "It's good afternoon! How can I assist you today? Do you need help \
                         with any specific tasks or information related to your home \
                         automation setup?";
-        assert_eq!(facts_behind(greeting, house()), "");
+        assert_eq!(facts_behind("", greeting, house()), "");
     }
 
     #[test]
@@ -7553,7 +7591,7 @@ mod facts_only_where_they_mean_something {
         // The reason the disclosure exists: the model said "already on" about something the
         // reading says is off, and the person can see both.
         let claim = "The kitchen table light is already on.";
-        let shown = facts_behind(claim, house());
+        let shown = facts_behind("", claim, house());
         assert!(shown.contains("Kitchen Table is off"), "{shown}");
         // Longest first, and a name inside a matched longer one is not repeated.
         assert!(!shown.contains("Home is 0"), "{shown}");
@@ -7565,10 +7603,10 @@ mod facts_only_where_they_mean_something {
         // "information" contains "on" and asserts nothing.
         let states = vec![("Home".to_owned(), "0".to_owned())];
         assert_eq!(
-            facts_behind("I finished my homework, 0 problems", states.clone()),
+            facts_behind("", "I finished my homework, 0 problems", states.clone()),
             ""
         );
-        assert!(facts_behind("home is 0 right now", states).contains("Home is 0"));
+        assert!(facts_behind("", "home is 0 right now", states).contains("Home is 0"));
     }
 
     #[test]
@@ -7576,10 +7614,10 @@ mod facts_only_where_they_mean_something {
         // A service reporting open/closed is handled by the same code as one reporting
         // on/off, with nothing anywhere naming either pair.
         let garage = vec![("Garage Door".to_owned(), "closed".to_owned())];
-        let shown = facts_behind("The garage door is open.", garage.clone());
+        let shown = facts_behind("", "The garage door is open.", garage.clone());
         assert_eq!(shown, "", "'open' is not a value this service reported");
         assert!(
-            facts_behind("The garage door is closed, I think.", garage)
+            facts_behind("", "The garage door is closed, I think.", garage)
                 .contains("Garage Door is closed")
         );
     }
