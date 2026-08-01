@@ -35,6 +35,12 @@ decides what actually happens — and it never does anything irreversible on its
 
 ## Quick start
 
+**Nothing installed yet?** `make bundled` starts Endora with a model runtime beside it —
+it looks at the hardware it can see and serves something that suits it, so there is
+nothing to set up first. The first start downloads a model (1–5 GB) once. It is a
+starting point, not a recommendation: everything below still applies, and pointing
+Endora at your own endpoint is the better end state.
+
 Bring your own model — any OpenAI-compatible endpoint (Ollama, LM Studio, llama.cpp,
 vLLM):
 

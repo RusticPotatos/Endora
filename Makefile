@@ -119,6 +119,19 @@ deploy-check: deploy ## Deploy, wait for the node to come up, then smoke it
 	done
 	$(MAKE) smoke
 
+.PHONY: bundled
+bundled: ## Start Endora WITH a bundled model runtime — no Ollama, nothing to install first
+	# For someone who wants it working before they want to configure anything. The runtime
+	# container looks at the hardware it can see and serves a model that suits it; Endora
+	# just talks to the URL, exactly as it would to your own endpoint (ADR 0055).
+	#
+	# First start downloads a model (1–5 GB depending on what it finds) into a named
+	# volume, so it happens once.
+	ENDORA_MODEL_URL=http://runtime:8080/v1 ENDORA_MODEL=bundled \
+	ENDORA_ROUTER_MODEL= ENDORA_SYNTH_MODEL= \
+	ENDORA_BUILD="$$(git rev-parse --short HEAD 2>/dev/null || echo dev)" \
+	$(COMPOSE) --profile bundled up -d --build
+
 .PHONY: deploy-logs
 deploy-logs: ## Follow the deployed node's logs (respects DOCKER_CONTEXT)
 	$(COMPOSE) logs -f
