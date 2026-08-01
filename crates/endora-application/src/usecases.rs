@@ -1582,6 +1582,11 @@ pub fn send_to_butler_streaming(
     // true. Whether the model narrates well is not something Endora can fix, but whether
     // the person is told nothing happened is.
     let mut appended = nothing_changed_note(disclosures);
+    // Outside every other branch on purpose. This is about what the person ASKED for, so it
+    // does not depend on whether the turn acted, succeeded, or answered — and a dead device
+    // is precisely the case where an action *is* attempted and fails, which is the branch it
+    // was first written into the wrong side of.
+    appended.push_str(&note_not_answering(text, capabilities.current_states()));
     // On a turn that answered rather than acted, show the facts behind whatever it named
     // (ADR 0053). Scoped to answers because that is where a claim about state goes
     // unchecked, and because an acting turn already discloses its own before-and-after.
@@ -1597,7 +1602,6 @@ pub fn send_to_butler_streaming(
         //
         // The request is stable: it is the person's own words, and it is the thing they are
         // waiting to hear about.
-        appended.push_str(&note_not_answering(text, capabilities.current_states()));
         appended.push_str(&account_behind(&reply_text, &context.did_lately));
     }
     // Where the words went. Disclosed on every escalated turn rather than left to a
