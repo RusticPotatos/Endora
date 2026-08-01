@@ -2598,14 +2598,24 @@ pub fn daily_brief(
     // **Gathering stays local.** Only the assembled facts leave, disguised — and only
     // those: the deep model gets a context with nothing else in it, so beliefs, aliases and
     // the track record never travel just because prose is wanted.
+    let mut worded_elsewhere = false;
     let text = match (butler.deeper(), already_known.as_deref()) {
-        (Some(deeper), Some(facts)) => word_the_brief(deeper.as_ref(), facts, ids, clock)
-            .or(text)
-            .map(Some)
-            .unwrap_or(None),
+        (Some(deeper), Some(facts)) => match word_the_brief(deeper.as_ref(), facts, ids, clock) {
+            Some(written) => {
+                worded_elsewhere = true;
+                Some(written)
+            }
+            None => text,
+        },
         _ => text,
     };
     let text = match (text, already_known) {
+        // Already said it: appending would print the same brief twice, which is what
+        // happened the first time this ran. The check is on the text, not on trust —
+        // a model that was told to use every fact and did needs nothing added.
+        (Some(written), Some(facts)) if worded_elsewhere && says_it_all(&written, &facts) => {
+            Some(written)
+        }
         (Some(written), Some(facts)) => Some(format!("{written}\n\n{facts}")),
         (Some(written), None) => Some(written),
         // The facts stand alone when the model gives nothing usable. They ARE the brief;
@@ -3144,6 +3154,19 @@ fn recently_did(
         .collect())
 }
 
+/// Whether a written brief already contains everything the facts said.
+///
+/// Compared on the **distinctive** part of each fact — what precedes the timestamp — because
+/// a model that rewords "at 2026-08-01 00:00:00" into "tomorrow morning" has still said it.
+/// Every fact must appear, so a brief that covers half of them still gets the full list.
+fn says_it_all(written: &str, facts: &str) -> bool {
+    facts.lines().filter(|l| !l.trim().is_empty()).all(|line| {
+        let said = line.trim().trim_start_matches("- ");
+        let distinctive = said.split(" at ").next().unwrap_or(said).trim();
+        distinctive.len() > 8 && written.contains(distinctive)
+    })
+}
+
 /// Asks a stronger model to word a brief from facts that have already been gathered.
 ///
 /// `None` when it cannot be reached or says nothing usable, and the caller falls back — a
@@ -3211,9 +3234,13 @@ fn whats_worth_saying_this_morning(
     for trouble in troubles {
         lines.push(trouble.statement(trouble.since_ms));
     }
-    // What Endora itself has been doing, which is the question a proactive butler is asked
-    // first and could not answer at all until recently.
-    lines.extend(context.did_lately.iter().cloned());
+    // Deliberately NOT what Endora has been doing. That answers "did you do anything while
+    // I was out?", which is a different question — and put in a brief it reads as Endora
+    // quoting its own message log back, including the messages that went wrong:
+    //
+    //   10:47 — I wrote to you unprompted: "Sure, please provide me with a function name…"
+    //
+    // A morning brief is about the person's day, not the butler's.
     // `None` rather than "nothing to report": with no facts AND no model, there is no
     // brief at all. Posting a cheerful nothing would be Endora claiming to have thought
     // about the day, which is the floor ADR 0053 refuses to build.
@@ -8214,6 +8241,23 @@ mod who_words_the_brief {
         // And what the person reads is their own words again.
         assert!(written.contains("rustic"), "{written}");
         assert!(written.contains("E. Werner & M. Battaglia"), "{written}");
+    }
+
+    #[test]
+    fn a_brief_is_not_printed_twice() {
+        // The first live run: the deep model echoed every fact, and Endora appended them
+        // underneath, so the brief said everything two ways.
+        let facts = "- rustic is not home; on the Family calendar: Yardwork at 2026-08-01\n- outside it is 80F and partlycloudy";
+        let echoed = "Good morning. rustic is not home; on the Family calendar: Yardwork \
+                      tomorrow. outside it is 80F and partlycloudy.";
+        assert!(
+            says_it_all(echoed, facts),
+            "everything is there, in its own words"
+        );
+
+        // Half a brief still gets the full list underneath.
+        let partial = "Good morning. rustic is not home.";
+        assert!(!says_it_all(partial, facts));
     }
 
     #[test]
