@@ -264,9 +264,43 @@ impl Notion {
     ///
     /// Arithmetic over resolved records, and nothing else (ADR 0051): the model proposes the
     /// wording, the record decides whether it survives.
+    ///
+    /// **Enough is not only a count.** A belief is a statement about *the person*, so at least
+    /// one piece of evidence has to be attributable to them — see
+    /// [`says_something_about_the_person`](Self::says_something_about_the_person).
     #[must_use]
     pub fn is_ready_to_believe(&self) -> bool {
-        self.status == NotionStatus::Open && self.support_count() >= ENOUGH_TO_BELIEVE
+        self.status == NotionStatus::Open
+            && self.support_count() >= ENOUGH_TO_BELIEVE
+            && self.says_something_about_the_person()
+    }
+
+    /// Whether anything behind this notion is actually attributable to the person.
+    ///
+    /// **The house is shared.** Other people live there, so a reading — a light, a door, a
+    /// panel disarmed at six in the morning, an entry on a family calendar naming two other
+    /// people — says nothing about *this* person. A belief formed from one is Endora
+    /// confidently wrong about them on the strength of somebody else's morning, and wrong
+    /// invisibly, because the card reads perfectly well.
+    ///
+    /// An **outcome is Endora's own conduct**, which [`crate::domain::Belief`] already may not
+    /// be formed from: a butler that treats its own behaviour as evidence reinforces whatever
+    /// it happens to be doing, including its own faults. Letting one carry a notion would be
+    /// that same loop with an extra step in it.
+    ///
+    /// So a notion may be *corroborated* by the house and by what Endora did, and may only be
+    /// **carried into belief** by something the person said, or by something already believed
+    /// about them.
+    ///
+    /// There is a real cost, taken deliberately: a pattern purely in household rhythm can
+    /// never mature. That is the honest outcome while nothing records *who* did it — and it is
+    /// also what keeps Endora from quietly accumulating a model of people who are not its
+    /// person and never asked to be modelled.
+    #[must_use]
+    pub fn says_something_about_the_person(&self) -> bool {
+        self.citations
+            .iter()
+            .any(|c| matches!(c.source, Source::Message | Source::Belief))
     }
 
     /// Promotes it to a belief, if it has earned that. Returns whether it did.
@@ -457,12 +491,16 @@ mod tests {
     fn it_matures_on_a_count_and_never_on_request() {
         // ADR 0057 rejects letting the model decide it was right. Maturity is arithmetic, so
         // asking early simply fails.
-        let mut n = notion_from(&["outcome-1", "outcome-2"]);
+        let mut n = notion_from(&["outcome-1"]);
+        // Something the person said, so attribution is satisfied and the count is the only
+        // thing this test is still about.
+        assert!(n.support(Citation::new(Source::Message, "msg-4").unwrap(), at(5)));
+        assert_eq!(n.support_count(), 2);
         assert!(!n.is_ready_to_believe());
         assert!(!n.mature(), "two is a coincidence");
         assert_eq!(n.status(), NotionStatus::Open);
 
-        assert!(n.support(cite("message-4"), at(10)));
+        assert!(n.support(cite("outcome-3"), at(10)));
         assert_eq!(n.support_count(), ENOUGH_TO_BELIEVE);
         assert!(n.mature());
         assert_eq!(n.status(), NotionStatus::Matured);
@@ -483,8 +521,68 @@ mod tests {
     }
 
     #[test]
+    fn the_house_alone_never_becomes_a_belief_about_the_person() {
+        // Other people live there. A reading is a light, a door, a panel disarmed at six in
+        // the morning, an entry on a family calendar naming two other people — none of which
+        // says anything about *this* person. Three of them is still nothing about them.
+        let mut n = Notion::new(
+            NotionId::new(1),
+            "you are up early lately",
+            vec![
+                Citation::new(Source::Reading, "alarm_control_panel.home").unwrap(),
+                Citation::new(Source::Reading, "binary_sensor.front_door").unwrap(),
+                Citation::new(Source::Reading, "calendar.family").unwrap(),
+            ],
+            "",
+            at(0),
+        )
+        .unwrap();
+        assert_eq!(n.support_count(), ENOUGH_TO_BELIEVE);
+        assert!(!n.is_ready_to_believe(), "the house is shared");
+        assert!(!n.mature());
+        assert_eq!(
+            n.status(),
+            NotionStatus::Open,
+            "still worth wondering about"
+        );
+    }
+
+    #[test]
+    fn what_endora_did_cannot_carry_a_notion_either() {
+        // An outcome is Endora's own conduct, and a butler that treats its own behaviour as
+        // evidence reinforces whatever it happens to be doing — the loop ADR 0052 found at the
+        // top of the understanding screen, arriving here with an extra step in it.
+        let mut n = notion_from(&["outcome-1", "outcome-2", "outcome-3"]);
+        assert_eq!(n.support_count(), ENOUGH_TO_BELIEVE);
+        assert!(!n.is_ready_to_believe());
+        assert!(!n.mature());
+    }
+
+    #[test]
+    fn one_thing_the_person_said_is_enough_to_carry_it() {
+        // The house may corroborate; it may not carry. So a notion the person spoke to even
+        // once, met twice more by the house, is a belief about them.
+        let mut n = Notion::new(
+            NotionId::new(1),
+            "you are up early lately",
+            vec![Citation::new(Source::Message, "msg-4").unwrap()],
+            "",
+            at(0),
+        )
+        .unwrap();
+        n.support(
+            Citation::new(Source::Reading, "alarm_control_panel.home").unwrap(),
+            at(10),
+        );
+        n.support(Citation::new(Source::Outcome, "outcome-9").unwrap(), at(20));
+        assert!(n.is_ready_to_believe());
+        assert!(n.mature());
+    }
+
+    #[test]
     fn a_matured_notion_stops_being_thought_about() {
-        let mut n = notion_from(&["a", "b", "c"]);
+        let mut n = notion_from(&["a", "b"]);
+        n.support(Citation::new(Source::Message, "msg-4").unwrap(), at(1));
         assert!(n.mature());
         assert!(!n.is_ready_to_believe(), "no longer open");
         assert!(
