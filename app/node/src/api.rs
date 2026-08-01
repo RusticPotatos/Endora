@@ -4011,6 +4011,8 @@ fn reach_out(config: &endora_capabilities::ConfigStore, message: &endora_applica
 /// read would clear every clock in the house on one bad network moment.
 fn watch_the_world(state: &AppState) {
     let config = state.config.clone();
+    let events = state.events.clone();
+    let clock = state.clock.clone();
     let now_ms = state.clock.now().unix_millis();
     for (server, channel) in native_channels(config.as_ref()) {
         match channel.states() {
@@ -4022,6 +4024,29 @@ fn watch_the_world(state: &AppState) {
                     now_ms,
                 ) {
                     eprintln!("watching {server}: could not record what is wrong: {e}");
+                }
+                // The same reading, asked a second question. `watch_for_trouble` only ever
+                // asks "is this answering?", so a house could change all day and Endora would
+                // carry nothing out of it (ADR 0058).
+                match endora_capabilities::watch_for_change(
+                    config.as_ref(),
+                    &server,
+                    &reading,
+                    now_ms,
+                ) {
+                    Ok(moved) => {
+                        for change in moved {
+                            record_event(
+                                events.as_ref(),
+                                clock.as_ref(),
+                                &format!(
+                                    "{} went from {} to {}",
+                                    change.key, change.from, change.to
+                                ),
+                            );
+                        }
+                    }
+                    Err(e) => eprintln!("watching {server}: could not record what moved: {e}"),
                 }
             }
             Err(e) => eprintln!("watching {server}: could not read it this time: {e}"),

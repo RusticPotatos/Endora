@@ -26,12 +26,13 @@ pub mod target_search;
 pub use application::{
     AutonomyEnvelope, AutonomyEnvelopeRepository, ButlerModelConfig, ButlerModelConfigRepository,
     CapabilityConfigRepository, CapabilityRunner, CapabilitySettingsRepository, CapabilitySpec,
-    CapabilityUse, ConfigWrite, ConfigWriteLog, DeepModel, DeepModelRepository, McpServer,
-    McpServerRegistry, McpTransport, ModelSlot, ModelTuneSchedule, ModelTuneScheduleRepository,
-    Sampling, StandingTrouble, StandingTroubleRepository, TargetAlias, TargetAliasRepository,
-    WriteKind, not_answering, watch_for_trouble, worth_raising,
+    CapabilityUse, ConfigWrite, ConfigWriteLog, DeepModel, DeepModelRepository,
+    KEEP_TRANSITIONS_FOR_MS, McpServer, McpServerRegistry, McpTransport, ModelSlot,
+    ModelTuneSchedule, ModelTuneScheduleRepository, Sampling, StandingTrouble,
+    StandingTroubleRepository, TargetAlias, TargetAliasRepository, TransitionLog, WriteKind,
+    not_answering, watch_for_change, watch_for_trouble, worth_raising,
 };
-pub use domain::{SetupField, SetupForm};
+pub use domain::{DWELL_MS, SetupField, SetupForm, Transition, Watched};
 pub use home_assistant::{HomeAssistant, paired_server};
 pub use infrastructure::{
     AliasRunner, Capability, CapabilityError, CapabilityInfo, CapabilitySettings, CompositeRunner,
