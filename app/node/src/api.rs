@@ -853,6 +853,8 @@ pub fn app(state: AppState) -> Router {
         // forms its own intentions, and the person's whole side of the interface is
         // "stop doing that" (ADR 0052).
         .route("/v1/intentions", get(list_intentions))
+        // Readable, never actionable — no companion POST exists (ADR 0057).
+        .route("/v1/notions", get(list_notions))
         .route("/v1/intentions/{id}/drop", post(drop_intention))
         .route("/v1/capabilities", get(list_capabilities))
         .route("/v1/capabilities/{id}/invoke", post(invoke_capability))
@@ -1917,6 +1919,43 @@ fn intention_json(i: &endora_application::Intention) -> serde_json::Value {
         "created_ms": i.created_at().unix_millis(),
         "last_progressed_ms": i.last_progressed_at().unix_millis(),
     })
+}
+
+/// One notion, as the console reads it (ADR 0057).
+///
+/// Carries its evidence, because a statement about somebody with the reasoning stripped off is
+/// the thing this design is most careful not to produce. There is **no verb here and no count
+/// anywhere** — the person may look at what Endora is chewing on and cannot be asked to
+/// maintain it.
+fn notion_json(n: &endora_application::Notion) -> serde_json::Value {
+    json!({
+        "id": n.id().value().to_string(),
+        "statement": n.statement(),
+        "because": n.citations()
+            .iter()
+            .map(|c| format!("{}:{}", c.source().name(), c.reference()))
+            .collect::<Vec<_>>(),
+        "settles_when": n.settles_when(),
+        "status": n.status().name(),
+        "created_ms": n.created_at().unix_millis(),
+        "last_supported_ms": n.last_supported_at().unix_millis(),
+    })
+}
+
+/// What Endora is still thinking about (ADR 0057).
+///
+/// Read-only, deliberately and permanently: there is no companion `POST` anywhere in this file
+/// because a screen with an action on it becomes a chore list whatever its cards say.
+async fn list_notions(
+    State(state): State<AppState>,
+) -> Result<Json<Vec<serde_json::Value>>, ApiError> {
+    let understanding = state.understanding.clone();
+    let items = blocking(move || {
+        endora_application::NotionRepository::open(understanding.as_ref())
+            .map_err(endora_application::AppError::from)
+    })
+    .await?;
+    Ok(Json(items.iter().map(notion_json).collect()))
 }
 
 /// What Endora is pursuing, and what it has pursued before (ADR 0052).
@@ -4103,6 +4142,7 @@ pub fn spawn_heartbeat(state: AppState) {
                 // irreversible. Serialized under the turn lock like the brief.
                 let reflected = usecases::run_due_nightly_loop(
                     chat.as_ref(),
+                    understanding.as_ref(),
                     understanding.as_ref(),
                     understanding.as_ref(),
                     understanding.as_ref(),

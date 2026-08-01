@@ -2,9 +2,44 @@
 //! outcomes and intentions.
 
 use endora_kernel::RepositoryError;
-use endora_kernel::ids::{BeliefId, IntentionId, OutcomeId, PreferenceId};
+use endora_kernel::ids::{BeliefId, IntentionId, NotionId, OutcomeId, PreferenceId};
 
-use crate::domain::{Belief, Intention, Outcome, Preference};
+use crate::domain::{Belief, Intention, Notion, Outcome, Preference};
+
+/// Persists and retrieves [`Notion`]s — what Endora is still thinking about (ADR 0057).
+///
+/// The counterpart to [`BeliefRepository`] one stage earlier: that one holds what Endora has
+/// earned the right to believe, this one what it suspects and is still gathering evidence for.
+///
+/// [`open`](Self::open) is the load-bearing query, because the cap is enforced against it. A
+/// notion that matured or died is kept but is no longer thought about, so the working set stays
+/// bounded however long the history grows.
+pub trait NotionRepository {
+    /// Inserts a notion, or replaces the one with the same id (form + support).
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if the backend fails.
+    fn save(&self, notion: &Notion) -> Result<(), RepositoryError>;
+
+    /// Fetches a notion by id, `None` if absent.
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if the backend fails or stored data is corrupt.
+    fn get(&self, id: NotionId) -> Result<Option<Notion>, RepositoryError>;
+
+    /// The ones still being thought about, best-supported first.
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if the backend fails or stored data is corrupt.
+    fn open(&self) -> Result<Vec<Notion>, RepositoryError>;
+
+    /// Every notion, most recently supported first — including the ones that matured or
+    /// died, so what Endora dropped on its own stays visible rather than vanishing.
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if the backend fails or stored data is corrupt.
+    fn list(&self) -> Result<Vec<Notion>, RepositoryError>;
+}
 
 /// Persists and retrieves [`Intention`]s — what Endora is pursuing (ADR 0052).
 ///

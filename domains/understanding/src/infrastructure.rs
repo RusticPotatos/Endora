@@ -2,16 +2,17 @@
 //! intention repositories.
 
 use endora_kernel::RepositoryError;
-use endora_kernel::ids::{BeliefId, IntentionId, OutcomeId, PreferenceId, Timestamp};
+use endora_kernel::ids::{BeliefId, IntentionId, NotionId, OutcomeId, PreferenceId, Timestamp};
 use endora_persistence::{Db, backend, corrupt, id_text, parse_id};
 use rusqlite::{Connection, params};
 
 use crate::application::{
-    BeliefRepository, IntentionRepository, OutcomeRepository, PreferenceRepository,
+    BeliefRepository, IntentionRepository, NotionRepository, OutcomeRepository,
+    PreferenceRepository,
 };
 use crate::domain::{
-    Belief, BeliefKind, BeliefStatus, Confidence, Intention, IntentionState, Outcome, Preference,
-    PreferenceKind, Reaction,
+    Belief, BeliefKind, BeliefStatus, Citation, Confidence, Intention, IntentionState, Notion,
+    NotionStatus, Outcome, Preference, PreferenceKind, Reaction, Source,
 };
 
 /// Creates the understanding tables if absent (idempotent).
@@ -57,6 +58,20 @@ pub fn migrate(db: &Db) -> Result<(), RepositoryError> {
                 motivating_belief TEXT,
                 reaction          TEXT,
                 changed           INTEGER
+            ) STRICT;
+            CREATE TABLE IF NOT EXISTS notions (
+                id                TEXT PRIMARY KEY,
+                statement         TEXT NOT NULL,
+                settles_when      TEXT NOT NULL,
+                created_ms        INTEGER NOT NULL,
+                last_supported_ms INTEGER NOT NULL,
+                status            TEXT NOT NULL
+            ) STRICT;
+            CREATE TABLE IF NOT EXISTS notion_citations (
+                notion_id TEXT NOT NULL,
+                source    TEXT NOT NULL,
+                reference TEXT NOT NULL,
+                PRIMARY KEY (notion_id, source, reference)
             ) STRICT;",
         )
         .map_err(backend)?;
@@ -141,6 +156,69 @@ impl BeliefRepository for UnderstandingStore {
     fn list(&self) -> Result<Vec<Belief>, RepositoryError> {
         let conn = self.db.lock()?;
         all_beliefs(&conn)
+    }
+}
+
+impl NotionRepository for UnderstandingStore {
+    fn save(&self, notion: &Notion) -> Result<(), RepositoryError> {
+        let mut conn = self.db.lock()?;
+        // The row and its evidence are one fact, so they move together. Without the
+        // transaction a failure between the two statements leaves a notion whose citations
+        // were just deleted — which reads as "nothing supports this" and gets it killed by
+        // the very rule that is supposed to protect the person from unfounded speculation.
+        let tx = conn.transaction().map_err(backend)?;
+        let id = id_text(notion.id().value());
+        tx.execute(
+            "INSERT OR REPLACE INTO notions \
+             (id, statement, settles_when, created_ms, last_supported_ms, status) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                id,
+                notion.statement(),
+                notion.settles_when(),
+                notion.created_at().unix_millis(),
+                notion.last_supported_at().unix_millis(),
+                notion.status().name(),
+            ],
+        )
+        .map_err(backend)?;
+        tx.execute(
+            "DELETE FROM notion_citations WHERE notion_id = ?1",
+            params![id],
+        )
+        .map_err(backend)?;
+        for citation in notion.citations() {
+            tx.execute(
+                "INSERT OR IGNORE INTO notion_citations (notion_id, source, reference) \
+                 VALUES (?1, ?2, ?3)",
+                params![id, citation.source().name(), citation.reference()],
+            )
+            .map_err(backend)?;
+        }
+        tx.commit().map_err(backend)?;
+        Ok(())
+    }
+
+    fn get(&self, id: NotionId) -> Result<Option<Notion>, RepositoryError> {
+        let conn = self.db.lock()?;
+        Ok(all_notions(&conn)?.into_iter().find(|n| n.id() == id))
+    }
+
+    fn open(&self) -> Result<Vec<Notion>, RepositoryError> {
+        let conn = self.db.lock()?;
+        let mut open: Vec<Notion> = all_notions(&conn)?
+            .into_iter()
+            .filter(|n| n.status() == NotionStatus::Open)
+            .collect();
+        // Best-supported first, so the caller reading only the head of this list is reading
+        // the notions with the most behind them.
+        open.sort_by_key(|n| std::cmp::Reverse(n.standing()));
+        Ok(open)
+    }
+
+    fn list(&self) -> Result<Vec<Notion>, RepositoryError> {
+        let conn = self.db.lock()?;
+        all_notions(&conn)
     }
 }
 
@@ -350,6 +428,101 @@ fn all_preferences(conn: &Connection) -> Result<Vec<Preference>, RepositoryError
     Ok(out)
 }
 
+/// Every notion with its evidence, most recently supported first.
+///
+/// A citation whose stored `source` is not one this build understands is **dropped**, and a
+/// notion left with none is dropped with it. That is the cautious direction and it matches
+/// what the domain refuses to construct: a citation nobody knows how to check is exactly the
+/// thing that must never come back as evidence, and reading one is no safer than writing one.
+fn all_notions(conn: &Connection) -> Result<Vec<Notion>, RepositoryError> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT n.id, n.statement, n.settles_when, n.created_ms, n.last_supported_ms, \
+                    n.status, c.source, c.reference \
+             FROM notions n LEFT JOIN notion_citations c ON c.notion_id = n.id \
+             ORDER BY n.last_supported_ms DESC, n.rowid DESC, c.source, c.reference",
+        )
+        .map_err(backend)?;
+    let rows = stmt
+        .query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, i64>(3)?,
+                r.get::<_, i64>(4)?,
+                r.get::<_, String>(5)?,
+                r.get::<_, Option<String>>(6)?,
+                r.get::<_, Option<String>>(7)?,
+            ))
+        })
+        .map_err(backend)?;
+
+    // The join gives one row per citation, so the notion's own fields repeat. Grouping by id
+    // keeps the query to one round trip while still assembling whole notions.
+    let mut order: Vec<String> = Vec::new();
+    let mut gathered: std::collections::HashMap<String, (Notion, Vec<Citation>)> =
+        std::collections::HashMap::new();
+    for row in rows {
+        let (id, statement, settles, created_ms, supported_ms, status, source, reference) =
+            row.map_err(backend)?;
+        if !gathered.contains_key(&id) {
+            order.push(id.clone());
+            gathered.insert(
+                id.clone(),
+                (
+                    Notion::from_parts(
+                        NotionId::new(parse_id(&id)?),
+                        statement,
+                        Vec::new(),
+                        settles,
+                        Timestamp::from_unix_millis(created_ms),
+                        Timestamp::from_unix_millis(supported_ms),
+                        NotionStatus::from_name(&status),
+                    ),
+                    Vec::new(),
+                ),
+            );
+        }
+        let (Some(source), Some(reference)) = (source, reference) else {
+            continue; // a notion with no citations at all
+        };
+        let Ok(source) = Source::from_name(&source) else {
+            continue; // a kind of evidence this build cannot check
+        };
+        let Ok(citation) = Citation::new(source, &reference) else {
+            continue; // an unnamed record cannot be checked
+        };
+        if let Some((_, citations)) = gathered.get_mut(&id) {
+            citations.push(citation);
+        }
+    }
+
+    let mut out = Vec::new();
+    for id in order {
+        let Some((notion, mut citations)) = gathered.remove(&id) else {
+            continue;
+        };
+        // The domain keeps citations sorted by its own ordering; SQL sorted them as text. A
+        // notion that came back in a different order than it went in would not compare equal
+        // to itself, which is a trap for every later caller rather than a cosmetic difference.
+        citations.sort();
+        if citations.is_empty() {
+            continue; // no evidence survived; it is not a notion (ADR 0057)
+        }
+        out.push(Notion::from_parts(
+            notion.id(),
+            notion.statement().to_owned(),
+            citations,
+            notion.settles_when().to_owned(),
+            notion.created_at(),
+            notion.last_supported_at(),
+            notion.status(),
+        ));
+    }
+    Ok(out)
+}
+
 fn all_beliefs(conn: &Connection) -> Result<Vec<Belief>, RepositoryError> {
     let mut stmt = conn
         .prepare(
@@ -393,11 +566,18 @@ fn all_beliefs(conn: &Connection) -> Result<Vec<Belief>, RepositoryError> {
 mod tests {
     use super::{UnderstandingStore, migrate};
     use crate::application::{
-        BeliefRepository, IntentionRepository, OutcomeRepository, PreferenceRepository,
+        BeliefRepository, IntentionRepository, NotionRepository, OutcomeRepository,
+        PreferenceRepository,
     };
-    use crate::domain::{Intention, Outcome, Preference, PreferenceKind, Reaction};
+    use crate::domain::{
+        Citation, Intention, Notion, NotionStatus, Outcome, Preference, PreferenceKind, Reaction,
+        Source,
+    };
+    use endora_kernel::ids::NotionId;
     use endora_kernel::ids::{BeliefId, IntentionId, OutcomeId, PreferenceId, Timestamp};
     use endora_persistence::Db;
+    use endora_persistence::id_text;
+    use rusqlite::params;
 
     #[test]
     fn preferences_round_trip_and_delete() {
@@ -586,5 +766,145 @@ mod tests {
             .map(|o| o.id().value())
             .collect();
         assert_eq!(ids, vec![2, 3, 1]);
+    }
+
+    // --- Notions (ADR 0057) ---
+
+    /// An open notion last supported at a chosen moment — the shape one has after sitting in
+    /// the database for a while, which `new` alone cannot produce.
+    fn a_notion(id: u128, references: &[(Source, &str)], supported_ms: i64) -> Notion {
+        let citations = references
+            .iter()
+            .map(|(source, reference)| Citation::new(*source, reference).unwrap())
+            .collect();
+        let formed = Notion::new(
+            NotionId::new(id),
+            "the Monday gym block gets cancelled",
+            citations,
+            "whether next Monday's block survives",
+            Timestamp::from_unix_millis(0),
+        )
+        .unwrap();
+        Notion::from_parts(
+            formed.id(),
+            formed.statement().to_owned(),
+            formed.citations().to_vec(),
+            formed.settles_when().to_owned(),
+            formed.created_at(),
+            Timestamp::from_unix_millis(supported_ms),
+            NotionStatus::Open,
+        )
+    }
+
+    #[test]
+    fn a_notion_round_trips_with_every_piece_of_its_evidence() {
+        let db = Db::open_in_memory().unwrap();
+        migrate(&db).unwrap();
+        let store = UnderstandingStore::new(db);
+
+        let notion = a_notion(
+            1,
+            &[
+                (Source::Outcome, "outcome-7"),
+                (Source::Message, "msg-2"),
+                (Source::Reading, "calendar.rustic"),
+            ],
+            500,
+        );
+        NotionRepository::save(&store, &notion).unwrap();
+
+        let stored = NotionRepository::get(&store, NotionId::new(1))
+            .unwrap()
+            .expect("saved");
+        assert_eq!(stored, notion);
+        assert_eq!(stored.support_count(), 3);
+    }
+
+    #[test]
+    fn saving_again_does_not_multiply_the_evidence() {
+        // The write replaces a notion in place — supporting one and saving it must leave three
+        // pieces of evidence, not six. Storing evidence twice would mature a notion on a
+        // single record, which is the failure the count exists to prevent.
+        let db = Db::open_in_memory().unwrap();
+        migrate(&db).unwrap();
+        let store = UnderstandingStore::new(db);
+
+        let mut notion = a_notion(1, &[(Source::Outcome, "outcome-7")], 100);
+        NotionRepository::save(&store, &notion).unwrap();
+        notion.support(
+            Citation::new(Source::Message, "msg-2").unwrap(),
+            Timestamp::from_unix_millis(200),
+        );
+        NotionRepository::save(&store, &notion).unwrap();
+        NotionRepository::save(&store, &notion).unwrap();
+
+        let stored = NotionRepository::get(&store, NotionId::new(1))
+            .unwrap()
+            .expect("saved");
+        assert_eq!(stored.support_count(), 2);
+        assert_eq!(stored.last_supported_at(), Timestamp::from_unix_millis(200));
+    }
+
+    #[test]
+    fn only_open_notions_are_still_thought_about() {
+        let db = Db::open_in_memory().unwrap();
+        migrate(&db).unwrap();
+        let store = UnderstandingStore::new(db);
+
+        NotionRepository::save(&store, &a_notion(1, &[(Source::Outcome, "a")], 100)).unwrap();
+        let mut gone = a_notion(2, &[(Source::Outcome, "b")], 200);
+        gone.die();
+        NotionRepository::save(&store, &gone).unwrap();
+
+        let open = NotionRepository::open(&store).unwrap();
+        assert_eq!(open.len(), 1);
+        assert_eq!(open[0].id(), NotionId::new(1));
+        assert_eq!(
+            NotionRepository::list(&store).unwrap().len(),
+            2,
+            "what it dropped stays visible"
+        );
+    }
+
+    #[test]
+    fn the_open_list_leads_with_the_best_supported() {
+        let db = Db::open_in_memory().unwrap();
+        migrate(&db).unwrap();
+        let store = UnderstandingStore::new(db);
+
+        NotionRepository::save(&store, &a_notion(1, &[(Source::Outcome, "a")], 900)).unwrap();
+        NotionRepository::save(
+            &store,
+            &a_notion(2, &[(Source::Outcome, "b"), (Source::Message, "c")], 100),
+        )
+        .unwrap();
+
+        let open = NotionRepository::open(&store).unwrap();
+        assert_eq!(
+            open[0].id(),
+            NotionId::new(2),
+            "two pieces of old evidence beat one recent one"
+        );
+    }
+
+    #[test]
+    fn a_notion_whose_evidence_cannot_be_checked_does_not_come_back() {
+        // A row written by a later build, read by this one. Dropping it is the same caution
+        // the domain applies at construction: evidence nobody knows how to verify must never
+        // count, and a notion left with none is not a notion at all (ADR 0057).
+        let db = Db::open_in_memory().unwrap();
+        migrate(&db).unwrap();
+        let store = UnderstandingStore::new(db.clone());
+
+        NotionRepository::save(&store, &a_notion(1, &[(Source::Outcome, "a")], 100)).unwrap();
+        db.lock()
+            .unwrap()
+            .execute(
+                "UPDATE notion_citations SET source = 'vibes' WHERE notion_id = ?1",
+                params![id_text(1)],
+            )
+            .unwrap();
+
+        assert!(NotionRepository::list(&store).unwrap().is_empty());
     }
 }

@@ -19,10 +19,12 @@ pub mod domain;
 pub mod infrastructure;
 
 pub use application::{
-    BeliefRepository, IntentionRepository, OutcomeRepository, PreferenceRepository,
+    BeliefRepository, IntentionRepository, NotionRepository, OutcomeRepository,
+    PreferenceRepository,
 };
 pub use domain::{
-    Belief, BeliefKind, BeliefStatus, Confidence, Intention, IntentionState, Outcome, Preference,
-    PreferenceKind, Reaction, Reliability, Remedy, RepairProposal, repair_proposals,
+    Belief, BeliefKind, BeliefStatus, Citation, Confidence, Intention, IntentionState, Notion,
+    NotionStatus, Outcome, Preference, PreferenceKind, Reaction, Reliability, Remedy,
+    RepairProposal, Source, make_way_for_a_new_one, repair_proposals,
 };
 pub use infrastructure::{UnderstandingStore, migrate};
