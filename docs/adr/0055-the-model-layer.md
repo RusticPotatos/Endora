@@ -78,6 +78,19 @@ fallback automatic without asking would quietly convert a local butler into one 
 whenever the small model stumbles — which it does often. Reliability is worth a great deal; it
 is not worth deciding this on somebody's behalf.
 
+**The daily brief is worded by it too, when the switch is on.** Measured rather than assumed:
+given identical facts, the local model wrote *"the lights in your bedroom are off"* and the
+deep one wrote a brief using every one of them. Six placements had already established that
+the facts were reaching the local model and being ignored, which makes this a difference in
+capability rather than a prompt left to tune.
+
+**Gathering stays local, and only the facts leave.** The deep model is handed a context with
+nothing else in it — no beliefs, no names for things, no track record — because writing prose
+is no reason for any of that to travel. What does travel is disguised
+([0051](0051-where-the-boundary-is.md)), and a brief never depends on somebody else's service
+being up: if it says nothing usable, the local wording stands and the facts are appended
+either way.
+
 **Every escalated reply says so**, rather than relying on the person to remember a setting they
 changed once. Which model answered is not a detail — it is where their words went.
 
