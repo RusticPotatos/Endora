@@ -251,6 +251,13 @@ opened, because nothing records which was which — and that is the safe directi
 reopens what they want, where the alternative leaves something open that they believe they
 have just closed.
 
+**A bulk action is not the same as a standing policy.** Twenty tools is not a thing to tap
+twenty times, and the honest answer to that is a bulk action rather than a default that
+decides for people. Allowing every tool a server exposes *right now* is one deliberate act
+about things that exist; auto-allow is a promise about everything the server may ever expose,
+applied on every connect. The first is a person choosing; the second is how a tool that plays
+audio through a house ended up open without anyone choosing it.
+
 The general rule: a switch that writes state elsewhere must unwrite it, or it is not a switch.
 
 ### Connecting a new kind of thing is the service's form, rendered
