@@ -234,6 +234,34 @@ fn note_verification_against(
     )
 }
 
+/// Says so when the thing an action was aimed at **is not answering** (ADR 0056).
+///
+/// Endora knows this and has never said it. Live: "turn on the guest bedroom left lamp"
+/// failed, and `Guest Bedroom Left` had been unavailable for days — the service could not
+/// reach it, so nothing was ever going to happen. The person got a failure with no cause,
+/// and the cause was sitting in the reading Endora had just taken.
+///
+/// Read from the **live** state rather than from the standing-trouble record, because a
+/// device that went quiet an hour ago is exactly as unreachable as one that went quiet on
+/// Tuesday, and waiting three days to mention it helps nobody mid-request.
+///
+/// Names are matched longest-first for the same reason the facts disclosure does it: a call
+/// aimed at `Kitchen Main Light` must not be explained by something called `Kitchen`.
+fn note_not_answering(input_json: &str, mut states: Vec<(String, String)>) -> String {
+    let asked = words_of(input_json);
+    states.sort_by_key(|(name, _)| std::cmp::Reverse(name.len()));
+    let Some((name, state)) = states.into_iter().find(|(name, state)| {
+        endora_capabilities::not_answering(state) && contains_all_words(&asked, &words_of(name))
+    }) else {
+        return String::new();
+    };
+    format!(
+        "\n\n[not answering] {name} is `{state}` — the service cannot reach it at all, so \
+         nothing was going to happen here whatever the tool reported. Say that plainly: it \
+         is the device, not the request."
+    )
+}
+
 /// Says so when the world is **identical before and after** an action.
 ///
 /// The sharpest form of the failure ADR 0053 exists for. Asked to turn the kitchen
@@ -868,7 +896,11 @@ fn run_tool_turn(
                                 before.as_deref(),
                                 observed.as_deref(),
                             ) + &note_unchanged(before.as_deref(), observed.as_deref())
-                                + &note_changed(before.as_deref(), observed.as_deref()),
+                                + &note_changed(before.as_deref(), observed.as_deref())
+                                + &note_not_answering(
+                                    &call.input_json,
+                                    capabilities.current_states(),
+                                ),
                         )
                     }
                     Err(e) => {
@@ -7390,6 +7422,58 @@ mod one_call_two_spellings {
         // No worse than before: unparseable text compares as text.
         assert_eq!(same_call_as("not json"), "not json");
         assert_ne!(same_call_as("not json"), same_call_as("other junk"));
+    }
+}
+
+#[cfg(test)]
+mod why_it_could_not_have_worked {
+    use super::note_not_answering;
+
+    fn house() -> Vec<(String, String)> {
+        [
+            ("Guest Bedroom Left", "unavailable"),
+            ("Guest Bedroom Right", "unavailable"),
+            ("Kitchen Main Light", "on"),
+            ("Kitchen", "off"),
+        ]
+        .into_iter()
+        .map(|(a, b)| (a.to_owned(), b.to_owned()))
+        .collect()
+    }
+
+    #[test]
+    fn a_dead_target_explains_the_failure() {
+        // The live one: "turn on the guest bedroom left lamp" failed, and the lamp had been
+        // unavailable for days. The cause was in the reading Endora had just taken, and it
+        // said nothing.
+        let said = note_not_answering(r#"{"name":"Guest Bedroom Left"}"#, house());
+        assert!(said.contains("Guest Bedroom Left"), "{said}");
+        assert!(said.contains("unavailable"), "{said}");
+        assert!(said.contains("it is the device, not the request"), "{said}");
+    }
+
+    #[test]
+    fn a_target_that_is_answering_gets_no_excuse_made_for_it() {
+        // A working light that did not change is a different problem, and blaming the
+        // device would be Endora inventing a cause for its own failure.
+        assert_eq!(
+            note_not_answering(r#"{"name":"Kitchen Main Light"}"#, house()),
+            ""
+        );
+        assert_eq!(note_not_answering(r#"{"area":"kitchen"}"#, house()), "");
+    }
+
+    #[test]
+    fn the_longest_matching_name_is_the_one_blamed() {
+        // `Kitchen` is in the house and answering; a call naming `Kitchen Main Light` must
+        // be judged on the light, not on the room that shares its first word.
+        let mut mixed = house();
+        mixed.push((
+            "Kitchen Main Light LED".to_owned(),
+            "unavailable".to_owned(),
+        ));
+        let said = note_not_answering(r#"{"name":"Kitchen Main Light LED"}"#, mixed);
+        assert!(said.contains("Kitchen Main Light LED"), "{said}");
     }
 }
 

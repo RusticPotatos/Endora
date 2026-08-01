@@ -224,6 +224,27 @@ property of the port, not of any one service — and the battery grades both beh
 count must be a count, and a question the reading cannot answer must be declined rather
 than furnished.
 
+### A failure says why, when the why is already in hand
+
+Live: *"turn on the guest bedroom left lamp"* failed, and `Guest Bedroom Left` had been
+unavailable for days. The service could not reach it, so nothing was ever going to happen —
+and the person got a failure with no cause, while the cause sat in the reading Endora had
+taken moments earlier.
+
+A verdict now says so: when the thing an action was aimed at is not answering, that is stated
+alongside the result. **It is the device, not the request** — which is the difference between
+a person trying again pointlessly and going to look at a lamp.
+
+Read from the **live** state rather than from the standing-trouble record. A device that went
+quiet an hour ago is exactly as unreachable as one that went quiet on Tuesday, and the
+three-day threshold that decides what is worth *raising* has no business deciding what is
+worth *explaining*.
+
+Names match longest-first, for the same reason the facts disclosure does it: a call aimed at
+`Kitchen Main Light` must not be excused by something called `Kitchen`. And a target that *is*
+answering gets no excuse made for it — blaming a working device would be Endora inventing a
+cause for its own failure.
+
 ### An answer carries the facts it spoke about
 
 Endora holds the exact reading an answer came from, so the facts behind the prose were
