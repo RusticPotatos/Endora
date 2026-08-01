@@ -102,6 +102,13 @@ passed CI, passed the smoke tier — and rendered a blank page on a phone.
 Stubs are explicit and minimal on purpose. A `Proxy` answering any unknown global would make
 everything pass, including the failure this is here to catch.
 
+It also holds a **budget: no screen may stack more than six sections.** A ratchet rather than a
+target — the number is where the worst screen already sits. Two sections were added to it in a
+single week without anyone noticing what they were being added to, which is the failure a
+budget catches and a review does not. Counted from the *rendered* screen, so a section
+contributed by a nested call counts like one written inline; the person sees no difference.
+Lowering it is the point, and raising it should feel like a decision.
+
 **Budgets belong in tests, not in a performance tier.** A latency suite has never caught
 anything here, but volume degrading quality has: a tool that returned five kilobytes where a
 timestamp was wanted. Assert budgets — result sizes, round counts — inside the tiers above.
