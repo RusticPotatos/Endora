@@ -38,7 +38,7 @@ Endora needs from a service has nowhere to live in it.
 | what Endora needs | expressible over MCP |
 | --- | --- |
 | call something, get an answer | **yes** |
-| read the whole world, continuously, for the watch loop | no |
+| read the whole world, continuously, for the watch loop | **yes, via resources** |
 | supply context for every turn (`about_the_person`) | no |
 | carry a setup flow — *"your URL and a long-lived token"* | no |
 | declare per-tool reversibility, so policy can gate it | no |
@@ -48,6 +48,26 @@ Endora needs from a service has nowhere to live in it.
 So the test is one question: **does Endora need a relationship with this service, or just
 answers from it?** Answers → MCP. Relationship → native. Where both are true, do what Home
 Assistant does and run both: native for the relationship, MCP for the verbs.
+
+#### Correction, the same day: the watch loop *is* expressible over MCP
+
+This record first claimed the watch loop had no MCP equivalent. **That was wrong.** MCP
+standardises `resources/list`, `resources/read` and `resources/subscribe`; Endora's client
+simply did not implement them, speaking only `initialize`, `tools/list`, `tools/call` and
+`notifications/message`. Reading the protocol rather than the client would have caught it.
+
+The row above is corrected, and resources are now implemented over both transports and
+surfaced as `current_states`. The consequence is larger than a table cell: **a third-party MCP
+server can feed the watch loop, the transition log and notions with no Rust in this repository
+at all.** That is the plugin standard this project needs, and it did not have to be invented.
+
+What still has no MCP expression is the person-facing half — a setup form, a config write with
+an undo, presence phrased for a turn. Those keep native for now.
+
+One thing deliberately **not** adopted: MCP tool annotations (`readOnlyHint`,
+`destructiveHint`) look like reversibility, but they are a server describing itself, and
+[0054](0054-other-peoples-services.md) already settled that a server announcing "I only read"
+is not evidence of anything. They may inform a default; they may never authorize.
 
 The default matters because the costs are wildly asymmetric. Native is Rust carried in every
 release, owned forever, needing coverage in five test tiers, and breaking when the vendor
@@ -109,9 +129,10 @@ Three properties are load-bearing rather than incidental:
 
 - **Native for everything, for consistency.** Consistency bought with a thousand lines per
   service, in a project maintained by one person.
-- **MCP for everything, and give up the watch loop.** The watch loop is what makes noticing
-  possible at all ([0057](0057-thinking-between-turns.md)); `states()` has no MCP equivalent
-  and inventing a private extension to the protocol would be a fork of it.
+- **Inventing a private state-reading extension to MCP.** Rejected before it was attempted,
+  because the protocol already has `resources/*` — the correction above. A private extension
+  would have been a fork of the standard, and would have made every third-party server
+  incompatible with the one thing this project most needs from them.
 - **A plugin ABI / dynamic loading.** Real modularity, real cost — versioning, unsafe
   boundaries, sandboxing — for a benefit that a `Vec` in one file already delivers. Revisit
   only when integrations arrive faster than releases.
