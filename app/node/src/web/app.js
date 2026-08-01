@@ -412,6 +412,7 @@ function viewChat() {
     <div class="chat">
       ${dayBar}
       <div id="chat-thread" class="chat-thread">${(msgs || (CHAT_STREAMING ? "" : emptyToday)) + (CHAT_STREAMING ? liveTurn : pending) + streamingActivity}</div>
+      ${CHAT_STREAMING ? "" : viewNeedsYou()}
       <div class="composer">
         <textarea id="chat-input" rows="1" placeholder="Talk to your butler…"></textarea>
         <div class="composer-actions">
@@ -1316,8 +1317,6 @@ function viewUnderstanding() {
     ${groups || `<div class="empty">Nothing yet. Talk with Endora and it will start to understand you — you'll see it here.</div>`}
     ${viewIntention()}
     ${viewHowItLands()}
-    ${viewStandingTrouble()}
-    ${viewRepairs()}
     ${viewConfigWrites()}
     ${viewOutcomes()}`;
 }
@@ -1503,6 +1502,63 @@ function viewConnect() {
       <div class="form" style="margin-top:6px;">
         <input id="connect-other" placeholder="or something else, by its Home Assistant name" />
         <button class="ghost" data-act="connect:other">Start</button>
+      </div>
+    </div>`;
+}
+
+// The one thing Endora would like an answer about, shown where you already are.
+//
+// It used to live on a screen reached by menu → Settings → Understanding → scroll: three
+// taps away from the conversation, on a page holding six unrelated things. A question you
+// have to go and find is a question that does not get answered — 109 outcomes carried zero
+// reactions for exactly that reason.
+//
+// **One at a time, never a list.** Seven problem statements rendered together is the pile of
+// chores ADR 0052 exists to prevent, and putting the pile in the chat would only make it
+// harder to ignore. This is the same "a cursor, not a queue" rule that governs intentions:
+// one question, answering it is the dismissal, and the next appears when it appears.
+//
+// No badge and no count anywhere. Both are how a queue announces itself, and a screen with
+// "3 waiting" on it is a chore list whatever the cards say.
+function viewNeedsYou() {
+  // The person's own world first — a broken lamp is theirs, a misfiring tool is Endora's.
+  const trouble = (TROUBLE || [])[0];
+  if (trouble) {
+    return `
+      <div class="card" style="margin:6px 0;border-color:color-mix(in srgb, var(--accent) 30%, var(--line));">
+        <div class="row" style="align-items:center;gap:10px;">
+          <div class="grow">
+            <div class="title" style="font-weight:500;">${esc(trouble.thing)}</div>
+            <div class="sub">Hasn't answered ${trouble.days === 1 ? "since yesterday" : `for ${trouble.days} days`}. Still yours?</div>
+          </div>
+          <button class="ghost" data-act="trouble:gone:${esc(trouble.server)}:${esc(trouble.thing)}" title="Hide it in the service that owns it. Nothing is deleted, and you can put it back.">It's gone</button>
+          <button class="ghost" data-act="trouble:fine:${esc(trouble.server)}:${esc(trouble.thing)}" title="Leave it exactly as it is and stop mentioning it.">It's fine</button>
+        </div>
+      </div>`;
+  }
+  const repair = (REPAIRS || [])[0];
+  if (!repair) return "";
+  if (repair.remedy === "stop_offering_it") {
+    return `
+      <div class="card" style="margin:6px 0;">
+        <div class="row" style="align-items:center;gap:10px;">
+          <div class="grow">
+            <div class="title" style="font-weight:500;">${esc(repair.capability)}</div>
+            <div class="sub">${repair.attempts} attempts, and it has never once worked. Looks like the wrong tool rather than the wrong name.</div>
+          </div>
+          <button class="ghost danger" data-act="skill:enable:${esc(repair.capability)}:0">Stop offering it</button>
+        </div>
+      </div>`;
+  }
+  return `
+    <div class="card" style="margin:6px 0;">
+      <div class="grow">
+        <div class="title" style="font-weight:500;">${esc(repair.capability)}</div>
+        <div class="sub">${repair.attempts} attempts aimed at &ldquo;${esc(repair.target)}&rdquo; didn't work. What is it actually called?</div>
+        <div class="form" style="margin-top:6px;">
+          <input id="alias-${esc(repair.capability)}-${esc(repair.target)}" placeholder="the real name, e.g. Kitchen Main" />
+          <button class="primary" data-act="alias:${esc(repair.capability)}:${esc(repair.target)}">Remember</button>
+        </div>
       </div>
     </div>`;
 }

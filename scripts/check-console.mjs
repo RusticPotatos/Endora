@@ -211,7 +211,8 @@ for (const name of named) {
 // How many distinct sections one screen may stack before it stops being a screen and starts
 // being a filing cabinet.
 //
-// A ratchet, not a target. The number is where the worst screen already is — `viewUnderstanding`
+// A ratchet, not a target — tightened whenever a screen improves, which is the only way a
+// budget stays honest. It began at six, where the worst screen was — `viewUnderstanding`
 // stacks beliefs, an intention, how its actions landed, standing trouble, repairs, config
 // writes and outcomes, seven unrelated things at identical visual weight. Two of those were
 // added in a single week without anyone noticing what they were being added to, which is
@@ -221,7 +222,7 @@ for (const name of named) {
 // nested call counts the same as one written inline — the person sees no difference.
 //
 // Lowering this is the point. Raising it should feel like a decision.
-const MOST_SECTIONS_ON_ONE_SCREEN = 6;
+const MOST_SECTIONS_ON_ONE_SCREEN = 4;
 
 for (const name of named.filter((n) => n.startsWith("view"))) {
   const fn = context[name];
