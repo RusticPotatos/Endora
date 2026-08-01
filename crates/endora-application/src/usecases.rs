@@ -247,8 +247,8 @@ fn note_verification_against(
 ///
 /// Names are matched longest-first for the same reason the facts disclosure does it: a call
 /// aimed at `Kitchen Main Light` must not be explained by something called `Kitchen`.
-fn note_not_answering(input_json: &str, mut states: Vec<(String, String)>) -> String {
-    let asked = words_of(input_json);
+fn note_not_answering(named_in: &str, mut states: Vec<(String, String)>) -> String {
+    let asked = words_of(named_in);
     states.sort_by_key(|(name, _)| std::cmp::Reverse(name.len()));
     let Some((name, state)) = states.into_iter().find(|(name, state)| {
         endora_capabilities::not_answering(state) && contains_all_words(&asked, &words_of(name))
@@ -1587,6 +1587,16 @@ pub fn send_to_butler_streaming(
     // unchecked, and because an acting turn already discloses its own before-and-after.
     if disclosures.is_empty() {
         appended.push_str(&facts_behind(&reply_text, capabilities.current_states()));
+        // The same fact, at answer time. Live: "turn on the guest bedroom left lamp" got
+        // "there doesn't seem to be a guest bedroom left lamp in your home setup, sir" —
+        // and there is one, unavailable since Tuesday. The tool surface hides an
+        // unreachable entity, so the model was told the truth it could see and reported a
+        // falsehood; direct reach can see the rest, and says so rather than letting the
+        // person go looking for a lamp they own.
+        appended.push_str(&note_not_answering(
+            &reply_text,
+            capabilities.current_states(),
+        ));
         appended.push_str(&account_behind(&reply_text, &context.did_lately));
     }
     // Where the words went. Disclosed on every escalated turn rather than left to a
@@ -7450,6 +7460,18 @@ mod why_it_could_not_have_worked {
         assert!(said.contains("Guest Bedroom Left"), "{said}");
         assert!(said.contains("unavailable"), "{said}");
         assert!(said.contains("it is the device, not the request"), "{said}");
+    }
+
+    #[test]
+    fn a_reply_that_denies_the_thing_exists_is_corrected_with_the_fact() {
+        // The live reply, word for word. The lamp exists and is unreachable; the tool
+        // surface hides unavailable entities, so the model reported what it could see and
+        // sent the person looking for something they own.
+        let denied = "I'm sorry, but there doesn't seem to be a guest bedroom left lamp in \
+                      your home setup, sir.";
+        let said = note_not_answering(denied, house());
+        assert!(said.contains("Guest Bedroom Left"), "{said}");
+        assert!(said.contains("unavailable"), "{said}");
     }
 
     #[test]
