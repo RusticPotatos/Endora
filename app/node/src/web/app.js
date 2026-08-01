@@ -24,6 +24,7 @@ let TUNE_SCHED = { enabled: false, hour_utc: 4 }; // nightly self-improving mode
 let UNDERSTANDING = [];        // Endora's beliefs about the person (the home surface)
 let OUTCOMES = [];             // what Endora DID, and what it saw afterwards (ADR 0053)
 let INTENTIONS = [];           // what Endora is pursuing, and has pursued (ADR 0052)
+let NOTIONS = [];              // what Endora is still thinking about (ADR 0057)
 let MCP_NEEDS = { fields: [], docs: "" }; // what the chosen catalogue entry says it needs
 let WORTH_KNOWING = { models: [], fits_gb: 12, asked: false }; // hub models that would fit
 let CHAT_DAY = null;           // which day's conversation is showing; null = today
@@ -139,6 +140,7 @@ async function reload() {
   try { UNDERSTANDING = await api("GET", "/v1/understanding"); } catch (_) { UNDERSTANDING = []; }
   try { OUTCOMES = await api("GET", "/v1/outcomes"); } catch (_) { OUTCOMES = []; }
   try { INTENTIONS = await api("GET", "/v1/intentions"); } catch (_) { INTENTIONS = []; }
+  try { NOTIONS = await api("GET", "/v1/notions"); } catch (_) { NOTIONS = []; }
   try { REPAIRS = await api("GET", "/v1/repairs"); } catch (_) { REPAIRS = []; }
   try { TROUBLE = await api("GET", "/v1/standing-trouble"); } catch (_) { TROUBLE = []; }
   try { LANDING = await api("GET", "/v1/reliability"); } catch (_) { LANDING = null; }
@@ -1326,7 +1328,29 @@ function viewUnderstanding() {
 
     ${setup}
     ${groups || `<div class="empty">Nothing yet. Talk with Endora and it will start to understand you — you'll see it here.</div>`}
-    ${viewIntention()}`;
+    ${viewIntention()}
+    ${viewNotions()}`;
+}
+
+// What Endora is still turning over (ADR 0057).
+//
+// Deliberately the plainest thing on this screen: no buttons, no count, no badge. The person
+// may look at what their butler is chewing on — holding private theories about somebody is not
+// something this system does — but there is nothing here for them to answer, dismiss or keep
+// tidy. A notion that comes to something becomes a belief above; one that does not lets itself
+// go. Both happen without anyone doing anything.
+function viewNotions() {
+  const open = (NOTIONS || []).filter((n) => n.status === "open");
+  if (!open.length) return "";
+  const rows = open.map((n) => `
+    <div class="card"><div class="row"><div class="grow">
+      <div class="title" style="font-weight:500;">${esc(n.statement)}</div>
+      <div class="sub">from ${esc((n.because || []).join(", "))}</div>
+      ${n.settles_when ? `<div class="sub">watching for: ${esc(n.settles_when)}</div>` : ""}
+    </div></div></div>`).join("");
+  return `<h3 style="margin-top:16px;">Still wondering</h3>
+    <div class="sub" style="margin-bottom:8px;">Not settled — nothing for you to do with these.</div>
+    ${rows}`;
 }
 
 // What Endora is currently working on (ADR 0052).

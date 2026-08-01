@@ -143,6 +143,14 @@ runInContext(
   OUTCOMES = [{ id: "42", capability: "home.HassTurnOff", claim: "done",
                 observation: "still on", observed: true, reaction: null, at_ms: 1 }];
   INTENTIONS = [{ id: "1", summary: "find a running route", state: "active", steps_left: 3 }];
+  // Open, with evidence — an empty fixture once missed the very bug it was written for, and a
+  // notion carrying no evidence would skip the one line here that can actually throw.
+  NOTIONS = [{ id: "1", statement: "the Monday gym block gets cancelled",
+               because: ["message:12", "reading:calendar.rustic"],
+               settles_when: "whether next Monday's block survives",
+               status: "open", created_ms: 1, last_supported_ms: 2 },
+             { id: "2", statement: "a thought that came to nothing", because: ["message:3"],
+               settles_when: "", status: "died", created_ms: 1, last_supported_ms: 1 }];
   REPAIRS = [{ capability: "home.HassTurnOff", target: "kitchen", attempts: 3,
                remedy: "name_the_target" }];
   TROUBLE = [{ server: "home-assistant", thing: "living room lamp", trouble: "unavailable",

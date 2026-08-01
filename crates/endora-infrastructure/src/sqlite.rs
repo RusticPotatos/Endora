@@ -184,6 +184,24 @@ CREATE TABLE IF NOT EXISTS standing_trouble (
     accepted INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (server, thing, trouble)
 ) STRICT;
+CREATE TABLE IF NOT EXISTS notions (
+    id                TEXT PRIMARY KEY,
+    statement         TEXT NOT NULL,
+    settles_when      TEXT NOT NULL,
+    created_ms        INTEGER NOT NULL,
+    last_supported_ms INTEGER NOT NULL,
+    status            TEXT NOT NULL
+) STRICT;
+-- One row per distinct record behind a notion (ADR 0057). The composite primary key is the
+-- schema-level half of the rule that the same record cited twice is one piece of evidence:
+-- the domain refuses the duplicate and the table cannot store it either, so no path adds the
+-- same evidence twice however a notion comes to be written.
+CREATE TABLE IF NOT EXISTS notion_citations (
+    notion_id TEXT NOT NULL,
+    source    TEXT NOT NULL,
+    reference TEXT NOT NULL,
+    PRIMARY KEY (notion_id, source, reference)
+) STRICT;
 CREATE TABLE IF NOT EXISTS mcp_servers (
     name    TEXT PRIMARY KEY,
     kind    TEXT NOT NULL,
@@ -1059,5 +1077,36 @@ mod the_schema_production_actually_runs {
         config
             .clear_trouble("house", "Living Room Lamp")
             .expect("clear");
+    }
+
+    #[test]
+    fn a_notion_can_be_stored_by_the_schema_production_runs() {
+        // `endora_understanding::migrate` is the same shortcut the test above was written
+        // about: called by that crate's own tests and by nothing else. Notions live in two
+        // tables, so this is exactly the shape that has twice shipped a green suite and an
+        // "internal error" in the person's house — and the second table, holding the
+        // evidence, is the one whose absence would silently turn every notion into an
+        // unfounded statement about them (ADR 0057).
+        use endora_application::{Citation, Notion, NotionId, NotionRepository, Source, Timestamp};
+
+        let store = SqliteStore::open_in_memory().expect("open the production store");
+        let understanding = endora_understanding::UnderstandingStore::new(store.db());
+
+        let notion = Notion::new(
+            NotionId::new(1),
+            "the Monday gym block gets cancelled",
+            vec![
+                Citation::new(Source::Outcome, "outcome-7").unwrap(),
+                Citation::new(Source::Message, "msg-2").unwrap(),
+            ],
+            "whether next Monday's block survives",
+            Timestamp::from_unix_millis(1_000),
+        )
+        .unwrap();
+        NotionRepository::save(&understanding, &notion).expect("notions");
+
+        let back = NotionRepository::open(&understanding).expect("read back");
+        assert_eq!(back.len(), 1);
+        assert_eq!(back[0].support_count(), 2, "notion_citations");
     }
 }

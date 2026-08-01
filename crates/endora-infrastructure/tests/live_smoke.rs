@@ -26,6 +26,7 @@
 //! ```
 
 use endora_application::{reads_as_an_instruction, says_the_same_thing, statements_disagree};
+use endora_understanding::domain::notions::MOST_NOTIONS_AT_ONCE;
 use serde_json::Value;
 
 /// Where the node is, unless told otherwise.
@@ -39,6 +40,7 @@ const WHAT_THE_INTERFACE_LOADS: &[&str] = &[
     "/v1/capabilities",
     "/v1/activity",
     "/v1/intentions",
+    "/v1/notions",
     "/v1/outcomes",
     "/v1/repairs",
     "/v1/standing-trouble",
@@ -255,5 +257,38 @@ fn the_butler_is_told_where_the_person_is() {
     assert!(
         !right_now.is_empty(),
         "the turn carries nothing about the person's world: {told:#}"
+    );
+}
+
+#[test]
+#[ignore = "talks to a deployed node: run with `make smoke` after `make deploy`"]
+fn nothing_it_wonders_about_is_unfounded() {
+    // The one guarantee ADR 0057 rests on, checked against the real thing rather than a
+    // fixture: a notion exists only if records that exist bore it out. A statement about the
+    // person with no evidence behind it is the failure this whole feature was designed around,
+    // and it is the kind that would be invisible — the card would read perfectly well.
+    //
+    // Uses the production constant rather than a copy: a smoke test with its own idea of the
+    // cap is testing its own idea.
+    let wondering = get("/v1/notions");
+    let open = wondering.as_array().cloned().unwrap_or_default();
+
+    for notion in &open {
+        let because = notion["because"].as_array().cloned().unwrap_or_default();
+        assert!(
+            !because.is_empty(),
+            "this is a statement about the person with nothing behind it: {notion:#}"
+        );
+        assert!(
+            !notion["statement"].as_str().unwrap_or_default().is_empty(),
+            "a notion with no statement: {notion:#}"
+        );
+    }
+
+    assert!(
+        open.len() <= MOST_NOTIONS_AT_ONCE,
+        "{} open notions is past the cap of {MOST_NOTIONS_AT_ONCE} — the bound that keeps this \
+         a cursor rather than the queue ADR 0029 deleted: {wondering:#}",
+        open.len()
     );
 }
