@@ -2537,7 +2537,8 @@ pub fn daily_brief(
     // the pile of chores ADR 0056 forbids.
     let open = troubles.troubles().unwrap_or_default();
     let raisable = endora_capabilities::worth_raising(&open, clock.now().unix_millis());
-    let already_known = whats_worth_saying_this_morning(&brief_ctx, &raisable);
+    let already_known =
+        whats_worth_saying_this_morning(&brief_ctx, &raisable, clock.now().unix_millis());
     let ask = [ChatMessage::new(
         MessageId::new(ids.new_id()),
         MessageRole::User,
@@ -3240,6 +3241,7 @@ fn word_the_brief(
 fn whats_worth_saying_this_morning(
     context: &ButlerContext,
     troubles: &[&endora_capabilities::StandingTrouble],
+    now_ms: i64,
 ) -> Option<String> {
     let mut lines: Vec<String> = Vec::new();
     // One fact per line. The services join theirs with "; ", which reads as a run-on in a
@@ -3255,7 +3257,11 @@ fn whats_worth_saying_this_morning(
     // Things that have been wrong long enough to be worth a mention. Only the ones already
     // judged worth raising, so the brief cannot become the pile of chores ADR 0056 forbids.
     for trouble in troubles {
-        lines.push(trouble.statement(trouble.since_ms));
+        // Measured against NOW, not against when it started. Passing `since_ms` here made
+        // every duration zero, so the first brief to carry these said "has not answered
+        // since earlier today" about seven things that had been silent for three days —
+        // and the duration is the entire reason a problem statement is not a status line.
+        lines.push(trouble.statement(now_ms));
     }
     // Deliberately NOT what Endora has been doing. That answers "did you do anything while
     // I was out?", which is a different question — and put in a brief it reads as Endora
@@ -8277,6 +8283,26 @@ mod who_words_the_brief {
             "{:?}",
             not_yet_said(written, facts)
         );
+    }
+
+    #[test]
+    fn a_problem_statement_says_how_long_it_has_been_wrong() {
+        // The first brief to carry these said "has not answered since earlier today" about
+        // seven things silent for three days, because the duration was measured against
+        // when it started rather than against now. The duration is the entire reason a
+        // problem statement is not a status line (ADR 0056).
+        const DAY: i64 = 86_400_000;
+        let lamp = endora_capabilities::StandingTrouble {
+            server: "home-assistant".to_owned(),
+            thing: "living room lamp".to_owned(),
+            trouble: "unavailable".to_owned(),
+            since_ms: 0,
+            accepted: false,
+        };
+        let said = whats_worth_saying_this_morning(&ButlerContext::default(), &[&lamp], 3 * DAY)
+            .expect("something to say");
+        assert!(said.contains("for 3 days"), "{said}");
+        assert!(!said.contains("earlier today"), "{said}");
     }
 
     #[test]
