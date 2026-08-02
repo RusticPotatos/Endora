@@ -62,6 +62,12 @@ pub struct AppState {
     /// subscribers know to refresh. Carries no payload — it is a "something
     /// changed" nudge, and clients re-read the authoritative state.
     pub changes: broadcast::Sender<()>,
+    /// The token every `/v1` request must carry.
+    ///
+    /// This node shipped with no inbound authentication at all, on `0.0.0.0`, which made
+    /// `/v1/export` and every write available to anyone who could reach the port. Empty here
+    /// refuses every API route rather than opening them — see [`crate::auth::may_pass`].
+    pub token: Arc<String>,
     /// The butler's skills (weather, web, …) — declared modules the butler can
     /// reach for, each gated by its autonomy level (ADR 0056).
     pub capabilities: Arc<Vec<Arc<dyn Capability>>>,
@@ -114,6 +120,8 @@ impl AppState {
         clock: Arc<SystemClock>,
         butler: Arc<dyn Butler + Send + Sync>,
     ) -> Self {
+        // Resolved before the struct takes ownership of the store.
+        let token = Arc::new(the_nodes_token(&store, &ids));
         // A small buffer is plenty: subscribers coalesce to a single refresh,
         // and a lagged receiver still gets one "changed" signal.
         let (changes, _) = broadcast::channel(16);
@@ -172,6 +180,48 @@ impl AppState {
             mcp,
             turn_lock: Arc::new(tokio::sync::Mutex::new(())),
             summary,
+            token,
+        }
+    }
+}
+
+/// The token this node will accept, made once and kept.
+///
+/// `ENDORA_TOKEN` wins when set, so a deployment can pin it. Otherwise one is generated on
+/// first run, stored, and **printed to the log** — the operator has a shell on the machine
+/// this runs on, which is the one channel that needs no bootstrapping of its own.
+///
+/// Two identifiers from the source the rest of the node already uses (v4 UUIDs, so 256 bits
+/// of the same randomness) — and **no new dependency** for something a dependency would not
+/// make safer.
+///
+/// If the store cannot be read or written, this returns **empty**, and empty refuses every
+/// API route. A node that cannot remember its own credential is not a node that should be
+/// answering — failing open here would undo the entire point.
+fn the_nodes_token(store: &SqliteStore, ids: &RandomIdSource) -> String {
+    if let Ok(pinned) = std::env::var("ENDORA_TOKEN") {
+        let pinned = pinned.trim().to_owned();
+        if !pinned.is_empty() {
+            return pinned;
+        }
+    }
+    match store.node_token() {
+        Ok(Some(kept)) => kept,
+        Ok(None) => {
+            use endora_application::IdSource as _;
+            let made = format!("{:032x}{:032x}", ids.new_id(), ids.new_id());
+            if store.set_node_token(&made).is_err() {
+                eprintln!("endora: could not store a token, so nothing will be let in");
+                return String::new();
+            }
+            eprintln!(
+                "\nendora: this node's token is\n\n    {made}\n\npaste it into the console once. It will not be shown again.\n"
+            );
+            made
+        }
+        Err(e) => {
+            eprintln!("endora: could not read the stored token ({e}); refusing everything");
+            String::new()
         }
     }
 }
@@ -938,7 +988,44 @@ pub fn app(state: AppState) -> Router {
         .route("/v1/memory/purge", post(purge))
         // Notify activity-stream subscribers after any successful write.
         .layer(from_fn_with_state(state.changes.clone(), notify_on_change))
+        // Outermost, so nothing behind it runs for a request that has no business being here.
+        .layer(from_fn_with_state(state.token.clone(), require_the_token))
         .with_state(state)
+}
+
+/// Middleware: refuses any `/v1` request that does not carry the node's token.
+///
+/// The console, its assets and `/health` stay open — the screen that *asks* for a token is
+/// served by this node, and a health check has to answer before anybody has one. Everything
+/// else is closed, including when no token is configured at all (see [`crate::auth::may_pass`]).
+///
+/// `401` rather than `403`: the request may be retried with a credential, which is exactly
+/// what the console does after the person pastes one.
+async fn require_the_token(
+    State(token): State<Arc<String>>,
+    request: Request,
+    next: Next,
+) -> Response {
+    let path = request.uri().path().to_owned();
+    let offered = request
+        .headers()
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_owned);
+    // Only the live feed is allowed to carry it here, and only because `EventSource` cannot
+    // set a header. `may_pass` enforces that, not this parsing.
+    let in_query = request.uri().query().and_then(|q| {
+        q.split('&')
+            .find_map(|pair| pair.strip_prefix("token=").map(str::to_owned))
+    });
+    if !crate::auth::may_pass(&path, offered.as_deref(), in_query.as_deref(), &token) {
+        return (
+            StatusCode::UNAUTHORIZED,
+            "this node needs its token — see the container log on first run",
+        )
+            .into_response();
+    }
+    next.run(request).await
 }
 
 /// Middleware: after a successful write (any `POST`), send a "changed" signal so
@@ -4450,13 +4537,20 @@ mod tests {
     use std::sync::Arc;
     use tower::ServiceExt; // for `oneshot`
 
+    /// A known token, so the helpers below can sign like the console does.
+    const TEST_TOKEN: &str = "a-token-for-tests";
+
     fn test_state() -> AppState {
-        AppState::new(
+        let mut state = AppState::new(
             Arc::new(SqliteStore::open_in_memory().unwrap()),
             Arc::new(RandomIdSource),
             Arc::new(SystemClock),
             Arc::new(endora_infrastructure::ScriptedButler),
-        )
+        );
+        // Pinned rather than read back, so a test signs with something it chose. The
+        // generated-on-first-run path is exercised by `the_node_makes_and_keeps_a_token`.
+        state.token = Arc::new(TEST_TOKEN.to_owned());
+        state
     }
 
     async fn json_body(res: axum::response::Response) -> serde_json::Value {
@@ -4469,20 +4563,101 @@ mod tests {
             .method("POST")
             .uri(uri)
             .header("content-type", "application/json")
+            .header("authorization", format!("Bearer {TEST_TOKEN}"))
             .body(Body::from(body.to_owned()))
             .unwrap()
     }
 
     fn get(uri: &str) -> Request<Body> {
-        Request::builder().uri(uri).body(Body::empty()).unwrap()
+        Request::builder()
+            .uri(uri)
+            .header("authorization", format!("Bearer {TEST_TOKEN}"))
+            .body(Body::empty())
+            .unwrap()
     }
 
     fn del(uri: &str) -> Request<Body> {
         Request::builder()
             .method("DELETE")
             .uri(uri)
+            .header("authorization", format!("Bearer {TEST_TOKEN}"))
             .body(Body::empty())
             .unwrap()
+    }
+
+    /// Exactly the same request, unsigned — for proving a route is actually shut.
+    fn unsigned(uri: &str) -> Request<Body> {
+        Request::builder().uri(uri).body(Body::empty()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn an_unsigned_request_gets_nothing() {
+        // The hole this exists for: every one of these answered anyone who could reach the
+        // port, on an interface bound to 0.0.0.0. `/v1/export` handed over the whole
+        // conversation, and `/v1/deep-model` would have taken an endpoint of somebody's
+        // choosing and sent every later turn there.
+        let app = app(test_state());
+        for path in [
+            "/v1/export",
+            "/v1/chat",
+            "/v1/capabilities",
+            "/v1/deep-model",
+            "/v1/activity/stream",
+        ] {
+            let res = app.clone().oneshot(unsigned(path)).await.unwrap();
+            assert_eq!(
+                res.status(),
+                StatusCode::UNAUTHORIZED,
+                "{path} answered an unsigned request"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_wrong_token_is_no_better_than_none() {
+        let res = app(test_state())
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/export")
+                    .header("authorization", "Bearer not-the-token")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn the_console_still_loads_without_one() {
+        // It must: the screen that asks for the token is served by this node, and a health
+        // check has to answer before anybody has one.
+        let app = app(test_state());
+        for path in ["/", "/app.js", "/styles.css", "/health"] {
+            let res = app.clone().oneshot(unsigned(path)).await.unwrap();
+            assert_eq!(res.status(), StatusCode::OK, "{path} should stay open");
+        }
+    }
+
+    #[tokio::test]
+    async fn the_node_makes_and_keeps_a_token() {
+        // Generated once and remembered, so a restart does not lock the person out of their
+        // own console.
+        let store = Arc::new(SqliteStore::open_in_memory().unwrap());
+        assert_eq!(
+            store.node_token().unwrap(),
+            None,
+            "nothing before first run"
+        );
+
+        let ids = Arc::new(RandomIdSource);
+        let first = super::the_nodes_token(&store, &ids);
+        assert!(first.len() >= 32, "not enough token: {first:?}");
+        assert_eq!(
+            super::the_nodes_token(&store, &ids),
+            first,
+            "kept, not remade"
+        );
     }
 
     #[tokio::test]
