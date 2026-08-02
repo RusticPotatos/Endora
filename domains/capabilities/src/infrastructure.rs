@@ -261,7 +261,7 @@ pub fn default_capabilities() -> Vec<Arc<dyn Capability>> {
 
 /// Reads a service address the person typed, and makes it a URL.
 ///
-/// `192.168.1.14:8123` is what someone types when asked for their Home Assistant address,
+/// `192.168.1.10:8123` is what someone types when asked for their Home Assistant address,
 /// and it is not a URL — every request built from it fails with `http: invalid format`.
 ///
 /// This was live and invisible. Endora's **direct reach** into the house had been dead:
@@ -1765,7 +1765,7 @@ const HA_SETTINGS: &[SettingSpec] = &[
     SettingSpec {
         key: "open_on_tap",
         label: "Where a tapped notification takes you — the address you reach Endora at, \
-                e.g. https://192.168.1.14:8787 (blank = it just opens Home Assistant)",
+                e.g. https://192.168.1.10:8787 (blank = it just opens Home Assistant)",
         secret: false,
         optional: true,
     },
@@ -4337,7 +4337,7 @@ mod tests {
         // Loopback, RFC1918, link-local (incl. cloud metadata), and IPv6 loopback.
         for url in [
             "http://127.0.0.1/x",
-            "http://192.168.1.14:8787/data",
+            "http://192.168.1.10:8787/data",
             "http://10.0.0.5/",
             "http://169.254.169.254/latest/meta-data",
             "https://[::1]/",
@@ -6263,7 +6263,7 @@ mod an_address_someone_typed {
         // Live, and invisible: this is exactly what was in the settings, and every request
         // built from it failed with `http: invalid format` — taking presence, live states
         // and the standing-trouble watch down without anything appearing to be broken.
-        assert_eq!(as_url("192.168.1.14:8123"), "http://192.168.1.14:8123");
+        assert_eq!(as_url("192.168.1.10:8123"), "http://192.168.1.10:8123");
         assert_eq!(
             as_url("  homeassistant.local:8123  "),
             "http://homeassistant.local:8123"
@@ -6276,8 +6276,8 @@ mod an_address_someone_typed {
         // the bug this fixes.
         assert_eq!(as_url("https://ha.example.com"), "https://ha.example.com");
         assert_eq!(
-            as_url("http://192.168.1.14:8123/"),
-            "http://192.168.1.14:8123"
+            as_url("http://192.168.1.10:8123/"),
+            "http://192.168.1.10:8123"
         );
     }
 

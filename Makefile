@@ -41,6 +41,16 @@ ENDORA_URL ?= https://127.0.0.1:8787
 # It can still read beliefs and context, which the suite asserts on — deliberate, not a gap.
 ENDORA_TOKEN ?=
 
+# Your own values — your name, your city, your postcode, anyone you live with — comma
+# separated, so `make personal-check` can prove none of them are in the tree. They go in
+# local.mk and nowhere else, which is the point rather than a precaution: a city, a county,
+# a postcode and three people's names once reached this public repository through test
+# fixtures, and every one of them was caught by somebody reading a diff.
+#
+# Empty here and empty in CI, deliberately. The machine that holds the real values is the
+# only machine that can check for them; CI checks by shape instead.
+ENDORA_PERSONAL_VALUES ?=
+
 # Compose derives its project name from the working directory, so running a
 # deploy from a git worktree would invent a NEW project — a fresh empty volume,
 # and a name collision with the real deployment. Pinning it means every deploy
@@ -174,6 +184,15 @@ console-check: ## Render every console screen in Node (catches a broken UI befor
 	# rendered a blank page. This loads app.js and actually calls every screen.
 	node scripts/check-console.mjs
 
+.PHONY: personal-check
+personal-check: ## Fail if anything personal is in the tree (a city and two names once were)
+	# By shape — a real mailbox, a home address, coordinates, a phone number, a live
+	# secret — so it does not need to know who you are. What it cannot guess, your own
+	# name and your own city, comes from ENDORA_PERSONAL_VALUES in the git-ignored
+	# local.mk. That is the rule stated as a mechanism: personal values are
+	# configuration, and configuration is not in the repository.
+	ENDORA_PERSONAL_VALUES="$(ENDORA_PERSONAL_VALUES)" node scripts/check-nothing-personal.mjs
+
 .PHONY: fmt
 fmt: ## Format the code in place
 	$(CARGO) fmt --all
@@ -199,7 +218,7 @@ diff-check: ## Fail on whitespace errors / leftover conflict markers
 	git diff --check
 
 .PHONY: ci
-ci: fmt-check clippy test console-check diff-check ## Run every check exactly as CI does
+ci: fmt-check clippy test console-check personal-check diff-check ## Run every check exactly as CI does
 	@echo "All CI checks passed."
 
 ## ----------------------------------------------------------------------------

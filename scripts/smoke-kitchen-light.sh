@@ -11,7 +11,7 @@
 # Exit 0 = PASS (an HA action tool ran); 1 = no action ran; 2 = degraded reply.
 set -uo pipefail
 
-BASE="${ENDORA_URL:-https://192.168.1.14:8787}"
+BASE="${ENDORA_URL:-https://192.168.1.10:8787}"
 MSG="${1:-turn off the kitchen light}"
 
 payload=$(MSG="$MSG" python3 -c 'import json,os; print(json.dumps({"message": os.environ["MSG"]}))')

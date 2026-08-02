@@ -14,7 +14,7 @@
 //! live model, so it is `#[ignore]`d. Run per model:
 //!
 //! ```text
-//! ENDORA_MODEL_URL=http://192.168.1.14:11434/v1 ENDORA_MODEL=qwen2.5:14b \
+//! ENDORA_MODEL_URL=http://192.168.1.10:11434/v1 ENDORA_MODEL=qwen2.5:14b \
 //!   cargo test -p endora-infrastructure --test agentic_eval -- --ignored --nocapture
 //! ```
 
@@ -86,7 +86,7 @@ fn report(label: &str, score: &RepeatedScore) {
 #[ignore = "needs a live model: set ENDORA_MODEL_URL and ENDORA_MODEL, run with --ignored"]
 fn butler_drives_the_agentic_loop() {
     let url = std::env::var("ENDORA_MODEL_URL")
-        .expect("set ENDORA_MODEL_URL (e.g. http://192.168.1.14:11434/v1)");
+        .expect("set ENDORA_MODEL_URL (e.g. http://192.168.1.10:11434/v1)");
     let model = std::env::var("ENDORA_MODEL").expect("set ENDORA_MODEL (e.g. qwen2.5:14b)");
     let butler = LlmButler::new(url, model.clone());
     let score = evaluate_repeated(&butler, runs());
@@ -121,7 +121,7 @@ fn butler_drives_the_agentic_loop() {
 #[ignore = "needs a live model: set ENDORA_MODEL_URL, ENDORA_ROUTER_MODEL, ENDORA_SYNTH_MODEL"]
 fn mixture_drives_the_agentic_loop() {
     let url = std::env::var("ENDORA_MODEL_URL")
-        .expect("set ENDORA_MODEL_URL (e.g. http://192.168.1.14:11434/v1)");
+        .expect("set ENDORA_MODEL_URL (e.g. http://192.168.1.10:11434/v1)");
     let router =
         std::env::var("ENDORA_ROUTER_MODEL").expect("set ENDORA_ROUTER_MODEL (e.g. hermes3:8b)");
     let synth =
