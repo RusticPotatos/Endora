@@ -24,8 +24,21 @@ DOCKER_CONTEXT ?=
 # Where `make smoke` looks for the deployed node. Override in local.mk to point at the
 # host you actually deploy to; the default is a local `make deploy`.
 ENDORA_URL ?= https://127.0.0.1:8787
-# The node's token. Printed to its log on first run; put it in the git-ignored local.mk
-# beside ENDORA_URL. Without it the smoke suite gets 401 and says so.
+# The credential `make smoke` signs its requests with (the node refuses /v1 without one).
+# Put it in the git-ignored local.mk beside ENDORA_URL; without it the suite gets 401 and
+# says so by name rather than looking like a broken screen.
+#
+# Use a SESSION token, not the bootstrap one printed to the node's log. The bootstrap token
+# never expires and cannot be rotated without editing the database; a session ages out in
+# thirty days and is revoked by clearing `node_sessions`. A plaintext file on a laptop should
+# hold the credential you can throw away.
+#
+# You already have one after signing in — in the browser's devtools console, on the Endora
+# tab:
+#
+#     localStorage.getItem('endora-token')
+#
+# Preferred over signing in with `curl`, which would leave the password in shell history.
 ENDORA_TOKEN ?=
 
 # Compose derives its project name from the working directory, so running a
