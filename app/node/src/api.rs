@@ -919,6 +919,15 @@ pub fn app(state: AppState) -> Router {
         .route("/v1/session/setup", get(sign_in_setup).post(set_sign_in))
         // A read-only credential for `make smoke`, behind a full one.
         .route("/v1/session/checks", post(mint_a_checking_token))
+        // Managing your own credentials. Every one of these needs a full session, and the two
+        // that change something need the current password as well.
+        .route("/v1/session/password", post(change_password))
+        .route("/v1/session/authenticator", post(begin_new_authenticator))
+        .route(
+            "/v1/session/authenticator/confirm",
+            post(confirm_new_authenticator),
+        )
+        .route("/v1/session/bootstrap", get(reveal_the_bootstrap_token))
         .route("/v1/connect/connected", get(what_is_connected))
         .route("/v1/connect/begin", post(begin_connecting))
         .route("/v1/connect/finish", post(finish_connecting))
@@ -1095,6 +1104,142 @@ fn password_matches(password: &str, stored: &str) -> bool {
             .verify_password(password.as_bytes(), &parsed)
             .is_ok()
     })
+}
+
+#[derive(Deserialize)]
+struct ChangePassword {
+    current: String,
+    new: String,
+}
+
+/// Changes the password. Requires the current one.
+///
+/// Being signed in is not enough. A session lives in a browser and can be taken; the password
+/// is the thing only the person knows, so it is what proves this is them and not somebody
+/// sitting at their unlocked laptop.
+async fn change_password(
+    State(state): State<AppState>,
+    Json(req): Json<ChangePassword>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    if req.new.chars().count() < 12 {
+        return Err(ApiError(endora_application::AppError::BadRequest {
+            message: "a password shorter than twelve characters is not worth hashing".to_owned(),
+        }));
+    }
+    let hash = hash_password(&req.new).map_err(|e| {
+        ApiError(endora_application::AppError::Repository(
+            endora_application::RepositoryError::Backend(e),
+        ))
+    })?;
+    let store = state.store.clone();
+    let changed = blocking(move || {
+        let (current_hash, secret) = store.sign_in_setup()?;
+        if !password_matches(&req.current, &current_hash) {
+            return Ok::<_, endora_application::AppError>(false);
+        }
+        store.set_sign_in_setup(&hash, &secret)?;
+        Ok(true)
+    })
+    .await?;
+    if !changed {
+        return Err(ApiError(endora_application::AppError::BadRequest {
+            message: "that is not your current password".to_owned(),
+        }));
+    }
+    Ok(Json(json!({ "ok": true })))
+}
+
+#[derive(Deserialize)]
+struct ProveItIsYou {
+    current: String,
+}
+
+/// Begins replacing the authenticator: makes a new secret and hands back its QR.
+///
+/// **Changes nothing yet.** The live secret keeps working, and the old phone keeps working,
+/// until a code from the new one proves it was really scanned. A swap that took effect on
+/// being *offered* would lock somebody out of their own house the first time a QR did not
+/// scan cleanly.
+async fn begin_new_authenticator(
+    State(state): State<AppState>,
+    Json(req): Json<ProveItIsYou>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let store = state.store.clone();
+    let ids = state.ids.clone();
+    let made = blocking(move || {
+        let (current_hash, _) = store.sign_in_setup()?;
+        if !password_matches(&req.current, &current_hash) {
+            return Ok::<_, endora_application::AppError>(None);
+        }
+        use endora_application::IdSource as _;
+        let bytes: Vec<u8> = ids.new_id().to_be_bytes()[..16]
+            .iter()
+            .chain(ids.new_id().to_be_bytes()[..4].iter())
+            .copied()
+            .collect();
+        let hex = crate::totp::to_hex(&bytes);
+        store.set_pending_authenticator(&hex)?;
+        Ok(Some(bytes))
+    })
+    .await?;
+    let Some(bytes) = made else {
+        return Err(ApiError(endora_application::AppError::BadRequest {
+            message: "that is not your current password".to_owned(),
+        }));
+    };
+    Ok(Json(json!({
+        "qr": crate::totp::enrolment_qr(&bytes, "you"),
+        "otpauth": crate::totp::enrolment_uri(&bytes, "you"),
+    })))
+}
+
+#[derive(Deserialize)]
+struct ConfirmAuthenticator {
+    code: String,
+}
+
+/// Locks in the replacement authenticator, once a code from **it** proves it was scanned.
+///
+/// Verified against the pending secret, never the live one — checking the old one would
+/// happily "confirm" a new phone that was never set up, which is precisely the lock-out this
+/// two-step exists to prevent.
+async fn confirm_new_authenticator(
+    State(state): State<AppState>,
+    Json(req): Json<ConfirmAuthenticator>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let store = state.store.clone();
+    let now = u64::try_from(state.clock.now().unix_millis() / 1_000).unwrap_or_default();
+    let locked_in = blocking(move || {
+        let pending = store.pending_authenticator()?;
+        if pending.is_empty() {
+            return Ok::<_, endora_application::AppError>(false);
+        }
+        if !crate::totp::verify(&crate::totp::from_hex(&pending), &req.code, now) {
+            return Ok(false);
+        }
+        let (hash, _) = store.sign_in_setup()?;
+        store.set_sign_in_setup(&hash, &pending)?;
+        store.set_pending_authenticator("")?;
+        Ok(true)
+    })
+    .await?;
+    if !locked_in {
+        return Err(ApiError(endora_application::AppError::BadRequest {
+            message: "that code did not come from the new authenticator".to_owned(),
+        }));
+    }
+    Ok(Json(json!({ "ok": true })))
+}
+
+/// The node's bootstrap token, for somebody already signed in.
+///
+/// They can already do everything this token allows, so showing it adds no power — it saves
+/// an SSH to read a log. Named plainly as the recovery credential, because that is what it is
+/// and what it should be kept like.
+async fn reveal_the_bootstrap_token(
+    State(state): State<AppState>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    Ok(Json(json!({ "token": (*state.token).clone() })))
 }
 
 /// Mints a read-only credential for the smoke suite.
@@ -5115,6 +5260,190 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    /// A signed-in state with a known password, for the credential-management tests.
+    fn signed_in_state() -> (AppState, String) {
+        let state = test_state();
+        super::ensure_enrolment_secret(&state.store, &RandomIdSource).unwrap();
+        let hash = super::hash_password("the-current-password").unwrap();
+        let (_, secret) = state.store.sign_in_setup().unwrap();
+        state.store.set_sign_in_setup(&hash, &secret).unwrap();
+        (state, secret)
+    }
+
+    fn code_now(secret_hex: &str) -> String {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        format!(
+            "{:06}",
+            crate::totp::code_at(&crate::totp::from_hex(secret_hex), now)
+        )
+    }
+
+    #[tokio::test]
+    async fn changing_the_password_needs_the_current_one() {
+        // Being signed in is not enough. A session lives in a browser and can be taken; the
+        // password is the thing only the person knows.
+        let (state, _) = signed_in_state();
+        let app = app(state);
+
+        let refused = app
+            .clone()
+            .oneshot(post(
+                "/v1/session/password",
+                r#"{"current":"a-wrong-guess","new":"a-brand-new-password"}"#,
+            ))
+            .await
+            .unwrap();
+        assert!(!refused.status().is_success());
+
+        let allowed = app
+            .oneshot(post(
+                "/v1/session/password",
+                r#"{"current":"the-current-password","new":"a-brand-new-password"}"#,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(allowed.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn a_half_finished_authenticator_swap_leaves_the_old_phone_working() {
+        // The lock-out this two-step exists to prevent. Somebody asks for a new authenticator,
+        // the QR does not scan, they close the tab — and their existing phone must still open
+        // the door.
+        let (state, original) = signed_in_state();
+        let store = state.store.clone();
+        let app = app(state);
+
+        let started = app
+            .clone()
+            .oneshot(post(
+                "/v1/session/authenticator",
+                r#"{"current":"the-current-password"}"#,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(started.status(), StatusCode::OK);
+
+        // Nothing has changed yet.
+        assert_eq!(
+            store.sign_in_setup().unwrap().1,
+            original,
+            "live secret moved"
+        );
+        assert!(
+            !store.pending_authenticator().unwrap().is_empty(),
+            "a replacement should be waiting"
+        );
+        // And the original still signs in.
+        let res = app
+            .oneshot(post(
+                "/v1/session",
+                &format!(
+                    r#"{{"password":"the-current-password","code":"{}"}}"#,
+                    code_now(&original)
+                ),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(
+            res.status(),
+            StatusCode::OK,
+            "the old phone stopped working"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_code_from_the_old_phone_does_not_lock_in_the_new_one() {
+        // The subtle version of the same mistake: confirming against the *live* secret would
+        // happily accept a code from the phone somebody is replacing, and lock in a secret
+        // nobody ever scanned.
+        let (state, original) = signed_in_state();
+        let store = state.store.clone();
+        let app = app(state);
+        app.clone()
+            .oneshot(post(
+                "/v1/session/authenticator",
+                r#"{"current":"the-current-password"}"#,
+            ))
+            .await
+            .unwrap();
+
+        let res = app
+            .oneshot(post(
+                "/v1/session/authenticator/confirm",
+                &format!(r#"{{"code":"{}"}}"#, code_now(&original)),
+            ))
+            .await
+            .unwrap();
+        assert!(
+            !res.status().is_success(),
+            "the old code confirmed the new secret"
+        );
+        assert_eq!(
+            store.sign_in_setup().unwrap().1,
+            original,
+            "live secret moved"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_code_from_the_new_one_locks_it_in() {
+        let (state, original) = signed_in_state();
+        let store = state.store.clone();
+        let app = app(state);
+        app.clone()
+            .oneshot(post(
+                "/v1/session/authenticator",
+                r#"{"current":"the-current-password"}"#,
+            ))
+            .await
+            .unwrap();
+        let pending = store.pending_authenticator().unwrap();
+
+        let res = app
+            .oneshot(post(
+                "/v1/session/authenticator/confirm",
+                &format!(r#"{{"code":"{}"}}"#, code_now(&pending)),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        assert_eq!(store.sign_in_setup().unwrap().1, pending, "not locked in");
+        assert_ne!(store.sign_in_setup().unwrap().1, original);
+        assert!(
+            store.pending_authenticator().unwrap().is_empty(),
+            "the pending secret should be spent"
+        );
+    }
+
+    #[tokio::test]
+    async fn managing_credentials_is_closed_to_strangers() {
+        let app = app(test_state());
+        for (path, method) in [
+            ("/v1/session/password", "POST"),
+            ("/v1/session/authenticator", "POST"),
+            ("/v1/session/authenticator/confirm", "POST"),
+            ("/v1/session/bootstrap", "GET"),
+        ] {
+            let res = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method(method)
+                        .uri(path)
+                        .header("content-type", "application/json")
+                        .body(Body::from("{}"))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(res.status(), StatusCode::UNAUTHORIZED, "{method} {path}");
+        }
     }
 
     #[tokio::test]

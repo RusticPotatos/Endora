@@ -153,6 +153,12 @@ runInContext(
   // A node nobody has claimed yet — the branch that renders the setup screen rather than a
   // sign-in form for an account that does not exist.
   SIGNIN_EXISTS = false;
+  // Mid-rotation, with a token on screen — the branches that only exist between two states and
+  // would otherwise never be rendered by this check.
+  NEW_AUTHENTICATOR = "otpauth://totp/Endora:you?secret=BBBB";
+  NEW_AUTHENTICATOR_QR = "<svg xmlns='http://www.w3.org/2000/svg'><rect/></svg>";
+  DEV_TOKEN = "0123456789abcdef";
+  DEV_TOKEN_NOTE = "Reads only.";
   // The screen shown once, immediately after claiming — a branch that only exists between two
   // other screens and would otherwise never be rendered by this check.
   JUST_ENROLLED = "otpauth://totp/Endora:you?secret=AAAA&issuer=Endora";

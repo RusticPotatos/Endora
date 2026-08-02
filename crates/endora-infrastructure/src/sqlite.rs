@@ -195,7 +195,11 @@ CREATE TABLE IF NOT EXISTS node_auth (
     totp_secret     TEXT NOT NULL DEFAULT '',
     -- Consecutive failed sign-ins, and when the last one was, so guessing gets expensive.
     failures        INTEGER NOT NULL DEFAULT 0,
-    last_failure_ms INTEGER NOT NULL DEFAULT 0
+    last_failure_ms INTEGER NOT NULL DEFAULT 0,
+    -- A replacement authenticator secret, waiting for a code that proves it was really
+    -- scanned. The live one keeps working until then, so a half-finished swap cannot lock
+    -- somebody out of their own house.
+    pending_totp    TEXT NOT NULL DEFAULT ''
 ) STRICT;
 -- Tokens handed out by a successful sign-in. Separate from the bootstrap token on purpose:
 -- that one is the recovery path and should not be what a password buys, and these can be
@@ -332,6 +336,41 @@ impl SqliteStore {
                  VALUES (0, '', ?1, ?2) \
                  ON CONFLICT(id) DO UPDATE SET password_hash = ?1, totp_secret = ?2",
                 params![hash, secret],
+            )
+            .map_err(backend)?;
+        Ok(())
+    }
+
+    /// The replacement authenticator secret waiting to be confirmed, if any.
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if the backend fails.
+    pub fn pending_authenticator(&self) -> Result<String, RepositoryError> {
+        let conn = self.db.lock()?;
+        let mut stmt = conn
+            .prepare("SELECT pending_totp FROM node_auth WHERE id = 0")
+            .map_err(backend)?;
+        let mut rows = stmt.query([]).map_err(backend)?;
+        let Some(row) = rows.next().map_err(backend)? else {
+            return Ok(String::new());
+        };
+        row.get(0).map_err(backend)
+    }
+
+    /// Puts a replacement authenticator secret aside, or clears it with an empty string.
+    ///
+    /// **Never touches the live secret.** That is the whole point: until a code proves the new
+    /// one was actually scanned, the old phone keeps working.
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if the backend fails.
+    pub fn set_pending_authenticator(&self, secret: &str) -> Result<(), RepositoryError> {
+        self.db
+            .lock()?
+            .execute(
+                "INSERT INTO node_auth (id, token, pending_totp) VALUES (0, '', ?1) \
+                 ON CONFLICT(id) DO UPDATE SET pending_totp = ?1",
+                params![secret],
             )
             .map_err(backend)?;
         Ok(())
@@ -544,6 +583,12 @@ impl SqliteStore {
                 "node_sessions",
                 "scope",
                 "TEXT NOT NULL DEFAULT 'full'",
+            )?;
+            ensure_column(
+                &conn,
+                "node_auth",
+                "pending_totp",
+                "TEXT NOT NULL DEFAULT ''",
             )?;
         }
         Ok(Self { db })
