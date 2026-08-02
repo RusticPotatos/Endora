@@ -1371,7 +1371,7 @@ mod the_schema_production_actually_runs {
         TransitionLog::remember(
             &config,
             &Watched {
-                key: "house::person.morgan".to_owned(),
+                key: "house::person.john".to_owned(),
                 settled: "home".to_owned(),
                 candidate: "home".to_owned(),
                 candidate_since_ms: 1_000,
@@ -1386,7 +1386,7 @@ mod the_schema_production_actually_runs {
         TransitionLog::record(
             &config,
             &Transition {
-                key: "house::person.morgan".to_owned(),
+                key: "house::person.john".to_owned(),
                 from: "home".to_owned(),
                 to: "not_home".to_owned(),
                 at_ms: 2_000,

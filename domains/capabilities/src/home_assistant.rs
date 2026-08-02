@@ -55,7 +55,7 @@ pub struct HomeAssistant {
     /// The entity the person nominated as meaning "not now", empty when they did not.
     ///
     /// Notifications were deliberately **not** gated on presence when they were built,
-    /// because the only signal available was free text a service had written — *"morgan is
+    /// because the only signal available was free text a service had written — *"john is
     /// not home"* — and being wrong either wakes somebody or silently swallows the alert
     /// they wanted. A **boolean entity** removes that objection entirely: their phone's
     /// Focus mode is already on/off, already in the house, and already means exactly this.
@@ -710,12 +710,12 @@ fn describe_weather(e: &Entity) -> Option<String> {
 /// Finds the entity a name refers to, across **both** of Home Assistant's naming spaces.
 ///
 /// The registry stores an entity's own name. The states reading shows a **composed** display
-/// name — the device's name and the entity's together, `Bambam` + `Kiosk Brightness` — and
+/// name — the device's name and the entity's together, `Pixel` + `Kiosk Brightness` — and
 /// that composed form is what every screen says, what standing trouble is raised with, and
 /// what the person taps.
 ///
 /// Resolving only against the registry meant anything belonging to a named device could be
-/// complained about and never acted on: *"nothing here is called Bambam Kiosk Brightness"*,
+/// complained about and never acted on: *"nothing here is called Pixel Kiosk Brightness"*,
 /// about an entity sitting right there. Neither name is wrong; they are answers to different
 /// questions, and this is the one place both have to reconcile.
 ///
@@ -1504,18 +1504,12 @@ mod tests {
 
     #[test]
     fn presence_reads_as_a_sentence_not_a_state_string() {
-        assert_eq!(describe_presence("morgan", "home"), "morgan is home");
-        assert_eq!(
-            describe_presence("morgan", "not_home"),
-            "morgan is not home"
-        );
+        assert_eq!(describe_presence("john", "home"), "john is home");
+        assert_eq!(describe_presence("john", "not_home"), "john is not home");
         // A named zone is a place, and reads better as one than as "not_home".
-        assert_eq!(describe_presence("morgan", "Office"), "morgan is at Office");
+        assert_eq!(describe_presence("john", "Office"), "john is at Office");
         // A tracker that has lost the person says so plainly rather than inventing a place.
-        assert_eq!(
-            describe_presence("morgan", "unavailable"),
-            "morgan is not home"
-        );
+        assert_eq!(describe_presence("john", "unavailable"), "john is not home");
     }
 
     #[test]
@@ -1688,9 +1682,9 @@ mod what_is_on_today {
     fn an_engagement_is_read_from_the_facts_not_the_state() {
         // The live one. A calendar's state is `off` whether the evening is empty or not, so
         // a connected calendar told the butler nothing until this existed.
-        let tonight = calendar("Family", "K. Novak & J. Ellis", "2026-07-31 18:30:00");
+        let tonight = calendar("Family", "Jane Doe & John Doe", "2026-07-31 18:30:00");
         let said = describe_engagement(&tonight).expect("an engagement");
-        assert!(said.contains("K. Novak & J. Ellis"), "{said}");
+        assert!(said.contains("Jane Doe & John Doe"), "{said}");
         assert!(said.contains("18:30"), "{said}");
         // The service's own words for the time — Endora has no business deciding what
         // "18:30" means in somebody's timezone when the service wrote it in theirs.
@@ -1715,11 +1709,11 @@ mod one_thing_with_two_names {
     //! Resolving a name back to an entity (ADR 0054).
     //!
     //! Live: the person tapped **It's gone** on a card Endora had raised, naming
-    //! `Bambam Kiosk Brightness`, and got back *"nothing here is called Bambam Kiosk
+    //! `Pixel Kiosk Brightness`, and got back *"nothing here is called Pixel Kiosk
     //! Brightness"*. The entity was right there.
     //!
     //! Home Assistant has two naming spaces. The **states reading** shows a composed display
-    //! name — the device's name plus the entity's, `Bambam` + `Kiosk Brightness` — while the
+    //! name — the device's name plus the entity's, `Pixel` + `Kiosk Brightness` — while the
     //! **registry** stores only the entity's own part. Trouble is raised from the reading and
     //! was resolved against the registry, so anything belonging to a named device could be
     //! complained about and never acted on.
@@ -1763,18 +1757,18 @@ mod one_thing_with_two_names {
     #[test]
     fn a_device_prefixed_name_falls_back_to_what_the_reading_shows() {
         // The live bug, exactly. The registry knows it as "Kiosk Brightness"; every screen —
-        // and the trouble card the person tapped — calls it "Bambam Kiosk Brightness".
+        // and the trouble card the person tapped — calls it "Pixel Kiosk Brightness".
         let registry = json!([
-            {"entity_id":"sensor.bambam_kiosk_brightness","name":null,
+            {"entity_id":"sensor.pixel_kiosk_brightness","name":null,
              "original_name":"Kiosk Brightness"}
         ]);
         let states = [reading(
-            "sensor.bambam_kiosk_brightness",
-            "Bambam Kiosk Brightness",
+            "sensor.pixel_kiosk_brightness",
+            "Pixel Kiosk Brightness",
         )];
         assert_eq!(
-            entity_named(&registry, &states, "Bambam Kiosk Brightness"),
-            Some("sensor.bambam_kiosk_brightness".to_owned())
+            entity_named(&registry, &states, "Pixel Kiosk Brightness"),
+            Some("sensor.pixel_kiosk_brightness".to_owned())
         );
     }
 
@@ -1800,13 +1794,9 @@ mod one_thing_with_two_names {
 
     #[test]
     fn a_registry_that_answers_oddly_does_not_take_the_reading_down_with_it() {
-        let states = [reading("sensor.x", "Bambam Kiosk Brightness")];
+        let states = [reading("sensor.x", "Pixel Kiosk Brightness")];
         assert_eq!(
-            entity_named(
-                &json!({"error": "nope"}),
-                &states,
-                "Bambam Kiosk Brightness"
-            ),
+            entity_named(&json!({"error": "nope"}), &states, "Pixel Kiosk Brightness"),
             Some("sensor.x".to_owned())
         );
     }
@@ -1908,15 +1898,15 @@ mod which_things_are_the_persons_own {
     #[test]
     fn a_persons_own_trackers_are_theirs_and_so_is_the_person_entity() {
         let states = body(
-            r#"{"entity_id":"person.morgan","attributes":{"device_trackers":["device_tracker.bambam","device_tracker.watch"]}},
+            r#"{"entity_id":"person.john","attributes":{"device_trackers":["device_tracker.pixel","device_tracker.watch"]}},
                {"entity_id":"light.hall","attributes":{}}"#,
         );
         assert_eq!(
             the_persons_own_things(&states),
             vec![
-                "device_tracker.bambam",
+                "device_tracker.pixel",
                 "device_tracker.watch",
-                "person.morgan",
+                "person.john",
             ]
         );
     }
@@ -1928,16 +1918,16 @@ mod which_things_are_the_persons_own {
         // because the cost of being wrong is a false belief about somebody rather than a bad
         // reading. Attributing nothing is the honest answer until somebody says.
         let states = body(
-            r#"{"entity_id":"person.morgan","attributes":{"device_trackers":["device_tracker.bambam"]}},
-               {"entity_id":"person.elise","attributes":{"device_trackers":["device_tracker.elise_phone"]}}"#,
+            r#"{"entity_id":"person.john","attributes":{"device_trackers":["device_tracker.pixel"]}},
+               {"entity_id":"person.jane","attributes":{"device_trackers":["device_tracker.jane_phone"]}}"#,
         );
         assert!(the_persons_own_things(&states).is_empty());
     }
 
     #[test]
     fn a_person_with_no_trackers_still_counts_as_themselves() {
-        let states = body(r#"{"entity_id":"person.morgan","attributes":{}}"#);
-        assert_eq!(the_persons_own_things(&states), vec!["person.morgan"]);
+        let states = body(r#"{"entity_id":"person.john","attributes":{}}"#);
+        assert_eq!(the_persons_own_things(&states), vec!["person.john"]);
     }
 
     #[test]

@@ -736,7 +736,7 @@ fn resolve_point(input: &Value) -> Result<(f64, f64, String), CapabilityError> {
         return Ok(point);
     }
     // The Open-Meteo geocoder wants a bare city name — it returns nothing for
-    // "New York NC" or "New York, NC". So try the full query, then simpler forms
+    // "New York NY" or "New York, NY". So try the full query, then simpler forms
     // (before a comma, and without a trailing US state abbreviation).
     let first = geocode_candidates(q)
         .into_iter()
@@ -768,7 +768,7 @@ fn resolve_point(input: &Value) -> Result<(f64, f64, String), CapabilityError> {
 
 /// Progressively simpler place-name queries for the geocoder: the full string, the
 /// part before a comma, and the same without a trailing 2-letter US state (so
-/// "New York NC" / "New York, NC" both fall back to "New York").
+/// "New York NY" / "New York, NY" both fall back to "New York").
 fn geocode_candidates(q: &str) -> Vec<String> {
     let mut out = vec![q.trim().to_owned()];
     let before_comma = q.split(',').next().unwrap_or(q).trim();
@@ -1073,7 +1073,7 @@ impl Capability for LocalNewsCapability {
     ) -> Result<Value, CapabilityError> {
         // Prefer an explicit {query}; else build one from {location}. A bare ZIP or
         // raw coordinates make a poor news search, so resolve the location to a
-        // place name first ("10001" → "New York, NC news"). One of query/location
+        // place name first ("10001" → "New York, NY news"). One of query/location
         // is required — without it we say so rather than invent headlines.
         let query = match input.get("query").and_then(Value::as_str) {
             Some(q) if !q.trim().is_empty() => q.trim().to_owned(),
@@ -1799,7 +1799,7 @@ const NOT_ABOUT_THE_THING: &[&str] = &[
 /// The attributes of a thing that carry its meaning, when its **state does not**.
 ///
 /// Connecting a calendar achieved nothing until this existed. A calendar's state is `off`,
-/// and its event — *"K. Novak & J. Ellis at 18:30"* — lives entirely in its attributes,
+/// and its event — *"Jane Doe & John Doe at 18:30"* — lives entirely in its attributes,
 /// so Endora read `Family: off` and had nothing to say about the person's evening. The same
 /// holds for weather (`clear-night`, with the temperature in an attribute) and for a media
 /// player (`playing`, with what is playing in one).
@@ -4243,12 +4243,12 @@ mod tests {
     #[test]
     fn geocode_candidates_simplify_city_state() {
         assert_eq!(
-            geocode_candidates("New York NC"),
-            vec!["New York NC", "New York"]
+            geocode_candidates("New York NY"),
+            vec!["New York NY", "New York"]
         );
         assert_eq!(
-            geocode_candidates("New York, NC"),
-            vec!["New York, NC", "New York"]
+            geocode_candidates("New York, NY"),
+            vec!["New York, NY", "New York"]
         );
         assert_eq!(geocode_candidates("Boston"), vec!["Boston"]);
         assert_eq!(geocode_candidates("San Francisco"), vec!["San Francisco"]);
@@ -5781,7 +5781,7 @@ mod tests {
         }
 
         fn about_the_person(&self) -> Option<String> {
-            Some("morgan is not home".to_owned())
+            Some("john is not home".to_owned())
         }
 
         fn states(&self) -> Result<Vec<(String, String)>, String> {
@@ -6003,13 +6003,13 @@ mod tests {
 
     #[test]
     fn what_a_service_knows_about_the_person_reaches_the_turn() {
-        // The house was already reporting `person.morgan -> not_home` in a reading Endora
+        // The house was already reporting `person.john -> not_home` in a reading Endora
         // fetches for other reasons, and nothing ever looked at it. A butler that does not
         // know whether anyone is in is guessing every time it decides whether to speak.
         let (_, runner) = with_direct();
         assert_eq!(
             runner.about_the_person(),
-            vec!["morgan is not home".to_owned()]
+            vec!["john is not home".to_owned()]
         );
     }
 
@@ -6204,7 +6204,7 @@ mod tests {
         )));
         assert_eq!(
             composed.about_the_person(),
-            vec!["morgan is not home".to_owned()],
+            vec!["john is not home".to_owned()],
             "presence was dropped somewhere in the stack"
         );
         assert!(
@@ -6395,7 +6395,7 @@ mod what_a_thing_is_actually_telling_you {
         // Captured from a live house. Connecting a calendar achieved nothing until this
         // existed: the state is `off`, and the evening is in the attributes.
         let family = json!({
-            "message": "K. Novak & J. Ellis",
+            "message": "Jane Doe & John Doe",
             "all_day": false,
             "start_time": "2026-07-31 18:30:00",
             "end_time": "2026-07-31 19:30:00",
@@ -6405,7 +6405,7 @@ mod what_a_thing_is_actually_telling_you {
             "supported_features": 1
         });
         let facts = facts_worth_reading(&family);
-        assert_eq!(facts["message"], "K. Novak & J. Ellis");
+        assert_eq!(facts["message"], "Jane Doe & John Doe");
         assert_eq!(facts["start_time"], "2026-07-31 18:30:00");
         // An empty location is not a fact about the evening.
         assert!(!facts.contains_key("location"));

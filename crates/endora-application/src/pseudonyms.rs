@@ -16,7 +16,7 @@
 //! ```text
 //! out:   on the Family calendar: <event 1> at 18:30; <person 1> is not home
 //! back:  Good morning. <person 1> isn't home, and <event 1> is at 6:30.
-//! shown: Good morning. morgan isn't home, and K. Novak & J. Ellis is at 6:30.
+//! shown: Good morning. john isn't home, and Jane Doe & John Doe is at 6:30.
 //! ```
 //!
 //! ## What this does not do
@@ -60,7 +60,7 @@ impl Pseudonyms {
                 standing_in.push((real.to_owned(), format!("<{kind} {seen}>")));
             }
         }
-        // Longest first: "K. Novak & J. Ellis" must go before "Jordan Ellis", or
+        // Longest first: "Jane Doe & John Doe" must go before "John Doe", or
         // a shorter match leaves half a name behind in the outgoing text.
         standing_in.sort_by_key(|(real, _)| std::cmp::Reverse(real.len()));
         Self { standing_in }
@@ -103,23 +103,20 @@ mod tests {
 
     fn table() -> Pseudonyms {
         let mut kinds: BTreeMap<&str, Vec<String>> = BTreeMap::new();
-        kinds.insert(
-            "person",
-            vec!["morgan".to_owned(), "Jordan Ellis".to_owned()],
-        );
-        kinds.insert("place", vec!["New York NC".to_owned()]);
-        kinds.insert("event", vec!["K. Novak & J. Ellis".to_owned()]);
+        kinds.insert("person", vec!["john".to_owned(), "John Doe".to_owned()]);
+        kinds.insert("place", vec!["New York NY".to_owned()]);
+        kinds.insert("event", vec!["Jane Doe & John Doe".to_owned()]);
         Pseudonyms::of(&kinds)
     }
 
     #[test]
     fn nothing_personal_is_in_what_leaves() {
         // The real brief, as it was actually assembled.
-        let brief = "morgan is not home; on the Family calendar: K. Novak & J. Ellis \
+        let brief = "john is not home; on the Family calendar: Jane Doe & John Doe \
                      at 2026-07-31 18:30:00; outside it is 69F";
         let sent = table().hide(brief);
 
-        for real in ["morgan", "K. Novak", "Ellis", "New York"] {
+        for real in ["john", "Jane Doe", "Doe", "New York"] {
             assert!(!sent.contains(real), "{real} left the house: {sent}");
         }
         // What is not about the person is untouched, or the remote model has nothing to
@@ -131,20 +128,21 @@ mod tests {
     #[test]
     fn what_comes_back_is_the_persons_own_words_again() {
         let table = table();
-        let sent = table.hide("morgan is not home; K. Novak & J. Ellis at 18:30");
+        let sent = table.hide("john is not home; Jane Doe & John Doe at 18:30");
         let answered = format!("Good morning. {sent} — shall I set a reminder?");
         let shown = table.restore(&answered);
-        assert!(shown.contains("morgan is not home"), "{shown}");
-        assert!(shown.contains("K. Novak & J. Ellis"), "{shown}");
+        assert!(shown.contains("john is not home"), "{shown}");
+        assert!(shown.contains("Jane Doe & John Doe"), "{shown}");
         assert!(!shown.contains("<person"), "{shown}");
     }
 
     #[test]
     fn a_longer_name_is_replaced_before_the_shorter_one_inside_it() {
-        // "Jordan Ellis" and "K. Novak & J. Ellis" share a surname. Replacing the
-        // shorter first would leave half a name in the outgoing text — the leak in disguise.
-        let sent = table().hide("Jordan Ellis and K. Novak & J. Ellis");
-        assert!(!sent.contains("Ellis"), "{sent}");
+        // One value sits wholly inside another. Replacing the shorter first would consume
+        // its own half of the longer, leaving the rest of a name in the outgoing text —
+        // the leak in disguise.
+        let sent = table().hide("John Doe and Jane Doe & John Doe");
+        assert!(!sent.contains("Doe"), "{sent}");
     }
 
     #[test]

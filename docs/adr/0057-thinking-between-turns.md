@@ -85,7 +85,7 @@ design, and it broke the first implementation: within an hour of deploying, the 
 Endora was reading said
 
 ```text
-morgan is not home; on the Family calendar: Yardwork in the morning - Elise and Michael
+john is not home; on the Family calendar: Yardwork in the morning - Jane Doe and John Doe
 ```
 
 A notion could cite that reading three times over and mature into a belief that *the person*

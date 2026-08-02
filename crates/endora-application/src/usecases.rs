@@ -671,14 +671,14 @@ fn personal_values_in(context: &ButlerContext) -> crate::pseudonyms::Pseudonyms 
     use std::collections::BTreeMap;
     let mut kinds: BTreeMap<&str, Vec<String>> = BTreeMap::new();
     for line in &context.present {
-        // "morgan is not home" — the name is what precedes the verb.
+        // "john is not home" — the name is what precedes the verb.
         if let Some(name) = line.split(" is ").next().filter(|n| !n.contains(':')) {
             kinds
                 .entry("person")
                 .or_default()
                 .push(name.trim().to_owned());
         }
-        // "on the Family calendar: K. Novak & J. Ellis at 2026-07-31 18:30:00"
+        // "on the Family calendar: Jane Doe & John Doe at 2026-07-31 18:30:00"
         if let Some((_, rest)) = line.split_once("calendar: ") {
             let title = rest.split(" at ").next().unwrap_or(rest);
             kinds
@@ -3914,8 +3914,8 @@ fn recently_did(
 /// The facts a written brief has **not** already said, so nothing is printed twice.
 ///
 /// Compared on **words, not phrasing**. An exact-substring check was tried and failed on the
-/// first live brief: the facts said *"morgan is not home; on the Family calendar: Yardwork"*
-/// and the model wrote *"morgan is not home right now. On the Family calendar, there's
+/// first live brief: the facts said *"john is not home; on the Family calendar: Yardwork"*
+/// and the model wrote *"john is not home right now. On the Family calendar, there's
 /// Yardwork"* — the same thing, and not the same string. Any check against model output that
 /// depends on wording is a check that will fail.
 ///
@@ -9244,7 +9244,7 @@ mod when_the_local_model_will_not_do_it {
         let local = SilentWithDeeper(deep.clone());
         let context = ButlerContext {
             present: vec![
-                "morgan is not home; on the Family calendar: K. Novak & J. Ellis at \
+                "john is not home; on the Family calendar: Jane Doe & John Doe at \
                  2026-07-31 18:30:00"
                     .to_owned(),
             ],
@@ -9261,14 +9261,14 @@ mod when_the_local_model_will_not_do_it {
         .expect("a turn");
 
         let sent = deep.0.lock().unwrap().clone();
-        for personal in ["morgan", "K. Novak", "Ellis"] {
+        for personal in ["john", "Jane Doe", "Doe"] {
             assert!(
                 !sent.contains(personal),
                 "{personal} left the house: {sent}"
             );
         }
         // And the person still reads their own words.
-        assert!(reply.text.contains("K. Novak & J. Ellis"), "{}", reply.text);
+        assert!(reply.text.contains("Jane Doe & John Doe"), "{}", reply.text);
         assert!(reply.escalated);
     }
 
@@ -9448,7 +9448,7 @@ mod who_words_the_brief {
         }
     }
 
-    const REAL_FACTS: &str = "- morgan is not home; on the Family calendar:                               K. Novak & J. Ellis at 2026-07-31 18:30:00";
+    const REAL_FACTS: &str = "- john is not home; on the Family calendar:                               Jane Doe & John Doe at 2026-07-31 18:30:00";
 
     #[test]
     fn only_the_facts_leave_and_they_leave_disguised() {
@@ -9457,7 +9457,7 @@ mod who_words_the_brief {
             .expect("a brief");
 
         let sent = deep.0.lock().unwrap().clone();
-        for personal in ["morgan", "K. Novak", "Ellis"] {
+        for personal in ["john", "Jane Doe", "Doe"] {
             assert!(
                 !sent.contains(personal),
                 "{personal} left the house: {sent}"
@@ -9470,16 +9470,16 @@ mod who_words_the_brief {
         assert!(sent.contains("names=[]"), "{sent}");
 
         // And what the person reads is their own words again.
-        assert!(written.contains("morgan"), "{written}");
-        assert!(written.contains("K. Novak & J. Ellis"), "{written}");
+        assert!(written.contains("john"), "{written}");
+        assert!(written.contains("Jane Doe & John Doe"), "{written}");
     }
 
     #[test]
     fn only_what_the_writing_left_out_is_printed_again() {
         // The real second live brief. The facts and the prose say the same things in
         // different words, which is why an exact-substring check failed here.
-        let facts = "- morgan is not home\n                     - on the Family calendar: Yardwork in the morning - Elise and Michael\n                     - outside it is 77F and partly cloudy";
-        let written = "Good morning! Quick brief for you: morgan is not home right now. On                        the Family calendar, there's Yardwork in the morning - Elise and                        Michael at 2026-08-01. Outside it's 77F and partly cloudy.";
+        let facts = "- john is not home\n                     - on the Family calendar: Yardwork in the morning - Jane Doe and John Doe\n                     - outside it is 77F and partly cloudy";
+        let written = "Good morning! Quick brief for you: john is not home right now. On                        the Family calendar, there's Yardwork in the morning - Jane Doe                        and John Doe at 2026-08-01. Outside it's 77F and partly cloudy.";
         assert!(
             not_yet_said(written, facts).is_empty(),
             "{:?}",
@@ -9512,8 +9512,8 @@ mod who_words_the_brief {
         // The bias is deliberate. A fact wrongly thought missing is printed twice, which is
         // untidy; one wrongly thought covered is lost, and losing them is what kept
         // happening.
-        let facts = "- morgan is not home\n- the porch light has not answered for 4 days";
-        let written = "Good morning. morgan is not home right now.";
+        let facts = "- john is not home\n- the porch light has not answered for 4 days";
+        let written = "Good morning. john is not home right now.";
         let missed = not_yet_said(written, facts);
         assert_eq!(missed.len(), 1);
         assert!(missed[0].contains("porch light"), "{missed:?}");
@@ -9565,18 +9565,15 @@ mod telling_the_person_from_the_household {
     fn the_persons_own_devices_are_marked_apart_from_the_house() {
         let record = TheRecord::of(super::readings_as_records(
             vec![
-                ("person.morgan".to_owned(), "home".to_owned()),
-                ("device_tracker.bambam".to_owned(), "home".to_owned()),
+                ("person.john".to_owned(), "home".to_owned()),
+                ("device_tracker.pixel".to_owned(), "home".to_owned()),
                 ("light.hall".to_owned(), "on".to_owned()),
                 (
                     "calendar.family".to_owned(),
-                    "Yardwork - Elise and Michael".to_owned(),
+                    "Yardwork - Jane Doe and John Doe".to_owned(),
                 ),
             ],
-            &[
-                "person.morgan".to_owned(),
-                "device_tracker.bambam".to_owned(),
-            ],
+            &["person.john".to_owned(), "device_tracker.pixel".to_owned()],
         ));
         let kind = |reference: &str| {
             record
@@ -9585,8 +9582,8 @@ mod telling_the_person_from_the_household {
                 .find(|e| e.reference == reference)
                 .map(|e| e.source)
         };
-        assert_eq!(kind("person.morgan"), Some(Source::Personal));
-        assert_eq!(kind("device_tracker.bambam"), Some(Source::Personal));
+        assert_eq!(kind("person.john"), Some(Source::Personal));
+        assert_eq!(kind("device_tracker.pixel"), Some(Source::Personal));
         assert_eq!(kind("light.hall"), Some(Source::Reading));
         assert_eq!(
             kind("calendar.family"),
@@ -9600,7 +9597,7 @@ mod telling_the_person_from_the_household {
         // The safe direction, and what a household with several `person` entities produces:
         // nothing is attributed rather than the house being mistaken for the person.
         let record = TheRecord::of(super::readings_as_records(
-            vec![("person.morgan".to_owned(), "home".to_owned())],
+            vec![("person.john".to_owned(), "home".to_owned())],
             &[],
         ));
         assert_eq!(

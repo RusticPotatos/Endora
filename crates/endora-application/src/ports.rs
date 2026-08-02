@@ -208,7 +208,7 @@ pub struct ButlerContext {
     /// the battery that exists to measure it (ADR 0053).
     pub target_aliases: Vec<String>,
     /// What the person's own services say about them **right now** — one line each,
-    /// e.g. `morgan is not home`.
+    /// e.g. `john is not home`.
     ///
     /// Live state rather than a belief: true this minute and worthless tomorrow, so it
     /// belongs to the turn and never to understanding. It is what lets the butler know

@@ -615,7 +615,7 @@ mod tests {
     fn a_server_lists_its_resources() {
         let mut io = FakeIo::new(&[r#"{"jsonrpc":"2.0","id":1,"result":{"resources":[
                 {"uri":"house://light.kitchen","name":"Kitchen light","description":"a lamp","mimeType":"text/plain"},
-                {"uri":"house://person.morgan","name":"morgan"}
+                {"uri":"house://person.john","name":"john"}
             ]}}"#]);
         let mut id = 1;
         let found = list_resources(&mut io, &mut id).unwrap();
@@ -623,7 +623,7 @@ mod tests {
         assert_eq!(found[0].uri, "house://light.kitchen");
         assert_eq!(found[0].name, "Kitchen light");
         assert_eq!(found[0].description, "a lamp");
-        assert_eq!(found[1].uri, "house://person.morgan");
+        assert_eq!(found[1].uri, "house://person.john");
         assert!(
             found[1].description.is_empty(),
             "a missing description is empty, not a failure"

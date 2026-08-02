@@ -281,7 +281,7 @@ they widen it.
 It **is** gated on "not now", once there is something honest to gate on.
 
 The first version refused to, and the reasoning still holds for what was available then: the
-only signal was free text a service had written — *"morgan is not home"* — and deciding
+only signal was free text a service had written — *"john is not home"* — and deciding
 whether to interrupt somebody by parsing prose is a guess that fails in both directions. A
 **boolean entity** removes the objection entirely. Their phone's Focus mode is already on or
 off, already in the house, and already means precisely this.

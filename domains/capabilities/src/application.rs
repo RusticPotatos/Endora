@@ -430,7 +430,7 @@ pub trait CapabilityRunner {
     fn available(&self) -> Vec<CapabilitySpec>;
 
     /// What the person's own services can say about them **right now** — one short line
-    /// each, e.g. `morgan is not home`.
+    /// each, e.g. `john is not home`.
     ///
     /// Live state, not a belief: it is true this minute and worthless tomorrow, which is
     /// why it goes into the turn's context rather than into understanding. A butler that
@@ -708,7 +708,7 @@ mod keeping_a_record_of_what_moved {
         let moved = watch_for_change(
             &log,
             "house",
-            &reading(&[("light.kitchen", "on"), ("person.morgan", "home")]),
+            &reading(&[("light.kitchen", "on"), ("person.john", "home")]),
             1_000,
         )
         .unwrap();
@@ -719,12 +719,12 @@ mod keeping_a_record_of_what_moved {
     #[test]
     fn a_change_that_holds_is_recorded_once_and_not_again() {
         let log = FakeLog::default();
-        watch_for_change(&log, "house", &reading(&[("person.morgan", "home")]), 0).unwrap();
+        watch_for_change(&log, "house", &reading(&[("person.john", "home")]), 0).unwrap();
         // It changes, but has not held yet.
         let moved = watch_for_change(
             &log,
             "house",
-            &reading(&[("person.morgan", "not_home")]),
+            &reading(&[("person.john", "not_home")]),
             1_000,
         )
         .unwrap();
@@ -734,7 +734,7 @@ mod keeping_a_record_of_what_moved {
         let moved = watch_for_change(
             &log,
             "house",
-            &reading(&[("person.morgan", "not_home")]),
+            &reading(&[("person.john", "not_home")]),
             1_000 + DWELL_MS,
         )
         .unwrap();
@@ -747,7 +747,7 @@ mod keeping_a_record_of_what_moved {
         let moved = watch_for_change(
             &log,
             "house",
-            &reading(&[("person.morgan", "not_home")]),
+            &reading(&[("person.john", "not_home")]),
             9_000_000,
         )
         .unwrap();

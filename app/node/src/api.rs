@@ -4882,7 +4882,7 @@ pub fn spawn_heartbeat(state: AppState) {
                 // they set, so this cannot become a firehose without them widening it.
                 //
                 // Deliberately NOT gated on presence. That would mean parsing free text a
-                // service wrote ("morgan is not home") to decide whether to interrupt, and
+                // service wrote ("john is not home") to decide whether to interrupt, and
                 // a wrong guess either wakes someone or silently drops the alert they
                 // wanted. The schedule is the honest limit.
                 for message in [posted.as_ref(), briefed.as_ref()].into_iter().flatten() {
