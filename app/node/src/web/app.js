@@ -226,6 +226,21 @@ function viewNeedsToken() {
 // authenticator, and get a token for scripts. Each is behind being signed in, and the two that
 // change something ask for the current password as well — a session lives in a browser and can
 // be taken, and the password is the thing only the person knows.
+// Sign-in has its own screen, because it is not understanding.
+//
+// It sat on "What Endora understands about you" for one bad reason: the location-setup card
+// was already there, and this was written next to it. ADR 0052 cut that screen from six
+// sections to one precisely so it would hold beliefs and nothing else — *understanding is a
+// model of the person; the rest is a receipt* — and three credential cards is the same drift
+// arriving again.
+function viewSignin() {
+  return `
+    ${settingsCrumbs("signin")}
+    <h2>Your sign-in</h2>
+    ${viewSetUpSignIn()}
+    ${viewYourCredentials()}`;
+}
+
 function viewYourCredentials() {
   if (SIGNIN_EXISTS !== true) return "";
   const rotating = NEW_AUTHENTICATOR
@@ -381,6 +396,7 @@ const UNDER_SETTINGS = [
   { view: "proactive", icon: "target", label: "Reaching out", note: "check-ins, the daily brief, the overnight loop" },
   { view: "skills", icon: "skills", label: "Skills", note: "what Endora can do, and the servers it connects to" },
   { view: "understanding", icon: "sparkle", label: "What Endora understands about you", short: "Understanding", note: "beliefs, and what it's working on" },
+  { view: "signin", icon: "prefs", label: "Your sign-in", short: "Your sign-in", note: "password, authenticator, and tokens for scripts" },
   { view: "prefs", icon: "prefs", label: "Things Endora remembers about you", short: "What it remembers" },
   { view: "audit", icon: "audit", label: "What Endora has done", short: "What it has done", note: "what it tried, what changed, every decision" },
 ];
@@ -1542,8 +1558,6 @@ function viewUnderstanding() {
     ${settingsCrumbs("understanding")}
     <h2>What Endora understands about you</h2>
 
-    ${viewSetUpSignIn()}
-    ${viewYourCredentials()}
     ${setup}
     ${groups || `<div class="empty">Nothing yet. Talk with Endora and it will start to understand you — you'll see it here.</div>`}
     ${viewIntention()}
@@ -2332,6 +2346,7 @@ function render() {
     : v === "models" ? viewModels()
     : v === "proactive" ? viewProactive()
     : v === "understanding" ? viewUnderstanding()
+    : v === "signin" ? viewSignin()
     : viewUnderstanding();
   // On the chat, jump to the newest message (kept clear of the sticky composer).
   if (v === "chat") {
