@@ -2,8 +2,14 @@
 
 ## Status
 
-Proposed (2026-08-01). Extends [0052](0052-what-it-knows-about-you.md), whose central rule it
+Accepted (2026-08-02). Extends [0052](0052-what-it-knows-about-you.md), whose central rule it
 has to survive rather than quietly amend.
+
+Proposed 2026-08-01 and accepted after the two departures below were put to the person
+explicitly: that beliefs may now arrive from **observation** as well as conversation, and that
+notions are **stored rather than derived**. Both are real widenings of 0052 and 0054, and both
+were named as the reason this sat unaccepted rather than being carried by the rest of the
+argument.
 
 ## Context
 
