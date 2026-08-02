@@ -1433,15 +1433,24 @@ function viewSkills() {
           ? `<button class="ghost" data-act="skill:enable:${t.id}:1">Offer it again</button>`
           : `<button class="${t.opened ? "primary" : "ghost"}" data-act="skill:open:${t.id}:${t.opened ? "0" : "1"}">${t.opened ? "Block" : "Allow"}</button>`}
       </div>`;
+    // Stacked, not side by side. Four buttons beside a name is a row on a laptop and a
+    // disaster on a phone: the actions took the width they needed and left the name a column
+    // about eight characters wide, so "brave-search" broke across two lines, the pills came
+    // out as "8" above "tools", and the launch command rendered one word per line. Adding a
+    // fifth button made it worse.
+    //
+    // Second time for this exact shape — the reader dropdown did it to its own label, for the
+    // same reason, and the fix was the same: full width, one thing under another. A `.row` is
+    // only safe when nothing in it needs room to breathe.
     return `
       <div class="card">
-        <div class="row">
-          <div class="grow">
+        <div>
+          <div>
             <div class="title">${esc(s.name)} ${health} <span class="pill">${esc(s.transport)}</span>${s.auth_set ? ` <span class="pill concluded">token set</span>` : ""}${(s.env_keys || []).length ? ` <span class="pill concluded">${(s.env_keys || []).length} env</span>` : ""}</div>
-            <div class="sub">${esc(addr)}</div>
+            <div class="sub" style="overflow-wrap:anywhere;">${esc(addr)}</div>
             ${s.tools_live === 0 ? `<div class="sub" style="margin-top:4px;color:var(--danger,#c33);"><strong>Connected to nothing — no tools.</strong> Endora can't use this server. Most often that's a missing or wrong environment variable rather than a broken server${(s.env_keys || []).length ? ` — it has ${(s.env_keys || []).map(esc).join(", ")} set` : " — it has none set"}. ${s.transport === "stdio" ? "Some servers also need a one-time setup with a browser before they can run headless; check their docs." : "Check the endpoint is reachable."} Retrying every couple of minutes.</div>` : ""}
           </div>
-          <div class="row" style="gap:6px;">
+          <div class="row" style="gap:6px;flex-wrap:wrap;margin-top:8px;">
             <button class="ghost" data-act="mcp:edit:${esc(s.name)}" title="Load this server into the form below to change its URL or settings">Edit</button>
             <button class="ghost" data-act="mcp:test:${esc(s.name)}" title="Call its state-reading tool for real, so a wrong key says so instead of going quiet">Test</button>
             <button class="ghost" data-act="mcp:reconnect:${esc(s.name)}" title="Retry the connection using its saved settings">Reconnect</button>
