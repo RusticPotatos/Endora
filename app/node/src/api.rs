@@ -4196,6 +4196,13 @@ pub fn spawn_heartbeat(state: AppState) {
                     understanding.as_ref(),
                     schedules.as_ref(),
                     &runner,
+                    // Which things the services say are the person's own rather than the
+                    // household's, so a reading can be told apart from the house (ADR 0057).
+                    // Empty when nothing can say, which attributes nothing.
+                    &native_channels(config.as_ref())
+                        .iter()
+                        .flat_map(|(_, channel)| channel.belongs_to_the_person())
+                        .collect::<Vec<_>>(),
                     butler.as_ref(),
                     audit.as_ref(),
                     ids.as_ref(),
