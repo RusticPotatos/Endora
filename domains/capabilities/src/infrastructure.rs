@@ -205,6 +205,36 @@ pub fn channels_of(
         .collect()
 }
 
+/// Which tools the auto-allow toggle governs: **every one the server exposes**, whichever
+/// way it is being moved.
+///
+/// The distinction this draws against [`tools_to_open_on_connect`] is the whole of it, and
+/// getting it wrong left a server reading *"Allow all its tools: On"* with all eight of them
+/// blocked:
+///
+/// - **Connect is a default.** It runs at every start-up, nobody asked for it this time, and
+///   it must never overwrite a decision — that rule was written after a standing flag
+///   silently restored a capability somebody had said no to.
+/// - **The toggle is a decision**, made just now, by the person, about this server. A
+///   decision is exactly the thing that *may* overwrite an older one.
+///
+/// Only the off direction was implemented, and it was right to close everything: nothing
+/// records which tools auto-allow opened, so closing them all is the safe direction. But on
+/// did nothing except store the flag, leaving the opening to connect — which correctly skips
+/// every tool anybody has ruled on, and after an off that is all of them.
+///
+/// So off-then-on was a one-way door in the opposite direction to the one that fix closed,
+/// and the way back was opening each tool by hand.
+#[must_use]
+pub fn tools_the_toggle_governs(available: &[String], server: &str) -> Vec<String> {
+    let prefix = format!("{server}.");
+    available
+        .iter()
+        .filter(|id| id.starts_with(&prefix))
+        .cloned()
+        .collect()
+}
+
 /// Which of a trusted server's tools should be opened on connect.
 ///
 /// `trust_all` means **"allow the tools I have not decided about"**, not "re-open everything,
@@ -6711,6 +6741,33 @@ mod a_standing_default_never_overwrites_a_decision {
             tools_to_open_on_connect(&ids(&["elsewhere.DoAThing"]), &ids(&["house."]), &[],)
                 .is_empty()
         );
+    }
+
+    /// The other half, and the one that was missing.
+    ///
+    /// Live: a freshly added search server read "Allow all its tools: On" with all eight of
+    /// its tools blocked, because the only thing the on direction did was store the flag and
+    /// leave the opening to connect — which skips anything already ruled on.
+    ///
+    /// Connect is a default and must not overwrite a decision. The toggle **is** a decision.
+    #[test]
+    fn the_toggle_governs_every_tool_including_the_ruled_on_ones() {
+        let governed = super::tools_the_toggle_governs(
+            &ids(&["search.web", "search.news", "search.images"]),
+            "search",
+        );
+        assert_eq!(governed, vec!["search.web", "search.news", "search.images"]);
+    }
+
+    #[test]
+    fn the_toggle_stops_at_its_own_server() {
+        // Same rule as the off direction, which already closed only its own server's tools.
+        // A prefix that is a prefix of another name must not reach into it.
+        let governed = super::tools_the_toggle_governs(
+            &ids(&["search.web", "search-extra.web", "house.HassTurnOn"]),
+            "search",
+        );
+        assert_eq!(governed, vec!["search.web"]);
     }
 }
 
