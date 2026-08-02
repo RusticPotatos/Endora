@@ -1443,6 +1443,7 @@ function viewSkills() {
           </div>
           <div class="row" style="gap:6px;">
             <button class="ghost" data-act="mcp:edit:${esc(s.name)}" title="Load this server into the form below to change its URL or settings">Edit</button>
+            <button class="ghost" data-act="mcp:test:${esc(s.name)}" title="Call its state-reading tool for real, so a wrong key says so instead of going quiet">Test</button>
             <button class="ghost" data-act="mcp:reconnect:${esc(s.name)}" title="Retry the connection using its saved settings">Reconnect</button>
             <button class="ghost danger" data-act="mcp:remove:${esc(s.name)}">Remove</button>
           </div>
@@ -2736,6 +2737,18 @@ async function dispatch(act) {
         else flash("Still not connecting — check it's reachable and the token is right.", "err");
       } catch (e) { flash("Couldn't reconnect: " + e.message, "err"); }
       return reload();
+    }
+    // Reconnect answers "did the process start"; this answers "does the credential work".
+    // A Brave server connected cleanly, listed eight tools and was subscribed to the wrong
+    // API — every indicator green, because a handshake never calls the service behind it.
+    // A refusal is the useful answer here, so it is shown as prose rather than swallowed.
+    if (verb === "mcp" && noun === "test") {
+      flash("Testing…", "ok");
+      try {
+        const r = await api("POST", "/v1/mcp/servers/" + encodeURIComponent(id) + "/test");
+        flash(r.ok ? `It answered: ${r.said}` : r.said, r.ok ? "ok" : "err");
+      } catch (e) { flash("Couldn't test: " + e.message, "err"); }
+      return;
     }
     if (verb === "mcp" && noun === "remove") {
       if (!confirm(`Remove the MCP server "${id}"? Its tools will be disconnected.`)) return;
