@@ -21,9 +21,15 @@
 //! first.
 //!
 //! ```text
-//! make smoke                        # ENDORA_URL from local.mk, or the default below
-//! ENDORA_URL=https://host:8787 make smoke
+//! make smoke                        # ENDORA_URL and ENDORA_TOKEN from local.mk
+//! ENDORA_URL=https://host:8787 ENDORA_TOKEN=… make smoke
 //! ```
+//!
+//! The node refuses `/v1` without a credential, so this suite needs one too. Use a **session**
+//! token rather than the bootstrap token from the node's log: a session expires and can be
+//! revoked, and a plaintext file on a laptop should hold the credential you can throw away.
+//! After signing in, the browser has one — `localStorage.getItem('endora-token')` — which
+//! avoids putting a password into shell history.
 
 use endora_application::{reads_as_an_instruction, says_the_same_thing, statements_disagree};
 use endora_understanding::domain::notions::MOST_NOTIONS_AT_ONCE;
