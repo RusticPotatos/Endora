@@ -565,6 +565,39 @@ fn take_turn_retrying_empty(
             }
         }
     }
+    // Every attempt has now produced something the code has determined is not an answer, and
+    // there is no deeper model left to ask. Handing the person the raw text is the remaining
+    // option and it is the wrong one: what they get is the model narrating its own function
+    // list at them.
+    //
+    // The reasoning above this used to be "suppressing an answer someone asked for would be
+    // worse than an awkward one, so nothing is ever withheld", which is right about
+    // suppression and wrong about the choice — there is a third option. **Say so.** Not
+    // silence, and not the machinery.
+    //
+    // Live: asked "any emails today", the reply was three paragraphs about which functions
+    // pertain to the `email` domain and how Home Assistant integrations are typically wired.
+    // Nothing in that is for the person, and there is no reading of it where they are better
+    // off having seen it.
+    //
+    // Marked degraded, which carries the consequence already established (ADR 0056): the
+    // person waiting on an answer reads this, and a check-in nobody asked for stays silent.
+    // **Only when there is text and the text is machinery.** An empty reply already has a
+    // considered path — the caller retries where somebody is waiting and stays silent where
+    // nobody asked — and replacing that here would override a decision made somewhere better
+    // informed. This is narrowly the case with no good path: words that reached the person
+    // and should not have.
+    let is_plumbing = !reply.text.trim().is_empty()
+        && sounds_like_plumbing(&reply.text)
+        && reply.tool_calls.is_empty();
+    if is_plumbing {
+        return Ok(ButlerReply {
+            text: "I haven't got a real answer to that one. I'd rather say so than pad it out."
+                .to_owned(),
+            degraded: true,
+            ..ButlerReply::default()
+        });
+    }
     Ok(reply)
 }
 
@@ -7747,6 +7780,83 @@ mod tests {
             "Based on your request, here are the appropriate function calls:\n             1. **GetWeather** - To fetch the current weather.",
         );
         assert!(super::not_an_answer(&described, &ctx));
+    }
+
+    #[test]
+    fn when_every_attempt_is_plumbing_it_says_so_instead() {
+        // Live: asked "any emails today", the reply was three paragraphs about which functions
+        // pertain to the `email` domain. The detector fired, both retries produced the same,
+        // there was no deeper model to ask — and the raw text went to the person anyway.
+        //
+        // Nothing in that paragraph was for them. Saying so plainly is the third option the
+        // old reasoning missed between showing it and showing nothing.
+        struct AlwaysPlumbing;
+        impl Butler for AlwaysPlumbing {
+            fn respond(
+                &self,
+                _h: &[ChatMessage],
+                _p: &[Preference],
+                _c: &ButlerContext,
+            ) -> Result<ButlerReply, crate::ProposalError> {
+                Ok(ButlerReply {
+                    text: "None of the functions listed pertain to handling emails or \
+                           checking for exposed entities in the `email` domain."
+                        .to_owned(),
+                    ..ButlerReply::default()
+                })
+            }
+        }
+
+        let reply = super::take_turn_retrying_empty(
+            &AlwaysPlumbing,
+            &[crate::TurnMessage::User("any emails today".to_owned())],
+            &[],
+            &ButlerContext::default(),
+            &mut |_t: &str| {},
+        )
+        .expect("a turn");
+
+        assert!(
+            !reply.text.contains("function"),
+            "the machinery reached the person: {}",
+            reply.text
+        );
+        assert!(!reply.text.is_empty(), "silence is not the answer either");
+        assert!(
+            reply.degraded,
+            "so an unprompted turn stays quiet rather than posting this"
+        );
+    }
+
+    #[test]
+    fn a_real_answer_is_never_replaced() {
+        // The half that matters most. An honest fallback that ate good answers would be far
+        // worse than the problem it solves.
+        struct Helpful;
+        impl Butler for Helpful {
+            fn respond(
+                &self,
+                _h: &[ChatMessage],
+                _p: &[Preference],
+                _c: &ButlerContext,
+            ) -> Result<ButlerReply, crate::ProposalError> {
+                Ok(ButlerReply {
+                    text: "You have 36,081 unread, though I can only see the count.".to_owned(),
+                    ..ButlerReply::default()
+                })
+            }
+        }
+
+        let reply = super::take_turn_retrying_empty(
+            &Helpful,
+            &[crate::TurnMessage::User("any emails today".to_owned())],
+            &[],
+            &ButlerContext::default(),
+            &mut |_t: &str| {},
+        )
+        .expect("a turn");
+        assert!(reply.text.contains("36,081"), "a good answer was replaced");
+        assert!(!reply.degraded);
     }
 
     #[test]
