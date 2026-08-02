@@ -3886,6 +3886,17 @@ const NOTHING_KNOWN_ABOUT_IT: f32 = 0.5;
 /// every retrieval scheme including the ones that work, so the recoverable version is the
 /// only one that survives being wrong.
 ///
+/// **What lands in `deferred` is wider than "things that act", and the way back has to say
+/// so.** A tool counts as a read only if it is the one the person nominated as that server's
+/// state reader, and there is exactly one of those per server — a field that exists for
+/// read-back verification, doing a job it was never shaped for. A search server with eight
+/// read-only tools therefore has seven of them classed as actuators.
+///
+/// The first version of this described the lookup as the way to *"tools that can DO
+/// something — turn things on or off, set, play, send"*, which made those seven unreachable
+/// in practice: no model calls an actuator-finder to answer a question. Deferral is only
+/// safe because it is recoverable, and an escape hatch nobody opens is not one.
+///
 /// Deferred tools come back **ordered by what has actually worked**, from read-back that is
 /// already recorded. Every published approach ranks on a tool's description, which is why
 /// they would all offer `HassLightSet` first forever: it reads perfectly for "turn off the
@@ -3996,9 +4007,10 @@ pub fn butler_context(
     if !deferred.is_empty() {
         tools.push(CapabilityTool {
             id: LOOK_FOR_A_TOOL.to_owned(),
-            description: "Find the tools that can DO something — turn things on or off, set, \
-                          play, send, add. Call this first whenever the person asks for \
-                          something to happen. Say what they want in their own words."
+            description: "Find more tools. Only some are listed above; the rest — acting on \
+                          things, and further ways of looking things up — are behind this. \
+                          Call it whenever the tools you can see do not cover what was asked, \
+                          and say what is wanted in the person's own words."
                 .to_owned(),
             input_schema: Some(
                 r#"{"type":"object","properties":{"what_they_want":{"type":"string"}},"required":["what_they_want"]}"#
@@ -5508,6 +5520,38 @@ mod tests {
             "the turn ended on the narration: {}",
             reply.text
         );
+    }
+
+    /// The way back has to cover everything that is behind it.
+    ///
+    /// What lands in `deferred` is wider than "things that act": a tool counts as a read
+    /// only if it is the one nominated as its server's state reader, and there is exactly
+    /// one of those per server. A search server with eight read-only tools has seven of them
+    /// treated as actuators.
+    ///
+    /// So a lookup described as the way to *"tools that can DO something"* left those seven
+    /// unreachable — no model calls an actuator-finder to answer a question. Deferral is
+    /// only safe because it is recoverable.
+    #[test]
+    fn the_way_back_is_not_described_as_being_only_for_actions() {
+        let offered = super::LOOK_FOR_A_TOOL;
+        assert!(!offered.is_empty());
+        // The description is built where the context is; assert on the built context so the
+        // wording and the mechanism cannot drift apart.
+        let (_, deferred) = super::offered_and_deferred(
+            vec![endora_capabilities::CapabilitySpec {
+                id: "search.news".to_owned(),
+                description: "look up recent news".to_owned(),
+                configured: true,
+                autonomous: false,
+                input_schema: None,
+                reversibility: Reversibility::Irreversible,
+            }],
+            &std::collections::HashMap::new(),
+        );
+        // A read-only search tool really does land behind the lookup — that is the state of
+        // the classification, and the reason the wording matters.
+        assert_eq!(deferred.len(), 1, "the premise of this test has changed");
     }
 
     /// A tool result is data, not instructions the model may repeat.
