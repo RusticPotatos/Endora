@@ -184,6 +184,12 @@ CREATE TABLE IF NOT EXISTS standing_trouble (
     accepted INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (server, thing, trouble)
 ) STRICT;
+-- The token this node accepts on every /v1 request. One row. Generated on first run and
+-- printed to the log, unless a deployment pinned one through ENDORA_TOKEN.
+CREATE TABLE IF NOT EXISTS node_auth (
+    id    INTEGER PRIMARY KEY CHECK (id = 0),
+    token TEXT NOT NULL
+) STRICT;
 CREATE TABLE IF NOT EXISTS watched_things (
     key                TEXT PRIMARY KEY,
     settled            TEXT NOT NULL,
@@ -243,6 +249,40 @@ pub struct SqliteStore {
 }
 
 impl SqliteStore {
+    /// The token this node accepts, or `None` before one has been made.
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if the backend fails. Deliberately **not** collapsed into `None` —
+    /// a caller cannot tell "no token yet" from "the database is unreadable" without it, and
+    /// those two need opposite responses.
+    pub fn node_token(&self) -> Result<Option<String>, RepositoryError> {
+        let conn = self.db.lock()?;
+        let mut stmt = conn
+            .prepare("SELECT token FROM node_auth WHERE id = 0")
+            .map_err(backend)?;
+        let mut rows = stmt.query([]).map_err(backend)?;
+        let Some(row) = rows.next().map_err(backend)? else {
+            return Ok(None);
+        };
+        let token: String = row.get(0).map_err(backend)?;
+        Ok((!token.is_empty()).then_some(token))
+    }
+
+    /// Stores the token this node will accept from then on.
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if the backend fails.
+    pub fn set_node_token(&self, token: &str) -> Result<(), RepositoryError> {
+        self.db
+            .lock()?
+            .execute(
+                "INSERT OR REPLACE INTO node_auth (id, token) VALUES (0, ?1)",
+                params![token],
+            )
+            .map_err(backend)?;
+        Ok(())
+    }
+
     /// Opens (creating if needed) a store at `path` and applies the schema.
     ///
     /// # Errors

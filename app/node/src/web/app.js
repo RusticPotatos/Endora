@@ -26,6 +26,7 @@ let OUTCOMES = [];             // what Endora DID, and what it saw afterwards (A
 let INTENTIONS = [];           // what Endora is pursuing, and has pursued (ADR 0052)
 let NOTIONS = [];              // what Endora is still thinking about (ADR 0057)
 let CONNECTED = [];            // integrations already set up behind the channel (ADR 0058)
+let NEEDS_TOKEN = false;       // this device cannot prove who it is to the node
 let MCP_NEEDS = { fields: [], docs: "" }; // what the chosen catalogue entry says it needs
 let WORTH_KNOWING = { models: [], fits_gb: 12, asked: false }; // hub models that would fit
 let CHAT_DAY = null;           // which day's conversation is showing; null = today
@@ -101,16 +102,46 @@ function flash(text, kind) {
 }
 function clearMsg() { msgEl.className = "msg"; }
 
+// The node's token, kept on this device only. The node prints it to its log once, on first
+// run; it is never sent to anybody but the node itself.
+function token() {
+  try { return localStorage.getItem("endora-token") || ""; } catch (_) { return ""; }
+}
+
 async function api(method, path, body) {
+  const headers = body !== undefined ? { "content-type": "application/json" } : {};
+  const t = token();
+  if (t) headers["authorization"] = "Bearer " + t;
   const res = await fetch(path, {
     method,
-    headers: body !== undefined ? { "content-type": "application/json" } : {},
+    headers,
     body: body !== undefined ? JSON.stringify(body) : undefined,
   });
   let data = null;
   try { data = await res.json(); } catch (_) {}
+  // A 401 means this browser has no usable token. Say so once, plainly, rather than letting
+  // every screen fail with its own error — the node is fine, this device just cannot prove
+  // who it is.
+  if (res.status === 401) { NEEDS_TOKEN = true; render(); throw new Error("unauthorized"); }
   if (!res.ok) throw new Error((data && data.error) || ("HTTP " + res.status));
+  NEEDS_TOKEN = false;
   return data;
+}
+
+// The one screen that shows before anything else can load.
+//
+// No styling flourish and no reassurance: the person either has the token from the node's log
+// or they do not, and anything else on this screen is in the way.
+function viewNeedsToken() {
+  return `
+    <h2>This device needs the node's token</h2>
+    <div class="card">
+      <div class="note" style="margin-bottom:10px;">Endora printed it to its log the first time it started. It is kept on this device only, and goes nowhere but your own node.</div>
+      <div class="form">
+        <input id="token-input" type="password" autocomplete="off" placeholder="paste it here" />
+        <button class="primary" data-act="token:save">Save</button>
+      </div>
+    </div>`;
 }
 
 async function reload() {
@@ -154,7 +185,7 @@ async function reload() {
 // snapshot and feed live. Reconnection is handled by the browser's EventSource.
 function subscribeToActivity() {
   try {
-    const es = new EventSource("/v1/activity/stream");
+    const es = new EventSource("/v1/activity/stream?token=" + encodeURIComponent(token()));
     // A background "changed" event refreshes the snapshot — but a full re-render
     // must never yank unsaved work out from under the person:
     //  - not while a reply is streaming (it would wipe the live bubble),
@@ -2095,6 +2126,8 @@ async function drainChat() {
 
 function render() {
   updateMenuState();
+  // Nothing else can load without a token, so nothing else is worth drawing.
+  if (NEEDS_TOKEN) { app.innerHTML = viewNeedsToken(); return; }
   const v = NAV.v;
   app.innerHTML =
       v === "audit" ? viewAudit()
@@ -2210,6 +2243,15 @@ async function dispatch(act) {
       localStorage.setItem("endora.showActivity", SHOW_ACTIVITY ? "1" : "0");
       closeMenu();
       return render();
+    }
+    // Keep the node's token on this device. Nothing is sent anywhere to check it — the next
+    // request either works or comes back 401 and puts this screen straight back up.
+    if (verb === "token") {
+      const t = val("token-input");
+      if (!t) return;
+      try { localStorage.setItem("endora-token", t); } catch (_) {}
+      NEEDS_TOKEN = false;
+      return reload();
     }
     // Save the person's home location as a preference the butler reads for context.
     if (verb === "setlocation") {
