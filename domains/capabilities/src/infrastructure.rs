@@ -205,6 +205,63 @@ pub fn channels_of(
         .collect()
 }
 
+/// The smallest arguments that will make a tool actually do its work, from its own schema.
+///
+/// A test that proves nothing is worse than no test. Calling a tool with `{}` gets a
+/// validation error back from the server without a single byte leaving for the service
+/// behind it — which looks like a failure while saying nothing at all about the credential,
+/// the thing anybody presses Test to find out about.
+///
+/// Live: a Brave server listed eight tools, connected cleanly, reported no error, and was
+/// subscribed to the wrong API. Everything on the card looked healthy because a handshake
+/// never calls the service. Only a real call can tell you.
+///
+/// So: every **required** property gets the blandest value of its declared type, and nothing
+/// optional is invented. An `enum` yields its first member rather than a guess, because a
+/// made-up string is the one thing certain to be rejected locally.
+///
+/// From the schema the server published, never from a table of server names — the same rule
+/// that keeps every other integration from needing its own branch here.
+#[must_use]
+pub fn arguments_for_a_test_call(schema: Option<&str>) -> String {
+    let Some(parsed) = schema.and_then(|s| serde_json::from_str::<Value>(s).ok()) else {
+        return "{}".to_owned();
+    };
+    let required: Vec<&str> = parsed
+        .get("required")
+        .and_then(Value::as_array)
+        .map(|r| r.iter().filter_map(Value::as_str).collect())
+        .unwrap_or_default();
+    let mut args = serde_json::Map::new();
+    for key in required {
+        let Some(field) = parsed.get("properties").and_then(|p| p.get(key)) else {
+            continue;
+        };
+        // A declared choice beats anything invented: the server already told us what it
+        // will accept.
+        if let Some(first) = field
+            .get("enum")
+            .and_then(Value::as_array)
+            .and_then(|c| c.first())
+        {
+            args.insert(key.to_owned(), first.clone());
+            continue;
+        }
+        let value = match field.get("type").and_then(Value::as_str) {
+            Some("string") => json!("test"),
+            Some("integer" | "number") => json!(1),
+            Some("boolean") => json!(false),
+            Some("array") => json!([]),
+            Some("object") => json!({}),
+            // A required field of unstated type is left out rather than guessed. The server
+            // will say what it wanted, which is more use than a rejected invention.
+            _ => continue,
+        };
+        args.insert(key.to_owned(), value);
+    }
+    Value::Object(args).to_string()
+}
+
 /// Which tools the auto-allow toggle governs: **every one the server exposes**, whichever
 /// way it is being moved.
 ///
@@ -6768,6 +6825,50 @@ mod a_standing_default_never_overwrites_a_decision {
             "search",
         );
         assert_eq!(governed, vec!["search.web"]);
+    }
+}
+
+#[cfg(test)]
+mod pressing_test_has_to_reach_the_service {
+    //! Live: a Brave server listed eight tools, connected cleanly, reported no error — and
+    //! was subscribed to the wrong API. A handshake never calls the service, so everything
+    //! on the card looked healthy while nothing had been proven.
+
+    #[test]
+    fn a_test_call_fills_in_what_the_tool_requires() {
+        let schema = r#"{"type":"object",
+            "properties":{"query":{"type":"string"},"count":{"type":"integer"}},
+            "required":["query"]}"#;
+        // The required field is filled; the optional one is not invented.
+        assert_eq!(
+            super::arguments_for_a_test_call(Some(schema)),
+            r#"{"query":"test"}"#
+        );
+    }
+
+    #[test]
+    fn a_test_call_takes_a_declared_choice_over_an_invented_one() {
+        let schema = r#"{"type":"object",
+            "properties":{"freshness":{"enum":["pd","pw","pm"]}},
+            "required":["freshness"]}"#;
+        assert_eq!(
+            super::arguments_for_a_test_call(Some(schema)),
+            r#"{"freshness":"pd"}"#
+        );
+    }
+
+    #[test]
+    fn a_test_call_without_a_schema_sends_nothing() {
+        assert_eq!(super::arguments_for_a_test_call(None), "{}");
+        assert_eq!(super::arguments_for_a_test_call(Some("not json")), "{}");
+    }
+
+    #[test]
+    fn a_required_field_of_unstated_type_is_left_to_the_server_to_complain_about() {
+        // Guessing produces a rejection that reads like a broken credential. The server's
+        // own message is more use than an invented value.
+        let schema = r#"{"type":"object","properties":{"thing":{}},"required":["thing"]}"#;
+        assert_eq!(super::arguments_for_a_test_call(Some(schema)), "{}");
     }
 }
 
