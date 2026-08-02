@@ -95,6 +95,7 @@ into belief:
 | --- | --- | --- |
 | what the person **said** | yes | **yes** |
 | what Endora already **believes** about them | yes | **yes** |
+| a reading from **their own device** | yes | **yes** |
 | an **outcome** — what Endora did | yes | no |
 | a **reading** — the house | yes | no |
 
@@ -102,6 +103,23 @@ Outcomes are excluded for a reason this repository already learned once: **an ou
 Endora's own conduct**, and [0052](0052-what-it-knows-about-you.md) found a belief formed from
 exactly that at the top of the understanding screen. Letting one carry a notion is that
 feedback loop with an extra step in it.
+
+#### The correction: their own devices are not the household
+
+The first version of this rule ruled out **every** reading. That was right about the hallway
+light and wrong about their own phone — and it was the reason wearable and health data would
+have landed, corroborated nothing, and correctly done nothing at all.
+
+A watch on somebody's wrist is not the household's. So a reading from a thing that belongs to
+*them* may carry a notion, and a reading from the house still may not.
+
+**Which entities those are is read from the service, never inferred.** Home Assistant already
+holds the mapping because the person set it up — a `person` entity lists the trackers its
+presence is computed from. And where there is **more than one person entity, Endora attributes
+nothing**: nothing there can say which one it serves, and this record rejects guessing outright
+because the cost of being wrong is not a bad reading but a false belief about somebody. That
+also fails safely as a household grows — it stops attributing rather than starting to mix
+people up.
 
 Two things follow, both accepted deliberately:
 
