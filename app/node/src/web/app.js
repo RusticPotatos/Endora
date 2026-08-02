@@ -803,11 +803,16 @@ async function mcpSearch() {
       MCP_CATALOG = r.servers || [];
       if (!box) return;
       if (!MCP_CATALOG.length) { box.innerHTML = `<div class="sub" style="margin-top:8px;">Nothing matched.</div>`; return; }
-      // Newest first. The registry publishes no download or star count of any kind, so
-      // recency is the only ordering signal there is — say that rather than imply a
-      // popularity sort nobody can actually provide.
+      // Checked entries first, then the registry by recency. The registry publishes no
+      // download or star count of any kind, so recency is the only ordering signal there is
+      // — say that rather than imply a popularity sort nobody can actually provide.
+      //
+      // And say who publishes it. Searching "brave" put a stranger's fork first and Brave's
+      // own fourth, purely because the fork was edited more recently, on a search whose next
+      // step is typing an API key into whatever came back. Recency reads like ranking unless
+      // the screen says otherwise.
       const note = r.registry_ok
-        ? `<div class="sub" style="margin-top:6px;">Newest first — the registry doesn't publish download counts, so recency is all there is to sort by.</div>`
+        ? `<div class="sub" style="margin-top:6px;">Checked entries first, then the community registry, newest first — it publishes no download counts, so recency is all the ordering there is. Anyone can publish there, so check a name is who you think it is before giving it a key.</div>`
         : `<div class="sub" style="margin-top:6px;">Showing built-in suggestions — the community registry wasn't reachable.</div>`;
       box.innerHTML = note + MCP_CATALOG.map((e, i) => `
         <div class="row" style="align-items:flex-start;gap:10px;margin-top:8px;border-top:1px solid var(--line);padding-top:8px;">
@@ -861,6 +866,29 @@ function shortServerName(id) {
   return last.replace(/[^A-Za-z0-9_-]/g, "-").replace(/-+/g, "-").replace(/^-|-$/g, "");
 }
 
+// Bring a form into view, opening whatever it is folded inside first.
+//
+// The add form lives in a `<details>`, because almost nobody arrives at that screen to type
+// a launch command out by hand. Filling it in while that is shut fills in nothing anybody
+// can see: `scrollIntoView` on a collapsed element moves the page nowhere, so choosing a
+// server flashed "review and add it" over a screen that did not change, and the field asking
+// for the API key stayed behind a fold there was no reason to suspect.
+//
+// Ancestors only. A nested `<details>` — Advanced, and the other environment variables —
+// stays shut, which is the whole point of it being there.
+function revealForm(id) {
+  const form = document.getElementById(id);
+  if (!form) return;
+  let fold = form.closest ? form.closest("details") : null;
+  while (fold) {
+    fold.open = true;
+    fold = fold.parentElement && fold.parentElement.closest
+      ? fold.parentElement.closest("details")
+      : null;
+  }
+  form.scrollIntoView({ block: "center" });
+}
+
 // Prefill the add form from a catalog entry. Everything stays editable — the entry
 // is a starting point, not a fixed recipe.
 function mcpUseCatalog(i) {
@@ -884,8 +912,7 @@ function mcpUseCatalog(i) {
   flash(needs.length
     ? `Filled in ${e.name}. Still needs: ${needs.map((f) => f.label).join(", ")}.`
     : `Filled in ${e.name} — review and add it.`, "ok");
-  const form = document.getElementById("mcp-name");
-  if (form) form.scrollIntoView({ block: "center" });
+  revealForm("mcp-name");
 }
 
 // Load an already-registered server into the Add/Save form so its URL or settings can
@@ -910,8 +937,7 @@ function mcpEditServer(name) {
     ? " Leave the token/secret blank to keep what's saved."
     : "";
   flash(`Editing "${s.name}". Change what you need, then Save.${secretNote}`, "ok");
-  const form = document.getElementById("mcp-name");
-  if (form) form.scrollIntoView({ block: "center" });
+  revealForm("mcp-name");
 }
 
 // Toggle the MCP add-form fields between the stdio (command/args) and http (url) sets.

@@ -149,6 +149,34 @@ pub const ENTRIES: &[Entry] = &[
         }],
         docs: "https://github.com/modelcontextprotocol/servers",
     },
+    // Web search, which is the one nobody had and everybody wanted. Endora can reach a
+    // house, a calendar and a mailbox and still cannot answer "when do they open" — and
+    // searching the registry for it is where this entry earns its place rather than being a
+    // convenience. The registry sorts by recency, so a stranger's fork of a Brave server was
+    // the first result and Brave's own was fourth, on a search whose whole purpose is to
+    // hand somebody's API key to whatever comes back. Curated entries are checked and they
+    // sort first; that is the difference between the two lists.
+    //
+    // Package and variable are the ones Brave publishes under `io.github.brave/`, read from
+    // the registry rather than remembered.
+    Entry {
+        id: "brave-search",
+        name: "Brave Search",
+        description: "Search the web — an independent index, not a wrapper around Google \
+                      or Bing. Needs a free API key from Brave.",
+        category: "search web",
+        transport: "stdio",
+        command: "npx",
+        args: &["-y", "@brave/brave-search-mcp-server"],
+        fields: &[Field {
+            key: "BRAVE_API_KEY",
+            label: "Brave Search API key",
+            placeholder: "BSA…",
+            secret: true,
+            target: Target::Env,
+        }],
+        docs: "https://brave.com/search/api/",
+    },
     Entry {
         id: "fetch",
         name: "Fetch",
@@ -280,5 +308,38 @@ mod tests {
         // Matches on category too.
         assert!(!search("dev").is_empty());
         assert!(search("zzzznope").is_empty());
+    }
+
+    /// Whatever somebody calls it, searching for the web finds a way to search it.
+    ///
+    /// This is a trust check wearing a search check's clothes. Without a curated answer the
+    /// query falls straight through to the registry, which sorts by recency and put a
+    /// stranger's fork above Brave's own — on the one search where the next step is typing
+    /// an API key into whatever came back first.
+    #[test]
+    fn searching_for_the_web_finds_a_way_to_search_it() {
+        for asked in ["brave", "search", "web"] {
+            let found = search(asked);
+            assert!(
+                found.iter().any(|e| e["id"] == "brave-search"),
+                "'{asked}' found no way to search the web"
+            );
+        }
+    }
+
+    /// A curated entry that wants a credential has to ask for it by name.
+    ///
+    /// Registry entries often declare nothing, and then the only way in is the Advanced
+    /// KEY=value box — a plain-text field for a secret, where a mistyped key fails silently
+    /// and the server just returns nothing. A curated entry exists to be better than that.
+    #[test]
+    fn a_curated_entry_asks_for_its_credential_by_name() {
+        let brave = ENTRIES.iter().find(|e| e.id == "brave-search").unwrap();
+        let key = brave.fields.iter().find(|f| f.secret).unwrap();
+        assert_eq!(key.key, "BRAVE_API_KEY");
+        assert!(
+            !brave.docs.is_empty(),
+            "a key somebody has to go and get needs a link to where they get it"
+        );
     }
 }
