@@ -62,6 +62,9 @@ pub struct AppState {
     /// subscribers know to refresh. Carries no payload — it is a "something
     /// changed" nudge, and clients re-read the authoritative state.
     pub changes: broadcast::Sender<()>,
+    /// When this process started, so a never-claimed node can be claimed without the
+    /// bootstrap token for a short while after it comes up (ADR 0058 / `crate::signin`).
+    pub started_ms: i64,
     /// The token every `/v1` request must carry.
     ///
     /// This node shipped with no inbound authentication at all, on `0.0.0.0`, which made
@@ -120,7 +123,11 @@ impl AppState {
         clock: Arc<SystemClock>,
         butler: Arc<dyn Butler + Send + Sync>,
     ) -> Self {
-        // Resolved before the struct takes ownership of the store.
+        // Both resolved before the struct takes ownership of the store and the clock.
+        let started_ms = {
+            use endora_application::Clock as _;
+            clock.now().unix_millis()
+        };
         let token = Arc::new(the_nodes_token(&store, &ids));
         // The authenticator secret is made alongside, so the enrolment QR is ready the first
         // time anybody opens the console rather than needing a separate step to bring into
@@ -187,6 +194,7 @@ impl AppState {
             turn_lock: Arc::new(tokio::sync::Mutex::new(())),
             summary,
             token,
+            started_ms,
         }
     }
 }
@@ -1156,14 +1164,19 @@ async fn set_sign_in(
         ))
     })?;
     let store = state.store.clone();
-    blocking(move || {
+    let secret = blocking(move || {
         let (_, secret) = store.sign_in_setup()?;
-        store
-            .set_sign_in_setup(&hash, &secret)
-            .map_err(endora_application::AppError::from)
+        store.set_sign_in_setup(&hash, &secret)?;
+        Ok::<_, endora_application::AppError>(secret)
     })
     .await?;
-    Ok(Json(json!({ "ok": true })))
+    // Handed back **here and only here**. Claiming a node closes the window that let the
+    // request through, so a second call cannot ask again — and the GET that would otherwise
+    // serve it needs a credential the claimant does not have yet.
+    Ok(Json(json!({
+        "ok": true,
+        "otpauth": crate::totp::enrolment_uri(&crate::totp::from_hex(&secret), "you"),
+    })))
 }
 
 #[derive(Deserialize)]
@@ -1269,7 +1282,22 @@ async fn require_the_token(
             .sessions(state.clock.now().unix_millis(), SESSIONS_LAST_MS)
             .unwrap_or_default(),
     );
-    if !crate::auth::may_pass(&path, offered.as_deref(), in_query.as_deref(), &accepted) {
+    // A node nobody has claimed yet may be claimed without the token, briefly after it comes
+    // up. This is the one place the closed-by-default rule bends, and it bends only while
+    // there is nothing to protect: no password, no owner, and a fifteen-minute window from
+    // start-up (`crate::signin::may_claim`).
+    // POST only. A GET here hands out the authenticator secret, and letting *that* through the
+    // window would let somebody enrol their own phone against a node they never claimed and
+    // then simply wait — which a test caught within a minute of the window existing.
+    let claimable = path == "/v1/session/setup"
+        && request.method() == Method::POST
+        && crate::signin::may_claim(
+            already_signed_in(&state.store),
+            state.clock.now().unix_millis() - state.started_ms,
+        );
+    if !claimable
+        && !crate::auth::may_pass(&path, offered.as_deref(), in_query.as_deref(), &accepted)
+    {
         return (
             StatusCode::UNAUTHORIZED,
             "this node needs its token — see the container log on first run",
@@ -4983,21 +5011,79 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn enrolling_is_behind_the_bootstrap_token() {
-        // Claiming the account is the one thing a stranger must not be able to do first.
+    async fn a_node_nobody_owns_can_be_claimed_without_the_token() {
+        // The password-first page. Home Assistant, on the same network and controlling more,
+        // leaves this open indefinitely; this closes it after a quarter of an hour, because a
+        // node left unclaimed for weeks would otherwise be claimable by anyone who ever
+        // reached it — which was this node's actual situation.
         let app = app(test_state());
-        for req in [
-            unsigned("/v1/session/setup"),
-            Request::builder()
-                .method("POST")
-                .uri("/v1/session/setup")
-                .header("content-type", "application/json")
-                .body(Body::from(r#"{"password":"a-long-enough-password"}"#))
-                .unwrap(),
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/session/setup")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"password":"a-long-enough-password"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert!(
+            res.status().is_success(),
+            "a fresh node should be claimable: {}",
+            res.status()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_node_that_has_an_owner_cannot_be_claimed_again() {
+        // The half that matters. Once a password exists the window is shut permanently, so a
+        // stranger cannot take a running house by asking nicely at the right moment.
+        let state = test_state();
+        let hash = super::hash_password("the-owners-password").unwrap();
+        let (_, secret) = state.store.sign_in_setup().unwrap();
+        state.store.set_sign_in_setup(&hash, &secret).unwrap();
+
+        let res = app(state)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/session/setup")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"password":"someone-elses-password"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn the_claim_window_does_not_open_anything_else() {
+        // Being unclaimed is a reason to allow *setting the first password*, and nothing else.
+        // Without this the fifteen minutes would be fifteen minutes of no security at all.
+        let app = app(test_state());
+        for path in [
+            "/v1/export",
+            "/v1/chat",
+            "/v1/deep-model",
+            "/v1/capabilities",
         ] {
-            let res = app.clone().oneshot(req).await.unwrap();
-            assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+            let res = app.clone().oneshot(unsigned(path)).await.unwrap();
+            assert_eq!(res.status(), StatusCode::UNAUTHORIZED, "{path} was opened");
         }
+    }
+
+    #[tokio::test]
+    async fn reading_the_enrolment_secret_is_behind_the_token_even_when_unclaimed() {
+        // The claim window allows *setting* the first password. Handing out the authenticator
+        // secret to an unsigned GET would let somebody enrol their own phone against a node
+        // they never claimed, and then wait.
+        let res = app(test_state())
+            .oneshot(unsigned("/v1/session/setup"))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
     }
 
     #[tokio::test]
