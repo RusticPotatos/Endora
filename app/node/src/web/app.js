@@ -28,6 +28,7 @@ let NOTIONS = [];              // what Endora is still thinking about (ADR 0057)
 let CONNECTED = [];            // integrations already set up behind the channel (ADR 0058)
 let NEEDS_TOKEN = false;       // this device cannot prove who it is to the node
 let SIGNIN = null;             // whether a password and authenticator are set up
+let SIGNIN_EXISTS = null;      // has this node ever been claimed? (asked without a token)
 let MCP_NEEDS = { fields: [], docs: "" }; // what the chosen catalogue entry says it needs
 let WORTH_KNOWING = { models: [], fits_gb: 12, asked: false }; // hub models that would fit
 let CHAT_DAY = null;           // which day's conversation is showing; null = today
@@ -129,12 +130,31 @@ async function api(method, path, body) {
   return data;
 }
 
-// The one screen that shows before anything else can load.
+// The screen that shows before anything else can load.
 //
-// Two ways in, in the order they will actually be used. Signing in is the everyday one; the
-// token from the node's log is the recovery path, and stays available precisely because a lost
-// phone must not be the end of it.
+// **Which one depends on whether this node has ever been set up**, and getting that wrong was
+// the bug: a brand-new Endora asked people to sign in to an account that did not exist, then
+// showed a bare field labelled "the node's token" with no hint of where to find one.
+//
+// The token step cannot go away. Something has to prove that whoever opened this page owns
+// the machine, or the first stranger to reach a new node claims somebody's butler — and
+// reading the log needs a shell on the box, which is exactly that proof. What it can do is
+// say so, and say where to look.
 function viewNeedsToken() {
+  if (SIGNIN_EXISTS === false) {
+    return `
+      <h2>Set up Endora</h2>
+      <div class="card">
+        <div class="note" style="margin-bottom:10px;">Nobody has claimed this node yet. Endora printed a one-time token to its log when it first started — fetching it proves you own the machine, which is the whole point of this step.</div>
+        <div class="sub" style="margin-bottom:6px;">On the machine Endora runs on:</div>
+        <div class="sub" style="user-select:all;margin-bottom:10px;font-family:ui-monospace,monospace;">docker logs endora-node 2>&amp;1 | grep -A2 "this node's token"</div>
+        <div class="form">
+          <input id="token-input" type="password" autocomplete="off" placeholder="paste the token" />
+          <button class="primary" data-act="token:save">Continue</button>
+        </div>
+        <div class="sub" style="margin-top:10px;">Next you'll choose a password and add Endora to your authenticator, so you never need this token again.</div>
+      </div>`;
+  }
   return `
     <h2>Sign in</h2>
     <div class="card">
@@ -176,6 +196,13 @@ function viewSetUpSignIn() {
 }
 
 async function reload() {
+  // First, and without a credential: has this node ever been claimed? Everything below is
+  // about to 401 on a fresh install, and `render` needs this answer *before* that happens or
+  // it shows a sign-in form for an account nobody has created.
+  try {
+    const state = await api("GET", "/v1/session");
+    SIGNIN_EXISTS = !!(state && state.set_up);
+  } catch (_) { /* an older node has no such route; the sign-in screen is the safe fallback */ }
   // The export snapshot, the derived activity feed, and the everyday settings.
   const [db, activity, checkin, caps, autonomy] = await Promise.all([
     api("GET", "/v1/export"),

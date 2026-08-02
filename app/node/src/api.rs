@@ -909,7 +909,7 @@ pub fn app(state: AppState) -> Router {
         // again — a Connect button beside a working calendar reads as a failed attempt.
         // Signing in. The POST answers unsigned by design (see `sign_in`); the setup pair
         // sits behind the bootstrap token, because enrolling is claiming the account.
-        .route("/v1/session", post(sign_in))
+        .route("/v1/session", get(whether_sign_in_exists).post(sign_in))
         .route("/v1/session/setup", get(sign_in_setup).post(set_sign_in))
         .route("/v1/connect/connected", get(what_is_connected))
         .route("/v1/connect/begin", post(begin_connecting))
@@ -1049,6 +1049,27 @@ fn password_matches(password: &str, stored: &str) -> bool {
             .verify_password(password.as_bytes(), &parsed)
             .is_ok()
     })
+}
+
+/// Whether sign-in has ever been set up. **Open, and a single boolean.**
+///
+/// The console cannot choose its first screen without this, and the endpoint that knew was
+/// itself behind the token — so a brand-new node asked people to sign in to an account that
+/// did not exist yet.
+///
+/// Nothing else travels. Somebody learns that this Endora has a password, which one attempt
+/// would have told them anyway.
+async fn whether_sign_in_exists(
+    State(state): State<AppState>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let store = state.store.clone();
+    let (hash, _) = blocking(move || {
+        store
+            .sign_in_setup()
+            .map_err(endora_application::AppError::from)
+    })
+    .await?;
+    Ok(Json(json!({ "set_up": !hash.is_empty() })))
 }
 
 /// What the console needs to set sign-in up, or to know it already is.
