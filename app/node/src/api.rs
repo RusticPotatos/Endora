@@ -976,6 +976,7 @@ pub fn app(state: AppState) -> Router {
         )
         .route("/v1/mcp/servers/{name}/trust", post(set_mcp_trust))
         .route("/v1/mcp/servers/{name}/reader", post(set_mcp_reader))
+        .route("/v1/mcp/servers/{name}/test", post(test_mcp_server))
         .route(
             "/v1/capabilities/{id}/config",
             post(set_capability_settings),
@@ -4489,6 +4490,89 @@ async fn invoke_capability(
     }
 }
 
+/// Proves an MCP server works with the credential it has, right now.
+///
+/// Built-in skills have had a Test button and both model endpoints a *Test connection*;
+/// somebody else's server had **Reconnect**, which proves a process started and listed its
+/// tools. That is not the question anybody is asking.
+///
+/// Live, and the reason this exists: a Brave server connected cleanly, advertised eight
+/// tools, reported no error, and was subscribed to the wrong Brave API. Every indicator on
+/// the card was green because **a handshake never calls the service behind the server**. The
+/// first anyone would have known is a search quietly returning nothing.
+///
+/// It calls the tool the person nominated as this server's state reader (ADR 0054). That
+/// nomination already means *"this one only looks"*, so the safety question is settled by a
+/// decision they made rather than by a guess here — the same rule as `test_capability`, that
+/// "press this to find out" must never be how someone learns what a skill does. A server
+/// with no reader nominated is not tested; it says so and says what to do about it.
+///
+/// A refusal from the far end is a **result, not an error**: `401` is the most useful thing
+/// this endpoint can report, so it comes back as prose with `ok: false` rather than as a
+/// failed request.
+async fn test_mcp_server(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    use endora_capabilities::{CapabilityRunner, McpServerRegistry};
+    let config = state.config.clone();
+    let lookup = name.clone();
+    let known = blocking(move || {
+        Ok(McpServerRegistry::list(config.as_ref())
+            .map_err(AppError::Repository)?
+            .into_iter()
+            .find(|s| s.name == lookup))
+    })
+    .await?;
+    let Some(server) = known else {
+        return Err(ApiError(AppError::NotFound { entity: "server" }));
+    };
+    if server.reader_tool.trim().is_empty() {
+        return Ok(Json(json!({
+            "ok": false,
+            "said": "Nobody has said which of its tools reads this server's state, so there \
+                    is nothing safe to call. Choose one above and press Test again.",
+        })));
+    }
+
+    let id = format!("{}.{}", server.name, server.reader_tool.trim());
+    let runner = mcp_snapshot(&state);
+    let Some(spec) = runner.available().into_iter().find(|s| s.id == id) else {
+        return Ok(Json(json!({
+            "ok": false,
+            "said": format!(
+                "It is not offering '{}' at the moment. Press Reconnect, then Test again.",
+                server.reader_tool.trim()
+            ),
+        })));
+    };
+
+    let args = endora_capabilities::arguments_for_a_test_call(spec.input_schema.as_deref());
+    let events = state.events.clone();
+    let clock = state.clock.clone();
+    let called = tokio::task::spawn_blocking(move || runner.run(&id, &args))
+        .await
+        .map_err(|_| {
+            ApiError(AppError::Repository(RepositoryError::Backend(
+                "worker task failed".to_owned(),
+            )))
+        })?;
+    match called {
+        Ok(said) => {
+            record_event(
+                events.as_ref(),
+                clock.as_ref(),
+                &format!("Tested the {name} server: it answered."),
+            );
+            // Enough to show it really answered, not so much that a page of search results
+            // lands in a toast.
+            let shown: String = said.chars().take(300).collect();
+            Ok(Json(json!({ "ok": true, "said": shown })))
+        }
+        Err(why) => Ok(Json(json!({ "ok": false, "said": why }))),
+    }
+}
+
 /// Proves a skill works with the settings it has, right now.
 ///
 /// Both model endpoints have had a *Test connection* button since they existed; no skill
@@ -6252,6 +6336,45 @@ mod tests {
             .find(|s| s["name"] == "ha")
             .unwrap();
         assert_eq!(ha["trust_all"], false);
+    }
+
+    #[tokio::test]
+    async fn testing_an_unknown_server_is_404() {
+        let res = app(test_state())
+            .oneshot(post("/v1/mcp/servers/nope/test", ""))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::NOT_FOUND);
+    }
+
+    /// A server with no state reader is not tested by calling something at random.
+    ///
+    /// The reader nomination is the person saying "this one only looks" (ADR 0054). Without
+    /// it there is nothing here that is known to be safe to call, and the honest answer is
+    /// to say so rather than to pick a tool and find out what it does.
+    #[tokio::test]
+    async fn a_server_with_no_state_reader_says_so_instead_of_calling_something() {
+        let router = app(test_state());
+        let reg = router
+            .clone()
+            .oneshot(post(
+                "/v1/mcp/servers",
+                r#"{"name":"unread","transport":"http","url":"http://x/sse","enabled":false}"#,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(reg.status(), StatusCode::OK);
+
+        let res = router
+            .oneshot(post("/v1/mcp/servers/unread/test", ""))
+            .await
+            .unwrap();
+        // A soft result the person can read and act on, not a failed request.
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = json_body(res).await;
+        assert_eq!(body["ok"], false);
+        let said = body["said"].as_str().unwrap();
+        assert!(said.contains("reads this server's state"), "{said}");
     }
 
     #[tokio::test]
