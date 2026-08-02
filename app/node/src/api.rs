@@ -917,6 +917,8 @@ pub fn app(state: AppState) -> Router {
         // sits behind the bootstrap token, because enrolling is claiming the account.
         .route("/v1/session", get(whether_sign_in_exists).post(sign_in))
         .route("/v1/session/setup", get(sign_in_setup).post(set_sign_in))
+        // A read-only credential for `make smoke`, behind a full one.
+        .route("/v1/session/checks", post(mint_a_checking_token))
         .route("/v1/connect/connected", get(what_is_connected))
         .route("/v1/connect/begin", post(begin_connecting))
         .route("/v1/connect/finish", post(finish_connecting))
@@ -1095,6 +1097,37 @@ fn password_matches(password: &str, stored: &str) -> bool {
     })
 }
 
+/// Mints a read-only credential for the smoke suite.
+///
+/// Behind a full credential, because handing one out is an act only the owner should take.
+///
+/// It exists because `make smoke` needs a token in a plaintext file on a laptop, and that one
+/// should not be able to do the things that matter — point the deep model somewhere else,
+/// widen a capability, purge memory, or pull the whole conversation in a single call.
+///
+/// It can still read beliefs and context, and that is deliberate: three of the suite's
+/// invariants assert on real belief statements, and asserting about real data is the entire
+/// reason that tier exists.
+async fn mint_a_checking_token(
+    State(state): State<AppState>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let store = state.store.clone();
+    let ids = state.ids.clone();
+    let now_ms = state.clock.now().unix_millis();
+    let token = blocking(move || {
+        use endora_application::IdSource as _;
+        let token = format!("{:032x}{:032x}", ids.new_id(), ids.new_id());
+        store.add_session(&token, "checks", now_ms, SESSIONS_LAST_MS)?;
+        Ok::<_, endora_application::AppError>(token)
+    })
+    .await?;
+    Ok(Json(json!({
+        "token": token,
+        "scope": "checks",
+        "note": "Reads only, and not /v1/export. Put it in local.mk as ENDORA_TOKEN.",
+    })))
+}
+
 /// Whether sign-in has ever been set up. **Open, and a single boolean.**
 ///
 /// The console cannot choose its first screen without this, and the endpoint that knew was
@@ -1234,7 +1267,7 @@ async fn sign_in(
         store.set_sign_in_failures(cleared.failures, cleared.last_failure_ms)?;
         use endora_application::IdSource as _;
         let session = format!("{:032x}{:032x}", ids.new_id(), ids.new_id());
-        store.add_session(&session, now_ms, SESSIONS_LAST_MS)?;
+        store.add_session(&session, "full", now_ms, SESSIONS_LAST_MS)?;
         Ok(Ok(session))
     })
     .await?;
@@ -1264,6 +1297,8 @@ async fn require_the_token(
     next: Next,
 ) -> Response {
     let path = request.uri().path().to_owned();
+    // Anything that is not a plain read. A checking credential may do none of it.
+    let is_write = request.method() != Method::GET;
     let offered = request
         .headers()
         .get(axum::http::header::AUTHORIZATION)
@@ -1278,15 +1313,27 @@ async fn require_the_token(
     // The bootstrap token from the log, plus any live session. Read per request: it is one
     // indexed lookup over a handful of rows, and it means signing out takes effect at once
     // rather than whenever a cache felt like it.
-    let mut accepted: Vec<String> = Vec::new();
+    let mut accepted: Vec<(String, crate::auth::Scope)> = Vec::new();
     if !state.token.is_empty() {
-        accepted.push((*state.token).clone());
+        // The bootstrap token is the recovery path and is unrestricted; scoping it would mean
+        // the credential you fall back to could not fix whatever went wrong.
+        accepted.push(((*state.token).clone(), crate::auth::Scope::Full));
     }
     accepted.extend(
         state
             .store
             .sessions(state.clock.now().unix_millis(), SESSIONS_LAST_MS)
-            .unwrap_or_default(),
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(token, scope)| {
+                // Anything unrecognised is treated as the narrow scope, not the wide one: a
+                // scope nobody understands must not be read as permission.
+                let scope = match scope.as_str() {
+                    "full" => crate::auth::Scope::Full,
+                    _ => crate::auth::Scope::Checks,
+                };
+                (token, scope)
+            }),
     );
     // A node nobody has claimed yet may be claimed without the token, briefly after it comes
     // up. This is the one place the closed-by-default rule bends, and it bends only while
@@ -1302,7 +1349,13 @@ async fn require_the_token(
             state.clock.now().unix_millis() - state.started_ms,
         );
     if !claimable
-        && !crate::auth::may_pass(&path, offered.as_deref(), in_query.as_deref(), &accepted)
+        && !crate::auth::may_pass(
+            &path,
+            offered.as_deref(),
+            in_query.as_deref(),
+            &accepted,
+            is_write,
+        )
     {
         return (
             StatusCode::UNAUTHORIZED,
@@ -5057,6 +5110,67 @@ mod tests {
                     .uri("/v1/session/setup")
                     .header("content-type", "application/json")
                     .body(Body::from(r#"{"password":"someone-elses-password"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn a_checking_token_reads_but_cannot_touch_anything() {
+        // End to end, through the real router. This credential is the one that ends up in a
+        // plaintext file on a laptop, so what it *cannot* do is the whole point of it.
+        let app = app(test_state());
+        let minted = json_body(
+            app.clone()
+                .oneshot(post("/v1/session/checks", "{}"))
+                .await
+                .unwrap(),
+        )
+        .await;
+        let checking = minted["token"].as_str().expect("a token").to_owned();
+        let with = |uri: &str, method: &str| {
+            Request::builder()
+                .method(method)
+                .uri(uri)
+                .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {checking}"))
+                .body(Body::from("{}"))
+                .unwrap()
+        };
+
+        // Reads the suite depends on.
+        for path in ["/v1/understanding", "/v1/notions", "/v1/reliability"] {
+            let res = app.clone().oneshot(with(path, "GET")).await.unwrap();
+            assert_eq!(res.status(), StatusCode::OK, "{path} should be readable");
+        }
+        // The bulk dump, and every write — including the one that would redirect every later
+        // turn to somebody else's server.
+        for (path, method) in [
+            ("/v1/export", "GET"),
+            ("/v1/deep-model", "POST"),
+            ("/v1/memory/purge", "POST"),
+            ("/v1/session/checks", "POST"),
+        ] {
+            let res = app.clone().oneshot(with(path, method)).await.unwrap();
+            assert_eq!(
+                res.status(),
+                StatusCode::UNAUTHORIZED,
+                "{method} {path} should be refused"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn minting_one_needs_a_full_credential() {
+        let res = app(test_state())
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/session/checks")
+                    .header("content-type", "application/json")
+                    .body(Body::from("{}"))
                     .unwrap(),
             )
             .await

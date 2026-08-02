@@ -25,11 +25,14 @@
 //! ENDORA_URL=https://host:8787 ENDORA_TOKEN=… make smoke
 //! ```
 //!
-//! The node refuses `/v1` without a credential, so this suite needs one too. Use a **session**
-//! token rather than the bootstrap token from the node's log: a session expires and can be
-//! revoked, and a plaintext file on a laptop should hold the credential you can throw away.
-//! After signing in, the browser has one — `localStorage.getItem('endora-token')` — which
-//! avoids putting a password into shell history.
+//! The node refuses `/v1` without a credential, so this suite needs one too — and it should be
+//! the **narrowest**, because it lives in a plaintext file on a laptop. `POST
+//! /v1/session/checks` mints a read-only token that is also refused `/v1/export`, so a leak
+//! cannot redirect the deep model, widen a capability, purge memory, or pull the whole
+//! conversation at once.
+//!
+//! It can still read beliefs and context. That is deliberate: three of the invariants below
+//! assert on real belief statements, and asserting about real data is why this tier exists.
 
 use endora_application::{reads_as_an_instruction, says_the_same_thing, statements_disagree};
 use endora_understanding::domain::notions::MOST_NOTIONS_AT_ONCE;
