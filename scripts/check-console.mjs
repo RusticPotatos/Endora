@@ -302,4 +302,31 @@ if (failures.length) {
   for (const f of failures) console.error("  " + f);
   process.exit(1);
 }
+// Every screen under Settings must say so in its breadcrumb.
+//
+// They drifted: four said "Home > Skills" when they were two levels down, one had no trail at
+// all, and two different screens both called themselves "Preferences". Rendering the trail
+// from one list fixed those; this stops the next screen being added without one, which is the
+// only way the fix survives.
+// Read through `runInContext`, not `context.UNDER_SETTINGS`: a `const` at the top of a VM
+// script is a lexical binding rather than a property of the global, which is the same trap
+// the fixture above is written the way it is to avoid.
+const settingsViews = runInContext("UNDER_SETTINGS.map((p) => p.view)", context);
+const missing = [];
+for (const view of settingsViews) {
+  let html = "";
+  try {
+    html = runInContext(`view${view[0].toUpperCase()}${view.slice(1)}()`, context) || "";
+  } catch (e) {
+    missing.push(`${view} (threw: ${e.message})`);
+    continue;
+  }
+  if (!/Settings/.test(html)) missing.push(view);
+}
+if (missing.length) {
+  console.error(`breadcrumbs: these screens are under Settings but do not say so: ${missing.join(", ")}`);
+  process.exit(1);
+}
+console.log(`breadcrumbs: ${settingsViews.length} screens under Settings all say so`);
+
 console.log(`console check: ${named.length} screens render`);
