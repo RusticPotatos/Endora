@@ -167,10 +167,31 @@ pub fn enrolment_uri(secret: &[u8], account: &str) -> String {
     )
 }
 
+/// The enrolment URI as a scannable QR, inline SVG.
+///
+/// A phone camera is how an authenticator is set up; a hundred-character `otpauth://` string
+/// is not something anybody types. The text is kept alongside for a password manager or a
+/// machine that cannot scan, but this is the one that gets used.
+///
+/// Rendered server-side and inlined rather than fetched: the secret must never sit at a URL
+/// somebody could request, and the console is served from the same binary anyway.
+#[must_use]
+pub fn enrolment_qr(secret: &[u8], account: &str) -> String {
+    let uri = enrolment_uri(secret, account);
+    let Ok(code) = qrcode::QrCode::new(uri.as_bytes()) else {
+        return String::new();
+    };
+    code.render::<qrcode::render::svg::Color<'_>>()
+        .min_dimensions(220, 220)
+        .quiet_zone(true)
+        .build()
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        SECRET_BYTES, base32, code_at, enrolment_uri, from_hex, hmac_sha1, to_hex, verify,
+        SECRET_BYTES, base32, code_at, enrolment_qr, enrolment_uri, from_hex, hmac_sha1, to_hex,
+        verify,
     };
     use sha1::Digest as _;
 
@@ -286,6 +307,37 @@ mod tests {
         }
         assert!(from_hex("abc").is_empty(), "odd length is not a secret");
         assert!(from_hex("zzzz").is_empty(), "not hex is not a secret");
+    }
+
+    #[test]
+    fn the_qr_carries_the_whole_uri_and_is_big_enough_to_scan() {
+        // A phone camera is how this is actually done. A QR that encodes a truncated URI, or
+        // renders too small to resolve, fails in the one way nobody can debug from the screen:
+        // it simply does not scan.
+        let svg = enrolment_qr(&[0x2a; SECRET_BYTES], "you");
+        assert!(
+            svg.starts_with("<?xml") || svg.starts_with("<svg"),
+            "{svg:.60}"
+        );
+        assert!(svg.contains("<svg"), "not an svg");
+        // A URI this long needs a fair number of modules; a trivially small render would mean
+        // the encoder silently took a shorter input than it was given.
+        assert!(
+            svg.len() > 1_000,
+            "suspiciously small for a {}-character uri: {} bytes",
+            enrolment_uri(&[0x2a; SECRET_BYTES], "you").len(),
+            svg.len()
+        );
+    }
+
+    #[test]
+    fn the_qr_and_the_text_describe_the_same_secret() {
+        // They are two renderings of one thing, and a screen showing a QR for one secret
+        // beside text for another would be undiscoverable until codes started failing.
+        let a = enrolment_qr(&[1u8; SECRET_BYTES], "you");
+        let b = enrolment_qr(&[2u8; SECRET_BYTES], "you");
+        assert_ne!(a, b, "different secrets must not render identically");
+        assert_eq!(a, enrolment_qr(&[1u8; SECRET_BYTES], "you"), "stable");
     }
 
     #[test]

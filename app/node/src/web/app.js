@@ -30,6 +30,9 @@ let NEEDS_TOKEN = false;       // this device cannot prove who it is to the node
 let SIGNIN = null;             // whether a password and authenticator are set up
 let SIGNIN_EXISTS = null;      // has this node ever been claimed? (asked without a token)
 let JUST_ENROLLED = "";        // the otpauth link, shown once right after claiming
+// The same secret as a scannable QR. Inline SVG straight from the node — never fetched from a
+// URL, because a secret at an address is a secret somebody can request.
+let JUST_ENROLLED_QR = "";
 let MCP_NEEDS = { fields: [], docs: "" }; // what the chosen catalogue entry says it needs
 let WORTH_KNOWING = { models: [], fits_gb: 12, asked: false }; // hub models that would fit
 let CHAT_DAY = null;           // which day's conversation is showing; null = today
@@ -145,11 +148,15 @@ function viewNeedsToken() {
   // Just claimed: the secret is handed over once, in the reply to claiming, and never again.
   if (JUST_ENROLLED) {
     return `
-      <h2>Add Endora to your authenticator</h2>
+      <h2>Scan this with your authenticator</h2>
       <div class="card">
-        <div class="note" style="margin-bottom:10px;">This is shown once. Add it to Google Authenticator (or any app that takes an <code>otpauth://</code> link), then sign in with your new password and the 6-digit code.</div>
-        <div class="sub" style="word-break:break-all;user-select:all;margin-bottom:10px;font-family:ui-monospace,monospace;">${esc(JUST_ENROLLED)}</div>
-        <button class="primary" data-act="enrolled:done">I've added it</button>
+        <div class="note" style="margin-bottom:10px;">Google Authenticator, 1Password, whichever you use — point it at this. <b>It is shown once.</b></div>
+        <div style="background:#fff;padding:12px;border-radius:8px;display:inline-block;line-height:0;">${JUST_ENROLLED_QR}</div>
+        <details style="margin-top:10px;">
+          <summary class="sub">Can't scan it?</summary>
+          <div class="sub" style="word-break:break-all;user-select:all;margin-top:6px;font-family:ui-monospace,monospace;">${esc(JUST_ENROLLED)}</div>
+        </details>
+        <div style="margin-top:12px;"><button class="primary" data-act="enrolled:done">I've added it</button></div>
       </div>`;
   }
   if (SIGNIN_EXISTS === false) {
@@ -207,7 +214,8 @@ function viewSetUpSignIn() {
     <div class="card" style="border-color: color-mix(in srgb, var(--accent) 40%, var(--line));">
       <div class="title" style="margin-bottom:8px;">${icon("sparkle", 15)} Set up signing in</div>
       <div class="sub" style="margin-bottom:8px;">So you don't have to paste the long token on every device. Add this to Google Authenticator, then choose a password.</div>
-      <div class="sub" style="word-break:break-all;margin-bottom:8px;user-select:all;">${esc(SIGNIN.otpauth || "")}</div>
+      <div style="background:#fff;padding:12px;border-radius:8px;display:inline-block;line-height:0;margin-bottom:8px;">${SIGNIN.qr || ""}</div>
+      <details style="margin-bottom:8px;"><summary class="sub">Can't scan it?</summary><div class="sub" style="word-break:break-all;margin-top:6px;user-select:all;">${esc(SIGNIN.otpauth || "")}</div></details>
       <div class="form" style="flex-direction:column;align-items:stretch;gap:8px;">
         <input id="setup-password" type="password" autocomplete="new-password" placeholder="a password (12 characters or more)" />
         <button class="primary" data-act="signin:setup">Save</button>
@@ -2357,12 +2365,14 @@ async function dispatch(act) {
       const data = await res.json().catch(() => null);
       if (!res.ok) return flash((data && data.error) || "That didn't work.", "warn");
       JUST_ENROLLED = (data && data.otpauth) || "";
+      JUST_ENROLLED_QR = (data && data.qr) || "";
       SIGNIN_EXISTS = true;
       NEEDS_TOKEN = true;
       return render();
     }
     if (verb === "enrolled" && noun === "done") {
       JUST_ENROLLED = "";
+      JUST_ENROLLED_QR = "";
       return render();
     }
     // Keep the node's token on this device. Nothing is sent anywhere to check it — the next
