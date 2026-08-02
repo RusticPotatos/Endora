@@ -122,6 +122,11 @@ impl AppState {
     ) -> Self {
         // Resolved before the struct takes ownership of the store.
         let token = Arc::new(the_nodes_token(&store, &ids));
+        // The authenticator secret is made alongside, so the enrolment QR is ready the first
+        // time anybody opens the console rather than needing a separate step to bring into
+        // existence. Best-effort: a node that cannot store one simply cannot be enrolled, and
+        // the bootstrap token still works.
+        let _ = ensure_enrolment_secret(&store, &ids);
         // A small buffer is plenty: subscribers coalesce to a single refresh,
         // and a lagged receiver still gets one "changed" signal.
         let (changes, _) = broadcast::channel(16);
@@ -902,6 +907,10 @@ pub fn app(state: AppState) -> Router {
         .route("/v1/reliability", get(how_it_has_been_landing))
         // What is already set up, so the screen can say so instead of offering to do it
         // again — a Connect button beside a working calendar reads as a failed attempt.
+        // Signing in. The POST answers unsigned by design (see `sign_in`); the setup pair
+        // sits behind the bootstrap token, because enrolling is claiming the account.
+        .route("/v1/session", post(sign_in))
+        .route("/v1/session/setup", get(sign_in_setup).post(set_sign_in))
         .route("/v1/connect/connected", get(what_is_connected))
         .route("/v1/connect/begin", post(begin_connecting))
         .route("/v1/connect/finish", post(finish_connecting))
@@ -989,8 +998,180 @@ pub fn app(state: AppState) -> Router {
         // Notify activity-stream subscribers after any successful write.
         .layer(from_fn_with_state(state.changes.clone(), notify_on_change))
         // Outermost, so nothing behind it runs for a request that has no business being here.
-        .layer(from_fn_with_state(state.token.clone(), require_the_token))
+        .layer(from_fn_with_state(state.clone(), require_the_token))
         .with_state(state)
+}
+
+/// How long a session lasts before it has to be earned again.
+const SESSIONS_LAST_MS: i64 = 30 * 24 * 60 * 60 * 1_000;
+
+/// Makes the authenticator secret if there is not one yet, and leaves it alone if there is.
+///
+/// **Never regenerated.** Replacing a secret that a phone already holds would silently break
+/// every code the person has, so this only ever fills a blank.
+///
+/// # Errors
+/// [`RepositoryError`] if the backend fails.
+fn ensure_enrolment_secret(
+    store: &SqliteStore,
+    ids: &RandomIdSource,
+) -> Result<(), endora_application::RepositoryError> {
+    let (hash, secret) = store.sign_in_setup()?;
+    if !secret.is_empty() {
+        return Ok(());
+    }
+    use endora_application::IdSource as _;
+    // 160 bits, which is what RFC 4226 recommends and what authenticator apps expect, taken
+    // from the same source the node's identifiers already use.
+    let bytes: Vec<u8> = ids.new_id().to_be_bytes()[..crate::totp::SECRET_BYTES.min(16)]
+        .iter()
+        .chain(ids.new_id().to_be_bytes()[..4].iter())
+        .copied()
+        .collect();
+    store.set_sign_in_setup(&hash, &crate::totp::to_hex(&bytes))
+}
+
+/// Hashes a password with Argon2id, salt and parameters carried in the string.
+fn hash_password(password: &str) -> Result<String, String> {
+    use argon2::password_hash::{PasswordHasher, SaltString};
+    let salt = SaltString::generate(&mut argon2::password_hash::rand_core::OsRng);
+    argon2::Argon2::default()
+        .hash_password(password.as_bytes(), &salt)
+        .map(|h| h.to_string())
+        .map_err(|e| e.to_string())
+}
+
+/// Whether a password matches a stored Argon2 hash. Any malformed hash is a refusal.
+fn password_matches(password: &str, stored: &str) -> bool {
+    use argon2::password_hash::{PasswordHash, PasswordVerifier};
+    PasswordHash::new(stored).is_ok_and(|parsed| {
+        argon2::Argon2::default()
+            .verify_password(password.as_bytes(), &parsed)
+            .is_ok()
+    })
+}
+
+/// What the console needs to set sign-in up, or to know it already is.
+///
+/// Behind the bearer token, deliberately: enrolling is claiming the account, and the token
+/// printed to the node's log is the proof that whoever is asking has a shell on the machine
+/// this runs on. Leaving this open would let whoever reached it first take the house.
+async fn sign_in_setup(State(state): State<AppState>) -> Result<Json<serde_json::Value>, ApiError> {
+    let store = state.store.clone();
+    let (hash, secret) = blocking(move || {
+        store
+            .sign_in_setup()
+            .map_err(endora_application::AppError::from)
+    })
+    .await?;
+    // Stored as hex and shown as base32 inside an `otpauth://` URI, because those are two
+    // different things: the bytes are the secret, base32 is only how they travel to a phone.
+    let uri = crate::totp::enrolment_uri(&crate::totp::from_hex(&secret), "you");
+    Ok(Json(json!({
+        "password_set": !hash.is_empty(),
+        "enrolled": !secret.is_empty(),
+        // Only ever handed out before a password exists. After that the secret is never sent
+        // again — an authenticator not set up by then needs a fresh enrolment.
+        "otpauth": if hash.is_empty() { uri } else { String::new() },
+    })))
+}
+
+#[derive(Deserialize)]
+struct SetUpSignIn {
+    password: String,
+}
+
+/// Sets the password, completing enrolment.
+///
+/// Also behind the bearer token, for the same reason.
+async fn set_sign_in(
+    State(state): State<AppState>,
+    Json(req): Json<SetUpSignIn>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    if req.password.chars().count() < 12 {
+        return Err(ApiError(endora_application::AppError::BadRequest {
+            message: "a password shorter than twelve characters is not worth hashing".to_owned(),
+        }));
+    }
+    let hash = hash_password(&req.password).map_err(|e| {
+        ApiError(endora_application::AppError::Repository(
+            endora_application::RepositoryError::Backend(e),
+        ))
+    })?;
+    let store = state.store.clone();
+    blocking(move || {
+        let (_, secret) = store.sign_in_setup()?;
+        store
+            .set_sign_in_setup(&hash, &secret)
+            .map_err(endora_application::AppError::from)
+    })
+    .await?;
+    Ok(Json(json!({ "ok": true })))
+}
+
+#[derive(Deserialize)]
+struct SignIn {
+    password: String,
+    code: String,
+}
+
+/// Signs in with a password and an authenticator code, returning a session token.
+///
+/// **The one `/v1` route that answers unsigned**, because a credential is what it exists to
+/// hand out. It is not thereby unprotected: a password you can remember and six digits are
+/// both guessable in a way the bootstrap token is not, so every attempt goes through
+/// [`crate::signin`]'s throttle and the failures are counted across restarts.
+///
+/// A wrong password and a wrong code are one answer, never two. Telling somebody which half
+/// they got right turns one search into two much smaller ones.
+async fn sign_in(
+    State(state): State<AppState>,
+    Json(req): Json<SignIn>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let store = state.store.clone();
+    let now_ms = state.clock.now().unix_millis();
+    let ids = state.ids.clone();
+    let outcome = blocking(move || {
+        let (failures, last_failure_ms) = store.sign_in_failures()?;
+        let attempts = crate::signin::Attempts {
+            failures,
+            last_failure_ms,
+        };
+        if let crate::signin::Gate::WaitFor(ms) = crate::signin::may_try(attempts, now_ms) {
+            return Ok::<_, endora_application::AppError>(Err(ms / 1_000));
+        }
+        let (hash, secret) = store.sign_in_setup()?;
+        let good = !hash.is_empty()
+            && password_matches(&req.password, &hash)
+            && crate::totp::verify(
+                // Decoded, not the stored text: the authenticator hashes the *bytes*.
+                &crate::totp::from_hex(&secret),
+                &req.code,
+                u64::try_from(now_ms / 1_000).unwrap_or_default(),
+            );
+        if !good {
+            let next = crate::signin::after_failure(attempts, now_ms);
+            store.set_sign_in_failures(next.failures, next.last_failure_ms)?;
+            return Ok(Err(0));
+        }
+        let cleared = crate::signin::after_success();
+        store.set_sign_in_failures(cleared.failures, cleared.last_failure_ms)?;
+        use endora_application::IdSource as _;
+        let session = format!("{:032x}{:032x}", ids.new_id(), ids.new_id());
+        store.add_session(&session, now_ms, SESSIONS_LAST_MS)?;
+        Ok(Ok(session))
+    })
+    .await?;
+
+    match outcome {
+        Ok(session) => Ok(Json(json!({ "token": session }))),
+        Err(0) => Err(ApiError(endora_application::AppError::BadRequest {
+            message: "that did not match".to_owned(),
+        })),
+        Err(seconds) => Err(ApiError(endora_application::AppError::BadRequest {
+            message: format!("too many attempts — try again in about {seconds}s"),
+        })),
+    }
 }
 
 /// Middleware: refuses any `/v1` request that does not carry the node's token.
@@ -1002,7 +1183,7 @@ pub fn app(state: AppState) -> Router {
 /// `401` rather than `403`: the request may be retried with a credential, which is exactly
 /// what the console does after the person pastes one.
 async fn require_the_token(
-    State(token): State<Arc<String>>,
+    State(state): State<AppState>,
     request: Request,
     next: Next,
 ) -> Response {
@@ -1018,7 +1199,20 @@ async fn require_the_token(
         q.split('&')
             .find_map(|pair| pair.strip_prefix("token=").map(str::to_owned))
     });
-    if !crate::auth::may_pass(&path, offered.as_deref(), in_query.as_deref(), &token) {
+    // The bootstrap token from the log, plus any live session. Read per request: it is one
+    // indexed lookup over a handful of rows, and it means signing out takes effect at once
+    // rather than whenever a cache felt like it.
+    let mut accepted: Vec<String> = Vec::new();
+    if !state.token.is_empty() {
+        accepted.push((*state.token).clone());
+    }
+    accepted.extend(
+        state
+            .store
+            .sessions(state.clock.now().unix_millis(), SESSIONS_LAST_MS)
+            .unwrap_or_default(),
+    );
+    if !crate::auth::may_pass(&path, offered.as_deref(), in_query.as_deref(), &accepted) {
         return (
             StatusCode::UNAUTHORIZED,
             "this node needs its token — see the container log on first run",
@@ -4637,6 +4831,128 @@ mod tests {
             let res = app.clone().oneshot(unsigned(path)).await.unwrap();
             assert_eq!(res.status(), StatusCode::OK, "{path} should stay open");
         }
+    }
+
+    #[tokio::test]
+    async fn a_password_and_a_real_code_sign_you_in() {
+        // End to end, through the router, with a code computed from the secret the node
+        // actually stored. This is the test that would have caught hashing the base32 text
+        // instead of the bytes it encodes — a mistake whose only symptom is "the codes never
+        // work", with nothing in any log to say why.
+        let state = test_state();
+        let store = state.store.clone();
+        super::ensure_enrolment_secret(&store, &RandomIdSource).unwrap();
+        let hash = super::hash_password("a-long-enough-password").unwrap();
+        let (_, secret) = store.sign_in_setup().unwrap();
+        store.set_sign_in_setup(&hash, &secret).unwrap();
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let code = format!(
+            "{:06}",
+            crate::totp::code_at(&crate::totp::from_hex(&secret), now)
+        );
+
+        let app = app(state);
+        let res = app
+            .clone()
+            .oneshot(post(
+                "/v1/session",
+                &format!(r#"{{"password":"a-long-enough-password","code":"{code}"}}"#),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(
+            res.status(),
+            StatusCode::OK,
+            "a correct sign-in was refused"
+        );
+        let issued = json_body(res).await;
+        let session = issued["token"]
+            .as_str()
+            .expect("a session token")
+            .to_owned();
+
+        // And the token it handed back actually opens the door.
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/capabilities")
+                    .header("authorization", format!("Bearer {session}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            res.status(),
+            StatusCode::OK,
+            "the session token was refused"
+        );
+    }
+
+    #[tokio::test]
+    async fn signing_in_is_reachable_without_a_token_but_a_wrong_one_gets_nothing() {
+        // It must answer unsigned — a credential is what it exists to hand out — and it must
+        // still refuse. Both halves matter; either alone is a bug.
+        let res = app(test_state())
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/session")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"password":"wrong","code":"000000"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_ne!(
+            res.status(),
+            StatusCode::UNAUTHORIZED,
+            "sign-in must be reachable without a credential"
+        );
+        assert!(!res.status().is_success(), "and must refuse a wrong one");
+    }
+
+    #[tokio::test]
+    async fn a_password_too_short_to_be_worth_hashing_is_refused() {
+        let res = app(test_state())
+            .oneshot(post("/v1/session/setup", r#"{"password":"short"}"#))
+            .await
+            .unwrap();
+        assert!(!res.status().is_success());
+    }
+
+    #[tokio::test]
+    async fn enrolling_is_behind_the_bootstrap_token() {
+        // Claiming the account is the one thing a stranger must not be able to do first.
+        let app = app(test_state());
+        for req in [
+            unsigned("/v1/session/setup"),
+            Request::builder()
+                .method("POST")
+                .uri("/v1/session/setup")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"password":"a-long-enough-password"}"#))
+                .unwrap(),
+        ] {
+            let res = app.clone().oneshot(req).await.unwrap();
+            assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+        }
+    }
+
+    #[tokio::test]
+    async fn the_secret_is_never_replaced_once_it_exists() {
+        // Regenerating one a phone already holds would silently break every code, and the
+        // person would have no way to tell that from a broken implementation.
+        let store = Arc::new(SqliteStore::open_in_memory().unwrap());
+        super::ensure_enrolment_secret(&store, &RandomIdSource).unwrap();
+        let (_, first) = store.sign_in_setup().unwrap();
+        assert!(!first.is_empty());
+        super::ensure_enrolment_secret(&store, &RandomIdSource).unwrap();
+        assert_eq!(store.sign_in_setup().unwrap().1, first);
     }
 
     #[tokio::test]

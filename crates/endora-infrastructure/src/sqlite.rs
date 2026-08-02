@@ -188,7 +188,21 @@ CREATE TABLE IF NOT EXISTS standing_trouble (
 -- printed to the log, unless a deployment pinned one through ENDORA_TOKEN.
 CREATE TABLE IF NOT EXISTS node_auth (
     id    INTEGER PRIMARY KEY CHECK (id = 0),
-    token TEXT NOT NULL
+    token TEXT NOT NULL,
+    -- Argon2id, salt and parameters included. Empty until sign-in has been set up.
+    password_hash   TEXT NOT NULL DEFAULT '',
+    -- The shared secret an authenticator app holds, base32 as the app expects it.
+    totp_secret     TEXT NOT NULL DEFAULT '',
+    -- Consecutive failed sign-ins, and when the last one was, so guessing gets expensive.
+    failures        INTEGER NOT NULL DEFAULT 0,
+    last_failure_ms INTEGER NOT NULL DEFAULT 0
+) STRICT;
+-- Tokens handed out by a successful sign-in. Separate from the bootstrap token on purpose:
+-- that one is the recovery path and should not be what a password buys, and these can be
+-- thrown away without changing it.
+CREATE TABLE IF NOT EXISTS node_sessions (
+    token     TEXT PRIMARY KEY,
+    issued_ms INTEGER NOT NULL
 ) STRICT;
 CREATE TABLE IF NOT EXISTS watched_things (
     key                TEXT PRIMARY KEY,
@@ -283,6 +297,125 @@ impl SqliteStore {
         Ok(())
     }
 
+    /// How sign-in is set up: the password hash and the authenticator secret.
+    ///
+    /// Both empty until somebody has enrolled, which is what the console keys "not set up yet"
+    /// from.
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if the backend fails.
+    pub fn sign_in_setup(&self) -> Result<(String, String), RepositoryError> {
+        let conn = self.db.lock()?;
+        let mut stmt = conn
+            .prepare("SELECT password_hash, totp_secret FROM node_auth WHERE id = 0")
+            .map_err(backend)?;
+        let mut rows = stmt.query([]).map_err(backend)?;
+        let Some(row) = rows.next().map_err(backend)? else {
+            return Ok((String::new(), String::new()));
+        };
+        Ok((row.get(0).map_err(backend)?, row.get(1).map_err(backend)?))
+    }
+
+    /// Stores the password hash and authenticator secret.
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if the backend fails.
+    pub fn set_sign_in_setup(&self, hash: &str, secret: &str) -> Result<(), RepositoryError> {
+        self.db
+            .lock()?
+            // Upsert, not `UPDATE … WHERE id = 0`: that matches nothing before the row exists
+            // and reports success anyway, so enrolment appeared to work and stored nothing.
+            .execute(
+                "INSERT INTO node_auth (id, token, password_hash, totp_secret) \
+                 VALUES (0, '', ?1, ?2) \
+                 ON CONFLICT(id) DO UPDATE SET password_hash = ?1, totp_secret = ?2",
+                params![hash, secret],
+            )
+            .map_err(backend)?;
+        Ok(())
+    }
+
+    /// Consecutive failed sign-ins, and when the last one was.
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if the backend fails.
+    pub fn sign_in_failures(&self) -> Result<(u32, i64), RepositoryError> {
+        let conn = self.db.lock()?;
+        let mut stmt = conn
+            .prepare("SELECT failures, last_failure_ms FROM node_auth WHERE id = 0")
+            .map_err(backend)?;
+        let mut rows = stmt.query([]).map_err(backend)?;
+        let Some(row) = rows.next().map_err(backend)? else {
+            return Ok((0, 0));
+        };
+        let failures: i64 = row.get(0).map_err(backend)?;
+        Ok((
+            u32::try_from(failures).unwrap_or(u32::MAX),
+            row.get(1).map_err(backend)?,
+        ))
+    }
+
+    /// Records how many sign-ins have failed in a row, and when.
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if the backend fails.
+    pub fn set_sign_in_failures(&self, failures: u32, at_ms: i64) -> Result<(), RepositoryError> {
+        self.db
+            .lock()?
+            // Upsert for the same reason: a throttle that silently fails to record a failure
+            // is not a throttle.
+            .execute(
+                "INSERT INTO node_auth (id, token, failures, last_failure_ms) \
+                 VALUES (0, '', ?1, ?2) \
+                 ON CONFLICT(id) DO UPDATE SET failures = ?1, last_failure_ms = ?2",
+                params![i64::from(failures), at_ms],
+            )
+            .map_err(backend)?;
+        Ok(())
+    }
+
+    /// Hands out a session token, and forgets any older than `keep_for_ms`.
+    ///
+    /// Pruned on issue rather than on a timer: the only moment the set can grow is the only
+    /// moment it needs tidying, and nothing accumulates for anybody to clear.
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if the backend fails.
+    pub fn add_session(
+        &self,
+        token: &str,
+        now_ms: i64,
+        keep_for_ms: i64,
+    ) -> Result<(), RepositoryError> {
+        let conn = self.db.lock()?;
+        conn.execute(
+            "INSERT OR REPLACE INTO node_sessions (token, issued_ms) VALUES (?1, ?2)",
+            params![token, now_ms],
+        )
+        .map_err(backend)?;
+        conn.execute(
+            "DELETE FROM node_sessions WHERE issued_ms < ?1",
+            params![now_ms - keep_for_ms],
+        )
+        .map_err(backend)?;
+        Ok(())
+    }
+
+    /// Every session token still within `keep_for_ms` of being issued.
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if the backend fails.
+    pub fn sessions(&self, now_ms: i64, keep_for_ms: i64) -> Result<Vec<String>, RepositoryError> {
+        let conn = self.db.lock()?;
+        let mut stmt = conn
+            .prepare("SELECT token FROM node_sessions WHERE issued_ms >= ?1")
+            .map_err(backend)?;
+        let rows = stmt
+            .query_map(params![now_ms - keep_for_ms], |r| r.get::<_, String>(0))
+            .map_err(backend)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(backend)
+    }
+
     /// Opens (creating if needed) a store at `path` and applies the schema.
     ///
     /// # Errors
@@ -373,6 +506,29 @@ impl SqliteStore {
             // Whether an action actually moved the world (ADR 0054). Existing rows read
             // back NULL — nothing to compare — which is the honest default.
             ensure_column(&conn, "outcomes", "changed", "INTEGER")?;
+            // Sign-in with a password and an authenticator code. `node_auth` shipped hours
+            // earlier holding only a token, and `CREATE TABLE IF NOT EXISTS` does nothing to a
+            // table that already exists — the trap this repository has already fallen into
+            // twice, both times shipping a green suite and a broken endpoint.
+            ensure_column(
+                &conn,
+                "node_auth",
+                "password_hash",
+                "TEXT NOT NULL DEFAULT ''",
+            )?;
+            ensure_column(
+                &conn,
+                "node_auth",
+                "totp_secret",
+                "TEXT NOT NULL DEFAULT ''",
+            )?;
+            ensure_column(&conn, "node_auth", "failures", "INTEGER NOT NULL DEFAULT 0")?;
+            ensure_column(
+                &conn,
+                "node_auth",
+                "last_failure_ms",
+                "INTEGER NOT NULL DEFAULT 0",
+            )?;
         }
         Ok(Self { db })
     }

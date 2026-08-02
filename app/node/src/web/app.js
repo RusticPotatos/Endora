@@ -27,6 +27,7 @@ let INTENTIONS = [];           // what Endora is pursuing, and has pursued (ADR 
 let NOTIONS = [];              // what Endora is still thinking about (ADR 0057)
 let CONNECTED = [];            // integrations already set up behind the channel (ADR 0058)
 let NEEDS_TOKEN = false;       // this device cannot prove who it is to the node
+let SIGNIN = null;             // whether a password and authenticator are set up
 let MCP_NEEDS = { fields: [], docs: "" }; // what the chosen catalogue entry says it needs
 let WORTH_KNOWING = { models: [], fits_gb: 12, asked: false }; // hub models that would fit
 let CHAT_DAY = null;           // which day's conversation is showing; null = today
@@ -130,16 +131,46 @@ async function api(method, path, body) {
 
 // The one screen that shows before anything else can load.
 //
-// No styling flourish and no reassurance: the person either has the token from the node's log
-// or they do not, and anything else on this screen is in the way.
+// Two ways in, in the order they will actually be used. Signing in is the everyday one; the
+// token from the node's log is the recovery path, and stays available precisely because a lost
+// phone must not be the end of it.
 function viewNeedsToken() {
   return `
-    <h2>This device needs the node's token</h2>
+    <h2>Sign in</h2>
     <div class="card">
-      <div class="note" style="margin-bottom:10px;">Endora printed it to its log the first time it started. It is kept on this device only, and goes nowhere but your own node.</div>
-      <div class="form">
-        <input id="token-input" type="password" autocomplete="off" placeholder="paste it here" />
-        <button class="primary" data-act="token:save">Save</button>
+      <div class="form" style="flex-direction:column;align-items:stretch;gap:8px;">
+        <input id="signin-password" type="password" autocomplete="current-password" placeholder="password" />
+        <input id="signin-code" type="text" inputmode="numeric" autocomplete="one-time-code" placeholder="6-digit code from your authenticator" />
+        <button class="primary" data-act="signin">Sign in</button>
+      </div>
+    </div>
+    <details style="margin-top:12px;">
+      <summary class="sub">Lost your phone, or setting this up for the first time?</summary>
+      <div class="card" style="margin-top:8px;">
+        <div class="note" style="margin-bottom:10px;">Endora printed a token to its log the first time it started. It always works, and it is how you set a password up. Kept on this device only.</div>
+        <div class="form">
+          <input id="token-input" type="password" autocomplete="off" placeholder="paste the node's token" />
+          <button class="ghost" data-act="token:save">Use it</button>
+        </div>
+      </div>
+    </details>`;
+}
+
+// Setting up sign-in, shown once the person is in with the node's token but has no password.
+//
+// The secret is only ever offered before a password exists — after that it is never sent
+// again, so an authenticator not enrolled by then needs a fresh secret rather than a peek at
+// the old one.
+function viewSetUpSignIn() {
+  if (!SIGNIN || SIGNIN.password_set) return "";
+  return `
+    <div class="card" style="border-color: color-mix(in srgb, var(--accent) 40%, var(--line));">
+      <div class="title" style="margin-bottom:8px;">${icon("sparkle", 15)} Set up signing in</div>
+      <div class="sub" style="margin-bottom:8px;">So you don't have to paste the long token on every device. Add this to Google Authenticator, then choose a password.</div>
+      <div class="sub" style="word-break:break-all;margin-bottom:8px;user-select:all;">${esc(SIGNIN.otpauth || "")}</div>
+      <div class="form" style="flex-direction:column;align-items:stretch;gap:8px;">
+        <input id="setup-password" type="password" autocomplete="new-password" placeholder="a password (12 characters or more)" />
+        <button class="primary" data-act="signin:setup">Save</button>
       </div>
     </div>`;
 }
@@ -174,6 +205,7 @@ async function reload() {
   try { INTENTIONS = await api("GET", "/v1/intentions"); } catch (_) { INTENTIONS = []; }
   try { NOTIONS = await api("GET", "/v1/notions"); } catch (_) { NOTIONS = []; }
   try { CONNECTED = await api("GET", "/v1/connect/connected"); } catch (_) { CONNECTED = []; }
+  try { SIGNIN = await api("GET", "/v1/session/setup"); } catch (_) { SIGNIN = null; }
   try { REPAIRS = await api("GET", "/v1/repairs"); } catch (_) { REPAIRS = []; }
   try { TROUBLE = await api("GET", "/v1/standing-trouble"); } catch (_) { TROUBLE = []; }
   try { LANDING = await api("GET", "/v1/reliability"); } catch (_) { LANDING = null; }
@@ -1359,6 +1391,7 @@ function viewUnderstanding() {
   return `
     <h2>What Endora understands about you</h2>
 
+    ${viewSetUpSignIn()}
     ${setup}
     ${groups || `<div class="empty">Nothing yet. Talk with Endora and it will start to understand you — you'll see it here.</div>`}
     ${viewIntention()}
@@ -2243,6 +2276,30 @@ async function dispatch(act) {
       localStorage.setItem("endora.showActivity", SHOW_ACTIVITY ? "1" : "0");
       closeMenu();
       return render();
+    }
+    // Sign in, and keep whatever the node hands back. Nothing is stored until it works.
+    if (verb === "signin" && !noun) {
+      const password = val("signin-password");
+      const code = val("signin-code");
+      if (!password || !code) return;
+      const res = await fetch("/v1/session", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ password, code }),
+      });
+      const data = await res.json().catch(() => null);
+      if (!res.ok) return flash((data && data.error) || "That didn't match.", "warn");
+      try { localStorage.setItem("endora-token", data.token); } catch (_) {}
+      NEEDS_TOKEN = false;
+      return reload();
+    }
+    // Choose a password, completing enrolment.
+    if (verb === "signin" && noun === "setup") {
+      const password = val("setup-password");
+      if (!password) return;
+      await api("POST", "/v1/session/setup", { password });
+      flash("Signing in is set up. Your authenticator and that password work from now on.", "ok");
+      return reload();
     }
     // Keep the node's token on this device. Nothing is sent anywhere to check it — the next
     // request either works or comes back 401 and puts this screen straight back up.

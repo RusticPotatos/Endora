@@ -148,6 +148,8 @@ runInContext(
   // One offered service already set up, and one the person added themselves — both branches
   // of the Connect screen, which previously rendered only the "nothing is connected" case.
   CONNECTED = ["caldav", "hue", "tplink"];
+  // Not yet enrolled, which is the branch that actually renders the setup card.
+  SIGNIN = { password_set: false, enrolled: true, otpauth: "otpauth://totp/Endora:you?secret=AAAA" };
   NOTIONS = [{ id: "1", statement: "the Monday gym block gets cancelled",
                because: ["message:12", "reading:calendar.rustic"],
                settles_when: "whether next Monday's block survives",
