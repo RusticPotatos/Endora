@@ -33,6 +33,10 @@ let JUST_ENROLLED = "";        // the otpauth link, shown once right after claim
 // The same secret as a scannable QR. Inline SVG straight from the node — never fetched from a
 // URL, because a secret at an address is a secret somebody can request.
 let JUST_ENROLLED_QR = "";
+let NEW_AUTHENTICATOR = "";    // a replacement being set up, not yet locked in
+let NEW_AUTHENTICATOR_QR = "";
+let DEV_TOKEN = "";            // a token just minted or revealed, shown until the screen changes
+let DEV_TOKEN_NOTE = "";
 let MCP_NEEDS = { fields: [], docs: "" }; // what the chosen catalogue entry says it needs
 let WORTH_KNOWING = { models: [], fits_gb: 12, asked: false }; // hub models that would fit
 let CHAT_DAY = null;           // which day's conversation is showing; null = today
@@ -201,6 +205,58 @@ function viewNeedsToken() {
         </div>
       </div>
     </details>`;
+}
+
+// Managing your own credentials, in Settings.
+//
+// Three things that used to need a shell on the NAS: change the password, move to a new
+// authenticator, and get a token for scripts. Each is behind being signed in, and the two that
+// change something ask for the current password as well — a session lives in a browser and can
+// be taken, and the password is the thing only the person knows.
+function viewYourCredentials() {
+  if (SIGNIN_EXISTS !== true) return "";
+  const rotating = NEW_AUTHENTICATOR
+    ? `<div class="card" style="margin-top:8px;border-color: color-mix(in srgb, var(--accent) 40%, var(--line));">
+         <div class="sub" style="margin-bottom:8px;">Scan this, then type a code <b>from the new one</b> to lock it in. Your current authenticator keeps working until you do — nothing has changed yet.</div>
+         <div style="background:#fff;padding:12px;border-radius:8px;display:inline-block;line-height:0;margin-bottom:8px;">${NEW_AUTHENTICATOR_QR}</div>
+         <details style="margin-bottom:8px;"><summary class="sub">Can't scan it?</summary><div class="sub" style="word-break:break-all;margin-top:6px;user-select:all;">${esc(NEW_AUTHENTICATOR)}</div></details>
+         <div class="form">
+           <input id="rotate-code" type="text" inputmode="numeric" autocomplete="one-time-code" placeholder="code from the new authenticator" />
+           <button class="primary" data-act="auth:confirm">Lock it in</button>
+         </div>
+       </div>`
+    : `<div class="form" style="margin-top:8px;">
+         <input id="rotate-password" type="password" autocomplete="current-password" placeholder="your current password" />
+         <button class="ghost" data-act="auth:begin">Move to a new authenticator</button>
+       </div>`;
+  const dev = DEV_TOKEN
+    ? `<div class="sub" style="word-break:break-all;user-select:all;margin-top:8px;font-family:ui-monospace,monospace;">${esc(DEV_TOKEN)}</div>
+       <div class="sub" style="margin-top:4px;">${esc(DEV_TOKEN_NOTE)}</div>`
+    : "";
+  return `
+    <h3 style="margin-top:22px;">Your sign-in</h3>
+    <div class="card">
+      <div class="title" style="font-weight:500;margin-bottom:6px;">Change your password</div>
+      <div class="form" style="flex-direction:column;align-items:stretch;gap:8px;">
+        <input id="pw-current" type="password" autocomplete="current-password" placeholder="current password" />
+        <input id="pw-new" type="password" autocomplete="new-password" placeholder="new password (12 characters or more)" />
+        <button class="ghost" data-act="password:change">Change it</button>
+      </div>
+    </div>
+    <div class="card" style="margin-top:8px;">
+      <div class="title" style="font-weight:500;margin-bottom:6px;">Your authenticator</div>
+      <div class="sub">Moving to a new phone, or starting over. The new one only takes effect once you've proved you scanned it.</div>
+      ${rotating}
+    </div>
+    <div class="card" style="margin-top:8px;">
+      <div class="title" style="font-weight:500;margin-bottom:6px;">Tokens for scripts</div>
+      <div class="sub" style="margin-bottom:8px;">A checking token reads only and can't touch anything — that's the one for <code>make smoke</code> and anything else automated. The recovery token is what gets you in if you lose your phone; keep it somewhere safe rather than in a file.</div>
+      <div class="row" style="gap:8px;">
+        <button class="ghost" data-act="token:checks">Mint a checking token</button>
+        <button class="ghost" data-act="token:recovery">Show the recovery token</button>
+      </div>
+      ${dev}
+    </div>`;
 }
 
 // Setting up sign-in, shown once the person is in with the node's token but has no password.
@@ -1447,6 +1503,7 @@ function viewUnderstanding() {
     <h2>What Endora understands about you</h2>
 
     ${viewSetUpSignIn()}
+    ${viewYourCredentials()}
     ${setup}
     ${groups || `<div class="empty">Nothing yet. Talk with Endora and it will start to understand you — you'll see it here.</div>`}
     ${viewIntention()}
@@ -2373,6 +2430,47 @@ async function dispatch(act) {
     if (verb === "enrolled" && noun === "done") {
       JUST_ENROLLED = "";
       JUST_ENROLLED_QR = "";
+      return render();
+    }
+    if (verb === "password" && noun === "change") {
+      const current = val("pw-current"), next = val("pw-new");
+      if (!current || !next) return;
+      try {
+        await api("POST", "/v1/session/password", { current, new: next });
+        flash("Password changed.", "ok");
+      } catch (e) { flash(String(e.message || e), "warn"); }
+      return render();
+    }
+    if (verb === "auth" && noun === "begin") {
+      const current = val("rotate-password");
+      if (!current) return;
+      try {
+        const made = await api("POST", "/v1/session/authenticator", { current });
+        NEW_AUTHENTICATOR = made.otpauth || "";
+        NEW_AUTHENTICATOR_QR = made.qr || "";
+      } catch (e) { flash(String(e.message || e), "warn"); }
+      return render();
+    }
+    if (verb === "auth" && noun === "confirm") {
+      const code = val("rotate-code");
+      if (!code) return;
+      try {
+        await api("POST", "/v1/session/authenticator/confirm", { code });
+        NEW_AUTHENTICATOR = ""; NEW_AUTHENTICATOR_QR = "";
+        flash("That's your authenticator now. The old one has stopped working.", "ok");
+      } catch (e) { flash(String(e.message || e), "warn"); }
+      return render();
+    }
+    if (verb === "token" && noun === "checks") {
+      const made = await api("POST", "/v1/session/checks", {});
+      DEV_TOKEN = made.token || "";
+      DEV_TOKEN_NOTE = made.note || "";
+      return render();
+    }
+    if (verb === "token" && noun === "recovery") {
+      const got = await api("GET", "/v1/session/bootstrap");
+      DEV_TOKEN = got.token || "";
+      DEV_TOKEN_NOTE = "This is the recovery token. It never expires — keep it somewhere safe, not in a file.";
       return render();
     }
     // Keep the node's token on this device. Nothing is sent anywhere to check it — the next
