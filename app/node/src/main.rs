@@ -11,7 +11,9 @@
 mod api;
 mod auth;
 mod mcp_catalog;
+mod signin;
 mod tls;
+mod totp;
 
 use std::sync::Arc;
 
