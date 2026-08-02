@@ -391,9 +391,8 @@ const val = (id) => document.getElementById(id).value.trim();
 // `short` is what the breadcrumb says when the full label is too long to sit in a trail. Two
 // renderings of one entry, side by side, so they cannot quietly disagree.
 const UNDER_SETTINGS = [
-  { view: "display", icon: "prefs", label: "Preferences", note: "reading replies aloud, vibration, showing actions" },
+  { view: "display", icon: "prefs", label: "Preferences", note: "reading aloud, vibration, and when Endora reaches out" },
   { view: "models", icon: "sparkle", label: "Models", note: "which model answers, and the bigger one behind it" },
-  { view: "proactive", icon: "target", label: "Reaching out", note: "check-ins, the daily brief, the overnight loop" },
   { view: "skills", icon: "skills", label: "Skills", note: "what Endora can do, and the servers it connects to" },
   { view: "understanding", icon: "sparkle", label: "What Endora understands about you", short: "Understanding", note: "beliefs, and what it's working on" },
   { view: "signin", icon: "prefs", label: "Your sign-in", short: "Your sign-in", note: "password, authenticator, and tokens for scripts" },
@@ -1276,7 +1275,8 @@ function viewDisplay() {
       ${row(SPEAK, "toggle:speak", "Read replies aloud", TTS ? "" : "not supported in this browser")}
       ${row(SHOW_ACTIVITY, "toggle:activity", "Show Endora's actions", "a note of what it did each turn")}
       ${navigator.vibrate ? row(HAPTIC, "toggle:haptic", "Vibrate", "a short buzz when a reply lands and when the mic starts listening") : ""}
-    </div>`;
+    </div>
+    ${proactivitySection()}`;
 }
 
 function viewModels() {
@@ -1314,10 +1314,10 @@ function worthKnowingSection() {
     ${WORTH_KNOWING.asked ? listOr(rows, "Nothing recent that fits — which is a fine answer.") : ""}`;
 }
 
+// Kept only so an older link or a back button lands on the screen that now holds it.
+// Removing a route is how a bookmark becomes a blank page.
 function viewProactive() {
-  return `
-    ${settingsCrumbs("proactive")}
-    ${proactivitySection()}`;
+  return viewDisplay();
 }
 
 // What the butler has learned — visible, correctable, deletable memory.
