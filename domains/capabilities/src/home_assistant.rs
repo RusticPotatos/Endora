@@ -732,6 +732,32 @@ fn describe_engagement(e: &Entity) -> Option<String> {
     })
 }
 
+/// The integrations Home Assistant already has configured, by domain, sorted and deduplicated.
+///
+/// Two Hue bridges or two calendars are **one** integration here: the question this answers is
+/// "is this connected?", which has a single answer however many accounts sit behind it.
+///
+/// Anything unreadable yields no integrations rather than an error. This only ever decorates a
+/// screen, and a service answering oddly should cost the person a label, never the ability to
+/// connect something.
+#[must_use]
+pub fn configured_integrations(body: &str) -> Vec<String> {
+    let Ok(entries) = serde_json::from_str::<Value>(body) else {
+        return Vec::new();
+    };
+    let Some(entries) = entries.as_array() else {
+        return Vec::new();
+    };
+    let mut found: Vec<String> = entries
+        .iter()
+        .filter_map(|e| e.get("domain").and_then(Value::as_str))
+        .map(str::to_owned)
+        .collect();
+    found.sort();
+    found.dedup();
+    found
+}
+
 /// The MCP server this instance is the direct counterpart of.
 ///
 /// Data rather than a constant in the wiring: whoever registers the MCP server chooses
@@ -959,6 +985,17 @@ impl crate::infrastructure::NativeChannel for HomeAssistant {
     fn act(&self, tool: &str, entity: &str) -> Option<Result<String, String>> {
         let (domain, service) = service_for(tool)?;
         Some(self.call_service(domain, service, entity))
+    }
+
+    /// The integrations Home Assistant already holds, so the Connect screen can say what is
+    /// there rather than offering to set it all up again.
+    ///
+    /// Failure is silence: this decorates a screen, and a Home Assistant that will not answer
+    /// should cost a label rather than the ability to connect something.
+    fn already_connected(&self) -> Vec<String> {
+        self.get("/api/config/config_entries/entry")
+            .map(|body| configured_integrations(&body))
+            .unwrap_or_default()
     }
 
     fn begin_setup(&self, kind: &str) -> Option<Result<crate::domain::SetupForm, String>> {
@@ -1541,6 +1578,58 @@ mod what_is_on_today {
         let mut lamp = calendar("Family", "something", "now");
         lamp.id = "light.kitchen".to_owned();
         assert_eq!(describe_engagement(&lamp), None);
+    }
+}
+
+#[cfg(test)]
+mod what_is_already_connected {
+    //! Reading Home Assistant's own list of configured integrations.
+    //!
+    //! The Connect screen offered every service with a **Connect** button and knew nothing
+    //! about what was already set up — so somebody with CalDAV working saw "Connect" beside
+    //! it, and had nowhere on the screen to find out whether it had worked. Offering to do
+    //! something already done is worse than not offering: it reads as though the last attempt
+    //! failed.
+
+    use super::configured_integrations;
+
+    #[test]
+    fn it_names_each_configured_integration() {
+        let body = r#"[
+            {"entry_id":"a","domain":"caldav","title":"Calendar"},
+            {"entry_id":"b","domain":"hue","title":"Hue"}
+        ]"#;
+        assert_eq!(configured_integrations(body), vec!["caldav", "hue"]);
+    }
+
+    #[test]
+    fn two_of_the_same_thing_are_one_integration() {
+        // Two Hue bridges, or two calendars on different accounts. The person asked "is this
+        // connected?", which is answered once.
+        let body = r#"[
+            {"entry_id":"a","domain":"hue"},
+            {"entry_id":"b","domain":"hue"},
+            {"entry_id":"c","domain":"caldav"}
+        ]"#;
+        assert_eq!(configured_integrations(body), vec!["caldav", "hue"]);
+    }
+
+    #[test]
+    fn an_entry_without_a_domain_is_skipped_rather_than_guessed() {
+        let body = r#"[{"entry_id":"a"},{"entry_id":"b","domain":"caldav"}]"#;
+        assert_eq!(configured_integrations(body), vec!["caldav"]);
+    }
+
+    #[test]
+    fn anything_unreadable_is_no_integrations_rather_than_an_error() {
+        // This only ever decorates a screen. A service that answers oddly should cost the
+        // person a label, never the ability to connect something.
+        for body in ["", "not json", "{}", "[]", r#"{"error":"nope"}"#] {
+            assert!(
+                configured_integrations(body).is_empty(),
+                "expected nothing from {body:?}"
+            );
+        }
     }
 }
 
