@@ -9,6 +9,7 @@
 #![forbid(unsafe_code)]
 
 mod api;
+mod auth;
 mod mcp_catalog;
 mod tls;
 
