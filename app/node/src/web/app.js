@@ -29,6 +29,7 @@ let CONNECTED = [];            // integrations already set up behind the channel
 let NEEDS_TOKEN = false;       // this device cannot prove who it is to the node
 let SIGNIN = null;             // whether a password and authenticator are set up
 let SIGNIN_EXISTS = null;      // has this node ever been claimed? (asked without a token)
+let JUST_ENROLLED = "";        // the otpauth link, shown once right after claiming
 let MCP_NEEDS = { fields: [], docs: "" }; // what the chosen catalogue entry says it needs
 let WORTH_KNOWING = { models: [], fits_gb: 12, asked: false }; // hub models that would fit
 let CHAT_DAY = null;           // which day's conversation is showing; null = today
@@ -141,19 +142,38 @@ async function api(method, path, body) {
 // reading the log needs a shell on the box, which is exactly that proof. What it can do is
 // say so, and say where to look.
 function viewNeedsToken() {
+  // Just claimed: the secret is handed over once, in the reply to claiming, and never again.
+  if (JUST_ENROLLED) {
+    return `
+      <h2>Add Endora to your authenticator</h2>
+      <div class="card">
+        <div class="note" style="margin-bottom:10px;">This is shown once. Add it to Google Authenticator (or any app that takes an <code>otpauth://</code> link), then sign in with your new password and the 6-digit code.</div>
+        <div class="sub" style="word-break:break-all;user-select:all;margin-bottom:10px;font-family:ui-monospace,monospace;">${esc(JUST_ENROLLED)}</div>
+        <button class="primary" data-act="enrolled:done">I've added it</button>
+      </div>`;
+  }
   if (SIGNIN_EXISTS === false) {
     return `
       <h2>Set up Endora</h2>
       <div class="card">
-        <div class="note" style="margin-bottom:10px;">Nobody has claimed this node yet. Endora printed a one-time token to its log when it first started — fetching it proves you own the machine, which is the whole point of this step.</div>
-        <div class="sub" style="margin-bottom:6px;">On the machine Endora runs on:</div>
-        <div class="sub" style="user-select:all;margin-bottom:10px;font-family:ui-monospace,monospace;">docker logs endora-node 2>&amp;1 | grep -A2 "this node's token"</div>
-        <div class="form">
-          <input id="token-input" type="password" autocomplete="off" placeholder="paste the token" />
-          <button class="primary" data-act="token:save">Continue</button>
+        <div class="note" style="margin-bottom:10px;">Nobody has claimed this node yet. Choose a password and it's yours.</div>
+        <div class="form" style="flex-direction:column;align-items:stretch;gap:8px;">
+          <input id="setup-password" type="password" autocomplete="new-password" placeholder="a password (12 characters or more)" />
+          <button class="primary" data-act="signin:setup">Claim this node</button>
         </div>
-        <div class="sub" style="margin-top:10px;">Next you'll choose a password and add Endora to your authenticator, so you never need this token again.</div>
-      </div>`;
+        <div class="sub" style="margin-top:10px;">Next you'll add Endora to your authenticator, so signing in needs both.</div>
+      </div>
+      <details style="margin-top:12px;">
+        <summary class="sub">This didn't work?</summary>
+        <div class="card" style="margin-top:8px;">
+          <div class="note" style="margin-bottom:10px;">Claiming is only open for a quarter of an hour after Endora starts, so a node left running unclaimed can't be taken by whoever finds it. If that window has passed, restart it — or use the token from its log, which always works.</div>
+          <div class="sub" style="user-select:all;margin-bottom:10px;font-family:ui-monospace,monospace;">docker logs endora-node 2>&amp;1 | grep -A3 "sign-in is not set up"</div>
+          <div class="form">
+            <input id="token-input" type="password" autocomplete="off" placeholder="paste the token" />
+            <button class="ghost" data-act="token:save">Use it</button>
+          </div>
+        </div>
+      </details>`;
   }
   return `
     <h2>Sign in</h2>
@@ -2320,13 +2340,30 @@ async function dispatch(act) {
       NEEDS_TOKEN = false;
       return reload();
     }
-    // Choose a password, completing enrolment.
+    // Choose a password. On a node nobody has claimed this needs no credential, which is the
+    // whole point — and the reply carries the authenticator link, because the endpoint that
+    // would otherwise serve it needs a credential the claimant does not have yet.
     if (verb === "signin" && noun === "setup") {
       const password = val("setup-password");
       if (!password) return;
-      await api("POST", "/v1/session/setup", { password });
-      flash("Signing in is set up. Your authenticator and that password work from now on.", "ok");
-      return reload();
+      const t = token();
+      const res = await fetch("/v1/session/setup", {
+        method: "POST",
+        headers: t
+          ? { "content-type": "application/json", authorization: "Bearer " + t }
+          : { "content-type": "application/json" },
+        body: JSON.stringify({ password }),
+      });
+      const data = await res.json().catch(() => null);
+      if (!res.ok) return flash((data && data.error) || "That didn't work.", "warn");
+      JUST_ENROLLED = (data && data.otpauth) || "";
+      SIGNIN_EXISTS = true;
+      NEEDS_TOKEN = true;
+      return render();
+    }
+    if (verb === "enrolled" && noun === "done") {
+      JUST_ENROLLED = "";
+      return render();
     }
     // Keep the node's token on this device. Nothing is sent anywhere to check it — the next
     // request either works or comes back 401 and puts this screen straight back up.

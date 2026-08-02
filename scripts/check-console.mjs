@@ -153,6 +153,9 @@ runInContext(
   // A node nobody has claimed yet — the branch that renders the setup screen rather than a
   // sign-in form for an account that does not exist.
   SIGNIN_EXISTS = false;
+  // The screen shown once, immediately after claiming — a branch that only exists between two
+  // other screens and would otherwise never be rendered by this check.
+  JUST_ENROLLED = "otpauth://totp/Endora:you?secret=AAAA&issuer=Endora";
   NOTIONS = [{ id: "1", statement: "the Monday gym block gets cancelled",
                because: ["message:12", "reading:calendar.rustic"],
                settles_when: "whether next Monday's block survives",
