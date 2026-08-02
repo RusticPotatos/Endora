@@ -150,6 +150,9 @@ runInContext(
   CONNECTED = ["caldav", "hue", "tplink"];
   // Not yet enrolled, which is the branch that actually renders the setup card.
   SIGNIN = { password_set: false, enrolled: true, otpauth: "otpauth://totp/Endora:you?secret=AAAA" };
+  // A node nobody has claimed yet — the branch that renders the setup screen rather than a
+  // sign-in form for an account that does not exist.
+  SIGNIN_EXISTS = false;
   NOTIONS = [{ id: "1", statement: "the Monday gym block gets cancelled",
                because: ["message:12", "reading:calendar.rustic"],
                settles_when: "whether next Monday's block survives",

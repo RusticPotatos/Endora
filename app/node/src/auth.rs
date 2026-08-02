@@ -99,6 +99,26 @@ mod tests {
     }
 
     #[test]
+    fn asking_whether_sign_in_exists_needs_no_credential() {
+        // The console cannot show the right first screen without knowing whether a password
+        // has ever been set, and the endpoint that knew was itself behind the token — so a
+        // brand-new node asked people to sign in to an account that did not exist.
+        //
+        // A single boolean is all that travels. An attacker learns "this Endora has a
+        // password", which they would learn from one attempt anyway.
+        assert!(may_pass("/v1/session", None, None, &good()));
+        assert!(may_pass("/v1/session", None, None, &nothing()));
+    }
+
+    #[test]
+    fn setting_the_password_is_still_behind_the_token() {
+        // The neighbouring path, and the one that must never open: claiming the account is
+        // exactly what a stranger on the network must not be able to do first.
+        assert!(!may_pass("/v1/session/setup", None, None, &good()));
+        assert!(!may_pass("/v1/session/setup", None, None, &nothing()));
+    }
+
+    #[test]
     fn the_console_can_load_before_anyone_has_a_token() {
         // It has to: the screen that asks for the token is served by this node. A health check
         // must answer too, or the container is unhealthy the moment auth is turned on.
