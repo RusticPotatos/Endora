@@ -4678,6 +4678,7 @@ impl endora_capabilities::Capability for WhatIHaveBeenDoing {
             configured: true,
             needs: "",
             settings: &[],
+            input_schema: None,
         }
     }
 
