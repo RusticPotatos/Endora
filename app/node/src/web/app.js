@@ -118,10 +118,23 @@ function token() {
   try { return localStorage.getItem("endora-token") || ""; } catch (_) { return ""; }
 }
 
-async function api(method, path, body) {
-  const headers = body !== undefined ? { "content-type": "application/json" } : {};
+// Every request to this node goes through here, so signing is not something a call site can
+// forget.
+//
+// It was: `/v1/chat/stream` was fetched directly with only a content-type, so the moment the
+// node started requiring a credential, **every message failed to send**. Nothing caught it —
+// the console harness renders screens and makes no requests, and the Rust tests exercise the
+// router rather than the browser. It took a screenshot.
+//
+// Signing a request that does not need one costs nothing, so sign-in goes through it too
+// rather than being a second path somebody has to remember exists.
+function signed(headers) {
   const t = token();
-  if (t) headers["authorization"] = "Bearer " + t;
+  return t ? { ...headers, authorization: "Bearer " + t } : { ...headers };
+}
+
+async function api(method, path, body) {
+  const headers = signed(body !== undefined ? { "content-type": "application/json" } : {});
   const res = await fetch(path, {
     method,
     headers,
@@ -2201,7 +2214,7 @@ async function drainChat() {
   try {
     const res = await fetch("/v1/chat/stream", {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: signed({ "content-type": "application/json" }),
       body: JSON.stringify({ message: msg }),
       signal: CHAT_ABORT.signal,
     });
@@ -2423,7 +2436,7 @@ async function dispatch(act) {
       if (!password || !code) return;
       const res = await fetch("/v1/session", {
         method: "POST",
-        headers: { "content-type": "application/json" },
+        headers: signed({ "content-type": "application/json" }),
         body: JSON.stringify({ password, code }),
       });
       const data = await res.json().catch(() => null);
@@ -2438,12 +2451,9 @@ async function dispatch(act) {
     if (verb === "signin" && noun === "setup") {
       const password = val("setup-password");
       if (!password) return;
-      const t = token();
       const res = await fetch("/v1/session/setup", {
         method: "POST",
-        headers: t
-          ? { "content-type": "application/json", authorization: "Bearer " + t }
-          : { "content-type": "application/json" },
+        headers: signed({ "content-type": "application/json" }),
         body: JSON.stringify({ password }),
       });
       const data = await res.json().catch(() => null);
