@@ -190,6 +190,14 @@ pub struct ButlerContext {
     /// the endpoint's native tool-calling API (exact name + input schema) rather than
     /// relying on the model to hand-write an id. Parallel to `capabilities`.
     pub tools: Vec<CapabilityTool>,
+    /// The tools that exist but are **not** in front of the turn: everything that acts
+    /// rather than reads, ordered by what has actually worked (ADR 0060).
+    ///
+    /// Deferred, never removed. One lookup brings back the ones that match what the person
+    /// asked for, and they stay for the rest of the turn. A tool the model cannot see is a
+    /// tool it cannot ask for — it apologises instead, which is the failure this exists to
+    /// stop.
+    pub deferred: Vec<CapabilityTool>,
     /// The current date and time (human-readable), so the butler always knows what
     /// day it is rather than guessing or leaking a placeholder. Cheap local truth —
     /// grounded every turn, unlike weather/news which need a skill.

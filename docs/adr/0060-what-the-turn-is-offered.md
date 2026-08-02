@@ -8,9 +8,9 @@ free to be heard by the turn — and thereby made this the next thing to break.
 
 ## Context
 
-Asked *"any events in Charlotte this week"*, the butler answered:
+Asked *"any events in New York this week"*, the butler answered:
 
-> It seems like you're asking about events in Charlotte this week, but the functions
+> It seems like you're asking about events in New York this week, but the functions
 > provided are from Home Assistant and may not directly address external event information.
 
 That is false. It was offered **37** tools:

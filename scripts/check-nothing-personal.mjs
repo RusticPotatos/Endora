@@ -24,7 +24,22 @@
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 
-const tracked = execFileSync("git", ["ls-files"], { encoding: "utf8" })
+// Tracked files **and files not yet added**.
+//
+// `git ls-files` alone reads only what git already carries, so a brand-new file is
+// invisible to this check until it is staged — and the moment somebody runs the check
+// before `git add`, which is the natural order, it reports all-clear on a file it never
+// opened. That happened: an ADR quoting a live failure carried a real city name past a
+// green check and into a merged commit.
+//
+// A checker that lies is worse than no checker. `--others --exclude-standard` adds
+// untracked files while still honouring .gitignore, so local.mk stays out by the same rule
+// that keeps it out of git.
+const tracked = execFileSync(
+  "git",
+  ["ls-files", "--cached", "--others", "--exclude-standard"],
+  { encoding: "utf8" },
+)
   .split("\n")
   .filter(Boolean);
 
