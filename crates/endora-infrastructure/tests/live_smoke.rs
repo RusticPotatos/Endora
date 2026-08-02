@@ -88,15 +88,30 @@ fn base() -> String {
         .to_owned()
 }
 
+/// The node's token, from the environment.
+///
+/// `make smoke` passes it through from `local.mk`. Empty gives a 401 and the assertion below
+/// names it, which is a better failure than a suite that silently skips because a credential
+/// was missing.
+fn token() -> String {
+    std::env::var("ENDORA_TOKEN").unwrap_or_default()
+}
+
 /// Fetches one path, failing with the status and the path when it is not a success.
 fn get(path: &str) -> Value {
     let url = format!("{}{path}", base());
     let mut response = agent()
         .get(&url)
+        .header("Authorization", &format!("Bearer {}", token()))
         .call()
         .unwrap_or_else(|e| panic!("{path}: could not reach the node at {url}: {e}"));
     let status = response.status().as_u16();
     let body = response.body_mut().read_to_string().unwrap_or_default();
+    assert!(
+        status != 401,
+        "{path}: answered 401 — set ENDORA_TOKEN to the node's token (it is printed to the \
+         container log on first run)"
+    );
     assert!(
         (200..300).contains(&status),
         "{path}: answered {status} — the interface shows this as a broken screen. Body: {}",
