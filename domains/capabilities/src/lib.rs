@@ -39,7 +39,7 @@ pub use infrastructure::{
     McpClient, McpResource, McpRunner, McpToolInfo, NativeChannel, OpenerRunner, RegistryRunner,
     ReversibleOnlyRunner, SettingSpec, TargetSearchRunner, WithdrawnRunner, channels_of,
     default_capabilities, redact_pii_in_value, same_call_as, scan_outbound_secret,
-    settings_complete, tools_to_open_on_connect,
+    settings_complete, tools_the_toggle_governs, tools_to_open_on_connect,
 };
 pub use mcp_http::HttpMcpClient;
 pub use mcp_stdio::StdioMcpClient;
