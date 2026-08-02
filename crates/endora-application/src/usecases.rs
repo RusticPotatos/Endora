@@ -16,7 +16,7 @@ use endora_understanding::{
     PreferenceKind, Reaction, RepairProposal, Source, make_way_for_a_new_one,
 };
 
-use endora_capabilities::CapabilityRunner;
+use endora_capabilities::{CapabilityRunner, CapabilitySpec};
 use endora_conversation::ChatRepository;
 use endora_platform::{AuditLog, EventLog};
 use endora_understanding::{
@@ -855,8 +855,13 @@ fn run_tool_turn(
     // looping the same call — especially a read-only one that succeeds every time and
     // so never trips the failure cap.
     let mut seen: std::collections::HashSet<(String, String)> = std::collections::HashSet::new();
+    // The turn's own copy, because what it is offered can grow within the turn: asking for
+    // a way to do something brings the matching actuators into the tool list and leaves
+    // them there (ADR 0060). Cloned rather than threaded back out — the widening lasts for
+    // this turn and the next one starts from the same small list.
+    let mut context = context.clone();
     for round in 0..=max_rounds {
-        let reply = take_turn_retrying_empty(butler, &conversation, prefs, context, on_token)?;
+        let reply = take_turn_retrying_empty(butler, &conversation, prefs, &context, on_token)?;
         // No tool call → the final answer, grounded in the tool results so far — unless
         // the last thing that happened was a FAILED action and there is budget left.
         //
@@ -916,6 +921,39 @@ fn run_tool_turn(
                     content: "you already called this with the same input this turn — use the \
                               earlier result or answer now; do not repeat it."
                         .to_owned(),
+                });
+                continue;
+            }
+            // Asking for a way to do something is not doing it (ADR 0060). It runs no
+            // capability, touches nothing, and needs no clearance — it hands back the
+            // actuators that were deferred and adds them to what this turn may call.
+            //
+            // Everything it returns was already deferred, which means it was already
+            // *available*: this widens attention, never permission. A tool that was
+            // blocked is still blocked when it arrives, and one that acts still asks
+            // (ADR 0051).
+            if id == LOOK_FOR_A_TOOL {
+                let found: Vec<CapabilityTool> = context.deferred.clone();
+                let content = if found.is_empty() {
+                    "there is nothing here that can do that.".to_owned()
+                } else {
+                    // Best-first, since that is the order they were put in.
+                    let list = found
+                        .iter()
+                        .map(|t| format!("{} — {}", t.id, t.description))
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    format!("these can act, best first — call one of them now:\n{list}")
+                };
+                for tool in found {
+                    if !context.tools.iter().any(|t| t.id == tool.id) {
+                        context.tools.push(tool);
+                    }
+                }
+                context.deferred.clear();
+                conversation.push(TurnMessage::ToolResult {
+                    call_id: call.id.clone(),
+                    content,
                 });
                 continue;
             }
@@ -3788,6 +3826,91 @@ fn nightly_focus(
 
 /// Assembles the [`ButlerContext`] — a snapshot of what Endora understands about
 /// the person and the skills it can reach right now — so the butler's conversation
+/// The reserved id of the lookup that fetches a deferred tool (ADR 0060).
+///
+/// Named for what somebody would say rather than for the mechanism: the model is choosing
+/// a thing to do, not managing a catalogue.
+pub const LOOK_FOR_A_TOOL: &str = "find_a_way_to_do_it";
+
+/// A tool with no record yet, scored so it is neither trusted nor punished.
+///
+/// Absence of a decision is not a decision — the same rule that stops a standing default
+/// re-opening a tool somebody blocked, pointed the other way. A brand-new tool outranks
+/// one that has failed every time it was tried and is outranked by one that works.
+const NOTHING_KNOWN_ABOUT_IT: f32 = 0.5;
+
+/// What the turn is offered, and what waits behind a lookup (ADR 0060).
+///
+/// A butler asked about events in a city was handed **37** tools — nine skills including one
+/// that answers exactly that, twenty from the house, eight from a search engine — and replied
+/// that "the functions provided are from Home Assistant". Nothing was unwired. Published
+/// work puts the audit threshold around thirty tools and the degradation starting at twenty;
+/// deferral moved Opus 4 from 49% to 74% **on unchanged weights**, and the model here is far
+/// smaller than that.
+///
+/// The split is by what a tool **does**, not what it is about:
+///
+/// - a **read** is cheap, its result is evidence ([0053]), and it is useful far outside its
+///   own subject — whether anyone is home bears on questions that have nothing to do with
+///   the house. Reads stay.
+/// - an **actuator** is only wanted once the person has asked for something to happen, so it
+///   waits behind one lookup.
+///
+/// Deferred, never removed. When the guess is right the two are identical; when it is wrong,
+/// a removed tool is unreachable and the model cannot even ask — it apologises instead,
+/// which is exactly what happened. Missing on a paraphrase is the acknowledged failure of
+/// every retrieval scheme including the ones that work, so the recoverable version is the
+/// only one that survives being wrong.
+///
+/// Deferred tools come back **ordered by what has actually worked**, from read-back that is
+/// already recorded. Every published approach ranks on a tool's description, which is why
+/// they would all offer `HassLightSet` first forever: it reads perfectly for "turn off the
+/// kitchen light" and has never once worked. They are stateless retrievers and never find
+/// out. This one is told.
+#[must_use]
+pub fn offered_and_deferred(
+    available: Vec<CapabilitySpec>,
+    how_it_went: &std::collections::HashMap<String, (u32, u32)>,
+) -> (Vec<CapabilitySpec>, Vec<CapabilitySpec>) {
+    let (mut offered, mut deferred): (Vec<_>, Vec<_>) = available
+        .into_iter()
+        .partition(|c| c.reversibility == Reversibility::Observe);
+    let worked = |c: &CapabilitySpec| match how_it_went.get(&c.id) {
+        Some((_, 0)) | None => NOTHING_KNOWN_ABOUT_IT,
+        #[allow(clippy::cast_precision_loss)]
+        Some((confirmed, tried)) => *confirmed as f32 / *tried as f32,
+    };
+    // Descending, and stable — so tools nothing is known about keep the order they were
+    // registered in rather than being shuffled by a sort that has nothing to go on.
+    deferred.sort_by(|a, b| {
+        worked(b)
+            .partial_cmp(&worked(a))
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    offered.sort_by(|a, b| a.id.cmp(&b.id));
+    (offered, deferred)
+}
+
+/// How each capability has actually landed: `(confirmed changed, times tried)`.
+///
+/// Only read-back counts. An actuator's own claim is the thing that can be untrue
+/// ([0053](../../docs/adr/0053-honesty-about-what-it-did.md)), so `changed: Some(true)` is
+/// the numerator and everything else — a false, or an unreadable `None` — is only a try.
+#[must_use]
+pub fn how_each_capability_landed(
+    outcomes: &[Outcome],
+) -> std::collections::HashMap<String, (u32, u32)> {
+    let mut tally: std::collections::HashMap<String, (u32, u32)> = std::collections::HashMap::new();
+    for o in outcomes {
+        let entry = tally.entry(o.capability().to_owned()).or_insert((0, 0));
+        entry.1 += 1;
+        if o.changed() == Some(true) {
+            entry.0 += 1;
+        }
+    }
+    tally
+}
+
 /// is grounded in that rather than starting cold each turn.
 ///
 /// # Errors
@@ -3823,12 +3946,19 @@ pub fn butler_context(
         .into_iter()
         .filter(|c| c.configured)
         .collect();
-    let skills = available
+    // How its own past actions landed (ADR 0053) — a bounded read, since only the
+    // recent stretch is informative and the prompt has to stay small. It now pays twice:
+    // the same read-back that keeps the butler honest also says which tools deserve to be
+    // reached for first (ADR 0060).
+    let recent = recent_outcomes(outcomes, TRACK_RECORD_WINDOW)?;
+    // Reads stay in front of the turn; actuators wait behind one lookup (ADR 0060).
+    let (offered, deferred) = offered_and_deferred(available, &how_each_capability_landed(&recent));
+    let skills = offered
         .iter()
         .map(|c| format!("{} — {}", c.id, c.description))
         .collect();
     // The same skills structured for native tool-calling (exact id + input schema).
-    let tools = available
+    let mut tools: Vec<CapabilityTool> = offered
         .iter()
         .map(|c| CapabilityTool {
             id: c.id.clone(),
@@ -3836,11 +3966,33 @@ pub fn butler_context(
             input_schema: c.input_schema.clone(),
         })
         .collect();
-    // How its own past actions landed (ADR 0053) — a bounded read, since only the
-    // recent stretch is informative and the prompt has to stay small.
-    let recent = recent_outcomes(outcomes, TRACK_RECORD_WINDOW)?;
+    // The way back. Without this the deferral is a deletion, and a deletion the model
+    // cannot see is the failure this whole record exists to avoid: it apologises for tools
+    // it was never shown instead of asking for them.
+    if !deferred.is_empty() {
+        tools.push(CapabilityTool {
+            id: LOOK_FOR_A_TOOL.to_owned(),
+            description: "Find the tools that can DO something — turn things on or off, set, \
+                          play, send, add. Call this first whenever the person asks for \
+                          something to happen. Say what they want in their own words."
+                .to_owned(),
+            input_schema: Some(
+                r#"{"type":"object","properties":{"what_they_want":{"type":"string"}},"required":["what_they_want"]}"#
+                    .to_owned(),
+            ),
+        });
+    }
+    let deferred = deferred
+        .into_iter()
+        .map(|c| CapabilityTool {
+            id: c.id,
+            description: c.description,
+            input_schema: c.input_schema,
+        })
+        .collect();
     Ok(ButlerContext {
         understanding,
+        deferred,
         capabilities: skills,
         tools,
         // Live, and cheap: the services already read for other reasons know whether the
@@ -5331,6 +5483,141 @@ mod tests {
             !reply.text.contains("Here is the request"),
             "the turn ended on the narration: {}",
             reply.text
+        );
+    }
+
+    /// Deferral has to be a detour, not a wall (ADR 0060).
+    ///
+    /// The whole risk of taking actuators out of the turn's list is that the model cannot
+    /// ask for what it cannot see — which is the failure being fixed, arriving by another
+    /// door. So the seam, not either half: a turn that starts without the actuator asks for
+    /// a way to do the thing, and can call it in the very next round.
+    #[test]
+    fn asking_for_a_way_to_do_it_brings_the_actuator_back_within_the_turn() {
+        struct LooksThenActs {
+            turns: std::cell::Cell<usize>,
+            /// What the tool list held when it was asked to act.
+            saw_when_acting: std::cell::RefCell<Vec<String>>,
+        }
+        impl Butler for LooksThenActs {
+            fn respond(
+                &self,
+                _h: &[ChatMessage],
+                _p: &[Preference],
+                _c: &ButlerContext,
+            ) -> Result<ButlerReply, ProposalError> {
+                Ok(ButlerReply::default())
+            }
+            fn take_turn(
+                &self,
+                _conversation: &[crate::TurnMessage],
+                _p: &[Preference],
+                c: &ButlerContext,
+            ) -> Result<ButlerReply, ProposalError> {
+                let n = self.turns.get();
+                self.turns.set(n + 1);
+                if n == 0 {
+                    // It cannot see the actuator yet — only the way to ask for one.
+                    assert!(
+                        !c.tools.iter().any(|t| t.id == "home.HassTurnOff"),
+                        "the actuator was in front of the turn after all"
+                    );
+                    return Ok(ButlerReply {
+                        tool_calls: vec![crate::ToolCall {
+                            id: "look".to_owned(),
+                            capability: super::LOOK_FOR_A_TOOL.to_owned(),
+                            input_json: r#"{"what_they_want":"turn the kitchen light off"}"#
+                                .to_owned(),
+                        }],
+                        ..ButlerReply::default()
+                    });
+                }
+                *self.saw_when_acting.borrow_mut() = c.tools.iter().map(|t| t.id.clone()).collect();
+                if n == 1 {
+                    return Ok(ButlerReply {
+                        tool_calls: vec![crate::ToolCall {
+                            id: "act".to_owned(),
+                            capability: "home.HassTurnOff".to_owned(),
+                            input_json: r#"{"name":"Kitchen Main Light"}"#.to_owned(),
+                        }],
+                        ..ButlerReply::default()
+                    });
+                }
+                Ok(ButlerReply {
+                    text: "Turned it off.".to_owned(),
+                    ..ButlerReply::default()
+                })
+            }
+        }
+
+        struct OneActuator;
+        impl CapabilityRunner for OneActuator {
+            fn available(&self) -> Vec<endora_capabilities::CapabilitySpec> {
+                vec![endora_capabilities::CapabilitySpec {
+                    id: "home.HassTurnOff".to_owned(),
+                    description: "Turns something off".to_owned(),
+                    configured: true,
+                    autonomous: true,
+                    input_schema: None,
+                    reversibility: Reversibility::Irreversible,
+                }]
+            }
+            fn run(&self, _id: &str, _input: &str) -> Result<String, String> {
+                Ok("action_done".to_owned())
+            }
+        }
+
+        // The turn starts with the actuator deferred, exactly as `butler_context` builds it.
+        let context = ButlerContext {
+            tools: vec![crate::CapabilityTool {
+                id: super::LOOK_FOR_A_TOOL.to_owned(),
+                description: "Find the tools that can DO something".to_owned(),
+                input_schema: None,
+            }],
+            deferred: vec![crate::CapabilityTool {
+                id: "home.HassTurnOff".to_owned(),
+                description: "Turns something off".to_owned(),
+                input_schema: None,
+            }],
+            ..ButlerContext::default()
+        };
+
+        let butler = LooksThenActs {
+            turns: std::cell::Cell::new(0),
+            saw_when_acting: std::cell::RefCell::new(Vec::new()),
+        };
+        let (ids, clock, audit) = (SeqIds::default(), FixedClock(0), FakeAudit::default());
+        let mut activity = Vec::new();
+        super::run_tool_turn(
+            &butler,
+            &OneActuator,
+            &audit,
+            &OutcomeSink::unmotivated(&FakeOutcomes::default()),
+            &ids,
+            &clock,
+            &one_user_turn("turn the kitchen light off"),
+            &[],
+            &context,
+            6,
+            &mut |_| {},
+            &mut |_token: &str| {},
+            &mut activity,
+            &mut Vec::new(),
+        )
+        .expect("the turn answers");
+
+        assert!(
+            butler
+                .saw_when_acting
+                .borrow()
+                .iter()
+                .any(|id| id == "home.HassTurnOff"),
+            "the lookup did not bring the actuator into the turn: {:?}",
+            butler.saw_when_acting.borrow()
+        );
+        assert!(
+            activity.iter().any(|a| a.contains("home.HassTurnOff")),
+            "it never got to act: {activity:?}"
         );
     }
 
@@ -10274,5 +10561,116 @@ mod one_fact_source_reaches_everything {
             }
         }
         assert!(what_changed_lately(&Broken, NOW).is_empty());
+    }
+}
+
+#[cfg(test)]
+mod what_the_turn_is_offered {
+    //! ADR 0060.
+    //!
+    //! Live: asked about events in a city, the butler was handed 37 tools — nine skills
+    //! including one that answers exactly that — and replied that "the functions provided
+    //! are from Home Assistant". Nothing was unwired.
+
+    use super::{Reversibility, offered_and_deferred};
+    use endora_capabilities::CapabilitySpec;
+    use std::collections::HashMap;
+
+    fn tool(id: &str, band: Reversibility) -> CapabilitySpec {
+        CapabilitySpec {
+            id: id.to_owned(),
+            description: String::new(),
+            configured: true,
+            autonomous: band == Reversibility::Observe,
+            input_schema: None,
+            reversibility: band,
+        }
+    }
+
+    #[test]
+    fn a_read_is_offered_and_an_actuator_waits() {
+        // Whether anyone is home bears on questions with nothing to do with the house;
+        // broadcasting through it does not.
+        let (offered, deferred) = offered_and_deferred(
+            vec![
+                tool("home-assistant.HassBroadcast", Reversibility::Irreversible),
+                tool("home-assistant.GetLiveContext", Reversibility::Observe),
+                tool("news", Reversibility::Observe),
+            ],
+            &HashMap::new(),
+        );
+        assert_eq!(
+            offered.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(),
+            vec!["home-assistant.GetLiveContext", "news"]
+        );
+        assert_eq!(
+            deferred.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(),
+            vec!["home-assistant.HassBroadcast"]
+        );
+    }
+
+    /// The whole argument for ranking on read-back rather than on a description.
+    ///
+    /// `HassLightSet` reads perfectly for "turn off the kitchen light" and has never once
+    /// worked in five attempts. Every published approach ranks by description and would
+    /// offer it first forever, because none of them ever finds out.
+    #[test]
+    fn a_tool_that_has_never_worked_sinks_below_one_that_has() {
+        let mut how_it_went = HashMap::new();
+        how_it_went.insert("home-assistant.HassLightSet".to_owned(), (0, 5));
+        how_it_went.insert("home-assistant.HassTurnOff".to_owned(), (4, 13));
+        let (_, deferred) = offered_and_deferred(
+            vec![
+                tool("home-assistant.HassLightSet", Reversibility::Reversible),
+                tool("home-assistant.HassTurnOff", Reversibility::Reversible),
+            ],
+            &how_it_went,
+        );
+        assert_eq!(
+            deferred.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(),
+            vec!["home-assistant.HassTurnOff", "home-assistant.HassLightSet"]
+        );
+    }
+
+    /// Absence of a decision is not a decision.
+    ///
+    /// A tool nobody has tried outranks one that has failed every time, and is outranked by
+    /// one that works. Punishing a new tool for having no record is the same mistake as a
+    /// standing default re-opening one somebody blocked, pointed the other way.
+    #[test]
+    fn a_tool_nothing_is_known_about_sits_between_the_two() {
+        let mut how_it_went = HashMap::new();
+        how_it_went.insert("never".to_owned(), (0, 4));
+        how_it_went.insert("always".to_owned(), (4, 4));
+        let (_, deferred) = offered_and_deferred(
+            vec![
+                tool("never", Reversibility::Reversible),
+                tool("brand-new", Reversibility::Reversible),
+                tool("always", Reversibility::Reversible),
+            ],
+            &how_it_went,
+        );
+        assert_eq!(
+            deferred.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(),
+            vec!["always", "brand-new", "never"]
+        );
+    }
+
+    #[test]
+    fn with_nothing_recorded_the_order_is_the_one_it_arrived_in() {
+        // A sort with nothing to go on must not shuffle. Stability is what keeps a turn
+        // reproducible on a fresh install, which is where the eval runs.
+        let (_, deferred) = offered_and_deferred(
+            vec![
+                tool("first", Reversibility::Reversible),
+                tool("second", Reversibility::Reversible),
+                tool("third", Reversibility::Reversible),
+            ],
+            &HashMap::new(),
+        );
+        assert_eq!(
+            deferred.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(),
+            vec!["first", "second", "third"]
+        );
     }
 }
