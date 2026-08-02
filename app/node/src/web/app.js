@@ -25,6 +25,7 @@ let UNDERSTANDING = [];        // Endora's beliefs about the person (the home su
 let OUTCOMES = [];             // what Endora DID, and what it saw afterwards (ADR 0053)
 let INTENTIONS = [];           // what Endora is pursuing, and has pursued (ADR 0052)
 let NOTIONS = [];              // what Endora is still thinking about (ADR 0057)
+let CONNECTED = [];            // integrations already set up behind the channel (ADR 0058)
 let MCP_NEEDS = { fields: [], docs: "" }; // what the chosen catalogue entry says it needs
 let WORTH_KNOWING = { models: [], fits_gb: 12, asked: false }; // hub models that would fit
 let CHAT_DAY = null;           // which day's conversation is showing; null = today
@@ -141,6 +142,7 @@ async function reload() {
   try { OUTCOMES = await api("GET", "/v1/outcomes"); } catch (_) { OUTCOMES = []; }
   try { INTENTIONS = await api("GET", "/v1/intentions"); } catch (_) { INTENTIONS = []; }
   try { NOTIONS = await api("GET", "/v1/notions"); } catch (_) { NOTIONS = []; }
+  try { CONNECTED = await api("GET", "/v1/connect/connected"); } catch (_) { CONNECTED = []; }
   try { REPAIRS = await api("GET", "/v1/repairs"); } catch (_) { REPAIRS = []; }
   try { TROUBLE = await api("GET", "/v1/standing-trouble"); } catch (_) { TROUBLE = []; }
   try { LANDING = await api("GET", "/v1/reliability"); } catch (_) { LANDING = null; }
@@ -1521,11 +1523,25 @@ function viewConnect() {
         </div>
       </div>`;
   }
+  // Offering to set up something already working reads as though the last attempt failed, and
+  // the screen had no other way to answer "is my calendar connected?" (ADR 0058). A service
+  // already there says so and offers nothing; adding a second account is still possible from
+  // the box below, by name.
+  const isConnected = (kind) => (CONNECTED || []).includes(kind);
   const buttons = WORTH_CONNECTING.map(([kind, label, why]) => `
     <div class="row" style="align-items:center;gap:10px;margin-bottom:8px;">
-      <div class="grow"><div class="title" style="font-weight:500;">${esc(label)}</div><div class="sub">${esc(why)}</div></div>
-      <button class="ghost" data-act="connect:start:${esc(kind)}">Connect</button>
+      <div class="grow"><div class="title" style="font-weight:500;">${esc(label)}</div><div class="sub">${isConnected(kind) ? "Already set up — Endora can use it." : esc(why)}</div></div>
+      ${isConnected(kind)
+        ? `<span class="pill active">connected</span>`
+        : `<button class="ghost" data-act="connect:start:${esc(kind)}">Connect</button>`}
     </div>`).join("");
+  // Everything else the person has set up themselves. Without this the screen could only ever
+  // talk about the four things Endora happens to suggest, and stayed silent about the rest.
+  const offered = WORTH_CONNECTING.map(([kind]) => kind);
+  const alsoThere = (CONNECTED || []).filter((k) => !offered.includes(k));
+  const alsoHtml = alsoThere.length
+    ? `<div class="sub" style="margin-top:10px;">Also set up: ${alsoThere.map(esc).join(", ")}</div>`
+    : "";
   return `
     <h3 style="margin-top:22px;">Connect something to your home</h3>
     <div class="note" style="margin-bottom:10px;">Endora sets it up in Home Assistant for you — you only sign in. Whatever you add here, it can use straight away.</div>
@@ -1535,6 +1551,7 @@ function viewConnect() {
         <input id="connect-other" placeholder="or something else, by its Home Assistant name" />
         <button class="ghost" data-act="connect:other">Start</button>
       </div>
+      ${alsoHtml}
     </div>`;
 }
 
