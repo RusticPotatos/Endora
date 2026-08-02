@@ -1916,6 +1916,7 @@ async fn send_chat(
             config.as_ref(),
             chat.as_ref(),
             &runner,
+            config.as_ref(),
             clock.as_ref(),
         )?;
         let out = usecases::send_to_butler(
@@ -1970,6 +1971,7 @@ async fn brief(State(state): State<AppState>) -> Result<Json<serde_json::Value>,
             config.as_ref(),
             chat.as_ref(),
             &runner,
+            config.as_ref(),
             clock.as_ref(),
         )?;
         let out = usecases::daily_brief(
@@ -2056,6 +2058,7 @@ async fn stream_chat(
                 config.as_ref(),
                 chat.as_ref(),
                 &runner,
+                config.as_ref(),
                 clock.as_ref(),
             ) {
                 Ok(c) => c,
@@ -2810,6 +2813,7 @@ async fn what_the_butler_is_told(
             config.as_ref(),
             chat.as_ref(),
             &runner,
+            config.as_ref(),
             clock.as_ref(),
         )
     })
@@ -4687,6 +4691,44 @@ fn watch_the_world(state: &AppState) {
             Err(e) => eprintln!("watching {server}: could not read it this time: {e}"),
         }
     }
+
+    // And everything else that can say what it currently knows.
+    //
+    // The loop above only ever saw native channels, so an MCP server publishing resources fed
+    // notions but was never *watched* — nothing noticed when it changed, and nothing raised it
+    // when it stopped answering. Adding an integration meant wiring it into this function by
+    // hand, which is the thing that does not scale.
+    //
+    // Now anything implementing `current_states` is watched by virtue of implementing it.
+    // Keys already carry their source, so `watch_for_change` can namespace as it always has.
+    let runner = build_runner(
+        config.as_ref(),
+        state.capabilities.clone(),
+        state
+            .mcp
+            .read()
+            .map_or_else(|p| p.into_inner().clone(), |g| g.clone()),
+    );
+    let reading = endora_capabilities::CapabilityRunner::current_states(&runner);
+    if !reading.is_empty() {
+        if let Err(e) =
+            endora_capabilities::watch_for_trouble(config.as_ref(), "skills", &reading, now_ms)
+        {
+            eprintln!("watching skills: could not record what is wrong: {e}");
+        }
+        match endora_capabilities::watch_for_change(config.as_ref(), "skills", &reading, now_ms) {
+            Ok(moved) => {
+                for change in moved {
+                    record_event(
+                        events.as_ref(),
+                        clock.as_ref(),
+                        &format!("{} went from {} to {}", change.key, change.from, change.to),
+                    );
+                }
+            }
+            Err(e) => eprintln!("watching skills: could not record what moved: {e}"),
+        }
+    }
 }
 
 /// Re-reads stored beliefs against the rules as they stand today (ADR 0052).
@@ -4756,6 +4798,7 @@ pub fn spawn_heartbeat(state: AppState) {
                     config.as_ref(),
                     chat.as_ref(),
                     &runner,
+                    config.as_ref(),
                     clock.as_ref(),
                 )?;
                 // The butler decides whether it has a reason to speak; the schedule
