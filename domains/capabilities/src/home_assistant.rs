@@ -1505,17 +1505,11 @@ mod tests {
     #[test]
     fn presence_reads_as_a_sentence_not_a_state_string() {
         assert_eq!(describe_presence("john", "home"), "john is home");
-        assert_eq!(
-            describe_presence("john", "not_home"),
-            "john is not home"
-        );
+        assert_eq!(describe_presence("john", "not_home"), "john is not home");
         // A named zone is a place, and reads better as one than as "not_home".
         assert_eq!(describe_presence("john", "Office"), "john is at Office");
         // A tracker that has lost the person says so plainly rather than inventing a place.
-        assert_eq!(
-            describe_presence("john", "unavailable"),
-            "john is not home"
-        );
+        assert_eq!(describe_presence("john", "unavailable"), "john is not home");
     }
 
     #[test]
@@ -1802,11 +1796,7 @@ mod one_thing_with_two_names {
     fn a_registry_that_answers_oddly_does_not_take_the_reading_down_with_it() {
         let states = [reading("sensor.x", "Pixel Kiosk Brightness")];
         assert_eq!(
-            entity_named(
-                &json!({"error": "nope"}),
-                &states,
-                "Pixel Kiosk Brightness"
-            ),
+            entity_named(&json!({"error": "nope"}), &states, "Pixel Kiosk Brightness"),
             Some("sensor.x".to_owned())
         );
     }

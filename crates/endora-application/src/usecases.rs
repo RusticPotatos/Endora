@@ -9479,7 +9479,7 @@ mod who_words_the_brief {
         // The real second live brief. The facts and the prose say the same things in
         // different words, which is why an exact-substring check failed here.
         let facts = "- john is not home\n                     - on the Family calendar: Yardwork in the morning - Jane Doe and John Doe\n                     - outside it is 77F and partly cloudy";
-        let written = "Good morning! Quick brief for you: john is not home right now. On                        the Family calendar, there's Yardwork in the morning - Jane Doe and                        Michael at 2026-08-01. Outside it's 77F and partly cloudy.";
+        let written = "Good morning! Quick brief for you: john is not home right now. On                        the Family calendar, there's Yardwork in the morning - Jane Doe                        and John Doe at 2026-08-01. Outside it's 77F and partly cloudy.";
         assert!(
             not_yet_said(written, facts).is_empty(),
             "{:?}",
@@ -9573,10 +9573,7 @@ mod telling_the_person_from_the_household {
                     "Yardwork - Jane Doe and John Doe".to_owned(),
                 ),
             ],
-            &[
-                "person.john".to_owned(),
-                "device_tracker.pixel".to_owned(),
-            ],
+            &["person.john".to_owned(), "device_tracker.pixel".to_owned()],
         ));
         let kind = |reference: &str| {
             record

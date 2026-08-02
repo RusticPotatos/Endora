@@ -103,10 +103,7 @@ mod tests {
 
     fn table() -> Pseudonyms {
         let mut kinds: BTreeMap<&str, Vec<String>> = BTreeMap::new();
-        kinds.insert(
-            "person",
-            vec!["john".to_owned(), "John Doe".to_owned()],
-        );
+        kinds.insert("person", vec!["john".to_owned(), "John Doe".to_owned()]);
         kinds.insert("place", vec!["New York NY".to_owned()]);
         kinds.insert("event", vec!["Jane Doe & John Doe".to_owned()]);
         Pseudonyms::of(&kinds)
@@ -141,8 +138,9 @@ mod tests {
 
     #[test]
     fn a_longer_name_is_replaced_before_the_shorter_one_inside_it() {
-        // "John Doe" and "Jane Doe & John Doe" share a surname. Replacing the
-        // shorter first would leave half a name in the outgoing text — the leak in disguise.
+        // One value sits wholly inside another. Replacing the shorter first would consume
+        // its own half of the longer, leaving the rest of a name in the outgoing text —
+        // the leak in disguise.
         let sent = table().hide("John Doe and Jane Doe & John Doe");
         assert!(!sent.contains("Doe"), "{sent}");
     }
