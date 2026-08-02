@@ -1815,6 +1815,10 @@ function viewNeedsYou() {
         </div>
       </div>`;
   }
+  // "Leave it" is not decoration. Answering is meant to be the dismissal, but somebody who
+  // does not know the real name has no answer to give — and with no way out the card sits
+  // there for good. The trouble card has had "It's fine" for exactly this reason; this one
+  // never did.
   return `
     <div class="card" style="margin:6px 0;">
       <div class="grow">
@@ -1823,6 +1827,9 @@ function viewNeedsYou() {
         <div class="form" style="margin-top:6px;">
           <input id="alias-${esc(repair.capability)}-${esc(repair.target)}" placeholder="the real name, e.g. Kitchen Main" />
           <button class="primary" data-act="alias:${esc(repair.capability)}:${esc(repair.target)}">Remember</button>
+        </div>
+        <div class="row" style="justify-content:flex-end;margin-top:6px;">
+          <button class="ghost" data-act="repair:leave:${esc(repair.capability)}:${esc(repair.target)}" title="Stop asking about this one. Nothing is turned off.">Leave it</button>
         </div>
       </div>
     </div>`;
@@ -2781,6 +2788,15 @@ async function dispatch(act) {
     }
     // Answer what Endora asked about a target it can't hit (ADR 0054). This is the
     // confirmed source — Endora never fills it in from a server's own text.
+    // Stop asking about one thing. Nothing is turned off — it silences this question only.
+    if (verb === "repair" && noun === "leave") {
+      const server = String(id || "").split(".")[0];
+      try {
+        await api("POST", `/v1/repairs/${encodeURIComponent(server)}/${encodeURIComponent(arg)}/leave`, {});
+        flash("Alright — I'll stop asking about that one.", "ok");
+      } catch (e) { flash("Couldn't do that: " + e.message, "err"); }
+      return reload();
+    }
     if (verb === "alias") {
       const server = String(noun || "").split(".")[0];
       const el = document.getElementById(`alias-${noun}-${id}`);
