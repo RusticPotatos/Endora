@@ -732,6 +732,56 @@ fn describe_engagement(e: &Entity) -> Option<String> {
     })
 }
 
+/// The entities that belong to **the person themselves**, rather than to the household.
+///
+/// A hallway light is the house's; a phone in their pocket is not. That difference decides
+/// whether a reading may ever become a belief about them (ADR 0057), so it is **read from the
+/// service, never inferred**: Home Assistant already holds the mapping because the person set
+/// it up, and a `person` entity lists the trackers its presence is computed from.
+///
+/// **More than one person means Endora will not guess.** With two `person` entities nothing
+/// here can say which one Endora serves, and the cost of being wrong is a false belief about
+/// somebody rather than a bad reading. Attributing nothing until somebody says is the honest
+/// answer, and it is the direction that fails safely as a household grows.
+#[must_use]
+pub fn the_persons_own_things(states_body: &str) -> Vec<String> {
+    let Ok(states) = serde_json::from_str::<Value>(states_body) else {
+        return Vec::new();
+    };
+    let Some(states) = states.as_array() else {
+        return Vec::new();
+    };
+    let people: Vec<&Value> = states
+        .iter()
+        .filter(|e| {
+            e.get("entity_id")
+                .and_then(Value::as_str)
+                .is_some_and(|id| id.starts_with("person."))
+        })
+        .collect();
+    let [person] = people[..] else {
+        return Vec::new(); // nobody, or more than one and no way to tell which
+    };
+    let mut theirs: Vec<String> = person
+        .get("attributes")
+        .and_then(|a| a.get("device_trackers"))
+        .and_then(Value::as_array)
+        .map(|all| {
+            all.iter()
+                .filter_map(Value::as_str)
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default();
+    // The person entity itself is theirs too — it is the thing their presence *is*.
+    if let Some(id) = person.get("entity_id").and_then(Value::as_str) {
+        theirs.push(id.to_owned());
+    }
+    theirs.sort();
+    theirs.dedup();
+    theirs
+}
+
 /// The integrations Home Assistant already has configured, by domain, sorted and deduplicated.
 ///
 /// Two Hue bridges or two calendars are **one** integration here: the question this answers is
@@ -985,6 +1035,15 @@ impl crate::infrastructure::NativeChannel for HomeAssistant {
     fn act(&self, tool: &str, entity: &str) -> Option<Result<String, String>> {
         let (domain, service) = service_for(tool)?;
         Some(self.call_service(domain, service, entity))
+    }
+
+    /// Which entities are the person's own, straight from Home Assistant's `person` mapping.
+    ///
+    /// Failure is silence, which attributes nothing — the safe direction.
+    fn belongs_to_the_person(&self) -> Vec<String> {
+        self.get("/api/states")
+            .map(|body| the_persons_own_things(&body))
+            .unwrap_or_default()
     }
 
     /// The integrations Home Assistant already holds, so the Connect screen can say what is
@@ -1578,6 +1637,70 @@ mod what_is_on_today {
         let mut lamp = calendar("Family", "something", "now");
         lamp.id = "light.kitchen".to_owned();
         assert_eq!(describe_engagement(&lamp), None);
+    }
+}
+
+#[cfg(test)]
+mod which_things_are_the_persons_own {
+    //! Telling the person's own devices from the household's (ADR 0057).
+    //!
+    //! A hallway light belongs to the house, which has other people in it. A phone in their
+    //! pocket does not. That difference is the whole of attribution, and getting it wrong does
+    //! not produce a wrong reading — it produces a wrong belief about somebody.
+    //!
+    //! **So it is read, never inferred.** Home Assistant already holds the mapping, because
+    //! the person set it up themselves: a `person` entity lists the trackers it is computed
+    //! from.
+
+    use super::the_persons_own_things;
+
+    fn body(entities: &str) -> String {
+        format!("[{entities}]")
+    }
+
+    #[test]
+    fn a_persons_own_trackers_are_theirs_and_so_is_the_person_entity() {
+        let states = body(
+            r#"{"entity_id":"person.morgan","attributes":{"device_trackers":["device_tracker.bambam","device_tracker.watch"]}},
+               {"entity_id":"light.hall","attributes":{}}"#,
+        );
+        assert_eq!(
+            the_persons_own_things(&states),
+            vec![
+                "device_tracker.bambam",
+                "device_tracker.watch",
+                "person.morgan",
+            ]
+        );
+    }
+
+    #[test]
+    fn more_than_one_person_means_endora_will_not_guess() {
+        // The house has other people in it. With two `person` entities nothing here can say
+        // which one Endora serves — and ADR 0057 rejects attributing by guesswork outright,
+        // because the cost of being wrong is a false belief about somebody rather than a bad
+        // reading. Attributing nothing is the honest answer until somebody says.
+        let states = body(
+            r#"{"entity_id":"person.morgan","attributes":{"device_trackers":["device_tracker.bambam"]}},
+               {"entity_id":"person.elise","attributes":{"device_trackers":["device_tracker.elise_phone"]}}"#,
+        );
+        assert!(the_persons_own_things(&states).is_empty());
+    }
+
+    #[test]
+    fn a_person_with_no_trackers_still_counts_as_themselves() {
+        let states = body(r#"{"entity_id":"person.morgan","attributes":{}}"#);
+        assert_eq!(the_persons_own_things(&states), vec!["person.morgan"]);
+    }
+
+    #[test]
+    fn a_house_with_nobody_in_it_attributes_nothing() {
+        for states in ["[]", "", "not json", r#"[{"entity_id":"light.hall"}]"#] {
+            assert!(
+                the_persons_own_things(states).is_empty(),
+                "expected nothing from {states:?}"
+            );
+        }
     }
 }
 

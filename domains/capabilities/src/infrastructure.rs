@@ -3242,6 +3242,15 @@ pub trait NativeChannel: Send + Sync {
         true
     }
 
+    /// The things this service says belong to **the person**, rather than to the household.
+    ///
+    /// Decides whether a reading may ever become a belief about them (ADR 0057). Empty is the
+    /// honest default and the safe direction: nothing is attributed, rather than the house
+    /// being mistaken for the person.
+    fn belongs_to_the_person(&self) -> Vec<String> {
+        Vec::new()
+    }
+
     /// What this service already has set up, by whatever name it calls each thing.
     ///
     /// The Connect screen offered every service with a **Connect** button and knew nothing

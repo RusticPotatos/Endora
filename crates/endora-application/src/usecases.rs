@@ -3145,6 +3145,7 @@ pub fn what_there_is_to_go_on(
     outcomes: &impl OutcomeRepository,
     beliefs: &impl BeliefRepository,
     readings: Vec<(String, String)>,
+    theirs: &[String],
     now: Timestamp,
 ) -> Result<TheRecord, AppError> {
     let since = now.unix_millis() - AS_FAR_BACK_AS_A_NOTION_LIVES_MS;
@@ -3188,15 +3189,34 @@ pub fn what_there_is_to_go_on(
         });
     }
 
-    for (entity, state) in readings {
-        entries.push(KnownRecord {
-            source: Source::Reading,
-            reference: entity.clone(),
-            text: format!("{entity} {state}"),
-        });
-    }
+    entries.extend(readings_as_records(readings, theirs));
 
     Ok(TheRecord::of(entries))
+}
+
+/// Turns a reading into a record, marking the ones that are **the person's own**.
+///
+/// The distinction is the whole of attribution (ADR 0057). A hallway light and a family
+/// calendar belong to a household that has other people in it; a phone in the person's pocket
+/// does not, and only the second may ever carry a notion into a belief about them.
+///
+/// `theirs` comes from the service, which holds the mapping because the person set it up. When
+/// it is empty — nobody configured, or several people and no way to tell which one Endora
+/// serves — **everything is the house**, which is the direction that fails safely.
+#[must_use]
+pub fn readings_as_records(readings: Vec<(String, String)>, theirs: &[String]) -> Vec<KnownRecord> {
+    readings
+        .into_iter()
+        .map(|(entity, state)| KnownRecord {
+            source: if theirs.contains(&entity) {
+                Source::Personal
+            } else {
+                Source::Reading
+            },
+            text: format!("{entity} {state}"),
+            reference: entity,
+        })
+        .collect()
 }
 
 /// Asks for notions, handing over the record to cite from.
@@ -3432,6 +3452,8 @@ pub fn run_due_nightly_loop(
     notions: &impl NotionRepository,
     schedules: &impl NightlyLoopScheduleRepository,
     capabilities: &dyn CapabilityRunner,
+    // What the services say belongs to the person rather than the household (ADR 0057).
+    theirs: &[String],
     butler: &dyn Butler,
     audit: &dyn AuditLog,
     ids: &impl IdSource,
@@ -3575,8 +3597,14 @@ pub fn run_due_nightly_loop(
     // all: a notion maturing is arithmetic over records that arrived on their own, and a night
     // where the language model was unreachable is still a night in which the person's calendar
     // and the house went on happening.
-    let record =
-        what_there_is_to_go_on(chat, outcomes, beliefs, capabilities.current_states(), now)?;
+    let record = what_there_is_to_go_on(
+        chat,
+        outcomes,
+        beliefs,
+        capabilities.current_states(),
+        theirs,
+        now,
+    )?;
     let proposed = if worth_recording {
         ask_for_notions(butler, &record, &notions.open()?, ids, clock)
     } else {
@@ -6897,6 +6925,7 @@ mod tests {
             &FakeNotions::default(),
             &sched,
             &NoCapabilities,
+            &[],
             &ReflectiveButler,
             &audit,
             &ids,
@@ -6976,6 +7005,7 @@ mod tests {
             &super::tests::FakeNotions::default(),
             &due_nightly(),
             &NoCapabilities,
+            &[],
             &butler,
             &FakeAudit::default(),
             &SeqIds::default(),
@@ -7192,6 +7222,7 @@ mod tests {
             &super::tests::FakeNotions::default(),
             &OffSchedule,
             &NoCapabilities,
+            &[],
             &NeverButler,
             &audit,
             &ids,
@@ -7343,6 +7374,7 @@ mod tests {
             &super::tests::FakeNotions::default(),
             &sched,
             &ResearchRunner,
+            &[],
             &ResearchButler,
             &audit,
             &ids,
@@ -9329,6 +9361,62 @@ mod who_words_the_brief {
         fn now(&self) -> endora_kernel::Timestamp {
             endora_kernel::Timestamp::from_unix_millis(self.0)
         }
+    }
+}
+
+#[cfg(test)]
+mod telling_the_person_from_the_household {
+    //! Classifying a reading (ADR 0057). The house is shared and the person's own devices are
+    //! not, and only the second may carry a notion into a belief about them.
+
+    use super::{Source, TheRecord};
+
+    #[test]
+    fn the_persons_own_devices_are_marked_apart_from_the_house() {
+        let record = TheRecord::of(super::readings_as_records(
+            vec![
+                ("person.morgan".to_owned(), "home".to_owned()),
+                ("device_tracker.bambam".to_owned(), "home".to_owned()),
+                ("light.hall".to_owned(), "on".to_owned()),
+                (
+                    "calendar.family".to_owned(),
+                    "Yardwork - Elise and Michael".to_owned(),
+                ),
+            ],
+            &[
+                "person.morgan".to_owned(),
+                "device_tracker.bambam".to_owned(),
+            ],
+        ));
+        let kind = |reference: &str| {
+            record
+                .entries()
+                .iter()
+                .find(|e| e.reference == reference)
+                .map(|e| e.source)
+        };
+        assert_eq!(kind("person.morgan"), Some(Source::Personal));
+        assert_eq!(kind("device_tracker.bambam"), Some(Source::Personal));
+        assert_eq!(kind("light.hall"), Some(Source::Reading));
+        assert_eq!(
+            kind("calendar.family"),
+            Some(Source::Reading),
+            "a shared calendar naming two other people is not evidence about this one"
+        );
+    }
+
+    #[test]
+    fn with_nothing_known_to_be_theirs_everything_is_the_house() {
+        // The safe direction, and what a household with several `person` entities produces:
+        // nothing is attributed rather than the house being mistaken for the person.
+        let record = TheRecord::of(super::readings_as_records(
+            vec![("person.morgan".to_owned(), "home".to_owned())],
+            &[],
+        ));
+        assert_eq!(
+            record.entries().first().map(|e| e.source),
+            Some(Source::Reading)
+        );
     }
 }
 

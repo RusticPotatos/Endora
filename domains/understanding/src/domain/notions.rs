@@ -62,7 +62,18 @@ pub enum Source {
     /// Something Endora already believes.
     Belief,
     /// A reading taken from a capability — an entity and its state.
+    ///
+    /// **Shared.** The house has other people in it, so a light, a door or a family calendar
+    /// says nothing about any particular one of them.
     Reading,
+    /// A reading from something that belongs to **the person themselves** — their phone,
+    /// their watch, the tracker their own presence is computed from.
+    ///
+    /// Distinct from [`Reading`](Self::Reading) because the difference is the whole of
+    /// attribution: a hallway light is the household's, and a watch on their wrist is not.
+    /// Which entities these are is **stated by the service**, never inferred here — a wrong
+    /// guess does not produce a wrong reading, it produces a wrong belief about somebody.
+    Personal,
 }
 
 impl Source {
@@ -74,6 +85,7 @@ impl Source {
             Self::Message => "message",
             Self::Belief => "belief",
             Self::Reading => "reading",
+            Self::Personal => "personal",
         }
     }
 
@@ -89,6 +101,7 @@ impl Source {
             "message" => Ok(Self::Message),
             "belief" => Ok(Self::Belief),
             "reading" => Ok(Self::Reading),
+            "personal" => Ok(Self::Personal),
             _ => Err(DomainError::EmptyField {
                 field: "notion.citation.source",
             }),
@@ -298,9 +311,12 @@ impl Notion {
     /// person and never asked to be modelled.
     #[must_use]
     pub fn says_something_about_the_person(&self) -> bool {
-        self.citations
-            .iter()
-            .any(|c| matches!(c.source, Source::Message | Source::Belief))
+        self.citations.iter().any(|c| {
+            matches!(
+                c.source,
+                Source::Message | Source::Belief | Source::Personal
+            )
+        })
     }
 
     /// Promotes it to a belief, if it has earned that. Returns whether it did.
@@ -559,6 +575,27 @@ mod tests {
     }
 
     #[test]
+    fn a_reading_from_the_persons_own_device_can_carry_a_notion() {
+        // The house is shared; a watch on their wrist is not. Ruling out every reading was
+        // right about the hallway light and wrong about their own phone, which is the only
+        // source besides conversation that says anything about *them* on its own.
+        let mut n = Notion::new(
+            NotionId::new(1),
+            "you are up early lately",
+            vec![
+                Citation::new(Source::Personal, "device_tracker.rustic_phone").unwrap(),
+                Citation::new(Source::Reading, "alarm_control_panel.home").unwrap(),
+                Citation::new(Source::Outcome, "outcome-9").unwrap(),
+            ],
+            "",
+            at(0),
+        )
+        .unwrap();
+        assert!(n.is_ready_to_believe());
+        assert!(n.mature());
+    }
+
+    #[test]
     fn one_thing_the_person_said_is_enough_to_carry_it() {
         // The house may corroborate; it may not carry. So a notion the person spoke to even
         // once, met twice more by the house, is a belief about them.
@@ -673,6 +710,7 @@ mod tests {
             Source::Message,
             Source::Belief,
             Source::Reading,
+            Source::Personal,
         ] {
             assert_eq!(Source::from_name(s.name()).unwrap(), s);
         }
