@@ -336,6 +336,7 @@ pub fn default_capabilities() -> Vec<Arc<dyn Capability>> {
         Arc::new(LocalNewsCapability),
         Arc::new(ImageReviewCapability::from_env()),
         Arc::new(CityMeetingsCapability),
+        Arc::new(TicketedEventsCapability),
         Arc::new(FlightSearchCapability),
         Arc::new(LocationLogCapability),
         Arc::new(SafetyAlertsCapability),
@@ -1528,6 +1529,129 @@ fn today_utc() -> String {
     format!("{y:04}-{m:02}-{d:02}")
 }
 
+/// A failure with the credential taken back out of it.
+///
+/// This API takes its key in the **query string** — its choice, not ours — so the key is
+/// part of the URL of every request. Whether a failure repeats that URL is then decided by
+/// the `Display` of an HTTP crate, and a message like *"401 for
+/// https://…?apikey=REAL_KEY&…"* would land in an error the person reads and in the record
+/// of what was tried.
+///
+/// So it is removed rather than hoped about. The dependency may print whatever it likes;
+/// the key cannot survive this function, and what it says about *why* it failed — a 401 is
+/// the most useful thing here — survives intact.
+#[must_use]
+pub fn without_the_key(said: &str, key: &str) -> String {
+    if key.trim().is_empty() {
+        return said.to_owned();
+    }
+    said.replace(key.trim(), "…")
+}
+
+/// One ticketed event, as a person would hear it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TicketedEvent {
+    /// What it is called.
+    pub what: String,
+    /// `YYYY-MM-DD`.
+    pub on: String,
+    /// Local start time, `HH:MM`, empty when the listing has not said.
+    pub at: String,
+    /// Where, plus its town when the listing gives one.
+    pub place: String,
+    /// The cheapest advertised ticket, already rounded, empty when none is published.
+    pub from: String,
+}
+
+/// The events in a Discovery API answer.
+///
+/// Parsed, never trusted. Field names are the whole of the contract with somebody else's
+/// service, and a renamed one has to yield **no events** rather than an error or a
+/// half-built row — the same posture as reading a city's agenda, and for the same reason: a
+/// screen quietly saying "nothing on" is the worst failure available to a thing whose only
+/// job is to say what is on.
+#[must_use]
+pub fn ticketed_events_in(body: &str) -> Vec<TicketedEvent> {
+    let Ok(parsed) = serde_json::from_str::<Value>(body) else {
+        return Vec::new();
+    };
+    let Some(Value::Array(rows)) = parsed.get("_embedded").and_then(|e| e.get("events")) else {
+        // No `_embedded` at all is what an empty search returns, and it is not an error.
+        return Vec::new();
+    };
+    rows.iter()
+        .filter_map(|row| {
+            // Something nobody can name is not worth reporting; the rest is optional.
+            let what = row.get("name")?.as_str()?.trim().to_owned();
+            if what.is_empty() {
+                return None;
+            }
+            let start = row.get("dates").and_then(|d| d.get("start"));
+            let venue = row
+                .get("_embedded")
+                .and_then(|e| e.get("venues"))
+                .and_then(Value::as_array)
+                .and_then(|v| v.first());
+            let place = match (
+                venue.and_then(|v| v.get("name")).and_then(Value::as_str),
+                venue
+                    .and_then(|v| v.get("city"))
+                    .and_then(|c| c.get("name"))
+                    .and_then(Value::as_str),
+            ) {
+                (Some(name), Some(town)) if !name.is_empty() && !town.is_empty() => {
+                    format!("{name}, {town}")
+                }
+                (Some(name), _) => name.to_owned(),
+                (None, Some(town)) => town.to_owned(),
+                _ => String::new(),
+            };
+            Some(TicketedEvent {
+                what,
+                place,
+                on: start
+                    .and_then(|s| s.get("localDate"))
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_owned(),
+                // `20:00:00` is a machine's way of saying eight o'clock; the seconds are noise.
+                at: start
+                    .and_then(|s| s.get("localTime"))
+                    .and_then(Value::as_str)
+                    .map(|t| t.split(':').take(2).collect::<Vec<_>>().join(":"))
+                    .unwrap_or_default(),
+                from: row
+                    .get("priceRanges")
+                    .and_then(Value::as_array)
+                    .and_then(|p| p.first())
+                    .and_then(|p| p.get("min"))
+                    .and_then(Value::as_f64)
+                    .map(|m| format!("{}", m.round() as i64))
+                    .unwrap_or_default(),
+            })
+        })
+        .collect()
+}
+
+/// Says an event the way somebody would mention it.
+#[must_use]
+pub fn describe_ticketed_event(e: &TicketedEvent) -> String {
+    let mut said = e.what.clone();
+    if !e.on.is_empty() {
+        said.push_str(&format!(" on {}", e.on));
+    }
+    if !e.at.is_empty() {
+        said.push_str(&format!(" at {}", e.at));
+    }
+    if !e.place.is_empty() {
+        said.push_str(&format!(", {}", e.place));
+    }
+    if !e.from.is_empty() {
+        said.push_str(&format!(", from ${}", e.from));
+    }
+    said
+}
+
 /// One public meeting, as a person would hear it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PublicMeeting {
@@ -1611,6 +1735,162 @@ pub fn describe_meeting(m: &PublicMeeting) -> String {
 /// stub this replaces promised "concerts, markets, community happenings" and delivered
 /// nothing; ticketed events are a separate source with a separate key, and pretending one
 /// skill covers both is how a person ends up asking a question it was never going to answer.
+/// What is on at a venue — concerts, sport, shows — from Ticketmaster's Discovery API.
+///
+/// **ADR 0058 says MCP by default, and this is native anyway.** The rule is *"answers, or a
+/// relationship?"*, and this is plainly answers — so a table row should have beaten a
+/// thousand lines of Rust. What decides it is the state of the shelf: the only Ticketmaster
+/// server published is a v0.1.0 **remote gateway** from a publisher nobody knows, with no
+/// local package. Using it routes either the credential or every query — which city, which
+/// venue, what somebody is interested in — through a stranger, to reach a public REST API
+/// that answers a single authenticated GET.
+///
+/// That inverts 0058's cost calculus rather than escaping it: native is Rust owned forever,
+/// and a row in a table is cheap *only when the row is trustworthy*.
+///
+/// **So this is deliberately revisitable.** If Ticketmaster publishes a first-party server,
+/// or anyone ships one that runs locally over stdio, delete this and add a catalogue entry.
+/// Native has to keep earning it.
+///
+/// Named for what it holds. The skill next door was called `local_events` while answering
+/// only with civic agendas, and the butler reached for it for a stadium question twice
+/// because on a small model the id is the headline.
+struct TicketedEventsCapability;
+
+impl Capability for TicketedEventsCapability {
+    fn info(&self) -> CapabilityInfo {
+        CapabilityInfo {
+            id: "ticketed_events",
+            name: "What's on at a venue",
+            description: "Concerts, sport, shows and theatre — with dates, venue and the \
+                          cheapest ticket. Ticketed events ONLY: it knows nothing about \
+                          council meetings, community listings, or anything without a \
+                          ticket. Give it a venue, a team, an act or just a town.",
+            category: "information",
+            reaches_external: true,
+            reversibility: Reversibility::Observe,
+            configured: true,
+            needs: "",
+            settings: &[SettingSpec {
+                key: "ticketmaster_key",
+                label: "your Ticketmaster consumer key",
+                // It travels in a query string, because that is the only way this API takes
+                // it. A URL reaches logs far more readily than a header does, so it is
+                // stored as a secret and never echoed back — see `self_test`, which reports
+                // what came back and never what was sent.
+                secret: true,
+                optional: false,
+            }],
+        }
+    }
+
+    fn invoke(
+        &self,
+        input: &Value,
+        settings: &CapabilitySettings,
+    ) -> Result<Value, CapabilityError> {
+        let key = settings
+            .get("ticketmaster_key")
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| {
+                CapabilityError::Unavailable(
+                    "I need a Ticketmaster consumer key before I can see what's on —                      developer.ticketmaster.com, My Apps."
+                        .to_owned(),
+                )
+            })?;
+        // What to look for: a venue, a team, an act. A town narrows it when given.
+        let asked = input
+            .get("what")
+            .or_else(|| input.get("keyword"))
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .trim();
+        let town = input
+            .get("city")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .trim();
+        if asked.is_empty() && town.is_empty() {
+            return Err(CapabilityError::BadInput(
+                "say what to look for — a venue, a team, an act, or a town".to_owned(),
+            ));
+        }
+        // Only what has not happened yet. A listing service will happily answer "what is on"
+        // with last spring, which is worse than answering nothing.
+        let from = format!("{}T00:00:00Z", crate::infrastructure::today_utc());
+        let mut url = format!(
+            "https://app.ticketmaster.com/discovery/v2/events.json\
+             ?apikey={key}&startDateTime={from}&size=20&sort=date,asc"
+        );
+        if !asked.is_empty() {
+            url.push_str(&format!("&keyword={}", urlencode(asked)));
+        }
+        if !town.is_empty() {
+            url.push_str(&format!("&city={}", urlencode(town)));
+        }
+        let body = http_get_text_ua(
+            &url,
+            "Endora personal butler (github.com/RusticPotatos/Endora)",
+            512 * 1024,
+        )
+        .map_err(|e| match e {
+            CapabilityError::Unavailable(m) => {
+                CapabilityError::Unavailable(without_the_key(&m, key))
+            }
+            CapabilityError::BadInput(m) => CapabilityError::BadInput(without_the_key(&m, key)),
+        })?;
+        let on = ticketed_events_in(&body);
+        Ok(serde_json::json!({
+            "events": on
+                .iter()
+                .map(|e| serde_json::json!({
+                    "what": e.what, "on": e.on, "at": e.at,
+                    "place": e.place, "from": e.from,
+                }))
+                .collect::<Vec<_>>(),
+        }))
+    }
+
+    fn summarize(&self, output: &Value) -> String {
+        let on: Vec<TicketedEvent> = output
+            .get("events")
+            .and_then(Value::as_array)
+            .map(|all| {
+                all.iter()
+                    .map(|e| TicketedEvent {
+                        what: e["what"].as_str().unwrap_or_default().to_owned(),
+                        on: e["on"].as_str().unwrap_or_default().to_owned(),
+                        at: e["at"].as_str().unwrap_or_default().to_owned(),
+                        place: e["place"].as_str().unwrap_or_default().to_owned(),
+                        from: e["from"].as_str().unwrap_or_default().to_owned(),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        if on.is_empty() {
+            return "Nothing ticketed coming up for that.".to_owned();
+        }
+        on.iter()
+            .map(describe_ticketed_event)
+            .collect::<Vec<_>>()
+            .join("; ")
+    }
+
+    /// Proves the key works, without ever repeating it.
+    ///
+    /// A wrong key here is a 401 from Ticketmaster, which is the single most useful thing
+    /// this can report — the same reason an MCP server got a Test button.
+    fn self_test(&self, settings: &CapabilitySettings) -> Result<String, CapabilityError> {
+        let found = self.invoke(&serde_json::json!({ "city": "New York" }), settings)?;
+        let n = found
+            .get("events")
+            .and_then(Value::as_array)
+            .map_or(0, Vec::len);
+        Ok(format!("The key works — {n} listings came back."))
+    }
+}
+
 struct CityMeetingsCapability;
 
 impl Capability for CityMeetingsCapability {
@@ -6871,6 +7151,106 @@ mod pressing_test_has_to_reach_the_service {
         // own message is more use than an invented value.
         let schema = r#"{"type":"object","properties":{"thing":{}},"required":["thing"]}"#;
         assert_eq!(super::arguments_for_a_test_call(Some(schema)), "{}");
+    }
+}
+
+#[cfg(test)]
+mod whats_on_at_a_venue {
+    //! Reading Ticketmaster's Discovery API (ADR 0058 — answers, so MCP-shaped; a built-in
+    //! skill because the only server offering it is a v0.1.0 remote gateway from an unknown
+    //! publisher, and routing a credential and every query through a stranger costs more
+    //! than the code it saves).
+    //!
+    //! Parsed rather than trusted, exactly as the civic agenda is. Field names are the whole
+    //! contract with somebody else's service, and a renamed one must yield **no events**
+    //! rather than an error or a half-built row.
+
+    use super::{describe_ticketed_event, ticketed_events_in};
+
+    /// Shaped as the documented response: events under `_embedded.events`, the venue under
+    /// the event's own `_embedded`, and the time carrying seconds nobody says out loud.
+    const ANSWERED: &str = r#"{"_embedded":{"events":[
+        {"name":"Rovers vs Wanderers",
+         "dates":{"start":{"localDate":"2026-08-04","localTime":"20:00:00"}},
+         "priceRanges":[{"min":40.0,"max":220.0,"currency":"USD"}],
+         "_embedded":{"venues":[{"name":"The Big Ground","city":{"name":"New York"}}]}},
+        {"name":"An Evening With Somebody",
+         "dates":{"start":{"localDate":"2026-08-07"}},
+         "_embedded":{"venues":[{"name":"The Hall"}]}}
+    ]}}"#;
+
+    #[test]
+    fn it_reads_what_is_on_and_where() {
+        let on = ticketed_events_in(ANSWERED);
+        assert_eq!(on.len(), 2);
+        assert_eq!(on[0].what, "Rovers vs Wanderers");
+        assert_eq!(on[0].on, "2026-08-04");
+        // Seconds are a machine's way of saying eight o'clock.
+        assert_eq!(on[0].at, "20:00");
+        assert_eq!(on[0].place, "The Big Ground, New York");
+        assert_eq!(on[0].from, "40");
+    }
+
+    #[test]
+    fn a_listing_that_says_less_still_arrives() {
+        // No time, no price, no town. All optional — only a name is load-bearing.
+        let on = ticketed_events_in(ANSWERED);
+        assert_eq!(on[1].at, "");
+        assert_eq!(on[1].from, "");
+        assert_eq!(on[1].place, "The Hall");
+        assert_eq!(
+            describe_ticketed_event(&on[1]),
+            "An Evening With Somebody on 2026-08-07, The Hall"
+        );
+    }
+
+    #[test]
+    fn it_says_an_event_the_way_somebody_would() {
+        let on = ticketed_events_in(ANSWERED);
+        assert_eq!(
+            describe_ticketed_event(&on[0]),
+            "Rovers vs Wanderers on 2026-08-04 at 20:00, The Big Ground, New York, from $40"
+        );
+    }
+
+    /// Nothing on is an answer. An error is not.
+    #[test]
+    fn an_empty_search_is_empty_rather_than_broken() {
+        // What the API returns when a search matches nothing: no `_embedded` at all.
+        assert!(ticketed_events_in(r#"{"page":{"totalElements":0}}"#).is_empty());
+    }
+
+    /// A key in a query string is a key in every error about that request.
+    ///
+    /// What an HTTP crate prints on failure is its choice, not ours, and "401 for
+    /// https://…?apikey=REAL_KEY" would reach both the person and the record of what was
+    /// tried. Removing it is a guarantee; hoping about a `Display` impl is not.
+    #[test]
+    fn a_failure_never_carries_the_key_back_out() {
+        let leaked = "http status 401 for \
+                      https://app.ticketmaster.com/discovery/v2/events.json?apikey=s3cr3t&size=20";
+        let safe = super::without_the_key(leaked, "s3cr3t");
+        assert!(!safe.contains("s3cr3t"), "{safe}");
+        // And it still says what went wrong, which is the useful half.
+        assert!(safe.contains("401"), "{safe}");
+    }
+
+    #[test]
+    fn with_no_key_configured_a_message_is_left_alone() {
+        // An empty needle would otherwise match everywhere and shred the message.
+        assert_eq!(
+            super::without_the_key("could not connect", "   "),
+            "could not connect"
+        );
+    }
+
+    /// The failure this skill exists to avoid is the quiet one.
+    #[test]
+    fn a_renamed_field_yields_nothing_rather_than_a_half_built_row() {
+        let renamed = r#"{"_embedded":{"events":[
+            {"title":"Rovers vs Wanderers","dates":{"start":{"localDate":"2026-08-04"}}}]}}"#;
+        assert!(ticketed_events_in(renamed).is_empty());
+        assert!(ticketed_events_in("not json at all").is_empty());
     }
 }
 
