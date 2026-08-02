@@ -3384,7 +3384,33 @@ pub fn think_about_the_day(
         }
         notions.save(&formed)?;
         activity.push(format!("Started wondering whether {}", formed.statement()));
-        break;
+        return Ok(());
+    }
+
+    // Nothing was formed, and **which kind of nothing matters**.
+    //
+    // Every failure on this path is silent by design — a proposal the record will not bear out
+    // is discarded rather than stored, which is the whole guarantee. But that left no way to
+    // tell a model that **said nothing usable** from a model whose suggestion was **refused**,
+    // and the two mean opposite things: the first is a model that cannot hit the shape and
+    // will never form a notion at all, the second is the guarantee working exactly as
+    // intended. The first live pass produced precisely that ambiguity, and there was nothing
+    // to look at.
+    //
+    // ADR 0053 already settled the principle for every other path here: *the interface
+    // discloses, whatever the model said*. A turn that changed nothing says so. This one now
+    // does too.
+    if proposed.is_empty() {
+        activity.push(format!(
+            "Looked over {} things from the last fortnight and found nothing worth watching",
+            record.entries().len()
+        ));
+    } else {
+        activity.push(format!(
+            "Turned over {} idea{} about you — none of it held up against the record",
+            proposed.len(),
+            if proposed.len() == 1 { "" } else { "s" }
+        ));
     }
     Ok(())
 }
@@ -9811,6 +9837,78 @@ mod a_night_spent_thinking {
     }
 
     #[test]
+    fn a_night_that_landed_on_nothing_says_which_kind_of_nothing() {
+        // Every failure on this path is silent by design, which left no way to tell "the model
+        // said nothing" from "the model said something the record would not bear out". The
+        // first is a model that cannot hit the shape and will never form a notion; the second
+        // is the guarantee doing its job. They look identical from outside, and the live pass
+        // produced exactly this ambiguity on its first run.
+        let notions = FakeNotions::default();
+        let mut activity = Vec::new();
+        think_about_the_day(
+            &notions,
+            &Beliefs::default(),
+            &gym_record(),
+            &[ProposedNotion {
+                statement: "you are unhappy at work".to_owned(),
+                citations: vec![(Source::Message, "1".to_owned())],
+                settles_when: String::new(),
+            }],
+            &Ids::default(),
+            &At(10),
+            &mut activity,
+        )
+        .unwrap();
+        assert!(notions.list().unwrap().is_empty());
+        assert_eq!(activity.len(), 1);
+        assert!(
+            activity[0].contains("held up against the record"),
+            "should say the record refused it: {activity:?}"
+        );
+    }
+
+    #[test]
+    fn a_night_with_nothing_proposed_at_all_says_so_differently() {
+        let mut activity = Vec::new();
+        think_about_the_day(
+            &FakeNotions::default(),
+            &Beliefs::default(),
+            &gym_record(),
+            &[],
+            &Ids::default(),
+            &At(10),
+            &mut activity,
+        )
+        .unwrap();
+        assert_eq!(activity.len(), 1);
+        assert!(
+            activity[0].contains("nothing worth watching"),
+            "a model that proposed nothing is a different fact: {activity:?}"
+        );
+    }
+
+    #[test]
+    fn a_night_that_did_something_does_not_also_report_nothing() {
+        let mut activity = Vec::new();
+        think_about_the_day(
+            &FakeNotions::default(),
+            &Beliefs::default(),
+            &gym_record(),
+            &[ProposedNotion {
+                statement: "you skip the gym when tired".to_owned(),
+                citations: vec![(Source::Message, "1".to_owned())],
+                settles_when: String::new(),
+            }],
+            &Ids::default(),
+            &At(10),
+            &mut activity,
+        )
+        .unwrap();
+        assert_eq!(activity.len(), 1);
+        assert!(activity[0].starts_with("Started wondering"), "{activity:?}");
+    }
+
+    #[test]
     fn a_proposal_the_record_does_not_bear_out_stores_nothing() {
         let notions = FakeNotions::default();
         let mut activity = Vec::new();
@@ -9829,7 +9927,6 @@ mod a_night_spent_thinking {
         )
         .unwrap();
         assert!(notions.list().unwrap().is_empty());
-        assert!(activity.is_empty());
     }
 
     #[test]
