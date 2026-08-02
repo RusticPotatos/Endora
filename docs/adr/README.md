@@ -7,7 +7,7 @@ and numbered in sequence.
 
 ## What they add up to
 
-Eight accepted records, one proposed, forty-eight archived, and a handful of ideas underneath
+Eight accepted records, two proposed, forty-eight archived, and a handful of ideas underneath
 all of them. Read this before reading
 any individual record; each line is a rule the code actually follows, with the decision
 that established it.
@@ -44,6 +44,10 @@ that established it.
   hardcodes and a leak into the protocol adapter came from fixing one integration at a time.
   Genuine quirks are allowed — behind that integration's own named boundary, never in shared
   code.
+- **Say what you know; everything else follows** ([0059](0059-one-fact-source-many-consumers.md),
+  proposed). One question — `current_states` — feeds the watch loop, the turn and the thinking.
+  A source implements it and is thereby joined up, with nothing to nominate and no wiring per
+  integration. The turn hears what **changed**, bounded, which is why it can be automatic.
 - **MCP unless Endora needs a relationship** ([0058](0058-how-an-integration-gets-in.md),
   proposed). A tool protocol expresses "call this"; it cannot express watching a service,
   supplying context, a setup flow, reversibility, or undo. Answers → MCP; relationship →
@@ -128,6 +132,7 @@ of an existing record and take the next number.
 | [0056](0056-how-it-behaves-toward-you.md) | How it behaves toward you | 0017, 0019, 0025, 0031 |
 | [0057](0057-thinking-between-turns.md) | Thinking between turns | — |
 | [0058](0058-how-an-integration-gets-in.md) | How an integration gets in | — (proposed) |
+| [0059](0059-one-fact-source-many-consumers.md) | One fact source, many consumers | — (proposed) |
 
 The forty-eight decisions these consolidate are in [archive/](archive/) — kept in full,
 because the reasoning that produced a rule is the reason it survives an argument later.

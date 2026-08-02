@@ -2444,10 +2444,16 @@ impl CapabilityRunner for McpRunner {
                     .into_iter()
                     .take(MOST_RESOURCES_READ_PER_SERVER)
                     .filter_map(|r| {
+                        // Keyed by **server and uri**, not uri alone. Two servers may publish
+                        // the same resource name, and a flat key would have one silently
+                        // overwrite the other — invisible, because both would look present.
+                        // It also gives every consumer downstream a name that says where a
+                        // fact came from, which is what makes one fact source usable by three
+                        // different things.
                         c.transport
                             .read_resource(&r.uri)
                             .ok()
-                            .map(|text| (r.uri, text))
+                            .map(|text| (format!("{}::{}", c.server, r.uri), text))
                     })
                     .collect::<Vec<_>>()
             })
@@ -4523,15 +4529,47 @@ mod tests {
             states,
             vec![
                 (
-                    "house://door".to_owned(),
+                    "house::house://door".to_owned(),
                     "state of house://door".to_owned()
                 ),
                 (
-                    "house://light.kitchen".to_owned(),
+                    "house::house://light.kitchen".to_owned(),
                     "state of house://light.kitchen".to_owned()
                 ),
-            ]
+            ],
+            "states must say which server they came from"
         );
+    }
+
+    #[test]
+    fn two_servers_publishing_the_same_name_do_not_collide() {
+        // A flat key would have one silently overwrite the other, and both would still look
+        // present — the kind of loss nothing downstream could detect.
+        let runner = McpRunner::connect_with_readers(vec![
+            (
+                "house".to_owned(),
+                Box::new(FakeWithResources {
+                    resources: vec![resource("status")],
+                    unreadable: false,
+                }) as Box<dyn McpClient>,
+                String::new(),
+            ),
+            (
+                "network".to_owned(),
+                Box::new(FakeWithResources {
+                    resources: vec![resource("status")],
+                    unreadable: false,
+                }) as Box<dyn McpClient>,
+                String::new(),
+            ),
+        ]);
+        let mut keys: Vec<String> = runner
+            .current_states()
+            .into_iter()
+            .map(|(key, _)| key)
+            .collect();
+        keys.sort();
+        assert_eq!(keys, vec!["house::status", "network::status"]);
     }
 
     #[test]
