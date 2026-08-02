@@ -854,7 +854,9 @@ fn run_tool_turn(
     // Tool calls already made this turn (capability + input), to stop the model from
     // looping the same call — especially a read-only one that succeeds every time and
     // so never trips the failure cap.
-    let mut seen: std::collections::HashSet<(String, String)> = std::collections::HashSet::new();
+    // What each call answered, so a repeat gets the answer back instead of a scolding.
+    let mut seen: std::collections::HashMap<(String, String), String> =
+        std::collections::HashMap::new();
     // The turn's own copy, because what it is offered can grow within the turn: asking for
     // a way to do something brings the matching actuators into the tool list and leaves
     // them there (ADR 0060). Cloned rather than threaded back out — the widening lasts for
@@ -908,19 +910,38 @@ fn run_tool_turn(
                 });
                 continue;
             }
-            // Don't loop the same call: if this exact tool + input already ran this
-            // turn, hand back a nudge instead of re-running it.
+            // Don't loop the same call: if this exact tool + input already ran this turn,
+            // hand back **what it said the first time** rather than re-running it.
             // Compared by what the arguments *mean*, not how they are spelled. The
             // capabilities context owns tool-argument knowledge; this layer only asks.
-            if !seen.insert((
+            //
+            // It used to hand back an instruction — *"you already called this with the same
+            // input this turn — use the earlier result or answer now"* — and a weak model
+            // read that as the thing to say. Asked about events at a stadium it called a
+            // skill that takes no arguments twice, got the scolding, and answered:
+            //
+            //     None of the previous calls required inputs, so there's no earlier result
+            //     to reuse. Could you please provide more details on what you'd like to
+            //     achieve?
+            //
+            // That is Endora's own bookkeeping, reasoned about out loud and put to the
+            // person as a question. A tool result is **data, not instructions**: anything
+            // written to the model in the second person is something it may repeat, and
+            // [0053](../../docs/adr/0053-honesty-about-what-it-did.md) settled that the
+            // guarantee belongs in code rather than in wording the model is trusted to obey.
+            //
+            // Returning the earlier answer is also simply more use. The nudge told it to
+            // "use the earlier result" while withholding it, which asks a 7B model to hold a
+            // conversation in its head; this hands it back. Repetition stays bounded by the
+            // round and action caps, which is where that job belonged all along.
+            let already = (
                 id.clone(),
                 endora_capabilities::same_call_as(&call.input_json),
-            )) {
+            );
+            if let Some(said_before) = seen.get(&already) {
                 conversation.push(TurnMessage::ToolResult {
                     call_id: call.id.clone(),
-                    content: "you already called this with the same input this turn — use the \
-                              earlier result or answer now; do not repeat it."
-                        .to_owned(),
+                    content: said_before.clone(),
                 });
                 continue;
             }
@@ -1127,6 +1148,9 @@ fn run_tool_turn(
                 label: progress_label(&id),
                 output: Some(content.clone()),
             });
+            // Remember what it answered, so calling it again this turn gets this back
+            // rather than a scolding the model might repeat to the person.
+            seen.insert(already, content.clone());
             conversation.push(TurnMessage::ToolResult {
                 call_id: call.id.clone(),
                 content,
@@ -5483,6 +5507,118 @@ mod tests {
             !reply.text.contains("Here is the request"),
             "the turn ended on the narration: {}",
             reply.text
+        );
+    }
+
+    /// A tool result is data, not instructions the model may repeat.
+    ///
+    /// Live: asked about events at a stadium, it called a skill that takes no arguments
+    /// twice, was handed *"you already called this with the same input this turn — use the
+    /// earlier result or answer now"*, and said to the person:
+    ///
+    /// > None of the previous calls required inputs, so there's no earlier result to reuse.
+    /// > Could you please provide more details on what you'd like to achieve?
+    ///
+    /// Endora's own bookkeeping, reasoned about out loud and put back as a question. The
+    /// repeat now gets the earlier answer, which is both unrepeatable as prose and more use.
+    #[test]
+    fn calling_the_same_thing_twice_gets_the_answer_back_not_a_scolding() {
+        struct CallsItTwice {
+            turns: std::cell::Cell<usize>,
+            second_result: std::cell::RefCell<String>,
+        }
+        impl Butler for CallsItTwice {
+            fn respond(
+                &self,
+                _h: &[ChatMessage],
+                _p: &[Preference],
+                _c: &ButlerContext,
+            ) -> Result<ButlerReply, ProposalError> {
+                Ok(ButlerReply::default())
+            }
+            fn take_turn(
+                &self,
+                conversation: &[crate::TurnMessage],
+                _p: &[Preference],
+                _c: &ButlerContext,
+            ) -> Result<ButlerReply, ProposalError> {
+                let n = self.turns.get();
+                self.turns.set(n + 1);
+                if n >= 2 {
+                    // Whatever the second identical call was told.
+                    if let Some(crate::TurnMessage::ToolResult { content, .. }) = conversation
+                        .iter()
+                        .rev()
+                        .find(|m| matches!(m, crate::TurnMessage::ToolResult { .. }))
+                    {
+                        *self.second_result.borrow_mut() = content.clone();
+                    }
+                    return Ok(ButlerReply {
+                        text: "Here is what is on.".to_owned(),
+                        ..ButlerReply::default()
+                    });
+                }
+                // A skill that takes no arguments, called with the same (empty) input.
+                Ok(ButlerReply {
+                    tool_calls: vec![crate::ToolCall {
+                        id: format!("c{n}"),
+                        capability: "local_events".to_owned(),
+                        input_json: "{}".to_owned(),
+                    }],
+                    ..ButlerReply::default()
+                })
+            }
+        }
+
+        struct AlwaysAnswers;
+        impl CapabilityRunner for AlwaysAnswers {
+            fn available(&self) -> Vec<endora_capabilities::CapabilitySpec> {
+                vec![endora_capabilities::CapabilitySpec {
+                    id: "local_events".to_owned(),
+                    description: "what the city is doing".to_owned(),
+                    configured: true,
+                    autonomous: true,
+                    input_schema: None,
+                    reversibility: Reversibility::Observe,
+                }]
+            }
+            fn run(&self, _id: &str, _input: &str) -> Result<String, String> {
+                Ok("zoning board meets Tuesday".to_owned())
+            }
+        }
+
+        let butler = CallsItTwice {
+            turns: std::cell::Cell::new(0),
+            second_result: std::cell::RefCell::new(String::new()),
+        };
+        let (ids, clock, audit) = (SeqIds::default(), FixedClock(0), FakeAudit::default());
+        super::run_tool_turn(
+            &butler,
+            &AlwaysAnswers,
+            &audit,
+            &OutcomeSink::unmotivated(&FakeOutcomes::default()),
+            &ids,
+            &clock,
+            &one_user_turn("any events this week?"),
+            &[],
+            &ButlerContext::default(),
+            6,
+            &mut |_| {},
+            &mut |_token: &str| {},
+            &mut Vec::new(),
+            &mut Vec::new(),
+        )
+        .expect("the turn answers");
+
+        let said = butler.second_result.borrow().clone();
+        assert!(
+            said.contains("zoning board meets Tuesday"),
+            "the repeat did not get the earlier answer back: {said:?}"
+        );
+        // Nothing addressed to the model, which is the half it repeated out loud.
+        assert!(
+            !said.contains("you already called") && !said.contains("do not repeat"),
+            "an instruction to the model came back as a tool result: {said:?}"
         );
     }
 
