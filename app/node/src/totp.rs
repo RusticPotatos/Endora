@@ -342,8 +342,8 @@ mod tests {
 
     #[test]
     fn the_enrolment_uri_is_one_an_app_will_scan() {
-        let uri = enrolment_uri(&[0u8; SECRET_BYTES], "rustic");
-        assert!(uri.starts_with("otpauth://totp/Endora:rustic?"));
+        let uri = enrolment_uri(&[0u8; SECRET_BYTES], "john");
+        assert!(uri.starts_with("otpauth://totp/Endora:john?"));
         assert!(uri.contains("secret=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"));
         assert!(uri.contains("issuer=Endora"));
         assert!(uri.contains("digits=6"), "{uri}");

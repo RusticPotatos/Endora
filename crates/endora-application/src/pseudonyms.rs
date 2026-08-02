@@ -105,7 +105,7 @@ mod tests {
         let mut kinds: BTreeMap<&str, Vec<String>> = BTreeMap::new();
         kinds.insert(
             "person",
-            vec!["rustic".to_owned(), "John Doe".to_owned()],
+            vec!["john".to_owned(), "John Doe".to_owned()],
         );
         kinds.insert("place", vec!["New York NY".to_owned()]);
         kinds.insert("event", vec!["Jane Doe & John Doe".to_owned()]);
@@ -119,7 +119,7 @@ mod tests {
                      at 2026-07-31 18:30:00; outside it is 69F";
         let sent = table().hide(brief);
 
-        for real in ["rustic", "Jane Doe", "Doe", "New York"] {
+        for real in ["john", "Jane Doe", "Doe", "New York"] {
             assert!(!sent.contains(real), "{real} left the house: {sent}");
         }
         // What is not about the person is untouched, or the remote model has nothing to
