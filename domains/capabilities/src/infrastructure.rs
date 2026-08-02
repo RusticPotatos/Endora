@@ -249,7 +249,7 @@ pub fn default_capabilities() -> Vec<Arc<dyn Capability>> {
         Arc::new(WebAnswersCapability),
         Arc::new(LocalNewsCapability),
         Arc::new(ImageReviewCapability::from_env()),
-        Arc::new(LocalEventsCapability),
+        Arc::new(CityMeetingsCapability),
         Arc::new(FlightSearchCapability),
         Arc::new(LocationLogCapability),
         Arc::new(SafetyAlertsCapability),
@@ -1508,16 +1508,200 @@ macro_rules! scaffold {
     };
 }
 
-scaffold!(
-    LocalEventsCapability,
-    "local_events",
-    "Local events",
-    "What's on near you — concerts, markets, community happenings.",
-    "information",
-    true,
-    Reversibility::Reversible, // read-only lookup
-    "an events data source / API key"
-);
+/// Today, as `YYYY-MM-DD`.
+///
+/// The clock does not reach this layer as a port the way it does in the domain — a capability
+/// is an adapter to somebody else's service and is allowed to know what day it is. Kept in one
+/// place so the format is not written twice.
+fn today_utc() -> String {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or_default();
+    // Civil-from-days: the standard algorithm, so a date is arithmetic rather than a
+    // dependency for one line of formatting.
+    let days = (secs / 86_400) as i64;
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    format!("{y:04}-{m:02}-{d:02}")
+}
+
+/// One public meeting, as a person would hear it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PublicMeeting {
+    /// `2026-08-03`.
+    pub on: String,
+    /// `9:00 AM`, in the body's own words. Empty when it does not say.
+    pub at: String,
+    /// Which committee or council.
+    pub who: String,
+    /// Where it sits. Empty when it does not say.
+    pub place: String,
+}
+
+/// Reads Legistar's answer into meetings.
+///
+/// Legistar runs the legislative calendar for a great many US municipalities and its Web API
+/// is **open and keyless** — which is why the civic half of "what's on this week" needs no
+/// account, unlike everything else in this area.
+///
+/// It is also why this is parsed rather than trusted: field names are the only contract, a
+/// renamed one would yield empty meetings rather than an error, and a screen quietly saying
+/// "nothing on" is the worst possible failure for a thing whose whole job is to say what is on.
+#[must_use]
+pub fn meetings_in(body: &str) -> Vec<PublicMeeting> {
+    let Ok(Value::Array(rows)) = serde_json::from_str::<Value>(body) else {
+        return Vec::new();
+    };
+    rows.iter()
+        .filter_map(|row| {
+            // A meeting nobody can name is not worth reporting; everything else is optional.
+            let who = row.get("EventBodyName")?.as_str()?.trim().to_owned();
+            if who.is_empty() {
+                return None;
+            }
+            let on = row
+                .get("EventDate")
+                .and_then(Value::as_str)
+                // Legistar dates arrive as `2026-08-03T00:00:00`; the day is the useful part
+                // and the zeroed time is noise that reads as a real
+                .map(|d| d.split('T').next().unwrap_or(d).to_owned())
+                .unwrap_or_default();
+            Some(PublicMeeting {
+                on,
+                at: row
+                    .get("EventTime")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .trim()
+                    .to_owned(),
+                who,
+                place: row
+                    .get("EventLocation")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .trim()
+                    .to_owned(),
+            })
+        })
+        .collect()
+}
+
+/// Says a meeting the way somebody would mention it.
+#[must_use]
+pub fn describe_meeting(m: &PublicMeeting) -> String {
+    let when = match (m.on.is_empty(), m.at.is_empty()) {
+        (true, _) => String::new(),
+        (false, true) => format!(" on {}", m.on),
+        (false, false) => format!(" on {} at {}", m.on, m.at),
+    };
+    let where_ = if m.place.is_empty() {
+        String::new()
+    } else {
+        format!(", {}", m.place)
+    };
+    format!("{}{when}{where_}", m.who)
+}
+
+/// What the city is doing this week — public meetings from Legistar.
+///
+/// Named for what it can actually answer rather than for the whole of "local events". The
+/// stub this replaces promised "concerts, markets, community happenings" and delivered
+/// nothing; ticketed events are a separate source with a separate key, and pretending one
+/// skill covers both is how a person ends up asking a question it was never going to answer.
+struct CityMeetingsCapability;
+
+impl Capability for CityMeetingsCapability {
+    fn info(&self) -> CapabilityInfo {
+        CapabilityInfo {
+            id: "local_events",
+            name: "What the city is doing",
+            description: "Upcoming public meetings — council, committees, planning, zoning.",
+            category: "information",
+            reaches_external: true,
+            reversibility: Reversibility::Observe,
+            configured: true,
+            needs: "",
+            settings: &[SettingSpec {
+                key: "legistar_client",
+                label: "your city's Legistar name (e.g. nyc)",
+                secret: false,
+                optional: false,
+            }],
+        }
+    }
+
+    fn invoke(
+        &self,
+        _input: &Value,
+        settings: &CapabilitySettings,
+    ) -> Result<Value, CapabilityError> {
+        let client = settings
+            .get("legistar_client")
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| {
+                CapabilityError::Unavailable(
+                    "tell me your city's Legistar name — the part before .legistar.com in its \
+                     meetings page address"
+                        .to_owned(),
+                )
+            })?;
+        // Only what has not happened yet. Legistar holds a decade of history and answering
+        // "what is on this week" with 2015 would be worse than answering nothing.
+        let from = crate::infrastructure::today_utc();
+        let url = format!(
+            "https://webapi.legistar.com/v1/{client}/events?$filter=EventDate%20ge%20datetime'{from}'&$orderby=EventDate&$top=25"
+        );
+        let body = http_get_text_ua(
+            &url,
+            "Endora personal butler (github.com/RusticPotatos/Endora)",
+            512 * 1024,
+        )?;
+        let meetings = meetings_in(&body);
+        Ok(serde_json::json!({
+            "meetings": meetings
+                .iter()
+                .map(|m| serde_json::json!({
+                    "on": m.on, "at": m.at, "who": m.who, "place": m.place,
+                }))
+                .collect::<Vec<_>>(),
+        }))
+    }
+
+    fn summarize(&self, output: &Value) -> String {
+        let meetings: Vec<PublicMeeting> = output
+            .get("meetings")
+            .and_then(Value::as_array)
+            .map(|all| {
+                all.iter()
+                    .map(|m| PublicMeeting {
+                        on: m["on"].as_str().unwrap_or_default().to_owned(),
+                        at: m["at"].as_str().unwrap_or_default().to_owned(),
+                        who: m["who"].as_str().unwrap_or_default().to_owned(),
+                        place: m["place"].as_str().unwrap_or_default().to_owned(),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        if meetings.is_empty() {
+            return "Nothing on the city's public calendar just now.".to_owned();
+        }
+        meetings
+            .iter()
+            .map(describe_meeting)
+            .collect::<Vec<_>>()
+            .join("; ")
+    }
+}
 scaffold!(
     FlightSearchCapability,
     "flights",
@@ -6616,5 +6800,102 @@ mod a_standing_default_never_overwrites_a_decision {
             tools_to_open_on_connect(&ids(&["elsewhere.DoAThing"]), &ids(&["house."]), &[],)
                 .is_empty()
         );
+    }
+}
+
+#[cfg(test)]
+mod what_the_city_is_doing {
+    //! Reading Legistar (ADR 0058 — answers, so MCP-shaped, but it is a built-in skill because
+    //! there is no server to run).
+    //!
+    //! Parsed rather than trusted. Field names are the only contract this has with somebody
+    //! else's service, a renamed one yields empty meetings rather than an error, and **a screen
+    //! quietly saying "nothing on" is the worst possible failure** for a thing whose entire job
+    //! is to say what is on.
+
+    use super::{describe_meeting, meetings_in, today_utc};
+
+    /// Shaped exactly as the live API answered on 2026-08-02, including the zeroed time in
+    /// `EventDate` that a naive read would show somebody as midnight.
+    const REAL: &str = r#"[
+      {"EventId":1,"EventDate":"2026-08-03T00:00:00","EventTime":"9:00 AM",
+       "EventBodyName":"Housing Council Committee",
+       "EventLocation":"New York City Government Center, Room 267"},
+      {"EventId":2,"EventDate":"2026-08-03T00:00:00","EventTime":"5:00 PM",
+       "EventBodyName":"Transportation, Planning, and Development Council Committee ",
+       "EventLocation":""}
+    ]"#;
+
+    #[test]
+    fn it_reads_the_shape_the_service_actually_returns() {
+        let found = meetings_in(REAL);
+        assert_eq!(found.len(), 2);
+        assert_eq!(found[0].who, "Housing Council Committee");
+        assert_eq!(found[0].at, "9:00 AM");
+        assert_eq!(
+            found[0].on, "2026-08-03",
+            "the zeroed time must not reach a person as midnight"
+        );
+    }
+
+    #[test]
+    fn a_trailing_space_in_a_committee_name_is_not_part_of_the_name() {
+        // The live answer has one. Left in, it reads as a typo somebody will assume is ours.
+        assert_eq!(
+            meetings_in(REAL)[1].who,
+            "Transportation, Planning, and Development Council Committee"
+        );
+    }
+
+    #[test]
+    fn a_meeting_nobody_can_name_is_not_reported() {
+        let body = r#"[{"EventId":1,"EventDate":"2026-08-03T00:00:00","EventBodyName":""}]"#;
+        assert!(meetings_in(body).is_empty());
+    }
+
+    #[test]
+    fn everything_but_the_name_is_allowed_to_be_missing() {
+        // A meeting with no time or place is still a meeting, and dropping it would be
+        // silently answering "nothing on" when something is.
+        let body = r#"[{"EventId":1,"EventBodyName":"City Council Business Meeting"}]"#;
+        let found = meetings_in(body);
+        assert_eq!(found.len(), 1);
+        assert_eq!(describe_meeting(&found[0]), "City Council Business Meeting");
+    }
+
+    #[test]
+    fn an_answer_this_cannot_read_is_no_meetings_rather_than_a_crash() {
+        for body in ["", "not json", "{}", r#"{"error":"nope"}"#, "[]"] {
+            assert!(meetings_in(body).is_empty(), "{body:?}");
+        }
+    }
+
+    #[test]
+    fn a_meeting_is_said_the_way_somebody_would_mention_it() {
+        let found = meetings_in(REAL);
+        assert_eq!(
+            describe_meeting(&found[0]),
+            "Housing Council Committee on 2026-08-03 at 9:00 AM, \
+             New York City Government Center, Room 267"
+        );
+        assert_eq!(
+            describe_meeting(&found[1]),
+            "Transportation, Planning, and Development Council Committee on 2026-08-03 at 5:00 PM"
+        );
+    }
+
+    #[test]
+    fn today_is_the_shape_the_query_needs() {
+        // The filter is a string comparison in somebody else's query language; a wrong shape
+        // returns everything since 2015 rather than failing.
+        let today = today_utc();
+        assert_eq!(today.len(), 10, "{today}");
+        assert_eq!(today.matches('-').count(), 2, "{today}");
+        let (y, rest) = today.split_at(4);
+        assert!(
+            y.parse::<u32>().is_ok_and(|y| (2020..2200).contains(&y)),
+            "{today}"
+        );
+        assert!(rest.starts_with('-'));
     }
 }
