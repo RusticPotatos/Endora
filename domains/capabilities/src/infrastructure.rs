@@ -1616,9 +1616,11 @@ struct CityMeetingsCapability;
 impl Capability for CityMeetingsCapability {
     fn info(&self) -> CapabilityInfo {
         CapabilityInfo {
-            id: "local_events",
+            id: "city_meetings",
             name: "What the city is doing",
-            description: "Upcoming public meetings — council, committees, planning, zoning.",
+            description: "Council, committee, planning and zoning meetings from the city's \
+                          own agenda. Civic business ONLY — it does not know about concerts, \
+                          sport, shows or anything at a venue.",
             category: "information",
             reaches_external: true,
             reversibility: Reversibility::Observe,

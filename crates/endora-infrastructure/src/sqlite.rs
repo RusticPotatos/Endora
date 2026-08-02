@@ -529,6 +529,7 @@ impl SqliteStore {
             // bearer token (http). Secrets — stored, never returned by the API.
             // `CREATE TABLE IF NOT EXISTS` never adds a column to a table that already
             // exists, so a new column on an existing install arrives only here.
+            renamed_capability(&conn, "local_events", "city_meetings")?;
             ensure_column(
                 &conn,
                 "deep_model",
@@ -904,6 +905,43 @@ fn all_audit(conn: &Connection) -> Result<Vec<AuditRecord>, RepositoryError> {
 }
 
 /// Loads a reflection's evidence observation ids, in stored order.
+/// Carries a renamed capability's stored config and settings across to its new id.
+///
+/// A skill called `local_events` answers with civic agendas — council, committee, planning,
+/// zoning — and nothing else. Its description said exactly that; its id did not, and on a
+/// small model the id is the headline. Asked what was on at a stadium it reached for this
+/// one, twice, confidently, and reported the council calendar. The tool was working
+/// perfectly and the name was a promise the description had to walk back.
+///
+/// Renaming without this would silently drop whatever the person had configured and leave
+/// the skill asking to be set up again — settings loss wearing a fresh install's clothes,
+/// which is the worst shape a migration can take because nothing looks broken.
+///
+/// `UPDATE OR IGNORE` then `DELETE`: if a row already exists under the new id, that is the
+/// person's newer choice and it wins, and the stale one goes rather than lingering.
+fn renamed_capability(
+    conn: &rusqlite::Connection,
+    from: &str,
+    to: &str,
+) -> Result<(), RepositoryError> {
+    for (table, column) in [
+        ("capability_config", "id"),
+        ("capability_settings", "capability_id"),
+    ] {
+        conn.execute(
+            &format!("UPDATE OR IGNORE {table} SET {column} = ?1 WHERE {column} = ?2"),
+            rusqlite::params![to, from],
+        )
+        .map_err(backend)?;
+        conn.execute(
+            &format!("DELETE FROM {table} WHERE {column} = ?1"),
+            rusqlite::params![from],
+        )
+        .map_err(backend)?;
+    }
+    Ok(())
+}
+
 fn ensure_column(
     conn: &Connection,
     table: &str,
@@ -1110,6 +1148,45 @@ mod tests {
                 "llava".to_owned()
             )]
         );
+    }
+
+    /// A rename must not look like a fresh install.
+    ///
+    /// The value here is one somebody typed once and would have to find again: drop it and
+    /// the skill politely asks to be set up, which reads as working software and is not.
+    #[test]
+    fn renaming_a_capability_carries_what_the_person_configured() {
+        use endora_application::{CapabilityConfigRepository, CapabilitySettingsRepository};
+        let store = store();
+        let cfg = cfg_store(&store);
+
+        (&cfg as &dyn CapabilitySettingsRepository)
+            .set_setting("old_name", "client", "somewhere")
+            .unwrap();
+        (&cfg as &dyn CapabilityConfigRepository)
+            .set_enabled("old_name", false)
+            .unwrap();
+
+        super::renamed_capability(&store.db().lock().unwrap(), "old_name", "new_name").unwrap();
+
+        let settings = (&cfg as &dyn CapabilitySettingsRepository)
+            .all_settings()
+            .unwrap();
+        assert_eq!(
+            settings,
+            vec![(
+                "new_name".to_owned(),
+                "client".to_owned(),
+                "somewhere".to_owned()
+            )],
+            "the configured value did not travel with the rename"
+        );
+        // Whether it was switched off travelled too, and the old id is gone rather than
+        // lingering as a second, stale row.
+        let config = (&cfg as &dyn CapabilityConfigRepository)
+            .enabled_overrides()
+            .unwrap();
+        assert_eq!(config, vec![("new_name".to_owned(), false)]);
     }
 
     #[test]

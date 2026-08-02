@@ -2311,7 +2311,7 @@ fn progress_label(id: &str) -> String {
         "web_fetch" => "Reading the page",
         "knowledge" => "Looking that up",
         "home_assistant" => "Checking your home",
-        "local_events" => "Checking local events",
+        "city_meetings" => "Checking the city's agenda",
         "image_review" => "Looking at the image",
         other => return format!("Using the {other} skill"),
     }
@@ -5562,7 +5562,7 @@ mod tests {
                 Ok(ButlerReply {
                     tool_calls: vec![crate::ToolCall {
                         id: format!("c{n}"),
-                        capability: "local_events".to_owned(),
+                        capability: "city_meetings".to_owned(),
                         input_json: "{}".to_owned(),
                     }],
                     ..ButlerReply::default()
@@ -5574,7 +5574,7 @@ mod tests {
         impl CapabilityRunner for AlwaysAnswers {
             fn available(&self) -> Vec<endora_capabilities::CapabilitySpec> {
                 vec![endora_capabilities::CapabilitySpec {
-                    id: "local_events".to_owned(),
+                    id: "city_meetings".to_owned(),
                     description: "what the city is doing".to_owned(),
                     configured: true,
                     autonomous: true,
