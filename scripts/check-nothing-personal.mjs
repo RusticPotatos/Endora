@@ -20,6 +20,16 @@
 // CI has no local.mk, so there it runs the shape rules alone. That is the correct
 // degradation: the machine that holds the real values is the machine that can check for
 // them.
+//
+// `--github` extends the same value list to the things this repository publishes that git
+// does not carry: pull request titles and bodies, issue bodies, and every comment. Off by
+// default because it needs the network and `gh`.
+//
+// It is here because scrubbing the tree and rewriting history left a city name sitting in a
+// merged pull request's description, where no amount of `filter-repo` would ever reach it —
+// and the person found it by reading. Ten issues and pull requests turned out to be
+// carrying names, a device and a host address for the same reason: **the check only looked
+// where the code was, and the writing about the code is published too.**
 
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
@@ -148,6 +158,78 @@ if (tracked.includes("local.mk")) {
     hit: "tracked by git",
     say: "git rm --cached local.mk — it is meant to be ignored",
   });
+}
+
+// What this repository has published that git does not carry.
+//
+// Only ever the person's own values — the shape rules are wrong here, because a PR body
+// legitimately quotes example addresses and mailboxes, and a check that cries wolf on its
+// own documentation gets turned off.
+if (process.argv.includes("--github") && theirOwn.length > 0) {
+  const gh = (path) => {
+    try {
+      return JSON.parse(
+        execFileSync("gh", ["api", path], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }),
+      );
+    } catch {
+      return null;
+    }
+  };
+  const repo = (() => {
+    try {
+      return execFileSync("gh", ["repo", "view", "--json", "nameWithOwner", "-q", ".nameWithOwner"], {
+        encoding: "utf8",
+      }).trim();
+    } catch {
+      return "";
+    }
+  })();
+  if (!repo) {
+    console.error("nothing-personal --github: could not ask gh which repository this is");
+    process.exit(1);
+  }
+  const pages = (path) => {
+    const all = [];
+    for (let page = 1; page <= 20; page++) {
+      const got = gh(`${path}${path.includes("?") ? "&" : "?"}per_page=100&page=${page}`);
+      if (!Array.isArray(got) || got.length === 0) break;
+      all.push(...got);
+    }
+    return all;
+  };
+  const published = [
+    // The issues API covers pull requests too, so this is both in one pass.
+    ...pages(`repos/${repo}/issues?state=all`).map((i) => ({
+      where: `#${i.number}`,
+      text: `${i.title ?? ""}\n${i.body ?? ""}`,
+    })),
+    ...pages(`repos/${repo}/issues/comments`).map((c) => ({
+      where: `comment ${c.id}`,
+      text: c.body ?? "",
+    })),
+    ...pages(`repos/${repo}/pulls/comments`).map((c) => ({
+      where: `review comment ${c.id}`,
+      text: c.body ?? "",
+    })),
+    ...pages(`repos/${repo}/releases`).map((r) => ({
+      where: `release ${r.tag_name}`,
+      text: `${r.name ?? ""}\n${r.body ?? ""}`,
+    })),
+  ];
+  for (const { where, text } of published) {
+    for (const value of theirOwn) {
+      if (text.includes(value)) {
+        found.push({
+          file: where,
+          line: 1,
+          what: "one of your own values, published",
+          hit: value,
+          say: "history rewriting cannot reach this — edit it on the forge",
+        });
+      }
+    }
+  }
+  console.log(`nothing-personal: also read ${published.length} published titles, bodies and comments`);
 }
 
 if (found.length > 0) {
