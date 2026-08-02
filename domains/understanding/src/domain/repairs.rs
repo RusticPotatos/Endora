@@ -81,7 +81,10 @@ pub struct RepairProposal {
 /// never works *on the kitchen*" are different findings and only the second is
 /// actionable.
 #[must_use]
-pub fn repair_proposals(outcomes: &[Outcome]) -> Vec<RepairProposal> {
+pub fn repair_proposals(
+    outcomes: &[Outcome],
+    answered: &[(String, String)],
+) -> Vec<RepairProposal> {
     let mut counts: std::collections::BTreeMap<(String, String), usize> =
         std::collections::BTreeMap::new();
     // The two streams a withdrawal needs, kept apart from the counts above because a
@@ -125,6 +128,25 @@ pub fn repair_proposals(outcomes: &[Outcome]) -> Vec<RepairProposal> {
         }
         wholly_broken.insert(capability, targets.iter().map(|(_, n)| *n).sum());
     }
+    // A question the person has already answered stops being asked.
+    //
+    // Live: twelve failed attempts at "kitchen", the person typed the real name, and the card
+    // stayed — because this derives from outcomes alone, and twelve failures are in the record
+    // forever. Teaching the name did nothing to a finding computed from history.
+    //
+    // That is ADR 0052's "answering is the dismissal" simply not wired up. It is wired up
+    // here: a target the person has named is a target they have answered about, and the
+    // finding goes. If the aimed-at name still fails afterwards, that is a new pattern with
+    // new outcomes, and it will surface on its own.
+    let counts: std::collections::BTreeMap<(String, String), usize> = counts
+        .into_iter()
+        .filter(|((capability, target), _)| {
+            let server = capability.split('.').next().unwrap_or(capability);
+            !answered
+                .iter()
+                .any(|(s, said)| s == server && said.eq_ignore_ascii_case(target))
+        })
+        .collect();
     let mut proposals: Vec<RepairProposal> = counts
         .into_iter()
         // A call that named nothing at all cannot be answered with a name. Asking "what
@@ -320,7 +342,7 @@ mod tests {
             outcome(1, "home.HassTurnOff", r#"{"area":"kitchen"}"#, Some(false)),
             outcome(2, "home.HassTurnOff", r#"{"area":"kitchen"}"#, Some(false)),
         ];
-        let proposals = repair_proposals(&history);
+        let proposals = repair_proposals(&history, &[]);
         assert_eq!(
             proposals,
             vec![RepairProposal {
@@ -355,7 +377,7 @@ mod tests {
                 None,
             ),
         ];
-        let proposals = repair_proposals(&history);
+        let proposals = repair_proposals(&history, &[]);
         assert_eq!(proposals.len(), 1, "{proposals:?}");
         assert_eq!(proposals[0].attempts, 2);
     }
@@ -369,7 +391,7 @@ mod tests {
             outcome(1, "home.HassTurnOff", r#"{"area":"kitchen"}"#, None),
             outcome(2, "home.HassTurnOff", r#"{"area":"kitchen"}"#, None),
         ];
-        assert!(repair_proposals(&history).is_empty());
+        assert!(repair_proposals(&history, &[]).is_empty());
     }
 
     #[test]
@@ -382,7 +404,7 @@ mod tests {
             r#"{"area":"kitchen"}"#,
             Some(false),
         )];
-        assert!(repair_proposals(&history).is_empty());
+        assert!(repair_proposals(&history, &[]).is_empty());
     }
 
     #[test]
@@ -391,7 +413,7 @@ mod tests {
             outcome(1, "home.HassTurnOff", r#"{"area":"kitchen"}"#, Some(true)),
             outcome(2, "home.HassTurnOff", r#"{"area":"kitchen"}"#, Some(true)),
         ];
-        assert!(repair_proposals(&history).is_empty());
+        assert!(repair_proposals(&history, &[]).is_empty());
     }
 
     #[test]
@@ -403,7 +425,7 @@ mod tests {
             outcome(2, "home.HassTurnOff", r#"{"area":"kitchen"}"#, Some(false)),
             outcome(3, "home.HassTurnOff", r#"{"area":"garage"}"#, Some(false)),
         ];
-        let proposals = repair_proposals(&history);
+        let proposals = repair_proposals(&history, &[]);
         assert_eq!(proposals.len(), 1, "{proposals:?}");
         assert_eq!(proposals[0].target, "kitchen");
     }
@@ -430,7 +452,7 @@ mod tests {
                 None,
             ),
         ];
-        let proposals = repair_proposals(&history);
+        let proposals = repair_proposals(&history, &[]);
         assert_eq!(
             proposals.len(),
             1,
@@ -458,7 +480,7 @@ mod tests {
                 Some(false),
             ),
         ];
-        let proposals = repair_proposals(&history);
+        let proposals = repair_proposals(&history, &[]);
         assert_eq!(proposals.len(), 1, "{proposals:?}");
         assert_eq!(proposals[0].attempts, 2);
     }
@@ -472,7 +494,7 @@ mod tests {
             outcome(4, "b", r#"{"x":"two"}"#, Some(false)),
             outcome(5, "b", r#"{"x":"two"}"#, Some(false)),
         ];
-        let proposals = repair_proposals(&history);
+        let proposals = repair_proposals(&history, &[]);
         assert_eq!(proposals[0].capability, "b");
         assert_eq!(proposals[0].attempts, 3);
     }
@@ -514,7 +536,7 @@ mod tests {
                 None,
             ),
         ];
-        let proposals = repair_proposals(&history);
+        let proposals = repair_proposals(&history, &[]);
         assert_eq!(
             proposals.len(),
             1,
@@ -569,7 +591,7 @@ mod tests {
                 Some(true),
             ),
         ];
-        let proposals = repair_proposals(&history);
+        let proposals = repair_proposals(&history, &[]);
         assert!(
             proposals.iter().all(|p| p.remedy == Remedy::NameTheTarget),
             "a tool that works somewhere must not be withdrawn: {proposals:?}"
@@ -613,7 +635,7 @@ mod tests {
             ),
             outcome(5, "cal.CreateEvent", r#"{"title":"three"}"#, None),
         ];
-        let proposals = repair_proposals(&history);
+        let proposals = repair_proposals(&history, &[]);
         assert!(
             proposals.iter().all(|p| p.remedy == Remedy::NameTheTarget),
             "an unverified success is still a success: {proposals:?}"
@@ -648,7 +670,7 @@ mod tests {
                 None,
             ),
         ];
-        let proposals = repair_proposals(&history);
+        let proposals = repair_proposals(&history, &[]);
         assert_eq!(proposals.len(), 1, "{proposals:?}");
         assert_eq!(proposals[0].remedy, Remedy::NameTheTarget);
         assert_eq!(proposals[0].target, "kitchen");
@@ -665,7 +687,7 @@ mod tests {
             claimed(3, "files.Move", r#"{"path":"b.txt"}"#, "error: nope", None),
             claimed(4, "files.Move", r#"{"path":"b.txt"}"#, "error: nope", None),
         ];
-        let proposals = repair_proposals(&history);
+        let proposals = repair_proposals(&history, &[]);
         assert_eq!(proposals.len(), 1, "{proposals:?}");
         assert_eq!(proposals[0].capability, "files.Move");
         assert_eq!(proposals[0].remedy, Remedy::StopOfferingIt);
@@ -716,7 +738,7 @@ mod tests {
             r#"{"name":"Garage Main"}"#,
             Some(false),
         ));
-        let proposals = repair_proposals(&history);
+        let proposals = repair_proposals(&history, &[]);
         assert!(
             proposals.iter().all(|p| p.remedy == Remedy::NameTheTarget),
             "a tool that worked was proposed for withdrawal: {proposals:?}"
@@ -734,7 +756,7 @@ mod tests {
             outcome(3, "home.HassTurnOff", r#"{"name":"bedroom"}"#, Some(false)),
             outcome(4, "home.HassTurnOff", r#"{"name":"bedroom"}"#, Some(false)),
         ];
-        let proposals = repair_proposals(&history);
+        let proposals = repair_proposals(&history, &[]);
         assert!(
             proposals.iter().all(|p| p.remedy == Remedy::NameTheTarget),
             "no-op evidence alone withdrew a tool: {proposals:?}"
@@ -764,8 +786,85 @@ mod tests {
             ),
         ];
         assert!(
-            repair_proposals(&history).is_empty(),
+            repair_proposals(&history, &[]).is_empty(),
             "asked the person to name something that was never named"
+        );
+    }
+}
+#[cfg(test)]
+mod answering_makes_it_go_away {
+    //! Live: twelve failed attempts aimed at "kitchen", the person typed the real name into
+    //! the card, pressed Remember — and the card stayed. Forever, with no way to dismiss it.
+    //!
+    //! The finding derives from outcomes alone, and twelve failures are in the record for
+    //! good. Teaching the name could not affect it. That is ADR 0052's "answering is the
+    //! dismissal" never having been connected for this kind of finding.
+
+    use super::super::{Outcome, repair_proposals};
+    use endora_kernel::ids::{OutcomeId, Timestamp};
+
+    fn failed_at(id: u128, target: &str) -> Outcome {
+        Outcome::record(
+            OutcomeId::new(id),
+            "home-assistant.HassTurnOff",
+            &format!("{{\"area\":\"{target}\"}}"),
+            "The action completed successfully.",
+            Some("Kitchen Main | switch | on"),
+            Timestamp::from_unix_millis(id as i64),
+            None,
+            // Reported success and moved nothing — the live kitchen case.
+            Some(false),
+        )
+        .expect("valid")
+    }
+
+    fn several_failures_at(target: &str) -> Vec<Outcome> {
+        (1..=12).map(|id| failed_at(id, target)).collect()
+    }
+
+    #[test]
+    fn an_unanswered_target_is_still_asked_about() {
+        let found = repair_proposals(&several_failures_at("kitchen"), &[]);
+        assert_eq!(found.len(), 1, "the question should stand: {found:#?}");
+        assert_eq!(found[0].target, "kitchen");
+    }
+
+    #[test]
+    fn naming_the_thing_stops_the_question() {
+        // The bug. The person answered; the card must go.
+        let answered = vec![("home-assistant".to_owned(), "kitchen".to_owned())];
+        assert!(
+            repair_proposals(&several_failures_at("kitchen"), &answered).is_empty(),
+            "answering did not dismiss it"
+        );
+    }
+
+    #[test]
+    fn answering_is_matched_however_it_was_typed() {
+        // Somebody types "Kitchen" into a card that says "kitchen". Refusing that would leave
+        // the card in place and give them no idea why.
+        let answered = vec![("home-assistant".to_owned(), "KITCHEN".to_owned())];
+        assert!(repair_proposals(&several_failures_at("kitchen"), &answered).is_empty());
+    }
+
+    #[test]
+    fn answering_about_one_thing_does_not_silence_another() {
+        let mut history = several_failures_at("kitchen");
+        history.extend((20..=31).map(|id| failed_at(id, "garage")));
+        let answered = vec![("home-assistant".to_owned(), "kitchen".to_owned())];
+        let found = repair_proposals(&history, &answered);
+        assert_eq!(found.len(), 1, "{found:#?}");
+        assert_eq!(found[0].target, "garage", "the wrong question was silenced");
+    }
+
+    #[test]
+    fn an_answer_on_another_server_is_not_an_answer_here() {
+        // Two servers may both call something "kitchen"; naming one says nothing about the
+        // other.
+        let answered = vec![("some-other-server".to_owned(), "kitchen".to_owned())];
+        assert_eq!(
+            repair_proposals(&several_failures_at("kitchen"), &answered).len(),
+            1
         );
     }
 }
