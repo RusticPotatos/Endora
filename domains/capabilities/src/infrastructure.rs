@@ -3242,6 +3242,19 @@ pub trait NativeChannel: Send + Sync {
         true
     }
 
+    /// What this service already has set up, by whatever name it calls each thing.
+    ///
+    /// The Connect screen offered every service with a **Connect** button and knew nothing
+    /// about what was already there, so somebody with a calendar working saw "Connect" beside
+    /// it and had nowhere to find out whether it had worked. Offering to do something already
+    /// done is worse than not offering — it reads as though the last attempt failed.
+    ///
+    /// Empty is the honest default: a channel that cannot tell says nothing rather than
+    /// implying nothing is connected.
+    fn already_connected(&self) -> Vec<String> {
+        Vec::new()
+    }
+
     /// Begins connecting a new kind of thing to this service, returning **the service's own
     /// setup form** (ADR 0054).
     ///

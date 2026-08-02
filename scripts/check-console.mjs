@@ -145,6 +145,9 @@ runInContext(
   INTENTIONS = [{ id: "1", summary: "find a running route", state: "active", steps_left: 3 }];
   // Open, with evidence — an empty fixture once missed the very bug it was written for, and a
   // notion carrying no evidence would skip the one line here that can actually throw.
+  // One offered service already set up, and one the person added themselves — both branches
+  // of the Connect screen, which previously rendered only the "nothing is connected" case.
+  CONNECTED = ["caldav", "hue", "tplink"];
   NOTIONS = [{ id: "1", statement: "the Monday gym block gets cancelled",
                because: ["message:12", "reading:calendar.rustic"],
                settles_when: "whether next Monday's block survives",

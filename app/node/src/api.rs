@@ -850,6 +850,9 @@ pub fn app(state: AppState) -> Router {
         .route("/v1/models/worth-knowing", get(models_worth_knowing))
         .route("/v1/context", get(what_the_butler_is_told))
         .route("/v1/reliability", get(how_it_has_been_landing))
+        // What is already set up, so the screen can say so instead of offering to do it
+        // again — a Connect button beside a working calendar reads as a failed attempt.
+        .route("/v1/connect/connected", get(what_is_connected))
         .route("/v1/connect/begin", post(begin_connecting))
         .route("/v1/connect/finish", post(finish_connecting))
         .route("/v1/standing-trouble", get(list_standing_trouble))
@@ -2289,6 +2292,25 @@ struct BeginConnecting {
 /// Starts connecting something new to a service, returning **that service's own form**.
 ///
 /// Endora renders whatever comes back rather than knowing what a calendar needs, so a kind
+/// The integrations already configured behind each connected channel (ADR 0058).
+///
+/// Read-only and best-effort: a channel that cannot say returns nothing, and the screen simply
+/// shows no label rather than claiming the service is unconnected.
+async fn what_is_connected(State(state): State<AppState>) -> Result<Json<Vec<String>>, ApiError> {
+    let config = state.config.clone();
+    let found = blocking(move || {
+        let mut all: Vec<String> = native_channels(config.as_ref())
+            .iter()
+            .flat_map(|(_, channel)| channel.already_connected())
+            .collect();
+        all.sort();
+        all.dedup();
+        Ok::<_, endora_application::AppError>(all)
+    })
+    .await?;
+    Ok(Json(found))
+}
+
 /// of thing nobody here has heard of works exactly like one that ships today (ADR 0054).
 async fn begin_connecting(
     State(state): State<AppState>,
