@@ -72,6 +72,20 @@ pub struct CapabilityInfo {
     /// The settings this capability needs to run (empty for keyless skills). A
     /// skill is usable only once all of these have values.
     pub settings: &'static [SettingSpec],
+    /// The JSON-Schema for this skill's arguments, when it takes any.
+    ///
+    /// Built-in skills had no way to say. Every one of them was offered to the model with an
+    /// empty parameter object — *this takes nothing* — and the two that really do take
+    /// arguments got by on a hand-written example inside the system prompt, which is a
+    /// per-skill patch and only ever covered the skills somebody remembered.
+    ///
+    /// A new skill that needed a venue was therefore called with `{}`, twice, and answered
+    /// *"say what to look for"* both times. It was doing exactly what it was told it could.
+    ///
+    /// MCP tools have carried a real schema all along; this is the same thing for the skills
+    /// written here, so the model is told the field names rather than left to guess them.
+    /// `None` for a skill that genuinely takes nothing.
+    pub input_schema: Option<&'static str>,
 }
 
 /// Why a capability call failed.
@@ -1095,6 +1109,7 @@ impl Capability for WeatherCapability {
             configured: true,
             needs: "",
             settings: &[],
+            input_schema: None,
         }
     }
 
@@ -1233,6 +1248,7 @@ impl Capability for WebFetchCapability {
             configured: true,
             needs: "",
             settings: &[],
+            input_schema: None,
         }
     }
 
@@ -1320,6 +1336,7 @@ impl Capability for LocalNewsCapability {
             configured: true,
             needs: "",
             settings: &[],
+            input_schema: None,
         }
     }
 
@@ -1480,6 +1497,7 @@ impl Capability for KnowledgeCapability {
             configured: true,
             needs: "",
             settings: &[],
+            input_schema: None,
         }
     }
 
@@ -1584,6 +1602,7 @@ impl Capability for ImageReviewCapability {
             configured: true,
             needs: "set the vision model (e.g. moondream) in this skill's settings",
             settings: IMAGE_MODEL_SETTING,
+            input_schema: None,
         }
     }
 
@@ -1656,6 +1675,7 @@ macro_rules! scaffold {
                     configured: false,
                     needs: $needs,
                     settings: &[],
+                    input_schema: None,
                 }
             }
             fn invoke(
@@ -1950,6 +1970,15 @@ impl Capability for TicketedEventsCapability {
                 secret: true,
                 optional: false,
             }],
+            // Named fields, because the model is otherwise guessing. It was offered this
+            // skill with an empty parameter object, called it with `{}` twice, and was told
+            // "say what to look for" twice — doing exactly what it had been told it could.
+            input_schema: Some(
+                r#"{"type":"object","properties":{
+                     "what":{"type":"string","description":"a venue, a team, an act, or a show"},
+                     "city":{"type":"string","description":"the town to look in"}},
+                   "required":[]}"#,
+            ),
         }
     }
 
@@ -2081,6 +2110,7 @@ impl Capability for CityMeetingsCapability {
                 secret: false,
                 optional: false,
             }],
+            input_schema: None,
         }
     }
 
@@ -2186,6 +2216,7 @@ impl Capability for SafetyAlertsCapability {
             configured: true,
             needs: "",
             settings: &[],
+            input_schema: None,
         }
     }
 
@@ -2397,6 +2428,7 @@ impl Capability for HomeAssistantCapability {
             configured: true,
             needs: "your Home Assistant URL and a long-lived access token",
             settings: HA_SETTINGS,
+            input_schema: None,
         }
     }
 
@@ -2771,7 +2803,7 @@ impl CapabilityRunner for RegistryRunner {
                         self.is_confirm(info.id),
                     ),
                     // Built-ins describe their inputs in the prompt, not a schema.
-                    input_schema: None,
+                    input_schema: info.input_schema.map(str::to_owned),
                 }
             })
             .collect()
@@ -4490,6 +4522,7 @@ mod tests {
             configured: true,
             needs: "",
             settings: &[],
+            input_schema: None,
         }
     }
 
@@ -4615,6 +4648,7 @@ mod tests {
                     configured: true,
                     needs: "",
                     settings: &[],
+                    input_schema: None,
                 }
             }
             fn invoke(
@@ -4650,6 +4684,7 @@ mod tests {
                     configured: true,
                     needs: "",
                     settings: &[],
+                    input_schema: None,
                 }
             }
             fn invoke(
@@ -4707,6 +4742,7 @@ mod tests {
                     configured: true,
                     needs: "",
                     settings: &[],
+                    input_schema: None,
                 }
             }
             fn invoke(
@@ -6846,6 +6882,7 @@ mod pressing_test_is_safe {
                 configured: true,
                 needs: "",
                 settings: &[],
+                input_schema: None,
             }
         }
         fn invoke(
@@ -6872,6 +6909,7 @@ mod pressing_test_is_safe {
                 configured: true,
                 needs: "",
                 settings: &[],
+                input_schema: None,
             }
         }
         fn invoke(
@@ -7044,6 +7082,7 @@ mod the_seam_a_local_integration_plugs_into {
                 configured: true,
                 needs: "",
                 settings: &[],
+                input_schema: None,
             }
         }
         fn invoke(
@@ -7083,6 +7122,7 @@ mod the_seam_a_local_integration_plugs_into {
                 configured: true,
                 needs: "",
                 settings: &[],
+                input_schema: None,
             }
         }
         fn invoke(
@@ -7320,6 +7360,54 @@ mod pressing_test_has_to_reach_the_service {
         // own message is more use than an invented value.
         let schema = r#"{"type":"object","properties":{"thing":{}},"required":["thing"]}"#;
         assert_eq!(super::arguments_for_a_test_call(Some(schema)), "{}");
+    }
+}
+
+#[cfg(test)]
+mod a_skill_can_say_what_it_takes {
+    //! Live: a new skill that needs a venue was offered to the model with an empty parameter
+    //! object — *this takes nothing* — so it called it with `{}` twice and was told "say what
+    //! to look for" both times. It was doing exactly what it had been told it could.
+    //!
+    //! MCP tools have carried a real schema all along. The skills written here had no way to
+    //! say, and the two that really take arguments got by on a hand-written example in the
+    //! system prompt: a per-skill patch that only ever covered whoever was remembered.
+
+    use crate::application::CapabilityRunner;
+    use std::sync::Arc;
+
+    #[test]
+    fn a_skill_that_needs_arguments_hands_the_model_their_names() {
+        let runner = super::RegistryRunner::new(Arc::new(super::default_capabilities()));
+        let spec = runner
+            .available()
+            .into_iter()
+            .find(|c| c.id == "ticketed_events")
+            .expect("the skill is registered");
+        let schema = spec
+            .input_schema
+            .expect("a skill that needs arguments must say so");
+        let parsed: serde_json::Value =
+            serde_json::from_str(&schema).expect("the schema must be JSON the model can read");
+        let properties = parsed
+            .get("properties")
+            .and_then(serde_json::Value::as_object)
+            .expect("a schema with no properties tells the model it takes nothing");
+        assert!(properties.contains_key("what"), "{properties:?}");
+        assert!(properties.contains_key("city"), "{properties:?}");
+    }
+
+    #[test]
+    fn a_skill_that_takes_nothing_still_says_nothing() {
+        // The default has to stay honest: an empty schema is right for a skill with no
+        // arguments, and wrong only for one that has them.
+        let runner = super::RegistryRunner::new(Arc::new(super::default_capabilities()));
+        let spec = runner
+            .available()
+            .into_iter()
+            .find(|c| c.id == "own_activity" || c.id == "city_meetings")
+            .expect("some skill takes nothing");
+        assert!(spec.input_schema.is_none());
     }
 }
 
