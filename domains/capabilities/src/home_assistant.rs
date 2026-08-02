@@ -358,16 +358,17 @@ impl HomeAssistant {
             1,
             &json!({ "type": "config/entity_registry/list" }),
         )?;
-        Ok(listed.as_array().and_then(|all| {
-            all.iter()
-                .find(|e| {
-                    [e["name"].as_str(), e["original_name"].as_str()]
-                        .into_iter()
-                        .flatten()
-                        .any(|n| n.eq_ignore_ascii_case(wanted))
-                })
-                .and_then(|e| e["entity_id"].as_str().map(str::to_owned))
-        }))
+        // Both naming spaces, reconciled here — see `entity_named`. The reading is fetched
+        // only when the registry has no answer, so the ordinary case costs nothing extra and
+        // a Home Assistant that will not list states cannot break un-hiding.
+        if let Some(found) = entity_named(&listed, &[], wanted) {
+            return Ok(Some(found));
+        }
+        Ok(entity_named(
+            &Value::Null,
+            &self.entities().unwrap_or_default(),
+            wanted,
+        ))
     }
 
     /// Hides an entity from Home Assistant's own interface, or shows it again. Returns
@@ -704,6 +705,41 @@ fn describe_weather(e: &Entity) -> Option<String> {
         "outside it is {degrees}{unit} and {}",
         e.state.replace('-', " ")
     ))
+}
+
+/// Finds the entity a name refers to, across **both** of Home Assistant's naming spaces.
+///
+/// The registry stores an entity's own name. The states reading shows a **composed** display
+/// name — the device's name and the entity's together, `Pixel` + `Kiosk Brightness` — and
+/// that composed form is what every screen says, what standing trouble is raised with, and
+/// what the person taps.
+///
+/// Resolving only against the registry meant anything belonging to a named device could be
+/// complained about and never acted on: *"nothing here is called Pixel Kiosk Brightness"*,
+/// about an entity sitting right there. Neither name is wrong; they are answers to different
+/// questions, and this is the one place both have to reconcile.
+///
+/// **The registry is still tried first**, and that ordering is load-bearing rather than
+/// arbitrary: a hidden entity drops out of the reading entirely, so un-hiding one can only
+/// ever be resolved there.
+fn entity_named(registry: &Value, reading: &[Entity], wanted: &str) -> Option<String> {
+    let wanted = wanted.trim();
+    let in_registry = registry.as_array().and_then(|all| {
+        all.iter()
+            .find(|e| {
+                [e["name"].as_str(), e["original_name"].as_str()]
+                    .into_iter()
+                    .flatten()
+                    .any(|n| n.eq_ignore_ascii_case(wanted))
+            })
+            .and_then(|e| e["entity_id"].as_str().map(str::to_owned))
+    });
+    in_registry.or_else(|| {
+        reading
+            .iter()
+            .find(|e| e.name.trim().eq_ignore_ascii_case(wanted))
+            .map(|e| e.id.clone())
+    })
 }
 
 /// What is still outstanding on one of the person's lists, in a sentence.
@@ -1671,6 +1707,108 @@ mod what_is_on_today {
         let mut lamp = calendar("Family", "something", "now");
         lamp.id = "light.kitchen".to_owned();
         assert_eq!(describe_engagement(&lamp), None);
+    }
+}
+
+#[cfg(test)]
+mod one_thing_with_two_names {
+    //! Resolving a name back to an entity (ADR 0054).
+    //!
+    //! Live: the person tapped **It's gone** on a card Endora had raised, naming
+    //! `Pixel Kiosk Brightness`, and got back *"nothing here is called Pixel Kiosk
+    //! Brightness"*. The entity was right there.
+    //!
+    //! Home Assistant has two naming spaces. The **states reading** shows a composed display
+    //! name — the device's name plus the entity's, `Pixel` + `Kiosk Brightness` — while the
+    //! **registry** stores only the entity's own part. Trouble is raised from the reading and
+    //! was resolved against the registry, so anything belonging to a named device could be
+    //! complained about and never acted on.
+
+    use super::{Entity, entity_named};
+    use serde_json::json;
+
+    fn reading(id: &str, name: &str) -> Entity {
+        Entity {
+            id: id.to_owned(),
+            name: name.to_owned(),
+            state: "unavailable".to_owned(),
+            since: String::new(),
+            kinds: vec![],
+            facts: serde_json::Map::new(),
+        }
+    }
+
+    #[test]
+    fn the_registry_answers_when_it_holds_the_whole_name() {
+        let registry = json!([
+            {"entity_id":"light.lamp","name":"living room lamp","original_name":null}
+        ]);
+        assert_eq!(
+            entity_named(&registry, &[], "living room lamp"),
+            Some("light.lamp".to_owned())
+        );
+    }
+
+    #[test]
+    fn a_name_the_person_never_renamed_still_resolves() {
+        let registry = json!([
+            {"entity_id":"light.lamp","name":null,"original_name":"Living Room Lamp"}
+        ]);
+        assert_eq!(
+            entity_named(&registry, &[], "living room lamp"),
+            Some("light.lamp".to_owned())
+        );
+    }
+
+    #[test]
+    fn a_device_prefixed_name_falls_back_to_what_the_reading_shows() {
+        // The live bug, exactly. The registry knows it as "Kiosk Brightness"; every screen —
+        // and the trouble card the person tapped — calls it "Pixel Kiosk Brightness".
+        let registry = json!([
+            {"entity_id":"sensor.pixel_kiosk_brightness","name":null,
+             "original_name":"Kiosk Brightness"}
+        ]);
+        let states = [reading(
+            "sensor.pixel_kiosk_brightness",
+            "Pixel Kiosk Brightness",
+        )];
+        assert_eq!(
+            entity_named(&registry, &states, "Pixel Kiosk Brightness"),
+            Some("sensor.pixel_kiosk_brightness".to_owned())
+        );
+    }
+
+    #[test]
+    fn the_registry_wins_when_both_could_answer() {
+        // Un-hiding needs the registry: a hidden entity drops out of the reading entirely, so
+        // the registry must stay the first place looked rather than a fallback of a fallback.
+        let registry = json!([
+            {"entity_id":"light.from_registry","name":"the lamp","original_name":null}
+        ]);
+        let states = [reading("light.from_reading", "the lamp")];
+        assert_eq!(
+            entity_named(&registry, &states, "the lamp"),
+            Some("light.from_registry".to_owned())
+        );
+    }
+
+    #[test]
+    fn something_genuinely_absent_is_still_absent() {
+        let registry = json!([{"entity_id":"light.lamp","name":"the lamp"}]);
+        assert_eq!(entity_named(&registry, &[], "a thing nobody has"), None);
+    }
+
+    #[test]
+    fn a_registry_that_answers_oddly_does_not_take_the_reading_down_with_it() {
+        let states = [reading("sensor.x", "Pixel Kiosk Brightness")];
+        assert_eq!(
+            entity_named(
+                &json!({"error": "nope"}),
+                &states,
+                "Pixel Kiosk Brightness"
+            ),
+            Some("sensor.x".to_owned())
+        );
     }
 }
 
