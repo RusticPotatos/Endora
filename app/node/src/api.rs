@@ -1131,10 +1131,12 @@ async fn sign_in_setup(State(state): State<AppState>) -> Result<Json<serde_json:
     .await?;
     // Stored as hex and shown as base32 inside an `otpauth://` URI, because those are two
     // different things: the bytes are the secret, base32 is only how they travel to a phone.
-    let uri = crate::totp::enrolment_uri(&crate::totp::from_hex(&secret), "you");
+    let bytes = crate::totp::from_hex(&secret);
+    let uri = crate::totp::enrolment_uri(&bytes, "you");
     Ok(Json(json!({
         "password_set": !hash.is_empty(),
         "enrolled": !secret.is_empty(),
+        "qr": if hash.is_empty() { crate::totp::enrolment_qr(&bytes, "you") } else { String::new() },
         // Only ever handed out before a password exists. After that the secret is never sent
         // again — an authenticator not set up by then needs a fresh enrolment.
         "otpauth": if hash.is_empty() { uri } else { String::new() },
@@ -1173,9 +1175,13 @@ async fn set_sign_in(
     // Handed back **here and only here**. Claiming a node closes the window that let the
     // request through, so a second call cannot ask again — and the GET that would otherwise
     // serve it needs a credential the claimant does not have yet.
+    let bytes = crate::totp::from_hex(&secret);
     Ok(Json(json!({
         "ok": true,
-        "otpauth": crate::totp::enrolment_uri(&crate::totp::from_hex(&secret), "you"),
+        // The QR is how this is actually done — nobody types a hundred-character URI into a
+        // phone. The text goes alongside for a password manager, or a machine that cannot scan.
+        "qr": crate::totp::enrolment_qr(&bytes, "you"),
+        "otpauth": crate::totp::enrolment_uri(&bytes, "you"),
     })))
 }
 
