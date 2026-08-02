@@ -12,6 +12,29 @@
 //! The rule below is the whole of the decision, kept pure so every way in and out of it is a
 //! test rather than an argument.
 
+/// What a credential is allowed to do.
+///
+/// One axis, deliberately. A general scope system for a single-person appliance would be more
+/// machinery than the thing it protects; this exists because a *specific* credential has to
+/// live in a plaintext file on a laptop, and that one should not be able to do the things that
+/// matter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Scope {
+    /// The console and the person: everything.
+    Full,
+    /// The smoke suite: **reads only, and never the bulk export.**
+    ///
+    /// It cannot write, so it cannot point the deep model at somebody else's endpoint, change
+    /// what a capability may do, or purge memory. It cannot pull the whole conversation in one
+    /// call either.
+    ///
+    /// It *can* still read beliefs, context and the rest — and that is not an oversight. Three
+    /// of the suite's invariants assert on real belief statements, and "asserts about real
+    /// data" is the entire reason that tier exists. A credential blind to those would leave
+    /// the tests unable to check anything worth checking.
+    Checks,
+}
+
 /// The one route a browser cannot send a header on.
 ///
 /// `EventSource` has no way to set `Authorization`, so the live activity feed takes its token
@@ -27,6 +50,25 @@ const THE_ROUTE_A_BROWSER_CANNOT_SIGN: &str = "/v1/activity/stream";
 /// password and a six-digit code are safe to accept at all.
 const WHERE_YOU_ASK_TO_BE_LET_IN: &str = "/v1/session";
 
+/// The one read that hands over everything at once.
+///
+/// Every other read is a slice — this is the whole conversation, every belief and the audit
+/// trail in a single call, which is what makes it worth naming separately from "reads".
+const THE_ONE_THAT_HANDS_OVER_EVERYTHING: &str = "/v1/export";
+
+/// Whether this scope permits this request.
+///
+/// Split from [`may_pass`] because they answer different questions — *is this credential real*
+/// and *is this credential allowed* — and conflating them is how a scope quietly stops being
+/// enforced on a route somebody added later.
+#[must_use]
+pub fn scope_permits(scope: Scope, path: &str, is_write: bool) -> bool {
+    match scope {
+        Scope::Full => true,
+        Scope::Checks => !is_write && path != THE_ONE_THAT_HANDS_OVER_EVERYTHING,
+    }
+}
+
 /// Whether a request may proceed.
 ///
 /// - Anything outside `/v1` is open: the console has to be able to load in order to ask for a
@@ -39,7 +81,8 @@ pub fn may_pass(
     path: &str,
     header: Option<&str>,
     query_token: Option<&str>,
-    accepted: &[String],
+    accepted: &[(String, Scope)],
+    is_write: bool,
 ) -> bool {
     if !path.starts_with("/v1") || path == WHERE_YOU_ASK_TO_BE_LET_IN {
         return true;
@@ -47,25 +90,36 @@ pub fn may_pass(
     if accepted.is_empty() {
         return false;
     }
-    if let Some(offered) = header.and_then(|h| h.strip_prefix("Bearer ")) {
-        return any_of(accepted, offered.trim());
-    }
-    if path == THE_ROUTE_A_BROWSER_CANNOT_SIGN {
-        if let Some(offered) = query_token {
-            return any_of(accepted, offered);
-        }
-    }
-    false
+    let offered = header
+        .and_then(|h| h.strip_prefix("Bearer "))
+        .map(str::trim)
+        .or_else(|| {
+            // Only the live feed, and only because `EventSource` cannot set a header.
+            (path == THE_ROUTE_A_BROWSER_CANNOT_SIGN)
+                .then_some(query_token)
+                .flatten()
+        });
+    let Some(offered) = offered else {
+        return false;
+    };
+    // Being a real credential and being an allowed one are separate questions, answered
+    // separately — conflating them is how a scope quietly stops applying to a route somebody
+    // added later.
+    matches_any(accepted, offered).is_some_and(|scope| scope_permits(scope, path, is_write))
 }
 
-/// Whether an offered secret is any of the accepted ones.
+/// Which scope an offered secret carries, if it is one of the accepted ones.
 ///
 /// **Every candidate is checked even after one matches**, for the same reason
 /// [`same_secret`] does not stop at the first differing byte: returning early would make how
 /// long a rejection took a measurement of how far down the list the near-miss was.
-fn any_of(accepted: &[String], offered: &str) -> bool {
-    accepted.iter().fold(false, |found, candidate| {
-        found | same_secret(offered, candidate)
+fn matches_any(accepted: &[(String, Scope)], offered: &str) -> Option<Scope> {
+    accepted.iter().fold(None, |found, (candidate, scope)| {
+        if same_secret(offered, candidate) {
+            Some(*scope)
+        } else {
+            found
+        }
     })
 }
 
@@ -89,12 +143,12 @@ fn same_secret(offered: &str, expected: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{may_pass, same_secret};
+    use super::{Scope, may_pass, same_secret};
 
-    fn good() -> Vec<String> {
-        vec!["a-real-token".to_owned()]
+    fn good() -> Vec<(String, Scope)> {
+        vec![("a-real-token".to_owned(), Scope::Full)]
     }
-    fn nothing() -> Vec<String> {
+    fn nothing() -> Vec<(String, Scope)> {
         Vec::new()
     }
 
@@ -106,16 +160,22 @@ mod tests {
         //
         // A single boolean is all that travels. An attacker learns "this Endora has a
         // password", which they would learn from one attempt anyway.
-        assert!(may_pass("/v1/session", None, None, &good()));
-        assert!(may_pass("/v1/session", None, None, &nothing()));
+        assert!(may_pass("/v1/session", None, None, &good(), false));
+        assert!(may_pass("/v1/session", None, None, &nothing(), false));
     }
 
     #[test]
     fn setting_the_password_is_still_behind_the_token() {
         // The neighbouring path, and the one that must never open: claiming the account is
         // exactly what a stranger on the network must not be able to do first.
-        assert!(!may_pass("/v1/session/setup", None, None, &good()));
-        assert!(!may_pass("/v1/session/setup", None, None, &nothing()));
+        assert!(!may_pass("/v1/session/setup", None, None, &good(), false));
+        assert!(!may_pass(
+            "/v1/session/setup",
+            None,
+            None,
+            &nothing(),
+            false
+        ));
     }
 
     #[test]
@@ -123,9 +183,12 @@ mod tests {
         // It has to: the screen that asks for the token is served by this node. A health check
         // must answer too, or the container is unhealthy the moment auth is turned on.
         for path in ["/", "/app.js", "/styles.css", "/health"] {
-            assert!(may_pass(path, None, None, &good()), "{path} must stay open");
             assert!(
-                may_pass(path, None, None, &nothing()),
+                may_pass(path, None, None, &good(), false),
+                "{path} must stay open"
+            );
+            assert!(
+                may_pass(path, None, None, &nothing(), false),
                 "{path} must load even with nothing configured"
             );
         }
@@ -136,8 +199,14 @@ mod tests {
         // Fail closed, always. An appliance that reads "unset" as "allow" is one bad migration
         // away from wide open, and fails in the direction nobody notices.
         for path in ["/v1/export", "/v1/chat", "/v1/deep-model"] {
-            assert!(!may_pass(path, Some("Bearer anything"), None, &nothing()));
-            assert!(!may_pass(path, None, None, &nothing()));
+            assert!(!may_pass(
+                path,
+                Some("Bearer anything"),
+                None,
+                &nothing(),
+                false
+            ));
+            assert!(!may_pass(path, None, None, &nothing(), false));
         }
     }
 
@@ -147,7 +216,8 @@ mod tests {
             "/v1/export",
             Some("Bearer a-real-token"),
             None,
-            &good()
+            &good(),
+            false
         ));
     }
 
@@ -163,7 +233,7 @@ mod tests {
             Some("Bearer a-real-token-with-more"),
         ] {
             assert!(
-                !may_pass("/v1/export", header, None, &good()),
+                !may_pass("/v1/export", header, None, &good(), false),
                 "{header:?} should not have been let in"
             );
         }
@@ -175,7 +245,8 @@ mod tests {
             "/v1/export",
             Some("Bearer  a-real-token  "),
             None,
-            &good()
+            &good(),
+            false
         ));
     }
 
@@ -185,13 +256,15 @@ mod tests {
             "/v1/activity/stream",
             None,
             Some("a-real-token"),
-            &good()
+            &good(),
+            false
         ));
         assert!(!may_pass(
             "/v1/activity/stream",
             None,
             Some("wrong"),
-            &good()
+            &good(),
+            false
         ));
     }
 
@@ -201,7 +274,7 @@ mod tests {
         // One route needs the exception; giving it to everything would be a second way in.
         for path in ["/v1/export", "/v1/chat", "/v1/memory/purge"] {
             assert!(
-                !may_pass(path, None, Some("a-real-token"), &good()),
+                !may_pass(path, None, Some("a-real-token"), &good(), false),
                 "{path} must not take a token from the query"
             );
         }
@@ -215,7 +288,8 @@ mod tests {
             "/v1/activity/stream",
             Some("Bearer wrong"),
             Some("a-real-token"),
-            &good()
+            &good(),
+            false
         ));
     }
 
@@ -227,5 +301,68 @@ mod tests {
         assert!(!same_secret("ab", "abc"));
         assert!(!same_secret("abcd", "abc"));
         assert!(same_secret("", ""));
+    }
+}
+
+#[cfg(test)]
+mod what_a_checking_credential_may_do {
+    //! Scopes (`Scope::Checks`). This exists because one credential has to live in a plaintext
+    //! file on a laptop so `make smoke` can run, and that one should not be able to do the
+    //! things that matter.
+
+    use super::{Scope, scope_permits};
+
+    #[test]
+    fn the_console_credential_is_unrestricted() {
+        for (path, is_write) in [("/v1/export", false), ("/v1/deep-model", true)] {
+            assert!(scope_permits(Scope::Full, path, is_write));
+        }
+    }
+
+    #[test]
+    fn a_checking_credential_cannot_write_anything() {
+        // The whole point. A token in a file on a laptop must not be able to point the deep
+        // model at somebody else's endpoint, widen what a capability may do, or purge memory —
+        // which are the three things a leaked credential would actually be used for.
+        for path in [
+            "/v1/deep-model",
+            "/v1/memory/purge",
+            "/v1/capabilities/x/open",
+            "/v1/chat",
+            "/v1/session/setup",
+        ] {
+            assert!(
+                !scope_permits(Scope::Checks, path, true),
+                "{path} should not be writable"
+            );
+        }
+    }
+
+    #[test]
+    fn a_checking_credential_cannot_pull_everything_at_once() {
+        // Every other read is a slice; this one is the whole conversation, every belief and
+        // the audit trail in a single call. The suite never touches it.
+        assert!(!scope_permits(Scope::Checks, "/v1/export", false));
+    }
+
+    #[test]
+    fn a_checking_credential_can_still_read_what_the_suite_asserts_on() {
+        // Not an oversight. Three of the nine invariants assert on real belief statements, and
+        // "asserts about real data" is why that tier exists at all — a credential blind to
+        // them would leave the tests unable to check anything worth checking.
+        for path in [
+            "/v1/understanding",
+            "/v1/context",
+            "/v1/notions",
+            "/v1/standing-trouble",
+            "/v1/reliability",
+            "/v1/chat",
+            "/v1/audit",
+        ] {
+            assert!(
+                scope_permits(Scope::Checks, path, false),
+                "{path} should be readable"
+            );
+        }
     }
 }

@@ -202,7 +202,9 @@ CREATE TABLE IF NOT EXISTS node_auth (
 -- thrown away without changing it.
 CREATE TABLE IF NOT EXISTS node_sessions (
     token     TEXT PRIMARY KEY,
-    issued_ms INTEGER NOT NULL
+    issued_ms INTEGER NOT NULL,
+    -- 'full' for the console, 'checks' for the smoke suite's read-only credential.
+    scope     TEXT NOT NULL DEFAULT 'full'
 ) STRICT;
 CREATE TABLE IF NOT EXISTS watched_things (
     key                TEXT PRIMARY KEY,
@@ -384,13 +386,14 @@ impl SqliteStore {
     pub fn add_session(
         &self,
         token: &str,
+        scope: &str,
         now_ms: i64,
         keep_for_ms: i64,
     ) -> Result<(), RepositoryError> {
         let conn = self.db.lock()?;
         conn.execute(
-            "INSERT OR REPLACE INTO node_sessions (token, issued_ms) VALUES (?1, ?2)",
-            params![token, now_ms],
+            "INSERT OR REPLACE INTO node_sessions (token, issued_ms, scope) VALUES (?1, ?2, ?3)",
+            params![token, now_ms, scope],
         )
         .map_err(backend)?;
         conn.execute(
@@ -405,13 +408,19 @@ impl SqliteStore {
     ///
     /// # Errors
     /// [`RepositoryError`] if the backend fails.
-    pub fn sessions(&self, now_ms: i64, keep_for_ms: i64) -> Result<Vec<String>, RepositoryError> {
+    pub fn sessions(
+        &self,
+        now_ms: i64,
+        keep_for_ms: i64,
+    ) -> Result<Vec<(String, String)>, RepositoryError> {
         let conn = self.db.lock()?;
         let mut stmt = conn
-            .prepare("SELECT token FROM node_sessions WHERE issued_ms >= ?1")
+            .prepare("SELECT token, scope FROM node_sessions WHERE issued_ms >= ?1")
             .map_err(backend)?;
         let rows = stmt
-            .query_map(params![now_ms - keep_for_ms], |r| r.get::<_, String>(0))
+            .query_map(params![now_ms - keep_for_ms], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+            })
             .map_err(backend)?;
         rows.collect::<Result<Vec<_>, _>>().map_err(backend)
     }
@@ -528,6 +537,13 @@ impl SqliteStore {
                 "node_auth",
                 "last_failure_ms",
                 "INTEGER NOT NULL DEFAULT 0",
+            )?;
+            // Sessions shipped without one; existing rows are the console's, which is full.
+            ensure_column(
+                &conn,
+                "node_sessions",
+                "scope",
+                "TEXT NOT NULL DEFAULT 'full'",
             )?;
         }
         Ok(Self { db })

@@ -28,17 +28,17 @@ ENDORA_URL ?= https://127.0.0.1:8787
 # Put it in the git-ignored local.mk beside ENDORA_URL; without it the suite gets 401 and
 # says so by name rather than looking like a broken screen.
 #
-# Use a SESSION token, not the bootstrap one printed to the node's log. The bootstrap token
-# never expires and cannot be rotated without editing the database; a session ages out in
-# thirty days and is revoked by clearing `node_sessions`. A plaintext file on a laptop should
-# hold the credential you can throw away.
+# Use a CHECKING token — read-only, and refused /v1/export. Not the bootstrap token from the
+# node's log, and not your console session either: this one lives in a plaintext file, so it
+# should be the credential that cannot point the deep model somewhere else, widen a
+# capability, purge memory, or pull the whole conversation in one call.
 #
-# You already have one after signing in — in the browser's devtools console, on the Endora
-# tab:
+# Mint one from a signed-in console (devtools, on the Endora tab):
 #
-#     localStorage.getItem('endora-token')
+#     await (await fetch('/v1/session/checks', {method:'POST',
+#       headers:{authorization:'Bearer '+localStorage.getItem('endora-token')}})).json()
 #
-# Preferred over signing in with `curl`, which would leave the password in shell history.
+# It can still read beliefs and context, which the suite asserts on — deliberate, not a gap.
 ENDORA_TOKEN ?=
 
 # Compose derives its project name from the working directory, so running a
