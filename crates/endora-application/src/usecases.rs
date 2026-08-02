@@ -2343,8 +2343,14 @@ pub fn intentions(intentions: &impl IntentionRepository) -> Result<Vec<Intention
 ///
 /// # Errors
 /// [`AppError::Repository`] if the backend fails or stored data is corrupt.
-pub fn repairs(outcomes: &impl OutcomeRepository) -> Result<Vec<RepairProposal>, AppError> {
-    Ok(endora_understanding::repair_proposals(&outcomes.list()?))
+pub fn repairs(
+    outcomes: &impl OutcomeRepository,
+    answered: &[(String, String)],
+) -> Result<Vec<RepairProposal>, AppError> {
+    Ok(endora_understanding::repair_proposals(
+        &outcomes.list()?,
+        answered,
+    ))
 }
 
 /// The person tells Endora to stop working on something (ADR 0052).

@@ -919,6 +919,10 @@ pub fn app(state: AppState) -> Router {
         .route("/v1/session/setup", get(sign_in_setup).post(set_sign_in))
         // A read-only credential for `make smoke`, behind a full one.
         .route("/v1/session/checks", post(mint_a_checking_token))
+        .route(
+            "/v1/repairs/{server}/{thing}/leave",
+            post(leave_this_one_alone),
+        )
         // Managing your own credentials. Every one of these needs a full session, and the two
         // that change something need the current password as well.
         .route("/v1/session/password", post(change_password))
@@ -3157,6 +3161,44 @@ async fn undo_config_write(
     Ok(Json(json!({ "ok": true, "undone": said })))
 }
 
+/// The person asks not to be bothered about one thing again.
+///
+/// Deliberately narrow: it silences **this** question and turns nothing off. A finding they
+/// cannot answer and cannot dismiss is a chore that never empties, which is the shape ADR 0052
+/// exists to prevent — and the trouble card has had its equivalent since it was written.
+async fn leave_this_one_alone(
+    State(state): State<AppState>,
+    Path((server, thing)): Path<(String, String)>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let config = state.config.clone();
+    blocking(move || {
+        config
+            .leave_it_alone(&server, &thing)
+            .map_err(endora_application::AppError::from)
+    })
+    .await?;
+    Ok(Json(json!({ "ok": true })))
+}
+
+/// Every name the person has already taught, as `(server, what they said)`.
+///
+/// A target they have named is a question they have answered, and a question that has been
+/// answered stops being asked (ADR 0052). Without this the card asking "what is it actually
+/// called?" survived being told — the finding derives from outcomes, and the failures that
+/// produced it stay in the record for good.
+fn named_already(config: &endora_capabilities::ConfigStore) -> Vec<(String, String)> {
+    let mut answered: Vec<(String, String)> =
+        endora_capabilities::TargetAliasRepository::aliases(config)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|a| (a.server, a.said))
+            .collect();
+    // "Stop asking" is an answer too. Somebody who does not know a thing's real name has
+    // nothing to type, and without this the card had no way out at all.
+    answered.extend(config.left_alone().unwrap_or_default());
+    answered
+}
+
 /// Turns off capabilities Endora has established do not work (ADR 0051).
 ///
 /// The finding was already derived and already correct; it just sat in a card waiting for
@@ -3173,7 +3215,8 @@ async fn undo_config_write(
 /// - it is **one click** to undo, and the activity trail says what happened and why.
 fn withdraw_what_never_works(state: &AppState) {
     use endora_capabilities::CapabilityConfigRepository;
-    let Ok(found) = usecases::repairs(state.understanding.as_ref()) else {
+    let Ok(found) = usecases::repairs(state.understanding.as_ref(), &named_already(&state.config))
+    else {
         return;
     };
     let already: std::collections::HashSet<String> = state
@@ -3288,7 +3331,7 @@ async fn list_repairs(
     let config = state.config.clone();
     let (found, withdrawn) = blocking(move || {
         use endora_capabilities::CapabilityConfigRepository;
-        let found = usecases::repairs(understanding.as_ref())?;
+        let found = usecases::repairs(understanding.as_ref(), &named_already(&config))?;
         let withdrawn: std::collections::HashSet<String> = config
             .enabled_overrides()
             .unwrap_or_default()

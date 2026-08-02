@@ -115,6 +115,13 @@ pub fn migrate(db: &Db) -> Result<(), RepositoryError> {
                 trust_all INTEGER NOT NULL DEFAULT 0,
                 reader_tool TEXT NOT NULL DEFAULT ''
             ) STRICT;
+            -- Questions the person answered by asking not to be asked again. Answering is the
+            -- dismissal (ADR 0052), and somebody who does not know a real name still needs an answer.
+            CREATE TABLE IF NOT EXISTS repairs_left_alone (
+                server TEXT NOT NULL,
+                thing  TEXT NOT NULL,
+                PRIMARY KEY (server, thing)
+            ) STRICT;
             CREATE TABLE IF NOT EXISTS watched_things (
                 key                TEXT PRIMARY KEY,
                 settled            TEXT NOT NULL,
@@ -702,6 +709,39 @@ impl crate::application::TransitionLog for ConfigStore {
             .execute("DELETE FROM transitions WHERE at_ms < ?1", params![ms])
             .map_err(backend)?;
         Ok(())
+    }
+}
+
+impl ConfigStore {
+    /// Records that the person does not want to be asked about this thing again.
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if the backend fails.
+    pub fn leave_it_alone(&self, server: &str, thing: &str) -> Result<(), RepositoryError> {
+        self.db
+            .lock()?
+            .execute(
+                "INSERT INTO repairs_left_alone (server, thing) VALUES (?1, ?2) \
+                 ON CONFLICT(server, thing) DO NOTHING",
+                params![server, thing],
+            )
+            .map_err(backend)?;
+        Ok(())
+    }
+
+    /// Everything the person has asked not to be bothered about, as `(server, thing)`.
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if the backend fails.
+    pub fn left_alone(&self) -> Result<Vec<(String, String)>, RepositoryError> {
+        let conn = self.db.lock()?;
+        let mut stmt = conn
+            .prepare("SELECT server, thing FROM repairs_left_alone")
+            .map_err(backend)?;
+        let rows = stmt
+            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
+            .map_err(backend)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(backend)
     }
 }
 
