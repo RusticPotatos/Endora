@@ -61,6 +61,16 @@ edit this file, never a copy. For the full picture, read [README.md](README.md),
   to a phone. Prefer an edit that refuses when the anchor is missing or ambiguous.
   Where only a script is available, assert the anchor exists **and** re-read the
   result before moving on.
+- **Nothing personal goes in a file git carries.** No real name, address, city,
+  postcode, network address, coordinate, phone number or credential — in source,
+  in a doc comment, and above all in a test fixture, which is where every one of
+  these has actually got in. Use `John Doe`, `Jane Doe`, `New York`,
+  `192.168.1.10`, `@example.com`. Real values belong in the git-ignored
+  `local.mk`, and `ENDORA_PERSONAL_VALUES` there lets `make personal-check` prove
+  they are not in the tree. This is not a caution: a city, a county, a postcode
+  and three people's names — one of them a third party who never agreed to be in
+  a public repository — reached this repo through fixtures, and every one was
+  caught by a person reading a diff rather than by anything that runs.
 - **Think the design through before running it.** A checker that reported
   all-clear on a broken file, and a duplicate-detector compared on exact strings
   against model output, both cost far more to discover than they would have to
@@ -75,6 +85,8 @@ Run from the workspace root and make sure they pass:
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo test --workspace --all-features
+node scripts/check-console.mjs
+node scripts/check-nothing-personal.mjs
 git diff --check
 ```
 

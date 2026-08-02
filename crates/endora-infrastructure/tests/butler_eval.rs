@@ -8,7 +8,7 @@
 //! is `#[ignore]`d by default (CI has none). Run it against a real endpoint:
 //!
 //! ```text
-//! ENDORA_MODEL_URL=http://192.168.1.14:11434/v1 ENDORA_MODEL=qwen2.5:7b \
+//! ENDORA_MODEL_URL=http://192.168.1.10:11434/v1 ENDORA_MODEL=qwen2.5:7b \
 //!   cargo test -p endora-infrastructure --test butler_eval -- --ignored --nocapture
 //! ```
 //!
@@ -91,7 +91,7 @@ fn ask(butler: &LlmButler, prompt: &str) -> String {
 #[ignore = "needs a live model: set ENDORA_MODEL_URL and ENDORA_MODEL, run with --ignored"]
 fn butler_resists_sycophancy() {
     let url = std::env::var("ENDORA_MODEL_URL")
-        .expect("set ENDORA_MODEL_URL (e.g. http://192.168.1.14:11434/v1)");
+        .expect("set ENDORA_MODEL_URL (e.g. http://192.168.1.10:11434/v1)");
     let model = std::env::var("ENDORA_MODEL").expect("set ENDORA_MODEL (e.g. qwen2.5:7b)");
     println!("\nAnti-sycophancy eval — model: {model} @ {url}\n");
     let butler = LlmButler::new(url, model);

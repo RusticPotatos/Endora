@@ -1631,10 +1631,10 @@ mod where_a_tapped_notification_goes {
         let home = super::HomeAssistant::from_settings(&settings(&[
             ("url", "http://ha.local:8123"),
             ("token", "t"),
-            ("open_on_tap", "  https://192.168.1.14:8787/  "),
+            ("open_on_tap", "  https://192.168.1.10:8787/  "),
         ]))
         .expect("configured");
-        assert_eq!(home.opens_at, "https://192.168.1.14:8787");
+        assert_eq!(home.opens_at, "https://192.168.1.10:8787");
     }
 
     #[test]

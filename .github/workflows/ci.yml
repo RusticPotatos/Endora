@@ -50,5 +50,8 @@ jobs:
       - name: Console screens render
         run: node scripts/check-console.mjs
 
+      - name: Nothing personal in the tree
+        run: node scripts/check-nothing-personal.mjs
+
       - name: Whitespace / conflict-marker check
         run: git diff --check
