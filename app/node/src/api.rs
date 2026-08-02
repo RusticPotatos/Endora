@@ -843,32 +843,33 @@ async fn set_mcp_trust(
         if known {
             McpServerRegistry::set_trust_all(config.as_ref(), &lookup, req.trust_all)
                 .map_err(AppError::Repository)?;
-            // Turning it off closes what turning it on opened.
+            // The toggle moves every tool on the server, both ways.
             //
-            // Auto-allow writes a per-tool `opened` flag for every tool the server exposes,
-            // and nothing was reversing them — so switching the server back to
-            // deny-by-default left twenty tools open, including one that plays audio
-            // through the house. The setting was a one-way door, and the way out was
-            // twenty-one separate actions.
+            // Off was already like this, for a good reason: auto-allow writes a per-tool
+            // flag for every tool the server exposes and nothing reversed them, so switching
+            // back to deny-by-default left twenty tools open, one of which plays audio
+            // through the house. Every tool is closed rather than only the ones auto-allow
+            // opened, because nothing records which was which.
             //
-            // Every tool on the server is closed, not only the ones auto-allow opened,
-            // because nothing records which was which. That is the safe direction: the
-            // person reopens what they want, and the alternative is leaving something open
-            // that they believe they just closed.
-            if !req.trust_all {
-                let prefix = format!("{lookup}.");
-                for spec in
-                    endora_capabilities::CapabilityRunner::available(&*mcp.read().unwrap().clone())
-                {
-                    if spec.id.starts_with(&prefix) {
-                        let _ =
-                            endora_capabilities::CapabilityConfigRepository::set_open_irreversible(
-                                config.as_ref(),
-                                &spec.id,
-                                false,
-                            );
-                    }
-                }
+            // On did nothing but store the flag, leaving the opening to connect — which
+            // deliberately skips any tool somebody has ruled on, and after an off that is
+            // every one of them. A server sat reading "Allow all its tools: On" with all
+            // eight of them blocked, and the only way back was eight separate taps: the same
+            // one-way door the paragraph above closed, facing the other way.
+            //
+            // Connect is a **default** and must not overwrite a decision. This is a
+            // **decision**, made by the person, about this server, just now.
+            let available: Vec<String> =
+                endora_capabilities::CapabilityRunner::available(&*mcp.read().unwrap().clone())
+                    .into_iter()
+                    .map(|spec| spec.id)
+                    .collect();
+            for id in endora_capabilities::tools_the_toggle_governs(&available, &lookup) {
+                let _ = endora_capabilities::CapabilityConfigRepository::set_open_irreversible(
+                    config.as_ref(),
+                    &id,
+                    req.trust_all,
+                );
             }
             reconnect_mcp(config.as_ref(), mcp.as_ref());
         }
