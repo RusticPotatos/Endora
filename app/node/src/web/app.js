@@ -352,6 +352,38 @@ function go(v, id) { NAV = { v, id }; clearMsg(); closeMenu(); render(); }
 const val = (id) => document.getElementById(id).value.trim();
 
 // ---- lifecycle (North Stars & Targets) ------------------------------------
+// Everything that lives under Settings, in one place.
+//
+// The Settings list and each screen's breadcrumb are rendered from **this** rather than
+// written out twice, because written out twice is how they drifted: four screens said
+// "Home › Skills" when they were two levels down, one had no breadcrumb at all, and two
+// different screens both called themselves "Preferences" in the trail — the one actually
+// named Preferences, and the one the menu calls "Things Endora remembers about you".
+//
+// `short` is what the breadcrumb says when the full label is too long to sit in a trail. Two
+// renderings of one entry, side by side, so they cannot quietly disagree.
+const UNDER_SETTINGS = [
+  { view: "display", icon: "prefs", label: "Preferences", note: "reading replies aloud, vibration, showing actions" },
+  { view: "models", icon: "sparkle", label: "Models", note: "which model answers, and the bigger one behind it" },
+  { view: "proactive", icon: "target", label: "Reaching out", note: "check-ins, the daily brief, the overnight loop" },
+  { view: "skills", icon: "skills", label: "Skills", note: "what Endora can do, and the servers it connects to" },
+  { view: "understanding", icon: "sparkle", label: "What Endora understands about you", short: "Understanding", note: "beliefs, and what it's working on" },
+  { view: "prefs", icon: "prefs", label: "Things Endora remembers about you", short: "What it remembers" },
+  { view: "audit", icon: "audit", label: "What Endora has done", short: "What it has done", note: "what it tried, what changed, every decision" },
+];
+
+// The trail for a screen under Settings. Anything not under Settings gets the short trail, so
+// a top-level screen cannot accidentally claim to be nested.
+function settingsCrumbs(view) {
+  const page = UNDER_SETTINGS.find((p) => p.view === view);
+  const here = page ? (page.short || page.label) : view;
+  return crumbs([
+    { label: "Home", act: "go:chat" },
+    { label: "Settings", act: "go:settings" },
+    { label: here },
+  ]);
+}
+
 function crumbs(parts) {
   return `<div class="crumbs">` +
     parts.map((p, i) => i < parts.length - 1
@@ -395,7 +427,7 @@ function viewAudit() {
     <div class="card"><div class="sub mono">${new Date(a.at_ms).toLocaleString()}</div>
       <div>${esc(a.summary)}</div></div>`);
   return `
-    ${crumbs([{ label: "Home", act: "go:chat" }, { label: "The record" }])}
+    ${settingsCrumbs("audit")}
     <h2>What Endora has done</h2>
     <div class="note">Its own account of its work — what it tried, whether it checked, and what it changed. Nothing here needs anything from you.</div>
     ${viewHowItLands()}
@@ -1077,13 +1109,7 @@ function viewSettings() {
     ${crumbs([{ label: "Home", act: "go:chat" }, { label: "Settings" }])}
     <h2>Settings</h2>
     <div class="card nav-list">
-      ${nav("go:display", "prefs", "Preferences", "reading replies aloud, vibration, showing actions")}
-      ${nav("go:models", "sparkle", "Models", "which model answers, and the bigger one behind it")}
-      ${nav("go:proactive", "target", "Reaching out", "check-ins, the daily brief, the overnight loop")}
-      ${nav("go:skills", "skills", "Skills", "what Endora can do, and the servers it connects to")}
-      ${nav("go:understanding", "sparkle", "What Endora understands about you", "beliefs, and what it's working on")}
-      ${nav("go:prefs", "prefs", "Things Endora remembers about you")}
-      ${nav("go:audit", "audit", "What Endora has done", "what it tried, what changed, every decision")}
+      ${UNDER_SETTINGS.map((p) => nav(`go:${p.view}`, p.icon, p.label, p.note)).join("")}
       ${nav("export", "export", "Export my data")}
     </div>
     <div class="card nav-list" style="margin-top:14px;">
@@ -1189,7 +1215,7 @@ function viewDisplay() {
       <button class="${on ? "primary" : "ghost"}" data-act="${act}">${on ? "On" : "Off"}</button>
     </div>`;
   return `
-    ${crumbs([{ label: "Home", act: "go:chat" }, { label: "Settings", act: "go:settings" }, { label: "Preferences" }])}
+    ${settingsCrumbs("display")}
     <h2>Preferences</h2>
     <div class="card" style="display:flex;flex-direction:column;gap:14px;">
       ${row(SPEAK, "toggle:speak", "Read replies aloud", TTS ? "" : "not supported in this browser")}
@@ -1200,7 +1226,7 @@ function viewDisplay() {
 
 function viewModels() {
   return `
-    ${crumbs([{ label: "Home", act: "go:chat" }, { label: "Settings", act: "go:settings" }, { label: "Models" }])}
+    ${settingsCrumbs("models")}
     ${modelsSection()}
     ${worthKnowingSection()}`;
 }
@@ -1235,7 +1261,7 @@ function worthKnowingSection() {
 
 function viewProactive() {
   return `
-    ${crumbs([{ label: "Home", act: "go:chat" }, { label: "Settings", act: "go:settings" }, { label: "Reaching out" }])}
+    ${settingsCrumbs("proactive")}
     ${proactivitySection()}`;
 }
 
@@ -1250,7 +1276,7 @@ function viewPrefs() {
       <button class="ghost danger" data-act="delete:pref:${p.id}" title="forget this">${icon("purge",15)}</button>
     </div></div>`);
   return `
-    ${crumbs([{ label: "Home", act: "go:chat" }, { label: "Preferences" }])}
+    ${settingsCrumbs("prefs")}
     <h2>What the butler knows about you</h2>
     ${listOr(rows, "Nothing yet. The butler will propose things to remember as you talk — or add one below.")}
     <div class="form">
@@ -1439,7 +1465,7 @@ function viewSkills() {
     ${mcpBrowse}
     ${mcpAddForm}`;
   return `
-    ${crumbs([{ label: "Home", act: "go:chat" }, { label: "Skills" }])}
+    ${settingsCrumbs("skills")}
     <h2>What Endora can do</h2>
 
     ${envelope}
@@ -1500,6 +1526,7 @@ function viewUnderstanding() {
     </div>`;
   const setup = locationSetup + addressSetup;
   return `
+    ${settingsCrumbs("understanding")}
     <h2>What Endora understands about you</h2>
 
     ${viewSetUpSignIn()}
