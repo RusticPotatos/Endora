@@ -210,6 +210,13 @@ CREATE TABLE IF NOT EXISTS node_sessions (
     -- 'full' for the console, 'checks' for the smoke suite's read-only credential.
     scope     TEXT NOT NULL DEFAULT 'full'
 ) STRICT;
+-- Questions the person answered by asking not to be asked again. Answering is the
+-- dismissal (ADR 0052), and somebody who does not know a real name still needs an answer.
+CREATE TABLE IF NOT EXISTS repairs_left_alone (
+    server TEXT NOT NULL,
+    thing  TEXT NOT NULL,
+    PRIMARY KEY (server, thing)
+) STRICT;
 CREATE TABLE IF NOT EXISTS watched_things (
     key                TEXT PRIMARY KEY,
     settled            TEXT NOT NULL,
