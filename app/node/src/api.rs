@@ -1585,11 +1585,23 @@ async fn console_js() -> impl axum::response::IntoResponse {
     )
 }
 
-async fn health() -> Json<serde_json::Value> {
+async fn health(State(state): State<AppState>) -> Json<serde_json::Value> {
     let stt = std::env::var("ENDORA_STT_URL")
         .ok()
         .is_some_and(|s| !s.trim().is_empty());
+    // Whether a turn is being taken right now.
+    //
+    // The console decides whether to show a thinking bubble, and it could only ever ask
+    // itself. So a turn that failed left the last stored message being the person's, with
+    // nothing after it, and the screen sat on an animated ellipsis **forever** — through a
+    // reload, through a restart, because the state it was rendering lived in a tab that had
+    // gone. A butler that cannot be spoken to again is worse than one that answers badly.
+    //
+    // The lock the turn already takes is the honest answer, and it is the same answer on
+    // every device rather than per-tab hope.
+    let busy = state.turn_lock.try_lock().is_err();
     Json(json!({
+        "busy": busy,
         "status": "ok",
         "service": endora_application::platform_identity(),
         "version": endora_application::version(),

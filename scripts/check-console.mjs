@@ -459,6 +459,50 @@ console.log(`requests: sending a message signs its ${chat.length} request(s)`);
   console.log("catalogue: choosing a server opens the form it filled in");
 }
 
+// A turn that never answered must not strand the person.
+//
+// Live: a reply streamed, flashed, and vanished — the turn failed after the tokens went out
+// and before anything was saved. The last stored message was the person's, so the screen
+// rendered a thinking bubble, and it stayed through every reload, because the only thing the
+// console could ask about "is it still working?" was itself, and the tab that had been
+// streaming was gone. The butler could not be spoken to again.
+//
+// Three states, one of which is not waiting for anything.
+{
+  const chatWith = (last) => {
+    runInContext(
+      `CHAT_MSGS = [{ id: "1", role: "user", text: ${JSON.stringify(last)},
+                      at_ms: Date.now() }];
+       CHAT_STREAMING = false; CHAT_STOPPED = false;
+       CHAT_DAYS = []; CHAT_DAY = null;`,
+      context,
+    );
+    return runInContext("viewChat()", context) || "";
+  };
+
+  runInContext("NODE_BUSY = true;", context);
+  const working = chatWith("any events this week?");
+  if (!/class="dots"/.test(working)) {
+    console.error("chat: the node is taking a turn and the screen does not show it thinking");
+    process.exit(1);
+  }
+
+  runInContext("NODE_BUSY = false;", context);
+  const stranded = chatWith("any events this week?");
+  if (/class="dots"/.test(stranded)) {
+    console.error(
+      "chat: a message with no reply and nothing running still shows a thinking bubble — " +
+        "that is the state a person cannot get out of by reloading",
+    );
+    process.exit(1);
+  }
+  if (!/chat:retry/.test(stranded)) {
+    console.error("chat: a turn that never answered offers no way to ask again");
+    process.exit(1);
+  }
+  console.log("chat: an unanswered turn says so, and can be asked again");
+}
+
 console.log(`breadcrumbs: ${settingsViews.length} screens under Settings all say so`);
 
 console.log(`console check: ${named.length} screens render`);

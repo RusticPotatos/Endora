@@ -53,6 +53,10 @@ let LAST_ACTIVITY_MSG = null;  // the butler message id that activity belongs to
 let STEP_LIST = [];            // the live action trail for the turn currently streaming
 let SHOW_ACTIVITY = localStorage.getItem("endora.showActivity") !== "0"; // default on
 let CHAT_STREAMING = false;    // true while a reply is streaming in (guards live-render)
+// Whether the NODE says it is taking a turn — not whether this tab is. A turn that failed
+// left the last stored message being the person's, and the screen showed a thinking bubble
+// for ever, through a reload, because the only thing it could ask was itself.
+let NODE_BUSY = false;
 let HAPTIC = localStorage.getItem("endora.haptic") !== "0"; // buzz on reply + mic (default on)
 let CHAT_STOPPED = false;      // the person stopped the last turn, so no reply is coming
 let CHAT_QUEUE = [];           // messages awaiting their turn — turns are SERIALIZED
@@ -316,6 +320,8 @@ async function reload() {
     SIGNIN_EXISTS = !!(state && state.set_up);
   } catch (_) { /* an older node has no such route; the sign-in screen is the safe fallback */ }
   // The export snapshot, the derived activity feed, and the everyday settings.
+  // Whether the node is mid-turn, asked every reload — the answer that outlives this tab.
+  try { NODE_BUSY = !!(await api("GET", "/health")).busy; } catch (_) { NODE_BUSY = false; }
   const [db, activity, checkin, caps, autonomy] = await Promise.all([
     api("GET", "/v1/export"),
     api("GET", "/v1/activity?limit=30"),
@@ -608,12 +614,23 @@ function viewChat() {
   // there forever waiting for something that was cancelled. Say what happened.
   // Only today can be awaiting a reply; an older day is finished by definition.
   const awaiting = showing === today && list.length > 0 && list[list.length - 1].role === "user";
+  // Three different things, and they used to render as one animated ellipsis: stopped on
+  // purpose, still being worked on, and never answered at all. Only the first two are worth
+  // waiting for, and the third is the one that stranded somebody — a message sent, a reply
+  // that flashed and vanished, and dots that survived every reload because the tab that had
+  // been streaming was gone. `NODE_BUSY` is the node's own answer, so it is the same on
+  // every device and outlives the tab.
+  const stillWorking = CHAT_STREAMING || NODE_BUSY;
   const pending = awaiting
     ? (CHAT_STOPPED
         ? `<div class="row" style="justify-content:flex-start; margin:6px 0;">
              <div class="bubble butler"><span class="sub">You stopped this one. Send again if you'd like an answer.</span></div></div>`
-        : `<div class="row" style="justify-content:flex-start; margin:6px 0;" id="chat-pending">
-             <div class="bubble butler thinking"><span class="dots"><i></i><i></i><i></i></span></div></div>`)
+        : stillWorking
+          ? `<div class="row" style="justify-content:flex-start; margin:6px 0;" id="chat-pending">
+             <div class="bubble butler thinking"><span class="dots"><i></i><i></i><i></i></span></div></div>`
+          : `<div class="row" style="justify-content:flex-start; margin:6px 0;">
+             <div class="bubble butler"><span class="sub">That one didn't get an answer — nothing was saved.</span>
+             <div class="row" style="margin-top:6px;"><button class="ghost" data-act="chat:retry">Ask it again</button></div></div></div>`)
     : "";
   // While a turn is streaming, DB.messages doesn't include it yet. Rebuild the
   // in-flight exchange from live state — the just-sent message(s) and the reply
@@ -2470,6 +2487,17 @@ async function dispatch(act) {
     if (verb === "chat" && noun === "send") { await sendChat(); return; }
     if (verb === "chat" && noun === "mic") { listen(); return; }
     if (verb === "chat" && noun === "stop") { stopChat(); return; }
+    // Ask the same thing again after a turn that never answered. It re-sends the person's
+    // own last words rather than making them retype them, which is the whole difference
+    // between a dead end and a hiccup.
+    if (verb === "chat" && noun === "retry") {
+      const list = (DB.messages || []).slice().reverse();
+      const mine = list.find((m) => m.role === "user");
+      if (!mine || !mine.text) return;
+      CHAT_QUEUE.push(mine.text);
+      updateComposerButton();
+      return drainChat();
+    }
     if (verb === "brief") {
       try {
         const r = await api("POST", "/v1/brief");
