@@ -127,6 +127,7 @@ impl AppState {
         // existence. Best-effort: a node that cannot store one simply cannot be enrolled, and
         // the bootstrap token still works.
         let _ = ensure_enrolment_secret(&store, &ids);
+        say_the_token_if_it_is_still_needed(&store, &token);
         // A small buffer is plenty: subscribers coalesce to a single refresh,
         // and a lagged receiver still gets one "changed" signal.
         let (changes, _) = broadcast::channel(16);
@@ -219,9 +220,6 @@ fn the_nodes_token(store: &SqliteStore, ids: &RandomIdSource) -> String {
                 eprintln!("endora: could not store a token, so nothing will be let in");
                 return String::new();
             }
-            eprintln!(
-                "\nendora: this node's token is\n\n    {made}\n\npaste it into the console once. It will not be shown again.\n"
-            );
             made
         }
         Err(e) => {
@@ -1004,6 +1002,44 @@ pub fn app(state: AppState) -> Router {
 
 /// How long a session lasts before it has to be earned again.
 const SESSIONS_LAST_MS: i64 = 30 * 24 * 60 * 60 * 1_000;
+
+/// Prints the bootstrap token to the log, **for as long as it is still the only way in**.
+///
+/// It used to be printed once, on the run that generated it. That locked somebody out of their
+/// own node within a day: `docker logs` shows the *current* container, every deploy recreates
+/// it, and the token is stored rather than regenerated — so the one message carrying it was
+/// gone and the console was asking for something nobody could obtain.
+///
+/// So it is printed every start until a password exists. That is exactly the window where it
+/// is needed, and the log is host-only — the same trust boundary as the database the token
+/// already sits in, so this reveals nothing new to anybody. **Once sign-in is set up it stops**,
+/// because after that it is a recovery credential rather than a setup step, and a recovery
+/// credential should not be lying around in a log that gets shipped to a pastebin the first
+/// time somebody debugs a container.
+fn already_signed_in(store: &SqliteStore) -> bool {
+    // A store that cannot answer is treated as not set up: better to print a token nobody
+    // needed than to withhold the only one somebody did.
+    store
+        .sign_in_setup()
+        .map(|(hash, _)| !hash.is_empty())
+        .unwrap_or(false)
+}
+
+fn say_the_token_if_it_is_still_needed(store: &SqliteStore, token: &str) {
+    if token.is_empty() {
+        return;
+    }
+    // A store that cannot answer is treated as not set up: better to print a token nobody
+    // needed than to withhold the only one somebody did.
+    if already_signed_in(store) {
+        return;
+    }
+    eprintln!(
+        "\nendora: sign-in is not set up yet, so this node's token is\n\n    {token}\n\n\
+         Paste it into the console to claim this node, then choose a password and add Endora\n\
+         to your authenticator. This stops appearing once that is done.\n"
+    );
+}
 
 /// Makes the authenticator secret if there is not one yet, and leaves it alone if there is.
 ///
@@ -4974,6 +5010,29 @@ mod tests {
         assert!(!first.is_empty());
         super::ensure_enrolment_secret(&store, &RandomIdSource).unwrap();
         assert_eq!(store.sign_in_setup().unwrap().1, first);
+    }
+
+    #[tokio::test]
+    async fn the_token_is_findable_for_as_long_as_it_is_the_only_way_in() {
+        // The lockout this exists for: printed once on the run that generated it, then gone —
+        // `docker logs` shows only the current container, every deploy recreates it, and the
+        // token is stored rather than remade. Within a day the console was asking for
+        // something nobody could obtain.
+        let store = Arc::new(SqliteStore::open_in_memory().unwrap());
+        let token = super::the_nodes_token(&store, &RandomIdSource);
+
+        // Not yet claimed: it must be shown.
+        assert!(!super::already_signed_in(&store), "nothing is set up yet");
+
+        // Once a password exists it is a recovery credential, not a setup step, and should
+        // stop appearing in a log that gets pasted into an issue the first time anything
+        // goes wrong.
+        let hash = super::hash_password("a-long-enough-password").unwrap();
+        let (_, secret) = store.sign_in_setup().unwrap();
+        store.set_sign_in_setup(&hash, &secret).unwrap();
+        assert!(super::already_signed_in(&store));
+
+        assert!(!token.is_empty());
     }
 
     #[tokio::test]
