@@ -1,5 +1,10 @@
-// Renders every screen of the console in Node, so a broken one fails a build instead of a
-// person's phone.
+// Renders every screen of the console in Node, and drives the requests it makes, so a broken
+// one fails a build instead of a person's phone.
+//
+// **Everything here runs in about 50 milliseconds.** That is not incidental: a check nobody
+// wants to run is a check nobody runs, and the whole offline gate is held under ten seconds on
+// purpose. Nothing in this file may touch the network or start a browser — the console's own
+// code is already executing in this context, so exercising it costs nothing.
 //
 // The bug this exists for: a call to `activityHtml` survived an edit that deleted the
 // function, the file stayed syntactically perfect, `node --check` passed, CI passed, the
@@ -348,6 +353,50 @@ if (unsigned.length) {
   process.exit(1);
 }
 console.log("requests: every fetch to /v1 is signed");
+
+// What the browser actually sends.
+//
+// The gap that let the chat break entirely: 702 Rust tests exercise the router, 26 screens
+// render here, 9 invariants run against the deployed node — and **not one of them made a
+// request the way a browser does**. `/v1/chat/stream` went out unsigned for hours, and the
+// only thing that noticed was a person looking at a red banner.
+//
+// So this drives the real send path with a recording `fetch`. No network, no browser, no new
+// dependency: the console's own code is already running in this context, so calling it is
+// free. It costs milliseconds, which is the only reason it is in the fast tier at all.
+const sent = [];
+runInContext("localStorage.getItem = () => 'a-test-token';", context);
+context.fetch = (path, opts = {}) => {
+  sent.push({ path, headers: opts.headers || {}, method: opts.method || "GET" });
+  // A streaming reply the drain loop can read to completion without hanging.
+  return Promise.resolve({
+    ok: true,
+    status: 200,
+    json: async () => ({}),
+    body: {
+      getReader: () => ({
+        read: async () => ({ value: undefined, done: true }),
+      }),
+    },
+  });
+};
+runInContext("CHAT_QUEUE = ['does the kitchen light work?']; CHAT_STREAMING = false;", context);
+await runInContext("drainChat()", context);
+
+const chat = sent.filter((r) => String(r.path).includes("/v1/chat/stream"));
+if (!chat.length) {
+  console.error("requests: sending a message made no request to /v1/chat/stream at all");
+  process.exit(1);
+}
+const unsignedSends = chat.filter((r) => !r.headers.authorization);
+if (unsignedSends.length) {
+  console.error(
+    "requests: sending a message went out without a credential — the node will refuse it, " +
+      "which is exactly how the chat broke"
+  );
+  process.exit(1);
+}
+console.log(`requests: sending a message signs its ${chat.length} request(s)`);
 
 console.log(`breadcrumbs: ${settingsViews.length} screens under Settings all say so`);
 
