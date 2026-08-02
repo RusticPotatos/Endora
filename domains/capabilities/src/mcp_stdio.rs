@@ -615,7 +615,7 @@ mod tests {
     fn a_server_lists_its_resources() {
         let mut io = FakeIo::new(&[r#"{"jsonrpc":"2.0","id":1,"result":{"resources":[
                 {"uri":"house://light.kitchen","name":"Kitchen light","description":"a lamp","mimeType":"text/plain"},
-                {"uri":"house://person.morgan","name":"rustic"}
+                {"uri":"house://person.morgan","name":"morgan"}
             ]}}"#]);
         let mut id = 1;
         let found = list_resources(&mut io, &mut id).unwrap();

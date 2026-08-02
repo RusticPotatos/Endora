@@ -9261,18 +9261,14 @@ mod when_the_local_model_will_not_do_it {
         .expect("a turn");
 
         let sent = deep.0.lock().unwrap().clone();
-        for personal in ["rustic", "K. Novak", "Ellis"] {
+        for personal in ["morgan", "K. Novak", "Ellis"] {
             assert!(
                 !sent.contains(personal),
                 "{personal} left the house: {sent}"
             );
         }
         // And the person still reads their own words.
-        assert!(
-            reply.text.contains("K. Novak & J. Ellis"),
-            "{}",
-            reply.text
-        );
+        assert!(reply.text.contains("K. Novak & J. Ellis"), "{}", reply.text);
         assert!(reply.escalated);
     }
 
@@ -9461,7 +9457,7 @@ mod who_words_the_brief {
             .expect("a brief");
 
         let sent = deep.0.lock().unwrap().clone();
-        for personal in ["rustic", "K. Novak", "Ellis"] {
+        for personal in ["morgan", "K. Novak", "Ellis"] {
             assert!(
                 !sent.contains(personal),
                 "{personal} left the house: {sent}"
@@ -9474,7 +9470,7 @@ mod who_words_the_brief {
         assert!(sent.contains("names=[]"), "{sent}");
 
         // And what the person reads is their own words again.
-        assert!(written.contains("rustic"), "{written}");
+        assert!(written.contains("morgan"), "{written}");
         assert!(written.contains("K. Novak & J. Ellis"), "{written}");
     }
 

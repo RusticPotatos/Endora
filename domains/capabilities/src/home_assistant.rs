@@ -55,7 +55,7 @@ pub struct HomeAssistant {
     /// The entity the person nominated as meaning "not now", empty when they did not.
     ///
     /// Notifications were deliberately **not** gated on presence when they were built,
-    /// because the only signal available was free text a service had written — *"rustic is
+    /// because the only signal available was free text a service had written — *"morgan is
     /// not home"* — and being wrong either wakes somebody or silently swallows the alert
     /// they wanted. A **boolean entity** removes that objection entirely: their phone's
     /// Focus mode is already on/off, already in the house, and already means exactly this.
@@ -1504,16 +1504,16 @@ mod tests {
 
     #[test]
     fn presence_reads_as_a_sentence_not_a_state_string() {
-        assert_eq!(describe_presence("rustic", "home"), "morgan is home");
+        assert_eq!(describe_presence("morgan", "home"), "morgan is home");
         assert_eq!(
-            describe_presence("rustic", "not_home"),
+            describe_presence("morgan", "not_home"),
             "morgan is not home"
         );
         // A named zone is a place, and reads better as one than as "not_home".
-        assert_eq!(describe_presence("rustic", "Office"), "morgan is at Office");
+        assert_eq!(describe_presence("morgan", "Office"), "morgan is at Office");
         // A tracker that has lost the person says so plainly rather than inventing a place.
         assert_eq!(
-            describe_presence("rustic", "unavailable"),
+            describe_presence("morgan", "unavailable"),
             "morgan is not home"
         );
     }

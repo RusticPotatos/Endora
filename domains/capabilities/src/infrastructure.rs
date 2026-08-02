@@ -4267,10 +4267,7 @@ mod tests {
     #[test]
     fn outbound_tripwire_flags_secrets_but_not_ordinary_text() {
         // Ordinary queries and URLs are NOT flagged (no false positives).
-        assert_eq!(
-            scan_outbound_secret("what's the weather in New York"),
-            None
-        );
+        assert_eq!(scan_outbound_secret("what's the weather in New York"), None);
         assert_eq!(
             scan_outbound_secret("https://example.com/articles/2026/summer-festival"),
             None
