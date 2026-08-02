@@ -222,3 +222,58 @@ mod tests {
         ));
     }
 }
+
+/// How long after starting a never-claimed node will let somebody set a password without the
+/// bootstrap token.
+///
+/// Home Assistant — on the same network, controlling more — leaves onboarding open
+/// indefinitely until somebody claims it. That is defensible and it is what people expect, but
+/// it means a node left unclaimed for weeks can be claimed by anyone who ever reaches it, and
+/// this one had been running unclaimed for exactly that long.
+///
+/// Fifteen minutes is the compromise: long enough to walk to another room and open a laptop,
+/// short enough that claiming somebody's butler means being on their network *at the moment
+/// they restart it* rather than at any point in a month.
+pub const CLAIMABLE_FOR_MS: i64 = 15 * 60 * 1_000;
+
+/// Whether somebody may claim this node — set the first password — without the token.
+///
+/// **Shut forever once claimed.** The window is about a node that has never had an owner, not
+/// about convenience afterwards; re-opening it on every restart would hand an attacker a fresh
+/// chance at every deploy.
+#[must_use]
+pub fn may_claim(already_claimed: bool, running_for_ms: i64) -> bool {
+    !already_claimed && (0..CLAIMABLE_FOR_MS).contains(&running_for_ms)
+}
+
+#[cfg(test)]
+mod claiming {
+    use super::{CLAIMABLE_FOR_MS, may_claim};
+
+    #[test]
+    fn a_fresh_node_can_be_claimed_straight_away() {
+        assert!(may_claim(false, 0));
+        assert!(may_claim(false, CLAIMABLE_FOR_MS - 1));
+    }
+
+    #[test]
+    fn the_window_closes() {
+        assert!(!may_claim(false, CLAIMABLE_FOR_MS));
+        assert!(!may_claim(false, 30 * CLAIMABLE_FOR_MS));
+    }
+
+    #[test]
+    fn a_claimed_node_is_never_claimable_again() {
+        // The half that matters most. A window that re-opened on every restart would hand
+        // somebody a fresh chance at every deploy, which is worse than never having closed it.
+        for running_for in [0, 1, CLAIMABLE_FOR_MS - 1, CLAIMABLE_FOR_MS, i64::MAX] {
+            assert!(!may_claim(true, running_for), "at {running_for}");
+        }
+    }
+
+    #[test]
+    fn a_clock_that_goes_backwards_does_not_reopen_it() {
+        assert!(!may_claim(false, -1));
+        assert!(!may_claim(false, i64::MIN));
+    }
+}
