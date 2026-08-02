@@ -327,6 +327,28 @@ if (missing.length) {
   console.error(`breadcrumbs: these screens are under Settings but do not say so: ${missing.join(", ")}`);
   process.exit(1);
 }
+// No request to this node may be made without going through `signed`.
+//
+// `/v1/chat/stream` was fetched directly with a bare content-type, so the moment the node
+// started requiring a credential every message failed to send — and nothing caught it: this
+// harness renders screens and makes no requests, and the Rust tests exercise the router rather
+// than the browser. It took a screenshot of a red banner.
+//
+// This is a source check rather than an execution one, which the header above is rightly
+// sceptical of — so it looks for one specific, unambiguous shape (`headers:` given an object
+// literal on a `fetch`) rather than trying to understand the file. A false positive here is
+// somebody writing headers a new way and being told to route them through `signed`, which is
+// the right answer anyway.
+const unsigned = [...source.matchAll(/fetch\(\s*["'`]([^"'`]*\/v1[^"'`]*)[\s\S]{0,200}?headers:\s*\{/g)]
+  .map((m) => m[1]);
+if (unsigned.length) {
+  console.error(
+    `requests: these reach /v1 without going through signed(): ${unsigned.join(", ")}`
+  );
+  process.exit(1);
+}
+console.log("requests: every fetch to /v1 is signed");
+
 console.log(`breadcrumbs: ${settingsViews.length} screens under Settings all say so`);
 
 console.log(`console check: ${named.length} screens render`);
