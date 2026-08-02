@@ -7,7 +7,7 @@ and numbered in sequence.
 
 ## What they add up to
 
-Seven accepted records, two proposed, forty-eight archived, and a handful of ideas underneath
+Eight accepted records, one proposed, forty-eight archived, and a handful of ideas underneath
 all of them. Read this before reading
 any individual record; each line is a rule the code actually follows, with the decision
 that established it.
@@ -68,7 +68,7 @@ that established it.
   version of the promise [0029](0052-what-it-knows-about-you.md) made by deletion.
 - **Answering is the dismissal.** A finding whose answer has been given stops being derived.
 - **A half-formed thought is Endora's to carry, not the person's to resolve**
-  ([0057](0057-thinking-between-turns.md), proposed). It may hold tentative statements
+  ([0057](0057-thinking-between-turns.md)). It may hold tentative statements
   between turns — capped, self-expiring, readable but with no verb on them — and only a
   matured one reaches the person, as a belief they can correct.
 - **What it changed outside itself is kept and reversible** ([0045](0054-other-peoples-services.md)).
@@ -126,7 +126,7 @@ of an existing record and take the next number.
 | [0054](0054-other-peoples-services.md) | Other people's services | 0021, 0038–0043, 0045–0048 |
 | [0055](0055-the-model-layer.md) | The model layer | 0008, 0027, 0030 |
 | [0056](0056-how-it-behaves-toward-you.md) | How it behaves toward you | 0017, 0019, 0025, 0031 |
-| [0057](0057-thinking-between-turns.md) | Thinking between turns | — (proposed) |
+| [0057](0057-thinking-between-turns.md) | Thinking between turns | — |
 | [0058](0058-how-an-integration-gets-in.md) | How an integration gets in | — (proposed) |
 
 The forty-eight decisions these consolidate are in [archive/](archive/) — kept in full,
