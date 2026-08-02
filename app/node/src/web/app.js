@@ -1535,7 +1535,9 @@ function viewUnderstanding() {
   // A gentle one-line setup for basic context (location) so skills like weather
   // and the guard dog have somewhere to start. Stored as a preference, which the
   // butler already reads — no separate onboarding.
-  const knowsLocation = (DB.preferences || []).some((p) => /^\s*based in\b/i.test(p.text));
+  // Location is asked in the chat now, where questions belong — see `viewNeedsYou`. Asking
+  // in both places would be the same question twice, which is how a prompt becomes a chore.
+  const knowsLocation = true;
   const knowsAddress = (DB.preferences || []).some((p) => /^\s*address me as\b/i.test(p.text));
   const locationSetup = knowsLocation ? "" : `
     <div class="card" style="border-color: color-mix(in srgb, var(--accent) 40%, var(--line));">
@@ -1800,6 +1802,29 @@ function viewConnect() {
 // No badge and no count anywhere. Both are how a queue announces itself, and a screen with
 // "3 waiting" on it is a chore list whatever the cards say.
 function viewNeedsYou() {
+  // Before anything else: where the person is.
+  //
+  // One line of text, and four skills are silent without it — weather, the news, safety
+  // alerts and what the city is doing are all "near you", and near nowhere is nothing. They
+  // report themselves as configured the whole time, so the failure looks like working.
+  //
+  // It was already being asked, three taps away on Settings > Understanding, which is exactly
+  // the placement the comment above this function was written about. A question you have to
+  // go and find is a question that does not get answered — and this one is the difference
+  // between a butler that knows where it lives and one that does not.
+  const knowsWhere = (DB.preferences || []).some((p) => /^\s*based in\b/i.test(p.text));
+  if (!knowsWhere) {
+    return `
+      <div class="card" style="margin:6px 0;border-color:color-mix(in srgb, var(--accent) 30%, var(--line));">
+        <div class="title" style="font-weight:500;">Where are you based?</div>
+        <div class="sub" style="margin-bottom:6px;">The weather, the news, safety alerts and what's on locally all need this. A town or city is enough.</div>
+        <div class="form">
+          <input id="setup-location" placeholder="a city, e.g. New York, NY" />
+          <button class="primary" data-act="setlocation">Save</button>
+        </div>
+      </div>`;
+  }
+
   // The person's own world first — a broken lamp is theirs, a misfiring tool is Endora's.
   const trouble = (TROUBLE || [])[0];
   if (trouble) {

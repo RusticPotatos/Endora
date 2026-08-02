@@ -246,7 +246,6 @@ pub fn default_capabilities() -> Vec<Arc<dyn Capability>> {
         Arc::new(WeatherCapability),
         Arc::new(WebFetchCapability),
         Arc::new(KnowledgeCapability),
-        Arc::new(WebAnswersCapability),
         Arc::new(LocalNewsCapability),
         Arc::new(ImageReviewCapability::from_env()),
         Arc::new(CityMeetingsCapability),
@@ -1283,98 +1282,6 @@ impl Capability for KnowledgeCapability {
 }
 
 const WIKI_UA: &str = "Endora personal butler (github.com/RusticPotatos/Endora)";
-
-// ---- Web answers (real; DuckDuckGo Instant Answer, no API key) --------------
-
-struct WebAnswersCapability;
-
-impl Capability for WebAnswersCapability {
-    fn info(&self) -> CapabilityInfo {
-        CapabilityInfo {
-            id: "web_search",
-            name: "Web answers",
-            description: "Get a quick answer or definition from the web for a question (DuckDuckGo).",
-            category: "information",
-            reaches_external: true,
-            // Reads state; changes nothing. Policy-identical to Reversible
-            // (both are Act), but it lets the turn tell an observation from a
-            // receipt — see ADR 0053.
-            reversibility: Reversibility::Observe,
-            configured: true,
-            needs: "",
-            settings: &[],
-        }
-    }
-
-    fn invoke(
-        &self,
-        input: &Value,
-        _settings: &CapabilitySettings,
-    ) -> Result<Value, CapabilityError> {
-        let q = str_field(input, "query").or_else(|_| str_field(input, "question"))?;
-        let body = http_get_text(
-            &format!(
-                "https://api.duckduckgo.com/?q={}&format=json&no_html=1&skip_disambig=1",
-                urlencode(q)
-            ),
-            256 * 1024,
-        )?;
-        let data: Value =
-            serde_json::from_str(&body).map_err(|e| CapabilityError::Unavailable(e.to_string()))?;
-        // Prefer a direct answer/abstract; else surface a few related topics.
-        let answer = first_non_empty(&[
-            data["Answer"].as_str(),
-            data["AbstractText"].as_str(),
-            data["Definition"].as_str(),
-        ]);
-        let related: Vec<String> = data["RelatedTopics"]
-            .as_array()
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|t| t["Text"].as_str())
-                    .filter(|s| !s.is_empty())
-                    .take(4)
-                    .map(str::to_owned)
-                    .collect()
-            })
-            .unwrap_or_default();
-        Ok(json!({
-            "query": q,
-            "answer": answer,
-            "source": data["AbstractURL"].as_str().unwrap_or(""),
-            "related": related,
-        }))
-    }
-
-    fn summarize(&self, o: &Value) -> String {
-        let query = o["query"].as_str().unwrap_or("that");
-        if let Some(answer) = o["answer"].as_str().filter(|s| !s.is_empty()) {
-            return answer.to_owned();
-        }
-        let related: Vec<&str> = o["related"]
-            .as_array()
-            .map(|a| a.iter().filter_map(Value::as_str).collect())
-            .unwrap_or_default();
-        if related.is_empty() {
-            return format!(
-                "I didn't find a direct answer for '{query}'. It may need a more specific search."
-            );
-        }
-        format!("Here's what I found for '{query}': {}", related.join("; "))
-    }
-}
-
-/// The first of several optional strings that is present and non-empty.
-fn first_non_empty(candidates: &[Option<&str>]) -> String {
-    candidates
-        .iter()
-        .flatten()
-        .map(|s| s.trim())
-        .find(|s| !s.is_empty())
-        .unwrap_or("")
-        .to_owned()
-}
-
 // ---- Image review (local vision model via Ollama; env-gated) ---------------
 
 struct ImageReviewCapability {
@@ -4541,18 +4448,25 @@ mod tests {
     }
 
     #[test]
-    fn web_answers_prefers_a_direct_answer_then_related() {
-        let direct = json!({ "query": "capital of France", "answer": "Paris", "related": [] });
-        assert_eq!(WebAnswersCapability.summarize(&direct), "Paris");
-        let related = json!({ "query": "rust lang", "answer": "",
-            "related": ["Rust is a systems language", "Memory safety without GC"] });
-        let s = WebAnswersCapability.summarize(&related);
-        assert!(s.contains("Rust is a systems language"));
-        let empty = json!({ "query": "zzz", "answer": "", "related": [] });
+    fn nothing_claims_to_search_the_web_any_more() {
+        // The DuckDuckGo skill is gone, and this is here so it does not quietly return.
+        //
+        // It called the Instant Answer API, which is not a search engine: it answers when a
+        // query names a well-known entity and returns **nothing** for real questions. Live,
+        // "new york nc events this week" and "what is on at bank of america stadium" both
+        // came back empty. It had been offered to the model for months and called zero times
+        // across thirty recorded outcomes — and had it been called, it would have said nothing.
+        //
+        // Two skills claiming to search, one of them useless, gives a model no way to choose
+        // and a person no way to tell. Better to offer nothing than something that cannot work.
+        let searching: Vec<&str> = default_capabilities()
+            .iter()
+            .map(|c| c.info().id)
+            .filter(|id| *id == "web_search")
+            .collect();
         assert!(
-            WebAnswersCapability
-                .summarize(&empty)
-                .contains("didn't find")
+            searching.is_empty(),
+            "something is claiming to search again: {searching:?}"
         );
     }
 

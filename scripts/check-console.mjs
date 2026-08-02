@@ -354,6 +354,27 @@ if (unsigned.length) {
 }
 console.log("requests: every fetch to /v1 is signed");
 
+// The question a brand-new install actually faces.
+//
+// The fixture above has a location set, so the first-run branch never renders in the pass
+// below — the same blind spot that let a blank console ship, arriving again. Four skills are
+// silent without this answer while reporting themselves configured, so a screen that fails to
+// ask is a failure that looks like working.
+runInContext("DB.preferences = [];", context);
+const firstRun = runInContext("viewNeedsYou()", context) || "";
+if (!/Where are you based/.test(firstRun)) {
+  console.error("first run: a node with no location does not ask for one");
+  process.exit(1);
+}
+runInContext("DB.preferences = [{ id: '1', text: 'based in Boston, MA' }];", context);
+const settled = runInContext("viewNeedsYou()", context) || "";
+if (/Where are you based/.test(settled)) {
+  console.error("first run: it keeps asking after being told");
+  process.exit(1);
+}
+console.log("first run: asks where you are, once, and stops when told");
+
+
 // What the browser actually sends.
 //
 // The gap that let the chat break entirely: 702 Rust tests exercise the router, 26 screens
