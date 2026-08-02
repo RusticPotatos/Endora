@@ -135,11 +135,9 @@ pub fn to_hex(secret: &[u8]) -> String {
 #[must_use]
 pub fn from_hex(text: &str) -> Vec<u8> {
     let text = text.trim();
-    if text.len() % 2 != 0 {
-        return Vec::new();
-    }
+    let mut pairs = text.as_bytes().chunks_exact(2);
     let mut out = Vec::with_capacity(text.len() / 2);
-    for pair in text.as_bytes().chunks(2) {
+    for pair in pairs.by_ref() {
         let Ok(pair) = std::str::from_utf8(pair) else {
             return Vec::new();
         };
@@ -148,7 +146,12 @@ pub fn from_hex(text: &str) -> Vec<u8> {
         };
         out.push(byte);
     }
-    out
+    // A trailing half-byte is not a short secret, it is a corrupt one.
+    if pairs.remainder().is_empty() {
+        out
+    } else {
+        Vec::new()
+    }
 }
 
 /// The `otpauth://` URI an authenticator scans.
