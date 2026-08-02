@@ -134,6 +134,7 @@ of an existing record and take the next number.
 | [0058](0058-how-an-integration-gets-in.md) | How an integration gets in | — (proposed) |
 | [0059](0059-one-fact-source-many-consumers.md) | One fact source, many consumers | — (proposed) |
 | [0060](0060-what-the-turn-is-offered.md) | What the turn is offered | — (proposed) |
+| [0061](0061-answers-worth-keeping.md) | Answers worth keeping | — (proposed) |
 
 The forty-eight decisions these consolidate are in [archive/](archive/) — kept in full,
 because the reasoning that produced a rule is the reason it survives an argument later.

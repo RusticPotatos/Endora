@@ -406,20 +406,201 @@ fn external_agent() -> ureq::Agent {
     builder.build().into()
 }
 
+// ---- Answers worth keeping (ADR 0061) --------------------------------------
+
+/// How long an answer is kept when the source says nothing, and the shortest it is ever
+/// kept even when the source says less.
+///
+/// A source is not owed unlimited trust about its own freshness. Something claiming
+/// `max-age=0` would make this pointless; the floor decides instead.
+const KEEP_AT_LEAST_MS: u64 = 60_000;
+
+/// The longest an answer is kept, whatever the source claims.
+///
+/// A ceiling because a source claiming a year would otherwise make the butler wrong for a
+/// year, and being confidently out of date is worse than being slow.
+const KEEP_AT_MOST_MS: u64 = 6 * 60 * 60 * 1_000;
+
+/// How many answers are remembered at once. Oldest goes first.
+const MOST_ANSWERS_KEPT: usize = 256;
+
+/// One remembered answer.
+struct Remembered {
+    body: String,
+    /// When it stops being served without asking again.
+    fresh_until_ms: u64,
+    /// When it arrived — used to decide what to forget first, and nothing else.
+    stored_ms: u64,
+}
+
+/// Everything remembered, in memory only (ADR 0061).
+///
+/// Never written to disk. A cache keyed by what somebody asked is a **record of questions**,
+/// and persisting it would create an obligation to purge it on *forget everything* that a
+/// warm start does not justify.
+static REMEMBERED: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashMap<(u64, u64), Remembered>>,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
+}
+
+/// A fingerprint of a request — enough to recognise it again, not enough to rebuild it.
+///
+/// **The URL is never stored.** It carries the API key of whatever is being asked, and often
+/// the person's own town. The node holds those elsewhere and must; what this refuses to do
+/// is create a *second* place they can be read from. There is nothing here to redact in a
+/// log, because there is nothing here to print.
+///
+/// Two independent hashes rather than one, because a collision would not be a slow answer —
+/// it would be another question's answer, delivered confidently.
+fn fingerprint(url: &str) -> (u64, u64) {
+    use std::hash::{Hash, Hasher};
+    let once = {
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        url.hash(&mut h);
+        h.finish()
+    };
+    let twice = {
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        // A different starting state, so the two are not the same function twice.
+        "endora/0061".hash(&mut h);
+        url.hash(&mut h);
+        h.finish()
+    };
+    (once, twice)
+}
+
+/// How long the source says its answer is good for, within bounds.
+///
+/// `Cache-Control: max-age` decides it, per response, per source — which is the whole reason
+/// there is no table of which source is hourly and which is monthly. Such a table would go
+/// stale, and it is exactly the per-integration knowledge that belongs nowhere near shared
+/// code.
+#[must_use]
+pub fn keep_for_ms(cache_control: Option<&str>) -> u64 {
+    let Some(said) = cache_control else {
+        return KEEP_AT_LEAST_MS;
+    };
+    let said = said.to_ascii_lowercase();
+    // The one directive worth obeying exactly: the source is saying do not keep this at all.
+    // `max-age=0` is NOT that — it is a claim about freshness, and a claim about freshness is
+    // the thing the floor exists to bound.
+    if said.contains("no-store") {
+        return 0;
+    }
+    let value_of = |name: &str| {
+        said.split(',').find_map(|part| {
+            part.trim()
+                .strip_prefix(name)?
+                .trim()
+                .parse::<u64>()
+                .ok()
+                .map(|seconds| seconds.saturating_mul(1000))
+        })
+    };
+    // `s-maxage` first wherever both appear: it is the one addressed to a shared cache,
+    // which is what this is. Order in the header must not decide it.
+    value_of("s-maxage=")
+        .or_else(|| value_of("max-age="))
+        .map_or(KEEP_AT_LEAST_MS, |ms| {
+            ms.clamp(KEEP_AT_LEAST_MS, KEEP_AT_MOST_MS)
+        })
+}
+
+/// Forgets the oldest answers once there are too many.
+fn forget_the_oldest(kept: &mut std::collections::HashMap<(u64, u64), Remembered>) {
+    while kept.len() > MOST_ANSWERS_KEPT {
+        let Some(oldest) = kept
+            .iter()
+            .min_by_key(|(_, r)| r.stored_ms)
+            .map(|(k, _)| *k)
+        else {
+            return;
+        };
+        kept.remove(&oldest);
+    }
+}
+
+/// GETs a URL, remembering the answer for as long as the source says it is good (ADR 0061).
+///
+/// One place, so a skill written the ordinary way is cached without opting in and a new one
+/// does nothing to take part. The capability runner was the tempting layer and the wrong
+/// one: by the time a result reaches it the origin's headers are gone, and recovering them
+/// would mean every skill reporting its own freshness.
+///
+/// **A stale answer beats no answer.** If the source is down or the quota is spent and there
+/// is an old answer, it is served — the failure that has cost most here is a screen quietly
+/// saying it knows nothing when it does.
+fn get_remembering(
+    url: &str,
+    ua: Option<&str>,
+    max_bytes: usize,
+) -> Result<String, CapabilityError> {
+    use std::io::Read;
+    let id = fingerprint(url);
+    let now = now_ms();
+    if let Ok(kept) = REMEMBERED.lock() {
+        if let Some(found) = kept.get(&id) {
+            if now < found.fresh_until_ms {
+                return Ok(found.body.clone());
+            }
+        }
+    }
+
+    let mut request = external_agent().get(url);
+    if let Some(ua) = ua {
+        request = request.header("User-Agent", ua);
+    }
+    let asked = request.call().and_then(|mut resp| {
+        let keep = keep_for_ms(
+            resp.headers()
+                .get("cache-control")
+                .and_then(|v| v.to_str().ok()),
+        );
+        let mut buf = Vec::new();
+        resp.body_mut()
+            .as_reader()
+            .take(max_bytes as u64)
+            .read_to_end(&mut buf)?;
+        Ok((String::from_utf8_lossy(&buf).into_owned(), keep))
+    });
+
+    match asked {
+        Ok((body, keep)) => {
+            if keep > 0 {
+                if let Ok(mut kept) = REMEMBERED.lock() {
+                    kept.insert(
+                        id,
+                        Remembered {
+                            body: body.clone(),
+                            fresh_until_ms: now.saturating_add(keep),
+                            stored_ms: now,
+                        },
+                    );
+                    forget_the_oldest(&mut kept);
+                }
+            }
+            Ok(body)
+        }
+        Err(e) => {
+            // Stale rather than nothing.
+            if let Ok(kept) = REMEMBERED.lock() {
+                if let Some(found) = kept.get(&id) {
+                    return Ok(found.body.clone());
+                }
+            }
+            Err(CapabilityError::Unavailable(e.to_string()))
+        }
+    }
+}
+
 /// GETs a URL and returns the body as text (size-capped), for the info skills.
 fn http_get_text(url: &str, max_bytes: usize) -> Result<String, CapabilityError> {
-    use std::io::Read;
-    let mut resp = external_agent()
-        .get(url)
-        .call()
-        .map_err(|e| CapabilityError::Unavailable(e.to_string()))?;
-    let mut buf = Vec::new();
-    resp.body_mut()
-        .as_reader()
-        .take(max_bytes as u64)
-        .read_to_end(&mut buf)
-        .map_err(|e| CapabilityError::Unavailable(e.to_string()))?;
-    Ok(String::from_utf8_lossy(&buf).into_owned())
+    get_remembering(url, None, max_bytes)
 }
 
 fn str_field<'a>(input: &'a Value, key: &str) -> Result<&'a str, CapabilityError> {
@@ -433,19 +614,7 @@ fn str_field<'a>(input: &'a Value, key: &str) -> Result<&'a str, CapabilityError
 
 /// GET with an explicit `User-Agent` (some APIs, e.g. the US NWS, require one).
 fn http_get_text_ua(url: &str, ua: &str, max_bytes: usize) -> Result<String, CapabilityError> {
-    use std::io::Read;
-    let mut resp = external_agent()
-        .get(url)
-        .header("User-Agent", ua)
-        .call()
-        .map_err(|e| CapabilityError::Unavailable(e.to_string()))?;
-    let mut buf = Vec::new();
-    resp.body_mut()
-        .as_reader()
-        .take(max_bytes as u64)
-        .read_to_end(&mut buf)
-        .map_err(|e| CapabilityError::Unavailable(e.to_string()))?;
-    Ok(String::from_utf8_lossy(&buf).into_owned())
+    get_remembering(url, Some(ua), max_bytes)
 }
 
 // ---- Egress guard (SSRF protection for model/person-provided URLs) ----------
@@ -7151,6 +7320,71 @@ mod pressing_test_has_to_reach_the_service {
         // own message is more use than an invented value.
         let schema = r#"{"type":"object","properties":{"thing":{}},"required":["thing"]}"#;
         assert_eq!(super::arguments_for_a_test_call(Some(schema)), "{}");
+    }
+}
+
+#[cfg(test)]
+mod answers_worth_keeping {
+    //! ADR 0061.
+    //!
+    //! The sources this runs on are free tiers, and a free tier is the budget. Asking the
+    //! same question twice paid twice, so the butler could not afford to look things up
+    //! often — and so it did not.
+
+    use super::{fingerprint, keep_for_ms};
+
+    #[test]
+    fn the_source_decides_how_long_its_answer_is_good_for() {
+        assert_eq!(keep_for_ms(Some("public, max-age=3600")), 3_600_000);
+        // `s-maxage` wins where both are given: it is the one addressed to a shared cache,
+        // which is what this is.
+        assert_eq!(keep_for_ms(Some("max-age=60, s-maxage=1800")), 1_800_000);
+    }
+
+    #[test]
+    fn a_source_is_not_owed_unlimited_trust_about_its_own_freshness() {
+        // Claiming zero would make the whole thing pointless; the floor decides instead.
+        assert_eq!(keep_for_ms(Some("max-age=0")), super::KEEP_AT_LEAST_MS);
+        // Claiming a year would make the butler confidently out of date for a year.
+        assert_eq!(
+            keep_for_ms(Some("max-age=31536000")),
+            super::KEEP_AT_MOST_MS
+        );
+        // Saying nothing at all is the common case, and gets the floor.
+        assert_eq!(keep_for_ms(None), super::KEEP_AT_LEAST_MS);
+        assert_eq!(keep_for_ms(Some("private")), super::KEEP_AT_LEAST_MS);
+    }
+
+    #[test]
+    fn no_store_is_obeyed_exactly() {
+        // The one instruction worth taking literally: the source is saying do not keep this.
+        assert_eq!(keep_for_ms(Some("no-store")), 0);
+        assert_eq!(keep_for_ms(Some("private, no-store, max-age=600")), 0);
+    }
+
+    /// The whole privacy posture of this record, as an assertion.
+    ///
+    /// A URL carries the API key of whatever is being asked and often the person's own town.
+    /// What is kept must be enough to recognise the same question and not enough to rebuild
+    /// it — so there is nothing here to redact in a log, because there is nothing to print.
+    #[test]
+    fn what_is_kept_cannot_be_turned_back_into_the_question() {
+        let asked = "https://example.com/events?apikey=s3cr3t&city=Springfield";
+        let (a, b) = fingerprint(asked);
+        let held = format!("{a}{b}");
+        assert!(!held.contains("s3cr3t"), "the credential survived");
+        assert!(!held.contains("Springfield"), "the place survived");
+        assert!(!held.contains("example.com"), "the source survived");
+    }
+
+    #[test]
+    fn the_same_question_is_recognised_and_a_different_one_is_not() {
+        let one = fingerprint("https://example.com/events?city=A");
+        assert_eq!(one, fingerprint("https://example.com/events?city=A"));
+        assert_ne!(one, fingerprint("https://example.com/events?city=B"));
+        // Two independent hashes, so a collision is another question's answer rather than a
+        // slow one — the halves must not be the same function twice.
+        assert_ne!(one.0, one.1);
     }
 }
 
