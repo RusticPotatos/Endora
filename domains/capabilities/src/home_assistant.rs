@@ -706,6 +706,36 @@ fn describe_weather(e: &Entity) -> Option<String> {
     ))
 }
 
+/// What is still outstanding on one of the person's lists, in a sentence.
+///
+/// Endora has held add, complete, remove and read on these lists since the Home Assistant
+/// server was registered, and has never once touched them. Not for want of a tool — it could
+/// not *see* that anything was on a list, so it had no reason to reach for one.
+///
+/// The morning brief taught this already: one instruction to "reach for whatever's relevant"
+/// produced four days of briefs about the kitchen lights, because every fact worth having was
+/// in the turn and all of it was left to the model to go and fetch. So this is **stated**, not
+/// fetched.
+///
+/// A todo entity's state is the number of things left on it. `None` for anything that is not a
+/// list, for an empty one — the same judgement [`describe_engagement`] makes about an empty
+/// day — and for a list that is not answering, since "unavailable things on your list" is
+/// worse than silence and a broken entity belongs in standing trouble.
+fn describe_outstanding(e: &Entity) -> Option<String> {
+    if !e.id.starts_with("todo.") {
+        return None;
+    }
+    let left: u32 = e.state.trim().parse().ok()?;
+    if left == 0 {
+        return None;
+    }
+    Some(format!(
+        "{left} thing{} on your {} list",
+        if left == 1 { "" } else { "s" },
+        e.name
+    ))
+}
+
 /// What a calendar entry says about the day, in a sentence.
 ///
 /// `None` for anything that is not a calendar, and for a calendar with nothing on it — an
@@ -972,6 +1002,10 @@ impl crate::infrastructure::NativeChannel for HomeAssistant {
         // account established: asked what was on tonight with the event in the house, the
         // model answered about the living room lights (ADR 0056).
         said.extend(everything.iter().filter_map(describe_engagement));
+        // What is still outstanding. Endora could add to these lists and complete things on
+        // them from the day it connected, and never did — because nothing ever told it there
+        // was anything on one.
+        said.extend(everything.iter().filter_map(describe_outstanding));
         said.extend(everything.iter().filter_map(describe_weather));
         (!said.is_empty()).then(|| said.join("; "))
     }
@@ -1637,6 +1671,81 @@ mod what_is_on_today {
         let mut lamp = calendar("Family", "something", "now");
         lamp.id = "light.kitchen".to_owned();
         assert_eq!(describe_engagement(&lamp), None);
+    }
+}
+
+#[cfg(test)]
+mod what_is_still_outstanding {
+    //! Putting the person's lists into the turn (ADR 0056).
+    //!
+    //! Endora has held full read/write on the todo lists since the day the Home Assistant
+    //! server was registered — add, complete, remove, read — and has never once touched them.
+    //! Not for want of a tool: it could not *see* that anything was on a list, so it had no
+    //! reason to reach for one.
+    //!
+    //! This is the lesson the morning brief already taught. One instruction to "reach for
+    //! whatever's relevant" produced four days of briefs about the kitchen lights, because
+    //! every fact worth having was in the turn and all of it was left to the model to go and
+    //! fetch. So this is stated, not fetched.
+
+    use super::{Entity, describe_outstanding};
+
+    fn list(name: &str, id: &str, state: &str) -> Entity {
+        Entity {
+            id: format!("todo.{id}"),
+            name: name.to_owned(),
+            state: state.to_owned(),
+            since: String::new(),
+            kinds: vec!["todo".to_owned()],
+            facts: serde_json::Map::new(),
+        }
+    }
+
+    #[test]
+    fn a_list_with_things_on_it_says_how_many() {
+        assert_eq!(
+            describe_outstanding(&list("Reminders", "reminders", "2")),
+            Some("2 things on your Reminders list".to_owned())
+        );
+    }
+
+    #[test]
+    fn one_thing_is_not_two_things() {
+        assert_eq!(
+            describe_outstanding(&list("Family", "family", "1")),
+            Some("1 thing on your Family list".to_owned())
+        );
+    }
+
+    #[test]
+    fn an_empty_list_is_not_worth_a_line_in_every_turn() {
+        // The same judgement `describe_engagement` makes about an empty day. A butler that
+        // reports nothing-to-do on every single turn has made the context noisier, not more
+        // useful.
+        assert_eq!(
+            describe_outstanding(&list("Reminders", "reminders", "0")),
+            None
+        );
+    }
+
+    #[test]
+    fn a_list_that_is_not_answering_says_nothing_rather_than_guessing() {
+        // `unavailable` is not a count, and reporting "unavailable things on your list" is
+        // worse than silence. Standing trouble is where a broken entity belongs.
+        for state in ["unavailable", "unknown", "", "lots"] {
+            assert_eq!(
+                describe_outstanding(&list("Reminders", "reminders", state)),
+                None,
+                "expected silence for {state:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn nothing_that_is_not_a_list_is_described() {
+        let mut light = list("Kitchen", "x", "3");
+        light.id = "light.kitchen".to_owned();
+        assert_eq!(describe_outstanding(&light), None);
     }
 }
 
