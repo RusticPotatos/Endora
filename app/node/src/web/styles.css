@@ -89,7 +89,9 @@
   .grow { flex: 1; min-width: 0; }
   .title { font-weight: 550; }
   .sub { color: var(--muted); font-size: 13px; }
-  .pill { font-size: 12px; padding: 2px 9px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); }
+  /* A pill never breaks inside itself. Squeezed into a narrow column one rendered as
+     "8" above "tools", which reads as two pills and is unreadable as either. */
+  .pill { font-size: 12px; padding: 2px 9px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); white-space: nowrap; display: inline-block; }
   .pill.proposed, .pill.pending { color: var(--warn); border-color: var(--warn); }
   .pill.running { color: var(--accent); border-color: var(--accent); }
   .pill.concluded, .pill.approved, .pill.achieved { color: var(--ok); border-color: var(--ok); }
