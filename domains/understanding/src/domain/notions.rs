@@ -311,9 +311,12 @@ impl Notion {
     /// person and never asked to be modelled.
     #[must_use]
     pub fn says_something_about_the_person(&self) -> bool {
-        self.citations
-            .iter()
-            .any(|c| matches!(c.source, Source::Message | Source::Belief | Source::Personal))
+        self.citations.iter().any(|c| {
+            matches!(
+                c.source,
+                Source::Message | Source::Belief | Source::Personal
+            )
+        })
     }
 
     /// Promotes it to a belief, if it has earned that. Returns whether it did.
