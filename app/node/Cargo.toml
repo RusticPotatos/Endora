@@ -32,6 +32,14 @@ tokio = { version = "1.53.0", features = ["rt-multi-thread", "macros", "net", "s
 # needed for browser mic/voice on a LAN address without a domain or proxy.
 axum-server = { version = "0.7.2", features = ["tls-rustls"] }
 rcgen = "0.13.2"
+# One-time passwords (RFC 6238). Already in the tree via the websocket client's handshake;
+# declared here so the dependency is honest. HMAC-SHA1 is what the RFC specifies and what
+# every authenticator app produces — its collision weaknesses do not apply to HMAC.
+sha1 = "0.11.0"
+# Password hashing. The one place in this repository where writing it here would be wrong:
+# correctness is not the hard part, resistance to purpose-built hardware is, and no test can
+# demonstrate that. Argon2id is the current recommendation and carries its own salting.
+argon2 = { version = "0.5.3", features = ["std"] }
 rustls = { version = "0.23.23", features = ["ring"] }
 
 [lints]

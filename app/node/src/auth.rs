@@ -20,6 +20,13 @@
 /// rather than a second way in.
 const THE_ROUTE_A_BROWSER_CANNOT_SIGN: &str = "/v1/activity/stream";
 
+/// The one `/v1` route that must answer an unsigned request: signing in.
+///
+/// Chicken and egg — a credential is what it exists to hand out. It is not therefore
+/// unprotected: it is throttled and locked by [`crate::signin`], which is the whole reason a
+/// password and a six-digit code are safe to accept at all.
+const WHERE_YOU_ASK_TO_BE_LET_IN: &str = "/v1/session";
+
 /// Whether a request may proceed.
 ///
 /// - Anything outside `/v1` is open: the console has to be able to load in order to ask for a
@@ -32,23 +39,34 @@ pub fn may_pass(
     path: &str,
     header: Option<&str>,
     query_token: Option<&str>,
-    expected: &str,
+    accepted: &[String],
 ) -> bool {
-    if !path.starts_with("/v1") {
+    if !path.starts_with("/v1") || path == WHERE_YOU_ASK_TO_BE_LET_IN {
         return true;
     }
-    if expected.is_empty() {
+    if accepted.is_empty() {
         return false;
     }
     if let Some(offered) = header.and_then(|h| h.strip_prefix("Bearer ")) {
-        return same_secret(offered.trim(), expected);
+        return any_of(accepted, offered.trim());
     }
     if path == THE_ROUTE_A_BROWSER_CANNOT_SIGN {
         if let Some(offered) = query_token {
-            return same_secret(offered, expected);
+            return any_of(accepted, offered);
         }
     }
     false
+}
+
+/// Whether an offered secret is any of the accepted ones.
+///
+/// **Every candidate is checked even after one matches**, for the same reason
+/// [`same_secret`] does not stop at the first differing byte: returning early would make how
+/// long a rejection took a measurement of how far down the list the near-miss was.
+fn any_of(accepted: &[String], offered: &str) -> bool {
+    accepted.iter().fold(false, |found, candidate| {
+        found | same_secret(offered, candidate)
+    })
 }
 
 /// Compares two secrets without giving away where they first differ.
@@ -73,16 +91,21 @@ fn same_secret(offered: &str, expected: &str) -> bool {
 mod tests {
     use super::{may_pass, same_secret};
 
-    const GOOD: &str = "a-real-token";
+    fn good() -> Vec<String> {
+        vec!["a-real-token".to_owned()]
+    }
+    fn nothing() -> Vec<String> {
+        Vec::new()
+    }
 
     #[test]
     fn the_console_can_load_before_anyone_has_a_token() {
         // It has to: the screen that asks for the token is served by this node. A health check
         // must answer too, or the container is unhealthy the moment auth is turned on.
         for path in ["/", "/app.js", "/styles.css", "/health"] {
-            assert!(may_pass(path, None, None, GOOD), "{path} must stay open");
+            assert!(may_pass(path, None, None, &good()), "{path} must stay open");
             assert!(
-                may_pass(path, None, None, ""),
+                may_pass(path, None, None, &nothing()),
                 "{path} must load even with nothing configured"
             );
         }
@@ -93,8 +116,8 @@ mod tests {
         // Fail closed, always. An appliance that reads "unset" as "allow" is one bad migration
         // away from wide open, and fails in the direction nobody notices.
         for path in ["/v1/export", "/v1/chat", "/v1/deep-model"] {
-            assert!(!may_pass(path, Some("Bearer anything"), None, ""));
-            assert!(!may_pass(path, None, None, ""));
+            assert!(!may_pass(path, Some("Bearer anything"), None, &nothing()));
+            assert!(!may_pass(path, None, None, &nothing()));
         }
     }
 
@@ -104,7 +127,7 @@ mod tests {
             "/v1/export",
             Some("Bearer a-real-token"),
             None,
-            GOOD
+            &good()
         ));
     }
 
@@ -120,7 +143,7 @@ mod tests {
             Some("Bearer a-real-token-with-more"),
         ] {
             assert!(
-                !may_pass("/v1/export", header, None, GOOD),
+                !may_pass("/v1/export", header, None, &good()),
                 "{header:?} should not have been let in"
             );
         }
@@ -132,7 +155,7 @@ mod tests {
             "/v1/export",
             Some("Bearer  a-real-token  "),
             None,
-            GOOD
+            &good()
         ));
     }
 
@@ -142,9 +165,14 @@ mod tests {
             "/v1/activity/stream",
             None,
             Some("a-real-token"),
-            GOOD
+            &good()
         ));
-        assert!(!may_pass("/v1/activity/stream", None, Some("wrong"), GOOD));
+        assert!(!may_pass(
+            "/v1/activity/stream",
+            None,
+            Some("wrong"),
+            &good()
+        ));
     }
 
     #[test]
@@ -153,7 +181,7 @@ mod tests {
         // One route needs the exception; giving it to everything would be a second way in.
         for path in ["/v1/export", "/v1/chat", "/v1/memory/purge"] {
             assert!(
-                !may_pass(path, None, Some("a-real-token"), GOOD),
+                !may_pass(path, None, Some("a-real-token"), &good()),
                 "{path} must not take a token from the query"
             );
         }
@@ -167,7 +195,7 @@ mod tests {
             "/v1/activity/stream",
             Some("Bearer wrong"),
             Some("a-real-token"),
-            GOOD
+            &good()
         ));
     }
 
