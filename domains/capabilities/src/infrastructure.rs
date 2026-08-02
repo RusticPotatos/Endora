@@ -1539,7 +1539,7 @@ impl Capability for CityMeetingsCapability {
             needs: "",
             settings: &[SettingSpec {
                 key: "legistar_client",
-                label: "your city's Legistar name (e.g. nyc)",
+                label: "your city's Legistar name (e.g. seattle)",
                 secret: false,
                 optional: false,
             }],
@@ -4453,8 +4453,8 @@ mod tests {
         //
         // It called the Instant Answer API, which is not a search engine: it answers when a
         // query names a well-known entity and returns **nothing** for real questions. Live,
-        // "new york nc events this week" and "what is on at bank of america stadium" both
-        // came back empty. It had been offered to the model for months and called zero times
+        // an ordinary question about local events came back empty, and so did one naming a
+        // stadium. It had been offered to the model for months and called zero times
         // across thirty recorded outcomes — and had it been called, it would have said nothing.
         //
         // Two skills claiming to search, one of them useless, gives a model no way to choose
@@ -6734,7 +6734,7 @@ mod what_the_city_is_doing {
     const REAL: &str = r#"[
       {"EventId":1,"EventDate":"2026-08-03T00:00:00","EventTime":"9:00 AM",
        "EventBodyName":"Housing Council Committee",
-       "EventLocation":"New York City Government Center, Room 267"},
+       "EventLocation":"City Government Center, Room 267"},
       {"EventId":2,"EventDate":"2026-08-03T00:00:00","EventTime":"5:00 PM",
        "EventBodyName":"Transportation, Planning, and Development Council Committee ",
        "EventLocation":""}
@@ -6790,7 +6790,7 @@ mod what_the_city_is_doing {
         assert_eq!(
             describe_meeting(&found[0]),
             "Housing Council Committee on 2026-08-03 at 9:00 AM, \
-             New York City Government Center, Room 267"
+             City Government Center, Room 267"
         );
         assert_eq!(
             describe_meeting(&found[1]),

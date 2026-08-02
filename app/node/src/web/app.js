@@ -1819,7 +1819,7 @@ function viewNeedsYou() {
         <div class="title" style="font-weight:500;">Where are you based?</div>
         <div class="sub" style="margin-bottom:6px;">The weather, the news, safety alerts and what's on locally all need this. A town or city is enough.</div>
         <div class="form">
-          <input id="setup-location" placeholder="a city, e.g. New York, NC" />
+          <input id="setup-location" placeholder="a city, e.g. New York, NY" />
           <button class="primary" data-act="setlocation">Save</button>
         </div>
       </div>`;
