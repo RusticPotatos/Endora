@@ -419,6 +419,46 @@ if (unsignedSends.length) {
 }
 console.log(`requests: sending a message signs its ${chat.length} request(s)`);
 
+// Choosing a server from the catalogue has to show you the form it filled in.
+//
+// Both halves were right on their own. The add form was folded into a `<details>`, because
+// almost nobody arrives at that screen to type a launch command out by hand. And "Use" had
+// always filled the fields in and scrolled to them.
+//
+// Inside a closed `<details>` there is nothing to scroll to. The toast said "review and add
+// it", the screen did not move, and the field asking for the API key was behind a fold the
+// person had no reason to suspect. Two correct changes and one seam, which is where these
+// live: neither half is wrong in the file it is in.
+//
+// So this asserts the seam and not either half — after choosing, the form is open and filled.
+{
+  const fold = { open: false, parentElement: null };
+  const nameField = { ...element(), closest: (sel) => (sel === "details" ? fold : null) };
+  const realGet = context.document.getElementById;
+  context.document.getElementById = (id) => (id === "mcp-name" ? nameField : element());
+  runInContext(
+    `MCP_CATALOG = [{ id: "io.github.brave/brave-search-mcp-server", name: "Brave Search",
+       transport: "stdio", command: "npx", args: ["-y", "@brave/brave-search-mcp-server"],
+       fields: [{ key: "BRAVE_API_KEY", label: "Brave API key", secret: true, target: "env" }],
+       docs: "" }];
+     mcpUseCatalog(0);`,
+    context,
+  );
+  context.document.getElementById = realGet;
+  if (!nameField.value) {
+    console.error("catalogue: choosing a server did not fill the form in at all");
+    process.exit(1);
+  }
+  if (!fold.open) {
+    console.error(
+      "catalogue: choosing a server filled a form that is still folded shut — the person " +
+        "sees a toast and no form, which is how this broke",
+    );
+    process.exit(1);
+  }
+  console.log("catalogue: choosing a server opens the form it filled in");
+}
+
 console.log(`breadcrumbs: ${settingsViews.length} screens under Settings all say so`);
 
 console.log(`console check: ${named.length} screens render`);
