@@ -40,6 +40,11 @@ sha1 = "0.11.0"
 # correctness is not the hard part, resistance to purpose-built hardware is, and no test can
 # demonstrate that. Argon2id is the current recommendation and carries its own salting.
 argon2 = { version = "0.5.3", features = ["std"] }
+# QR codes for authenticator enrolment. A dependency for the same reason argon2 is: the
+# encoding is Reed-Solomon plus masking plus version selection, and a mistake produces
+# something that silently will not scan. `svg` only — the default features pull in an image
+# encoder this has no use for.
+qrcode = { version = "0.14.1", default-features = false, features = ["svg"] }
 rustls = { version = "0.23.23", features = ["ring"] }
 
 [lints]
