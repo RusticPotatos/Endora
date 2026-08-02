@@ -149,13 +149,14 @@ runInContext(
   // of the Connect screen, which previously rendered only the "nothing is connected" case.
   CONNECTED = ["caldav", "hue", "tplink"];
   // Not yet enrolled, which is the branch that actually renders the setup card.
-  SIGNIN = { password_set: false, enrolled: true, otpauth: "otpauth://totp/Endora:you?secret=AAAA" };
+  SIGNIN = { password_set: false, enrolled: true, otpauth: "otpauth://totp/Endora:you?secret=AAAA", qr: "<svg xmlns='http://www.w3.org/2000/svg'><rect/></svg>" };
   // A node nobody has claimed yet — the branch that renders the setup screen rather than a
   // sign-in form for an account that does not exist.
   SIGNIN_EXISTS = false;
   // The screen shown once, immediately after claiming — a branch that only exists between two
   // other screens and would otherwise never be rendered by this check.
   JUST_ENROLLED = "otpauth://totp/Endora:you?secret=AAAA&issuer=Endora";
+  JUST_ENROLLED_QR = "<svg xmlns='http://www.w3.org/2000/svg'><rect/></svg>";
   NOTIONS = [{ id: "1", statement: "the Monday gym block gets cancelled",
                because: ["message:12", "reading:calendar.rustic"],
                settles_when: "whether next Monday's block survives",
