@@ -193,6 +193,14 @@ personal-check: ## Fail if anything personal is in the tree (a city and two name
 	# configuration, and configuration is not in the repository.
 	ENDORA_PERSONAL_VALUES="$(ENDORA_PERSONAL_VALUES)" node scripts/check-nothing-personal.mjs
 
+.PHONY: personal-check-published
+personal-check-published: ## Also check what this repo has PUBLISHED — PR bodies, issues, comments
+	# Rewriting history cannot reach a pull request's description. A city name survived a
+	# tree scrub and two force-pushes sitting in a merged PR body, and nine more issues and
+	# PRs were carrying names, a device and a host address. Needs the network and `gh`, so
+	# it is not in `make ci`; run it after opening or editing anything.
+	ENDORA_PERSONAL_VALUES="$(ENDORA_PERSONAL_VALUES)" node scripts/check-nothing-personal.mjs --github
+
 .PHONY: fmt
 fmt: ## Format the code in place
 	$(CARGO) fmt --all
