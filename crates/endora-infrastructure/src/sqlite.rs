@@ -96,7 +96,8 @@ CREATE TABLE IF NOT EXISTS capability_config (
     id                TEXT PRIMARY KEY,
     enabled           INTEGER NOT NULL,
     open_irreversible INTEGER NOT NULL DEFAULT 0,
-    confirm           INTEGER NOT NULL DEFAULT 0
+    confirm           INTEGER NOT NULL DEFAULT 0,
+    stance            TEXT NOT NULL DEFAULT ''
 ) STRICT;
 CREATE TABLE IF NOT EXISTS capability_settings (
     capability_id TEXT NOT NULL,
@@ -530,6 +531,24 @@ impl SqliteStore {
             // `CREATE TABLE IF NOT EXISTS` never adds a column to a table that already
             // exists, so a new column on an existing install arrives only here.
             renamed_capability(&conn, "local_events", "city_meetings")?;
+            // Eight permission axes fold into one stance (ADR 0062). The fold errs toward
+            // `ask`, the recoverable direction: a tool that asks when it could act is a tap;
+            // one that acts when it should ask is the reason the axes existed.
+            ensure_column(
+                &conn,
+                "capability_config",
+                "stance",
+                "TEXT NOT NULL DEFAULT ''",
+            )?;
+            conn.execute_batch(
+                "UPDATE capability_config SET stance = CASE \
+                     WHEN stance != '' THEN stance \
+                     WHEN enabled = 0 THEN 'off' \
+                     WHEN confirm = 1 THEN 'ask' \
+                     WHEN open_irreversible = 1 THEN 'ask' \
+                     ELSE '' END;",
+            )
+            .map_err(backend)?;
             ensure_column(
                 &conn,
                 "deep_model",
@@ -1164,7 +1183,7 @@ mod tests {
             .set_setting("old_name", "client", "somewhere")
             .unwrap();
         (&cfg as &dyn CapabilityConfigRepository)
-            .set_enabled("old_name", false)
+            .set_stance("old_name", endora_capabilities::Stance::Off)
             .unwrap();
 
         super::renamed_capability(&store.db().lock().unwrap(), "old_name", "new_name").unwrap();
@@ -1181,12 +1200,13 @@ mod tests {
             )],
             "the configured value did not travel with the rename"
         );
-        // Whether it was switched off travelled too, and the old id is gone rather than
-        // lingering as a second, stale row.
-        let config = (&cfg as &dyn CapabilityConfigRepository)
-            .enabled_overrides()
-            .unwrap();
-        assert_eq!(config, vec![("new_name".to_owned(), false)]);
+        // The stance travelled too, and the old id is gone rather than lingering as a
+        // second, stale row.
+        let config = (&cfg as &dyn CapabilityConfigRepository).stances().unwrap();
+        assert_eq!(
+            config,
+            vec![("new_name".to_owned(), endora_capabilities::Stance::Off)]
+        );
     }
 
     #[test]
@@ -1314,26 +1334,46 @@ mod tests {
     }
 
     #[test]
-    fn capability_enable_overrides_round_trip() {
+    fn a_stance_round_trips_and_an_unrecognised_word_is_dropped() {
         use endora_application::CapabilityConfigRepository;
+        use endora_capabilities::Stance;
         let store = store();
         let cfg = cfg_store(&store);
         let repo: &dyn CapabilityConfigRepository = &cfg;
 
-        // No overrides to start.
-        assert!(repo.enabled_overrides().unwrap().is_empty());
-
-        // Set two, then flip one; the store keeps the latest per id.
-        repo.set_enabled("weather", true).unwrap();
-        repo.set_enabled("flights", false).unwrap();
-        repo.set_enabled("weather", false).unwrap();
-
-        let mut got = repo.enabled_overrides().unwrap();
+        assert!(repo.stances().unwrap().is_empty());
+        repo.set_stance("weather", Stance::Off).unwrap();
+        repo.set_stance("flights", Stance::Ask).unwrap();
+        repo.set_stance("weather", Stance::Auto).unwrap(); // latest per id wins
+        let mut got = repo.stances().unwrap();
         got.sort();
         assert_eq!(
             got,
-            vec![("flights".to_owned(), false), ("weather".to_owned(), false)]
+            vec![
+                ("flights".to_owned(), Stance::Ask),
+                ("weather".to_owned(), Stance::Auto)
+            ]
         );
+
+        // Clearing returns a tool to its band's default.
+        repo.clear_stance("flights").unwrap();
+        assert_eq!(
+            repo.stances().unwrap(),
+            vec![("weather".to_owned(), Stance::Auto)]
+        );
+
+        // A word nobody recognises is dropped rather than guessed at: a permission that
+        // deserialises leniently is a permission that widens by typo.
+        store
+            .db()
+            .lock()
+            .unwrap()
+            .execute(
+                "UPDATE capability_config SET stance = 'yolo' WHERE id = 'weather'",
+                [],
+            )
+            .unwrap();
+        assert!(repo.stances().unwrap().is_empty());
     }
 
     #[test]

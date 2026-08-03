@@ -4017,6 +4017,29 @@ pub fn seeded_from(
         .collect()
 }
 
+/// How many read-back confirmed changes prove a tool (ADR 0062).
+///
+/// The same arithmetic as a notion maturing: a count in code, which the model cannot argue
+/// with and the person does not administer. Three, because one confirmed change could be a
+/// coincidence of timing and two a repeat of it; a percentage was rejected because a ratio
+/// invites gaming by volume and reads as tunable.
+pub const PROVEN_AFTER: u32 = 3;
+
+/// The tools the record has proven: enough outcomes where read-back **saw the world
+/// change** (ADR 0062). Only `changed: Some(true)` counts — a claim without read-back is
+/// the thing that can be untrue, and an unread effect proves nothing.
+///
+/// Derived, never stored: delete an outcome and the proof recedes with it, purge
+/// everything and every graduate goes back to asking.
+#[must_use]
+pub fn proven_by_the_record(outcomes: &[Outcome]) -> std::collections::HashSet<String> {
+    how_each_capability_landed(outcomes)
+        .into_iter()
+        .filter(|(_, (confirmed, _))| *confirmed >= PROVEN_AFTER)
+        .map(|(id, _)| id)
+        .collect()
+}
+
 /// How each capability has actually landed: `(confirmed changed, times tried)`.
 ///
 /// Only read-back counts. An actuator's own claim is the thing that can be untrue
@@ -10849,6 +10872,63 @@ mod one_fact_source_reaches_everything {
             }
         }
         assert!(what_changed_lately(&Broken, NOW).is_empty());
+    }
+}
+
+#[cfg(test)]
+mod the_record_graduates_a_tool {
+    //! ADR 0062. The permission model was the one place "evidence beats claims" did not
+    //! reach: thirteen read-back confirmed outcomes proved a light switch is a light
+    //! switch, and it was still filed next to a wire transfer.
+
+    use super::{PROVEN_AFTER, proven_by_the_record};
+    use endora_kernel::ids::OutcomeId;
+    use endora_understanding::Outcome;
+
+    fn outcome(id: u128, capability: &str, changed: Option<bool>) -> Outcome {
+        Outcome::from_parts(
+            OutcomeId::new(id),
+            capability.to_owned(),
+            "{}".to_owned(),
+            "done".to_owned(),
+            changed.map(|_| "seen".to_owned()),
+            super::Timestamp::from_unix_millis(0),
+            None,
+            None,
+            changed,
+        )
+    }
+
+    #[test]
+    fn enough_confirmed_changes_prove_a_tool_and_claims_prove_nothing() {
+        let mut all = Vec::new();
+        // Three read-back confirmed changes: proven.
+        for i in 0..u128::from(PROVEN_AFTER) {
+            all.push(outcome(i + 1, "home.HassTurnOff", Some(true)));
+        }
+        // Thirty raw claims with no read-back: the claim is the thing that can be untrue.
+        for i in 0..30u128 {
+            all.push(outcome(100 + i, "home.HassBroadcast", None));
+        }
+        // Confirmed *failures* are tries, not proof.
+        for i in 0..5u128 {
+            all.push(outcome(200 + i, "home.HassLightSet", Some(false)));
+        }
+        let proven = proven_by_the_record(&all);
+        assert!(proven.contains("home.HassTurnOff"));
+        assert!(
+            !proven.contains("home.HassBroadcast"),
+            "thirty unverified claims must prove nothing"
+        );
+        assert!(!proven.contains("home.HassLightSet"));
+    }
+
+    #[test]
+    fn one_short_of_the_bar_is_not_proven() {
+        let all: Vec<Outcome> = (0..u128::from(PROVEN_AFTER) - 1)
+            .map(|i| outcome(i + 1, "home.HassTurnOff", Some(true)))
+            .collect();
+        assert!(proven_by_the_record(&all).is_empty());
     }
 }
 
