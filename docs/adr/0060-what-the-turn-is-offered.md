@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed (2026-08-02). Completes [0058](0058-how-an-integration-gets-in.md) and
+Accepted (2026-08-02), **amended the same day by the measurement it demanded**. Completes [0058](0058-how-an-integration-gets-in.md) and
 [0059](0059-one-fact-source-many-consumers.md), which made it cheap to add a source and
 free to be heard by the turn — and thereby made this the next thing to break.
 
@@ -90,6 +90,33 @@ failure of every retrieval scheme, including the ones that work. Choosing the re
 failure is not caution, it is the only version of this that may be wrong in production —
 which it will be.
 
+### Correction: the record decides what is in front, not only what comes back
+
+The first version deferred **every** actuator and trusted the model to open the way back.
+Measured against the live model, that failed **0 times out of 3**: asked to turn a light off
+with nothing in front of it that could act, it did not reach for the lookup. It answered
+instead.
+
+Deferral is only safe because it is recoverable, and **a recovery the model does not take is
+a deletion** — the precise failure this record exists to prevent, produced by this record's
+own first implementation.
+
+So a handful of **proven** actuators stay in front beside the readers: the ones whose
+read-back says they have actually worked. That is the same short, clean list the battery
+already chooses correctly from every time, and the long tail stays behind the lookup where
+the crowding was. Nothing unproven is promoted — a tool with no record cannot buy its way to
+the front, and one that has never worked certainly cannot.
+
+The measurement, before and after, three runs each:
+
+| | before | after |
+| --- | --- | --- |
+| a proven actuator is reachable | **0/3** | **3/3** |
+| the lookup is not called when it need not be | 2/3 | **3/3** |
+| whole battery, mean | 36.7/48 | **39.7/48** |
+
+Spread was 1 on both runs, so the gain is outside the noise this battery declares.
+
 ### Readers stay; actuators are scoped
 
 Of Home Assistant's 20 tools, **3 read** and **17 act**. *Is anyone home* is worth having in
@@ -160,6 +187,17 @@ Two, both of which exist already:
 
 A ranking that claims to improve with time and is not measured over time is a story. This
 record is not accepted until both move.
+
+### What the acceptance test was, and why it did not test this
+
+This record said it stayed proposed until the eval's crowding case moved. **That case does
+not exercise deferral at all** — it hands the model every tool directly, which is what the
+turn used to do and no longer does. It passes 3/3, and always did; it says the model copes
+with that list and says nothing about this decision.
+
+An acceptance test that does not exercise the thing it accepts is a wish. The two cases added
+here ask the question this record actually makes: with the catalogue built the way production
+builds it, can the butler still act, and does it avoid a round-trip it does not need.
 
 ## Consequences
 

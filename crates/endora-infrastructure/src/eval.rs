@@ -507,6 +507,40 @@ fn crowded_catalogue() -> Vec<String> {
         .collect()
 }
 
+/// The catalogue as production **now** builds it: readers in front, actuators behind one
+/// lookup (ADR 0060).
+///
+/// The crowded case above measures the model against every tool at once, which is what the
+/// live turn used to do and no longer does. It passes — so it says the model copes with that
+/// list, and says nothing at all about deferral. **An acceptance test that does not exercise
+/// the thing it accepts is a wish**, and this record's own standard is that it stays
+/// proposed until a number moves.
+///
+/// Deferral turns one crowded choice into two easy ones: find the way to act, then pick from
+/// a short list. The second half is already measured — `select:turn-off-not-light-set` runs
+/// against exactly the short list deferral produces, and passes. So the only thing left
+/// unmeasured is the first half, and it is a single-shot question: **offered readers and a
+/// lookup, does the model reach for the lookup when asked to do something?**
+fn as_production_offers_it() -> Vec<String> {
+    let mut lines: Vec<String> = EVAL_SKILL_LINES.iter().map(|s| (*s).to_owned()).collect();
+    // The one Home Assistant tool that reads, which is what survives the split.
+    lines.push(
+        "home-assistant.GetLiveContext — Provides real-time information about the CURRENT \
+         state, value, or mode of devices, sensors, entities, or areas."
+            .to_owned(),
+    );
+    // The proven actuators, which the record now keeps in front (ADR 0060, amended).
+    lines.push("home-assistant.HassTurnOff — Turns off a device or entity.".to_owned());
+    lines.push("home-assistant.HassTurnOn — Turns on a device or entity.".to_owned());
+    lines.push(format!(
+        "{} — Find more tools. Only some are listed above; the rest — acting on things, and \
+         further ways of looking things up — are behind this. Call it whenever the tools you \
+         can see do not cover what was asked.",
+        endora_application::LOOK_FOR_A_TOOL
+    ));
+    lines
+}
+
 /// Just the Home Assistant server's tools, as an owned catalogue.
 fn hass_only() -> Vec<String> {
     HASS_TOOLS.iter().map(|s| (*s).to_owned()).collect()
@@ -773,6 +807,30 @@ pub fn battery() -> Vec<EvalCase> {
             tier: Tier::L1,
             probe: Probe::WithTools(crowded_catalogue(), "turn off the kitchen light"),
             check: |r, _| used(r).is_some_and(|t| t.ends_with("HassTurnOff")),
+        },
+        EvalCase {
+            // The half of ADR 0060 nothing measured.
+            //
+            // Deferral is only safe because it is recoverable, and it is recoverable only if
+            // the model actually opens the way back. Asked to do something when nothing in
+            // front of it can act, the right first move is the lookup — and if it instead
+            // apologises, or answers from a reader, deferral has become deletion.
+            // Measured first, and it failed 0/3: with nothing in front of it that could act,
+            // the model did not reach for the lookup. That is deferral behaving as deletion,
+            // and it is why the record now keeps proven actuators in front rather than
+            // trusting a recovery the model does not take.
+            name: "select:a-proven-actuator-is-in-front-of-the-turn",
+            tier: Tier::L1,
+            probe: Probe::WithTools(as_production_offers_it(), "turn off the kitchen light"),
+            check: |r, _| used(r).is_some_and(|t| t.ends_with("HassTurnOff")),
+        },
+        EvalCase {
+            // And it must not fire when what is in front of it is enough — otherwise every
+            // question pays a round-trip on a model that is already slow.
+            name: "select:does-not-reach-for-the-way-back-when-it-need-not",
+            tier: Tier::L1,
+            probe: Probe::WithTools(as_production_offers_it(), "is anyone home?"),
+            check: |r, _| used(r).is_some_and(|t| t != endora_application::LOOK_FOR_A_TOOL),
         },
         EvalCase {
             name: "select:light-set-when-dimming",

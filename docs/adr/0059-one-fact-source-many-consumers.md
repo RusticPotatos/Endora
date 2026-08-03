@@ -2,7 +2,8 @@
 
 ## Status
 
-Proposed (2026-08-02). Completes [0058](0058-how-an-integration-gets-in.md), which said how an
+Accepted (2026-08-02). Shipped: one fact source feeds the watch loop, the turn and
+notions, and the transition log has been recording live for a day. Completes [0058](0058-how-an-integration-gets-in.md), which said how an
 integration gets *in* without saying what it then gets for free.
 
 ## Context

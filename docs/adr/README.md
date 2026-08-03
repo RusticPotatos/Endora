@@ -131,9 +131,9 @@ of an existing record and take the next number.
 | [0055](0055-the-model-layer.md) | The model layer | 0008, 0027, 0030 |
 | [0056](0056-how-it-behaves-toward-you.md) | How it behaves toward you | 0017, 0019, 0025, 0031 |
 | [0057](0057-thinking-between-turns.md) | Thinking between turns | — |
-| [0058](0058-how-an-integration-gets-in.md) | How an integration gets in | — (proposed) |
-| [0059](0059-one-fact-source-many-consumers.md) | One fact source, many consumers | — (proposed) |
-| [0060](0060-what-the-turn-is-offered.md) | What the turn is offered | — (proposed) |
+| [0058](0058-how-an-integration-gets-in.md) | How an integration gets in | — |
+| [0059](0059-one-fact-source-many-consumers.md) | One fact source, many consumers | — |
+| [0060](0060-what-the-turn-is-offered.md) | What the turn is offered | — |
 | [0061](0061-answers-worth-keeping.md) | Answers worth keeping | — (proposed) |
 
 The forty-eight decisions these consolidate are in [archive/](archive/) — kept in full,

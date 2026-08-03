@@ -3856,6 +3856,12 @@ fn nightly_focus(
 /// a thing to do, not managing a catalogue.
 pub const LOOK_FOR_A_TOOL: &str = "find_a_way_to_do_it";
 
+/// How many proven actuators sit in front of the turn beside the readers.
+///
+/// A handful, not all of them: enough that the things this person actually does are one step
+/// away, few enough that the list stays the short one the model chooses correctly from.
+const MOST_PROVEN_ACTUATORS_IN_FRONT: usize = 4;
+
 /// A tool with no record yet, scored so it is neither trusted nor punished.
 ///
 /// Absence of a decision is not a decision — the same rule that stops a standing default
@@ -3921,6 +3927,33 @@ pub fn offered_and_deferred(
         worked(b)
             .partial_cmp(&worked(a))
             .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    // The ones that have actually worked stay in front.
+    //
+    // Measured, and it is the correction this whole idea needed. Deferring *every* actuator
+    // and trusting the model to open the way back failed the eval 0 times out of 3: asked to
+    // turn a light off with nothing in front of it that could act, it did not reach for the
+    // lookup. Deferral is only safe because it is recoverable, and a recovery the model
+    // never takes is a deletion.
+    //
+    // So the record decides what is in front, not only what comes back. A handful of
+    // proven actuators are offered directly — which is exactly the short, clean list the
+    // battery already picks correctly from every time — and the long tail stays behind the
+    // lookup where the crowding was.
+    //
+    // Nothing unproven is promoted. A tool with no record cannot buy its way to the front,
+    // and one that has never worked certainly cannot.
+    let mut promoted = 0;
+    deferred.retain(|c| {
+        let proven = how_it_went
+            .get(&c.id)
+            .is_some_and(|(confirmed, _)| *confirmed > 0);
+        if proven && promoted < MOST_PROVEN_ACTUATORS_IN_FRONT {
+            promoted += 1;
+            offered.push(c.clone());
+            return false;
+        }
+        true
     });
     offered.sort_by(|a, b| a.id.cmp(&b.id));
     (offered, deferred)
@@ -10794,12 +10827,21 @@ mod what_the_turn_is_offered {
     /// `HassLightSet` reads perfectly for "turn off the kitchen light" and has never once
     /// worked in five attempts. Every published approach ranks by description and would
     /// offer it first forever, because none of them ever finds out.
+    /// The whole argument for ranking on read-back rather than on a description.
+    ///
+    /// `HassLightSet` reads perfectly for "turn off the kitchen light" and has never once
+    /// worked in five attempts. Every published approach ranks by description and would
+    /// offer it first forever, because none of them ever finds out.
+    ///
+    /// Amended: a proven actuator is not merely ranked first among the deferred, it is
+    /// **offered**. Deferring every actuator and trusting the model to open the way back
+    /// measured 0/3 against the live model.
     #[test]
-    fn a_tool_that_has_never_worked_sinks_below_one_that_has() {
+    fn a_tool_that_has_worked_is_offered_and_one_that_never_has_is_not() {
         let mut how_it_went = HashMap::new();
         how_it_went.insert("home-assistant.HassLightSet".to_owned(), (0, 5));
         how_it_went.insert("home-assistant.HassTurnOff".to_owned(), (4, 13));
-        let (_, deferred) = offered_and_deferred(
+        let (offered, deferred) = offered_and_deferred(
             vec![
                 tool("home-assistant.HassLightSet", Reversibility::Reversible),
                 tool("home-assistant.HassTurnOff", Reversibility::Reversible),
@@ -10807,8 +10849,14 @@ mod what_the_turn_is_offered {
             &how_it_went,
         );
         assert_eq!(
+            offered.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(),
+            vec!["home-assistant.HassTurnOff"],
+            "a proven actuator has to be reachable without a round-trip"
+        );
+        assert_eq!(
             deferred.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(),
-            vec!["home-assistant.HassTurnOff", "home-assistant.HassLightSet"]
+            vec!["home-assistant.HassLightSet"],
+            "five attempts and never once worked — it does not belong in front"
         );
     }
 
@@ -10822,7 +10870,7 @@ mod what_the_turn_is_offered {
         let mut how_it_went = HashMap::new();
         how_it_went.insert("never".to_owned(), (0, 4));
         how_it_went.insert("always".to_owned(), (4, 4));
-        let (_, deferred) = offered_and_deferred(
+        let (offered, deferred) = offered_and_deferred(
             vec![
                 tool("never", Reversibility::Reversible),
                 tool("brand-new", Reversibility::Reversible),
@@ -10830,9 +10878,16 @@ mod what_the_turn_is_offered {
             ],
             &how_it_went,
         );
+        // Only the proven one comes forward: a tool with no record cannot buy its way to the
+        // front, and one that has never worked certainly cannot.
+        assert_eq!(
+            offered.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(),
+            vec!["always"]
+        );
+        // Among what is left, an unknown tool still sits above one that has never worked.
         assert_eq!(
             deferred.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(),
-            vec!["always", "brand-new", "never"]
+            vec!["brand-new", "never"]
         );
     }
 
