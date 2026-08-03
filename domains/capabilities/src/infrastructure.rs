@@ -462,6 +462,44 @@ fn now_ms() -> u64 {
         .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
 }
 
+/// A transport failure, said the way a person would say it.
+///
+/// Shown live, as the whole of an answer:
+///
+/// ```text
+/// error: unavailable: io: invalid peer certificate: certificate expired: verification
+/// time 1785717318 (UNIX), but certificate is not valid after 1543938436 (241778882
+/// seconds ago)
+/// ```
+///
+/// Every word of that is true and none of it is an answer. The person asked a question; a
+/// site they have never heard of has a certificate that lapsed in 2018, and there is nothing
+/// they can do about it. **What matters is that the page could not be read and why in one
+/// clause** — the rest is plumbing, and the butler does not narrate plumbing.
+///
+/// Mapped on what the message contains rather than on a status code, because these arrive
+/// as prose from a transport that owes us no shape. Anything unrecognised is passed through:
+/// a wrong guess would be worse than a technical sentence, and unrecognised is where the
+/// next unknown failure lives.
+#[must_use]
+pub fn plainly(said: &str) -> String {
+    let lower = said.to_ascii_lowercase();
+    let plain = if lower.contains("certificate expired") || lower.contains("certificatexpired") {
+        "that site's security certificate has expired, so I would not trust the page"
+    } else if lower.contains("certificate") {
+        "that site's security certificate did not check out, so I would not trust the page"
+    } else if lower.contains("timed out") || lower.contains("timeout") {
+        "that site took too long to answer"
+    } else if lower.contains("dns") || lower.contains("resolve") {
+        "I could not find that site at all"
+    } else if lower.contains("connection refused") || lower.contains("connect") {
+        "that site would not let me connect"
+    } else {
+        return said.to_owned();
+    };
+    plain.to_owned()
+}
+
 /// A fingerprint of a request — enough to recognise it again, not enough to rebuild it.
 ///
 /// **The URL is never stored.** It carries the API key of whatever is being asked, and often
@@ -607,7 +645,7 @@ fn get_remembering(
                     return Ok(found.body.clone());
                 }
             }
-            Err(CapabilityError::Unavailable(e.to_string()))
+            Err(CapabilityError::Unavailable(plainly(&e.to_string())))
         }
     }
 }
@@ -1238,7 +1276,8 @@ impl Capability for WebFetchCapability {
         CapabilityInfo {
             id: "web_fetch",
             name: "Web browsing",
-            description: "Fetch a web page and read its text — for research and briefings.",
+            description: "Read ONE web page whose address you already have. It cannot search \
+                          — if you do not have a real address, search first and read a result.",
             category: "information",
             reaches_external: true,
             // Reads state; changes nothing. Policy-identical to Reversible
@@ -1248,7 +1287,15 @@ impl Capability for WebFetchCapability {
             configured: true,
             needs: "",
             settings: &[],
-            input_schema: None,
+            // It requires a URL and said it took nothing, so the model supplied the one
+            // address every documentation page uses — fetched `example.com`, got back "this
+            // domain is for use in documentation examples", and answered from it. A skill
+            // that fails is recoverable; one that succeeds against a placeholder is not.
+            input_schema: Some(
+                r#"{"type":"object","properties":{
+                     "url":{"type":"string","description":"the full https:// address of a real page you already have"}},
+                   "required":["url"]}"#,
+            ),
         }
     }
 
@@ -3057,20 +3104,45 @@ fn compact_input_hint(schema: &serde_json::Value) -> Option<String> {
         .and_then(serde_json::Value::as_array)
         .map(|a| a.iter().filter_map(serde_json::Value::as_str).collect())
         .unwrap_or_default();
+    // **Required fields only, and the rest counted.**
+    //
+    // This listed every parameter a server declared. A search tool with nine of them —
+    // count, country, freshness, goggles, offset, result_filter, safesearch, extra_snippets,
+    // query — read to a small model as nine things to collect, and it turned round and asked
+    // the person for them:
+    //
+    //     To provide you with relevant news, I'll need some more details such as the count
+    //     of results you'd like to see, your preferred country… what level of freshness you
+    //     require.
+    //
+    // That is somebody else's API surface, put to the person as a question. Optional means
+    // the server has a default, so naming them invites a weak model to gather what it was
+    // never required to have. The real schema still travels structurally, so nothing is
+    // hidden from a model that wants to set them — this is only what the prose says.
     let mut fields: Vec<String> = props
         .iter()
-        .map(|(name, spec)| {
-            let ty = spec.get("type").and_then(serde_json::Value::as_str);
-            match (ty, required.contains(name.as_str())) {
-                (Some(ty), true) => format!("{name} ({ty}, required)"),
-                (Some(ty), false) => format!("{name} ({ty})"),
-                (None, true) => format!("{name} (required)"),
-                (None, false) => name.clone(),
-            }
-        })
+        .filter(|(name, _)| required.contains(name.as_str()))
+        .map(
+            |(name, spec)| match spec.get("type").and_then(serde_json::Value::as_str) {
+                Some(ty) => format!("{name} ({ty})"),
+                None => name.clone(),
+            },
+        )
         .collect();
     fields.sort(); // stable order → a deterministic prompt
-    Some(format!("call with input fields: {}", fields.join(", ")))
+    let optional = props.len() - fields.len();
+    if fields.is_empty() {
+        // Everything is optional: say so, rather than listing a menu.
+        return Some(format!(
+            "call it with no arguments, or set any of its {optional} options"
+        ));
+    }
+    let rest = if optional == 0 {
+        String::new()
+    } else {
+        format!(" ({optional} more are optional — leave them out)")
+    };
+    Some(format!("needs: {}{rest}", fields.join(", ")))
 }
 
 /// How many resources one server may contribute to a single watch pass.
@@ -5352,8 +5424,15 @@ mod tests {
         assert_eq!(coerce_args_to_schema(r#"{"x":1}"#, None), r#"{"x":1}"#);
     }
 
+    /// The hint names what a tool **needs**, and counts the rest.
+    ///
+    /// It used to list every parameter a server declared. A search tool with nine of them
+    /// read to a small model as nine things to collect, and it asked the person for them —
+    /// "the count of results you'd like to see, your preferred country, what level of
+    /// freshness you require". That is somebody else's API surface, put to the person as a
+    /// question. Optional means the server has a default.
     #[test]
-    fn compact_input_hint_lists_fields_types_and_required() {
+    fn compact_input_hint_names_what_is_needed_and_counts_the_rest() {
         let schema = serde_json::json!({
             "type": "object",
             "properties": {
@@ -5363,8 +5442,21 @@ mod tests {
             "required": ["name"]
         });
         let hint = compact_input_hint(&schema).unwrap();
-        assert!(hint.contains("name (string, required)"), "got: {hint}");
-        assert!(hint.contains("area (string)"), "got: {hint}");
+        assert!(hint.contains("name (string)"), "got: {hint}");
+        assert!(
+            !hint.contains("area"),
+            "an optional field was named: {hint}"
+        );
+        assert!(hint.contains("1 more"), "got: {hint}");
+
+        // Everything optional: say so rather than listing a menu to be collected.
+        let all_optional = serde_json::json!({
+            "type": "object",
+            "properties": { "count": { "type": "integer" }, "country": { "type": "string" } }
+        });
+        let hint = compact_input_hint(&all_optional).unwrap();
+        assert!(hint.contains("no arguments"), "got: {hint}");
+        assert!(!hint.contains("country"), "got: {hint}");
         // A no-argument tool needs no hint.
         assert!(
             compact_input_hint(&serde_json::json!({ "type": "object", "properties": {} }))
@@ -5394,8 +5486,10 @@ mod tests {
             .unwrap();
         // The model sees both what the tool does AND how to call it.
         assert!(spec.description.contains("Turns on a device"));
+        // What it NEEDS, not every parameter it will accept — a menu of optional fields
+        // reads to a small model as things to go and collect from the person.
         assert!(
-            spec.description.contains("name (string, required)"),
+            spec.description.contains("needs: name (string)"),
             "description should carry the input hint, got: {}",
             spec.description
         );
@@ -7420,6 +7514,34 @@ mod answers_worth_keeping {
     //! often — and so it did not.
 
     use super::{fingerprint, keep_for_ms};
+
+    /// The whole of an answer, live:
+    ///
+    /// > error: unavailable: io: invalid peer certificate: certificate expired:
+    /// > verification time 1785717318 (UNIX), but certificate is not valid after
+    /// > 1543938436 (241778882 seconds ago)
+    ///
+    /// Every word true, none of it an answer.
+    #[test]
+    fn a_transport_failure_is_said_the_way_a_person_would_say_it() {
+        let raw = "io: invalid peer certificate: certificate expired: verification time \
+                   1785717318 (UNIX), but certificate is not valid after 1543938436";
+        let said = super::plainly(raw);
+        assert!(said.contains("certificate has expired"), "{said}");
+        assert!(
+            !said.contains("1785717318"),
+            "a unix timestamp reached the person: {said}"
+        );
+        assert!(!said.contains("io:"), "{said}");
+    }
+
+    #[test]
+    fn an_unrecognised_failure_is_passed_through_rather_than_guessed_at() {
+        // A wrong guess reads worse than a technical sentence, and unrecognised is exactly
+        // where the next unknown failure lives.
+        let odd = "the remote end did something nobody has seen before";
+        assert_eq!(super::plainly(odd), odd);
+    }
 
     #[test]
     fn the_source_decides_how_long_its_answer_is_good_for() {
