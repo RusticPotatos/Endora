@@ -1925,6 +1925,7 @@ async fn send_chat(
         let context = usecases::butler_context(
             understanding.as_ref(),
             understanding.as_ref(),
+            understanding.as_ref(),
             config.as_ref(),
             chat.as_ref(),
             &runner,
@@ -1983,6 +1984,7 @@ async fn brief(State(state): State<AppState>) -> Result<Json<serde_json::Value>,
             proven_now(understanding.as_ref()),
         );
         let context = usecases::butler_context(
+            understanding.as_ref(),
             understanding.as_ref(),
             understanding.as_ref(),
             config.as_ref(),
@@ -2075,6 +2077,7 @@ async fn stream_chat(
                 .map(|d| endora_infrastructure::DeepModelAsker::new(d.url, d.model, d.api_key));
             let event = |v: serde_json::Value| Event::default().data(v.to_string());
             let context = match usecases::butler_context(
+                understanding.as_ref(),
                 understanding.as_ref(),
                 understanding.as_ref(),
                 config.as_ref(),
@@ -2848,6 +2851,7 @@ async fn what_the_butler_is_told(
             proven_now(understanding.as_ref()),
         );
         usecases::butler_context(
+            understanding.as_ref(),
             understanding.as_ref(),
             understanding.as_ref(),
             config.as_ref(),
@@ -5001,6 +5005,7 @@ pub fn spawn_heartbeat(state: AppState) {
                     proven_now(understanding.as_ref()),
                 );
                 let context = usecases::butler_context(
+                    understanding.as_ref(),
                     understanding.as_ref(),
                     understanding.as_ref(),
                     config.as_ref(),

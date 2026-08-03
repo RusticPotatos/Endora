@@ -202,6 +202,19 @@ pub struct ButlerContext {
     /// day it is rather than guessing or leaking a placeholder. Cheap local truth —
     /// grounded every turn, unlike weather/news which need a skill.
     pub now: String,
+    /// Where the person is based, stated as ground truth every turn — empty until they
+    /// have said.
+    ///
+    /// Cheap local truth, exactly like [`Self::now`], and left as prose for far too long.
+    /// The place was only ever in the preferences the model reads alongside its own past
+    /// replies — so when the butler once answered with the wrong city, that answer became
+    /// three of the last twelve messages and it went on reading its own mistake back as
+    /// evidence. **A model's past output is not a source about the person** ([0052]), and
+    /// the conversation is the one place that rule had no reach.
+    ///
+    /// Stating it as a fact settles it the way the date is settled: nothing has to be
+    /// inferred, so nothing can drift.
+    pub where_they_are: String,
     /// A compact running summary of the earlier conversation this session — the part
     /// that has scrolled out of the recent verbatim window. Keeps the day's thread
     /// present without sending the whole transcript (which slows a local model), so

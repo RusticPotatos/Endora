@@ -4130,6 +4130,29 @@ pub fn scorecard(outcomes: &[Outcome]) -> Option<String> {
     Some(said)
 }
 
+/// Where the person said they are based, from what they told Endora.
+///
+/// Read from the preference they set on first run rather than inferred, because the model
+/// reads its own past replies in the same window and a wrong answer it once gave becomes
+/// three of the last twelve messages — evidence, as far as a small model is concerned.
+/// The person's own words outrank the butler's recollection of itself.
+#[must_use]
+pub fn where_they_are(preferences: &[Preference]) -> String {
+    preferences
+        .iter()
+        .filter_map(|p| {
+            let text = p.text().trim();
+            let rest = text
+                .strip_prefix("based in ")
+                .or_else(|| text.strip_prefix("Based in "))?;
+            let place = rest.trim().trim_end_matches('.').trim();
+            (!place.is_empty()).then(|| place.to_owned())
+        })
+        // The latest one they set wins, the same rule every other preference follows.
+        .next_back()
+        .unwrap_or_default()
+}
+
 /// How many read-back confirmed changes prove a tool (ADR 0062).
 ///
 /// The same arithmetic as a notion maturing: a count in code, which the model cannot argue
@@ -4177,8 +4200,16 @@ pub fn how_each_capability_landed(
 ///
 /// # Errors
 /// [`AppError::Repository`] if the backend fails or stored data is corrupt.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "explicit dependencies, no hidden state — the same reason every other \
+              orchestrator here names its stores"
+)]
 pub fn butler_context(
     beliefs: &impl BeliefRepository,
+    // Where they are is a fact the turn is handed, not something to infer from prose it
+    // reads beside its own past replies.
+    preferences: &impl PreferenceRepository,
     outcomes: &impl OutcomeRepository,
     aliases: &(
          impl endora_capabilities::TargetAliasRepository
@@ -4255,6 +4286,7 @@ pub fn butler_context(
         .collect();
     Ok(ButlerContext {
         understanding,
+        where_they_are: where_they_are(&preferences.list_all()?),
         deferred,
         capabilities: skills,
         tools,
@@ -10989,6 +11021,56 @@ mod one_fact_source_reaches_everything {
             }
         }
         assert!(what_changed_lately(&Broken, NOW).is_empty());
+    }
+}
+
+#[cfg(test)]
+mod where_they_are_is_a_fact {
+    //! Live: the butler kept answering with the wrong city while the stored preference was
+    //! right the whole time. Its own past replies were three of the last twelve messages,
+    //! and to a small model reading the window, that is evidence. ADR 0052 already says
+    //! Endora's own conduct is not evidence about the person — the conversation was the one
+    //! place that rule had no reach.
+
+    use super::where_they_are;
+    use endora_kernel::ids::PreferenceId;
+    use endora_understanding::Preference;
+
+    fn pref(id: u128, text: &str) -> Preference {
+        Preference::new(
+            PreferenceId::new(id),
+            text,
+            endora_understanding::PreferenceKind::Context,
+            super::Timestamp::from_unix_millis(i64::try_from(id).unwrap_or_default()),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn the_place_comes_from_what_they_said() {
+        let prefs = vec![
+            pref(1, "you usually want news, weather, and traffic"),
+            pref(2, "based in Springfield, IL"),
+        ];
+        assert_eq!(where_they_are(&prefs), "Springfield, IL");
+    }
+
+    #[test]
+    fn the_latest_one_they_set_wins() {
+        // Moving house is a preference change, not an argument with history.
+        let prefs = vec![
+            pref(1, "based in Springfield, IL"),
+            pref(2, "based in Ashfield"),
+        ];
+        assert_eq!(where_they_are(&prefs), "Ashfield");
+    }
+
+    #[test]
+    fn saying_nothing_is_empty_rather_than_a_guess() {
+        assert_eq!(where_they_are(&[]), "");
+        assert_eq!(where_they_are(&[pref(1, "likes short answers")]), "");
+        // And a trailing full stop is not part of the town.
+        assert_eq!(where_they_are(&[pref(1, "based in Ashfield.")]), "Ashfield");
     }
 }
 
