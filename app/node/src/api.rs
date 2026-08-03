@@ -5051,6 +5051,12 @@ pub fn spawn_heartbeat(state: AppState) {
                 // The nightly self-improvement loop (ADR 0051), if due: review the
                 // day and reflect, within the reversible band — never anything
                 // irreversible. Serialized under the turn lock like the brief.
+                // The fortnight's transitions — the sensing the thinking cites from.
+                let fortnight = endora_capabilities::TransitionLog::since(
+                    config.as_ref(),
+                    clock.now().unix_millis() - endora_capabilities::KEEP_TRANSITIONS_FOR_MS,
+                )
+                .unwrap_or_default();
                 let reflected = usecases::run_due_nightly_loop(
                     chat.as_ref(),
                     understanding.as_ref(),
@@ -5058,6 +5064,7 @@ pub fn spawn_heartbeat(state: AppState) {
                     understanding.as_ref(),
                     understanding.as_ref(),
                     understanding.as_ref(),
+                    &fortnight,
                     schedules.as_ref(),
                     &runner,
                     // Which things the services say are the person's own rather than the

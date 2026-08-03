@@ -1878,6 +1878,30 @@ pub fn ticketed_events_in(body: &str) -> Vec<TicketedEvent> {
         .collect()
 }
 
+/// Says a list the way a person would, not the way a printer would.
+///
+/// Asked for significant events, the butler recited six council committees verbatim — a
+/// summariser that joins every row with "; " hands a small model a list, and a small model
+/// handed a list reads the list. Proportion is the fix and it is universal: few enough to
+/// say, say them; more than that, say the shape and the first few, and count the rest.
+#[must_use]
+pub fn said_proportionately(said: Vec<String>, what: &str) -> String {
+    /// Up to this many, naming them all reads fine.
+    const FEW_ENOUGH_TO_SAY: usize = 4;
+    if said.is_empty() {
+        return format!("Nothing {what} just now.");
+    }
+    if said.len() <= FEW_ENOUGH_TO_SAY {
+        return said.join("; ");
+    }
+    let rest = said.len() - FEW_ENOUGH_TO_SAY;
+    format!(
+        "{} of them — {}; and {rest} more",
+        said.len(),
+        said[..FEW_ENOUGH_TO_SAY].join("; ")
+    )
+}
+
 /// Says an event the way somebody would mention it.
 #[must_use]
 pub fn describe_ticketed_event(e: &TicketedEvent) -> String {
@@ -2125,10 +2149,10 @@ impl Capability for TicketedEventsCapability {
         if on.is_empty() {
             return "Nothing ticketed coming up for that.".to_owned();
         }
-        on.iter()
-            .map(describe_ticketed_event)
-            .collect::<Vec<_>>()
-            .join("; ")
+        said_proportionately(
+            on.iter().map(describe_ticketed_event).collect(),
+            "ticketed coming up",
+        )
     }
 
     /// Proves the key works, without ever repeating it.
@@ -2226,11 +2250,10 @@ impl Capability for CityMeetingsCapability {
         if meetings.is_empty() {
             return "Nothing on the city's public calendar just now.".to_owned();
         }
-        meetings
-            .iter()
-            .map(describe_meeting)
-            .collect::<Vec<_>>()
-            .join("; ")
+        said_proportionately(
+            meetings.iter().map(describe_meeting).collect(),
+            "on the city's public calendar",
+        )
     }
 }
 scaffold!(
@@ -7633,6 +7656,32 @@ mod answers_worth_keeping {
         // Two independent hashes, so a collision is another question's answer rather than a
         // slow one — the halves must not be the same function twice.
         assert_ne!(one.0, one.1);
+    }
+}
+
+#[cfg(test)]
+mod a_list_said_like_a_person {
+    use super::said_proportionately;
+
+    #[test]
+    fn few_are_named_and_many_are_shaped() {
+        let few = vec!["a".to_owned(), "b".to_owned()];
+        assert_eq!(said_proportionately(few, "on"), "a; b");
+        let many: Vec<String> = (1..=7).map(|i| format!("thing {i}")).collect();
+        let said = said_proportionately(many, "on");
+        // The shape first, the first few, and the count of the rest — never the recital
+        // a small model will read straight back to the person.
+        assert!(said.starts_with("7 of them — thing 1;"), "{said}");
+        assert!(said.ends_with("and 3 more"), "{said}");
+        assert!(!said.contains("thing 5"), "{said}");
+    }
+
+    #[test]
+    fn nothing_says_so() {
+        assert_eq!(
+            said_proportionately(Vec::new(), "on the calendar"),
+            "Nothing on the calendar just now."
+        );
     }
 }
 
