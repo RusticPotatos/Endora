@@ -4771,6 +4771,8 @@ fn reach_out(config: &endora_capabilities::ConfigStore, message: &endora_applica
 /// read would clear every clock in the house on one bad network moment.
 fn watch_the_world(state: &AppState) {
     let config = state.config.clone();
+    // Everything this pass records, for the wake decision at the end (ADR 0063).
+    let mut this_pass: Vec<endora_capabilities::Transition> = Vec::new();
     let events = state.events.clone();
     let clock = state.clock.clone();
     let now_ms = state.clock.now().unix_millis();
@@ -4804,6 +4806,7 @@ fn watch_the_world(state: &AppState) {
                                     change.key, change.from, change.to
                                 ),
                             );
+                            this_pass.push(change);
                         }
                     }
                     Err(e) => eprintln!("watching {server}: could not record what moved: {e}"),
@@ -4846,11 +4849,76 @@ fn watch_the_world(state: &AppState) {
                         clock.as_ref(),
                         &format!("{} went from {} to {}", change.key, change.from, change.to),
                     );
+                    this_pass.push(change);
                 }
             }
             Err(e) => eprintln!("watching skills: could not record what moved: {e}"),
         }
     }
+    wake_on_the_unusual(state, &this_pass, now_ms);
+}
+
+/// How long after one wake before another may happen (ADR 0063). In memory: a restart
+/// forgets it, which is at worst one extra consideration per restart — accepted over a
+/// stored timestamp whose only job is to be one.
+const WAKE_COOLDOWN_MS: i64 = 60 * 60 * 1_000;
+static LAST_WAKE_MS: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+
+/// A rare change spends the check-in budget early (ADR 0063).
+///
+/// This adds no new way to speak. It pulls the existing check-in's `next_at` to now, so
+/// the next heartbeat runs the same `consider_reaching_out` a scheduled check-in runs —
+/// same agentic turn, same reversible-only clamp, same silence-is-the-default. The
+/// transition reaches that turn through the fact stream, so the butler wakes already
+/// knowing what woke it. No schedule means no waking: the person's one dial governs both.
+fn wake_on_the_unusual(
+    state: &AppState,
+    this_pass: &[endora_capabilities::Transition],
+    now_ms: i64,
+) {
+    use std::sync::atomic::Ordering;
+    if this_pass.is_empty() {
+        return;
+    }
+    let last = LAST_WAKE_MS.load(Ordering::Relaxed);
+    if now_ms.saturating_sub(last) < WAKE_COOLDOWN_MS {
+        return;
+    }
+    // The whole window, including what this pass just recorded.
+    let Ok(history) = endora_capabilities::TransitionLog::since(
+        state.config.as_ref(),
+        now_ms - endora_capabilities::KEEP_TRANSITIONS_FOR_MS,
+    ) else {
+        return;
+    };
+    let Some(unusual) = endora_capabilities::worth_waking_for(this_pass, &history) else {
+        return;
+    };
+    // Only advance a budget that exists: check-ins off means waking off, same switch.
+    let Ok(Some(mut schedule)) =
+        endora_scheduling::CheckinRepository::get(state.schedules.as_ref())
+    else {
+        return;
+    };
+    if !schedule.enabled {
+        return;
+    }
+    schedule.next_at = endora_application::Timestamp::from_unix_millis(now_ms);
+    if endora_scheduling::CheckinRepository::set(state.schedules.as_ref(), &schedule).is_err() {
+        return;
+    }
+    LAST_WAKE_MS.store(now_ms, Ordering::Relaxed);
+    // Said in the trail, so "why did it message me?" has an answer even when the
+    // consideration ends in silence.
+    record_event(
+        state.events.as_ref(),
+        state.clock.as_ref(),
+        &format!(
+            "Something unusual: {} went from {} to {} — having a look now instead of \
+             waiting for the next check-in",
+            unusual.key, unusual.from, unusual.to
+        ),
+    );
 }
 
 /// Re-reads stored beliefs against the rules as they stand today (ADR 0052).

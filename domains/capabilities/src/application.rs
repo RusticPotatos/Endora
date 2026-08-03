@@ -628,6 +628,32 @@ pub fn watch_for_change(
     Ok(moved)
 }
 
+/// How many transitions a key may have in the fortnight and still count as unusual
+/// (ADR 0063). Counting the one that just happened — so a thing on its third-ever change
+/// still wakes, and a thing on its fourth does not.
+pub const RARELY: usize = 3;
+
+/// The transition worth waking for, if this pass recorded one (ADR 0063).
+///
+/// Rarity is arithmetic and it is the whole trigger: a key that has changed at most
+/// [`RARELY`] times in the whole fortnight the log holds is unusual, whatever it is
+/// called and whichever integration it came from. No keyword list — a name-based rule is
+/// the per-skill patch 0054 forbids — and no model judgement: interrupting somebody is
+/// consequential, and the model is never the enforcement boundary (0051).
+///
+/// The first qualifying transition wins; the rest of the pass reaches the turn through
+/// the fact stream anyway. `history` is the log's whole window and includes what this
+/// pass just recorded.
+#[must_use]
+pub fn worth_waking_for<'a>(
+    moved: &'a [Transition],
+    history: &[Transition],
+) -> Option<&'a Transition> {
+    moved
+        .iter()
+        .find(|t| history.iter().filter(|h| h.key == t.key).count() <= RARELY)
+}
+
 /// # Errors
 /// [`RepositoryError`] if the backend fails.
 pub fn watch_for_trouble(
@@ -659,6 +685,45 @@ mod keeping_a_record_of_what_moved {
     //! downstream inherits the noise.
 
     use super::{TransitionLog, watch_for_change};
+    #[test]
+    fn a_rare_change_wakes_and_a_chatty_one_never_does() {
+        // ADR 0063. The hallway light changes all day; a sensor that has said nothing all
+        // fortnight and just spoke is worth a word.
+        let t = |key: &str, at: i64| super::Transition {
+            key: key.to_owned(),
+            from: "a".to_owned(),
+            to: "b".to_owned(),
+            at_ms: at,
+        };
+        let mut history: Vec<super::Transition> =
+            (0..40).map(|i| t("house::light.hall", i)).collect();
+        history.push(t("house::sensor.quiet", 41));
+        let moved = vec![t("house::light.hall", 42), t("house::sensor.quiet", 41)];
+        let woke = super::worth_waking_for(&moved, &history).expect("the quiet sensor wakes");
+        assert_eq!(woke.key, "house::sensor.quiet");
+    }
+
+    #[test]
+    fn the_fourth_change_in_a_fortnight_is_no_longer_unusual() {
+        let t = |at: i64| super::Transition {
+            key: "house::sensor.quiet".to_owned(),
+            from: "a".to_owned(),
+            to: "b".to_owned(),
+            at_ms: at,
+        };
+        // Counting itself: three changes in the window still wakes...
+        let history: Vec<super::Transition> = (0..3).map(t).collect();
+        assert!(super::worth_waking_for(&history[2..], &history).is_some());
+        // ...the fourth does not. Unusual has a boundary or it is a synonym for "any".
+        let history: Vec<super::Transition> = (0..4).map(t).collect();
+        assert!(super::worth_waking_for(&history[3..], &history).is_none());
+    }
+
+    #[test]
+    fn a_pass_that_moved_nothing_wakes_nobody() {
+        assert!(super::worth_waking_for(&[], &[]).is_none());
+    }
+
     use crate::domain::{DWELL_MS, Transition, Watched};
     use endora_kernel::RepositoryError;
     use std::cell::RefCell;

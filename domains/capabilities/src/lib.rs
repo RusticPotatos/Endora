@@ -30,7 +30,7 @@ pub use application::{
     KEEP_TRANSITIONS_FOR_MS, McpServer, McpServerRegistry, McpTransport, ModelSlot,
     ModelTuneSchedule, ModelTuneScheduleRepository, Sampling, Stance, StandingTrouble,
     StandingTroubleRepository, TargetAlias, TargetAliasRepository, TransitionLog, WriteKind,
-    not_answering, watch_for_change, watch_for_trouble, worth_raising,
+    not_answering, watch_for_change, watch_for_trouble, worth_raising, worth_waking_for,
 };
 pub use domain::{DWELL_MS, SetupField, SetupForm, Transition, Watched};
 pub use home_assistant::{HomeAssistant, paired_server};
