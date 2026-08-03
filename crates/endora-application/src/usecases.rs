@@ -3602,6 +3602,12 @@ pub fn run_due_nightly_loop(
     let mut history = chat.list()?;
     let prefs = preferences.list_all()?;
     let mut activity: Vec<String> = Vec::new();
+    // The reward signal, nightly (loop spine). Derived from read-back, never from the
+    // model's account of itself; recorded where the person reads and the butler's own
+    // own-activity skill can reach it from any turn.
+    if let Some(score) = scorecard(&outcomes.list()?) {
+        activity.push(score);
+    }
 
     // AGENTIC overnight review (ADR 0056/0024): name a focus the person cares about
     // and let the butler reach for WHATEVER skills help look into it — its choice,
@@ -4015,6 +4021,46 @@ pub fn seeded_from(
             }
         })
         .collect()
+}
+
+/// The butler's own score, said the way it would say it about anything else.
+///
+/// The reward half of the loop spine: every number here is derived from read-back the
+/// system already records — never from the model's account of itself, which is the thing
+/// that can be untrue (ADR 0053). Nothing new is stored; the nightly pass says this into
+/// the activity trail, where the person can read it and the butler's own-activity skill
+/// can reach it from any turn — so "how have you been doing?" has a grounded answer, and
+/// the night's reflection has a measurement to chew on instead of a feeling.
+///
+/// `None` when there is nothing to score: a scorecard over zero attempts is a vibe.
+#[must_use]
+pub fn scorecard(outcomes: &[Outcome]) -> Option<String> {
+    if outcomes.is_empty() {
+        return None;
+    }
+    let tally = how_each_capability_landed(outcomes);
+    let tried: u32 = tally.values().map(|(_, t)| t).sum();
+    let confirmed: u32 = tally.values().map(|(c, _)| c).sum();
+    let mut said = format!("Scorecard: {confirmed} of {tried} actions confirmed by read-back");
+    // The worst habit, named — a tool tried enough to judge and never once seen to work.
+    // This is the line a notion can grow from, and the line that once justified a skill
+    // withdrawing itself.
+    if let Some((worst, (_, tries))) = tally
+        .iter()
+        .filter(|(_, (c, t))| *c == 0 && *t >= PROVEN_AFTER)
+        .max_by_key(|(_, (_, t))| *t)
+    {
+        said.push_str(&format!("; {worst} has never worked in {tries} tries"));
+    }
+    let graduated = proven_by_the_record(outcomes).len();
+    if graduated > 0 {
+        said.push_str(&format!(
+            "; {graduated} tool{} earned acting without asking",
+            if graduated == 1 { " has" } else { "s have" }
+        ));
+    }
+    said.push('.');
+    Some(said)
 }
 
 /// How many read-back confirmed changes prove a tool (ADR 0062).
@@ -10872,6 +10918,65 @@ mod one_fact_source_reaches_everything {
             }
         }
         assert!(what_changed_lately(&Broken, NOW).is_empty());
+    }
+}
+
+#[cfg(test)]
+mod it_keeps_its_own_score {
+    //! The reward half of the loop spine: derived from read-back, never from the model's
+    //! account of itself.
+
+    use super::scorecard;
+    use endora_kernel::ids::OutcomeId;
+    use endora_understanding::Outcome;
+
+    fn outcome(id: u128, capability: &str, changed: Option<bool>) -> Outcome {
+        Outcome::from_parts(
+            OutcomeId::new(id),
+            capability.to_owned(),
+            "{}".to_owned(),
+            "done".to_owned(),
+            changed.map(|_| "seen".to_owned()),
+            super::Timestamp::from_unix_millis(0),
+            None,
+            None,
+            changed,
+        )
+    }
+
+    #[test]
+    fn the_score_is_read_back_and_names_the_worst_habit() {
+        let mut all = Vec::new();
+        for i in 0..4u128 {
+            all.push(outcome(i, "home.HassTurnOff", Some(true)));
+        }
+        for i in 0..5u128 {
+            all.push(outcome(10 + i, "home.HassLightSet", Some(false)));
+        }
+        let said = scorecard(&all).unwrap();
+        assert!(said.contains("4 of 9 actions confirmed"), "{said}");
+        assert!(
+            said.contains("home.HassLightSet has never worked in 5 tries"),
+            "{said}"
+        );
+        assert!(
+            said.contains("1 tool has earned acting without asking"),
+            "{said}"
+        );
+    }
+
+    #[test]
+    fn nothing_attempted_is_no_scorecard_rather_than_a_vibe() {
+        assert!(scorecard(&[]).is_none());
+    }
+
+    #[test]
+    fn a_tool_barely_tried_is_not_named_the_worst() {
+        // One failed try is not a habit; naming it would teach avoidance on no evidence —
+        // the same reason a new tool is not punished for having no record (ADR 0060).
+        let all = vec![outcome(1, "home.HassBroadcast", Some(false))];
+        let said = scorecard(&all).unwrap();
+        assert!(!said.contains("never worked"), "{said}");
     }
 }
 
