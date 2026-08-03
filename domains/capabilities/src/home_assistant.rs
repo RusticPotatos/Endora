@@ -43,6 +43,49 @@ pub struct Entity {
     /// without these is unreadable for a whole class of thing.
     pub facts: serde_json::Map<String, Value>,
 }
+/// `2026-08-03T04:00:00Z` from unix millis — the recorder's own date shape.
+fn format_utc(ms: i64) -> String {
+    let secs = ms.div_euclid(1000);
+    let days = secs.div_euclid(86_400);
+    let tod = secs.rem_euclid(86_400);
+    let date = crate::infrastructure::civil_from_days(days);
+    format!(
+        "{date}T{:02}:{:02}:{:02}Z",
+        tod / 3600,
+        (tod % 3600) / 60,
+        tod % 60
+    )
+}
+
+/// The `(state, when)` pairs in a recorder answer.
+///
+/// Parsed, never trusted, and a renamed field yields nothing rather than a half-built row —
+/// the same posture as every other read of somebody else's service. The recorder answers an
+/// array per entity; `minimal_response` strips attributes, and the first entry of each run
+/// carries `last_changed` while later ones may not.
+#[must_use]
+pub fn states_in_history(body: &str) -> Vec<(String, String)> {
+    let Ok(serde_json::Value::Array(per_entity)) = serde_json::from_str(body) else {
+        return Vec::new();
+    };
+    per_entity
+        .iter()
+        .filter_map(|rows| rows.as_array())
+        .flatten()
+        .filter_map(|row| {
+            let state = row.get("state")?.as_str()?.trim();
+            if state.is_empty() {
+                return None;
+            }
+            let when = row
+                .get("last_changed")
+                .or_else(|| row.get("last_updated"))
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default();
+            Some((state.to_owned(), when.to_owned()))
+        })
+        .collect()
+}
 
 /// A configured connection to a Home Assistant instance.
 pub struct HomeAssistant {
@@ -197,6 +240,28 @@ impl HomeAssistant {
         let path = format!("/api/services/{domain}/{service}");
         let body = self.post(&path, &json!({ "entity_id": entity }))?;
         Ok(describe_service_result(&body, service, entity))
+    }
+
+    /// What one thing did over the last stretch of hours, from the service's own recorder.
+    ///
+    /// The house keeps months of state history behind a query API, and Endora kept its own
+    /// fortnight of changes beside it without ever asking. This is the ask. Answers, not a
+    /// relationship (ADR 0058) — one authenticated GET against a connection that already
+    /// exists, so nothing new is configured and nothing new is trusted.
+    ///
+    /// # Errors
+    /// A human-readable message if the recorder cannot be read.
+    pub fn history_of(&self, entity: &str, hours: u32) -> Result<Vec<(String, String)>, String> {
+        let start_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|e| e.to_string())?
+            .as_millis()
+            .saturating_sub(u128::from(hours) * 3_600_000);
+        let start = format_utc(i64::try_from(start_ms).unwrap_or_default());
+        let body = self.get(&format!(
+            "/api/history/period/{start}?filter_entity_id={entity}&minimal_response"
+        ))?;
+        Ok(states_in_history(&body))
     }
 
     fn get(&self, path: &str) -> Result<String, String> {
@@ -1329,6 +1394,33 @@ impl crate::infrastructure::NativeChannel for HomeAssistant {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn the_recorder_answer_is_parsed_never_trusted() {
+        // Shaped as /api/history/period answers with minimal_response: an array per
+        // entity; later entries of a run may carry last_updated instead of last_changed.
+        let body = r#"[[
+            {"state":"off","last_changed":"2026-08-03T01:00:00+00:00"},
+            {"state":"on","last_updated":"2026-08-03T02:30:00+00:00"},
+            {"state":"","last_changed":"2026-08-03T03:00:00+00:00"}
+        ]]"#;
+        let past = super::states_in_history(body);
+        assert_eq!(past.len(), 2, "a blank state is not a reading");
+        assert_eq!(past[0].0, "off");
+        assert_eq!(
+            past[1],
+            ("on".to_owned(), "2026-08-03T02:30:00+00:00".to_owned())
+        );
+        // A renamed field yields nothing rather than a half-built row.
+        assert!(super::states_in_history(r#"[[{"status":"on"}]]"#).is_empty());
+        assert!(super::states_in_history("not json").is_empty());
+    }
+
+    #[test]
+    fn the_recorder_is_asked_in_its_own_date_shape() {
+        // 2026-08-03 00:00:00 UTC.
+        assert_eq!(super::format_utc(1_785_715_200_000), "2026-08-03T00:00:00Z");
+    }
     use super::*;
 
     #[test]

@@ -1758,9 +1758,13 @@ fn today_utc() -> String {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or_default();
-    // Civil-from-days: the standard algorithm, so a date is arithmetic rather than a
-    // dependency for one line of formatting.
     let days = (secs / 86_400) as i64;
+    civil_from_days(days)
+}
+
+/// `YYYY-MM-DD` from days since the epoch — the standard civil-from-days algorithm, so a
+/// date is arithmetic rather than a dependency for one line of formatting.
+pub(crate) fn civil_from_days(days: i64) -> String {
     let z = days + 719_468;
     let era = z.div_euclid(146_097);
     let doe = z.rem_euclid(146_097);
@@ -2510,7 +2514,13 @@ impl Capability for HomeAssistantCapability {
             configured: true,
             needs: "your Home Assistant URL and a long-lived access token",
             settings: HA_SETTINGS,
-            input_schema: None,
+            input_schema: Some(
+                r#"{"type":"object","properties":{
+                     "domain":{"type":"string","description":"filter what it can see: light, person, sensor…"},
+                     "history_of":{"type":"string","description":"an entity id, to get what it DID over recent hours from the house's own recorder"},
+                     "hours":{"type":"integer","description":"how far back to look (with history_of), default 24"}},
+                   "required":[]}"#,
+            ),
         }
     }
 
@@ -2592,6 +2602,33 @@ impl Capability for HomeAssistantCapability {
                     "set a Home Assistant access token in this skill's settings".to_owned(),
                 )
             })?;
+        // Asked about history — what one thing DID, from the service's own recorder
+        // (ADR 0058: answers over a connection that already exists; months of state the
+        // house was keeping right beside Endora's fortnight of changes, never asked).
+        if let Some(thing) = input.get("history_of").and_then(Value::as_str) {
+            let hours = input
+                .get("hours")
+                .and_then(Value::as_u64)
+                .map_or(24, |h| u32::try_from(h.clamp(1, 24 * 14)).unwrap_or(24));
+            let home =
+                crate::home_assistant::HomeAssistant::from_settings(settings).ok_or_else(|| {
+                    CapabilityError::Unavailable(
+                        "set the Home Assistant URL and token in this skill's settings".to_owned(),
+                    )
+                })?;
+            let past = home
+                .history_of(thing.trim(), hours)
+                .map_err(CapabilityError::Unavailable)?;
+            return Ok(json!({
+                "thing": thing,
+                "hours": hours,
+                "changes": past.len().saturating_sub(1),
+                "history": past
+                    .iter()
+                    .map(|(state, when)| json!({ "state": state, "at": when }))
+                    .collect::<Vec<_>>(),
+            }));
+        }
         // Optional {domain} filter (e.g. "light", "person", "sensor", "media_player").
         let domain = input.get("domain").and_then(Value::as_str).unwrap_or("");
         // HA is the person's own local service — direct agent (not proxied/guarded).
