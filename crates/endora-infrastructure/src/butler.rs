@@ -1223,6 +1223,19 @@ fn build_butler_request(
     if !context.now.is_empty() {
         system.push_str(&format!("\nThe current date and time is {}.", context.now));
     }
+    // Stated, not inferred — the same treatment the date gets, and for the same reason.
+    // Left as prose, the place was read out of preferences sitting beside the butler's own
+    // past replies, so one wrong answer became three of the last twelve messages and it
+    // went on repeating itself. What the person said outranks what the butler remembers
+    // saying.
+    if !context.where_they_are.is_empty() {
+        system.push_str(&format!(
+            "\nThey are based in {}. That is where 'home', 'here', 'my area' and any \
+             unqualified place refer to — use it for skill inputs that need a place, and \
+             never a place you saw in an earlier reply.",
+            context.where_they_are
+        ));
+    }
     if let Some(summary) = context
         .conversation_summary
         .as_deref()
