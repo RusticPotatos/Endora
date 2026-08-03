@@ -2869,6 +2869,7 @@ async fn what_the_butler_is_told(
         "understands": told.understanding,
         "names_it_knows": told.target_aliases,
         "how_its_actions_landed": told.track_record,
+        "where_they_are": told.where_they_are,
         "skills_offered": told.capabilities.len(),
     })))
 }

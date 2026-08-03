@@ -4141,11 +4141,22 @@ pub fn where_they_are(preferences: &[Preference]) -> String {
     preferences
         .iter()
         .filter_map(|p| {
+            // Read the shape that is actually stored, not the one this expected. The
+            // console writes "Based in: <place>" with a colon; a parser matching only
+            // "based in " found nothing and the fact silently stayed empty — which is the
+            // same mistake as assuming a tool's argument name instead of checking it.
+            //
+            // So: case-insensitive prefix, then strip whatever punctuation separates the
+            // label from the answer.
             let text = p.text().trim();
-            let rest = text
-                .strip_prefix("based in ")
-                .or_else(|| text.strip_prefix("Based in "))?;
-            let place = rest.trim().trim_end_matches('.').trim();
+            let lower = text.to_ascii_lowercase();
+            let rest = lower.strip_prefix("based in")?;
+            let place = text[text.len() - rest.len()..]
+                .trim()
+                .trim_start_matches([':', '-', '\u{2014}', '\u{2013}'])
+                .trim()
+                .trim_end_matches('.')
+                .trim();
             (!place.is_empty()).then(|| place.to_owned())
         })
         // The latest one they set wins, the same rule every other preference follows.
@@ -11047,12 +11058,22 @@ mod where_they_are_is_a_fact {
     }
 
     #[test]
-    fn the_place_comes_from_what_they_said() {
+    fn the_place_comes_from_what_they_said_however_it_was_written() {
         let prefs = vec![
             pref(1, "you usually want news, weather, and traffic"),
             pref(2, "based in Springfield, IL"),
         ];
         assert_eq!(where_they_are(&prefs), "Springfield, IL");
+        // The shape the console actually writes — found only by reading the live store,
+        // after a parser that assumed the other shape returned nothing at all.
+        assert_eq!(
+            where_they_are(&[pref(3, "Based in: Springfield, IL")]),
+            "Springfield, IL"
+        );
+        assert_eq!(
+            where_they_are(&[pref(4, "BASED IN — Ashfield")]),
+            "Ashfield"
+        );
     }
 
     #[test]
