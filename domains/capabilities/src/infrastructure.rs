@@ -1147,7 +1147,10 @@ impl Capability for WeatherCapability {
             configured: true,
             needs: "",
             settings: &[],
-            input_schema: None,
+            // Needs a place — a town, or a postcode, and said it needed nothing.
+            input_schema: Some(
+                r#"{"type":"object","properties":{"location":{"type":"string","description":"a town or postcode"},"lat":{"type":"number"},"lon":{"type":"number"}},"required":["location"]}"#,
+            ),
         }
     }
 
@@ -1383,7 +1386,10 @@ impl Capability for LocalNewsCapability {
             configured: true,
             needs: "",
             settings: &[],
-            input_schema: None,
+            // Needs where or what, and said it needed nothing.
+            input_schema: Some(
+                r#"{"type":"object","properties":{"query":{"type":"string","description":"a topic to search for"},"location":{"type":"string","description":"a town, when asking what is happening there"}},"required":[]}"#,
+            ),
         }
     }
 
@@ -1544,7 +1550,10 @@ impl Capability for KnowledgeCapability {
             configured: true,
             needs: "",
             settings: &[],
-            input_schema: None,
+            // Needs what to look up, and said it needed nothing.
+            input_schema: Some(
+                r#"{"type":"object","properties":{"query":{"type":"string","description":"the topic, person or place to look up"}},"required":["query"]}"#,
+            ),
         }
     }
 
@@ -2263,7 +2272,10 @@ impl Capability for SafetyAlertsCapability {
             configured: true,
             needs: "",
             settings: &[],
-            input_schema: None,
+            // Needs where, and said it needed nothing.
+            input_schema: Some(
+                r#"{"type":"object","properties":{"location":{"type":"string","description":"a town or postcode"},"lat":{"type":"number"},"lon":{"type":"number"}},"required":["location"]}"#,
+            ),
         }
     }
 
@@ -7454,6 +7466,49 @@ mod pressing_test_has_to_reach_the_service {
         // own message is more use than an invented value.
         let schema = r#"{"type":"object","properties":{"thing":{}},"required":["thing"]}"#;
         assert_eq!(super::arguments_for_a_test_call(Some(schema)), "{}");
+    }
+}
+
+#[cfg(test)]
+mod every_skill_that_needs_arguments_says_so {
+    //! The gap that bit twice in one afternoon, and the second time was worse.
+    //!
+    //! A skill that requires an argument and declares no schema is offered to the model as
+    //! taking nothing. The venue skill was called with `{}` and answered "say what to look
+    //! for", twice — visibly broken, and recoverable. `web_fetch` was called with `{}` too,
+    //! and the model supplied `https://example.com`, which **succeeded**: it came back with
+    //! "this domain is for use in documentation examples" and the butler answered from it.
+    //!
+    //! Fixing the one in front of me and not sweeping for the rest is what let the second
+    //! one ship. This sweeps.
+
+    use crate::{CapabilityError, CapabilitySettings};
+
+    /// Called with no arguments and no settings, so nothing here reaches a network: a skill
+    /// that needs either refuses before it would.
+    #[test]
+    fn a_skill_that_refuses_an_empty_call_has_declared_its_arguments() {
+        let empty = CapabilitySettings::default();
+        let mut offenders = Vec::new();
+        for c in super::default_capabilities() {
+            let info = c.info();
+            // Irreversible skills are never invoked to find out what they do.
+            if info.reversibility != endora_kernel::Reversibility::Observe {
+                continue;
+            }
+            let refused_for_arguments = matches!(
+                c.invoke(&serde_json::json!({}), &empty),
+                Err(CapabilityError::BadInput(_))
+            );
+            if refused_for_arguments && info.input_schema.is_none() {
+                offenders.push(info.id);
+            }
+        }
+        assert!(
+            offenders.is_empty(),
+            "these need arguments and tell the model they need none, so it will guess — \
+             and a guess that happens to work is worse than one that fails: {offenders:?}"
+        );
     }
 }
 

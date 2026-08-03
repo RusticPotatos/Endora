@@ -503,6 +503,75 @@ console.log(`requests: sending a message signs its ${chat.length} request(s)`);
   console.log("chat: an unanswered turn says so, and can be asked again");
 }
 
+// Layout is still not covered, and this is the honest note about why.
+//
+// The shape that has broken twice on a phone — a `.row` holding a text block and a pile of
+// buttons, giving the buttons their width and the text about eight characters — was worth a
+// check and does not survive one. This file renders markup and cannot lay it out, so the
+// only thing available is the shape in the source. The distance between a text block and its
+// buttons runs from fifty characters to nearly three thousand depending on how much that
+// block says, and a window wide enough for the real case swept in three unrelated rows that
+// were perfectly fine.
+//
+// A checker that lies is worse than no checker — the sentence at the top of this file — and
+// three false alarms on correct code is a check somebody turns off. What would actually
+// measure this is a narrow viewport in a real browser, which is a slower tier than this one
+// is allowed to be. Until that exists, this is caught by a person with a phone, and it is
+// better to say so here than to pretend otherwise.
+
+// Every button leads somewhere, and every request has somewhere to land.
+//
+// Two seams that nothing watched, both of which have broken here before. A `data-act` the
+// dispatcher does not handle is a button that silently does nothing — the person taps and
+// the screen sits there, which reads as a hung app rather than a missing branch. And a
+// `/v1` path the node does not route is a 404 arriving as "couldn't reach the node", sending
+// the diagnosis in exactly the wrong direction.
+//
+// Source checks, which the header of this file is rightly sceptical of — so both look for
+// one unambiguous shape rather than trying to understand the file, and both are wrong only
+// in the direction of asking somebody to look.
+{
+  const verbs = new Set();
+  for (const m of source.matchAll(/verb === "([a-z]+)"/g)) verbs.add(m[1]);
+  // Actions are `verb:noun[:rest]`; the dispatcher branches on the verb, so an unknown verb
+  // is the shape that cannot possibly be handled.
+  const acted = [...source.matchAll(/data-act="\$?\{?["']?([a-z]+):/g)].map((m) => m[1]);
+  const unhandled = [...new Set(acted)].filter((v) => !verbs.has(v));
+  if (unhandled.length) {
+    console.error(
+      `actions: these buttons name a verb nothing handles, so tapping them does nothing: ${unhandled.join(", ")}`,
+    );
+    process.exit(1);
+  }
+  console.log(`actions: ${verbs.size} verbs handled, every button leads somewhere`);
+}
+
+{
+  const routerPath = resolve(here, "../app/node/src/api.rs");
+  const router = readFileSync(routerPath, "utf8");
+  // `/v1/mcp/servers/{name}/test` in the router, `/v1/mcp/servers/brave/test` in the
+  // console — compare on the shape with every path segment blanked, so a real id and a
+  // placeholder read the same.
+  const shapeOf = (p) =>
+    p
+      .split("/")
+      .map((seg) => (/^\{.*\}$/.test(seg) || seg.includes("$") || seg === "" ? "*" : seg))
+      .join("/");
+  const routed = new Set(
+    [...router.matchAll(/"(\/v1\/[^"]*)"/g)].map((m) => shapeOf(m[1])),
+  );
+  const called = [...source.matchAll(/api\(\s*["'][A-Z]+["']\s*,\s*["'`](\/v1\/[^"'`?]*)/g)]
+    .map((m) => shapeOf(m[1]));
+  const missing = [...new Set(called)].filter((p) => !routed.has(p));
+  if (missing.length) {
+    console.error(
+      `requests: the console calls these and the node routes nothing like them: ${missing.join(", ")}`,
+    );
+    process.exit(1);
+  }
+  console.log(`requests: every /v1 path the console calls is routed`);
+}
+
 console.log(`breadcrumbs: ${settingsViews.length} screens under Settings all say so`);
 
 console.log(`console check: ${named.length} screens render`);
