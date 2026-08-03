@@ -2,7 +2,8 @@
 
 ## Status
 
-Proposed (2026-08-02). Sits beside [0059](0059-one-fact-source-many-consumers.md): that
+Accepted (2026-08-03). Shipped the same day it was proposed and has been serving repeated
+questions since; accepted on that record. Originally proposed 2026-08-02. Sits beside [0059](0059-one-fact-source-many-consumers.md): that
 record is about facts arriving unasked, this one is about answers being remembered.
 
 ## Context

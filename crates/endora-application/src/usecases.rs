@@ -3247,6 +3247,10 @@ pub fn what_there_is_to_go_on(
     outcomes: &impl OutcomeRepository,
     beliefs: &impl BeliefRepository,
     readings: Vec<(String, String)>,
+    // What the watch loop has recorded moving (ADR 0059/0063) — the sensing the thinking
+    // could not reach. Notions ran at zero for two days after shipping because the night
+    // pass could cite an entity's state *now* and nothing about what had changed.
+    transitions: &[endora_capabilities::Transition],
     theirs: &[String],
     now: Timestamp,
 ) -> Result<TheRecord, AppError> {
@@ -3292,8 +3296,38 @@ pub fn what_there_is_to_go_on(
     }
 
     entries.extend(readings_as_records(readings, theirs));
+    entries.extend(transitions_as_records(transitions, theirs));
 
     Ok(TheRecord::of(entries))
+}
+
+/// Turns what moved into records a notion may cite (ADR 0063 closing 0057's loop).
+///
+/// Attribution is the same rule as a plain reading: the key names its entity after the
+/// `server::` namespace, and only an entity the person's own service lists as theirs is
+/// [`Source::Personal`] — everything else is the house, which corroborates and never
+/// carries. References carry the timestamp so three changes of one thing are three
+/// citations, not one said thrice: maturity is a count of *distinct* resolutions.
+#[must_use]
+pub fn transitions_as_records(
+    transitions: &[endora_capabilities::Transition],
+    theirs: &[String],
+) -> Vec<KnownRecord> {
+    transitions
+        .iter()
+        .map(|t| {
+            let entity = t.key.split_once("::").map_or(t.key.as_str(), |(_, e)| e);
+            KnownRecord {
+                source: if theirs.iter().any(|mine| mine == entity) {
+                    Source::Personal
+                } else {
+                    Source::Reading
+                },
+                reference: format!("{}@{}", t.key, t.at_ms),
+                text: format!("{entity} went from {} to {}", t.from, t.to),
+            }
+        })
+        .collect()
 }
 
 /// Turns a reading into a record, marking the ones that are **the person's own**.
@@ -3578,6 +3612,8 @@ pub fn run_due_nightly_loop(
     outcomes: &impl OutcomeRepository,
     intentions: &impl IntentionRepository,
     notions: &impl NotionRepository,
+    // The fortnight's transitions, for the record the thinking cites from.
+    transitions: &[endora_capabilities::Transition],
     schedules: &impl NightlyLoopScheduleRepository,
     capabilities: &dyn CapabilityRunner,
     // What the services say belongs to the person rather than the household (ADR 0057).
@@ -3737,6 +3773,7 @@ pub fn run_due_nightly_loop(
         outcomes,
         beliefs,
         capabilities.current_states(),
+        transitions,
         theirs,
         now,
     )?;
@@ -7683,6 +7720,7 @@ mod tests {
             &FakeOutcomes::default(),
             &FakeIntentions::default(),
             &FakeNotions::default(),
+            &[],
             &sched,
             &NoCapabilities,
             &[],
@@ -7763,6 +7801,7 @@ mod tests {
             &FakeOutcomes::default(),
             intentions,
             &super::tests::FakeNotions::default(),
+            &[],
             &due_nightly(),
             &NoCapabilities,
             &[],
@@ -7980,6 +8019,7 @@ mod tests {
             &FakeOutcomes::default(),
             &FakeIntentions::default(),
             &super::tests::FakeNotions::default(),
+            &[],
             &OffSchedule,
             &NoCapabilities,
             &[],
@@ -8132,6 +8172,7 @@ mod tests {
             &FakeOutcomes::default(),
             &FakeIntentions::default(),
             &super::tests::FakeNotions::default(),
+            &[],
             &sched,
             &ResearchRunner,
             &[],
@@ -10918,6 +10959,54 @@ mod one_fact_source_reaches_everything {
             }
         }
         assert!(what_changed_lately(&Broken, NOW).is_empty());
+    }
+}
+
+#[cfg(test)]
+mod the_thinking_reaches_the_sensing {
+    //! Notions ran at zero for two days after shipping. A notion can only be built from
+    //! citations that resolve against the record, and the record held entities' states
+    //! *now* — nothing about what had changed. The watch loop and the night pass were two
+    //! working parts with no join, which is where nine of ten bugs here have lived.
+
+    use super::transitions_as_records;
+    use endora_capabilities::Transition;
+    use endora_understanding::Source;
+
+    fn moved(key: &str, at: i64) -> Transition {
+        Transition {
+            key: key.to_owned(),
+            from: "off".to_owned(),
+            to: "on".to_owned(),
+            at_ms: at,
+        }
+    }
+
+    #[test]
+    fn a_change_becomes_a_record_a_notion_can_cite() {
+        let records = transitions_as_records(
+            &[
+                moved("house::light.hall", 1),
+                moved("house::device_tracker.pixel", 2),
+            ],
+            &["device_tracker.pixel".to_owned()],
+        );
+        // The house corroborates and never carries; the person's own device may carry
+        // (ADR 0057) — same attribution as a plain reading, decided by the same list.
+        assert_eq!(records[0].source, Source::Reading);
+        assert_eq!(records[1].source, Source::Personal);
+        assert!(records[0].text.contains("light.hall went from off to on"));
+    }
+
+    #[test]
+    fn three_changes_of_one_thing_are_three_citations_not_one_said_thrice() {
+        // Maturity is a count of DISTINCT resolutions; a reference that collapses to the
+        // key alone would let one restless sensor mature a notion by itself in a night.
+        let records = transitions_as_records(
+            &[moved("house::door.back", 1), moved("house::door.back", 2)],
+            &[],
+        );
+        assert_ne!(records[0].reference, records[1].reference);
     }
 }
 
