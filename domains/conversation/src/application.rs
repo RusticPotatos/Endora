@@ -18,6 +18,27 @@ pub trait ChatRepository {
     /// [`RepositoryError`] if the backend fails or stored data is corrupt.
     fn list(&self) -> Result<Vec<ChatMessage>, RepositoryError>;
 
+    /// What a past reply actually **found** — the outputs of the tools it ran, if any.
+    ///
+    /// Kept because a turn is seeded from prose alone. Every tool result inside a turn is
+    /// threaded properly and then thrown away at its end, so asking a second time starts
+    /// from nothing: the butler has its own summary of what it said and no trace of what it
+    /// read. Ask the same question twice and it looks twice, or gives up and asks you to say
+    /// more.
+    ///
+    /// The findings were already being stored — for the person, so a reply keeps its
+    /// expandable trail after a reload. **They were never given back to the butler.** This
+    /// is the read that closes that.
+    ///
+    /// Empty for a reply that ran nothing, which is most of them.
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if the backend fails.
+    fn what_it_found(&self, message_id: &str) -> Result<Vec<String>, RepositoryError> {
+        let _ = message_id;
+        Ok(Vec::new())
+    }
+
     /// The messages between two moments, oldest first — `from` inclusive, `to` exclusive.
     ///
     /// What a **console** needs, which is not what the butler needs. A turn reads the

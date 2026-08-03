@@ -826,6 +826,9 @@ fn run_tool_turn(
     ids: &impl IdSource,
     clock: &impl Clock,
     history: &[ChatMessage],
+    // What each past reply found, by message id — so asking again does not start from
+    // nothing. `&|_| Vec::new()` for a caller with no findings to hand.
+    findings: &dyn Fn(&str) -> Vec<String>,
     prefs: &[Preference],
     context: &ButlerContext,
     max_rounds: usize,
@@ -837,17 +840,8 @@ fn run_tool_turn(
     // Stop hammering a dead end: after this many failed runs in a turn, stop executing
     // and let the model answer from what it has.
     const MAX_TOOL_FAILURES: usize = 2;
-    // Seed the conversation with the plain chat so far.
-    let mut conversation: Vec<TurnMessage> = history
-        .iter()
-        .map(|m| match m.role() {
-            MessageRole::User => TurnMessage::User(m.text().to_owned()),
-            MessageRole::Butler => TurnMessage::Assistant {
-                text: m.text().to_owned(),
-                tool_calls: Vec::new(),
-            },
-        })
-        .collect();
+    // Seed the conversation with the chat so far, **and what it found while having it**.
+    let mut conversation: Vec<TurnMessage> = seeded_from(history, findings);
     let mut failures = 0usize;
     // Whether the most recent action errored — see the recovery branch below.
     let mut last_action_failed = false;
@@ -1706,6 +1700,10 @@ pub fn send_to_butler_streaming(
     // flows (check-in, brief, nightly loop) run on this same loop.
     let reply = {
         let mut relay = |chunk: &str| on_token(chunk);
+        // What each past reply found, given back to the butler (ADR 0053's trail, read
+        // rather than only displayed). A read that fails is not worth failing a turn for:
+        // the worst case is the conversation it had before this change.
+        let findings = |id: &str| chat.what_it_found(id).unwrap_or_default();
         run_tool_turn(
             butler,
             capabilities,
@@ -1714,6 +1712,7 @@ pub fn send_to_butler_streaming(
             ids,
             clock,
             &history,
+            &findings,
             &prefs,
             context,
             CHAT_TOOL_ROUNDS,
@@ -2688,6 +2687,7 @@ pub fn consider_reaching_out(
         ids,
         clock,
         &ask,
+        &|_id| Vec::new(),
         &prefs,
         &ask_ctx,
         CHECKIN_TOOL_ROUNDS,
@@ -2795,6 +2795,7 @@ pub fn daily_brief(
         ids,
         clock,
         &ask,
+        &|_id| Vec::new(),
         &prefs,
         &brief_ctx,
         BRIEF_TOOL_ROUNDS,
@@ -3674,6 +3675,7 @@ pub fn run_due_nightly_loop(
         ids,
         clock,
         &history,
+        &|_id| Vec::new(),
         &prefs,
         &review_ctx,
         NIGHTLY_TOOL_ROUNDS,
@@ -3957,6 +3959,62 @@ pub fn offered_and_deferred(
     });
     offered.sort_by(|a, b| a.id.cmp(&b.id));
     (offered, deferred)
+}
+
+/// How many findings from one past reply are carried forward.
+///
+/// A handful: enough that "and what about next week?" has the list it is talking about, few
+/// enough that a search result page cannot crowd out the conversation it belongs to.
+const MOST_FINDINGS_CARRIED: usize = 3;
+
+/// The longest a single carried finding may be.
+const LONGEST_FINDING_CARRIED: usize = 400;
+
+/// The conversation as the butler sees it — what was said, and what it found while saying it.
+///
+/// Every tool result inside a turn is threaded properly and then **thrown away at its end**.
+/// A turn was seeded from prose alone, so asking the same thing twice started from nothing:
+/// the butler had its own summary of what it said and no trace of what it read. It looked
+/// again, or gave up and asked the person to say more — which is what asking twice felt like.
+///
+/// The findings were already stored, for the person, so a reply keeps its expandable trail
+/// after a reload. **They were never given back to the butler.**
+///
+/// Attached to the reply that produced them rather than added as tool results, because a
+/// tool result has to answer a call the model made in *this* conversation, and these answer
+/// calls from a conversation that has ended. Bounded twice, for the reason every bound here
+/// exists: a weak model reads a long context worse than a short one.
+#[must_use]
+pub fn seeded_from(
+    history: &[ChatMessage],
+    findings: &dyn Fn(&str) -> Vec<String>,
+) -> Vec<TurnMessage> {
+    history
+        .iter()
+        .map(|m| match m.role() {
+            MessageRole::User => TurnMessage::User(m.text().to_owned()),
+            MessageRole::Butler => {
+                let found: Vec<String> = findings(&m.id().value().to_string())
+                    .into_iter()
+                    .filter(|f| !f.trim().is_empty())
+                    .take(MOST_FINDINGS_CARRIED)
+                    .map(|f| {
+                        let short: String = f.chars().take(LONGEST_FINDING_CARRIED).collect();
+                        short
+                    })
+                    .collect();
+                let text = if found.is_empty() {
+                    m.text().to_owned()
+                } else {
+                    format!("{}\n(what I found then: {})", m.text(), found.join(" | "))
+                };
+                TurnMessage::Assistant {
+                    text,
+                    tool_calls: Vec::new(),
+                }
+            }
+        })
+        .collect()
 }
 
 /// How each capability has actually landed: `(confirmed changed, times tried)`.
@@ -5183,6 +5241,7 @@ mod tests {
             &ids,
             &clock,
             &one_user_turn("do the thing"),
+            &|_id| Vec::new(),
             &[],
             &ButlerContext::default(),
             6,
@@ -5302,6 +5361,7 @@ mod tests {
             &ids,
             &clock,
             &one_user_turn("do the thing"),
+            &|_id| Vec::new(),
             &[],
             &ButlerContext::default(),
             6,
@@ -5384,6 +5444,7 @@ mod tests {
             &ids,
             &clock,
             &one_user_turn("turn the kitchen light off"),
+            &|_id| Vec::new(),
             &[],
             &ButlerContext::default(),
             6,
@@ -5533,6 +5594,7 @@ mod tests {
             &ids,
             &clock,
             &one_user_turn("turn the kitchen switch off"),
+            &|_id| Vec::new(),
             &[],
             &ButlerContext::default(),
             6,
@@ -5677,6 +5739,7 @@ mod tests {
             &ids,
             &clock,
             &one_user_turn("any events this week?"),
+            &|_id| Vec::new(),
             &[],
             &ButlerContext::default(),
             6,
@@ -5809,6 +5872,7 @@ mod tests {
             &ids,
             &clock,
             &one_user_turn("turn the kitchen light off"),
+            &|_id| Vec::new(),
             &[],
             &context,
             6,
@@ -5903,6 +5967,7 @@ mod tests {
             &ids,
             &clock,
             &one_user_turn("turn it off"),
+            &|_id| Vec::new(),
             &[],
             &ButlerContext::default(),
             6,
@@ -5972,6 +6037,7 @@ mod tests {
             &ids,
             &clock,
             &one_user_turn("turn off the kitchen main"),
+            &|_id| Vec::new(),
             &[],
             &ButlerContext::default(),
             6,
@@ -6065,6 +6131,7 @@ mod tests {
             &ids,
             &clock,
             &one_user_turn("turn on the lights"),
+            &|_id| Vec::new(),
             &[],
             &ButlerContext::default(),
             6,
@@ -6210,6 +6277,7 @@ mod tests {
             &ids,
             &clock,
             &one_user_turn("turn on the lights"),
+            &|_id| Vec::new(),
             &[],
             &ButlerContext::default(),
             6,
@@ -6440,6 +6508,7 @@ mod tests {
             &ids,
             &clock,
             &one_user_turn("turn on the lights"),
+            &|_id| Vec::new(),
             &[],
             &ButlerContext::default(),
             6,
@@ -6477,6 +6546,7 @@ mod tests {
             &ids,
             &clock,
             &one_user_turn("turn on the kitchen lights"),
+            &|_id| Vec::new(),
             &[],
             &ButlerContext::default(),
             6,
@@ -6540,6 +6610,7 @@ mod tests {
             &ids,
             &clock,
             &one_user_turn("do it"),
+            &|_id| Vec::new(),
             &[],
             &ButlerContext::default(),
             6,
@@ -6598,6 +6669,7 @@ mod tests {
             &ids,
             &clock,
             &one_user_turn("what's on?"),
+            &|_id| Vec::new(),
             &[],
             &ButlerContext::default(),
             6,
@@ -6683,6 +6755,7 @@ mod tests {
             &ids,
             &clock,
             &one_user_turn("turn on the kitchen light"),
+            &|_id| Vec::new(),
             &[],
             &ButlerContext::default(),
             3,
@@ -6786,6 +6859,7 @@ mod tests {
             &ids,
             &clock,
             &one_user_turn("turn off the kitchen light"),
+            &|_id| Vec::new(),
             &[],
             &ButlerContext::default(),
             3,
@@ -8188,6 +8262,7 @@ mod tests {
             &ids,
             &clock,
             &one_user_turn("evening"),
+            &|_id| Vec::new(),
             &[],
             &ButlerContext::default(),
             6,
@@ -10774,6 +10849,99 @@ mod one_fact_source_reaches_everything {
             }
         }
         assert!(what_changed_lately(&Broken, NOW).is_empty());
+    }
+}
+
+#[cfg(test)]
+mod asking_again_does_not_start_from_nothing {
+    //! The gap a person found by using it: *"I keep asking the same question and it doesn't
+    //! get any context from the previous messages."*
+    //!
+    //! Every tool result inside a turn was threaded properly and then thrown away at its
+    //! end. A turn was seeded from prose alone, so the butler began the next one with its
+    //! own summary of what it said and **no trace of what it read** — and looked again, or
+    //! asked the person to say more.
+    //!
+    //! The findings were already stored. They were stored *for the person*, so a reply keeps
+    //! its expandable trail after a reload, and were never given back to the butler.
+
+    use super::Timestamp;
+    use super::seeded_from;
+    use endora_conversation::{ChatMessage, MessageRole};
+    use endora_kernel::ids::MessageId;
+
+    fn said(id: u128, role: MessageRole, text: &str) -> ChatMessage {
+        ChatMessage::new(
+            MessageId::new(id),
+            role,
+            text,
+            Timestamp::from_unix_millis(id as i64),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn what_a_past_turn_found_is_in_front_of_the_next_one() {
+        let history = [
+            said(1, MessageRole::User, "any events this week?"),
+            said(
+                2,
+                MessageRole::Butler,
+                "A few council committees are meeting.",
+            ),
+        ];
+        let seeded = seeded_from(&history, &|id| {
+            if id == "2" {
+                vec!["zoning board Tuesday 5:30pm; housing committee Monday 9am".to_owned()]
+            } else {
+                Vec::new()
+            }
+        });
+        let assistant = seeded
+            .iter()
+            .filter_map(|m| match m {
+                super::TurnMessage::Assistant { text, .. } => Some(text.clone()),
+                _ => None,
+            })
+            .next()
+            .expect("the butler's turn is there");
+        assert!(
+            assistant.contains("zoning board Tuesday"),
+            "asking again starts from nothing: {assistant}"
+        );
+        // And what it actually said is still there — the finding is added, not substituted.
+        assert!(assistant.contains("council committees"), "{assistant}");
+    }
+
+    #[test]
+    fn a_turn_that_found_nothing_reads_exactly_as_it_did() {
+        let history = [said(9, MessageRole::Butler, "Good morning.")];
+        let seeded = seeded_from(&history, &|_| Vec::new());
+        match &seeded[0] {
+            super::TurnMessage::Assistant { text, .. } => assert_eq!(text, "Good morning."),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_long_finding_is_cut_and_a_pile_of_them_is_bounded() {
+        // A weak model reads a long context worse than a short one, and a search result page
+        // must not crowd out the conversation it belongs to.
+        let history = [said(3, MessageRole::Butler, "Here you go.")];
+        let seeded = seeded_from(&history, &|_| {
+            (0..10)
+                .map(|i| format!("{i}:{}", "x".repeat(900)))
+                .collect()
+        });
+        let super::TurnMessage::Assistant { text, .. } = &seeded[0] else {
+            panic!("expected the butler's turn")
+        };
+        assert!(text.len() < 1600, "carried {} characters", text.len());
+        assert!(
+            text.contains("0:"),
+            "the first findings are the ones kept: {text:.80}"
+        );
+        assert!(!text.contains("5:"), "too many were carried");
     }
 }
 

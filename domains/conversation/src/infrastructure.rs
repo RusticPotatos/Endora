@@ -151,6 +151,45 @@ where
 }
 
 impl ChatRepository for ChatStore {
+    /// What a past reply found — the outputs of the tools it ran (ADR 0053's trail, read
+    /// back rather than only displayed).
+    ///
+    /// The trail was stored for the person, so a reply keeps its expandable actions after a
+    /// reload. It was never given back to the butler, so a second turn began with the prose
+    /// and no trace of the reading behind it — and asking the same thing twice meant looking
+    /// twice, or being asked to say more.
+    ///
+    /// A malformed or missing trail is no findings rather than an error: this is context,
+    /// and a turn that loses it is exactly the turn everyone had before.
+    fn what_it_found(&self, message_id: &str) -> Result<Vec<String>, RepositoryError> {
+        let conn = self.db.lock()?;
+        let stored: Option<String> = conn
+            .query_row(
+                "SELECT actions FROM message_actions WHERE message_id = ?1",
+                params![message_id],
+                |row| row.get(0),
+            )
+            .ok();
+        let Some(stored) = stored else {
+            return Ok(Vec::new());
+        };
+        let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&stored) else {
+            return Ok(Vec::new());
+        };
+        Ok(parsed
+            .get("steps")
+            .and_then(serde_json::Value::as_array)
+            .map(|steps| {
+                steps
+                    .iter()
+                    .filter_map(|s| s.get("output").and_then(serde_json::Value::as_str))
+                    .filter(|o| !o.trim().is_empty())
+                    .map(str::to_owned)
+                    .collect()
+            })
+            .unwrap_or_default())
+    }
+
     fn append(&self, message: &ChatMessage) -> Result<(), RepositoryError> {
         let conn = self.db.lock()?;
         conn.execute(
