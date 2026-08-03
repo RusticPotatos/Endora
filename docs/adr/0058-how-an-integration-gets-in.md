@@ -2,7 +2,9 @@
 
 ## Status
 
-Proposed (2026-08-01). Extends [0054](0054-other-peoples-services.md).
+Accepted (2026-08-02). Shipped and in use — the registration seam, resources over both
+transports, and the answers-or-relationship rule have all decided real cases since.
+Originally proposed (2026-08-01). Extends [0054](0054-other-peoples-services.md).
 
 ## Context
 
