@@ -439,6 +439,7 @@ dependencies = [
  "endora-kernel",
  "endora-persistence",
  "rusqlite",
+ "serde_json",
 ]
 
 [[package]]
