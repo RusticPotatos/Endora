@@ -76,6 +76,14 @@ const ADDRESS_IS_AN_EXAMPLE = new Set([
 /** Checksums, not credentials. */
 const HEX_IS_EXPECTED = new Set(["Cargo.lock"]);
 
+// The prompt is the one file where even a FICTIONAL city is a leak in reverse: an example
+// city in a prompt is a magnet for a small model, which copies it as the person's own.
+// Lived twice — the butler placed its person in the example city after a privacy scrub
+// swapped one magnet for another. Checked here because it is the same class of mistake as
+// the rest of this file: a value where a value must not be.
+const PROMPT_FILES = ["crates/endora-infrastructure/src/butler.rs"];
+const CITY_SHAPED = /\b(New York|Boston|Chicago|Seattle|Springfield|London|Paris)\b/;
+
 const rules = [
   {
     what: "a real mailbox",
@@ -158,6 +166,29 @@ if (tracked.includes("local.mk")) {
     hit: "tracked by git",
     say: "git rm --cached local.mk — it is meant to be ignored",
   });
+}
+
+for (const file of PROMPT_FILES) {
+  let text;
+  try {
+    text = readFileSync(file, "utf8");
+  } catch {
+    continue;
+  }
+  // Only the prompt string region matters — but the whole non-test file is close enough,
+  // and being wrong here costs a look at an example that should be placeless anyway.
+  const untested = text.split("#[cfg(test)]")[0];
+  const hit = untested.match(CITY_SHAPED);
+  if (hit) {
+    const line = untested.slice(0, hit.index).split("\n").length;
+    found.push({
+      file,
+      line,
+      what: "a city in the system prompt",
+      hit: hit[0],
+      say: "a small model copies prompt examples — make the example placeless",
+    });
+  }
 }
 
 // What this repository has published that git does not carry.
