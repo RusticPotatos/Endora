@@ -2460,30 +2460,6 @@ async function dispatch(act) {
       if (noun === "audit") return go("audit");
       return go(noun, id);
     }
-    if (verb === "toggle" && noun === "archived") {
-      SHOW_ARCHIVED = !SHOW_ARCHIVED; return render();
-    }
-    if (verb === "status" && (noun === "direction" || noun === "target")) {
-      await api("POST", `/v1/${noun}s/${id}`, { status: arg }); return reload();
-    }
-    if (verb === "delete" && (noun === "direction" || noun === "target")) {
-      if (!confirm(`Delete this ${noun}? This cannot be undone — archive instead to keep it.`)) return;
-      await api("DELETE", `/v1/${noun}s/${id}`); return reload();
-    }
-    if (verb === "create" && noun === "direction") {
-      await api("POST", "/v1/directions", { title: val("new-direction") }); return reload();
-    }
-    if (verb === "create" && noun === "value") {
-      await api("POST", "/v1/values", { name: val("new-value") }); return reload();
-    }
-    if (verb === "delete" && noun === "value") {
-      if (!confirm("Delete this value? Goals serving it must be re-filed first.")) return;
-      await api("DELETE", `/v1/values/${id}`); return reload();
-    }
-    if (verb === "file" && noun === "direction") {
-      const sel = document.getElementById("val-" + id).value;
-      await api("POST", `/v1/directions/${id}/value`, { value_id: sel || null }); return reload();
-    }
     if (verb === "chat" && noun === "send") { await sendChat(); return; }
     if (verb === "chat" && noun === "mic") { listen(); return; }
     if (verb === "chat" && noun === "stop") { stopChat(); return; }
@@ -3037,10 +3013,6 @@ async function dispatch(act) {
       flash(enabled ? "The butler will review the day and reflect overnight." : "Nightly review off.", "ok");
       return reload();
     }
-    if (verb === "snooze" && noun === "attention") {
-      // data-act = snooze:attention:<kind>:<subject>
-      await api("POST", "/v1/attention/snooze", { kind: id, subject: arg }); return reload();
-    }
     if (verb === "create" && noun === "pref") {
       const text = val("new-pref");
       if (!text) return;
@@ -3048,52 +3020,6 @@ async function dispatch(act) {
     }
     if (verb === "delete" && noun === "pref") {
       await api("DELETE", `/v1/preferences/${id}`); return reload();
-    }
-    if (verb === "create" && noun === "target") {
-      await api("POST", `/v1/directions/${id}/targets`, { statement: val("new-target") }); return reload();
-    }
-    if (verb === "create" && noun === "assumption") {
-      await api("POST", `/v1/targets/${id}/assumptions`, { statement: val("new-assumption") }); return reload();
-    }
-    if (verb === "propose" && noun === "experiment") {
-      await api("POST", `/v1/assumptions/${id}/experiments`, { hypothesis: val("new-experiment") }); return reload();
-    }
-    if (verb === "start" && noun === "experiment") {
-      await api("POST", `/v1/experiments/${id}/start`); return reload();
-    }
-    if (verb === "conclude" && noun === "experiment") {
-      await api("POST", `/v1/experiments/${id}/conclude`); return reload();
-    }
-    if (verb === "review" && noun === "experiment") {
-      const days = parseInt(val("rev-" + id), 10);
-      if (!(days >= 1)) { flash("Enter a number of days (1 or more).", "err"); return; }
-      await api("POST", `/v1/experiments/${id}/review`, { in_days: days }); return reload();
-    }
-    if (verb === "record" && noun === "observation") {
-      await api("POST", `/v1/experiments/${id}/observations`, { note: val("obs-" + id) }); return reload();
-    }
-    if (verb === "create" && noun === "reflection") {
-      const evidence = [...document.querySelectorAll(".evi-box:checked")].map((b) => b.value);
-      await api("POST", `/v1/targets/${id}/reflections`, { summary: val("new-reflection"), evidence }); return reload();
-    }
-    if (verb === "propose" && noun === "change") {
-      await api("POST", `/v1/reflections/${id}/process-changes`, { description: val("new-change") }); return reload();
-    }
-    if (verb === "draft" && noun === "change") {
-      await api("POST", `/v1/reflections/${id}/process-changes/draft`); return reload();
-    }
-    if (verb === "approve" && noun === "change") {
-      await api("POST", `/v1/process-changes/${id}/approve`); return reload();
-    }
-    if (verb === "reject" && noun === "change") {
-      await api("POST", `/v1/process-changes/${id}/reject`); return reload();
-    }
-    if (verb === "decide" && noun === "change") {
-      const actor = document.getElementById("actor-" + id).value;
-      const d = await api("POST", `/v1/process-changes/${id}/decision`, { actor });
-      flash("Policy: " + d.decision.replace(/_/g, " ") + (d.reason ? " — " + d.reason : ""),
-            d.decision === "permit" ? "ok" : "err");
-      return reload();
     }
     if (verb === "export") {
       closeMenu();
