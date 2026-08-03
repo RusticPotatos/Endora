@@ -28,7 +28,7 @@ pub use application::{
     CapabilityConfigRepository, CapabilityRunner, CapabilitySettingsRepository, CapabilitySpec,
     CapabilityUse, ConfigWrite, ConfigWriteLog, DeepModel, DeepModelRepository,
     KEEP_TRANSITIONS_FOR_MS, McpServer, McpServerRegistry, McpTransport, ModelSlot,
-    ModelTuneSchedule, ModelTuneScheduleRepository, Sampling, StandingTrouble,
+    ModelTuneSchedule, ModelTuneScheduleRepository, Sampling, Stance, StandingTrouble,
     StandingTroubleRepository, TargetAlias, TargetAliasRepository, TransitionLog, WriteKind,
     not_answering, watch_for_change, watch_for_trouble, worth_raising,
 };
@@ -38,9 +38,9 @@ pub use infrastructure::{
     AliasRunner, Capability, CapabilityError, CapabilityInfo, CapabilitySettings, CompositeRunner,
     McpClient, McpResource, McpRunner, McpToolInfo, NativeChannel, OpenerRunner, RegistryRunner,
     ReversibleOnlyRunner, SettingSpec, TargetSearchRunner, WithdrawnRunner,
-    arguments_for_a_test_call, channels_of, default_capabilities, redact_pii_in_value,
-    same_call_as, scan_outbound_secret, settings_complete, tools_the_toggle_governs,
-    tools_to_open_on_connect,
+    arguments_for_a_test_call, channels_of, default_capabilities, default_stance,
+    redact_pii_in_value, same_call_as, scan_outbound_secret, settings_complete,
+    tools_the_toggle_governs, tools_to_open_on_connect,
 };
 pub use mcp_http::HttpMcpClient;
 pub use mcp_stdio::StdioMcpClient;

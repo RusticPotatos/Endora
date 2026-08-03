@@ -245,7 +245,6 @@ fn the_nodes_token(store: &SqliteStore, ids: &RandomIdSource) -> String {
 /// with confirmation); `off` = disabled. Missing/invalid files are logged and
 /// skipped — a bad config never stops the node from starting.
 fn apply_skills_config(config: &endora_capabilities::ConfigStore, path: &str) {
-    use endora_capabilities::CapabilityConfigRepository;
     let text = match std::fs::read_to_string(path) {
         Ok(t) => t,
         Err(e) => {
@@ -260,26 +259,17 @@ fn apply_skills_config(config: &endora_capabilities::ConfigStore, path: &str) {
             return;
         }
     };
+    // The file's vocabulary was always the real model (ADR 0062); it used to be
+    // translated into three flags, and now it is stored as itself.
     for (id, mode) in map {
-        match mode.as_str() {
-            "off" => {
-                let _ = config.set_enabled(&id, false);
+        match endora_capabilities::Stance::from_word(&mode) {
+            Some(stance) => {
+                let _ = endora_capabilities::CapabilityConfigRepository::set_stance(
+                    config, &id, stance,
+                );
             }
-            "auto" => {
-                let _ = config.set_enabled(&id, true);
-                let _ = config.set_confirm(&id, false);
-                let _ = config.set_open_irreversible(&id, false);
-            }
-            // Ask first, band-agnostic: confirm downgrades an autonomous read, and
-            // opening lets an un-undoable run with confirmation. Both together give
-            // "on with user input" for any band.
-            "ask" => {
-                let _ = config.set_enabled(&id, true);
-                let _ = config.set_confirm(&id, true);
-                let _ = config.set_open_irreversible(&id, true);
-            }
-            other => {
-                eprintln!("skills config: unknown mode '{other}' for '{id}' (use off|auto|ask)");
+            None => {
+                eprintln!("skills config: unknown mode '{mode}' for '{id}' (use off|ask|auto)");
             }
         }
     }
@@ -291,8 +281,7 @@ fn apply_skills_config(config: &endora_capabilities::ConfigStore, path: &str) {
 /// can't break startup or a turn. HTTP transport is a later slice.
 fn connect_mcp(config: &endora_capabilities::ConfigStore) -> endora_capabilities::McpRunner {
     use endora_capabilities::{
-        CapabilityConfigRepository, CapabilityRunner, HttpMcpClient, McpClient, McpServerRegistry,
-        McpTransport, StdioMcpClient,
+        CapabilityRunner, HttpMcpClient, McpClient, McpServerRegistry, McpTransport, StdioMcpClient,
     };
     let servers = config.list().unwrap_or_default();
     // Namespacing prefixes of servers whose tools should be auto-allowed on connect.
@@ -321,23 +310,22 @@ fn connect_mcp(config: &endora_capabilities::ConfigStore) -> endora_capabilities
         })
         .collect();
     let runner = endora_capabilities::McpRunner::connect_with_readers(clients);
-    // Auto-allow: for a server marked trust_all, open every tool it exposes so the
-    // butler can use them without per-tool clicking. Opened MCP tools remain
-    // Block→Confirm — it still asks before each use (ADR 0051). This is deterministic
-    // policy set in code from a stored flag, never routed from model output.
+    // trust_all's one remaining meaning (ADR 0062): a tool arriving on that server gets
+    // `ask` instead of `off`. Only tools nobody has ruled on — a stored stance is a
+    // decision, and connect is a default that must never overwrite one.
     if !trusted.is_empty() {
-        // Only tools nobody has ruled on. This used to open every tool on a trusted server at
-        // every start-up, which silently restored a capability the person had blocked — see
-        // `tools_to_open_on_connect`.
-        let decided: Vec<String> = config
-            .opened_overrides()
+        let decided: Vec<String> = endora_capabilities::CapabilityConfigRepository::stances(config)
             .unwrap_or_default()
             .into_iter()
             .map(|(id, _)| id)
             .collect();
         let available: Vec<String> = runner.available().iter().map(|s| s.id.clone()).collect();
         for id in endora_capabilities::tools_to_open_on_connect(&available, &trusted, &decided) {
-            let _ = config.set_open_irreversible(&id, true);
+            let _ = endora_capabilities::CapabilityConfigRepository::set_stance(
+                config,
+                &id,
+                endora_capabilities::Stance::Ask,
+            );
         }
     }
     runner
@@ -486,24 +474,23 @@ async fn list_mcp_servers(
         CapabilityConfigRepository, CapabilityRunner, McpServerRegistry, McpTransport,
     };
     let config = state.config.clone();
-    let (servers, opened, enabled) = blocking(move || {
+    let (servers, stances) = blocking(move || {
         Ok((
             config.list().map_err(AppError::Repository)?,
-            config.opened_overrides().map_err(AppError::Repository)?,
-            config.enabled_overrides().map_err(AppError::Repository)?,
+            CapabilityConfigRepository::stances(config.as_ref()).map_err(AppError::Repository)?,
         ))
     })
     .await?;
-    // Tools the person has turned off entirely (ADR 0054) — not offered to the butler at
-    // all, which is a different state from blocked and must be visible as such.
-    let withdrawn: std::collections::HashSet<String> = enabled
-        .into_iter()
-        .filter(|(_, on)| !*on)
-        .map(|(id, _)| id)
+    // One word per tool (ADR 0062). "Withdrawn" and "blocked" both read as `off` now —
+    // that collapse is the point, not a loss.
+    let withdrawn: std::collections::HashSet<String> = stances
+        .iter()
+        .filter(|(_, st)| *st == endora_capabilities::Stance::Off)
+        .map(|(id, _)| id.clone())
         .collect();
-    let opened: std::collections::HashSet<String> = opened
+    let opened: std::collections::HashSet<String> = stances
         .into_iter()
-        .filter(|(_, o)| *o)
+        .filter(|(_, st)| *st != endora_capabilities::Stance::Off)
         .map(|(id, _)| id)
         .collect();
     // The live tools (namespaced server.tool) each connected server exposes.
@@ -865,10 +852,15 @@ async fn set_mcp_trust(
                     .map(|spec| spec.id)
                     .collect();
             for id in endora_capabilities::tools_the_toggle_governs(&available, &lookup) {
-                let _ = endora_capabilities::CapabilityConfigRepository::set_open_irreversible(
+                let stance = if req.trust_all {
+                    endora_capabilities::Stance::Ask
+                } else {
+                    endora_capabilities::Stance::Off
+                };
+                let _ = endora_capabilities::CapabilityConfigRepository::set_stance(
                     config.as_ref(),
                     &id,
-                    req.trust_all,
+                    stance,
                 );
             }
             reconnect_mcp(config.as_ref(), mcp.as_ref());
@@ -1769,43 +1761,32 @@ fn build_runner(
     config: &endora_capabilities::ConfigStore,
     capabilities: Arc<Vec<Arc<dyn Capability>>>,
     mcp: Arc<endora_capabilities::McpRunner>,
+    proven: std::collections::HashSet<String>,
 ) -> endora_capabilities::WithdrawnRunner {
-    let overrides = config.enabled_overrides().unwrap_or_default();
-    // Everything the person has turned off, whatever kind of capability it is. The
-    // built-in registry applies its own flag below; an MCP tool had no equivalent, so
-    // "off" silently did nothing to it (ADR 0054).
-    let withdrawn: std::collections::HashSet<String> = overrides
+    let stances =
+        endora_capabilities::CapabilityConfigRepository::stances(config).unwrap_or_default();
+    // `off` is off for every kind of capability, whichever source offers it (ADR 0062).
+    let withdrawn: std::collections::HashSet<String> = stances
         .iter()
-        .filter(|(_, enabled)| !*enabled)
+        .filter(|(_, st)| *st == endora_capabilities::Stance::Off)
         .map(|(id, _)| id.clone())
         .collect();
-    let opened = config.opened_overrides().unwrap_or_default();
-    let confirm = config.confirm_overrides().unwrap_or_default();
     let envelope = AutonomyEnvelopeRepository::get(config).unwrap_or_default();
-    // Whether the person allowed acting on consequential things on its own — an opened
-    // MCP tool may then run in the loop rather than only confirm-each-use.
     let auto_consequential = envelope.auto_consequential;
-    // The tools the person has opened this turn (ADR 0051) — shared by the built-in
-    // registry and the MCP overlay below.
-    let mcp_opened: std::collections::HashSet<String> = opened
-        .iter()
-        .filter(|(_, open)| *open)
-        .map(|(id, _)| id.clone())
-        .collect();
-    // Fresh per turn so config/envelope/opener/ask-first changes take effect at once.
+    // Fresh per turn so a stance, envelope or settings change takes effect at once.
     let registry = endora_infrastructure::RegistryRunner::with_config(
         capabilities,
-        overrides,
-        opened,
-        confirm,
+        stances.clone(),
+        proven.clone(),
         envelope,
         settings_map(config),
     );
-    // Apply the same openers to the shared MCP runner's deny-by-default: an opened
-    // MCP tool becomes confirm-each-use this turn, without rebuilding the connection.
+    // The same stances overlaid on the shared MCP runner, without rebuilding the
+    // connection: `ask` confirms each use and graduates when proven (ADR 0062).
     let mcp_source = endora_capabilities::OpenerRunner::new(
         mcp as Arc<dyn endora_capabilities::CapabilityRunner + Send + Sync>,
-        mcp_opened,
+        stances.into_iter().collect(),
+        proven,
         auto_consequential,
     );
     // Confirmed target aliases (ADR 0054), so a call that fails on a name the person has
@@ -1852,12 +1833,24 @@ fn build_reversible_only_runner(
     config: &endora_capabilities::ConfigStore,
     capabilities: Arc<Vec<Arc<dyn Capability>>>,
     mcp: Arc<endora_capabilities::McpRunner>,
+    proven: std::collections::HashSet<String>,
 ) -> endora_capabilities::ReversibleOnlyRunner {
     endora_capabilities::ReversibleOnlyRunner::new(Arc::new(build_runner(
         config,
         capabilities,
         mcp,
+        proven,
     )))
+}
+
+/// What the record has proven, read from outcomes (ADR 0062). Derived at composition,
+/// never stored; an unreadable store proves nothing, which is the safe direction.
+fn proven_now(
+    understanding: &endora_understanding::UnderstandingStore,
+) -> std::collections::HashSet<String> {
+    endora_understanding::OutcomeRepository::list(understanding)
+        .map(|all| usecases::proven_by_the_record(&all))
+        .unwrap_or_default()
 }
 
 /// The servers Endora has **direct reach** into (ADR 0054) — its own connection to a
@@ -1922,7 +1915,12 @@ async fn send_chat(
     // Serialize this turn against any other butler turn (chat or heartbeat brief).
     let _turn = state.turn_lock.clone().lock_owned().await;
     let (reply, activity) = blocking(move || {
-        let runner = build_runner(config.as_ref(), capabilities, mcp);
+        let runner = build_runner(
+            config.as_ref(),
+            capabilities,
+            mcp,
+            proven_now(understanding.as_ref()),
+        );
         // Ground the butler in the person's current life before it answers.
         let context = usecases::butler_context(
             understanding.as_ref(),
@@ -1978,7 +1976,12 @@ async fn brief(State(state): State<AppState>) -> Result<Json<serde_json::Value>,
     let result = blocking(move || {
         // A brief is an act of service, defined as reversible — it gathers and writes,
         // it never actuates. Enforced, not just documented above.
-        let runner = build_reversible_only_runner(config.as_ref(), capabilities, mcp);
+        let runner = build_reversible_only_runner(
+            config.as_ref(),
+            capabilities,
+            mcp,
+            proven_now(understanding.as_ref()),
+        );
         let context = usecases::butler_context(
             understanding.as_ref(),
             understanding.as_ref(),
@@ -2057,7 +2060,12 @@ async fn stream_chat(
     tokio::task::spawn(async move {
         let _turn = turn_lock.lock_owned().await;
         tokio::task::spawn_blocking(move || {
-            let runner = build_runner(config.as_ref(), capabilities, mcp);
+            let runner = build_runner(
+                config.as_ref(),
+                capabilities,
+                mcp,
+                proven_now(understanding.as_ref()),
+            );
             // The deeper (bigger/cloud) rung of the capability ladder, if the person
             // configured one — the turn escalates to it only when the local model
             // comes up empty (ADR 0055).
@@ -2820,7 +2828,12 @@ async fn what_the_butler_is_told(
     let mcp = mcp_snapshot(&state);
     let capabilities = state.capabilities.clone();
     let told = blocking(move || {
-        let runner = build_runner(config.as_ref(), capabilities, mcp);
+        let runner = build_runner(
+            config.as_ref(),
+            capabilities,
+            mcp,
+            proven_now(understanding.as_ref()),
+        );
         usecases::butler_context(
             understanding.as_ref(),
             understanding.as_ref(),
@@ -3239,10 +3252,10 @@ fn withdraw_what_never_works(state: &AppState) {
     };
     let already: std::collections::HashSet<String> = state
         .config
-        .enabled_overrides()
+        .stances()
         .unwrap_or_default()
         .into_iter()
-        .filter(|(_, on)| !*on)
+        .filter(|(_, st)| *st == endora_capabilities::Stance::Off)
         .map(|(id, _)| id)
         .collect();
     for repair in found {
@@ -3251,7 +3264,11 @@ fn withdraw_what_never_works(state: &AppState) {
         {
             continue;
         }
-        if state.config.set_enabled(&repair.capability, false).is_err() {
+        if state
+            .config
+            .set_stance(&repair.capability, endora_capabilities::Stance::Off)
+            .is_err()
+        {
             continue;
         }
         // Said out loud, in the place the person already looks. A capability quietly
@@ -3351,10 +3368,10 @@ async fn list_repairs(
         use endora_capabilities::CapabilityConfigRepository;
         let found = usecases::repairs(understanding.as_ref(), &named_already(&config))?;
         let withdrawn: std::collections::HashSet<String> = config
-            .enabled_overrides()
+            .stances()
             .unwrap_or_default()
             .into_iter()
-            .filter(|(_, on)| !*on)
+            .filter(|(_, st)| *st == endora_capabilities::Stance::Off)
             .map(|(id, _)| id)
             .collect();
         Ok((found, withdrawn))
@@ -3430,11 +3447,15 @@ async fn react_to_outcome(
 
 fn capability_json(
     info: &endora_infrastructure::CapabilityInfo,
-    enabled: bool,
-    opened: bool,
-    confirm: bool,
+    stance: endora_capabilities::Stance,
     settings: &endora_infrastructure::CapabilitySettings,
 ) -> serde_json::Value {
+    use endora_capabilities::Stance;
+    // One word (ADR 0062). The older field names are kept for the console and derived,
+    // so a stale page keeps rendering while it catches up.
+    let enabled = stance != Stance::Off;
+    let opened = stance != Stance::Off && info.reversibility.name() == "irreversible";
+    let confirm = stance == Stance::Ask;
     // The settings schema, each flagged whether it's been set — but NEVER the value
     // (secrets stay server-side).
     let settings_schema: Vec<serde_json::Value> = info
@@ -3474,6 +3495,8 @@ fn capability_json(
         "enabled": enabled,
         "usable": info.configured && settings_complete && enabled,
         "needs": info.needs,
+        // The one word the model of this is actually made of now (ADR 0062).
+        "stance": stance.word(),
         "settings": settings_schema,
     })
 }
@@ -3481,21 +3504,9 @@ fn capability_json(
 /// Lists the butler's skills (capabilities/modules), their status, and whether the
 /// person has each turned on.
 async fn list_capabilities(State(state): State<AppState>) -> Json<Vec<serde_json::Value>> {
-    let enabled: std::collections::HashMap<String, bool> = state
+    let stances: std::collections::HashMap<String, endora_capabilities::Stance> = state
         .config
-        .enabled_overrides()
-        .unwrap_or_default()
-        .into_iter()
-        .collect();
-    let opened: std::collections::HashMap<String, bool> = state
-        .config
-        .opened_overrides()
-        .unwrap_or_default()
-        .into_iter()
-        .collect();
-    let confirm: std::collections::HashMap<String, bool> = state
-        .config
-        .confirm_overrides()
+        .stances()
         .unwrap_or_default()
         .into_iter()
         .collect();
@@ -3519,16 +3530,11 @@ async fn list_capabilities(State(state): State<AppState>) -> Json<Vec<serde_json
             // implement it, and it appears here with no further change.
             .filter(|info| info.configured || !info.settings.is_empty())
             .map(|info| {
-                let on = enabled.get(info.id).copied().unwrap_or(true);
-                let is_open = opened.get(info.id).copied().unwrap_or(false);
-                let is_confirm = confirm.get(info.id).copied().unwrap_or(false);
-                capability_json(
-                    &info,
-                    on,
-                    is_open,
-                    is_confirm,
-                    settings.get(info.id).unwrap_or(&empty),
-                )
+                let stance = stances
+                    .get(info.id)
+                    .copied()
+                    .unwrap_or_else(|| endora_capabilities::default_stance(info.reversibility));
+                capability_json(&info, stance, settings.get(info.id).unwrap_or(&empty))
             })
             .collect(),
     )
@@ -3612,9 +3618,14 @@ async fn set_capability_enabled(
     let clock = state.clock.clone();
     let (cap_id, enabled) = (id.clone(), req.enabled);
     blocking(move || {
-        config
-            .set_enabled(&cap_id, enabled)
-            .map_err(AppError::Repository)?;
+        // On = back to the band's default; off = off. One word (ADR 0062).
+        if enabled {
+            config.clear_stance(&cap_id).map_err(AppError::Repository)?;
+        } else {
+            config
+                .set_stance(&cap_id, endora_capabilities::Stance::Off)
+                .map_err(AppError::Repository)?;
+        }
         record_event(
             events.as_ref(),
             clock.as_ref(),
@@ -3674,8 +3685,13 @@ async fn set_every_tool_open(
     let changed = blocking(move || {
         let mut changed = 0;
         for id in &ids {
+            let stance = if open {
+                endora_capabilities::Stance::Ask
+            } else {
+                endora_capabilities::Stance::Off
+            };
             config
-                .set_open_irreversible(id, open)
+                .set_stance(id, stance)
                 .map_err(AppError::Repository)?;
             changed += 1;
         }
@@ -3718,18 +3734,21 @@ async fn set_capability_open(
     let clock = state.clock.clone();
     let (cap_id, open) = (id.clone(), req.open);
     blocking(move || {
+        let stance = if open {
+            endora_capabilities::Stance::Ask
+        } else {
+            endora_capabilities::Stance::Off
+        };
         config
-            .set_open_irreversible(&cap_id, open)
+            .set_stance(&cap_id, stance)
             .map_err(AppError::Repository)?;
         record_event(
             events.as_ref(),
             clock.as_ref(),
             &if open {
-                format!(
-                    "Opened the {cap_id} skill's irreversible actions (still confirmed each time)"
-                )
+                format!("Allowed the {cap_id} skill — it asks each time until it has proven itself")
             } else {
-                format!("Re-blocked the {cap_id} skill's irreversible actions")
+                format!("Blocked the {cap_id} skill")
             },
         );
         Ok::<_, AppError>(())
@@ -3768,9 +3787,13 @@ async fn set_capability_confirm(
     let clock = state.clock.clone();
     let (cap_id, confirm) = (id.clone(), req.confirm);
     blocking(move || {
-        config
-            .set_confirm(&cap_id, confirm)
-            .map_err(AppError::Repository)?;
+        if confirm {
+            config
+                .set_stance(&cap_id, endora_capabilities::Stance::Ask)
+                .map_err(AppError::Repository)?;
+        } else {
+            config.clear_stance(&cap_id).map_err(AppError::Repository)?;
+        }
         record_event(
             events.as_ref(),
             clock.as_ref(),
@@ -4806,6 +4829,7 @@ fn watch_the_world(state: &AppState) {
             .mcp
             .read()
             .map_or_else(|p| p.into_inner().clone(), |g| g.clone()),
+        proven_now(state.understanding.as_ref()),
     );
     let reading = endora_capabilities::CapabilityRunner::current_states(&runner);
     if !reading.is_empty() {
@@ -4889,7 +4913,12 @@ pub fn spawn_heartbeat(state: AppState) {
             let posted = tokio::task::spawn_blocking(move || {
                 // Unattended: nobody is here to confirm anything, so only the reversible
                 // bands may act — regardless of what the person opened for chat turns.
-                let runner = build_reversible_only_runner(config.as_ref(), capabilities, mcp);
+                let runner = build_reversible_only_runner(
+                    config.as_ref(),
+                    capabilities,
+                    mcp,
+                    proven_now(understanding.as_ref()),
+                );
                 let context = usecases::butler_context(
                     understanding.as_ref(),
                     understanding.as_ref(),

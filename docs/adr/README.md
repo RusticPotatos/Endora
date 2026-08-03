@@ -135,6 +135,7 @@ of an existing record and take the next number.
 | [0059](0059-one-fact-source-many-consumers.md) | One fact source, many consumers | — |
 | [0060](0060-what-the-turn-is-offered.md) | What the turn is offered | — |
 | [0061](0061-answers-worth-keeping.md) | Answers worth keeping | — (proposed) |
+| [0062](0062-one-permission-surface.md) | One permission surface | — |
 
 The forty-eight decisions these consolidate are in [archive/](archive/) — kept in full,
 because the reasoning that produced a rule is the reason it survives an argument later.

@@ -13,7 +13,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::application::CapabilityRunner;
+use crate::application::{CapabilityRunner, Stance};
 use endora_kernel::{Decision, Reversibility};
 use serde_json::{Value, json};
 
@@ -2673,14 +2673,11 @@ impl Capability for HomeAssistantCapability {
 /// confirm — or is blocked — stays gated.
 pub struct RegistryRunner {
     capabilities: Arc<Vec<Arc<dyn Capability>>>,
-    /// Per-capability enabled overrides (id → enabled). Missing = default enabled.
-    enabled: std::collections::HashMap<String, bool>,
-    /// Per-capability irreversible-band openers (id → opened, ADR 0051). Missing =
-    /// closed: the un-undoable stays blocked until the person opens it.
-    opened: std::collections::HashMap<String, bool>,
-    /// Per-capability "ask first" overrides (id → confirm). When set, the skill runs
-    /// only after the person confirms each use — never on its own — whatever its band.
-    confirm: std::collections::HashMap<String, bool>,
+    /// The person's per-tool stance (ADR 0062). Missing = the band's default.
+    stances: std::collections::HashMap<String, Stance>,
+    /// Tools the record has proven — enough read-back confirmed changes (ADR 0062).
+    /// Derived from outcomes at composition, never stored.
+    proven: std::collections::HashSet<String>,
     /// The person's autonomy envelope — the boundary the butler acts within.
     envelope: crate::application::AutonomyEnvelope,
     /// Per-capability settings (id → key/value), for skills that need config.
@@ -2688,64 +2685,71 @@ pub struct RegistryRunner {
 }
 
 impl RegistryRunner {
-    /// Wraps a shared capability registry at its defaults (every skill enabled, the
-    /// default autonomy envelope, no settings).
+    /// Wraps a shared capability registry at its defaults: no stances stored, nothing
+    /// proven, the default envelope, no settings.
     #[must_use]
     pub fn new(capabilities: Arc<Vec<Arc<dyn Capability>>>) -> Self {
         Self {
             capabilities,
-            enabled: std::collections::HashMap::new(),
-            opened: std::collections::HashMap::new(),
-            confirm: std::collections::HashMap::new(),
+            stances: std::collections::HashMap::new(),
+            proven: std::collections::HashSet::new(),
             envelope: crate::application::AutonomyEnvelope::default(),
             settings: std::collections::HashMap::new(),
         }
     }
 
-    /// Wraps the registry, applying the person's enable/disable overrides (ADR 0054),
-    /// their autonomy envelope (ADR 0051), per-capability irreversible-band openers
-    /// (ADR 0051), and per-capability settings (ADR 0054). A disabled skill never
-    /// runs; the envelope and openers decide which kinds of action may run without
-    /// confirmation (or at all); settings make a configurable skill usable.
+    /// Wraps the registry with the person's stances (ADR 0062), what the record has
+    /// proven, their envelope (ADR 0051), and per-capability settings (ADR 0054).
     #[must_use]
     pub fn with_config(
         capabilities: Arc<Vec<Arc<dyn Capability>>>,
-        overrides: Vec<(String, bool)>,
-        opened: Vec<(String, bool)>,
-        confirm: Vec<(String, bool)>,
+        stances: Vec<(String, Stance)>,
+        proven: std::collections::HashSet<String>,
         envelope: crate::application::AutonomyEnvelope,
         settings: std::collections::HashMap<String, CapabilitySettings>,
     ) -> Self {
         Self {
             capabilities,
-            enabled: overrides.into_iter().collect(),
-            opened: opened.into_iter().collect(),
-            confirm: confirm.into_iter().collect(),
+            stances: stances.into_iter().collect(),
+            proven,
             envelope,
             settings,
         }
     }
 
-    /// Whether a capability is enabled (its override, or its built-in default).
-    fn is_enabled(&self, id: &str) -> bool {
-        self.enabled.get(id).copied().unwrap_or(true)
+    /// The person's stance on a tool, or its band's default (ADR 0062).
+    fn stance_of(&self, info: &CapabilityInfo) -> Stance {
+        self.stances
+            .get(info.id)
+            .copied()
+            .unwrap_or_else(|| default_stance(info.reversibility))
     }
 
-    /// Whether the person has opened this capability's irreversible band (ADR 0051).
-    /// Closed by default — the un-undoable stays blocked until deliberately opened.
-    fn is_opened(&self, id: &str) -> bool {
-        self.opened.get(id).copied().unwrap_or(false)
-    }
-
-    /// Whether the person set this capability to **ask first** (on with user input).
-    /// Off by default — a skill follows its band unless deliberately set to confirm.
-    fn is_confirm(&self, id: &str) -> bool {
-        self.confirm.get(id).copied().unwrap_or(false)
+    /// Whether a capability may appear at all — `off` is visible but never offered.
+    fn is_enabled(&self, info: &CapabilityInfo) -> bool {
+        self.stance_of(info) != Stance::Off
     }
 
     /// The stored settings for a capability (empty if none set).
     fn settings_for(&self, id: &str) -> CapabilitySettings {
         self.settings.get(id).cloned().unwrap_or_default()
+    }
+}
+
+/// The band's default stance, where the person has said nothing (ADR 0062).
+///
+/// A read reports the world and runs; something reversible asks; the un-undoable — and
+/// every unproven MCP tool, which is classed with it because a server's self-report is not
+/// evidence — is blocked until somebody moves it. Deny-by-default lives here.
+#[must_use]
+pub const fn default_stance(band: Reversibility) -> Stance {
+    match band {
+        Reversibility::Observe => Stance::Auto,
+        // Reversible on-device runs; outward-but-reversible asks, because reach is the
+        // person's second dial and `auto` would take it out of their hands by default.
+        Reversibility::Reversible => Stance::Auto,
+        Reversibility::OutwardReversible => Stance::Ask,
+        Reversibility::Irreversible => Stance::Off,
     }
 }
 
@@ -2764,80 +2768,55 @@ pub fn settings_complete(info: &CapabilityInfo, settings: &CapabilitySettings) -
         .all(|s| settings.get(s.key).is_some_and(|v| !v.trim().is_empty()))
 }
 
-/// The deterministic classifier at the heart of the autonomy envelope
-/// (ADR 0051/0024): given a skill's declared [`Reversibility`] band, reach, and
-/// the person's envelope, what does policy do — [`Act`](Decision::Act) on its
-/// own, [`Confirm`](Decision::Confirm) first, or [`Block`](Decision::Block)
-/// outright? Never consults the model — the boundary is policy.
+/// The deterministic classifier (ADR 0051's boundary, ADR 0062's mechanism): one stance,
+/// the band, the record, and the envelope — never the model.
 ///
-/// The kernel owns the envelope-independent posture
-/// ([`Reversibility::default_decision`]); this function applies the person's levers
-/// on top of it: `auto_external` can *narrow* an otherwise-autonomous read that
-/// leaves the device, and `auto_consequential` can *widen* an outward-but-reversible
-/// action to run on its own.
+/// The whole ladder:
 ///
-/// `opened_irreversible` is the person's per-capability escape hatch (ADR 0051): by
-/// default the irreversible band is [`Block`](Decision::Block) — refused, not
-/// offered, because a mistaken confirm is unrecoverable — but when the person has
-/// deliberately opened this capability it becomes [`Confirm`](Decision::Confirm).
-/// It never becomes [`Act`](Decision::Act): the un-undoable is confirmed every
-/// time, never run autonomously.
+/// - **`off`** blocks, whoever set it and whyever.
+/// - **`ask`** confirms each use — and **graduates**: a tool the record has proven (enough
+///   read-back confirmed changes, counted in code) acts on its own while the envelope
+///   allows consequential actions. Narrow the envelope and every graduate asks again.
+/// - **`auto`** acts — narrowed to confirm for an external read when the person has kept
+///   off-device actions in hand, exactly as before.
+///
+/// What graduation can never do: move `off` (a stance the person set is a decision, and the
+/// record does not overrule decisions), or lift a tool nobody vetted (an unproven
+/// irreversible-band tool has no `ask` to graduate from — its default is `off`).
 fn classify(
     info: &CapabilityInfo,
     env: &crate::application::AutonomyEnvelope,
-    opened_irreversible: bool,
-    confirm_each_use: bool,
+    stance: Stance,
+    proven: bool,
 ) -> Decision {
-    let base = match info.reversibility.default_decision() {
-        // The un-undoable is refused outright — deny-by-default (ADR 0051) — unless
-        // the person has opened this capability, and even then only to confirm-each-
-        // use, never to autonomous.
-        Decision::Block => {
-            if opened_irreversible {
-                Decision::Confirm
+    match stance {
+        Stance::Off => Decision::Block,
+        Stance::Ask => {
+            if proven && env.auto_consequential {
+                Decision::Act
             } else {
-                Decision::Block
+                Decision::Confirm
             }
         }
-        // Autonomous by default (Observe / Reversible), but a read that leaves the
-        // device waits for confirmation if the person narrowed the envelope to keep
-        // on-device actions in-hand.
-        Decision::Act => {
+        Stance::Auto => {
             if info.reaches_external && !env.auto_external {
                 Decision::Confirm
             } else {
                 Decision::Act
             }
         }
-        // Confirm by default (outward but reversible); autonomous only when the
-        // person has widened the envelope to allow consequential actions.
-        Decision::Confirm => {
-            if env.auto_consequential {
-                Decision::Act
-            } else {
-                Decision::Confirm
-            }
-        }
-    };
-    // Per-skill "ask first" (on with user input): never runs on its own — the butler
-    // proposes and waits. Downgrades an autonomous verdict to Confirm, and turns an
-    // allow-with-confirm into the same (it can't relax a hard Block, though).
-    match base {
-        Decision::Act if confirm_each_use => Decision::Confirm,
-        other => other,
     }
 }
 
 /// Whether a skill may run on its own this turn — exactly when the deterministic
-/// [`classify`] verdict is [`Act`](Decision::Act). An opened irreversible skill or one
-/// set to ask-first is never autonomous (it confirms every time).
+/// [`classify`] verdict is [`Act`](Decision::Act).
 fn may_run_autonomously(
     info: &CapabilityInfo,
     env: &crate::application::AutonomyEnvelope,
-    opened_irreversible: bool,
-    confirm_each_use: bool,
+    stance: Stance,
+    proven: bool,
 ) -> bool {
-    classify(info, env, opened_irreversible, confirm_each_use) == Decision::Act
+    classify(info, env, stance, proven) == Decision::Act
 }
 
 impl CapabilityRunner for RegistryRunner {
@@ -2852,14 +2831,14 @@ impl CapabilityRunner for RegistryRunner {
                     // Usable only if the code is ready, the person has it enabled, AND
                     // every required setting has a value (ADR 0054).
                     configured: info.configured
-                        && self.is_enabled(info.id)
+                        && self.is_enabled(&info)
                         && settings_complete(&info, &self.settings_for(info.id)),
                     reversibility: info.reversibility,
                     autonomous: may_run_autonomously(
                         &info,
                         &self.envelope,
-                        self.is_opened(info.id),
-                        self.is_confirm(info.id),
+                        self.stance_of(&info),
+                        self.proven.contains(info.id),
                     ),
                     // Built-ins describe their inputs in the prompt, not a schema.
                     input_schema: info.input_schema.map(str::to_owned),
@@ -2873,40 +2852,46 @@ impl CapabilityRunner for RegistryRunner {
             .iter()
             .find(|c| c.info().id == id)
             .map(|c| {
+                let info = c.info();
                 classify(
-                    &c.info(),
+                    &info,
                     &self.envelope,
-                    self.is_opened(id),
-                    self.is_confirm(id),
+                    self.stance_of(&info),
+                    self.proven.contains(id),
                 )
             })
     }
 
     fn run(&self, id: &str, input_json: &str) -> Result<String, String> {
-        if !self.is_enabled(id) {
-            return Err(format!("the '{id}' skill is turned off"));
-        }
         let cap = self
             .capabilities
             .iter()
             .find(|c| c.info().id == id)
             .ok_or_else(|| format!("no such skill '{id}'"))?;
+
         // Deny-by-default on the irreversible band (ADR 0051): the un-undoable is
         // blocked outright — never run, even on an explicit request — until the
         // person opens it per capability. Once opened it reaches this path only via
         // an explicit confirmation. The failure mode is "it refused," never "it did
         // something permanent." The classifier owns which band is blocked.
+        let info = cap.info();
         if classify(
-            &cap.info(),
+            &info,
             &self.envelope,
-            self.is_opened(id),
-            self.is_confirm(id),
+            self.stance_of(&info),
+            self.proven.contains(id),
         ) == Decision::Block
         {
-            return Err(format!(
-                "the '{id}' skill can't be undone, so Endora won't run it on its own — \
-                 this band stays blocked until you open it for this skill"
-            ));
+            // One state (`off`), worded by why it is off: the un-undoable was never
+            // allowed, anything else the person turned off (ADR 0062).
+            return Err(if info.reversibility == Reversibility::Irreversible {
+                format!(
+                    "the '{id}' skill can't be undone, so Endora won't run it on its own — \
+                     it stays blocked until you allow it for this skill"
+                )
+            } else {
+                format!("the '{id}' skill is turned off")
+            });
         }
         // Data-loss tripwire: for a skill that leaves the device, refuse to send a
         // request that appears to carry a secret (ADR 0051). Fail closed.
@@ -3781,40 +3766,51 @@ impl CapabilityRunner for AliasRunner {
     }
 }
 
-/// A per-turn overlay that lifts an inner source's deny-by-default for tools the
-/// person has **opened** (ADR 0051). An opened tool moves from
-/// [`Block`](Decision::Block) to [`Confirm`](Decision::Confirm) — confirm-each-use —
-/// and only opened tools may run; everything the person hasn't opened stays blocked.
+/// Overlays the person's stances — and what the record has proven — onto the shared MCP
+/// runner (ADR 0062), so a tool's word applies without rebuilding the connection.
 ///
-/// When the person has *also* widened the autonomy envelope to act on consequential
-/// things on its own (`auto_consequential`), an opened tool goes one step further to
-/// [`Act`](Decision::Act): they've made two deliberate choices — allow this specific
-/// tool, and allow acting without a per-use prompt — so the butler may run it in the
-/// loop. (An ADR 0051 amendment: the un-undoable can become autonomous, but only
-/// behind both of those explicit gates.) Wraps the shared MCP runner so specific MCP
-/// tools can be allowed without rebuilding the connection.
+/// An MCP tool's default is `off`: a server's self-report is not evidence, so an unvetted
+/// tool is blocked outright. `ask` confirms each use — and graduates to acting on its own
+/// when the record has proven the tool AND the person's envelope allows consequential
+/// actions: the same two deliberate gates as before, with the record standing where a
+/// stored "opened" flag used to.
 pub struct OpenerRunner {
     inner: Arc<dyn CapabilityRunner + Send + Sync>,
-    opened: std::collections::HashSet<String>,
-    /// The person allowed acting on consequential things on its own — so an opened
-    /// tool may run in the loop rather than only confirm-each-use.
+    stances: std::collections::HashMap<String, Stance>,
+    /// Tools with enough read-back confirmed changes (ADR 0062). Derived, never stored.
+    proven: std::collections::HashSet<String>,
+    /// The envelope's consequential dial — graduation's second gate.
     auto_consequential: bool,
 }
 
 impl OpenerRunner {
-    /// Overlays `opened` (the ids the person has opened) onto `inner`. `auto_consequential`
-    /// mirrors the autonomy envelope: with it on, opened tools may run autonomously.
+    /// Overlays `stances` and `proven` onto `inner`.
     #[must_use]
     pub fn new(
         inner: Arc<dyn CapabilityRunner + Send + Sync>,
-        opened: std::collections::HashSet<String>,
+        stances: std::collections::HashMap<String, Stance>,
+        proven: std::collections::HashSet<String>,
         auto_consequential: bool,
     ) -> Self {
         Self {
             inner,
-            opened,
+            stances,
+            proven,
             auto_consequential,
         }
+    }
+
+    /// A tool's stance: the person's word, or its band's default.
+    fn stance_of(&self, id: &str, band: Reversibility) -> Stance {
+        self.stances
+            .get(id)
+            .copied()
+            .unwrap_or_else(|| default_stance(band))
+    }
+
+    /// Ask's graduation (ADR 0062): proven by read-back, and the envelope allows it.
+    fn graduates(&self, id: &str) -> bool {
+        self.proven.contains(id) && self.auto_consequential
     }
 }
 
@@ -3827,10 +3823,10 @@ impl CapabilityRunner for OpenerRunner {
             .available()
             .into_iter()
             .map(|mut spec| {
-                // An opened tool may run on its own only when the person also allowed
-                // acting on consequential things autonomously; otherwise it confirms.
-                if self.opened.contains(&spec.id) && self.auto_consequential {
-                    spec.autonomous = true;
+                match self.stance_of(&spec.id, spec.reversibility) {
+                    Stance::Off => spec.autonomous = false,
+                    Stance::Ask => spec.autonomous = self.graduates(&spec.id),
+                    Stance::Auto => spec.autonomous = true,
                 }
                 spec
             })
@@ -3838,26 +3834,41 @@ impl CapabilityRunner for OpenerRunner {
     }
 
     fn decision(&self, id: &str) -> Option<Decision> {
-        match self.inner.decision(id)? {
-            // Opened: the un-undoable becomes confirm-each-use — or, when the person
-            // allowed acting on its own, autonomous (both gates opened deliberately).
-            Decision::Block if self.opened.contains(id) => Some(if self.auto_consequential {
-                Decision::Act
-            } else {
-                Decision::Confirm
-            }),
-            other => Some(other),
-        }
+        // The service below is always asked — its own verdict must never be silently
+        // swallowed by an overlay. The stance then narrows or widens it: `off` blocks
+        // whatever was said below; `ask` is the person's allow-with-confirm, which is
+        // precisely what may override a deny-by-default Block (and graduates when the
+        // record and the envelope both say so); `auto` keeps whatever the service said,
+        // so a stricter verdict below survives.
+        let below = self.inner.decision(id);
+        let band = self
+            .inner
+            .available()
+            .into_iter()
+            .find(|s| s.id == id)
+            .map(|s| s.reversibility);
+        let Some(band) = band else {
+            return below;
+        };
+        Some(match self.stance_of(id, band) {
+            Stance::Off => Decision::Block,
+            Stance::Ask => {
+                if self.graduates(id) {
+                    Decision::Act
+                } else {
+                    Decision::Confirm
+                }
+            }
+            Stance::Auto => below.unwrap_or(Decision::Act),
+        })
     }
 
     fn run(&self, id: &str, input_json: &str) -> Result<String, String> {
-        // Deny-by-default at the run layer too: a blocked-and-unopened tool never
-        // runs, even on a direct call. Opened tools (now confirm-each-use) run —
-        // reaching run means policy cleared them (a confirmation happened).
-        if self.inner.decision(id) == Some(Decision::Block) && !self.opened.contains(id) {
+        // Deny-by-default at the run layer too: `off` never runs, even on a direct call.
+        if self.decision(id) == Some(Decision::Block) {
             return Err(format!(
-                "'{id}' isn't allowed yet — open it under Skills first (it will still \
-                 confirm every use)"
+                "'{id}' isn't allowed yet — allow it under Skills first (it will still \
+                 confirm every use until it has proven itself)"
             ));
         }
         self.inner.run(id, input_json)
@@ -4611,9 +4622,9 @@ mod tests {
     }
 
     #[test]
-    fn the_classifier_maps_band_reach_and_envelope_to_a_decision() {
-        use crate::application::AutonomyEnvelope;
-        use Reversibility::{OutwardReversible, Reversible};
+    fn one_stance_the_band_the_record_and_the_envelope_decide() {
+        use crate::application::{AutonomyEnvelope, Stance};
+        use Reversibility::{Irreversible, OutwardReversible, Reversible};
         let default_env = AutonomyEnvelope::default(); // external ok, consequential no
         let no_external = AutonomyEnvelope {
             auto_external: false,
@@ -4624,95 +4635,63 @@ mod tests {
             auto_consequential: true,
         };
 
-        // `closed` = the irreversible opener is off; `ask` = the ask-first override.
-        let closed = false;
-        let ask = false;
-        // Reversible local read: always acts.
+        // The band's defaults, where the person has said nothing.
+        assert_eq!(default_stance(Reversibility::Observe), Stance::Auto);
+        assert_eq!(default_stance(Reversible), Stance::Auto);
+        assert_eq!(default_stance(OutwardReversible), Stance::Ask);
+        assert_eq!(default_stance(Irreversible), Stance::Off);
+
+        // Auto acts — narrowed to confirm when an external action is kept in hand.
         assert_eq!(
-            classify(&info(Reversible, false), &default_env, closed, ask),
+            classify(&info(Reversible, false), &default_env, Stance::Auto, false),
             Decision::Act
         );
-        // Reversible external read: acts by default...
         assert_eq!(
-            classify(&info(Reversible, true), &default_env, closed, ask),
+            classify(&info(Reversible, true), &no_external, Stance::Auto, false),
+            Decision::Confirm
+        );
+
+        // Ask confirms each use, whatever the envelope says...
+        assert_eq!(
+            classify(&info(OutwardReversible, true), &widened, Stance::Ask, false),
+            Decision::Confirm
+        );
+        // ...until the record proves the tool AND the envelope allows consequential
+        // actions — then it acts. Graduation (ADR 0062).
+        assert_eq!(
+            classify(&info(OutwardReversible, true), &widened, Stance::Ask, true),
             Decision::Act
         );
-        // ...but waits for confirmation when the person narrows the envelope.
+        // Narrow the envelope and every graduate asks again.
         assert_eq!(
-            classify(&info(Reversible, true), &no_external, closed, ask),
+            classify(
+                &info(OutwardReversible, true),
+                &default_env,
+                Stance::Ask,
+                true
+            ),
             Decision::Confirm
         );
-        // ...or when the person sets that skill to ask first (on with user input):
-        // an otherwise-autonomous read now confirms every use.
+
+        // Off blocks, whoever set it and whyever — proof and widening change nothing.
         assert_eq!(
-            classify(&info(Reversible, false), &default_env, closed, true),
-            Decision::Confirm
-        );
-        // Outward but reversible: confirm by default, acts only when widened.
-        assert_eq!(
-            classify(&info(OutwardReversible, true), &default_env, closed, ask),
-            Decision::Confirm
-        );
-        assert_eq!(
-            classify(&info(OutwardReversible, true), &widened, closed, ask),
-            Decision::Act
-        );
-        // Ask-first keeps a widened outward action confirming rather than acting.
-        assert_eq!(
-            classify(&info(OutwardReversible, true), &widened, closed, true),
-            Decision::Confirm
+            classify(&info(Irreversible, true), &widened, Stance::Off, true),
+            Decision::Block
         );
 
         // `may_run_autonomously` is exactly "the verdict is Act".
         assert!(may_run_autonomously(
             &info(Reversible, false),
             &default_env,
-            closed,
-            ask
+            Stance::Auto,
+            false
         ));
         assert!(!may_run_autonomously(
             &info(OutwardReversible, true),
-            &default_env,
-            closed,
-            ask
+            &widened,
+            Stance::Ask,
+            false
         ));
-        // Ask-first is never autonomous.
-        assert!(!may_run_autonomously(
-            &info(Reversible, false),
-            &default_env,
-            closed,
-            true
-        ));
-    }
-
-    #[test]
-    fn irreversible_is_blocked_when_closed_and_confirm_when_opened() {
-        use crate::application::AutonomyEnvelope;
-        let widened = AutonomyEnvelope {
-            auto_external: true,
-            auto_consequential: true,
-        };
-        let irreversible = info(Reversibility::Irreversible, true);
-
-        // Closed: blocked outright, not merely confirmed — even fully widened, and
-        // even if set to ask-first (ask-first can't relax the hard irreversible Block).
-        assert_eq!(
-            classify(&irreversible, &widened, false, false),
-            Decision::Block
-        );
-        assert_eq!(
-            classify(&irreversible, &widened, false, true),
-            Decision::Block
-        );
-
-        // Opened (ADR 0051 escape hatch): moves to Confirm — never Act. The
-        // un-undoable is confirmed every time, never run autonomously, even fully
-        // widened.
-        assert_eq!(
-            classify(&irreversible, &widened, true, false),
-            Decision::Confirm
-        );
-        assert!(!may_run_autonomously(&irreversible, &widened, true, false));
     }
 
     #[test]
@@ -4782,12 +4761,11 @@ mod tests {
         let caps: Arc<Vec<Arc<dyn Capability>>> =
             Arc::new(vec![Arc::new(BookingSkill) as Arc<dyn Capability>]);
 
-        // Opened for this capability, fully-widened envelope.
+        // Moved to `ask` for this capability, fully-widened envelope, nothing proven.
         let runner = RegistryRunner::with_config(
             caps,
-            vec![],
-            vec![("booking".to_owned(), true)],
-            vec![],
+            vec![("booking".to_owned(), crate::application::Stance::Ask)],
+            std::collections::HashSet::new(),
             crate::application::AutonomyEnvelope {
                 auto_external: true,
                 auto_consequential: true,
@@ -4805,7 +4783,7 @@ mod tests {
             .unwrap();
         assert!(
             !spec.autonomous,
-            "an opened irreversible skill must still confirm"
+            "an unproven irreversible skill at `ask` must still confirm"
         );
     }
 
@@ -4843,12 +4821,11 @@ mod tests {
         // Closed: the un-undoable is Blocked (the bool would only say "not autonomous").
         let closed = RegistryRunner::new(caps.clone());
         assert_eq!(closed.decision("booking"), Some(Decision::Block));
-        // Opened: Confirm — never Act.
+        // At `ask`, unproven: Confirm — never Act.
         let opened = RegistryRunner::with_config(
             caps,
-            vec![],
-            vec![("booking".to_owned(), true)],
-            vec![],
+            vec![("booking".to_owned(), crate::application::Stance::Ask)],
+            std::collections::HashSet::new(),
             crate::application::AutonomyEnvelope::default(),
             std::collections::HashMap::new(),
         );
@@ -6056,8 +6033,9 @@ mod tests {
         )]));
         // The person has opened only fs.write_file, but has NOT allowed acting on its
         // own (auto_consequential = false).
-        let opened: std::collections::HashSet<String> = ["fs.write_file".to_owned()].into();
-        let overlay = OpenerRunner::new(mcp, opened, false);
+        let stances: std::collections::HashMap<String, Stance> =
+            [("fs.write_file".to_owned(), Stance::Ask)].into();
+        let overlay = OpenerRunner::new(mcp, stances, std::collections::HashSet::new(), false);
 
         // Deny-by-default holds for the un-opened tool; the opened one becomes
         // confirm-each-use (never autonomous — its spec stays non-autonomous).
@@ -6086,8 +6064,10 @@ mod tests {
                 healthy: true,
             }) as Box<dyn McpClient>,
         )]));
-        let opened: std::collections::HashSet<String> = ["home.HassTurnOff".to_owned()].into();
-        let attended = Arc::new(OpenerRunner::new(mcp, opened, true));
+        let stances: std::collections::HashMap<String, Stance> =
+            [("home.HassTurnOff".to_owned(), Stance::Ask)].into();
+        let proven: std::collections::HashSet<String> = ["home.HassTurnOff".to_owned()].into();
+        let attended = Arc::new(OpenerRunner::new(mcp, stances, proven, true));
         // Precondition: attended, it really is cleared to act.
         assert_eq!(attended.decision("home.HassTurnOff"), Some(Decision::Act));
 
@@ -6129,10 +6109,12 @@ mod tests {
                 healthy: true,
             }) as Box<dyn McpClient>,
         )]));
-        let opened: std::collections::HashSet<String> = ["home.HassTurnOn".to_owned()].into();
-        // Both gates open: this specific tool is opened AND the person allowed acting
-        // on consequential things on its own.
-        let overlay = OpenerRunner::new(mcp, opened, true);
+        let stances: std::collections::HashMap<String, Stance> =
+            [("home.HassTurnOn".to_owned(), Stance::Ask)].into();
+        let proven: std::collections::HashSet<String> = ["home.HassTurnOn".to_owned()].into();
+        // Both gates open (ADR 0062): the record has proven this tool AND the person
+        // allowed acting on consequential things on its own.
+        let overlay = OpenerRunner::new(mcp, stances, proven, true);
 
         // The opened tool may now run in the loop (Act + autonomous); the un-opened
         // one is still blocked, and never autonomous.
@@ -6834,6 +6816,7 @@ mod tests {
                 Arc::new(CompositeRunner::new(vec![Arc::new(AliasRunner::new(
                     Arc::new(OpenerRunner::new(
                         Arc::clone(&bottom) as Arc<dyn CapabilityRunner + Send + Sync>,
+                        std::collections::HashMap::new(),
                         std::collections::HashSet::new(),
                         false,
                     )),

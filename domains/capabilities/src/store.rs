@@ -9,8 +9,8 @@ use crate::application::{
     AutonomyEnvelope, AutonomyEnvelopeRepository, ButlerModelConfig, ButlerModelConfigRepository,
     CapabilityConfigRepository, CapabilitySettingsRepository, ConfigWrite, DeepModel,
     DeepModelRepository, McpServer, McpServerRegistry, McpTransport, ModelSlot, ModelTuneSchedule,
-    ModelTuneScheduleRepository, Sampling, StandingTrouble, StandingTroubleRepository, TargetAlias,
-    TargetAliasRepository,
+    ModelTuneScheduleRepository, Sampling, Stance, StandingTrouble, StandingTroubleRepository,
+    TargetAlias, TargetAliasRepository,
 };
 use crate::domain::{Transition, Watched};
 
@@ -149,6 +149,23 @@ pub fn migrate(db: &Db) -> Result<(), RepositoryError> {
         "ALTER TABLE capability_config ADD COLUMN confirm INTEGER NOT NULL DEFAULT 0",
         [],
     );
+    // One word per tool (ADR 0062). The fold from the old axes errs toward `ask`, the
+    // recoverable direction — a tool that asks when it could act is a tap; one that acts
+    // when it should ask is why the axes existed.
+    let _ = db.lock()?.execute(
+        "ALTER TABLE capability_config ADD COLUMN stance TEXT NOT NULL DEFAULT ''",
+        [],
+    );
+    db.lock()?
+        .execute_batch(
+            "UPDATE capability_config SET stance = CASE \
+                 WHEN stance != '' THEN stance \
+                 WHEN enabled = 0 THEN 'off' \
+                 WHEN confirm = 1 THEN 'ask' \
+                 WHEN open_irreversible = 1 THEN 'ask' \
+                 ELSE '' END;",
+        )
+        .map_err(backend)?;
     // Per-server credentials: a child-process environment (stdio) and a bearer token
     // (http). Secrets — stored here, never returned by the API.
     let _ = db.lock()?.execute(
@@ -414,82 +431,42 @@ impl CapabilitySettingsRepository for ConfigStore {
 }
 
 impl CapabilityConfigRepository for ConfigStore {
-    fn enabled_overrides(&self) -> Result<Vec<(String, bool)>, RepositoryError> {
+    fn stances(&self) -> Result<Vec<(String, Stance)>, RepositoryError> {
         let conn = self.db.lock()?;
         let mut stmt = conn
-            .prepare("SELECT id, enabled FROM capability_config")
+            .prepare("SELECT id, stance FROM capability_config WHERE stance != ''")
             .map_err(backend)?;
         let rows = stmt
-            .query_map([], |r| {
-                Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)? != 0))
-            })
+            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
             .map_err(backend)?;
-        rows.collect::<Result<Vec<_>, _>>().map_err(backend)
+        // A word nobody recognises is dropped rather than guessed at: a permission that
+        // deserialises leniently is a permission that widens by typo.
+        Ok(rows
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(backend)?
+            .into_iter()
+            .filter_map(|(id, word)| Stance::from_word(&word).map(|st| (id, st)))
+            .collect())
     }
 
-    fn set_enabled(&self, id: &str, enabled: bool) -> Result<(), RepositoryError> {
-        // Upsert only the enabled column; a new row defaults the opener to closed,
-        // and an existing row keeps its opener flag untouched.
+    fn set_stance(&self, id: &str, stance: Stance) -> Result<(), RepositoryError> {
         self.db
             .lock()?
             .execute(
-                "INSERT INTO capability_config (id, enabled, open_irreversible) VALUES (?1, ?2, 0) \
-                 ON CONFLICT(id) DO UPDATE SET enabled = excluded.enabled",
-                params![id, i64::from(enabled)],
+                "INSERT INTO capability_config (id, enabled, stance) VALUES (?1, 1, ?2) \
+                 ON CONFLICT(id) DO UPDATE SET stance = excluded.stance",
+                params![id, stance.word()],
             )
             .map_err(backend)?;
         Ok(())
     }
 
-    fn opened_overrides(&self) -> Result<Vec<(String, bool)>, RepositoryError> {
-        let conn = self.db.lock()?;
-        let mut stmt = conn
-            .prepare("SELECT id, open_irreversible FROM capability_config")
-            .map_err(backend)?;
-        let rows = stmt
-            .query_map([], |r| {
-                Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)? != 0))
-            })
-            .map_err(backend)?;
-        rows.collect::<Result<Vec<_>, _>>().map_err(backend)
-    }
-
-    fn set_open_irreversible(&self, id: &str, opened: bool) -> Result<(), RepositoryError> {
-        // Upsert only the opener column; a new row defaults enabled to on (the
-        // built-in default), and an existing row keeps its enabled flag untouched.
+    fn clear_stance(&self, id: &str) -> Result<(), RepositoryError> {
         self.db
             .lock()?
             .execute(
-                "INSERT INTO capability_config (id, enabled, open_irreversible) VALUES (?1, 1, ?2) \
-                 ON CONFLICT(id) DO UPDATE SET open_irreversible = excluded.open_irreversible",
-                params![id, i64::from(opened)],
-            )
-            .map_err(backend)?;
-        Ok(())
-    }
-
-    fn confirm_overrides(&self) -> Result<Vec<(String, bool)>, RepositoryError> {
-        let conn = self.db.lock()?;
-        let mut stmt = conn
-            .prepare("SELECT id, confirm FROM capability_config")
-            .map_err(backend)?;
-        let rows = stmt
-            .query_map([], |r| {
-                Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)? != 0))
-            })
-            .map_err(backend)?;
-        rows.collect::<Result<Vec<_>, _>>().map_err(backend)
-    }
-
-    fn set_confirm(&self, id: &str, confirm: bool) -> Result<(), RepositoryError> {
-        // Upsert only the confirm column; a new row defaults enabled on and the
-        // opener closed, and an existing row keeps its other flags untouched.
-        self.db
-            .lock()?
-            .execute(
-                "INSERT INTO capability_config (id, enabled, confirm) VALUES (?1, 1, ?2) \
-                 ON CONFLICT(id) DO UPDATE SET confirm = excluded.confirm",
-                params![id, i64::from(confirm)],
+                "UPDATE capability_config SET stance = '' WHERE id = ?1",
+                params![id],
             )
             .map_err(backend)?;
         Ok(())
@@ -955,6 +932,7 @@ impl McpServerRegistry for ConfigStore {
 #[cfg(test)]
 mod tests {
     use super::{ConfigStore, migrate};
+    use crate::application::Stance;
     use crate::application::{
         AutonomyEnvelope, AutonomyEnvelopeRepository, CapabilityConfigRepository,
         CapabilitySettingsRepository,
@@ -992,10 +970,10 @@ mod tests {
                 "metric".to_owned()
             )]
         );
-        store.set_enabled("news", false).unwrap();
+        store.set_stance("news", Stance::Off).unwrap();
         assert_eq!(
-            store.enabled_overrides().unwrap(),
-            vec![("news".to_owned(), false)]
+            store.stances().unwrap(),
+            vec![("news".to_owned(), Stance::Off)]
         );
     }
 
@@ -1116,81 +1094,48 @@ mod tests {
     }
 
     #[test]
-    fn opener_round_trips_and_does_not_clobber_enabled() {
+    fn the_migration_folds_the_old_axes_into_a_stance() {
+        // An install that lived through the eight-axis era (ADR 0062). The fold errs
+        // toward `ask`, the recoverable direction: a tool that asks when it could act is
+        // a tap; one that acts when it should ask is why the axes existed.
         let db = Db::open_in_memory().unwrap();
         migrate(&db).unwrap();
+        let handle = db.clone();
         let store = ConfigStore::new(db);
-
-        // Closed by default: no rows.
-        assert!(store.opened_overrides().unwrap().is_empty());
-
-        // Open one capability's irreversible band.
-        store.set_open_irreversible("flights", true).unwrap();
+        {
+            let conn = handle.lock().unwrap();
+            conn.execute_batch(
+                "INSERT INTO capability_config (id, enabled, open_irreversible, confirm) VALUES \
+                     ('was_disabled', 0, 0, 0), \
+                     ('asked_first', 1, 0, 1), \
+                     ('opened_band', 1, 1, 0), \
+                     ('plain_default', 1, 0, 0);",
+            )
+            .unwrap();
+        }
+        // The fold runs on open; run its statement directly against this connection.
+        {
+            let conn = handle.lock().unwrap();
+            conn.execute_batch(
+                "UPDATE capability_config SET stance = CASE \
+                     WHEN stance != '' THEN stance \
+                     WHEN enabled = 0 THEN 'off' \
+                     WHEN confirm = 1 THEN 'ask' \
+                     WHEN open_irreversible = 1 THEN 'ask' \
+                     ELSE '' END;",
+            )
+            .unwrap();
+        }
+        let mut got = store.stances().unwrap();
+        got.sort();
         assert_eq!(
-            store.opened_overrides().unwrap(),
-            vec![("flights".to_owned(), true)]
-        );
-
-        // Toggling `enabled` on the same id must NOT reset the opener, and vice
-        // versa — the two per-capability flags are independent (ON CONFLICT upsert).
-        store.set_enabled("flights", false).unwrap();
-        assert_eq!(
-            store.opened_overrides().unwrap(),
-            vec![("flights".to_owned(), true)],
-            "enabling/disabling must not clobber the opener"
-        );
-        assert_eq!(
-            store.enabled_overrides().unwrap(),
-            vec![("flights".to_owned(), false)]
-        );
-
-        // Re-close it.
-        store.set_open_irreversible("flights", false).unwrap();
-        assert_eq!(
-            store.opened_overrides().unwrap(),
-            vec![("flights".to_owned(), false)]
-        );
-        assert_eq!(
-            store.enabled_overrides().unwrap(),
-            vec![("flights".to_owned(), false)],
-            "re-closing the opener must not clobber enabled"
-        );
-    }
-
-    #[test]
-    fn confirm_round_trips_and_is_independent_of_the_other_flags() {
-        let db = Db::open_in_memory().unwrap();
-        migrate(&db).unwrap();
-        let store = ConfigStore::new(db);
-
-        // Off by default: no rows.
-        assert!(store.confirm_overrides().unwrap().is_empty());
-
-        // Set "ask first" for a read-only skill.
-        store.set_confirm("weather", true).unwrap();
-        assert_eq!(
-            store.confirm_overrides().unwrap(),
-            vec![("weather".to_owned(), true)]
-        );
-
-        // enabled / opener / confirm are three independent per-skill flags.
-        store.set_enabled("weather", false).unwrap();
-        store.set_open_irreversible("weather", true).unwrap();
-        assert_eq!(
-            store.confirm_overrides().unwrap(),
-            vec![("weather".to_owned(), true)],
-            "toggling enabled/opener must not clobber confirm"
-        );
-        assert_eq!(
-            store.enabled_overrides().unwrap(),
-            vec![("weather".to_owned(), false)]
-        );
-
-        // Clear it.
-        store.set_confirm("weather", false).unwrap();
-        assert_eq!(
-            store.confirm_overrides().unwrap(),
-            vec![("weather".to_owned(), false)]
+            got,
+            vec![
+                ("asked_first".to_owned(), Stance::Ask),
+                ("opened_band".to_owned(), Stance::Ask),
+                ("was_disabled".to_owned(), Stance::Off),
+            ],
+            "a row with no axis set stays at its band's default (no stance)"
         );
     }
 

@@ -204,58 +204,67 @@ pub trait CapabilitySettingsRepository {
     ) -> Result<(), RepositoryError>;
 }
 
-/// Persists per-capability configuration the person controls from the Skills view
-/// (ADR 0054). Stores the **enabled** flag and, per ADR 0051, whether the person
-/// has **opened the irreversible band** for this capability. Only overrides are
-/// stored — a capability with no row keeps its built-in defaults (enabled, and the
-/// irreversible band closed).
+/// The one stored word of a tool's permission (ADR 0062): may it run, and how.
+///
+/// Everything else about permission is **derived, never stored** — the band supplies the
+/// default, the record supplies graduation, the envelope supplies the ceiling. Eight stored
+/// axes used to answer this one question, and every bug in the permission model was two of
+/// them disagreeing. Two axes cannot disagree when there is one axis.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Stance {
+    /// Visible but blocked. The default for the un-undoable and the unproven.
+    Off,
+    /// Runs after the person confirms, each time.
+    Ask,
+    /// Runs on its own — within the envelope, and only where the band or the record
+    /// justifies it.
+    Auto,
+}
+
+impl Stance {
+    /// The stored word for this stance.
+    #[must_use]
+    pub const fn word(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Ask => "ask",
+            Self::Auto => "auto",
+        }
+    }
+
+    /// Reads a stored word back, refusing anything unrecognised — a permission that
+    /// deserialises leniently is a permission that widens by typo.
+    #[must_use]
+    pub fn from_word(word: &str) -> Option<Self> {
+        match word {
+            "off" => Some(Self::Off),
+            "ask" => Some(Self::Ask),
+            "auto" => Some(Self::Auto),
+            _ => None,
+        }
+    }
+}
+
+/// Persists the person's per-tool stance (ADR 0062). Only overrides are stored — a tool
+/// with no row keeps its band's default.
 pub trait CapabilityConfigRepository {
-    /// The stored enabled/disabled overrides, as `(id, enabled)` pairs. Ids not
-    /// present here have never been toggled and use their default.
+    /// Every stored stance, as `(id, stance)` pairs.
     ///
     /// # Errors
     /// [`RepositoryError`] if the backend fails.
-    fn enabled_overrides(&self) -> Result<Vec<(String, bool)>, RepositoryError>;
+    fn stances(&self) -> Result<Vec<(String, Stance)>, RepositoryError>;
 
-    /// Sets whether a capability is enabled (upsert by id, leaving the
-    /// irreversible-opener flag untouched).
+    /// Sets a tool's stance (upsert by id).
     ///
     /// # Errors
     /// [`RepositoryError`] if the backend fails.
-    fn set_enabled(&self, id: &str, enabled: bool) -> Result<(), RepositoryError>;
+    fn set_stance(&self, id: &str, stance: Stance) -> Result<(), RepositoryError>;
 
-    /// The capabilities whose **irreversible band the person has opened** (ADR
-    /// 0024), as `(id, opened)` pairs. Ids not present default to closed — the
-    /// irreversible band stays blocked until deliberately opened, per capability.
+    /// Removes a stored stance, returning the tool to its band's default.
     ///
     /// # Errors
     /// [`RepositoryError`] if the backend fails.
-    fn opened_overrides(&self) -> Result<Vec<(String, bool)>, RepositoryError>;
-
-    /// Opens or re-closes a capability's irreversible band (upsert by id, leaving
-    /// the enabled flag untouched). Opening only ever moves the un-undoable from
-    /// *blocked* to *confirm-each-use* — never to autonomous (ADR 0051).
-    ///
-    /// # Errors
-    /// [`RepositoryError`] if the backend fails.
-    fn set_open_irreversible(&self, id: &str, opened: bool) -> Result<(), RepositoryError>;
-
-    /// The capabilities the person has set to **ask first** ("on with user input"),
-    /// as `(id, confirm)` pairs. When set, the skill runs only after the person
-    /// confirms each use — the butler proposes, never acts on its own for it —
-    /// regardless of the skill's band. Ids not present default to their band's
-    /// behaviour (a read-only skill acts on its own).
-    ///
-    /// # Errors
-    /// [`RepositoryError`] if the backend fails.
-    fn confirm_overrides(&self) -> Result<Vec<(String, bool)>, RepositoryError>;
-
-    /// Sets whether a capability must **ask first** before each use (upsert by id,
-    /// leaving the other flags untouched).
-    ///
-    /// # Errors
-    /// [`RepositoryError`] if the backend fails.
-    fn set_confirm(&self, id: &str, confirm: bool) -> Result<(), RepositoryError>;
+    fn clear_stance(&self, id: &str) -> Result<(), RepositoryError>;
 }
 
 /// Stores what the person said a server's targets are really called (ADR 0054).
