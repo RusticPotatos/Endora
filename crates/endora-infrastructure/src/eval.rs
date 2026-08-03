@@ -227,7 +227,11 @@ names: living room lamp | domain: light | state: unavailable";
 /// routing is tested under the same choice pressure as the live deployment.
 const EVAL_SKILL_LINES: &[&str] = &[
     "weather — Current conditions and today's forecast for a place",
-    "web_fetch — Fetch a web page and read its text — for research",
+    // Kept in step with the real description deliberately: the live failure was the model
+    // reaching for this with no address, and a battery carrying a friendlier copy of the
+    // wording than production sends would measure a butler nobody runs.
+    "web_fetch — Read ONE web page whose address you already have. It cannot search — if you \
+     do not have a real address, search first and read a result.",
     "knowledge — Look up factual, encyclopedic knowledge about a topic",
     "web_search — Get a quick answer or definition from the web for a question",
     "news — Recent news headlines for a place or topic",
@@ -591,6 +595,19 @@ pub fn battery() -> Vec<EvalCase> {
             tier: Tier::L1,
             probe: Probe::WithSkills("what does 'usufruct' mean?"),
             check: |r, _| matches!(used(r), Some("web_search" | "knowledge")),
+        },
+        EvalCase {
+            // Live: asked for something it had no address for, the model called `web_fetch`
+            // with `https://example.com` — the address every documentation page uses — got
+            // back "this domain is for use in documentation examples", and answered from it.
+            //
+            // A skill that fails is recoverable. One that **succeeds against a placeholder**
+            // is not: it produces a confident answer drawn from nothing, and the only clue is
+            // a source chip nobody reads.
+            name: "select:does-not-fetch-a-page-it-has-no-address-for",
+            tier: Tier::L1,
+            probe: Probe::WithSkills("give me the busiest traffic days downtown"),
+            check: |r, _| used(r) != Some("web_fetch"),
         },
         EvalCase {
             name: "select:web_fetch",
