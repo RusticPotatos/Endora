@@ -702,7 +702,37 @@ fn gave_nothing_useful(
     conversation: &[TurnMessage],
     context: &ButlerContext,
 ) -> bool {
-    not_an_answer(reply, context) || repeats_its_last_answer(reply, conversation)
+    not_an_answer(reply, context)
+        || repeats_its_last_answer(reply, conversation)
+        || gave_up_after_a_failure(reply, conversation)
+}
+
+/// Whether the model stopped trying right after its action failed.
+///
+/// The third escalation trigger, and like the others it is a check the code applies to the
+/// records — never the model's opinion of how it did. The shape it catches was measured
+/// before it was written: `verify:failure-names-what-is-really-there` fails 0/3 on the
+/// local model — one call fails, the read-back names what actually exists, and the local
+/// model answers prose instead of retrying. A deeper model gets one chance at exactly that
+/// moment, which is the whole capability ladder as a habit rather than a button.
+///
+/// Bounded by what already bounds the loop: the failure cap and the round cap. At most a
+/// couple of deep attempts per turn, each disclosed as escalations already are, each with
+/// nothing personal leaving under its own name.
+fn gave_up_after_a_failure(reply: &ButlerReply, conversation: &[TurnMessage]) -> bool {
+    if !reply.tool_calls.is_empty() {
+        return false; // still trying — that is the loop working, not a dead end.
+    }
+    conversation
+        .iter()
+        .rev()
+        .find_map(|m| match m {
+            TurnMessage::ToolResult { content, .. } => Some(content.clone()),
+            _ => None,
+        })
+        .is_some_and(|last| {
+            last.starts_with("error:") || last.contains("reached this turn's action limit")
+        })
 }
 
 /// Whether this reply is the butler's previous one again.
@@ -10959,6 +10989,73 @@ mod one_fact_source_reaches_everything {
             }
         }
         assert!(what_changed_lately(&Broken, NOW).is_empty());
+    }
+}
+
+#[cfg(test)]
+mod escalation_is_a_habit {
+    //! The third trigger: one call failed, the read-back named what really exists, and the
+    //! local model answered prose instead of retrying — measured 0/3 before this was
+    //! written. A deeper model gets one chance at exactly that moment.
+
+    use super::gave_up_after_a_failure;
+    use crate::ports::ButlerReply;
+    use crate::{ToolCall, TurnMessage};
+
+    fn after(result: &str) -> Vec<TurnMessage> {
+        vec![
+            TurnMessage::User("turn the kitchen switch off".to_owned()),
+            TurnMessage::ToolResult {
+                call_id: "c1".to_owned(),
+                content: result.to_owned(),
+            },
+        ]
+    }
+
+    #[test]
+    fn prose_after_a_failed_action_escalates() {
+        let waffle = ButlerReply {
+            text: "Let's try again. Here is the request:".to_owned(),
+            ..ButlerReply::default()
+        };
+        assert!(gave_up_after_a_failure(
+            &waffle,
+            &after("error: no_match_reason=NAME")
+        ));
+        assert!(gave_up_after_a_failure(
+            &waffle,
+            &after("not run — reached this turn's action limit; answer with what you have.")
+        ));
+    }
+
+    #[test]
+    fn still_trying_is_the_loop_working_not_a_dead_end() {
+        let retrying = ButlerReply {
+            tool_calls: vec![ToolCall {
+                id: "c2".to_owned(),
+                capability: "home.HassTurnOff".to_owned(),
+                input_json: "{}".to_owned(),
+            }],
+            ..ButlerReply::default()
+        };
+        assert!(!gave_up_after_a_failure(
+            &retrying,
+            &after("error: no_match_reason=NAME")
+        ));
+    }
+
+    #[test]
+    fn prose_after_a_success_is_just_an_answer() {
+        let answer = ButlerReply {
+            text: "It's off now.".to_owned(),
+            ..ButlerReply::default()
+        };
+        assert!(!gave_up_after_a_failure(&answer, &after("action_done")));
+        // And a turn with no tool results at all has nothing to have given up on.
+        assert!(!gave_up_after_a_failure(
+            &answer,
+            &[TurnMessage::User("hi".to_owned())]
+        ));
     }
 }
 
