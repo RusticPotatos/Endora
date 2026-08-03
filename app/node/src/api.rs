@@ -2085,6 +2085,14 @@ async fn stream_chat(
             ) {
                 Ok(c) => c,
                 Err(e) => {
+                    // A failure that evaporates can be neither trusted nor improved: this
+                    // turn used to die leaving the last stored message as the person's,
+                    // nothing after it, and nothing anywhere saying why.
+                    record_event(
+                        events.as_ref(),
+                        clock.as_ref(),
+                        &format!("A turn failed before it could reply: {e}"),
+                    );
                     let _ = tx.send(event(json!({ "type": "error", "message": e.to_string() })));
                     return;
                 }
@@ -2193,6 +2201,11 @@ async fn stream_chat(
                     })));
                 }
                 Err(e) => {
+                    record_event(
+                        events.as_ref(),
+                        clock.as_ref(),
+                        &format!("A turn failed before it could reply: {e}"),
+                    );
                     let _ = tx.send(event(json!({ "type": "error", "message": e.to_string() })));
                 }
             }
