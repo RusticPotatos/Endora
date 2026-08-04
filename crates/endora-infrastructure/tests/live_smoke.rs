@@ -282,6 +282,19 @@ fn the_butler_is_told_where_the_person_is() {
         !right_now.is_empty(),
         "the turn carries nothing about the person's world: {told:#}"
     );
+
+    // And where they live, which is the fact this test used not to check. Four briefs
+    // opened with the wrong city while this test was green, because it asserted that the
+    // context *contained* something and never that the answer *used* it. The turn now
+    // fills a missing place in from here rather than asking the model to remember it, so
+    // an empty value is no longer a prompt that reads oddly — it is a skill call going
+    // out with no place at all.
+    let place = told["where_they_are"].as_str().unwrap_or_default();
+    assert!(
+        !place.trim().is_empty(),
+        "the node does not know where the person lives, so every skill that needs a \
+         place will be asked without one: {told:#}"
+    );
 }
 
 #[test]

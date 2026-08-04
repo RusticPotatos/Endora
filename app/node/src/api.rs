@@ -4726,6 +4726,7 @@ impl endora_capabilities::Capability for WhatIHaveBeenDoing {
             configured: true,
             needs: "",
             settings: &[],
+            wants_place: false,
             borrows_from: None,
             third_party: false,
             input_schema: None,
@@ -6128,6 +6129,7 @@ mod tests {
         };
         let spec = |id: &str| CapabilitySpec {
             id: id.to_owned(),
+            wants_place: false,
             third_party: false,
             description: String::new(),
             configured: true,

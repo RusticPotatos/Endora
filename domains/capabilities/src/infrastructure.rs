@@ -72,6 +72,22 @@ pub struct CapabilityInfo {
     /// The settings this capability needs to run (empty for keyless skills). A
     /// skill is usable only once all of these have values.
     pub settings: &'static [SettingSpec],
+    /// Whether this skill needs a place, and should be given the person's when the request
+    /// does not name one.
+    ///
+    /// Three fixes in two days tried to make the model more likely to remember where
+    /// somebody lives — take the example city out of the prompt, state the place as ground
+    /// truth, then fix the parser that made the statement empty. Each one shipped, each one
+    /// was verified, and the fourth brief still opened "here's your daily brief for New
+    /// York". A 7B model reading twelve messages, three of which name a city it once said,
+    /// will keep saying it.
+    ///
+    /// So it is not asked. A place the person did not name is filled in from what they told
+    /// Endora, in code, before the skill runs. The model can still name a different place —
+    /// "the weather in Boston" is a real request — and it can no longer get *home* wrong,
+    /// because home was never its to remember.
+    pub wants_place: bool,
+
     /// Another capability whose settings this one uses, when it rides an existing
     /// connection rather than asking for its own.
     ///
@@ -1174,6 +1190,7 @@ impl Capability for WeatherCapability {
             needs: "",
             settings: &[],
             // Needs a place — a town, or a postcode, and said it needed nothing.
+            wants_place: true,
             borrows_from: None,
             third_party: false,
             input_schema: Some(
@@ -1322,6 +1339,7 @@ impl Capability for WebFetchCapability {
             // address every documentation page uses — fetched `example.com`, got back "this
             // domain is for use in documentation examples", and answered from it. A skill
             // that fails is recoverable; one that succeeds against a placeholder is not.
+            wants_place: false,
             borrows_from: None,
             third_party: true,
             input_schema: Some(
@@ -1417,6 +1435,7 @@ impl Capability for LocalNewsCapability {
             needs: "",
             settings: &[],
             // Needs where or what, and said it needed nothing.
+            wants_place: true,
             borrows_from: None,
             third_party: true,
             input_schema: Some(
@@ -1583,6 +1602,7 @@ impl Capability for KnowledgeCapability {
             needs: "",
             settings: &[],
             // Needs what to look up, and said it needed nothing.
+            wants_place: false,
             borrows_from: None,
             third_party: true,
             input_schema: Some(
@@ -1692,6 +1712,7 @@ impl Capability for ImageReviewCapability {
             configured: true,
             needs: "set the vision model (e.g. moondream) in this skill's settings",
             settings: IMAGE_MODEL_SETTING,
+            wants_place: false,
             borrows_from: None,
             third_party: false,
             input_schema: None,
@@ -1767,6 +1788,7 @@ macro_rules! scaffold {
                     configured: false,
                     needs: $needs,
                     settings: &[],
+                    wants_place: false,
                     borrows_from: None,
                     third_party: false,
                     input_schema: None,
@@ -2095,6 +2117,7 @@ impl Capability for TicketedEventsCapability {
             // Named fields, because the model is otherwise guessing. It was offered this
             // skill with an empty parameter object, called it with `{}` twice, and was told
             // "say what to look for" twice — doing exactly what it had been told it could.
+            wants_place: false,
             borrows_from: None,
             third_party: true,
             input_schema: Some(
@@ -2243,6 +2266,7 @@ impl Capability for MailCapability {
             needs: "",
             settings: &[],
             // Rides the house's connection rather than asking for the token twice.
+            wants_place: false,
             borrows_from: Some("home_assistant"),
             third_party: true,
             input_schema: None,
@@ -2319,6 +2343,7 @@ impl Capability for CityMeetingsCapability {
                 secret: false,
                 optional: false,
             }],
+            wants_place: false,
             borrows_from: None,
             third_party: true,
             input_schema: None,
@@ -2427,6 +2452,7 @@ impl Capability for SafetyAlertsCapability {
             needs: "",
             settings: &[],
             // Needs where, and said it needed nothing.
+            wants_place: true,
             borrows_from: None,
             third_party: false,
             input_schema: Some(
@@ -2643,6 +2669,7 @@ impl Capability for HomeAssistantCapability {
             configured: true,
             needs: "your Home Assistant URL and a long-lived access token",
             settings: HA_SETTINGS,
+            wants_place: false,
             borrows_from: None,
             third_party: false,
             input_schema: Some(
@@ -3030,6 +3057,7 @@ impl CapabilityRunner for RegistryRunner {
                 let info = c.info();
                 crate::application::CapabilitySpec {
                     id: info.id.to_owned(),
+                    wants_place: false,
                     third_party: false,
                     description: info.description.to_owned(),
                     // Usable only if the code is ready, the person has it enabled, AND
@@ -3441,6 +3469,7 @@ impl CapabilityRunner for McpRunner {
                         // server is a stranger, the house is not. The overlay that knows
                         // which servers are the house sets this; here it is the safe
                         // default, because a tool nobody has placed is a stranger.
+                        wants_place: false,
                         third_party: true,
                         configured: true,
                         // Deny-by-default everywhere else: the server tells us nothing
@@ -3606,6 +3635,55 @@ macro_rules! forwards_to_inner {
     ($field:ident : $($method:ident),+ $(,)?) => {
         $( forward_one_to_inner!($field, $method); )+
     };
+}
+
+/// Fill in the person's place when a skill needs one and the request did not name it.
+///
+/// Four briefs opened "here's your daily brief for New York" — a city nobody here lives in.
+/// Three fixes came before this one, and every one of them was an attempt to make the model
+/// *more likely* to remember: take the example city out of the prompt, state the place as
+/// ground truth, then repair the parser that had made that statement empty. Each shipped,
+/// each was verified against a live node, and the next brief was wrong again. A 7B model
+/// reading a dozen messages, three of which name a city it said last week, will say it again.
+///
+/// The rule this repository already had says why: a guarantee belongs in code, not in a
+/// prompt asking the model to be careful (ADR 0053). Where somebody lives is a fact Endora
+/// was told and holds. Asking a language model to recall it — and checking afterwards
+/// whether it did — was the mistake, repeated three times in different clothes.
+///
+/// So it stops being asked. A skill that declares `wants_place` and is called without one
+/// gets the person's, substituted here, before the call goes out. What the model may still
+/// do is name a *different* place, because "the weather in Boston" is a real request and
+/// only the person can mean it. What it can no longer do is get home wrong.
+pub fn place_filled_in(input_json: &str, wants_place: bool, where_they_are: &str) -> String {
+    if !wants_place || where_they_are.is_empty() {
+        return input_json.to_string();
+    }
+    let Ok(serde_json::Value::Object(mut args)) = serde_json::from_str(input_json) else {
+        // Not an object: there is no field to fill. Left exactly as it came, so a malformed
+        // call fails the way it would have anyway rather than failing differently here.
+        return input_json.to_string();
+    };
+    // A place the model did name is the person's to mean, and is never overwritten —
+    // including coordinates, which are a place spelled differently.
+    let named = ["location", "place", "city", "q", "lat", "latitude"]
+        .iter()
+        .any(|k| {
+            args.get(*k).is_some_and(|v| match v {
+                // A key present but empty is the model declining to answer, not an answer.
+                serde_json::Value::Null => false,
+                serde_json::Value::String(s) => !s.trim().is_empty(),
+                _ => true,
+            })
+        });
+    if named {
+        return input_json.to_string();
+    }
+    args.insert(
+        "location".to_owned(),
+        serde_json::Value::String(where_they_are.to_owned()),
+    );
+    serde_json::Value::Object(args).to_string()
 }
 
 /// Reduces a call's arguments to what they **mean**, so that two spellings of one call
@@ -4846,10 +4924,80 @@ mod tests {
             configured: true,
             needs: "",
             settings: &[],
+            wants_place: false,
             borrows_from: None,
             third_party: false,
             input_schema: None,
         }
+    }
+
+    #[test]
+    fn a_place_the_person_did_not_name_is_filled_in() {
+        let filled = super::place_filled_in("{}", true, "Springfield");
+        assert!(filled.contains("Springfield"), "{filled}");
+        assert!(filled.contains("location"), "{filled}");
+    }
+
+    #[test]
+    fn a_place_the_person_did_name_is_left_alone() {
+        // "the weather in Boston" is a real request, and only the person can mean it.
+        for named in [
+            r#"{"location":"Boston"}"#,
+            r#"{"city":"Boston"}"#,
+            r#"{"q":"Boston"}"#,
+            r#"{"lat":42.36,"lon":-71.06}"#,
+        ] {
+            assert_eq!(
+                super::place_filled_in(named, true, "Springfield"),
+                named,
+                "overwrote a place the person asked about: {named}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_key_present_but_empty_is_not_an_answer() {
+        // The failure mode that looks like an answer: the model emits the field and
+        // leaves it blank. Treating that as "they named a place" is how a blank reaches
+        // the geocoder, which then resolves it to somewhere famous.
+        for blank in [
+            r#"{"location":""}"#,
+            r#"{"location":"  "}"#,
+            r#"{"location":null}"#,
+        ] {
+            assert!(
+                super::place_filled_in(blank, true, "Springfield").contains("Springfield"),
+                "an empty field counted as a place: {blank}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_skill_that_does_not_want_a_place_is_untouched() {
+        assert_eq!(super::place_filled_in("{}", false, "Springfield"), "{}");
+        // And nothing is invented when Endora has not been told where they are.
+        assert_eq!(super::place_filled_in("{}", true, ""), "{}");
+    }
+
+    #[test]
+    fn a_call_that_will_not_parse_fails_the_way_it_already_would() {
+        // Not this function's job to rescue a malformed call, and changing how it fails
+        // would move the error somewhere harder to read.
+        assert_eq!(
+            super::place_filled_in("not json", true, "Springfield"),
+            "not json"
+        );
+        assert_eq!(
+            super::place_filled_in("[1,2]", true, "Springfield"),
+            "[1,2]"
+        );
+    }
+
+    #[test]
+    fn other_arguments_survive_the_fill() {
+        let filled = super::place_filled_in(r#"{"days":3}"#, true, "Springfield");
+        assert!(filled.contains("\"days\":3"), "{filled}");
+        assert!(filled.contains("Springfield"), "{filled}");
     }
 
     #[test]
@@ -4942,6 +5090,7 @@ mod tests {
                     configured: true,
                     needs: "",
                     settings: &[],
+                    wants_place: false,
                     borrows_from: None,
                     third_party: false,
                     input_schema: None,
@@ -4980,6 +5129,7 @@ mod tests {
                     configured: true,
                     needs: "",
                     settings: &[],
+                    wants_place: false,
                     borrows_from: None,
                     third_party: false,
                     input_schema: None,
@@ -5039,6 +5189,7 @@ mod tests {
                     configured: true,
                     needs: "",
                     settings: &[],
+                    wants_place: false,
                     borrows_from: None,
                     third_party: false,
                     input_schema: None,
@@ -5746,6 +5897,7 @@ mod tests {
         fn available(&self) -> Vec<CapabilitySpec> {
             vec![CapabilitySpec {
                 id: "weather".to_owned(),
+                wants_place: false,
                 third_party: false,
                 description: "the weather".to_owned(),
                 configured: true,
@@ -5806,6 +5958,7 @@ mod tests {
             fn available(&self) -> Vec<crate::application::CapabilitySpec> {
                 vec![crate::application::CapabilitySpec {
                     id: "home-assistant.HassTurnOn".to_owned(),
+                    wants_place: false,
                     third_party: false,
                     description: String::new(),
                     configured: true,
@@ -6398,6 +6551,7 @@ mod tests {
                     .into_iter()
                     .map(|id| crate::application::CapabilitySpec {
                         id: id.to_owned(),
+                        wants_place: false,
                         third_party: false,
                         description: String::new(),
                         configured: true,
@@ -7006,6 +7160,7 @@ mod tests {
         fn available(&self) -> Vec<crate::application::CapabilitySpec> {
             vec![crate::application::CapabilitySpec {
                 id: A_SKILL_IT_OFFERS.to_owned(),
+                wants_place: false,
                 third_party: false,
                 description: String::new(),
                 configured: true,
@@ -7226,6 +7381,7 @@ mod pressing_test_is_safe {
                 configured: true,
                 needs: "",
                 settings: &[],
+                wants_place: false,
                 borrows_from: None,
                 third_party: false,
                 input_schema: None,
@@ -7255,6 +7411,7 @@ mod pressing_test_is_safe {
                 configured: true,
                 needs: "",
                 settings: &[],
+                wants_place: false,
                 borrows_from: None,
                 third_party: false,
                 input_schema: None,
@@ -7430,6 +7587,7 @@ mod the_seam_a_local_integration_plugs_into {
                 configured: true,
                 needs: "",
                 settings: &[],
+                wants_place: false,
                 borrows_from: None,
                 third_party: false,
                 input_schema: None,
@@ -7472,6 +7630,7 @@ mod the_seam_a_local_integration_plugs_into {
                 configured: true,
                 needs: "",
                 settings: &[],
+                wants_place: false,
                 borrows_from: None,
                 third_party: false,
                 input_schema: None,

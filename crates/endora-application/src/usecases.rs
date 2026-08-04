@@ -1034,14 +1034,19 @@ fn run_tool_turn(
                 // A tool that claims success having changed nothing is the failure
                 // ADR 0053 was built for, and comparing two readings settles it without
                 // interpreting either — no knowledge of any server's format required.
-                let before = read_state_back(capabilities, &id, &call.input_json);
-                match capabilities.run(&id, &call.input_json) {
+                let input_json = endora_capabilities::place_filled_in(
+                    &call.input_json,
+                    spec.as_ref().is_some_and(|s| s.wants_place),
+                    &context.where_they_are,
+                );
+                let before = read_state_back(capabilities, &id, &input_json);
+                match capabilities.run(&id, &input_json) {
                     Ok(out) => {
                         last_action_failed = false;
                         activity.push(format!("Used the {id} skill"));
                         // Evidence verifies (ADR 0053): look at the world rather than
                         // taking the actuator's word for what it did.
-                        let observed = read_state_back(capabilities, &id, &call.input_json);
+                        let observed = read_state_back(capabilities, &id, &input_json);
                         // …but look again if it seems nothing moved. A service that
                         // updates state asynchronously answers the call first and changes
                         // the world a moment later, so the first reading races the change
@@ -1055,7 +1060,7 @@ fn run_tool_turn(
                         let observed =
                             if did_change(before.as_deref(), observed.as_deref()) == Some(false) {
                                 std::thread::sleep(SETTLE_BEFORE_LOOKING_AGAIN);
-                                read_state_back(capabilities, &id, &call.input_json).or(observed)
+                                read_state_back(capabilities, &id, &input_json).or(observed)
                             } else {
                                 observed
                             };
@@ -4941,6 +4946,7 @@ mod tests {
         fn spec(band: Reversibility) -> CapabilitySpec {
             CapabilitySpec {
                 id: "x".to_owned(),
+                wants_place: false,
                 third_party: false,
                 description: "x".to_owned(),
                 configured: true,
@@ -5008,6 +5014,7 @@ mod tests {
         fn actuator() -> CapabilitySpec {
             CapabilitySpec {
                 id: "home-assistant.HassTurnOff".to_owned(),
+                wants_place: false,
                 third_party: false,
                 description: "x".to_owned(),
                 configured: true,
@@ -5310,6 +5317,7 @@ mod tests {
             fn available(&self) -> Vec<endora_capabilities::CapabilitySpec> {
                 vec![endora_capabilities::CapabilitySpec {
                     id: "weather".to_owned(),
+                    wants_place: false,
                     third_party: false,
                     description: "current conditions".to_owned(),
                     configured: true,
@@ -5381,6 +5389,7 @@ mod tests {
             fn available(&self) -> Vec<endora_capabilities::CapabilitySpec> {
                 vec![endora_capabilities::CapabilitySpec {
                     id: "home.HassLightSet".to_owned(),
+                    wants_place: false,
                     third_party: false,
                     description: "set a light".to_owned(),
                     configured: true,
@@ -5430,6 +5439,7 @@ mod tests {
         fn available(&self) -> Vec<endora_capabilities::CapabilitySpec> {
             vec![endora_capabilities::CapabilitySpec {
                 id: self.id.to_owned(),
+                wants_place: false,
                 third_party: false,
                 description: "does a thing".to_owned(),
                 configured: true,
@@ -5456,6 +5466,7 @@ mod tests {
         fn available(&self) -> Vec<endora_capabilities::CapabilitySpec> {
             let mut specs = vec![endora_capabilities::CapabilitySpec {
                 id: self.id.to_owned(),
+                wants_place: false,
                 third_party: false,
                 description: "does a thing".to_owned(),
                 configured: true,
@@ -5466,6 +5477,7 @@ mod tests {
             if self.reads_back.is_some() {
                 specs.push(endora_capabilities::CapabilitySpec {
                     id: "reader".to_owned(),
+                    wants_place: false,
                     third_party: false,
                     description: "reads state".to_owned(),
                     configured: true,
@@ -5668,6 +5680,7 @@ mod tests {
                     .into_iter()
                     .map(|id| endora_capabilities::CapabilitySpec {
                         id: id.to_owned(),
+                        wants_place: false,
                         third_party: false,
                         description: String::new(),
                         configured: true,
@@ -5720,6 +5733,71 @@ mod tests {
             reply.text.contains("[unchanged]"),
             "a success that changed nothing went unremarked: {}",
             reply.text
+        );
+    }
+
+    #[test]
+    fn a_skill_that_needs_a_place_is_given_theirs_not_the_models() {
+        // The bug this exists for shipped four times. Every brief opened "here's your
+        // daily brief for New York" — a city nobody here lives in — and three fixes in a
+        // row tried to make the model remember better instead of taking the question away
+        // from it. This test asserts the thing that actually matters: what the *skill was
+        // called with*, not what the prompt was told.
+        use std::sync::Mutex;
+
+        struct WeatherRecordingItsInput(Mutex<Vec<String>>);
+        impl CapabilityRunner for WeatherRecordingItsInput {
+            fn available(&self) -> Vec<endora_capabilities::CapabilitySpec> {
+                vec![endora_capabilities::CapabilitySpec {
+                    id: "weather".to_owned(),
+                    wants_place: true,
+                    third_party: false,
+                    description: "the weather somewhere".to_owned(),
+                    configured: true,
+                    autonomous: true,
+                    input_schema: None,
+                    reversibility: Reversibility::Observe,
+                }]
+            }
+            fn run(&self, _id: &str, input: &str) -> Result<String, String> {
+                self.0.lock().expect("not poisoned").push(input.to_owned());
+                Ok("64F, clear".to_owned())
+            }
+        }
+
+        let weather = WeatherRecordingItsInput(Mutex::new(Vec::new()));
+        let (ids, clock, audit) = (SeqIds::default(), FixedClock(0), FakeAudit::default());
+        let context = ButlerContext {
+            where_they_are: "Springfield".to_owned(),
+            ..ButlerContext::default()
+        };
+        let _ = super::run_tool_turn(
+            // The model calls the skill naming no place at all — the honest version of
+            // what a weak model does when it is not sure.
+            &CallThenEcho {
+                capability: "weather",
+            },
+            &weather,
+            &audit,
+            &OutcomeSink::unmotivated(&FakeOutcomes::default()),
+            &ids,
+            &clock,
+            &one_user_turn("what's the weather"),
+            &|_id| Vec::new(),
+            &[],
+            &context,
+            4,
+            &mut |_| {},
+            &mut |_token: &str| {},
+            &mut Vec::new(),
+            &mut Vec::new(),
+        )
+        .expect("the turn answers");
+
+        let called_with = weather.0.lock().expect("not poisoned").join(" ");
+        assert!(
+            called_with.contains("Springfield"),
+            "the skill was asked about somewhere the person does not live: {called_with}"
         );
     }
 
@@ -5827,6 +5905,7 @@ mod tests {
             fn available(&self) -> Vec<endora_capabilities::CapabilitySpec> {
                 vec![endora_capabilities::CapabilitySpec {
                     id: "home.HassTurnOff".to_owned(),
+                    wants_place: false,
                     third_party: false,
                     description: String::new(),
                     configured: true,
@@ -5897,6 +5976,7 @@ mod tests {
         let (_, deferred) = super::offered_and_deferred(
             vec![endora_capabilities::CapabilitySpec {
                 id: "search.news".to_owned(),
+                wants_place: false,
                 third_party: false,
                 description: "look up recent news".to_owned(),
                 configured: true,
@@ -5976,6 +6056,7 @@ mod tests {
             fn available(&self) -> Vec<endora_capabilities::CapabilitySpec> {
                 vec![endora_capabilities::CapabilitySpec {
                     id: "city_meetings".to_owned(),
+                    wants_place: false,
                     third_party: false,
                     description: "what the city is doing".to_owned(),
                     configured: true,
@@ -6094,6 +6175,7 @@ mod tests {
             fn available(&self) -> Vec<endora_capabilities::CapabilitySpec> {
                 vec![endora_capabilities::CapabilitySpec {
                     id: "home.HassTurnOff".to_owned(),
+                    wants_place: false,
                     third_party: false,
                     description: "Turns something off".to_owned(),
                     configured: true,
@@ -6208,6 +6290,7 @@ mod tests {
             fn available(&self) -> Vec<endora_capabilities::CapabilitySpec> {
                 vec![endora_capabilities::CapabilitySpec {
                     id: "home.HassTurnOff".to_owned(),
+                    wants_place: false,
                     third_party: false,
                     description: String::new(),
                     configured: true,
@@ -6259,6 +6342,7 @@ mod tests {
                     .into_iter()
                     .map(|id| endora_capabilities::CapabilitySpec {
                         id: id.to_owned(),
+                        wants_place: false,
                         third_party: false,
                         description: String::new(),
                         configured: true,
@@ -7099,6 +7183,7 @@ mod tests {
                     .into_iter()
                     .map(|id| endora_capabilities::CapabilitySpec {
                         id: id.to_owned(),
+                        wants_place: false,
                         third_party: false,
                         description: "does a thing".to_owned(),
                         configured: true,
@@ -7182,6 +7267,7 @@ mod tests {
             fn available(&self) -> Vec<endora_capabilities::CapabilitySpec> {
                 vec![endora_capabilities::CapabilitySpec {
                     id: "flights".to_owned(),
+                    wants_place: false,
                     third_party: false,
                     description: "find flights".to_owned(),
                     configured: false,
@@ -7249,6 +7335,7 @@ mod tests {
             fn available(&self) -> Vec<endora_capabilities::CapabilitySpec> {
                 vec![endora_capabilities::CapabilitySpec {
                     id: "booking".to_owned(),
+                    wants_place: false,
                     third_party: false,
                     description: "book travel".to_owned(),
                     configured: true,
@@ -7473,6 +7560,7 @@ mod tests {
             fn available(&self) -> Vec<endora_capabilities::CapabilitySpec> {
                 vec![endora_capabilities::CapabilitySpec {
                     id: "weather".to_owned(),
+                    wants_place: false,
                     third_party: false,
                     description: "w".to_owned(),
                     configured: true,
@@ -8212,6 +8300,7 @@ mod tests {
                 vec![
                     CapabilitySpec {
                         id: "web_answers".to_owned(),
+                        wants_place: false,
                         third_party: false,
                         description: "answer a question".to_owned(),
                         configured: true,
@@ -8222,6 +8311,7 @@ mod tests {
                     // A consequential skill the loop must never reach for.
                     CapabilitySpec {
                         id: "flights".to_owned(),
+                        wants_place: false,
                         third_party: false,
                         description: "book flights".to_owned(),
                         configured: true,
@@ -9085,6 +9175,7 @@ mod what_a_read_gets_back {
     fn actuator() -> crate::CapabilitySpec {
         crate::CapabilitySpec {
             id: "home-assistant.GetDateTime".to_owned(),
+            wants_place: false,
             third_party: false,
             description: String::new(),
             configured: true,
@@ -11149,6 +11240,7 @@ mod what_a_stranger_said {
             vec![
                 CapabilitySpec {
                     id: "web_fetch".to_owned(),
+                    wants_place: false,
                     third_party: true,
                     description: "read a page".to_owned(),
                     configured: true,
@@ -11158,6 +11250,7 @@ mod what_a_stranger_said {
                 },
                 CapabilitySpec {
                     id: "home.HassTurnOff".to_owned(),
+                    wants_place: false,
                     third_party: false,
                     description: "turn something off".to_owned(),
                     configured: true,
@@ -11701,6 +11794,7 @@ mod what_the_turn_is_offered {
     fn tool(id: &str, band: Reversibility) -> CapabilitySpec {
         CapabilitySpec {
             id: id.to_owned(),
+            wants_place: false,
             third_party: false,
             description: String::new(),
             configured: true,
