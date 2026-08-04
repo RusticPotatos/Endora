@@ -410,6 +410,9 @@ pub struct CapabilityUse {
 pub struct CapabilitySpec {
     /// Stable id, e.g. `"weather"`.
     pub id: String,
+    /// Whether this skill needs a place, so the turn can supply the person's when the
+    /// request did not name one. The model is never asked to remember where they live.
+    pub wants_place: bool,
     /// Whether what this returns is prose somebody else wrote (ADR 0064) — a web page, a
     /// search result, mail. Once it enters a turn, every actuator in that turn confirms.
     pub third_party: bool,
