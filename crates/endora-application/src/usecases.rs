@@ -4189,6 +4189,26 @@ pub fn scorecard(outcomes: &[Outcome]) -> Option<String> {
     {
         said.push_str(&format!("; {worst} has never worked in {tries} tries"));
     }
+    // Named, because a tool quietly ceasing to act on its own is exactly the kind of change
+    // ADR 0053 says the person hears about rather than notices.
+    let taken_back: Vec<String> = {
+        let judged = how_they_judged(outcomes);
+        let mut ids: Vec<String> = judged
+            .iter()
+            .filter(|(id, counts)| {
+                withdrawn_by_them(**counts)
+                    && tally.get(*id).is_some_and(|(c, _)| *c >= PROVEN_AFTER)
+            })
+            .map(|(id, _)| id.clone())
+            .collect();
+        ids.sort();
+        ids
+    };
+    if let Some(first) = taken_back.first() {
+        said.push_str(&format!(
+            "; {first} earned acting on its own and you took it back"
+        ));
+    }
     let graduated = proven_by_the_record(outcomes).len();
     if graduated > 0 {
         said.push_str(&format!(
@@ -4258,11 +4278,54 @@ pub const PROVEN_AFTER: u32 = 3;
 /// everything and every graduate goes back to asking.
 #[must_use]
 pub fn proven_by_the_record(outcomes: &[Outcome]) -> std::collections::HashSet<String> {
+    let judged = how_they_judged(outcomes);
     how_each_capability_landed(outcomes)
         .into_iter()
         .filter(|(_, (confirmed, _))| *confirmed >= PROVEN_AFTER)
+        .filter(|(id, _)| !withdrawn_by_them(judged.get(id).copied().unwrap_or((0, 0))))
         .map(|(id, _)| id)
         .collect()
+}
+
+/// What the person has said about each capability: `(helped, did not help)`.
+///
+/// [`Reaction::NoReaction`] is a third answer and not a middle one — *they saw it and it
+/// made no difference* is information about the moment, not about the tool, and counting it
+/// either way would put a thumb on a scale it does not belong on.
+#[must_use]
+pub fn how_they_judged(outcomes: &[Outcome]) -> std::collections::HashMap<String, (u32, u32)> {
+    let mut tally: std::collections::HashMap<String, (u32, u32)> = std::collections::HashMap::new();
+    for o in outcomes {
+        let entry = tally.entry(o.capability().to_owned()).or_insert((0, 0));
+        match o.reaction() {
+            Some(Reaction::Helped) => entry.0 += 1,
+            Some(Reaction::DidNotHelp) => entry.1 += 1,
+            _ => {}
+        }
+    }
+    tally
+}
+
+/// Whether the person has taken back what the record granted.
+///
+/// Read-back proves the world changed. It cannot prove the change was **wanted**, and until
+/// now nothing in the graduation path could tell those apart: a tool that reliably moved
+/// something the person kept saying was unhelpful still earned the right to act without
+/// asking, because the only question asked was whether a light went off.
+///
+/// Their verdict was already collected — the console has the buttons, and repeating an ask
+/// marks the actions before it as unhelpful on its own — and it went nowhere except into a
+/// sentence in the prompt. That is the mistake [0065](../../docs/adr/0065-a-place-is-not-the-models-to-remember.md)
+/// named one layer down: a fact the system holds, narrated to a model instead of deciding
+/// anything.
+///
+/// Symmetric with [`PROVEN_AFTER`] deliberately. Three confirmed changes grant it; three net
+/// unhelpful verdicts take it back. One stray mark cannot withdraw a working tool — which
+/// matters because the repeat-ask path marks *every* successful action in its window, and
+/// that is a coarse instrument to hang a single-strike rule on.
+#[must_use]
+pub fn withdrawn_by_them((helped, did_not): (u32, u32)) -> bool {
+    did_not >= PROVEN_AFTER && did_not > helped
 }
 
 /// How each capability has actually landed: `(confirmed changed, times tried)`.
@@ -11635,7 +11698,7 @@ mod the_record_graduates_a_tool {
     //! reach: thirteen read-back confirmed outcomes proved a light switch is a light
     //! switch, and it was still filed next to a wire transfer.
 
-    use super::{PROVEN_AFTER, proven_by_the_record};
+    use super::{PROVEN_AFTER, proven_by_the_record, withdrawn_by_them};
     use endora_kernel::ids::OutcomeId;
     use endora_understanding::Outcome;
 
@@ -11651,6 +11714,100 @@ mod the_record_graduates_a_tool {
             None,
             changed,
         )
+    }
+
+    /// Same as [`outcome`], plus what the person said about it afterwards.
+    fn judged(id: u128, capability: &str, reaction: super::Reaction) -> Outcome {
+        Outcome::from_parts(
+            OutcomeId::new(id),
+            capability.to_owned(),
+            "{}".to_owned(),
+            "done".to_owned(),
+            Some("seen".to_owned()),
+            super::Timestamp::from_unix_millis(0),
+            None,
+            Some(reaction),
+            Some(true),
+        )
+    }
+
+    #[test]
+    fn a_tool_they_keep_calling_unhelpful_does_not_act_unasked() {
+        // Read-back proves a light went off. It cannot prove anybody wanted it off, and
+        // that was the whole of what graduation asked before this.
+        let mut all: Vec<_> = (0..u128::from(PROVEN_AFTER))
+            .map(|i| outcome(i + 1, "home.HassTurnOff", Some(true)))
+            .collect();
+        assert!(
+            proven_by_the_record(&all).contains("home.HassTurnOff"),
+            "the record alone should still grant it"
+        );
+
+        for i in 0..u128::from(PROVEN_AFTER) {
+            all.push(judged(
+                50 + i,
+                "home.HassTurnOff",
+                super::Reaction::DidNotHelp,
+            ));
+        }
+        assert!(
+            !proven_by_the_record(&all).contains("home.HassTurnOff"),
+            "it kept acting unasked through three verdicts that it was not wanted"
+        );
+    }
+
+    #[test]
+    fn one_stray_verdict_does_not_withdraw_a_working_tool() {
+        // Repeating an ask marks *every* successful action in its window as unhelpful, so
+        // a single mark is far too coarse a thing to revoke autonomy on.
+        assert!(!withdrawn_by_them((0, 1)));
+        assert!(!withdrawn_by_them((0, PROVEN_AFTER - 1)));
+        assert!(withdrawn_by_them((0, PROVEN_AFTER)));
+    }
+
+    #[test]
+    fn saying_it_helped_holds_the_grant_open() {
+        // A tool the person is mostly happy with keeps acting, even with some marks
+        // against it. The verdict has to be net negative, not merely present.
+        assert!(!withdrawn_by_them((PROVEN_AFTER, PROVEN_AFTER)));
+        assert!(!withdrawn_by_them((5, 4)));
+        assert!(withdrawn_by_them((2, 5)));
+    }
+
+    #[test]
+    fn made_no_difference_is_a_third_answer_not_a_middle_one() {
+        // "I saw it and it changed nothing for me" says something about the moment, not
+        // about whether the tool works. Counting it either way tilts a scale it is not on.
+        let mut all: Vec<_> = (0..u128::from(PROVEN_AFTER))
+            .map(|i| outcome(i + 1, "home.HassTurnOn", Some(true)))
+            .collect();
+        for i in 0..10u128 {
+            all.push(judged(
+                50 + i,
+                "home.HassTurnOn",
+                super::Reaction::NoReaction,
+            ));
+        }
+        assert!(proven_by_the_record(&all).contains("home.HassTurnOn"));
+    }
+
+    #[test]
+    fn withdrawal_recedes_when_the_verdicts_do() {
+        // Derived, never stored — the same property the grant already had. Delete the
+        // marks and the tool is trusted again, with nothing to administer.
+        let granted: Vec<_> = (0..u128::from(PROVEN_AFTER))
+            .map(|i| outcome(i + 1, "home.HassTurnOff", Some(true)))
+            .collect();
+        let mut withdrawn = granted.clone();
+        for i in 0..u128::from(PROVEN_AFTER) {
+            withdrawn.push(judged(
+                50 + i,
+                "home.HassTurnOff",
+                super::Reaction::DidNotHelp,
+            ));
+        }
+        assert!(!proven_by_the_record(&withdrawn).contains("home.HassTurnOff"));
+        assert!(proven_by_the_record(&granted).contains("home.HassTurnOff"));
     }
 
     #[test]
