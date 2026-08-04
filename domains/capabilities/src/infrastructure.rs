@@ -72,6 +72,18 @@ pub struct CapabilityInfo {
     /// The settings this capability needs to run (empty for keyless skills). A
     /// skill is usable only once all of these have values.
     pub settings: &'static [SettingSpec],
+    /// Whether what this returns is **prose somebody else wrote** (ADR 0064).
+    ///
+    /// A web page, a search result, a news item, a public agenda, a ticket listing — and,
+    /// when it arrives, mail. Once any of it enters a turn, every actuator in that turn
+    /// drops to confirm: an attacker may make the butler say something wrong, never do
+    /// something.
+    ///
+    /// **The house is not a stranger.** A light reporting `on` is a reading, not an
+    /// utterance, and machine state cannot carry an instruction. Declared rather than
+    /// guessed from an id, so a skill written next year is covered by saying so.
+    pub third_party: bool,
+
     /// The JSON-Schema for this skill's arguments, when it takes any.
     ///
     /// Built-in skills had no way to say. Every one of them was offered to the model with an
@@ -1148,6 +1160,7 @@ impl Capability for WeatherCapability {
             needs: "",
             settings: &[],
             // Needs a place — a town, or a postcode, and said it needed nothing.
+            third_party: false,
             input_schema: Some(
                 r#"{"type":"object","properties":{"location":{"type":"string","description":"a town or postcode"},"lat":{"type":"number"},"lon":{"type":"number"}},"required":["location"]}"#,
             ),
@@ -1294,6 +1307,7 @@ impl Capability for WebFetchCapability {
             // address every documentation page uses — fetched `example.com`, got back "this
             // domain is for use in documentation examples", and answered from it. A skill
             // that fails is recoverable; one that succeeds against a placeholder is not.
+            third_party: true,
             input_schema: Some(
                 r#"{"type":"object","properties":{
                      "url":{"type":"string","description":"the full https:// address of a real page you already have"}},
@@ -1387,6 +1401,7 @@ impl Capability for LocalNewsCapability {
             needs: "",
             settings: &[],
             // Needs where or what, and said it needed nothing.
+            third_party: true,
             input_schema: Some(
                 r#"{"type":"object","properties":{"query":{"type":"string","description":"a topic to search for"},"location":{"type":"string","description":"a town, when asking what is happening there"}},"required":[]}"#,
             ),
@@ -1551,6 +1566,7 @@ impl Capability for KnowledgeCapability {
             needs: "",
             settings: &[],
             // Needs what to look up, and said it needed nothing.
+            third_party: true,
             input_schema: Some(
                 r#"{"type":"object","properties":{"query":{"type":"string","description":"the topic, person or place to look up"}},"required":["query"]}"#,
             ),
@@ -1658,6 +1674,7 @@ impl Capability for ImageReviewCapability {
             configured: true,
             needs: "set the vision model (e.g. moondream) in this skill's settings",
             settings: IMAGE_MODEL_SETTING,
+            third_party: false,
             input_schema: None,
         }
     }
@@ -1731,6 +1748,7 @@ macro_rules! scaffold {
                     configured: false,
                     needs: $needs,
                     settings: &[],
+                    third_party: false,
                     input_schema: None,
                 }
             }
@@ -2057,6 +2075,7 @@ impl Capability for TicketedEventsCapability {
             // Named fields, because the model is otherwise guessing. It was offered this
             // skill with an empty parameter object, called it with `{}` twice, and was told
             // "say what to look for" twice — doing exactly what it had been told it could.
+            third_party: true,
             input_schema: Some(
                 r#"{"type":"object","properties":{
                      "what":{"type":"string","description":"a venue, a team, an act, or a show"},
@@ -2194,6 +2213,7 @@ impl Capability for CityMeetingsCapability {
                 secret: false,
                 optional: false,
             }],
+            third_party: true,
             input_schema: None,
         }
     }
@@ -2300,6 +2320,7 @@ impl Capability for SafetyAlertsCapability {
             needs: "",
             settings: &[],
             // Needs where, and said it needed nothing.
+            third_party: false,
             input_schema: Some(
                 r#"{"type":"object","properties":{"location":{"type":"string","description":"a town or postcode"},"lat":{"type":"number"},"lon":{"type":"number"}},"required":["location"]}"#,
             ),
@@ -2514,6 +2535,7 @@ impl Capability for HomeAssistantCapability {
             configured: true,
             needs: "your Home Assistant URL and a long-lived access token",
             settings: HA_SETTINGS,
+            third_party: false,
             input_schema: Some(
                 r#"{"type":"object","properties":{
                      "domain":{"type":"string","description":"filter what it can see: light, person, sensor…"},
@@ -2887,6 +2909,7 @@ impl CapabilityRunner for RegistryRunner {
                 let info = c.info();
                 crate::application::CapabilitySpec {
                     id: info.id.to_owned(),
+                    third_party: false,
                     description: info.description.to_owned(),
                     // Usable only if the code is ready, the person has it enabled, AND
                     // every required setting has a value (ADR 0054).
@@ -3287,6 +3310,12 @@ impl CapabilityRunner for McpRunner {
                     crate::application::CapabilitySpec {
                         id: format!("{}.{}", c.server, t.name),
                         description,
+                        // A server Endora has no relationship with is answering with
+                        // somebody else's words (ADR 0064, using 0058's own line): a search
+                        // server is a stranger, the house is not. The overlay that knows
+                        // which servers are the house sets this; here it is the safe
+                        // default, because a tool nobody has placed is a stranger.
+                        third_party: true,
                         configured: true,
                         // Deny-by-default everywhere else: the server tells us nothing
                         // about whether a tool reads or actuates, so its result is a
@@ -3836,6 +3865,9 @@ impl CapabilityRunner for AliasRunner {
 /// stored "opened" flag used to.
 pub struct OpenerRunner {
     inner: Arc<dyn CapabilityRunner + Send + Sync>,
+    /// The servers Endora has a relationship with rather than answers from (ADR 0058).
+    /// Their readings are the house, not a stranger's words (ADR 0064).
+    the_house: std::collections::HashSet<String>,
     stances: std::collections::HashMap<String, Stance>,
     /// Tools with enough read-back confirmed changes (ADR 0062). Derived, never stored.
     proven: std::collections::HashSet<String>,
@@ -3848,12 +3880,14 @@ impl OpenerRunner {
     #[must_use]
     pub fn new(
         inner: Arc<dyn CapabilityRunner + Send + Sync>,
+        the_house: std::collections::HashSet<String>,
         stances: std::collections::HashMap<String, Stance>,
         proven: std::collections::HashSet<String>,
         auto_consequential: bool,
     ) -> Self {
         Self {
             inner,
+            the_house,
             stances,
             proven,
             auto_consequential,
@@ -3883,6 +3917,15 @@ impl CapabilityRunner for OpenerRunner {
             .available()
             .into_iter()
             .map(|mut spec| {
+                // A server Endora has a relationship with is the house speaking about
+                // itself, not a stranger (ADR 0064).
+                if spec
+                    .id
+                    .split_once('.')
+                    .is_some_and(|(server, _)| self.the_house.contains(server))
+                {
+                    spec.third_party = false;
+                }
                 match self.stance_of(&spec.id, spec.reversibility) {
                     Stance::Off => spec.autonomous = false,
                     Stance::Ask => spec.autonomous = self.graduates(&spec.id),
@@ -4677,6 +4720,7 @@ mod tests {
             configured: true,
             needs: "",
             settings: &[],
+            third_party: false,
             input_schema: None,
         }
     }
@@ -4771,6 +4815,7 @@ mod tests {
                     configured: true,
                     needs: "",
                     settings: &[],
+                    third_party: false,
                     input_schema: None,
                 }
             }
@@ -4807,6 +4852,7 @@ mod tests {
                     configured: true,
                     needs: "",
                     settings: &[],
+                    third_party: false,
                     input_schema: None,
                 }
             }
@@ -4864,6 +4910,7 @@ mod tests {
                     configured: true,
                     needs: "",
                     settings: &[],
+                    third_party: false,
                     input_schema: None,
                 }
             }
@@ -5569,6 +5616,7 @@ mod tests {
         fn available(&self) -> Vec<CapabilitySpec> {
             vec![CapabilitySpec {
                 id: "weather".to_owned(),
+                third_party: false,
                 description: "the weather".to_owned(),
                 configured: true,
                 autonomous: true,
@@ -5628,6 +5676,7 @@ mod tests {
             fn available(&self) -> Vec<crate::application::CapabilitySpec> {
                 vec![crate::application::CapabilitySpec {
                     id: "home-assistant.HassTurnOn".to_owned(),
+                    third_party: false,
                     description: String::new(),
                     configured: true,
                     autonomous: true,
@@ -6095,7 +6144,13 @@ mod tests {
         // own (auto_consequential = false).
         let stances: std::collections::HashMap<String, Stance> =
             [("fs.write_file".to_owned(), Stance::Ask)].into();
-        let overlay = OpenerRunner::new(mcp, stances, std::collections::HashSet::new(), false);
+        let overlay = OpenerRunner::new(
+            mcp,
+            std::collections::HashSet::new(),
+            stances,
+            std::collections::HashSet::new(),
+            false,
+        );
 
         // Deny-by-default holds for the un-opened tool; the opened one becomes
         // confirm-each-use (never autonomous — its spec stays non-autonomous).
@@ -6127,7 +6182,13 @@ mod tests {
         let stances: std::collections::HashMap<String, Stance> =
             [("home.HassTurnOff".to_owned(), Stance::Ask)].into();
         let proven: std::collections::HashSet<String> = ["home.HassTurnOff".to_owned()].into();
-        let attended = Arc::new(OpenerRunner::new(mcp, stances, proven, true));
+        let attended = Arc::new(OpenerRunner::new(
+            mcp,
+            std::collections::HashSet::new(),
+            stances,
+            proven,
+            true,
+        ));
         // Precondition: attended, it really is cleared to act.
         assert_eq!(attended.decision("home.HassTurnOff"), Some(Decision::Act));
 
@@ -6174,7 +6235,8 @@ mod tests {
         let proven: std::collections::HashSet<String> = ["home.HassTurnOn".to_owned()].into();
         // Both gates open (ADR 0062): the record has proven this tool AND the person
         // allowed acting on consequential things on its own.
-        let overlay = OpenerRunner::new(mcp, stances, proven, true);
+        let overlay =
+            OpenerRunner::new(mcp, std::collections::HashSet::new(), stances, proven, true);
 
         // The opened tool may now run in the loop (Act + autonomous); the un-opened
         // one is still blocked, and never autonomous.
@@ -6206,6 +6268,7 @@ mod tests {
                     .into_iter()
                     .map(|id| crate::application::CapabilitySpec {
                         id: id.to_owned(),
+                        third_party: false,
                         description: String::new(),
                         configured: true,
                         autonomous: false,
@@ -6813,6 +6876,7 @@ mod tests {
         fn available(&self) -> Vec<crate::application::CapabilitySpec> {
             vec![crate::application::CapabilitySpec {
                 id: A_SKILL_IT_OFFERS.to_owned(),
+                third_party: false,
                 description: String::new(),
                 configured: true,
                 autonomous: true,
@@ -6876,6 +6940,7 @@ mod tests {
                 Arc::new(CompositeRunner::new(vec![Arc::new(AliasRunner::new(
                     Arc::new(OpenerRunner::new(
                         Arc::clone(&bottom) as Arc<dyn CapabilityRunner + Send + Sync>,
+                        std::collections::HashSet::new(),
                         std::collections::HashMap::new(),
                         std::collections::HashSet::new(),
                         false,
@@ -7031,6 +7096,7 @@ mod pressing_test_is_safe {
                 configured: true,
                 needs: "",
                 settings: &[],
+                third_party: false,
                 input_schema: None,
             }
         }
@@ -7058,6 +7124,7 @@ mod pressing_test_is_safe {
                 configured: true,
                 needs: "",
                 settings: &[],
+                third_party: false,
                 input_schema: None,
             }
         }
@@ -7231,6 +7298,7 @@ mod the_seam_a_local_integration_plugs_into {
                 configured: true,
                 needs: "",
                 settings: &[],
+                third_party: false,
                 input_schema: None,
             }
         }
@@ -7271,6 +7339,7 @@ mod the_seam_a_local_integration_plugs_into {
                 configured: true,
                 needs: "",
                 settings: &[],
+                third_party: false,
                 input_schema: None,
             }
         }

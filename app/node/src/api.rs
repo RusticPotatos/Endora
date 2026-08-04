@@ -1783,8 +1783,15 @@ fn build_runner(
     );
     // The same stances overlaid on the shared MCP runner, without rebuilding the
     // connection: `ask` confirms each use and graduates when proven (ADR 0062).
+    // The servers Endora has a relationship with — their readings are the house, not a
+    // stranger's words (ADR 0064, drawing 0058's line).
+    let the_house: std::collections::HashSet<String> = native_channels(config)
+        .into_iter()
+        .map(|(server, _)| server)
+        .collect();
     let mcp_source = endora_capabilities::OpenerRunner::new(
         mcp as Arc<dyn endora_capabilities::CapabilityRunner + Send + Sync>,
+        the_house,
         stances.into_iter().collect(),
         proven,
         auto_consequential,
@@ -4719,6 +4726,7 @@ impl endora_capabilities::Capability for WhatIHaveBeenDoing {
             configured: true,
             needs: "",
             settings: &[],
+            third_party: false,
             input_schema: None,
         }
     }
@@ -6089,6 +6097,7 @@ mod tests {
         };
         let spec = |id: &str| CapabilitySpec {
             id: id.to_owned(),
+            third_party: false,
             description: String::new(),
             configured: true,
             autonomous: false,

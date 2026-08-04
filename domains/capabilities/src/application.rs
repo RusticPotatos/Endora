@@ -410,6 +410,9 @@ pub struct CapabilityUse {
 pub struct CapabilitySpec {
     /// Stable id, e.g. `"weather"`.
     pub id: String,
+    /// Whether what this returns is prose somebody else wrote (ADR 0064) — a web page, a
+    /// search result, mail. Once it enters a turn, every actuator in that turn confirms.
+    pub third_party: bool,
     /// One-line description of what it does.
     pub description: String,
     /// Ready to use (vs awaiting setup).

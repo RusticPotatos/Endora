@@ -137,6 +137,7 @@ of an existing record and take the next number.
 | [0061](0061-answers-worth-keeping.md) | Answers worth keeping | — (proposed) |
 | [0062](0062-one-permission-surface.md) | One permission surface | — |
 | [0063](0063-waking-on-the-world.md) | Waking on the world | — |
+| [0064](0064-what-a-stranger-said.md) | What a stranger said | — |
 
 The forty-eight decisions these consolidate are in [archive/](archive/) — kept in full,
 because the reasoning that produced a rule is the reason it survives an argument later.
