@@ -1323,6 +1323,7 @@ fn run_probe(butler: &dyn Butler, probe: &Probe) -> ButlerReply {
             // function — so this measures the string production actually sends.
             let spec = endora_application::CapabilitySpec {
                 id: (*capability).to_owned(),
+                third_party: false,
                 description: String::new(),
                 configured: true,
                 autonomous: true,
@@ -1667,6 +1668,7 @@ mod tests {
 
         let spec = CapabilitySpec {
             id: "x".to_owned(),
+            third_party: false,
             description: String::new(),
             configured: true,
             autonomous: true,
@@ -1708,6 +1710,7 @@ mod tests {
 
         let spec = CapabilitySpec {
             id: "x".to_owned(),
+            third_party: false,
             description: String::new(),
             configured: true,
             autonomous: true,
