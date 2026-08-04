@@ -479,23 +479,6 @@ pub trait Butler {
     }
 }
 
-/// The next rung of the **capability ladder**: a deeper (bigger / cloud) model the
-/// person has configured for questions the local one can't handle. Local-first —
-/// the turn only reaches for this when the local rung comes up empty, and only when
-/// the person has opted in by configuring one.
-///
-/// Escalation sends the question off the device, so an implementation must apply
-/// the same egress protections as any outbound call (withhold apparent secrets,
-/// minimize personal data). It returns prose only — never an action — so it stays a
-/// *reasoning* aid behind the deterministic policy boundary, not a way around it.
-pub trait DeepAsker {
-    /// Escalate a question to the deeper model. Returns its answer, or `None` if no
-    /// deeper model is configured, the request is withheld (egress guard), or the
-    /// call fails — in which case the caller keeps its local answer / honest
-    /// fallback.
-    fn ask(&self, question: &str) -> Option<String>;
-}
-
 // PreferenceRepository moved to the understanding context (ADR 0050);
 // re-exported from `endora_application` (see lib.rs) so existing paths hold.
 
