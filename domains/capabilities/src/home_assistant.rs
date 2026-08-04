@@ -188,36 +188,45 @@ impl HomeAssistant {
     /// A human-readable message if Home Assistant cannot be reached or replies badly.
     pub fn entities(&self) -> Result<Vec<Entity>, String> {
         let body = self.get("/api/states")?;
-        let states: Value = serde_json::from_str(&body).map_err(|e| e.to_string())?;
-        let entities = states
-            .as_array()
-            .ok_or("Home Assistant did not return a list of states")?
-            .iter()
-            .filter_map(|e| {
-                let id = e["entity_id"].as_str()?;
-                let mut kinds = Vec::new();
-                if let Some((domain, _)) = id.split_once('.') {
-                    kinds.push(domain.to_owned());
-                }
-                if let Some(class) = e["attributes"]["device_class"].as_str() {
-                    kinds.push(class.to_owned());
-                }
-                Some(Entity {
-                    id: id.to_owned(),
-                    name: e["attributes"]["friendly_name"]
-                        .as_str()
-                        .unwrap_or(id)
-                        .to_owned(),
-                    state: e["state"].as_str().unwrap_or("?").to_owned(),
-                    since: e["last_changed"].as_str().unwrap_or_default().to_owned(),
-                    facts: crate::infrastructure::facts_worth_reading(&e["attributes"]),
-                    kinds,
-                })
-            })
-            .collect();
-        Ok(entities)
+        entities_in(&body)
+            .ok_or_else(|| "Home Assistant did not return a list of states".to_owned())
     }
+}
 
+/// The entities in a `/api/states` answer — separated from the fetch so the shapes this
+/// house actually returns can be asserted without a house.
+#[must_use]
+pub fn entities_in(body: &str) -> Option<Vec<Entity>> {
+    let states: Value = serde_json::from_str(body).ok()?;
+    let entities = states
+        .as_array()?
+        .iter()
+        .filter_map(|e| {
+            let id = e["entity_id"].as_str()?;
+            let mut kinds = Vec::new();
+            if let Some((domain, _)) = id.split_once('.') {
+                kinds.push(domain.to_owned());
+            }
+            if let Some(class) = e["attributes"]["device_class"].as_str() {
+                kinds.push(class.to_owned());
+            }
+            Some(Entity {
+                id: id.to_owned(),
+                name: e["attributes"]["friendly_name"]
+                    .as_str()
+                    .unwrap_or(id)
+                    .to_owned(),
+                state: e["state"].as_str().unwrap_or("?").to_owned(),
+                since: e["last_changed"].as_str().unwrap_or_default().to_owned(),
+                facts: crate::infrastructure::facts_worth_reading(&e["attributes"]),
+                kinds,
+            })
+        })
+        .collect();
+    Some(entities)
+}
+
+impl HomeAssistant {
     /// Calls a service on exactly one entity, and reports **what happened** in words.
     ///
     /// Home Assistant answers a service call with the list of states it changed, so a
@@ -1078,10 +1087,23 @@ impl crate::infrastructure::NativeChannel for HomeAssistant {
     }
 
     fn states(&self) -> Result<Vec<(String, String)>, String> {
+        // Keyed by **entity id**, never by friendly name.
+        //
+        // Friendly names are not unique and this house proves it: a device tracker and a
+        // timestamp sensor both answer to one name, so their readings collapsed into a
+        // single key and every pass flipped it between a place and a date. That is a
+        // permanent fake transition — it recorded a change every two minutes forever, it
+        // was "rare" by every measure that counts distinct values, and it is what woke the
+        // butler for nothing.
+        //
+        // ADR 0059 already argued this one level up: two servers may publish the same
+        // resource name, so keys carry their source. Two entities may share a friendly
+        // name for exactly the same reason, and the fix is the same — use the id that
+        // cannot collide. The name stays where names belong, in prose.
         Ok(self
             .entities()?
             .into_iter()
-            .map(|e| (e.name, e.state))
+            .map(|e| (e.id, e.state))
             .collect())
     }
 
@@ -1394,6 +1416,26 @@ impl crate::infrastructure::NativeChannel for HomeAssistant {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_reading_is_keyed_by_id_because_names_collide() {
+        // The live failure: a device tracker and a timestamp sensor answering to one
+        // friendly name collapsed into a single key, and every pass flipped it between a
+        // place and a date — a permanent fake transition, recorded every two minutes,
+        // "rare" by every measure that counts distinct values, and the reason the butler
+        // woke for nothing.
+        let states = super::entities_in(
+            r#"[{"entity_id":"device_tracker.pixel","state":"not_home",
+                 "attributes":{"friendly_name":"Pixel"}},
+                {"entity_id":"sensor.pixel_seen","state":"2026-08-02T11:01:36+00:00",
+                 "attributes":{"friendly_name":"Pixel"}}]"#,
+        )
+        .expect("a list of states parses");
+        let keys: Vec<&str> = states.iter().map(|e| e.id.as_str()).collect();
+        assert_eq!(keys, vec!["device_tracker.pixel", "sensor.pixel_seen"]);
+        // Both answer to the same name, which is exactly why the name cannot be the key.
+        assert_eq!(states[0].name, states[1].name);
+    }
 
     #[test]
     fn the_recorder_answer_is_parsed_never_trusted() {
