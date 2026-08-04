@@ -2254,8 +2254,30 @@ fn similar(a: &str, b: &str) -> bool {
         return normalized(a) == normalized(b);
     }
     let shared = ka.iter().filter(|w| kb.contains(w)).count() as f64;
-    let smaller = ka.len().min(kb.len()) as f64;
-    shared / smaller >= 0.75
+    // **Both** statements, not the shorter one.
+    //
+    // Dividing by the smaller set is containment, and containment says a short belief is a
+    // copy of any longer one that happens to mention the same things. Live, it called these
+    // the same thought:
+    //
+    //     "you prefer to run after work on Tuesdays and Thursdays"
+    //     "Work unpredictability squeezes your evenings — a 4-hour issue call pushed your
+    //      main work late — so the after-work run needs to stay small enough to survive a
+    //      late day."
+    //
+    // They share a subject and say entirely different things. One is a preference, the
+    // other is what the week does to it. Under containment the specific one swallows the
+    // general one — and because this same rule decides whether a night's thought is a
+    // discovery, **a detailed belief quietly stops related simpler ones from ever forming**.
+    // That is the opposite of learning, in the function that decides what is learned.
+    //
+    // Jaccard is symmetric: sameness has to hold in both directions, so a longer statement
+    // must actually be about the same amount of thing to count as a repeat.
+    let union = ka.len() + kb.len() - shared as usize;
+    if union == 0 {
+        return normalized(a) == normalized(b);
+    }
+    shared / union as f64 >= 0.6
 }
 
 /// Whether two statements concern the same subject at all — the precondition for them
@@ -11032,6 +11054,41 @@ mod one_fact_source_reaches_everything {
             }
         }
         assert!(what_changed_lately(&Broken, NOW).is_empty());
+    }
+}
+
+#[cfg(test)]
+mod a_short_belief_is_not_a_copy_of_a_long_one {
+    //! Caught by the live smoke, which is where this repository's bugs keep surfacing.
+    //! Containment made a specific belief swallow a general one — and because the same rule
+    //! decides whether a night's thought is a discovery, a detailed belief quietly stopped
+    //! related simpler ones from ever forming. The opposite of learning, in the function
+    //! that decides what is learned.
+
+    use super::says_the_same_thing;
+
+    const SPECIFIC: &str = "Work unpredictability squeezes your evenings — a long issue \
+                            call pushed your main work late — so the after-work run needs \
+                            to stay small enough to survive a late day.";
+    const GENERAL: &str = "you prefer to run after work on Tuesdays and Thursdays";
+
+    #[test]
+    fn two_thoughts_about_one_subject_are_not_one_thought() {
+        assert!(
+            !says_the_same_thing(SPECIFIC, GENERAL),
+            "a preference and what the week does to it are different beliefs"
+        );
+        // Symmetric, which containment never was.
+        assert!(!says_the_same_thing(GENERAL, SPECIFIC));
+    }
+
+    #[test]
+    fn a_real_repeat_is_still_a_repeat() {
+        // The job it must keep doing: rewording is not a discovery.
+        assert!(says_the_same_thing(
+            "you prefer to run after work on Tuesdays and Thursdays",
+            "You prefer running after work on Tuesdays and Thursdays."
+        ));
     }
 }
 
