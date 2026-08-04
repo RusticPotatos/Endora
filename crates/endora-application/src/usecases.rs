@@ -1202,12 +1202,19 @@ fn run_tool_turn(
             });
             // From here on, this turn may not act on its own — and the result carries the
             // mark, so the escalation decision downstream can see it too.
-            let content = if spec.as_ref().is_some_and(|s| s.third_party) {
-                a_stranger_spoke = true;
-                format!("{STRANGER_MARK}{content}")
-            } else {
-                content
-            };
+            // A call that FAILED returned no stranger's words, so there is nothing to be
+            // tainted by — and tainting anyway blocked the escalation that exists to catch
+            // exactly this. Seen live within an hour of shipping both: the mail skill
+            // failed, the turn was marked as having heard from outside, escalation was
+            // refused, and the local model told the person there was no new mail. The rule
+            // silenced the mechanism meant to notice it was lying.
+            let content =
+                if spec.as_ref().is_some_and(|s| s.third_party) && status != StepStatus::Failed {
+                    a_stranger_spoke = true;
+                    format!("{STRANGER_MARK}{content}")
+                } else {
+                    content
+                };
             // Remember what it answered, so calling it again this turn gets this back
             // rather than a scolding the model might repeat to the person.
             seen.insert(already, content.clone());

@@ -72,6 +72,19 @@ pub struct CapabilityInfo {
     /// The settings this capability needs to run (empty for keyless skills). A
     /// skill is usable only once all of these have values.
     pub settings: &'static [SettingSpec],
+    /// Another capability whose settings this one uses, when it rides an existing
+    /// connection rather than asking for its own.
+    ///
+    /// Settings are keyed by a capability's own id, so a skill that borrows a connection and
+    /// declares nothing gets an empty map — and reports itself unconfigured while the
+    /// connection it wanted is right there. Declaring the same settings again would work and
+    /// would make the person paste the same token twice, which is how two copies of a
+    /// credential start.
+    ///
+    /// Named, not guessed, and general: any skill that rides another's connection says so
+    /// and nothing in shared code learns an integration by name.
+    pub borrows_from: Option<&'static str>,
+
     /// Whether what this returns is **prose somebody else wrote** (ADR 0064).
     ///
     /// A web page, a search result, a news item, a public agenda, a ticket listing — and,
@@ -1161,6 +1174,7 @@ impl Capability for WeatherCapability {
             needs: "",
             settings: &[],
             // Needs a place — a town, or a postcode, and said it needed nothing.
+            borrows_from: None,
             third_party: false,
             input_schema: Some(
                 r#"{"type":"object","properties":{"location":{"type":"string","description":"a town or postcode"},"lat":{"type":"number"},"lon":{"type":"number"}},"required":["location"]}"#,
@@ -1308,6 +1322,7 @@ impl Capability for WebFetchCapability {
             // address every documentation page uses — fetched `example.com`, got back "this
             // domain is for use in documentation examples", and answered from it. A skill
             // that fails is recoverable; one that succeeds against a placeholder is not.
+            borrows_from: None,
             third_party: true,
             input_schema: Some(
                 r#"{"type":"object","properties":{
@@ -1402,6 +1417,7 @@ impl Capability for LocalNewsCapability {
             needs: "",
             settings: &[],
             // Needs where or what, and said it needed nothing.
+            borrows_from: None,
             third_party: true,
             input_schema: Some(
                 r#"{"type":"object","properties":{"query":{"type":"string","description":"a topic to search for"},"location":{"type":"string","description":"a town, when asking what is happening there"}},"required":[]}"#,
@@ -1567,6 +1583,7 @@ impl Capability for KnowledgeCapability {
             needs: "",
             settings: &[],
             // Needs what to look up, and said it needed nothing.
+            borrows_from: None,
             third_party: true,
             input_schema: Some(
                 r#"{"type":"object","properties":{"query":{"type":"string","description":"the topic, person or place to look up"}},"required":["query"]}"#,
@@ -1675,6 +1692,7 @@ impl Capability for ImageReviewCapability {
             configured: true,
             needs: "set the vision model (e.g. moondream) in this skill's settings",
             settings: IMAGE_MODEL_SETTING,
+            borrows_from: None,
             third_party: false,
             input_schema: None,
         }
@@ -1749,6 +1767,7 @@ macro_rules! scaffold {
                     configured: false,
                     needs: $needs,
                     settings: &[],
+                    borrows_from: None,
                     third_party: false,
                     input_schema: None,
                 }
@@ -2076,6 +2095,7 @@ impl Capability for TicketedEventsCapability {
             // Named fields, because the model is otherwise guessing. It was offered this
             // skill with an empty parameter object, called it with `{}` twice, and was told
             // "say what to look for" twice — doing exactly what it had been told it could.
+            borrows_from: None,
             third_party: true,
             input_schema: Some(
                 r#"{"type":"object","properties":{
@@ -2222,6 +2242,8 @@ impl Capability for MailCapability {
             configured: true,
             needs: "",
             settings: &[],
+            // Rides the house's connection rather than asking for the token twice.
+            borrows_from: Some("home_assistant"),
             third_party: true,
             input_schema: None,
         }
@@ -2297,6 +2319,7 @@ impl Capability for CityMeetingsCapability {
                 secret: false,
                 optional: false,
             }],
+            borrows_from: None,
             third_party: true,
             input_schema: None,
         }
@@ -2404,6 +2427,7 @@ impl Capability for SafetyAlertsCapability {
             needs: "",
             settings: &[],
             // Needs where, and said it needed nothing.
+            borrows_from: None,
             third_party: false,
             input_schema: Some(
                 r#"{"type":"object","properties":{"location":{"type":"string","description":"a town or postcode"},"lat":{"type":"number"},"lon":{"type":"number"}},"required":["location"]}"#,
@@ -2619,6 +2643,7 @@ impl Capability for HomeAssistantCapability {
             configured: true,
             needs: "your Home Assistant URL and a long-lived access token",
             settings: HA_SETTINGS,
+            borrows_from: None,
             third_party: false,
             input_schema: Some(
                 r#"{"type":"object","properties":{
@@ -2898,7 +2923,19 @@ impl RegistryRunner {
 
     /// The stored settings for a capability (empty if none set).
     fn settings_for(&self, id: &str) -> CapabilitySettings {
-        self.settings.get(id).cloned().unwrap_or_default()
+        // A skill that rides another's connection reads that one's settings (ADR 0058:
+        // one credential, one place). Declared by the skill, so nothing here knows an
+        // integration by name.
+        let borrowed = self
+            .capabilities
+            .iter()
+            .map(|c| c.info())
+            .find(|i| i.id == id)
+            .and_then(|i| i.borrows_from)
+            .and_then(|from| self.settings.get(from).cloned());
+        borrowed
+            .or_else(|| self.settings.get(id).cloned())
+            .unwrap_or_default()
     }
 }
 
@@ -2999,7 +3036,12 @@ impl CapabilityRunner for RegistryRunner {
                     // every required setting has a value (ADR 0054).
                     configured: info.configured
                         && self.is_enabled(&info)
-                        && settings_complete(&info, &self.settings_for(info.id)),
+                        // A borrower is ready when the connection it rides is ready, which
+                        // is what `settings_for` already resolves.
+                        && (info.borrows_from.map_or_else(
+                            || settings_complete(&info, &self.settings_for(info.id)),
+                            |_| !self.settings_for(info.id).is_empty(),
+                        )),
                     reversibility: info.reversibility,
                     autonomous: may_run_autonomously(
                         &info,
@@ -4804,6 +4846,7 @@ mod tests {
             configured: true,
             needs: "",
             settings: &[],
+            borrows_from: None,
             third_party: false,
             input_schema: None,
         }
@@ -4899,6 +4942,7 @@ mod tests {
                     configured: true,
                     needs: "",
                     settings: &[],
+                    borrows_from: None,
                     third_party: false,
                     input_schema: None,
                 }
@@ -4936,6 +4980,7 @@ mod tests {
                     configured: true,
                     needs: "",
                     settings: &[],
+                    borrows_from: None,
                     third_party: false,
                     input_schema: None,
                 }
@@ -4994,6 +5039,7 @@ mod tests {
                     configured: true,
                     needs: "",
                     settings: &[],
+                    borrows_from: None,
                     third_party: false,
                     input_schema: None,
                 }
@@ -7180,6 +7226,7 @@ mod pressing_test_is_safe {
                 configured: true,
                 needs: "",
                 settings: &[],
+                borrows_from: None,
                 third_party: false,
                 input_schema: None,
             }
@@ -7208,6 +7255,7 @@ mod pressing_test_is_safe {
                 configured: true,
                 needs: "",
                 settings: &[],
+                borrows_from: None,
                 third_party: false,
                 input_schema: None,
             }
@@ -7382,6 +7430,7 @@ mod the_seam_a_local_integration_plugs_into {
                 configured: true,
                 needs: "",
                 settings: &[],
+                borrows_from: None,
                 third_party: false,
                 input_schema: None,
             }
@@ -7423,6 +7472,7 @@ mod the_seam_a_local_integration_plugs_into {
                 configured: true,
                 needs: "",
                 settings: &[],
+                borrows_from: None,
                 third_party: false,
                 input_schema: None,
             }
@@ -7846,6 +7896,58 @@ mod answers_worth_keeping {
         // Two independent hashes, so a collision is another question's answer rather than a
         // slow one — the halves must not be the same function twice.
         assert_ne!(one.0, one.1);
+    }
+}
+
+#[cfg(test)]
+mod a_skill_may_ride_anothers_connection {
+    //! Live, within an hour of shipping: the mail skill reported itself unconfigured while
+    //! the Home Assistant connection it reads through was right there and working. Settings
+    //! are keyed by a capability's own id, and a skill that borrows a connection and
+    //! declares nothing gets an empty map.
+    //!
+    //! Declaring the same settings again would have worked and would have made the person
+    //! paste the same token twice, which is how two copies of a credential start.
+
+    use crate::application::CapabilityRunner;
+    use std::sync::Arc;
+
+    #[test]
+    fn a_borrower_reads_the_settings_of_what_it_borrows() {
+        let mut settings = std::collections::HashMap::new();
+        let mut house = super::CapabilitySettings::new();
+        house.insert("url".to_owned(), "https://192.168.1.10:8123".to_owned());
+        house.insert("token".to_owned(), "a-token".to_owned());
+        settings.insert("home_assistant".to_owned(), house);
+
+        let runner = super::RegistryRunner::with_config(
+            Arc::new(super::default_capabilities()),
+            Vec::new(),
+            std::collections::HashSet::new(),
+            crate::application::AutonomyEnvelope::default(),
+            settings,
+        );
+        let mail = runner
+            .available()
+            .into_iter()
+            .find(|c| c.id == "mail")
+            .expect("the skill is registered");
+        assert!(
+            mail.configured,
+            "a borrower is ready when the connection it rides is ready — it reported \
+             unconfigured while the house was connected and working"
+        );
+    }
+
+    #[test]
+    fn a_borrower_with_nothing_to_borrow_is_honestly_unconfigured() {
+        let runner = super::RegistryRunner::new(Arc::new(super::default_capabilities()));
+        let mail = runner
+            .available()
+            .into_iter()
+            .find(|c| c.id == "mail")
+            .expect("the skill is registered");
+        assert!(!mail.configured);
     }
 }
 
