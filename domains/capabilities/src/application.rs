@@ -689,6 +689,26 @@ mod keeping_a_record_of_what_moved {
 
     use super::{TransitionLog, watch_for_change};
     #[test]
+    fn its_own_notifications_are_not_the_world_changing() {
+        // Live: the entity Endora reaches the person through is a `notify` whose state is
+        // the timestamp of the last thing IT sent. Sending a message changed the house,
+        // rarely, and woke it to consider sending another. A butler that wakes itself is
+        // not attentive, it is pacing. Filtered before this is asked — the rule belongs
+        // where the composition knows which entity is Endora's own voice — so what this
+        // asserts is that the filter is what decides, not rarity.
+        let t = |key: &str| super::Transition {
+            key: key.to_owned(),
+            from: "a".to_owned(),
+            to: "b".to_owned(),
+            at_ms: 1,
+        };
+        let its_own = [t("house::notify.phone")];
+        let history = its_own.to_vec();
+        // Rare by every measure — which is exactly why the filter has to come first.
+        assert!(super::worth_waking_for(&its_own, &history).is_some());
+    }
+
+    #[test]
     fn a_rare_change_wakes_and_a_chatty_one_never_does() {
         // ADR 0063. The hallway light changes all day; a sensor that has said nothing all
         // fortnight and just spoke is worth a word.

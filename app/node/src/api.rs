@@ -4799,12 +4799,20 @@ fn watch_the_world(state: &AppState) {
     let config = state.config.clone();
     // Everything this pass records, for the wake decision at the end (ADR 0063).
     let mut this_pass: Vec<endora_capabilities::Transition> = Vec::new();
+    // Every thing a native channel reported, changed or not. Filtering the second pass by
+    // what *changed* was not enough and made it subtler: the two paths keep separate stored
+    // priors, so suppressing the duplicate stopped `skills::` updating its own prior and it
+    // simply fired one pass later with a stale value. The house is watched once because the
+    // second pass never sees its entities at all.
+    let mut the_house_reported: std::collections::HashSet<String> =
+        std::collections::HashSet::new();
     let events = state.events.clone();
     let clock = state.clock.clone();
     let now_ms = state.clock.now().unix_millis();
     for (server, channel) in native_channels(config.as_ref()) {
         match channel.states() {
             Ok(reading) => {
+                the_house_reported.extend(reading.iter().map(|(thing, _)| thing.clone()));
                 if let Err(e) = endora_capabilities::watch_for_trouble(
                     config.as_ref(),
                     &server,
@@ -4868,15 +4876,11 @@ fn watch_the_world(state: &AppState) {
     // so every change became two transitions, two events, and two candidates to wake on.
     // ADR 0059's promise is one fact source with many consumers, not one fact counted
     // twice; the thing-part of the key is what identifies it, whichever route it arrived by.
-    let already: std::collections::HashSet<&str> = this_pass
-        .iter()
-        .filter_map(|t| t.key.split_once("::").map(|(_, thing)| thing))
-        .collect();
     let reading: Vec<(String, String)> = reading
         .into_iter()
         .filter(|(key, _)| {
             let thing = key.split_once("::").map_or(key.as_str(), |(_, t)| t);
-            !already.contains(thing)
+            !the_house_reported.contains(thing)
         })
         .collect();
     if !reading.is_empty() {
@@ -4935,7 +4939,33 @@ fn wake_on_the_unusual(
     ) else {
         return;
     };
-    let Some(unusual) = endora_capabilities::worth_waking_for(this_pass, &history) else {
+    // Endora's own conduct is not the world changing (ADR 0052's oldest rule, in a place it
+    // had never reached). The entity it reaches the person through is a `notify` whose state
+    // is the timestamp of the last thing IT sent — so sending a message changed the house,
+    // rarely, and woke it to consider sending another. A butler that wakes itself up is not
+    // attentive, it is pacing.
+    //
+    // Seen live: three transitions on that entity, all of them Endora's own notifications,
+    // and one of them woke a check-in.
+    let its_own_doing: std::collections::HashSet<String> = settings_map(state.config.as_ref())
+        .values()
+        .filter_map(|s| s.get("notify_service").map(|v| v.trim().to_owned()))
+        .filter(|v| !v.is_empty())
+        // Stored as `notify.thing` or bare `thing` depending on how it was set.
+        .flat_map(|v| {
+            let bare = v.rsplit('.').next().unwrap_or(&v).to_owned();
+            [format!("notify.{bare}"), v]
+        })
+        .collect();
+    let world_changed: Vec<endora_capabilities::Transition> = this_pass
+        .iter()
+        .filter(|t| {
+            let thing = t.key.split_once("::").map_or(t.key.as_str(), |(_, x)| x);
+            !its_own_doing.contains(thing)
+        })
+        .cloned()
+        .collect();
+    let Some(unusual) = endora_capabilities::worth_waking_for(&world_changed, &history) else {
         return;
     };
     // Only advance a budget that exists: check-ins off means waking off, same switch.
