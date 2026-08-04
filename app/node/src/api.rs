@@ -4853,6 +4853,24 @@ fn watch_the_world(state: &AppState) {
         proven_now(state.understanding.as_ref()),
     );
     let reading = endora_capabilities::CapabilityRunner::current_states(&runner);
+    // Minus whatever a native channel already reported this pass.
+    //
+    // A service that is BOTH a native channel and reachable through the runner was watched
+    // twice — the same entity recorded under `home-assistant::` and again under `skills::`,
+    // so every change became two transitions, two events, and two candidates to wake on.
+    // ADR 0059's promise is one fact source with many consumers, not one fact counted
+    // twice; the thing-part of the key is what identifies it, whichever route it arrived by.
+    let already: std::collections::HashSet<&str> = this_pass
+        .iter()
+        .filter_map(|t| t.key.split_once("::").map(|(_, thing)| thing))
+        .collect();
+    let reading: Vec<(String, String)> = reading
+        .into_iter()
+        .filter(|(key, _)| {
+            let thing = key.split_once("::").map_or(key.as_str(), |(_, t)| t);
+            !already.contains(thing)
+        })
+        .collect();
     if !reading.is_empty() {
         if let Err(e) =
             endora_capabilities::watch_for_trouble(config.as_ref(), "skills", &reading, now_ms)
