@@ -4726,6 +4726,7 @@ impl endora_capabilities::Capability for WhatIHaveBeenDoing {
             configured: true,
             needs: "",
             settings: &[],
+            borrows_from: None,
             third_party: false,
             input_schema: None,
         }
