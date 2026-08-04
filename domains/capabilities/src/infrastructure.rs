@@ -361,6 +361,7 @@ pub fn default_capabilities() -> Vec<Arc<dyn Capability>> {
         Arc::new(KnowledgeCapability),
         Arc::new(LocalNewsCapability),
         Arc::new(ImageReviewCapability::from_env()),
+        Arc::new(MailCapability),
         Arc::new(CityMeetingsCapability),
         Arc::new(TicketedEventsCapability),
         Arc::new(FlightSearchCapability),
@@ -2189,6 +2190,89 @@ impl Capability for TicketedEventsCapability {
             .and_then(Value::as_array)
             .map_or(0, Vec::len);
         Ok(format!("The key works — {n} listings came back."))
+    }
+}
+
+/// What the mail says — headers only, through the house (ADR 0064/0058).
+///
+/// Endora holds no mail credential. The app password lives in Home Assistant's IMAP
+/// integration, and this reads the entity that integration publishes, over the connection
+/// that already exists. One credential, one place — and nothing here can send.
+///
+/// **Third-party by construction.** Mail is other people's words, so any turn that reads it
+/// stops being able to act (ADR 0064): an email that says "turn off the alarm" reaches a
+/// butler that may answer and may not obey. That rule existed before this skill did, which
+/// is the only reason this skill may exist.
+///
+/// Headers, never bodies. *"Anything I need to deal with?"* is answered by who wrote and
+/// what about; a body is where one-time codes and reset links live, and this repository has
+/// no business carrying those into a context that persists.
+struct MailCapability;
+
+impl Capability for MailCapability {
+    fn info(&self) -> CapabilityInfo {
+        CapabilityInfo {
+            id: "mail",
+            name: "What the mail says",
+            description: "Who has written and what about, from the mailbox connected to the \
+                          house. Headers only — never message bodies — and it cannot send.",
+            category: "information",
+            reaches_external: false,
+            reversibility: Reversibility::Observe,
+            configured: true,
+            needs: "",
+            settings: &[],
+            third_party: true,
+            input_schema: None,
+        }
+    }
+
+    fn invoke(
+        &self,
+        _input: &Value,
+        settings: &CapabilitySettings,
+    ) -> Result<Value, CapabilityError> {
+        let home =
+            crate::home_assistant::HomeAssistant::from_settings(settings).ok_or_else(|| {
+                CapabilityError::Unavailable(
+                    "the mailbox is read through Home Assistant — set its URL and token in \
+                     the Home Assistant skill"
+                        .to_owned(),
+                )
+            })?;
+        let entities = home.entities().map_err(CapabilityError::Unavailable)?;
+        let said = crate::home_assistant::mail_in(&entities);
+        Ok(serde_json::json!({
+            "mail": said
+                .iter()
+                .map(|m| serde_json::json!({
+                    "mailbox": m.mailbox,
+                    "waiting": m.waiting,
+                    "subject": m.subject,
+                    "from": m.from,
+                    "when": m.when,
+                }))
+                .collect::<Vec<_>>(),
+        }))
+    }
+
+    fn summarize(&self, output: &Value) -> String {
+        let said: Vec<crate::home_assistant::MailSaid> = output
+            .get("mail")
+            .and_then(Value::as_array)
+            .map(|all| {
+                all.iter()
+                    .map(|m| crate::home_assistant::MailSaid {
+                        mailbox: m["mailbox"].as_str().unwrap_or_default().to_owned(),
+                        waiting: m["waiting"].as_u64().and_then(|n| u32::try_from(n).ok()),
+                        subject: m["subject"].as_str().map(ToOwned::to_owned),
+                        from: m["from"].as_str().map(ToOwned::to_owned),
+                        when: m["when"].as_str().map(ToOwned::to_owned),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        crate::home_assistant::describe_mail(&said)
     }
 }
 

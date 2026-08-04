@@ -193,6 +193,87 @@ impl HomeAssistant {
     }
 }
 
+/// What the mailboxes say, from whatever the house's mail integration publishes.
+///
+/// **Headers only, and only what is already there.** Endora holds no mail credential: the
+/// app password lives in Home Assistant's IMAP integration, and this reads the entity that
+/// integration publishes. One credential, one place (ADR 0058 — answers over a relationship
+/// that already exists).
+///
+/// Shape-tolerant on purpose. The integration publishes a message count always, and subject
+/// and sender only when it has been configured to include them. A parser written against an
+/// assumed shape is the mistake this repository has now made three times in one day, so this
+/// reports what is present and says plainly when all it has is a number. It never invents a
+/// field and never guesses at a body.
+#[must_use]
+pub fn mail_in(entities: &[Entity]) -> Vec<MailSaid> {
+    entities
+        .iter()
+        .filter(|e| e.id.starts_with("sensor.imap") || e.id.contains("_imap_"))
+        .map(|e| {
+            let field = |names: &[&str]| {
+                names.iter().find_map(|n| {
+                    e.facts
+                        .get(*n)
+                        .and_then(serde_json::Value::as_str)
+                        .map(|v| v.trim().to_owned())
+                        .filter(|v| !v.is_empty())
+                })
+            };
+            MailSaid {
+                mailbox: e.name.clone(),
+                waiting: e.state.parse::<u32>().ok(),
+                subject: field(&["subject", "last_subject", "title"]),
+                from: field(&["sender", "from", "last_sender"]),
+                when: field(&["date", "last_message", "received"]),
+            }
+        })
+        .collect()
+}
+
+/// One mailbox, as the house reports it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MailSaid {
+    /// What the mailbox is called.
+    pub mailbox: String,
+    /// How many are waiting, when the integration says. `None` when its state is not a count.
+    pub waiting: Option<u32>,
+    /// The most recent subject, when the integration publishes one.
+    pub subject: Option<String>,
+    /// Who it is from, when the integration publishes it.
+    pub from: Option<String>,
+    /// When it arrived, when the integration publishes it.
+    pub when: Option<String>,
+}
+
+/// Says the mail the way a person would ask about it.
+///
+/// A count alone is nearly useless — *"36,133 messages"* answers nothing anybody asks — so
+/// when that is all there is, this says so and says what would change it, rather than
+/// reporting a number as though it were an answer.
+#[must_use]
+pub fn describe_mail(said: &[MailSaid]) -> String {
+    if said.is_empty() {
+        return "No mailbox is connected to the house.".to_owned();
+    }
+    let lines: Vec<String> = said
+        .iter()
+        .map(|m| match (&m.subject, &m.from) {
+            (Some(subject), Some(from)) => format!("{} — \"{subject}\", from {from}", m.mailbox),
+            (Some(subject), None) => format!("{} — \"{subject}\"", m.mailbox),
+            _ => match m.waiting {
+                Some(n) => format!(
+                    "{}: {n} in the mailbox, and the house publishes no subjects or senders \
+                     — only the count",
+                    m.mailbox
+                ),
+                None => format!("{}: nothing readable", m.mailbox),
+            },
+        })
+        .collect();
+    crate::infrastructure::said_proportionately(lines, "in the mail")
+}
+
 /// The entities in a `/api/states` answer — separated from the fetch so the shapes this
 /// house actually returns can be asserted without a house.
 #[must_use]
@@ -1416,6 +1497,45 @@ impl crate::infrastructure::NativeChannel for HomeAssistant {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_count_alone_is_said_as_a_count_alone() {
+        // What this house publishes today. "36,133 messages" answers nothing anybody asks,
+        // so it says so and says what would change it, rather than reporting a number as
+        // though it were an answer.
+        let entities = super::entities_in(
+            r#"[{"entity_id":"sensor.imap_someone_example_com_messages","state":"36133",
+                 "attributes":{"friendly_name":"IMAP (someone)"}}]"#,
+        )
+        .expect("states parse");
+        let said = super::mail_in(&entities);
+        assert_eq!(said[0].waiting, Some(36133));
+        assert!(said[0].subject.is_none());
+        let told = super::describe_mail(&said);
+        assert!(told.contains("only the count"), "{told}");
+    }
+
+    #[test]
+    fn a_subject_and_sender_are_used_when_the_house_publishes_them() {
+        let entities = super::entities_in(
+            r#"[{"entity_id":"sensor.imap_someone_example_com_messages","state":"4",
+                 "attributes":{"friendly_name":"IMAP (someone)",
+                               "subject":"Your parcel is out for delivery",
+                               "sender":"depot@example.com"}}]"#,
+        )
+        .expect("states parse");
+        let told = super::describe_mail(&super::mail_in(&entities));
+        assert!(told.contains("Your parcel is out for delivery"), "{told}");
+        assert!(told.contains("depot@example.com"), "{told}");
+    }
+
+    #[test]
+    fn a_mailbox_that_is_not_there_is_not_invented() {
+        assert_eq!(
+            super::describe_mail(&super::mail_in(&[])),
+            "No mailbox is connected to the house."
+        );
+    }
 
     #[test]
     fn a_reading_is_keyed_by_id_because_names_collide() {
