@@ -32,8 +32,7 @@ use endora_scheduling::{
 use crate::error::AppError;
 use crate::ports::{
     Butler, ButlerContext, ButlerReply, CapabilityTool, Clock, ConversationSummary,
-    ConversationSummaryStore, DeepAsker, FormedBelief, IdSource, MemorySnapshot, MemoryStore,
-    TurnMessage,
+    ConversationSummaryStore, FormedBelief, IdSource, MemorySnapshot, MemoryStore, TurnMessage,
 };
 
 /// Exports everything the user has stored (a memory right).
@@ -1280,7 +1279,6 @@ pub fn send_to_butler(
         butler,
         audit,
         None,
-        None,
         ids,
         clock,
         context,
@@ -1709,7 +1707,6 @@ pub fn send_to_butler_streaming(
     capabilities: &dyn CapabilityRunner,
     butler: &dyn Butler,
     audit: &dyn AuditLog,
-    deep: Option<&dyn DeepAsker>,
     summary: Option<&dyn ConversationSummaryStore>,
     ids: &impl IdSource,
     clock: &impl Clock,
@@ -1801,29 +1798,28 @@ pub fn send_to_butler_streaming(
         )?
     };
 
-    // The capability ladder (local-first, ADR 0055): if the local model came up empty,
-    // climb to the deeper (bigger/cloud) model when the person configured one. Prose
-    // only — never an action — so it stays a reasoning aid behind the policy boundary,
-    // and the deep asker applies the egress guard since the question leaves the device.
+    // There is exactly one way to the deep model, and it is inside the turn (ADR 0067).
+    //
+    // A second rung used to live here: when the local model came up empty, it asked the deep
+    // model the person's raw sentence. It carried no system prompt, no place, no time and
+    // none of what the turn had just found, so a large model answered as a generic assistant
+    // — and, worse, it answered on turns the turn itself had *refused* to escalate. The
+    // refusals it overrode were the taint rule (ADR 0064) and the person's own consent to
+    // automatic escalation (ADR 0055), both of which are checked in `run_tool_turn` and
+    // neither of which existed here.
+    //
     // Whether the answering round spoke for itself. When it did, that text has already
     // reached the person token by token; when it did not, whatever stands in for it is
     // new to them.
     let answered_in_its_own_words = !reply.text.trim().is_empty();
     let reply_text = if reply.text.trim().is_empty() {
-        match deep.and_then(|d| d.ask(text)).map(|a| a.trim().to_owned()) {
-            Some(answer) if !answer.is_empty() => {
-                activity.push("Asked the deep model (the local model came up empty)".to_owned());
-                answer
-            }
-            // Nothing from either model. If the turn ACTED, apologising is simply false —
-            // it did something and knows what. ADR 0053 rejected deterministic narration
-            // because code-written sentences got contradicted by the model; there is
-            // nothing to contradict when the model produced no sentence at all, which is
-            // what makes this safe rather than a relapse.
-            _ => acted_note(disclosures).unwrap_or_else(|| {
-                "I'm not sure how to help with that yet — can you say a bit more?".to_owned()
-            }),
-        }
+        // If the turn ACTED, apologising is simply false — it did something and knows what.
+        // ADR 0053 rejected deterministic narration because code-written sentences got
+        // contradicted by the model; there is nothing to contradict when the model produced
+        // no sentence at all, which is what makes this safe rather than a relapse.
+        acted_note(disclosures).unwrap_or_else(|| {
+            "I'm not sure how to help with that yet — can you say a bit more?".to_owned()
+        })
     } else {
         reply.text.trim().to_owned()
     };
@@ -7450,11 +7446,18 @@ mod tests {
     }
 
     #[test]
-    fn the_ladder_escalates_to_the_deep_model_when_the_local_comes_up_empty() {
+    fn a_local_model_that_comes_up_empty_says_so_rather_than_inventing_a_second_rung() {
         use super::send_to_butler_streaming;
-        use crate::ports::DeepAsker;
 
-        // The local rung: answers with nothing usable (an empty reply).
+        // The local rung answers with nothing usable. There used to be a second rung right
+        // here that asked the deep model the person's raw sentence — no system prompt, no
+        // place, no time, none of what the turn had found. A large model given only "give
+        // me an afternoon briefing" replied with a blank fill-in-the-blanks template that
+        // asked the person for their location and timezone (ADR 0067).
+        //
+        // The ladder still climbs, inside the turn, where the conversation and the
+        // pseudonymised context go with it. What must not happen is a bare question
+        // leaving the device from out here.
         struct EmptyButler;
         impl Butler for EmptyButler {
             fn respond(
@@ -7466,20 +7469,9 @@ mod tests {
                 Ok(ButlerReply::default())
             }
         }
-        // The deeper rung: answers.
-        struct DeepModel;
-        impl DeepAsker for DeepModel {
-            fn ask(&self, q: &str) -> Option<String> {
-                assert!(q.contains("quantum"), "the person's question is escalated");
-                Some("A qubit can hold superposition.".to_owned())
-            }
-        }
 
         let store = FakeStore::default();
-        let ids = SeqIds::default();
-        let clock = FixedClock(1_000);
-        let deep = DeepModel;
-        let mut streamed = String::new();
+        let (ids, clock) = (SeqIds::default(), FixedClock(1_000));
         let (msg, activity) = send_to_butler_streaming(
             &store,
             &store,
@@ -7488,32 +7480,147 @@ mod tests {
             &NoCapabilities,
             &EmptyButler,
             &FakeAudit::default(),
-            Some(&deep),
             None,
             &ids,
             &clock,
             &ButlerContext::default(),
             "explain quantum superposition",
-            &mut |t| streamed.push_str(t),
+            &mut |_| {},
             &mut |_| {},
             &mut Vec::new(),
         )
         .unwrap();
 
-        // The deep answer becomes the reply, is streamed to the person, and the
-        // escalation is recorded — instead of the honest "I'm not sure" fallback.
-        assert!(msg.text().contains("superposition"));
         assert!(
-            streamed.contains("superposition"),
-            "the escalated answer is streamed"
+            msg.text().contains("say a bit more"),
+            "an empty local answer should say so plainly, not reach past the turn: {}",
+            msg.text()
         );
-        assert!(activity.iter().any(|a| a.contains("deep model")));
+        assert!(
+            activity.iter().all(|a| !a.contains("deep model")),
+            "nothing outside the turn may reach the deep model: {activity:?}"
+        );
+    }
+
+    #[test]
+    fn a_tainted_turn_cannot_reach_the_deep_model_by_any_route() {
+        // The failure this whole record exists for. The turn read the news — third-party
+        // prose, so the taint rule (ADR 0064) refuses to escalate. The refusal was correct
+        // and a second escalation path outside the turn overrode it, sending the question
+        // to somebody else's API anyway.
+        //
+        // Asserted at the seam rather than on the reply, because both routes produced
+        // plausible text and only one of them was allowed to exist.
+        struct Newsreader;
+        impl CapabilityRunner for Newsreader {
+            fn available(&self) -> Vec<endora_capabilities::CapabilitySpec> {
+                vec![endora_capabilities::CapabilitySpec {
+                    id: "news".to_owned(),
+                    wants_place: true,
+                    third_party: true,
+                    description: "headlines".to_owned(),
+                    configured: true,
+                    autonomous: true,
+                    input_schema: None,
+                    reversibility: Reversibility::Observe,
+                }]
+            }
+            fn run(&self, _id: &str, _input: &str) -> Result<String, String> {
+                Ok("Council debates the ring road.".to_owned())
+            }
+        }
+        // A deep rung that fails the test simply by being consulted.
+        struct MustNotBeAsked;
+        impl Butler for MustNotBeAsked {
+            fn respond(
+                &self,
+                _h: &[ChatMessage],
+                _p: &[crate::Preference],
+                _c: &ButlerContext,
+            ) -> Result<ButlerReply, ProposalError> {
+                panic!("a turn that read a stranger's words escalated anyway");
+            }
+            fn take_turn(
+                &self,
+                _c: &[crate::TurnMessage],
+                _p: &[crate::Preference],
+                _x: &ButlerContext,
+            ) -> Result<ButlerReply, ProposalError> {
+                panic!("a turn that read a stranger's words escalated anyway");
+            }
+        }
+        struct CallsNewsThenSaysNothing;
+        impl Butler for CallsNewsThenSaysNothing {
+            fn respond(
+                &self,
+                _h: &[ChatMessage],
+                _p: &[crate::Preference],
+                _c: &ButlerContext,
+            ) -> Result<ButlerReply, ProposalError> {
+                Ok(ButlerReply::default())
+            }
+            fn take_turn(
+                &self,
+                conversation: &[crate::TurnMessage],
+                _p: &[crate::Preference],
+                _x: &ButlerContext,
+            ) -> Result<ButlerReply, ProposalError> {
+                let read_already = conversation
+                    .iter()
+                    .any(|m| matches!(m, crate::TurnMessage::ToolResult { .. }));
+                if read_already {
+                    // Came up empty *after* reading a stranger — the exact shape.
+                    return Ok(ButlerReply::default());
+                }
+                Ok(ButlerReply {
+                    tool_calls: vec![crate::ToolCall {
+                        id: "c1".to_owned(),
+                        capability: "news".to_owned(),
+                        input_json: "{}".to_owned(),
+                    }],
+                    ..ButlerReply::default()
+                })
+            }
+            fn deeper(&self) -> Option<std::sync::Arc<dyn Butler + Send + Sync>> {
+                Some(std::sync::Arc::new(MustNotBeAsked))
+            }
+        }
+
+        let store = FakeStore::default();
+        let (ids, clock) = (SeqIds::default(), FixedClock(1_000));
+        let (msg, activity) = super::send_to_butler_streaming(
+            &store,
+            &store,
+            &store,
+            &FakeOutcomes::default(),
+            &Newsreader,
+            &CallsNewsThenSaysNothing,
+            &FakeAudit::default(),
+            None,
+            &ids,
+            &clock,
+            &ButlerContext::default(),
+            "give me an afternoon briefing",
+            &mut |_| {},
+            &mut |_| {},
+            &mut Vec::new(),
+        )
+        .unwrap();
+
+        assert!(
+            activity.iter().all(|a| !a.contains("deep model")),
+            "the taint rule was bypassed: {activity:?}"
+        );
+        assert!(
+            !msg.text().contains("Insert"),
+            "a template reached the person: {}",
+            msg.text()
+        );
     }
 
     #[test]
     fn the_ladder_leaves_a_good_local_answer_alone() {
         use super::send_to_butler_streaming;
-        use crate::ports::DeepAsker;
 
         struct GoodButler;
         impl Butler for GoodButler {
@@ -7528,19 +7635,35 @@ mod tests {
                     ..ButlerReply::default()
                 })
             }
-        }
-        // A deeper model that must never be consulted when the local rung answered.
-        struct PanicDeep;
-        impl DeepAsker for PanicDeep {
-            fn ask(&self, _q: &str) -> Option<String> {
-                panic!("must not escalate when the local model answered");
+            // Offered, never consulted — `deeper()` is asked whether a rung exists on
+            // every turn and only *used* when the local answer was no good, so the
+            // assertion has to sit on being spoken to rather than on being looked up.
+            fn deeper(&self) -> Option<std::sync::Arc<dyn Butler + Send + Sync>> {
+                struct MustNotBeAsked;
+                impl Butler for MustNotBeAsked {
+                    fn respond(
+                        &self,
+                        _h: &[ChatMessage],
+                        _p: &[crate::Preference],
+                        _c: &ButlerContext,
+                    ) -> Result<ButlerReply, ProposalError> {
+                        panic!("must not escalate when the local model answered");
+                    }
+                    fn take_turn(
+                        &self,
+                        _c: &[crate::TurnMessage],
+                        _p: &[crate::Preference],
+                        _x: &ButlerContext,
+                    ) -> Result<ButlerReply, ProposalError> {
+                        panic!("must not escalate when the local model answered");
+                    }
+                }
+                Some(std::sync::Arc::new(MustNotBeAsked))
             }
         }
 
         let store = FakeStore::default();
-        let ids = SeqIds::default();
-        let clock = FixedClock(1_000);
-        let deep = PanicDeep;
+        let (ids, clock) = (SeqIds::default(), FixedClock(1_000));
         let (msg, activity) = send_to_butler_streaming(
             &store,
             &store,
@@ -7549,7 +7672,6 @@ mod tests {
             &NoCapabilities,
             &GoodButler,
             &FakeAudit::default(),
-            Some(&deep),
             None,
             &ids,
             &clock,
@@ -8779,7 +8901,6 @@ mod tests {
                 round: std::cell::Cell::new(0),
             },
             &FakeAudit::default(),
-            None,
             None,
             &ids,
             &clock,
