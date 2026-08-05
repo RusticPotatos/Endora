@@ -150,6 +150,7 @@ of an existing record and take the next number.
 | [0068](0068-facts-are-arguments-not-recall.md) | Facts are arguments, not recall | — |
 | [0069](0069-one-door-off-the-device.md) | One door off the device | — |
 | [0070](0070-taint-is-derived-not-remembered.md) | Taint is derived, not remembered | — |
+| [0071](0071-capabilities-it-writes-itself.md) | Capabilities it writes itself | Proposed |
 
 The forty-eight decisions these consolidate are in [archive/](archive/) — kept in full,
 because the reasoning that produced a rule is the reason it survives an argument later.
