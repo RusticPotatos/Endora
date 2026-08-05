@@ -366,7 +366,8 @@ impl LlmButler {
             };
             if let Some(delta) = chunk["choices"][0]["delta"]["content"].as_str() {
                 raw.push_str(delta);
-                let preview = extract_reply_preview(&raw);
+                // Thinking is transport, not reply — never streamed to the person.
+                let preview = extract_reply_preview(&without_thinking(&raw));
                 if preview.len() > emitted {
                     on_token(&preview[emitted..]);
                     emitted = preview.len();
@@ -378,7 +379,7 @@ impl LlmButler {
         }
         // The authoritative reply (text + proposals) comes from a full parse of
         // the accumulated envelope; the streamed prose was a live preview.
-        Ok(parse_butler_json(&raw))
+        Ok(parse_butler_json(&without_thinking(&raw)))
     }
 }
 
@@ -1054,11 +1055,11 @@ pub fn ask_deep_model(
         return Err(format!("deep model returned status {}", response.status()));
     }
     let json: Value = response.body_mut().read_json().map_err(|e| e.to_string())?;
-    let answer = json["choices"][0]["message"]["content"]
-        .as_str()
-        .unwrap_or("")
-        .trim()
-        .to_owned();
+    let answer = without_thinking(
+        json["choices"][0]["message"]["content"]
+            .as_str()
+            .unwrap_or(""),
+    );
     if answer.is_empty() {
         Err("the deep model returned an empty answer".to_owned())
     } else {
@@ -1484,12 +1485,37 @@ fn apply_sampling(body: &mut Value, sampling: &Sampling) {
     }
 }
 
+/// Removes a reasoning model's thinking from what the person (and every downstream
+/// check) reads. Qwen3-class models emit `<think>…</think>` before the reply; the tags
+/// are part of the **transport**, not the answer, and leaving them in is how a
+/// generation of better models measured *worse* here — the battery's L3 collapsed to
+/// 3/11 reading scaffolding as replies, while the same model set the L1 record.
+///
+/// Deterministic and universal: one transform at the one parse path, for any model
+/// anyone configures (the mechanisms-not-per-model rule). An unclosed tag drops the
+/// tail — thinking that never ended is not an answer that started.
+fn without_thinking(content: &str) -> String {
+    let mut out = String::with_capacity(content.len());
+    let mut rest = content;
+    while let Some(start) = rest.find("<think>") {
+        out.push_str(&rest[..start]);
+        match rest[start..].find("</think>") {
+            Some(end) => rest = &rest[start + end + "</think>".len()..],
+            None => {
+                rest = "";
+            }
+        }
+    }
+    out.push_str(rest);
+    out.trim().to_owned()
+}
+
 /// Extracts the butler reply from a chat-completions response. Pure.
 fn parse_butler_response(json: &Value) -> Result<ButlerReply, ProposalError> {
     let content = json["choices"][0]["message"]["content"]
         .as_str()
         .ok_or_else(|| ProposalError::Unavailable("unexpected response shape".to_owned()))?;
-    Ok(parse_butler_json(content))
+    Ok(parse_butler_json(&without_thinking(content)))
 }
 
 /// Parses a chat-completion response, preferring a **native tool call** when the
@@ -1511,11 +1537,7 @@ fn parse_model_reply(json: &Value, context: &ButlerContext) -> Result<ButlerRepl
                 capability: c.capability.clone(),
                 input_json: c.input_json.clone(),
             });
-        let text = message["content"]
-            .as_str()
-            .unwrap_or_default()
-            .trim()
-            .to_owned();
+        let text = without_thinking(message["content"].as_str().unwrap_or_default());
         return Ok(ButlerReply {
             text,
             capability_use,
@@ -1817,6 +1839,28 @@ mod tests {
         ] {
             assert!(!super::is_private_endpoint(public), "{public}");
         }
+    }
+
+    #[test]
+    fn thinking_is_stripped_and_the_reply_survives() {
+        use super::without_thinking;
+        // The qwen3 screen: L1 record and an L3 collapse, because every narrow check
+        // downstream was reading reasoning scaffolding as the reply.
+        assert_eq!(
+            without_thinking(
+                "<think>The person asked about rain. I should check.</think>It will rain at noon."
+            ),
+            "It will rain at noon."
+        );
+        // Multiple blocks, and text between them, survive in order.
+        assert_eq!(
+            without_thinking("<think>a</think>Yes.<think>b</think> Certainly."),
+            "Yes. Certainly."
+        );
+        // An unclosed block is thinking that never became an answer.
+        assert_eq!(without_thinking("<think>still going"), "");
+        // Prose without tags is untouched.
+        assert_eq!(without_thinking("Plain answer."), "Plain answer.");
     }
 
     #[test]
