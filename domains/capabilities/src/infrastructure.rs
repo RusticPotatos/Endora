@@ -861,6 +861,12 @@ pub fn redact_pii_in_value(v: &mut Value) {
     }
 }
 
+/// [`redact_pii_in_value`] for plain text — the shape a typed question arrives in.
+#[must_use]
+pub fn redact_pii_in_text(text: &str) -> String {
+    redact_emails_in_text(text)
+}
+
 /// Replaces whole-word email addresses in free text with `[redacted-email]`. Splits
 /// on spaces so a bare URL (one word, not an email) is never altered — only a
 /// standalone address in a query is caught.
