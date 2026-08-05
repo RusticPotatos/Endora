@@ -129,6 +129,21 @@ fn get(path: &str) -> Value {
     serde_json::from_str(&body).unwrap_or_else(|e| panic!("{path}: not JSON ({e}): {body}"))
 }
 
+/// Posts a JSON body to one path, returning the status and the body — the caller judges,
+/// because on this suite's credential a refusal can be the correct answer (see
+/// [`the_verdict_channel_is_wired_and_scoped`]).
+fn post(path: &str, body: &Value) -> (u16, String) {
+    let url = format!("{}{path}", base());
+    let mut response = agent()
+        .post(&url)
+        .header("Authorization", &format!("Bearer {}", token()))
+        .send_json(body)
+        .unwrap_or_else(|e| panic!("{path}: could not reach the node at {url}: {e}"));
+    let status = response.status().as_u16();
+    let text = response.body_mut().read_to_string().unwrap_or_default();
+    (status, text)
+}
+
 fn statements(beliefs: &Value) -> Vec<String> {
     beliefs
         .as_array()
@@ -327,5 +342,80 @@ fn nothing_it_wonders_about_is_unfounded() {
         "{} open notions is past the cap of {MOST_NOTIONS_AT_ONCE} — the bound that keeps this \
          a cursor rather than the queue ADR 0029 deleted: {wondering:#}",
         open.len()
+    );
+}
+
+#[test]
+#[ignore = "talks to a deployed node: run with `make smoke` after `make deploy`"]
+fn the_verdict_channel_is_wired_and_scoped() {
+    // ADR 0066 withdraws a tool's autonomy on the person's verdict — and when that record
+    // shipped, zero reactions had ever been stored on this install. The endpoint is
+    // unit-tested in-process; what had never been proven is the deployed wire. Writing
+    // this test proved something else first: the suite's own credential is **checks
+    // scope** — reads pass, writes are refused — which is why every smoke before this one
+    // is a GET. That is the monitoring credential working as designed, and this test pins
+    // it rather than working around it.
+    //
+    // So it asserts whichever truth its credential can reach:
+    // - a full-scope token proves the round trip: accepted, echoed, persisted;
+    // - the checks-scope token proves the refusal: the same token that just read the
+    //   record may not write a verdict into it. Either outcome is the node behaving;
+    //   anything else — a 500, a 404, a write that vanishes — fails.
+    //
+    // The true end-to-end (a thumb on the console button) is the person's to press, and
+    // doing so also seeds ADR 0066 with its first real signal.
+    let outcomes = get("/v1/outcomes");
+    let all = outcomes.as_array().cloned().unwrap_or_default();
+    if all.is_empty() {
+        return; // a fresh install has nothing to react to; that is not a broken channel
+    }
+    // The oldest unjudged outcome: far outside the repeat-ask marker's window, and
+    // `no_reaction` counts for neither side in every consumer, so a full-scope run
+    // leaves the graduation arithmetic exactly as it found it.
+    let Some(unjudged) = all
+        .iter()
+        .filter(|o| o["reaction"].is_null())
+        .min_by_key(|o| o["at_ms"].as_i64().unwrap_or(i64::MAX))
+    else {
+        return; // every outcome already carries a verdict — the channel demonstrably works
+    };
+    let id = unjudged["id"].as_str().expect("an outcome has an id");
+
+    let (status, body) = post(
+        &format!("/v1/outcomes/{id}/reaction"),
+        &serde_json::json!({ "reaction": "no_reaction" }),
+    );
+    if status == 401 {
+        // The read above succeeded with this same token, so this is not a bad
+        // credential — it is the write scope holding. Pin that and stop.
+        assert!(
+            body.contains("token"),
+            "refused, but not by the token check: {body}"
+        );
+        return;
+    }
+    assert!(
+        (200..300).contains(&status),
+        "/v1/outcomes/{id}/reaction: answered {status}: {}",
+        body.chars().take(300).collect::<String>()
+    );
+    let answered: Value = serde_json::from_str(&body)
+        .unwrap_or_else(|e| panic!("reaction reply is not JSON ({e}): {body}"));
+    assert_eq!(
+        answered["reaction"].as_str(),
+        Some("no_reaction"),
+        "the endpoint accepted the reaction but did not echo it: {answered:#}"
+    );
+    // Read back through the same door the console uses — a stored verdict is the thing
+    // ADR 0066 consumes.
+    let read_back = get("/v1/outcomes");
+    let stored = read_back
+        .as_array()
+        .and_then(|xs| xs.iter().find(|o| o["id"].as_str() == Some(id)))
+        .unwrap_or_else(|| panic!("the outcome vanished on read-back: {id}"));
+    assert_eq!(
+        stored["reaction"].as_str(),
+        Some("no_reaction"),
+        "the reaction was accepted but not persisted: {stored:#}"
     );
 }
