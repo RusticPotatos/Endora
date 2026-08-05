@@ -60,6 +60,17 @@ application-to-application, never reaching into each other's internals.
 [ADR 0067](adr/0067-one-way-to-the-deep-model.md) again. When a new mechanism
 supersedes part of an old one, the retirement ships in the same PR.
 
+**Corollary — an offer is a promise.** Every control the console renders is an
+offer, and the handler behind it must not be allowed to refuse it for data the
+renderer can produce. The "It's gone" button erred exactly here: the card
+derived the offer from the trouble list, the handler enforced a precondition
+(a native channel exists) the renderer never checked, and the person got a
+true-but-useless error every pass. When a handler keeps an error branch for
+"the UI shouldn't send this", that branch is the bug's half-built nest: either
+the list endpoint computes the offer from the same predicate the handler
+enforces, or the handler learns to honour the offer for every shape the data
+can take. A 4xx reachable from a rendered control is a defect by definition.
+
 ### 4. Observer *(GoF, in closure form)* — progress and tokens
 
 `on_step` and `on_token` callbacks: the turn reports what it is doing without

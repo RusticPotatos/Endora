@@ -6236,6 +6236,53 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn every_answer_the_card_offers_is_honoured_for_a_serviceless_trouble() {
+        // The offer-is-a-promise rule (patterns.md): the card renders BOTH buttons for
+        // every trouble, so both must succeed for every shape the writers can produce.
+        // The serviceless shape (the catch-all bucket) is the one that shipped broken;
+        // this walks the whole answer set against it so a third answer added to the
+        // card someday meets its matrix here.
+        use endora_capabilities::{StandingTrouble, StandingTroubleRepository};
+        for answer in ["fine", "gone"] {
+            let state = test_state();
+            StandingTroubleRepository::note_trouble(
+                state.config.as_ref(),
+                &StandingTrouble {
+                    server: "skills".to_owned(),
+                    thing: "light.kiosk_brightness".to_owned(),
+                    trouble: "unavailable".to_owned(),
+                    since_ms: 1_000,
+                    accepted: false,
+                },
+            )
+            .unwrap();
+            let answered = json_body(
+                app(state.clone())
+                    .oneshot(post(
+                        "/v1/standing-trouble/answer",
+                        &format!(
+                            r#"{{"server":"skills","thing":"light.kiosk_brightness","answer":"{answer}"}}"#
+                        ),
+                    ))
+                    .await
+                    .unwrap(),
+            )
+            .await;
+            assert!(
+                answered["done"].is_string(),
+                "the card offered '{answer}' and the handler refused it: {answered:#}"
+            );
+            // Whichever button, the outcome the person asked for: never surfaced again.
+            let all = StandingTroubleRepository::troubles(state.config.as_ref()).unwrap();
+            let worth = endora_capabilities::worth_raising(&all, i64::MAX / 2);
+            assert!(
+                worth.is_empty(),
+                "'{answer}' did not stop the asking: {all:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn its_gone_on_a_serviceless_trouble_accepts_instead_of_erroring() {
         // Observed live: a deleted device's trouble lands under the catch-all bucket
         // (things the runner sees but no native channel reported), and "It's gone" then
