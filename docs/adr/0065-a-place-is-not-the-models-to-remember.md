@@ -91,6 +91,21 @@ a wish.
 - **One flag per skill is a thing to forget.** The default is the old behaviour, so forgetting
   it degrades to today rather than breaking anything.
 
+## Amended (2026-08-04): a place nobody named is put back
+
+The Rejected list below declined to override a place the model *did* name, and said what
+evidence would change that. The eval case `select:no-invented-place` — added the same week
+— asked for weather with no place named anywhere, and the model invented a city on its
+first run. That is the trigger.
+
+The sharper rule: **a place counts as named only if the person's own words contain it.**
+The turn hands the fill everything the person said, so "the weather in Boston" keeps
+Boston — including as a follow-up whose earlier message named it — and a city appearing
+from nowhere is the model recalling, which is not a source (ADR 0068): it is replaced
+with where they live. Coordinates stay the model's, because nobody types a latitude and
+the person's words cannot arbitrate one. "What's the weather" asked after "I land in
+Boston tomorrow" keeps Boston, which is the case the original rejection protected.
+
 ## Rejected
 
 - **A fourth prompt fix.** Three have been tried. The next one would also mostly work.
