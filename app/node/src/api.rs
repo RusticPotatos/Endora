@@ -58,6 +58,9 @@ pub struct AppState {
     pub clock: Arc<SystemClock>,
     /// The butler brain (proposes; never acts).
     pub butler: Arc<dyn Butler + Send + Sync>,
+    /// The same brain, concretely — for facts only the composition can answer, like
+    /// which rung is serving (ADR 0072). `None` in tests that hand in a bare fake.
+    pub brain: Option<Arc<endora_infrastructure::ConfigurableButler>>,
     /// Broadcasts a signal whenever a write succeeds, so activity-stream
     /// subscribers know to refresh. Carries no payload — it is a "something
     /// changed" nudge, and clients re-read the authoritative state.
@@ -178,6 +181,7 @@ impl AppState {
             all
         });
         Self {
+            brain: None,
             store,
             chat,
             schedules,
@@ -196,6 +200,14 @@ impl AppState {
             token,
             started_ms,
         }
+    }
+
+    /// Attaches the concrete brain, for facts only the composition can answer —
+    /// which rung is serving (ADR 0072). The `dyn` handle stays the one turns use.
+    #[must_use]
+    pub fn with_brain(mut self, brain: Arc<endora_infrastructure::ConfigurableButler>) -> Self {
+        self.brain = Some(brain);
+        self
     }
 }
 
@@ -1592,8 +1604,18 @@ async fn health(State(state): State<AppState>) -> Json<serde_json::Value> {
     // The lock the turn already takes is the honest answer, and it is the same answer on
     // every device rather than per-tab hope.
     let busy = state.turn_lock.try_lock().is_err();
+    // Which brain is serving turns right now (ADR 0072) — so "which model answered
+    // that?" is a fact on a screen. Read from config + the cached health verdict; a
+    // fallback butler with no stored config reports nothing.
+    let (serving_url, serving_model) = state
+        .brain
+        .as_ref()
+        .map(|b| b.serving())
+        .unwrap_or_default();
     Json(json!({
         "busy": busy,
+        "serving_url": serving_url,
+        "serving_model": serving_model,
         "status": "ok",
         "service": endora_application::platform_identity(),
         "version": endora_application::version(),
@@ -3997,6 +4019,8 @@ async fn get_model_config(
     let default_mixture = !default_router.is_empty() && !default_synth.is_empty();
     Ok(Json(json!({
         "base_url": cfg.base_url,
+        "preferred_url": cfg.preferred_url,
+        "preferred_model": cfg.preferred_model,
         "mixture": cfg.mixture,
         "key_set": !cfg.api_key.is_empty(),
         "configured": configured,
@@ -4053,6 +4077,10 @@ struct ModelConfigRequest {
     router: SlotRequest,
     #[serde(default)]
     synth: SlotRequest,
+    #[serde(default)]
+    preferred_url: String,
+    #[serde(default)]
+    preferred_model: String,
 }
 
 /// Saves the butler model configuration. A blank/omitted `api_key` keeps any
@@ -4073,6 +4101,19 @@ async fn set_model_config(
             Some(k) if !k.trim().is_empty() => k.trim().to_owned(),
             _ => existing.api_key, // keep the stored key when none is supplied
         };
+        // The preferred rung stays on the person's own network, structurally. Base turns
+        // carry the raw conversation — the pseudonym door guards only the deep rung
+        // (ADR 0069) — so a public address here would move everything off the device on
+        // whichever days that endpoint answered. Cloud models belong behind the door.
+        let preferred_url = req.preferred_url.trim().to_owned();
+        if !preferred_url.is_empty() && !endora_infrastructure::is_private_endpoint(&preferred_url)
+        {
+            return Err(AppError::BadRequest {
+                message: "the preferred endpoint must be on your own network (a private or \
+                          local address) — cloud models go under the deep model instead"
+                    .to_owned(),
+            });
+        }
         ButlerModelConfigRepository::set(
             config.as_ref(),
             &ButlerModelConfig {
@@ -4082,6 +4123,8 @@ async fn set_model_config(
                 single: req.single.into_slot(),
                 router: req.router.into_slot(),
                 synth: req.synth.into_slot(),
+                preferred_url,
+                preferred_model: req.preferred_model.trim().to_owned(),
             },
         )
         .map_err(AppError::Repository)?;

@@ -156,6 +156,15 @@ pub fn migrate(db: &Db) -> Result<(), RepositoryError> {
         "ALTER TABLE capability_config ADD COLUMN stance TEXT NOT NULL DEFAULT ''",
         [],
     );
+    // The preferred base rung (a bigger model on a sometimes-away machine); empty = none.
+    let _ = db.lock()?.execute(
+        "ALTER TABLE butler_model_config ADD COLUMN preferred_url TEXT NOT NULL DEFAULT ''",
+        [],
+    );
+    let _ = db.lock()?.execute(
+        "ALTER TABLE butler_model_config ADD COLUMN preferred_model TEXT NOT NULL DEFAULT ''",
+        [],
+    );
     db.lock()?
         .execute_batch(
             "UPDATE capability_config SET stance = CASE \
@@ -247,7 +256,8 @@ impl ButlerModelConfigRepository for ConfigStore {
                 "SELECT base_url, api_key, mixture, \
                  single_model, single_temp, single_top_p, single_top_k, single_repeat, \
                  router_model, router_temp, router_top_p, router_top_k, router_repeat, \
-                 synth_model, synth_temp, synth_top_p, synth_top_k, synth_repeat \
+                 synth_model, synth_temp, synth_top_p, synth_top_k, synth_repeat, \
+                 preferred_url, preferred_model \
                  FROM butler_model_config WHERE id = 0",
                 [],
                 |r| {
@@ -282,6 +292,8 @@ impl ButlerModelConfigRepository for ConfigStore {
                                 repeat_penalty: r.get(17)?,
                             },
                         },
+                        preferred_url: r.get(18)?,
+                        preferred_model: r.get(19)?,
                     })
                 },
             )
@@ -297,9 +309,10 @@ impl ButlerModelConfigRepository for ConfigStore {
                  id, base_url, api_key, mixture, \
                  single_model, single_temp, single_top_p, single_top_k, single_repeat, \
                  router_model, router_temp, router_top_p, router_top_k, router_repeat, \
-                 synth_model, synth_temp, synth_top_p, synth_top_k, synth_repeat) \
+                 synth_model, synth_temp, synth_top_p, synth_top_k, synth_repeat, \
+                 preferred_url, preferred_model) \
                  VALUES (0, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, \
-                 ?16, ?17, ?18)",
+                 ?16, ?17, ?18, ?19, ?20)",
                 params![
                     c.base_url,
                     c.api_key,
@@ -319,6 +332,8 @@ impl ButlerModelConfigRepository for ConfigStore {
                     c.synth.sampling.top_p,
                     c.synth.sampling.top_k,
                     c.synth.sampling.repeat_penalty,
+                    c.preferred_url,
+                    c.preferred_model,
                 ],
             )
             .map_err(backend)?;
