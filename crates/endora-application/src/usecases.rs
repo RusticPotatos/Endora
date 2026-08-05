@@ -7641,8 +7641,19 @@ mod tests {
         )
         .unwrap();
 
+        // The guard that matters is the panicking fake above: reaching the deep model
+        // at all fails the test. The trail may now MENTION the deep model — the door
+        // names its refusals (ADR 0064's "and says so"), and the refusal line is
+        // correct behavior, not a bypass. What must never appear is the mark of a
+        // climb that happened.
         assert!(
-            activity.iter().all(|a| !a.contains("deep model")),
+            activity
+                .iter()
+                .any(|a| a.contains("Couldn't ask the deep model")),
+            "the refusal went unnamed: {activity:?}"
+        );
+        assert!(
+            activity.iter().all(|a| !a.contains("Asked the deep model")),
             "the taint rule was bypassed: {activity:?}"
         );
         assert!(
