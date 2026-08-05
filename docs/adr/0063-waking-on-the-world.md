@@ -80,6 +80,21 @@ server's whole catalogue arriving at once wakes nothing.
 - A genuinely new sensor's first few changes will wake once. That is the desired
   behaviour, not a false positive: *new thing in the house* is exactly worth a word.
 
+## Amended (2026-08-04): rare for the hour
+
+The original arithmetic counted a key's transitions across the whole fortnight, so a
+thing that moves daily was never unusual — including at an hour it has never once moved.
+A front door opening every morning is common by that count and unheard-of at three in the
+night, and the version above slept through the night opening.
+
+The same arithmetic now runs twice: overall as before, and once more confined to the
+six-hour quarter of the day the new transition falls in, using the timestamps the log
+already carries. Either count at or under [`RARELY`] wakes. Quarters rather than hours
+because a fortnight holds at most fourteen samples of any single hour, and rarity over
+fourteen samples would call half the house unusual; six-hour bands split night from
+morning from afternoon from evening, which is the distinction "why is this happening
+*now*?" actually turns on. Still no keyword list, no importance table, and no model.
+
 ## Rejected
 
 - **Letting the model watch the stream and decide when to interrupt.** The interruption

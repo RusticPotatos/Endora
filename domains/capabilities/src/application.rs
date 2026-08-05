@@ -655,9 +655,32 @@ pub fn worth_waking_for<'a>(
     moved: &'a [Transition],
     history: &[Transition],
 ) -> Option<&'a Transition> {
-    moved
-        .iter()
-        .find(|t| history.iter().filter(|h| h.key == t.key).count() <= RARELY)
+    moved.iter().find(|t| {
+        let same_key = || history.iter().filter(|h| h.key == t.key);
+        if same_key().count() <= RARELY {
+            return true;
+        }
+        // Rare *for the hour* (ADR 0063, amended): a door that opens every morning is
+        // common by the count above and unheard-of at three in the night. The log
+        // already holds when each change happened, so the same arithmetic runs once
+        // more, confined to this quarter of the day — no clock but the one the
+        // transitions carry, no model, no keyword list.
+        same_key()
+            .filter(|h| quarter_of_day(h.at_ms) == quarter_of_day(t.at_ms))
+            .count()
+            <= RARELY
+    })
+}
+
+/// Which six-hour quarter of the day a moment falls in (0–3, UTC).
+///
+/// Quarters rather than hours, because a fortnight holds at most fourteen samples of any
+/// single hour and rarity arithmetic on fourteen samples would call half the house
+/// unusual. Six-hour bands split night from morning from afternoon from evening, which is
+/// the distinction "why is this happening *now*?" actually turns on. UTC on purpose: the
+/// banding only compares moments to each other, so any fixed offset cancels out.
+fn quarter_of_day(at_ms: i64) -> i64 {
+    (at_ms / 3_600_000).rem_euclid(24) / 6
 }
 
 /// # Errors
@@ -743,6 +766,53 @@ mod keeping_a_record_of_what_moved {
         // ...the fourth does not. Unusual has a boundary or it is a synonym for "any".
         let history: Vec<super::Transition> = (0..4).map(t).collect();
         assert!(super::worth_waking_for(&history[3..], &history).is_none());
+    }
+
+    #[test]
+    fn common_every_morning_is_still_unusual_at_night() {
+        // The clock-only gap ADR 0063's amendment closes: the front door opens every
+        // morning of the fortnight — common by the overall count — and has never once
+        // opened between midnight and six. The night opening wakes.
+        const HOUR: i64 = 3_600_000;
+        const DAY: i64 = 24 * HOUR;
+        let t = |at: i64| super::Transition {
+            key: "house::binary_sensor.front_door".to_owned(),
+            from: "closed".to_owned(),
+            to: "open".to_owned(),
+            at_ms: at,
+        };
+        // Fourteen mornings at 08:00 — far past RARELY overall.
+        let mut history: Vec<super::Transition> = (0..14).map(|d| t(d * DAY + 8 * HOUR)).collect();
+        // Tonight, 03:00.
+        let at_night = t(14 * DAY + 3 * HOUR);
+        history.push(at_night.clone());
+        let moved = vec![at_night];
+        assert!(
+            super::worth_waking_for(&moved, &history).is_some(),
+            "a first-ever night opening went unremarked"
+        );
+    }
+
+    #[test]
+    fn common_at_this_hour_stays_common() {
+        // The same door, opening at 08:00 like every other morning: both counts say
+        // ordinary, and ordinary must not wake — or the amendment turns the rare-change
+        // trigger into a doorbell.
+        const HOUR: i64 = 3_600_000;
+        const DAY: i64 = 24 * HOUR;
+        let t = |at: i64| super::Transition {
+            key: "house::binary_sensor.front_door".to_owned(),
+            from: "closed".to_owned(),
+            to: "open".to_owned(),
+            at_ms: at,
+        };
+        let mut history: Vec<super::Transition> = (0..14).map(|d| t(d * DAY + 8 * HOUR)).collect();
+        let this_morning = t(14 * DAY + 8 * HOUR);
+        history.push(this_morning.clone());
+        assert!(
+            super::worth_waking_for(&[this_morning], &history).is_none(),
+            "an ordinary morning opening woke the butler"
+        );
     }
 
     #[test]
