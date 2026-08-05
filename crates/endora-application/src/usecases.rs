@@ -523,8 +523,8 @@ fn take_turn_retrying_empty(
     // did.
     // Through the door, or not at all (ADR 0069): the disguise, the outbound secret scan
     // and the taint refusal (ADR 0064) live inside `Deeper`, so this site decides only
-    // *whether* escalation is wanted — never what may leave. The `a_stranger_spoke` check
-    // that used to sit here moved into the door, where a second caller cannot forget it.
+    // *whether* escalation is wanted — never what may leave. The taint refusal lives in
+    // the door, derived from the marks each time (ADR 0070) — nothing here to forget.
     if let Some(deeper) = butler
         .deeper()
         .filter(|_| gave_nothing_useful(&reply, conversation, context))
@@ -824,7 +824,6 @@ fn run_tool_turn(
     // the context, every proposal from here is downstream of it — so every actuator
     // confirms, proven or not. Provenance, never content: nothing inspects what was said,
     // because judging text written to fool a model is an arms race this cannot win.
-    let mut a_stranger_spoke = false;
     let mut seen: std::collections::HashMap<(String, String), String> =
         std::collections::HashMap::new();
     // The turn's own copy, because what it is offered can grow within the turn: asking for
@@ -949,15 +948,20 @@ fn run_tool_turn(
                 continue;
             }
             let spec = capabilities.available().into_iter().find(|c| c.id == id);
+            // Not a flag: the proof that no stranger has spoken is derived from the
+            // conversation as it stands, each time it is needed (ADR 0070). The bool this
+            // replaces was set in one place and read in two, and the class of bug it
+            // invited — a third site that forgets it exists — had already shipped once
+            // (ADR 0067). Held as `Option`, the absence of the proof IS the taint.
+            let no_stranger = crate::egress::NoStrangerSpoke::given(&conversation);
             let cleared = spec
                 .as_ref()
                 .is_some_and(|s| s.configured && s.autonomous)
                 // A read still runs; only the doing is unsafe. The question the person
-                // asked still deserves an answer.
-                && !(a_stranger_spoke
-                    && spec
-                        .as_ref()
-                        .is_some_and(|s| s.reversibility != Reversibility::Observe));
+                // asked still deserves an answer. Acting unasked requires the proof.
+                && spec.as_ref().is_some_and(|s| {
+                    s.reversibility == Reversibility::Observe || no_stranger.is_some()
+                });
             let (status, content) = if cleared {
                 on_step(ButlerStep {
                     skill: id.clone(),
@@ -1116,7 +1120,7 @@ fn run_tool_turn(
                         format!("'{id}' isn't allowed yet — you can't run it even if asked.")
                     }
                     (Some(s), _)
-                        if a_stranger_spoke && s.reversibility != Reversibility::Observe =>
+                        if no_stranger.is_none() && s.reversibility != Reversibility::Observe =>
                     {
                         format!(
                             "'{id}' needs their go-ahead: this turn has read something \
@@ -1150,7 +1154,6 @@ fn run_tool_turn(
             // silenced the mechanism meant to notice it was lying.
             let content =
                 if spec.as_ref().is_some_and(|s| s.third_party) && status != StepStatus::Failed {
-                    a_stranger_spoke = true;
                     format!("{STRANGER_MARK}{content}")
                 } else {
                     content
@@ -11715,6 +11718,101 @@ mod what_a_stranger_said {
                 .iter()
                 .any(|a| a.contains("Used the home.HassTurnOff")),
             "a stranger commanded the butler: {activity:?}"
+        );
+    }
+
+    #[test]
+    fn acting_before_the_stranger_is_fine_and_after_is_not() {
+        // The property the derived proof pins (ADR 0070): taint is a fact about the
+        // conversation *as it stands*, so the same actuator in the same turn is cleared
+        // before the stranger's words arrive and requires a go-ahead afterwards. A stored
+        // flag gets this right only if every site remembers to check it; a derivation
+        // cannot be forgotten, because the absence of the proof IS the refusal.
+        struct ActsThenReadsThenObeys {
+            turns: std::cell::Cell<usize>,
+        }
+        impl crate::ports::Butler for ActsThenReadsThenObeys {
+            fn respond(
+                &self,
+                _h: &[crate::ChatMessage],
+                _p: &[crate::Preference],
+                _c: &ButlerContext,
+            ) -> Result<ButlerReply, crate::ProposalError> {
+                Ok(ButlerReply::default())
+            }
+            fn take_turn(
+                &self,
+                _c: &[TurnMessage],
+                _p: &[crate::Preference],
+                _x: &ButlerContext,
+            ) -> Result<ButlerReply, crate::ProposalError> {
+                let turn = self.turns.get();
+                self.turns.set(turn + 1);
+                let call = |id: &str, cid: &str, input: &str| ButlerReply {
+                    tool_calls: vec![ToolCall {
+                        id: cid.to_owned(),
+                        capability: id.to_owned(),
+                        input_json: input.to_owned(),
+                    }],
+                    ..ButlerReply::default()
+                };
+                match turn {
+                    // Clean turn so far: act.
+                    0 => Ok(call("home.HassTurnOff", "c1", r#"{"area":"garage"}"#)),
+                    // Then read the stranger.
+                    1 => Ok(call("web_fetch", "c2", "{}")),
+                    // Then try to act again on the stranger's say-so. A different target,
+                    // or the repeated-call guard would answer from this turn's cache
+                    // without the clearance question ever being asked.
+                    2 => Ok(call("home.HassTurnOff", "c3", r#"{"area":"kitchen"}"#)),
+                    _ => Ok(ButlerReply {
+                        text: "done".to_owned(),
+                        ..ButlerReply::default()
+                    }),
+                }
+            }
+        }
+
+        let (ids, clock, audit) = (
+            super::tests::SeqIds::default(),
+            super::tests::FixedClock(0),
+            super::tests::FakeAudit::default(),
+        );
+        let mut activity = Vec::new();
+        run_tool_turn(
+            &ActsThenReadsThenObeys {
+                turns: std::cell::Cell::new(0),
+            },
+            &AStrangerAndASwitch,
+            &audit,
+            &super::OutcomeSink::unmotivated(&super::tests::FakeOutcomes::default()),
+            &ids,
+            &clock,
+            &super::tests::one_user_turn("turn it off, then check that page"),
+            &|_id| Vec::new(),
+            &[],
+            &ButlerContext::default(),
+            8,
+            &mut |_| {},
+            &mut |_t: &str| {},
+            &mut activity,
+            &mut Vec::new(),
+        )
+        .expect("the turn answers");
+
+        let acted = activity
+            .iter()
+            .filter(|a| a.contains("Used the home.HassTurnOff"))
+            .count();
+        assert_eq!(
+            acted, 1,
+            "before the stranger: cleared once; after: refused. Trail: {activity:?}"
+        );
+        assert!(
+            activity
+                .iter()
+                .any(|a| a.contains("Couldn't use home.HassTurnOff")),
+            "the second attempt should have been refused, not skipped: {activity:?}"
         );
     }
 
