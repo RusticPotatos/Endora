@@ -37,6 +37,10 @@ the node only through a stable, versioned protocol.
 
 ## Workspace layout — Responsibility-Oriented Clean Architecture (ROCA)
 
+The design patterns in use are a **closed, named set** — see
+[the pattern budget](patterns.md). A pattern not on that list needs an ADR that
+also names what it retires.
+
 The code is organized **by responsibility**, not by technical layer (ADR 0050).
 Each bounded context is its own crate under `domains/`, owning its full
 Clean-Architecture stack; cross-cutting primitives live in `shared/`; the
