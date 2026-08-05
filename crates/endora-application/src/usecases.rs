@@ -2694,6 +2694,60 @@ pub fn set_checkin_schedule(
     Ok(schedule)
 }
 
+/// Enforces "open with it plainly — not a greeting" (the check-in's own instruction).
+///
+/// The instruction was already in the prompt, and the model opened with "Morning, sir"
+/// four times in one day — the last at half past one in the afternoon. Whether it is
+/// morning is the clock's fact, not the model's, and an instruction the model must
+/// remember is not a rule (ADR 0068). So the salutation is removed in code: a leading
+/// greeting-shaped clause — "Morning, sir." / "Good afternoon!" — goes, and what the
+/// check-in actually noticed opens the message, which is what the prompt asked for.
+///
+/// Narrow by design. The shape is a known opener, an optional short address, and
+/// terminal punctuation; "Morning traffic is heavy" opens with a fact and is left
+/// alone. A message that was *only* a greeting becomes empty, and the empty check
+/// downstream then correctly declines to send it.
+fn opened_plainly(text: &str) -> String {
+    // Longest first, so "good morning" is not half-matched as "morning".
+    const OPENERS: [&str; 11] = [
+        "good morning",
+        "good afternoon",
+        "good evening",
+        "good day",
+        "greetings",
+        "morning",
+        "afternoon",
+        "evening",
+        "hello",
+        "hey",
+        "hi",
+    ];
+    let lower = text.to_lowercase();
+    for opener in OPENERS {
+        if !lower.starts_with(opener) {
+            continue;
+        }
+        let mut rest = &text[opener.len()..];
+        // An optional short address — ", sir", ", John" — one word, comma-led.
+        if let Some(after_comma) = rest.strip_prefix(',') {
+            let addressed = after_comma.trim_start();
+            let word_end = addressed
+                .find(|c: char| !c.is_alphanumeric())
+                .unwrap_or(addressed.len());
+            if (1..=12).contains(&word_end) {
+                rest = &addressed[word_end..];
+            }
+        }
+        // Only a clause that *ends* here was a salutation. "Morning traffic is
+        // heavy" reaches this point and fails it, unchanged.
+        let Some(body) = rest.trim_start().strip_prefix(['.', '!', ':']) else {
+            break;
+        };
+        return body.trim_start().to_owned();
+    }
+    text.to_owned()
+}
+
 /// Considers reaching out, and does so **only if the butler has a reason**.
 ///
 /// The clock no longer decides. [`CheckinSchedule`] is a *budget* — it bounds how
@@ -2738,9 +2792,9 @@ pub fn consider_reaching_out(
     let Some(mut schedule) = checkins.get()? else {
         return Ok(None);
     };
+    let history = chat.list()?;
     // When the person themselves last spoke — if they are around, they can just ask.
-    let last_person_activity = chat
-        .list()?
+    let last_person_activity = history
         .iter()
         .rev()
         .find(|m| m.role() == MessageRole::User)
@@ -2799,12 +2853,28 @@ pub fn consider_reaching_out(
     let text = reply
         .as_ref()
         .filter(|r| !not_an_answer(r, &ask_ctx))
-        .map(|r| r.text.trim().to_owned())
+        .map(|r| opened_plainly(r.text.trim()))
         .filter(|t| !t.is_empty());
     let Some(text) = text else {
         activity.push("Considered reaching out, and had nothing worth saying".to_owned());
         return Ok(None);
     };
+    // Saying it once was service; saying it four times is nagging. What has already been
+    // said since the person last spoke is a fact the chat history holds, so the check is
+    // code's, not an instruction the model must remember (ADR 0068). Observed: the same
+    // lights complaint went out four times in one day, reworded a little each time —
+    // which is why this compares meaning, not strings. The window resets when the person
+    // replies, because an unacknowledged concern is fair to raise again in a new
+    // conversation.
+    let said_already = history
+        .iter()
+        .rev()
+        .take_while(|m| m.role() != MessageRole::User)
+        .any(|m| m.role() == MessageRole::Butler && says_the_same_thing(m.text(), &text));
+    if said_already {
+        activity.push("Considered reaching out, but it had already been said".to_owned());
+        return Ok(None);
+    }
 
     let message = ChatMessage::new(
         MessageId::new(ids.new_id()),
@@ -7963,6 +8033,190 @@ mod tests {
                 .unix_millis(),
             121_000
         );
+    }
+
+    #[test]
+    fn a_checkin_does_not_repeat_what_it_already_said() {
+        // Observed live: the same lights complaint went out four times in one day,
+        // reworded a little each time. The chat history holds what was already said;
+        // this makes it the code's fact rather than the model's memory (ADR 0068).
+        use super::{chat_history, consider_reaching_out, set_checkin_schedule};
+        use std::cell::RefCell;
+        let store = FakeStore::default();
+        let ids = SeqIds::default();
+        let ctx = ButlerContext::default();
+        let audit = FakeAudit {
+            records: RefCell::new(Vec::new()),
+        };
+
+        struct SameThought;
+        impl Butler for SameThought {
+            fn respond(
+                &self,
+                _h: &[ChatMessage],
+                _p: &[Preference],
+                _c: &ButlerContext,
+            ) -> Result<ButlerReply, ProposalError> {
+                Ok(ButlerReply::default())
+            }
+            fn take_turn(
+                &self,
+                _c: &[crate::TurnMessage],
+                _p: &[Preference],
+                _x: &ButlerContext,
+            ) -> Result<ButlerReply, ProposalError> {
+                Ok(ButlerReply {
+                    text: "The lights in the guest bedroom and living room are \
+                           experiencing technical issues at the moment."
+                        .to_owned(),
+                    ..ButlerReply::default()
+                })
+            }
+        }
+
+        // What the last check-in already said, in different words.
+        let earlier = ChatMessage::new(
+            MessageId::new(ids.new_id()),
+            MessageRole::Butler,
+            "I noticed the lights in the guest bedroom and living room are \
+             experiencing technical issues. I'm working on it right away.",
+            Timestamp::from_unix_millis(500),
+        )
+        .unwrap();
+        store.append(&earlier).unwrap();
+
+        set_checkin_schedule(&store, &FixedClock(1_000), true, 60_000).unwrap();
+        let out = consider_reaching_out(
+            &store,
+            &store,
+            &store,
+            &FakeOutcomes::default(),
+            &NoCapabilities,
+            &SameThought,
+            &audit,
+            &ids,
+            &FixedClock(61_000),
+            &ctx,
+        )
+        .unwrap();
+        assert!(out.is_none(), "the same concern must not be raised twice");
+        assert_eq!(
+            chat_history(&store).unwrap().len(),
+            1,
+            "nothing new was posted"
+        );
+    }
+
+    #[test]
+    fn the_person_replying_makes_it_fair_to_raise_again() {
+        // An unacknowledged concern in a *new* conversation is service, not nagging —
+        // the window resets when the person speaks.
+        use super::{consider_reaching_out, set_checkin_schedule};
+        use std::cell::RefCell;
+        let store = FakeStore::default();
+        let ids = SeqIds::default();
+        let ctx = ButlerContext::default();
+        let audit = FakeAudit {
+            records: RefCell::new(Vec::new()),
+        };
+
+        struct SameThought;
+        impl Butler for SameThought {
+            fn respond(
+                &self,
+                _h: &[ChatMessage],
+                _p: &[Preference],
+                _c: &ButlerContext,
+            ) -> Result<ButlerReply, ProposalError> {
+                Ok(ButlerReply::default())
+            }
+            fn take_turn(
+                &self,
+                _c: &[crate::TurnMessage],
+                _p: &[Preference],
+                _x: &ButlerContext,
+            ) -> Result<ButlerReply, ProposalError> {
+                Ok(ButlerReply {
+                    // Opens with the forbidden salutation, so this test also proves
+                    // the strip happens on the real path, not only in the unit test.
+                    text: "Morning, sir. The lights in the guest bedroom are \
+                           experiencing technical issues at the moment."
+                        .to_owned(),
+                    ..ButlerReply::default()
+                })
+            }
+        }
+
+        let earlier = ChatMessage::new(
+            MessageId::new(ids.new_id()),
+            MessageRole::Butler,
+            "I noticed the lights in the guest bedroom are experiencing technical \
+             issues.",
+            Timestamp::from_unix_millis(400),
+        )
+        .unwrap();
+        store.append(&earlier).unwrap();
+        // The person replied after it — long enough ago that the quiet-hours guard
+        // does not swallow the check-in.
+        let reply = ChatMessage::new(
+            MessageId::new(ids.new_id()),
+            MessageRole::User,
+            "thanks, keep an eye on it",
+            Timestamp::from_unix_millis(500),
+        )
+        .unwrap();
+        store.append(&reply).unwrap();
+
+        set_checkin_schedule(&store, &FixedClock(1_000), true, 60_000).unwrap();
+        let out = consider_reaching_out(
+            &store,
+            &store,
+            &store,
+            &FakeOutcomes::default(),
+            &NoCapabilities,
+            &SameThought,
+            &audit,
+            &ids,
+            &FixedClock(100_000_000),
+            &ctx,
+        )
+        .unwrap();
+        let (msg, _) = out.expect("after the person spoke, a standing concern may be raised again");
+        assert!(
+            msg.text().starts_with("The lights"),
+            "the salutation must be stripped on the real path: {}",
+            msg.text()
+        );
+    }
+
+    #[test]
+    fn a_salutation_is_removed_so_the_message_opens_with_the_thing_itself() {
+        use super::opened_plainly;
+        // The observed failure: "Morning, sir" at half past one in the afternoon.
+        assert_eq!(
+            opened_plainly("Morning, sir. The lights in the guest bedroom stopped answering."),
+            "The lights in the guest bedroom stopped answering."
+        );
+        assert_eq!(
+            opened_plainly("Good afternoon! I found the window sensor offline."),
+            "I found the window sensor offline."
+        );
+        // A message that is only a greeting becomes empty — and the empty check then
+        // declines to send it, which is the right end for a content-free check-in.
+        assert_eq!(opened_plainly("Hello."), "");
+    }
+
+    #[test]
+    fn a_message_that_opens_with_a_fact_is_left_alone() {
+        use super::opened_plainly;
+        // "Morning" the time of day, not the greeting.
+        for opens_plainly in [
+            "Morning traffic is heavy on the ring road.",
+            "Evening walk suggestion: the rain stops at six.",
+            "The lights in the guest bedroom stopped answering.",
+        ] {
+            assert_eq!(opened_plainly(opens_plainly), opens_plainly);
+        }
     }
 
     #[test]
