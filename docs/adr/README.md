@@ -106,6 +106,12 @@ decision deliberately rather than by accident.
 - Adopting or replacing a load-bearing technology (protocol, storage, runtime).
 - Any change that touches the deterministic policy boundary around models.
 - Adding a new runtime dependency that is not obviously justified.
+- Introducing a design pattern outside [the pattern budget](../patterns.md).
+
+**An ADR that adds a mechanism names what it retires, and the retirement ships
+in the same PR.** Two implementations of one responsibility is how a refusal
+got overridden ([0067](0067-one-way-to-the-deep-model.md)): the superseded path
+ran last and won. Addition without subtraction is a decision too — record it.
 
 See [CONTRIBUTING.md](../../CONTRIBUTING.md).
 
