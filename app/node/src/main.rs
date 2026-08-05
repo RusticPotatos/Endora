@@ -76,16 +76,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // The deep model is attached as a FALLBACK, not as the brain: it is used only when the
     // local one fails a deterministic check, and only if the person turned that on (ADR
     // 0055). `ConfigStore` is both repositories, so this is the same handle.
-    let butler: Arc<dyn Butler + Send + Sync> = Arc::new(
+    let brain = Arc::new(
         ConfigurableButler::new(model_config.clone(), fallback).also_knowing(model_config),
     );
+    let butler: Arc<dyn Butler + Send + Sync> = brain.clone();
 
     let state = AppState::new(
         store,
         Arc::new(RandomIdSource),
         Arc::new(SystemClock),
         butler,
-    );
+    )
+    .with_brain(brain);
 
     println!("{}", endora_application::platform_identity());
     println!("drafting model: {model} via {model_url}  (optional; 503 if unavailable)");

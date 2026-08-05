@@ -97,6 +97,13 @@ pub struct ButlerModelConfig {
     pub router: ModelSlot,
     /// The synthesizer slot — a generalist that writes the reply.
     pub synth: ModelSlot,
+    /// A **preferred** endpoint tried first while it answers — a bigger model on a
+    /// machine that is sometimes busy or asleep (the capability ladder's middle rung,
+    /// applied to the base). Empty means none. When its health probe fails, turns fall
+    /// back to `base_url` + the slots above, which stay the always-on floor.
+    pub preferred_url: String,
+    /// The model served from `preferred_url`.
+    pub preferred_model: String,
 }
 
 /// A schedule for the self-improving model tune (ADR 0055) — off by default.

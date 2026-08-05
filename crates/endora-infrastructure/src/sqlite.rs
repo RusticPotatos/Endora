@@ -148,7 +148,9 @@ CREATE TABLE IF NOT EXISTS butler_model_config (
     synth_temp    REAL,
     synth_top_p   REAL,
     synth_top_k   INTEGER,
-    synth_repeat  REAL
+    synth_repeat  REAL,
+    preferred_url   TEXT NOT NULL DEFAULT '',
+    preferred_model TEXT NOT NULL DEFAULT ''
 ) STRICT;
 CREATE TABLE IF NOT EXISTS model_tune_schedule (
     id       INTEGER PRIMARY KEY CHECK (id = 0),
@@ -1309,6 +1311,8 @@ mod tests {
                     ..Sampling::default()
                 },
             },
+            preferred_url: "http://192.168.1.10:11434/v1".to_owned(),
+            preferred_model: "qwen2.5:14b".to_owned(),
         };
         repo.set(&config).unwrap();
         // Every field, including the nullable sampling knobs, round-trips exactly.

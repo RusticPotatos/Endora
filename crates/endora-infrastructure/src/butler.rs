@@ -618,6 +618,9 @@ impl Butler for MixtureButler {
     }
 }
 
+/// An endpoint and the model served from it — one rung of the base ladder (ADR 0072).
+type Rung = (String, String);
+
 /// A butler whose model configuration is editable at runtime from the console
 /// (ADR 0055). Each turn it reads the stored [`ButlerModelConfig`]; when one is
 /// set it runs that — a single model or the router+synth mixture, each slot with
@@ -635,6 +638,13 @@ pub struct ConfigurableButler {
     deep: Option<Arc<dyn DeepModelRepository + Send + Sync>>,
     /// The deep brain, rebuilt when its configuration changes — same shape as `cache`.
     deep_cache: Mutex<Option<(DeepModel, Arc<dyn Butler + Send + Sync>)>>,
+    /// The preferred rung's brain, rebuilt when its endpoint/model change.
+    preferred_cache: Mutex<Option<(Rung, Arc<dyn Butler + Send + Sync>)>>,
+    /// The preferred rung's last health verdict and when it was reached, so a sleeping
+    /// machine costs one probe per window rather than one per turn.
+    preferred_health: Mutex<Option<(std::time::Instant, bool)>>,
+    /// How the preferred endpoint is probed — injectable so tests need no listener.
+    probe: fn(&str) -> bool,
 }
 
 impl ConfigurableButler {
@@ -651,6 +661,9 @@ impl ConfigurableButler {
             cache: Mutex::new(None),
             deep: None,
             deep_cache: Mutex::new(None),
+            preferred_cache: Mutex::new(None),
+            preferred_health: Mutex::new(None),
+            probe: endpoint_answers,
         }
     }
 
@@ -674,12 +687,86 @@ impl ConfigurableButler {
         self
     }
 
-    /// The brain for this turn: the stored config if usable (cached, rebuilt on
-    /// change), else the environment fallback.
+    /// Replaces the health probe — tests hand in a closure instead of a listener.
+    #[must_use]
+    pub fn with_probe(mut self, probe: fn(&str) -> bool) -> Self {
+        self.probe = probe;
+        self
+    }
+
+    /// How long a health verdict about the preferred rung is trusted before the next
+    /// probe. Long enough that a machine that is asleep costs one short timeout a
+    /// minute; short enough that it coming back is noticed within one.
+    const PREFERRED_HEALTH_TTL: std::time::Duration = std::time::Duration::from_secs(60);
+
+    /// Whether the preferred rung answers right now, remembered for
+    /// [`PREFERRED_HEALTH_TTL`](Self::PREFERRED_HEALTH_TTL).
+    fn preferred_answers(&self, url: &str) -> bool {
+        let mut health = self
+            .preferred_health
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if let Some((at, verdict)) = health.as_ref() {
+            if at.elapsed() < Self::PREFERRED_HEALTH_TTL {
+                return *verdict;
+            }
+        }
+        let verdict = (self.probe)(url);
+        *health = Some((std::time::Instant::now(), verdict));
+        verdict
+    }
+
+    /// The endpoint and model actually serving turns right now — for `/health`, so
+    /// "which brain answered that?" is a fact on a screen rather than a guess.
+    #[must_use]
+    pub fn serving(&self) -> (String, String) {
+        let Ok(Some(config)) = self.repo.get() else {
+            return (String::new(), String::new());
+        };
+        if let Some((url, model)) = self.preferred_rung(&config) {
+            return (url, model);
+        }
+        (config.base_url.clone(), config.single.model.clone())
+    }
+
+    /// The preferred rung, when one is configured **and answering** (ADR 0072).
+    fn preferred_rung(&self, config: &ButlerModelConfig) -> Option<(String, String)> {
+        let url = config.preferred_url.trim();
+        let model = config.preferred_model.trim();
+        if url.is_empty() || model.is_empty() {
+            return None;
+        }
+        self.preferred_answers(url)
+            .then(|| (url.to_owned(), model.to_owned()))
+    }
+
+    /// The brain for this turn: the preferred rung while it answers (ADR 0072), else
+    /// the stored config if usable (cached, rebuilt on change), else the environment
+    /// fallback. Falling is silent and per-turn — the next turn re-asks, so the bigger
+    /// machine waking up is noticed within one health window.
     fn current(&self) -> Arc<dyn Butler + Send + Sync> {
         let Ok(Some(config)) = self.repo.get() else {
             return Arc::clone(&self.fallback);
         };
+        if let Some((url, model)) = self.preferred_rung(&config) {
+            let mut cache = self
+                .preferred_cache
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            if let Some((cached, brain)) = cache.as_ref() {
+                if *cached == (url.clone(), model.clone()) {
+                    return Arc::clone(brain);
+                }
+            }
+            let brain: Arc<dyn Butler + Send + Sync> = Arc::new(LlmButler::with_config(
+                url.clone(),
+                model.clone(),
+                config.api_key.clone(),
+                endora_application::Sampling::default(),
+            ));
+            *cache = Some(((url, model), Arc::clone(&brain)));
+            return brain;
+        }
         if !Self::is_usable(&config) {
             return Arc::clone(&self.fallback);
         }
@@ -693,6 +780,57 @@ impl ConfigurableButler {
         *cache = Some((config, Arc::clone(&brain)));
         brain
     }
+}
+
+/// Whether an OpenAI-compatible endpoint answers: `GET {base}/models` within a short
+/// timeout. Fail-fast on purpose — this runs at most once per health window, and a
+/// sleeping machine should cost a moment, not a turn.
+fn endpoint_answers(base_url: &str) -> bool {
+    let url = format!("{}/models", base_url.trim_end_matches('/'));
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .timeout_global(Some(std::time::Duration::from_millis(1_500)))
+        .build()
+        .into();
+    agent
+        .get(&url)
+        .call()
+        .is_ok_and(|r| r.status().is_success())
+}
+
+/// Whether a URL points at the person's own network — loopback, RFC 1918 private
+/// ranges, or a `.local`/`.lan`/bare hostname. The **base** rungs must live here: base
+/// turns carry the raw conversation, and only the deep rung has the pseudonym door
+/// (ADR 0069) between it and somebody else's computer.
+#[must_use]
+pub fn is_private_endpoint(url: &str) -> bool {
+    let host = url
+        .trim()
+        .strip_prefix("https://")
+        .or_else(|| url.trim().strip_prefix("http://"))
+        .unwrap_or(url.trim());
+    let host = host
+        .split(['/', ':'])
+        .next()
+        .unwrap_or_default()
+        .to_lowercase();
+    if host.is_empty() {
+        return false;
+    }
+    if host == "localhost" || host.ends_with(".local") || host.ends_with(".lan") {
+        return true;
+    }
+    // A bare single-label hostname ("nas", "host.docker.internal" is multi-label but
+    // known-local) resolves on the person's own network or not at all.
+    if host == "host.docker.internal" || !host.contains('.') {
+        return true;
+    }
+    if let Ok(ip) = host.parse::<std::net::IpAddr>() {
+        return match ip {
+            std::net::IpAddr::V4(v4) => v4.is_loopback() || v4.is_private() || v4.is_link_local(),
+            std::net::IpAddr::V6(v6) => v6.is_loopback(),
+        };
+    }
+    false
 }
 
 /// Builds one [`LlmButler`] slot from a config's shared endpoint + key and the
@@ -732,6 +870,14 @@ impl Butler for ConfigurableButler {
     fn deeper(&self) -> Option<endora_application::egress::Deeper> {
         let config = self.deep.as_ref()?.get().ok().flatten()?;
         if !config.escalate || config.url.trim().is_empty() || config.model.trim().is_empty() {
+            return None;
+        }
+        // Escalating to the brain already serving is a paid no-op (ADR 0072): with the
+        // preferred rung answering, "ask a bigger model" may name the same one. Skip.
+        let (serving_url, serving_model) = self.serving();
+        if config.url.trim().trim_end_matches('/') == serving_url.trim_end_matches('/')
+            && config.model.trim() == serving_model
+        {
             return None;
         }
         let mut cache = self.deep_cache.lock().unwrap_or_else(|e| e.into_inner());
@@ -1529,6 +1675,148 @@ mod tests {
             Timestamp::from_unix_millis(0),
         )
         .unwrap()
+    }
+
+    /// A stored config with a preferred rung, for the ladder tests (ADR 0072).
+    fn config_with_preferred(url: &str) -> endora_application::ButlerModelConfig {
+        endora_application::ButlerModelConfig {
+            base_url: "http://floor.lan:11434/v1".to_owned(),
+            api_key: String::new(),
+            mixture: false,
+            single: endora_application::ModelSlot {
+                model: "floor-7b".to_owned(),
+                sampling: Sampling::default(),
+            },
+            router: endora_application::ModelSlot::default(),
+            synth: endora_application::ModelSlot::default(),
+            preferred_url: url.to_owned(),
+            preferred_model: if url.is_empty() {
+                String::new()
+            } else {
+                "bigger-14b".to_owned()
+            },
+        }
+    }
+
+    struct StoredConfig(endora_application::ButlerModelConfig);
+    impl endora_application::ButlerModelConfigRepository for StoredConfig {
+        fn get(
+            &self,
+        ) -> Result<
+            Option<endora_application::ButlerModelConfig>,
+            endora_application::RepositoryError,
+        > {
+            Ok(Some(self.0.clone()))
+        }
+        fn set(
+            &self,
+            _c: &endora_application::ButlerModelConfig,
+        ) -> Result<(), endora_application::RepositoryError> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn the_preferred_rung_serves_while_it_answers_and_the_floor_when_it_does_not() {
+        // ADR 0072: highest available, falling back — decided by a probe in code, never
+        // by the model. The probe is injected, so no listener is needed.
+        let up = super::ConfigurableButler::new(
+            std::sync::Arc::new(StoredConfig(config_with_preferred(
+                "http://bigger.lan:11434/v1",
+            ))),
+            std::sync::Arc::new(ScriptedButler),
+        )
+        .with_probe(|_| true);
+        assert_eq!(
+            up.serving(),
+            (
+                "http://bigger.lan:11434/v1".to_owned(),
+                "bigger-14b".to_owned()
+            ),
+            "an answering preferred rung should serve"
+        );
+
+        let down = super::ConfigurableButler::new(
+            std::sync::Arc::new(StoredConfig(config_with_preferred(
+                "http://bigger.lan:11434/v1",
+            ))),
+            std::sync::Arc::new(ScriptedButler),
+        )
+        .with_probe(|_| false);
+        assert_eq!(
+            down.serving(),
+            (
+                "http://floor.lan:11434/v1".to_owned(),
+                "floor-7b".to_owned()
+            ),
+            "a dead preferred rung must fall back to the floor, not to silence"
+        );
+    }
+
+    #[test]
+    fn no_preferred_rung_means_the_floor_serves_and_nothing_is_probed() {
+        let butler = super::ConfigurableButler::new(
+            std::sync::Arc::new(StoredConfig(config_with_preferred(""))),
+            std::sync::Arc::new(ScriptedButler),
+        )
+        .with_probe(|_| panic!("nothing to probe when no preferred rung is configured"));
+        assert_eq!(
+            butler.serving(),
+            (
+                "http://floor.lan:11434/v1".to_owned(),
+                "floor-7b".to_owned()
+            )
+        );
+    }
+
+    #[test]
+    fn the_health_verdict_is_remembered_within_its_window() {
+        // One probe per window, not one per turn: a sleeping machine costs a moment a
+        // minute. The probe panics on the second call; the second ask must be served
+        // from the remembered verdict.
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static CALLS: AtomicUsize = AtomicUsize::new(0);
+        let butler = super::ConfigurableButler::new(
+            std::sync::Arc::new(StoredConfig(config_with_preferred(
+                "http://bigger.lan:11434/v1",
+            ))),
+            std::sync::Arc::new(ScriptedButler),
+        )
+        .with_probe(|_| {
+            assert_eq!(
+                CALLS.fetch_add(1, Ordering::SeqCst),
+                0,
+                "the verdict must be remembered, not re-probed per ask"
+            );
+            true
+        });
+        let _ = butler.serving();
+        let _ = butler.serving();
+    }
+
+    #[test]
+    fn the_base_rungs_stay_on_their_own_network() {
+        // Base turns carry the raw conversation; only the deep rung has the pseudonym
+        // door (ADR 0069). A public address in the base list would move everything off
+        // the device on whichever days it answered.
+        for private in [
+            "http://192.168.1.10:11434/v1",
+            "http://10.0.0.5:8080/v1",
+            "http://localhost:11434/v1",
+            "http://nas:11434/v1",
+            "http://host.docker.internal:11434/v1",
+            "http://mymac.local:11434/v1",
+        ] {
+            assert!(super::is_private_endpoint(private), "{private}");
+        }
+        for public in [
+            "https://api.openai.com/v1",
+            "https://api.deepseek.com/v1",
+            "http://8.8.8.8:11434/v1",
+            "",
+        ] {
+            assert!(!super::is_private_endpoint(public), "{public}");
+        }
     }
 
     #[test]

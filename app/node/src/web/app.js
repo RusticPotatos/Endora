@@ -1062,6 +1062,10 @@ function modelsSection() {
         <input id="m-base" placeholder="${esc(mc.default_base_url || "http://host.docker.internal:11434/v1")}" value="${esc(mc.base_url || "")}" /></div>
       <div class="field"><label>API key <span style="opacity:.7;">· cloud only</span></label>
         <input id="m-key" type="password" autocomplete="off" placeholder="${mc.key_set ? "•••••• (unchanged)" : "stored securely, never shown"}" /></div>
+      <div class="field"><label>Preferred endpoint <span style="opacity:.7;">· optional, your own network — used while it answers, falls back above when offline</span></label>
+        <input id="m-preferred-url" placeholder="e.g. http://192.168.1.10:11434/v1" value="${esc(mc.preferred_url || "")}" /></div>
+      <div class="field"><label>Preferred model</label>
+        <input id="m-preferred-model" placeholder="e.g. qwen2.5:14b" value="${esc(mc.preferred_model || "")}" /></div>
       <div class="row" style="gap:8px;"><button class="ghost" data-act="discover:everyday" style="font-size:13px;">${icon("sparkle", 14)} Discover models</button><button class="ghost" data-act="testconn:everyday" style="font-size:13px;">${icon("check", 14)} Test connection</button></div>
       <div id="m-model-picker"></div>
       <datalist id="m-models"></datalist>
@@ -2830,6 +2834,8 @@ async function dispatch(act) {
         base_url: (val("m-base") || "").trim(),
         mixture: !!(document.getElementById("m-mix") || {}).checked,
         single: slot("single"), router: slot("router"), synth: slot("synth"),
+        preferred_url: (val("m-preferred-url") || "").trim(),
+        preferred_model: (val("m-preferred-model") || "").trim(),
       };
       const key = (val("m-key") || "").trim();
       if (key) body.api_key = key;
