@@ -521,52 +521,19 @@ fn take_turn_retrying_empty(
     // bigger one to exist. What makes this safe rather than clever is that the **trigger is
     // code**: a check Endora applied to the reply, never the model's own opinion of how it
     // did.
-    // A turn carrying a stranger's words does not escalate (ADR 0064). The deep model is
-    // off this network, and the pseudonym layer substitutes values Endora *holds* — a name,
-    // a town, an event title. It cannot disguise an arbitrary paragraph somebody else wrote.
-    let a_stranger_spoke = conversation.iter().any(|m| {
-        matches!(m, TurnMessage::ToolResult { content, .. } if content.starts_with(STRANGER_MARK))
-    });
+    // Through the door, or not at all (ADR 0069): the disguise, the outbound secret scan
+    // and the taint refusal (ADR 0064) live inside `Deeper`, so this site decides only
+    // *whether* escalation is wanted — never what may leave. The `a_stranger_spoke` check
+    // that used to sit here moved into the door, where a second caller cannot forget it.
     if let Some(deeper) = butler
         .deeper()
-        .filter(|_| !a_stranger_spoke && gave_nothing_useful(&reply, conversation, context))
+        .filter(|_| gave_nothing_useful(&reply, conversation, context))
     {
-        // Nothing personal leaves under its own name (ADR 0051). Endora holds the values —
-        // the person's name, their city, the title of tonight's appointment — so it
-        // substitutes rather than trying to *detect* PII, which is what you do when you
-        // lack them. What comes back is put right locally, so the person reads their own
-        // words and the deep model never saw them.
-        let disguise = personal_values_in(context);
-        let hidden: Vec<TurnMessage> = conversation
-            .iter()
-            .map(|m| match m {
-                TurnMessage::User(text) => TurnMessage::User(disguise.hide(text)),
-                other => other.clone(),
-            })
-            .collect();
-        let hidden_ctx = ButlerContext {
-            present: context.present.iter().map(|l| disguise.hide(l)).collect(),
-            did_lately: context
-                .did_lately
-                .iter()
-                .map(|l| disguise.hide(l))
-                .collect(),
-            understanding: context
-                .understanding
-                .iter()
-                .map(|l| disguise.hide(l))
-                .collect(),
-            ..context.clone()
-        };
         // Not streamed. The person has already seen whatever the local attempts emitted, and
         // a second voice writing into the same bubble would read as one confused answer.
-        if let Ok(better) = deeper.take_turn(&hidden, prefs, &hidden_ctx) {
+        if let Some(better) = deeper.continue_turn(conversation, prefs, context) {
             if !gave_nothing_useful(&better, conversation, context) {
-                return Ok(ButlerReply {
-                    escalated: true,
-                    text: disguise.restore(&better.text),
-                    ..better
-                });
+                return Ok(better);
             }
         }
     }
@@ -662,37 +629,6 @@ fn note_what_the_repeat_says(
         }
     }
     Ok(marked)
-}
-
-/// The values worth standing in for, gathered from what Endora already holds (ADR 0051).
-///
-/// Not a PII detector. Endora knows the person's name, their city and tonight's appointment
-/// because they are in its own record — and substituting values you hold is exact where
-/// pattern-matching for "something that looks personal" is a guess that fails silently.
-///
-/// Drawn from the lines the services contribute about the person, so a value that never
-/// reaches a turn is never in the table either.
-fn personal_values_in(context: &ButlerContext) -> crate::pseudonyms::Pseudonyms {
-    use std::collections::BTreeMap;
-    let mut kinds: BTreeMap<&str, Vec<String>> = BTreeMap::new();
-    for line in &context.present {
-        // "john is not home" — the name is what precedes the verb.
-        if let Some(name) = line.split(" is ").next().filter(|n| !n.contains(':')) {
-            kinds
-                .entry("person")
-                .or_default()
-                .push(name.trim().to_owned());
-        }
-        // "on the Family calendar: Jane Doe & John Doe at 2026-07-31 18:30:00"
-        if let Some((_, rest)) = line.split_once("calendar: ") {
-            let title = rest.split(" at ").next().unwrap_or(rest);
-            kinds
-                .entry("event")
-                .or_default()
-                .push(title.trim().to_owned());
-        }
-    }
-    crate::pseudonyms::Pseudonyms::of(&kinds)
 }
 
 /// Whether a reply is worth keeping — [`not_an_answer`], plus saying the same thing again.
@@ -2416,7 +2352,7 @@ fn progress_label(id: &str) -> String {
 /// Formats a Unix-millisecond timestamp as `"Weekday, YYYY-MM-DD HH:MM UTC"` — no
 /// date dependency, using the standard civil-from-days algorithm. UTC for now; a
 /// later refinement can localise from the person's known location.
-fn format_datetime_utc(ms: i64) -> String {
+pub(crate) fn format_datetime_utc(ms: i64) -> String {
     let day = ms.div_euclid(86_400_000);
     let secs = ms.rem_euclid(86_400_000) / 1000;
     let (hh, mm) = (secs / 3600, (secs % 3600) / 60);
@@ -3003,7 +2939,7 @@ pub fn daily_brief(
     // the track record never travel just because prose is wanted.
     let mut worded_elsewhere = false;
     let text = match (butler.deeper(), already_known.as_deref()) {
-        (Some(deeper), Some(facts)) => match word_the_brief(deeper.as_ref(), facts, ids, clock) {
+        (Some(deeper), Some(facts)) => match word_the_brief(&deeper, facts, ids, clock) {
             Some(written) => {
                 worded_elsewhere = true;
                 Some(written)
@@ -3561,7 +3497,7 @@ pub fn ask_for_notions(
             .collect::<Vec<_>>()
             .join("\n")
     };
-    let disguise = personal_values_in(&ButlerContext {
+    let disguise = crate::egress::personal_values_in(&ButlerContext {
         present: record.entries().iter().map(|e| e.text.clone()).collect(),
         ..ButlerContext::default()
     });
@@ -4320,13 +4256,9 @@ pub fn where_they_are(preferences: &[Preference]) -> String {
         .unwrap_or_default()
 }
 
-/// Marks a tool result as somebody else's words (ADR 0064).
-///
-/// Carried in the result itself rather than in a variable, because the escalation decision
-/// happens in a different function from the loop that ran the tool — and a flag that has to
-/// be threaded through four signatures is a flag somebody forgets. The mark travels with the
-/// thing it describes.
-pub const STRANGER_MARK: &str = "[from outside] ";
+/// Marks a tool result as somebody else's words (ADR 0064). Defined at the door it
+/// ultimately guards (ADR 0069); re-exported here for the paths that write the mark.
+pub use crate::egress::STRANGER_MARK;
 
 /// How many read-back confirmed changes prove a tool (ADR 0062).
 ///
@@ -4614,37 +4546,21 @@ fn not_yet_said(written: &str, facts: &str) -> Vec<String> {
 /// (ADR 0051). And what does travel is disguised, so the values are placeholders and are put
 /// back here.
 fn word_the_brief(
-    deeper: &dyn Butler,
+    deeper: &crate::egress::Deeper,
     facts: &str,
     ids: &impl IdSource,
     clock: &impl Clock,
 ) -> Option<String> {
-    let bare = ButlerContext {
-        now: format_datetime_utc(clock.now().unix_millis()),
-        ..ButlerContext::default()
-    };
-    let disguise = personal_values_in(&ButlerContext {
-        present: facts
-            .lines()
-            .map(|l| l.trim_start_matches("- ").to_owned())
-            .collect(),
-        ..ButlerContext::default()
-    });
-    let ask = ChatMessage::new(
-        MessageId::new(ids.new_id()),
-        MessageRole::User,
-        &format!(
-            "Write my morning brief from exactly these facts, using all of them. Keep it \
-             short and warm, do not invent anything, and leave any placeholder in angle \
-             brackets exactly as it is:\n{}",
-            disguise.hide(facts)
-        ),
-        clock.now(),
+    // The instruction is Endora's own sentence; the facts travel through the door, which
+    // disguises them, scans what would leave, and restores the reply (ADR 0069).
+    deeper.word(
+        "Write my morning brief from exactly these facts, using all of them. Keep it \
+         short and warm, do not invent anything, and leave any placeholder in angle \
+         brackets exactly as it is:",
+        facts,
+        ids,
+        clock,
     )
-    .ok()?;
-    let written = deeper.respond(&[ask], &[], &bare).ok()?;
-    let written = disguise.restore(written.text.trim());
-    (!written.is_empty()).then_some(written)
 }
 
 /// How far back the turn is told about, and how much of it.
@@ -7651,8 +7567,10 @@ mod tests {
                     ..ButlerReply::default()
                 })
             }
-            fn deeper(&self) -> Option<std::sync::Arc<dyn Butler + Send + Sync>> {
-                Some(std::sync::Arc::new(MustNotBeAsked))
+            fn deeper(&self) -> Option<crate::egress::Deeper> {
+                Some(crate::egress::Deeper::new(std::sync::Arc::new(
+                    MustNotBeAsked,
+                )))
             }
         }
 
@@ -7708,7 +7626,7 @@ mod tests {
             // Offered, never consulted — `deeper()` is asked whether a rung exists on
             // every turn and only *used* when the local answer was no good, so the
             // assertion has to sit on being spoken to rather than on being looked up.
-            fn deeper(&self) -> Option<std::sync::Arc<dyn Butler + Send + Sync>> {
+            fn deeper(&self) -> Option<crate::egress::Deeper> {
                 struct MustNotBeAsked;
                 impl Butler for MustNotBeAsked {
                     fn respond(
@@ -7728,7 +7646,9 @@ mod tests {
                         panic!("must not escalate when the local model answered");
                     }
                 }
-                Some(std::sync::Arc::new(MustNotBeAsked))
+                Some(crate::egress::Deeper::new(std::sync::Arc::new(
+                    MustNotBeAsked,
+                )))
             }
         }
 
@@ -10518,8 +10438,8 @@ mod when_the_local_model_will_not_do_it {
             self.0.fetch_add(1, Ordering::SeqCst);
             Ok(ButlerReply::default())
         }
-        fn deeper(&self) -> Option<std::sync::Arc<dyn Butler + Send + Sync>> {
-            Some(std::sync::Arc::new(Deeper))
+        fn deeper(&self) -> Option<crate::egress::Deeper> {
+            Some(crate::egress::Deeper::new(std::sync::Arc::new(Deeper)))
         }
     }
 
@@ -10612,8 +10532,10 @@ mod when_the_local_model_will_not_do_it {
         ) -> Result<ButlerReply, crate::ProposalError> {
             Ok(ButlerReply::default())
         }
-        fn deeper(&self) -> Option<std::sync::Arc<dyn Butler + Send + Sync>> {
-            Some(self.0.clone() as std::sync::Arc<dyn Butler + Send + Sync>)
+        fn deeper(&self) -> Option<crate::egress::Deeper> {
+            Some(crate::egress::Deeper::new(
+                self.0.clone() as std::sync::Arc<dyn Butler + Send + Sync>
+            ))
         }
     }
 
@@ -10833,8 +10755,9 @@ mod who_words_the_brief {
 
     #[test]
     fn only_the_facts_leave_and_they_leave_disguised() {
-        let deep = Elsewhere(Mutex::new(String::new()));
-        let written = word_the_brief(&deep, REAL_FACTS, &FakeIds::default(), &FixedClock(0))
+        let deep = std::sync::Arc::new(Elsewhere(Mutex::new(String::new())));
+        let door = crate::egress::Deeper::new(deep.clone());
+        let written = word_the_brief(&door, REAL_FACTS, &FakeIds::default(), &FixedClock(0))
             .expect("a brief");
 
         let sent = deep.0.lock().unwrap().clone();
@@ -10915,7 +10838,12 @@ mod who_words_the_brief {
             }
         }
         assert_eq!(
-            word_the_brief(&Mute, REAL_FACTS, &FakeIds::default(), &FixedClock(0)),
+            word_the_brief(
+                &crate::egress::Deeper::new(std::sync::Arc::new(Mute)),
+                REAL_FACTS,
+                &FakeIds::default(),
+                &FixedClock(0)
+            ),
             None
         );
     }

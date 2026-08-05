@@ -393,7 +393,7 @@ pub trait Butler {
     ///
     /// What keeps it honest is that the trigger is **code** — a check Endora applied to the
     /// reply — never the model's own opinion of how it did.
-    fn deeper(&self) -> Option<std::sync::Arc<dyn Butler + Send + Sync>> {
+    fn deeper(&self) -> Option<crate::egress::Deeper> {
         None
     }
 

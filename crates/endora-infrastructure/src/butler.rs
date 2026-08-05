@@ -729,7 +729,7 @@ impl Butler for ConfigurableButler {
     /// pressed a button — so every use of it was them choosing to send that conversation
     /// off the box. Falling back automatically is a change to where their words go, and
     /// that is theirs to make (ADR 0055).
-    fn deeper(&self) -> Option<Arc<dyn Butler + Send + Sync>> {
+    fn deeper(&self) -> Option<endora_application::egress::Deeper> {
         let config = self.deep.as_ref()?.get().ok().flatten()?;
         if !config.escalate || config.url.trim().is_empty() || config.model.trim().is_empty() {
             return None;
@@ -737,7 +737,7 @@ impl Butler for ConfigurableButler {
         let mut cache = self.deep_cache.lock().unwrap_or_else(|e| e.into_inner());
         if let Some((cached, brain)) = cache.as_ref() {
             if *cached == config {
-                return Some(Arc::clone(brain));
+                return Some(endora_application::egress::Deeper::new(Arc::clone(brain)));
             }
         }
         let brain: Arc<dyn Butler + Send + Sync> = Arc::new(LlmButler::with_config(
@@ -747,7 +747,7 @@ impl Butler for ConfigurableButler {
             endora_application::Sampling::default(),
         ));
         *cache = Some((config, Arc::clone(&brain)));
-        Some(brain)
+        Some(endora_application::egress::Deeper::new(brain))
     }
 
     fn respond(
@@ -886,8 +886,9 @@ pub fn ask_deep_model(
     base_url: &str,
     model: &str,
     api_key: &str,
-    question: &str,
+    question: &endora_application::egress::TheirOwnQuestion,
 ) -> Result<String, String> {
+    let question = question.as_str();
     let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
     let agent: ureq::Agent = ureq::Agent::config_builder()
         .timeout_global(Some(std::time::Duration::from_secs(120)))

@@ -4379,17 +4379,10 @@ async fn deep_ask(
         if cfg.url.is_empty() || cfg.model.is_empty() {
             return Ok(None);
         }
-        // Egress guard on the outbound question (it leaves the device to the deep model).
-        if let Some(kind) = endora_infrastructure::scan_outbound_secret(&question) {
-            return Err(AppError::BadRequest {
-                message: format!(
-                    "won't send that to the deep model — it looks like it contains {kind}"
-                ),
-            });
-        }
-        let mut v = serde_json::Value::String(question.clone());
-        endora_infrastructure::redact_pii_in_value(&mut v);
-        let safe_question = v.as_str().unwrap_or(&question).to_owned();
+        // Through the door, or not at all (ADR 0069): the scan and the redaction live in
+        // the constructor, and `ask_deep_model` accepts nothing but its product.
+        let safe_question = endora_application::egress::TheirOwnQuestion::checked(&question)
+            .map_err(|message| AppError::BadRequest { message })?;
         // Persist the person's question (what they typed, kept local) so the chat
         // shows both sides after a reload — this path otherwise stored only the
         // answer, so the question vanished and it looked like nothing happened.

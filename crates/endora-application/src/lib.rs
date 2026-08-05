@@ -12,6 +12,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod egress;
 pub mod error;
 pub mod ports;
 pub mod pseudonyms;
