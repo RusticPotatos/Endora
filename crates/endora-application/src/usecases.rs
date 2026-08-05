@@ -494,6 +494,8 @@ fn take_turn_retrying_empty(
     prefs: &[Preference],
     context: &ButlerContext,
     on_token: &mut dyn FnMut(&str),
+    // The turn's trail — so a rung that fires and fails is on the record, not invisible.
+    notes: &mut Vec<String>,
 ) -> Result<ButlerReply, AppError> {
     const MAX_EMPTY_RETRIES: usize = 2;
     let mut reply = butler
@@ -535,6 +537,11 @@ fn take_turn_retrying_empty(
             if !gave_nothing_useful(&better, conversation, context) {
                 return Ok(better);
             }
+            // The ladder climbed and it did not help. Said in the trail, because a rung
+            // that fails invisibly is indistinguishable from one that never fired — the
+            // exact question a person asks when a turn gives up after a failure is
+            // "did anything even try harder?", and the answer must be on the record.
+            notes.push("Asked the deep model too, and it did no better".to_owned());
         }
     }
     // Every attempt has now produced something the code has determined is not an answer, and
@@ -832,7 +839,8 @@ fn run_tool_turn(
     // this turn and the next one starts from the same small list.
     let mut context = context.clone();
     for round in 0..=max_rounds {
-        let reply = take_turn_retrying_empty(butler, &conversation, prefs, &context, on_token)?;
+        let reply =
+            take_turn_retrying_empty(butler, &conversation, prefs, &context, on_token, activity)?;
         // No tool call → the final answer, grounded in the tool results so far — unless
         // the last thing that happened was a FAILED action and there is budget left.
         //
@@ -1191,7 +1199,7 @@ fn run_tool_turn(
     // calling yet another tool and leaving the turn without an answer.
     let mut final_ctx = context.clone();
     final_ctx.tools = Vec::new();
-    take_turn_retrying_empty(butler, &conversation, prefs, &final_ctx, on_token)
+    take_turn_retrying_empty(butler, &conversation, prefs, &final_ctx, on_token, activity)
 }
 
 /// Sends a message to the butler and records both turns.
@@ -9179,6 +9187,7 @@ mod tests {
             &[],
             &ButlerContext::default(),
             &mut |_t: &str| {},
+            &mut Vec::new(),
         )
         .expect("a turn");
 
@@ -9219,6 +9228,7 @@ mod tests {
             &[],
             &ButlerContext::default(),
             &mut |_t: &str| {},
+            &mut Vec::new(),
         )
         .expect("a turn");
         assert!(reply.text.contains("36,081"), "a good answer was replaced");
@@ -10501,6 +10511,7 @@ mod when_the_local_model_will_not_do_it {
             &[],
             &ButlerContext::default(),
             &mut |_| {},
+            &mut Vec::new(),
         )
         .expect("a turn");
 
@@ -10575,6 +10586,7 @@ mod when_the_local_model_will_not_do_it {
             &[],
             &context,
             &mut |_| {},
+            &mut Vec::new(),
         )
         .expect("a turn");
 
@@ -10598,6 +10610,7 @@ mod when_the_local_model_will_not_do_it {
             &[],
             &ButlerContext::default(),
             &mut |_| {},
+            &mut Vec::new(),
         )
         .expect("a turn");
         assert!(reply.text.is_empty());

@@ -1380,7 +1380,7 @@ function viewSkills() {
         ${c.settings.map((s) => `
           <div class="form" style="margin-bottom:6px;align-items:center;">
             <label class="sub" style="min-width:130px;">${esc(s.label)}${s.set ? ` <span class="pill concluded">set</span>` : ""}</label>
-            <input id="setting-${c.id}-${s.key}" type="${s.secret ? "password" : "text"}" placeholder="${s.set ? "•••••• (unchanged)" : (s.secret ? "enter a value" : "")}" autocomplete="off" />
+            <input id="setting-${c.id}-${s.key}" type="${s.secret ? "password" : "text"}" placeholder="${s.set ? "•••••• (unchanged)" : (s.secret ? "enter a value" : "")}" value="${!s.set && s.key === "open_on_tap" ? esc(location.origin) : ""}" autocomplete="off" />
           </div>`).join("")}
         <div class="row" style="gap:8px;">
           <button class="primary" data-act="skillcfg:${c.id}">Save settings</button>
