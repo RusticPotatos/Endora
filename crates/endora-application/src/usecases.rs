@@ -533,15 +533,38 @@ fn take_turn_retrying_empty(
     {
         // Not streamed. The person has already seen whatever the local attempts emitted, and
         // a second voice writing into the same bubble would read as one confused answer.
-        if let Some(better) = deeper.continue_turn(conversation, prefs, context) {
-            if !gave_nothing_useful(&better, conversation, context) {
-                return Ok(better);
+        //
+        // Every branch below reaches the trail, because a rung that fails invisibly is
+        // indistinguishable from one that never fired — a live turn gave up after two
+        // failed actions and answered with the weather, and the record could not say
+        // whether the deep model was refused, unreachable, or never consulted. Now it
+        // says (ADR 0064's "and says so", finally kept).
+        match deeper.continue_turn(conversation, prefs, context) {
+            Ok(better) => {
+                if !gave_nothing_useful(&better, conversation, context) {
+                    return Ok(better);
+                }
+                notes.push("Asked the deep model too, and it did no better".to_owned());
             }
-            // The ladder climbed and it did not help. Said in the trail, because a rung
-            // that fails invisibly is indistinguishable from one that never fired — the
-            // exact question a person asks when a turn gives up after a failure is
-            // "did anything even try harder?", and the answer must be on the record.
-            notes.push("Asked the deep model too, and it did no better".to_owned());
+            Err(crate::egress::DoorRefusal::AStrangerSpoke) => {
+                notes.push(
+                    "Couldn't ask the deep model: this turn read something written by \
+                     someone else, and that never leaves the box"
+                        .to_owned(),
+                );
+            }
+            Err(crate::egress::DoorRefusal::LooksLikeASecret) => {
+                notes.push(
+                    "Couldn't ask the deep model: the conversation looks like it \
+                     contains a secret, and that never leaves the box"
+                        .to_owned(),
+                );
+            }
+            Err(crate::egress::DoorRefusal::TheModelFailed(why)) => {
+                // The short truth for the person; the full error for the operator.
+                eprintln!("the deep model failed: {why}");
+                notes.push("Tried the deep model too, but it couldn't answer".to_owned());
+            }
         }
     }
     // Every attempt has now produced something the code has determined is not an answer, and
