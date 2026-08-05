@@ -3117,9 +3117,28 @@ async fn answer_standing_trouble(
         }
         let channels = native_channels(config.as_ref());
         let Some((_, channel)) = channels.iter().find(|(name, _)| *name == req.server) else {
-            return Err(AppError::BadRequest {
-                message: format!("Endora has no direct reach into {}", req.server),
-            });
+            // No service to hide it in — troubles land here under the catch-all bucket
+            // for things the runner sees but no native channel reported, which is
+            // exactly where a deleted device ends up. "It's gone" still means what the
+            // person said: stop asking. Acceptance does that, survives the watcher's
+            // re-notes (ON CONFLICT DO NOTHING), and self-heals — a thing that answers
+            // again clears its record and is watched fresh. The old reply here was
+            // "Endora has no direct reach into skills": true, unactionable, and the
+            // card came back every pass because nothing was recorded.
+            endora_capabilities::StandingTroubleRepository::accept_trouble(
+                config.as_ref(),
+                &req.server,
+                &req.thing,
+            )
+            .map_err(AppError::Repository)?;
+            return Ok(json!({
+                "done": format!(
+                    "noted — {} lives in no service Endora can edit, so it can't be \
+                     hidden there; it won't be asked about again (and if it ever \
+                     answers again, watching starts fresh)",
+                    req.thing
+                )
+            }));
         };
         match channel.hide(&req.thing, true) {
             Some(Ok(mut write)) => {
@@ -6213,6 +6232,56 @@ mod tests {
             res.status() == StatusCode::METHOD_NOT_ALLOWED || res.status() == StatusCode::NOT_FOUND,
             "repairs became writable — that is a queue: {}",
             res.status()
+        );
+    }
+
+    #[tokio::test]
+    async fn its_gone_on_a_serviceless_trouble_accepts_instead_of_erroring() {
+        // Observed live: a deleted device's trouble lands under the catch-all bucket
+        // (things the runner sees but no native channel reported), and "It's gone" then
+        // answered "Endora has no direct reach into skills" — true, unactionable, and
+        // the card returned every pass because nothing was recorded. Gone means stop
+        // asking, and acceptance is how the record says that.
+        use endora_capabilities::{StandingTrouble, StandingTroubleRepository};
+        let state = test_state();
+        StandingTroubleRepository::note_trouble(
+            state.config.as_ref(),
+            &StandingTrouble {
+                server: "skills".to_owned(),
+                thing: "light.kiosk_brightness".to_owned(),
+                trouble: "unavailable".to_owned(),
+                since_ms: 1_000,
+                accepted: false,
+            },
+        )
+        .unwrap();
+        let app = app(state.clone());
+
+        let answered = json_body(
+            app.clone()
+                .oneshot(post(
+                    "/v1/standing-trouble/answer",
+                    r#"{"server":"skills","thing":"light.kiosk_brightness","answer":"gone"}"#,
+                ))
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert!(
+            answered["done"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("won't be asked"),
+            "the person got an error instead of an outcome: {answered:#}"
+        );
+
+        // The trouble is accepted — never surfaced again, and never re-noted as fresh
+        // (the watcher's upsert is ON CONFLICT DO NOTHING).
+        let all = StandingTroubleRepository::troubles(state.config.as_ref()).unwrap();
+        assert!(
+            all.iter()
+                .any(|t| t.thing == "light.kiosk_brightness" && t.accepted),
+            "gone did not stick: {all:?}"
         );
     }
 
