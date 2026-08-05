@@ -3643,25 +3643,29 @@ macro_rules! forwards_to_inner {
     };
 }
 
-/// Fill in the person's place when a skill needs one and the request did not name it.
+/// Fill in the person's place when a skill needs one and the request did not name it —
+/// and put theirs back when the model named one **nobody asked about**.
 ///
 /// Four briefs opened "here's your daily brief for New York" — a city nobody here lives in.
-/// Three fixes came before this one, and every one of them was an attempt to make the model
-/// *more likely* to remember: take the example city out of the prompt, state the place as
-/// ground truth, then repair the parser that had made that statement empty. Each shipped,
-/// each was verified against a live node, and the next brief was wrong again. A 7B model
-/// reading a dozen messages, three of which name a city it said last week, will say it again.
+/// Three fixes tried to make the model *more likely* to remember before ADR 0065 took the
+/// question away from it for the blank case. The eval then measured the case the fill
+/// could not reach — `select:no-invented-place` — and the model, asked for weather with no
+/// place named anywhere, invented a city on its first run. That is the trigger evidence
+/// 0065 said would justify the sharper rule, so (amended 2026-08-04) here it is:
 ///
-/// The rule this repository already had says why: a guarantee belongs in code, not in a
-/// prompt asking the model to be careful (ADR 0053). Where somebody lives is a fact Endora
-/// was told and holds. Asking a language model to recall it — and checking afterwards
-/// whether it did — was the mistake, repeated three times in different clothes.
-///
-/// So it stops being asked. A skill that declares `wants_place` and is called without one
-/// gets the person's, substituted here, before the call goes out. What the model may still
-/// do is name a *different* place, because "the weather in Boston" is a real request and
-/// only the person can mean it. What it can no longer do is get home wrong.
-pub fn place_filled_in(input_json: &str, wants_place: bool, where_they_are: &str) -> String {
+/// **A place counts as named only if the person's own words contain it.** "The weather in
+/// Boston" keeps Boston, including as a follow-up whose earlier message named it — the
+/// person's words travel in `the_person_said`. A city appearing from nowhere is the model
+/// recalling, and recall is not a source (ADR 0068): it is replaced with where they live.
+/// Coordinates are left alone — nobody types a latitude, so "did they say it?" cannot
+/// arbitrate them, and a coordinate-shaped invention has never been observed.
+#[must_use]
+pub fn place_filled_in(
+    input_json: &str,
+    wants_place: bool,
+    where_they_are: &str,
+    the_person_said: &str,
+) -> String {
     if !wants_place || where_they_are.is_empty() {
         return input_json.to_string();
     }
@@ -3670,25 +3674,42 @@ pub fn place_filled_in(input_json: &str, wants_place: bool, where_they_are: &str
         // call fails the way it would have anyway rather than failing differently here.
         return input_json.to_string();
     };
-    // A place the model did name is the person's to mean, and is never overwritten —
-    // including coordinates, which are a place spelled differently.
-    let named = ["location", "place", "city", "q", "lat", "latitude"]
-        .iter()
-        .any(|k| {
-            args.get(*k).is_some_and(|v| match v {
-                // A key present but empty is the model declining to answer, not an answer.
-                serde_json::Value::Null => false,
-                serde_json::Value::String(s) => !s.trim().is_empty(),
-                _ => true,
-            })
-        });
-    if named {
+    // Coordinates are a place spelled in a way nobody speaks; the model may hold them
+    // for its own reasons and the person's words cannot confirm or deny them.
+    let coordinates = ["lat", "latitude"].iter().any(|k| {
+        args.get(*k)
+            .is_some_and(|v| !matches!(v, serde_json::Value::Null))
+    });
+    if coordinates {
         return input_json.to_string();
     }
-    args.insert(
-        "location".to_owned(),
-        serde_json::Value::String(where_they_are.to_owned()),
-    );
+    let said = the_person_said.to_lowercase();
+    let mut replaced = false;
+    for key in ["location", "place", "city", "q"] {
+        let Some(serde_json::Value::String(value)) = args.get(key) else {
+            continue;
+        };
+        let value = value.trim().to_owned();
+        if value.is_empty() {
+            continue;
+        }
+        if said.contains(&value.to_lowercase()) {
+            // The person named it — theirs to mean, never overwritten.
+            return input_json.to_string();
+        }
+        // Named by nobody: the model is recalling. Replaced, not trusted.
+        args.insert(
+            key.to_owned(),
+            serde_json::Value::String(where_they_are.to_owned()),
+        );
+        replaced = true;
+    }
+    if !replaced {
+        args.insert(
+            "location".to_owned(),
+            serde_json::Value::String(where_they_are.to_owned()),
+        );
+    }
     serde_json::Value::Object(args).to_string()
 }
 
@@ -4939,7 +4960,7 @@ mod tests {
 
     #[test]
     fn a_place_the_person_did_not_name_is_filled_in() {
-        let filled = super::place_filled_in("{}", true, "Springfield");
+        let filled = super::place_filled_in("{}", true, "Springfield", "the weather please");
         assert!(filled.contains("Springfield"), "{filled}");
         assert!(filled.contains("location"), "{filled}");
     }
@@ -4954,11 +4975,57 @@ mod tests {
             r#"{"lat":42.36,"lon":-71.06}"#,
         ] {
             assert_eq!(
-                super::place_filled_in(named, true, "Springfield"),
+                super::place_filled_in(
+                    named,
+                    true,
+                    "Springfield",
+                    "the weather in Boston at 42.36"
+                ),
                 named,
                 "overwrote a place the person asked about: {named}"
             );
         }
+    }
+
+    #[test]
+    fn a_place_nobody_named_is_put_back() {
+        // The amended rule (ADR 0065): measured by `select:no-invented-place`, the model
+        // asked for weather with no place named anywhere invented a city on its first
+        // run. A place counts as named only if the person's own words contain it.
+        let filled = super::place_filled_in(
+            r#"{"location":"New York"}"#,
+            true,
+            "Springfield",
+            "give me my morning brief",
+        );
+        assert!(
+            filled.contains("Springfield") && !filled.contains("New York"),
+            "an invented city survived: {filled}"
+        );
+    }
+
+    #[test]
+    fn a_place_named_earlier_in_the_conversation_is_kept() {
+        // "what about tomorrow?" after "weather in Boston" — the earlier message travels
+        // in the person's words, so Boston is theirs to mean.
+        let kept = super::place_filled_in(
+            r#"{"location":"Boston"}"#,
+            true,
+            "Springfield",
+            "what is the weather in Boston\nwhat about tomorrow?",
+        );
+        assert_eq!(kept, r#"{"location":"Boston"}"#);
+    }
+
+    #[test]
+    fn coordinates_are_left_to_the_model() {
+        // Nobody types a latitude, so the person's words cannot arbitrate one — and a
+        // coordinate-shaped invention has never been observed.
+        let coords = r#"{"lat":42.36,"lon":-71.06}"#;
+        assert_eq!(
+            super::place_filled_in(coords, true, "Springfield", "morning brief"),
+            coords
+        );
     }
 
     #[test]
@@ -4972,7 +5039,8 @@ mod tests {
             r#"{"location":null}"#,
         ] {
             assert!(
-                super::place_filled_in(blank, true, "Springfield").contains("Springfield"),
+                super::place_filled_in(blank, true, "Springfield", "the weather please")
+                    .contains("Springfield"),
                 "an empty field counted as a place: {blank}"
             );
         }
@@ -4980,9 +5048,12 @@ mod tests {
 
     #[test]
     fn a_skill_that_does_not_want_a_place_is_untouched() {
-        assert_eq!(super::place_filled_in("{}", false, "Springfield"), "{}");
+        assert_eq!(
+            super::place_filled_in("{}", false, "Springfield", "hi"),
+            "{}"
+        );
         // And nothing is invented when Endora has not been told where they are.
-        assert_eq!(super::place_filled_in("{}", true, ""), "{}");
+        assert_eq!(super::place_filled_in("{}", true, "", "hi"), "{}");
     }
 
     #[test]
@@ -4990,18 +5061,19 @@ mod tests {
         // Not this function's job to rescue a malformed call, and changing how it fails
         // would move the error somewhere harder to read.
         assert_eq!(
-            super::place_filled_in("not json", true, "Springfield"),
+            super::place_filled_in("not json", true, "Springfield", "hi"),
             "not json"
         );
         assert_eq!(
-            super::place_filled_in("[1,2]", true, "Springfield"),
+            super::place_filled_in("[1,2]", true, "Springfield", "hi"),
             "[1,2]"
         );
     }
 
     #[test]
     fn other_arguments_survive_the_fill() {
-        let filled = super::place_filled_in(r#"{"days":3}"#, true, "Springfield");
+        let filled =
+            super::place_filled_in(r#"{"days":3}"#, true, "Springfield", "forecast please");
         assert!(filled.contains("\"days\":3"), "{filled}");
         assert!(filled.contains("Springfield"), "{filled}");
     }

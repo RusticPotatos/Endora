@@ -973,10 +973,22 @@ fn run_tool_turn(
                 // A tool that claims success having changed nothing is the failure
                 // ADR 0053 was built for, and comparing two readings settles it without
                 // interpreting either — no knowledge of any server's format required.
+                // The person's own words, so "did anybody name this place?" has its
+                // arbiter (ADR 0065, amended): a follow-up keeps the city its earlier
+                // message named, and a city from nowhere is the model recalling.
+                let the_person_said: String = conversation
+                    .iter()
+                    .filter_map(|m| match m {
+                        TurnMessage::User(text) => Some(text.as_str()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n");
                 let input_json = endora_capabilities::place_filled_in(
                     &call.input_json,
                     spec.as_ref().is_some_and(|s| s.wants_place),
                     &context.where_they_are,
+                    &the_person_said,
                 );
                 let before = read_state_back(capabilities, &id, &input_json);
                 match capabilities.run(&id, &input_json) {
