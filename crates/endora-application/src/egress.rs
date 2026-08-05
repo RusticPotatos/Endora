@@ -59,6 +59,25 @@ impl NoStrangerSpoke {
     }
 }
 
+/// Why the door did not hand back an answer (ADR 0064/0069, amended for honesty).
+///
+/// One silent `None` used to cover all three, and a live turn proved the cost: a person
+/// watched their butler give up after two failed actions and answer with the weather,
+/// and the record could not say whether the deep model was refused, unreachable, or
+/// never consulted. The evidence existed at the moment and was discarded. Named, the
+/// next occurrence carries its own diagnosis — and 0064's "does not escalate, and says
+/// so" stops being an unkept promise.
+#[derive(Debug)]
+pub enum DoorRefusal {
+    /// The conversation carries a stranger's words (ADR 0064): nothing to disguise an
+    /// arbitrary paragraph with, so nothing leaves.
+    AStrangerSpoke,
+    /// Something in what would leave still looks like a secret after the disguise.
+    LooksLikeASecret,
+    /// The door opened and the deep model itself failed — unreachable, refused, empty.
+    TheModelFailed(String),
+}
+
 /// The deep model, behind the door.
 ///
 /// Wraps the connection so that the *only* operations are the ones this module defines,
@@ -77,22 +96,24 @@ impl Deeper {
     }
 
     /// Escalates a turn the local model handled badly (ADR 0055, as a habit per 0060's
-    /// successor work). `None` when the door refuses — a stranger's words in the
-    /// conversation (ADR 0064), an apparent secret that the disguise cannot account for,
-    /// or the deep model failing to answer. The reply's text comes back with the person's
-    /// real values restored, and `escalated` set.
-    #[must_use]
+    /// successor work). The reply's text comes back with the person's real values
+    /// restored, and `escalated` set; a refusal names itself.
+    ///
+    /// # Errors
+    /// [`DoorRefusal`] — taint, an apparent secret, or the deep model failing.
     pub fn continue_turn(
         &self,
         conversation: &[TurnMessage],
         prefs: &[crate::Preference],
         context: &ButlerContext,
-    ) -> Option<ButlerReply> {
+    ) -> Result<ButlerReply, DoorRefusal> {
         // A turn that has read a stranger's words does not leave the device. The pseudonym
         // layer substitutes values Endora *holds*; it cannot disguise an arbitrary
         // paragraph somebody else wrote (ADR 0064). Same proof the actuator clearance
         // requires (ADR 0070) — one derivation, both consumers.
-        NoStrangerSpoke::given(conversation)?;
+        if NoStrangerSpoke::given(conversation).is_none() {
+            return Err(DoorRefusal::AStrangerSpoke);
+        }
         // Nothing personal leaves under its own name (ADR 0051). Endora holds the values —
         // the person's name, their city, the title of tonight's appointment — so it
         // substitutes rather than trying to *detect* PII, which is what you do when you
@@ -115,7 +136,7 @@ impl Deeper {
             _ => false,
         });
         if leaves {
-            return None;
+            return Err(DoorRefusal::LooksLikeASecret);
         }
         let hidden_ctx = ButlerContext {
             present: context.present.iter().map(|l| disguise.hide(l)).collect(),
@@ -131,8 +152,11 @@ impl Deeper {
                 .collect(),
             ..context.clone()
         };
-        let better = self.0.take_turn(&hidden, prefs, &hidden_ctx).ok()?;
-        Some(ButlerReply {
+        let better = self
+            .0
+            .take_turn(&hidden, prefs, &hidden_ctx)
+            .map_err(|e| DoorRefusal::TheModelFailed(e.to_string()))?;
+        Ok(ButlerReply {
             escalated: true,
             text: disguise.restore(&better.text),
             ..better
@@ -311,9 +335,11 @@ mod tests {
             },
         ];
         assert!(
-            door.continue_turn(&conversation, &[], &ButlerContext::default())
-                .is_none(),
-            "a tainted turn left the device"
+            matches!(
+                door.continue_turn(&conversation, &[], &ButlerContext::default()),
+                Err(DoorRefusal::AStrangerSpoke)
+            ),
+            "a tainted turn left the device, or refused for the wrong reason"
         );
     }
 
@@ -328,9 +354,11 @@ mod tests {
             "why doesn't AKIAABCDEFGHIJKLMNOP work in my config?".to_owned(),
         )];
         assert!(
-            door.continue_turn(&conversation, &[], &ButlerContext::default())
-                .is_none(),
-            "an apparent secret left the device"
+            matches!(
+                door.continue_turn(&conversation, &[], &ButlerContext::default()),
+                Err(DoorRefusal::LooksLikeASecret)
+            ),
+            "an apparent secret left the device, or refused for the wrong reason"
         );
     }
 
@@ -346,6 +374,46 @@ mod tests {
             "the address left as itself: {}",
             redacted.as_str()
         );
+    }
+
+    #[test]
+    fn a_failing_deep_model_is_named_not_swallowed() {
+        // The live turn this exists for: gave up after two failed actions, answered
+        // with the weather, and the record could not say whether the deep model was
+        // refused, unreachable, or never consulted.
+        struct AlwaysDown;
+        impl Butler for AlwaysDown {
+            fn respond(
+                &self,
+                _h: &[endora_conversation::ChatMessage],
+                _p: &[crate::Preference],
+                _c: &ButlerContext,
+            ) -> Result<ButlerReply, ProposalError> {
+                Err(ProposalError::Unavailable("connection refused".to_owned()))
+            }
+            fn take_turn(
+                &self,
+                _c: &[TurnMessage],
+                _p: &[crate::Preference],
+                _x: &ButlerContext,
+            ) -> Result<ButlerReply, ProposalError> {
+                Err(ProposalError::Unavailable("connection refused".to_owned()))
+            }
+        }
+        let door = Deeper::new(std::sync::Arc::new(AlwaysDown));
+        match door.continue_turn(
+            &[TurnMessage::User("is anyone home?".to_owned())],
+            &[],
+            &ButlerContext::default(),
+        ) {
+            Err(DoorRefusal::TheModelFailed(why)) => {
+                assert!(
+                    why.contains("connection refused"),
+                    "the reason was lost: {why}"
+                );
+            }
+            other => panic!("a dead model must be named as one: {other:?}"),
+        }
     }
 
     #[test]
