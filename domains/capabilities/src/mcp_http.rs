@@ -37,6 +37,14 @@ const TIMEOUT: Duration = Duration::from_secs(30);
 /// Cap on a single response body.
 const MAX_BYTES: u64 = 4 * 1024 * 1024;
 
+/// Whether the streamable server has forgotten our session (MCP spec: unknown session
+/// id ⇒ `404`, and the client starts a new one). Narrow for the same reason its SSE
+/// sibling is: a 500 or a refusal is a server having a bad day, not a lost session.
+fn forgot_the_session(why: &str) -> bool {
+    let why = why.to_lowercase();
+    why.contains("mcp http request failed") && (why.contains("404") || why.contains("session"))
+}
+
 /// Whether an error means the session is gone rather than the server being unwell.
 ///
 /// Shape, not status alone: the post URL a session issued stops existing when the
@@ -147,7 +155,51 @@ impl HttpMcpClient {
         if self.on_sse() {
             return self.request_sse_healing(id, &body);
         }
-        self.request_streamable(id, &body)
+        self.request_streamable_healing(id, &body)
+    }
+
+    /// One streamable-HTTP request, starting a new session once if the server has
+    /// forgotten the old one (ADR 0073).
+    ///
+    /// The MCP specification is explicit: a server that no longer knows a session id
+    /// answers `404`, and the client is to begin a new session rather than keep
+    /// presenting a dead one. Nothing on this install speaks this transport today —
+    /// Home Assistant is SSE and the search server is stdio — so this is the same
+    /// class fixed before it is met, on the strength of the spec rather than a
+    /// screenshot.
+    fn request_streamable_healing(&self, id: u64, body: &Value) -> Result<Value, String> {
+        match self.request_streamable(id, body) {
+            Err(why) if forgot_the_session(&why) => {
+                // Drop the stale id first: the handshake must go out without it, or the
+                // server is being asked to honour the very session it just disowned.
+                if let Ok(mut g) = self.session.lock() {
+                    *g = None;
+                }
+                let init_id = self.next_id.fetch_add(1, Ordering::Relaxed);
+                self.request_streamable(
+                    init_id,
+                    &json!({
+                        "jsonrpc": "2.0",
+                        "id": init_id,
+                        "method": "initialize",
+                        "params": {
+                            "protocolVersion": PROTOCOL_VERSION,
+                            "capabilities": {},
+                            "clientInfo": {
+                                "name": "endora",
+                                "version": env!("CARGO_PKG_VERSION"),
+                            },
+                        },
+                    }),
+                )?;
+                self.notify("notifications/initialized");
+                let retry_id = self.next_id.fetch_add(1, Ordering::Relaxed);
+                let mut retry = body.clone();
+                retry["id"] = json!(retry_id);
+                self.request_streamable(retry_id, &retry)
+            }
+            other => other,
+        }
     }
 
     /// Whether this client speaks the HTTP+SSE transport.
@@ -288,7 +340,17 @@ impl HttpMcpClient {
                         }
                     }
                 }
-                Err(_) => return Err("the MCP server timed out".to_owned()),
+                // Split, because the two mean opposite things (ADR 0073). A timeout is
+                // a server thinking too long — reopening would be a storm. A closed
+                // channel is the reader thread having ended, which happens when the
+                // event stream itself died: that IS the session going away, and the
+                // post is not always what notices first.
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                    return Err("the MCP server timed out".to_owned());
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                    return Err("MCP SSE post failed: the session's event stream closed".to_owned());
+                }
             }
         }
     }

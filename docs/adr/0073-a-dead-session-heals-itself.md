@@ -59,6 +59,24 @@ reopening on those would be a reconnect storm against something already struggli
 test pins both directions, including the near-miss (`MCP HTTP request failed: … 404` —
 the streamable transport, a different failure, deliberately not matched).
 
+### Every transport, because the class is the transport's not the server's
+
+The audit that followed the fix found the same shape twice more, so all three heal:
+
+- **HTTP+SSE** — the observed failure. Reopen the session, re-handshake, retry once.
+  A dead *stream* counts too: `recv_timeout` distinguishes a closed channel (the
+  reader thread ended, so the stream is gone) from a timeout (the server is thinking),
+  and only the first heals. The code previously collapsed both into "timed out",
+  which would have left stream-side deaths uncovered.
+- **Streamable HTTP** — the specification is explicit that an unknown session id
+  answers `404` and the client starts a new one. Nothing on this install speaks this
+  transport, so it is the same class fixed on the strength of the spec rather than a
+  screenshot. The stale id is cleared *before* the handshake, or the server is being
+  asked to honour the session it just disowned.
+- **stdio** — a subprocess is a session and dies like one. A closed channel or a broken
+  pipe means it is gone; the client keeps what it takes to start the server again and
+  does so once. A timeout does not restart: that would kill work in progress.
+
 ### The weak health check stays, and says why
 
 *"Exposing no tools"* is kept as the coarse net for the coarse case it was written for:
@@ -73,9 +91,12 @@ it for complete.
 - **The first call after a reload pays one extra round trip** — a reopen and a
   handshake. Once, and only on the call that discovers the death.
 - **A genuinely dead server fails the same way it does now**, one retry later.
-- **Only the SSE transport is covered.** Streamable HTTP carries its session in a
-  header and has no announced URL to go stale; when a comparable failure is observed
-  there, it gets its own evidence and its own change.
+- **All three transports recover; none of them retries twice.** The shared discipline
+  is that a fresh session failing means the server is genuinely down, and saying so is
+  the answer.
+- **A restart costs the work in flight on that one call**, which is why only
+  unambiguous death — a closed channel, a broken pipe, a 404 on a session — triggers
+  it, and never a timeout.
 
 ## Rejected
 
