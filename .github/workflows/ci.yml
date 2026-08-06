@@ -15,13 +15,40 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # Which platforms this run covers.
+  #
+  # macOS runners bill at **ten times** the Linux rate, so a three-minute macOS job
+  # costs thirty minutes of the allowance. Running it on every pull request AND again
+  # on every merge exhausted a month's Actions minutes in about a day — thirty runs,
+  # after which GitHub silently stopped creating runs at all: no error, no failed
+  # check, just nothing. A CI that stops without saying so is worse than a slow one.
+  #
+  # So macOS runs where it earns the multiplier — on the push to a protected branch,
+  # where a platform break would actually reach the deployed node — and pull requests
+  # run Linux alone. The trade, stated plainly: a macOS-only break is caught after the
+  # merge rather than before it, on develop, where the next push notices. That has
+  # never happened in this repository; running out of minutes has.
+  platforms:
+    runs-on: ubuntu-latest
+    outputs:
+      os: ${{ steps.pick.outputs.os }}
+    steps:
+      - id: pick
+        run: |
+          if [ "${{ github.event_name }}" = "push" ]; then
+            echo 'os=["ubuntu-latest","macos-latest"]' >> "$GITHUB_OUTPUT"
+          else
+            echo 'os=["ubuntu-latest"]' >> "$GITHUB_OUTPUT"
+          fi
+
   test:
+    needs: platforms
     name: fmt · clippy · test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: ${{ fromJSON(needs.platforms.outputs.os) }}
     steps:
       - uses: actions/checkout@v7
 
