@@ -37,6 +37,21 @@ const TIMEOUT: Duration = Duration::from_secs(30);
 /// Cap on a single response body.
 const MAX_BYTES: u64 = 4 * 1024 * 1024;
 
+/// Whether an error means the session is gone rather than the server being unwell.
+///
+/// Shape, not status alone: the post URL a session issued stops existing when the
+/// server restarts, which is what installing a device in Home Assistant does. A `404`
+/// on the session endpoint is that, and so is a server explicitly saying the session
+/// is unknown. Anything else — a timeout, a 500, a refused connection — is a server
+/// having a bad day, and reopening would be a reconnect storm rather than a fix.
+fn session_is_gone(why: &str) -> bool {
+    let why = why.to_lowercase();
+    if !why.contains("mcp sse post failed") {
+        return false;
+    }
+    why.contains("404") || why.contains("session")
+}
+
 /// A live HTTP+SSE connection: the POST endpoint the server announced, and the
 /// receiver for messages the reader thread pulls off the event stream.
 struct SseConn {
@@ -55,7 +70,10 @@ pub struct HttpMcpClient {
     /// The session id the server assigned on `initialize` (streamable transport).
     session: Mutex<Option<String>>,
     next_id: AtomicU64,
-    sse: Option<SseConn>,
+    /// The live SSE connection, replaceable: a session dies whenever the server
+    /// restarts, and the fix is to open a new one rather than to stay broken
+    /// (ADR 0073).
+    sse: Mutex<Option<SseConn>>,
 }
 
 impl HttpMcpClient {
@@ -86,7 +104,7 @@ impl HttpMcpClient {
             auth,
             session: Mutex::new(None),
             next_id: AtomicU64::new(1),
-            sse,
+            sse: Mutex::new(sse),
         };
         let params = json!({
             "protocolVersion": PROTOCOL_VERSION,
@@ -111,7 +129,7 @@ impl HttpMcpClient {
         if !self.auth.is_empty() {
             b = b.header("authorization", &format!("Bearer {}", self.auth));
         }
-        if self.sse.is_none() {
+        if !self.on_sse() {
             if let Some(sid) = self.session_id() {
                 b = b.header("mcp-session-id", &sid);
             }
@@ -126,10 +144,84 @@ impl HttpMcpClient {
         if let Some(p) = params {
             body["params"] = p;
         }
-        if let Some(sse) = &self.sse {
-            return self.request_sse(sse, id, &body);
+        if self.on_sse() {
+            return self.request_sse_healing(id, &body);
         }
         self.request_streamable(id, &body)
+    }
+
+    /// Whether this client speaks the HTTP+SSE transport.
+    fn on_sse(&self) -> bool {
+        self.sse.lock().map(|g| g.is_some()).unwrap_or(false)
+    }
+
+    /// One SSE request, reopening the session once if the old one is gone (ADR 0073).
+    ///
+    /// A session belongs to the server that issued it, so a Home Assistant restart —
+    /// which is what installing a device does — invalidates it. Every later call then
+    /// posts to a URL that no longer exists and fails `404`, and nothing upstream
+    /// notices: the tool list is cached from the last good connect, so the server keeps
+    /// looking healthy while every action against the house fails. Observed live, and
+    /// it persisted until the node was restarted.
+    ///
+    /// Healing here rather than upstream because this is the only layer that knows the
+    /// session died. One retry, never a loop: if the fresh session fails too, the
+    /// server is genuinely down and saying so is the honest answer.
+    fn request_sse_healing(&self, id: u64, body: &Value) -> Result<Value, String> {
+        let first = {
+            let guard = self.sse.lock().map_err(|_| "MCP SSE lock poisoned")?;
+            let Some(sse) = guard.as_ref() else {
+                return Err("MCP SSE connection is gone".to_owned());
+            };
+            self.request_sse(sse, id, body)
+        };
+        match first {
+            Err(why) if session_is_gone(&why) => {
+                self.reopen()?;
+                let guard = self.sse.lock().map_err(|_| "MCP SSE lock poisoned")?;
+                let Some(sse) = guard.as_ref() else {
+                    return Err("MCP SSE connection is gone".to_owned());
+                };
+                // A new session starts unhandshaken, so the id space restarts with it.
+                let retry_id = self.next_id.fetch_add(1, Ordering::Relaxed);
+                let mut retry = body.clone();
+                retry["id"] = json!(retry_id);
+                self.request_sse(sse, retry_id, &retry)
+            }
+            other => other,
+        }
+    }
+
+    /// Opens a fresh SSE session and re-runs the handshake on it.
+    fn reopen(&self) -> Result<(), String> {
+        let fresh = open_sse(&self.url, &self.auth)
+            .ok_or("MCP SSE reconnect failed: the server did not offer a session")?;
+        {
+            let mut guard = self.sse.lock().map_err(|_| "MCP SSE lock poisoned")?;
+            *guard = Some(fresh);
+        }
+        // A session that has not been initialized answers nothing useful, so the
+        // handshake is part of reopening rather than a separate courtesy.
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        let body = json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": PROTOCOL_VERSION,
+                "capabilities": {},
+                "clientInfo": { "name": "endora", "version": env!("CARGO_PKG_VERSION") },
+            },
+        });
+        {
+            let guard = self.sse.lock().map_err(|_| "MCP SSE lock poisoned")?;
+            let Some(sse) = guard.as_ref() else {
+                return Err("MCP SSE connection is gone".to_owned());
+            };
+            self.request_sse(sse, id, &body)?;
+        }
+        self.notify("notifications/initialized");
+        Ok(())
     }
 
     /// Streamable HTTP: POST the message, read the reply inline.
@@ -206,11 +298,13 @@ impl HttpMcpClient {
         let msg = json!({ "jsonrpc": "2.0", "method": method });
         let post_url = self
             .sse
-            .as_ref()
-            .map_or(self.url.as_str(), |s| s.post_url.as_str());
+            .lock()
+            .ok()
+            .and_then(|g| g.as_ref().map(|s| s.post_url.clone()))
+            .unwrap_or_else(|| self.url.clone());
         let builder = self
             .agent
-            .post(post_url)
+            .post(&post_url)
             .header("accept", "application/json, text/event-stream");
         let _ = self.with_headers(builder).send_json(msg);
     }
@@ -355,6 +449,33 @@ impl McpClient for HttpMcpClient {
     fn read_resource(&self, uri: &str) -> Result<String, String> {
         let result = self.request("resources/read", Some(json!({ "uri": uri })))?;
         Ok(crate::mcp_stdio::contents_from_result(&result))
+    }
+}
+
+#[cfg(test)]
+mod session_death {
+    //! ADR 0073. A Home Assistant restart — which is what installing a device does —
+    //! invalidates the SSE session, and every later action failed `404` until the node
+    //! itself was restarted.
+
+    #[test]
+    fn a_dead_session_is_told_from_an_unwell_server() {
+        use super::session_is_gone;
+        // The observed failure, verbatim from the person's screen.
+        assert!(session_is_gone("MCP SSE post failed: http status: 404"));
+        assert!(session_is_gone(
+            "MCP SSE post failed: unknown session id 7f3a"
+        ));
+        // A server having a bad day is not a dead session: reopening on these would be
+        // a reconnect storm against something already struggling.
+        for unwell in [
+            "MCP SSE post failed: http status: 500",
+            "MCP SSE post failed: connection refused",
+            "the MCP server timed out",
+            "MCP HTTP request failed: http status: 404",
+        ] {
+            assert!(!session_is_gone(unwell), "would have stormed on: {unwell}");
+        }
     }
 }
 
