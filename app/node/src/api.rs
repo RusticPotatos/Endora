@@ -390,6 +390,12 @@ fn reconnect_empty_mcp_servers(state: &AppState) {
     if empty.is_empty() {
         return;
     }
+    // NOTE (ADR 0073): "exposing no tools" is a weak health check and it is deliberately
+    // kept weak. It catches the boot race it was written for — a server not up yet when
+    // the node started. It cannot catch a session that died *after* a good connect,
+    // because the tool list is cached from that connect and keeps the server looking
+    // healthy while every call 404s. That failure heals inside the transport, where the
+    // dead session is actually visible; this stays the coarse net for the coarse case.
     println!(
         "mcp: {} enabled server(s) exposing no tools ({}) — reconnecting",
         empty.len(),

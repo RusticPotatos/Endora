@@ -420,6 +420,15 @@ impl Drop for StdioIo {
 /// the request/response cycle so it is `Send + Sync` behind [`McpClient`].
 pub struct StdioMcpClient {
     io: Mutex<StdioIo>,
+    /// What it takes to start this server again. A subprocess is a session like any
+    /// other and dies like one — crashed, killed, out of memory — and the pipes it
+    /// left behind fail every call afterwards (ADR 0073). Held so a death can be
+    /// answered rather than merely reported.
+    how_to_start: (
+        String,
+        Vec<String>,
+        std::collections::BTreeMap<String, String>,
+    ),
 }
 
 impl StdioMcpClient {
@@ -484,31 +493,79 @@ impl StdioMcpClient {
         let mut id = io.next_id;
         handshake(&mut io, &mut id)?;
         io.next_id = id;
-        Ok(Self { io: Mutex::new(io) })
+        Ok(Self {
+            io: Mutex::new(io),
+            how_to_start: (command.to_owned(), args.to_vec(), env.clone()),
+        })
+    }
+
+    /// Whether an error means the subprocess is gone rather than merely slow.
+    ///
+    /// A closed channel is the reader thread having ended, which only happens when
+    /// stdout closed — the process is over. A broken pipe on the way in says the same
+    /// from the other side. A timeout is a server thinking, and respawning on that
+    /// would kill work in progress.
+    fn process_is_gone(why: &str) -> bool {
+        let why = why.to_lowercase();
+        why.contains("closed the connection")
+            || why.contains("broken pipe")
+            || why.contains("failed to send to mcp server")
+    }
+
+    /// Runs one call, restarting the server once if it turns out to have died.
+    ///
+    /// The heartbeat cannot notice this: the tool list is cached from the last good
+    /// connect, so a dead server keeps advertising everything it used to do while
+    /// every call fails. Restarting where the death is visible is the same answer
+    /// ADR 0073 gives the HTTP transports.
+    fn healing<T>(&self, run: impl Fn(&mut StdioIo) -> Result<T, String>) -> Result<T, String> {
+        let first = {
+            let mut io = self
+                .io
+                .lock()
+                .map_err(|_| "MCP client poisoned".to_owned())?;
+            run(&mut io)
+        };
+        let Err(why) = first else {
+            return first;
+        };
+        if !Self::process_is_gone(&why) {
+            return Err(why);
+        }
+        let (command, args, env) = &self.how_to_start;
+        // A fresh process is a fresh handshake; `spawn_with_env` does both.
+        let fresh = Self::spawn_with_env(command, args, env)
+            .map_err(|e| format!("{why} (restarting it failed too: {e})"))?;
+        let mut mine = self
+            .io
+            .lock()
+            .map_err(|_| "MCP client poisoned".to_owned())?;
+        let theirs = fresh
+            .io
+            .into_inner()
+            .map_err(|_| "MCP client poisoned".to_owned())?;
+        *mine = theirs;
+        run(&mut mine)
     }
 }
 
 impl McpClient for StdioMcpClient {
     fn list_tools(&self) -> Result<Vec<McpToolInfo>, String> {
-        let mut io = self
-            .io
-            .lock()
-            .map_err(|_| "MCP client poisoned".to_owned())?;
-        let mut id = io.next_id;
-        let out = list_tools(&mut *io, &mut id);
-        io.next_id = id;
-        out
+        self.healing(|io| {
+            let mut id = io.next_id;
+            let out = list_tools(io, &mut id);
+            io.next_id = id;
+            out
+        })
     }
 
     fn call(&self, tool: &str, input_json: &str) -> Result<String, String> {
-        let mut io = self
-            .io
-            .lock()
-            .map_err(|_| "MCP client poisoned".to_owned())?;
-        let mut id = io.next_id;
-        let out = call_tool(&mut *io, &mut id, tool, input_json);
-        io.next_id = id;
-        out
+        self.healing(|io| {
+            let mut id = io.next_id;
+            let out = call_tool(io, &mut id, tool, input_json);
+            io.next_id = id;
+            out
+        })
     }
 
     fn list_resources(&self) -> Result<Vec<McpResource>, String> {
@@ -531,6 +588,52 @@ impl McpClient for StdioMcpClient {
         let out = read_resource(&mut *io, &mut id, uri);
         io.next_id = id;
         out
+    }
+}
+
+#[cfg(test)]
+mod a_dead_subprocess {
+    //! ADR 0073, stdio half. A subprocess is a session and dies like one; the pipes it
+    //! leaves behind fail every call, while the cached tool list keeps the server
+    //! looking healthy to the heartbeat.
+
+    use super::StdioMcpClient;
+
+    #[test]
+    fn a_gone_process_is_told_from_a_slow_one() {
+        // Both directions the transport actually produces.
+        assert!(StdioMcpClient::process_is_gone(
+            "the MCP server closed the connection"
+        ));
+        assert!(StdioMcpClient::process_is_gone(
+            "failed to send to MCP server: Broken pipe (os error 32)"
+        ));
+        // A server thinking is not a server gone — restarting would kill work in
+        // progress and lose whatever it was about to answer.
+        for slow in [
+            "the MCP server timed out",
+            "MCP server error: tool not found",
+            "bad JSON from MCP server: expected value",
+        ] {
+            assert!(
+                !StdioMcpClient::process_is_gone(slow),
+                "would have restarted on: {slow}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_server_that_will_not_start_says_both_what_failed_and_why_it_could_not_recover() {
+        // The honest end of the road: the original failure is not swallowed by the
+        // recovery attempt's own failure.
+        let why = match StdioMcpClient::spawn("definitely-not-a-real-command-xyz", &[]) {
+            Err(why) => why,
+            Ok(_) => panic!("a missing command must not appear to start"),
+        };
+        assert!(
+            why.contains("failed to start MCP server"),
+            "unhelpful failure: {why}"
+        );
     }
 }
 
