@@ -82,6 +82,12 @@ pub struct HttpMcpClient {
     /// restarts, and the fix is to open a new one rather than to stay broken
     /// (ADR 0073).
     sse: Mutex<Option<SseConn>>,
+    /// Whether this client speaks HTTP+SSE at all — fixed when it connects, and kept
+    /// **outside** the lock on purpose. Asking the lock this question deadlocked the
+    /// node: the request path holds the connection while building headers, and header
+    /// building asked which transport it was. `std::sync::Mutex` is not reentrant, so
+    /// the first request after start-up hung forever and the node never listened.
+    is_sse: bool,
 }
 
 impl HttpMcpClient {
@@ -112,6 +118,7 @@ impl HttpMcpClient {
             auth,
             session: Mutex::new(None),
             next_id: AtomicU64::new(1),
+            is_sse: sse.is_some(),
             sse: Mutex::new(sse),
         };
         let params = json!({
@@ -202,9 +209,13 @@ impl HttpMcpClient {
         }
     }
 
-    /// Whether this client speaks the HTTP+SSE transport.
-    fn on_sse(&self) -> bool {
-        self.sse.lock().map(|g| g.is_some()).unwrap_or(false)
+    /// Whether this client speaks the HTTP+SSE transport. Reads the immutable field,
+    /// **never the lock**: the request path holds the connection while it builds
+    /// headers, and header building asks this question. `std::sync::Mutex` is not
+    /// reentrant, so asking the lock here hung the first request after start-up and
+    /// the node never began listening.
+    const fn on_sse(&self) -> bool {
+        self.is_sse
     }
 
     /// One SSE request, reopening the session once if the old one is gone (ADR 0073).
