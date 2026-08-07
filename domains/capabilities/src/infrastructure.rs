@@ -1217,7 +1217,8 @@ impl Capability for WeatherCapability {
             &format!(
                 "https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}\
                  &current=temperature_2m,apparent_temperature,weather_code,wind_speed_10m\
-                 &daily=temperature_2m_max,temperature_2m_min,weather_code&timezone=auto&forecast_days=1"
+                 &daily=temperature_2m_max,temperature_2m_min,weather_code,precipitation_probability_max\
+                 &timezone=auto&forecast_days=1"
             ),
             64 * 1024,
         )?;
@@ -1234,6 +1235,8 @@ impl Capability for WeatherCapability {
             "condition": condition,
             "high_c": w["daily"]["temperature_2m_max"][0],
             "low_c": w["daily"]["temperature_2m_min"][0],
+            // Today's peak chance of rain — what decides the umbrella line below.
+            "rain_chance_pct": w["daily"]["precipitation_probability_max"][0],
             // The local time this reading is FROM — a brief is posted once and never
             // updates, so "current" can go stale by the time it's read. Surfacing the
             // observation time makes that obvious ("as of 7 AM") instead of looking
@@ -1267,6 +1270,21 @@ impl Capability for WeatherCapability {
         }
         if let (Some(hi), Some(lo)) = (o["high_c"].as_f64(), o["low_c"].as_f64()) {
             s.push_str(&format!("; today's high {}, low {}", cf(hi), cf(lo)));
+        }
+        // Whether you need an umbrella or a jacket is a fact of the numbers, so it
+        // is said here rather than left to the model. Named heuristics — 40% is
+        // where most people start carrying one, 10°C / 50°F is where a jacket stops
+        // being optional — and the blast radius of a wrong one is a sentence of
+        // advice. Missing fields say nothing: no value, no claim.
+        if let Some(rain) = o["rain_chance_pct"].as_f64().filter(|r| *r >= 40.0) {
+            s.push_str(&format!(". Take an umbrella — {rain:.0}% chance of rain"));
+        }
+        let chill = [o["feels_like_c"].as_f64(), o["low_c"].as_f64()]
+            .into_iter()
+            .flatten()
+            .fold(f64::INFINITY, f64::min);
+        if chill <= 10.0 {
+            s.push_str(&format!(". Bring a jacket — expect {}", cf(chill)));
         }
         if let Some(w) = o["warning"].as_str().filter(|w| !w.is_empty()) {
             s.push_str(&format!(". {w}"));
@@ -1423,6 +1441,17 @@ fn strip_html(html: &str) -> String {
 
 // ---- Local news (real; Google News RSS, no API key) ------------------------
 
+/// How many headlines a news call wants. Six was hardcoded; a brief wants the top
+/// three, and "top three" enforced here is real, where "please only mention three"
+/// in a prompt is a wish. Clamped: zero headlines is not a news reading, and more
+/// than six is a feed, not a briefing.
+fn wanted_headlines(input: &Value) -> usize {
+    input
+        .get("count")
+        .and_then(Value::as_u64)
+        .map_or(6, |n| n.clamp(1, 6)) as usize
+}
+
 struct LocalNewsCapability;
 
 impl Capability for LocalNewsCapability {
@@ -1445,7 +1474,7 @@ impl Capability for LocalNewsCapability {
             borrows_from: None,
             third_party: true,
             input_schema: Some(
-                r#"{"type":"object","properties":{"query":{"type":"string","description":"a topic to search for"},"location":{"type":"string","description":"a town, when asking what is happening there"}},"required":[]}"#,
+                r#"{"type":"object","properties":{"query":{"type":"string","description":"a topic to search for"},"location":{"type":"string","description":"a town, when asking what is happening there"},"count":{"type":"integer","description":"how many headlines (1-6, default 6)"}},"required":[]}"#,
             ),
         }
     }
@@ -1477,7 +1506,7 @@ impl Capability for LocalNewsCapability {
             urlencode(&query)
         );
         let xml = http_get_text(&url, 256 * 1024)?;
-        let items = extract_rss_items(&xml, 6);
+        let items = extract_rss_items(&xml, wanted_headlines(input));
         let headlines: Vec<Value> = items
             .iter()
             .map(|(title, link, publisher)| {
@@ -5371,6 +5400,76 @@ mod tests {
         // Unrecognized shapes fall back to no tag (rather than a wrong one).
         assert_eq!(observed_time("garbage"), None);
         assert_eq!(observed_time("2026-07-23T99:00"), None);
+    }
+
+    #[test]
+    fn a_news_call_says_how_many_headlines_it_wants() {
+        assert_eq!(wanted_headlines(&json!({"count": 3})), 3);
+        assert_eq!(wanted_headlines(&json!({})), 6, "the historical default holds");
+        assert_eq!(wanted_headlines(&json!({"count": 0})), 1, "zero is not a reading");
+        assert_eq!(wanted_headlines(&json!({"count": 50})), 6, "fifty is a feed");
+    }
+
+    #[test]
+    fn the_weather_summary_says_when_an_umbrella_is_worth_taking() {
+        // The person asked for exactly this: "weather, and if you need an umbrella
+        // or jacket". Whether you need one is a fact of the numbers, so it is said
+        // by code, not left to the model's mood.
+        let reading = json!({
+            "place": "New York", "condition": "light rain",
+            "temperature_c": 18.0, "feels_like_c": 17.0,
+            "high_c": 21.0, "low_c": 14.0,
+            "rain_chance_pct": 65,
+            "observed_at": "2026-08-07T07:00", "warning": "",
+        });
+        let s = WeatherCapability.summarize(&reading);
+        assert!(s.contains("umbrella"), "{s}");
+        assert!(s.contains("65%"), "{s}");
+        assert!(!s.contains("jacket"), "17°C is not jacket weather: {s}");
+    }
+
+    #[test]
+    fn a_cold_morning_calls_for_a_jacket() {
+        let reading = json!({
+            "place": "New York", "condition": "clear sky",
+            "temperature_c": 9.0, "feels_like_c": 6.0,
+            "high_c": 15.0, "low_c": 5.0,
+            "rain_chance_pct": 5,
+            "observed_at": "2026-08-07T07:00", "warning": "",
+        });
+        let s = WeatherCapability.summarize(&reading);
+        assert!(s.contains("jacket"), "{s}");
+        assert!(!s.contains("umbrella"), "5% is not umbrella weather: {s}");
+    }
+
+    #[test]
+    fn a_dry_mild_day_gets_no_wardrobe_advice() {
+        // Advice that fires every day is noise, and noise teaches the person to
+        // stop reading.
+        let reading = json!({
+            "place": "New York", "condition": "partly cloudy",
+            "temperature_c": 22.0, "feels_like_c": 23.0,
+            "high_c": 27.0, "low_c": 18.0,
+            "rain_chance_pct": 10,
+            "observed_at": "2026-08-07T07:00", "warning": "",
+        });
+        let s = WeatherCapability.summarize(&reading);
+        assert!(!s.contains("umbrella"), "{s}");
+        assert!(!s.contains("jacket"), "{s}");
+    }
+
+    #[test]
+    fn a_reading_without_the_rain_field_stays_quiet_about_umbrellas() {
+        // An older reading (or an API that omitted the field) must not produce
+        // advice from a value that is not there.
+        let reading = json!({
+            "place": "New York", "condition": "partly cloudy",
+            "temperature_c": 22.0, "feels_like_c": 23.0,
+            "high_c": 27.0, "low_c": 18.0,
+            "observed_at": "2026-08-07T07:00", "warning": "",
+        });
+        let s = WeatherCapability.summarize(&reading);
+        assert!(!s.contains("umbrella"), "{s}");
     }
 
     #[test]
