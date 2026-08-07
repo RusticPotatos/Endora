@@ -2208,7 +2208,11 @@ impl Capability for TicketedEventsCapability {
             url.push_str(&format!("&keyword={}", urlencode(asked)));
         }
         if !town.is_empty() {
-            url.push_str(&format!("&city={}", urlencode(town)));
+            let (city, state) = city_and_state(town);
+            url.push_str(&format!("&city={}", urlencode(&city)));
+            if let Some(state) = state {
+                url.push_str(&format!("&stateCode={state}"));
+            }
         }
         let body = http_get_text_ua(
             &url,
@@ -2367,6 +2371,29 @@ impl Capability for TrafficCapability {
         }
         format!("Traffic: {}", lines.join(" · "))
     }
+}
+
+/// Splits "New York NY" into the city and the state code Ticketmaster wants as a
+/// **separate** parameter. The place preference is exactly that shape, and sent
+/// whole as `city=` it matches no city at all — live, the home team played at the
+/// stadium while the brief said nothing ticketed was coming up. A named heuristic:
+/// a trailing two-letter word is read as a state code only when something precedes
+/// it, and a trailing comma on the city is shed with it.
+fn city_and_state(town: &str) -> (String, Option<String>) {
+    let mut words: Vec<&str> = town.split_whitespace().collect();
+    let state = match words.last() {
+        Some(last)
+            if words.len() >= 2
+                && last.len() == 2
+                && last.chars().all(|c| c.is_ascii_alphabetic()) =>
+        {
+            let code = last.to_uppercase();
+            words.pop();
+            Some(code)
+        }
+        _ => None,
+    };
+    (words.join(" ").trim_end_matches(',').to_owned(), state)
 }
 
 /// What the mail says — headers only, through the house (ADR 0064/0058).
@@ -5498,6 +5525,25 @@ mod tests {
         // Unrecognized shapes fall back to no tag (rather than a wrong one).
         assert_eq!(observed_time("garbage"), None);
         assert_eq!(observed_time("2026-07-23T99:00"), None);
+    }
+
+    #[test]
+    fn a_city_with_a_state_code_is_split_for_the_listing_service() {
+        assert_eq!(
+            city_and_state("Springfield IL"),
+            ("Springfield".to_owned(), Some("IL".to_owned()))
+        );
+        assert_eq!(
+            city_and_state("Springfield, IL"),
+            ("Springfield".to_owned(), Some("IL".to_owned()))
+        );
+        assert_eq!(
+            city_and_state("New York ny"),
+            ("New York".to_owned(), Some("NY".to_owned()))
+        );
+        // A bare city stays whole, and a lone two-letter word is a city, not a state.
+        assert_eq!(city_and_state("Boston"), ("Boston".to_owned(), None));
+        assert_eq!(city_and_state("NY"), ("NY".to_owned(), None));
     }
 
     #[test]

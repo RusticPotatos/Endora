@@ -3118,12 +3118,7 @@ async fn answer_standing_trouble(
     let clock = state.clock.clone();
     let said = blocking(move || {
         if req.answer == "fine" {
-            endora_capabilities::StandingTroubleRepository::accept_trouble(
-                config.as_ref(),
-                &req.server,
-                &req.thing,
-            )
-            .map_err(AppError::Repository)?;
+            accept_trouble_everywhere(config.as_ref(), &req.thing)?;
             return Ok(json!({ "done": format!("left {} alone", req.thing) }));
         }
         if req.answer != "gone" {
@@ -3141,12 +3136,7 @@ async fn answer_standing_trouble(
             // again clears its record and is watched fresh. The old reply here was
             // "Endora has no direct reach into skills": true, unactionable, and the
             // card came back every pass because nothing was recorded.
-            endora_capabilities::StandingTroubleRepository::accept_trouble(
-                config.as_ref(),
-                &req.server,
-                &req.thing,
-            )
-            .map_err(AppError::Repository)?;
+            accept_trouble_everywhere(config.as_ref(), &req.thing)?;
             return Ok(json!({
                 "done": format!(
                     "noted — {} lives in no service Endora can edit, so it can't be \
@@ -3156,6 +3146,27 @@ async fn answer_standing_trouble(
                 )
             }));
         };
+        // A thing the service no longer lists cannot be hidden in it. Live: the
+        // person deleted the device at the service, tapped "It's gone", the hide
+        // errored on a name the service didn't know, nothing was recorded, and the
+        // card came back every pass — a loop with no exit the person could tap.
+        // The service's own reading is the proof it is gone; acceptance is the
+        // dismissal, exactly as in the no-channel arm above. A reading that cannot
+        // be taken proves nothing and falls through to the hide as before.
+        let vanished = channel
+            .states()
+            .map(|listed| !listed.iter().any(|(id, _)| id == &req.thing))
+            .unwrap_or(false);
+        if vanished {
+            accept_trouble_everywhere(config.as_ref(), &req.thing)?;
+            return Ok(json!({
+                "done": format!(
+                    "{} is no longer in {} at all — nothing to hide, and it won't \
+                     be asked about again",
+                    req.thing, req.server
+                )
+            }));
+        }
         match channel.hide(&req.thing, true) {
             Some(Ok(mut write)) => {
                 write.id = endora_application::IdSource::new_id(ids.as_ref());
@@ -3171,6 +3182,11 @@ async fn answer_standing_trouble(
                     &req.thing,
                 )
                 .map_err(AppError::Repository)?;
+                // …and under every other watcher too: a hidden entity stops
+                // appearing in readings, so the twin record would never clear
+                // itself — it would just keep raising a card about a thing the
+                // person already dealt with.
+                accept_trouble_everywhere(config.as_ref(), &req.thing)?;
                 Ok(
                     json!({ "done": format!("hid {} in {}", req.thing, req.server),
                            "id": write.id.to_string() }),
@@ -3185,6 +3201,26 @@ async fn answer_standing_trouble(
     .await?;
     let _ = state.changes.send(());
     Ok(Json(said))
+}
+
+/// Accepts a standing trouble under **every** server that recorded it.
+///
+/// Two watchers see the same house (the connected server and the built-in reader),
+/// so one dead device holds two rows. Accepting only the row on the card left the
+/// twin standing, and the next pass raised it — the same card, apparently immortal,
+/// actually alternating between records the person could not see apart.
+fn accept_trouble_everywhere(
+    config: &endora_capabilities::ConfigStore,
+    thing: &str,
+) -> Result<(), AppError> {
+    use endora_capabilities::StandingTroubleRepository;
+    for t in StandingTroubleRepository::troubles(config).unwrap_or_default() {
+        if t.thing == thing {
+            StandingTroubleRepository::accept_trouble(config, &t.server, &t.thing)
+                .map_err(AppError::Repository)?;
+        }
+    }
+    Ok(())
 }
 
 /// Every change Endora has made to a service's own configuration (ADR 0054).
@@ -6442,6 +6478,43 @@ mod tests {
             all.iter()
                 .any(|t| t.thing == "light.kiosk_brightness" && t.accepted),
             "gone did not stick: {all:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn one_answer_settles_a_thing_every_watcher_recorded() {
+        // Observed live: two watchers see the same house, so a removed device held
+        // two rows — one per server. Answering the card accepted only the row it
+        // named; the twin was raised on the next pass, and the person met the same
+        // card again, apparently immortal. One answer is about the THING, and it
+        // settles every record of it.
+        use endora_capabilities::{StandingTrouble, StandingTroubleRepository};
+        let state = test_state();
+        for server in ["skills", "home-assistant"] {
+            StandingTroubleRepository::note_trouble(
+                state.config.as_ref(),
+                &StandingTrouble {
+                    server: server.to_owned(),
+                    thing: "sensor.kiosk_volume".to_owned(),
+                    trouble: "unavailable".to_owned(),
+                    since_ms: 1_000,
+                    accepted: false,
+                },
+            )
+            .unwrap();
+        }
+        app(state.clone())
+            .oneshot(post(
+                "/v1/standing-trouble/answer",
+                r#"{"server":"skills","thing":"sensor.kiosk_volume","answer":"gone"}"#,
+            ))
+            .await
+            .unwrap();
+        let all = StandingTroubleRepository::troubles(state.config.as_ref()).unwrap();
+        let worth = endora_capabilities::worth_raising(&all, i64::MAX / 2);
+        assert!(
+            worth.is_empty(),
+            "the twin record kept the card alive: {all:?}"
         );
     }
 
