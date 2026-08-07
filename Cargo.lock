@@ -409,6 +409,7 @@ dependencies = [
  "endora-platform",
  "endora-scheduling",
  "endora-understanding",
+ "serde_json",
 ]
 
 [[package]]

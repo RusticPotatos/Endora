@@ -2318,6 +2318,17 @@ impl Capability for TrafficCapability {
             })?;
         let entities = home.entities().map_err(CapabilityError::Unavailable)?;
         let said = crate::home_assistant::commute_in(&entities);
+        // No sensors is unavailability, not an empty reading: a chat ask gets the
+        // honest hint below, and a brief skips the section instead of printing the
+        // same hint every morning.
+        if said.is_empty() {
+            return Err(CapabilityError::Unavailable(
+                "no travel-time sensors in the house yet — add one (for example the \
+                 Waze Travel Time integration in Home Assistant) and this will report \
+                 the drive"
+                    .to_owned(),
+            ));
+        }
         Ok(serde_json::json!({
             "drives": said
                 .iter()

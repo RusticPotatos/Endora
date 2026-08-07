@@ -805,9 +805,6 @@ fn repeats_its_last_answer(reply: &ButlerReply, conversation: &[TurnMessage]) ->
 const CHAT_TOOL_ROUNDS: usize = 3;
 /// Tool rounds allowed in a proactive **check-in** — it mostly just needs to look.
 const CHECKIN_TOOL_ROUNDS: usize = 3;
-/// Tool rounds allowed in a **brief**, which legitimately gathers several things
-/// (weather, alerts, news) before writing.
-const BRIEF_TOOL_ROUNDS: usize = 6;
 /// Tool rounds allowed in the **nightly loop** — it researches one focus, unhurried.
 const NIGHTLY_TOOL_ROUNDS: usize = 4;
 
@@ -2945,151 +2942,161 @@ pub fn consider_reaching_out(
     Ok(Some((message, activity)))
 }
 
-/// Composes a **daily briefing** — an act of service (ADR 0056). The butler is handed
-/// its skill catalogue and decides for itself what a brief needs today, gathering
-/// across tool rounds and then writing it. Policy gates every call to configured +
-/// reversible + autonomous, so a briefing never does anything consequential
-/// (ADR 0051), and each result — success or failure — comes back as a tool message the
-/// butler answers from, so the prose is grounded in what actually happened (ADR 0053).
+/// The sections of the person's **standing order** (ADR 0074), gathered by code.
 ///
-/// There is **no scripted fallback**: if the butler gathered nothing worth saying, or
-/// the model is unavailable, this returns `None` and no brief is posted. A brief
-/// assembled by fixed code from a hardcoded skill list would be Endora claiming to
-/// have thought about the person's day when it had not.
+/// Each section is a configured skill called with known-good arguments, its summary
+/// included verbatim — "top three headlines" is enforced by the call, never asked of
+/// the model. A skill that is not configured contributes nothing, so the brief
+/// shrinks honestly; one that fails is noted in the activity trail and its section
+/// is absent rather than apologised for every morning — the trail is the operator's,
+/// the brief is the person's.
+fn gathered_brief_sections(
+    capabilities: &dyn CapabilityRunner,
+    place: &str,
+    activity: &mut Vec<String>,
+) -> Vec<String> {
+    const TOP_HEADLINES: u8 = 3;
+    let configured: std::collections::HashSet<String> = capabilities
+        .available()
+        .into_iter()
+        .filter(|s| s.configured)
+        .map(|s| s.id)
+        .collect();
+    let mut asks: Vec<(&str, &str, String)> = vec![("traffic", "drive", "{}".to_owned())];
+    // Sections that need a place are skipped without one — a brief must never guess
+    // where "home" is (ADR 0065).
+    if !place.trim().is_empty() {
+        asks.insert(
+            0,
+            (
+                "weather",
+                "weather",
+                serde_json::json!({ "location": place }).to_string(),
+            ),
+        );
+        asks.push((
+            "news",
+            "news",
+            serde_json::json!({ "location": place, "count": TOP_HEADLINES }).to_string(),
+        ));
+        asks.push((
+            "ticketed_events",
+            "events",
+            serde_json::json!({ "city": place }).to_string(),
+        ));
+    }
+    asks.push(("city_meetings", "city meetings", "{}".to_owned()));
+    let mut sections = Vec::new();
+    for (id, label, args) in asks {
+        if !configured.contains(id) {
+            continue;
+        }
+        match capabilities.run(id, &args) {
+            Ok(s) if !s.trim().is_empty() => {
+                activity.push(format!("Fetched the {label}"));
+                sections.push(s.trim().to_owned());
+            }
+            Ok(_) => {}
+            Err(_) => activity.push(format!("Tried the {label}, but it failed")),
+        }
+    }
+    sections
+}
+
+/// Everything a brief has to say, assembled deterministically (ADR 0074): what
+/// Endora already holds (presence, today's calendar, standing troubles — via
+/// [`whats_worth_saying_this_morning`]) plus the standing-order sections gathered
+/// fresh by [`gathered_brief_sections`]. `None` means there is genuinely nothing —
+/// no brief, rather than a cheerful nothing.
+pub fn assembled_brief_facts(
+    capabilities: &dyn CapabilityRunner,
+    troubles: &impl endora_capabilities::StandingTroubleRepository,
+    context: &ButlerContext,
+    now_ms: i64,
+    activity: &mut Vec<String>,
+) -> Option<String> {
+    let open = troubles.troubles().unwrap_or_default();
+    let raisable = endora_capabilities::worth_raising(&open, now_ms);
+    let mut lines: Vec<String> = Vec::new();
+    if let Some(known) = whats_worth_saying_this_morning(context, &raisable, now_ms) {
+        lines.push(known);
+    }
+    lines.extend(gathered_brief_sections(
+        capabilities,
+        &context.where_they_are,
+        activity,
+    ));
+    (!lines.is_empty()).then(|| lines.join("\n"))
+}
+
+/// Composes a **daily briefing** — an act of service (ADR 0056), assembled as a
+/// standing order (ADR 0074). The sections are the person's own: their calendar and
+/// presence, what has stopped answering, their weather (with whether an umbrella or
+/// jacket is worth it), their drive, their top three headlines, their local events —
+/// each gathered by code from a configured skill with known-good arguments. The
+/// model's only job is the wording, and only the deep model gets it (measured: the
+/// local one, handed exactly these facts, wrote about lights instead).
 ///
-/// Returns the posted message and a plain-language activity trail, or `None`.
+/// What ADR 0074 retires is the agentic gather: a brief that depended on the model
+/// choosing the right tools arrived as "the kitchen and garage lights are on" four
+/// days running, and the person's own request — three headlines, the weather, the
+/// drive — had nowhere to live but a prompt the model was free to ignore. The facts
+/// no longer need a model at all: with no deep wording they post as themselves.
+/// Append, never rewrite (ADR 0056) still governs the worded path.
+///
+/// `None` — no brief — only when there was genuinely nothing to say.
 ///
 /// # Errors
 /// [`AppError::Repository`] on a backend failure.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "explicit dependencies, no hidden state"
-)]
 pub fn daily_brief(
     chat: &impl ChatRepository,
-    preferences: &impl PreferenceRepository,
-    outcomes: &impl OutcomeRepository,
     troubles: &impl endora_capabilities::StandingTroubleRepository,
     capabilities: &dyn CapabilityRunner,
     butler: &dyn Butler,
-    audit: &dyn AuditLog,
     ids: &impl IdSource,
     clock: &impl Clock,
     context: &ButlerContext,
 ) -> Result<Option<(ChatMessage, Vec<String>)>, AppError> {
-    let prefs = preferences.list_all()?;
     let mut activity: Vec<String> = Vec::new();
-    let actions = OutcomeSink::unmotivated(outcomes);
-
-    // ONE agentic pass (ADR 0056/0028): the butler reaches for whatever it decides a
-    // brief needs, each result comes back as a tool message, and it writes the brief
-    // from those results in the same conversation. No gather/synthesize split, and no
-    // scripted weather→safety→news sweep underneath it.
     let brief_ctx = ButlerContext {
         now: format_datetime_utc(clock.now().unix_millis()),
         ..context.clone()
     };
-    // What Endora already knows, assembled here rather than asked for. A brief that
-    // depends on the model choosing the right tools is a brief that arrives as "the
-    // kitchen and garage lights are on" — which is what four days of them looked like.
-    // Only what has been wrong long enough to be worth raising, so a brief cannot become
-    // the pile of chores ADR 0056 forbids.
-    let open = troubles.troubles().unwrap_or_default();
-    let raisable = endora_capabilities::worth_raising(&open, clock.now().unix_millis());
-    let already_known =
-        whats_worth_saying_this_morning(&brief_ctx, &raisable, clock.now().unix_millis());
-    let ask = [ChatMessage::new(
-        MessageId::new(ids.new_id()),
-        MessageRole::User,
-        &format!(
-            "Put together my brief. Here is what you already know, which you must include \
-             all of:\n{}\n\nThen reach for anything else relevant — news I'd \
-             care about, safety alerts where I'm based — and give me a short, warm rundown. \
-             If a skill failed or you couldn't reach something, say so plainly rather than \
-             filling the gap.",
-            already_known.as_deref().unwrap_or("- nothing yet")
-        ),
-        clock.now(),
-    )?];
-    let text = run_tool_turn(
-        butler,
+    let Some(facts) = assembled_brief_facts(
         capabilities,
-        audit,
-        &actions,
-        ids,
-        clock,
-        &ask,
-        &|_id| Vec::new(),
-        &prefs,
+        troubles,
         &brief_ctx,
-        BRIEF_TOOL_ROUNDS,
-        &mut |_step| {},
-        &mut |_token: &str| {},
+        clock.now().unix_millis(),
         &mut activity,
-        &mut Vec::new(),
-    )
-    .ok()
-    // Protocol prose is not a brief. Live, as the whole of one: "None of the functions
-    // provided relate to the error message received… Check for Calendar Integration."
-    // That shape is already recognised everywhere else; a brief had no reason to be the
-    // exception, and unlike a chat answer there is no question of withholding something
-    // the person asked for (ADR 0053).
-    .filter(|reply| !not_an_answer(reply, &brief_ctx))
-    .map(|reply| reply.text.trim().to_owned())
-    .filter(|t| !t.is_empty());
-    // The facts go under whatever the model wrote, because six placements have now shown
-    // it will not use them (ADR 0056). They were put in the system prompt, in the turn's
-    // grounding, and finally verbatim in the request itself — and the brief still came back
-    // "the lights in the Living Room are currently unavailable, sir."
-    //
-    // This is the one thing that has ever worked: append, never rewrite. Endora states what
-    // it knows and the model's sentence stands beside it, exactly as a reading stands beside
-    // a tool's receipt (ADR 0053). Nothing here judges the prose — showing the facts needs no
-    // judgement, which is why it can be relied on.
-    // The facts stand on their own when the model gives nothing usable. They ARE the
-    // brief; the prose is the greeting around them, and a morning with a calendar entry
-    // and a broken lamp is worth saying whether or not a sentence came back.
+    ) else {
+        // Nothing known and nothing gathered: no brief. A scripted one would be
+        // Endora claiming to have thought about the day (ADR 0053).
+        return Ok(None);
+    };
     // The brief is worded by the deep model when the person has opted in (ADR 0055).
     //
-    // Measured, not assumed: given exactly these facts the local model wrote "the lights in
-    // your bedroom are off", and the deep one wrote a brief that used every one of them.
-    // Six placements had already shown the facts were reaching the local model and being
-    // ignored, so this is a model-capability difference rather than a prompt to tune.
+    // Measured, not assumed: given exactly these facts the local model wrote "the
+    // lights in your bedroom are off", and the deep one wrote a brief that used every
+    // one of them — so the local model is not asked at all, and without a deep model
+    // the facts stand as their own brief.
     //
     // **Gathering stays local.** Only the assembled facts leave, disguised — and only
-    // those: the deep model gets a context with nothing else in it, so beliefs, aliases and
-    // the track record never travel just because prose is wanted.
-    let mut worded_elsewhere = false;
-    let text = match (butler.deeper(), already_known.as_deref()) {
-        (Some(deeper), Some(facts)) => match word_the_brief(&deeper, facts, ids, clock) {
-            Some(written) => {
-                worded_elsewhere = true;
-                Some(written)
-            }
-            None => text,
+    // those: the deep model gets a context with nothing else in it, so beliefs,
+    // aliases and the track record never travel just because prose is wanted.
+    //
+    // Append, never rewrite (ADR 0056): whatever the writing left out is appended
+    // verbatim. Appending everything printed the brief twice on its first live run;
+    // appending nothing would trust the model, which is what the appending exists to
+    // avoid.
+    let text = match butler
+        .deeper()
+        .and_then(|deeper| word_the_brief(&deeper, &facts, ids, clock))
+    {
+        Some(written) => match not_yet_said(&written, &facts) {
+            missed if missed.is_empty() => written,
+            missed => format!("{written}\n\n{}", missed.join("\n")),
         },
-        _ => text,
-    };
-    let text = match (text, already_known) {
-        // Only what the writing left out. Appending everything printed the brief twice on
-        // its first live run; appending nothing would trust the model, which is what the
-        // appending exists to avoid.
-        (Some(written), Some(facts)) if worded_elsewhere => match not_yet_said(&written, &facts) {
-            missed if missed.is_empty() => Some(written),
-            missed => Some(format!("{written}\n\n{}", missed.join("\n"))),
-        },
-        (Some(written), Some(facts)) => Some(format!("{written}\n\n{facts}")),
-        (Some(written), None) => Some(written),
-        // The facts stand alone when the model gives nothing usable. They ARE the brief;
-        // the prose is the greeting around them, and a morning with a calendar entry and a
-        // broken lamp is worth saying whether or not a sentence came back.
-        (None, Some(facts)) => Some(facts),
-        // Nothing known and nothing said: no brief. A scripted one would be Endora
-        // claiming to have thought about the day (ADR 0053).
-        (None, None) => None,
-    };
-    let Some(text) = text else {
-        return Ok(None);
+        None => facts,
     };
     let message = post_butler_message(chat, ids, clock, &text)?;
     Ok(Some((message, activity)))
@@ -3181,13 +3188,10 @@ pub fn set_brief_schedule(
 )]
 pub fn run_due_brief(
     chat: &impl ChatRepository,
-    preferences: &impl PreferenceRepository,
-    outcomes: &impl OutcomeRepository,
     troubles: &impl endora_capabilities::StandingTroubleRepository,
     briefs: &impl BriefScheduleRepository,
     capabilities: &dyn CapabilityRunner,
     butler: &dyn Butler,
-    audit: &dyn AuditLog,
     ids: &impl IdSource,
     clock: &impl Clock,
     context: &ButlerContext,
@@ -3202,18 +3206,7 @@ pub fn run_due_brief(
     // Mark fired first, so a slow compose can't double-post on the next tick.
     schedule.last_at = now;
     briefs.set(&schedule)?;
-    daily_brief(
-        chat,
-        preferences,
-        outcomes,
-        troubles,
-        capabilities,
-        butler,
-        audit,
-        ids,
-        clock,
-        context,
-    )
+    daily_brief(chat, troubles, capabilities, butler, ids, clock, context)
 }
 
 // ---------------------------------------------------------------------------
@@ -7864,116 +7857,117 @@ mod tests {
     }
 
     #[test]
-    fn daily_brief_is_written_from_what_the_butler_actually_gathered() {
+    fn daily_brief_is_assembled_from_the_standing_order() {
         use super::daily_brief;
 
-        struct BriefSkills;
+        // The person's own sections, gathered by code (ADR 0074): the model never
+        // chooses the tools, and "top three headlines" is in the call, not a prompt.
+        struct BriefSkills(std::cell::RefCell<Vec<(String, String)>>);
         impl CapabilityRunner for BriefSkills {
             fn available(&self) -> Vec<endora_capabilities::CapabilitySpec> {
-                vec![endora_capabilities::CapabilitySpec {
-                    id: "weather".to_owned(),
-                    wants_place: false,
-                    third_party: false,
-                    description: "w".to_owned(),
-                    configured: true,
-                    autonomous: true,
-                    input_schema: None,
-                    reversibility: endora_kernel::Reversibility::Observe,
-                }]
+                ["weather", "news", "traffic"]
+                    .into_iter()
+                    .map(|id| endora_capabilities::CapabilitySpec {
+                        id: id.to_owned(),
+                        wants_place: false,
+                        third_party: false,
+                        description: String::new(),
+                        configured: true,
+                        autonomous: true,
+                        input_schema: None,
+                        reversibility: endora_kernel::Reversibility::Observe,
+                    })
+                    .collect()
             }
-            fn run(&self, id: &str, _input_json: &str) -> Result<String, String> {
-                assert_eq!(id, "weather");
-                Ok("clear, 25C".to_owned())
-            }
-        }
-
-        // The butler reaches for a skill, the result comes back as a turn in the same
-        // conversation, and it writes the brief from that — one pass, no synthesis
-        // hand-off (ADR 0053).
-        struct BriefButler;
-        impl Butler for BriefButler {
-            fn respond(
-                &self,
-                history: &[ChatMessage],
-                _preferences: &[Preference],
-                _context: &ButlerContext,
-            ) -> Result<ButlerReply, ProposalError> {
-                let Some(result) = last_skill_result(history) else {
-                    // Nothing gathered yet — reach for the weather.
-                    return Ok(ButlerReply {
-                        capability_use: Some(endora_capabilities::CapabilityUse {
-                            capability: "weather".to_owned(),
-                            input_json: "{\"location\":\"10001\"}".to_owned(),
-                        }),
-                        ..ButlerReply::default()
-                    });
-                };
-                assert!(
-                    result.contains("clear, 25C"),
-                    "the brief must be written from the real gathered result"
-                );
-                Ok(ButlerReply {
-                    text: "Good morning! It's clear and 25C where you are.".to_owned(),
-                    ..ButlerReply::default()
-                })
+            fn run(&self, id: &str, input_json: &str) -> Result<String, String> {
+                self.0
+                    .borrow_mut()
+                    .push((id.to_owned(), input_json.to_owned()));
+                match id {
+                    "weather" => Ok("clear, 25C. Take an umbrella — 60% chance of rain".to_owned()),
+                    "news" => Ok("1. Big local story".to_owned()),
+                    "traffic" => Err("no travel-time sensors in the house yet".to_owned()),
+                    _ => panic!("nothing else in this catalogue is a section: {id}"),
+                }
             }
         }
 
         let store = FakeStore::default();
         let ids = SeqIds::default();
         let clock = FixedClock(1_000);
-        let audit = FakeAudit::default();
-        let ctx = ButlerContext::default();
+        let skills = BriefSkills(std::cell::RefCell::new(Vec::new()));
+        let ctx = ButlerContext {
+            where_they_are: "10001".to_owned(),
+            ..ButlerContext::default()
+        };
 
+        // With no deep model, the facts stand as their own brief — assembled sections
+        // do not need a model at all (ADR 0074; the local model, measured, wrote
+        // about lights when handed exactly these facts).
         let (msg, activity) = daily_brief(
             &store,
-            &store,
-            &FakeOutcomes::default(),
             &crate::usecases::NoTrouble,
-            &BriefSkills,
-            &BriefButler,
-            &audit,
+            &skills,
+            &ScriptedNoTools,
             &ids,
             &clock,
             &ctx,
         )
         .unwrap()
         .unwrap();
-        // Natural prose carrying the real fact — no label dump.
-        assert!(msg.text().contains("Good morning"));
-        assert!(msg.text().contains("25C"));
-        assert!(!msg.text().contains("Weather —"));
-        assert!(activity.iter().any(|a| a.contains("weather")));
+        assert!(msg.text().contains("25C"), "{}", msg.text());
+        assert!(msg.text().contains("umbrella"), "{}", msg.text());
+        assert!(msg.text().contains("Big local story"), "{}", msg.text());
+        // The failed drive is in the trail, not apologised for in the person's brief.
+        assert!(!msg.text().contains("travel-time"), "{}", msg.text());
+        assert!(activity.iter().any(|a| a.contains("drive")), "{activity:?}");
 
-        // No floor (ADR 0053): if the butler is unavailable there is NO brief. A
-        // scripted one would be Endora claiming to have thought about the day.
-        struct DeadButler;
-        impl Butler for DeadButler {
-            fn respond(
-                &self,
-                _h: &[ChatMessage],
-                _p: &[Preference],
-                _c: &ButlerContext,
-            ) -> Result<ButlerReply, ProposalError> {
-                Err(ProposalError::Unavailable("down".to_owned()))
+        // The calls carried the standing order: the place, and the headline count.
+        let calls = skills.0.borrow();
+        let news = calls.iter().find(|(id, _)| id == "news").expect("news ran");
+        assert!(news.1.contains("\"count\":3"), "{}", news.1);
+        assert!(news.1.contains("10001"), "{}", news.1);
+    }
+
+    /// A butler with no tool-calling and nothing to say — the brief must not need it.
+    struct ScriptedNoTools;
+    impl Butler for ScriptedNoTools {
+        fn respond(
+            &self,
+            _h: &[ChatMessage],
+            _p: &[Preference],
+            _c: &ButlerContext,
+        ) -> Result<ButlerReply, ProposalError> {
+            Err(ProposalError::Unavailable("down".to_owned()))
+        }
+    }
+
+    #[test]
+    fn a_brief_with_nothing_to_say_is_not_posted() {
+        // Nothing known, nothing configured: no brief. A cheerful nothing would be
+        // Endora claiming to have thought about the day (ADR 0053).
+        struct NoSections;
+        impl CapabilityRunner for NoSections {
+            fn available(&self) -> Vec<endora_capabilities::CapabilitySpec> {
+                Vec::new()
+            }
+            fn run(&self, _id: &str, _input: &str) -> Result<String, String> {
+                panic!("nothing is configured, nothing may run");
             }
         }
+        let store = FakeStore::default();
         assert!(
-            daily_brief(
+            super::daily_brief(
                 &store,
-                &store,
-                &FakeOutcomes::default(),
                 &crate::usecases::NoTrouble,
-                &BriefSkills,
-                &DeadButler,
-                &audit,
-                &ids,
-                &clock,
-                &ctx,
+                &NoSections,
+                &ScriptedNoTools,
+                &SeqIds::default(),
+                &FixedClock(1_000),
+                &ButlerContext::default(),
             )
             .unwrap()
-            .is_none(),
-            "a brief is never fabricated when the butler can't think"
+            .is_none()
         );
     }
 

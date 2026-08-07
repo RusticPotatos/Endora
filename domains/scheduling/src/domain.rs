@@ -57,8 +57,8 @@ impl CheckinSchedule {
     }
 }
 
-/// The person's **daily brief** schedule — the butler preparing a weather/safety/news
-/// brief on its own each day at a chosen hour (ADRs 0024/0025). Off by default. The
+/// The person's **daily brief** schedule — the butler assembling their standing-order
+/// brief on its own each day at a chosen hour (ADRs 0024/0025, 0074). Off by default. The
 /// hour is stored in **UTC** (the console converts the person's local hour when they
 /// set it), which keeps the server-side scheduler timezone-free.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

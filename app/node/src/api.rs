@@ -165,18 +165,32 @@ impl AppState {
             config.as_ref(),
         ))));
         // Built before the struct literal takes ownership of the stores.
-        let capabilities = Arc::new({
+        // Endora's own record, as a skill it can reach for. Defined HERE because it
+        // reads across four contexts — chat, outcomes, config writes, standing
+        // trouble — and the composition root is the only place allowed to know all of
+        // them (ADR 0050). The digest itself is a use case in the orchestration layer;
+        // this is only the wiring.
+        let base_caps = Arc::new({
             let mut all = endora_infrastructure::default_capabilities();
-            // Endora's own record, as a skill it can reach for. Defined HERE because it
-            // reads across four contexts — chat, outcomes, config writes, standing
-            // trouble — and the composition root is the only place allowed to know all of
-            // them (ADR 0050). The digest itself is a use case in the orchestration layer;
-            // this is only the wiring.
             all.push(Arc::new(WhatIHaveBeenDoing {
                 chat: chat.clone(),
                 understanding: understanding.clone(),
                 config: config.clone(),
                 clock: clock.clone(),
+            }) as Arc<dyn endora_capabilities::Capability>);
+            all
+        });
+        // The brief skill gathers FROM `base_caps` — a list that does not contain it,
+        // so it can never recurse into itself by construction (ADR 0074).
+        let capabilities = Arc::new({
+            let mut all = (*base_caps).clone();
+            all.push(Arc::new(TheWholeBrief {
+                chat: chat.clone(),
+                understanding: understanding.clone(),
+                config: config.clone(),
+                clock: clock.clone(),
+                base: base_caps,
+                mcp: mcp.clone(),
             }) as Arc<dyn endora_capabilities::Capability>);
             all
         });
@@ -2003,7 +2017,6 @@ async fn brief(State(state): State<AppState>) -> Result<Json<serde_json::Value>,
     let understanding = state.understanding.clone();
     let config = state.config.clone();
     let events = state.events.clone();
-    let audit = state.audit.clone();
     let ids = state.ids.clone();
     let clock = state.clock.clone();
     let capabilities = state.capabilities.clone();
@@ -2030,12 +2043,9 @@ async fn brief(State(state): State<AppState>) -> Result<Json<serde_json::Value>,
         )?;
         let out = usecases::daily_brief(
             chat.as_ref(),
-            understanding.as_ref(),
-            understanding.as_ref(),
             config.as_ref(),
             &runner,
             butler.as_ref(),
-            audit.as_ref(),
             ids.as_ref(),
             clock.as_ref(),
             &context,
@@ -2055,7 +2065,7 @@ async fn brief(State(state): State<AppState>) -> Result<Json<serde_json::Value>,
             json!({ "briefed": true, "message": MessageResponse::from(&msg) }),
         )),
         None => Ok(Json(
-            json!({ "briefed": false, "note": "Set your home location, and enable weather/news/safety, to get a brief." }),
+            json!({ "briefed": false, "note": "Set your home location and enable some skills — weather, news, the home — to get a brief." }),
         )),
     }
 }
@@ -4813,6 +4823,106 @@ impl endora_capabilities::Capability for WhatIHaveBeenDoing {
     }
 }
 
+/// The person's brief, as a skill the model can reach for (ADR 0074).
+///
+/// Defined HERE because assembling it crosses contexts — capabilities, standing
+/// trouble, scheduling's idea of a brief — and the composition root is the only
+/// place allowed to know all of them (ADR 0050). The assembly itself is
+/// `usecases::assembled_brief_facts`; this is only the wiring, exactly as
+/// [`WhatIHaveBeenDoing`] wires the activity digest.
+///
+/// Asked at 5 PM it reads the world at 5 PM: every section is gathered fresh at
+/// call time, and the weather section carries its own "as of" clock.
+struct TheWholeBrief {
+    chat: Arc<endora_conversation::ChatStore>,
+    understanding: Arc<endora_understanding::UnderstandingStore>,
+    config: Arc<endora_capabilities::ConfigStore>,
+    clock: Arc<SystemClock>,
+    /// The catalogue this skill gathers FROM — built without this skill in it, so
+    /// the brief can never recurse into itself by construction.
+    base: Arc<Vec<Arc<dyn endora_capabilities::Capability>>>,
+    mcp: Arc<std::sync::RwLock<Arc<endora_capabilities::McpRunner>>>,
+}
+
+impl endora_capabilities::Capability for TheWholeBrief {
+    fn info(&self) -> endora_capabilities::CapabilityInfo {
+        endora_capabilities::CapabilityInfo {
+            id: "brief",
+            name: "Your brief",
+            description: "The person's whole brief, assembled from their own skills — \
+                          today's weather and whether they need an umbrella or jacket, \
+                          the drive, the top headlines, today's calendar, local events, \
+                          and anything in the house not answering. Use it whenever they \
+                          ask for their brief, rundown, or morning/afternoon/evening \
+                          update — it is ONE call that gathers everything.",
+            category: "endora",
+            reaches_external: true,
+            reversibility: endora_application::Reversibility::Observe,
+            configured: true,
+            needs: "",
+            settings: &[],
+            wants_place: false,
+            borrows_from: None,
+            // Headlines are other people's words; a brief that carries them makes
+            // the turn that read it unable to act on its own (ADR 0064).
+            third_party: true,
+            input_schema: None,
+        }
+    }
+
+    fn invoke(
+        &self,
+        _input: &serde_json::Value,
+        _settings: &endora_capabilities::CapabilitySettings,
+    ) -> Result<serde_json::Value, endora_capabilities::CapabilityError> {
+        let unavailable = |e: String| endora_capabilities::CapabilityError::Unavailable(e);
+        let mcp = self
+            .mcp
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        // Reversible-only for the same reason the heartbeat's is: a brief gathers,
+        // it never actuates — enforced, not documented.
+        let runner = build_reversible_only_runner(
+            self.config.as_ref(),
+            self.base.clone(),
+            mcp,
+            proven_now(self.understanding.as_ref()),
+        );
+        let context = usecases::butler_context(
+            self.understanding.as_ref(),
+            self.understanding.as_ref(),
+            self.understanding.as_ref(),
+            self.config.as_ref(),
+            self.chat.as_ref(),
+            &runner,
+            self.config.as_ref(),
+            self.clock.as_ref(),
+        )
+        .map_err(|e| unavailable(e.to_string()))?;
+        let mut activity = Vec::new();
+        let facts = usecases::assembled_brief_facts(
+            &runner,
+            self.config.as_ref(),
+            &context,
+            self.clock.now().unix_millis(),
+            &mut activity,
+        );
+        Ok(json!({
+            "brief": facts.unwrap_or_else(|| {
+                "There's nothing to brief yet — set a home location and enable some \
+                 skills, and this fills in."
+                    .to_owned()
+            }),
+        }))
+    }
+
+    fn summarize(&self, output: &serde_json::Value) -> String {
+        // Already written for a person; raw JSON is what a small model relays worst.
+        output["brief"].as_str().unwrap_or_default().to_owned()
+    }
+}
+
 /// Sends one line to whatever the person nominated as how to reach them (ADR 0056).
 ///
 /// Best-effort and silent on failure: a notification that cannot be delivered must never
@@ -5147,13 +5257,10 @@ pub fn spawn_heartbeat(state: AppState) {
                 // A daily brief, if one is due (reversible skills only).
                 let briefed = usecases::run_due_brief(
                     chat.as_ref(),
-                    understanding.as_ref(),
-                    understanding.as_ref(),
                     config.as_ref(),
                     schedules.as_ref(),
                     &runner,
                     butler.as_ref(),
-                    audit.as_ref(),
                     ids.as_ref(),
                     clock.as_ref(),
                     &context,
