@@ -5506,7 +5506,10 @@ mod tests {
             {"name": "Home to Work", "minutes": 18.4, "route": "I-77 S"},
             {"name": "School run", "minutes": 12.0, "route": null},
         ]}));
-        assert_eq!(s, "Traffic: Home to Work — 18 min via I-77 S · School run — 12 min");
+        assert_eq!(
+            s,
+            "Traffic: Home to Work — 18 min via I-77 S · School run — 12 min"
+        );
         // No sensors is an honest absence that says what to add, never a guess.
         let none = TrafficCapability.summarize(&json!({"drives": []}));
         assert!(none.contains("Waze Travel Time"), "{none}");
@@ -5515,9 +5518,21 @@ mod tests {
     #[test]
     fn a_news_call_says_how_many_headlines_it_wants() {
         assert_eq!(wanted_headlines(&json!({"count": 3})), 3);
-        assert_eq!(wanted_headlines(&json!({})), 6, "the historical default holds");
-        assert_eq!(wanted_headlines(&json!({"count": 0})), 1, "zero is not a reading");
-        assert_eq!(wanted_headlines(&json!({"count": 50})), 6, "fifty is a feed");
+        assert_eq!(
+            wanted_headlines(&json!({})),
+            6,
+            "the historical default holds"
+        );
+        assert_eq!(
+            wanted_headlines(&json!({"count": 0})),
+            1,
+            "zero is not a reading"
+        );
+        assert_eq!(
+            wanted_headlines(&json!({"count": 50})),
+            6,
+            "fifty is a feed"
+        );
     }
 
     #[test]

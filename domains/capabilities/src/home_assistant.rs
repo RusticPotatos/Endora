@@ -1753,7 +1753,8 @@ mod tests {
         let mut waze = entity("Home to Work");
         waze.id = "sensor.home_to_work".to_owned();
         waze.state = "18.4".to_owned();
-        waze.facts.insert("route".to_owned(), serde_json::json!("I-77 S"));
+        waze.facts
+            .insert("route".to_owned(), serde_json::json!("I-77 S"));
         let mut plain = entity("School run");
         plain.id = "sensor.school_travel_time".to_owned();
         plain.state = "12".to_owned();
@@ -1765,7 +1766,8 @@ mod tests {
         let mut dead = entity("Broken commute");
         dead.id = "sensor.broken_commute".to_owned();
         dead.state = "unavailable".to_owned();
-        dead.facts.insert("route".to_owned(), serde_json::json!("x"));
+        dead.facts
+            .insert("route".to_owned(), serde_json::json!("x"));
 
         let said = super::commute_in(&[waze, plain, entity("Kitchen"), dead]);
         assert_eq!(said.len(), 2, "{said:?}");
