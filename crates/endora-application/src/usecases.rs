@@ -549,8 +549,12 @@ fn take_turn_retrying_empty(
             message: e.to_string(),
         })?;
     let mut retries = 0;
-    while gave_nothing_useful(&reply, conversation, context) && retries < MAX_EMPTY_RETRIES {
+    while let Some(why) = why_nothing_useful(&reply, conversation, context) {
+        if retries >= MAX_EMPTY_RETRIES {
+            break;
+        }
         retries += 1;
+        eprintln!("turn: round rejected ({why}) — retry {retries}/{MAX_EMPTY_RETRIES}");
         // A retry only happens when the round produced NOTHING, so nothing was streamed
         // and there is nothing for the person to see rewritten.
         reply = butler
@@ -572,6 +576,9 @@ fn take_turn_retrying_empty(
     // and the taint refusal (ADR 0064) live inside `Deeper`, so this site decides only
     // *whether* escalation is wanted — never what may leave. The taint refusal lives in
     // the door, derived from the marks each time (ADR 0070) — nothing here to forget.
+    if let Some(why) = why_nothing_useful(&reply, conversation, context) {
+        eprintln!("turn: escalating to the deep model ({why})");
+    }
     if let Some(deeper) = butler
         .deeper()
         .filter(|_| gave_nothing_useful(&reply, conversation, context))
@@ -718,9 +725,27 @@ fn gave_nothing_useful(
     conversation: &[TurnMessage],
     context: &ButlerContext,
 ) -> bool {
-    not_an_answer(reply, context)
-        || repeats_its_last_answer(reply, conversation)
-        || gave_up_after_a_failure(reply, conversation)
+    why_nothing_useful(reply, conversation, context).is_some()
+}
+
+/// Which deterministic check rejected the reply — for the operator's log. Two live
+/// turns in a row were diagnosable only by inference because the record showed the
+/// rejection's *consequences* (retries, an escalation, the valve) and never its reason.
+fn why_nothing_useful(
+    reply: &ButlerReply,
+    conversation: &[TurnMessage],
+    context: &ButlerContext,
+) -> Option<&'static str> {
+    if not_an_answer(reply, context) {
+        return Some("not an answer (empty, degraded, plumbing, or described a tool)");
+    }
+    if repeats_its_last_answer(reply, conversation) {
+        return Some("repeats its last answer");
+    }
+    if gave_up_after_a_failure(reply, conversation) {
+        return Some("gave up right after a failure");
+    }
+    None
 }
 
 /// Whether the model stopped trying right after its action failed.
