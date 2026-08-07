@@ -251,15 +251,60 @@ fn note_verification_against(
 fn note_not_answering(named_in: &str, mut states: Vec<(String, String)>) -> String {
     let asked = words_of(named_in);
     states.sort_by_key(|(name, _)| std::cmp::Reverse(name.len()));
-    let Some((name, state)) = states.into_iter().find(|(name, state)| {
+    if let Some((name, state)) = states.iter().find(|(name, state)| {
         endora_capabilities::not_answering(state) && contains_all_words(&asked, &words_of(name))
-    }) else {
+    }) {
+        return format!(
+            "\n\n[not answering] {name} is `{state}` — the service cannot reach it at all, so \
+             nothing was going to happen here whatever the tool reported. Say that plainly: it \
+             is the device, not the request."
+        );
+    }
+    // Nothing named one thing — but "check the lights" names a KIND, and the kind is
+    // the first word of the service's own key (`light.kitchen_table`), never an English
+    // list; a service whose keys carry no kind contributes nothing. A trailing `s` is
+    // trimmed because people speak of their lights and a service names a light.
+    //
+    // Live, 2026-08-06: "tell me if any are offline". The answer was sitting in the
+    // reading, no single name was in the ask, and the model — which follows an
+    // instruction about verification one run in three — invented a recap instead.
+    // This line is the deterministic floor under that question: whatever the prose
+    // says, the dead things in the house are named beside it (append, never rewrite —
+    // ADR 0056).
+    const MOST_NAMED: usize = 5;
+    let asked_kinds: Vec<String> = asked
+        .iter()
+        .map(|w| w.strip_suffix('s').unwrap_or(w).to_owned())
+        .collect();
+    let mut dead: Vec<String> = states
+        .iter()
+        .filter(|(name, state)| {
+            endora_capabilities::not_answering(state)
+                && words_of(name)
+                    .first()
+                    .is_some_and(|kind| asked_kinds.contains(kind))
+        })
+        .map(|(name, state)| format!("{name} is `{state}`"))
+        .collect();
+    if dead.is_empty() {
         return String::new();
-    };
+    }
+    if dead.len() == 1 {
+        return format!(
+            "\n\n[not answering] {} — the service cannot reach it at all. Say that \
+             plainly: it is the device, not the request.",
+            dead.remove(0)
+        );
+    }
+    let more = dead.len().saturating_sub(MOST_NAMED);
+    dead.truncate(MOST_NAMED);
+    let mut list = dead.join(" · ");
+    if more > 0 {
+        list.push_str(&format!(" · and {more} more"));
+    }
     format!(
-        "\n\n[not answering] {name} is `{state}` — the service cannot reach it at all, so \
-         nothing was going to happen here whatever the tool reported. Say that plainly: it \
-         is the device, not the request."
+        "\n\n[not answering] {list} — the service cannot reach these at all. Say that \
+         plainly: it is the devices, not the request."
     )
 }
 
@@ -9754,6 +9799,53 @@ mod why_it_could_not_have_worked {
             ""
         );
         assert_eq!(note_not_answering(r#"{"area":"kitchen"}"#, house()), "");
+    }
+
+    fn house_by_id() -> Vec<(String, String)> {
+        // The shape the native channel actually returns: keyed by entity id, so the
+        // kind is the first word of the key.
+        [
+            ("light.guest_bedroom_right", "unavailable"),
+            ("light.outside_color", "offline"),
+            ("light.kitchen_table", "on"),
+            ("sensor.garage_door", "unavailable"),
+            ("scene.bedroom_bright", "unknown"),
+        ]
+        .into_iter()
+        .map(|(a, b)| (a.to_owned(), b.to_owned()))
+        .collect()
+    }
+
+    #[test]
+    fn a_kind_of_thing_names_everything_of_that_kind_not_answering() {
+        // Live, 2026-08-06: "can you check the lights now … tell me if any are
+        // offline". No single entity is named, so the name match has nothing to bite
+        // on — but the kind is right there in the service's own keys.
+        let said = note_not_answering("can you check the lights right now?", house_by_id());
+        assert!(said.contains("light.guest_bedroom_right"), "{said}");
+        assert!(said.contains("light.outside_color"), "{said}");
+        // A healthy light is not a problem, another kind's problem is another
+        // question's, and `unknown` is not an admission of failure (ADR 0056).
+        assert!(!said.contains("kitchen_table"), "{said}");
+        assert!(!said.contains("sensor.garage_door"), "{said}");
+        assert!(!said.contains("scene.bedroom_bright"), "{said}");
+    }
+
+    #[test]
+    fn a_kind_with_everything_answering_stays_quiet() {
+        let healthy = vec![
+            ("light.kitchen_table".to_owned(), "on".to_owned()),
+            ("light.bedroom".to_owned(), "off".to_owned()),
+        ];
+        assert_eq!(note_not_answering("check the lights", healthy), "");
+    }
+
+    #[test]
+    fn a_kind_nobody_asked_about_is_not_volunteered() {
+        // The dead sensor is real, but the question was about lights; disclosure keyed
+        // on the ask stays an answer rather than becoming a standing report.
+        let said = note_not_answering("are the lights ok?", house_by_id());
+        assert!(!said.contains("sensor.garage_door"), "{said}");
     }
 
     #[test]
