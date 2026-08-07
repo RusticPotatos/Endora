@@ -59,7 +59,8 @@ already knows, and refrain from overclaiming confidence — and an **adoption fl
 so the model layer can no longer trade understanding away for tool-routing points on
 its own.
 
-The battery is now data-driven (39 cases) and runs repeatedly, reporting the spread
+The battery is now data-driven (55 cases as of 2026-08-06; the measurements below
+predate later additions and keep their original denominators) and runs repeatedly, reporting the spread
 rather than hiding it — because the spread *is* the resolution of the instrument, and
 without it there is no way to tell a real gain from a lucky run.
 

@@ -2665,7 +2665,9 @@ impl Capability for HomeAssistantCapability {
         CapabilityInfo {
             id: "home_assistant",
             name: "Home Assistant",
-            description: "Read your home's state — lights, presence, sensors — to learn your routines.",
+            description: "Read your home's current state — every light, switch, presence \
+                          and sensor it has, including ones hidden from voice assistants — \
+                          to answer what is on, off, or offline right now.",
             category: "presence",
             reaches_external: true,
             // Reads state; changes nothing. Policy-identical to Reversible
