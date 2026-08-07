@@ -3586,7 +3586,11 @@ impl CapabilityRunner for McpRunner {
         // HassTurnOn wants domain:["light"] but the model sends "light"). Coerce the
         // arguments to the tool's schema before the call so a single-value slip
         // doesn't fail validation.
-        let args = coerce_args_to_schema(input_json, tool.input_schema.as_ref());
+        let args = coerce_args_to_schema(
+            input_json,
+            tool.input_schema.as_ref(),
+            self.is_state_reader(id),
+        );
         conn.transport.call(&tool.name, &args)
     }
 }
@@ -3744,7 +3748,16 @@ pub fn same_call_as(input_json: &str) -> String {
 /// schema types as `array`, a non-array value is wrapped in a one-element array. Only
 /// that one coercion — everything else is passed through untouched, and any parse
 /// failure returns the input unchanged (the server still validates).
-fn coerce_args_to_schema(input_json: &str, schema: Option<&serde_json::Value>) -> String {
+/// `widening_is_harmless` is true for a **state reader**: the widest read is the
+/// reader's whole job, so a call whose every target came out null is cleaned into the
+/// unscoped read rather than left for the server to reject. An actuator never gets
+/// that: cleaning its nulls once turned on every light in the house (see the guard
+/// at the end).
+fn coerce_args_to_schema(
+    input_json: &str,
+    schema: Option<&serde_json::Value>,
+    widening_is_harmless: bool,
+) -> String {
     let Some(schema) = schema else {
         return input_json.to_owned();
     };
@@ -3814,7 +3827,11 @@ fn coerce_args_to_schema(input_json: &str, schema: Option<&serde_json::Value>) -
     //
     // So if every targeting value it gave was empty, the call is left alone rather than
     // cleaned into a house-wide one, and the server rejects it as it did before.
-    if aimed_at_something && !obj.iter().any(|(_, v)| v.is_string()) {
+    //
+    // Unless widening is harmless — a read. Live, the same nulls on the state reader
+    // were faithfully passed through, rejected ("None is not of type 'string'"), and
+    // an answerable question about the lights died in failure recovery.
+    if !widening_is_harmless && aimed_at_something && !obj.iter().any(|(_, v)| v.is_string()) {
         return input_json.to_owned();
     }
     args.to_string()
@@ -5879,19 +5896,26 @@ mod tests {
             }
         });
         // The classic HA slip: domain sent as a string, not an array.
-        let out = coerce_args_to_schema(r#"{"domain":"light","name":"kitchen"}"#, Some(&schema));
+        let out = coerce_args_to_schema(
+            r#"{"domain":"light","name":"kitchen"}"#,
+            Some(&schema),
+            false,
+        );
         let v: serde_json::Value = serde_json::from_str(&out).unwrap();
         assert_eq!(v["domain"], serde_json::json!(["light"]));
         // A non-array field is left alone; an already-array value is untouched.
         assert_eq!(v["name"], "kitchen");
-        let already = coerce_args_to_schema(r#"{"domain":["light"]}"#, Some(&schema));
+        let already = coerce_args_to_schema(r#"{"domain":["light"]}"#, Some(&schema), false);
         assert_eq!(
             serde_json::from_str::<serde_json::Value>(&already).unwrap()["domain"],
             serde_json::json!(["light"])
         );
         // No schema, or unparseable input → passed through unchanged.
-        assert_eq!(coerce_args_to_schema("{bad", Some(&schema)), "{bad");
-        assert_eq!(coerce_args_to_schema(r#"{"x":1}"#, None), r#"{"x":1}"#);
+        assert_eq!(coerce_args_to_schema("{bad", Some(&schema), false), "{bad");
+        assert_eq!(
+            coerce_args_to_schema(r#"{"x":1}"#, None, false),
+            r#"{"x":1}"#
+        );
     }
 
     /// The hint names what a tool **needs**, and counts the rest.
@@ -6213,6 +6237,7 @@ mod tests {
         let out = coerce_args_to_schema(
             r#"{"name":"main","floor":"","device_class":["light"]}"#,
             Some(&schema),
+            false,
         );
         let parsed: Value = serde_json::from_str(&out).unwrap();
         assert_eq!(parsed["name"], "main");
@@ -6244,6 +6269,7 @@ mod tests {
         let out = coerce_args_to_schema(
             r#"{"area":null,"name":null,"domain":["light"]}"#,
             Some(&schema),
+            false,
         );
         let parsed: Value = serde_json::from_str(&out).unwrap();
         assert!(
@@ -6267,6 +6293,7 @@ mod tests {
         let out = coerce_args_to_schema(
             r#"{"name":"Kitchen Table","floor":"","domain":["light"]}"#,
             Some(&schema),
+            false,
         );
         let parsed: Value = serde_json::from_str(&out).unwrap();
         assert_eq!(parsed["name"], "Kitchen Table");
@@ -6278,8 +6305,30 @@ mod tests {
         // Something like "cancel all timers" supplies no targeting field at all. It never
         // aimed at one thing, so there is nothing for the guard to protect.
         let schema = serde_json::json!({ "type": "object", "properties": {} });
-        let out = coerce_args_to_schema("{}", Some(&schema));
+        let out = coerce_args_to_schema("{}", Some(&schema), false);
         assert_eq!(out, "{}");
+    }
+
+    #[test]
+    fn a_reader_call_full_of_nulls_is_widened_not_rejected() {
+        // Live, 2026-08-06: GetLiveContext{name:null} — the revert guard below
+        // (written for actuators, where cleaning nulls once switched on every light
+        // in the house) put the null back, and the server rejected the call:
+        // "Input validation error: None is not of type 'string'". The turn then fell
+        // into failure recovery and the person got no answer to "what lights are on".
+        //
+        // For a READ, widening is harmless by construction — the widest read is the
+        // reader's whole job — so the guard yields and the nulls go.
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": { "name": { "type": "string" } }
+        });
+        let widened = coerce_args_to_schema(r#"{"name":null}"#, Some(&schema), true);
+        assert_eq!(widened, "{}");
+        // An actuator keeps the guard: the nulls stay, and the server's rejection
+        // stands in for the target the model failed to name.
+        let kept = coerce_args_to_schema(r#"{"name":null}"#, Some(&schema), false);
+        assert_eq!(kept, r#"{"name":null}"#);
     }
 
     #[test]
@@ -6299,6 +6348,7 @@ mod tests {
         let out = coerce_args_to_schema(
             r#"{"area":"kitchen","domain":["switch"],"device_class":["switch"]}"#,
             Some(&schema),
+            false,
         );
         let parsed: Value = serde_json::from_str(&out).unwrap();
         assert_eq!(parsed["area"], "kitchen", "the target is untouched");
@@ -6325,6 +6375,7 @@ mod tests {
         let out = coerce_args_to_schema(
             r#"{"domain":["light"],"device_class":["outlet"]}"#,
             Some(&schema),
+            false,
         );
         let parsed: Value = serde_json::from_str(&out).unwrap();
         assert!(parsed.get("domain").is_some(), "{out}");
@@ -6343,7 +6394,7 @@ mod tests {
                 }
             }
         });
-        let out = coerce_args_to_schema(r#"{"device_class":"switch"}"#, Some(&schema));
+        let out = coerce_args_to_schema(r#"{"device_class":"switch"}"#, Some(&schema), false);
         let parsed: Value = serde_json::from_str(&out).unwrap();
         assert_eq!(
             parsed["device_class"],
@@ -7288,6 +7339,7 @@ mod tests {
         let out = coerce_args_to_schema(
             r#"{"device_class":["light"],"name":"front"}"#,
             Some(&schema),
+            false,
         );
         let v: Value = serde_json::from_str(&out).unwrap();
         assert!(
@@ -7310,7 +7362,7 @@ mod tests {
                 }
             }
         });
-        let out = coerce_args_to_schema(r#"{"device_class":["garage"]}"#, Some(&schema));
+        let out = coerce_args_to_schema(r#"{"device_class":["garage"]}"#, Some(&schema), false);
         let v: Value = serde_json::from_str(&out).unwrap();
         assert_eq!(v["device_class"], serde_json::json!(["garage"]));
     }
