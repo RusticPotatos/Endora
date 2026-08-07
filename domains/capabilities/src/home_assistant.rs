@@ -246,6 +246,54 @@ pub struct MailSaid {
     pub when: Option<String>,
 }
 
+/// The travel-time sensors the house holds — how the drive is right now.
+///
+/// Discovery is by shape, not by integration name (the same posture as `mail_in`): a
+/// sensor whose state is a number of minutes and which either carries a `route` fact
+/// (the Waze Travel Time shape) or plainly calls itself a travel/commute sensor. A
+/// named heuristic; the blast radius of a wrong match is one line in a brief, and a
+/// house with no such sensor gets an honest absence rather than a guess.
+#[must_use]
+pub fn commute_in(entities: &[Entity]) -> Vec<CommuteSaid> {
+    entities
+        .iter()
+        .filter(|e| e.id.starts_with("sensor."))
+        .filter(|e| {
+            let minutes = e
+                .facts
+                .get("unit_of_measurement")
+                .and_then(Value::as_str)
+                .is_some_and(|u| matches!(u.trim(), "min" | "minutes"));
+            let route_shaped = e.facts.contains_key("route");
+            let says_so = ["travel_time", "commute", "traffic"]
+                .iter()
+                .any(|w| e.id.contains(w));
+            e.state.parse::<f64>().is_ok() && (route_shaped || (minutes && says_so))
+        })
+        .map(|e| CommuteSaid {
+            name: e.name.clone(),
+            minutes: e.state.parse::<f64>().ok(),
+            route: e
+                .facts
+                .get("route")
+                .and_then(Value::as_str)
+                .map(|r| r.trim().to_owned())
+                .filter(|r| !r.is_empty()),
+        })
+        .collect()
+}
+
+/// One drive, as the house reports it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CommuteSaid {
+    /// What the sensor is called — `Home to Work`.
+    pub name: String,
+    /// The drive right now, in minutes.
+    pub minutes: Option<f64>,
+    /// The route it assumes, when the integration says — `I-77 S`.
+    pub route: Option<String>,
+}
+
 /// Says the mail the way a person would ask about it.
 ///
 /// A count alone is nearly useless — *"36,133 messages"* answers nothing anybody asks — so
@@ -1698,6 +1746,49 @@ mod tests {
                 ("table".to_owned(), "Kitchen Table".to_owned()),
                 ("ceiling light".to_owned(), "Kitchen Main Light".to_owned()),
             ])
+    }
+
+    #[test]
+    fn the_house_knows_the_drive_when_it_has_a_travel_sensor() {
+        let mut waze = entity("Home to Work");
+        waze.id = "sensor.home_to_work".to_owned();
+        waze.state = "18.4".to_owned();
+        waze.facts
+            .insert("route".to_owned(), serde_json::json!("I-77 S"));
+        let mut plain = entity("School run");
+        plain.id = "sensor.school_travel_time".to_owned();
+        plain.state = "12".to_owned();
+        plain
+            .facts
+            .insert("unit_of_measurement".to_owned(), serde_json::json!("min"));
+        // A light is not a drive, and a travel sensor that is unavailable has no
+        // number to report — neither may produce a line.
+        let mut dead = entity("Broken commute");
+        dead.id = "sensor.broken_commute".to_owned();
+        dead.state = "unavailable".to_owned();
+        dead.facts
+            .insert("route".to_owned(), serde_json::json!("x"));
+
+        let said = super::commute_in(&[waze, plain, entity("Kitchen"), dead]);
+        assert_eq!(said.len(), 2, "{said:?}");
+        assert_eq!(said[0].name, "Home to Work");
+        assert_eq!(said[0].minutes, Some(18.4));
+        assert_eq!(said[0].route.as_deref(), Some("I-77 S"));
+        assert_eq!(said[1].name, "School run");
+        assert_eq!(said[1].route, None);
+    }
+
+    #[test]
+    fn a_minutes_sensor_that_never_says_travel_is_not_a_drive() {
+        // A cooking timer also counts minutes. Without a route fact or a
+        // travel-shaped id, it is not a commute.
+        let mut timer = entity("Oven timer");
+        timer.id = "sensor.oven_timer".to_owned();
+        timer.state = "12".to_owned();
+        timer
+            .facts
+            .insert("unit_of_measurement".to_owned(), serde_json::json!("min"));
+        assert!(super::commute_in(&[timer]).is_empty());
     }
 
     fn entity(name: &str) -> Entity {

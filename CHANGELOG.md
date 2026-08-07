@@ -44,6 +44,18 @@ tagged release.
 
 ### Added
 
+- **The brief is a standing order** ([ADR 0074](docs/adr/0074-the-brief-is-a-standing-order.md)).
+  The daily brief's sections are gathered by code with known-good arguments — the
+  weather (whose summary now says whether an umbrella or jacket is worth it, from
+  the numbers), the drive from the house's own travel-time sensors (a new `traffic`
+  skill, the Waze Travel Time shape, no maps credential), the top **three**
+  headlines (`count` is now a news input, enforced by the call), ticketed events and
+  city meetings where configured — joined to the calendar, presence and
+  standing-trouble facts ADR 0056 already assembled. The deep model words it when
+  opted in (append, never rewrite); with no model the facts post as themselves. A
+  new `brief` skill assembles the same sections fresh at ask time, so an afternoon
+  ask reads the world in the afternoon. The brief's agentic gather and its six tool
+  rounds are retired.
 - **"Evidence verifies" is implemented** ([ADR 0053](docs/adr/0053-honesty-about-what-it-did.md)).
   The architecture principle is *models propose, policy authorizes, capabilities
   execute, **evidence verifies**, memory learns* — and the fourth clause had **zero
