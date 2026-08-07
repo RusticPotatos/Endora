@@ -391,6 +391,7 @@ pub fn default_capabilities() -> Vec<Arc<dyn Capability>> {
         Arc::new(LocalNewsCapability),
         Arc::new(ImageReviewCapability::from_env()),
         Arc::new(MailCapability),
+        Arc::new(TrafficCapability),
         Arc::new(CityMeetingsCapability),
         Arc::new(TicketedEventsCapability),
         Arc::new(FlightSearchCapability),
@@ -2268,6 +2269,92 @@ impl Capability for TicketedEventsCapability {
             .and_then(Value::as_array)
             .map_or(0, Vec::len);
         Ok(format!("The key works — {n} listings came back."))
+    }
+}
+
+/// How the drive is — travel times through the house (ADR 0064/0058, the mail
+/// skill's pattern).
+///
+/// Endora holds no maps credential. A travel-time integration (Waze Travel Time is
+/// the common free one) publishes sensors into Home Assistant, and this reads them
+/// over the connection that already exists. Sensors are discovered by shape
+/// (`commute_in`); a house with none gets an honest absence naming what to add,
+/// never an invented drive.
+struct TrafficCapability;
+
+impl Capability for TrafficCapability {
+    fn info(&self) -> CapabilityInfo {
+        CapabilityInfo {
+            id: "traffic",
+            name: "Traffic",
+            description: "How the drive is right now — travel times from the house's own \
+                          commute sensors (e.g. Waze Travel Time in Home Assistant).",
+            category: "travel",
+            reaches_external: false,
+            reversibility: Reversibility::Observe,
+            configured: true,
+            needs: "",
+            settings: &[],
+            wants_place: false,
+            // Rides the house's connection rather than asking for a token twice.
+            borrows_from: Some("home_assistant"),
+            third_party: false,
+            input_schema: None,
+        }
+    }
+
+    fn invoke(
+        &self,
+        _input: &Value,
+        settings: &CapabilitySettings,
+    ) -> Result<Value, CapabilityError> {
+        let home =
+            crate::home_assistant::HomeAssistant::from_settings(settings).ok_or_else(|| {
+                CapabilityError::Unavailable(
+                    "the drive is read through Home Assistant — set its URL and token in \
+                     the Home Assistant skill"
+                        .to_owned(),
+                )
+            })?;
+        let entities = home.entities().map_err(CapabilityError::Unavailable)?;
+        let said = crate::home_assistant::commute_in(&entities);
+        Ok(serde_json::json!({
+            "drives": said
+                .iter()
+                .map(|d| serde_json::json!({
+                    "name": d.name,
+                    "minutes": d.minutes,
+                    "route": d.route,
+                }))
+                .collect::<Vec<_>>(),
+        }))
+    }
+
+    fn summarize(&self, output: &Value) -> String {
+        let lines: Vec<String> = output
+            .get("drives")
+            .and_then(Value::as_array)
+            .map(|all| {
+                all.iter()
+                    .filter_map(|d| {
+                        let name = d["name"].as_str().filter(|n| !n.is_empty())?;
+                        let minutes = d["minutes"].as_f64()?;
+                        let route = d["route"].as_str().filter(|r| !r.is_empty());
+                        Some(match route {
+                            Some(r) => format!("{name} — {minutes:.0} min via {r}"),
+                            None => format!("{name} — {minutes:.0} min"),
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        if lines.is_empty() {
+            return "No travel-time sensors in the house yet — add one (for example the \
+                    Waze Travel Time integration in Home Assistant) and this will report \
+                    the drive."
+                .to_owned();
+        }
+        format!("Traffic: {}", lines.join(" · "))
     }
 }
 
@@ -5400,6 +5487,18 @@ mod tests {
         // Unrecognized shapes fall back to no tag (rather than a wrong one).
         assert_eq!(observed_time("garbage"), None);
         assert_eq!(observed_time("2026-07-23T99:00"), None);
+    }
+
+    #[test]
+    fn traffic_reads_as_drives_and_absence_names_the_fix() {
+        let s = TrafficCapability.summarize(&json!({"drives": [
+            {"name": "Home to Work", "minutes": 18.4, "route": "I-77 S"},
+            {"name": "School run", "minutes": 12.0, "route": null},
+        ]}));
+        assert_eq!(s, "Traffic: Home to Work — 18 min via I-77 S · School run — 12 min");
+        // No sensors is an honest absence that says what to add, never a guess.
+        let none = TrafficCapability.summarize(&json!({"drives": []}));
+        assert!(none.contains("Waze Travel Time"), "{none}");
     }
 
     #[test]
