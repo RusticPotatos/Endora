@@ -4106,9 +4106,13 @@ pub fn offered_and_deferred(
     available: Vec<CapabilitySpec>,
     how_it_went: &std::collections::HashMap<String, (u32, u32)>,
 ) -> (Vec<CapabilitySpec>, Vec<CapabilitySpec>) {
+    // Offered means runnable: the clearance gate refuses a read that has lost its
+    // autonomy (a stance the person set to `off`), and a tool that is shown but
+    // refused on every call is a trap, not an offer — the model reached for it
+    // every time, was turned away every time, and the turn ended in apology.
     let (mut offered, mut deferred): (Vec<_>, Vec<_>) = available
         .into_iter()
-        .partition(|c| c.reversibility == Reversibility::Observe);
+        .partition(|c| c.reversibility == Reversibility::Observe && c.autonomous);
     let worked = |c: &CapabilitySpec| match how_it_went.get(&c.id) {
         Some((_, 0)) | None => NOTHING_KNOWN_ABOUT_IT,
         #[allow(clippy::cast_precision_loss)]
@@ -12443,11 +12447,29 @@ mod what_the_turn_is_offered {
         );
     }
 
-    /// The whole argument for ranking on read-back rather than on a description.
-    ///
-    /// `HassLightSet` reads perfectly for "turn off the kitchen light" and has never once
-    /// worked in five attempts. Every published approach ranks by description and would
-    /// offer it first forever, because none of them ever finds out.
+    #[test]
+    fn a_read_the_gate_would_refuse_is_not_dangled_in_front() {
+        // Live: a stored stance had taken the reader's autonomy, but the offer only
+        // looked at the band — so the model was shown a tool the gate refused every
+        // single time, called it every single time, and spent the turn apologising.
+        // What is offered must be what would actually run; a silenced read waits
+        // behind the lookup with everything else the turn cannot simply use.
+        let mut silenced = tool("home-assistant.GetLiveContext", Reversibility::Observe);
+        silenced.autonomous = false;
+        let (offered, deferred) = offered_and_deferred(
+            vec![silenced, tool("news", Reversibility::Observe)],
+            &HashMap::new(),
+        );
+        assert_eq!(
+            offered.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(),
+            vec!["news"]
+        );
+        assert_eq!(
+            deferred.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(),
+            vec!["home-assistant.GetLiveContext"]
+        );
+    }
+
     /// The whole argument for ranking on read-back rather than on a description.
     ///
     /// `HassLightSet` reads perfectly for "turn off the kitchen light" and has never once
