@@ -56,6 +56,19 @@ my afternoon brief" in chat reads the world in the afternoon and the weather lin
 carries its own "as of" clock. The skill is third-party — headlines are other
 people's words, so a turn that read the brief may not act on its own (0064).
 
+**And the ask routes deterministically.** Measured live exactly once before this
+was added: the first "Good morning. Give me my brief" after the skill shipped went
+to `home_assistant` + `own_activity` and answered with house gossip — the model
+never picked the skill built for the question. A known ask for a known feature is
+policy's to route: `asked_for_their_brief` (a determiner+noun bigram — "my brief",
+"today's brief", "brief me" — never the bare adjective) short-circuits the chat
+turn into the assembly, worded the same way the scheduled brief is, with the model
+nowhere in the loop. A failed assembly falls through to the ordinary turn: broken
+routing must degrade to a conversation, never to silence. This is not the
+`is_brief_request` hack the agentic loop once replaced — that routed into a
+scripted template; this routes into the person's standing order, which is now the
+feature itself.
+
 **A failed section is a trail note, not a daily apology.** A section whose skill is
 unconfigured contributes nothing — the brief shrinks honestly. One whose fetch
 failed is recorded in the activity trail, where the operator looks, rather than

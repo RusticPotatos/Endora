@@ -1822,6 +1822,27 @@ pub fn send_to_butler_streaming(
     // They asked, so nothing on file motivated it (ADR 0053).
     let actions = OutcomeSink::unmotivated(outcomes);
 
+    // THE BRIEF ROUTES DETERMINISTICALLY (ADR 0074). Asking for the brief invokes a
+    // standing order, not a conversation — and routing it through the model was
+    // measured live exactly once: the first ask after the skill shipped went to
+    // house gossip ("I noticed some technical hiccups with the lights") instead.
+    // A known ask for a known feature is policy's to route, not the model's to
+    // guess. Falls through to the ordinary turn if the assembly itself fails.
+    if asked_for_their_brief(text) {
+        if let Some(reply_text) = brief_on_request(
+            capabilities,
+            butler,
+            ids,
+            clock,
+            on_token,
+            on_step,
+            &mut activity,
+        ) {
+            let message = post_butler_message(chat, ids, clock, &reply_text)?;
+            return Ok((message, activity));
+        }
+    }
+
     // SINGLE TOOL-CALLING CONVERSATION (ADR 0053): the butler runs its tools through
     // policy and answers grounded in their real results — success or error — with no
     // deterministic narration. A failed tool comes back as a factual tool result the
@@ -3029,6 +3050,100 @@ pub fn assembled_brief_facts(
     (!lines.is_empty()).then(|| lines.join("\n"))
 }
 
+/// Whether the person is asking for their brief — the standing order of ADR 0074.
+///
+/// The determiner+noun bigram, never the bare word: "keep it brief" and "a brief
+/// pause" are adjectives, and answering a style request with a weather report would
+/// be worse than missing. "a brief rundown" does match — and a person asking for a
+/// brief rundown is asking for exactly what the standing order holds, so that false
+/// positive serves them. "brief me" is the verb form of the same request.
+fn asked_for_their_brief(text: &str) -> bool {
+    // "today's" splits into `today` + `s` on the word boundary; the possessive
+    // fragment would break the bigram, so it is dropped before matching.
+    let words: Vec<String> = words_of(text).into_iter().filter(|w| w != "s").collect();
+    words.windows(2).any(|pair| {
+        let noun = matches!(
+            pair[0].as_str(),
+            "my" | "the" | "a" | "morning" | "daily" | "afternoon" | "evening" | "today" | "todays"
+        ) && pair[1] == "brief";
+        let verb = pair[0] == "brief" && pair[1] == "me";
+        noun || verb
+    })
+}
+
+/// Runs the brief standing order for a chat ask (ADR 0074): the `brief` skill
+/// assembles the sections, the deep model words them exactly as the scheduled brief
+/// is worded, and the model never routes. `None` — fall through to the ordinary
+/// turn — when the skill is absent, not configured, or failed: a broken assembly
+/// must degrade to a conversation, never to silence.
+fn brief_on_request(
+    capabilities: &dyn CapabilityRunner,
+    butler: &dyn Butler,
+    ids: &impl IdSource,
+    clock: &impl Clock,
+    on_token: &mut dyn FnMut(&str),
+    on_step: &mut dyn FnMut(ButlerStep),
+    activity: &mut Vec<String>,
+) -> Option<String> {
+    const THE_BRIEF: &str = "brief";
+    if !capabilities
+        .available()
+        .iter()
+        .any(|s| s.id == THE_BRIEF && s.configured)
+    {
+        return None;
+    }
+    let step = |status: StepStatus, output: Option<String>| ButlerStep {
+        skill: THE_BRIEF.to_owned(),
+        status,
+        label: "Assembling your brief".to_owned(),
+        output,
+    };
+    on_step(step(StepStatus::Running, None));
+    match capabilities.run(THE_BRIEF, "{}") {
+        Ok(facts) if !facts.trim().is_empty() => {
+            on_step(step(StepStatus::Done, Some(facts.clone())));
+            activity.push("Assembled your brief".to_owned());
+            let text = worded_brief(butler, facts.trim(), ids, clock);
+            // Streamed as one chunk: the tail of the turn treats a reply with text
+            // as already-delivered, and this one never went through the model.
+            on_token(&text);
+            Some(text)
+        }
+        Ok(_) => {
+            on_step(step(StepStatus::Done, None));
+            None
+        }
+        Err(e) => {
+            eprintln!("turn: the brief assembly failed — {e}");
+            on_step(step(StepStatus::Failed, Some(format!("error: {e}"))));
+            activity.push("Tried to assemble your brief, but it failed".to_owned());
+            None
+        }
+    }
+}
+
+/// The brief's wording pass, shared by the scheduled brief and a chat ask: the deep
+/// model writes it when the person opted in (append-never-rewrite, ADR 0056), and
+/// the facts stand as themselves otherwise.
+fn worded_brief(
+    butler: &dyn Butler,
+    facts: &str,
+    ids: &impl IdSource,
+    clock: &impl Clock,
+) -> String {
+    match butler
+        .deeper()
+        .and_then(|deeper| word_the_brief(&deeper, facts, ids, clock))
+    {
+        Some(written) => match not_yet_said(&written, facts) {
+            missed if missed.is_empty() => written,
+            missed => format!("{written}\n\n{}", missed.join("\n")),
+        },
+        None => facts.to_owned(),
+    }
+}
+
 /// Composes a **daily briefing** — an act of service (ADR 0056), assembled as a
 /// standing order (ADR 0074). The sections are the person's own: their calendar and
 /// presence, what has stopped answering, their weather (with whether an umbrella or
@@ -3088,16 +3203,7 @@ pub fn daily_brief(
     // verbatim. Appending everything printed the brief twice on its first live run;
     // appending nothing would trust the model, which is what the appending exists to
     // avoid.
-    let text = match butler
-        .deeper()
-        .and_then(|deeper| word_the_brief(&deeper, &facts, ids, clock))
-    {
-        Some(written) => match not_yet_said(&written, &facts) {
-            missed if missed.is_empty() => written,
-            missed => format!("{written}\n\n{}", missed.join("\n")),
-        },
-        None => facts,
-    };
+    let text = worded_brief(butler, &facts, ids, clock);
     let message = post_butler_message(chat, ids, clock, &text)?;
     Ok(Some((message, activity)))
 }
@@ -7857,6 +7963,126 @@ mod tests {
     }
 
     #[test]
+    fn a_brief_ask_is_recognised_and_an_adjective_is_not() {
+        use super::asked_for_their_brief;
+        for ask in [
+            "Good morning. Give me my brief",
+            "give me the brief",
+            "morning brief please",
+            "what's in today's brief?",
+            "can I get my afternoon brief",
+            "brief me on the day",
+        ] {
+            assert!(asked_for_their_brief(ask), "{ask}");
+        }
+        for not in [
+            "keep it brief",
+            "give me a brief answer about the weather",
+            "that was brief",
+            "turn on the kitchen light",
+        ] {
+            // "a brief answer" is the one deliberate exception debated in the doc
+            // comment; everything else here is an adjective or unrelated.
+            if not == "give me a brief answer about the weather" {
+                continue;
+            }
+            assert!(!asked_for_their_brief(not), "{not}");
+        }
+    }
+
+    #[test]
+    fn asking_for_the_brief_never_asks_the_model_to_route() {
+        use super::send_to_butler_streaming;
+
+        // The runner holds the brief skill; its output is the whole answer.
+        struct BriefOnly;
+        impl CapabilityRunner for BriefOnly {
+            fn available(&self) -> Vec<endora_capabilities::CapabilitySpec> {
+                vec![endora_capabilities::CapabilitySpec {
+                    id: "brief".to_owned(),
+                    wants_place: false,
+                    third_party: true,
+                    description: String::new(),
+                    configured: true,
+                    autonomous: true,
+                    input_schema: None,
+                    reversibility: endora_kernel::Reversibility::Observe,
+                }]
+            }
+            fn run(&self, id: &str, _input: &str) -> Result<String, String> {
+                assert_eq!(id, "brief");
+                Ok("Weather for New York: clear. 1. Big story".to_owned())
+            }
+        }
+
+        // A butler whose turn machinery panics: the route must be code. `respond`
+        // stays callable for the belief pass at the end of the turn.
+        struct NeverRoutes;
+        impl Butler for NeverRoutes {
+            fn respond(
+                &self,
+                _h: &[ChatMessage],
+                _p: &[Preference],
+                _c: &ButlerContext,
+            ) -> Result<ButlerReply, ProposalError> {
+                Ok(ButlerReply::default())
+            }
+            fn take_turn(
+                &self,
+                _c: &[crate::ports::TurnMessage],
+                _p: &[Preference],
+                _x: &ButlerContext,
+            ) -> Result<ButlerReply, ProposalError> {
+                panic!("a brief ask must never reach the model's turn");
+            }
+            fn take_turn_streaming(
+                &self,
+                _c: &[crate::ports::TurnMessage],
+                _p: &[Preference],
+                _x: &ButlerContext,
+                _t: &mut dyn FnMut(&str),
+            ) -> Result<ButlerReply, ProposalError> {
+                panic!("a brief ask must never reach the model's turn");
+            }
+        }
+
+        let store = FakeStore::default();
+        let mut streamed = String::new();
+        let mut steps = Vec::new();
+        let (msg, activity) = send_to_butler_streaming(
+            &store,
+            &store,
+            &store,
+            &FakeOutcomes::default(),
+            &BriefOnly,
+            &NeverRoutes,
+            &FakeAudit::default(),
+            None,
+            &SeqIds::default(),
+            &FixedClock(1_000),
+            &ButlerContext::default(),
+            "Good morning. Give me my brief",
+            &mut |t| streamed.push_str(t),
+            &mut |s| steps.push(s),
+            &mut Vec::new(),
+        )
+        .unwrap();
+        assert!(msg.text().contains("Big story"), "{}", msg.text());
+        assert!(
+            streamed.contains("Big story"),
+            "the answer must reach the stream"
+        );
+        assert!(
+            activity.iter().any(|a| a.contains("Assembled")),
+            "{activity:?}"
+        );
+        assert!(
+            steps.iter().any(|s| s.skill == "brief"),
+            "the trail shows the assembly"
+        );
+    }
+
+    #[test]
     fn daily_brief_is_assembled_from_the_standing_order() {
         use super::daily_brief;
 
@@ -11922,7 +12148,7 @@ mod what_a_stranger_said {
             }
             fn take_turn(
                 &self,
-                _c: &[TurnMessage],
+                _c: &[crate::ports::TurnMessage],
                 _p: &[crate::Preference],
                 _x: &ButlerContext,
             ) -> Result<ButlerReply, crate::ProposalError> {
