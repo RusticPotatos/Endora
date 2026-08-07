@@ -1495,6 +1495,9 @@ fn build_butler_request(
     body
 }
 
+/// The generation ceiling sent on every model call (`max_tokens`).
+const MOST_REPLY_TOKENS: u32 = 1024;
+
 /// Writes sampling parameters onto a chat-completions request body. `temperature`
 /// and `top_p` are standard OpenAI-compatible fields; `top_k` and
 /// `repeat_penalty` are local-runtime extensions (Ollama) only emitted when set,
@@ -1505,6 +1508,14 @@ fn apply_sampling(body: &mut Value, sampling: &Sampling) {
     let Some(obj) = body.as_object_mut() else {
         return;
     };
+    // A hard ceiling on generation, always sent. Without one, a small model that
+    // falls into a repetition loop generates until the transport timeout kills the
+    // whole round — observed live, 2026-08-06: asked which lights were on, the model
+    // enumerated the house, began repeating itself, blew the 60s budget, and the
+    // person watched a wall of text collapse into the canned fallback. A bounded
+    // answer that ends mid-list arrives; an unbounded one never does. Two screens
+    // of prose, roomy enough for the longest brief yet seen.
+    obj.insert("max_tokens".to_owned(), json!(MOST_REPLY_TOKENS));
     obj.insert(
         "temperature".to_owned(),
         json!(sampling.temperature.unwrap_or(0.5)),
@@ -2189,6 +2200,10 @@ mod tests {
         // Native tool-calling is offered and the json-object grammar is dropped.
         assert!(body.get("response_format").is_none());
         assert!(!body["tools"].as_array().unwrap().is_empty());
+        // Generation is always bounded. Unbounded, a small model in a repetition
+        // loop generates until the transport timeout kills the round — live, the
+        // person watched a wall of repeating text collapse into the canned fallback.
+        assert_eq!(body["max_tokens"], 1024);
     }
 
     #[test]
