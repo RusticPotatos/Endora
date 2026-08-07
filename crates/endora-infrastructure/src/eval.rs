@@ -237,7 +237,14 @@ const EVAL_SKILL_LINES: &[&str] = &[
     "news — Recent news headlines for a place or topic",
     "image_review — Describe or answer questions about an image",
     "safety_alerts — Active safety alerts near you — severe weather and warnings",
-    "home_assistant — Read your home's state — lights, presence, sensors",
+    // Two readers exist live (this one and the connected server's own), with nothing
+    // in their old descriptions to choose between them and different entity sets
+    // behind them. This one now says what only it can do — see everything, including
+    // what the voice surface hides — and the battery carries the words production
+    // sends, or it measures a routing pressure nobody runs.
+    "home_assistant — Read your home's current state — every light, switch, presence and \
+     sensor it has, including ones hidden from voice assistants — to answer what is on, \
+     off, or offline right now",
 ];
 
 /// The same skills as the prose list the context also carries.
@@ -1021,6 +1028,54 @@ pub fn battery() -> Vec<EvalCase> {
                     .iter()
                     .any(|unit| text.contains(unit));
                 !claims_a_duration
+            },
+        },
+        EvalCase {
+            // Live, 2026-08-06: "can you check the lights now". The turn's real defect
+            // was policy refusing the reader — fixed where it lived — but the ask also
+            // had no case: the AfterTool pair hands the reading over, and the routing
+            // cases offer built-ins alone. Against the catalogue production actually
+            // sends — two readers, two proven actuators, the lookup — a status ask
+            // must reach a reader. Either reader: they overlap by design, and a point
+            // that hangs on which one would measure the tie-break, not the routing.
+            name: "select:a-status-ask-reaches-a-reader",
+            tier: Tier::L1,
+            probe: Probe::WithTools(
+                as_production_offers_it(),
+                "can you check the lights right now?",
+            ),
+            check: |r, _| {
+                matches!(
+                    used(r),
+                    Some("home_assistant" | "home-assistant.GetLiveContext")
+                )
+            },
+        },
+        EvalCase {
+            // The same ask in its answerable form. Four lights in the reading are
+            // `unavailable`; "which are offline" is answered by naming them — all
+            // four, not a sample and not a paraphrase. The scenes reading `unknown`
+            // are NOT offline (ADR 0056's vocabulary: `unknown` swept 28 phantom
+            // problems in against 7 real ones), so a reply that drags a nightlight
+            // scene in has pattern-matched a word, not read the states.
+            name: "report:names-what-is-offline",
+            tier: Tier::L2,
+            probe: Probe::AfterTool {
+                prompt: "which lights are offline right now?",
+                capability: "home-assistant.GetLiveContext",
+                result: A_REAL_SIZED_READING,
+            },
+            check: |r, _| {
+                let text = r.text.to_lowercase();
+                [
+                    "guest bedroom right",
+                    "hue filament bulb 1",
+                    "outside color",
+                    "living room lamp",
+                ]
+                .iter()
+                .all(|name| text.contains(name))
+                    && !text.contains("nightlight")
             },
         },
         EvalCase {

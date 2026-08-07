@@ -226,6 +226,14 @@ impl LlmButler {
             context,
         );
         body["stream"] = Value::Bool(true);
+        // Same reasoning as `try_model_streaming`: the JSON-object grammar makes common
+        // local runtimes buffer the whole reply, which un-streams the stream. The rounds
+        // that offer tools never carry the grammar anyway; the one that does is the
+        // forced final round (tools emptied so the model must answer in prose), which is
+        // exactly the round whose tokens the person is waiting on.
+        if let Some(obj) = body.as_object_mut() {
+            obj.remove("response_format");
+        }
         let body = self.with_keep_alive(body);
         let url = format!("{}/chat/completions", self.base_url);
         let mut req = self.agent.post(&url);
@@ -613,6 +621,19 @@ impl Butler for MixtureButler {
             .take_turn(conversation, preferences, context)
     }
 
+    fn take_turn_streaming(
+        &self,
+        conversation: &[endora_application::TurnMessage],
+        preferences: &[Preference],
+        context: &ButlerContext,
+        on_token: &mut dyn FnMut(&str),
+    ) -> Result<ButlerReply, ProposalError> {
+        // Without this, dynamic dispatch lands on the trait's non-streaming default and
+        // the whole answer arrives as one chunk — silently, because the default exists.
+        self.synthesizer
+            .take_turn_streaming(conversation, preferences, context, on_token)
+    }
+
     fn summarize(&self, prior: &str, transcript: &str) -> Result<String, ProposalError> {
         // Summarising is prose — the generalist synthesizer.
         self.synthesizer.summarize(prior, transcript)
@@ -924,6 +945,20 @@ impl Butler for ConfigurableButler {
         context: &ButlerContext,
     ) -> Result<ButlerReply, ProposalError> {
         self.current().take_turn(conversation, preferences, context)
+    }
+
+    fn take_turn_streaming(
+        &self,
+        conversation: &[endora_application::TurnMessage],
+        preferences: &[Preference],
+        context: &ButlerContext,
+        on_token: &mut dyn FnMut(&str),
+    ) -> Result<ButlerReply, ProposalError> {
+        // Without this, dynamic dispatch lands on the trait's non-streaming default:
+        // the node's chat route streamed nothing, because every turn went through this
+        // wrapper and the wrapper quietly forgot how.
+        self.current()
+            .take_turn_streaming(conversation, preferences, context, on_token)
     }
 
     fn summarize(&self, prior: &str, transcript: &str) -> Result<String, ProposalError> {
@@ -1773,6 +1808,74 @@ mod tests {
             ),
             "a dead preferred rung must fall back to the floor, not to silence"
         );
+    }
+
+    #[test]
+    fn the_wrapper_streams_when_its_brain_streams() {
+        // The trait's `take_turn_streaming` has a non-streaming default, so a wrapper
+        // that forgets to forward it still compiles and still answers — in one chunk.
+        // That is what shipped: every chat turn goes through this wrapper, and the
+        // node's stream route delivered whole answers at once, silently.
+        struct NoConfig;
+        impl endora_application::ButlerModelConfigRepository for NoConfig {
+            fn get(
+                &self,
+            ) -> Result<
+                Option<endora_application::ButlerModelConfig>,
+                endora_application::RepositoryError,
+            > {
+                Ok(None)
+            }
+            fn set(
+                &self,
+                _c: &endora_application::ButlerModelConfig,
+            ) -> Result<(), endora_application::RepositoryError> {
+                Ok(())
+            }
+        }
+        struct Chunky;
+        impl Butler for Chunky {
+            fn respond(
+                &self,
+                _history: &[ChatMessage],
+                _preferences: &[endora_application::Preference],
+                _context: &ButlerContext,
+            ) -> Result<endora_application::ButlerReply, endora_application::ProposalError>
+            {
+                Ok(endora_application::ButlerReply::default())
+            }
+            fn take_turn_streaming(
+                &self,
+                _conversation: &[endora_application::TurnMessage],
+                _preferences: &[endora_application::Preference],
+                _context: &ButlerContext,
+                on_token: &mut dyn FnMut(&str),
+            ) -> Result<endora_application::ButlerReply, endora_application::ProposalError>
+            {
+                on_token("one ");
+                on_token("two");
+                Ok(endora_application::ButlerReply {
+                    text: "one two".to_owned(),
+                    ..Default::default()
+                })
+            }
+        }
+        let butler = super::ConfigurableButler::new(
+            std::sync::Arc::new(NoConfig),
+            std::sync::Arc::new(Chunky),
+        );
+        let mut chunks = Vec::new();
+        let reply = butler
+            .take_turn_streaming(&[], &[], &ButlerContext::default(), &mut |t| {
+                chunks.push(t.to_owned());
+            })
+            .unwrap();
+        assert_eq!(
+            chunks,
+            vec!["one ".to_owned(), "two".to_owned()],
+            "two chunks in must be two chunks out"
+        );
+        assert_eq!(reply.text, "one two");
     }
 
     #[test]

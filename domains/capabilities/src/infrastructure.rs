@@ -2665,7 +2665,9 @@ impl Capability for HomeAssistantCapability {
         CapabilityInfo {
             id: "home_assistant",
             name: "Home Assistant",
-            description: "Read your home's state — lights, presence, sensors — to learn your routines.",
+            description: "Read your home's current state — every light, switch, presence \
+                          and sensor it has, including ones hidden from voice assistants — \
+                          to answer what is on, off, or offline right now.",
             category: "presence",
             reaches_external: true,
             // Reads state; changes nothing. Policy-identical to Reversible
@@ -4159,6 +4161,15 @@ impl CapabilityRunner for OpenerRunner {
                 }
                 match self.stance_of(&spec.id, spec.reversibility) {
                     Stance::Off => spec.autonomous = false,
+                    // Graduation is an actuator's gate: `proven` means read-back
+                    // confirmed CHANGES (ADR 0062), which a read can never produce.
+                    // Applying it to the observe band left a nominated reader
+                    // permanently non-autonomous the moment anything stored an `ask`
+                    // for it (trust_all does, for every undecided tool) — and a
+                    // butler that may not look answers from imagination. Seen live.
+                    Stance::Ask if spec.reversibility == Reversibility::Observe => {
+                        spec.autonomous = true;
+                    }
                     Stance::Ask => spec.autonomous = self.graduates(&spec.id),
                     Stance::Auto => spec.autonomous = true,
                 }
@@ -4186,6 +4197,10 @@ impl CapabilityRunner for OpenerRunner {
         };
         Some(match self.stance_of(id, band) {
             Stance::Off => Decision::Block,
+            // On the observe band `ask` means what `auto` means: confirming a read
+            // blocks the very question it exists to answer, and graduation (proven
+            // changes) is unsatisfiable for something that changes nothing.
+            Stance::Ask if band == Reversibility::Observe => below.unwrap_or(Decision::Act),
             Stance::Ask => {
                 if self.graduates(id) {
                     Decision::Act
@@ -6525,6 +6540,93 @@ mod tests {
         assert_eq!(
             overlay.run("fs.write_file", "{\"p\":1}").unwrap(),
             "write_file({\"p\":1})"
+        );
+    }
+
+    #[test]
+    fn an_ask_stance_does_not_take_a_readers_autonomy() {
+        // Seen live: `trust_all` opened every undecided tool on a server with `ask` —
+        // including the nominated reader. Ask's graduation gate is proven-by-read-back
+        // confirmed CHANGES (ADR 0062), which only an actuator can ever satisfy, so the
+        // reader was left permanently non-autonomous and every chat-turn read was
+        // refused with "needs their go-ahead". The model, unable to look, answered
+        // about the house from imagination. A read has no work of its own to confirm;
+        // asking cannot make it safer than it already is.
+        let mcp = Arc::new(McpRunner::connect_with_readers(vec![(
+            "home".to_owned(),
+            Box::new(FakeTransport {
+                tools: vec![tool("GetLiveContext"), tool("HassTurnOff")],
+                healthy: true,
+            }) as Box<dyn McpClient>,
+            "GetLiveContext".to_owned(),
+        )]));
+        let stances: std::collections::HashMap<String, Stance> = [
+            ("home.GetLiveContext".to_owned(), Stance::Ask),
+            ("home.HassTurnOff".to_owned(), Stance::Ask),
+        ]
+        .into();
+        let overlay = OpenerRunner::new(
+            mcp,
+            std::collections::HashSet::new(),
+            stances,
+            std::collections::HashSet::new(),
+            false,
+        );
+
+        let reader = overlay
+            .available()
+            .into_iter()
+            .find(|s| s.id == "home.GetLiveContext")
+            .expect("offered");
+        assert!(
+            reader.autonomous,
+            "an ask stance on the observe band must not strip autonomy"
+        );
+        assert_eq!(overlay.decision("home.GetLiveContext"), Some(Decision::Act));
+
+        // The actuator's gate is untouched: confirm-each-use until proven.
+        let actuator = overlay
+            .available()
+            .into_iter()
+            .find(|s| s.id == "home.HassTurnOff")
+            .expect("offered");
+        assert!(!actuator.autonomous);
+        assert_eq!(
+            overlay.decision("home.HassTurnOff"),
+            Some(Decision::Confirm)
+        );
+    }
+
+    #[test]
+    fn off_still_silences_a_reader() {
+        // `off` is the person's decision, not a default — the observe band must not
+        // resurrect a reader they switched off.
+        let mcp = Arc::new(McpRunner::connect_with_readers(vec![(
+            "home".to_owned(),
+            Box::new(FakeTransport {
+                tools: vec![tool("GetLiveContext")],
+                healthy: true,
+            }) as Box<dyn McpClient>,
+            "GetLiveContext".to_owned(),
+        )]));
+        let stances: std::collections::HashMap<String, Stance> =
+            [("home.GetLiveContext".to_owned(), Stance::Off)].into();
+        let overlay = OpenerRunner::new(
+            mcp,
+            std::collections::HashSet::new(),
+            stances,
+            std::collections::HashSet::new(),
+            false,
+        );
+        let reader = overlay
+            .available()
+            .into_iter()
+            .find(|s| s.id == "home.GetLiveContext")
+            .expect("listed");
+        assert!(!reader.autonomous);
+        assert_eq!(
+            overlay.decision("home.GetLiveContext"),
+            Some(Decision::Block)
         );
     }
 
