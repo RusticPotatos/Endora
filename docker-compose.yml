@@ -61,15 +61,14 @@ services:
       # relaying results). Used for the drafting endpoint and as the single-model
       # butler when the mixture below is not set.
       ENDORA_MODEL: "${ENDORA_MODEL:-qwen2.5:7b}"
-      # The butler brain (ADR 0055). Set BOTH to run the mixture: a tool-tuned
-      # specialist routes to skills, a generalist writes the reply. The agentic
-      # eval shows this out-routes a single model at less VRAM (hermes3:8b +
-      # qwen2.5:7b scored 8/8, matching a single qwen2.5:14b). Unset both to use
-      # the single ENDORA_MODEL above. Both must be pulled on the Ollama host.
-      # Blank them for a single-model setup — the bundled runtime serves one model, so a
-      # mixture would route to a name that is not there.
-      ENDORA_ROUTER_MODEL: "${ENDORA_ROUTER_MODEL-hermes3:8b}"
-      ENDORA_SYNTH_MODEL: "${ENDORA_SYNTH_MODEL-qwen2.5:7b}"
+      # The butler brain (ADR 0055). The default is the single ENDORA_MODEL above:
+      # the mixture (a tool-tuned router + a generalist synthesizer) out-routed a
+      # single model in one early eval, but ADR 0055 rejected it after live use —
+      # two models thrash through one queue on the same GPU — and the 2026-08-05
+      # bake-off settled on the single 7b. Set BOTH to run the mixture anyway;
+      # both must be pulled on the Ollama host. Blank or unset means single-model.
+      ENDORA_ROUTER_MODEL: "${ENDORA_ROUTER_MODEL-}"
+      ENDORA_SYNTH_MODEL: "${ENDORA_SYNTH_MODEL-}"
       # Optional private egress: route *external* skill traffic (weather, news,
       # search, web fetch) through a proxy of your choice, WITHOUT binding Endora's
       # network to another container (no `network_mode: service:...`; that tight

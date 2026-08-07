@@ -40,8 +40,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // the reply — which the eval shows out-routes a single model at less VRAM.
     // Otherwise a single model does both. Either way it falls back to the scripted
     // brain, so the conversation works even with no model available.
-    let router_model = std::env::var("ENDORA_ROUTER_MODEL").ok();
-    let synth_model = std::env::var("ENDORA_SYNTH_MODEL").ok();
+    // Set-but-empty means unset: compose materialises a blanked variable as "", and a
+    // mixture built from two empty model names is not a butler, it is two 404s.
+    let router_model = std::env::var("ENDORA_ROUTER_MODEL")
+        .ok()
+        .filter(|m| !m.trim().is_empty());
+    let synth_model = std::env::var("ENDORA_SYNTH_MODEL")
+        .ok()
+        .filter(|m| !m.trim().is_empty());
     let fallback: Arc<dyn Butler + Send + Sync> = match (router_model, synth_model) {
         (Some(router), Some(synth)) => {
             println!("butler fallback: mixture — router={router}, synth={synth} via {model_url}");

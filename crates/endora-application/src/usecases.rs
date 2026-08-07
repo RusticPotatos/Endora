@@ -1133,6 +1133,11 @@ fn run_tool_turn(
                     Err(e) => {
                         failures += 1;
                         last_action_failed = true;
+                        // One greppable line per outcome that is not a plain success.
+                        // When a turn went wrong live, the only forensic trail was the
+                        // per-message actions blob in the database; the node's log
+                        // showed nothing but its own startup.
+                        eprintln!("turn: tool {id} failed — {e}");
                         activity.push(format!("Tried the {id} skill, but it failed"));
                         // Read back on failure too: a failed action's most useful
                         // output is what actually exists, which is what lets the
@@ -1221,6 +1226,7 @@ fn run_tool_turn(
                     }
                     (None, _) => format!("no such skill '{id}' — you can't do that."),
                 };
+                eprintln!("turn: tool {id} refused — {content}");
                 activity.push(format!(
                     "Couldn't use {id} (off, not set up, or needs confirming)"
                 ));

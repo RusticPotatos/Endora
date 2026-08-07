@@ -6591,7 +6591,10 @@ mod tests {
             .find(|s| s.id == "home.HassTurnOff")
             .expect("offered");
         assert!(!actuator.autonomous);
-        assert_eq!(overlay.decision("home.HassTurnOff"), Some(Decision::Confirm));
+        assert_eq!(
+            overlay.decision("home.HassTurnOff"),
+            Some(Decision::Confirm)
+        );
     }
 
     #[test]
@@ -6621,7 +6624,10 @@ mod tests {
             .find(|s| s.id == "home.GetLiveContext")
             .expect("listed");
         assert!(!reader.autonomous);
-        assert_eq!(overlay.decision("home.GetLiveContext"), Some(Decision::Block));
+        assert_eq!(
+            overlay.decision("home.GetLiveContext"),
+            Some(Decision::Block)
+        );
     }
 
     #[test]
