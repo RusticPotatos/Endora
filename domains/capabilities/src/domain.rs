@@ -255,6 +255,12 @@ pub fn worth_raising(troubles: &[StandingTrouble], now_ms: i64) -> Vec<&Standing
         .filter(|t| t.days_by(now_ms) >= WORTH_SAYING_AFTER_DAYS)
         .collect();
     out.sort_by_key(|t| t.since_ms);
+    // One device, one problem — whichever watcher saw it. Two sources watch the same
+    // house (a connected server and the built-in reader), each keeping its own record,
+    // and the person was handed every fault twice. Sorted oldest-first already, so the
+    // record kept is the one whose duration makes the strongest case.
+    let mut seen = std::collections::HashSet::new();
+    out.retain(|t| seen.insert(t.thing.clone()));
     out
 }
 
@@ -489,6 +495,36 @@ impl McpServer {
 mod tests {
     use super::{McpServer, McpTransport};
     use endora_kernel::DomainError;
+
+    #[test]
+    fn one_dead_device_seen_by_two_watchers_is_one_problem() {
+        // Live, 2026-08-06: every dead light was raised twice — once by the connected
+        // server's watcher, once by the built-in reader's — and five real problems
+        // became eleven, which the deploy smoke rightly called a pile of chores. The
+        // fact is about the device, not about who saw it.
+        use super::{StandingTrouble, WORTH_SAYING_AFTER_DAYS, worth_raising};
+        const DAY: i64 = 86_400_000;
+        let t = |server: &str, thing: &str, since_ms: i64| StandingTrouble {
+            server: server.to_owned(),
+            thing: thing.to_owned(),
+            trouble: "unavailable".to_owned(),
+            since_ms,
+            accepted: false,
+        };
+        let troubles = vec![
+            t("home-assistant", "light.guest_bedroom_right", DAY),
+            t("skills", "light.guest_bedroom_right", 2 * DAY),
+            t("skills", "light.outside_color", DAY),
+        ];
+        let raised = worth_raising(&troubles, (WORTH_SAYING_AFTER_DAYS + 3) * DAY);
+        assert_eq!(raised.len(), 2, "one problem per device: {raised:?}");
+        // The oldest record is the one kept: its duration makes the strongest case.
+        let guest = raised
+            .iter()
+            .find(|t| t.thing == "light.guest_bedroom_right")
+            .expect("raised");
+        assert_eq!(guest.since_ms, DAY);
+    }
 
     #[test]
     fn stdio_trims_and_drops_blank_args() {
