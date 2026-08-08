@@ -104,6 +104,35 @@ function icon(name, size = 17) {
 // ---- tiny helpers ---------------------------------------------------------
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) =>
   ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+// Butler prose, rendered lightly. Escaped FIRST — everything below operates on
+// already-escaped text, so nothing a headline or a tool result carries can become
+// markup — then the few shapes the butler actually writes are dressed: links become
+// tappable and are shown as their site's name (a 200-character news URL was punching
+// every bubble wide open), **bold** bolds, `code` gets a monospace chip, a leading
+// "- " becomes a real bullet, and a #-heading line turns bold. Everything else is
+// left exactly as written; `white-space: pre-wrap` keeps the paragraphs.
+function rich(text) {
+  let s = esc(text);
+  // [label](url) first, so its url is not also linkified as a bare one below.
+  s = s.replace(/\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)/g,
+    (_m, label, url) => `<a href="${url}" target="_blank" rel="noopener noreferrer">${label}</a>`);
+  // Bare links, shown as their host so the words break, not the bubble. The guard
+  // group skips urls already sitting inside an href="..." from the pass above (a
+  // raw quote cannot appear in escaped text, so the only `"` here is ours).
+  s = s.replace(/(^|[^"'>])(https?:\/\/[^\s<)]+)/g, (_m, before, url) => {
+    const trimmed = url.replace(/[.,;:!?]+$/, "");
+    const tail = url.slice(trimmed.length);
+    let shown = trimmed;
+    try { shown = new URL(trimmed).hostname.replace(/^www\./, ""); } catch (_) { /* shown stays the url */ }
+    return `${before}<a href="${trimmed}" target="_blank" rel="noopener noreferrer">${shown}</a>${tail}`;
+  });
+  s = s.replace(/\*\*([^*\n]+)\*\*/g, "<b>$1</b>");
+  s = s.replace(/`([^`\n]+)`/g, "<code>$1</code>");
+  s = s.replace(/^#{1,4} +(.+)$/gm, "<b>$1</b>");
+  s = s.replace(/^- +/gm, "• ");
+  return s;
+}
 const byId = (list, id) => (list || []).find((x) => x.id === id);
 const shortId = (id) => id.slice(0, 6) + "…";
 
@@ -596,7 +625,7 @@ function viewChat() {
   const msgs = list.map((m) => {
     const mine = m.role === "user";
     const bubble = `<div class="row" style="justify-content:${mine ? "flex-end" : "flex-start"}; margin:6px 0;">
-      <div class="bubble ${mine ? "me" : "butler"}">${esc(m.text)}</div></div>`;
+      <div class="bubble ${mine ? "me" : "butler"}">${mine ? esc(m.text) : rich(m.text)}</div></div>`;
     // A butler reply carries its persisted action trail + sources (if any), so
     // you can expand a PAST answer to see what it did and where it came from.
     if (!mine && m.actions) {
@@ -640,7 +669,7 @@ function viewChat() {
   if (CHAT_STREAMING) {
     const users = [CHAT_INFLIGHT, ...CHAT_QUEUE].filter(Boolean).map((t) =>
       `<div class="row" style="justify-content:flex-end; margin:6px 0;"><div class="bubble me">${esc(t)}</div></div>`).join("");
-    const replyInner = LIVE_REPLY ? esc(LIVE_REPLY) : `<span class="dots"><i></i><i></i><i></i></span>`;
+    const replyInner = LIVE_REPLY ? rich(LIVE_REPLY) : `<span class="dots"><i></i><i></i><i></i></span>`;
     liveTurn = users +
       `<div class="row" style="justify-content:flex-start; margin:6px 0;" id="chat-live"><div class="bubble butler">${replyInner}</div></div>`;
   }
@@ -2347,7 +2376,10 @@ async function drainChat() {
           // writing into that one rather than a now-detached node.
           const liveRow = document.getElementById("chat-live");
           const bod = liveRow && liveRow.querySelector(".bubble");
-          if (bod) bod.textContent = acc;
+          // Rendered, not textContent, so a link arriving mid-stream reads as a
+          // link and never as a wall of URL. `rich` escapes before it dresses, so
+          // a streamed token can no more become markup than a stored one.
+          if (bod) bod.innerHTML = rich(acc);
           if (liveRow) scrollBubbleIntoView(liveRow);
         } else if (ev.type === "step") {
           if (ev.status === "running") {

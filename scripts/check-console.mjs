@@ -503,6 +503,43 @@ console.log(`requests: sending a message signs its ${chat.length} request(s)`);
   console.log("chat: an unanswered turn says so, and can be asked again");
 }
 
+// Butler prose renders lightly, and nothing it carries can become markup.
+//
+// The brief's news section hands the chat 200-character URLs; rendered raw they
+// punched every bubble wide open, and rendered carelessly they would be an
+// injection surface — a headline is a third party's sentence. So both properties
+// are held here: a bare URL becomes an anchor shown as its host, and a script tag
+// in the text stays text.
+{
+  const linked = runInContext(
+    "rich('1. Story — Pub (https://news.google.com/rss/articles/CBMi?oc=5)')",
+    context,
+  );
+  if (!/<a href="https:\/\/news\.google\.com\/rss\/articles\/CBMi\?oc=5"/.test(linked)
+    || !/>news\.google\.com<\/a>/.test(linked)) {
+    console.error(`chat: a bare URL did not render as a host-named link: ${linked}`);
+    process.exit(1);
+  }
+  const hostile = runInContext(
+    "rich('breaking: <script>alert(1)</script> **bold** stays')",
+    context,
+  );
+  if (hostile.includes("<script>")) {
+    console.error(`chat: third-party text became markup: ${hostile}`);
+    process.exit(1);
+  }
+  if (!hostile.includes("<b>bold</b>")) {
+    console.error(`chat: the light markdown did not render: ${hostile}`);
+    process.exit(1);
+  }
+  const bullets = runInContext("rich('- jane is not home\\n- 2 things on your list')", context);
+  if (!bullets.includes("• jane is not home")) {
+    console.error(`chat: a dash bullet did not render as a bullet: ${bullets}`);
+    process.exit(1);
+  }
+  console.log("chat: prose renders links, bullets and bold — and hostile text stays text");
+}
+
 // Layout is still not covered, and this is the honest note about why.
 //
 // The shape that has broken twice on a phone — a `.row` holding a text block and a pile of
