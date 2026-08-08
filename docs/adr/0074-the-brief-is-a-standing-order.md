@@ -39,10 +39,12 @@ clock decides *when it may*, and now the order decides *what it holds*.
 **Sections are gathered by code.** `gathered_brief_sections` calls each configured
 section skill with known-good arguments — weather for the person's place (its
 summary now says whether an umbrella or jacket is worth it, from the numbers), the
-drive from the house's own travel-time sensors, the top **three** headlines
-(enforced by the call), ticketed events and city meetings where configured. The
-results are joined to what Endora already holds (calendar, presence, standing
-troubles — 0056's assembly, unchanged) by `assembled_brief_facts`.
+drive from the house's own travel-time sensors, what the mail says (headers only,
+through the house — 0058/0064; the one section the person noticed missing on the
+first fully-configured brief), the top **three** headlines (enforced by the call),
+ticketed events and city meetings where configured. The results are joined to what
+Endora already holds (calendar, presence, standing troubles — 0056's assembly,
+unchanged) by `assembled_brief_facts`.
 
 **The model's only job is wording.** The deep model words the facts when the person
 opted in (0055), under append-never-rewrite (0056): whatever the writing leaves out

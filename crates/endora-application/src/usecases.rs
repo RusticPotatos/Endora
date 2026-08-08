@@ -2971,6 +2971,10 @@ pub fn consider_reaching_out(
 /// shrinks honestly; one that fails is noted in the activity trail and its section
 /// is absent rather than apologised for every morning — the trail is the operator's,
 /// the brief is the person's.
+///
+/// The mail rides along (headers only, through the house — ADR 0058/0064): who has
+/// written and what about is exactly a morning question, and it was the one section
+/// the person noticed missing on the first fully-configured brief.
 fn gathered_brief_sections(
     capabilities: &dyn CapabilityRunner,
     place: &str,
@@ -2983,7 +2987,10 @@ fn gathered_brief_sections(
         .filter(|s| s.configured)
         .map(|s| s.id)
         .collect();
-    let mut asks: Vec<(&str, &str, String)> = vec![("traffic", "drive", "{}".to_owned())];
+    let mut asks: Vec<(&str, &str, String)> = vec![
+        ("traffic", "drive", "{}".to_owned()),
+        ("mail", "mail", "{}".to_owned()),
+    ];
     // Sections that need a place are skipped without one — a brief must never guess
     // where "home" is (ADR 0065).
     if !place.trim().is_empty() {
@@ -8091,7 +8098,7 @@ mod tests {
         struct BriefSkills(std::cell::RefCell<Vec<(String, String)>>);
         impl CapabilityRunner for BriefSkills {
             fn available(&self) -> Vec<endora_capabilities::CapabilitySpec> {
-                ["weather", "news", "traffic"]
+                ["weather", "news", "traffic", "mail"]
                     .into_iter()
                     .map(|id| endora_capabilities::CapabilitySpec {
                         id: id.to_owned(),
@@ -8113,6 +8120,7 @@ mod tests {
                     "weather" => Ok("clear, 25C. Take an umbrella — 60% chance of rain".to_owned()),
                     "news" => Ok("1. Big local story".to_owned()),
                     "traffic" => Err("no travel-time sensors in the house yet".to_owned()),
+                    "mail" => Ok("Inbox: 2 waiting — latest from Jane Doe".to_owned()),
                     _ => panic!("nothing else in this catalogue is a section: {id}"),
                 }
             }
@@ -8144,6 +8152,7 @@ mod tests {
         assert!(msg.text().contains("25C"), "{}", msg.text());
         assert!(msg.text().contains("umbrella"), "{}", msg.text());
         assert!(msg.text().contains("Big local story"), "{}", msg.text());
+        assert!(msg.text().contains("Jane Doe"), "{}", msg.text());
         // The failed drive is in the trail, not apologised for in the person's brief.
         assert!(!msg.text().contains("travel-time"), "{}", msg.text());
         assert!(activity.iter().any(|a| a.contains("drive")), "{activity:?}");
