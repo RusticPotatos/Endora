@@ -3219,8 +3219,15 @@ impl CapabilityRunner for RegistryRunner {
                 let info = c.info();
                 crate::application::CapabilitySpec {
                     id: info.id.to_owned(),
-                    wants_place: false,
-                    third_party: false,
+                    // The declaration, carried — not hardcoded false, which is what
+                    // shipped: every built-in lost both flags at this seam, so the
+                    // place guard (ADR 0065) never fired for weather/news and the
+                    // stranger taint (ADR 0064) never fired for news/mail. Live, a
+                    // model-invented city sailed straight into a weather call the
+                    // guard existed to catch, and the butler talked about Springfield
+                    // to a person who never said it.
+                    wants_place: info.wants_place,
+                    third_party: info.third_party,
                     description: info.description.to_owned(),
                     // Usable only if the code is ready, the person has it enabled, AND
                     // every required setting has a value (ADR 0054).
@@ -5525,6 +5532,29 @@ mod tests {
         // Unrecognized shapes fall back to no tag (rather than a wrong one).
         assert_eq!(observed_time("garbage"), None);
         assert_eq!(observed_time("2026-07-23T99:00"), None);
+    }
+
+    #[test]
+    fn a_built_in_keeps_the_flags_it_declared() {
+        // The seam that shipped broken: `available()` hardcoded both flags false,
+        // so the place guard (ADR 0065) and the stranger taint (ADR 0064) silently
+        // never applied to any built-in. Weather declares wants_place; news and
+        // mail declare third_party; the specs must say so.
+        let runner = RegistryRunner::new(Arc::new(default_capabilities()));
+        let spec = |id: &str| {
+            runner
+                .available()
+                .into_iter()
+                .find(|s| s.id == id)
+                .unwrap_or_else(|| panic!("{id} is registered"))
+        };
+        assert!(spec("weather").wants_place, "weather declared wants_place");
+        assert!(spec("news").third_party, "news is other people's words");
+        assert!(spec("mail").third_party, "mail is other people's words");
+        assert!(
+            !spec("home_assistant").third_party,
+            "the house is not a stranger"
+        );
     }
 
     #[test]
