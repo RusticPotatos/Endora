@@ -147,7 +147,12 @@
   .evi input { width: auto; }
   code.id { font-size: 12px; color: var(--muted); }
   .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; word-break: break-word; }
-  .bubble { max-width: 78%; padding: 8px 12px; border-radius: 12px; line-height: 1.4; white-space: pre-wrap; }
+  /* overflow-wrap: a token longer than the bubble (a URL, an entity id) breaks
+     inside it instead of punching the whole page wide open. */
+  .bubble { max-width: 78%; padding: 8px 12px; border-radius: 12px; line-height: 1.4; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .bubble a { color: var(--accent); text-decoration: underline; text-underline-offset: 2px; }
+  .bubble.me a { color: #fff; }
+  .bubble code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; background: color-mix(in srgb, var(--line) 45%, transparent); padding: 0 4px; border-radius: 4px; }
   .bubble.me { background: var(--accent); color: #fff; border-bottom-right-radius: 4px; }
   .bubble.butler { background: var(--card); border: 1px solid var(--line); border-bottom-left-radius: 4px; }
   /* "thinking…" indicator while the butler composes a reply */
