@@ -44,6 +44,13 @@ tagged release.
 
 ### Added
 
+- **Standing questions** ([ADR 0076](docs/adr/0076-standing-questions.md)).
+  A closed set of routine asks whose complete answer is derivable by code routes
+  deterministically before the model's turn: the brief (ADR 0074's route, folded
+  into the one mechanism), and kind-status questions — "what lights are on?",
+  "any lights offline?" — answered from the house's own reading, naming what is
+  on and what is not answering. Action phrasings ("turn off the lights") never
+  match; anything the set doesn't cover falls through to the ordinary turn.
 - **Failures become specimens** ([ADR 0075](docs/adr/0075-failures-become-specimens.md)).
   A chat turn the deterministic checks reject (the honesty valve, not-an-answer)
   files the ask privately in the house's own record; the nightly loop replays one
