@@ -9087,11 +9087,10 @@ mod recipe_tests {
 
     #[test]
     fn the_worked_example_fills_exactly() {
-        let url =
-            fill_get_template(&air_quality(), &json!({"lat": 40.7128, "lon": -74.006})).unwrap();
+        let url = fill_get_template(&air_quality(), &json!({"lat": 12.5, "lon": -34.25})).unwrap();
         assert_eq!(
             url,
-            "https://air-quality-api.open-meteo.com/v1/air-quality?latitude=40.7128&longitude=-74.006&current=us_aqi"
+            "https://air-quality-api.open-meteo.com/v1/air-quality?latitude=12.5&longitude=-34.25&current=us_aqi"
         );
     }
 

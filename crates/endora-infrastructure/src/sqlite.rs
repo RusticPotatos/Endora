@@ -187,6 +187,15 @@ CREATE TABLE IF NOT EXISTS standing_trouble (
     accepted INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (server, thing, trouble)
 ) STRICT;
+-- The person's own capabilities (ADR 0071) — five fields, validated at authoring
+-- time, never code.
+CREATE TABLE IF NOT EXISTS recipes (
+    id          TEXT PRIMARY KEY,
+    description TEXT NOT NULL,
+    inputs      TEXT NOT NULL,
+    get_url     TEXT NOT NULL,
+    say         TEXT NOT NULL
+) STRICT;
 -- The token this node accepts on every /v1 request. One row. Generated on first run and
 -- printed to the log, unless a deployment pinned one through ENDORA_TOKEN.
 CREATE TABLE IF NOT EXISTS node_auth (
@@ -1412,8 +1421,8 @@ mod tests {
 mod the_schema_production_actually_runs {
     use super::SqliteStore;
     use endora_capabilities::{
-        ConfigStore, ConfigWrite, ConfigWriteLog, StandingTrouble, StandingTroubleRepository,
-        TargetAlias, TargetAliasRepository, WriteKind,
+        ConfigStore, ConfigWrite, ConfigWriteLog, Recipe, RecipeRepository, StandingTrouble,
+        StandingTroubleRepository, TargetAlias, TargetAliasRepository, WriteKind,
     };
 
     /// Builds the stores exactly as `main.rs` does: one production [`SqliteStore`], with the
@@ -1476,6 +1485,26 @@ mod the_schema_production_actually_runs {
         config
             .clear_trouble("house", "Living Room Lamp")
             .expect("clear");
+
+        // A third time would be its own kind of lesson: the recipes table (ADR
+        // 0071) went into `endora_capabilities::migrate` alone on the first pass
+        // and was invisible here — every unit test green, `/v1/recipes` a 500 on
+        // the very first real request, caught by this exact test before it ever
+        // reached a person's house.
+        let recipe = Recipe::new(
+            "air_quality",
+            "Today's air quality.",
+            vec![],
+            "https://x.test/",
+            "s",
+        )
+        .unwrap();
+        RecipeRepository::save_recipe(&config, &recipe).expect("recipes");
+        assert_eq!(
+            RecipeRepository::recipes(&config).expect("read back").len(),
+            1
+        );
+        RecipeRepository::delete_recipe(&config, "air_quality").expect("delete");
     }
 
     #[test]
