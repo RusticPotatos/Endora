@@ -7,6 +7,8 @@ tagged release.
 
 ## [Unreleased]
 
+## [0.12.0] — 2026-08-08
+
 ### Fixed
 
 - **`make deploy` no longer depends on where you run it from.** Compose derives its
@@ -530,5 +532,6 @@ autonomous agent; interfaces may still change before 1.0.
 - **Tooling** — a `Makefile` (bootstrap, run, dev, `ci`), GitHub Actions CI
   (fmt, Clippy with warnings denied, tests on Linux and macOS), and Dependabot.
 
-[Unreleased]: https://github.com/RusticPotatos/Endora/compare/v0.1.0...develop
+[Unreleased]: https://github.com/RusticPotatos/Endora/compare/v0.12.0...develop
+[0.12.0]: https://github.com/RusticPotatos/Endora/compare/v0.11.0...v0.12.0
 [0.1.0]: https://github.com/RusticPotatos/Endora/releases/tag/v0.1.0
