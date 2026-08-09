@@ -697,6 +697,210 @@ async fn register_mcp_server(
     Ok(Json(json!({ "ok": true })))
 }
 
+// ---- Recipes: the person's own capabilities (ADR 0071) ---------------------
+
+#[derive(Deserialize)]
+struct RecipeInputRequest {
+    name: String,
+    /// "string" or "number" — the vocabulary `RecipeInputKind` stores.
+    #[serde(rename = "type")]
+    kind: String,
+}
+
+#[derive(Deserialize)]
+struct RecipeRequest {
+    id: String,
+    description: String,
+    #[serde(default)]
+    inputs: Vec<RecipeInputRequest>,
+    get: String,
+    say: String,
+}
+
+fn recipe_json(
+    recipe: &endora_capabilities::Recipe,
+    stance: endora_capabilities::Stance,
+) -> serde_json::Value {
+    json!({
+        "id": recipe.id,
+        "capability_id": recipe.capability_id(),
+        "description": recipe.description,
+        "inputs": recipe.inputs.iter()
+            .map(|i| json!({ "name": i.name, "type": i.kind.as_str() }))
+            .collect::<Vec<_>>(),
+        "get": recipe.get,
+        "say": recipe.say,
+        "enabled": stance != endora_capabilities::Stance::Off,
+    })
+}
+
+/// Every recipe the person has authored, with whether each is enabled.
+async fn list_recipes(
+    State(state): State<AppState>,
+) -> Result<Json<Vec<serde_json::Value>>, ApiError> {
+    use endora_capabilities::{CapabilityConfigRepository, RecipeRepository, Stance};
+    let config = state.config.clone();
+    let out = blocking(move || {
+        let recipes = RecipeRepository::recipes(config.as_ref()).map_err(AppError::Repository)?;
+        let stances: std::collections::HashMap<String, Stance> =
+            CapabilityConfigRepository::stances(config.as_ref())
+                .unwrap_or_default()
+                .into_iter()
+                .collect();
+        Ok::<_, AppError>(
+            recipes
+                .iter()
+                .map(|r| {
+                    let stance = stances
+                        .get(&r.capability_id())
+                        .copied()
+                        .unwrap_or(Stance::Off);
+                    recipe_json(r, stance)
+                })
+                .collect::<Vec<_>>(),
+        )
+    })
+    .await?;
+    Ok(Json(out))
+}
+
+/// Authors (or edits) a recipe — the whole self-authoring sandbox's only way in
+/// (ADR 0071). Validated at the domain layer (`Recipe::new`): a bad id, a
+/// non-http(s) `get`, or a `get` slot naming no declared input is refused here,
+/// before anything is stored, not discovered as a 400 the first time it runs.
+///
+/// A NEW recipe's stance is stamped `off` explicitly. The observe band's own
+/// default is `Auto` — recipes override that once, at the one moment doing so is
+/// unambiguous (ADR 0062's stored-beats-default, the same mechanism `trust_all`
+/// already uses for MCP tools). Editing an EXISTING recipe leaves its stance
+/// exactly as it was: enabling is the person's, never a side effect of a save.
+async fn create_recipe(
+    State(state): State<AppState>,
+    Json(req): Json<RecipeRequest>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    use endora_capabilities::{
+        CapabilityConfigRepository, Recipe, RecipeInput, RecipeInputKind, RecipeRepository, Stance,
+    };
+    let inputs = req
+        .inputs
+        .iter()
+        .map(|i| {
+            RecipeInputKind::from_name(&i.kind)
+                .map(|kind| RecipeInput {
+                    name: i.name.clone(),
+                    kind,
+                })
+                .ok_or_else(|| {
+                    ApiError(AppError::BadRequest {
+                        message: format!(
+                            "'{}' is not a recipe input type — use 'string' or 'number'",
+                            i.kind
+                        ),
+                    })
+                })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let recipe = Recipe::new(&req.id, &req.description, inputs, &req.get, &req.say)
+        .map_err(|e| ApiError(AppError::Domain(e)))?;
+    let config = state.config.clone();
+    let events = state.events.clone();
+    let clock = state.clock.clone();
+    blocking(move || {
+        let capability_id = recipe.capability_id();
+        let already_decided = CapabilityConfigRepository::stances(config.as_ref())
+            .unwrap_or_default()
+            .iter()
+            .any(|(id, _)| *id == capability_id);
+        RecipeRepository::save_recipe(config.as_ref(), &recipe).map_err(AppError::Repository)?;
+        if !already_decided {
+            CapabilityConfigRepository::set_stance(config.as_ref(), &capability_id, Stance::Off)
+                .map_err(AppError::Repository)?;
+        }
+        record_event(
+            events.as_ref(),
+            clock.as_ref(),
+            &format!("Authored the '{}' recipe", recipe.id),
+        );
+        Ok::<_, AppError>(())
+    })
+    .await?;
+    let _ = state.changes.send(());
+    Ok(Json(json!({ "ok": true })))
+}
+
+#[derive(Deserialize)]
+struct RecipeEnableRequest {
+    enabled: bool,
+}
+
+/// Turns a recipe on or off — the ADR's one affirmative "enable" action, and the
+/// one place recipes differ from the generic capability toggle: ON stores an
+/// explicit `Auto` rather than clearing back to the band default, because the
+/// band default (Observe) is `Auto` too — clearing would enable a recipe nobody
+/// had turned on yet the moment anyone next cleared an unrelated stance.
+async fn set_recipe_enabled(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(req): Json<RecipeEnableRequest>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    use endora_capabilities::{CapabilityConfigRepository, RecipeRepository, Stance};
+    let config = state.config.clone();
+    let events = state.events.clone();
+    let clock = state.clock.clone();
+    blocking(move || {
+        let Some(recipe) =
+            RecipeRepository::recipe(config.as_ref(), &id).map_err(AppError::Repository)?
+        else {
+            return Err(AppError::NotFound { entity: "recipe" });
+        };
+        let stance = if req.enabled {
+            Stance::Auto
+        } else {
+            Stance::Off
+        };
+        CapabilityConfigRepository::set_stance(config.as_ref(), &recipe.capability_id(), stance)
+            .map_err(AppError::Repository)?;
+        record_event(
+            events.as_ref(),
+            clock.as_ref(),
+            &format!(
+                "{} the '{}' recipe",
+                if req.enabled { "Enabled" } else { "Disabled" },
+                recipe.id
+            ),
+        );
+        Ok::<_, AppError>(())
+    })
+    .await?;
+    let _ = state.changes.send(());
+    Ok(Json(json!({ "ok": true })))
+}
+
+/// Removes a recipe. Its stance goes with it in storage (`delete_recipe` already
+/// cascades that), so a same-named recipe authored later starts at the same
+/// `off` default as any other new one, never inheriting one it never earned.
+async fn remove_recipe(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    use endora_capabilities::RecipeRepository;
+    let config = state.config.clone();
+    let events = state.events.clone();
+    let clock = state.clock.clone();
+    blocking(move || {
+        RecipeRepository::delete_recipe(config.as_ref(), &id).map_err(AppError::Repository)?;
+        record_event(
+            events.as_ref(),
+            clock.as_ref(),
+            &format!("Removed the '{id}' recipe"),
+        );
+        Ok::<_, AppError>(())
+    })
+    .await?;
+    let _ = state.changes.send(());
+    Ok(Json(json!({ "ok": true })))
+}
+
 /// Removes an MCP server by name, then reconnects.
 async fn remove_mcp_server(
     State(state): State<AppState>,
@@ -1005,6 +1209,9 @@ pub fn app(state: AppState) -> Router {
             "/v1/capabilities/{id}/config",
             post(set_capability_settings),
         )
+        .route("/v1/recipes", get(list_recipes).post(create_recipe))
+        .route("/v1/recipes/{id}", axum::routing::delete(remove_recipe))
+        .route("/v1/recipes/{id}/enable", post(set_recipe_enabled))
         .route("/v1/autonomy", get(get_autonomy).post(set_autonomy))
         .route("/v1/brief", post(brief))
         .route(
@@ -1823,6 +2030,15 @@ fn build_runner(
         envelope,
         settings_map(config),
     );
+    // The person's own recipes (ADR 0071) — read fresh, same as the built-in
+    // registry above, so authoring or enabling one takes effect on the very next
+    // turn. `RecipeRunner` holds the ONE difference from every other Observe-band
+    // skill (absence defaults to `off`, not `Auto`) entirely inside itself; the
+    // stances handed to it are the same stored rows every other source reads.
+    let recipe_source = endora_capabilities::RecipeRunner::new(
+        endora_capabilities::RecipeRepository::recipes(config).unwrap_or_default(),
+        stances.clone(),
+    );
     // The same stances overlaid on the shared MCP runner, without rebuilding the
     // connection: `ask` confirms each use and graduates when proven (ADR 0062).
     // The servers Endora has a relationship with — their readings are the house, not a
@@ -1860,6 +2076,7 @@ fn build_runner(
     );
     let composite = endora_capabilities::CompositeRunner::new(vec![
         Arc::new(registry) as Arc<dyn endora_capabilities::CapabilityRunner + Send + Sync>,
+        Arc::new(recipe_source) as Arc<dyn endora_capabilities::CapabilityRunner + Send + Sync>,
         Arc::new(recovers) as Arc<dyn endora_capabilities::CapabilityRunner + Send + Sync>,
     ]);
     // Outermost, so a withdrawn capability is off the menu regardless of which source
@@ -5575,10 +5792,10 @@ impl IntoResponse for ApiError {
 
 #[cfg(test)]
 mod tests {
-    use super::{AppState, app};
+    use super::{AppState, app, build_runner};
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
-    use endora_infrastructure::{RandomIdSource, SqliteStore, SystemClock};
+    use endora_infrastructure::{Capability, RandomIdSource, SqliteStore, SystemClock};
     use http_body_util::BodyExt;
     use std::sync::Arc;
     use tower::ServiceExt; // for `oneshot`
@@ -6818,6 +7035,142 @@ mod tests {
         ));
         // Too short to judge — never dropped.
         assert!(!looks_like_stt_hallucination("no no no"));
+    }
+
+    #[tokio::test]
+    async fn a_new_recipe_is_authored_off_and_enabling_turns_it_on() {
+        let router = app(test_state());
+        let created = router
+            .clone()
+            .oneshot(post(
+                "/v1/recipes",
+                r#"{"id":"air_quality","description":"Today's air quality.",
+                    "inputs":[{"name":"lat","type":"number"},{"name":"lon","type":"number"}],
+                    "get":"https://air-quality-api.open-meteo.com/v1/air-quality?latitude={lat}&longitude={lon}&current=us_aqi",
+                    "say":"The air quality index is {current.us_aqi} right now."}"#,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(created.status(), StatusCode::OK);
+
+        // Authored, not yet enabled — the one place a recipe differs from every
+        // other Observe-band skill's own band default (ADR 0071).
+        let list = json_body(router.clone().oneshot(get("/v1/recipes")).await.unwrap()).await;
+        let recipes = list.as_array().unwrap();
+        assert_eq!(recipes.len(), 1);
+        assert_eq!(recipes[0]["id"], "air_quality");
+        assert_eq!(recipes[0]["capability_id"], "recipe.air_quality");
+        assert_eq!(recipes[0]["enabled"], false, "{recipes:?}");
+
+        let enabled = router
+            .clone()
+            .oneshot(post(
+                "/v1/recipes/air_quality/enable",
+                r#"{"enabled":true}"#,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(enabled.status(), StatusCode::OK);
+        let list = json_body(router.clone().oneshot(get("/v1/recipes")).await.unwrap()).await;
+        assert_eq!(list.as_array().unwrap()[0]["enabled"], true);
+
+        let removed = router
+            .clone()
+            .oneshot(del("/v1/recipes/air_quality"))
+            .await
+            .unwrap();
+        assert_eq!(removed.status(), StatusCode::OK);
+        let list = json_body(router.oneshot(get("/v1/recipes")).await.unwrap()).await;
+        assert!(list.as_array().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_malformed_recipe_is_refused_before_it_is_stored() {
+        let router = app(test_state());
+        // A get whose scheme is not http(s) — refused by Recipe::new.
+        let bad_scheme = router
+            .clone()
+            .oneshot(post(
+                "/v1/recipes",
+                r#"{"id":"x","description":"d","inputs":[],"get":"ftp://x.test/","say":"s"}"#,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(bad_scheme.status(), StatusCode::BAD_REQUEST);
+
+        // A get slot naming no declared input — refused before anyone could enable it.
+        let undeclared_slot = router
+            .clone()
+            .oneshot(post(
+                "/v1/recipes",
+                r#"{"id":"y","description":"d","inputs":[],"get":"https://x.test/?q={q}","say":"s"}"#,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(undeclared_slot.status(), StatusCode::BAD_REQUEST);
+
+        // An input type outside string/number.
+        let bad_type = router
+            .oneshot(post(
+                "/v1/recipes",
+                r#"{"id":"z","description":"d","inputs":[{"name":"q","type":"bool"}],
+                    "get":"https://x.test/?q={q}","say":"s"}"#,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(bad_type.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn an_enabled_recipe_is_offered_by_the_composed_runner_and_a_disabled_one_is_not() {
+        // Not through the HTTP surface — this exercises `build_runner`'s actual
+        // composition, the thing a chat turn's tool catalogue is really built
+        // from, so it proves RecipeRunner is wired in rather than merely
+        // reachable through /v1/recipes.
+        use endora_capabilities::{
+            CapabilityConfigRepository, CapabilityRunner as _, Recipe, RecipeRepository, Stance,
+        };
+        let state = test_state();
+        let recipe = Recipe::new("air_quality", "d", vec![], "https://x.test/", "s").unwrap();
+        RecipeRepository::save_recipe(state.config.as_ref(), &recipe).unwrap();
+        CapabilityConfigRepository::set_stance(
+            state.config.as_ref(),
+            "recipe.air_quality",
+            Stance::Off,
+        )
+        .unwrap();
+
+        let empty_caps: Arc<Vec<Arc<dyn Capability>>> = Arc::new(Vec::new());
+        let mcp = Arc::new(endora_capabilities::McpRunner::connect(Vec::new()));
+        let runner = build_runner(
+            state.config.as_ref(),
+            empty_caps.clone(),
+            mcp.clone(),
+            std::collections::HashSet::new(),
+        );
+        let offered = runner.available();
+        assert!(
+            offered.iter().all(|c| c.id != "recipe.air_quality"),
+            "off must not be offered: {offered:?}"
+        );
+
+        CapabilityConfigRepository::set_stance(
+            state.config.as_ref(),
+            "recipe.air_quality",
+            Stance::Auto,
+        )
+        .unwrap();
+        let runner = build_runner(
+            state.config.as_ref(),
+            empty_caps,
+            mcp,
+            std::collections::HashSet::new(),
+        );
+        let offered = runner.available();
+        assert!(
+            offered.iter().any(|c| c.id == "recipe.air_quality"),
+            "enabled must be offered: {offered:?}"
+        );
     }
 
     #[tokio::test]

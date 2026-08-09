@@ -5,8 +5,8 @@ use endora_kernel::{Decision, RepositoryError, Reversibility};
 use crate::domain::{Change, Transition, Watched, note_reading};
 
 pub use crate::domain::{
-    AutonomyEnvelope, ConfigWrite, McpServer, McpTransport, StandingTrouble, TargetAlias,
-    WORTH_SAYING_AFTER_DAYS, WriteKind, not_answering, worth_raising,
+    AutonomyEnvelope, ConfigWrite, McpServer, McpTransport, Recipe, RecipeInput, RecipeInputKind,
+    StandingTrouble, TargetAlias, WORTH_SAYING_AFTER_DAYS, WriteKind, not_answering, worth_raising,
 };
 
 /// An optional **deep model** — a bigger/cloud AI the person configures for hard
@@ -337,6 +337,36 @@ pub trait StandingTroubleRepository {
     /// # Errors
     /// [`RepositoryError`] if the backend fails.
     fn accept_trouble(&self, server: &str, thing: &str) -> Result<(), RepositoryError>;
+}
+
+/// Stores the person's own recipes (ADR 0071) — capabilities that are data, not
+/// code.
+pub trait RecipeRepository {
+    /// Saves a recipe, or replaces the one with the same id.
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if the backend fails.
+    fn save_recipe(&self, recipe: &Recipe) -> Result<(), RepositoryError>;
+
+    /// Every recipe the person has authored.
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if the backend fails.
+    fn recipes(&self) -> Result<Vec<Recipe>, RepositoryError>;
+
+    /// One recipe by id, `None` if there is none.
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if the backend fails.
+    fn recipe(&self, id: &str) -> Result<Option<Recipe>, RepositoryError>;
+
+    /// Removes a recipe. Also its stance (ADR 0062) — a deleted recipe has
+    /// nothing left to have a stance about, and a stale `auto` row surviving
+    /// deletion would silently re-arm if the same id were ever authored again.
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if the backend fails.
+    fn delete_recipe(&self, id: &str) -> Result<(), RepositoryError>;
 }
 
 /// Stores what the person said a server's targets are really called (ADR 0054).
