@@ -3001,11 +3001,19 @@ pub fn consider_reaching_out(
 /// The mail rides along (headers only, through the house — ADR 0058/0064): who has
 /// written and what about is exactly a morning question, and it was the one section
 /// the person noticed missing on the first fully-configured brief.
+/// One section of the brief: the heading a person reads it under, the plainer
+/// fragment the overview line names it by, and the body text.
+struct BriefSection {
+    heading: &'static str,
+    named: &'static str,
+    body: String,
+}
+
 fn gathered_brief_sections(
     capabilities: &dyn CapabilityRunner,
     place: &str,
     activity: &mut Vec<String>,
-) -> Vec<String> {
+) -> Vec<BriefSection> {
     const TOP_HEADLINES: u8 = 3;
     let configured: std::collections::HashSet<String> = capabilities
         .available()
@@ -3013,9 +3021,16 @@ fn gathered_brief_sections(
         .filter(|s| s.configured)
         .map(|s| s.id)
         .collect();
-    let mut asks: Vec<(&str, &str, String)> = vec![
-        ("traffic", "drive", "{}".to_owned()),
-        ("mail", "mail", "{}".to_owned()),
+    // (capability id, activity-trail label, heading, overview fragment, args)
+    let mut asks: Vec<(&str, &str, &'static str, &'static str, String)> = vec![
+        (
+            "traffic",
+            "drive",
+            "The drive",
+            "the drive",
+            "{}".to_owned(),
+        ),
+        ("mail", "mail", "Mail", "the mail", "{}".to_owned()),
     ];
     // Sections that need a place are skipped without one — a brief must never guess
     // where "home" is (ADR 0065).
@@ -3025,36 +3040,75 @@ fn gathered_brief_sections(
             (
                 "weather",
                 "weather",
+                "Weather",
+                "the weather",
                 serde_json::json!({ "location": place }).to_string(),
             ),
         );
         asks.push((
             "news",
             "news",
+            "News",
+            "the headlines",
             serde_json::json!({ "location": place, "count": TOP_HEADLINES }).to_string(),
         ));
         asks.push((
             "ticketed_events",
             "events",
+            "Local events",
+            "local events",
             serde_json::json!({ "city": place }).to_string(),
         ));
     }
-    asks.push(("city_meetings", "city meetings", "{}".to_owned()));
+    asks.push((
+        "city_meetings",
+        "city meetings",
+        "City meetings",
+        "city meetings",
+        "{}".to_owned(),
+    ));
     let mut sections = Vec::new();
-    for (id, label, args) in asks {
+    for (id, label, heading, named, args) in asks {
         if !configured.contains(id) {
             continue;
         }
         match capabilities.run(id, &args) {
             Ok(s) if !s.trim().is_empty() => {
                 activity.push(format!("Fetched the {label}"));
-                sections.push(s.trim().to_owned());
+                sections.push(BriefSection {
+                    heading,
+                    named,
+                    body: s.trim().to_owned(),
+                });
             }
             Ok(_) => {}
             Err(_) => activity.push(format!("Tried the {label}, but it failed")),
         }
     }
     sections
+}
+
+/// A one-line lead naming what the brief holds, so the person can stop reading
+/// after a sentence if that is enough, or keep going for the rest. Plain text —
+/// no markdown — because it is also what a truncated push notification shows
+/// (`reach_out` takes the first sentence), where a stray `**` would be noise.
+///
+/// Live: a brief with no pacing at all — one unbroken run of bullet points, an
+/// entity-id dump in the middle of it, two dense sections run together with no
+/// gap — was unreadable end to end, and there was nowhere to look to get the gist
+/// without reading everything. This is that gist.
+fn brief_overview(named: &[&str]) -> Option<String> {
+    if named.is_empty() {
+        return None;
+    }
+    let joined = match named {
+        [one] => (*one).to_owned(),
+        [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
+        [] => unreachable!("checked non-empty above"),
+    };
+    Some(format!(
+        "Today's brief covers {joined} — the details are below."
+    ))
 }
 
 /// Everything a brief has to say, assembled deterministically (ADR 0074): what
@@ -3071,16 +3125,31 @@ pub fn assembled_brief_facts(
 ) -> Option<String> {
     let open = troubles.troubles().unwrap_or_default();
     let raisable = endora_capabilities::worth_raising(&open, now_ms);
-    let mut lines: Vec<String> = Vec::new();
+    // Each block gets its own heading and stands apart from its neighbours by a
+    // blank line — a single run of bullets with no pacing was the thing that made
+    // this unreadable in the first place, and a blank line is the one separator
+    // that survives every surface the text ends up on (the console, a push
+    // notification, plain mail).
+    let mut blocks: Vec<String> = Vec::new();
+    let mut named: Vec<&str> = Vec::new();
     if let Some(known) = whats_worth_saying_this_morning(context, &raisable, now_ms) {
-        lines.push(known);
+        named.push("what's around the house");
+        blocks.push(format!("**Around the house**\n{known}"));
     }
-    lines.extend(gathered_brief_sections(
-        capabilities,
-        &context.where_they_are,
-        activity,
-    ));
-    (!lines.is_empty()).then(|| lines.join("\n"))
+    for section in gathered_brief_sections(capabilities, &context.where_they_are, activity) {
+        named.push(section.named);
+        blocks.push(format!("**{}**\n{}", section.heading, section.body));
+    }
+    if blocks.is_empty() {
+        return None;
+    }
+    let mut out = String::new();
+    if let Some(overview) = brief_overview(&named) {
+        out.push_str(&overview);
+        out.push_str("\n\n");
+    }
+    out.push_str(&blocks.join("\n\n"));
+    Some(out)
 }
 
 /// The standing questions (ADR 0076): asks a person makes routinely whose complete
@@ -5066,6 +5135,15 @@ pub fn what_changed_lately(
         .collect()
 }
 
+/// Whether a `context.present` line is one of [`what_changed_lately`]'s raw
+/// transitions rather than a curated, human-authored fact. The exact phrase that
+/// function builds — see the shared shape between the two — is the only thing
+/// checked for, deliberately: it is a description of the one producer, not a guess
+/// at what "looks technical."
+fn is_a_raw_transition(line: &str) -> bool {
+    line.contains(" changed from ") && line.contains(" to ")
+}
+
 /// The facts a morning brief is *for*, gathered from what Endora already holds.
 ///
 /// The brief was one instruction — *"reach for whatever's relevant"* — and four days of them
@@ -5086,10 +5164,19 @@ fn whats_worth_saying_this_morning(
     // One fact per line. The services join theirs with "; ", which reads as a run-on in a
     // brief and — more importantly — makes coverage all-or-nothing: a written brief that
     // mentions two of three things could not be credited with either.
+    //
+    // `context.present` is shared with the chat turn, where a raw transition ("the back
+    // door opened ten minutes ago") is exactly the grounding a reply wants. A brief is
+    // read once, cover to cover, and the same feed's untranslated entries —
+    // `home-assistant::sensor.bambam_pressure changed from 14.484… to 14.485…` — are not
+    // a fact a person asked to start their day with; live, a page of them is what made a
+    // brief unreadable. Filtered by shape (`is_a_raw_transition`), not by source: nothing
+    // the curated `about_the_person` lines say is ever shaped that way.
     lines.extend(
         context
             .present
             .iter()
+            .filter(|line| !is_a_raw_transition(line))
             .flat_map(|line| line.split("; "))
             .map(str::to_owned),
     );
@@ -8521,6 +8608,67 @@ mod tests {
     }
 
     #[test]
+    fn the_assembled_brief_has_an_overview_and_blank_lines_between_sections() {
+        // Live: a brief with no pacing at all — everything joined with a single
+        // "\n", which the console renders as one continuous, unbroken block.
+        struct TwoSections;
+        impl CapabilityRunner for TwoSections {
+            fn available(&self) -> Vec<endora_capabilities::CapabilitySpec> {
+                ["weather", "news"]
+                    .into_iter()
+                    .map(|id| endora_capabilities::CapabilitySpec {
+                        id: id.to_owned(),
+                        wants_place: false,
+                        third_party: false,
+                        description: String::new(),
+                        configured: true,
+                        autonomous: true,
+                        input_schema: None,
+                        reversibility: endora_kernel::Reversibility::Observe,
+                    })
+                    .collect()
+            }
+            fn run(&self, id: &str, _input: &str) -> Result<String, String> {
+                match id {
+                    "weather" => Ok("clear, 25C".to_owned()),
+                    "news" => Ok("1. Big local story".to_owned()),
+                    _ => panic!("not a section: {id}"),
+                }
+            }
+        }
+        let ctx = ButlerContext {
+            where_they_are: "10001".to_owned(),
+            present: vec!["rustic is not home".to_owned()],
+            ..ButlerContext::default()
+        };
+        let mut activity = Vec::new();
+        let facts = super::assembled_brief_facts(
+            &TwoSections,
+            &crate::usecases::NoTrouble,
+            &ctx,
+            0,
+            &mut activity,
+        )
+        .expect("something to say");
+
+        // A one-line lead naming what follows, ahead of everything else.
+        let overview = facts.lines().next().unwrap_or_default();
+        assert!(overview.starts_with("Today's brief covers"), "{facts}");
+        assert!(overview.contains("what's around the house"), "{facts}");
+        assert!(overview.contains("the weather"), "{facts}");
+        assert!(overview.contains("the headlines"), "{facts}");
+
+        // Every section stands apart from its neighbours by a blank line, and
+        // carries a heading — no two sections run together as one paragraph.
+        assert!(facts.contains("\n\n**Around the house**\n"), "{facts}");
+        assert!(facts.contains("\n\n**Weather**\nclear, 25C"), "{facts}");
+        assert!(
+            facts.contains("\n\n**News**\n1. Big local story"),
+            "{facts}"
+        );
+    }
+
+    #[test]
     fn daily_brief_is_assembled_from_the_standing_order() {
         use super::daily_brief;
 
@@ -11776,6 +11924,44 @@ mod who_words_the_brief {
             "{:?}",
             not_yet_said(written, facts)
         );
+    }
+
+    #[test]
+    fn a_raw_transition_is_recognised_and_a_curated_fact_is_not() {
+        use super::is_a_raw_transition;
+        // The exact shape what_changed_lately builds.
+        assert!(is_a_raw_transition(
+            "home-assistant::sensor.bambam_pressure changed from 14.484 to 14.485"
+        ));
+        // The curated about_the_person lines this must never touch.
+        assert!(!is_a_raw_transition("rustic is not home"));
+        assert!(!is_a_raw_transition(
+            "on the Family calendar: Appointment at Modern Pet Salon Bonnie at 2026-08-11 07:00:00"
+        ));
+        assert!(!is_a_raw_transition("outside it is 75°F and partly cloudy"));
+    }
+
+    #[test]
+    fn the_morning_facts_drop_raw_transitions_and_keep_curated_ones() {
+        // Live: a brief's "Around the house" section was a page of
+        // `sensor.x changed from … to …` lines sitting beside the calendar entry
+        // that was the only thing anyone wanted to read. The feed is shared with
+        // the chat turn, which DOES want the raw transition — this filters only
+        // what the brief reads from it.
+        let ctx = ButlerContext {
+            present: vec![
+                "rustic is not home".to_owned(),
+                "home-assistant::sensor.bambam_pressure changed from 14.484 to 14.485".to_owned(),
+                "home-assistant::sun.sun changed from below_horizon to above_horizon".to_owned(),
+                "outside it is 75°F and partly cloudy".to_owned(),
+            ],
+            ..ButlerContext::default()
+        };
+        let said = whats_worth_saying_this_morning(&ctx, &[], 0).expect("something to say");
+        assert!(said.contains("rustic is not home"), "{said}");
+        assert!(said.contains("partly cloudy"), "{said}");
+        assert!(!said.contains("bambam_pressure"), "{said}");
+        assert!(!said.contains("sun.sun"), "{said}");
     }
 
     #[test]
