@@ -99,8 +99,7 @@ ARGS="health"`).
 
 A working personal project, developed against a home server. It runs the butler, the
 skills, the autonomy envelope, and the egress guard described above. Interfaces still
-change between releases — build one complete slice at a time. The latest tagged
-release is on the [releases page](https://github.com/RusticPotatos/Endora/releases).
+change and there's no tagged release yet — build one complete slice at a time.
 
 ## Contributing & license
 
