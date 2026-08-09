@@ -13,7 +13,8 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::application::{CapabilityRunner, Stance};
+use crate::application::{CapabilityRunner, Recipe, Stance};
+use crate::domain::{RecipeInputKind, placeholders_in};
 use endora_kernel::{Decision, Reversibility};
 use serde_json::{Value, json};
 
@@ -3754,6 +3755,204 @@ impl CapabilityRunner for McpRunner {
         );
         conn.transport.call(&tool.name, &args)
     }
+}
+
+// ---- Recipes: the person's own capabilities (ADR 0071) ---------------------
+
+/// Runs the person's own [`Recipe`]s as capabilities — the whole self-authoring
+/// sandbox. A recipe cannot act, by construction: `Reversibility::Observe` is
+/// hardcoded below, not read from anywhere a recipe could set it, and its
+/// interpretation never grows past the five fields it has (there is no branch,
+/// no loop, no second request to add one to). Its output taints the turn like any
+/// other outside service's words (`third_party: true`, ADR 0064).
+///
+/// **Off is the default a stored stance overrides, not the observe band's own.**
+/// Every other read defaults to `Auto` — a person did not choose to expose it, the
+/// band did. A recipe is different: the person wrote the request themselves, and
+/// running it before they have said so once is the one thing this format refuses
+/// to do silently. The HTTP layer stamps an explicit `Off` row at authoring time
+/// (ADR 0062's stored-beats-default, the same mechanism `trust_all` already uses
+/// for MCP tools) — this reads that row, and reads it fresh, so *nothing* here is
+/// hardcoded as a special case in the stance ladder itself.
+///
+/// Interpretation reuses [`scan_outbound_secret`] and [`redact_pii_in_value`] —
+/// the exact free functions [`RegistryRunner::run`] calls — rather than a second
+/// copy of either (ADR 0071's "zero parallel machinery").
+pub struct RecipeRunner {
+    recipes: Vec<Recipe>,
+    stances: std::collections::HashMap<String, Stance>,
+}
+
+impl RecipeRunner {
+    /// Wraps the person's recipes with their stored stances — built fresh per
+    /// turn, the same posture as [`RegistryRunner::with_config`], so authoring or
+    /// enabling one takes effect on the very next turn.
+    #[must_use]
+    pub fn new(recipes: Vec<Recipe>, stances: Vec<(String, Stance)>) -> Self {
+        Self {
+            recipes,
+            stances: stances.into_iter().collect(),
+        }
+    }
+
+    /// A recipe's stance, defaulting to `Off` — see the struct doc for why that
+    /// default lives here and not in [`default_stance`].
+    fn stance_of(&self, capability_id: &str) -> Stance {
+        self.stances
+            .get(capability_id)
+            .copied()
+            .unwrap_or(Stance::Off)
+    }
+
+    fn find(&self, id: &str) -> Option<&Recipe> {
+        let short = id.strip_prefix("recipe.")?;
+        self.recipes.iter().find(|r| r.id == short)
+    }
+}
+
+impl CapabilityRunner for RecipeRunner {
+    fn available(&self) -> Vec<crate::application::CapabilitySpec> {
+        self.recipes
+            .iter()
+            .map(|r| {
+                let capability_id = r.capability_id();
+                // Binary, deliberately: the console offers one affirmative action
+                // ("enable"), not a confirm-each-use middle state, so anything
+                // other than Off is the same as enabled.
+                let enabled = self.stance_of(&capability_id) != Stance::Off;
+                crate::application::CapabilitySpec {
+                    id: capability_id,
+                    wants_place: false,
+                    third_party: true,
+                    description: r.description.clone(),
+                    configured: enabled,
+                    reversibility: Reversibility::Observe,
+                    autonomous: enabled,
+                    input_schema: Some(recipe_input_schema(r)),
+                }
+            })
+            .collect()
+    }
+
+    fn decision(&self, id: &str) -> Option<Decision> {
+        self.find(id).map(|r| {
+            if self.stance_of(&r.capability_id()) == Stance::Off {
+                Decision::Block
+            } else {
+                Decision::Act
+            }
+        })
+    }
+
+    fn run(&self, id: &str, input_json: &str) -> Result<String, String> {
+        let recipe = self
+            .find(id)
+            .ok_or_else(|| format!("no such recipe '{id}'"))?;
+        if self.stance_of(&recipe.capability_id()) == Stance::Off {
+            return Err(format!("the '{id}' recipe is turned off"));
+        }
+        // The same tripwire and redaction every reaches_external built-in goes
+        // through — a recipe always reaches external by construction (its `get`
+        // is required to be http(s)), so both apply unconditionally.
+        if let Some(kind) = scan_outbound_secret(input_json) {
+            return Err(format!(
+                "refusing to send this to '{id}' — the request looks like it contains {kind}"
+            ));
+        }
+        let mut input: Value = serde_json::from_str(input_json.trim())
+            .or_else(|_| Ok::<Value, serde_json::Error>(json!({})))
+            .unwrap_or_else(|_| json!({}));
+        redact_pii_in_value(&mut input);
+        run_recipe(recipe, &input)
+    }
+}
+
+/// The JSON Schema a recipe's declared inputs describe, for native tool-calling —
+/// the same role `input_schema` plays for every other skill. Every input is
+/// required: a `get` slot with nothing to fill it is a request that cannot be
+/// made, and there is no optional-parameter concept in five fields to fall back
+/// to.
+fn recipe_input_schema(recipe: &Recipe) -> String {
+    let properties: serde_json::Map<String, Value> = recipe
+        .inputs
+        .iter()
+        .map(|i| {
+            (
+                i.name.clone(),
+                json!({ "type": i.kind.as_str(), "description": format!("for {}", recipe.description) }),
+            )
+        })
+        .collect();
+    let required: Vec<&str> = recipe.inputs.iter().map(|i| i.name.as_str()).collect();
+    json!({ "type": "object", "properties": properties, "required": required }).to_string()
+}
+
+/// Runs one recipe: fills `get` from `input`, fetches it, and fills `say` from
+/// the response. The whole interpreter — nothing here can do anything a plain GET
+/// followed by reading two known fields back could not already do.
+///
+/// # Errors
+/// A `String` message when an input is missing or the wrong shape, the request
+/// itself is refused (by [`RecipeRunner::run`]'s checks above), the fetch fails,
+/// or the response is not JSON / lacks a path `say` names.
+fn run_recipe(recipe: &Recipe, input: &Value) -> Result<String, String> {
+    let filled_get = fill_get_template(recipe, input)?;
+    let body = http_get_text(&filled_get, 64 * 1024).map_err(|e| e.to_string())?;
+    let response: Value =
+        serde_json::from_str(&body).map_err(|_| "the response wasn't JSON".to_owned())?;
+    fill_say_template(&recipe.say, &response)
+}
+
+/// Fills `recipe.get`'s `{slot}` placeholders from `input`, URL-encoding every
+/// value. Validated at authoring time ([`Recipe::new`]) to name only declared
+/// inputs, so the one failure mode left is the *call* omitting one or supplying
+/// the wrong shape — reported by name, since that is squarely the caller's (the
+/// model's) mistake to see and correct.
+fn fill_get_template(recipe: &Recipe, input: &Value) -> Result<String, String> {
+    let mut url = recipe.get.clone();
+    for i in &recipe.inputs {
+        let Some(value) = input.get(&i.name) else {
+            return Err(format!("missing input '{}'", i.name));
+        };
+        let filled = match i.kind {
+            RecipeInputKind::Text => value
+                .as_str()
+                .map(str::to_owned)
+                .ok_or_else(|| format!("'{}' must be text", i.name))?,
+            RecipeInputKind::Number => {
+                if !value.is_number() {
+                    return Err(format!("'{}' must be a number", i.name));
+                }
+                value.to_string()
+            }
+        };
+        url = url.replace(&format!("{{{}}}", i.name), &urlencode(&filled));
+    }
+    Ok(url)
+}
+
+/// Fills `say`'s `{a.b.c}` placeholders by walking that dotted path into the
+/// response, stringifying whatever it finds. No expressions, no array indices —
+/// a path is a sequence of object keys and nothing else, which is the whole
+/// reason a recipe's response reading can be trusted not to hide a second
+/// request: there is no syntax left for one to hide in.
+fn fill_say_template(say: &str, response: &Value) -> Result<String, String> {
+    let mut out = say.to_owned();
+    for path in placeholders_in(say) {
+        let mut here = response;
+        for step in path.split('.') {
+            here = here
+                .get(step)
+                .ok_or_else(|| format!("the response didn't have '{path}'"))?;
+        }
+        let shown = match here {
+            Value::String(s) => s.clone(),
+            Value::Null => return Err(format!("the response didn't have '{path}'")),
+            other => other.to_string(),
+        };
+        out = out.replace(&format!("{{{path}}}"), &shown);
+    }
+    Ok(out)
 }
 
 /// Passes one method of [`CapabilityRunner`](crate::application::CapabilityRunner) straight
@@ -8862,5 +9061,205 @@ mod what_the_city_is_doing {
             "{today}"
         );
         assert!(rest.starts_with('-'));
+    }
+}
+
+#[cfg(test)]
+mod recipe_tests {
+    use super::*;
+    use crate::domain::{Recipe, RecipeInput, RecipeInputKind};
+
+    fn air_quality() -> Recipe {
+        Recipe::new(
+            "air_quality",
+            "Today's air quality where you are.",
+            vec![
+                RecipeInput { name: "lat".to_owned(), kind: RecipeInputKind::Number },
+                RecipeInput { name: "lon".to_owned(), kind: RecipeInputKind::Number },
+            ],
+            "https://air-quality-api.open-meteo.com/v1/air-quality?latitude={lat}&longitude={lon}&current=us_aqi",
+            "The air quality index is {current.us_aqi} right now.",
+        )
+        .unwrap()
+    }
+
+    // ---- fill_get_template ----------------------------------------------
+
+    #[test]
+    fn the_worked_example_fills_exactly() {
+        let url =
+            fill_get_template(&air_quality(), &json!({"lat": 40.7128, "lon": -74.006})).unwrap();
+        assert_eq!(
+            url,
+            "https://air-quality-api.open-meteo.com/v1/air-quality?latitude=40.7128&longitude=-74.006&current=us_aqi"
+        );
+    }
+
+    #[test]
+    fn a_missing_input_is_refused_by_name() {
+        let err = fill_get_template(&air_quality(), &json!({"lat": 40.0})).unwrap_err();
+        assert!(err.contains("lon"), "{err}");
+    }
+
+    #[test]
+    fn the_wrong_shape_is_refused() {
+        let err =
+            fill_get_template(&air_quality(), &json!({"lat": "north", "lon": -74.0})).unwrap_err();
+        assert!(err.contains("lat") && err.contains("number"), "{err}");
+
+        let text_recipe = Recipe::new(
+            "x",
+            "d",
+            vec![RecipeInput {
+                name: "q".to_owned(),
+                kind: RecipeInputKind::Text,
+            }],
+            "https://x.test/?q={q}",
+            "s",
+        )
+        .unwrap();
+        let err = fill_get_template(&text_recipe, &json!({"q": 5})).unwrap_err();
+        assert!(err.contains('q') && err.contains("text"), "{err}");
+    }
+
+    #[test]
+    fn a_value_cannot_widen_the_request_it_fills() {
+        // The ceiling: every character outside the unreserved set is percent-encoded,
+        // so a value carrying "&x=y", "../", or a raw CRLF cannot add a query
+        // parameter, walk a path, or inject a header — there is no way for a slot's
+        // VALUE to change the request's SHAPE, only what one placeholder says.
+        let recipe = Recipe::new(
+            "x",
+            "d",
+            vec![RecipeInput {
+                name: "q".to_owned(),
+                kind: RecipeInputKind::Text,
+            }],
+            "https://x.test/search?q={q}&format=json",
+            "s",
+        )
+        .unwrap();
+        let url = fill_get_template(&recipe, &json!({"q": "a&evil=1"})).unwrap();
+        assert_eq!(url, "https://x.test/search?q=a%26evil%3D1&format=json");
+        assert!(
+            url.ends_with("&format=json"),
+            "the real second param must survive: {url}"
+        );
+
+        let url = fill_get_template(&recipe, &json!({"q": "../../etc/passwd"})).unwrap();
+        assert!(!url.contains("../"), "{url}");
+
+        let url = fill_get_template(&recipe, &json!({"q": "x\r\nX-Evil: 1"})).unwrap();
+        assert!(!url.contains('\r') && !url.contains('\n'), "{url}");
+    }
+
+    // ---- fill_say_template ------------------------------------------------
+
+    #[test]
+    fn the_worked_example_reads_the_nested_path() {
+        let said = fill_say_template(
+            "The air quality index is {current.us_aqi} right now.",
+            &json!({"current": {"us_aqi": 42, "time": "2026-08-09T12:00"}}),
+        )
+        .unwrap();
+        assert_eq!(said, "The air quality index is 42 right now.");
+    }
+
+    #[test]
+    fn a_missing_path_is_refused_by_name() {
+        let err = fill_say_template("{a.b.c}", &json!({"a": {"b": {}}})).unwrap_err();
+        assert!(err.contains("a.b.c"), "{err}");
+    }
+
+    #[test]
+    fn a_string_value_is_not_re_quoted() {
+        let said = fill_say_template(
+            "Condition: {current.condition}",
+            &json!({"current": {"condition": "clear"}}),
+        )
+        .unwrap();
+        assert_eq!(said, "Condition: clear");
+    }
+
+    #[test]
+    fn every_placeholder_in_the_template_is_filled() {
+        let said = fill_say_template("{a} and {b}", &json!({"a": 1, "b": "two"})).unwrap();
+        assert_eq!(said, "1 and two");
+    }
+
+    // ---- RecipeRunner -------------------------------------------------
+
+    #[test]
+    fn an_unenabled_recipe_is_hidden_and_a_stored_stance_turns_it_on() {
+        let runner = RecipeRunner::new(vec![air_quality()], vec![]);
+        let spec = runner
+            .available()
+            .into_iter()
+            .find(|s| s.id == "recipe.air_quality")
+            .unwrap();
+        // Absence defaults to Off — the observe band's own Auto default is not
+        // reached; see the struct doc for why.
+        assert!(!spec.configured, "an unauthored-into stance must not run");
+        assert!(!spec.autonomous);
+        assert_eq!(spec.reversibility, Reversibility::Observe);
+        assert!(
+            spec.third_party,
+            "a recipe's response is another service's words"
+        );
+        assert_eq!(runner.decision("recipe.air_quality"), Some(Decision::Block));
+        assert!(runner.run("recipe.air_quality", "{}").is_err());
+
+        let enabled = RecipeRunner::new(
+            vec![air_quality()],
+            vec![("recipe.air_quality".to_owned(), Stance::Auto)],
+        );
+        let spec = enabled
+            .available()
+            .into_iter()
+            .find(|s| s.id == "recipe.air_quality")
+            .unwrap();
+        assert!(spec.configured);
+        assert!(spec.autonomous);
+        assert_eq!(enabled.decision("recipe.air_quality"), Some(Decision::Act));
+    }
+
+    #[test]
+    fn a_call_that_looks_like_a_secret_is_refused_before_any_request() {
+        let runner = RecipeRunner::new(
+            vec![air_quality()],
+            vec![("recipe.air_quality".to_owned(), Stance::Auto)],
+        );
+        let err = runner
+            .run(
+                "recipe.air_quality",
+                r#"{"lat": 1, "lon": "sk-abcdefghijklmnopqrstuvwxyz0123456789ABCD"}"#,
+            )
+            .unwrap_err();
+        assert!(err.contains("looks like it contains"), "{err}");
+    }
+
+    #[test]
+    fn an_unknown_recipe_id_is_a_named_error_not_a_panic() {
+        let runner = RecipeRunner::new(vec![air_quality()], vec![]);
+        assert_eq!(runner.decision("recipe.nope"), None);
+        assert!(runner.run("recipe.nope", "{}").is_err());
+        assert!(
+            runner.run("weather", "{}").is_err(),
+            "the recipe. prefix is required"
+        );
+    }
+
+    #[test]
+    fn the_input_schema_requires_every_declared_input() {
+        let schema = recipe_input_schema(&air_quality());
+        let v: Value = serde_json::from_str(&schema).unwrap();
+        let required: Vec<&str> = v["required"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|x| x.as_str().unwrap())
+            .collect();
+        assert_eq!(required, vec!["lat", "lon"]);
+        assert_eq!(v["properties"]["lat"]["type"], "number");
     }
 }
