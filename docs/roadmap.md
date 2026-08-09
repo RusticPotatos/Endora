@@ -59,10 +59,20 @@ already knows, and refrain from overclaiming confidence — and an **adoption fl
 so the model layer can no longer trade understanding away for tool-routing points on
 its own.
 
-The battery is now data-driven (55 cases as of 2026-08-06; the measurements below
+The battery is now data-driven (57 cases as of 2026-08-08; the measurements below
 predate later additions and keep their original denominators) and runs repeatedly, reporting the spread
 rather than hiding it — because the spread *is* the resolution of the instrument, and
 without it there is no way to tell a real gain from a lucky run.
+
+**Re-baselined 2026-08-08, `qwen2.5:7b`, 54 scored cases: mean 38.7/54, range
+37–41, spread 4** (L1 21/30, L2 11/13, L3 5/11 on the last run; 14 cases flaky).
+Two readings worth recording beside the number. First, the outright failures —
+`answers-a-count-with-a-count` 0/3, `report:names-what-is-offline` 0/3 — are asks
+production no longer routes to the model at all (ADR 0076 standing questions);
+they stay in the battery as model-fitness measurements, not product risks. Second,
+this settles the ADR 0072 preferred-rung question on evidence: the rung stays
+**empty** — the 14b twins the 7b, qwen3-14b's L3 collapse is real, and the pain a
+bigger model would have fixed has since been removed from the model's hands.
 
 **Measured 2026-07-25, `qwen2.5:7b`.** Three separate 3-run measurements, taken hours
 apart while the battery was being corrected, gave **32.3/39, 32.0/39 and 30.0/40** — and
