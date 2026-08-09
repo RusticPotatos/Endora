@@ -106,6 +106,154 @@ impl ConfigWrite {
     }
 }
 
+/// A declared type for one [`Recipe`] input — the only two shapes a URL template
+/// slot or a say-template value can be.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RecipeInputKind {
+    /// Free text, URL-encoded when it fills a `get` slot.
+    Text,
+    /// A number, written with Rust's default float/int formatting.
+    Number,
+}
+
+impl RecipeInputKind {
+    /// A stable, lowercase name for storage and interfaces.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Text => "string",
+            Self::Number => "number",
+        }
+    }
+
+    /// Reads the stored name back. `None` for anything else — an unrecognised
+    /// kind is not silently treated as text.
+    #[must_use]
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "string" => Some(Self::Text),
+            "number" => Some(Self::Number),
+            _ => None,
+        }
+    }
+}
+
+/// One named, typed input a [`Recipe`] declares — what may fill its templates.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecipeInput {
+    /// The slot's name, as it appears in `{name}` inside the templates.
+    pub name: String,
+    /// What shape a value for it must be.
+    pub kind: RecipeInputKind,
+}
+
+/// A person-authored capability that is data, not code (ADR 0071).
+///
+/// Five fields are the whole expressiveness ceiling, and the ceiling **is** the
+/// sandbox: a `get` template whose `{slot}` placeholders are filled only from
+/// `inputs`, each value URL-encoded by the interpreter — a format with no way to
+/// write an unescaped placeholder has no escaping to fail; and a `say` template
+/// whose `{path.into.the.response}` placeholders are JSON paths, stringified, with
+/// no expressions and no second request. Anything a recipe cannot say, it cannot
+/// do.
+///
+/// Every placeholder in `get` must name a declared input — a template that could
+/// never be filled is rejected at authoring time, not discovered as a 400 the
+/// first time somebody enables it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Recipe {
+    /// A short, url-safe name — becomes `recipe.{id}` in the capability catalogue.
+    pub id: String,
+    /// What it does, in the person's or the butler's own words.
+    pub description: String,
+    /// What it accepts.
+    pub inputs: Vec<RecipeInput>,
+    /// The GET template. Every `{slot}` here must be a declared input's name.
+    pub get: String,
+    /// The template for what to say about the response — JSON-path placeholders.
+    pub say: String,
+}
+
+impl Recipe {
+    /// Builds a recipe, or refuses one whose template could never run.
+    ///
+    /// # Errors
+    /// [`DomainError::EmptyField`] on a blank required field;
+    /// [`DomainError::Malformed`] on an id with unsafe characters, a `get` whose
+    /// scheme is not `http`/`https`, or a `get` placeholder naming no declared
+    /// input.
+    pub fn new(
+        id: &str,
+        description: &str,
+        inputs: Vec<RecipeInput>,
+        get: &str,
+        say: &str,
+    ) -> Result<Self, DomainError> {
+        let id = require_non_empty("recipe.id", id)?;
+        if !id
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+            || !id.chars().next().is_some_and(|c| c.is_ascii_lowercase())
+        {
+            return Err(DomainError::Malformed {
+                field: "recipe.id",
+                reason: "must start with a lowercase letter and hold only \
+                         lowercase letters, digits, and underscores",
+            });
+        }
+        let description = require_non_empty("recipe.description", description)?;
+        let get = require_non_empty("recipe.get", get)?;
+        if !(get.starts_with("https://") || get.starts_with("http://")) {
+            return Err(DomainError::Malformed {
+                field: "recipe.get",
+                reason: "must start with http:// or https:// — a recipe has no \
+                         other way to reach anything",
+            });
+        }
+        let say = require_non_empty("recipe.say", say)?;
+        let declared: std::collections::HashSet<&str> =
+            inputs.iter().map(|i| i.name.as_str()).collect();
+        for slot in placeholders_in(&get) {
+            if !declared.contains(slot) {
+                return Err(DomainError::Malformed {
+                    field: "recipe.get",
+                    reason: "names a slot that is not a declared input",
+                });
+            }
+        }
+        Ok(Self {
+            id,
+            description,
+            inputs,
+            get,
+            say,
+        })
+    }
+
+    /// The id this recipe occupies in the capability catalogue.
+    #[must_use]
+    pub fn capability_id(&self) -> String {
+        format!("recipe.{}", self.id)
+    }
+}
+
+/// Every `{name}` placeholder in a template, in order of appearance, names only —
+/// braces stripped. Shared by validation (every `get` slot must be declared) and
+/// the interpreter (every `get`/`say` slot gets the same extraction).
+#[must_use]
+pub fn placeholders_in(template: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    let mut rest = template;
+    while let Some(open) = rest.find('{') {
+        let Some(close) = rest[open..].find('}') else {
+            break;
+        };
+        out.push(&rest[open + 1..open + close]);
+        rest = &rest[open + close + 1..];
+    }
+    out
+}
+
 /// Something in a service that has been wrong long enough to be worth saying (ADR 0056).
 ///
 /// A butler that reports "13 entities unavailable" has added an item to someone's day. One
@@ -898,5 +1046,113 @@ mod deciding_that_something_changed {
             note_reading(Some(&prior), &prior.key, "  On ", 9_999),
             Change::Nothing
         ));
+    }
+
+    fn latlon() -> Vec<super::RecipeInput> {
+        vec![
+            super::RecipeInput {
+                name: "lat".to_owned(),
+                kind: super::RecipeInputKind::Number,
+            },
+            super::RecipeInput {
+                name: "lon".to_owned(),
+                kind: super::RecipeInputKind::Number,
+            },
+        ]
+    }
+
+    #[test]
+    fn the_worked_example_from_the_adr_builds() {
+        let r = super::Recipe::new(
+            "air_quality",
+            "Today's air quality where you are.",
+            latlon(),
+            "https://air-quality-api.open-meteo.com/v1/air-quality?latitude={lat}&longitude={lon}&current=us_aqi",
+            "The air quality index is {current.us_aqi} right now.",
+        )
+        .unwrap();
+        assert_eq!(r.capability_id(), "recipe.air_quality");
+    }
+
+    #[test]
+    fn an_id_with_unsafe_characters_is_refused() {
+        for bad in [
+            "Air Quality",
+            "air.quality",
+            "air/quality",
+            "1air",
+            "-air",
+            "",
+        ] {
+            assert!(
+                super::Recipe::new(bad, "d", vec![], "https://x.test/", "s").is_err(),
+                "{bad:?} should have been refused"
+            );
+        }
+    }
+
+    #[test]
+    fn a_get_template_must_be_http_or_https() {
+        assert!(
+            super::Recipe::new("x", "d", vec![], "ftp://x.test/", "s").is_err(),
+            "a scheme other than http(s) is not a request a recipe may make"
+        );
+        assert!(
+            super::Recipe::new("x", "d", vec![], "file:///etc/passwd", "s").is_err(),
+            "a local file is not a request a recipe may make"
+        );
+    }
+
+    #[test]
+    fn a_get_slot_naming_an_undeclared_input_is_refused_at_authoring_time() {
+        // Caught here, not discovered as a runtime 400 the first time someone
+        // enables it — the whole point of validating at authoring time.
+        let err = super::Recipe::new(
+            "x",
+            "d",
+            latlon(),
+            "https://x.test/?latitude={lat}&longitude={lon}&zip={zip}",
+            "s",
+        )
+        .unwrap_err();
+        assert!(matches!(err, endora_kernel::DomainError::Malformed { .. }));
+    }
+
+    #[test]
+    fn an_undeclared_slot_in_say_is_left_for_the_interpreter() {
+        // `say` reads from the live response, which the domain layer has never
+        // seen — only `get`'s slots are checkable against declared inputs here.
+        assert!(
+            super::Recipe::new(
+                "x",
+                "d",
+                latlon(),
+                "https://x.test/?latitude={lat}&longitude={lon}",
+                "{deeply.nested.value}",
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn placeholders_in_reads_names_in_order() {
+        assert_eq!(super::placeholders_in("{a}-{b}/{c}"), vec!["a", "b", "c"]);
+        assert_eq!(super::placeholders_in("no slots here"), Vec::<&str>::new());
+        // An unclosed brace contributes nothing rather than panicking.
+        assert_eq!(super::placeholders_in("{a}-{unclosed"), vec!["a"]);
+    }
+
+    #[test]
+    fn recipe_input_kind_round_trips_by_name() {
+        assert_eq!(
+            super::RecipeInputKind::from_name("string"),
+            Some(super::RecipeInputKind::Text)
+        );
+        assert_eq!(
+            super::RecipeInputKind::from_name("number"),
+            Some(super::RecipeInputKind::Number)
+        );
+        assert_eq!(super::RecipeInputKind::from_name("bool"), None);
+        assert_eq!(super::RecipeInputKind::Text.as_str(), "string");
     }
 }

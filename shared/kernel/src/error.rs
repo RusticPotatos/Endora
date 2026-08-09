@@ -22,6 +22,16 @@ pub enum DomainError {
     ReflectionWithoutEvidence,
     /// An approval decision was attempted on a proposal that was already decided.
     AlreadyDecided,
+    /// A value failed a rule narrower than "not empty" — a shape, a range, a
+    /// reference to something that must exist. Generic on purpose: entities that
+    /// need it supply their own field name and reason rather than each growing a
+    /// bespoke variant.
+    Malformed {
+        /// Name of the offending field, e.g. `"recipe.get"`.
+        field: &'static str,
+        /// What rule it broke, as a short human sentence fragment.
+        reason: &'static str,
+    },
 }
 
 impl fmt::Display for DomainError {
@@ -35,6 +45,7 @@ impl fmt::Display for DomainError {
                 write!(f, "a reflection must cite at least one observation")
             }
             Self::AlreadyDecided => write!(f, "this proposal has already been decided"),
+            Self::Malformed { field, reason } => write!(f, "`{field}` {reason}"),
         }
     }
 }

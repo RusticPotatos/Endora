@@ -9,10 +9,10 @@ use crate::application::{
     AutonomyEnvelope, AutonomyEnvelopeRepository, ButlerModelConfig, ButlerModelConfigRepository,
     CapabilityConfigRepository, CapabilitySettingsRepository, ConfigWrite, DeepModel,
     DeepModelRepository, McpServer, McpServerRegistry, McpTransport, ModelSlot, ModelTuneSchedule,
-    ModelTuneScheduleRepository, Sampling, Stance, StandingTrouble, StandingTroubleRepository,
-    TargetAlias, TargetAliasRepository,
+    ModelTuneScheduleRepository, Recipe, RecipeRepository, Sampling, Stance, StandingTrouble,
+    StandingTroubleRepository, TargetAlias, TargetAliasRepository,
 };
-use crate::domain::{Transition, Watched};
+use crate::domain::{RecipeInput, RecipeInputKind, Transition, Watched};
 
 /// Creates the capabilities config tables if absent (idempotent).
 ///
@@ -135,7 +135,14 @@ pub fn migrate(db: &Db) -> Result<(), RepositoryError> {
                 at_ms    INTEGER NOT NULL,
                 PRIMARY KEY (key, at_ms)
             ) STRICT;
-            CREATE INDEX IF NOT EXISTS idx_transitions_at ON transitions(at_ms);",
+            CREATE INDEX IF NOT EXISTS idx_transitions_at ON transitions(at_ms);
+            CREATE TABLE IF NOT EXISTS recipes (
+                id          TEXT PRIMARY KEY,
+                description TEXT NOT NULL,
+                inputs      TEXT NOT NULL,
+                get_url     TEXT NOT NULL,
+                say         TEXT NOT NULL
+            ) STRICT;",
         )
         .map_err(backend)?;
     // Additive migrations for databases created before these columns existed —
@@ -804,6 +811,100 @@ impl StandingTroubleRepository for ConfigStore {
     }
 }
 
+/// Reassembles a [`Recipe`] from its stored row, refusing anything that would not
+/// have passed [`Recipe::new`] — the same posture as `parse_id` for a stored id:
+/// corrupted-in-storage is reported, never guessed at.
+fn recipe_from_row(
+    id: &str,
+    description: &str,
+    inputs_json: &str,
+    get: &str,
+    say: &str,
+) -> Result<Recipe, RepositoryError> {
+    let raw: Vec<(String, String)> =
+        serde_json::from_str(inputs_json).map_err(|e| corrupt(e.to_string()))?;
+    let inputs = raw
+        .into_iter()
+        .map(|(name, kind)| {
+            RecipeInputKind::from_name(&kind)
+                .map(|kind| RecipeInput { name, kind })
+                .ok_or_else(|| corrupt(format!("unrecognised recipe input kind '{kind}'")))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    Recipe::new(id, description, inputs, get, say).map_err(|e| corrupt(e.to_string()))
+}
+
+impl RecipeRepository for ConfigStore {
+    fn save_recipe(&self, recipe: &Recipe) -> Result<(), RepositoryError> {
+        let raw: Vec<(&str, &str)> = recipe
+            .inputs
+            .iter()
+            .map(|i| (i.name.as_str(), i.kind.as_str()))
+            .collect();
+        let inputs_json = serde_json::to_string(&raw).map_err(|e| corrupt(e.to_string()))?;
+        self.db
+            .lock()?
+            .execute(
+                "INSERT OR REPLACE INTO recipes (id, description, inputs, get_url, say) \
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![
+                    recipe.id,
+                    recipe.description,
+                    inputs_json,
+                    recipe.get,
+                    recipe.say
+                ],
+            )
+            .map_err(backend)?;
+        Ok(())
+    }
+
+    fn recipes(&self) -> Result<Vec<Recipe>, RepositoryError> {
+        let conn = self.db.lock()?;
+        let mut stmt = conn
+            .prepare("SELECT id, description, inputs, get_url, say FROM recipes ORDER BY id ASC")
+            .map_err(backend)?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, String>(3)?,
+                    r.get::<_, String>(4)?,
+                ))
+            })
+            .map_err(backend)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(backend)?;
+        rows.into_iter()
+            .map(|(id, description, inputs_json, get, say)| {
+                recipe_from_row(&id, &description, &inputs_json, &get, &say)
+            })
+            .collect()
+    }
+
+    fn recipe(&self, id: &str) -> Result<Option<Recipe>, RepositoryError> {
+        Ok(self.recipes()?.into_iter().find(|r| r.id == id))
+    }
+
+    fn delete_recipe(&self, id: &str) -> Result<(), RepositoryError> {
+        let conn = self.db.lock()?;
+        conn.execute("DELETE FROM recipes WHERE id = ?1", params![id])
+            .map_err(backend)?;
+        // Its stance too (ADR 0062): nothing is left to have an opinion about, and a
+        // stale `auto` row surviving deletion would silently re-arm a same-named
+        // recipe authored later.
+        let capability_id = format!("recipe.{id}");
+        conn.execute(
+            "DELETE FROM capability_config WHERE id = ?1",
+            params![capability_id],
+        )
+        .map_err(backend)?;
+        Ok(())
+    }
+}
+
 impl McpServerRegistry for ConfigStore {
     fn list(&self) -> Result<Vec<McpServer>, RepositoryError> {
         let conn = self.db.lock()?;
@@ -1446,5 +1547,100 @@ mod standing_trouble_tests {
                 .unwrap()
                 .accepted
         );
+    }
+}
+
+#[cfg(test)]
+mod recipe_tests {
+    use super::*;
+
+    fn store() -> ConfigStore {
+        let db = endora_persistence::Db::open_in_memory().unwrap();
+        migrate(&db).unwrap();
+        ConfigStore::new(db)
+    }
+
+    fn air_quality() -> Recipe {
+        Recipe::new(
+            "air_quality",
+            "Today's air quality where you are.",
+            vec![
+                RecipeInput { name: "lat".to_owned(), kind: RecipeInputKind::Number },
+                RecipeInput { name: "lon".to_owned(), kind: RecipeInputKind::Number },
+            ],
+            "https://air-quality-api.open-meteo.com/v1/air-quality?latitude={lat}&longitude={lon}&current=us_aqi",
+            "The air quality index is {current.us_aqi} right now.",
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn a_recipe_round_trips_through_storage_exactly() {
+        let store = store();
+        let recipe = air_quality();
+        store.save_recipe(&recipe).unwrap();
+        let back = store.recipe("air_quality").unwrap().expect("saved");
+        assert_eq!(
+            back, recipe,
+            "the stored recipe must be byte-for-byte the one saved"
+        );
+        assert_eq!(store.recipes().unwrap(), vec![recipe]);
+    }
+
+    #[test]
+    fn saving_the_same_id_again_replaces_it() {
+        let store = store();
+        store.save_recipe(&air_quality()).unwrap();
+        let edited = Recipe::new(
+            "air_quality",
+            "Edited description.",
+            vec![RecipeInput {
+                name: "lat".to_owned(),
+                kind: RecipeInputKind::Number,
+            }],
+            "https://x.test/?latitude={lat}",
+            "{x}",
+        )
+        .unwrap();
+        store.save_recipe(&edited).unwrap();
+        assert_eq!(store.recipes().unwrap(), vec![edited]);
+    }
+
+    #[test]
+    fn an_unknown_id_is_none_not_an_error() {
+        let store = store();
+        assert_eq!(store.recipe("nope").unwrap(), None);
+    }
+
+    #[test]
+    fn deleting_removes_the_recipe_and_its_stance() {
+        let store = store();
+        store.save_recipe(&air_quality()).unwrap();
+        CapabilityConfigRepository::set_stance(&store, "recipe.air_quality", Stance::Auto).unwrap();
+        assert_eq!(
+            CapabilityConfigRepository::stances(&store).unwrap(),
+            vec![("recipe.air_quality".to_owned(), Stance::Auto)]
+        );
+
+        store.delete_recipe("air_quality").unwrap();
+
+        assert_eq!(store.recipes().unwrap(), Vec::new());
+        assert!(
+            CapabilityConfigRepository::stances(&store)
+                .unwrap()
+                .is_empty(),
+            "a deleted recipe must not leave a stance behind for a future namesake to inherit"
+        );
+    }
+
+    #[test]
+    fn two_recipes_come_back_sorted_by_id() {
+        let store = store();
+        let b = Recipe::new("zzz_last", "d", vec![], "https://x.test/", "s").unwrap();
+        store.save_recipe(&b).unwrap();
+        store.save_recipe(&air_quality()).unwrap();
+        let saved = store.recipes().unwrap();
+        let ids: Vec<&str> = saved.iter().map(|r| r.id.as_str()).collect();
+        assert_eq!(ids, vec!["air_quality", "zzz_last"]);
     }
 }
