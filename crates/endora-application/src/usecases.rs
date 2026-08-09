@@ -1825,25 +1825,24 @@ pub fn send_to_butler_streaming(
     // They asked, so nothing on file motivated it (ADR 0053).
     let actions = OutcomeSink::unmotivated(outcomes);
 
-    // THE BRIEF ROUTES DETERMINISTICALLY (ADR 0074). Asking for the brief invokes a
-    // standing order, not a conversation — and routing it through the model was
-    // measured live exactly once: the first ask after the skill shipped went to
-    // house gossip ("I noticed some technical hiccups with the lights") instead.
-    // A known ask for a known feature is policy's to route, not the model's to
-    // guess. Falls through to the ordinary turn if the assembly itself fails.
-    if asked_for_their_brief(text) {
-        if let Some(reply_text) = brief_on_request(
-            capabilities,
-            butler,
-            ids,
-            clock,
-            on_token,
-            on_step,
-            &mut activity,
-        ) {
-            let message = post_butler_message(chat, ids, clock, &reply_text)?;
-            return Ok((message, activity));
-        }
+    // STANDING QUESTIONS ROUTE DETERMINISTICALLY (ADR 0074/0076). A known ask for
+    // a known feature is policy's to route, not the model's to guess — measured
+    // live twice: the first brief ask after its skill shipped went to house gossip,
+    // and "what lights are on" survived four fixes of everything around the model
+    // before the summary itself was taken from it. Falls through to the ordinary
+    // turn when nothing matches or the answer cannot be assembled.
+    if let Some(reply_text) = standing_answer(
+        text,
+        capabilities,
+        butler,
+        ids,
+        clock,
+        on_token,
+        on_step,
+        &mut activity,
+    ) {
+        let message = post_butler_message(chat, ids, clock, &reply_text)?;
+        return Ok((message, activity));
     }
 
     // SINGLE TOOL-CALLING CONVERSATION (ADR 0053): the butler runs its tools through
@@ -3084,6 +3083,49 @@ pub fn assembled_brief_facts(
     (!lines.is_empty()).then(|| lines.join("\n"))
 }
 
+/// The standing questions (ADR 0076): asks a person makes routinely whose complete
+/// answer is derivable by code. Policy routes them; the model is never consulted.
+/// This is THE one routing point — the brief's bespoke pre-route (ADR 0074) folded
+/// in here the day a second question earned the mechanism its name. Every entry
+/// falls through to the ordinary turn when it cannot assemble its answer: broken
+/// routing degrades to a conversation, never to silence.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "explicit dependencies, no hidden state"
+)]
+fn standing_answer(
+    text: &str,
+    capabilities: &dyn CapabilityRunner,
+    butler: &dyn Butler,
+    ids: &impl IdSource,
+    clock: &impl Clock,
+    on_token: &mut dyn FnMut(&str),
+    on_step: &mut dyn FnMut(ButlerStep),
+    activity: &mut Vec<String>,
+) -> Option<String> {
+    if asked_for_their_brief(text) {
+        if let Some(answer) = brief_on_request(
+            capabilities,
+            butler,
+            ids,
+            clock,
+            on_token,
+            on_step,
+            activity,
+        ) {
+            return Some(answer);
+        }
+    }
+    if let Some(kind) = asked_about_a_kind(text, &capabilities.current_states()) {
+        if let Some(answer) = kind_status_answer(&kind, &capabilities.current_states()) {
+            activity.push("Answered from the house's own reading".to_owned());
+            on_token(&answer);
+            return Some(answer);
+        }
+    }
+    None
+}
+
 /// Whether the person is asking for their brief — the standing order of ADR 0074.
 ///
 /// The determiner+noun bigram, never the bare word: "keep it brief" and "a brief
@@ -3155,6 +3197,124 @@ fn brief_on_request(
             None
         }
     }
+}
+
+/// Whether the ask is a STATUS question about a kind of thing the house actually
+/// holds — "what lights are on?", "any lights offline?", "check the lights"
+/// (ADR 0076). Three gates, all required:
+///
+/// 1. **A kind the house knows.** The kind vocabulary is the first word of the
+///    service's own keys (`light.kitchen_table`), plural-trimmed — never an
+///    English list, the same rule `note_not_answering` follows.
+/// 2. **A question-or-status word.** Without one, "I love these lights" is
+///    conversation.
+/// 3. **No action verb.** "Turn off the lights" carries both `off` and `lights`
+///    and is an instruction: it falls through to the model's turn, where policy
+///    gates the acting. This gate is what makes the other two safe.
+fn asked_about_a_kind(text: &str, states: &[(String, String)]) -> Option<String> {
+    let words = words_of(text);
+    const ACTS: &[&str] = &[
+        "turn", "switch", "set", "dim", "brighten", "make", "put", "start", "stop", "play",
+        "pause", "open", "close", "lock", "unlock",
+    ];
+    if words.iter().any(|w| ACTS.contains(&w.as_str())) {
+        return None;
+    }
+    const ASKS: &[&str] = &[
+        "on",
+        "off",
+        "offline",
+        "unavailable",
+        "status",
+        "check",
+        "working",
+        "ok",
+        "okay",
+        "running",
+        "many",
+        "any",
+        "which",
+        "what",
+    ];
+    if !words.iter().any(|w| ASKS.contains(&w.as_str())) {
+        return None;
+    }
+    let kinds: std::collections::HashSet<String> = states
+        .iter()
+        .filter_map(|(id, _)| words_of(id).into_iter().next())
+        .collect();
+    words
+        .iter()
+        .map(|w| w.strip_suffix('s').unwrap_or(w).to_owned())
+        .find(|w| kinds.contains(w))
+}
+
+/// The house's answer about one kind of thing, from the reading itself (ADR 0076).
+///
+/// Deterministic and complete where completeness is the point: what is **on** and
+/// what is **not answering** are named (those are the two lists a person acts on),
+/// everything else is counted. `unknown` is not a problem (ADR 0056's vocabulary),
+/// and a kind the house holds nothing of answers `None` so the ordinary turn can
+/// have the conversation instead.
+fn kind_status_answer(kind: &str, states: &[(String, String)]) -> Option<String> {
+    const NAMED: usize = 8;
+    let pretty = |id: &str| {
+        id.split_once('.')
+            .map_or(id, |(_, rest)| rest)
+            .replace('_', " ")
+    };
+    let of_kind: Vec<(&String, &String)> = states
+        .iter()
+        .filter(|(id, _)| words_of(id).first().map(String::as_str) == Some(kind))
+        .map(|(id, state)| (id, state))
+        .collect();
+    if of_kind.is_empty() {
+        return None;
+    }
+    let named = |list: &[String]| {
+        let shown: Vec<String> = list.iter().take(NAMED).cloned().collect();
+        let more = list.len().saturating_sub(NAMED);
+        if more > 0 {
+            format!("{} and {more} more", shown.join(", "))
+        } else {
+            shown.join(", ")
+        }
+    };
+    let on: Vec<String> = of_kind
+        .iter()
+        .filter(|(_, s)| s.eq_ignore_ascii_case("on"))
+        .map(|(id, _)| pretty(id))
+        .collect();
+    let dead: Vec<String> = of_kind
+        .iter()
+        .filter(|(_, s)| endora_capabilities::not_answering(s))
+        .map(|(id, _)| pretty(id))
+        .collect();
+    let off = of_kind
+        .iter()
+        .filter(|(_, s)| s.eq_ignore_ascii_case("off"))
+        .count();
+    let mut parts: Vec<String> = Vec::new();
+    if !on.is_empty() {
+        parts.push(format!("{} on — {}", on.len(), named(&on)));
+    }
+    if off > 0 {
+        parts.push(format!("{off} off"));
+    }
+    if !dead.is_empty() {
+        parts.push(format!("{} not answering — {}", dead.len(), named(&dead)));
+    }
+    let accounted = on.len() + off + dead.len();
+    let rest = of_kind.len() - accounted;
+    if rest > 0 {
+        parts.push(format!("{rest} reporting other readings"));
+    }
+    Some(format!(
+        "Of your {} {kind}{}: {}.",
+        of_kind.len(),
+        if of_kind.len() == 1 { "" } else { "s" },
+        parts.join(" · ")
+    ))
 }
 
 /// The brief's wording pass, shared by the scheduled brief and a chat ask: the deep
@@ -5630,6 +5790,131 @@ mod tests {
         assert_eq!(history.len(), 2);
         assert_eq!(history[0].role(), MessageRole::User);
         assert_eq!(history[1].role(), MessageRole::Butler);
+    }
+
+    #[test]
+    fn a_status_ask_is_answered_from_the_reading_and_the_model_is_never_consulted() {
+        use super::send_to_butler;
+        // ADR 0076: the second standing question. The butler that panics is the
+        // proof the route is code.
+        struct NeverConsulted;
+        impl Butler for NeverConsulted {
+            fn respond(
+                &self,
+                _h: &[ChatMessage],
+                _p: &[Preference],
+                _c: &ButlerContext,
+            ) -> Result<ButlerReply, ProposalError> {
+                Ok(ButlerReply::default())
+            }
+            fn take_turn(
+                &self,
+                _c: &[crate::ports::TurnMessage],
+                _p: &[Preference],
+                _x: &ButlerContext,
+            ) -> Result<ButlerReply, ProposalError> {
+                panic!("a standing question must never reach the model");
+            }
+            fn take_turn_streaming(
+                &self,
+                _c: &[crate::ports::TurnMessage],
+                _p: &[Preference],
+                _x: &ButlerContext,
+                _t: &mut dyn FnMut(&str),
+            ) -> Result<ButlerReply, ProposalError> {
+                panic!("a standing question must never reach the model");
+            }
+        }
+        struct HouseReader;
+        impl CapabilityRunner for HouseReader {
+            fn available(&self) -> Vec<endora_capabilities::CapabilitySpec> {
+                Vec::new()
+            }
+            fn run(&self, _id: &str, _input: &str) -> Result<String, String> {
+                panic!("the answer comes from the reading, not a tool call");
+            }
+            fn current_states(&self) -> Vec<(String, String)> {
+                [
+                    ("light.kitchen_table", "on"),
+                    ("light.bedroom", "off"),
+                    ("light.outside_color", "unavailable"),
+                    ("scene.bedroom_bright", "unknown"),
+                ]
+                .into_iter()
+                .map(|(a, b)| (a.to_owned(), b.to_owned()))
+                .collect()
+            }
+        }
+        let (msg, activity) = send_to_butler(
+            &FakeStore::default(),
+            &FakeStore::default(),
+            &FakeStore::default(),
+            &FakeOutcomes::default(),
+            &crate::usecases::NoSpecimens,
+            &HouseReader,
+            &NeverConsulted,
+            &FakeAudit::default(),
+            &SeqIds::default(),
+            &FixedClock(1_000),
+            &ButlerContext::default(),
+            "what lights are on right now?",
+        )
+        .unwrap();
+        assert!(msg.text().contains("kitchen table"), "{}", msg.text());
+        assert!(msg.text().contains("1 off"), "{}", msg.text());
+        assert!(
+            msg.text().contains("not answering — outside color"),
+            "{}",
+            msg.text()
+        );
+        assert!(
+            !msg.text().contains("bedroom bright"),
+            "a scene is not a light: {}",
+            msg.text()
+        );
+        assert!(
+            activity.iter().any(|a| a.contains("house's own reading")),
+            "{activity:?}"
+        );
+    }
+
+    #[test]
+    fn an_action_phrasing_is_never_a_standing_question() {
+        // "turn off the lights" carries `off` and `lights`; answering it with a
+        // status report would swallow an instruction. It must reach the model's
+        // turn, where policy gates the acting.
+        let states = vec![("light.kitchen_table".to_owned(), "on".to_owned())];
+        assert_eq!(
+            super::asked_about_a_kind("turn off the lights", &states),
+            None
+        );
+        assert_eq!(
+            super::asked_about_a_kind("switch on the light", &states),
+            None
+        );
+        // And conversation about lights with no question in it stays conversation.
+        assert_eq!(
+            super::asked_about_a_kind("I love these lights", &states),
+            None
+        );
+        // A kind the house does not hold is not a standing question either.
+        assert_eq!(
+            super::asked_about_a_kind("any cameras offline?", &states),
+            None
+        );
+        // The real asks match.
+        assert_eq!(
+            super::asked_about_a_kind("what lights are on?", &states).as_deref(),
+            Some("light")
+        );
+        assert_eq!(
+            super::asked_about_a_kind("check the lights", &states).as_deref(),
+            Some("light")
+        );
+        assert_eq!(
+            super::asked_about_a_kind("any lights offline?", &states).as_deref(),
+            Some("light")
+        );
     }
 
     #[test]
