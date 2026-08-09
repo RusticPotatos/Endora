@@ -1,0 +1,23 @@
+[package]
+name = "endora-application"
+description = "Endora application layer: orchestrates domain concepts into use cases. Depends only on the domain and on abstractions it defines."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+endora-kernel = { path = "../../shared/kernel" }
+endora-platform = { path = "../../domains/platform" }
+endora-capabilities = { path = "../../domains/capabilities" }
+endora-understanding = { path = "../../domains/understanding" }
+endora-conversation = { path = "../../domains/conversation" }
+endora-scheduling = { path = "../../domains/scheduling" }
+# The standing-order brief (ADR 0074) builds tool arguments here — hand-formatted
+# JSON would be an escaping bug the first time a place name carries a quote.
+serde_json = "1.0.150"
+
+[lints]
+workspace = true

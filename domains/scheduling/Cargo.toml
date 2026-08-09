@@ -1,0 +1,17 @@
+[package]
+name = "endora-scheduling"
+description = "Scheduling context: the check-in and daily-brief cadences and their repositories"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+endora-kernel = { path = "../../shared/kernel" }
+endora-persistence = { path = "../../shared/persistence" }
+rusqlite = { version = "0.39", features = ["bundled"] }
+
+[lints]
+workspace = true

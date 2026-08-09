@@ -1,0 +1,55 @@
+[package]
+name = "endora-node"
+description = "Endora node: the authoritative backend runtime (the 'brain'). Serves the versioned HTTP/JSON protocol."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "endora-node"
+path = "src/main.rs"
+
+[dependencies]
+axum = "0.8.9"
+endora-application = { path = "../../crates/endora-application" }
+endora-infrastructure = { path = "../../crates/endora-infrastructure" }
+endora-conversation = { path = "../../domains/conversation" }
+endora-scheduling = { path = "../../domains/scheduling" }
+endora-understanding = { path = "../../domains/understanding" }
+endora-capabilities = { path = "../../domains/capabilities" }
+endora-platform = { path = "../../domains/platform" }
+# Already in the tree transitively (via axum/tokio); declared directly to adapt
+# a broadcast channel into the SSE response stream. Enabling the stream helpers
+# pulls one additional crate from the same futures project (futures-macro).
+futures-util = "0.3.33"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.150"
+tokio = { version = "1.53.0", features = ["rt-multi-thread", "macros", "net", "sync", "time"] }
+# Optional self-signed HTTPS (ENDORA_TLS=1) so the console is a secure context —
+# needed for browser mic/voice on a LAN address without a domain or proxy.
+axum-server = { version = "0.7.2", features = ["tls-rustls"] }
+rcgen = "0.13.2"
+# One-time passwords (RFC 6238). Already in the tree via the websocket client's handshake;
+# declared here so the dependency is honest. HMAC-SHA1 is what the RFC specifies and what
+# every authenticator app produces — its collision weaknesses do not apply to HMAC.
+sha1 = "0.11.0"
+# Password hashing. The one place in this repository where writing it here would be wrong:
+# correctness is not the hard part, resistance to purpose-built hardware is, and no test can
+# demonstrate that. Argon2id is the current recommendation and carries its own salting.
+argon2 = { version = "0.5.3", features = ["std"] }
+# QR codes for authenticator enrolment. A dependency for the same reason argon2 is: the
+# encoding is Reed-Solomon plus masking plus version selection, and a mistake produces
+# something that silently will not scan. `svg` only — the default features pull in an image
+# encoder this has no use for.
+qrcode = { version = "0.14.1", default-features = false, features = ["svg"] }
+rustls = { version = "0.23.23", features = ["ring"] }
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+http-body-util = "0.1.4"
+tower = { version = "0.5.3", features = ["util"] }

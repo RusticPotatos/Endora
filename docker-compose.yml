@@ -1,0 +1,123 @@
+# Simplest dev deployment. Compose builds + runs on the target host — no
+# registry, native to that host's arch. Out of the box this is the local Docker
+# daemon, so a fresh clone works with no setup:
+#
+#   make deploy                                     # build + start
+#   make deploy-logs                                # follow logs
+#   make deploy-down                                # stop (data volume kept)
+#
+# To deploy to an always-on box instead, point Docker at it — per invocation:
+#
+#   make deploy DOCKER_CONTEXT=nas
+#
+# ...or once, per machine, in `local.mk` (git-ignored):
+#
+#   DOCKER_CONTEXT = nas
+#
+# The Makefile pins COMPOSE_PROJECT_NAME=endora, so a deploy run from a git
+# worktree still targets the real containers and the real data volume rather
+# than inventing a new project named after the directory.
+#
+# then open https://<host>:8787  (ENDORA_TLS is on; accept the self-signed
+# cert once — see docs/hosting.md)
+#
+# Note: the 0.x HTTP API is UNAUTHENTICATED. Publishing 8787 makes it reachable
+# by anything on that host's network — fine for a trusted LAN during dev, but do
+# not port-forward it to the internet. See docs/hosting.md.
+services:
+  node:
+    build:
+      context: .
+      args:
+        # Stamped by `make deploy` (git short SHA); shows in /health + the header.
+        ENDORA_BUILD: "${ENDORA_BUILD:-dev}"
+    image: endora-node:latest
+    container_name: endora-node
+    restart: unless-stopped
+    ports:
+      - "8787:8787"
+    volumes:
+      - endora-data:/data
+    # The image already defaults ENDORA_ADDR=0.0.0.0:8787 and
+    # ENDORA_DB=/data/endora.db. Point the butler/proposer at an Ollama running
+    # on the host (host.docker.internal → the host gateway). Without a reachable
+    # model the butler simply falls back to its scripted brain, so this is safe
+    # to leave in even where no model is running.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      # Overridable so `make bundled` can point this at the sibling runtime below without
+      # editing the file. The default is an Ollama on the host, which is what a
+      # bring-your-own setup looks like.
+      ENDORA_MODEL_URL: "${ENDORA_MODEL_URL:-http://host.docker.internal:11434/v1}"
+      # Optional speech-to-text server (OpenAI-compatible /v1/audio/transcriptions,
+      # e.g. a local Whisper). When set, the console's push-to-talk records audio
+      # and transcribes it here instead of using the browser's flaky Web Speech
+      # API. The node proxies it, so the STT host is never exposed to the page.
+      # Unset to fall back to the browser. host.docker.internal → the host gateway.
+      ENDORA_STT_URL: "http://host.docker.internal:8001/v1"
+      # A capable instruction model — strong at following directions and emitting
+      # clean JSON, which the butler relies on (skill selection, no fabrication,
+      # relaying results). Used for the drafting endpoint and as the single-model
+      # butler when the mixture below is not set.
+      ENDORA_MODEL: "${ENDORA_MODEL:-qwen2.5:7b}"
+      # The butler brain (ADR 0055). The default is the single ENDORA_MODEL above:
+      # the mixture (a tool-tuned router + a generalist synthesizer) out-routed a
+      # single model in one early eval, but ADR 0055 rejected it after live use —
+      # two models thrash through one queue on the same GPU — and the 2026-08-05
+      # bake-off settled on the single 7b. Set BOTH to run the mixture anyway;
+      # both must be pulled on the Ollama host. Blank or unset means single-model.
+      ENDORA_ROUTER_MODEL: "${ENDORA_ROUTER_MODEL-}"
+      ENDORA_SYNTH_MODEL: "${ENDORA_SYNTH_MODEL-}"
+      # Optional private egress: route *external* skill traffic (weather, news,
+      # search, web fetch) through a proxy of your choice, WITHOUT binding Endora's
+      # network to another container (no `network_mode: service:...`; that tight
+      # coupling means a proxy/VPN blip takes the app down). Accepts http(s):// or
+      # socks5://. The local model call is never proxied.
+      #   Use a proxy dedicated to this — NOT a shared P2P/torrent VPN path. A small
+      #   HTTP/SOCKS proxy container, Tor (socks5://tor:9050), or a separate egress
+      #   VPN are all fine.
+      # ENDORA_EGRESS_PROXY: "socks5://my-egress-proxy:1080"
+      # Self-signed HTTPS so the console is a secure context — required for the
+      # browser microphone/voice on a LAN address with no domain or proxy. The
+      # cert persists in /data (accept the browser warning once). Set
+      # ENDORA_TLS_SAN to this host's LAN IP/hostname for a cleaner cert — do that
+      # in docker-compose.override.yml (kept local, so no private IP is in git).
+      ENDORA_TLS: "1"
+
+  # An optional bundled model runtime, so `docker compose --profile bundled up` gives a
+  # working butler with nothing to install first. OFF unless the profile is named.
+  #
+  # This does NOT make Endora a model runtime (ADR 0055). Endora's code is unchanged: it
+  # talks to an OpenAI-compatible URL and knows nothing about what serves it. That the URL
+  # happens to belong to a sibling in the same compose file is a packaging decision, and
+  # deleting this service leaves Endora working exactly as before against your own endpoint.
+  #
+  # It also puts the hardware detection where the hardware is. Endora's container has no GPU
+  # access and cannot see a card even when one is present; this one is granted it, so it can
+  # look and choose. See scripts/pick-a-model.sh for the ladder and why it is not simply
+  # "the biggest that fits".
+  runtime:
+    profiles: ["bundled"]
+    image: ghcr.io/ggml-org/llama.cpp:server-cuda
+    container_name: endora-runtime
+    restart: unless-stopped
+    entrypoint: ["/bin/sh", "/opt/pick-a-model.sh"]
+    volumes:
+      - ./scripts/pick-a-model.sh:/opt/pick-a-model.sh:ro
+      # Models are large and downloaded once. A named volume keeps them across restarts so
+      # a container rebuild is not a fresh multi-gigabyte fetch.
+      - endora-models:/root/.cache/llama.cpp
+    # Requested, not required: without a GPU the compose file still starts and the script
+    # falls back to a model that runs on a CPU.
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+volumes:
+  endora-data:
+  endora-models:
