@@ -8,11 +8,12 @@ use rusqlite::{Connection, params};
 
 use crate::application::{
     BeliefRepository, IntentionRepository, NotionRepository, OutcomeRepository,
-    PreferenceRepository,
+    PreferenceRepository, SpecimenRepository,
 };
 use crate::domain::{
-    Belief, BeliefKind, BeliefStatus, Citation, Confidence, Intention, IntentionState, Notion,
-    NotionStatus, Outcome, Preference, PreferenceKind, Reaction, Source,
+    Belief, BeliefKind, BeliefStatus, Citation, Confidence, Intention, IntentionState,
+    MOST_SPECIMENS_OPEN, Notion, NotionStatus, Outcome, Preference, PreferenceKind,
+    REPLAYS_BEFORE_GIVING_UP, Reaction, Source, Specimen,
 };
 
 /// Creates the understanding tables if absent (idempotent).
@@ -72,6 +73,15 @@ pub fn migrate(db: &Db) -> Result<(), RepositoryError> {
                 source    TEXT NOT NULL,
                 reference TEXT NOT NULL,
                 PRIMARY KEY (notion_id, source, reference)
+            ) STRICT;
+            CREATE TABLE IF NOT EXISTS specimens (
+                id             TEXT PRIMARY KEY,
+                asked          TEXT NOT NULL,
+                verdict        TEXT NOT NULL,
+                filed_ms       INTEGER NOT NULL,
+                replays        INTEGER NOT NULL,
+                last_replay_ms INTEGER,
+                retired        INTEGER NOT NULL
             ) STRICT;",
         )
         .map_err(backend)?;
@@ -88,6 +98,88 @@ impl UnderstandingStore {
     #[must_use]
     pub fn new(db: Db) -> Self {
         Self { db }
+    }
+}
+
+impl SpecimenRepository for UnderstandingStore {
+    fn file_specimen(
+        &self,
+        id: &str,
+        asked: &str,
+        verdict: &str,
+        now_ms: i64,
+    ) -> Result<bool, RepositoryError> {
+        let conn = self.db.lock()?;
+        // A full shelf files nothing: the loop replays one per night, and a backlog
+        // deeper than the shelf is a signal to fix the machinery, not more evidence.
+        let open: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM specimens WHERE retired = 0",
+                [],
+                |r| r.get(0),
+            )
+            .map_err(backend)?;
+        if usize::try_from(open).unwrap_or(usize::MAX) >= MOST_SPECIMENS_OPEN {
+            return Ok(false);
+        }
+        // Asking twice is one problem, not two specimens.
+        let already: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM specimens WHERE retired = 0 AND asked = ?1",
+                params![asked],
+                |r| r.get(0),
+            )
+            .map_err(backend)?;
+        if already > 0 {
+            return Ok(false);
+        }
+        conn.execute(
+            "INSERT INTO specimens (id, asked, verdict, filed_ms, replays, last_replay_ms, retired) \
+             VALUES (?1, ?2, ?3, ?4, 0, NULL, 0)",
+            params![id, asked, verdict, now_ms],
+        )
+        .map_err(backend)?;
+        Ok(true)
+    }
+
+    fn open_specimens(&self) -> Result<Vec<Specimen>, RepositoryError> {
+        let conn = self.db.lock()?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, asked, verdict, filed_ms, replays, last_replay_ms, retired \
+                 FROM specimens WHERE retired = 0 ORDER BY filed_ms ASC",
+            )
+            .map_err(backend)?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok(Specimen {
+                    id: r.get(0)?,
+                    asked: r.get(1)?,
+                    verdict: r.get(2)?,
+                    filed_ms: r.get(3)?,
+                    replays: r.get(4)?,
+                    last_replay_ms: r.get(5)?,
+                    retired: r.get::<_, i64>(6)? != 0,
+                })
+            })
+            .map_err(backend)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(backend)
+    }
+
+    fn record_replay(&self, id: &str, passed: bool, now_ms: i64) -> Result<(), RepositoryError> {
+        // Retirement is derived here, never decided by a caller: a pass retires,
+        // and so does the giving-up-th failure — re-asking past that stops being
+        // information and would hold the shelf hostage to one broken question.
+        self.db
+            .lock()?
+            .execute(
+                "UPDATE specimens SET replays = replays + 1, last_replay_ms = ?2, \
+                 retired = CASE WHEN ?3 THEN 1 WHEN replays + 1 >= ?4 THEN 1 ELSE 0 END \
+                 WHERE id = ?1",
+                params![id, now_ms, passed, REPLAYS_BEFORE_GIVING_UP],
+            )
+            .map_err(backend)?;
+        Ok(())
     }
 }
 
@@ -578,6 +670,70 @@ mod tests {
     use endora_persistence::Db;
     use endora_persistence::id_text;
     use rusqlite::params;
+
+    #[test]
+    fn a_failed_ask_is_filed_once_and_replays_decide_its_end() {
+        use crate::application::SpecimenRepository;
+        let db = Db::open_in_memory().unwrap();
+        migrate(&db).unwrap();
+        let store = UnderstandingStore::new(db);
+
+        assert!(
+            store
+                .file_specimen("s1", "what lights are on?", "not an answer", 10)
+                .unwrap()
+        );
+        // Asking twice is one problem, not two specimens.
+        assert!(
+            !store
+                .file_specimen("s2", "what lights are on?", "not an answer", 20)
+                .unwrap()
+        );
+        assert_eq!(store.open_specimens().unwrap().len(), 1);
+
+        // A failed replay counts and keeps it open; a pass retires it.
+        store.record_replay("s1", false, 30).unwrap();
+        let open = store.open_specimens().unwrap();
+        assert_eq!(open[0].replays, 1);
+        assert_eq!(open[0].last_replay_ms, Some(30));
+        store.record_replay("s1", true, 40).unwrap();
+        assert!(store.open_specimens().unwrap().is_empty(), "a pass retires");
+
+        // Enough failures retires too — re-asking past that is not information.
+        assert!(
+            store
+                .file_specimen("s3", "another stumper", "degraded", 50)
+                .unwrap()
+        );
+        for n in 0..crate::domain::REPLAYS_BEFORE_GIVING_UP {
+            store.record_replay("s3", false, 60 + i64::from(n)).unwrap();
+        }
+        assert!(
+            store.open_specimens().unwrap().is_empty(),
+            "giving up retires"
+        );
+    }
+
+    #[test]
+    fn a_full_shelf_files_nothing() {
+        use crate::application::SpecimenRepository;
+        let db = Db::open_in_memory().unwrap();
+        migrate(&db).unwrap();
+        let store = UnderstandingStore::new(db);
+        for n in 0..crate::domain::MOST_SPECIMENS_OPEN {
+            assert!(
+                store
+                    .file_specimen(&format!("s{n}"), &format!("ask {n}"), "not an answer", 10)
+                    .unwrap()
+            );
+        }
+        assert!(
+            !store
+                .file_specimen("overflow", "one more", "not an answer", 20)
+                .unwrap(),
+            "past the shelf, a failure is a log line, not a record"
+        );
+    }
 
     #[test]
     fn preferences_round_trip_and_delete() {

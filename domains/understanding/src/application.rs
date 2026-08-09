@@ -97,6 +97,42 @@ pub trait OutcomeRepository {
     fn list(&self) -> Result<Vec<Outcome>, RepositoryError>;
 }
 
+/// Keeps the asks the butler failed, so it can notice itself improving (ADR 0075).
+///
+/// Intent-named, no storage vocabulary: a failure is *filed*, a night's attempt is
+/// *recorded*, and what remains to try is *open*. Retirement is derived inside the
+/// record calls — passing a replay retires, and so does failing enough of them —
+/// never decided by a caller.
+pub trait SpecimenRepository {
+    /// Files a failed ask. Returns `false` — and files nothing — when the same ask
+    /// is already open (asking twice is one problem) or the shelf is full
+    /// ([`MOST_SPECIMENS_OPEN`](crate::domain::MOST_SPECIMENS_OPEN)).
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if the backend fails.
+    fn file_specimen(
+        &self,
+        id: &str,
+        asked: &str,
+        verdict: &str,
+        now_ms: i64,
+    ) -> Result<bool, RepositoryError>;
+
+    /// The specimens still worth replaying, oldest first.
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if the backend fails.
+    fn open_specimens(&self) -> Result<Vec<crate::domain::Specimen>, RepositoryError>;
+
+    /// Records one nightly replay. A pass retires the specimen; so does the
+    /// [`REPLAYS_BEFORE_GIVING_UP`](crate::domain::REPLAYS_BEFORE_GIVING_UP)th
+    /// failure, because re-asking past that stops being information.
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if the backend fails.
+    fn record_replay(&self, id: &str, passed: bool, now_ms: i64) -> Result<(), RepositoryError>;
+}
+
 /// Persists and retrieves [`Belief`]s — what the butler currently understands
 /// about the person.
 pub trait BeliefRepository {

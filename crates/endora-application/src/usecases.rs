@@ -21,7 +21,7 @@ use endora_conversation::ChatRepository;
 use endora_platform::{AuditLog, EventLog};
 use endora_understanding::{
     BeliefRepository, IntentionRepository, NotionRepository, OutcomeRepository,
-    PreferenceRepository,
+    PreferenceRepository, SpecimenRepository,
 };
 
 use endora_scheduling::{
@@ -1315,6 +1315,7 @@ pub fn send_to_butler(
     preferences: &impl PreferenceRepository,
     beliefs: &impl BeliefRepository,
     outcomes: &impl OutcomeRepository,
+    specimens: &impl SpecimenRepository,
     capabilities: &dyn CapabilityRunner,
     butler: &dyn Butler,
     audit: &dyn AuditLog,
@@ -1330,6 +1331,7 @@ pub fn send_to_butler(
         preferences,
         beliefs,
         outcomes,
+        specimens,
         capabilities,
         butler,
         audit,
@@ -1759,6 +1761,7 @@ pub fn send_to_butler_streaming(
     preferences: &impl PreferenceRepository,
     beliefs: &impl BeliefRepository,
     outcomes: &impl OutcomeRepository,
+    specimens: &impl SpecimenRepository,
     capabilities: &dyn CapabilityRunner,
     butler: &dyn Butler,
     audit: &dyn AuditLog,
@@ -1884,6 +1887,30 @@ pub fn send_to_butler_streaming(
     // automatic escalation (ADR 0055), both of which are checked in `run_tool_turn` and
     // neither of which existed here.
     //
+    // A turn that ended in a failure the code itself judged files a SPECIMEN
+    // (ADR 0075) — the ask and the verdict, kept in the house's own record so the
+    // nightly loop can re-ask it and notice when it starts passing. Only
+    // answer-shaped failures: a turn that acted already has an outcome record, and
+    // replaying an action unattended would be a different mechanism entirely. The
+    // verdict is the same deterministic check that gated retries and escalation;
+    // the model's opinion of itself files nothing. Best-effort — a full shelf or a
+    // failed write must never break the reply.
+    if disclosures.is_empty() {
+        if let Some(why) = specimen_verdict(&reply, context) {
+            let filed = specimens
+                .file_specimen(
+                    &ids.new_id().to_string(),
+                    text,
+                    why,
+                    clock.now().unix_millis(),
+                )
+                .unwrap_or(false);
+            if filed {
+                activity.push("Couldn't answer this one — kept it to retry overnight".to_owned());
+            }
+        }
+    }
+
     // Whether the answering round spoke for itself. When it did, that text has already
     // reached the person token by token; when it did not, whatever stands in for it is
     // new to them.
@@ -3940,6 +3967,7 @@ pub fn run_due_nightly_loop(
     beliefs: &impl BeliefRepository,
     preferences: &impl PreferenceRepository,
     outcomes: &impl OutcomeRepository,
+    specimens: &impl SpecimenRepository,
     intentions: &impl IntentionRepository,
     notions: &impl NotionRepository,
     // The fortnight's transitions, for the record the thinking cites from.
@@ -3973,6 +4001,55 @@ pub fn run_due_nightly_loop(
     // own-activity skill can reach it from any turn.
     if let Some(score) = scorecard(&outcomes.list()?) {
         activity.push(score);
+    }
+
+    // REPLAY ONE STUMPER (ADR 0075). An ask that once ended at the honesty valve is
+    // re-asked against tonight's machinery — under the same reversible-only runner
+    // as the rest of the night, so a replay can gather and never actuate. Passing
+    // retires the specimen: the record notices the fleet getting better without the
+    // person having to ask again. One per night, oldest first — unhurried, like the
+    // rest — and judged by the same deterministic verdict that filed it.
+    if let Some(stumper) = specimens.open_specimens()?.into_iter().next() {
+        let ask = [ChatMessage::new(
+            MessageId::new(ids.new_id()),
+            MessageRole::User,
+            &stumper.asked,
+            clock.now(),
+        )?];
+        // Unmotivated, and nothing appended to the chat: a replay is the butler
+        // examining itself, not a conversation.
+        let unmotivated = OutcomeSink::unmotivated(outcomes);
+        let replayed = run_tool_turn(
+            butler,
+            capabilities,
+            audit,
+            &unmotivated,
+            ids,
+            clock,
+            &ask,
+            &|_id| Vec::new(),
+            &prefs,
+            context,
+            CHAT_TOOL_ROUNDS,
+            &mut |_step| {},
+            &mut |_token: &str| {},
+            &mut Vec::new(),
+            &mut Vec::new(),
+        );
+        let passed = replayed
+            .as_ref()
+            .map(|reply| specimen_verdict(reply, context).is_none())
+            .unwrap_or(false);
+        specimens.record_replay(&stumper.id, passed, clock.now().unix_millis())?;
+        activity.push(format!(
+            "{} \"{}\"",
+            if passed {
+                "A question that once stumped me answers now:"
+            } else {
+                "Replayed a stumper; it still fails:"
+            },
+            first_sentence_of(&stumper.asked)
+        ));
     }
 
     // AGENTIC overnight review (ADR 0056/0024): name a focus the person cares about
@@ -5535,6 +5612,7 @@ mod tests {
             &store,
             &store,
             &FakeOutcomes::default(),
+            &crate::usecases::NoSpecimens,
             &NoCapabilities,
             &ScriptedTestButler,
             &FakeAudit::default(),
@@ -5552,6 +5630,66 @@ mod tests {
         assert_eq!(history.len(), 2);
         assert_eq!(history[0].role(), MessageRole::User);
         assert_eq!(history[1].role(), MessageRole::Butler);
+    }
+
+    #[test]
+    fn a_failed_turn_is_kept_to_retry_and_an_answered_one_is_not() {
+        use super::send_to_butler;
+        // ADR 0075: the verdict that files a specimen is the same deterministic
+        // check that gates retries — never the model's opinion of itself.
+        struct Stumped;
+        impl Butler for Stumped {
+            fn respond(
+                &self,
+                _h: &[ChatMessage],
+                _p: &[Preference],
+                _c: &ButlerContext,
+            ) -> Result<ButlerReply, ProposalError> {
+                Ok(ButlerReply {
+                    text: "Sorry — I couldn't follow that.".to_owned(),
+                    degraded: true,
+                    ..ButlerReply::default()
+                })
+            }
+        }
+        let shelf = crate::usecases::RecordingShelf::default();
+        let _ = send_to_butler(
+            &FakeStore::default(),
+            &FakeStore::default(),
+            &FakeStore::default(),
+            &FakeOutcomes::default(),
+            &shelf,
+            &NoCapabilities,
+            &Stumped,
+            &FakeAudit::default(),
+            &SeqIds::default(),
+            &FixedClock(1_000),
+            &ButlerContext::default(),
+            "what lights are on?",
+        )
+        .unwrap();
+        let filed = shelf.filed.borrow();
+        assert_eq!(filed.len(), 1, "{filed:?}");
+        assert_eq!(filed[0].0, "what lights are on?");
+
+        // A turn that answered files nothing — the shelf holds failures only.
+        let fine = crate::usecases::RecordingShelf::default();
+        let _ = send_to_butler(
+            &FakeStore::default(),
+            &FakeStore::default(),
+            &FakeStore::default(),
+            &FakeOutcomes::default(),
+            &fine,
+            &NoCapabilities,
+            &ScriptedTestButler,
+            &FakeAudit::default(),
+            &SeqIds::default(),
+            &FixedClock(1_000),
+            &ButlerContext::default(),
+            "what lights are on?",
+        )
+        .unwrap();
+        assert!(fine.filed.borrow().is_empty());
     }
 
     #[test]
@@ -5618,6 +5756,7 @@ mod tests {
             &store,
             &store,
             &FakeOutcomes::default(),
+            &crate::usecases::NoSpecimens,
             &OneSkill,
             &ToolButler,
             &FakeAudit::default(),
@@ -5688,6 +5827,7 @@ mod tests {
             &store,
             &store,
             &FakeOutcomes::default(),
+            &crate::usecases::NoSpecimens,
             &AlwaysFails,
             &RelentlessButler,
             &FakeAudit::default(),
@@ -7566,6 +7706,7 @@ mod tests {
             &store,
             &store,
             &FakeOutcomes::default(),
+            &crate::usecases::NoSpecimens,
             &GatedSkill,
             &ToolButler,
             &FakeAudit::default(),
@@ -7638,6 +7779,7 @@ mod tests {
             &store,
             &store,
             &FakeOutcomes::default(),
+            &crate::usecases::NoSpecimens,
             &BlockedSkill,
             &BookingButler,
             &audit,
@@ -7695,6 +7837,7 @@ mod tests {
             &store,
             &store,
             &FakeOutcomes::default(),
+            &crate::usecases::NoSpecimens,
             &NoCapabilities,
             &EmptyButler,
             &FakeAudit::default(),
@@ -7813,6 +7956,7 @@ mod tests {
             &store,
             &store,
             &FakeOutcomes::default(),
+            &crate::usecases::NoSpecimens,
             &Newsreader,
             &CallsNewsThenSaysNothing,
             &FakeAudit::default(),
@@ -7902,6 +8046,7 @@ mod tests {
             &store,
             &store,
             &FakeOutcomes::default(),
+            &crate::usecases::NoSpecimens,
             &NoCapabilities,
             &GoodButler,
             &FakeAudit::default(),
@@ -8061,6 +8206,7 @@ mod tests {
             &store,
             &store,
             &FakeOutcomes::default(),
+            &crate::usecases::NoSpecimens,
             &BriefOnly,
             &NeverRoutes,
             &FakeAudit::default(),
@@ -8605,6 +8751,7 @@ mod tests {
             &store,
             &store,
             &FakeOutcomes::default(),
+            &crate::usecases::NoSpecimens,
             &NoCapabilities,
             &BeliefButler,
             &FakeAudit::default(),
@@ -8695,6 +8842,7 @@ mod tests {
             &store,
             &store,
             &FakeOutcomes::default(),
+            &crate::usecases::NoSpecimens,
             &FakeIntentions::default(),
             &FakeNotions::default(),
             &[],
@@ -8762,6 +8910,55 @@ mod tests {
         }
     }
 
+    #[test]
+    fn the_night_replays_the_oldest_stumper_and_a_pass_retires_it() {
+        // ADR 0075: a question that once ended at the honesty valve is re-asked
+        // against tonight's machinery, and passing is judged by the same
+        // deterministic verdict that filed it — never the model's self-opinion.
+        let shelf = crate::usecases::RecordingShelf::default();
+        shelf
+            .open
+            .borrow_mut()
+            .push(endora_understanding::Specimen {
+                id: "s1".to_owned(),
+                asked: "what lights are on?".to_owned(),
+                verdict: "not an answer".to_owned(),
+                filed_ms: 1,
+                replays: 3,
+                last_replay_ms: None,
+                retired: false,
+            });
+        let butler = EchoesItsInstruction {
+            seen: RefCell::new(String::new()),
+        };
+        let (_, activity) = super::run_due_nightly_loop(
+            &FakeStore::default(),
+            &FakeStore::default(),
+            &FakeStore::default(),
+            &FakeOutcomes::default(),
+            &shelf,
+            &FakeIntentions::default(),
+            &super::tests::FakeNotions::default(),
+            &[],
+            &due_nightly(),
+            &NoCapabilities,
+            &[],
+            &butler,
+            &FakeAudit::default(),
+            &SeqIds::default(),
+            &FixedClock(27 * 3_600_000),
+            &ButlerContext::default(),
+        )
+        .unwrap()
+        .expect("the loop runs when due");
+        // The butler answered with real prose, so the replay passed and was recorded.
+        assert_eq!(*shelf.replays.borrow(), vec![("s1".to_owned(), true)]);
+        assert!(
+            activity.iter().any(|a| a.contains("answers now")),
+            "{activity:?}"
+        );
+    }
+
     /// Runs one night and hands back the instruction the butler was given.
     fn one_night(
         beliefs: &FakeStore,
@@ -8776,6 +8973,7 @@ mod tests {
             beliefs,
             beliefs,
             &FakeOutcomes::default(),
+            &crate::usecases::NoSpecimens,
             intentions,
             &super::tests::FakeNotions::default(),
             &[],
@@ -8994,6 +9192,7 @@ mod tests {
             &store,
             &store,
             &FakeOutcomes::default(),
+            &crate::usecases::NoSpecimens,
             &FakeIntentions::default(),
             &super::tests::FakeNotions::default(),
             &[],
@@ -9151,6 +9350,7 @@ mod tests {
             &store,
             &store,
             &FakeOutcomes::default(),
+            &crate::usecases::NoSpecimens,
             &FakeIntentions::default(),
             &super::tests::FakeNotions::default(),
             &[],
@@ -9436,6 +9636,7 @@ mod tests {
             &store,
             &store,
             &FakeOutcomes::default(),
+            &crate::usecases::NoSpecimens,
             &NoCapabilities,
             &ThinksAloudThenAnswers {
                 round: std::cell::Cell::new(0),
@@ -10395,6 +10596,19 @@ fn clock_time_of(ms: i64) -> String {
     format!("{:02}:{:02}", secs / 3600, (secs % 3600) / 60)
 }
 
+/// Which deterministic check marks a turn's reply as a failure worth keeping
+/// (ADR 0075). The same predicates that gate retries and escalation — never the
+/// model's opinion of itself. `None` is a turn that answered.
+fn specimen_verdict(reply: &ButlerReply, context: &ButlerContext) -> Option<&'static str> {
+    if reply.degraded {
+        return Some("ended at the honesty valve, or the model was unreachable");
+    }
+    if not_an_answer(reply, context) {
+        return Some("not an answer — empty, plumbing, or described a tool");
+    }
+    None
+}
+
 /// The first sentence, so a quoted brief does not become the whole report.
 fn first_sentence_of(text: &str) -> String {
     const ENOUGH: usize = 90;
@@ -10408,6 +10622,76 @@ fn first_sentence_of(text: &str) -> String {
         out.push('…');
     }
     out
+}
+
+/// A shelf that takes nothing and holds nothing, for tests about something else.
+#[cfg(test)]
+#[derive(Default)]
+struct NoSpecimens;
+
+#[cfg(test)]
+impl SpecimenRepository for NoSpecimens {
+    fn file_specimen(
+        &self,
+        _id: &str,
+        _asked: &str,
+        _verdict: &str,
+        _now_ms: i64,
+    ) -> Result<bool, endora_kernel::RepositoryError> {
+        Ok(false)
+    }
+    fn open_specimens(
+        &self,
+    ) -> Result<Vec<endora_understanding::Specimen>, endora_kernel::RepositoryError> {
+        Ok(Vec::new())
+    }
+    fn record_replay(
+        &self,
+        _id: &str,
+        _passed: bool,
+        _now_ms: i64,
+    ) -> Result<(), endora_kernel::RepositoryError> {
+        Ok(())
+    }
+}
+
+/// A shelf that remembers everything done to it, for the specimen tests.
+#[cfg(test)]
+#[derive(Default)]
+struct RecordingShelf {
+    filed: std::cell::RefCell<Vec<(String, String)>>,
+    open: std::cell::RefCell<Vec<endora_understanding::Specimen>>,
+    replays: std::cell::RefCell<Vec<(String, bool)>>,
+}
+
+#[cfg(test)]
+impl SpecimenRepository for RecordingShelf {
+    fn file_specimen(
+        &self,
+        _id: &str,
+        asked: &str,
+        verdict: &str,
+        _now_ms: i64,
+    ) -> Result<bool, endora_kernel::RepositoryError> {
+        self.filed
+            .borrow_mut()
+            .push((asked.to_owned(), verdict.to_owned()));
+        Ok(true)
+    }
+    fn open_specimens(
+        &self,
+    ) -> Result<Vec<endora_understanding::Specimen>, endora_kernel::RepositoryError> {
+        Ok(self.open.borrow().clone())
+    }
+    fn record_replay(
+        &self,
+        id: &str,
+        passed: bool,
+        _now_ms: i64,
+    ) -> Result<(), endora_kernel::RepositoryError> {
+        self.replays.borrow_mut().push((id.to_owned(), passed));
+        Ok(())
+    }
 }
 
 /// A world with nothing wrong in it, for tests about something else.
