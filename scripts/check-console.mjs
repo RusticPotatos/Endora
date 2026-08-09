@@ -153,6 +153,19 @@ runInContext(
   // One offered service already set up, and one the person added themselves — both branches
   // of the Connect screen, which previously rendered only the "nothing is connected" case.
   CONNECTED = ["caldav", "hue", "tplink"];
+  // One enabled with a declared input (exercises the "needs" line and the "On"
+  // pill) and one still off (the "Off" pill and its own button label) — both
+  // branches of the enable toggle, which an empty list would never reach.
+  RECIPES = [
+    { id: "air_quality", capability_id: "recipe.air_quality",
+      description: "Today's air quality where you are.",
+      inputs: [{ name: "lat", type: "number" }, { name: "lon", type: "number" }],
+      get: "https://air-quality-api.open-meteo.com/v1/air-quality?latitude={lat}&longitude={lon}&current=us_aqi",
+      say: "The air quality index is {current.us_aqi} right now.", enabled: true },
+    { id: "transit_delays", capability_id: "recipe.transit_delays",
+      description: "Whether the morning train is delayed.",
+      inputs: [], get: "https://example.test/status", say: "Status: {status}", enabled: false },
+  ];
   // Not yet enrolled, which is the branch that actually renders the setup card.
   SIGNIN = { password_set: false, enrolled: true, otpauth: "otpauth://totp/Endora:you?secret=AAAA", qr: "<svg xmlns='http://www.w3.org/2000/svg'><rect/></svg>" };
   // A node nobody has claimed yet — the branch that renders the setup screen rather than a

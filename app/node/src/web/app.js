@@ -14,6 +14,7 @@ let ACTIVITY = [];             // latest /v1/activity feed (newest first)
 let CHECKIN = { enabled: false, interval_ms: 0 }; // proactive check-in cadence
 let CAPS = [];                 // the butler's capabilities/skills (modules)
 let MCP_SERVERS = { servers: [] }; // connected MCP servers + their tools (ADR 0054)
+let RECIPES = [];              // the person's own capabilities — five fields, no code (ADR 0071)
 let AUTONOMY = { auto_external: true, auto_consequential: false }; // the autonomy envelope (ADR 0051)
 let BRIEF_SCHED = { enabled: false, hour_utc: 12 }; // daily-brief schedule
 let NIGHT_SCHED = { enabled: false, hour_utc: 3 }; // nightly self-improvement loop (ADR 0051)
@@ -364,6 +365,7 @@ async function reload() {
   try { MODEL_CONFIG = await api("GET", "/v1/model-config"); } catch (_) {}
   try { TUNE_SCHED = await api("GET", "/v1/model-tune/schedule"); } catch (_) {}
   try { MCP_SERVERS = await api("GET", "/v1/mcp/servers"); } catch (_) {}
+  try { RECIPES = await api("GET", "/v1/recipes"); } catch (_) { RECIPES = []; }
   DB = db;
   // Attach each butler reply's persisted action trail (steps + sources) from the
   // chat endpoint, so past answers keep their expandable actions after a reload.
@@ -429,6 +431,7 @@ const UNDER_SETTINGS = [
   { view: "display", icon: "prefs", label: "Preferences", note: "reading aloud, vibration, and when Endora reaches out" },
   { view: "models", icon: "sparkle", label: "Models", note: "which model answers, and the bigger one behind it" },
   { view: "skills", icon: "skills", label: "Skills", note: "what Endora can do, and the servers it connects to" },
+  { view: "recipes", icon: "skills", label: "Recipes", note: "capabilities you've taught Endora yourself — no code, just a web address and how to read it" },
   { view: "understanding", icon: "sparkle", label: "What Endora understands about you", short: "Understanding", note: "beliefs, and what it's working on" },
   { view: "signin", icon: "prefs", label: "Your sign-in", short: "Your sign-in", note: "password, authenticator, and tokens for scripts" },
   { view: "prefs", icon: "prefs", label: "Things Endora remembers about you", short: "What it remembers" },
@@ -1590,6 +1593,61 @@ function viewSkills() {
     ${mcpSection}`;
 }
 
+// One recipe: what it does, what it needs, and — folded, since it's the
+// mechanism rather than the point — exactly what it fetches and says.
+function recipeCard(r) {
+  const needs = (r.inputs || []).map((i) => `${i.name} (${i.type})`).join(", ") || "nothing extra";
+  return `
+    <div class="card">
+      <div class="row">
+        <div class="grow">
+          <div class="title">${esc(r.description)}</div>
+          <div class="sub">${esc(r.id)} · needs: ${esc(needs)}</div>
+        </div>
+        <span class="pill ${r.enabled ? "concluded" : ""}">${r.enabled ? "On" : "Off"}</span>
+      </div>
+      <details class="steps" style="margin-top:6px;">
+        <summary>How it works</summary>
+        <div class="sub" style="word-break:break-all;margin-top:4px;">Fetches: ${esc(r.get)}</div>
+        <div class="sub" style="margin-top:4px;">Says: "${esc(r.say)}"</div>
+      </details>
+      <div class="row" style="gap:6px;flex-wrap:wrap;margin-top:8px;">
+        <button class="ghost" data-act="recipe:enable:${esc(r.id)}:${r.enabled ? "0" : "1"}">${r.enabled ? "Turn off" : "Turn on"}</button>
+        <button class="ghost danger" data-act="recipe:delete:${esc(r.id)}">Delete</button>
+      </div>
+    </div>`;
+}
+
+// Recipes: capabilities the person teaches Endora themselves — five fields, no
+// code (ADR 0071). The whole screen is a list plus one folded form, because the
+// form is a rarer action than reading what already exists — the same call the
+// MCP "add a server by hand" form makes.
+function viewRecipes() {
+  const recipes = RECIPES || [];
+  const addForm = `
+    <details class="adv">
+      <summary>Teach it a new one</summary>
+      <div class="card">
+        <div class="sub" style="margin:4px 0 8px;">Five things: a short name, what it does, what it needs from you, a web address to fetch (with those things filled in), and the one sentence to read back from what comes back. That's the whole capability — it can only read, never act.</div>
+        <div class="field"><label>Short name</label><input id="recipe-id" placeholder="e.g. air_quality — lowercase, no spaces" /></div>
+        <div class="field"><label>What it does</label><input id="recipe-description" placeholder="e.g. Today's air quality where you are." /></div>
+        <div class="field"><label>What it needs <span class="sub" style="font-weight:400;">· one per line, name:type — type is "string" or "number"</span></label>
+          <textarea id="recipe-inputs" rows="2" placeholder="lat:number&#10;lon:number"></textarea></div>
+        <div class="field"><label>Web address to fetch <span class="sub" style="font-weight:400;">· use {name} for each thing above</span></label>
+          <input id="recipe-get" placeholder="https://example.com/api?lat={lat}&lon={lon}" /></div>
+        <div class="field"><label>What to say <span class="sub" style="font-weight:400;">· use {path.into.the.answer} to read the response back</span></label>
+          <input id="recipe-say" placeholder="The air quality index is {current.us_aqi} right now." /></div>
+        <div class="row" style="justify-content:flex-end;"><button class="primary" data-act="recipe:add">Save recipe</button></div>
+      </div>
+    </details>`;
+  return `
+    ${settingsCrumbs("recipes")}
+    <h2>Recipes</h2>
+    <div class="note">A recipe is a capability you teach Endora yourself — no code. It can only read one web address and say one sentence about it; it can't act on anything. A new one stays off until you turn it on.</div>
+    ${listOr(recipes.map(recipeCard), "No recipes yet — teach it one below.")}
+    ${addForm}`;
+}
+
 // The home surface: what Endora currently understands about you. Not a task list —
 // beliefs it has formed (with the evidence and how sure it is), which you can
 // affirm or correct. This is the point of the product (ADR 0052).
@@ -2461,6 +2519,7 @@ function render() {
     : v === "proactive" ? viewProactive()
     : v === "understanding" ? viewUnderstanding()
     : v === "signin" ? viewSignin()
+    : v === "recipes" ? viewRecipes()
     : viewUnderstanding();
   // On the chat, jump to the newest message (kept clear of the sticky composer).
   if (v === "chat") {
@@ -2696,6 +2755,49 @@ async function dispatch(act) {
       const wantConfirm = arg === "1";
       try { await api("POST", `/v1/capabilities/${id}/confirm`, { confirm: wantConfirm }); flash(wantConfirm ? "Endora will ask before using this." : "Endora may use this on its own.", "ok"); }
       catch (e) { flash("Couldn't change that skill: " + e.message, "err"); }
+      return reload();
+    }
+    // A recipe's own enable route (ADR 0071) — NOT /v1/capabilities/{id}/enable.
+    // That generic route turns "on" into clearing the stored stance, which for a
+    // recipe means falling back to its OWN default (off), not the observe band's —
+    // so it would look like it worked and quietly not enable anything. This one
+    // stores "on" explicitly.
+    if (verb === "recipe" && noun === "enable") {
+      const enabled = arg === "1";
+      try {
+        await api("POST", `/v1/recipes/${id}/enable`, { enabled });
+        flash(enabled ? `${id} is on.` : `${id} is off. You can turn it back on any time.`, "ok");
+      }
+      catch (e) { flash("Couldn't change that recipe: " + e.message, "err"); }
+      return reload();
+    }
+    if (verb === "recipe" && noun === "delete") {
+      if (!confirm(`Delete the "${id}" recipe? This can't be undone.`)) return;
+      try { await api("DELETE", `/v1/recipes/${id}`); flash("Recipe deleted.", "ok"); }
+      catch (e) { flash("Couldn't delete that recipe: " + e.message, "err"); }
+      return reload();
+    }
+    if (verb === "recipe" && noun === "add") {
+      const id2 = val("recipe-id");
+      const description = val("recipe-description");
+      const get = val("recipe-get");
+      const say = val("recipe-say");
+      if (!id2 || !description || !get || !say) { flash("Fill in a name, what it does, the address, and what to say.", "err"); return; }
+      // One "name:type" per line — the same shape the domain layer stores, typed
+      // out by hand rather than built from repeatable form rows, because five
+      // fields do not need a dynamic form to stay honest about their limits.
+      const inputs = val("recipe-inputs").split("\n").map((line) => line.trim()).filter(Boolean)
+        .map((line) => {
+          const [name, type] = line.split(":").map((s) => (s || "").trim());
+          return { name, type };
+        });
+      const badInput = inputs.find((i) => !i.name || (i.type !== "string" && i.type !== "number"));
+      if (badInput) { flash(`"${badInput.name || "?"}" needs a type of "string" or "number".`, "err"); return; }
+      try {
+        await api("POST", "/v1/recipes", { id: id2, description, inputs, get, say });
+        flash(`Taught it "${id2}" — turn it on above when you're ready.`, "ok");
+      }
+      catch (e) { flash("Couldn't save that recipe: " + e.message, "err"); return; }
       return reload();
     }
     // Step to another day's conversation. Nothing is loaded or archived — the messages
