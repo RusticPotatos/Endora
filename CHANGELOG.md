@@ -44,6 +44,14 @@ tagged release.
 
 ### Added
 
+- **Failures become specimens** ([ADR 0075](docs/adr/0075-failures-become-specimens.md)).
+  A chat turn the deterministic checks reject (the honesty valve, not-an-answer)
+  files the ask privately in the house's own record; the nightly loop replays one
+  per night under the reversible-only runner, judged by the same verdict that
+  filed it, and the morning trail says when a question that once stumped the
+  butler answers now. Bounded shelf (12), duplicates not refiled, giving up after
+  two weeks of failed replays. Never harvested into checked-in fixtures — the
+  battery stays hand-authored, per the constitution.
 - **The brief is a standing order** ([ADR 0074](docs/adr/0074-the-brief-is-a-standing-order.md)).
   The daily brief's sections are gathered by code with known-good arguments — the
   weather (whose summary now says whether an umbrella or jacket is worth it, from

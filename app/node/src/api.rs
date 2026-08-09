@@ -1986,6 +1986,7 @@ async fn send_chat(
             understanding.as_ref(),
             understanding.as_ref(),
             understanding.as_ref(),
+            understanding.as_ref(),
             &runner,
             butler.as_ref(),
             audit.as_ref(),
@@ -2174,6 +2175,7 @@ async fn stream_chat(
                 };
                 usecases::send_to_butler_streaming(
                     chat.as_ref(),
+                    understanding.as_ref(),
                     understanding.as_ref(),
                     understanding.as_ref(),
                     understanding.as_ref(),
@@ -5318,6 +5320,7 @@ pub fn spawn_heartbeat(state: AppState) {
                 .unwrap_or_default();
                 let reflected = usecases::run_due_nightly_loop(
                     chat.as_ref(),
+                    understanding.as_ref(),
                     understanding.as_ref(),
                     understanding.as_ref(),
                     understanding.as_ref(),
