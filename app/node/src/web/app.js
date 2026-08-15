@@ -1621,6 +1621,50 @@ function recipeCard(r) {
 // The `name:type` lines of the "what it needs" box, as objects. One parser, used
 // by the sample-value fields, by Try, and by Save — three readings of the same
 // text would drift.
+// Ready-made recipes, to answer the blank page. Every one of these was run
+// against its real API before shipping — a starter that does not work is worse
+// than no starter, because it teaches the person the feature is broken.
+//
+// **None of them declare inputs**, and that is deliberate rather than lazy: an
+// input has to be supplied by the model at ask time, and asked "what's the air
+// quality?" a small local model does not know anybody's coordinates and will
+// invent some. A constant in the address is a number the person edits once and
+// is then simply right, forever. Inputs remain for the case they are actually
+// for — something that genuinely varies per question.
+//
+// The coordinates below are a public example (New York), not anybody's home;
+// the person swaps them for theirs. Same rule as every other fixture here.
+const RECIPE_STARTERS = [
+  {
+    id: "air_quality",
+    description: "Today's air quality.",
+    get: "https://air-quality-api.open-meteo.com/v1/air-quality?latitude=40.71&longitude=-74.01&current=us_aqi",
+    say: "The air quality index is {current.us_aqi} right now.",
+    note: "swap the latitude and longitude for yours",
+  },
+  {
+    id: "uv_index",
+    description: "How strong the sun is right now.",
+    get: "https://api.open-meteo.com/v1/forecast?latitude=40.71&longitude=-74.01&current=uv_index",
+    say: "The UV index is {current.uv_index} right now.",
+    note: "swap the latitude and longitude for yours",
+  },
+  {
+    id: "sunset",
+    description: "When the sun sets today.",
+    get: "https://api.sunrise-sunset.org/json?lat=40.71&lng=-74.01&formatted=0",
+    say: "The sun sets at {results.sunset}.",
+    note: "swap the lat and lng for yours",
+  },
+  {
+    id: "dollar_in_euro",
+    description: "What a dollar is worth in euro.",
+    get: "https://api.frankfurter.app/latest?from=USD&to=EUR",
+    say: "One US dollar is {rates.EUR} euro.",
+    note: "change USD, EUR and the sentence together — the field name follows the currency",
+  },
+];
+
 function recipeInputsFrom(text) {
   return (text || "").split("\n").map((l) => l.trim()).filter(Boolean).map((line) => {
     const [name, type] = line.split(":").map((s) => (s || "").trim());
@@ -1680,6 +1724,12 @@ function viewRecipes() {
       <summary>Teach it a new one</summary>
       <div class="card">
         <div class="sub" style="margin:4px 0 8px;">Five things: a short name, what it does, what it needs from you, a web address to fetch (with those things filled in), and the one sentence to read back from what comes back. That's the whole capability — it can only read, never act.</div>
+        <div class="sub" style="margin:8px 0 4px;">Start from one of these, then edit it:</div>
+        <div style="margin-bottom:10px;">
+          ${RECIPE_STARTERS.map((s, n) => `
+            <button class="pill pick" data-act="recipe:start:${n}" style="margin:2px 4px 2px 0;"
+              title="${esc(s.get)}">${esc(s.description)}</button>`).join("")}
+        </div>
         <div class="field"><label>Short name</label><input id="recipe-id" placeholder="e.g. air_quality — lowercase, no spaces" /></div>
         <div class="field"><label>What it does</label><input id="recipe-description" placeholder="e.g. Today's air quality where you are." /></div>
         <div class="field"><label>What it needs <span class="sub" style="font-weight:400;">· one per line, name:type — type is "string" or "number"</span></label>
@@ -2833,6 +2883,28 @@ async function dispatch(act) {
       try { await api("DELETE", `/v1/recipes/${id}`); flash("Recipe deleted.", "ok"); }
       catch (e) { flash("Couldn't delete that recipe: " + e.message, "err"); }
       return reload();
+    }
+    // Fill the form from a ready-made one. Like `recipe:try`, it writes into the
+    // fields rather than re-rendering — the form is open and the person is
+    // standing in it.
+    if (verb === "recipe" && noun === "start") {
+      const starter = RECIPE_STARTERS[Number(id)];
+      if (!starter) return;
+      const put = (field, value) => {
+        const box = document.getElementById(`recipe-${field}`);
+        if (box) box.value = value;
+      };
+      put("id", starter.id);
+      put("description", starter.description);
+      put("inputs", "");
+      put("get", starter.get);
+      put("say", starter.say);
+      // The address changed, so any earlier trial is about a different recipe.
+      recipeSamplesChanged("");
+      const trial = document.getElementById("recipe-trial");
+      if (trial) trial.innerHTML = "";
+      flash(`Filled in "${starter.description}" — ${starter.note}, then try it.`, "ok");
+      return;
     }
     // Fetch the draft once and show what came back. Deliberately does NOT
     // reload(): a re-render would wipe the half-written form this exists to
