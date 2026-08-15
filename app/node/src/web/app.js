@@ -1618,6 +1618,57 @@ function recipeCard(r) {
     </div>`;
 }
 
+// The `name:type` lines of the "what it needs" box, as objects. One parser, used
+// by the sample-value fields, by Try, and by Save — three readings of the same
+// text would drift.
+function recipeInputsFrom(text) {
+  return (text || "").split("\n").map((l) => l.trim()).filter(Boolean).map((line) => {
+    const [name, type] = line.split(":").map((s) => (s || "").trim());
+    return { name, type };
+  });
+}
+
+// Regenerates a sample-value box per declared input, so Try has something to fill
+// the address with. Called from the textarea's own `oninput` — it rewrites one
+// div and nothing else, because a re-render here would wipe the half-typed form
+// around it.
+function recipeSamplesChanged(text) {
+  const box = document.getElementById("recipe-samples");
+  if (!box) return;
+  const inputs = recipeInputsFrom(text).filter((i) => i.name);
+  box.innerHTML = inputs.length
+    ? `<div class="sub" style="margin:8px 0 4px;">Sample values, so you can try it:</div>` +
+      inputs.map((i) => `
+        <div class="field"><label>${esc(i.name)} <span class="sub" style="font-weight:400;">· ${esc(i.type || "string")}</span></label>
+          <input data-sample="${esc(i.name)}" data-sample-type="${esc(i.type || "string")}" placeholder="a value to test with" /></div>`).join("")
+    : "";
+}
+
+// What a trial found: the address it really fetched, the fields it can read
+// (tap one to use it), and the sentence as it reads. This is the whole point of
+// the authoring loop — nobody should be guessing a JSON path against an API
+// they cannot see.
+function recipeTrialHtml(r) {
+  if (!r) return "";
+  if (!r.ok) {
+    return `<div class="msg show err" style="margin-top:8px;">${esc(r.error || "that didn't work")}</div>`;
+  }
+  const chips = (r.fields || []).map((f) => `
+    <button class="pill pick" data-act="recipe:pick:${esc(f.path)}" title="use this field"
+      style="margin:2px 4px 2px 0;">${esc(f.path)} <span class="sub">${esc(String(f.sample).slice(0, 24))}</span></button>`).join("");
+  const preview = r.preview
+    ? `<div class="card" style="margin-top:8px;"><div class="sub">It would say:</div>
+         <div class="title" style="font-weight:500;">${esc(r.preview)}</div></div>`
+    : `<div class="msg show err" style="margin-top:8px;">${esc(r.preview_error || "the sentence didn't resolve")}</div>`;
+  return `
+    <div style="margin-top:10px;">
+      <div class="sub" style="word-break:break-all;">Fetched: ${esc(r.url)}</div>
+      ${chips ? `<div class="sub" style="margin:8px 0 4px;">Tap a field to put it in your sentence:</div><div>${chips}</div>` : ""}
+      ${r.skipped_a_list ? `<div class="sub" style="margin-top:6px;">This answer also had a list in it. A recipe can only read plain fields, so those aren't offered.</div>` : ""}
+      ${preview}
+    </div>`;
+}
+
 // Recipes: capabilities the person teaches Endora themselves — five fields, no
 // code (ADR 0071). The whole screen is a list plus one folded form, because the
 // form is a rarer action than reading what already exists — the same call the
@@ -1632,10 +1683,16 @@ function viewRecipes() {
         <div class="field"><label>Short name</label><input id="recipe-id" placeholder="e.g. air_quality — lowercase, no spaces" /></div>
         <div class="field"><label>What it does</label><input id="recipe-description" placeholder="e.g. Today's air quality where you are." /></div>
         <div class="field"><label>What it needs <span class="sub" style="font-weight:400;">· one per line, name:type — type is "string" or "number"</span></label>
-          <textarea id="recipe-inputs" rows="2" placeholder="lat:number&#10;lon:number"></textarea></div>
+          <textarea id="recipe-inputs" rows="2" placeholder="lat:number&#10;lon:number" oninput="recipeSamplesChanged(this.value)"></textarea></div>
+        <div id="recipe-samples"></div>
         <div class="field"><label>Web address to fetch <span class="sub" style="font-weight:400;">· use {name} for each thing above</span></label>
           <input id="recipe-get" placeholder="https://example.com/api?lat={lat}&lon={lon}" /></div>
-        <div class="field"><label>What to say <span class="sub" style="font-weight:400;">· use {path.into.the.answer} to read the response back</span></label>
+        <div class="row" style="justify-content:flex-start;">
+          <button class="ghost" data-act="recipe:try">Try it →</button>
+          <span class="sub">fetch it once and see what comes back</span>
+        </div>
+        <div id="recipe-trial"></div>
+        <div class="field" style="margin-top:10px;"><label>What to say <span class="sub" style="font-weight:400;">· tap a field above, or type {path.into.the.answer}</span></label>
           <input id="recipe-say" placeholder="The air quality index is {current.us_aqi} right now." /></div>
         <div class="row" style="justify-content:flex-end;"><button class="primary" data-act="recipe:add">Save recipe</button></div>
       </div>
@@ -2776,6 +2833,42 @@ async function dispatch(act) {
       try { await api("DELETE", `/v1/recipes/${id}`); flash("Recipe deleted.", "ok"); }
       catch (e) { flash("Couldn't delete that recipe: " + e.message, "err"); }
       return reload();
+    }
+    // Fetch the draft once and show what came back. Deliberately does NOT
+    // reload(): a re-render would wipe the half-written form this exists to
+    // help you finish, so it writes into its own result node and nothing else.
+    if (verb === "recipe" && noun === "try") {
+      const get = val("recipe-get");
+      if (!get) { flash("Put in a web address first.", "err"); return; }
+      const inputs = recipeInputsFrom(val("recipe-inputs"));
+      // Values are typed per their declaration, because the address filler is
+      // strict about it — a number arriving as text is refused there, and being
+      // refused by your own Try button is a confusing way to learn that.
+      const values = {};
+      for (const box of document.querySelectorAll("[data-sample]")) {
+        const name = box.getAttribute("data-sample");
+        const raw = (box.value || "").trim();
+        if (!raw) continue;
+        values[name] = box.getAttribute("data-sample-type") === "number" ? Number(raw) : raw;
+      }
+      const where = document.getElementById("recipe-trial");
+      if (where) where.innerHTML = `<div class="sub" style="margin-top:8px;">Fetching…</div>`;
+      let result;
+      try { result = await api("POST", "/v1/recipes/try", { inputs, get, say: val("recipe-say"), values }); }
+      catch (e) { result = { ok: false, error: e.message }; }
+      if (where) where.innerHTML = recipeTrialHtml(result);
+      return;
+    }
+    // Put a field from the trial into the sentence. Appends rather than
+    // replaces: a sentence is usually several fields and some words.
+    if (verb === "recipe" && noun === "pick") {
+      const path = act.slice("recipe:pick:".length);
+      const say = document.getElementById("recipe-say");
+      if (say && path) {
+        say.value = `${say.value}{${path}}`;
+        say.focus();
+      }
+      return;
     }
     if (verb === "recipe" && noun === "add") {
       const id2 = val("recipe-id");

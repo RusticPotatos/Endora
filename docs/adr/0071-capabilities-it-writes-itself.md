@@ -143,6 +143,28 @@ no expressions, no conditionals, no second request. Anything the format cannot
 say, a recipe cannot do; that sentence is the sandbox, and every extension to the
 format needs its own record.
 
+### Authoring is a loop, not a form (added 2026-08-15)
+
+The five fields are the format; they are not, on their own, a way to author
+anything. Hand-writing a JSON path against an API you cannot see is guesswork,
+and guesswork is what made the first version of the form unusable in practice.
+
+So authoring runs the loop the format already implies: **fetch it once, see the
+real answer, tap the field you want, read the sentence back.** `try_recipe` runs
+a draft through the *same* validation, the *same* guarded fetch and the *same*
+templating a saved recipe uses — a trial that took a shortcut would be a demo
+rather than evidence — and reports the address it really fetched, every path a
+`say` template could address (with the value found there), and the rendered
+sentence. Nothing is stored and nothing is enabled by trying.
+
+Two things the loop is careful about. It offers **only** paths that resolve:
+`say` walks object keys, so a field inside a list has no expressible path, and
+offering one would hand the person a template that always fails — those are
+skipped and *said to be skipped*, because "my field isn't there" otherwise reads
+as a bug rather than the format's edge. And it is the same evidence a
+butler-drafted proposal will show, so the two paths converge rather than
+growing separate explanations of the same recipe.
+
 ### The proposal surface: the trouble card's shape, not the deleted queue's
 
 A proposal renders exactly like a standing-trouble card — one card, the full

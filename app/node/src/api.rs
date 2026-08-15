@@ -717,6 +717,20 @@ struct RecipeRequest {
     say: String,
 }
 
+/// A draft being tried, before it is anything (ADR 0071). No id or description:
+/// what a trial can tell you about is the address and the sentence, and asking
+/// for a name before you know the thing works is the wrong order.
+#[derive(serde::Deserialize)]
+struct RecipeTrialRequest {
+    #[serde(default)]
+    inputs: Vec<RecipeInputRequest>,
+    get: String,
+    say: String,
+    /// A sample value per declared input, so the address can actually be filled.
+    #[serde(default)]
+    values: serde_json::Value,
+}
+
 fn recipe_json(
     recipe: &endora_capabilities::Recipe,
     stance: endora_capabilities::Stance,
@@ -826,6 +840,64 @@ async fn create_recipe(
     .await?;
     let _ = state.changes.send(());
     Ok(Json(json!({ "ok": true })))
+}
+
+/// Runs a draft recipe once and reports what came back (ADR 0071).
+///
+/// Nothing is stored and nothing is enabled: this is the authoring loop, where
+/// the person sees the real answer and picks the field they want out of it
+/// instead of guessing a JSON path. It runs the same guarded fetch a saved
+/// recipe runs, so a trial cannot reach anywhere the real thing could not.
+///
+/// A failed fetch is a **200 with the failure described**, not a 4xx: "that
+/// address didn't answer" is the trial's result, not a broken request.
+async fn try_recipe(
+    Json(req): Json<RecipeTrialRequest>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    use endora_capabilities::{RecipeInput, RecipeInputKind};
+    let inputs = req
+        .inputs
+        .iter()
+        .map(|i| {
+            RecipeInputKind::from_name(&i.kind)
+                .map(|kind| RecipeInput {
+                    name: i.name.clone(),
+                    kind,
+                })
+                .ok_or_else(|| {
+                    ApiError(AppError::BadRequest {
+                        message: format!(
+                            "'{}' is not a recipe input type — use 'string' or 'number'",
+                            i.kind
+                        ),
+                    })
+                })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let values = if req.values.is_object() {
+        req.values.clone()
+    } else {
+        json!({})
+    };
+    let tried = blocking(move || {
+        Ok::<_, AppError>(endora_capabilities::try_recipe(
+            inputs, &req.get, &req.say, &values,
+        ))
+    })
+    .await?;
+    Ok(Json(match tried {
+        Ok(trial) => json!({
+            "ok": true,
+            "url": trial.url,
+            "fields": trial.fields.iter()
+                .map(|(path, sample)| json!({ "path": path, "sample": sample }))
+                .collect::<Vec<_>>(),
+            "preview": trial.preview,
+            "preview_error": trial.preview_error,
+            "skipped_a_list": trial.skipped_a_list,
+        }),
+        Err(why) => json!({ "ok": false, "error": why }),
+    }))
 }
 
 #[derive(Deserialize)]
@@ -1210,6 +1282,7 @@ pub fn app(state: AppState) -> Router {
             post(set_capability_settings),
         )
         .route("/v1/recipes", get(list_recipes).post(create_recipe))
+        .route("/v1/recipes/try", post(try_recipe))
         .route("/v1/recipes/{id}", axum::routing::delete(remove_recipe))
         .route("/v1/recipes/{id}/enable", post(set_recipe_enabled))
         .route("/v1/autonomy", get(get_autonomy).post(set_autonomy))

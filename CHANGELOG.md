@@ -7,6 +7,19 @@ tagged release.
 
 ## [Unreleased]
 
+### Added
+
+- **Authoring a recipe is a loop, not a form**
+  ([ADR 0071](docs/adr/0071-capabilities-it-writes-itself.md)). A new **Try it**
+  button fetches the draft once and shows the address it really used, every field
+  it can read — each one tappable straight into the sentence — and the sentence as
+  it would read. No more hand-writing JSON paths against an API you can't see.
+  Sample-value boxes appear per declared input as you type them. The trial runs
+  the same validation, the same guarded fetch and the same templating a saved
+  recipe uses, so what you see when you try it is what you get when you save it;
+  nothing is stored or enabled by trying. Fields inside lists are skipped and said
+  to be skipped, because a recipe reads object keys only.
+
 ### Fixed
 
 - **A recipe could reach the house's own network.** The recipe interpreter
