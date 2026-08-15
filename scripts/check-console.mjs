@@ -582,6 +582,36 @@ console.log(`requests: sending a message signs its ${chat.length} request(s)`);
     process.exit(1);
   }
   console.log("recipes: a trial shows what it fetched, and its fields are tappable");
+
+  // Every starter must be complete and internally consistent, because a starter
+  // that does not work teaches the person the whole feature is broken. Each was
+  // run against its real API before shipping; what a build check can still hold
+  // is that none has been edited into an impossible shape since.
+  const starters = runInContext("JSON.stringify(RECIPE_STARTERS)", context);
+  for (const s of JSON.parse(starters)) {
+    for (const field of ["id", "description", "get", "say", "note"]) {
+      if (!s[field]) {
+        console.error(`recipes: the "${s.id || "?"}" starter has no ${field}`);
+        process.exit(1);
+      }
+    }
+    if (!/^https:\/\//.test(s.get)) {
+      console.error(`recipes: the "${s.id}" starter is not https: ${s.get}`);
+      process.exit(1);
+    }
+    // A starter declares no inputs, so its address must carry no {slot} — one
+    // would be unfillable and the recipe would refuse to save.
+    if (/\{[^}]+\}/.test(s.get)) {
+      console.error(`recipes: the "${s.id}" starter's address has a slot but no inputs: ${s.get}`);
+      process.exit(1);
+    }
+    // …and its sentence must read something, or there is nothing to say.
+    if (!/\{[^}]+\}/.test(s.say)) {
+      console.error(`recipes: the "${s.id}" starter's sentence reads no field: ${s.say}`);
+      process.exit(1);
+    }
+  }
+  console.log(`recipes: ${JSON.parse(starters).length} starters are complete and slot-free`);
 }
 
 // Layout is still not covered, and this is the honest note about why.
