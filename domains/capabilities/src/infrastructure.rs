@@ -3897,7 +3897,13 @@ fn recipe_input_schema(recipe: &Recipe) -> String {
 /// or the response is not JSON / lacks a path `say` names.
 fn run_recipe(recipe: &Recipe, input: &Value) -> Result<String, String> {
     let filled_get = fill_get_template(recipe, input)?;
-    let body = http_get_text(&filled_get, 64 * 1024).map_err(|e| e.to_string())?;
+    // GUARDED, not the plain helper. A recipe's URL is arbitrary — the person
+    // typed it, and one day the butler will draft it — which is exactly the case
+    // `guard_egress` exists for (ADR 0051). The built-in skills reach constant
+    // hosts and need no guard; this one shipped using their helper and was, until
+    // this line, a way to point the butler at 169.254.169.254 or anything else on
+    // the house's own network. Redirects are re-guarded per hop by the same call.
+    let body = guarded_get_text(&filled_get, 64 * 1024).map_err(|e| e.to_string())?;
     let response: Value =
         serde_json::from_str(&body).map_err(|_| "the response wasn't JSON".to_owned())?;
     fill_say_template(&recipe.say, &response)
@@ -9081,6 +9087,38 @@ mod recipe_tests {
             "The air quality index is {current.us_aqi} right now.",
         )
         .unwrap()
+    }
+
+    #[test]
+    fn a_recipe_may_not_reach_the_house_or_the_metadata_service() {
+        // The hole this closes: a recipe's URL is arbitrary — the person types it,
+        // and one day the butler drafts it — but the interpreter shipped fetching
+        // through the SAME helper the constant-host built-ins use, which does not
+        // guard. A recipe aimed at a link-local, loopback or private address was
+        // simply fetched. `Recipe::new` cannot catch this (a private host is a
+        // perfectly well-formed https URL), so the guard has to be at the fetch.
+        //
+        // No network is reached: the guard refuses before any request is made,
+        // which is also why this test is fast and offline.
+        for target in [
+            "http://169.254.169.254/latest/meta-data/",
+            "http://192.168.1.10:8123/api/states",
+            "http://127.0.0.1:8787/v1/export",
+            "http://localhost/admin",
+        ] {
+            let recipe = Recipe::new("probe", "probes somewhere private", vec![], target, "{x}")
+                .expect("a private host is a well-formed URL — validation cannot catch it");
+            let refused = run_recipe(&recipe, &serde_json::json!({}))
+                .expect_err("a private address must never be fetched");
+            // Asserting on the REASON, not merely that it errored: a refused
+            // connection also produces an error, so `is_err()` alone would pass
+            // just as happily with the guard removed — a test that lies.
+            assert!(
+                refused.contains("private/internal address"),
+                "{target} failed for the wrong reason ({refused}) — that is a \
+                 network error, not the guard refusing"
+            );
+        }
     }
 
     // ---- fill_get_template ----------------------------------------------
