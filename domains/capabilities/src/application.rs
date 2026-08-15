@@ -6,7 +6,8 @@ use crate::domain::{Change, Transition, Watched, note_reading};
 
 pub use crate::domain::{
     AutonomyEnvelope, ConfigWrite, McpServer, McpTransport, Recipe, RecipeInput, RecipeInputKind,
-    StandingTrouble, TargetAlias, WORTH_SAYING_AFTER_DAYS, WriteKind, not_answering, worth_raising,
+    StandingTrouble, TargetAlias, WORTH_SAYING_AFTER_DAYS, WriteKind, a_pile_of, device_of,
+    how_many_things, not_answering, worth_raising,
 };
 
 /// An optional **deep model** — a bigger/cloud AI the person configures for hard
