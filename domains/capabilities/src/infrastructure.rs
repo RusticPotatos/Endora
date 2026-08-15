@@ -14,7 +14,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::application::{CapabilityRunner, Recipe, Stance};
-use crate::domain::{RecipeInputKind, placeholders_in};
+use crate::domain::{RecipeInput, RecipeInputKind, placeholders_in};
 use endora_kernel::{Decision, Reversibility};
 use serde_json::{Value, json};
 
@@ -3935,6 +3935,115 @@ fn fill_get_template(recipe: &Recipe, input: &Value) -> Result<String, String> {
         url = url.replace(&format!("{{{}}}", i.name), &urlencode(&filled));
     }
     Ok(url)
+}
+
+/// What a draft recipe did when tried, before anyone commits to it (ADR 0071).
+///
+/// The authoring loop this exists for: fetch it once, see the real answer, pick
+/// the field you want out of it, and read the sentence back — rather than
+/// hand-writing a JSON path against an API you are guessing about.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecipeTrial {
+    /// The address actually fetched, with the sample values filled in.
+    pub url: String,
+    /// Every path `say` could address, with what this response had there.
+    pub fields: Vec<(String, String)>,
+    /// The sentence as it reads, when every placeholder resolved.
+    pub preview: Option<String>,
+    /// Why it did not, when one did not.
+    pub preview_error: Option<String>,
+    /// The response held a list. Recipes read objects only, so those fields are
+    /// not offered — said plainly, because "my field isn't there" otherwise looks
+    /// like a bug rather than the format's edge.
+    pub skipped_a_list: bool,
+}
+
+/// The most fields offered from one response. A long tail of paths is a wall,
+/// not a chooser, and anything past this is reachable by typing the path.
+const MOST_FIELDS_OFFERED: usize = 60;
+
+/// Runs a draft recipe once and reports what came back (ADR 0071).
+///
+/// Deliberately the **same** path a saved recipe takes — the same validation, the
+/// same guarded fetch, the same templating — so what you see when you try it is
+/// what you get when you save it. A trial that took a shortcut would be a demo,
+/// not evidence.
+///
+/// # Errors
+/// The draft's own validation errors, or whatever the fetch reported.
+pub fn try_recipe(
+    inputs: Vec<RecipeInput>,
+    get: &str,
+    say: &str,
+    values: &Value,
+) -> Result<RecipeTrial, String> {
+    // A placeholder id and description: a trial validates the URL and its slots,
+    // which is what can be wrong at this stage. The real id is validated on save.
+    let draft = Recipe::new("draft", "a draft", inputs, get, say).map_err(|e| e.to_string())?;
+    let url = fill_get_template(&draft, values)?;
+    let body = guarded_get_text(&url, 64 * 1024).map_err(|e| e.to_string())?;
+    let response: Value =
+        serde_json::from_str(&body).map_err(|_| "the response wasn't JSON".to_owned())?;
+    let mut fields = Vec::new();
+    let mut skipped_a_list = false;
+    readable_paths(&response, "", &mut fields, &mut skipped_a_list);
+    fields.truncate(MOST_FIELDS_OFFERED);
+    let (preview, preview_error) = match fill_say_template(&draft.say, &response) {
+        Ok(sentence) => (Some(sentence), None),
+        Err(why) => (None, Some(why)),
+    };
+    Ok(RecipeTrial {
+        url,
+        fields,
+        preview,
+        preview_error,
+        skipped_a_list,
+    })
+}
+
+/// Every path in a response that a `say` template could actually address, with
+/// the value found there.
+///
+/// Objects only, exactly matching [`fill_say_template`]'s reach: a path is a
+/// sequence of object keys, so a field inside a list has no expressible path and
+/// offering one would hand the person a template that cannot resolve. Nulls are
+/// skipped for the same reason — the template treats them as missing.
+fn readable_paths(
+    value: &Value,
+    prefix: &str,
+    out: &mut Vec<(String, String)>,
+    skipped_a_list: &mut bool,
+) {
+    if out.len() >= MOST_FIELDS_OFFERED {
+        return;
+    }
+    match value {
+        Value::Object(map) => {
+            for (key, child) in map {
+                let path = if prefix.is_empty() {
+                    key.clone()
+                } else {
+                    format!("{prefix}.{key}")
+                };
+                readable_paths(child, &path, out, skipped_a_list);
+            }
+        }
+        Value::Array(items) => {
+            if !items.is_empty() {
+                *skipped_a_list = true;
+            }
+        }
+        Value::Null => {}
+        scalar => {
+            if !prefix.is_empty() {
+                let shown = match scalar {
+                    Value::String(s) => s.clone(),
+                    other => other.to_string(),
+                };
+                out.push((prefix.to_owned(), shown));
+            }
+        }
+    }
 }
 
 /// Fills `say`'s `{a.b.c}` placeholders by walking that dotted path into the
@@ -9087,6 +9196,53 @@ mod recipe_tests {
             "The air quality index is {current.us_aqi} right now.",
         )
         .unwrap()
+    }
+
+    #[test]
+    fn the_fields_offered_are_exactly_the_ones_a_say_template_can_reach() {
+        // The picker's contract: every path it offers must resolve, and every
+        // path it hides must be one that could not. Offering a field inside a
+        // list would hand the person a template that always fails.
+        let response = serde_json::json!({
+            "current": { "us_aqi": 42, "label": "good" },
+            "hourly": [ { "us_aqi": 41 } ],
+            "elevation": 12.5,
+            "nothing": null,
+        });
+        let mut fields = Vec::new();
+        let mut skipped = false;
+        readable_paths(&response, "", &mut fields, &mut skipped);
+
+        let paths: Vec<&str> = fields.iter().map(|(p, _)| p.as_str()).collect();
+        assert!(paths.contains(&"current.us_aqi"), "{paths:?}");
+        assert!(paths.contains(&"current.label"), "{paths:?}");
+        assert!(paths.contains(&"elevation"), "{paths:?}");
+        // A list is unreachable, and a null reads as missing to the template.
+        assert!(!paths.iter().any(|p| p.starts_with("hourly")), "{paths:?}");
+        assert!(!paths.contains(&"nothing"), "{paths:?}");
+        assert!(skipped, "the list must be reported, not silently dropped");
+
+        // And the promise holds: every offered path really does resolve.
+        for (path, _) in &fields {
+            assert!(
+                fill_say_template(&format!("{{{path}}}"), &response).is_ok(),
+                "offered {path}, which the template cannot read"
+            );
+        }
+    }
+
+    #[test]
+    fn a_trial_shows_the_sample_value_it_found() {
+        let response = serde_json::json!({ "current": { "us_aqi": 42, "label": "good" } });
+        let mut fields = Vec::new();
+        let mut skipped = false;
+        readable_paths(&response, "", &mut fields, &mut skipped);
+        let aqi = fields.iter().find(|(p, _)| p == "current.us_aqi").unwrap();
+        assert_eq!(aqi.1, "42");
+        let label = fields.iter().find(|(p, _)| p == "current.label").unwrap();
+        // Strings are shown bare, not JSON-quoted — this is a sample for a
+        // person to read, not a value to round-trip.
+        assert_eq!(label.1, "good");
     }
 
     #[test]

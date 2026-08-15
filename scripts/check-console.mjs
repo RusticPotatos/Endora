@@ -553,6 +553,37 @@ console.log(`requests: sending a message signs its ${chat.length} request(s)`);
   console.log("chat: prose renders links, bullets and bold — and hostile text stays text");
 }
 
+// The recipe authoring loop shows what it actually fetched, and every field it
+// offers is one you can tap into the sentence (ADR 0071).
+//
+// The failure this guards against is subtle and would look fine: a chip whose
+// `data-act` verb nobody handles renders perfectly and does nothing when tapped,
+// which reads as a dead app rather than a missing branch. The verb scan below
+// catches an unhandled verb; this catches the chip losing its action entirely.
+{
+  const trial = runInContext(
+    `recipeTrialHtml({ ok: true, url: "https://x.test/?lat=1",
+       fields: [{ path: "current.us_aqi", sample: "42" }],
+       preview: "The index is 42.", preview_error: null, skipped_a_list: true })`,
+    context,
+  );
+  if (!/data-act="recipe:pick:current\.us_aqi"/.test(trial)) {
+    console.error(`recipes: a trial's field is not tappable into the sentence: ${trial}`);
+    process.exit(1);
+  }
+  if (!trial.includes("The index is 42.") || !/list/i.test(trial)) {
+    console.error(`recipes: a trial hid its preview or its skipped list: ${trial}`);
+    process.exit(1);
+  }
+  // A failed trial says why, rather than rendering an empty success.
+  const failed = runInContext(`recipeTrialHtml({ ok: false, error: "that address didn't answer" })`, context);
+  if (!failed.includes("that address didn&#39;t answer")) {
+    console.error(`recipes: a failed trial did not say why: ${failed}`);
+    process.exit(1);
+  }
+  console.log("recipes: a trial shows what it fetched, and its fields are tappable");
+}
+
 // Layout is still not covered, and this is the honest note about why.
 //
 // The shape that has broken twice on a phone — a `.row` holding a text block and a pile of
