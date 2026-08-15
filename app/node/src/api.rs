@@ -3372,12 +3372,23 @@ async fn list_standing_trouble(
         endora_capabilities::worth_raising(&open, now_ms)
             .into_iter()
             .map(|t| {
+                // What this card stands for. A raised trouble may cover a whole
+                // device's worth of entities (ADR 0056's pile rule), and a card
+                // that quietly spoke for ten others would be a truncation the
+                // person could not see.
+                let covers = endora_capabilities::how_many_things(&open, now_ms, t);
+                let statement = if covers > 1 {
+                    format!("{} (and {} more on it)", t.statement(now_ms), covers - 1)
+                } else {
+                    t.statement(now_ms)
+                };
                 json!({
                     "server": t.server,
                     "thing": t.thing,
                     "trouble": t.trouble,
                     "days": t.days_by(now_ms),
-                    "statement": t.statement(now_ms),
+                    "covers": covers,
+                    "statement": statement,
                 })
             })
             .collect::<Vec<_>>(),
@@ -3506,8 +3517,26 @@ fn accept_trouble_everywhere(
     thing: &str,
 ) -> Result<(), AppError> {
     use endora_capabilities::StandingTroubleRepository;
-    for t in StandingTroubleRepository::troubles(config).unwrap_or_default() {
-        if t.thing == thing {
+    let all = StandingTroubleRepository::troubles(config).unwrap_or_default();
+    // What the card actually claimed to cover. A raised trouble may stand for a
+    // whole device's worth of entities (ADR 0056's pile rule), and answering it
+    // has to settle exactly that — the same grouping the raiser used, from the
+    // same function, so the two cannot drift into "answered it and it came back".
+    let worth: Vec<(String, String)> = all
+        .iter()
+        .filter(|t| !t.accepted)
+        .map(|t| (t.server.clone(), t.thing.clone()))
+        .collect();
+    let group = all
+        .iter()
+        .find(|t| t.thing == thing)
+        .and_then(|t| endora_capabilities::a_pile_of(&worth, &t.server, &t.thing));
+    for t in &all {
+        let same_thing = t.thing == thing;
+        let same_pile = group
+            .as_deref()
+            .is_some_and(|device| endora_capabilities::device_of(&t.thing) == Some(device));
+        if same_thing || same_pile {
             StandingTroubleRepository::accept_trouble(config, &t.server, &t.thing)
                 .map_err(AppError::Repository)?;
         }
@@ -6771,6 +6800,74 @@ mod tests {
             all.iter()
                 .any(|t| t.thing == "light.kiosk_brightness" && t.accepted),
             "gone did not stick: {all:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn one_answer_settles_the_whole_device_the_card_stood_for() {
+        // A card that says "the phone stopped answering" must settle the phone,
+        // not one of its eleven sensors — otherwise answering it makes ten more
+        // cards appear, which is the loop that made this annoying in the first
+        // place. The route re-derives the group from the same function the
+        // raiser uses, so what was claimed and what is settled cannot drift.
+        use endora_capabilities::{StandingTrouble, StandingTroubleRepository};
+        let state = test_state();
+        let sensors = [
+            "sensor.bambam2_audio_output",
+            "sensor.bambam2_bssid",
+            "sensor.bambam2_sim_1",
+            "sensor.bambam2_storage",
+        ];
+        for thing in sensors {
+            StandingTroubleRepository::note_trouble(
+                state.config.as_ref(),
+                &StandingTrouble {
+                    server: "home-assistant".to_owned(),
+                    thing: thing.to_owned(),
+                    trouble: "unavailable".to_owned(),
+                    since_ms: 1_000,
+                    accepted: false,
+                },
+            )
+            .unwrap();
+        }
+        // An unrelated light must survive — answering about the phone says
+        // nothing about the kitchen.
+        StandingTroubleRepository::note_trouble(
+            state.config.as_ref(),
+            &StandingTrouble {
+                server: "home-assistant".to_owned(),
+                thing: "light.kitchen_table".to_owned(),
+                trouble: "unavailable".to_owned(),
+                since_ms: 1_000,
+                accepted: false,
+            },
+        )
+        .unwrap();
+
+        app(state.clone())
+            .oneshot(post(
+                "/v1/standing-trouble/answer",
+                r#"{"server":"home-assistant","thing":"sensor.bambam2_audio_output","answer":"gone"}"#,
+            ))
+            .await
+            .unwrap();
+
+        let all = StandingTroubleRepository::troubles(state.config.as_ref()).unwrap();
+        for thing in sensors {
+            let t = all
+                .iter()
+                .find(|t| t.thing == thing)
+                .expect("still recorded");
+            assert!(t.accepted, "{thing} was left to come back as another card");
+        }
+        let light = all
+            .iter()
+            .find(|t| t.thing == "light.kitchen_table")
+            .expect("still recorded");
+        assert!(
+            !light.accepted,
+            "answering about the phone silently accepted an unrelated light"
         );
     }
 

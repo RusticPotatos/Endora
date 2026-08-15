@@ -409,7 +409,90 @@ pub fn worth_raising(troubles: &[StandingTrouble], now_ms: i64) -> Vec<&Standing
     // record kept is the one whose duration makes the strongest case.
     let mut seen = std::collections::HashSet::new();
     out.retain(|t| seen.insert(t.thing.clone()));
+    // …and one device is still one problem when it takes a dozen entities down with
+    // it. A phone that stops reporting does not fail once; it fails per sensor, and
+    // the person met eleven separate cards asking whether eleven halves of one phone
+    // were still theirs. Sorted oldest-first, so the survivor is again the one whose
+    // duration makes the case.
+    //
+    // Counted against what SURVIVED the de-duplication above, not the whole store:
+    // an accepted or too-new sibling must not make a pile out of something that is
+    // not one.
+    let worth: Vec<(String, String)> = out
+        .iter()
+        .map(|t| (t.server.clone(), t.thing.clone()))
+        .collect();
+    let mut piled: std::collections::HashSet<String> = std::collections::HashSet::new();
+    out.retain(|t| match a_pile_of(&worth, &t.server, &t.thing) {
+        Some(device) => piled.insert(format!("{}::{device}", t.server)),
+        None => true,
+    });
     out
+}
+
+/// How many things a raised trouble stands for, counting itself — 1 when it
+/// stands alone. What the card says out loud, so eleven things collapsing into
+/// one line is visible rather than a silent truncation.
+#[must_use]
+pub fn how_many_things(
+    troubles: &[StandingTrouble],
+    now_ms: i64,
+    raised: &StandingTrouble,
+) -> usize {
+    let worth: Vec<(String, String)> = troubles
+        .iter()
+        .filter(|t| !t.accepted)
+        .filter(|t| t.days_by(now_ms) >= WORTH_SAYING_AFTER_DAYS)
+        .map(|t| (t.server.clone(), t.thing.clone()))
+        .collect();
+    match a_pile_of(&worth, &raised.server, &raised.thing) {
+        Some(device) => worth
+            .iter()
+            .filter(|(s, t)| s == &raised.server && device_of(t) == Some(device.as_str()))
+            .count(),
+        None => 1,
+    }
+}
+
+/// How many of one device's things must be wrong before they stop being separate
+/// problems.
+///
+/// Three, and the threshold is the whole safety of this: grouping only engages
+/// where the alternative is already the pile [0056](../../docs/adr/0056-how-it-behaves-toward-you.md)
+/// forbids. Two lights in one kitchen share a prefix and stay two cards, because
+/// hiding a device somebody did not mean to hide is the failure worth avoiding —
+/// and below three there is nothing to gain by risking it.
+pub const A_PILE_IS: usize = 3;
+
+/// The device an entity name belongs to, as far as a name can tell: the leading
+/// token of the part after the domain. `sensor.bambam2_audio_output` → `bambam2`.
+///
+/// A heuristic, named as one. Services do not publish device membership in the
+/// entity id, so this reads the convention every integration actually follows —
+/// and it is only ever allowed to *group*, never to act, which bounds what being
+/// wrong can cost.
+#[must_use]
+pub fn device_of(thing: &str) -> Option<&str> {
+    let after_domain = thing.split_once('.').map_or(thing, |(_, rest)| rest);
+    let head = after_domain.split('_').next()?;
+    (head.len() >= 2 && head != after_domain).then_some(head)
+}
+
+/// The device group `thing` belongs to, when that group is a pile — `None` when
+/// it stands alone, or when too few of its siblings are wrong to be worth
+/// collapsing.
+///
+/// Shared by the raising and the answering on purpose: a card that claims to
+/// cover eleven things must settle eleven things, and two readings of "what is
+/// this card about?" would drift the first time either changed.
+#[must_use]
+pub fn a_pile_of(worth: &[(String, String)], server: &str, thing: &str) -> Option<String> {
+    let device = device_of(thing)?;
+    let siblings = worth
+        .iter()
+        .filter(|(s, t)| s == server && device_of(t) == Some(device))
+        .count();
+    (siblings >= A_PILE_IS).then(|| device.to_owned())
 }
 
 /// The person's **autonomy envelope** (ADR 0051): the deterministic boundary the
@@ -643,6 +726,72 @@ impl McpServer {
 mod tests {
     use super::{McpServer, McpTransport};
     use endora_kernel::DomainError;
+
+    #[test]
+    fn a_phone_that_takes_its_sensors_down_with_it_is_one_card() {
+        // Live, 2026-08-15: a phone stopped reporting and its eleven sensors each
+        // became a separate "still yours?" card. One device failing is one
+        // problem however many entities it publishes.
+        use super::{StandingTrouble, WORTH_SAYING_AFTER_DAYS, how_many_things, worth_raising};
+        const DAY: i64 = 86_400_000;
+        let t = |thing: &str, since_ms: i64| StandingTrouble {
+            server: "home-assistant".to_owned(),
+            thing: thing.to_owned(),
+            trouble: "unavailable".to_owned(),
+            since_ms,
+            accepted: false,
+        };
+        let troubles: Vec<StandingTrouble> = [
+            "sensor.bambam2_audio_output",
+            "sensor.bambam2_bssid",
+            "sensor.bambam2_connection_type",
+            "sensor.bambam2_kiosk_brightness",
+            "sensor.bambam2_sim_1",
+            "sensor.bambam2_storage",
+        ]
+        .iter()
+        .enumerate()
+        .map(|(n, thing)| t(thing, DAY + n as i64))
+        .collect();
+        let now = (WORTH_SAYING_AFTER_DAYS + 6) * DAY;
+        let raised = worth_raising(&troubles, now);
+        assert_eq!(raised.len(), 1, "one phone, one card: {raised:?}");
+        // The oldest record survives — its duration makes the strongest case.
+        assert_eq!(raised[0].thing, "sensor.bambam2_audio_output");
+        // And the card can say what it stands for, rather than silently hiding ten.
+        assert_eq!(how_many_things(&troubles, now, raised[0]), 6);
+    }
+
+    #[test]
+    fn two_lights_in_one_room_are_still_two_problems() {
+        // The guard on the heuristic: `light.kitchen_table` and
+        // `light.kitchen_main` share a prefix and are genuinely different things.
+        // Below the pile threshold nothing groups, because hiding a device
+        // somebody did not mean to hide is the failure worth avoiding.
+        use super::{StandingTrouble, WORTH_SAYING_AFTER_DAYS, worth_raising};
+        const DAY: i64 = 86_400_000;
+        let t = |thing: &str| StandingTrouble {
+            server: "home-assistant".to_owned(),
+            thing: thing.to_owned(),
+            trouble: "unavailable".to_owned(),
+            since_ms: DAY,
+            accepted: false,
+        };
+        let troubles = vec![t("light.kitchen_table"), t("light.kitchen_main")];
+        let now = (WORTH_SAYING_AFTER_DAYS + 2) * DAY;
+        assert_eq!(worth_raising(&troubles, now).len(), 2);
+    }
+
+    #[test]
+    fn a_name_with_no_device_part_groups_nothing() {
+        use super::device_of;
+        // Nothing to split on, or the whole name would be the device.
+        assert_eq!(device_of("light.kitchen"), None);
+        assert_eq!(device_of("weather.forecast_home"), Some("forecast"));
+        assert_eq!(device_of("sensor.bambam2_audio_output"), Some("bambam2"));
+        // A one-character head is noise, not a device.
+        assert_eq!(device_of("sensor.a_b"), None);
+    }
 
     #[test]
     fn one_dead_device_seen_by_two_watchers_is_one_problem() {
