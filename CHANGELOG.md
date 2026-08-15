@@ -7,6 +7,18 @@ tagged release.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A recipe could reach the house's own network.** The recipe interpreter
+  ([ADR 0071](docs/adr/0071-capabilities-it-writes-itself.md)) fetched through the
+  same helper the constant-host built-in skills use, which does not apply the SSRF
+  guard — so a recipe aimed at `169.254.169.254`, a `192.168.x.x` device, or
+  `localhost` was simply fetched. A recipe's URL is arbitrary (the person types it,
+  and one day the butler drafts it), which is exactly the case the guard exists for
+  (ADR 0051). Recipes now fetch through the guarded path, which also re-guards each
+  redirect hop. The regression test asserts on the *reason* the fetch was refused,
+  because a connection error would otherwise let a guard-less build pass.
+
 ## [0.12.0] — 2026-08-08
 
 ### Fixed
