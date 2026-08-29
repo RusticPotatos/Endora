@@ -4,7 +4,7 @@
 use endora_kernel::RepositoryError;
 use endora_kernel::ids::{BeliefId, IntentionId, NotionId, OutcomeId, PreferenceId, Timestamp};
 use endora_persistence::{Db, backend, corrupt, id_text, parse_id};
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::application::{
     BeliefRepository, IntentionRepository, NotionRepository, OutcomeRepository,
@@ -13,7 +13,7 @@ use crate::application::{
 use crate::domain::{
     Belief, BeliefKind, BeliefStatus, Citation, Confidence, Intention, IntentionState,
     MOST_SPECIMENS_OPEN, Notion, NotionStatus, Outcome, Preference, PreferenceKind,
-    REPLAYS_BEFORE_GIVING_UP, Reaction, Source, Specimen,
+    REPLAYS_BEFORE_GIVING_UP, Reaction, Source, Specimen, SpecimenState,
 };
 
 /// Creates the understanding tables if absent (idempotent).
@@ -81,8 +81,36 @@ pub fn migrate(db: &Db) -> Result<(), RepositoryError> {
                 filed_ms       INTEGER NOT NULL,
                 replays        INTEGER NOT NULL,
                 last_replay_ms INTEGER,
-                retired        INTEGER NOT NULL
+                retired        INTEGER NOT NULL,
+                state          TEXT NOT NULL DEFAULT ''
             ) STRICT;",
+        )
+        .map_err(backend)?;
+    // Why a specimen finished, not merely that it did (ADR 0071). Additive for
+    // databases created before the column existed; a fresh one gets it from the
+    // CREATE, and the error on an already-present column is the expected case.
+    let _ = db.lock()?.execute(
+        "ALTER TABLE specimens ADD COLUMN state TEXT NOT NULL DEFAULT ''",
+        [],
+    );
+    // Backfill, once: rows written before the column carry only `retired`.
+    //
+    // `retired = 0` is unambiguously open, and a retirement *below* the replay
+    // limit can only have been a pass. The remaining rows — retired on exactly
+    // REPLAYS_BEFORE_GIVING_UP — are the ambiguity this column exists to end, and
+    // for already-written rows it cannot be recovered: a specimen that passed on
+    // its last allowed replay left the same row as one that ran out. They are read
+    // as `gave_up`, the likelier of the two, and the cost of being wrong is bounded
+    // — a proposal card the person is asked about and can refuse, never an action.
+    // Nothing written from here on is inferred.
+    db.lock()?
+        .execute(
+            "UPDATE specimens SET state = CASE \
+                WHEN retired = 0 THEN 'open' \
+                WHEN replays < ?1 THEN 'answered' \
+                ELSE 'gave_up' END \
+             WHERE state = ''",
+            params![REPLAYS_BEFORE_GIVING_UP],
         )
         .map_err(backend)?;
     Ok(())
@@ -99,6 +127,32 @@ impl UnderstandingStore {
     pub fn new(db: Db) -> Self {
         Self { db }
     }
+
+    /// Every specimen in one state, oldest first — the shape both specimen
+    /// listings want, so the two cannot drift apart in their column list.
+    fn in_state(&self, state: SpecimenState) -> Result<Vec<Specimen>, RepositoryError> {
+        let conn = self.db.lock()?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, asked, verdict, filed_ms, replays, last_replay_ms, state \
+                 FROM specimens WHERE state = ?1 ORDER BY filed_ms ASC",
+            )
+            .map_err(backend)?;
+        let rows = stmt
+            .query_map(params![state.name()], |r| {
+                Ok(Specimen {
+                    id: r.get(0)?,
+                    asked: r.get(1)?,
+                    verdict: r.get(2)?,
+                    filed_ms: r.get(3)?,
+                    replays: r.get(4)?,
+                    last_replay_ms: r.get(5)?,
+                    state: SpecimenState::from_name(&r.get::<_, String>(6)?),
+                })
+            })
+            .map_err(backend)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(backend)
+    }
 }
 
 impl SpecimenRepository for UnderstandingStore {
@@ -114,8 +168,8 @@ impl SpecimenRepository for UnderstandingStore {
         // deeper than the shelf is a signal to fix the machinery, not more evidence.
         let open: i64 = conn
             .query_row(
-                "SELECT COUNT(*) FROM specimens WHERE retired = 0",
-                [],
+                "SELECT COUNT(*) FROM specimens WHERE state = ?1",
+                params![SpecimenState::Open.name()],
                 |r| r.get(0),
             )
             .map_err(backend)?;
@@ -125,8 +179,8 @@ impl SpecimenRepository for UnderstandingStore {
         // Asking twice is one problem, not two specimens.
         let already: i64 = conn
             .query_row(
-                "SELECT COUNT(*) FROM specimens WHERE retired = 0 AND asked = ?1",
-                params![asked],
+                "SELECT COUNT(*) FROM specimens WHERE state = ?1 AND asked = ?2",
+                params![SpecimenState::Open.name(), asked],
                 |r| r.get(0),
             )
             .map_err(backend)?;
@@ -134,52 +188,61 @@ impl SpecimenRepository for UnderstandingStore {
             return Ok(false);
         }
         conn.execute(
-            "INSERT INTO specimens (id, asked, verdict, filed_ms, replays, last_replay_ms, retired) \
-             VALUES (?1, ?2, ?3, ?4, 0, NULL, 0)",
-            params![id, asked, verdict, now_ms],
+            "INSERT INTO specimens (id, asked, verdict, filed_ms, replays, last_replay_ms, retired, state) \
+             VALUES (?1, ?2, ?3, ?4, 0, NULL, 0, ?5)",
+            params![id, asked, verdict, now_ms, SpecimenState::Open.name()],
         )
         .map_err(backend)?;
         Ok(true)
     }
 
     fn open_specimens(&self) -> Result<Vec<Specimen>, RepositoryError> {
-        let conn = self.db.lock()?;
-        let mut stmt = conn
-            .prepare(
-                "SELECT id, asked, verdict, filed_ms, replays, last_replay_ms, retired \
-                 FROM specimens WHERE retired = 0 ORDER BY filed_ms ASC",
-            )
-            .map_err(backend)?;
-        let rows = stmt
-            .query_map([], |r| {
-                Ok(Specimen {
-                    id: r.get(0)?,
-                    asked: r.get(1)?,
-                    verdict: r.get(2)?,
-                    filed_ms: r.get(3)?,
-                    replays: r.get(4)?,
-                    last_replay_ms: r.get(5)?,
-                    retired: r.get::<_, i64>(6)? != 0,
-                })
-            })
-            .map_err(backend)?;
-        rows.collect::<Result<Vec<_>, _>>().map_err(backend)
+        self.in_state(SpecimenState::Open)
     }
 
-    fn record_replay(&self, id: &str, passed: bool, now_ms: i64) -> Result<(), RepositoryError> {
-        // Retirement is derived here, never decided by a caller: a pass retires,
-        // and so does the giving-up-th failure — re-asking past that stops being
-        // information and would hold the shelf hostage to one broken question.
-        self.db
-            .lock()?
-            .execute(
-                "UPDATE specimens SET replays = replays + 1, last_replay_ms = ?2, \
-                 retired = CASE WHEN ?3 THEN 1 WHEN replays + 1 >= ?4 THEN 1 ELSE 0 END \
-                 WHERE id = ?1",
-                params![id, now_ms, passed, REPLAYS_BEFORE_GIVING_UP],
+    fn gave_up_specimens(&self) -> Result<Vec<Specimen>, RepositoryError> {
+        self.in_state(SpecimenState::GaveUp)
+    }
+
+    fn record_replay(
+        &self,
+        id: &str,
+        passed: bool,
+        now_ms: i64,
+    ) -> Result<SpecimenState, RepositoryError> {
+        // Retirement is derived here, never decided by a caller: a pass finishes a
+        // specimen, and so does the giving-up-th failure — re-asking past that
+        // stops being information and would hold the shelf hostage to one broken
+        // question. The rule itself lives in the domain
+        // ([`SpecimenState::after_replay`]) so this store and its test doubles
+        // cannot drift apart on it; reading the count and writing the answer under
+        // one lock is what lets the outcome be stored rather than re-inferred.
+        let conn = self.db.lock()?;
+        let replays_before: Option<u32> = conn
+            .query_row(
+                "SELECT replays FROM specimens WHERE id = ?1",
+                params![id],
+                |r| r.get(0),
             )
+            .optional()
             .map_err(backend)?;
-        Ok(())
+        // A specimen that is no longer there has nothing to record — the same
+        // no-op the single `UPDATE` used to be, kept deliberately: a vanished row
+        // must not abort the night around it.
+        let Some(replays_before) = replays_before else {
+            return Ok(SpecimenState::Open);
+        };
+        let state = SpecimenState::after_replay(replays_before, passed);
+        conn.execute(
+            // `retired` is kept in step as the older mirror of the same fact, so a
+            // database written here still reads correctly to a build from before
+            // the column split. `state` is the authority; every query reads it.
+            "UPDATE specimens SET replays = replays + 1, last_replay_ms = ?2, \
+             state = ?3, retired = ?4 WHERE id = ?1",
+            params![id, now_ms, state.name(), i64::from(!state.is_open())],
+        )
+        .map_err(backend)?;
+        Ok(state)
     }
 }
 
@@ -711,6 +774,146 @@ mod tests {
         assert!(
             store.open_specimens().unwrap().is_empty(),
             "giving up retires"
+        );
+    }
+
+    #[test]
+    fn a_proven_gap_is_the_one_that_ran_out_not_the_one_that_passed() {
+        // ADR 0071's trigger: only an ask replayed to exhaustion is evidence the
+        // machinery cannot answer it. One that passed is the opposite — a gap that
+        // closed — and the two must not arrive at the same read.
+        use crate::application::SpecimenRepository;
+        use crate::domain::{REPLAYS_BEFORE_GIVING_UP, SpecimenState};
+        let db = Db::open_in_memory().unwrap();
+        migrate(&db).unwrap();
+        let store = UnderstandingStore::new(db);
+
+        store
+            .file_specimen("ran-out", "when is the next 41 bus?", "not an answer", 10)
+            .unwrap();
+        store
+            .file_specimen("caught-up", "what lights are on?", "not an answer", 20)
+            .unwrap();
+
+        for n in 0..REPLAYS_BEFORE_GIVING_UP {
+            let state = store
+                .record_replay("ran-out", false, 100 + i64::from(n))
+                .unwrap();
+            let last = n + 1 == REPLAYS_BEFORE_GIVING_UP;
+            assert_eq!(
+                state,
+                if last {
+                    SpecimenState::GaveUp
+                } else {
+                    SpecimenState::Open
+                },
+                "replay {n} reported the wrong state"
+            );
+        }
+        assert_eq!(
+            store.record_replay("caught-up", true, 200).unwrap(),
+            SpecimenState::Answered
+        );
+
+        let gaps = store.gave_up_specimens().unwrap();
+        assert_eq!(gaps.len(), 1, "{gaps:?}");
+        assert_eq!(gaps[0].id, "ran-out");
+        assert_eq!(gaps[0].state, SpecimenState::GaveUp);
+        assert!(
+            store.open_specimens().unwrap().is_empty(),
+            "neither is still worth re-asking"
+        );
+    }
+
+    #[test]
+    fn passing_on_the_last_allowed_replay_is_not_a_proven_gap() {
+        // The seam this column was added for. Both of these end on
+        // `replays = REPLAYS_BEFORE_GIVING_UP` with the specimen finished, so any
+        // reader inferring "it gave up" from the count would propose a new
+        // capability for an ask that had *just started working*.
+        use crate::application::SpecimenRepository;
+        use crate::domain::{REPLAYS_BEFORE_GIVING_UP, SpecimenState};
+        let db = Db::open_in_memory().unwrap();
+        migrate(&db).unwrap();
+        let store = UnderstandingStore::new(db);
+
+        store
+            .file_specimen("late-pass", "how warm is it outside?", "not an answer", 10)
+            .unwrap();
+        for n in 0..REPLAYS_BEFORE_GIVING_UP - 1 {
+            store
+                .record_replay("late-pass", false, 100 + i64::from(n))
+                .unwrap();
+        }
+        // The last allowed replay — and this time the machinery answers.
+        assert_eq!(
+            store.record_replay("late-pass", true, 999).unwrap(),
+            SpecimenState::Answered
+        );
+
+        let finished = store.gave_up_specimens().unwrap();
+        assert!(
+            finished.is_empty(),
+            "a specimen that finally passed is not a gap: {finished:?}"
+        );
+    }
+
+    #[test]
+    fn a_replay_of_something_no_longer_there_changes_nothing() {
+        // Recording a replay reads the count before writing the outcome, where it
+        // used to be one blind UPDATE. A row that is gone must stay the no-op it
+        // was: the nightly loop calls this, and a vanished specimen must not take
+        // the night down around it.
+        use crate::application::SpecimenRepository;
+        use crate::domain::SpecimenState;
+        let db = Db::open_in_memory().unwrap();
+        migrate(&db).unwrap();
+        let store = UnderstandingStore::new(db);
+
+        let state = store.record_replay("never-filed", false, 10).unwrap();
+        assert_eq!(state, SpecimenState::Open);
+        assert!(store.open_specimens().unwrap().is_empty());
+        assert!(store.gave_up_specimens().unwrap().is_empty());
+    }
+
+    #[test]
+    fn an_older_database_is_read_from_what_it_recorded() {
+        // Rows written before the state column carry only `retired`, which is what
+        // `ALTER TABLE ... DEFAULT ''` leaves behind. The backfill reads what those
+        // rows can still prove, and no more.
+        use crate::application::SpecimenRepository;
+        use crate::domain::{REPLAYS_BEFORE_GIVING_UP, SpecimenState};
+        let db = Db::open_in_memory().unwrap();
+        migrate(&db).unwrap();
+        for (id, replays, retired) in [
+            ("still-open", 2_i64, 0_i64),
+            ("passed-early", 3, 1),
+            ("ran-out", i64::from(REPLAYS_BEFORE_GIVING_UP), 1),
+        ] {
+            db.lock()
+                .unwrap()
+                .execute(
+                    "INSERT INTO specimens \
+                     (id, asked, verdict, filed_ms, replays, last_replay_ms, retired, state) \
+                     VALUES (?1, ?1, 'not an answer', 1, ?2, NULL, ?3, '')",
+                    params![id, replays, retired],
+                )
+                .unwrap();
+        }
+        // Re-running the migration is what a restart does.
+        migrate(&db).unwrap();
+        let store = UnderstandingStore::new(db);
+
+        let open = store.open_specimens().unwrap();
+        assert_eq!(open.len(), 1);
+        assert_eq!(open[0].id, "still-open");
+        assert_eq!(open[0].state, SpecimenState::Open);
+
+        let gaps = store.gave_up_specimens().unwrap();
+        assert_eq!(gaps.len(), 1, "{gaps:?}");
+        assert_eq!(
+            gaps[0].id, "ran-out",
+            "a retirement below the replay limit can only have been a pass"
         );
     }
 
