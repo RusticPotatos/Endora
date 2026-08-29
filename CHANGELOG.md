@@ -9,6 +9,24 @@ tagged release.
 
 ### Added
 
+- **A specimen records how it ended, and the night says when it gave up**
+  ([ADR 0075](docs/adr/0075-failures-become-specimens.md), groundwork for
+  [ADR 0071](docs/adr/0071-capabilities-it-writes-itself.md)). A failed ask that
+  the nightly loop replays to exhaustion is the live record proving the machinery
+  cannot answer something — the only trigger ADR 0071 allows for drafting a new
+  capability. That population could not be read: retirement was one flag, every
+  listing asked for the specimens *not* retired, and a specimen that **passed on
+  its last allowed replay** left a row identical to one that ran out — same replay
+  count, same flag. Anything inferring "it gave up" from the count would have
+  proposed a new capability for a gap that had just closed. A specimen now records
+  which ending it reached, at the moment it reaches it, and the morning trail says
+  so — *"I've stopped re-asking this one — nothing I have can answer it"* — where
+  before it repeated "it still fails" identically on the first failed replay and
+  the last. Existing databases are backfilled from what their rows can still prove;
+  the one case that cannot be recovered (already retired on exactly the replay
+  limit) is read as having given up, which is the likelier of the two and costs at
+  most a proposal card the person is asked about.
+
 - **Authoring a recipe is a loop, not a form**
   ([ADR 0071](docs/adr/0071-capabilities-it-writes-itself.md)). A new **Try it**
   button fetches the draft once and shows the address it really used, every field

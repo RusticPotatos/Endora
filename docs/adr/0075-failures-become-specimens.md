@@ -42,6 +42,19 @@ so: *"A question that once stumped me answers now."* Failing is recorded too,
 and enough failures retire it unresolved — re-asking past two weeks stops being
 information.
 
+*Amended 2026-08-29.* A specimen records **which** of those two endings it
+reached, and the trail says when it was the second one: *"I've stopped
+re-asking this one — nothing I have can answer it."* As first built, retirement
+was a single flag, and this paragraph's "unresolved" was a distinction the
+record could not actually make: a specimen that passed on its last allowed
+replay and one that ran out of them left identical rows, so the only way to tell
+them apart was to compare the replay count against the limit — which both of
+them reach. That is load-bearing rather than tidy, because
+[0071](0071-capabilities-it-writes-itself.md) draws a recipe proposal from a
+specimen that gave up, and under the flag it would have proposed a new
+capability for a gap that had just closed. The ending is now written down when
+it happens; nothing infers it afterwards.
+
 **The shelf is bounded.** At most `MOST_SPECIMENS_OPEN` (12) open at once, one
 replay per night, duplicates of an open ask not refiled. A backlog deeper than
 the shelf is a signal to fix the machinery, not to queue more evidence.

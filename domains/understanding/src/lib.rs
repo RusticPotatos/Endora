@@ -24,7 +24,8 @@ pub use application::{
 };
 pub use domain::{
     Belief, BeliefKind, BeliefStatus, Citation, Confidence, Intention, IntentionState, Notion,
-    NotionStatus, Outcome, Preference, PreferenceKind, Reaction, Reliability, Remedy,
-    RepairProposal, Source, Specimen, make_way_for_a_new_one, repair_proposals,
+    NotionStatus, Outcome, Preference, PreferenceKind, REPLAYS_BEFORE_GIVING_UP, Reaction,
+    Reliability, Remedy, RepairProposal, Source, Specimen, SpecimenState, make_way_for_a_new_one,
+    repair_proposals,
 };
 pub use infrastructure::{UnderstandingStore, migrate};

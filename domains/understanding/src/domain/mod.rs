@@ -14,4 +14,4 @@ pub use notions::{Citation, Notion, NotionStatus, Source, make_way_for_a_new_one
 pub use outcomes::{Outcome, Reaction, Reliability};
 pub use preferences::{Preference, PreferenceKind};
 pub use repairs::{Remedy, RepairProposal, repair_proposals};
-pub use specimens::{MOST_SPECIMENS_OPEN, REPLAYS_BEFORE_GIVING_UP, Specimen};
+pub use specimens::{MOST_SPECIMENS_OPEN, REPLAYS_BEFORE_GIVING_UP, Specimen, SpecimenState};

@@ -124,13 +124,38 @@ pub trait SpecimenRepository {
     /// [`RepositoryError`] if the backend fails.
     fn open_specimens(&self) -> Result<Vec<crate::domain::Specimen>, RepositoryError>;
 
-    /// Records one nightly replay. A pass retires the specimen; so does the
-    /// [`REPLAYS_BEFORE_GIVING_UP`](crate::domain::REPLAYS_BEFORE_GIVING_UP)th
-    /// failure, because re-asking past that stops being information.
+    /// The asks the machinery gave up on, oldest first — the proven gaps.
+    ///
+    /// Deliberately *not* a widening of [`open_specimens`](Self::open_specimens),
+    /// which means "still worth re-asking" and is what the nightly loop replays.
+    /// This is the other population: questions the house really asked, replayed to
+    /// exhaustion, still unanswered. Arithmetic over stored records with no model
+    /// anywhere in it, and the only trigger
+    /// [ADR 0071](../../../docs/adr/0071-capabilities-it-writes-itself.md) allows
+    /// for drafting a new capability.
     ///
     /// # Errors
     /// [`RepositoryError`] if the backend fails.
-    fn record_replay(&self, id: &str, passed: bool, now_ms: i64) -> Result<(), RepositoryError>;
+    fn gave_up_specimens(&self) -> Result<Vec<crate::domain::Specimen>, RepositoryError>;
+
+    /// Records one nightly replay and reports where the specimen landed. A pass
+    /// answers it; the
+    /// [`REPLAYS_BEFORE_GIVING_UP`](crate::domain::REPLAYS_BEFORE_GIVING_UP)th
+    /// failure gives up, because re-asking past that stops being information.
+    ///
+    /// The resulting state is **returned rather than looked up again**, so the
+    /// caller can say what became of the ask without a second read racing the
+    /// first — and so "it gave up" is recorded at the moment it happens instead of
+    /// being inferred afterwards from a replay count.
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if the backend fails.
+    fn record_replay(
+        &self,
+        id: &str,
+        passed: bool,
+        now_ms: i64,
+    ) -> Result<crate::domain::SpecimenState, RepositoryError>;
 }
 
 /// Persists and retrieves [`Belief`]s — what the butler currently understands

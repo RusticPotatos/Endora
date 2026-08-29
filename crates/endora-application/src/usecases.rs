@@ -4269,13 +4269,19 @@ pub fn run_due_nightly_loop(
             .as_ref()
             .map(|reply| specimen_verdict(reply, context).is_none())
             .unwrap_or(false);
-        specimens.record_replay(&stumper.id, passed, clock.now().unix_millis())?;
+        let landed = specimens.record_replay(&stumper.id, passed, clock.now().unix_millis())?;
+        // Three outcomes, not two. Giving up is the one worth naming: it is the
+        // night the record stops being "still trying" and becomes evidence that
+        // nothing here can answer this — which ADR 0075 said the trail would carry,
+        // and which ADR 0071 reads as a proven gap.
         activity.push(format!(
             "{} \"{}\"",
-            if passed {
-                "A question that once stumped me answers now:"
-            } else {
-                "Replayed a stumper; it still fails:"
+            match landed {
+                endora_understanding::SpecimenState::Answered =>
+                    "A question that once stumped me answers now:",
+                endora_understanding::SpecimenState::GaveUp =>
+                    "I've stopped re-asking this one — nothing I have can answer it:",
+                endora_understanding::SpecimenState::Open => "Replayed a stumper; it still fails:",
             },
             first_sentence_of(&stumper.asked)
         ));
@@ -9359,7 +9365,7 @@ mod tests {
                 filed_ms: 1,
                 replays: 3,
                 last_replay_ms: None,
-                retired: false,
+                state: endora_understanding::SpecimenState::Open,
             });
         let butler = EchoesItsInstruction {
             seen: RefCell::new(String::new()),
@@ -9389,6 +9395,75 @@ mod tests {
         assert!(
             activity.iter().any(|a| a.contains("answers now")),
             "{activity:?}"
+        );
+    }
+
+    /// A butler that cannot reach its model, so every replay fails the verdict.
+    struct StillCannot;
+    impl Butler for StillCannot {
+        fn respond(
+            &self,
+            _history: &[ChatMessage],
+            _p: &[crate::Preference],
+            _c: &ButlerContext,
+        ) -> Result<ButlerReply, ProposalError> {
+            Ok(ButlerReply {
+                text: "Sorry — I couldn't reach my language model just now.".to_owned(),
+                degraded: true,
+                ..ButlerReply::default()
+            })
+        }
+    }
+
+    #[test]
+    fn the_night_says_so_when_it_gives_up_on_an_ask() {
+        // ADR 0075 promised the activity trail would carry the fact that a specimen
+        // was given up on; it only ever said "it still fails", identically on the
+        // first failed replay and on the last. So the moment the record proves a gap
+        // — the moment ADR 0071 draws a recipe proposal from — went by unremarked.
+        let shelf = crate::usecases::RecordingShelf::default();
+        shelf
+            .open
+            .borrow_mut()
+            .push(endora_understanding::Specimen {
+                id: "s1".to_owned(),
+                asked: "when is the next 41 bus?".to_owned(),
+                verdict: "not an answer".to_owned(),
+                filed_ms: 1,
+                // One short of the limit: tonight's failure is the last one allowed.
+                replays: endora_understanding::REPLAYS_BEFORE_GIVING_UP - 1,
+                last_replay_ms: None,
+                state: endora_understanding::SpecimenState::Open,
+            });
+        let (_, activity) = super::run_due_nightly_loop(
+            &FakeStore::default(),
+            &FakeStore::default(),
+            &FakeStore::default(),
+            &FakeOutcomes::default(),
+            &shelf,
+            &FakeIntentions::default(),
+            &super::tests::FakeNotions::default(),
+            &[],
+            &due_nightly(),
+            &NoCapabilities,
+            &[],
+            &StillCannot,
+            &FakeAudit::default(),
+            &SeqIds::default(),
+            &FixedClock(27 * 3_600_000),
+            &ButlerContext::default(),
+        )
+        .unwrap()
+        .expect("the loop runs when due");
+
+        assert_eq!(*shelf.replays.borrow(), vec![("s1".to_owned(), false)]);
+        let said = activity
+            .iter()
+            .find(|a| a.contains("41 bus"))
+            .unwrap_or_else(|| panic!("{activity:?}"));
+        assert!(
+            said.contains("stopped re-asking"),
+            "the night that gives up has to say so, not repeat 'it still fails': {said}"
         );
     }
 
@@ -11078,13 +11153,18 @@ impl SpecimenRepository for NoSpecimens {
     ) -> Result<Vec<endora_understanding::Specimen>, endora_kernel::RepositoryError> {
         Ok(Vec::new())
     }
+    fn gave_up_specimens(
+        &self,
+    ) -> Result<Vec<endora_understanding::Specimen>, endora_kernel::RepositoryError> {
+        Ok(Vec::new())
+    }
     fn record_replay(
         &self,
         _id: &str,
         _passed: bool,
         _now_ms: i64,
-    ) -> Result<(), endora_kernel::RepositoryError> {
-        Ok(())
+    ) -> Result<endora_understanding::SpecimenState, endora_kernel::RepositoryError> {
+        Ok(endora_understanding::SpecimenState::Open)
     }
 }
 
@@ -11094,6 +11174,7 @@ impl SpecimenRepository for NoSpecimens {
 struct RecordingShelf {
     filed: std::cell::RefCell<Vec<(String, String)>>,
     open: std::cell::RefCell<Vec<endora_understanding::Specimen>>,
+    gave_up: std::cell::RefCell<Vec<endora_understanding::Specimen>>,
     replays: std::cell::RefCell<Vec<(String, bool)>>,
 }
 
@@ -11116,14 +11197,30 @@ impl SpecimenRepository for RecordingShelf {
     ) -> Result<Vec<endora_understanding::Specimen>, endora_kernel::RepositoryError> {
         Ok(self.open.borrow().clone())
     }
+    fn gave_up_specimens(
+        &self,
+    ) -> Result<Vec<endora_understanding::Specimen>, endora_kernel::RepositoryError> {
+        Ok(self.gave_up.borrow().clone())
+    }
     fn record_replay(
         &self,
         id: &str,
         passed: bool,
         _now_ms: i64,
-    ) -> Result<(), endora_kernel::RepositoryError> {
+    ) -> Result<endora_understanding::SpecimenState, endora_kernel::RepositoryError> {
         self.replays.borrow_mut().push((id.to_owned(), passed));
-        Ok(())
+        // The real store's rule, from the domain rather than restated here, so the
+        // double cannot quietly disagree with the thing it stands in for.
+        let replays_before = self
+            .open
+            .borrow()
+            .iter()
+            .find(|s| s.id == id)
+            .map_or(0, |s| s.replays);
+        Ok(endora_understanding::SpecimenState::after_replay(
+            replays_before,
+            passed,
+        ))
     }
 }
 
