@@ -156,6 +156,7 @@ of an existing record and take the next number.
 | [0074](0074-the-brief-is-a-standing-order.md) | The brief is a standing order | — |
 | [0075](0075-failures-become-specimens.md) | Failures become specimens | — |
 | [0076](0076-standing-questions.md) | Standing questions | — |
+| [0077](0077-seeing-something-through.md) | Seeing something through | Proposed |
 
 The forty-eight decisions these consolidate are in [archive/](archive/) — kept in full,
 because the reasoning that produced a rule is the reason it survives an argument later.
