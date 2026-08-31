@@ -11,7 +11,7 @@ authors.workspace = true
 [dependencies]
 endora-kernel = { path = "../../shared/kernel" }
 endora-persistence = { path = "../../shared/persistence" }
-rusqlite = { version = "0.39", features = ["bundled"] }
+rusqlite = { version = "0.40", features = ["bundled"] }
 ureq = { version = "3.3", features = ["json", "socks-proxy"] }
 serde_json = "1.0.150"
 tungstenite = { version = "0.30.0", default-features = false, features = ["handshake", "rustls-tls-native-roots"] }
