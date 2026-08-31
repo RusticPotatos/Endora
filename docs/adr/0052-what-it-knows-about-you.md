@@ -54,6 +54,15 @@ person's only verb is *stop*.
 There is deliberately **no "add"**. A console that let you file work would rebuild [0029]'s
 goal tracker with a new name.
 
+> **Amended by [0077](0077-seeing-something-through.md) (2026-08-30.)** Two clauses
+> above are superseded. *Traceable to a belief* becomes traceable to a belief **or to
+> the person's asking** — the constraint was that Endora cannot pursue what it cannot
+> explain, and "you asked me to" explains at least as well. *One active intention*
+> becomes one **per provenance**: applied flatly it made the person's own ask wait up
+> to seven nights behind Endora's, which is the defect 0077 exists to fix. The rest
+> stands, and **there is still no "add"** — an intention with the person's provenance
+> is created by their answer to an offer, never by a form.
+
 **A night that produced no answer is not a night's work.** The one intention Endora has ever
 held — *"you want to run more often"* — reached five of its seven steps with its stored
 progress reading:
