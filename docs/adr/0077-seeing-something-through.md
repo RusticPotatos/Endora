@@ -59,21 +59,76 @@ becomes either a belief Endora formed or **because you asked** — and "you aske
 me to" is an explanation at least as good as a belief, since it is the only one
 the person can check without reading the model's mind.
 
-One record, one store, one active at a time, the same bands. Not a second kind of
-object living beside the first.
+One record, one store, the same bands. Not a second kind of object living beside
+the first.
+
+**One active slot per provenance — yours never waits behind Endora's.** The
+first draft of this record kept 0052's flat "at most one active at a time" and
+called it a virtue. Read against the code that is a defect: `take_up_an_intention`
+runs only when `intentions.active()` is `None`, so an ask arriving while Endora
+pursues a belief of its own would have had nowhere to go for seven nights — or
+fourteen days with the loop off. The complaint this record exists to answer would
+have changed from *"I set a goal and it stops"* into *"I set a goal and it never
+starts."*
+
+So the bound moves from one to **one of each**: at most one belief-derived
+intention and at most one you asked for. Still a cursor, not a backlog — two is
+bounded, nothing accumulates, and no one has to groom anything. Where they
+compete for a step, **yours goes first**; Endora's own thread keeps its note and
+resumes after, which is the continue-rather-than-restart rule already stated
+below.
+
+Asking for a second thing while one of yours is running does not queue it. Endora
+says what it is on and asks whether to swap. That is one question at the moment
+you ask, which is the opposite of a backlog that asks forever.
+
+### An ask becomes work only when you say so
+
+How a message turns into something pursued was missing from the first draft, and
+the obvious filling — let the model recognise ongoing work — is precisely what
+[0076](0076-standing-questions.md) refused: *"The moment an entry needs a model to
+decide whether it matches, it is not a standing question."* A classifier deciding
+silently that you commissioned something would manufacture work you never asked
+for, and the record would carry your name on it.
+
+So nothing is created by classification. **The butler may offer; only your yes
+creates.** When a turn looks like ongoing work, it asks — *"shall I keep on
+this?"* — and an intention exists only after you agree. This keeps the ordinary
+spine (models propose, policy authorizes) and makes the failure cheap in the
+right direction: a wrong offer costs one sentence you ignore, where a wrong
+classification costs a week of misdirected nights.
+
+No closed phrase list, no matcher, no second routing surface. One rule, and it is
+checkable by reading it: if an intention with your provenance can come into
+existence without an answer from you, this is not what shipped.
 
 ### Finishing is a state it can reach, and settling is stated in advance
 
-An intention carries **what would settle it**, in the shape notions already use
-(`settles_when`), written down when it is formed. That ordering is the whole
-safeguard: "finished" is checked against a condition stated *before* the work,
-never adjudicated afterwards by the model that did the work.
+**Settling is your verdict** ([0066](0066-their-verdict-decides-too.md)), with the
+step budget as the backstop that stops anything waiting on you forever. That is
+the whole of it, and the first draft of this record claimed more than that.
 
-Where the settle condition is derivable by code, code decides. Where it is not,
-the person's word decides ([0066](0066-their-verdict-decides-too.md)), and until
-one of those happens it stays active. **The model does not get to declare its own
-work done** — the same line [0053](0053-honesty-about-what-it-did.md) drew about
-honesty, for the same reason and against the same measurement.
+It said an intention would carry what would settle it *"in the shape notions
+already use (`settles_when`)"*, and that *"where the settle condition is derivable
+by code, code decides."* Checked: `Notion::settles_when` is a `String`, written at
+formation, stored, read back, and **evaluated by nothing**. There is no machinery
+in this repository that checks a settle condition, so citing it as precedent
+described a mechanism that does not exist and this record does not design. A
+guarantee resting on a mechanism nobody built is the failure mode
+[0053](0053-honesty-about-what-it-did.md) is about, and it does not get to appear
+in the record that cites 0053.
+
+An intention may still carry a settling condition, with one restriction that
+closes the loophole the first draft left open: **the condition is your words, or
+there is none.** Where the intention came from your ask, it is captured from how
+you put it — *keep on this until the council publishes the minutes.* Where it came
+from a belief, there is no condition and settling is your verdict alone.
+
+The model never authors it. A model that writes the bar it will later be measured
+against is marking its own homework one step removed, and the ordering safeguard —
+condition before work — does nothing about that. This is the same line 0053 drew,
+against the same measurement: `verify:*` at 0/3 and 1/3 on respecting an explicit
+instruction about verification.
 
 The retirement message stops asserting a conclusion it does not hold. *"Gave it
 seven nights without getting anywhere"* is a claim about the world; what the
@@ -108,10 +163,17 @@ supersedes:
 
 - **0052's belief-only provenance** for intentions — superseded by provenance
   that keeps the must-be-explicable constraint and widens what explains.
-- **The blanket "seven nights means failure" retirement** — replaced by a settle
-  condition plus a budget that reports only what it knows.
+- **0052's flat "at most one active at a time"** — superseded by one slot per
+  provenance, for the reason argued above: applied flatly it made the person's own
+  ask wait behind Endora's.
+- **The blanket "seven nights means failure" retirement** — replaced by your
+  verdict plus a budget that reports only what it knows.
 - No new record type, no new store, no new screen. The console's existing
-  intention view gains a provenance line and a settle line.
+  intention view gains a provenance line and, where there is one, a settle line.
+
+0052 is amended in place in the same change, per the practice this repository
+already follows: a superseded clause that still reads as current in its own record
+is how a rule gets cited against itself later.
 
 ## What this is not
 
@@ -122,7 +184,7 @@ supersedes:
   It is the same distinction 0071 drew for the proposal card, and it is
   checkable. **If the console grows an "add task" form or a count badge, this
   record failed.**
-- **Not a task manager.** Still at most one active, still self-retiring. The
+- **Not a task manager.** Two slots, both self-retiring, and no third. The
   person's verbs stay what they were plus one: ask, and drop.
 - **Not more autonomy.** The clocks split; the bands do not move.
 
@@ -137,29 +199,69 @@ supersedes:
   The tripwire above (add-form, count badge) is the thing to check at review.
 - The eval battery gains cases for settling: a model that declares its own work
   done is precisely what to measure, and the `verify:*` results say to expect it
-  to try.
+  to try. Add one for the offer, too — a butler that offers to keep on everything
+  is as useless as one that never offers.
+- **Two constants stop meaning what they say.** `STEP_BUDGET = 7` is documented as
+  *"Nights of work"*, and `STALE_AFTER_MS` is a fortnight; both were sized against
+  a loop that ran once a night. Split the clocks and seven steps could be seven
+  hours. Neither number survives the change on its own, and the cadence work below
+  has to re-derive both rather than inherit them.
+- **No new authority is not no new cost.** Progressing more often is more model
+  calls on hardware that has one card, and in-turn progress competes with the
+  person's own latency on a 7b model. So progress inside a chat turn happens
+  *after* their reply is delivered, never before it — the person's turn is not the
+  place to spend a budget on Endora's own work.
 
 ## What acceptance needs
 
 Grounded against the live record, not invented — the standard
 [0061](0061-answers-worth-keeping.md) set, and the one 0071 was held to:
 
-1. The **settle-condition vocabulary**, designed against real examples of things
-   this house has actually asked for.
-2. The **console surface**, designed as lines on the existing intention view and
+1. The **console surface**, designed as lines on the existing intention view and
    checked against the nothing-to-groom tripwire.
-3. The **progress cadence**, argued as a number: what "an opportunity" is, so
-   splitting the clocks does not quietly become a busy loop.
+2. The **progress cadence**, argued as a number: what "an opportunity" is, so
+   splitting the clocks does not quietly become a busy loop — and with
+   `STEP_BUDGET` and `STALE_AFTER_MS` re-derived against whatever it turns out to
+   be, since both are nightly numbers today.
+3. The **offer's wording and its restraint**, against real turns from the live
+   record: which asks should draw *"shall I keep on this?"* and, more importantly,
+   which should not. This is the one place a model still judges, and the thing to
+   check is that a wrong judgement stays one ignorable sentence.
 
 ## Rejected
 
 - **A todo list or project tracker.** The thing 0029 deleted, and the failure
   mode this record is most likely to decay into.
 - **Letting the model mark its own work done.** Measured at 0/3 and 1/3 on
-  respecting an explicit verification instruction; a settle condition stated in
-  advance exists because that number does.
+  respecting an explicit verification instruction. Rejected in both its obvious
+  form and its disguised one: a model that authors the settle condition has
+  chosen the bar it will be judged against, which is the same thing wearing the
+  ordering safeguard as a hat.
+- **Letting a classifier decide you commissioned something.** The filling this
+  record's first draft left blank, and the thing 0076 refused. Work with your name
+  on it that you never agreed to is worse than no work at all.
 - **Answering "it doesn't feel agentic" with more authority.** Measured against
   the actual defect, it cannot *finish* and cannot *continue* — neither is a
   permission problem, and widening the bands would have fixed neither.
-- **Several goals at once.** The one-at-a-time rule is what keeps this a cursor
-  rather than a backlog.
+- **Several goals at once.** Two bounded slots keep this a cursor rather than a
+  backlog. A third would be a queue with better manners.
+
+## What review changed
+
+Kept because the reasoning that produced a rule is the reason it survives an
+argument later. This record was reviewed against the code before acceptance, and
+five things in the first draft did not survive it:
+
+1. **The flat one-active rule made the person's ask wait** up to seven nights
+   behind Endora's own — the record would have failed at the thing it exists to
+   fix. Now one slot per provenance.
+2. **How an ask becomes work was simply missing**, and the obvious filling was
+   open-ended intent classification, which 0076 had already refused. Now the
+   butler offers and only a yes creates.
+3. **The `settles_when` precedent was overstated.** It is a `String` nothing
+   evaluates; the draft cited it for a code-decides guarantee that has no
+   machinery behind it. Now settling is the person's verdict, stated as such.
+4. **The model could have authored its own bar**, which the ordering safeguard
+   did nothing about. Now the condition is the person's words or absent.
+5. **Two nightly constants and the cost of splitting the clocks** were unnamed.
+   Now both are consequences, and in-turn progress is placed after the reply.
