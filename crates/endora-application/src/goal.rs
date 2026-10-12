@@ -8,8 +8,48 @@
 use endora_kernel::Timestamp;
 use serde_json::{Value, json};
 
-/// Version of the serialized goal checkpoint.
-pub const GOAL_CHECKPOINT_VERSION: u64 = 1;
+/// Version of the serialized goal checkpoint. Version 2 adds the approaches that
+/// failed; a version 1 checkpoint still resumes, without that history.
+pub const GOAL_CHECKPOINT_VERSION: u64 = 2;
+
+/// How many approaches may fail in a row before the objective stops trying.
+///
+/// Three is the smallest number that distinguishes bad luck from a dead subject:
+/// one refusal is routine, two can be the same outage twice, and three different
+/// approaches failing is the objective telling you something.
+const ENOUGH_DEAD_ENDS: usize = 3;
+
+/// Operations one pursuit may spend before yielding, so a goal cannot monopolise
+/// the model or run unbounded between checkpoints.
+const MOST_STEPS_PER_PURSUIT: usize = 8;
+
+/// Why a step produced no evidence, and — the part that matters — whether the
+/// objective is still reachable by some other route.
+///
+/// The distinction is the whole fix. Treating every executor error as terminal
+/// meant one source answering 403 ended the thing the person asked for, which is
+/// not what a person means by asking.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StepError {
+    /// This approach failed but the objective is still reachable another way: a
+    /// refused source, a timeout, a rate limit, a malformed argument. The goal
+    /// records the dead end and chooses something else.
+    TryAnother(String),
+    /// Nothing further may be attempted — the capability is gone, permission was
+    /// withdrawn, the budget is spent. **Never used to shop for a substitute that
+    /// defeats the same restriction**; a policy denial stops the goal.
+    Stop(String),
+}
+
+/// One approach that did not work, kept so the goal does not spend its budget
+/// re-trying it. Visible to whatever chooses the next step.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeadEnd {
+    /// The step that failed, usually a capability id.
+    pub step: String,
+    /// What went wrong, in the executor's own words.
+    pub why: String,
+}
 
 /// Lifecycle of a delegated goal. Terminal states cannot be reopened.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -115,6 +155,7 @@ pub struct Goal {
     next_step: String,
     reason: String,
     evidence: Vec<GoalEvidence>,
+    dead_ends: Vec<DeadEnd>,
 }
 
 /// A goal together with the stable request key and timestamps needed to resume it.
@@ -184,12 +225,11 @@ impl Goal {
     /// Runs a validated plan, one step at a time, until the verifier finishes it
     /// or the bounded plan is exhausted. The executor is the only code allowed
     /// to perform I/O; the verifier is the only code allowed to finish success.
-    pub fn run_plan<F, V>(&mut self, plan: &[GoalStep], mut execute: F, mut verify: V) -> GoalStatus
+    pub fn run_plan<F, V>(&mut self, plan: &[GoalStep], mut execute: F, verify: V) -> GoalStatus
     where
         F: FnMut(&GoalStep) -> Result<String, String>,
         V: FnMut(&Goal, &GoalStep) -> GoalVerdict,
     {
-        const MAX_STEPS: usize = 8;
         if self.status.terminal() {
             return self.status;
         }
@@ -197,32 +237,110 @@ impl Goal {
             self.apply(GoalVerdict::Failed, "the goal had no executable steps");
             return self.status;
         }
-        for step in plan.iter().take(MAX_STEPS) {
+        // A fixed plan is the degenerate case of choosing the next step: walk it in
+        // order. Routed through `pursue` so there is one loop rather than two, which
+        // also means a failing step here moves on instead of ending the objective.
+        let mut next = 0usize;
+        self.pursue(
+            |_| {
+                let step = plan.get(next).cloned();
+                next += 1;
+                step
+            },
+            |step| execute(step).map_err(StepError::TryAnother),
+            verify,
+        )
+    }
+
+    /// Pursues the objective by repeatedly choosing the next step from what is
+    /// known so far — the loop that makes a goal make progress.
+    ///
+    /// `propose` is handed the goal's current state (its evidence **and** its dead
+    /// ends) and returns the next thing to try, or `None` when it has nothing left.
+    /// A model may choose; this code decides what happens to the result, which is
+    /// the ordinary division of labour — models propose, policy authorizes.
+    ///
+    /// Three properties are the point, and each one is a defect this replaces:
+    ///
+    /// - **It iterates.** The worker used to hand a one-element array to a fixed
+    ///   plan, so every objective finished after exactly one capability call.
+    /// - **A failed approach is not a failed objective.** `TryAnother` records a
+    ///   dead end and chooses again; only `Stop` ends it, and only
+    ///   [`ENOUGH_DEAD_ENDS`] consecutive failures exhaust it.
+    /// - **It is bounded.** At most [`MOST_STEPS_PER_PURSUIT`] operations per call,
+    ///   so the caller checkpoints and yields rather than running away.
+    pub fn pursue<P, F, V>(&mut self, mut propose: P, mut execute: F, mut verify: V) -> GoalStatus
+    where
+        P: FnMut(&Self) -> Option<GoalStep>,
+        F: FnMut(&GoalStep) -> Result<String, StepError>,
+        V: FnMut(&Self, &GoalStep) -> GoalVerdict,
+    {
+        if self.status.terminal() {
+            return self.status;
+        }
+        let mut in_a_row = 0usize;
+        for _ in 0..MOST_STEPS_PER_PURSUIT {
+            let Some(step) = propose(&*self) else {
+                // Nothing left to try. What was gathered still counts, but an
+                // objective with no evidence at all is blocked, never complete.
+                let verdict = if self.evidence.is_empty() {
+                    GoalVerdict::Blocked
+                } else {
+                    GoalVerdict::Partial
+                };
+                self.apply(verdict, "nothing further could be tried for this objective");
+                return self.status;
+            };
             self.start(&step.phase, &step.name);
-            match execute(step) {
+            match execute(&step) {
                 Ok(output) if !output.trim().is_empty() => {
+                    in_a_row = 0;
                     self.commit(&step.name, &output);
-                    let verdict = verify(self, step);
+                    let verdict = verify(&*self, &step);
                     self.apply(verdict, "the verifier evaluated the committed evidence");
                     if self.status.terminal() {
                         return self.status;
                     }
                 }
                 Ok(_) => {
-                    self.apply(GoalVerdict::Partial, "the step returned no evidence");
-                    return self.status;
+                    in_a_row += 1;
+                    self.note_dead_end(&step.name, "the step returned no evidence");
+                    if in_a_row >= ENOUGH_DEAD_ENDS {
+                        self.apply(GoalVerdict::Partial, "the step returned no evidence");
+                        return self.status;
+                    }
                 }
-                Err(reason) => {
-                    self.apply(GoalVerdict::Failed, &reason);
+                Err(StepError::TryAnother(why)) => {
+                    in_a_row += 1;
+                    self.note_dead_end(&step.name, &why);
+                    if in_a_row >= ENOUGH_DEAD_ENDS {
+                        self.apply(GoalVerdict::Partial, &why);
+                        return self.status;
+                    }
+                }
+                Err(StepError::Stop(why)) => {
+                    self.note_dead_end(&step.name, &why);
+                    self.apply(GoalVerdict::Blocked, &why);
                     return self.status;
                 }
             }
         }
+        // Out of operations for this pass, not out of objective: the caller
+        // checkpoints and the next pass picks it up where this one stopped.
         self.apply(
             GoalVerdict::Partial,
-            "the bounded goal plan ended before completion",
+            "the objective reached its bounded step limit for this pass",
         );
         self.status
+    }
+
+    /// Remembers an approach that did not work, so the next proposal can avoid it.
+    fn note_dead_end(&mut self, step: &str, why: &str) {
+        self.next_step.clear();
+        self.dead_ends.push(DeadEnd {
+            step: step.trim().to_owned(),
+            why: why.trim().to_owned(),
+        });
     }
 
     /// Creates a planned goal from the user's objective.
@@ -238,6 +356,7 @@ impl Goal {
             next_step: String::new(),
             reason: String::new(),
             evidence: Vec::new(),
+            dead_ends: Vec::new(),
         })
     }
 
@@ -326,6 +445,13 @@ impl Goal {
         &self.evidence
     }
 
+    /// The approaches that did not work, so whatever chooses the next step can
+    /// avoid spending the budget on them again.
+    #[must_use]
+    pub fn dead_ends(&self) -> &[DeadEnd] {
+        &self.dead_ends
+    }
+
     /// Serializes the resumable state. Unknown or newer versions must not be resumed silently.
     #[must_use]
     pub fn checkpoint(&self) -> String {
@@ -336,6 +462,7 @@ impl Goal {
             "next_step": self.next_step,
             "reason": self.reason,
             "evidence": self.evidence.iter().map(|e| json!({"step": e.step, "output": e.output})).collect::<Vec<_>>(),
+            "dead_ends": self.dead_ends.iter().map(|d| json!({"step": d.step, "why": d.why})).collect::<Vec<_>>(),
         })
         .to_string()
     }
@@ -344,8 +471,13 @@ impl Goal {
     pub fn from_checkpoint(objective: &str, checkpoint: &str) -> Result<Self, &'static str> {
         let value: Value =
             serde_json::from_str(checkpoint).map_err(|_| "invalid goal checkpoint")?;
-        if value["version"].as_u64() != Some(GOAL_CHECKPOINT_VERSION) {
-            return Err("unsupported goal checkpoint version");
+        // Every version up to the current one is resumable: a goal written before
+        // dead ends existed simply has none, and refusing it would strand work that
+        // is otherwise perfectly readable. A *newer* version is still refused,
+        // because this build cannot know what it left out.
+        match value["version"].as_u64() {
+            Some(v) if (1..=GOAL_CHECKPOINT_VERSION).contains(&v) => {}
+            _ => return Err("unsupported goal checkpoint version"),
         }
         let status = value["status"]
             .as_str()
@@ -367,13 +499,224 @@ impl Goal {
                 })
             })
             .collect();
+        goal.dead_ends = value["dead_ends"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|item| {
+                Some(DeadEnd {
+                    step: item["step"].as_str()?.to_owned(),
+                    why: item["why"].as_str()?.to_owned(),
+                })
+            })
+            .collect();
         Ok(goal)
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{Goal, GoalStatus, GoalStep, GoalVerdict};
+    use super::{Goal, GoalStatus, GoalStep, GoalVerdict, StepError};
+
+    /// A step that always works, for tests about the loop rather than the work.
+    fn works(output: &str) -> Result<String, StepError> {
+        Ok(output.to_owned())
+    }
+
+    #[test]
+    fn a_goal_keeps_choosing_steps_while_the_evidence_is_incomplete() {
+        // The defect this exists for: the worker called `run_plan` with a
+        // one-element array, so every objective reached a terminal state after
+        // exactly one capability call. Progress means choosing the *next* step
+        // from what is known so far, repeatedly.
+        let mut goal = Goal::new("find somewhere to eat on Sunday").unwrap();
+        let mut proposed = 0;
+        let status = goal.pursue(
+            |g| {
+                proposed += 1;
+                // The proposal adapts to the evidence already gathered.
+                match g.evidence().len() {
+                    0 => Some(GoalStep::new("gathering", "search").unwrap()),
+                    1 => Some(GoalStep::new("gathering", "opening_hours").unwrap()),
+                    2 => Some(GoalStep::new("checking", "confirm").unwrap()),
+                    _ => None,
+                }
+            },
+            |step| works(&format!("result of {}", step.name)),
+            |g, _| {
+                if g.evidence().len() == 3 {
+                    GoalVerdict::Complete
+                } else {
+                    GoalVerdict::Continue
+                }
+            },
+        );
+        assert_eq!(status, GoalStatus::Complete);
+        assert_eq!(proposed, 3, "it should have chosen three successive steps");
+        assert_eq!(goal.evidence().len(), 3);
+    }
+
+    #[test]
+    fn a_refused_source_is_not_the_end_of_the_objective() {
+        // Live shape: the first source answered 403. That ended the whole goal,
+        // because every executor error was terminal. A refused source is a reason
+        // to try another one, not a reason to abandon what was asked for.
+        let mut goal = Goal::new("find the next three games").unwrap();
+        let mut attempt = 0;
+        let status = goal.pursue(
+            |_| {
+                attempt += 1;
+                match attempt {
+                    1 => Some(GoalStep::new("gathering", "first_source").unwrap()),
+                    2 => Some(GoalStep::new("gathering", "second_source").unwrap()),
+                    _ => None,
+                }
+            },
+            |step| {
+                if step.name == "first_source" {
+                    return Err(StepError::TryAnother("the source answered 403".to_owned()));
+                }
+                works("three dated fixtures")
+            },
+            |_, _| GoalVerdict::Complete,
+        );
+        assert_eq!(status, GoalStatus::Complete);
+        assert_eq!(goal.evidence().len(), 1, "only the source that worked");
+        assert_eq!(
+            goal.dead_ends().len(),
+            1,
+            "the refusal is remembered, not forgotten"
+        );
+        assert_eq!(goal.dead_ends()[0].step, "first_source");
+    }
+
+    #[test]
+    fn a_dead_end_is_visible_so_the_same_approach_is_not_retried() {
+        // Without this the planner re-proposes the approach that just failed, which
+        // is a different flavour of the same stall.
+        let mut goal = Goal::new("an objective").unwrap();
+        goal.pursue(
+            |g| {
+                if g.dead_ends().iter().any(|d| d.step == "broken") {
+                    Some(GoalStep::new("gathering", "working").unwrap())
+                } else {
+                    Some(GoalStep::new("gathering", "broken").unwrap())
+                }
+            },
+            |step| {
+                if step.name == "broken" {
+                    return Err(StepError::TryAnother("still broken".to_owned()));
+                }
+                works("evidence")
+            },
+            |_, _| GoalVerdict::Complete,
+        );
+        assert_eq!(goal.status(), GoalStatus::Complete);
+        assert_eq!(goal.evidence()[0].step, "working");
+    }
+
+    #[test]
+    fn enough_dead_ends_ends_honestly_rather_than_looping() {
+        let mut goal = Goal::new("an impossible objective").unwrap();
+        let mut tries = 0;
+        let status = goal.pursue(
+            |_| {
+                tries += 1;
+                Some(GoalStep::new("gathering", "nope").unwrap())
+            },
+            |_| Err(StepError::TryAnother("refused again".to_owned())),
+            |_, _| GoalVerdict::Complete,
+        );
+        assert_eq!(status, GoalStatus::Partial, "it stops, and says why");
+        assert!(goal.reason().contains("refused again"), "{}", goal.reason());
+        assert!(tries <= 3, "bounded, not an endless retry: {tries}");
+    }
+
+    #[test]
+    fn a_withdrawn_capability_blocks_instead_of_trying_a_substitute() {
+        // Policy denial must not become a search for something that defeats the
+        // same restriction.
+        let mut goal = Goal::new("an objective").unwrap();
+        let status = goal.pursue(
+            |_| Some(GoalStep::new("gathering", "fetch").unwrap()),
+            |_| Err(StepError::Stop("web fetch was revoked".to_owned())),
+            |_, _| GoalVerdict::Complete,
+        );
+        assert_eq!(status, GoalStatus::Blocked);
+        assert_eq!(goal.reason(), "web fetch was revoked");
+    }
+
+    #[test]
+    fn nothing_left_to_try_is_blocked_when_nothing_was_gathered() {
+        let mut goal = Goal::new("an objective").unwrap();
+        let status = goal.pursue(|_| None, |_| works("unused"), |_, _| GoalVerdict::Complete);
+        assert_eq!(
+            status,
+            GoalStatus::Blocked,
+            "no evidence and no approach is blocked, never complete"
+        );
+    }
+
+    #[test]
+    fn nothing_left_to_try_is_partial_when_something_was_gathered() {
+        let mut goal = Goal::new("an objective").unwrap();
+        let mut first = true;
+        let status = goal.pursue(
+            |_| {
+                if first {
+                    first = false;
+                    return Some(GoalStep::new("gathering", "search").unwrap());
+                }
+                None
+            },
+            |_| works("something useful but incomplete"),
+            |_, _| GoalVerdict::Continue,
+        );
+        assert_eq!(status, GoalStatus::Partial);
+        assert_eq!(goal.evidence().len(), 1, "what it did find is kept");
+    }
+
+    #[test]
+    fn dead_ends_survive_a_checkpoint_and_an_older_one_still_resumes() {
+        let mut goal = Goal::new("an objective").unwrap();
+        goal.pursue(
+            |g| (g.dead_ends().is_empty()).then(|| GoalStep::new("gathering", "broken").unwrap()),
+            |_| Err(StepError::TryAnother("the source refused".to_owned())),
+            |_, _| GoalVerdict::Continue,
+        );
+        let restored = Goal::from_checkpoint(goal.objective(), &goal.checkpoint()).unwrap();
+        assert_eq!(restored, goal, "a resumed goal remembers its dead ends");
+
+        // A checkpoint written before dead ends existed still resumes, without them.
+        let older = r#"{"version":1,"status":"running","phase":"gathering",
+            "next_step":"search","reason":"","evidence":[]}"#;
+        let v1 = Goal::from_checkpoint("an objective", older).unwrap();
+        assert_eq!(v1.status(), GoalStatus::Running);
+        assert!(v1.dead_ends().is_empty());
+    }
+
+    #[test]
+    fn an_executor_error_no_longer_ends_a_multi_step_plan() {
+        // `run_plan`'s own defect, fixed by routing it through the same loop: a
+        // failing step used to make the whole plan terminal.
+        let mut goal = Goal::new("an objective").unwrap();
+        let plan = vec![
+            GoalStep::new("gathering", "first").unwrap(),
+            GoalStep::new("gathering", "second").unwrap(),
+        ];
+        let status = goal.run_plan(
+            &plan,
+            |step| {
+                if step.name == "first" {
+                    return Err("the first source failed".to_owned());
+                }
+                Ok("evidence from the second".to_owned())
+            },
+            |_, _| GoalVerdict::Complete,
+        );
+        assert_eq!(status, GoalStatus::Complete);
+        assert_eq!(goal.evidence().len(), 1);
+    }
 
     #[test]
     fn the_runner_iterates_until_a_verifier_marks_the_goal_complete() {
