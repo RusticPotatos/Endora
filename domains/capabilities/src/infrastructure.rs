@@ -219,7 +219,13 @@ pub trait Capability: Send + Sync {
                     .to_owned(),
             ));
         }
-        let out = self.invoke(&Value::Object(serde_json::Map::new()), settings)?;
+        // Whatever it needs to be asked, taken from its own schema, so a skill that wants a
+        // query is tested with one (it used to be called with nothing, and "Test" on a
+        // working search key answered "missing 'query'").
+        let input =
+            serde_json::from_str::<Value>(&arguments_for_a_test_call(self.info().input_schema))
+                .unwrap_or_else(|_| Value::Object(serde_json::Map::new()));
+        let out = self.invoke(&input, settings)?;
         Ok(self.summarize(&out))
     }
 
@@ -8753,6 +8759,53 @@ mod pressing_test_is_safe {
         fn summarize(&self, _o: &Value) -> String {
             "72F, sunny".to_owned()
         }
+    }
+
+    /// A read-only skill that cannot answer without being asked something.
+    struct NeedsAQuery;
+    impl Capability for NeedsAQuery {
+        fn info(&self) -> CapabilityInfo {
+            CapabilityInfo {
+                id: "web_search",
+                name: "Internet search",
+                description: "",
+                category: "",
+                reaches_external: true,
+                reversibility: Reversibility::Observe,
+                configured: true,
+                needs: "",
+                settings: &[],
+                wants_place: false,
+                borrows_from: None,
+                third_party: true,
+                input_schema: Some(
+                    r#"{"type":"object","properties":{"query":{"type":"string"}},"required":["query"]}"#,
+                ),
+            }
+        }
+        fn invoke(
+            &self,
+            input: &Value,
+            _settings: &CapabilitySettings,
+        ) -> Result<Value, CapabilityError> {
+            let query = str_field(input, "query")?;
+            Ok(serde_json::json!({ "searched": query }))
+        }
+        fn summarize(&self, o: &Value) -> String {
+            format!("searched for {}", o["searched"])
+        }
+    }
+
+    #[test]
+    fn a_skill_that_needs_a_query_is_tested_with_one() {
+        // Live: the Test button on a configured search key answered "missing 'query'", which
+        // read as a failure of the key. The key was fine; the test asked it nothing.
+        assert_eq!(
+            NeedsAQuery
+                .self_test(&CapabilitySettings::default())
+                .unwrap(),
+            "searched for \"test\""
+        );
     }
 
     #[test]
