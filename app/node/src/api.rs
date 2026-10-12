@@ -5134,16 +5134,29 @@ struct DeepAskRequest {
 /// Escalates one question to the configured deep model and posts its answer to the
 /// chat. The person opts in per question (the everyday stays local). The outbound
 /// question passes the egress guard — a secret blocks it, PII is redacted (ADR 0051).
+///
+/// The deep model plans with the person's skills and the local model reads what they
+/// return (ADR 0086): the deep model never sees what a skill returned, so nothing a
+/// stranger wrote reaches it or can command it, and nothing of the person's own life
+/// goes with the question beyond the question itself.
 async fn deep_ask(
     State(state): State<AppState>,
     Json(req): Json<DeepAskRequest>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
+    let store = state.store.clone();
     let chat = state.chat.clone();
+    let understanding = state.understanding.clone();
     let config = state.config.clone();
     let events = state.events.clone();
+    let audit = state.audit.clone();
     let ids = state.ids.clone();
     let clock = state.clock.clone();
+    let butler = state.butler.clone();
+    let capabilities = state.capabilities.clone();
+    let mcp = mcp_snapshot(&state);
     let question = req.question;
+    // Serialize against any other butler turn: this one runs skills too.
+    let _turn = state.turn_lock.clone().lock_owned().await;
     let posted = blocking(move || {
         let Some(cfg) = DeepModelRepository::get(config.as_ref()).map_err(AppError::Repository)?
         else {
@@ -5152,42 +5165,73 @@ async fn deep_ask(
         if cfg.url.is_empty() || cfg.model.is_empty() {
             return Ok(None);
         }
-        // Through the door, or not at all (ADR 0069): the scan and the redaction live in
-        // the constructor, and `ask_deep_model` accepts nothing but its product.
-        let safe_question = endora_application::egress::TheirOwnQuestion::checked(&question)
+        // Through the door, or not at all (ADR 0069): refuse a secret up front, before the
+        // question is stored or anything is asked of anyone.
+        endora_application::egress::TheirOwnQuestion::checked(&question)
             .map_err(|message| AppError::BadRequest { message })?;
-        // Persist the person's question (what they typed, kept local) so the chat
-        // shows both sides after a reload — this path otherwise stored only the
-        // answer, so the question vanished and it looked like nothing happened.
-        usecases::post_user_message(chat.as_ref(), ids.as_ref(), clock.as_ref(), &question)?;
-        // Record the person's question, then the deep answer.
         record_event(events.as_ref(), clock.as_ref(), "Asked the deep model");
-        match endora_infrastructure::ask_deep_model(
-            &cfg.url,
-            &cfg.model,
-            &cfg.api_key,
-            &safe_question,
-        ) {
-            Ok(answer) => {
-                let msg = usecases::post_butler_message(
-                    chat.as_ref(),
-                    ids.as_ref(),
-                    clock.as_ref(),
-                    &answer,
-                )?;
-                Ok(Some(msg))
-            }
-            Err(e) => Err(AppError::BadRequest {
-                message: format!("the deep model couldn't answer: {e}"),
-            }),
+        // The deep model is used here because the person pressed the button, whether or not
+        // they turned the automatic fallback on; so it is built from the configuration
+        // directly rather than through `Butler::deeper`, which honours that switch.
+        let deep = endora_application::egress::Deeper::new(Arc::new(
+            endora_infrastructure::LlmButler::with_config(
+                cfg.url.clone(),
+                cfg.model.clone(),
+                cfg.api_key.clone(),
+                endora_application::Sampling::default(),
+            ),
+        ));
+        let planned =
+            endora_application::deep_turn::PlannedByTheDeepModel::new(&deep, butler.as_ref());
+        let runner = build_runner(
+            config.as_ref(),
+            capabilities,
+            mcp,
+            proven_now(understanding.as_ref()),
+        );
+        let context = usecases::butler_context(
+            understanding.as_ref(),
+            understanding.as_ref(),
+            understanding.as_ref(),
+            config.as_ref(),
+            chat.as_ref(),
+            &runner,
+            config.as_ref(),
+            clock.as_ref(),
+        )?;
+        let (reply, activity) = usecases::send_to_butler_streaming_for_request(
+            chat.as_ref(),
+            understanding.as_ref(),
+            understanding.as_ref(),
+            understanding.as_ref(),
+            understanding.as_ref(),
+            &runner,
+            &planned,
+            audit.as_ref(),
+            None,
+            Some(store.as_ref()),
+            ids.as_ref(),
+            clock.as_ref(),
+            &context,
+            &question,
+            None,
+            &mut |_| {},
+            &mut |_| {},
+            &mut Vec::new(),
+        )?;
+        for item in &activity {
+            record_event(events.as_ref(), clock.as_ref(), item);
         }
+        Ok(Some((reply, activity)))
     })
     .await?;
     let _ = state.changes.send(());
     match posted {
-        Some(msg) => Ok(Json(
-            json!({ "answered": true, "message": MessageResponse::from(&msg) }),
-        )),
+        Some((msg, activity)) => Ok(Json(json!({
+            "answered": true,
+            "message": MessageResponse::from(&msg),
+            "activity": activity,
+        }))),
         None => Ok(Json(
             json!({ "answered": false, "note": "Configure a deep model in Settings first." }),
         )),

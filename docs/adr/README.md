@@ -168,6 +168,8 @@ of an existing record and take the next number.
 | [0083](0083-show-unattended-work-and-let-it-be-stopped.md) | Show unattended work and let it be stopped | — |
 | [0084](0084-tell-the-person-what-actually-went-wrong.md) | Tell the person what actually went wrong | — |
 | [0085](0085-a-question-about-the-world-is-not-answered-from-the-house.md) | A question about the world is not answered from the house | — |
+| [0086](0086-ask-deep-plans-and-the-house-reads.md) | Ask deep plans, and the house reads | — |
+| [0087](0087-a-local-answer-that-found-nothing-is-checked-once.md) | A local answer that found nothing is checked once | — |
 
 The forty-eight decisions these consolidate are in [archive/](archive/) — kept in full,
 because the reasoning that produced a rule is the reason it survives an argument later.

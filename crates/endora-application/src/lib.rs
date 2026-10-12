@@ -12,6 +12,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod deep_turn;
 pub mod egress;
 pub mod error;
 pub mod goal;
