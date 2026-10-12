@@ -24,7 +24,7 @@ endora-platform = { path = "../../domains/platform" }
 # Already in the tree transitively (via axum/tokio); declared directly to adapt
 # a broadcast channel into the SSE response stream. Enabling the stream helpers
 # pulls one additional crate from the same futures project (futures-macro).
-futures-util = "0.3.33"
+futures-util = "0.3.34"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.150"
 tokio = { version = "1.53.0", features = ["rt-multi-thread", "macros", "net", "sync", "time"] }
@@ -51,5 +51,5 @@ rustls = { version = "0.23.23", features = ["ring"] }
 workspace = true
 
 [dev-dependencies]
-http-body-util = "0.1.4"
+http-body-util = "0.1.5"
 tower = { version = "0.5.3", features = ["util"] }
