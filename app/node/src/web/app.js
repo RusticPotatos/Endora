@@ -93,6 +93,9 @@ const ICONS = {
   speakerOff: '<path d="M4 9.5v5h3.5L12 18V6L7.5 9.5H4z"/><line x1="16" y1="9.5" x2="21" y2="14.5"/><line x1="21" y1="9.5" x2="16" y2="14.5"/>',
   mic: '<rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5.5 11a6.5 6.5 0 0 0 13 0"/><line x1="12" y1="17.5" x2="12" y2="21"/><line x1="9" y1="21" x2="15" y2="21"/>',
   send: '<path d="M4.5 12h13M11 5.5l6.5 6.5-6.5 6.5"/>',
+  up: '<path d="M12 19V6M6 12l6-6 6 6"/>',
+  plus: '<path d="M12 5v14M5 12h14"/>',
+  close: '<path d="M6 6l12 12M18 6L6 18"/>',
   stop: '<rect x="6" y="6" width="12" height="12" rx="2.5"/>',
   chevron: '<path d="M9 6l6 6-6 6"/>',
   note: '<path d="M6 3h9l4 4v14H6z"/><path d="M15 3v4h4M9 12h6M9 16h4"/>',
@@ -114,15 +117,22 @@ function icon(name, size = 17) {
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) =>
   ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
-// Butler prose, rendered lightly. Escaped FIRST — everything below operates on
-// already-escaped text, so nothing a headline or a tool result carries can become
-// markup — then the few shapes the butler actually writes are dressed: links become
-// tappable and are shown as their site's name (a 200-character news URL was punching
-// every bubble wide open), **bold** bolds, `code` gets a monospace chip, a leading
-// "- " becomes a real bullet, and a #-heading line turns bold. Everything else is
-// left exactly as written; `white-space: pre-wrap` keeps the paragraphs.
-function rich(text) {
-  let s = esc(text);
+// Butler prose, rendered as the markdown the models actually write. Escaped FIRST —
+// everything below works on already-escaped text, so nothing a headline or a tool result
+// carries can become markup — and only then dressed:
+//   blocks:  paragraphs, "- " / "* " / "1." lists, # headings, > quotes, --- rules and
+//            ``` fenced code (kept verbatim, never dressed inside);
+//   inline:  [label](url) and bare links (shown as their site's name — a 200-character
+//            news URL used to punch every bubble wide open), **bold**, *italic*, `code`.
+// A fence still open at the end of the text is closed for display, so a reply that is
+// halfway through a code block while streaming reads as code, not as stray backticks.
+function inlineRich(text) {
+  const spans = [];
+  // Code spans first, held aside so nothing inside them is dressed.
+  let s = text.replace(/`([^`\n]+)`/g, (_m, code) => {
+    spans.push(`<code>${code}</code>`);
+    return `\u0001${spans.length - 1}\u0001`;
+  });
   // [label](url) first, so its url is not also linkified as a bare one below.
   s = s.replace(/\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)/g,
     (_m, label, url) => `<a href="${url}" target="_blank" rel="noopener noreferrer">${label}</a>`);
@@ -137,10 +147,66 @@ function rich(text) {
     return `${before}<a href="${trimmed}" target="_blank" rel="noopener noreferrer">${shown}</a>${tail}`;
   });
   s = s.replace(/\*\*([^*\n]+)\*\*/g, "<b>$1</b>");
-  s = s.replace(/`([^`\n]+)`/g, "<code>$1</code>");
-  s = s.replace(/^#{1,4} +(.+)$/gm, "<b>$1</b>");
-  s = s.replace(/^- +/gm, "• ");
-  return s;
+  // One asterisk, hugging its words: "2 * 3 * 4" is arithmetic, not emphasis.
+  s = s.replace(/(^|[^*\w])\*([^*\s][^*\n]*?)\*(?![*\w])/g, "$1<i>$2</i>");
+  return s.replace(/\u0001(\d+)\u0001/g, (_m, i) => spans[Number(i)]);
+}
+function rich(text) {
+  const fences = [];
+  const held = esc(text).replace(/\r\n/g, "\n")
+    .replace(/```[^\n`]*\n([\s\S]*?)(?:```|$)/g, (_m, code) => {
+      fences.push(code.replace(/\n$/, ""));
+      return `\n\u0000${fences.length - 1}\u0000\n`;
+    });
+  const out = [];
+  let para = [];
+  let list = null; // { tag, items: [html] }
+  const flushPara = () => {
+    if (para.length) out.push(`<p>${para.map(inlineRich).join("<br>")}</p>`);
+    para = [];
+  };
+  const flushList = () => {
+    if (list) out.push(`<${list.tag}${list.start > 1 ? ` start="${list.start}"` : ""}>${list.items.map((i) => `<li>${i}</li>`).join("")}</${list.tag}>`);
+    list = null;
+  };
+  const flush = () => { flushPara(); flushList(); };
+  for (const line of held.split("\n")) {
+    let m;
+    if ((m = /^\u0000(\d+)\u0000$/.exec(line))) {
+      flush();
+      out.push(`<pre class="code"><code>${fences[Number(m[1])]}</code></pre>`);
+    } else if (/^\s*$/.test(line)) {
+      flush();
+    } else if ((m = /^#{1,6}\s+(.+)$/.exec(line))) {
+      flush();
+      out.push(`<p class="h">${inlineRich(m[1])}</p>`);
+    } else if (/^\s*([-*_])(\s*\1){2,}\s*$/.test(line)) {
+      flush();
+      out.push("<hr>");
+    } else if ((m = /^\s*[-*•]\s+(.+)$/.exec(line))) {
+      flushPara();
+      if (!list || list.tag !== "ul") { flushList(); list = { tag: "ul", start: 1, items: [] }; }
+      list.items.push(inlineRich(m[1]));
+    } else if ((m = /^\s*(\d+)[.)]\s+(.+)$/.exec(line))) {
+      flushPara();
+      if (!list || list.tag !== "ol") { flushList(); list = { tag: "ol", start: Number(m[1]), items: [] }; }
+      list.items.push(inlineRich(m[2]));
+    } else if ((m = /^&gt;\s?(.*)$/.exec(line))) {
+      flush();
+      const last = out[out.length - 1];
+      const html = inlineRich(m[1]);
+      if (last && last.startsWith("<blockquote>")) out[out.length - 1] = last.replace(/<\/blockquote>$/, `<br>${html}</blockquote>`);
+      else out.push(`<blockquote>${html}</blockquote>`);
+    } else if (list && /^\s+\S/.test(line)) {
+      // An indented line under a list item belongs to that item.
+      list.items[list.items.length - 1] += `<br>${inlineRich(line.trim())}`;
+    } else {
+      flushList();
+      para.push(line);
+    }
+  }
+  flush();
+  return out.join("");
 }
 const byId = (list, id) => (list || []).find((x) => x.id === id);
 const shortId = (id) => id.slice(0, 6) + "…";
@@ -652,15 +718,16 @@ function viewChat() {
   const list = CHAT_MSGS || [];
   const msgs = list.map((m) => {
     const mine = m.role === "user";
-    const bubble = `<div class="row" style="justify-content:${mine ? "flex-end" : "flex-start"}; margin:6px 0;">
+    const bubble = `<div class="row msg-row${mine ? " mine" : ""}">
       <div class="bubble ${mine ? "me" : "butler"}">${mine ? esc(m.text) : rich(m.text)}</div></div>`;
     // A butler reply carries its persisted action trail + sources (if any), so
     // you can expand a PAST answer to see what it did and where it came from.
     if (!mine && m.actions) {
       const newest = m.id === (list[list.length - 1] || {}).id;
-      return bubble + activityHtml(m.actions.activity)
+      // What it did sits ABOVE what it said, as a quiet line that opens in place.
+      return stepsHtml(m.actions.steps) + bubble + activityHtml(m.actions.activity)
         + actionsTakenHtml(m.actions.actions_taken, newest)
-        + stepsHtml(m.actions.steps) + sourcesHtml(m.actions.sources);
+        + sourcesHtml(m.actions.sources);
     }
     return bubble;
   }).join("");
@@ -680,12 +747,12 @@ function viewChat() {
   const stillWorking = CHAT_STREAMING || NODE_BUSY;
   const pending = awaiting
     ? (CHAT_STOPPED
-        ? `<div class="row" style="justify-content:flex-start; margin:6px 0;">
+        ? `<div class="row msg-row">
              <div class="bubble butler"><span class="sub">You stopped this one. Send again if you'd like an answer.</span></div></div>`
         : stillWorking
-          ? `<div class="row" style="justify-content:flex-start; margin:6px 0;" id="chat-pending">
+          ? `<div class="row msg-row" id="chat-pending">
              <div class="bubble butler thinking"><span class="dots"><i></i><i></i><i></i></span></div></div>`
-          : `<div class="row" style="justify-content:flex-start; margin:6px 0;">
+          : `<div class="row msg-row">
              <div class="bubble butler"><span class="sub">That one didn't get an answer — nothing was saved.</span>
              <div class="row" style="margin-top:6px;"><button class="ghost" data-act="chat:retry">Ask it again</button></div></div></div>`)
     : "";
@@ -696,10 +763,10 @@ function viewChat() {
   let liveTurn = "";
   if (CHAT_STREAMING) {
     const users = [CHAT_INFLIGHT, ...CHAT_QUEUE].filter(Boolean).map((t) =>
-      `<div class="row" style="justify-content:flex-end; margin:6px 0;"><div class="bubble me">${esc(typeof t === "string" ? t : t.message)}</div></div>`).join("");
+      `<div class="row msg-row mine"><div class="bubble me">${esc(typeof t === "string" ? t : t.message)}</div></div>`).join("");
     const replyInner = LIVE_REPLY ? rich(LIVE_REPLY) : `<span class="dots"><i></i><i></i><i></i></span>`;
     liveTurn = users +
-      `<div class="row" style="justify-content:flex-start; margin:6px 0;" id="chat-live"><div class="bubble butler">${replyInner}</div></div>`;
+      `<div class="row msg-row" id="chat-live"><div class="bubble butler">${replyInner}</div></div>`;
   }
   // The in-flight turn only. Every finished turn renders its own note from the stored
   // record above, which is what makes it survive coming back to the chat; this is for the
@@ -738,25 +805,66 @@ function viewChat() {
       : "Say anything — Endora is listening."}</div>`;
   return `
     <div class="chat">
-      ${dayBar}
-      ${research}
-      ${ownWork}
-      <div id="chat-thread" class="chat-thread">${(msgs || (CHAT_STREAMING ? "" : emptyToday)) + (CHAT_STREAMING ? liveTurn : pending) + streamingActivity}</div>
-      ${CHAT_STREAMING ? "" : viewNeedsYou()}
-      <div class="composer">
-        <textarea id="chat-input" rows="1" placeholder="${RESEARCH_MODE ? "What should Endora research?" : "Talk to your butler…"}"></textarea>
-        ${RESEARCH_MODE ? `<textarea id="research-urls" rows="2" placeholder="Optional starting URLs, one per line"></textarea>` : ""}
-        <div class="composer-actions">
-          <div class="composer-secondary">
-            ${speakBtn}
-            ${micBtn}
-            <button class="ghost${RESEARCH_MODE ? " active" : ""}" data-act="toggle:research" title="commission durable, bounded research">${icon("note", 15)}<span>${RESEARCH_MODE ? "Research: on" : "Research"}</span></button>
-            ${DEEP_MODEL.configured ? `<button class="ghost${DEEP_MODE ? " active" : ""}" data-act="toggle:deep" title="when on, your messages go to the bigger model">${icon("sparkle", 15)}<span>${DEEP_MODE ? "Deep: on" : "Ask deep"}</span></button>` : ""}
+      <div class="chat-scroll" id="chat-scroll"><div class="chat-col">
+        ${dayBar}
+        ${research}
+        ${ownWork}
+        <div id="chat-thread" class="chat-thread">${(msgs || (CHAT_STREAMING ? "" : emptyToday)) + (CHAT_STREAMING ? liveTurn : pending) + streamingActivity}</div>
+        ${CHAT_STREAMING ? "" : viewNeedsYou()}
+      </div></div>
+      <div class="composer-dock"><div class="chat-col">
+        <div class="composer">
+          <div class="composer-chips" id="composer-chips">${composerChipsHtml()}</div>
+          <textarea id="chat-input" rows="1" placeholder="${RESEARCH_MODE ? "What should Endora research?" : "Talk to your butler…"}"></textarea>
+          ${RESEARCH_MODE ? `<textarea id="research-urls" rows="2" placeholder="Optional starting URLs, one per line"></textarea>` : ""}
+          <div class="composer-bar">
+            <div class="tools">
+              <button class="icon-btn" data-act="toggle:tools" title="More" aria-label="More options" aria-haspopup="menu">${icon("plus", 18)}</button>
+              <div class="tools-menu" id="tools-menu" role="menu" hidden>${toolsMenuHtml()}</div>
+            </div>
+            <button class="send-round" id="send-btn" data-act="${CHAT_STREAMING ? "chat:stop" : RESEARCH_MODE ? "research:start" : "chat:send"}" title="${CHAT_STREAMING ? "Stop" : RESEARCH_MODE ? "Start research" : "Send"}" aria-label="${CHAT_STREAMING ? "Stop" : RESEARCH_MODE ? "Start research" : "Send"}">${icon(CHAT_STREAMING ? "stop" : "up", 18)}</button>
           </div>
-          <button class="primary" id="send-btn" data-act="${CHAT_STREAMING ? "chat:stop" : RESEARCH_MODE ? "research:start" : "chat:send"}">${CHAT_STREAMING ? `${icon("stop")}<span>Stop</span>` : `${icon("send")}<span>${RESEARCH_MODE ? "Start" : "Send"}</span>`}</button>
         </div>
-      </div>
+      </div></div>
     </div>`;
+}
+
+// What is switched on, shown inside the composer where it applies, each one a tap away
+// from off. Modes live here rather than as four labelled buttons beside the box.
+function composerChipsHtml() {
+  const chip = (act, ic, label, title) =>
+    `<button class="chip" data-act="${act}" title="${esc(title)}">${icon(ic, 13)}<span>${label}</span>${icon("close", 11)}</button>`;
+  return [
+    DEEP_MODEL.configured && DEEP_MODE ? chip("toggle:deep", "sparkle", "Deep", "Your messages go to the bigger model — tap to turn off") : "",
+    RESEARCH_MODE ? chip("toggle:research", "note", "Research", "Commissioning durable research — tap to turn off") : "",
+    SPEAK ? chip("toggle:speak", "speakerOn", "Speaking", "Replies are read aloud — tap to turn off") : "",
+  ].join("");
+}
+
+// The "+" menu: everything that is not typing or sending.
+function toolsMenuHtml() {
+  const item = (act, ic, label, on, title) =>
+    `<button role="menuitem" data-act="${act}" title="${esc(title)}" class="${on ? "on" : ""}">${icon(ic, 16)}<span>${label}</span>${on ? icon("check", 14) : ""}</button>`;
+  const dictate = STT
+    ? (window.isSecureContext
+        ? item("chat:mic", "mic", "Dictate", false, "dictate into the box — you still press send")
+        : `<button role="menuitem" data-act="chat:mic" title="voice input needs HTTPS or localhost">${icon("mic", 16)}<span>Dictate (needs HTTPS)</span></button>`)
+    : "";
+  return [
+    TTS ? item("toggle:speak", SPEAK ? "speakerOn" : "speakerOff", "Read replies aloud", SPEAK, "read replies aloud") : "",
+    dictate,
+    item("toggle:research", "note", "Research", RESEARCH_MODE, "commission durable, bounded research"),
+    DEEP_MODEL.configured ? item("toggle:deep", "sparkle", "Ask the bigger model", DEEP_MODE, "when on, your messages go to the bigger model") : "",
+  ].join("");
+}
+
+// Refresh the chips and menu in place. A full render() rebuilds the thread from persisted
+// state and would wipe a reply that is still streaming in.
+function refreshComposerModes() {
+  const chips = document.getElementById("composer-chips");
+  if (chips) chips.innerHTML = composerChipsHtml();
+  const menu = document.getElementById("tools-menu");
+  if (menu) menu.innerHTML = toolsMenuHtml();
 }
 
 function viewResearch() {
@@ -2300,8 +2408,7 @@ function appendBubble(html, cls, id) {
   if (!thread) return null;
   const mine = cls.split(" ").includes("me");
   const wrap = document.createElement("div");
-  wrap.className = "row";
-  wrap.style.cssText = `justify-content:${mine ? "flex-end" : "flex-start"}; margin:6px 0;`;
+  wrap.className = "row msg-row" + (mine ? " mine" : "");
   if (id) wrap.id = id;
   wrap.innerHTML = `<div class="bubble ${cls}">${html}</div>`;
   thread.appendChild(wrap);
@@ -2313,9 +2420,7 @@ function appendBubble(html, cls, id) {
 // overlaps the newest message). Reserves the composer's real height.
 function scrollBubbleIntoView(el) {
   if (!el) return;
-  const composer = document.querySelector(".composer");
-  const pad = (composer ? composer.offsetHeight : 110) + 28;
-  el.style.scrollMarginBottom = pad + "px";
+  el.style.scrollMarginBottom = "16px";
   el.scrollIntoView({ block: "end", behavior: "smooth" });
 }
 
@@ -2331,16 +2436,17 @@ function renderSteps(wrap, steps, running) {
     const ic = STEP_ICON[s.status] || "";
     // A step with output is expandable — click to reveal what the skill returned.
     if (s.output) {
+      const tag = s.skill === "thinking" ? "div" : "pre";
       return `<details class="step-item"><summary class="step-row">${ic}<span>${esc(s.label)}</span><span class="step-more">details</span></summary>` +
-        `<pre class="step-out">${esc(s.output)}</pre></details>`;
+        `<${tag} class="step-out${s.skill === "thinking" ? " thought" : ""}">${esc(s.output)}</${tag}></details>`;
     }
     return `<div class="step-row">${ic}<span>${esc(s.label)}</span></div>`;
   }).join("");
   const n = steps.length;
-  const head = running ? "Working…" : `${n} action${n > 1 ? "s" : ""}`;
+  const head = running ? "Working…" : `${n} step${n > 1 ? "s" : ""}`;
   const lead = running ? '<span class="sspin"></span>' : icon("sparkle", 13);
   wrap.innerHTML =
-    `<details class="steps" ${running ? "open" : ""}><summary>${lead} ${head}</summary>` +
+    `<details class="steps" ${running ? "open" : ""}><summary>${lead}<span>${head}</span></summary>` +
     `<div class="step-list">${rows}</div></details>`;
 }
 
@@ -2471,12 +2577,13 @@ function stepsHtml(steps) {
   const rows = steps.map((s) => {
     const ic = STEP_ICON[s.status] || "";
     if (s.output) {
-      return `<details class="step-item"><summary class="step-row">${ic}<span>${esc(s.label)}</span><span class="step-more">details</span></summary><pre class="step-out">${esc(s.output)}</pre></details>`;
+      const tag = s.skill === "thinking" ? "div" : "pre";
+      return `<details class="step-item"><summary class="step-row">${ic}<span>${esc(s.label)}</span><span class="step-more">details</span></summary><${tag} class="step-out${s.skill === "thinking" ? " thought" : ""}">${esc(s.output)}</${tag}></details>`;
     }
     return `<div class="step-row">${ic}<span>${esc(s.label)}</span></div>`;
   }).join("");
   const n = steps.length;
-  return `<div class="row" style="justify-content:flex-start;margin:2px 0;"><details class="steps"><summary>${icon("sparkle", 13)} ${n} action${n > 1 ? "s" : ""}</summary><div class="step-list">${rows}</div></details></div>`;
+  return `<div class="row msg-row aux"><details class="steps"><summary>${icon("sparkle", 13)}<span>${n} step${n > 1 ? "s" : ""}</span></summary><div class="step-list">${rows}</div></details></div>`;
 }
 function sourcesHtml(urls) {
   if (!urls || !urls.length) return "";
@@ -2495,25 +2602,21 @@ function updateComposerButton() {
   const btn = document.getElementById("send-btn");
   if (!btn) return;
   btn.dataset.act = CHAT_STREAMING ? "chat:stop" : "chat:send";
-  btn.innerHTML = CHAT_STREAMING
-    ? `${icon("stop")}<span>Stop</span>`
-    : `${icon("send")}<span>Send</span>`;
+  const label = CHAT_STREAMING ? "Stop" : "Send";
+  btn.title = label;
+  btn.setAttribute("aria-label", label);
+  btn.innerHTML = icon(CHAT_STREAMING ? "stop" : "up", 18);
 }
 
 // Update the Speak button in place (icon + label) without a full render, so
 // toggling it never disturbs a streaming reply.
 function updateSpeakButton() {
-  const b = document.querySelector('[data-act="toggle:speak"]');
-  if (b) b.innerHTML = `${icon(SPEAK ? "speakerOn" : "speakerOff")}<span>${SPEAK ? "Speaking" : "Speak"}</span>`;
+  refreshComposerModes();
 }
 
 // Update the Deep-mode toggle in place (same reasoning as the Speak button).
 function updateDeepButton() {
-  const b = document.querySelector('[data-act="toggle:deep"]');
-  if (b) {
-    b.classList.toggle("active", DEEP_MODE);
-    b.innerHTML = `${icon("sparkle", 15)}<span>${DEEP_MODE ? "Deep: on" : "Ask deep"}</span>`;
-  }
+  refreshComposerModes();
 }
 
 // Send a question to the deep (bigger) model. It persists both the question and the
@@ -2673,6 +2776,15 @@ async function drainChat() {
           if (bod) bod.innerHTML = rich(acc);
           if (liveRow) scrollBubbleIntoView(liveRow);
         } else if (ev.type === "step") {
+          // Working notes are not the answer: file them in the trail and empty the bubble,
+          // so the reply never shows words that are later taken back.
+          if (ev.skill === "thinking") {
+            acc = "";
+            LIVE_REPLY = "";
+            const liveRow = document.getElementById("chat-live");
+            const bod = liveRow && liveRow.querySelector(".bubble");
+            if (bod) bod.innerHTML = '<span class="dots"><i></i><i></i><i></i></span>';
+          }
           if (ev.status === "running") {
             STEP_LIST.push({ skill: ev.skill, label: ev.label, status: "running", output: null });
           } else {
@@ -2740,6 +2852,9 @@ function render() {
   // Nothing else can load without a token, so nothing else is worth drawing.
   if (NEEDS_TOKEN) { app.innerHTML = viewNeedsToken(); return; }
   const v = NAV.v;
+  // The chat fills the window with its own scrolling thread and a docked composer; every
+  // other screen is an ordinary scrolling page.
+  document.body.classList.toggle("on-chat", v === "chat");
   app.innerHTML =
       v === "audit" ? viewAudit()
     : v === "chat" ? viewChat()
@@ -2781,6 +2896,11 @@ function updateMenuState() {
 // ---- actions (event delegation) -------------------------------------------
 async function dispatch(act) {
   const [verb, noun, id, arg] = act.split(":");
+  // Choosing anything from the "+" menu closes it; opening it is the one exception.
+  if (!(verb === "toggle" && noun === "tools")) {
+    const tools = document.getElementById("tools-menu");
+    if (tools) tools.hidden = true;
+  }
   try {
     if (verb === "reload") { location.reload(); return; }
     if (verb === "go") {
@@ -2851,6 +2971,11 @@ async function dispatch(act) {
       RESEARCH_MODE = !RESEARCH_MODE;
       localStorage.setItem("endora.researchmode", RESEARCH_MODE ? "1" : "0");
       return render();
+    }
+    if (verb === "toggle" && noun === "tools") {
+      const t = document.getElementById("tools-menu");
+      if (t) t.hidden = !t.hidden;
+      return;
     }
     if (verb === "toggle" && noun === "menu") {
       const m = document.getElementById("menu");
@@ -3586,6 +3711,8 @@ function setupHeader(health) {
 function closeMenu() {
   const m = document.getElementById("menu");
   if (m) m.hidden = true;
+  const t = document.getElementById("tools-menu");
+  if (t) t.hidden = true;
 }
 
 // ---- boot -----------------------------------------------------------------
