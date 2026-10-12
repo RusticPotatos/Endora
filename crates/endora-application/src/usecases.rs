@@ -3490,8 +3490,22 @@ const GOAL_TOOL_ROUNDS: usize = 3;
 const GOAL_STEPS_PER_PASS: usize = 1;
 
 /// Passes an objective may spend in total before it stops and shows its working.
-/// At one pass per tick this is minutes of effort, not an open-ended spend.
-const MOST_GOAL_PASSES: usize = 12;
+///
+/// Four, and the number is the mechanism rather than a tuning knob. Twelve was
+/// the first guess, and measuring it showed why it was wrong: the model answered
+/// the objective on pass one and spent every remaining pass restating the answer,
+/// sometimes padded with a conversational sign-off. Three separate attempts to
+/// *detect* that repetition — the belief-sameness rule, word-for-word equality,
+/// and a word-subset test — each failed on real output, which is the shape of a
+/// fix that tries to make a heuristic more likely to be right. So the bound does
+/// the work instead: a goal gathers a few times, then stops and shows the person
+/// what it has. [`Goal::commit`]'s repeat guard still earns its keep by cutting a
+/// wasted pass short, but nothing depends on it being clever.
+///
+/// Four is enough to fetch something, follow it up, and confirm it. The cost of
+/// being wrong is bounded in the right direction: a goal that needed five passes
+/// ends `Partial` with real findings the person can see and act on.
+const MOST_GOAL_PASSES: usize = 4;
 
 /// How much of one piece of evidence travels back into the next pass's context.
 const EVIDENCE_IN_CONTEXT: usize = 600;
@@ -3572,7 +3586,9 @@ fn goal_instruction(goal: &crate::Goal) -> String {
          your skills helps. Report plainly what you found. If a source refuses you or \
          comes back empty, say so and what you would try instead — do not invent the \
          answer. If you already have what they asked for, say that instead of \
-         gathering more.",
+         gathering more.\n\nWrite this as a note to yourself about what you found, \
+         not as a reply to them: they are not reading it and there is nobody to \
+         greet, thank or sign off to.",
     );
     ask
 }

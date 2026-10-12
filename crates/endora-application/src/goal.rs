@@ -41,17 +41,32 @@ pub enum StepError {
     Stop(String),
 }
 
-/// Whether two findings are the same text, ignoring case and how the whitespace
-/// fell. Nothing cleverer on purpose — see [`Goal::commit`] for why a looser rule
-/// is the dangerous direction here.
-fn word_for_word(a: &str, b: &str) -> bool {
-    let words = |s: &str| {
+/// Whether `fresh` tells the goal nothing it does not already have in `held`:
+/// every word of it already appears there.
+///
+/// Measured twice, and both measurements shaped this. Word-for-word equality was
+/// tried first and is useless, because the model's repeats are *reworded* — the
+/// second pass dropped a clause and said the same thing. The belief rule
+/// (`says_the_same_thing`) was tried before that and is unsafe, because it merged
+/// "evidence 1" with "evidence 2".
+///
+/// A subset test threads between them. A finding that introduces a new word —
+/// a time, a number, a name, a place — is kept, so "the 41 bus arrives at 14:05"
+/// and "...at 15:10" stay two findings, which is the error that must never
+/// happen. A finding that only re-arranges words already held adds nothing, and
+/// is the repeat worth stopping on. Compared against each held finding
+/// separately rather than the union of all of them, so a later genuine finding
+/// is not swallowed just because the words it uses have each been seen before.
+fn says_nothing_new(held: &str, fresh: &str) -> bool {
+    let words = |s: &str| -> std::collections::BTreeSet<String> {
         s.to_lowercase()
-            .split_whitespace()
-            .collect::<Vec<_>>()
-            .join(" ")
+            .split(|c: char| !c.is_alphanumeric())
+            .filter(|w| !w.is_empty())
+            .map(str::to_owned)
+            .collect()
     };
-    words(a) == words(b)
+    let (held, fresh) = (words(held), words(fresh));
+    !fresh.is_empty() && fresh.is_subset(&held)
 }
 
 /// One approach that did not work, kept so the goal does not spend its budget
@@ -413,22 +428,18 @@ impl Goal {
 
     /// Commits a step's result before the verifier decides what happens next.
     ///
-    /// Refuses a finding the goal already holds word for word. Measured live: once a
+    /// Refuses a finding that tells the goal nothing new. Measured live: once a
     /// pass has answered the objective it restates the answer, and without this the
     /// restatement is stored as a fresh finding and the loop re-runs the same step
     /// until its budget is gone. Returning `false` is what lets [`Self::pursue`] see
     /// that a pass added nothing.
     ///
-    /// Compared on collapsed whitespace and case, and nothing cleverer.
-    /// [`says_the_same_thing`](crate::usecases::says_the_same_thing) — the belief
-    /// rule — was tried here first and is the wrong tool, which its own tests proved
-    /// immediately by merging "evidence 1" with "evidence 2". Its threshold is tuned
-    /// to prefer merging, because for a belief a stored duplicate is worse than a
-    /// merge. Here the costs invert: merging two findings throws away real
-    /// information **and** stops the objective, so "the 41 bus arrives at 14:05" and
-    /// "...at 15:10" must stay two findings. The safe direction is to keep anything
-    /// that is not word for word what is already held — which still catches the
-    /// measured failure, where the model repeated itself verbatim pass after pass.
+    /// "Nothing new" is [`says_nothing_new`] — every word already held — and that
+    /// rule was arrived at by two failed attempts, both recorded there. Merging two
+    /// findings throws away real information **and** stops the objective, so the
+    /// bar for calling something a repeat has to be high enough that "the 41 bus
+    /// arrives at 14:05" and "...at 15:10" stay two findings, and low enough to
+    /// catch a reworded restatement, which is what the model actually produces.
     pub fn commit(&mut self, step: &str, output: &str) -> bool {
         if self.status.terminal() || step.trim().is_empty() || output.trim().is_empty() {
             return false;
@@ -436,7 +447,7 @@ impl Goal {
         if self
             .evidence
             .iter()
-            .any(|held| word_for_word(&held.output, output))
+            .any(|held| says_nothing_new(&held.output, output))
         {
             return false;
         }
@@ -874,6 +885,32 @@ mod tests {
             "{}",
             goal.reason()
         );
+    }
+
+    #[test]
+    fn the_repeat_measured_live_is_caught_and_a_new_particular_is_not() {
+        // Verbatim from the live run on qwen2.5:14b. The second pass dropped a
+        // clause and said the same thing, which word-for-word equality missed.
+        const FIRST: &str = "The page at https://example.com/ is titled \"Example Domain\" \
+             and serves as an example domain for use in documentation without requiring \
+             permission, though it's noted that this should not be relied upon for \
+             testing or monitoring purposes.";
+        const REWORDED: &str = "The page at https://example.com/ serves as an example \
+             domain for use in documentation without requiring permission, though it's \
+             noted that this should not be relied upon for testing or monitoring purposes.";
+        assert!(
+            super::says_nothing_new(FIRST, REWORDED),
+            "the reworded repeat measured live must be caught"
+        );
+
+        // And the error that must never happen: two readings that differ in a
+        // material particular are two findings, not one.
+        assert!(!super::says_nothing_new(
+            "The 41 bus arrives at 14:05.",
+            "The 41 bus arrives at 15:10."
+        ));
+        // Including the shape that disqualified the belief rule.
+        assert!(!super::says_nothing_new("evidence 1", "evidence 2"));
     }
 
     #[test]
