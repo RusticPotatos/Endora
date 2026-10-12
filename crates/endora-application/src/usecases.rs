@@ -2014,6 +2014,12 @@ pub fn send_to_butler_streaming_for_request(
     };
     let mut context = context.clone();
     context.conversation_summary = summary_text;
+    // What Endora did lately is given to the model only when the person asks about it. Kept
+    // in front of it all the time it was quoted back into answers about something else
+    // (a sports question that ended in "[did] 18:49 — I wrote to you unprompted…").
+    if !asks_what_it_did(text) {
+        context.did_lately.clear();
+    }
     let context = &context;
     let prefs = preferences.list_all()?;
 
@@ -2170,7 +2176,14 @@ pub fn send_to_butler_streaming_for_request(
     // and never sees a result, the local model reads. If the retry fails or says nothing,
     // the local answer stands.
     let mut retried = false;
-    let reply = if disclosures.is_empty() && !reply.escalated && says_it_found_nothing(&reply.text)
+    // Looked nothing up: no skill ran this turn, so any fact in the answer is from the
+    // model's memory. For a question about the world that is a guess, however sure it sounds.
+    let looked_nothing_up = !activity.iter().any(|a| {
+        a.starts_with("Used the ") || a.starts_with("Tried the ") || a.starts_with("Couldn't use ")
+    });
+    let reply = if disclosures.is_empty()
+        && !reply.escalated
+        && (says_it_found_nothing(&reply.text) || (looked_nothing_up && asks_about_the_world(text)))
     {
         match butler.deeper() {
             Some(deeper) => {
@@ -2196,7 +2209,7 @@ pub fn send_to_butler_streaming_for_request(
                 ) {
                     Ok(second) if !second.text.trim().is_empty() => {
                         activity.push(
-                            "The local answer found nothing, so the deep model chose the skills"
+                            "The local answer wasn't looked up, so the deep model chose the skills"
                                 .to_owned(),
                         );
                         activity.extend(again);
@@ -2259,7 +2272,7 @@ pub fn send_to_butler_streaming_for_request(
             "I'm not sure how to help with that yet — can you say a bit more?".to_owned()
         })
     } else {
-        reply.text.trim().to_owned()
+        without_the_record_unless_asked(reply.text.trim(), text)
     };
     // Say it plainly when a turn changed nothing (ADR 0053). Observed: asked to turn on
     // the kitchen table, the only action failed, and the reply announced that "the guest
@@ -7571,6 +7584,60 @@ mod tests {
     }
 
     #[test]
+    fn a_confident_answer_with_no_lookup_to_a_question_about_the_world_is_checked() {
+        // The live miss: a date, a time and an opponent, stated plainly, from memory.
+        let deep = ScriptedDeep::new(vec![Plan::Call("web_search"), Plan::Says("done")]);
+        let local = LocalThatGivesUp {
+            first: "The next game is on October 22 at 8:15 PM against the Cardinals.",
+            after_reading: "The next game is on Sunday, October 18.",
+            deep: Some(deep.clone()),
+        };
+        let skills = TheSkills::new();
+
+        let (text, _) = an_ordinary_chat_turn("when is the next game?", &local, &skills);
+
+        assert!(text.contains("Sunday, October 18"), "{text}");
+        assert!(!text.contains("8:15 PM"), "{text}");
+        assert_eq!(skills.ran(), vec!["web_search".to_owned()]);
+    }
+
+    #[test]
+    fn a_personal_question_and_small_talk_stay_local() {
+        for question in ["when is my next appointment?", "how are you today?"] {
+            let deep = ScriptedDeep::new(vec![Plan::Call("web_search")]);
+            let local = LocalThatGivesUp {
+                first: "Tuesday at ten.",
+                after_reading: "unused",
+                deep: Some(deep.clone()),
+            };
+            let skills = TheSkills::new();
+
+            let (text, _) = an_ordinary_chat_turn(question, &local, &skills);
+
+            assert!(text.contains("Tuesday at ten."), "{question}: {text}");
+            assert_eq!(deep.rounds(), 0, "{question}: nothing left the box");
+        }
+    }
+
+    #[test]
+    fn the_record_of_what_it_did_is_not_quoted_into_an_answer_about_something_else() {
+        let echoed =
+            "The next game is Sunday.\n\n[did] 18:49 — I wrote to you unprompted\n(now: done)";
+        assert_eq!(
+            super::without_the_record_unless_asked(echoed, "when is the next game?"),
+            "The next game is Sunday."
+        );
+        assert_eq!(
+            super::without_the_record_unless_asked(echoed, "what have you been up to?"),
+            echoed
+        );
+        assert_eq!(
+            super::without_the_record_unless_asked("[did] only this", "hello"),
+            ""
+        );
+    }
+
+    #[test]
     fn an_answer_that_found_something_is_not_checked() {
         let deep = ScriptedDeep::new(vec![Plan::Call("web_search")]);
         let local = LocalThatGivesUp {
@@ -7580,7 +7647,7 @@ mod tests {
         };
         let skills = TheSkills::new();
 
-        let (text, _) = an_ordinary_chat_turn("when is the next game?", &local, &skills);
+        let (text, _) = an_ordinary_chat_turn("tell me a joke", &local, &skills);
 
         assert!(text.contains("The next game is on Sunday."), "{text}");
         assert_eq!(deep.rounds(), 0, "nothing left the box");
@@ -13495,6 +13562,53 @@ fn specimen_verdict(reply: &ButlerReply, context: &ButlerContext) -> Option<&'st
         return Some("not an answer — empty, plumbing, or described a tool");
     }
     None
+}
+
+/// Whether the question is about something out in the world, answerable only by looking it
+/// up: when something is, what is next, a score, a schedule, a price. Words, not judgement,
+/// and the same bargain as [`says_it_found_nothing`]: a wrong yes costs one deep-model call.
+/// A question about the person's own things ("my", "our") is never one, so it stays local.
+fn asks_about_the_world(text: &str) -> bool {
+    let words = words_of(text);
+    let has = |wanted: &str| words.iter().any(|w| w == wanted);
+    if ["my", "mine", "our", "ours", "i", "we", "me"]
+        .iter()
+        .any(|w| has(w))
+    {
+        return false;
+    }
+    [
+        "when",
+        "next",
+        "latest",
+        "score",
+        "scores",
+        "schedule",
+        "schedules",
+        "price",
+        "prices",
+        "playing",
+        "showtimes",
+        "forecast",
+        "standings",
+    ]
+    .iter()
+    .any(|w| has(w))
+}
+
+/// The reply with any copy of the "what I did" record taken out, unless the person asked for
+/// it. The record is appended by code when they do (`account_behind`); when they did not, a
+/// model quoting it back is a leak of its own instructions, and everything from the marker on
+/// is the copy.
+fn without_the_record_unless_asked(reply: &str, asked: &str) -> String {
+    if asks_what_it_did(asked) {
+        return reply.to_owned();
+    }
+    match reply.find("[did]") {
+        Some(0) => String::new(),
+        Some(at) => reply[..at].trim_end().to_owned(),
+        None => reply.to_owned(),
+    }
 }
 
 /// Whether a reply says it looked and found nothing. Words, not judgement: it only decides
