@@ -3471,54 +3471,157 @@ fn sports_schedule_satisfied(answer: &str) -> bool {
     (1..=3).all(|number| answer.contains(&format!("{number}."))) && answer.contains("Source:")
 }
 
-/// Resumes a persisted sports goal after a process restart. The worker owns the
-/// checkpoint and this function owns only the bounded read plus deterministic
-/// verifier; it never turns model prose into completion.
-pub fn resume_sports_goal(
+/// Rounds of native tool-calling one goal pass may spend — the same bound a chat
+/// turn gets: enough to read something and act on what it says, not enough to wander.
+const GOAL_TOOL_ROUNDS: usize = 3;
+
+/// Operations one worker tick spends before yielding the shared turn lock. One,
+/// deliberately: a goal must never hold that lock while a person is waiting.
+const GOAL_STEPS_PER_PASS: usize = 1;
+
+/// Passes an objective may spend in total before it stops and shows its working.
+/// At one pass per tick this is minutes of effort, not an open-ended spend.
+const MOST_GOAL_PASSES: usize = 12;
+
+/// How much of one piece of evidence travels back into the next pass's context.
+const EVIDENCE_IN_CONTEXT: usize = 600;
+
+/// What to tell the butler at the start of one pass: the objective, what has been
+/// found so far, and what has already failed.
+///
+/// Handing the dead ends back is what stops a pass re-running the approach that
+/// failed on the last one — the stall that looks identical to no progress at all.
+fn goal_instruction(goal: &crate::Goal) -> String {
+    let mut ask = format!(
+        "You are working on something they asked you for: \"{}\".\n\n",
+        goal.objective()
+    );
+    if goal.evidence().is_empty() {
+        ask.push_str("Nothing has been gathered yet.\n");
+    } else {
+        ask.push_str("What you have found so far:\n");
+        for found in goal.evidence() {
+            let output: String = found.output.chars().take(EVIDENCE_IN_CONTEXT).collect();
+            ask.push_str(&format!("- {}: {}\n", found.step, output.trim()));
+        }
+    }
+    if !goal.dead_ends().is_empty() {
+        ask.push_str("\nApproaches that did not work — do not repeat these:\n");
+        for dead in goal.dead_ends() {
+            ask.push_str(&format!("- {}: {}\n", dead.step, dead.why));
+        }
+    }
+    ask.push_str(
+        "\nTake the single most useful next step towards it now, using whichever of \
+         your skills helps. Report plainly what you found. If a source refuses you or \
+         comes back empty, say so and what you would try instead — do not invent the \
+         answer. If you already have what they asked for, say that instead of \
+         gathering more.",
+    );
+    ask
+}
+
+/// Advances one goal by a single bounded pass, choosing what to do next from what
+/// it has already learned.
+///
+/// Replaces the former `resume_sports_goal`, which could resume only a sports-schedule lookup
+/// and handed [`crate::Goal::run_plan`] a hardcoded one-element array — so every
+/// objective reached a terminal state after exactly one capability call.
+///
+/// The planner is the ordinary tool-calling turn ([`run_tool_turn`]) rather than a
+/// second routing surface with its own prompt and parser: the model is offered the
+/// real catalogue, every call still goes through the policy gate, and the taint,
+/// egress and disclosure machinery applies unchanged. What this adds is only the
+/// part that was missing — the objective, the evidence so far and the approaches
+/// that failed are handed back in, pass after pass.
+///
+/// **It never marks its own work complete.** A deterministic check may finish a
+/// goal where one exists (the sports schedule has one); otherwise the goal
+/// accumulates evidence and ends `Partial` for the person to settle, which is what
+/// ADR 0077 decided and what the measured `verify:*` numbers require.
+#[allow(clippy::too_many_arguments)]
+pub fn resume_goal(
     record: &crate::GoalRecord,
+    butler: &dyn Butler,
     capabilities: &dyn CapabilityRunner,
-    clock: &dyn Clock,
+    audit: &dyn AuditLog,
+    outcomes: &dyn OutcomeRepository,
+    preferences: &impl PreferenceRepository,
+    ids: &impl IdSource,
+    clock: &impl Clock,
+    context: &ButlerContext,
 ) -> crate::GoalRecord {
     let mut goal = record.goal().clone();
     if goal.status().terminal() {
         return record.clone();
     }
-    let Some(team) = sports_team_query(goal.objective()) else {
-        goal.apply(
-            crate::GoalVerdict::Blocked,
-            "the saved goal is not a supported sports schedule request",
-        );
-        return record.with_goal(goal, clock.now());
-    };
-    if !capabilities
-        .available()
-        .iter()
-        .any(|s| s.id == "sports_schedule" && s.configured)
-    {
-        goal.apply(
-            crate::GoalVerdict::Blocked,
-            "the sports schedule capability is unavailable",
-        );
-        return record.with_goal(goal, clock.now());
-    }
-    let now_text = format_datetime_utc(clock.now().unix_millis());
-    let after = now_text.split_whitespace().nth(1).unwrap_or("");
-    let input = serde_json::json!({"team": team, "after": after, "count": 3}).to_string();
-    goal.run_plan(
-        &[crate::GoalStep::new("gathering", "sports_schedule")
-            .expect("the built-in sports step is valid")],
-        |_| capabilities.run("sports_schedule", &input),
-        |goal, _| {
-            let latest = goal
-                .evidence()
-                .last()
-                .map(|e| e.output.as_str())
-                .unwrap_or("");
-            if sports_schedule_satisfied(latest) {
-                crate::GoalVerdict::Complete
-            } else {
-                crate::GoalVerdict::Partial
+    let prefs = preferences.list_all().unwrap_or_default();
+    let actions = OutcomeSink::unmotivated(outcomes);
+    // One step per pass, so the instruction is settled before the loop runs and
+    // needs no access to the goal while it is being mutated.
+    let instruction = goal_instruction(&goal);
+    let wants_a_schedule = sports_team_query(goal.objective()).is_some();
+
+    goal.pursue(
+        GOAL_STEPS_PER_PASS,
+        |g| {
+            // Spent objectives stop and show their working rather than running on.
+            if g.evidence().len() + g.dead_ends().len() >= MOST_GOAL_PASSES {
+                return None;
             }
+            crate::GoalStep::new("gathering", "next step").ok()
+        },
+        |_| {
+            let Ok(ask) = ChatMessage::new(
+                MessageId::new(ids.new_id()),
+                MessageRole::User,
+                &instruction,
+                clock.now(),
+            ) else {
+                return Err(crate::StepError::Stop(
+                    "the goal's own instruction could not be formed".to_owned(),
+                ));
+            };
+            let reply = run_tool_turn(
+                butler,
+                capabilities,
+                audit,
+                &actions,
+                ids,
+                clock,
+                &[ask],
+                &|_| Vec::new(),
+                &prefs,
+                context,
+                GOAL_TOOL_ROUNDS,
+                &mut |_step| {},
+                &mut |_token: &str| {},
+                &mut Vec::new(),
+                &mut Vec::new(),
+            );
+            match reply {
+                // A degraded pass is not evidence and not a failure of the
+                // objective: the model was unreachable, which is worth trying again.
+                Ok(r) if r.degraded => Err(crate::StepError::TryAnother(
+                    "the model could not be reached for this pass".to_owned(),
+                )),
+                Ok(r) if r.text.trim().is_empty() => Err(crate::StepError::TryAnother(
+                    "the pass produced nothing".to_owned(),
+                )),
+                Ok(r) => Ok(r.text),
+                Err(why) => Err(crate::StepError::TryAnother(why.to_string())),
+            }
+        },
+        |g, _| {
+            // The only completion this may assert is one code can check. Everything
+            // else keeps going and is settled by the person.
+            if wants_a_schedule {
+                let latest = g.evidence().last().map(|e| e.output.as_str()).unwrap_or("");
+                if sports_schedule_satisfied(latest) {
+                    return crate::GoalVerdict::Complete;
+                }
+            }
+            crate::GoalVerdict::Continue
         },
     );
     record.with_goal(goal, clock.now())
@@ -9867,6 +9970,139 @@ mod tests {
         assert!(
             said.contains("stopped re-asking"),
             "the night that gives up has to say so, not repeat 'it still fails': {said}"
+        );
+    }
+
+    /// A butler that comes back with something new on each pass.
+    struct FindsSomethingEachPass(std::cell::Cell<usize>);
+    impl Butler for FindsSomethingEachPass {
+        fn respond(
+            &self,
+            _history: &[ChatMessage],
+            _p: &[crate::Preference],
+            _c: &ButlerContext,
+        ) -> Result<ButlerReply, ProposalError> {
+            let n = self.0.get() + 1;
+            self.0.set(n);
+            Ok(ButlerReply {
+                text: format!("found thing {n}"),
+                ..ButlerReply::default()
+            })
+        }
+    }
+
+    fn a_goal(objective: &str) -> crate::GoalRecord {
+        crate::GoalRecord::new(
+            "test-goal",
+            crate::Goal::new(objective).unwrap(),
+            endora_kernel::ids::Timestamp::from_unix_millis(1),
+        )
+        .unwrap()
+    }
+
+    /// Runs one pass of `resume_goal` with everything else faked out.
+    fn one_pass(record: &crate::GoalRecord, butler: &dyn Butler) -> crate::GoalRecord {
+        super::resume_goal(
+            record,
+            butler,
+            &NoCapabilities,
+            &FakeAudit::default(),
+            &FakeOutcomes::default(),
+            &FakeStore::default(),
+            &SeqIds::default(),
+            &FixedClock(1_000),
+            &ButlerContext::default(),
+        )
+    }
+
+    #[test]
+    fn a_goal_gathers_across_successive_passes() {
+        // The defect: the worker took one step and the objective was over. A pass
+        // must leave the goal resumable, and the next one must add to what the last
+        // one found rather than starting again.
+        let butler = FindsSomethingEachPass(std::cell::Cell::new(0));
+        let first = one_pass(&a_goal("find somewhere to eat on Sunday"), &butler);
+        assert_eq!(first.goal().evidence().len(), 1, "{:?}", first.goal());
+        assert!(
+            !first.goal().status().terminal(),
+            "one pass must not finish the objective: {:?}",
+            first.goal().status()
+        );
+
+        let second = one_pass(&first, &butler);
+        assert_eq!(
+            second.goal().evidence().len(),
+            2,
+            "the second pass adds to the first"
+        );
+        assert_ne!(
+            second.goal().evidence()[0].output,
+            second.goal().evidence()[1].output,
+            "and gathers something new rather than repeating itself"
+        );
+    }
+
+    #[test]
+    fn an_unreachable_model_is_a_dead_end_not_a_dead_goal() {
+        // `StillCannot` returns a degraded reply, which used to be indistinguishable
+        // from the objective failing. It is a reason to try again later.
+        let record = one_pass(&a_goal("an objective"), &StillCannot);
+        assert!(
+            !record.goal().status().terminal(),
+            "a degraded pass must leave the goal alive: {:?}",
+            record.goal().status()
+        );
+        assert_eq!(record.goal().evidence().len(), 0, "and commits no evidence");
+        assert_eq!(
+            record.goal().dead_ends().len(),
+            1,
+            "but remembers the attempt"
+        );
+    }
+
+    #[test]
+    fn a_spent_objective_stops_and_keeps_what_it_found() {
+        // Progress is bounded: an objective that never satisfies a deterministic
+        // check cannot keep spending the model forever. It stops and shows its work.
+        let mut goal = crate::Goal::new("an endless objective").unwrap();
+        for n in 0..super::MOST_GOAL_PASSES {
+            goal.start("gathering", "next step");
+            goal.commit("next step", &format!("partial finding {n}"));
+        }
+        let record = crate::GoalRecord::new(
+            "spent",
+            goal,
+            endora_kernel::ids::Timestamp::from_unix_millis(1),
+        )
+        .unwrap();
+
+        let butler = FindsSomethingEachPass(std::cell::Cell::new(0));
+        let after = one_pass(&record, &butler);
+        assert_eq!(after.goal().status(), crate::GoalStatus::Partial);
+        assert_eq!(
+            after.goal().evidence().len(),
+            super::MOST_GOAL_PASSES,
+            "what it gathered is kept, not discarded on the way out"
+        );
+    }
+
+    #[test]
+    fn a_finished_goal_is_left_alone() {
+        let mut goal = crate::Goal::new("an objective").unwrap();
+        goal.cancel("the person stopped it");
+        let record = crate::GoalRecord::new(
+            "cancelled",
+            goal,
+            endora_kernel::ids::Timestamp::from_unix_millis(1),
+        )
+        .unwrap();
+        let butler = FindsSomethingEachPass(std::cell::Cell::new(0));
+        let after = one_pass(&record, &butler);
+        assert_eq!(after.goal().status(), crate::GoalStatus::Cancelled);
+        assert_eq!(
+            after.goal().evidence().len(),
+            0,
+            "a late pass cannot add to it"
         );
     }
 

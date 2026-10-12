@@ -6235,15 +6235,50 @@ pub fn spawn_goal_worker(state: AppState) {
             let understanding = state.understanding.clone();
             let capabilities = state.capabilities.clone();
             let clock = state.clock.clone();
+            let butler = state.butler.clone();
+            let audit = state.audit.clone();
+            let ids = state.ids.clone();
+            let chat = state.chat.clone();
             let mcp = mcp_snapshot(&state);
             let result = tokio::task::spawn_blocking(move || {
-                let runner = build_runner(
+                // Clamped to the reversible bands, because nobody is watching. This
+                // worker used to build the unclamped runner, which was survivable
+                // only because the one thing it could resume was a schedule read;
+                // now the model chooses the tool, so the clamp is load-bearing —
+                // a goal may gather and can never actuate unattended.
+                let runner = build_reversible_only_runner(
                     config.as_ref(),
                     capabilities,
                     mcp,
                     proven_now(understanding.as_ref()),
                 );
-                let updated = usecases::resume_sports_goal(&record, &runner, clock.as_ref());
+                // Without the context the pass would run blind; skip it and leave the
+                // goal exactly as it was, so the next tick tries again. Failing to
+                // read context is a reason not to work, never a reason to end the
+                // objective.
+                let Ok(context) = usecases::butler_context(
+                    understanding.as_ref(),
+                    understanding.as_ref(),
+                    understanding.as_ref(),
+                    config.as_ref(),
+                    chat.as_ref(),
+                    &runner,
+                    config.as_ref(),
+                    clock.as_ref(),
+                ) else {
+                    return Ok(());
+                };
+                let updated = usecases::resume_goal(
+                    &record,
+                    butler.as_ref(),
+                    &runner,
+                    audit.as_ref(),
+                    understanding.as_ref(),
+                    understanding.as_ref(),
+                    ids.as_ref(),
+                    clock.as_ref(),
+                    &context,
+                );
                 store.save_goal(&updated).map(|_| ())
             })
             .await;
