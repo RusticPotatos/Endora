@@ -182,6 +182,20 @@ foundation-gate: ## Run foundation acceptance; missing coverage or failed behavi
 	python3 -m unittest discover -s scripts/foundation -p 'test_*.py'
 	python3 scripts/foundation/gate.py
 
+.PHONY: goal-eval
+goal-eval: ## Can it actually accomplish a goal? Drives the real pass loop with the real model
+	# A measurement, not a pass/fail gate. It stands in for the background worker —
+	# production schema, real skills clamped to the reversible bands exactly as
+	# `spawn_goal_worker` clamps them, real model — and reports what each pass
+	# gathered. The second case asks whether an unreachable source ends up visibly
+	# unmet rather than confidently answered; the battery says to expect the model
+	# to get that wrong, so a failure there is a number to record, not a loop bug.
+	#
+	# Set ENDORA_MODEL_URL (OpenAI-compatible, e.g. your Ollama) and ENDORA_MODEL
+	# in local.mk. Nothing here touches the deployed node or any personal data.
+	@ENDORA_MODEL_URL="$(ENDORA_MODEL_URL)" ENDORA_MODEL="$(ENDORA_MODEL)" \
+		cargo test -p endora-infrastructure --test goal_eval -- --ignored --nocapture --test-threads=1
+
 .PHONY: console-check
 console-check: ## Render every console screen in Node (catches a broken UI before a phone does)
 	# The Rust half is checked by the compiler; the console had nothing. A call to a

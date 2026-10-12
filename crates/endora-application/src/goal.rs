@@ -41,6 +41,19 @@ pub enum StepError {
     Stop(String),
 }
 
+/// Whether two findings are the same text, ignoring case and how the whitespace
+/// fell. Nothing cleverer on purpose — see [`Goal::commit`] for why a looser rule
+/// is the dangerous direction here.
+fn word_for_word(a: &str, b: &str) -> bool {
+    let words = |s: &str| {
+        s.to_lowercase()
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    words(a) == words(b)
+}
+
 /// One approach that did not work, kept so the goal does not spend its budget
 /// re-trying it. Visible to whatever chooses the next step.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -304,8 +317,21 @@ impl Goal {
             self.start(&step.phase, &step.name);
             match execute(&step) {
                 Ok(output) if !output.trim().is_empty() => {
+                    if !self.commit(&step.name, &output) {
+                        // The pass restated something already held. The goal has what
+                        // it came for and more passes cannot improve on it, so stop
+                        // here with what was found rather than spending the rest of
+                        // the budget producing copies. The counter cannot do this job:
+                        // it is local to one pursuit, and the worker calls this once
+                        // per tick, so a cross-pass stall would never be seen.
+                        self.note_dead_end(&step.name, "the pass repeated what was already known");
+                        self.apply(
+                            GoalVerdict::Partial,
+                            "it stopped learning anything new about this",
+                        );
+                        return self.status;
+                    }
                     in_a_row = 0;
-                    self.commit(&step.name, &output);
                     let verdict = verify(&*self, &step);
                     self.apply(verdict, "the verifier evaluated the committed evidence");
                     if self.status.terminal() {
@@ -386,8 +412,32 @@ impl Goal {
     }
 
     /// Commits a step's result before the verifier decides what happens next.
+    ///
+    /// Refuses a finding the goal already holds word for word. Measured live: once a
+    /// pass has answered the objective it restates the answer, and without this the
+    /// restatement is stored as a fresh finding and the loop re-runs the same step
+    /// until its budget is gone. Returning `false` is what lets [`Self::pursue`] see
+    /// that a pass added nothing.
+    ///
+    /// Compared on collapsed whitespace and case, and nothing cleverer.
+    /// [`says_the_same_thing`](crate::usecases::says_the_same_thing) — the belief
+    /// rule — was tried here first and is the wrong tool, which its own tests proved
+    /// immediately by merging "evidence 1" with "evidence 2". Its threshold is tuned
+    /// to prefer merging, because for a belief a stored duplicate is worse than a
+    /// merge. Here the costs invert: merging two findings throws away real
+    /// information **and** stops the objective, so "the 41 bus arrives at 14:05" and
+    /// "...at 15:10" must stay two findings. The safe direction is to keep anything
+    /// that is not word for word what is already held — which still catches the
+    /// measured failure, where the model repeated itself verbatim pass after pass.
     pub fn commit(&mut self, step: &str, output: &str) -> bool {
         if self.status.terminal() || step.trim().is_empty() || output.trim().is_empty() {
+            return false;
+        }
+        if self
+            .evidence
+            .iter()
+            .any(|held| word_for_word(&held.output, output))
+        {
             return false;
         }
         self.evidence.push(GoalEvidence {
@@ -733,7 +783,9 @@ mod tests {
             |_| Some(GoalStep::new("gathering", "a step").unwrap()),
             |_| {
                 passes += 1;
-                works("a little more evidence")
+                // Distinct findings: this test is about the budget, and a verbatim
+                // repeat would now (correctly) stop the pursuit for a different reason.
+                works(&format!("a little more evidence, part {passes}"))
             },
             |_, _| GoalVerdict::Continue,
         );
@@ -747,6 +799,99 @@ mod tests {
             1,
             |_| Some(GoalStep::new("gathering", "a step").unwrap()),
             |_| works("the last piece"),
+            |g, _| {
+                if g.evidence().len() == 3 {
+                    GoalVerdict::Complete
+                } else {
+                    GoalVerdict::Continue
+                }
+            },
+        );
+        assert_eq!(status, GoalStatus::Complete);
+        assert_eq!(goal.evidence().len(), 3);
+    }
+
+    #[test]
+    fn restating_what_is_already_known_is_not_progress() {
+        // Measured live on qwen2.5:14b: pass 1 fetched the page and answered it
+        // correctly, then passes 2-6 re-ran the same step and restated the same
+        // sentence. Six pieces of evidence, one fact, five wasted model turns —
+        // "one response then stops" become "one response then repeats itself".
+        // A repeat has to end the pursuit, because the goal plainly has what it
+        // came for and spending more passes cannot improve on it.
+        let mut goal = Goal::new("what is that page for").unwrap();
+        let status = goal.pursue(
+            8,
+            |_| Some(GoalStep::new("gathering", "next step").unwrap()),
+            |_| works("The page is an example domain for use in documentation."),
+            |_, _| GoalVerdict::Continue,
+        );
+        assert_eq!(
+            goal.evidence().len(),
+            1,
+            "the same finding must be stored once: {:?}",
+            goal.evidence()
+        );
+        assert_eq!(status, GoalStatus::Partial, "and the pursuit stops there");
+        assert!(
+            goal.reason().contains("stopped learning"),
+            "saying why, plainly: {}",
+            goal.reason()
+        );
+    }
+
+    #[test]
+    fn a_rewording_is_kept_because_discarding_a_real_finding_is_worse() {
+        // The deliberate limit of the rule. The belief-sameness helper was tried
+        // here and merged "evidence 1" with "evidence 2", which is the shape of
+        // "the 41 bus arrives at 14:05" against "...at 15:10" — two findings a
+        // looser rule would collapse into one, losing the second and stopping the
+        // objective. So a rewording is kept, and the loop relies on the verbatim
+        // repeat that actually follows it.
+        let mut goal = Goal::new("what is that page for").unwrap();
+        let mut pass = 0;
+        let status = goal.pursue(
+            8,
+            |_| Some(GoalStep::new("gathering", "next step").unwrap()),
+            |_| {
+                pass += 1;
+                if pass == 1 {
+                    return works("The page is titled Example Domain.");
+                }
+                works("The page serves as an example domain for documentation.")
+            },
+            |_, _| GoalVerdict::Continue,
+        );
+        assert_eq!(
+            goal.evidence().len(),
+            2,
+            "the rewording is kept, then the verbatim repeat stops it: {:?}",
+            goal.evidence()
+        );
+        assert_eq!(status, GoalStatus::Partial);
+        assert!(
+            goal.reason().contains("stopped learning"),
+            "{}",
+            goal.reason()
+        );
+    }
+
+    #[test]
+    fn genuinely_new_findings_still_accumulate() {
+        // The guard must not stop a goal that is actually learning things.
+        let mut goal = Goal::new("plan an evening").unwrap();
+        let mut pass = 0;
+        let status = goal.pursue(
+            8,
+            |_| Some(GoalStep::new("gathering", "next step").unwrap()),
+            |_| {
+                pass += 1;
+                match pass {
+                    1 => works("The restaurant on Mill Lane opens at six on Sundays."),
+                    2 => works("The last train home leaves at eleven twenty."),
+                    _ => works("Rain is forecast from nine in the evening."),
+                }
+            },
             |g, _| {
                 if g.evidence().len() == 3 {
                     GoalVerdict::Complete
