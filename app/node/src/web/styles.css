@@ -285,3 +285,32 @@
     /* Let any control row wrap rather than overflow. */
     .row { flex-wrap: wrap; }
   }
+
+  /* What is sent to the model: a ring that fills with the window, and the inspector it opens. */
+  .composer-right { display: flex; align-items: center; gap: 6px; }
+  .ctx-ring { width: 34px; height: 34px; padding: 0; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; background: transparent; border-color: transparent; color: var(--muted); }
+  .ctx-ring:hover { background: var(--accent-weak); border-color: transparent; }
+  .ctx-ring .ring-ok { stroke: var(--accent); } .ctx-ring .ring-warn { stroke: var(--warn); } .ctx-ring .ring-bad { stroke: var(--bad); }
+  .ctx-panel { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line); max-height: 46vh; overflow-y: auto; font-size: 13.5px; }
+  .ctx-panel[hidden] { display: none; }
+  .ctx-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 6px; margin-bottom: 8px; }
+  .ctx-bar { display: flex; height: 8px; border-radius: 99px; overflow: hidden; background: color-mix(in srgb, var(--ink) 8%, transparent); margin-bottom: 8px; }
+  .seg { display: block; height: 100%; }
+  .c0 { background: #6c8cff; } .c1 { background: #5cc8a8; } .c2 { background: #f0b45a; } .c3 { background: #e57f9c; }
+  .c4 { background: #a58cf0; } .c5 { background: #5ab4e0; } .c6 { background: #9bc45a; } .c7 { background: #c8a07a; }
+  .ctx-row > summary { display: flex; align-items: center; gap: 8px; padding: 5px 0; cursor: pointer; list-style: none; }
+  .ctx-row > summary::-webkit-details-marker { display: none; }
+  .ctx-row .dot { width: 9px; height: 9px; border-radius: 50%; flex: none; }
+  .ctx-row .lbl { flex: 1; min-width: 0; }
+  .ctx-row .n { color: var(--muted); font-variant-numeric: tabular-nums; }
+  .deep-tag { font-weight: 500; font-size: 11px; color: var(--accent); background: var(--accent-weak); padding: 1px 6px; border-radius: 99px; margin-left: 4px; }
+  .ctx-body { margin: 0 0 6px 17px; color: var(--muted); }
+  .ctx-body p { margin: 0 0 4px; }
+  .ctx-body ul { list-style: none; margin: 0; padding: 0; }
+  .ctx-body li { display: flex; gap: 10px; justify-content: space-between; padding: 2px 0; border-top: 1px dashed var(--line); }
+  .ctx-body li span { min-width: 0; overflow-wrap: anywhere; }
+  .ctx-body li em { font-style: normal; flex: none; font-variant-numeric: tabular-nums; }
+  .ctx-foot { margin: 8px 0 4px; }
+  .ctx-actions { display: flex; justify-content: flex-end; }
+  .topic-divider { display: flex; align-items: center; gap: 10px; margin: 18px 0 6px; color: var(--muted); font-size: 12px; }
+  .topic-divider::before, .topic-divider::after { content: ""; flex: 1; border-top: 1px solid var(--line); }

@@ -49,6 +49,8 @@ let MCP_NEEDS = { fields: [], docs: "" }; // what the chosen catalogue entry say
 let WORTH_KNOWING = { models: [], fits_gb: 12, asked: false }; // hub models that would fit
 let CHAT_DAY = null;           // which day's conversation is showing; null = today
 let CHAT_MSGS = [];            // just that day's messages, fetched rather than filtered
+let CTX = null;                // what the next message would send, and how full the window is (ADR 0088)
+let CTX_OPEN = false;          // whether the inspector is showing
 let CHAT_DAYS = [];            // [{day, messages}] — which days have anything, for the bar
 let LAST_VIEW = null;          // which screen was showing, so a change can reset the scroll
 let REPAIRS = [];              // tooling Endora has noticed keeps not working (ADR 0054)
@@ -439,6 +441,9 @@ async function reload() {
   try { MODEL_CONFIG = await api("GET", "/v1/model-config"); } catch (_) {}
   try { TUNE_SCHED = await api("GET", "/v1/model-tune/schedule"); } catch (_) {}
   try { MCP_SERVERS = await api("GET", "/v1/mcp/servers"); } catch (_) {}
+  // What the next message would send. Only asked for on the chat, since it builds the same
+  // context a turn does.
+  if (NAV.v === "chat") { try { CTX = await api("GET", "/v1/chat/context"); } catch (_) { CTX = null; } }
   try { RECIPES = await api("GET", "/v1/recipes"); } catch (_) { RECIPES = []; }
   DB = db;
   // Attach each butler reply's persisted action trail (steps + sources) from the
@@ -716,8 +721,13 @@ function viewChat() {
   // Default to today even before it has anything in it, so a new day starts clean.
   const showing = CHAT_DAY || today;
   const list = CHAT_MSGS || [];
-  const msgs = list.map((m) => {
+  // "New topic": earlier messages stay readable, but the model is no longer sent them.
+  const topicFrom = CTX && CTX.context_from_ms > 0 ? CTX.context_from_ms : 0;
+  const firstAfter = topicFrom ? list.findIndex((m) => m.at_ms >= topicFrom) : -1;
+  const divider = `<div class="topic-divider"><span>New topic · earlier messages are not sent to the model</span></div>`;
+  const msgs = list.map((m, index) => {
     const mine = m.role === "user";
+    const marker = topicFrom && index === firstAfter && index > 0 ? divider : "";
     const bubble = `<div class="row msg-row${mine ? " mine" : ""}">
       <div class="bubble ${mine ? "me" : "butler"}">${mine ? esc(m.text) : rich(m.text)}</div></div>`;
     // A butler reply carries its persisted action trail + sources (if any), so
@@ -725,12 +735,12 @@ function viewChat() {
     if (!mine && m.actions) {
       const newest = m.id === (list[list.length - 1] || {}).id;
       // What it did sits ABOVE what it said, as a quiet line that opens in place.
-      return stepsHtml(m.actions.steps) + bubble + activityHtml(m.actions.activity)
+      return marker + stepsHtml(m.actions.steps) + bubble + activityHtml(m.actions.activity)
         + actionsTakenHtml(m.actions.actions_taken, newest)
         + sourcesHtml(m.actions.sources);
     }
-    return bubble;
-  }).join("");
+    return marker + bubble;
+  }).join("") + (topicFrom && list.length && firstAfter === -1 ? divider : "");
   // Derived from persisted state, so it survives a reload: if the newest message is
   // yours, the butler still owes a reply — show the thinking indicator.
   //
@@ -822,8 +832,12 @@ function viewChat() {
               <button class="icon-btn" data-act="toggle:tools" title="More" aria-label="More options" aria-haspopup="menu">${icon("plus", 18)}</button>
               <div class="tools-menu" id="tools-menu" role="menu" hidden>${toolsMenuHtml()}</div>
             </div>
-            <button class="send-round" id="send-btn" data-act="${CHAT_STREAMING ? "chat:stop" : RESEARCH_MODE ? "research:start" : "chat:send"}" title="${CHAT_STREAMING ? "Stop" : RESEARCH_MODE ? "Start research" : "Send"}" aria-label="${CHAT_STREAMING ? "Stop" : RESEARCH_MODE ? "Start research" : "Send"}">${icon(CHAT_STREAMING ? "stop" : "up", 18)}</button>
+            <div class="composer-right">
+              <button class="ctx-ring" id="ctx-ring" data-act="ctx:toggle" title="${esc(ctxRingTitle())}" aria-label="What is sent to the model">${ctxRingSvg()}</button>
+              <button class="send-round" id="send-btn" data-act="${CHAT_STREAMING ? "chat:stop" : RESEARCH_MODE ? "research:start" : "chat:send"}" title="${CHAT_STREAMING ? "Stop" : RESEARCH_MODE ? "Start research" : "Send"}" aria-label="${CHAT_STREAMING ? "Stop" : RESEARCH_MODE ? "Start research" : "Send"}">${icon(CHAT_STREAMING ? "stop" : "up", 18)}</button>
+            </div>
           </div>
+          <div class="ctx-panel" id="ctx-panel" ${CTX_OPEN ? "" : "hidden"}>${ctxPanelHtml()}</div>
         </div>
       </div></div>
     </div>`;
@@ -854,12 +868,52 @@ function toolsMenuHtml() {
     TTS ? item("toggle:speak", SPEAK ? "speakerOn" : "speakerOff", "Read replies aloud", SPEAK, "read replies aloud") : "",
     dictate,
     item("toggle:research", "note", "Research", RESEARCH_MODE, "commission durable, bounded research"),
+    item("ctx:reset", "plus", "New topic", false, "stop sending earlier messages to the model; they stay in the chat"),
     DEEP_MODEL.configured ? item("toggle:deep", "sparkle", "Ask the bigger model", DEEP_MODE, "when on, your messages go to the bigger model") : "",
   ].join("");
 }
 
 // Refresh the chips and menu in place. A full render() rebuilds the thread from persisted
 // state and would wipe a reply that is still streaming in.
+// ---- what is sent to the model (ADR 0088) ---------------------------------
+const ctxFraction = () => (CTX && CTX.window_tokens && CTX.total_tokens ? Math.min(1, CTX.total_tokens / CTX.window_tokens) : 0);
+const kTokens = (n) => (n >= 1000 ? (n / 1000).toFixed(n >= 10000 ? 0 : 1) + "k" : String(n));
+function ctxRingTitle() {
+  if (!CTX || !CTX.window_tokens) return "What is sent to the model";
+  return `~${kTokens(CTX.total_tokens)} of ${kTokens(CTX.window_tokens)} tokens in the window (estimate). Tap for what is in it.`;
+}
+// A ring that fills as the window does: calm until it is most of the way, then amber, then red.
+function ctxRingSvg() {
+  const f = ctxFraction();
+  const r = 9, c = 2 * Math.PI * r;
+  const tone = f >= 0.9 ? "bad" : f >= 0.7 ? "warn" : "ok";
+  return `<svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="${r}" fill="none" stroke="currentColor" stroke-opacity=".18" stroke-width="3"/>` +
+    `<circle class="ring-${tone}" cx="12" cy="12" r="${r}" fill="none" stroke-width="3" stroke-linecap="round" stroke-dasharray="${(c * f).toFixed(1)} ${c.toFixed(1)}" transform="rotate(-90 12 12)"/></svg>`;
+}
+function ctxPanelHtml() {
+  if (!CTX || !Array.isArray(CTX.sections)) return `<div class="sub">Counting what is sent…</div>`;
+  const total = CTX.total_tokens || 1;
+  const pct = Math.round(ctxFraction() * 100);
+  const bar = CTX.sections.filter((s) => s.tokens > 0).map((s, i) =>
+    `<i class="seg c${i % 8}" style="width:${Math.max(0.5, (s.tokens / Math.max(total, CTX.window_tokens)) * 100).toFixed(2)}%" title="${esc(s.label)}"></i>`).join("");
+  const rows = CTX.sections.map((s, i) => {
+    const items = s.items.map((it) => `<li><span>${esc(it.text)}</span><em>${kTokens(it.tokens)}</em></li>`).join("");
+    const more = s.count > s.items.length ? `<li class="sub">…and ${s.count - s.items.length} more</li>` : "";
+    return `<details class="ctx-row"><summary><i class="dot c${i % 8}"></i><span class="lbl">${esc(s.label)}${s.to_deep ? ' <b class="deep-tag" title="This is also what Ask deep is shown">Ask deep sees this</b>' : ""}</span><span class="n">${s.key === "held_back" ? "not sent" : "~" + kTokens(s.tokens)}</span></summary>` +
+      `<div class="ctx-body">${s.note ? `<p class="sub">${esc(s.note)}</p>` : ""}<ul>${items}${more}</ul></div></details>`;
+  }).join("");
+  return `<div class="ctx-head"><strong>What is sent with each message</strong><span class="sub">~${kTokens(CTX.total_tokens)} of ${kTokens(CTX.window_tokens)} tokens · ${pct}% · estimate</span></div>` +
+    `<div class="ctx-bar">${bar}</div><div class="ctx-rows">${rows}</div>` +
+    `<p class="sub ctx-foot">Ask deep and the automatic re-check send the other model only your question and the skill definitions, never what a skill returned.</p>` +
+    `<div class="ctx-actions"><button class="ghost" data-act="ctx:reset" title="Stop sending earlier messages. They stay in the chat; what Endora has learned about you is kept.">${icon("plus", 14)}<span>New topic</span></button></div>`;
+}
+function refreshContextRing() {
+  const ring = document.getElementById("ctx-ring");
+  if (ring) { ring.innerHTML = ctxRingSvg(); ring.title = ctxRingTitle(); }
+  const panel = document.getElementById("ctx-panel");
+  if (panel) panel.innerHTML = ctxPanelHtml();
+}
+
 function refreshComposerModes() {
   const chips = document.getElementById("composer-chips");
   if (chips) chips.innerHTML = composerChipsHtml();
@@ -2971,6 +3025,19 @@ async function dispatch(act) {
       RESEARCH_MODE = !RESEARCH_MODE;
       localStorage.setItem("endora.researchmode", RESEARCH_MODE ? "1" : "0");
       return render();
+    }
+    if (verb === "ctx" && noun === "toggle") {
+      CTX_OPEN = !CTX_OPEN;
+      const panel = document.getElementById("ctx-panel");
+      if (panel) panel.hidden = !CTX_OPEN;
+      if (CTX_OPEN) { try { CTX = await api("GET", "/v1/chat/context"); refreshContextRing(); } catch (_) {} }
+      return;
+    }
+    if (verb === "ctx" && noun === "reset") {
+      await api("POST", "/v1/chat/context/reset");
+      CTX_OPEN = false;
+      flash("New topic. Earlier messages stay here but are no longer sent to the model.", "ok");
+      return reload();
     }
     if (verb === "toggle" && noun === "tools") {
       const t = document.getElementById("tools-menu");

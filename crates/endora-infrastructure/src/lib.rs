@@ -18,7 +18,8 @@ pub mod sqlite;
 
 pub use butler::{
     ConfigurableButler, LlmButler, MixtureButler, ScriptedButler, ask_deep_model,
-    butler_from_config, is_private_endpoint, list_models, test_connection, transcribe_audio,
+    butler_from_config, butler_instructions, is_private_endpoint, list_models, test_connection,
+    transcribe_audio,
 };
 pub use model_layer::{
     AdoptionDecision, AdoptionOutcome, CaseResult, ModelCandidate, Scorecard, ScoredCandidate,

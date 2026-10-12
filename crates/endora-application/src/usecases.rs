@@ -1751,6 +1751,35 @@ impl ActionDisclosure {
 /// last built; otherwise the cached summary is reused. If summarising isn't available
 /// (the default butler) or fails, the recent window still stands — just without the
 /// earlier context folded in.
+/// The recent messages and running summary the next turn would send, without running the
+/// summariser: the same arithmetic as the turn, read-only, for the console's account of what
+/// is in the window (ADR 0088). `from_ms` is where the current topic begins.
+///
+/// # Errors
+/// [`AppError::Repository`] if the chat cannot be read.
+pub fn history_the_next_turn_would_send(
+    chat: &impl ChatRepository,
+    summary: Option<ConversationSummary>,
+    from_ms: i64,
+) -> Result<(Vec<ChatMessage>, Option<String>), AppError> {
+    const RECENT_WINDOW: usize = 12;
+    const SUMMARY_BATCH: usize = 12;
+    let full: Vec<ChatMessage> = chat
+        .list()?
+        .into_iter()
+        .filter(|m| m.at().unix_millis() >= from_ms)
+        .collect();
+    if full.len() <= RECENT_WINDOW {
+        return Ok((full, None));
+    }
+    let current = summary.unwrap_or_default();
+    let start = current
+        .covered
+        .max(full.len().saturating_sub(RECENT_WINDOW + SUMMARY_BATCH));
+    let text = (!current.text.is_empty()).then_some(current.text);
+    Ok((full[start..].to_vec(), text))
+}
+
 fn compact_history(
     butler: &dyn Butler,
     summary: &dyn ConversationSummaryStore,
@@ -1999,7 +2028,12 @@ pub fn send_to_butler_streaming_for_request(
     // rather than dropped. The summary is regenerated only when the window overflows
     // FURTHER (new messages scroll past it), so most turns pay nothing.
     const RECENT_WINDOW: usize = 12;
-    let full = chat.list()?;
+    // Only what is after the person's last "new topic" is the model's to read.
+    let full: Vec<ChatMessage> = chat
+        .list()?
+        .into_iter()
+        .filter(|m| m.at().unix_millis() >= context.context_from_ms)
+        .collect();
     let (history, summary_text) = match summary {
         Some(store) => compact_history(butler, store, &full, RECENT_WINDOW),
         // No summary store (non-streaming path/tests): just bound with the recent
@@ -5817,6 +5851,8 @@ pub fn butler_context(
         now: format_datetime_utc(clock.now().unix_millis()),
         conversation_summary: None,
         track_record: track_record(&recent),
+        // Set by whoever holds the person's "new topic" choice; the context itself does not know it.
+        context_from_ms: 0,
         // What the person has said these targets are really called, and what Endora has
         // since made to stand for several of them (ADR 0054).
         target_aliases: aliases
@@ -7561,6 +7597,86 @@ mod tests {
         )
         .expect("the turn answers");
         (message.text().to_owned(), activity)
+    }
+
+    #[test]
+    fn a_new_topic_keeps_old_messages_in_the_chat_but_not_in_what_the_model_is_sent() {
+        struct SeesTheConversation(std::sync::Mutex<String>);
+        impl Butler for SeesTheConversation {
+            fn respond(
+                &self,
+                _h: &[ChatMessage],
+                _p: &[Preference],
+                _c: &ButlerContext,
+            ) -> Result<ButlerReply, ProposalError> {
+                Ok(ButlerReply::default())
+            }
+            fn take_turn(
+                &self,
+                conversation: &[crate::ports::TurnMessage],
+                _p: &[Preference],
+                _c: &ButlerContext,
+            ) -> Result<ButlerReply, ProposalError> {
+                *self.0.lock().unwrap() = format!("{conversation:?}");
+                Ok(ButlerReply {
+                    text: "ok".to_owned(),
+                    ..ButlerReply::default()
+                })
+            }
+        }
+        let store = FakeStore::default();
+        for (n, (ms, text)) in [(100, "OLD-QUESTION"), (200, "OLD-ANSWER")]
+            .into_iter()
+            .enumerate()
+        {
+            let role = if n == 0 {
+                MessageRole::User
+            } else {
+                MessageRole::Butler
+            };
+            crate::ChatRepository::append(
+                &store,
+                &ChatMessage::new(
+                    MessageId::new(n as u128 + 900),
+                    role,
+                    text,
+                    FixedClock(ms).now(),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        }
+        let butler = SeesTheConversation(std::sync::Mutex::new(String::new()));
+
+        super::send_to_butler(
+            &store,
+            &store,
+            &store,
+            &FakeOutcomes::default(),
+            &crate::usecases::NoSpecimens,
+            &NoCapabilities,
+            &butler,
+            &FakeAudit::default(),
+            &SeqIds::default(),
+            &FixedClock(1_000),
+            &ButlerContext {
+                context_from_ms: 500,
+                ..ButlerContext::default()
+            },
+            "a new question",
+        )
+        .unwrap();
+
+        let sent = butler.0.lock().unwrap().clone();
+        assert!(sent.contains("a new question"), "{sent}");
+        assert!(
+            !sent.contains("OLD-QUESTION") && !sent.contains("OLD-ANSWER"),
+            "{sent}"
+        );
+        // Nothing was deleted: the whole chat is still there to read.
+        let all = super::chat_history(&store).unwrap();
+        assert_eq!(all.len(), 4);
+        assert!(all.iter().any(|m| m.text() == "OLD-QUESTION"));
     }
 
     #[test]

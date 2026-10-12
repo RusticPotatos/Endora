@@ -972,6 +972,12 @@ impl Butler for ConfigurableButler {
 /// Central rule (see [ADR 0056]): Endora's internal vocabulary is its own, not
 /// conversational. The butler talks like a real person; the JSON envelope below is
 /// the machine layer.
+/// The fixed instructions every turn begins with, for the console's account of what is sent.
+#[must_use]
+pub fn butler_instructions() -> &'static str {
+    BUTLER_SYSTEM_PROMPT
+}
+
 const BUTLER_SYSTEM_PROMPT: &str = "You are Endora: a candid, warm personal \
 intelligence — a thoughtful butler. Your PRIMARY job is to UNDERSTAND the person: \
 what they are really trying to achieve or experience, what they value, what \

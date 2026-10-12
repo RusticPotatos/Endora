@@ -1196,6 +1196,8 @@ pub fn app(state: AppState) -> Router {
         .route("/health", get(health))
         .route("/v1/chat", post(send_chat).get(chat_history))
         .route("/v1/chat/days", get(chat_days))
+        .route("/v1/chat/context", get(chat_context))
+        .route("/v1/chat/context/reset", post(reset_chat_context))
         .route("/v1/chat/stream", post(stream_chat))
         .route("/v1/checkin", get(get_checkin).post(set_checkin))
         .route("/v1/understanding", get(list_understanding))
@@ -2241,6 +2243,123 @@ fn settings_map(
     map
 }
 
+/// Where the person's current topic begins (ms), or 0 for the whole chat (ADR 0088). Kept as
+/// one stored setting rather than a column, because it is a choice about what the model
+/// reads, not part of any message.
+fn topic_start(config: &endora_capabilities::ConfigStore) -> i64 {
+    settings_map(config)
+        .get("chat")
+        .and_then(|m| m.get("context_from_ms"))
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0)
+}
+
+/// The model's window in tokens. The node cannot ask the model server, so it is told:
+/// `ENDORA_CONTEXT_TOKENS`, defaulting to what the Ollama role configures.
+fn context_window_tokens() -> usize {
+    std::env::var("ENDORA_CONTEXT_TOKENS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .filter(|n| *n >= 1024)
+        .unwrap_or(16_384)
+}
+
+/// What the next message would send the model, section by section, and how full the window
+/// would be (ADR 0088). Estimates, labelled as such by the console.
+async fn chat_context(State(state): State<AppState>) -> Result<Json<serde_json::Value>, ApiError> {
+    let chat = state.chat.clone();
+    let understanding = state.understanding.clone();
+    let config = state.config.clone();
+    let clock = state.clock.clone();
+    let capabilities = state.capabilities.clone();
+    let summary = state.summary.clone();
+    let mcp = mcp_snapshot(&state);
+    let report = blocking(move || {
+        use endora_application::ConversationSummaryStore as _;
+        let runner = build_runner(
+            config.as_ref(),
+            capabilities,
+            mcp,
+            proven_now(understanding.as_ref()),
+        );
+        let mut context = usecases::butler_context(
+            understanding.as_ref(),
+            understanding.as_ref(),
+            understanding.as_ref(),
+            config.as_ref(),
+            chat.as_ref(),
+            &runner,
+            config.as_ref(),
+            clock.as_ref(),
+        )?;
+        let from = topic_start(config.as_ref());
+        context.context_from_ms = from;
+        // Not part of an ordinary message: it is only sent when the person asks what Endora did.
+        context.did_lately.clear();
+        let (history, summary_text) =
+            usecases::history_the_next_turn_would_send(chat.as_ref(), summary.get(), from)?;
+        let prefs = endora_application::PreferenceRepository::list_all(understanding.as_ref())
+            .map_err(AppError::Repository)?;
+        let report = endora_application::context_report::context_report(
+            &context,
+            &history,
+            &prefs,
+            summary_text.as_deref(),
+            endora_infrastructure::butler_instructions(),
+            context_window_tokens(),
+        );
+        Ok::<_, AppError>((report, from))
+    })
+    .await?;
+    let (report, from) = report;
+    let sections: Vec<serde_json::Value> = report
+        .sections
+        .iter()
+        .map(|s| {
+            json!({
+                "key": s.key,
+                "label": s.label,
+                "tokens": s.tokens,
+                "count": s.count,
+                "to_deep": s.to_deep,
+                "note": s.note,
+                "items": s.items.iter().map(|i| json!({"text": i.text, "tokens": i.tokens})).collect::<Vec<_>>(),
+            })
+        })
+        .collect();
+    Ok(Json(json!({
+        "window_tokens": report.window_tokens,
+        "total_tokens": report.total_tokens,
+        "context_from_ms": from,
+        "estimate": true,
+        "sections": sections,
+    })))
+}
+
+/// Starts a new topic: from now on the model reads only what comes after this moment, and
+/// the running summary of what came before is dropped. Nothing is deleted — the earlier chat
+/// stays on screen — and what Endora has learned about the person is untouched (ADR 0088).
+async fn reset_chat_context(
+    State(state): State<AppState>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    use endora_application::ConversationSummaryStore as _;
+    let config = state.config.clone();
+    let clock = state.clock.clone();
+    let summary = state.summary.clone();
+    let at = blocking(move || {
+        use endora_application::Clock as _;
+        let at = clock.now().unix_millis();
+        config
+            .set_setting("chat", "context_from_ms", &at.to_string())
+            .map_err(AppError::Repository)?;
+        summary.set(endora_application::ConversationSummary::default());
+        Ok::<_, AppError>(at)
+    })
+    .await?;
+    let _ = state.changes.send(());
+    Ok(Json(json!({ "ok": true, "context_from_ms": at })))
+}
+
 #[derive(Deserialize)]
 struct ChatRequest {
     message: String,
@@ -2274,7 +2393,7 @@ async fn send_chat(
             proven_now(understanding.as_ref()),
         );
         // Ground the butler in the person's current life before it answers.
-        let context = usecases::butler_context(
+        let mut context = usecases::butler_context(
             understanding.as_ref(),
             understanding.as_ref(),
             understanding.as_ref(),
@@ -2284,6 +2403,7 @@ async fn send_chat(
             config.as_ref(),
             clock.as_ref(),
         )?;
+        context.context_from_ms = topic_start(config.as_ref());
         let out = usecases::send_to_butler_streaming_for_request(
             chat.as_ref(),
             understanding.as_ref(),
@@ -2436,7 +2556,10 @@ async fn stream_chat(
                 config.as_ref(),
                 clock.as_ref(),
             ) {
-                Ok(c) => c,
+                Ok(mut c) => {
+                    c.context_from_ms = topic_start(config.as_ref());
+                    c
+                }
                 Err(e) => {
                     // A failure that evaporates can be neither trusted nor improved: this
                     // turn used to die leaving the last stored message as the person's,
@@ -5217,7 +5340,7 @@ async fn deep_ask(
             mcp,
             proven_now(understanding.as_ref()),
         );
-        let context = usecases::butler_context(
+        let mut context = usecases::butler_context(
             understanding.as_ref(),
             understanding.as_ref(),
             understanding.as_ref(),
@@ -5227,6 +5350,7 @@ async fn deep_ask(
             config.as_ref(),
             clock.as_ref(),
         )?;
+        context.context_from_ms = topic_start(config.as_ref());
         let (reply, activity) = usecases::send_to_butler_streaming_for_request(
             chat.as_ref(),
             understanding.as_ref(),
@@ -7071,6 +7195,44 @@ mod tests {
     /// Exactly the same request, unsigned — for proving a route is actually shut.
     fn unsigned(uri: &str) -> Request<Body> {
         Request::builder().uri(uri).body(Body::empty()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn the_chat_says_what_it_would_send_and_a_new_topic_stops_sending_the_past() {
+        let state = test_state();
+        let reply = app(state.clone())
+            .oneshot(get("/v1/chat/context"))
+            .await
+            .unwrap();
+        assert_eq!(reply.status(), StatusCode::OK);
+        let before = json_body(reply).await;
+        assert_eq!(before["estimate"], true);
+        assert_eq!(before["context_from_ms"], 0);
+        assert!(before["window_tokens"].as_u64().unwrap() >= 1024);
+        let keys: Vec<&str> = before["sections"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|s| s["key"].as_str())
+            .collect();
+        assert!(keys.contains(&"instructions"), "{keys:?}");
+
+        let reset = app(state.clone())
+            .oneshot(post("/v1/chat/context/reset", "{}"))
+            .await
+            .unwrap();
+        assert_eq!(reset.status(), StatusCode::OK);
+        let at = json_body(reset).await["context_from_ms"].as_i64().unwrap();
+        assert!(at > 0);
+
+        let after = json_body(
+            app(state.clone())
+                .oneshot(get("/v1/chat/context"))
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(after["context_from_ms"].as_i64().unwrap(), at);
     }
 
     #[tokio::test]

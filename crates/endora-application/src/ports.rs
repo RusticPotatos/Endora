@@ -406,6 +406,10 @@ pub struct ButlerContext {
     /// carries signal rather than noise. Empty until they have said something about
     /// anything, which is the normal early state.
     pub track_record: Vec<String>,
+    /// Where this conversation's context begins, in milliseconds. Messages before it stay in
+    /// the chat for the person to read and are **not** sent to the model (ADR 0088): it is how
+    /// "new topic" works without deleting anything. `0` means from the start.
+    pub context_from_ms: i64,
 }
 
 /// A compact summary of the conversation so far, and how many messages it folds in —

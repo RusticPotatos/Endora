@@ -536,6 +536,44 @@ if (keys.length !== 3 || keys[0] !== keys[1] || keys[0] === keys[2]) {
   console.log("chat: an unanswered turn says so, and can be asked again");
 }
 
+// What is sent to the model is visible: a ring that fills with the window, an inspector that
+// lists what is in it (and which of it Ask deep also sees), and a divider where a new topic
+// began. Text inside it is text, never markup.
+{
+  runInContext(`CTX = { window_tokens: 16384, total_tokens: 12000, context_from_ms: 0, estimate: true,
+    sections: [
+      { key: "skills", label: "Skill definitions", tokens: 8000, count: 2, to_deep: true, note: "",
+        items: [{ text: "web_search — <img src=x onerror=alert(1)>", tokens: 600 }] },
+      { key: "recent", label: "Recent messages", tokens: 4000, count: 1, to_deep: false, note: "", items: [] },
+      { key: "held_back", label: "Held back until needed", tokens: 0, count: 3, to_deep: false, note: "", items: [] },
+    ] };
+    CHAT_MSGS = [{ id: "1", role: "user", text: "old", at_ms: 100 }, { id: "2", role: "butler", text: "old answer", at_ms: 200 },
+                 { id: "3", role: "user", text: "fresh", at_ms: 900 }];
+    CHAT_STREAMING = false; CHAT_STOPPED = false; CHAT_DAYS = []; CHAT_DAY = null; NODE_BUSY = false;`, context);
+  const view = runInContext("viewChat()", context) || "";
+  if (!view.includes('id="ctx-ring"') || !view.includes("ring-warn")) {
+    console.error("chat: the context ring is missing, or is not amber at 73% of the window");
+    process.exit(1);
+  }
+  if (!view.includes("Skill definitions") || !view.includes("Ask deep sees this") || !view.includes("not sent")) {
+    console.error("chat: the inspector does not say what is sent and what Ask deep sees");
+    process.exit(1);
+  }
+  if (view.includes("<img src=x")) {
+    console.error("chat: text inside the inspector became markup");
+    process.exit(1);
+  }
+  runInContext("CTX.context_from_ms = 500;", context);
+  const divided = runInContext("viewChat()", context) || "";
+  if (!divided.includes("topic-divider") || divided.indexOf("topic-divider") < divided.indexOf("old answer")
+    || divided.indexOf("topic-divider") > divided.indexOf("fresh")) {
+    console.error("chat: the new-topic divider is not between the old messages and the new ones");
+    process.exit(1);
+  }
+  runInContext("CTX = null;", context);
+  console.log("chat: the window ring, the inspector and the new-topic divider render");
+}
+
 // Butler prose renders lightly, and nothing it carries can become markup.
 //
 // The brief's news section hands the chat 200-character URLs; rendered raw they
