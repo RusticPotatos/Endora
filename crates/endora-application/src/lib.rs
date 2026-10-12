@@ -12,26 +12,30 @@
 
 #![forbid(unsafe_code)]
 
+pub mod deep_turn;
 pub mod egress;
 pub mod error;
 pub mod goal;
+pub mod goal_execution;
+pub mod goal_request;
 pub mod ports;
 pub mod pseudonyms;
 pub mod research;
+pub mod schedule_verification;
 pub mod usecases;
 
 pub use error::AppError;
 pub use goal::{
-    DeadEnd, GOAL_CHECKPOINT_VERSION, Goal, GoalEvidence, GoalRecord, GoalStatus, GoalStep,
-    GoalVerdict, StepError,
+    DeadEnd, GOAL_CHECKPOINT_VERSION, Goal, GoalEvidence, GoalObservation, GoalRecord, GoalStatus,
+    GoalStep, GoalVerdict, StepError,
 };
 // The application layer re-exports the domain vocabulary of each context (models
 // + ids), so the adapter layers (infrastructure, the node) have one place to
 // import the types they translate to and from — the orchestration layer is the
 // surface above the domain (ADR 0050).
 pub use endora_kernel::{
-    AuditId, AutonomyLevel, BeliefId, DomainError, IntentionId, MessageId, NotionId, OutcomeId,
-    PreferenceId, Reversibility, Timestamp,
+    AuditId, AutonomyLevel, BeliefId, Decision, DomainError, IntentionId, MessageId, NotionId,
+    OutcomeId, PreferenceId, Reversibility, Timestamp,
 };
 // The audit trail and event log live in the platform context now (ADR 0050);
 // re-exported so `endora_application::{AuditLog, EventLog, ActivityEvent}` hold.
@@ -40,8 +44,8 @@ pub use endora_platform::{ActivityEvent, AuditLog, AuditRecord, EventLog};
 // so their `endora_application::…` paths are unchanged.
 pub use endora_capabilities::{
     AutonomyEnvelope, AutonomyEnvelopeRepository, ButlerModelConfig, ButlerModelConfigRepository,
-    CapabilityConfigRepository, CapabilityRunner, CapabilitySettingsRepository, CapabilitySpec,
-    CapabilityUse, DeepModel, DeepModelRepository, ModelSlot, ModelTuneSchedule,
+    CapabilityConfigRepository, CapabilityRead, CapabilityRunner, CapabilitySettingsRepository,
+    CapabilitySpec, CapabilityUse, DeepModel, DeepModelRepository, ModelSlot, ModelTuneSchedule,
     ModelTuneScheduleRepository, Sampling,
 };
 // The chat repository lives in the conversation context (ADR 0050); re-exported
@@ -64,7 +68,7 @@ pub use endora_understanding::{
 pub use ports::{
     Butler, ButlerContext, ButlerReply, CapabilityTool, Clock, ConversationSummary,
     ConversationSummaryStore, EXECUTION_LEASE_MS, ExecutionLeaseRepository, FormedBelief,
-    GoalDelivery, GoalRepository, IdSource, MemorySnapshot, MemoryStore, ProposalError,
+    GoalDelivery, GoalLease, GoalRepository, IdSource, MemorySnapshot, MemoryStore, ProposalError,
     RepositoryError, ResearchDelivery, ToolCall, TurnMessage,
 };
 pub use research::{ResearchRun, conduct_research};

@@ -27,6 +27,9 @@ decides what actually happens — and it never does anything irreversible on its
   web search, Wikipedia, fetch a page, describe an image (local vision model), and read
   Home Assistant state to learn your routines. Keyless where possible; the rest you
   configure with a key or token, stored locally.
+- Internet search uses Brave Search. Set its API key in **Skills → Internet search**
+  and allow the skill through the existing policy settings. Search returns source
+  URLs; Endora can fetch those pages to gather evidence.
 - **Proactive:** optional check-ins and a **daily brief** (weather / safety / news for
   where you're based).
 - **Private egress:** an SSRF guard, an outbound secret tripwire, query minimization,

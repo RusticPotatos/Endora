@@ -68,6 +68,7 @@ let NODE_BUSY = false;
 let HAPTIC = localStorage.getItem("endora.haptic") !== "0"; // buzz on reply + mic (default on)
 let CHAT_STOPPED = false;      // the person stopped the last turn, so no reply is coming
 let CHAT_QUEUE = [];           // messages awaiting their turn — turns are SERIALIZED
+let LAST_CHAT_REQUEST = null;  // reuse the key when retrying an interrupted turn
 let CHAT_INFLIGHT = null;      // the user message whose reply is streaming now (not yet persisted)
 let LIVE_REPLY = "";           // the reply text accumulated so far, so a re-render can rebuild it
 let CHAT_ABORT = null;         // AbortController for the in-flight turn (the Stop button)
@@ -420,10 +421,15 @@ function subscribeToActivity() {
   } catch (_) { /* SSE unavailable: the UI still works, just not live. */ }
 }
 
-function pollActiveResearch() {
+// While anything runs unattended — research or a goal — refresh every so often so its
+// progress and its ending show up without the person having to reload.
+function pollActiveWork() {
   setInterval(() => {
-    const active = ((RESEARCH && RESEARCH.items) || []).some((item) =>
+    const researching = ((RESEARCH && RESEARCH.items) || []).some((item) =>
       !["delivered", "blocked", "budget_exhausted", "cancelled", "failed"].includes(item.status));
+    const goalRunning = ((DB && DB.goals) || []).some((g) =>
+      !["complete", "partial", "blocked", "failed", "cancelled"].includes(g.status));
+    const active = researching || goalRunning;
     const ae = document.activeElement;
     if (!active || CHAT_STREAMING || (ae && /^(INPUT|TEXTAREA|SELECT)$/.test(ae.tagName))) return;
     reload().catch(() => {});
@@ -690,7 +696,7 @@ function viewChat() {
   let liveTurn = "";
   if (CHAT_STREAMING) {
     const users = [CHAT_INFLIGHT, ...CHAT_QUEUE].filter(Boolean).map((t) =>
-      `<div class="row" style="justify-content:flex-end; margin:6px 0;"><div class="bubble me">${esc(t)}</div></div>`).join("");
+      `<div class="row" style="justify-content:flex-end; margin:6px 0;"><div class="bubble me">${esc(typeof t === "string" ? t : t.message)}</div></div>`).join("");
     const replyInner = LIVE_REPLY ? rich(LIVE_REPLY) : `<span class="dots"><i></i><i></i><i></i></span>`;
     liveTurn = users +
       `<div class="row" style="justify-content:flex-start; margin:6px 0;" id="chat-live"><div class="bubble butler">${replyInner}</div></div>`;
@@ -726,6 +732,7 @@ function viewChat() {
        </div>`
     : "";
   const research = viewResearch();
+  const ownWork = viewGoals();
   const emptyToday = `<div class="empty">${showing === today && days.length > 1
       ? "A new day. Yesterday's conversation is a tap back."
       : "Say anything — Endora is listening."}</div>`;
@@ -733,6 +740,7 @@ function viewChat() {
     <div class="chat">
       ${dayBar}
       ${research}
+      ${ownWork}
       <div id="chat-thread" class="chat-thread">${(msgs || (CHAT_STREAMING ? "" : emptyToday)) + (CHAT_STREAMING ? liveTurn : pending) + streamingActivity}</div>
       ${CHAT_STREAMING ? "" : viewNeedsYou()}
       <div class="composer">
@@ -773,6 +781,37 @@ function viewResearch() {
         ? "Endora will keep working after you close this page and save a bounded Markdown report citing pages it read. It can search only through an approved Brave Search connection; otherwise add starting URLs."
         : "Research needs the built-in web reader. Connect Brave Search for discovery, or add starting URLs after the reader is available."}</div></div>` : "";
   return `<div aria-label="Research assignments">${setup}${cards}</div>`;
+}
+
+// What Endora is doing on its own, and how finished work ended (ADR 0083). A goal that ran
+// out of road used to leave nothing anywhere in the console: stored, finished, invisible.
+// Running work says where it is and can be stopped; ended work keeps the same words the chat
+// used, so the two can never disagree about what happened. Only the five newest ended goals
+// show, which bounds the strip however long the node has been running.
+function viewGoals() {
+  const goals = (DB && DB.goals) || [];
+  if (!goals.length) return "";
+  const ended = ["complete", "partial", "blocked", "failed", "cancelled"];
+  const label = { complete: "done", partial: "partly done", blocked: "blocked",
+    failed: "could not do it", cancelled: "cancelled" };
+  const running = goals.filter((g) => !ended.includes(g.status));
+  const finished = goals.filter((g) => ended.includes(g.status))
+    .sort((a, b) => b.updated_ms - a.updated_ms).slice(0, 5);
+  const runningCards = running.map((g) => {
+    const found = (g.evidence || []).length;
+    const where = [g.phase, `${found} finding${found === 1 ? "" : "s"} so far`,
+      g.next_step ? `next: ${g.next_step}` : ""].filter(Boolean).join(" · ");
+    // The key goes through encodeURIComponent because the dispatcher splits `data-act` on ":",
+    // and a goal's key may contain one.
+    return `<div class="card" style="margin:8px 0;">
+      <div class="row" style="justify-content:space-between;gap:8px;"><b>${esc(g.objective)}</b><span class="sub">working</span></div>
+      <div class="sub" style="margin-top:6px;">${esc(where)}</div>
+      <div class="row" style="gap:8px;margin-top:8px;"><button class="ghost" data-act="goal:cancel:${encodeURIComponent(g.request_key)}">Stop</button></div></div>`;
+  }).join("");
+  const finishedCards = finished.map((g) => `<details class="card" style="margin:8px 0;">
+      <summary><b>${esc(g.objective)}</b> <span class="sub">${esc(label[g.status])}</span></summary>
+      <div class="bubble butler" style="margin-top:8px;">${rich(g.outcome || "")}</div></details>`).join("");
+  return `<div aria-label="Endora's own work">${runningCards}${finishedCards}</div>`;
 }
 
 // Provider presets for the butler models. Each fills the endpoint + example
@@ -2572,7 +2611,10 @@ async function downloadResearch(id) {
 // Process the queue one turn at a time.
 async function drainChat() {
   if (CHAT_STREAMING || !CHAT_QUEUE.length) return;
-  const msg = CHAT_QUEUE.shift();
+  const queued = CHAT_QUEUE.shift();
+  const msg = typeof queued === "string" ? queued : queued.message;
+  const requestId = queued.request_id || `chat-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+  LAST_CHAT_REQUEST = { message: msg, request_id: requestId };
   // Remember the in-flight turn in module state so a re-render (e.g. toggling
   // Speak) can rebuild the just-sent message and the reply growing in, instead of
   // wiping them (they aren't in the persisted DB.messages until the turn ends).
@@ -2596,7 +2638,7 @@ async function drainChat() {
     const res = await fetch("/v1/chat/stream", {
       method: "POST",
       headers: signed({ "content-type": "application/json" }),
-      body: JSON.stringify({ message: msg }),
+      body: JSON.stringify({ message: msg, request_id: requestId }),
       signal: CHAT_ABORT.signal,
     });
     if (!res.ok || !res.body) throw new Error("stream unavailable");
@@ -2756,6 +2798,18 @@ async function dispatch(act) {
       return reload();
     }
     if (verb === "research" && noun === "download") { await downloadResearch(id); return; }
+    if (verb === "goal" && noun === "cancel") {
+      // `id` is still URI-encoded: a goal's key can contain ":", which the split above would
+      // otherwise have cut in two.
+      try {
+        await api("POST", `/v1/goals/${id}/cancel`, {});
+        flash("Stopped.", "ok");
+      } catch (e) {
+        // Usually it finished while the button was on screen; the refresh shows how it ended.
+        flash(String(e.message || e), "warn");
+      }
+      return reload();
+    }
     // Ask the same thing again after a turn that never answered. It re-sends the person's
     // own last words rather than making them retype them, which is the whole difference
     // between a dead end and a hiccup.
@@ -2763,7 +2817,8 @@ async function dispatch(act) {
       const list = (DB.messages || []).slice().reverse();
       const mine = list.find((m) => m.role === "user");
       if (!mine || !mine.text) return;
-      CHAT_QUEUE.push(mine.text);
+      CHAT_QUEUE.push(LAST_CHAT_REQUEST && LAST_CHAT_REQUEST.message === mine.text
+        ? LAST_CHAT_REQUEST : mine.text);
       updateComposerButton();
       return drainChat();
     }
@@ -3540,7 +3595,7 @@ function closeMenu() {
     setupHeader(health);
     await reload();
     subscribeToActivity();
-    pollActiveResearch();
+    pollActiveWork();
   } catch (e) {
     // Say which half failed. This catch covers reaching the node AND drawing the page, and
     // it reported both as "couldn't reach the node" — so a missing function read as a

@@ -8,9 +8,9 @@
 use endora_kernel::Timestamp;
 use serde_json::{Value, json};
 
-/// Version of the serialized goal checkpoint. Version 2 adds the approaches that
-/// failed; a version 1 checkpoint still resumes, without that history.
-pub const GOAL_CHECKPOINT_VERSION: u64 = 2;
+/// Version 4 binds declared criteria to the original request. Version 3 adds
+/// tool observations; older checkpoints remain readable without those fields.
+pub const GOAL_CHECKPOINT_VERSION: u64 = 4;
 
 /// How many approaches may fail in a row before the objective stops trying.
 ///
@@ -67,6 +67,57 @@ fn says_nothing_new(held: &str, fresh: &str) -> bool {
     };
     let (held, fresh) = (words(held), words(fresh));
     !fresh.is_empty() && fresh.is_subset(&held)
+}
+
+// Bounds for [`Goal::outcome_notice`]. The chat refuses only an empty message, so
+// nothing downstream would stop a goal that gathered a lot from posting a wall of
+// text; the sums here keep every notice well inside `NOTICE_CHARS`.
+const NOTICE_OBJECTIVE_CHARS: usize = 200;
+const NOTICE_LINE_CHARS: usize = 300;
+const NOTICE_DEAD_END_CHARS: usize = 200;
+const NOTICE_FINDINGS: usize = 5;
+const NOTICE_DEAD_ENDS: usize = 3;
+const NOTICE_CHARS: usize = 3_000;
+
+// What the loop says about its own bookkeeping, as opposed to about the world. Each is
+// true and tells the person nothing about their request, so a notice leaves them out.
+// They are named constants so that is an exact comparison against our own strings,
+// never a guess at what a model or a tool happened to say.
+pub(crate) const REPEATED_WHAT_WAS_KNOWN: &str = "the pass repeated what was already known";
+pub(crate) const RETURNED_NO_EVIDENCE: &str = "the step returned no evidence";
+pub(crate) const PRODUCED_NOTHING: &str = "the pass produced nothing";
+const STOPPED_LEARNING: &str = "it stopped learning anything new about this";
+const NOTHING_LEFT: &str = "nothing further could be tried for this objective";
+
+fn is_bookkeeping(text: &str) -> bool {
+    [
+        REPEATED_WHAT_WAS_KNOWN,
+        RETURNED_NO_EVIDENCE,
+        PRODUCED_NOTHING,
+        STOPPED_LEARNING,
+        NOTHING_LEFT,
+    ]
+    .contains(&text.trim())
+}
+
+/// Shortens `text` to at most `limit` characters and marks the cut. Counts
+/// characters, not bytes, so a multi-byte letter is never split.
+fn clip(text: &str, limit: usize) -> String {
+    let text = text.trim();
+    if text.chars().count() <= limit {
+        return text.to_owned();
+    }
+    let kept: String = text.chars().take(limit.saturating_sub(1)).collect();
+    format!("{}…", kept.trim_end())
+}
+
+/// One line for a bullet: whitespace collapsed so a multi-line finding cannot
+/// break the notice's layout, then clipped.
+fn line(text: &str, limit: usize) -> String {
+    clip(
+        &text.split_whitespace().collect::<Vec<_>>().join(" "),
+        limit,
+    )
 }
 
 /// One approach that did not work, kept so the goal does not spend its budget
@@ -131,6 +182,18 @@ impl GoalStatus {
             Self::Complete | Self::Partial | Self::Blocked | Self::Failed | Self::Cancelled
         )
     }
+
+    /// Whether the person is waiting to hear how this ended. Every way a goal can
+    /// stop on its own is announced, not only success: a goal that ran out of road
+    /// and said nothing looks exactly like one that was never worked on. Cancelling
+    /// is the person's own decision, so it is the one terminal state not announced.
+    #[must_use]
+    pub const fn announced(self) -> bool {
+        matches!(
+            self,
+            Self::Complete | Self::Partial | Self::Blocked | Self::Failed
+        )
+    }
 }
 
 /// Result of checking a goal's evidence against its success criteria.
@@ -174,6 +237,18 @@ pub struct GoalEvidence {
     pub output: String,
 }
 
+/// A receipt recorded at the tool boundary, separate from generated findings.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(missing_docs)]
+pub struct GoalObservation {
+    pub tool: String,
+    pub input: String,
+    pub output: String,
+    pub data: Option<String>,
+    pub error: Option<String>,
+    pub at: endora_kernel::Timestamp,
+}
+
 /// Mutable execution record for one objective.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Goal {
@@ -184,6 +259,8 @@ pub struct Goal {
     reason: String,
     evidence: Vec<GoalEvidence>,
     dead_ends: Vec<DeadEnd>,
+    observations: Vec<GoalObservation>,
+    criteria: Option<crate::goal_request::GoalCriteria>,
 }
 
 /// A goal together with the stable request key and timestamps needed to resume it.
@@ -326,24 +403,31 @@ impl Goal {
                 } else {
                     GoalVerdict::Partial
                 };
-                self.apply(verdict, "nothing further could be tried for this objective");
+                self.apply(verdict, NOTHING_LEFT);
                 return self.status;
             };
             self.start(&step.phase, &step.name);
             match execute(&step) {
                 Ok(output) if !output.trim().is_empty() => {
                     if !self.commit(&step.name, &output) {
+                        // An independently verified read can establish the same
+                        // finding already held as unverified prose. Repetition
+                        // must not override a positive evidence verdict.
+                        if verify(&*self, &step) == GoalVerdict::Complete {
+                            self.apply(
+                                GoalVerdict::Complete,
+                                "existing finding was independently verified",
+                            );
+                            return self.status;
+                        }
                         // The pass restated something already held. The goal has what
                         // it came for and more passes cannot improve on it, so stop
                         // here with what was found rather than spending the rest of
                         // the budget producing copies. The counter cannot do this job:
                         // it is local to one pursuit, and the worker calls this once
                         // per tick, so a cross-pass stall would never be seen.
-                        self.note_dead_end(&step.name, "the pass repeated what was already known");
-                        self.apply(
-                            GoalVerdict::Partial,
-                            "it stopped learning anything new about this",
-                        );
+                        self.note_dead_end(&step.name, REPEATED_WHAT_WAS_KNOWN);
+                        self.apply(GoalVerdict::Partial, STOPPED_LEARNING);
                         return self.status;
                     }
                     in_a_row = 0;
@@ -355,9 +439,9 @@ impl Goal {
                 }
                 Ok(_) => {
                     in_a_row += 1;
-                    self.note_dead_end(&step.name, "the step returned no evidence");
+                    self.note_dead_end(&step.name, RETURNED_NO_EVIDENCE);
                     if in_a_row >= ENOUGH_DEAD_ENDS {
-                        self.apply(GoalVerdict::Partial, "the step returned no evidence");
+                        self.apply(GoalVerdict::Partial, RETURNED_NO_EVIDENCE);
                         return self.status;
                     }
                 }
@@ -411,6 +495,8 @@ impl Goal {
             reason: String::new(),
             evidence: Vec::new(),
             dead_ends: Vec::new(),
+            observations: Vec::new(),
+            criteria: None,
         })
     }
 
@@ -526,6 +612,119 @@ impl Goal {
         &self.dead_ends
     }
 
+    /// The message that tells the person how this goal ended — or, while it is
+    /// still being worked on, where it stands.
+    ///
+    /// A finished goal delivers its verified evidence unchanged. Every other state
+    /// is described from the goal's own record, so a partial result is never
+    /// mistaken for a finished one and a cancellation is never described as a
+    /// shortfall.
+    ///
+    /// Only what a person can use is said. The loop's own bookkeeping ("the pass
+    /// repeated what was already known") is true but is not about their request, so
+    /// it is left out, and what went wrong is the tool's real error from the
+    /// receipts, once however often it happened. `Partial` means *unverified*, not
+    /// *unsuccessful*: what was found is shown as found, with the plain statement
+    /// that it could not be confirmed to cover everything asked. Bounded by
+    /// [`NOTICE_CHARS`].
+    #[must_use]
+    pub fn outcome_notice(&self) -> String {
+        let found_something = !self.evidence.is_empty();
+        let (headline, reason_label) = match self.status {
+            GoalStatus::Complete => {
+                return self.evidence.last().map_or_else(
+                    || format!("Your request is complete: {}.", self.objective),
+                    |finding| finding.output.clone(),
+                );
+            }
+            GoalStatus::Partial if found_something => {
+                ("Here is what I found on", "What is still missing")
+            }
+            GoalStatus::Partial => ("I couldn't finish", "What is still missing"),
+            GoalStatus::Blocked => ("I'm blocked on", "What is still missing"),
+            GoalStatus::Failed => ("I couldn't do", "What is still missing"),
+            GoalStatus::Cancelled => ("You cancelled", "Why it stopped"),
+            GoalStatus::Planned | GoalStatus::Running | GoalStatus::Waiting => {
+                ("Still working on", "Where it is")
+            }
+        };
+        // The headline already says "here is what I found", so the findings follow it
+        // directly rather than under a second label.
+        let findings_follow_headline = self.status == GoalStatus::Partial && found_something;
+        let mut lines = vec![format!(
+            "{headline}: {}",
+            line(&self.objective, NOTICE_OBJECTIVE_CHARS)
+        )];
+        if !found_something {
+            lines.push(
+                if self.status.terminal() {
+                    "I found nothing usable."
+                } else {
+                    "Nothing found yet."
+                }
+                .to_owned(),
+            );
+        } else {
+            if !findings_follow_headline {
+                lines.push("What I found:".to_owned());
+            }
+            let older = self.evidence.len().saturating_sub(NOTICE_FINDINGS);
+            lines.extend(
+                self.evidence
+                    .iter()
+                    .skip(older)
+                    .map(|finding| format!("- {}", line(&finding.output, NOTICE_LINE_CHARS))),
+            );
+        }
+        if findings_follow_headline {
+            lines.push("I couldn't confirm this fully answers your request.".to_owned());
+        }
+        if !self.reason.is_empty() && !is_bookkeeping(&self.reason) {
+            lines.push(format!(
+                "{reason_label}: {}",
+                line(&self.reason, NOTICE_LINE_CHARS)
+            ));
+        }
+        let failures = self.what_did_not_work();
+        if !failures.is_empty() {
+            lines.push("What did not work:".to_owned());
+            lines.extend(failures.into_iter().map(|failure| format!("- {failure}")));
+        }
+        clip(&lines.join("\n"), NOTICE_CHARS)
+    }
+
+    /// What went wrong in the world, in the words of whatever reported it: the
+    /// errors on the tool receipts, then any dead end the loop did not write about
+    /// itself. Each is one line; a failure repeated, or already contained in a longer
+    /// one, is said once; the most recent few are kept.
+    fn what_did_not_work(&self) -> Vec<String> {
+        let receipts = self.observations.iter().filter_map(|seen| {
+            seen.error
+                .as_deref()
+                .map(|error| format!("{}: {}", seen.tool.trim(), error.trim()))
+        });
+        let dead_ends = self
+            .dead_ends
+            .iter()
+            .filter(|dead_end| !is_bookkeeping(&dead_end.why))
+            .map(|dead_end| dead_end.why.clone());
+        let mut found: Vec<String> = Vec::new();
+        for candidate in receipts.chain(dead_ends) {
+            let candidate = candidate.split_whitespace().collect::<Vec<_>>().join(" ");
+            if candidate.is_empty() || found.iter().any(|held| held.contains(&candidate)) {
+                continue;
+            }
+            found.retain(|held| !candidate.contains(held.as_str()));
+            found.push(candidate);
+        }
+        let older = found.len().saturating_sub(NOTICE_DEAD_ENDS);
+        found
+            .split_off(older)
+            .into_iter()
+            .map(|failure| clip(&failure, NOTICE_DEAD_END_CHARS))
+            .collect()
+    }
+
     /// Serializes the resumable state. Unknown or newer versions must not be resumed silently.
     #[must_use]
     pub fn checkpoint(&self) -> String {
@@ -537,8 +736,36 @@ impl Goal {
             "reason": self.reason,
             "evidence": self.evidence.iter().map(|e| json!({"step": e.step, "output": e.output})).collect::<Vec<_>>(),
             "dead_ends": self.dead_ends.iter().map(|d| json!({"step": d.step, "why": d.why})).collect::<Vec<_>>(),
+            "observations": self.observations.iter().map(|o| json!({"tool":o.tool,"input":o.input,"output":o.output,"data":o.data,"error":o.error,"at_ms":o.at.unix_millis()})).collect::<Vec<_>>(),
+            "criteria": self.criteria.as_ref().map(crate::goal_request::GoalCriteria::to_json),
         })
         .to_string()
+    }
+
+    /// Returns actual tool observations; older checkpoints contain none.
+    pub fn observations(&self) -> &[GoalObservation] {
+        &self.observations
+    }
+
+    /// Binds validated interpretation to the unchanged user objective.
+    pub fn for_request(
+        objective: &str,
+        criteria: crate::goal_request::GoalCriteria,
+    ) -> Result<Self, &'static str> {
+        let criteria = crate::goal_request::GoalCriteria::from_json(&criteria.to_json())?;
+        let mut goal = Self::new(objective)?;
+        goal.criteria = Some(criteria);
+        Ok(goal)
+    }
+
+    /// Immutable completion constraints; legacy goals may have none.
+    pub fn criteria(&self) -> Option<&crate::goal_request::GoalCriteria> {
+        self.criteria.as_ref()
+    }
+
+    /// Attaches receipts collected during this pass, including failed reads.
+    pub fn record_observations(&mut self, observations: Vec<GoalObservation>) {
+        self.observations.extend(observations);
     }
 
     /// Restores state from a checkpoint produced by [`Self::checkpoint`].
@@ -562,6 +789,39 @@ impl Goal {
         goal.phase = value["phase"].as_str().unwrap_or("planning").to_owned();
         goal.next_step = value["next_step"].as_str().unwrap_or("").to_owned();
         goal.reason = value["reason"].as_str().unwrap_or("").to_owned();
+        if value["version"].as_u64().is_some_and(|v| v >= 3) {
+            let observations = value["observations"]
+                .as_array()
+                .ok_or("invalid goal observations")?;
+            for item in observations {
+                goal.observations.push(GoalObservation {
+                    tool: item["tool"]
+                        .as_str()
+                        .ok_or("invalid observation tool")?
+                        .to_owned(),
+                    input: item["input"]
+                        .as_str()
+                        .ok_or("invalid observation input")?
+                        .to_owned(),
+                    output: item["output"]
+                        .as_str()
+                        .ok_or("invalid observation output")?
+                        .to_owned(),
+                    data: item["data"].as_str().map(str::to_owned),
+                    error: item["error"].as_str().map(str::to_owned),
+                    at: endora_kernel::Timestamp::from_unix_millis(
+                        item["at_ms"]
+                            .as_i64()
+                            .ok_or("invalid observation timestamp")?,
+                    ),
+                });
+            }
+        }
+        if value["version"].as_u64() == Some(4) && !value["criteria"].is_null() {
+            goal.criteria = Some(crate::goal_request::GoalCriteria::from_json(
+                &value["criteria"],
+            )?);
+        }
         goal.evidence = value["evidence"]
             .as_array()
             .into_iter()
@@ -590,11 +850,270 @@ impl Goal {
 
 #[cfg(test)]
 mod tests {
-    use super::{Goal, GoalStatus, GoalStep, GoalVerdict, StepError};
+    use super::{Goal, GoalObservation, GoalStatus, GoalStep, GoalVerdict, StepError};
 
     /// A step that always works, for tests about the loop rather than the work.
     fn works(output: &str) -> Result<String, StepError> {
         Ok(output.to_owned())
+    }
+
+    /// A tool receipt for a call that failed, as `ObservingGoalRunner` records one.
+    fn failed_read(tool: &str, error: &str) -> GoalObservation {
+        GoalObservation {
+            tool: tool.to_owned(),
+            input: String::new(),
+            output: String::new(),
+            data: None,
+            error: Some(error.to_owned()),
+            at: endora_kernel::Timestamp::from_unix_millis(1),
+        }
+    }
+
+    #[test]
+    fn a_partial_outcome_says_what_was_found_what_is_missing_and_what_failed() {
+        // Review finding 2: a goal that ran out of road settled as `Partial` and
+        // then vanished — the person never learned it had stopped, let alone why.
+        let mut goal = Goal::new("compare the two supplied products").unwrap();
+        assert!(goal.commit("read", "Product A costs 10 dollars"));
+        goal.record_observations(vec![failed_read(
+            "web_fetch",
+            "the second page answered 403",
+        )]);
+        goal.apply(
+            GoalVerdict::Partial,
+            "only one of the two products could be read",
+        );
+
+        let notice = goal.outcome_notice();
+
+        assert!(notice.contains("compare the two supplied products"));
+        assert!(notice.contains("Product A costs 10 dollars"), "{notice}");
+        assert!(
+            notice.contains("only one of the two products could be read"),
+            "{notice}"
+        );
+        assert!(
+            notice.contains("web_fetch") && notice.contains("403"),
+            "{notice}"
+        );
+        assert!(
+            !notice.to_lowercase().contains("is complete"),
+            "a partial outcome must never read as a finished one: {notice}"
+        );
+    }
+
+    #[test]
+    fn a_partial_with_findings_shows_them_and_says_it_could_not_confirm_them() {
+        // Measured live: the page was read and described correctly, yet the person
+        // was told "I only got part of the way" and "what is still missing: it stopped
+        // learning anything new". Partial means unverified, not unsuccessful, and the
+        // loop's own reason for stopping is not something they asked about.
+        let mut goal = Goal::new("say what the page is for").unwrap();
+        assert!(goal.commit("read", "The page is titled Example Domain"));
+        goal.apply(GoalVerdict::Partial, super::STOPPED_LEARNING);
+
+        let notice = goal.outcome_notice();
+
+        assert!(notice.starts_with("Here is what I found on"), "{notice}");
+        assert!(
+            notice.contains("The page is titled Example Domain"),
+            "{notice}"
+        );
+        assert!(notice.contains("couldn't confirm"), "{notice}");
+        assert!(!notice.contains("part of the way"), "{notice}");
+        assert!(
+            !notice.contains("stopped learning anything new"),
+            "the loop's own reason is not information for the person: {notice}"
+        );
+        assert!(!notice.contains("What is still missing"), "{notice}");
+    }
+
+    #[test]
+    fn what_did_not_work_is_the_real_tool_error_shown_once() {
+        // Measured live: the guard refused a private address and the message said
+        // "next step: the pass produced nothing". The refusal was in the tool receipts.
+        let refusal = "bad input: refusing to fetch a private/internal address (169.254.169.254)";
+        let mut goal = Goal::new("read the internal address").unwrap();
+        goal.record_observations(vec![
+            failed_read("web_fetch", refusal),
+            failed_read("web_fetch", refusal),
+            failed_read("web_fetch", refusal),
+        ]);
+        goal.apply(GoalVerdict::Blocked, super::NOTHING_LEFT);
+
+        let notice = goal.outcome_notice();
+
+        assert!(notice.starts_with("I'm blocked on"), "{notice}");
+        assert!(notice.contains("I found nothing usable."), "{notice}");
+        assert!(
+            notice.contains(&format!("web_fetch: {refusal}")),
+            "the real error must be what the person is told: {notice}"
+        );
+        assert_eq!(
+            notice.matches("refusing to fetch").count(),
+            1,
+            "three identical failures are one thing that did not work: {notice}"
+        );
+        assert!(
+            !notice.contains("nothing further could be tried"),
+            "{notice}"
+        );
+    }
+
+    #[test]
+    fn the_loops_own_bookkeeping_is_never_presented_as_what_went_wrong() {
+        let mut goal = Goal::new("find the opening hours").unwrap();
+        goal.note_dead_end("next step", super::PRODUCED_NOTHING);
+        goal.note_dead_end("next step", super::REPEATED_WHAT_WAS_KNOWN);
+        goal.note_dead_end("next step", super::RETURNED_NO_EVIDENCE);
+        goal.apply(GoalVerdict::Blocked, super::NOTHING_LEFT);
+
+        let notice = goal.outcome_notice();
+
+        for internal in [
+            super::PRODUCED_NOTHING,
+            super::REPEATED_WHAT_WAS_KNOWN,
+            super::RETURNED_NO_EVIDENCE,
+            super::NOTHING_LEFT,
+        ] {
+            assert!(!notice.contains(internal), "{internal:?} leaked: {notice}");
+        }
+        assert!(
+            !notice.contains("What did not work"),
+            "with nothing real to report there is no such section: {notice}"
+        );
+        assert!(!notice.contains("next step"), "{notice}");
+
+        // A real reason a pass failed is still shown, without the placeholder step.
+        goal.note_dead_end("next step", "the model could not be reached for this pass");
+        let notice = goal.outcome_notice();
+        assert!(
+            notice.contains("the model could not be reached for this pass"),
+            "{notice}"
+        );
+        assert!(!notice.contains("next step"), "{notice}");
+    }
+
+    #[test]
+    fn each_unfinished_status_is_recognisable_from_its_notice() {
+        let notice_for = |verdict| {
+            let mut goal = Goal::new("find the opening hours").unwrap();
+            goal.apply(verdict, "no source answered");
+            goal.outcome_notice()
+        };
+        let partial = notice_for(GoalVerdict::Partial);
+        let blocked = notice_for(GoalVerdict::Blocked);
+        let failed = notice_for(GoalVerdict::Failed);
+
+        assert_ne!(partial, blocked);
+        assert_ne!(blocked, failed);
+        assert_ne!(partial, failed);
+        for notice in [&partial, &blocked, &failed] {
+            assert!(notice.contains("find the opening hours"), "{notice}");
+            assert!(notice.contains("no source answered"), "{notice}");
+            assert!(
+                notice.to_lowercase().contains("nothing usable"),
+                "an outcome with no findings must say so rather than imply some: {notice}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_complete_outcome_still_delivers_the_verified_evidence() {
+        let mut goal = Goal::new("find the next two games").unwrap();
+        goal.commit(
+            "sports_schedule",
+            "1. Home v Away\n2. Away v Home\nSource: test",
+        );
+        goal.apply(GoalVerdict::Complete, "verified evidence");
+        assert_eq!(
+            goal.outcome_notice(),
+            "1. Home v Away\n2. Away v Home\nSource: test"
+        );
+
+        let bare = {
+            let mut goal = Goal::new("water the plants").unwrap();
+            goal.apply(GoalVerdict::Complete, "done");
+            goal.outcome_notice()
+        };
+        assert_eq!(bare, "Your request is complete: water the plants.");
+    }
+
+    #[test]
+    fn a_cancelled_or_unfinished_goal_is_not_described_as_partial_progress() {
+        // The console shows this text beside every goal, not just the announced ones,
+        // so a cancelled or still-running goal needs words of its own.
+        let mut cancelled = Goal::new("compare the products").unwrap();
+        cancelled.commit("read", "Product A costs 10 dollars");
+        cancelled.cancel("no longer needed");
+        let notice = cancelled.outcome_notice();
+        assert!(notice.starts_with("You cancelled"), "{notice}");
+        assert!(notice.contains("compare the products"), "{notice}");
+        assert!(notice.contains("no longer needed"), "{notice}");
+        assert!(
+            !notice.contains("What is still missing"),
+            "a cancellation is not a shortfall: {notice}"
+        );
+
+        let mut running = Goal::new("compare the products").unwrap();
+        running.start("gathering", "read");
+        running.commit("read", "Product A costs 10 dollars");
+        let notice = running.outcome_notice();
+        assert!(notice.starts_with("Still working on"), "{notice}");
+        assert!(notice.contains("Product A costs 10 dollars"), "{notice}");
+        assert!(!notice.contains("part of the way"), "{notice}");
+    }
+
+    #[test]
+    fn an_outcome_notice_is_bounded_however_much_the_goal_gathered() {
+        // The chat only refuses an empty message, so the bound has to live here.
+        let mut goal = Goal::new(&"objective ".repeat(200)).unwrap();
+        for n in 0..40 {
+            // Distinct words per finding, or `commit` rightly refuses the repeat.
+            goal.commit(
+                "read",
+                &format!("finding{n} {}", format!("word{n} ").repeat(2_000)),
+            );
+            goal.note_dead_end("web_fetch", &format!("failure{n} {}", "x".repeat(5_000)));
+        }
+        goal.apply(GoalVerdict::Partial, &"still missing ".repeat(500));
+
+        let notice = goal.outcome_notice();
+
+        assert!(
+            notice.chars().count() <= 3_000,
+            "{}",
+            notice.chars().count()
+        );
+        assert!(
+            notice.contains("still missing"),
+            "what is missing must survive the bound"
+        );
+        assert!(
+            notice.contains("finding39"),
+            "the most recent finding is the one worth keeping"
+        );
+    }
+
+    #[test]
+    fn only_outcomes_the_person_is_waiting_on_are_announced() {
+        for announced in [
+            GoalStatus::Complete,
+            GoalStatus::Partial,
+            GoalStatus::Blocked,
+            GoalStatus::Failed,
+        ] {
+            assert!(announced.announced(), "{announced:?} must reach the person");
+        }
+        // Cancelling is the person's own decision; the rest have not finished.
+        for silent in [
+            GoalStatus::Cancelled,
+            GoalStatus::Planned,
+            GoalStatus::Running,
+            GoalStatus::Waiting,
+        ] {
+            assert!(!silent.announced(), "{silent:?} must not be announced");
+        }
     }
 
     #[test]
