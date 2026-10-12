@@ -387,6 +387,7 @@ pub fn tools_to_open_on_connect(
 pub fn default_capabilities() -> Vec<Arc<dyn Capability>> {
     vec![
         Arc::new(WeatherCapability),
+        Arc::new(WebSearchCapability),
         Arc::new(WebFetchCapability),
         Arc::new(KnowledgeCapability),
         Arc::new(LocalNewsCapability),
@@ -410,6 +411,46 @@ pub fn default_capabilities() -> Vec<Arc<dyn Capability>> {
 /// UTC date. The date is supplied by the application so tests and the running node agree
 /// about "today"; the capability itself only owns the external lookup and parsing.
 struct SportsScheduleCapability;
+
+fn next_schedule_games(events: &[Value], team_id: &str, cutoff: i64, count: usize) -> Vec<Value> {
+    let mut games: Vec<Value> = events
+        .iter()
+        .filter_map(|event| {
+            let date = event["date"].as_str()?;
+            if crate::application::schedule::utc_millis(date)? < cutoff {
+                return None;
+            }
+            let competitors = event["competitions"].get(0)?["competitors"].as_array()?;
+            let opponent = competitors
+                .iter()
+                .find(|c| c["id"].as_str() != Some(team_id))?;
+            let opponent_name = opponent["team"]["displayName"].as_str()?;
+            let home_away = event["competitions"].get(0)?["competitors"]
+                .as_array()?
+                .iter()
+                .find(|c| c["id"].as_str() == Some(team_id))?["homeAway"]
+                .as_str()
+                .unwrap_or("unknown");
+            let venue = event["competitions"].get(0)?["venue"]["fullName"]
+                .as_str()
+                .unwrap_or("");
+            Some(json!({
+                "id": event["id"].as_str()?,
+                "date": date,
+                "opponent": opponent_name,
+                "home_away": home_away,
+                "venue": venue,
+                "name": event["name"].as_str().unwrap_or("")
+            }))
+        })
+        .collect();
+    games.sort_by_key(|game| {
+        crate::application::schedule::utc_millis(game["date"].as_str().unwrap_or(""))
+            .unwrap_or(i64::MAX)
+    });
+    games.truncate(count);
+    games
+}
 
 impl Capability for SportsScheduleCapability {
     fn info(&self) -> CapabilityInfo {
@@ -439,11 +480,18 @@ impl Capability for SportsScheduleCapability {
     ) -> Result<Value, CapabilityError> {
         let query = str_field(input, "team")?;
         let after = str_field(input, "after")?;
-        if after.len() != 10 || after.as_bytes().get(4) != Some(&b'-') {
-            return Err(CapabilityError::BadInput(
-                "'after' must be YYYY-MM-DD".to_owned(),
-            ));
-        }
+        let after_date = crate::application::schedule::utc_millis(&format!("{after}T00:00:00Z"))
+            .ok_or_else(|| {
+                CapabilityError::BadInput("'after' must be a valid YYYY-MM-DD".to_owned())
+            })?;
+        let current = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|e| CapabilityError::Unavailable(e.to_string()))?
+            .as_millis() as i64;
+        let cutoff = input["after_ms"]
+            .as_i64()
+            .unwrap_or(current)
+            .max(after_date);
         let count = input
             .get("count")
             .and_then(Value::as_u64)
@@ -496,41 +544,11 @@ impl Capability for SportsScheduleCapability {
         let events = schedule["events"].as_array().ok_or_else(|| {
             CapabilityError::Unavailable("the sports source returned no schedule".to_owned())
         })?;
-        let games: Vec<Value> = events
-            .iter()
-            .filter_map(|event| {
-                let date = event["date"].as_str()?;
-                if date.get(..10)? < after {
-                    return None;
-                }
-                let competitors = event["competitions"].get(0)?["competitors"].as_array()?;
-                let opponent = competitors
-                    .iter()
-                    .find(|c| c["id"].as_str() != Some(team_id))?;
-                let opponent_name = opponent["team"]["displayName"]
-                    .as_str()
-                    .unwrap_or("opponent");
-                let home_away = event["competitions"].get(0)?["competitors"]
-                    .as_array()?
-                    .iter()
-                    .find(|c| c["id"].as_str() == Some(team_id))?["homeAway"]
-                    .as_str()
-                    .unwrap_or("unknown");
-                let venue = event["competitions"].get(0)?["venue"]["fullName"]
-                    .as_str()
-                    .unwrap_or("");
-                Some(json!({
-                    "date": date,
-                    "opponent": opponent_name,
-                    "home_away": home_away,
-                    "venue": venue,
-                    "name": event["name"].as_str().unwrap_or("")
-                }))
-            })
-            .take(count)
-            .collect();
+        let games = next_schedule_games(events, team_id, cutoff, count);
         Ok(json!({
             "team": team_name,
+            "team_id": team_id,
+            "cutoff_ms": cutoff,
             "after": after,
             "count": games.len(),
             "games": games,
@@ -1536,6 +1554,131 @@ fn urlencode(s: &str) -> String {
         .collect()
 }
 
+// ---- Internet search (Brave's web search API) -------------------------------
+
+struct WebSearchCapability;
+
+fn search_results(raw: &Value, count: usize) -> Result<Value, CapabilityError> {
+    let results = raw["web"]["results"].as_array().ok_or_else(|| {
+        CapabilityError::Unavailable("Search provider returned no result collection".to_owned())
+    })?;
+    let results: Vec<Value> = results.iter().filter_map(|item| {
+        let url = item["url"].as_str()?;
+        let authority = url.strip_prefix("https://")?.split('/').next()?;
+        if authority.is_empty() || authority.contains('@') || url.contains(char::is_whitespace) { return None; }
+        Some(json!({"title":item["title"].as_str().unwrap_or("").chars().take(300).collect::<String>(),
+            "url":url, "snippet":item["description"].as_str().unwrap_or("").chars().take(2000).collect::<String>()}))
+    }).take(count).collect();
+    Ok(json!({"results":results}))
+}
+
+fn search_request(url: &str, key: &str) -> Result<Value, CapabilityError> {
+    // Never forward this provider's key through redirects. The production URL is fixed.
+    let mut builder = ureq::Agent::config_builder()
+        .timeout_global(Some(Duration::from_secs(15)))
+        .max_redirects(0);
+    if let Some(proxy) = egress_proxy() {
+        builder = builder.proxy(Some(proxy));
+    }
+    let agent: ureq::Agent = builder.build().into();
+    let mut response = agent
+        .get(url)
+        .header("X-Subscription-Token", key)
+        .header("Api-Version", "2023-01-01")
+        .header("Accept", "application/json")
+        .call()
+        .map_err(|error| {
+            CapabilityError::Unavailable(format!("Internet search request failed: {error}"))
+        })?;
+    response
+        .body_mut()
+        .with_config()
+        .limit(512 * 1024)
+        .read_json::<Value>()
+        .map_err(|_| CapabilityError::Unavailable("Invalid search provider response".to_owned()))
+}
+
+impl Capability for WebSearchCapability {
+    fn info(&self) -> CapabilityInfo {
+        CapabilityInfo {
+            id: "web_search",
+            name: "Internet search",
+            description: "Search the internet for current sources. Returns titles, URLs and snippets; fetch useful URLs with web_fetch before treating them as evidence.",
+            category: "information",
+            reaches_external: true,
+            reversibility: Reversibility::Observe,
+            configured: true,
+            needs: "Brave Search API key",
+            settings: &[SettingSpec {
+                key: "api_key",
+                label: "Brave Search API key",
+                secret: true,
+                optional: false,
+            }],
+            wants_place: false,
+            borrows_from: None,
+            third_party: true,
+            input_schema: Some(
+                r#"{"type":"object","properties":{"query":{"type":"string","description":"Search terms for current information"},"count":{"type":"integer","minimum":1,"maximum":10}},"required":["query"]}"#,
+            ),
+        }
+    }
+
+    fn invoke(
+        &self,
+        input: &Value,
+        settings: &CapabilitySettings,
+    ) -> Result<Value, CapabilityError> {
+        let key = settings
+            .get("api_key")
+            .map(String::as_str)
+            .filter(|s| !s.trim().is_empty())
+            .ok_or_else(|| {
+                CapabilityError::Unavailable(
+                    "Configure Internet search with a Brave Search API key in Skills".to_owned(),
+                )
+            })?;
+        let query = str_field(input, "query")?;
+        if query.chars().count() > 600 || query.split_whitespace().count() > 75 {
+            return Err(CapabilityError::BadInput(
+                "Search query is too long".to_owned(),
+            ));
+        }
+        let count = match input.get("count") {
+            None => 5,
+            Some(value) => value
+                .as_u64()
+                .filter(|n| (1..=10).contains(n))
+                .ok_or_else(|| {
+                    CapabilityError::BadInput("Search count must be 1 through 10".to_owned())
+                })? as usize,
+        };
+        let url = format!(
+            "https://api.search.brave.com/res/v1/web/search?q={}&count={count}",
+            urlencode(query)
+        );
+        search_results(&search_request(&url, key)?, count)
+    }
+
+    fn summarize(&self, output: &Value) -> String {
+        let mut text = "Search leads (fetch pages to verify their contents):\n".to_owned();
+        if let Some(results) = output["results"].as_array() {
+            if results.is_empty() {
+                text.push_str("No matching sources found.");
+            }
+            for item in results {
+                text.push_str(&format!(
+                    "{}\n{}\n{}\n",
+                    item["title"].as_str().unwrap_or(""),
+                    item["url"].as_str().unwrap_or(""),
+                    item["snippet"].as_str().unwrap_or("")
+                ));
+            }
+        }
+        text
+    }
+}
+
 // ---- Web fetch / browse (real) ---------------------------------------------
 
 struct WebFetchCapability;
@@ -1592,7 +1735,12 @@ impl Capability for WebFetchCapability {
             .unwrap_or(2_000)
             .min(12_000) as usize;
         let excerpt: String = text.chars().take(max_chars).collect();
-        Ok(json!({ "url": url, "title": title.trim(), "text": excerpt }))
+        let mut output = json!({ "url": url, "title": title.trim(), "text": excerpt });
+        match crate::application::schedule::json_ld_events(&html) {
+            Ok(events) => output["sports_events"] = json!(events),
+            Err(error) => output["structured_error"] = json!(error),
+        }
+        Ok(output)
     }
 }
 
@@ -3472,6 +3620,14 @@ impl CapabilityRunner for RegistryRunner {
     }
 
     fn run(&self, id: &str, input_json: &str) -> Result<String, String> {
+        self.run_observed(id, input_json).map(|read| read.text)
+    }
+
+    fn run_observed(
+        &self,
+        id: &str,
+        input_json: &str,
+    ) -> Result<crate::application::CapabilityRead, String> {
         let cap = self
             .capabilities
             .iter()
@@ -3524,7 +3680,11 @@ impl CapabilityRunner for RegistryRunner {
             .map_err(|e| e.to_string())?;
         // Hand the butler readable text, not raw JSON — small models relay it far
         // more reliably (and won't miss headlines buried in a JSON array).
-        Ok(cap.summarize(&out))
+        Ok(crate::application::CapabilityRead {
+            text: cap.summarize(&out),
+            data: Some(out.to_string()),
+            input: input.to_string(),
+        })
     }
 }
 
@@ -4631,6 +4791,15 @@ impl CompositeRunner {
 }
 
 impl CapabilityRunner for CompositeRunner {
+    fn run_observed(
+        &self,
+        id: &str,
+        input: &str,
+    ) -> Result<crate::application::CapabilityRead, String> {
+        self.owner(id)
+            .ok_or_else(|| format!("no such skill '{id}'"))?
+            .run_observed(id, input)
+    }
     fn available(&self) -> Vec<crate::application::CapabilitySpec> {
         self.sources.iter().flat_map(|s| s.available()).collect()
     }
@@ -4762,20 +4931,31 @@ impl CapabilityRunner for AliasRunner {
     }
 
     fn run(&self, id: &str, input_json: &str) -> Result<String, String> {
-        let first = self.inner.run(id, input_json);
+        self.run_observed(id, input_json).map(|read| read.text)
+    }
+
+    fn run_observed(
+        &self,
+        id: &str,
+        input_json: &str,
+    ) -> Result<crate::application::CapabilityRead, String> {
+        let first = self.inner.run_observed(id, input_json);
         let Err(original) = first else {
             return first;
         };
         let Some(retry_input) = self.apply(id, input_json) else {
             return Err(original);
         };
-        match self.inner.run(id, &retry_input) {
+        match self.inner.run_observed(id, &retry_input) {
             // Say what was substituted. The model answers from this, the outcome record
             // keeps it, and the person sees it — nothing about the recovery is hidden.
-            Ok(out) => Ok(format!(
-                "(Endora retried using the name you gave it: {retry_input}. The first \
-                 attempt failed.)\n{out}"
-            )),
+            Ok(mut out) => {
+                out.text = format!(
+                    "(Endora retried using the name you gave it: {retry_input}. The first attempt failed.)\n{}",
+                    out.text
+                );
+                Ok(out)
+            }
             // The alias did not help either; the original failure is the honest answer.
             Err(_) => Err(original),
         }
@@ -4907,6 +5087,14 @@ impl CapabilityRunner for OpenerRunner {
     }
 
     fn run(&self, id: &str, input_json: &str) -> Result<String, String> {
+        self.run_observed(id, input_json).map(|read| read.text)
+    }
+
+    fn run_observed(
+        &self,
+        id: &str,
+        input_json: &str,
+    ) -> Result<crate::application::CapabilityRead, String> {
         // Deny-by-default at the run layer too: `off` never runs, even on a direct call.
         if self.decision(id) == Some(Decision::Block) {
             return Err(format!(
@@ -4914,7 +5102,7 @@ impl CapabilityRunner for OpenerRunner {
                  confirm every use until it has proven itself)"
             ));
         }
-        self.inner.run(id, input_json)
+        self.inner.run_observed(id, input_json)
     }
 }
 
@@ -4992,6 +5180,14 @@ impl CapabilityRunner for ReversibleOnlyRunner {
     }
 
     fn run(&self, id: &str, input_json: &str) -> Result<String, String> {
+        self.run_observed(id, input_json).map(|read| read.text)
+    }
+
+    fn run_observed(
+        &self,
+        id: &str,
+        input_json: &str,
+    ) -> Result<crate::application::CapabilityRead, String> {
         // Refused at the run layer too, so a direct call can't route around the
         // narrowed catalog above.
         if !self.may_run_unattended(id) {
@@ -5000,7 +5196,7 @@ impl CapabilityRunner for ReversibleOnlyRunner {
                  back, and nobody is here to confirm it"
             ));
         }
-        self.inner.run(id, input_json)
+        self.inner.run_observed(id, input_json)
     }
 }
 
@@ -5456,6 +5652,21 @@ impl TargetSearchRunner {
 }
 
 impl CapabilityRunner for TargetSearchRunner {
+    fn run_observed(
+        &self,
+        id: &str,
+        input: &str,
+    ) -> Result<crate::application::CapabilityRead, String> {
+        if self.channel(id).is_none() {
+            return self.inner.run_observed(id, input);
+        }
+        self.run(id, input)
+            .map(|text| crate::application::CapabilityRead {
+                text,
+                data: None,
+                input: input.to_owned(),
+            })
+    }
     // Presence, states and the read-back scope are ANSWERED here, from this runner's own
     // channels, so they are written out below rather than forwarded.
     forwards_to_inner!(inner: decision, verifier);
@@ -5634,19 +5845,96 @@ impl CapabilityRunner for WithdrawnRunner {
     }
 
     fn run(&self, id: &str, input_json: &str) -> Result<String, String> {
+        self.run_observed(id, input_json).map(|read| read.text)
+    }
+
+    fn run_observed(
+        &self,
+        id: &str,
+        input_json: &str,
+    ) -> Result<crate::application::CapabilityRead, String> {
         // Refused here too, so a model naming it from earlier in the conversation — or a
         // direct call — cannot route around the narrowed catalogue.
 
         if self.withdrawn.contains(id) {
             return Err(format!("'{id}' is turned off"));
         }
-        self.inner.run(id, input_json)
+        self.inner.run_observed(id, input_json)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn search_wire_sends_key_in_header_and_reports_provider_failure() {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            for status in [200, 429] {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(3)))
+                    .unwrap();
+                let mut request = Vec::new();
+                loop {
+                    let mut bytes = [0; 1024];
+                    let read = stream.read(&mut bytes).unwrap();
+                    assert!(read > 0);
+                    request.extend_from_slice(&bytes[..read]);
+                    if request.windows(4).any(|w| w == b"\r\n\r\n") {
+                        break;
+                    }
+                }
+                let request = String::from_utf8(request).unwrap().to_ascii_lowercase();
+                assert!(request.starts_with("get /search?q=fictional%20schedule&count=2 "));
+                assert!(request.contains("x-subscription-token: fixture-key\r\n"));
+                assert!(request.contains("api-version: 2023-01-01\r\n"));
+                assert!(!request.lines().next().unwrap().contains("fixture-key"));
+                let body = r#"{"web":{"results":[]}}"#;
+                write!(stream, "HTTP/1.1 {status} Fixture\r\nContent-Length: {}\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+            }
+        });
+        let url = format!("http://{address}/search?q=fictional%20schedule&count=2");
+        assert!(search_request(&url, "fixture-key").is_ok());
+        let error = search_request(&url, "fixture-key").unwrap_err().to_string();
+        assert!(error.contains("429") && !error.contains("fixture-key"));
+        server.join().unwrap();
+    }
+    #[test]
+    fn internet_search_returns_sources_and_requires_a_local_key() {
+        assert!(
+            WebSearchCapability
+                .invoke(
+                    &json!({"query":"fictional schedule"}),
+                    &CapabilitySettings::new()
+                )
+                .is_err()
+        );
+        let raw = json!({"web":{"results":[{"title":"Calendar","url":"https://example.com/schedule","description":"Upcoming games"},{"title":"Unsafe","url":"javascript:alert(1)"}]}});
+        let results = search_results(&raw, 5).unwrap();
+        assert_eq!(results["results"].as_array().unwrap().len(), 1);
+        let text = WebSearchCapability.summarize(&results);
+        assert!(text.contains("https://example.com/schedule") && text.contains("Upcoming games"));
+        assert!(search_results(&json!({"error":{"status":429}}), 5).is_err());
+    }
+
+    #[test]
+    fn schedule_reads_exclude_started_games_and_sort_before_selecting() {
+        let event = |id: &str, date: &str| json!({"id":id,"date":date,"competitions":[{"competitors":[{"id":"fixture-team","homeAway":"home"},{"id":"other","team":{"displayName":"Bears"}}],"venue":{"fullName":"Example Stadium"}}]});
+        let events = vec![
+            event("later", "2030-09-08T17:00:00Z"),
+            event("started", "2030-09-07T12:00:00Z"),
+            event("next", "2030-09-07T17:00:00Z"),
+            event("invalid", "2030-02-30T17:00:00Z"),
+        ];
+        let cutoff = crate::application::schedule::utc_millis("2030-09-07T14:00:00Z").unwrap();
+        let games = next_schedule_games(&events, "fixture-team", cutoff, 2);
+        assert_eq!(games.len(), 2);
+        assert_eq!(games[0]["id"], "next");
+        assert_eq!(games[1]["id"], "later");
+    }
 
     /// A `CapabilityInfo` with a given band and reach; other fields are inert.
     fn info(reversibility: Reversibility, reaches_external: bool) -> CapabilityInfo {
@@ -6394,26 +6682,16 @@ mod tests {
     }
 
     #[test]
-    fn nothing_claims_to_search_the_web_any_more() {
-        // The DuckDuckGo skill is gone, and this is here so it does not quietly return.
-        //
-        // It called the Instant Answer API, which is not a search engine: it answers when a
-        // query names a well-known entity and returns **nothing** for real questions. Live,
-        // an ordinary question about local events came back empty, and so did one naming a
-        // stadium. It had been offered to the model for months and called zero times
-        // across thirty recorded outcomes — and had it been called, it would have said nothing.
-        //
-        // Two skills claiming to search, one of them useless, gives a model no way to choose
-        // and a person no way to tell. Better to offer nothing than something that cannot work.
+    fn internet_search_is_declared_with_required_secret_configuration() {
         let searching: Vec<&str> = default_capabilities()
             .iter()
             .map(|c| c.info().id)
             .filter(|id| *id == "web_search")
             .collect();
-        assert!(
-            searching.is_empty(),
-            "something is claiming to search again: {searching:?}"
-        );
+        assert_eq!(searching, vec!["web_search"]);
+        let info = WebSearchCapability.info();
+        assert!(info.settings[0].secret && !info.settings[0].optional);
+        assert_eq!(info.reversibility, Reversibility::Observe);
     }
 
     #[test]

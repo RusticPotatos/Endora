@@ -62,9 +62,21 @@ shared/      kernel (ids, time, errors, AutonomyLevel, Reversibility),
 The thin **orchestration layer** (currently `endora-application`) holds the
 butler-turn contract and the use cases that compose several contexts (running a
 turn, preparing a brief, advancing commissioned research, running the nightly loop).
-The node's single research worker polls durable SQLite work, shares the foreground
+The node's research worker polls durable SQLite work, shares the foreground
 turn lock, and uses a runner narrowed to guarded web reads plus the exact approved
-search capability. Contexts do not reach into each
+search capability. The goal worker also shares that lock, claims work atomically,
+renews ownership during long passes, and fences checkpoints and dispatch with its
+current ownership token ([ADR 0079](adr/0079-goal-checkpoints-require-ownership.md)).
+Research still has its own lifecycle pending migration to the shared goal contract.
+Goal checkpoints also distinguish actual tool observations from generated findings;
+supported schedule completion validates structured events and renders its answer
+from those fields ([ADR 0080](adr/0080-completion-uses-tool-observations.md)).
+Chat now declares durable work through one native intake tool, persisting explicit
+criteria with the original request. Built-in internet search supplies URLs for
+guarded fetch; supported JSON-LD calendars provide an alternate schedule source
+and completed goals deliver their verified answer in chat
+([ADR 0081](adr/0081-declare-work-and-search-for-sources.md)).
+Contexts do not reach into each
 other's internals; they collaborate through application-layer ports, and the
 dependency graph is acyclic.
 

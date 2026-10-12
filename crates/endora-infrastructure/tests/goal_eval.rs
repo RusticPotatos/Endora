@@ -1,18 +1,19 @@
 //! Ignored live acceptance check: can Endora actually accomplish a goal it was
 //! never built for?
 //!
-//! Every part of this is the real thing — the production SQLite schema, the real
+//! This composes the production SQLite schema, the real
 //! capability registry **clamped to the reversible bands exactly as
 //! `spawn_goal_worker` clamps it**, the configured model adapter, and the real
 //! `resume_goal` pass loop. The test supplies only the objective and the tick: it
-//! stands in for the background worker, calling one bounded pass at a time the way
-//! the worker does, so what passes here is what the worker does in production.
+//! calls one bounded pass at a time. It tests that use case, not the worker's
+//! scheduling or delivery lifecycle.
 //!
-//! This is a measurement, not a unit test. The first case asks whether the loop
-//! gets anywhere at all; the second asks whether it stays honest when the source
-//! refuses, which the battery says to expect the model to get wrong. A failure
-//! here is a result to record, like any other battery number — not necessarily a
-//! bug in the loop.
+//! This is a live acceptance test, not a unit test. The first case requires an
+//! accomplished goal, not merely some prose followed by a terminal partial state.
+//! The second probes honesty when a source refuses. Failures mean the tested
+//! behavior is not accepted, whether the cause is the model or the orchestration.
+//! This directly drives `resume_goal`; it does not exercise worker scheduling,
+//! lease ownership, browser progress, or publication to chat.
 //!
 //! The source is the reserved documentation domain and the objective contains no
 //! personal data.
@@ -76,32 +77,77 @@ fn work_on(live: &Live, key: &str, objective: &str) -> GoalRecord {
         live.clock.now(),
     )
     .expect("a valid goal record");
-    live.store.save_goal(&record).expect("checkpoint");
+    live.store.create_goal(&record).expect("checkpoint");
 
     for pass in 1..=PASSES {
-        let context = usecases::butler_context(
-            &live.understanding,
-            &live.understanding,
-            &live.understanding,
-            &live.config,
-            &live.chat,
+        let lease = live
+            .store
+            .claim_goal(key, live.clock.now())
+            .expect("claim")
+            .expect("available goal");
+        // The worker runs a pass through the ownership-guarded runner and renews its
+        // claim on a timer while the pass runs (`spawn_goal_worker`). A pass that
+        // outlasts the 30-second lease without that is rightly refused at checkpoint,
+        // so without the same two things here a slow pass — retries, escalation to the
+        // deep model — failed this eval for a reason unrelated to what it measures.
+        let owned = endora_application::goal_execution::OwnedGoalRunner::new(
             &live.runner,
-            &live.config,
+            &live.store,
+            &lease,
             &live.clock,
-        )
-        .expect("context");
-        record = usecases::resume_goal(
-            &record,
-            &live.butler,
-            &live.runner,
-            &live.audit,
-            &live.understanding,
-            &live.understanding,
-            &live.ids,
-            &live.clock,
-            &context,
         );
-        live.store.save_goal(&record).expect("checkpoint");
+        let finished = std::sync::atomic::AtomicBool::new(false);
+        record = std::thread::scope(|scope| {
+            scope.spawn(|| {
+                let tick = std::time::Duration::from_millis(200);
+                let mut waited = std::time::Duration::ZERO;
+                while !finished.load(std::sync::atomic::Ordering::Relaxed) {
+                    std::thread::sleep(tick);
+                    waited += tick;
+                    if waited < std::time::Duration::from_secs(10) {
+                        continue;
+                    }
+                    waited = std::time::Duration::ZERO;
+                    if !live
+                        .store
+                        .renew_goal(&lease, live.clock.now())
+                        .unwrap_or(false)
+                    {
+                        return;
+                    }
+                }
+            });
+            let context = usecases::butler_context(
+                &live.understanding,
+                &live.understanding,
+                &live.understanding,
+                &live.config,
+                &live.chat,
+                &owned,
+                &live.config,
+                &live.clock,
+            )
+            .expect("context");
+            let next = usecases::resume_goal(
+                &record,
+                &live.butler,
+                &owned,
+                &live.audit,
+                &live.understanding,
+                &live.understanding,
+                &live.ids,
+                &live.clock,
+                &context,
+            );
+            finished.store(true, std::sync::atomic::Ordering::Relaxed);
+            next
+        });
+        assert!(
+            live.store
+                .checkpoint_goal(&record, &lease, live.clock.now())
+                .expect("checkpoint")
+        );
+        live.store.release_goal(&lease).expect("release");
         eprintln!(
             "pass {pass}: {:?} — {} piece(s) of evidence, {} dead end(s){}",
             record.goal().status(),
@@ -122,6 +168,19 @@ fn work_on(live: &Live, key: &str, objective: &str) -> GoalRecord {
     }
     for dead in record.goal().dead_ends() {
         eprintln!("  dead end [{}]: {}", dead.step, dead.why);
+    }
+    // Evidence and dead ends are internals; this is what the person would actually be
+    // told, which is the thing worth judging.
+    eprintln!(
+        "--- the message the person would receive ---\n{}\n---",
+        record.goal().outcome_notice()
+    );
+    for seen in record.goal().observations() {
+        eprintln!(
+            "  tool receipt [{}]: {}",
+            seen.tool,
+            seen.error.as_deref().unwrap_or("ok")
+        );
     }
     record
 }
@@ -174,12 +233,14 @@ fn a_real_model_makes_real_progress_on_a_goal_it_was_not_built_for() {
         goal.status()
     );
 
-    // An honest ending. `Failed` is the one outcome that means the loop itself
-    // broke rather than the objective being hard.
-    assert_ne!(
+    // A stopped attempt is not an accomplished goal. Previously Partial and
+    // Blocked both passed this check, masking the absence of a general completion
+    // contract. Keep this requirement red until the runtime can verify success;
+    // do not teach it to assert Complete merely to satisfy the test.
+    assert_eq!(
         goal.status(),
-        GoalStatus::Failed,
-        "the loop failed rather than finishing honestly: {}",
+        GoalStatus::Complete,
+        "the answerable objective stopped without verified completion: {}",
         goal.reason()
     );
 

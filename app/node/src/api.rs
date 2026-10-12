@@ -2244,6 +2244,8 @@ fn settings_map(
 #[derive(Deserialize)]
 struct ChatRequest {
     message: String,
+    #[serde(default)]
+    request_id: Option<String>,
 }
 
 /// Sends a message to the butler; returns its reply and what it did this turn.
@@ -2282,7 +2284,7 @@ async fn send_chat(
             config.as_ref(),
             clock.as_ref(),
         )?;
-        let out = usecases::send_to_butler_with_goals(
+        let out = usecases::send_to_butler_streaming_for_request(
             chat.as_ref(),
             understanding.as_ref(),
             understanding.as_ref(),
@@ -2291,11 +2293,16 @@ async fn send_chat(
             &runner,
             butler.as_ref(),
             audit.as_ref(),
-            store.as_ref(),
+            None,
+            Some(store.as_ref()),
             ids.as_ref(),
             clock.as_ref(),
             &context,
             &req.message,
+            req.request_id.as_deref(),
+            &mut |_| {},
+            &mut |_| {},
+            &mut Vec::new(),
         )?;
         // Persist what the butler did/learned this turn to its action log, so the
         // activity view is a durable record, not just an in-page note.
@@ -2401,6 +2408,7 @@ async fn stream_chat(
     let summary = state.summary.clone();
     let mcp = mcp_snapshot(&state);
     let message = req.message;
+    let request_id = req.request_id;
 
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Event>();
 
@@ -2476,7 +2484,7 @@ async fn stream_chat(
                     e["type"] = json!("step");
                     let _ = tx.send(event(e));
                 };
-                usecases::send_to_butler_streaming_with_goals(
+                usecases::send_to_butler_streaming_for_request(
                     chat.as_ref(),
                     understanding.as_ref(),
                     understanding.as_ref(),
@@ -2491,6 +2499,7 @@ async fn stream_chat(
                     clock.as_ref(),
                     &context,
                     &message,
+                    request_id.as_deref(),
                     &mut on_token,
                     &mut on_step,
                     &mut disclosed,
@@ -2890,7 +2899,12 @@ fn goal_json(record: &endora_application::GoalRecord) -> serde_json::Value {
         "phase": goal.phase(),
         "next_step": goal.next_step(),
         "reason": goal.reason(),
+        // The words the chat uses for how it ended, so the console shows the same text.
+        // Only for an ended goal: before then there is no outcome to describe.
+        "outcome": goal.status().terminal().then(|| goal.outcome_notice()),
+        "criteria": goal.criteria().map(endora_application::goal_request::GoalCriteria::to_json),
         "evidence": goal.evidence().iter().map(|e| json!({"step": e.step, "output": e.output})).collect::<Vec<_>>(),
+        "observations": goal.observations().iter().map(|o| json!({"tool":o.tool,"input":o.input,"output":o.output,"data":o.data,"error":o.error,"retrieved_ms":o.at.unix_millis()})).collect::<Vec<_>>(),
         "created_ms": record.created_at().unix_millis(),
         "updated_ms": record.updated_at().unix_millis(),
     })
@@ -3049,7 +3063,8 @@ fn research_capabilities(state: &AppState) -> (bool, Vec<String>) {
         if spec.id == "web_fetch" && spec.autonomous {
             fetch = true;
         }
-        let brave_tool = spec.id == "brave-search.brave_web_search"
+        let brave_tool = spec.id == "web_search"
+            || spec.id == "brave-search.brave_web_search"
             || spec.id == "brave-search.brave_news_search";
         if spec.autonomous && spec.third_party && brave_tool {
             search.push(spec.id);
@@ -6183,13 +6198,12 @@ pub fn spawn_goal_worker(state: AppState) {
                 let Ok(_turn) = state.turn_lock.clone().try_lock_owned() else {
                     continue;
                 };
+                // Every way a goal stops on its own is announced, with what was found
+                // and what is missing; a partial result used to settle and vanish.
                 let notice = endora_application::ChatMessage::new(
                     endora_application::MessageId::new(state.ids.new_id()),
                     endora_application::MessageRole::Butler,
-                    &format!(
-                        "Your request is complete: {}. Open the goal to see the evidence.",
-                        record.goal().objective()
-                    ),
+                    &record.goal().outcome_notice(),
                     state.clock.now(),
                 );
                 if let Ok(notice) = notice {
@@ -6215,19 +6229,17 @@ pub fn spawn_goal_worker(state: AppState) {
                 continue;
             };
             let now = state.clock.now();
-            let Some(request_key) = goals
-                .into_iter()
-                .map(|goal| goal.request_key().to_owned())
-                .find(|key| state.store.reserve_goal_attempt(key, now).unwrap_or(false))
-            else {
+            let Some(lease) = goals.into_iter().find_map(|goal| {
+                state
+                    .store
+                    .claim_goal(goal.request_key(), now)
+                    .ok()
+                    .flatten()
+            }) else {
                 continue;
             };
-            let lease_key = format!("goal:{request_key}");
-            let lease_until_ms = now.unix_millis() + endora_application::EXECUTION_LEASE_MS;
-            let Ok(Some(record)) = state.store.get_goal(&request_key) else {
-                let _ = state
-                    .store
-                    .release_execution_attempt(&lease_key, lease_until_ms);
+            let Ok(Some(record)) = state.store.get_goal(lease.request_key()) else {
+                let _ = state.store.release_goal(&lease);
                 continue;
             };
             let store = state.store.clone();
@@ -6240,7 +6252,8 @@ pub fn spawn_goal_worker(state: AppState) {
             let ids = state.ids.clone();
             let chat = state.chat.clone();
             let mcp = mcp_snapshot(&state);
-            let result = tokio::task::spawn_blocking(move || {
+            let worker_lease = lease.clone();
+            let mut task = tokio::task::spawn_blocking(move || {
                 // Clamped to the reversible bands, because nobody is watching. This
                 // worker used to build the unclamped runner, which was survivable
                 // only because the one thing it could resume was a schedule read;
@@ -6251,6 +6264,12 @@ pub fn spawn_goal_worker(state: AppState) {
                     capabilities,
                     mcp,
                     proven_now(understanding.as_ref()),
+                );
+                let runner = endora_application::goal_execution::OwnedGoalRunner::new(
+                    &runner,
+                    store.as_ref(),
+                    &worker_lease,
+                    clock.as_ref(),
                 );
                 // Without the context the pass would run blind; skip it and leave the
                 // goal exactly as it was, so the next tick tries again. Failing to
@@ -6266,7 +6285,7 @@ pub fn spawn_goal_worker(state: AppState) {
                     config.as_ref(),
                     clock.as_ref(),
                 ) else {
-                    return Ok(());
+                    return Ok(false);
                 };
                 let updated = usecases::resume_goal(
                     &record,
@@ -6279,15 +6298,26 @@ pub fn spawn_goal_worker(state: AppState) {
                     clock.as_ref(),
                     &context,
                 );
-                store.save_goal(&updated).map(|_| ())
-            })
-            .await;
-            if matches!(result, Ok(Ok(()))) {
+                store.checkpoint_goal(&updated, &worker_lease, clock.now())
+            });
+            let mut heartbeat = tokio::time::interval(std::time::Duration::from_secs(10));
+            heartbeat.tick().await;
+            let result = loop {
+                tokio::select! {
+                    result = &mut task => break result,
+                    _ = heartbeat.tick() => {
+                        if !state.store.renew_goal(&lease, state.clock.now()).unwrap_or(false) {
+                            // A dispatched operation keeps its transport deadline;
+                            // the guarded runner rejects every subsequent dispatch.
+                            break task.await;
+                        }
+                    }
+                }
+            };
+            if matches!(result, Ok(Ok(true))) {
                 let _ = state.changes.send(());
             }
-            let _ = state
-                .store
-                .release_execution_attempt(&lease_key, lease_until_ms);
+            let _ = state.store.release_goal(&lease);
         }
     });
 }
@@ -6488,6 +6518,450 @@ mod tests {
         // generated-on-first-run path is exercised by `the_node_makes_and_keeps_a_token`.
         state.token = Arc::new(TEST_TOKEN.to_owned());
         state
+    }
+
+    #[tokio::test]
+    async fn goal_worker_delivers_its_terminal_partial_result() {
+        use endora_application::{Goal, GoalRecord, GoalRepository, GoalStatus, MemoryStore};
+
+        let state = test_state();
+        let mut goal = Goal::new("Compare the supplied fictional products").unwrap();
+        for n in 0..4 {
+            goal.commit("read", &format!("distinct source finding {n}"));
+        }
+        let record = GoalRecord::new(
+            "worker-delivery-review",
+            goal,
+            endora_application::Timestamp::from_unix_millis(1),
+        )
+        .unwrap();
+        state.store.create_goal(&record).unwrap();
+        super::spawn_goal_worker(state.clone());
+
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                let saved = state.store.get_goal(record.request_key()).unwrap().unwrap();
+                if saved.goal().status() == GoalStatus::Partial {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("the actual worker must settle the exhausted goal");
+
+        // Give the real publisher its following tick. A direct call to the SQL
+        // publication method would miss the worker's status filter.
+        tokio::time::timeout(std::time::Duration::from_secs(6), async {
+            loop {
+                if !state.store.export().unwrap().messages.is_empty() {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("terminal partial findings must be delivered, not silently disappear");
+
+        // Delivered is not the same as useful: the message has to say what was asked,
+        // what was found, and that this is *not* the finished answer.
+        let messages = state.store.export().unwrap().messages;
+        assert_eq!(messages.len(), 1, "one outcome, delivered once");
+        let text = messages[0].text();
+        assert!(
+            text.contains("Compare the supplied fictional products"),
+            "{text}"
+        );
+        assert!(text.contains("distinct source finding 3"), "{text}");
+        assert!(
+            text.starts_with("Here is what I found on")
+                && text.contains("couldn't confirm")
+                && !text.to_lowercase().contains("is complete"),
+            "a partial outcome must show its findings and say it is unconfirmed: {text}"
+        );
+
+        // And it stays delivered: a later tick must not announce it again.
+        tokio::time::sleep(std::time::Duration::from_secs(6)).await;
+        assert_eq!(state.store.export().unwrap().messages.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn goal_worker_waiting_for_chat_does_not_reserve_an_attempt() {
+        use endora_application::{Goal, GoalRecord, GoalRepository, Timestamp};
+        let state = test_state();
+        let record = GoalRecord::new(
+            "waiting-for-chat",
+            Goal::new("Read a source").unwrap(),
+            Timestamp::from_unix_millis(1),
+        )
+        .unwrap();
+        state.store.create_goal(&record).unwrap();
+        let _turn = state.turn_lock.clone().lock_owned().await;
+        super::spawn_goal_worker(state.clone());
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        let saved = state.store.get_goal(record.request_key()).unwrap().unwrap();
+        assert_eq!(
+            saved.updated_at(),
+            record.updated_at(),
+            "a reservation would change this timestamp"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "worker ownership acceptance: runs past the 30-second lease"]
+    async fn goal_worker_renews_while_the_model_is_running() {
+        use endora_application::{
+            Butler, ButlerContext, ButlerReply, ChatMessage, Goal, GoalRecord, GoalRepository,
+            Preference, ProposalError, Timestamp,
+        };
+        struct SlowButler(std::sync::atomic::AtomicBool);
+        impl Butler for SlowButler {
+            fn respond(
+                &self,
+                _: &[ChatMessage],
+                _: &[Preference],
+                _: &ButlerContext,
+            ) -> Result<ButlerReply, ProposalError> {
+                if !self.0.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                    std::thread::sleep(std::time::Duration::from_secs(35));
+                }
+                Ok(ButlerReply {
+                    text: "A useful finding about the fictional objective.".to_owned(),
+                    ..Default::default()
+                })
+            }
+        }
+        let mut state = test_state();
+        state.butler = Arc::new(SlowButler(std::sync::atomic::AtomicBool::new(false)));
+        let record = GoalRecord::new(
+            "slow-worker",
+            Goal::new("Describe the fictional objective").unwrap(),
+            Timestamp::from_unix_millis(1),
+        )
+        .unwrap();
+        state.store.create_goal(&record).unwrap();
+        super::spawn_goal_worker(state.clone());
+        tokio::time::timeout(std::time::Duration::from_secs(40), async {
+            loop {
+                let saved = state.store.get_goal(record.request_key()).unwrap().unwrap();
+                if !saved.goal().evidence().is_empty() {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
+        })
+        .await
+        .expect("heartbeat must keep the claim valid so a slow pass can checkpoint");
+    }
+
+    #[tokio::test]
+    async fn goal_worker_completes_from_real_tool_data_instead_of_model_claims() {
+        use endora_application::{
+            Butler, ButlerContext, ButlerReply, ChatMessage, Goal, GoalRecord, GoalRepository,
+            GoalStatus, Preference, ProposalError, Timestamp, ToolCall, TurnMessage,
+        };
+        use endora_capabilities::{CapabilityError, CapabilityInfo, CapabilitySettings};
+        struct FixtureSports;
+        impl Capability for FixtureSports {
+            fn info(&self) -> CapabilityInfo {
+                endora_capabilities::default_capabilities()
+                    .into_iter()
+                    .find(|cap| cap.info().id == "sports_schedule")
+                    .unwrap()
+                    .info()
+            }
+            fn invoke(
+                &self,
+                _: &serde_json::Value,
+                _: &CapabilitySettings,
+            ) -> Result<serde_json::Value, CapabilityError> {
+                Ok(
+                    serde_json::json!({"team":"Fictional Panthers","team_id":"fixture-team","cutoff_ms":endora_application::Clock::now(&SystemClock).unix_millis(),"count":3,"source":"https://example.com/schedule","games":[
+                    {"id":"one","opponent":"Bears","date":"2030-09-08T17:00:00Z"},
+                    {"id":"two","opponent":"Wolves","date":"2030-09-15T17:00:00Z"},
+                    {"id":"three","opponent":"Eagles","date":"2030-09-22T17:00:00Z"}]}),
+                )
+            }
+            fn summarize(&self, _: &serde_json::Value) -> String {
+                "1. Unverified summary\n2. Not dates\n3. Not opponents\nSource: invented".to_owned()
+            }
+        }
+        struct CallsSchedule;
+        impl Butler for CallsSchedule {
+            fn respond(
+                &self,
+                _: &[ChatMessage],
+                _: &[Preference],
+                _: &ButlerContext,
+            ) -> Result<ButlerReply, ProposalError> {
+                Ok(ButlerReply {
+                    text: "Invented answer without supporting dates.".to_owned(),
+                    ..Default::default()
+                })
+            }
+            fn take_turn(
+                &self,
+                history: &[TurnMessage],
+                p: &[Preference],
+                c: &ButlerContext,
+            ) -> Result<ButlerReply, ProposalError> {
+                if history
+                    .iter()
+                    .any(|turn| matches!(turn, TurnMessage::ToolResult { .. }))
+                {
+                    return self.respond(&[], p, c);
+                }
+                Ok(ButlerReply {
+                    tool_calls: vec![ToolCall {
+                        id: "fixture-call".to_owned(),
+                        capability: "sports_schedule".to_owned(),
+                        input_json: serde_json::json!({"team":"panthers","after":c.now.split_whitespace().nth(1).unwrap(),"count":3}).to_string(),
+                    }],
+                    ..Default::default()
+                })
+            }
+        }
+        let mut state = test_state();
+        state.capabilities = Arc::new(vec![Arc::new(FixtureSports)]);
+        state.butler = Arc::new(CallsSchedule);
+        let mut goal = Goal::new("What are the next three Panthers games?").unwrap();
+        // Existing prose is still unverified. A real read with the same answer
+        // must be allowed to establish completion despite the repetition guard.
+        goal.commit("unverified finding", "Next 3 Fictional Panthers games:\n1. 2030-09-08T17:00:00Z vs Bears\n2. 2030-09-15T17:00:00Z vs Wolves\n3. 2030-09-22T17:00:00Z vs Eagles\nSource: https://example.com/schedule");
+        let record =
+            GoalRecord::new("source-backed-goal", goal, Timestamp::from_unix_millis(1)).unwrap();
+        state.store.create_goal(&record).unwrap();
+        super::spawn_goal_worker(state.clone());
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                let saved = state.store.get_goal(record.request_key()).unwrap().unwrap();
+                if saved.goal().status() == GoalStatus::Complete {
+                    assert_eq!(saved.goal().observations().len(), 1);
+                    assert!(saved.goal().observations()[0].data.is_some());
+                    let result = &saved.goal().evidence().last().unwrap().output;
+                    assert!(
+                        result.contains("Bears")
+                            && result.contains("2030-09-08")
+                            && result.contains("https://example.com/schedule")
+                    );
+                    assert!(!result.contains("Invented") && !result.contains("Unverified"));
+                    let restored =
+                        Goal::from_checkpoint(saved.goal().objective(), &saved.goal().checkpoint())
+                            .unwrap();
+                    assert_eq!(restored.observations(), saved.goal().observations());
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("the actual worker and wrapper stack must retain and verify source data");
+    }
+
+    #[tokio::test]
+    async fn goal_worker_recovers_a_failed_source_and_posts_the_verified_schedule() {
+        use endora_application::{
+            Butler, ButlerContext, ButlerReply, ChatMessage, GoalRepository, GoalStatus,
+            Preference, ProposalError, ToolCall, TurnMessage,
+        };
+        use endora_capabilities::{CapabilityError, CapabilityInfo, CapabilitySettings};
+        struct ReadFixture(&'static str);
+        impl Capability for ReadFixture {
+            fn info(&self) -> CapabilityInfo {
+                let mut info = endora_capabilities::default_capabilities()
+                    .into_iter()
+                    .find(|cap| cap.info().id == self.0)
+                    .unwrap()
+                    .info();
+                info.settings = &[]; // Synthetic provider, no account or actual internet call.
+                info
+            }
+            fn invoke(
+                &self,
+                _: &serde_json::Value,
+                _: &CapabilitySettings,
+            ) -> Result<serde_json::Value, CapabilityError> {
+                match self.0 {
+                    "sports_schedule" => Err(CapabilityError::Unavailable(
+                        "HTTP 403 from first source".to_owned(),
+                    )),
+                    "web_search" => Ok(
+                        serde_json::json!({"results":[{"title":"Schedule","url":"https://example.com/schedule","snippet":"Search is not proof"}]}),
+                    ),
+                    _ => {
+                        let html = r#"<script type="application/ld+json">[{"@type":"SportsEvent","startDate":"2030-09-15T17:00:00Z","homeTeam":{"name":"Fictional Panthers"},"awayTeam":{"name":"Wolves"}},{"@type":"SportsEvent","startDate":"2030-09-08T17:00:00Z","homeTeam":{"name":"Fictional Panthers"},"awayTeam":{"name":"Bears"}}]</script>"#;
+                        Ok(
+                            serde_json::json!({"url":"https://example.com/schedule", "sports_events":endora_capabilities::application::schedule::json_ld_events(html).unwrap()}),
+                        )
+                    }
+                }
+            }
+        }
+        struct RecoveringPlanner;
+        impl Butler for RecoveringPlanner {
+            fn respond(
+                &self,
+                _: &[ChatMessage],
+                _: &[Preference],
+                _: &ButlerContext,
+            ) -> Result<ButlerReply, ProposalError> {
+                Ok(ButlerReply {
+                    text: "Do not trust this generated answer.".to_owned(),
+                    ..Default::default()
+                })
+            }
+            fn take_turn(
+                &self,
+                history: &[TurnMessage],
+                p: &[Preference],
+                c: &ButlerContext,
+            ) -> Result<ButlerReply, ProposalError> {
+                let seen = history
+                    .iter()
+                    .filter(|turn| matches!(turn, TurnMessage::ToolResult { .. }))
+                    .count();
+                let intake = c
+                    .tools
+                    .iter()
+                    .any(|tool| tool.id == endora_application::goal_request::BEGIN_GOAL);
+                let (capability, input) = if intake {
+                    (
+                        endora_application::goal_request::BEGIN_GOAL,
+                        serde_json::json!({"kind":"schedule","team":"Panthers","count":2}),
+                    )
+                } else {
+                    match seen {
+                        0 => (
+                            "sports_schedule",
+                            serde_json::json!({"team":"panthers","after":c.now.split_whitespace().nth(1).unwrap(),"count":2}),
+                        ),
+                        1 => (
+                            "web_search",
+                            serde_json::json!({"query":"Panthers schedule","count":2}),
+                        ),
+                        2 => (
+                            "web_fetch",
+                            serde_json::json!({"url":"https://example.com/schedule"}),
+                        ),
+                        _ => return self.respond(&[], p, c),
+                    }
+                };
+                Ok(ButlerReply {
+                    tool_calls: vec![ToolCall {
+                        id: format!("read-{seen}"),
+                        capability: capability.to_owned(),
+                        input_json: input.to_string(),
+                    }],
+                    ..Default::default()
+                })
+            }
+        }
+        let mut state = test_state();
+        state.capabilities = Arc::new(vec![
+            Arc::new(ReadFixture("sports_schedule")),
+            Arc::new(ReadFixture("web_search")),
+            Arc::new(ReadFixture("web_fetch")),
+        ]);
+        state.butler = Arc::new(RecoveringPlanner);
+        let response = app(state.clone()).oneshot(post("/v1/chat", r#"{"message":"Find two forthcoming Panthers fixtures","request_id":"source-recovery"}"#)).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        super::spawn_goal_worker(state.clone());
+        tokio::time::timeout(std::time::Duration::from_secs(8), async {
+            loop {
+                let record = state
+                    .store
+                    .get_goal("request-source-recovery")
+                    .unwrap()
+                    .unwrap();
+                if record.goal().status() == GoalStatus::Complete
+                    && state.store.pending_goal_completions().unwrap().is_empty()
+                {
+                    let receipts = record.goal().observations();
+                    assert_eq!(receipts.len(), 3);
+                    assert!(receipts[0].error.as_deref().unwrap().contains("403"));
+                    let messages =
+                        endora_application::ChatRepository::list(state.chat.as_ref()).unwrap();
+                    let delivered: Vec<_> = messages
+                        .iter()
+                        .filter(|m| m.text().contains("2030-09-08T17:00:00Z vs Bears"))
+                        .collect();
+                    assert_eq!(
+                        delivered.len(),
+                        1,
+                        "the actual verified result must arrive in chat once"
+                    );
+                    assert!(delivered[0].text().contains("https://example.com/schedule"));
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("source failure must recover through search and fetched evidence");
+    }
+
+    #[tokio::test]
+    async fn declared_chat_work_is_durable_and_request_retries_do_not_duplicate_it() {
+        use endora_application::{
+            Butler, ButlerContext, ButlerReply, ChatMessage, GoalRepository, Preference,
+            ProposalError, ToolCall, TurnMessage,
+        };
+        struct Planner;
+        impl Butler for Planner {
+            fn respond(
+                &self,
+                _: &[ChatMessage],
+                _: &[Preference],
+                _: &ButlerContext,
+            ) -> Result<ButlerReply, ProposalError> {
+                Ok(ButlerReply {
+                    text: "Ready.".to_owned(),
+                    ..Default::default()
+                })
+            }
+            fn take_turn(
+                &self,
+                _: &[TurnMessage],
+                _: &[Preference],
+                _: &ButlerContext,
+            ) -> Result<ButlerReply, ProposalError> {
+                Ok(ButlerReply {
+                    tool_calls: vec![ToolCall {
+                        id: "plan".to_owned(),
+                        capability: endora_application::goal_request::BEGIN_GOAL.to_owned(),
+                        input_json: r#"{"kind":"schedule","team":"Panthers","count":4}"#.to_owned(),
+                    }],
+                    ..Default::default()
+                })
+            }
+        }
+        let mut state = test_state();
+        state.butler = Arc::new(Planner);
+        let router = app(state.clone());
+        let body = r#"{"message":"I'd like the forthcoming fixtures for Panthers, four please.","request_id":"goal-intake-test"}"#;
+        for _ in 0..2 {
+            let response = router
+                .clone()
+                .oneshot(post("/v1/chat", body))
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+        }
+        let goals = state.store.active_goals().unwrap();
+        assert_eq!(
+            goals.len(),
+            1,
+            "the ask, not a failed answer, creates one durable objective"
+        );
+        assert_eq!(goals[0].goal().criteria().unwrap().to_json()["count"], 4);
+        let conflict = router
+            .oneshot(post(
+                "/v1/chat",
+                r#"{"message":"A different task","request_id":"goal-intake-test"}"#,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(conflict.status(), StatusCode::CONFLICT);
     }
 
     async fn json_body(res: axum::response::Response) -> serde_json::Value {
@@ -8222,7 +8696,7 @@ mod tests {
         goal.start("gathering", "sports_schedule");
         let record =
             GoalRecord::new("api-goal-route", goal, Timestamp::from_unix_millis(1_000)).unwrap();
-        state.store.save_goal(&record).unwrap();
+        state.store.create_goal(&record).unwrap();
         let router = app(state);
 
         let listed = json_body(router.clone().oneshot(get("/v1/goals")).await.unwrap()).await;
@@ -8237,6 +8711,10 @@ mod tests {
         )
         .await;
         assert_eq!(fetched["status"], "running");
+        assert!(
+            fetched["outcome"].is_null(),
+            "work still in progress has no outcome yet: {fetched}"
+        );
 
         let cancelled = json_body(
             router
@@ -8246,5 +8724,11 @@ mod tests {
         )
         .await;
         assert_eq!(cancelled["status"], "cancelled");
+        let outcome = cancelled["outcome"].as_str().unwrap_or_default();
+        assert!(
+            outcome.starts_with("You cancelled")
+                && outcome.contains("what are the next three panthers games"),
+            "an ended goal carries the same wording the chat would use: {cancelled}"
+        );
     }
 }

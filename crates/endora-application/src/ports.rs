@@ -19,6 +19,33 @@ use endora_understanding::{
 /// How long a worker reservation remains owned before restart recovery may reclaim it.
 pub const EXECUTION_LEASE_MS: i64 = 30_000;
 
+/// Identifies one claim of a goal. Tokens never repeat, including after deletion.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GoalLease {
+    request_key: String,
+    owner: String,
+}
+
+impl GoalLease {
+    /// Constructs a storage-issued ownership token.
+    pub fn new(request_key: &str, owner: &str) -> Self {
+        Self {
+            request_key: request_key.to_owned(),
+            owner: owner.to_owned(),
+        }
+    }
+
+    /// The goal covered by this claim.
+    pub fn request_key(&self) -> &str {
+        &self.request_key
+    }
+
+    /// Opaque token checked by persistence on every mutation.
+    pub fn owner(&self) -> &str {
+        &self.owner
+    }
+}
+
 /// A complete snapshot of the user's stored data, for the memory rights of the
 /// constitution: it is what "export" hands back and what "delete" removes.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -63,9 +90,18 @@ pub trait MemoryStore {
 /// objective, reject stale writes that would resurrect a terminal goal, and
 /// return queued/running/waiting records so a worker can resume after restart.
 pub trait GoalRepository {
-    /// Inserts or checkpoints a goal. Returns `false` when a terminal record
-    /// won a race against this stale non-terminal update.
-    fn save_goal(&self, record: &GoalRecord) -> Result<bool, RepositoryError>;
+    /// Creates a goal without overwriting existing work. A conflicting objective
+    /// is an error; a duplicate request returns `false`.
+    fn create_goal(&self, record: &GoalRecord) -> Result<bool, RepositoryError>;
+
+    /// Updates existing active work only for its current, unexpired owner.
+    /// Never inserts; deletion, cancellation or replacement returns `false`.
+    fn checkpoint_goal(
+        &self,
+        record: &GoalRecord,
+        lease: &GoalLease,
+        at: Timestamp,
+    ) -> Result<bool, RepositoryError>;
 
     /// Fetches a goal by its idempotency key.
     fn get_goal(&self, request_key: &str) -> Result<Option<GoalRecord>, RepositoryError>;
@@ -73,15 +109,22 @@ pub trait GoalRepository {
     /// Returns all resumable goals, oldest update first.
     fn active_goals(&self) -> Result<Vec<GoalRecord>, RepositoryError>;
 
-    /// Reserves one bounded external attempt before I/O. A running goal may be
-    /// reclaimed only after its checkpoint has been stale long enough to imply
-    /// the previous worker died. Returns `false` when another worker owns it or
-    /// the attempt budget is exhausted.
-    fn reserve_goal_attempt(
+    /// Atomically claims active work and spends an attempt. Exhaustion after the
+    /// last owner's expiry records an explicit terminal reason.
+    fn claim_goal(
         &self,
         request_key: &str,
         at: Timestamp,
-    ) -> Result<bool, RepositoryError>;
+    ) -> Result<Option<GoalLease>, RepositoryError>;
+
+    /// Checks current ownership before a new external operation is dispatched.
+    fn goal_owned(&self, lease: &GoalLease, at: Timestamp) -> Result<bool, RepositoryError>;
+
+    /// Extends an unexpired claim; expired or revoked ownership cannot renew.
+    fn renew_goal(&self, lease: &GoalLease, at: Timestamp) -> Result<bool, RepositoryError>;
+
+    /// Releases this claim without clearing a replacement owner's lease.
+    fn release_goal(&self, lease: &GoalLease) -> Result<(), RepositoryError>;
 
     /// Cancels a non-terminal goal. Returns `false` when it was already terminal.
     fn cancel_goal(

@@ -2,6 +2,19 @@
 
 use endora_kernel::{Decision, RepositoryError, Reversibility};
 
+pub mod schedule;
+
+/// The readable result and optional machine data from one actual invocation.
+#[derive(Debug, Clone)]
+pub struct CapabilityRead {
+    /// Readable summary for the model and existing callers.
+    pub text: String,
+    /// Raw adapter data; generated prose is never promoted into this field.
+    pub data: Option<String>,
+    /// Effective arguments after adapter normalization or recovery.
+    pub input: String,
+}
+
 use crate::domain::{Change, Transition, Watched, note_reading};
 
 pub use crate::domain::{
@@ -511,6 +524,16 @@ pub trait CapabilityRunner {
     /// Runs a capability with JSON input, returning its JSON output or an error
     /// message. Only ever called for capabilities the policy layer has cleared.
     fn run(&self, id: &str, input_json: &str) -> Result<String, String>;
+
+    /// Executes once, preserving structured adapter data when supported.
+    /// Existing integrations remain readable but unstructured by default.
+    fn run_observed(&self, id: &str, input_json: &str) -> Result<CapabilityRead, String> {
+        self.run(id, input_json).map(|text| CapabilityRead {
+            text,
+            data: None,
+            input: input_json.to_owned(),
+        })
+    }
 
     /// The capability that **observes what this one changes**, if any — the read
     /// used to verify an actuation (ADR 0053).

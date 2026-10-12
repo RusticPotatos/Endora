@@ -25,8 +25,8 @@ pub mod target_search;
 
 pub use application::{
     AutonomyEnvelope, AutonomyEnvelopeRepository, ButlerModelConfig, ButlerModelConfigRepository,
-    CapabilityConfigRepository, CapabilityRunner, CapabilitySettingsRepository, CapabilitySpec,
-    CapabilityUse, ConfigWrite, ConfigWriteLog, DeepModel, DeepModelRepository,
+    CapabilityConfigRepository, CapabilityRead, CapabilityRunner, CapabilitySettingsRepository,
+    CapabilitySpec, CapabilityUse, ConfigWrite, ConfigWriteLog, DeepModel, DeepModelRepository,
     KEEP_TRANSITIONS_FOR_MS, McpServer, McpServerRegistry, McpTransport, ModelSlot,
     ModelTuneSchedule, ModelTuneScheduleRepository, Recipe, RecipeInput, RecipeInputKind,
     RecipeRepository, Sampling, Stance, StandingTrouble, StandingTroubleRepository, TargetAlias,
