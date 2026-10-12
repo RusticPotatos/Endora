@@ -8,6 +8,10 @@ The [implementation handoff](../plans/research-assistant-handoff.md) and
 accepted first release. The owner accepted this decision on 2026-09-06. This
 decision does not amend the constitution.
 
+Amended 2026-10-12: ordinary chat may now start an objective on its own, from the
+deterministic verdict that a turn could not answer. See the amendment in the
+Decision section; the clause it supersedes is struck there rather than deleted.
+
 ## Context
 
 The current nightly loop forms intentions from beliefs rather than explicit
@@ -24,8 +28,40 @@ contracts. Prepared with AI assistance (Codex/Astra).
 
 - **Explicit commissioning:** Research mode in the existing composer submits the
   person's assignment once. That submission is authorization; no second yes or
-  model classifier. Ordinary chat does not silently create work. Natural-language
-  commissioning from normal chat and model-generated offers are deferred.
+  model classifier. ~~Ordinary chat does not silently create work.
+  Natural-language commissioning from normal chat and model-generated offers are
+  deferred.~~ **Amended 2026-10-12 — see "Unanswered asks pursue themselves".**
+- **Unanswered asks pursue themselves** *(amendment, 2026-10-12)*. The two struck
+  sentences above are superseded on the maintainer's direction that this be
+  autonomous rather than ask. An ask the turn **could not answer** now starts an
+  objective from ordinary chat, with nothing asked of the person.
+
+  The deferred-model-offer refusal stands, and so does 0076's: **no classifier
+  decides what you commissioned.** None is needed, because the trigger already
+  exists and is already deterministic — `specimen_verdict`, the same honesty check
+  that gates retries and files specimens
+  ([0075](0075-failures-become-specimens.md)), is what says a turn could not
+  answer. A turn that could not answer is, by code rather than by any model's
+  opinion of itself, an ask that needs more than one turn. A turn that answered
+  starts nothing.
+
+  What makes starting unasked affordable is not that the trigger is clever but
+  what a goal may do: the worker runs it clamped to the reversible bands, so it
+  gathers and **can never actuate**; it is bounded; its evidence is visible; and
+  one verb drops it. A wrong objective costs model time, not consequences — and
+  that asymmetry is enforced in code, which is the only place this repository
+  accepts a guarantee. Weighed against it, requiring a yes charged a cost on every
+  ongoing request to avoid a cheap mistake on a few.
+
+  Bounded as the rest of this is: at most three self-started objectives at once,
+  and asking the same thing again addresses the same objective rather than opening
+  a second — the rule specimens already use, where asking twice is one problem.
+
+  **What this still does not reach,** stated rather than implied: a turn that
+  answers starts nothing, so a long-horizon goal like *"help me get fit"* produces
+  an answer and no pursuit. The deterministic trigger catches what Endora **could
+  not do**, which is the reported complaint, and not what the person is trying to
+  achieve. That remains open.
 - **Provenance:** one intention aggregate, originating from a belief or a stored
   user commissioning message. At most one active per origin. User research has
   owned checkpoint/evidence/report records, not a competing task store. A second

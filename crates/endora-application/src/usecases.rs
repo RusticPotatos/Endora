@@ -1997,6 +1997,16 @@ pub fn send_to_butler_streaming_with_goals(
             if filed {
                 activity.push("Couldn't answer this one — kept it to retry overnight".to_owned());
             }
+            // And start on it now rather than waiting for the night: the same
+            // deterministic verdict that files the specimen starts the pursuit, with
+            // nothing asked of the person (ADR 0077, as amended).
+            if let Some(repository) = goals {
+                if pursue_what_it_could_not_answer(repository, text, clock).is_some() {
+                    activity.push(
+                        "Couldn't answer it in one go, so I've started working on it".to_owned(),
+                    );
+                }
+            }
         }
     }
 
@@ -3485,6 +3495,52 @@ const MOST_GOAL_PASSES: usize = 12;
 
 /// How much of one piece of evidence travels back into the next pass's context.
 const EVIDENCE_IN_CONTEXT: usize = 600;
+
+/// How many objectives Endora may be pursuing on its own at once. Small on
+/// purpose: acting without being asked is not the same as starting everything,
+/// and three keeps the worker's five-second tick meaningful for each of them.
+const MOST_GOALS_AT_ONCE: usize = 3;
+
+/// A stable key for an ask, so asking the same thing again addresses the same
+/// objective rather than starting a second one — the rule specimens already use,
+/// where asking twice is one problem.
+fn goal_key_for(ask: &str) -> String {
+    let slug: String = words_of(ask).join("-").chars().take(60).collect();
+    format!("ask-{slug}")
+}
+
+/// Starts pursuing an ask the turn could not answer — **without asking first.**
+///
+/// The trigger is deterministic and already in the tree: [`specimen_verdict`] is
+/// the same honesty check that gates retries and files specimens (ADR 0075). A
+/// turn that could not answer is, by that check rather than any model's opinion of
+/// itself, an ask that needs more than one turn. Nothing here classifies intent
+/// and nothing offers the person a choice, because a classifier deciding what you
+/// commissioned is the thing ADR 0076 refused, and a confirmation step is the thing
+/// that stops this feeling like a butler.
+///
+/// What makes starting on its own affordable is not that the guess is reliable — it
+/// is what a goal is permitted to do. The background worker runs it clamped to the
+/// reversible bands, so it gathers and can never actuate; it is bounded to
+/// [`MOST_GOAL_PASSES`]; its evidence is visible; and one verb drops it. A wrong
+/// objective costs model time, not consequences. That asymmetry is the whole
+/// argument, and it lives in code rather than in this comment.
+fn pursue_what_it_could_not_answer(
+    goals: &dyn GoalRepository,
+    ask: &str,
+    clock: &impl Clock,
+) -> Option<String> {
+    let key = goal_key_for(ask);
+    // Already on this exact ask: asking again is the same objective, not a second.
+    if goals.get_goal(&key).ok().flatten().is_some() {
+        return None;
+    }
+    if goals.active_goals().ok()?.len() >= MOST_GOALS_AT_ONCE {
+        return None;
+    }
+    let record = crate::GoalRecord::new(&key, crate::Goal::new(ask).ok()?, clock.now()).ok()?;
+    goals.save_goal(&record).ok()?.then_some(key)
+}
 
 /// What to tell the butler at the start of one pass: the objective, what has been
 /// found so far, and what has already failed.
@@ -6521,6 +6577,169 @@ mod tests {
         )
         .unwrap();
         assert!(fine.filed.borrow().is_empty());
+    }
+
+    /// A goal store that remembers what it was handed, for the autonomy tests.
+    #[derive(Default)]
+    struct RecordingGoals {
+        saved: std::cell::RefCell<Vec<crate::GoalRecord>>,
+    }
+
+    impl crate::GoalRepository for RecordingGoals {
+        fn save_goal(
+            &self,
+            record: &crate::GoalRecord,
+        ) -> Result<bool, endora_kernel::RepositoryError> {
+            let mut saved = self.saved.borrow_mut();
+            if let Some(slot) = saved
+                .iter_mut()
+                .find(|r| r.request_key() == record.request_key())
+            {
+                *slot = record.clone();
+            } else {
+                saved.push(record.clone());
+            }
+            Ok(true)
+        }
+        fn get_goal(
+            &self,
+            request_key: &str,
+        ) -> Result<Option<crate::GoalRecord>, endora_kernel::RepositoryError> {
+            Ok(self
+                .saved
+                .borrow()
+                .iter()
+                .find(|r| r.request_key() == request_key)
+                .cloned())
+        }
+        fn active_goals(&self) -> Result<Vec<crate::GoalRecord>, endora_kernel::RepositoryError> {
+            Ok(self
+                .saved
+                .borrow()
+                .iter()
+                .filter(|r| !r.goal().status().terminal())
+                .cloned()
+                .collect())
+        }
+        fn reserve_goal_attempt(
+            &self,
+            _request_key: &str,
+            _at: endora_kernel::ids::Timestamp,
+        ) -> Result<bool, endora_kernel::RepositoryError> {
+            Ok(true)
+        }
+        fn cancel_goal(
+            &self,
+            _request_key: &str,
+            _reason: &str,
+            _at: endora_kernel::ids::Timestamp,
+        ) -> Result<bool, endora_kernel::RepositoryError> {
+            Ok(false)
+        }
+        fn pending_goal_completions(
+            &self,
+        ) -> Result<Vec<crate::GoalRecord>, endora_kernel::RepositoryError> {
+            Ok(Vec::new())
+        }
+        fn mark_goal_announced(
+            &self,
+            _request_key: &str,
+        ) -> Result<(), endora_kernel::RepositoryError> {
+            Ok(())
+        }
+    }
+
+    /// A butler that cannot answer, so the deterministic honesty verdict fires.
+    struct Stumped;
+    impl Butler for Stumped {
+        fn respond(
+            &self,
+            _h: &[ChatMessage],
+            _p: &[Preference],
+            _c: &ButlerContext,
+        ) -> Result<ButlerReply, ProposalError> {
+            Ok(ButlerReply {
+                text: "Sorry — I couldn't follow that.".to_owned(),
+                degraded: true,
+                ..ButlerReply::default()
+            })
+        }
+    }
+
+    fn one_turn(
+        goals: &RecordingGoals,
+        butler: &dyn Butler,
+        ask: &str,
+    ) -> (ChatMessage, Vec<String>) {
+        super::send_to_butler_with_goals(
+            &FakeStore::default(),
+            &FakeStore::default(),
+            &FakeStore::default(),
+            &FakeOutcomes::default(),
+            &crate::usecases::RecordingShelf::default(),
+            &NoCapabilities,
+            butler,
+            &FakeAudit::default(),
+            goals,
+            &SeqIds::default(),
+            &FixedClock(1_000),
+            &ButlerContext::default(),
+            ask,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn an_ask_it_could_not_answer_becomes_something_it_pursues_unasked() {
+        // The complaint this answers: one response, then nothing. A turn that could
+        // not answer now starts an objective on its own — no classifier deciding what
+        // was commissioned, and no question put to the person. The trigger is the same
+        // deterministic verdict that files a specimen.
+        let goals = RecordingGoals::default();
+        let (_, activity) = one_turn(&goals, &Stumped, "when is the next 41 bus?");
+
+        let saved = goals.saved.borrow();
+        assert_eq!(saved.len(), 1, "{saved:?}");
+        assert_eq!(saved[0].goal().objective(), "when is the next 41 bus?");
+        assert!(
+            !saved[0].goal().status().terminal(),
+            "it starts resumable, so the worker picks it up"
+        );
+        assert!(
+            activity.iter().any(|a| a.contains("started working on it")),
+            "and says so plainly: {activity:?}"
+        );
+    }
+
+    #[test]
+    fn an_ask_it_answered_starts_nothing() {
+        // Autonomy is not indiscriminate: an answered turn is finished business.
+        let goals = RecordingGoals::default();
+        one_turn(&goals, &ScriptedTestButler, "what lights are on?");
+        assert!(goals.saved.borrow().is_empty());
+    }
+
+    #[test]
+    fn asking_the_same_thing_again_is_one_objective_not_two() {
+        let goals = RecordingGoals::default();
+        one_turn(&goals, &Stumped, "when is the next 41 bus?");
+        one_turn(&goals, &Stumped, "When is the next 41 bus??");
+        assert_eq!(
+            goals.saved.borrow().len(),
+            1,
+            "asking twice is one problem, as it is for specimens"
+        );
+    }
+
+    #[test]
+    fn it_does_not_start_more_than_a_few_at_once() {
+        // Starting without being asked has to stay bounded, or a bad afternoon fills
+        // the worker with objectives and none of them gets anywhere.
+        let goals = RecordingGoals::default();
+        for n in 0..super::MOST_GOALS_AT_ONCE + 2 {
+            one_turn(&goals, &Stumped, &format!("an unanswerable question {n}"));
+        }
+        assert_eq!(goals.saved.borrow().len(), super::MOST_GOALS_AT_ONCE);
     }
 
     #[test]
