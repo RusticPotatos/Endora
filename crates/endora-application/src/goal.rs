@@ -242,6 +242,7 @@ impl Goal {
         // also means a failing step here moves on instead of ending the objective.
         let mut next = 0usize;
         self.pursue(
+            plan.len(),
             |_| {
                 let step = plan.get(next).cloned();
                 next += 1;
@@ -267,9 +268,18 @@ impl Goal {
     /// - **A failed approach is not a failed objective.** `TryAnother` records a
     ///   dead end and chooses again; only `Stop` ends it, and only
     ///   [`ENOUGH_DEAD_ENDS`] consecutive failures exhaust it.
-    /// - **It is bounded.** At most [`MOST_STEPS_PER_PURSUIT`] operations per call,
-    ///   so the caller checkpoints and yields rather than running away.
-    pub fn pursue<P, F, V>(&mut self, mut propose: P, mut execute: F, mut verify: V) -> GoalStatus
+    /// - **It is bounded, and pausing is not failing.** `steps` caps the operations
+    ///   this pass may spend (at most [`MOST_STEPS_PER_PURSUIT`]). Spending them
+    ///   leaves the goal [`GoalStatus::Waiting`] — *not* terminal — so the next
+    ///   pass resumes it with its evidence and dead ends intact. Only `propose`
+    ///   returning `None` means there is genuinely nothing left to try.
+    pub fn pursue<P, F, V>(
+        &mut self,
+        steps: usize,
+        mut propose: P,
+        mut execute: F,
+        mut verify: V,
+    ) -> GoalStatus
     where
         P: FnMut(&Self) -> Option<GoalStep>,
         F: FnMut(&GoalStep) -> Result<String, StepError>,
@@ -279,7 +289,7 @@ impl Goal {
             return self.status;
         }
         let mut in_a_row = 0usize;
-        for _ in 0..MOST_STEPS_PER_PURSUIT {
+        for _ in 0..steps.min(MOST_STEPS_PER_PURSUIT) {
             let Some(step) = propose(&*self) else {
                 // Nothing left to try. What was gathered still counts, but an
                 // objective with no evidence at all is blocked, never complete.
@@ -325,12 +335,15 @@ impl Goal {
                 }
             }
         }
-        // Out of operations for this pass, not out of objective: the caller
-        // checkpoints and the next pass picks it up where this one stopped.
-        self.apply(
-            GoalVerdict::Partial,
-            "the objective reached its bounded step limit for this pass",
-        );
+        // Out of operations for this pass, not out of objective. This must be
+        // `Waiting` and not `Partial`: `Partial` is terminal, so ending a bounded
+        // pass with it would stop the very goal the budget exists to let continue —
+        // the same one-pass-and-done defect in a new place. `Waiting` is what
+        // `active_goals` picks up again.
+        self.status = GoalStatus::Waiting;
+        self.phase = "gathering".to_owned();
+        self.next_step = "continue".to_owned();
+        self.reason = "paused after a bounded pass; the next pass resumes it".to_owned();
         self.status
     }
 
@@ -532,6 +545,7 @@ mod tests {
         let mut goal = Goal::new("find somewhere to eat on Sunday").unwrap();
         let mut proposed = 0;
         let status = goal.pursue(
+            8,
             |g| {
                 proposed += 1;
                 // The proposal adapts to the evidence already gathered.
@@ -564,6 +578,7 @@ mod tests {
         let mut goal = Goal::new("find the next three games").unwrap();
         let mut attempt = 0;
         let status = goal.pursue(
+            8,
             |_| {
                 attempt += 1;
                 match attempt {
@@ -596,6 +611,7 @@ mod tests {
         // is a different flavour of the same stall.
         let mut goal = Goal::new("an objective").unwrap();
         goal.pursue(
+            8,
             |g| {
                 if g.dead_ends().iter().any(|d| d.step == "broken") {
                     Some(GoalStep::new("gathering", "working").unwrap())
@@ -620,6 +636,7 @@ mod tests {
         let mut goal = Goal::new("an impossible objective").unwrap();
         let mut tries = 0;
         let status = goal.pursue(
+            8,
             |_| {
                 tries += 1;
                 Some(GoalStep::new("gathering", "nope").unwrap())
@@ -638,6 +655,7 @@ mod tests {
         // same restriction.
         let mut goal = Goal::new("an objective").unwrap();
         let status = goal.pursue(
+            8,
             |_| Some(GoalStep::new("gathering", "fetch").unwrap()),
             |_| Err(StepError::Stop("web fetch was revoked".to_owned())),
             |_, _| GoalVerdict::Complete,
@@ -649,7 +667,12 @@ mod tests {
     #[test]
     fn nothing_left_to_try_is_blocked_when_nothing_was_gathered() {
         let mut goal = Goal::new("an objective").unwrap();
-        let status = goal.pursue(|_| None, |_| works("unused"), |_, _| GoalVerdict::Complete);
+        let status = goal.pursue(
+            8,
+            |_| None,
+            |_| works("unused"),
+            |_, _| GoalVerdict::Complete,
+        );
         assert_eq!(
             status,
             GoalStatus::Blocked,
@@ -662,6 +685,7 @@ mod tests {
         let mut goal = Goal::new("an objective").unwrap();
         let mut first = true;
         let status = goal.pursue(
+            8,
             |_| {
                 if first {
                     first = false;
@@ -680,6 +704,7 @@ mod tests {
     fn dead_ends_survive_a_checkpoint_and_an_older_one_still_resumes() {
         let mut goal = Goal::new("an objective").unwrap();
         goal.pursue(
+            8,
             |g| (g.dead_ends().is_empty()).then(|| GoalStep::new("gathering", "broken").unwrap()),
             |_| Err(StepError::TryAnother("the source refused".to_owned())),
             |_, _| GoalVerdict::Continue,
@@ -693,6 +718,45 @@ mod tests {
         let v1 = Goal::from_checkpoint("an objective", older).unwrap();
         assert_eq!(v1.status(), GoalStatus::Running);
         assert!(v1.dead_ends().is_empty());
+    }
+
+    #[test]
+    fn spending_a_passs_budget_leaves_the_goal_resumable() {
+        // The trap this guards: ending a bounded pass with `Partial` reads like
+        // "paused" but `Partial` is terminal, so the goal the budget exists to let
+        // continue would stop instead — one-pass-and-done again, one layer down.
+        // `Waiting` is the status `active_goals` picks back up.
+        let mut goal = Goal::new("a long objective").unwrap();
+        let mut passes = 0;
+        let status = goal.pursue(
+            2,
+            |_| Some(GoalStep::new("gathering", "a step").unwrap()),
+            |_| {
+                passes += 1;
+                works("a little more evidence")
+            },
+            |_, _| GoalVerdict::Continue,
+        );
+        assert_eq!(passes, 2, "it spent exactly the budget it was given");
+        assert_eq!(status, GoalStatus::Waiting);
+        assert!(!status.terminal(), "a paused goal must be resumable");
+        assert_eq!(goal.evidence().len(), 2, "and keeps what it gathered");
+
+        // Resuming really does continue rather than start over.
+        let status = goal.pursue(
+            1,
+            |_| Some(GoalStep::new("gathering", "a step").unwrap()),
+            |_| works("the last piece"),
+            |g, _| {
+                if g.evidence().len() == 3 {
+                    GoalVerdict::Complete
+                } else {
+                    GoalVerdict::Continue
+                }
+            },
+        );
+        assert_eq!(status, GoalStatus::Complete);
+        assert_eq!(goal.evidence().len(), 3);
     }
 
     #[test]
