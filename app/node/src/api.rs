@@ -2461,14 +2461,42 @@ async fn stream_chat(
             // Every action this turn took, recorded deterministically whatever the
             // reply ends up claiming (ADR 0053).
             let mut disclosed: Vec<usecases::ActionDisclosure> = Vec::new();
+            // Words streamed since the last step. If the turn then does something else (calls
+            // a skill, asks the deep model), those words were working notes and not the
+            // answer, so they are moved into the action trail as a "Thinking" row rather
+            // than left in the reply bubble to be overwritten later.
+            let spoken = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+            let spoken_token = spoken.clone();
+            let spoken_step = spoken.clone();
             let result = {
                 let mut on_token = |chunk: &str| {
+                    if let Ok(mut g) = spoken_token.lock() {
+                        g.push_str(chunk);
+                    }
                     let _ = tx.send(event(json!({ "type": "token", "text": chunk })));
                 };
                 // Structured action steps (router → skill → result), surfaced live so
                 // the console can show an expandable trail of what the butler is doing,
                 // separate from the reply prose.
                 let mut on_step = |step: usecases::ButlerStep| {
+                    let notes = spoken_step
+                        .lock()
+                        .map(|mut g| std::mem::take(&mut *g))
+                        .unwrap_or_default();
+                    if !notes.trim().is_empty() {
+                        let thought = json!({
+                            "skill": "thinking",
+                            "status": "done",
+                            "label": "Thinking",
+                            "output": notes.trim(),
+                        });
+                        if let Ok(mut g) = collected_step.lock() {
+                            g.push(thought.clone());
+                        }
+                        let mut e = thought;
+                        e["type"] = json!("step");
+                        let _ = tx.send(event(e));
+                    }
                     let v = json!({
                         "skill": step.skill,
                         "status": step.status.as_str(),

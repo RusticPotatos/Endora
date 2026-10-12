@@ -2174,6 +2174,15 @@ pub fn send_to_butler_streaming_for_request(
     {
         match butler.deeper() {
             Some(deeper) => {
+                // Shown as a step, so the answer already on screen is filed away as working
+                // notes instead of being overwritten.
+                on_step(ButlerStep {
+                    skill: "deep".to_owned(),
+                    status: StepStatus::Done,
+                    label: "That found nothing, so the deep model is choosing the skills"
+                        .to_owned(),
+                    output: None,
+                });
                 let planned = crate::deep_turn::PlannedByTheDeepModel::new(&deeper, butler);
                 let mut again: Vec<String> = Vec::new();
                 let findings = |id: &str| chat.what_it_found(id).unwrap_or_default();
@@ -2189,7 +2198,7 @@ pub fn send_to_butler_streaming_for_request(
                     &prefs,
                     context,
                     CHAT_TOOL_ROUNDS,
-                    &mut |_| {},
+                    on_step,
                     &mut |_| {},
                     &mut again,
                     &mut Vec::new(),
@@ -7568,6 +7577,67 @@ mod tests {
         assert!(!shown.contains("XYZZY-7731"), "{shown}");
         assert!(!shown.contains("12 Example Street"), "{shown}");
         assert!(!shown.contains("Example City"), "{shown}");
+    }
+
+    #[test]
+    fn the_retry_is_announced_as_a_step_so_the_first_answer_can_be_filed_as_working_notes() {
+        let store = FakeStore::default();
+        let deep = ScriptedDeep::new(vec![Plan::Call("web_search"), Plan::Says("done")]);
+        let local = LocalThatGivesUp {
+            first: "I couldn't find any upcoming games in your area.",
+            after_reading: "The next game is on Sunday.",
+            deep: Some(deep),
+        };
+        let skills = TheSkills::new();
+        let mut steps: Vec<String> = Vec::new();
+        let mut streamed = String::new();
+
+        super::send_to_butler_streaming_with_goals(
+            &store,
+            &store,
+            &store,
+            &FakeOutcomes::default(),
+            &crate::usecases::NoSpecimens,
+            &skills,
+            &local,
+            &FakeAudit::default(),
+            None,
+            None,
+            &SeqIds::default(),
+            &FixedClock(1_000),
+            &ButlerContext {
+                tools: skills
+                    .available()
+                    .into_iter()
+                    .map(|s| crate::CapabilityTool {
+                        id: s.id,
+                        description: s.description,
+                        input_schema: None,
+                    })
+                    .collect(),
+                ..ButlerContext::default()
+            },
+            "when is the next game?",
+            &mut |chunk| streamed.push_str(chunk),
+            &mut |step| steps.push(format!("{}:{}", step.skill, step.label)),
+            &mut Vec::new(),
+        )
+        .expect("the turn answers");
+
+        assert!(
+            steps
+                .iter()
+                .any(|s| s.starts_with("deep:That found nothing")),
+            "{steps:?}"
+        );
+        assert!(
+            steps.iter().any(|s| s.starts_with("web_search:")),
+            "the deep model's skill call is shown too: {steps:?}"
+        );
+        assert!(
+            streamed.contains("The next game is on Sunday."),
+            "{streamed}"
+        );
     }
 
     #[test]

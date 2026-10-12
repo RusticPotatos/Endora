@@ -566,11 +566,39 @@ if (keys.length !== 3 || keys[0] !== keys[1] || keys[0] === keys[2]) {
     process.exit(1);
   }
   const bullets = runInContext("rich('- jane is not home\\n- 2 things on your list')", context);
-  if (!bullets.includes("• jane is not home")) {
-    console.error(`chat: a dash bullet did not render as a bullet: ${bullets}`);
+  if (!bullets.includes("<ul><li>jane is not home</li><li>2 things on your list</li></ul>")) {
+    console.error(`chat: dash bullets did not render as a list: ${bullets}`);
     process.exit(1);
   }
-  console.log("chat: prose renders links, bullets and bold — and hostile text stays text");
+  const shape = (src) => runInContext(`rich(${JSON.stringify(src)})`, context);
+  const numbered = shape("Next three:\n1. Mon\n2. Tue\n3. Wed\n\nThat is all.");
+  if (!numbered.includes("<ol><li>Mon</li><li>Tue</li><li>Wed</li></ol>") || !numbered.includes("<p>That is all.</p>")) {
+    console.error(`chat: a numbered list or its following paragraph is wrong: ${numbered}`);
+    process.exit(1);
+  }
+  const fenced = shape("Run:\n```sh\necho **not bold** <b>x</b>\n```\nDone");
+  if (!fenced.includes('<pre class="code"><code>echo **not bold** &lt;b&gt;x&lt;/b&gt;</code></pre>') || !fenced.includes("<p>Done</p>")) {
+    console.error(`chat: a code block was dressed, unescaped or lost: ${fenced}`);
+    process.exit(1);
+  }
+  const halfway = shape("Here:\n```\nline one");
+  if (!halfway.includes('<pre class="code"><code>line one</code></pre>')) {
+    console.error(`chat: a code block still open while streaming was not shown as code: ${halfway}`);
+    process.exit(1);
+  }
+  const mixed = shape("## Plan\n\nA *light* touch, `a**b**c` and 2 * 3 * 4.\n> quoted\n---");
+  if (!mixed.includes('<p class="h">Plan</p>') || !mixed.includes("<i>light</i>")
+    || !mixed.includes("<code>a**b**c</code>") || !mixed.includes("2 * 3 * 4")
+    || !mixed.includes("<blockquote>quoted</blockquote>") || !mixed.includes("<hr>")) {
+    console.error(`chat: heading, emphasis, code span, arithmetic, quote or rule is wrong: ${mixed}`);
+    process.exit(1);
+  }
+  const snuck = shape("- [x](https://e.com) <img src=x onerror=alert(1)>\n```\n<script>1</script>\n```");
+  if (/<img|<script/.test(snuck)) {
+    console.error(`chat: third-party text became markup inside a list or a code block: ${snuck}`);
+    process.exit(1);
+  }
+  console.log("chat: prose renders as markdown — lists, code, quotes, links — and hostile text stays text");
 }
 
 // Every honest research state renders, terminal work cannot be cancelled, the report

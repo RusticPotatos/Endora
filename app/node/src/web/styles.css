@@ -5,6 +5,7 @@
     --shadow: 0 1px 2px rgba(18,20,30,.05), 0 3px 12px rgba(18,20,30,.05);
     --shadow-lift: 0 2px 6px rgba(18,20,30,.07), 0 12px 30px rgba(18,20,30,.12);
     --radius: 14px;
+    color-scheme: light dark;
   }
   @media (prefers-color-scheme: dark) {
     :root {
@@ -149,12 +150,27 @@
   .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; word-break: break-word; }
   /* overflow-wrap: a token longer than the bubble (a URL, an entity id) breaks
      inside it instead of punching the whole page wide open. */
-  .bubble { max-width: 78%; padding: 8px 12px; border-radius: 12px; line-height: 1.4; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .bubble { max-width: 100%; line-height: 1.65; font-size: 16px; overflow-wrap: anywhere; }
   .bubble a { color: var(--accent); text-decoration: underline; text-underline-offset: 2px; }
-  .bubble.me a { color: #fff; }
-  .bubble code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; background: color-mix(in srgb, var(--line) 45%, transparent); padding: 0 4px; border-radius: 4px; }
-  .bubble.me { background: var(--accent); color: #fff; border-bottom-right-radius: 4px; }
-  .bubble.butler { background: var(--card); border: 1px solid var(--line); border-bottom-left-radius: 4px; }
+  .bubble code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .86em; background: color-mix(in srgb, var(--ink) 8%, transparent); padding: 1px 5px; border-radius: 5px; }
+  /* Yours: a soft pill on the right, as in the apps this is modelled on. */
+  .bubble.me { max-width: 82%; white-space: pre-wrap; padding: 9px 15px; border-radius: 20px; background: color-mix(in srgb, var(--ink) 7%, var(--card)); color: var(--ink); }
+  /* Endora's: no box. The text sits on the page, the full width of the column. */
+  .bubble.butler { padding: 2px 0; background: transparent; border: none; }
+  .bubble.butler > :first-child { margin-top: 0; }
+  .bubble.butler > :last-child { margin-bottom: 0; }
+  .bubble p { margin: 0 0 .8em; }
+  .bubble p.h { font-weight: 650; margin: 1.1em 0 .4em; }
+  .bubble ul, .bubble ol { margin: 0 0 .8em; padding-left: 1.5em; }
+  .bubble li { margin: .25em 0; padding-left: .15em; }
+  .bubble li::marker { color: var(--muted); }
+  .bubble blockquote { margin: 0 0 .8em; padding: 2px 0 2px 14px; border-left: 3px solid var(--line); color: var(--muted); }
+  .bubble hr { border: none; border-top: 1px solid var(--line); margin: 1em 0; }
+  .bubble pre.code { margin: 0 0 .9em; padding: 12px 14px; background: color-mix(in srgb, var(--ink) 6%, var(--card)); border: 1px solid var(--line); border-radius: 10px; overflow-x: auto; font-size: 13.5px; line-height: 1.5; }
+  .bubble pre.code code { background: none; padding: 0; font-size: inherit; white-space: pre; }
+  .msg-row { align-items: flex-start; justify-content: flex-start; margin: 14px 0; }
+  .msg-row.mine { justify-content: flex-end; }
+  .msg-row.aux { margin: 6px 0 -4px; }
   /* "thinking…" indicator while the butler composes a reply */
   .bubble.thinking { padding: 12px 14px; }
   .dots { display: inline-flex; gap: 4px; align-items: center; }
@@ -163,44 +179,64 @@
   .dots i:nth-child(3) { animation-delay: .4s; }
   @keyframes blink { 0%, 80%, 100% { opacity: .25; } 40% { opacity: 1; } }
 
-  /* Chat: a focused column so bubbles and the composer share one width. */
-  .chat { max-width: 680px; margin: 0 auto; }
+  /* Chat: the window is the app. The thread scrolls in its own pane and the composer is
+     docked beneath it, so nothing slides under the box and the page never moves. */
+  body.on-chat { height: 100vh; height: 100dvh; display: flex; flex-direction: column; overflow: hidden; }
+  body.on-chat header { position: static; flex: none; }
+  body.on-chat main { flex: 1; min-height: 0; max-width: none; padding: 0; display: flex; flex-direction: column; margin: 0; width: 100%; }
+  body.on-chat #app { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+  .chat { flex: 1; min-height: 0; display: flex; flex-direction: column; width: 100%; }
+  .chat-scroll { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 18px 16px 8px; }
+  .chat-col { max-width: 720px; margin: 0 auto; width: 100%; }
   .chat-thread { display: flex; flex-direction: column; margin-bottom: 12px; }
   .chat-thread .row { flex-wrap: nowrap; }
-  /* Composer: a card holding an auto-growing textarea and a button row beneath. */
+  .composer-dock { flex: none; padding: 6px 16px 14px; }
   .composer {
-    border: 1px solid var(--line); border-radius: var(--radius); background: var(--card);
-    box-shadow: var(--shadow); padding: 8px 10px 10px; position: sticky; bottom: 12px;
+    border: 1px solid var(--line); border-radius: 24px; background: var(--card);
+    box-shadow: var(--shadow); padding: 10px 12px 8px 16px;
+    transition: border-color .15s, box-shadow .15s;
   }
+  .composer:focus-within { border-color: color-mix(in srgb, var(--accent) 50%, var(--line)); box-shadow: 0 0 0 3px var(--accent-weak), var(--shadow); }
   .composer textarea {
     border: none; background: transparent; box-shadow: none; resize: none; width: 100%;
-    min-height: 24px; padding: 6px 4px; max-height: 40vh; overflow-y: auto; outline: none;
-    line-height: 1.5;
+    min-height: 26px; padding: 4px 0; max-height: 40vh; overflow-y: auto; outline: none;
+    font-size: 16px; line-height: 1.5;
   }
-  /* Secondary actions (Speak / Push-to-talk / Ask deep) group at the left; the
-     primary Send anchors at the right. Secondaries wrap among themselves on narrow
-     screens without pushing Send onto its own centered row. */
-  .composer-actions { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 8px; }
-  .composer-secondary { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-width: 0; }
-  .composer-actions .ghost, .composer-actions .ptt { font-size: 13px; padding: 7px 12px; }
-  #send-btn { flex: none; }
+  .composer-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .composer-chips:not(:empty) { margin-bottom: 6px; }
+  .chip { display: inline-flex; align-items: center; gap: 5px; padding: 3px 8px 3px 9px; font-size: 12.5px; border-radius: 999px; background: var(--accent-weak); color: var(--accent); border: 1px solid transparent; }
+  .chip:hover { border-color: color-mix(in srgb, var(--accent) 40%, transparent); background: var(--accent-weak); }
+  .composer-bar { display: flex; align-items: center; justify-content: space-between; margin-top: 2px; }
+  .tools { position: relative; }
+  .icon-btn { width: 34px; height: 34px; padding: 0; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; background: transparent; border-color: transparent; color: var(--muted); }
+  .icon-btn:hover { background: var(--accent-weak); color: var(--ink); border-color: transparent; }
+  .send-round { width: 34px; height: 34px; padding: 0; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; flex: none; background: var(--ink); border-color: var(--ink); color: var(--card); box-shadow: none; }
+  .send-round:hover { background: color-mix(in srgb, var(--ink) 82%, var(--card)); border-color: transparent; }
+  .tools-menu { position: absolute; bottom: calc(100% + 8px); left: 0; z-index: 30; min-width: 230px; background: var(--card); border: 1px solid var(--line); border-radius: 14px; box-shadow: var(--shadow-lift); padding: 6px; display: flex; flex-direction: column; gap: 1px; }
+  .tools-menu[hidden] { display: none; }
+  .tools-menu button { width: 100%; justify-content: flex-start; gap: 10px; border: none; background: transparent; border-radius: 9px; color: var(--ink); font-weight: 500; padding: 9px 11px; }
+  .tools-menu button:hover { background: var(--accent-weak); }
+  .tools-menu button > span { flex: 1; text-align: left; }
+  .tools-menu button.on { color: var(--accent); }
   /* "what Endora did" note under the latest reply */
   .activity { font-size: 12px; color: var(--muted); font-style: italic; margin: 2px 4px 10px; display: flex; align-items: center; gap: 6px; opacity: .85; }
   .activity .ic { color: var(--accent); opacity: .8; }
   /* live action trail (Claude-Code-style): a collapsible list of what the butler
      is doing this turn — router → skill → result — shown while it works. */
-  details.steps { font-size: 12px; color: var(--muted); background: var(--card, rgba(127,127,127,.06)); border: 1px solid rgba(127,127,127,.16); border-radius: 10px; padding: 4px 10px; max-width: 82%; }
-  details.steps > summary { cursor: pointer; list-style: none; display: flex; align-items: center; gap: 7px; padding: 3px 0; font-weight: 500; color: var(--muted); }
+  details.steps { font-size: 13px; color: var(--muted); max-width: 100%; }
+  details.steps > summary { cursor: pointer; list-style: none; display: inline-flex; align-items: center; gap: 6px; padding: 2px 0; font-weight: 500; color: var(--muted); border-radius: 6px; }
+  details.steps > summary:hover { color: var(--ink); }
   details.steps > summary::-webkit-details-marker { display: none; }
-  details.steps > summary::after { content: "▸"; margin-left: auto; opacity: .5; transition: transform .15s; }
+  details.steps > summary::after { content: "›"; font-size: 15px; line-height: 1; opacity: .6; transition: transform .15s; }
   details.steps[open] > summary::after { transform: rotate(90deg); }
-  .step-list { display: flex; flex-direction: column; gap: 3px; padding: 4px 0 6px; }
+  .step-list { display: flex; flex-direction: column; gap: 3px; margin: 4px 0 6px 6px; padding: 2px 0 2px 12px; border-left: 2px solid var(--line); }
   .step-row { display: flex; align-items: center; gap: 7px; }
   .step-row .sdone { color: #22a06b; } .step-row .sfail { color: #d9534f; } .step-row .sblock { color: var(--muted); opacity: .8; }
   details.step-item > summary { cursor: pointer; list-style: none; }
   details.step-item > summary::-webkit-details-marker { display: none; }
   details.step-item > summary .step-more { margin-left: auto; font-size: 11px; color: var(--accent); opacity: .8; }
   details.step-item[open] > summary .step-more::after { content: " ▾"; }
+  .step-out.thought { font-family: inherit; font-size: 13.5px; line-height: 1.55; background: none; padding: 0; margin: 4px 0 6px 18px; border-radius: 0; max-height: none; color: var(--muted); }
   .step-out { margin: 4px 0 6px 18px; padding: 8px 10px; background: rgba(127,127,127,.10); border-radius: 8px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11.5px; line-height: 1.45; white-space: pre-wrap; overflow-x: auto; max-height: 240px; overflow-y: auto; color: var(--fg); }
   /* Model configuration cards (Everyday + Deep) — one consistent layout each. */
   .model-card { display: flex; flex-direction: column; gap: 12px; }
