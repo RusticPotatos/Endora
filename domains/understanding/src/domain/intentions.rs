@@ -16,7 +16,27 @@
 //! [`abandon`](Intention::abandon).
 
 use endora_kernel::error::{DomainError, require_non_empty};
-use endora_kernel::ids::{BeliefId, IntentionId, Timestamp};
+use endora_kernel::ids::{BeliefId, IntentionId, MessageId, Timestamp};
+
+/// The inspectable reason Endora is pursuing an intention (ADR 0077).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IntentionOrigin {
+    /// Endora formed the intention from correctable understanding.
+    Belief(BeliefId),
+    /// The person explicitly commissioned this work in a stored message.
+    UserRequest(MessageId),
+}
+
+impl IntentionOrigin {
+    /// Stable persistence name for the origin kind.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Belief(_) => "belief",
+            Self::UserRequest(_) => "user_request",
+        }
+    }
+}
 
 /// Nights of work before an intention gives up on itself. Seven nights of looking into
 /// something without conclusion is Endora's own answer that it is not getting anywhere.
@@ -68,7 +88,7 @@ impl IntentionState {
 pub struct Intention {
     id: IntentionId,
     statement: String,
-    motivating_belief: BeliefId,
+    origin: IntentionOrigin,
     note: String,
     state: IntentionState,
     created_at: Timestamp,
@@ -92,7 +112,7 @@ impl Intention {
         Ok(Self {
             id,
             statement,
-            motivating_belief,
+            origin: IntentionOrigin::Belief(motivating_belief),
             note: String::new(),
             state: IntentionState::Active,
             created_at: at,
@@ -107,7 +127,7 @@ impl Intention {
     pub const fn from_parts(
         id: IntentionId,
         statement: String,
-        motivating_belief: BeliefId,
+        origin: IntentionOrigin,
         note: String,
         state: IntentionState,
         created_at: Timestamp,
@@ -117,13 +137,33 @@ impl Intention {
         Self {
             id,
             statement,
-            motivating_belief,
+            origin,
             note,
             state,
             created_at,
             last_progressed_at,
             steps_taken,
         }
+    }
+
+    /// Forms work the person explicitly commissioned.
+    pub fn from_request(
+        id: IntentionId,
+        statement: &str,
+        message: MessageId,
+        at: Timestamp,
+    ) -> Result<Self, DomainError> {
+        let statement = require_non_empty("intention.statement", statement)?;
+        Ok(Self {
+            id,
+            statement,
+            origin: IntentionOrigin::UserRequest(message),
+            note: String::new(),
+            state: IntentionState::Active,
+            created_at: at,
+            last_progressed_at: at,
+            steps_taken: 0,
+        })
     }
 
     /// Records a night's work: the butler's own account becomes the note it will be
@@ -203,8 +243,17 @@ impl Intention {
     /// The belief this came from — never absent, so "why is it doing this?" always has
     /// an answer that points at correctable understanding.
     #[must_use]
-    pub const fn motivating_belief(&self) -> BeliefId {
-        self.motivating_belief
+    pub const fn motivating_belief(&self) -> Option<BeliefId> {
+        match self.origin {
+            IntentionOrigin::Belief(id) => Some(id),
+            IntentionOrigin::UserRequest(_) => None,
+        }
+    }
+
+    /// Why this intention exists.
+    #[must_use]
+    pub const fn origin(&self) -> IntentionOrigin {
+        self.origin
     }
 
     /// Where it got to last time, in the butler's own words. Empty before the first
@@ -264,7 +313,7 @@ mod tests {
     fn an_intention_always_names_the_belief_it_came_from() {
         // ADR 0052: no free-floating intentions, so "why is it doing this?" always has
         // an answer. Enforced by the type — this test documents the intent of that.
-        assert_eq!(formed().motivating_belief(), BeliefId::new(7));
+        assert_eq!(formed().motivating_belief(), Some(BeliefId::new(7)));
     }
 
     #[test]

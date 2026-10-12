@@ -52,7 +52,7 @@ domains/     one crate per bounded context, each layered internally:
              <context>/src/{domain, application, infrastructure[, interface]}
   platform         audit trail + the butler's event log
   capabilities     skills, the policy-gated runner, egress guard, autonomy envelope
-  understanding    beliefs + preferences — Endora's model of the person
+  understanding    beliefs, intentions, commissioned research + preferences
   conversation     the chat model + repository
   scheduling       check-in, brief, and nightly-loop cadences
 shared/      kernel (ids, time, errors, AutonomyLevel, Reversibility),
@@ -61,7 +61,10 @@ shared/      kernel (ids, time, errors, AutonomyLevel, Reversibility),
 
 The thin **orchestration layer** (currently `endora-application`) holds the
 butler-turn contract and the use cases that compose several contexts (running a
-turn, preparing a brief, running the nightly loop). Contexts do not reach into each
+turn, preparing a brief, advancing commissioned research, running the nightly loop).
+The node's single research worker polls durable SQLite work, shares the foreground
+turn lock, and uses a runner narrowed to guarded web reads plus the exact approved
+search capability. Contexts do not reach into each
 other's internals; they collaborate through application-layer ports, and the
 dependency graph is acyclic.
 
@@ -158,7 +161,7 @@ app/
   node/                # Authoritative backend runtime (the brain) + web console
   cli/                 # Thin, replaceable client
 domains/
-  understanding/       # Beliefs + preferences — Endora's model of the person
+  understanding/       # Beliefs, intentions, research work/reports + preferences
   capabilities/        # Skills, policy-gated runner, egress guard, MCP host
   conversation/        # The chat and its running summary
   scheduling/          # Proactive cadences

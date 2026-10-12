@@ -14,11 +14,16 @@
 
 pub mod egress;
 pub mod error;
+pub mod goal;
 pub mod ports;
 pub mod pseudonyms;
+pub mod research;
 pub mod usecases;
 
 pub use error::AppError;
+pub use goal::{
+    GOAL_CHECKPOINT_VERSION, Goal, GoalEvidence, GoalRecord, GoalStatus, GoalStep, GoalVerdict,
+};
 // The application layer re-exports the domain vocabulary of each context (models
 // + ids), so the adapter layers (infrastructure, the node) have one place to
 // import the types they translate to and from — the orchestration layer is the
@@ -50,15 +55,18 @@ pub use endora_scheduling::{
 // re-exported so their `endora_application::…` paths are unchanged.
 pub use endora_understanding::{
     Belief, BeliefKind, BeliefRepository, BeliefStatus, Citation, Confidence, Intention,
-    IntentionRepository, IntentionState, Notion, NotionRepository, NotionStatus, Outcome,
-    OutcomeRepository, Preference, PreferenceKind, PreferenceRepository, Reaction, RepairProposal,
-    Source, make_way_for_a_new_one,
+    IntentionOrigin, IntentionRepository, IntentionState, Notion, NotionRepository, NotionStatus,
+    Outcome, OutcomeRepository, Preference, PreferenceKind, PreferenceRepository, Reaction,
+    RepairProposal, ResearchAssignment, ResearchReport, ResearchRepository, ResearchStatus, Source,
+    make_way_for_a_new_one,
 };
 pub use ports::{
     Butler, ButlerContext, ButlerReply, CapabilityTool, Clock, ConversationSummary,
-    ConversationSummaryStore, FormedBelief, IdSource, MemorySnapshot, MemoryStore, ProposalError,
-    RepositoryError, ToolCall, TurnMessage,
+    ConversationSummaryStore, EXECUTION_LEASE_MS, ExecutionLeaseRepository, FormedBelief,
+    GoalDelivery, GoalRepository, IdSource, MemorySnapshot, MemoryStore, ProposalError,
+    RepositoryError, ResearchDelivery, ToolCall, TurnMessage,
 };
+pub use research::{ResearchRun, conduct_research};
 pub use usecases::{
     ActivityItem, ActivityKind, LOOK_FOR_A_TOOL, note_verification, reads_as_an_instruction,
     says_the_same_thing, statements_disagree,

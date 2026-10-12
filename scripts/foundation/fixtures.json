@@ -1,0 +1,37 @@
+{
+  "version": 1,
+  "tools": [
+    {"name":"sports_schedule","description":"Fetch the primary team's schedule. Arguments: team, after (YYYY-MM-DD), count.","parameters":{"type":"object","properties":{"team":{"type":"string"},"after":{"type":"string"},"count":{"type":"integer"}},"required":["team","after"]}},
+    {"name":"web_search","description":"Search public sources for a question. Returns source URLs; fetch the pages for evidence.","parameters":{"type":"object","properties":{"query":{"type":"string"}},"required":["query"]}},
+    {"name":"web_fetch","description":"Read a public source URL returned by search or supplied by the user.","parameters":{"type":"object","properties":{"url":{"type":"string"}},"required":["url"]}}
+  ],
+  "cases": [
+    {
+      "id":"Q01",
+      "prompt":"What are the next three Panthers games? For this fictional test today is 2030-09-07 UTC. Try the primary sports schedule first. If it fails, use other available sources. Include opponents, dates and source links; do not guess.",
+      "search":[{"url":"https://example.com/schedule","title":"Official fictional Panthers schedule"}],
+      "pages":{"https://example.com/schedule":"Fictional Panthers schedule, season 2030. Completed: 2030-09-01 vs Owls. Upcoming in UTC: 2030-09-08T17:00:00Z vs Bears; 2030-09-15T17:00:00Z vs Wolves; 2030-09-22T17:00:00Z vs Eagles; 2030-09-29T17:00:00Z vs Foxes."},
+      "required_tools":["sports_schedule","web_search","web_fetch"],
+      "required_facts":["Bears","Wolves","Eagles"],
+      "review":"Exactly the first three future opponents with correct dates and the fetched source. No fourth or completed game represented as one of the next three."
+    },
+    {
+      "id":"Q02",
+      "prompt":"Compare these fictional backup products: https://example.com/backup-a and https://example.com/backup-b. I need encryption, daily backups, and a monthly price under 10 credits. Recommend one, explain the tradeoff, and cite what you read.",
+      "search":[],
+      "pages":{"https://example.com/backup-a":"Product Alder: 8 credits/month, daily backups, encryption included, restores limited to one device.","https://example.com/backup-b":"Product Birch: 12 credits/month, hourly backups, encryption included, restores on unlimited devices."},
+      "required_tools":["web_fetch"],
+      "required_facts":["Alder","8"],
+      "review":"Recommend Alder, establish all three constraints, explain the restore limitation, and cite both retrieved pages without unsupported claims."
+    },
+    {
+      "id":"Q03",
+      "prompt":"Find the next public astronomy event in this fictional calendar. Today is 2030-09-07 UTC. Read the source, give date, location and link, and do not confuse it with past events.",
+      "search":[{"url":"https://example.com/events","title":"Public astronomy calendar"}],
+      "pages":{"https://example.com/events":"Past event: 2030-09-01 telescope introduction. Next public event: 2030-09-12, Stargazing Night at Example Observatory. Following event: 2030-10-02 meteor lecture."},
+      "required_tools":["web_search","web_fetch"],
+      "required_facts":["Stargazing","Example Observatory"],
+      "review":"Identify September 12, 2030 and Example Observatory with the actual fetched citation; do not select the past event."
+    }
+  ]
+}

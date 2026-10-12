@@ -10,11 +10,15 @@ use endora_persistence::Db;
 
 use endora_application::{
     AuditId, AuditRecord, Belief, BeliefId, BeliefKind, BeliefStatus, ChatMessage, Confidence,
-    Intention, IntentionId, IntentionState, MessageId, MessageRole, Outcome, OutcomeId, Preference,
-    PreferenceId, PreferenceKind, Reaction, Timestamp,
+    Goal, GoalRecord, GoalStatus, Intention, IntentionId, IntentionOrigin, IntentionState,
+    MessageId, MessageRole, Outcome, OutcomeId, Preference, PreferenceId, PreferenceKind, Reaction,
+    ResearchAssignment, Timestamp,
 };
-use endora_application::{MemorySnapshot, MemoryStore, RepositoryError};
-use rusqlite::{Connection, params};
+use endora_application::{
+    ExecutionLeaseRepository, GoalDelivery, GoalRepository, MemorySnapshot, MemoryStore,
+    RepositoryError, ResearchDelivery, ResearchRepository,
+};
+use rusqlite::{Connection, OptionalExtension, params};
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS audit_log (
@@ -74,12 +78,40 @@ CREATE TABLE IF NOT EXISTS beliefs (
 CREATE TABLE IF NOT EXISTS intentions (
     id                 TEXT PRIMARY KEY,
     statement          TEXT NOT NULL,
-    motivating_belief  TEXT NOT NULL,
+    motivating_belief  TEXT,
+    origin             TEXT NOT NULL DEFAULT 'belief',
+    request_message_id TEXT,
     note               TEXT NOT NULL,
     state              TEXT NOT NULL,
     created_ms         INTEGER NOT NULL,
     last_progressed_ms INTEGER NOT NULL,
-    steps_taken        INTEGER NOT NULL
+    steps_taken        INTEGER NOT NULL,
+    CHECK ((origin = 'belief' AND motivating_belief IS NOT NULL AND request_message_id IS NULL)
+        OR (origin = 'user_request' AND motivating_belief IS NULL AND request_message_id IS NOT NULL))
+) STRICT;
+-- User-requested bounded execution. This is deliberately not named `goals`: that
+-- table belonged to the retired long-lived goal tracker and is removed by the
+-- migration below. These records are resumable work, not a second memory model.
+CREATE TABLE IF NOT EXISTS execution_goals (
+    request_key TEXT PRIMARY KEY,
+    objective   TEXT NOT NULL,
+    checkpoint  TEXT NOT NULL,
+    status      TEXT NOT NULL,
+    attempts    INTEGER NOT NULL DEFAULT 0,
+    lease_until_ms INTEGER NOT NULL DEFAULT 0,
+    completion_published INTEGER NOT NULL DEFAULT 0,
+    created_ms  INTEGER NOT NULL,
+    updated_ms  INTEGER NOT NULL
+) STRICT;
+CREATE INDEX IF NOT EXISTS idx_execution_goals_active
+    ON execution_goals(status, updated_ms);
+-- One durable lease table is shared by every resumable worker. The execution
+-- key is namespaced by its owner (`goal:` or `research:`), so domains retain
+-- their own checkpoints while worker ownership follows one contract.
+CREATE TABLE IF NOT EXISTS execution_leases (
+    execution_key TEXT PRIMARY KEY,
+    attempts INTEGER NOT NULL DEFAULT 0,
+    lease_until_ms INTEGER NOT NULL DEFAULT 0
 ) STRICT;
 CREATE TABLE IF NOT EXISTS outcomes (
     id                TEXT PRIMARY KEY,
@@ -288,6 +320,154 @@ pub struct SqliteStore {
 }
 
 impl SqliteStore {
+    /// Atomically records an explicit research commission and its user message.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the transaction receives the complete immutable commission"
+    )]
+    pub fn commission_research(
+        &self,
+        intention_id: IntentionId,
+        message_id: MessageId,
+        request_key: &str,
+        assignment: &str,
+        source_urls_json: &str,
+        search_capability_id: Option<&str>,
+        at: Timestamp,
+    ) -> Result<ResearchAssignment, RepositoryError> {
+        if assignment.trim().is_empty() || assignment.chars().count() > 4_000 {
+            return Err(RepositoryError::Corrupt(
+                "research assignment must be 1–4000 characters".to_owned(),
+            ));
+        }
+        if request_key.trim().is_empty() || request_key.chars().count() > 200 {
+            return Err(RepositoryError::Corrupt(
+                "invalid research request key".to_owned(),
+            ));
+        }
+        let work = ResearchAssignment::new(
+            intention_id,
+            assignment,
+            request_key,
+            source_urls_json,
+            search_capability_id.map(str::to_owned),
+            at,
+        )
+        .map_err(corrupt)?;
+        let mut conn = self.lock()?;
+        let existing: Option<(String, String, String, Option<String>)> = conn
+            .query_row(
+                "SELECT intention_id, assignment, source_urls_json, search_capability_id
+             FROM intention_research WHERE request_key=?1",
+                params![request_key],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .optional()
+            .map_err(backend)?;
+        if let Some((id, prior_assignment, prior_urls, prior_search)) = existing {
+            if prior_assignment != assignment.trim()
+                || prior_urls != source_urls_json
+                || prior_search.as_deref() != search_capability_id
+            {
+                return Err(RepositoryError::Backend(
+                    "research request key was reused with different input".to_owned(),
+                ));
+            }
+            drop(conn);
+            let existing_id = IntentionId::new(parse_id(&id)?);
+            return endora_understanding::UnderstandingStore::new(self.db())
+                .research(existing_id)?
+                .ok_or_else(|| {
+                    RepositoryError::Corrupt("research request lost its work row".to_owned())
+                });
+        }
+        let tx = conn.transaction().map_err(backend)?;
+        let active: i64 = tx.query_row(
+            "SELECT COUNT(*) FROM intention_research WHERE status IN ('queued','running','retry_wait')",
+            [], |r| r.get(0),
+        ).map_err(backend)?;
+        if active > 0 {
+            return Err(RepositoryError::Backend(
+                "another research assignment is active".to_owned(),
+            ));
+        }
+        tx.execute(
+            "INSERT INTO messages (id, role, body, at_ms) VALUES (?1,'user',?2,?3)",
+            params![
+                message_id.value().to_string(),
+                assignment.trim(),
+                at.unix_millis()
+            ],
+        )
+        .map_err(backend)?;
+        tx.execute(
+            "INSERT INTO intentions (id,statement,motivating_belief,origin,request_message_id,note,state,created_ms,last_progressed_ms,steps_taken)
+             VALUES (?1,?2,NULL,'user_request',?3,'','active',?4,?4,0)",
+            params![intention_id.value().to_string(), assignment.trim(), message_id.value().to_string(), at.unix_millis()],
+        ).map_err(backend)?;
+        tx.execute(
+            "INSERT INTO intention_research
+             (intention_id,assignment,request_key,source_urls_json,search_capability_id,status,phase,
+              reason_code,reason,checkpoint,model_calls_used,read_attempts_used,created_ms,updated_ms,expires_ms)
+             VALUES (?1,?2,?3,?4,?5,'queued','gathering','','',?6,0,0,?7,?7,?8)",
+            params![intention_id.value().to_string(), assignment.trim(), request_key,
+                source_urls_json, search_capability_id, work.checkpoint(), at.unix_millis(),
+                work.expires_at().unix_millis()],
+        ).map_err(backend)?;
+        tx.commit().map_err(backend)?;
+        Ok(work)
+    }
+
+    /// Atomically cancels commissioned research and abandons its parent intention.
+    pub fn cancel_research(
+        &self,
+        intention_id: IntentionId,
+        at: Timestamp,
+    ) -> Result<ResearchAssignment, RepositoryError> {
+        let mut conn = self.lock()?;
+        let tx = conn.transaction().map_err(backend)?;
+        let status: Option<String> = tx
+            .query_row(
+                "SELECT status FROM intention_research WHERE intention_id=?1",
+                params![intention_id.value().to_string()],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(backend)?;
+        let Some(status) = status else {
+            return Err(RepositoryError::Backend("research not found".to_owned()));
+        };
+        if status != "cancelled"
+            && matches!(
+                status.as_str(),
+                "delivered" | "blocked" | "budget_exhausted" | "failed"
+            )
+        {
+            return Err(RepositoryError::Backend(
+                "research is already terminal".to_owned(),
+            ));
+        }
+        if status != "cancelled" {
+            tx.execute(
+                "UPDATE intention_research SET status='cancelled', reason_code='cancelled',
+                 reason='You cancelled this research assignment.', updated_ms=?2
+                 WHERE intention_id=?1",
+                params![intention_id.value().to_string(), at.unix_millis()],
+            )
+            .map_err(backend)?;
+            tx.execute(
+                "UPDATE intentions SET state='abandoned', last_progressed_ms=?2 WHERE id=?1",
+                params![intention_id.value().to_string(), at.unix_millis()],
+            )
+            .map_err(backend)?;
+        }
+        tx.commit().map_err(backend)?;
+        drop(conn);
+        endora_understanding::UnderstandingStore::new(self.db())
+            .research(intention_id)?
+            .ok_or_else(|| RepositoryError::Corrupt("cancelled research disappeared".to_owned()))
+    }
+
     /// The token this node accepts, or `None` before one has been made.
     ///
     /// # Errors
@@ -628,7 +808,35 @@ impl SqliteStore {
                 "pending_totp",
                 "TEXT NOT NULL DEFAULT ''",
             )?;
+            ensure_column(
+                &conn,
+                "execution_goals",
+                "attempts",
+                "INTEGER NOT NULL DEFAULT 0",
+            )?;
+            ensure_column(
+                &conn,
+                "execution_goals",
+                "lease_until_ms",
+                "INTEGER NOT NULL DEFAULT 0",
+            )?;
+            ensure_column(
+                &conn,
+                "execution_goals",
+                "completion_published",
+                "INTEGER NOT NULL DEFAULT 0",
+            )?;
+            // Goal leases moved into the shared execution table so research and
+            // goals use the same restart/reclaim boundary. Preserve counters from
+            // older goal rows when this migration first runs.
+            conn.execute(
+                "INSERT OR IGNORE INTO execution_leases (execution_key, attempts, lease_until_ms)
+                 SELECT 'goal:' || request_key, attempts, lease_until_ms FROM execution_goals",
+                [],
+            )
+            .map_err(backend)?;
         }
+        endora_understanding::migrate(&db)?;
         Ok(Self { db })
     }
 
@@ -642,6 +850,440 @@ impl SqliteStore {
     fn lock(&self) -> Result<std::sync::MutexGuard<'_, Connection>, RepositoryError> {
         self.db.lock()
     }
+
+    fn all_goal_records(&self) -> Result<Vec<GoalRecord>, RepositoryError> {
+        let conn = self.lock()?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT request_key, objective, checkpoint, status, created_ms, updated_ms
+                 FROM execution_goals ORDER BY updated_ms DESC, request_key ASC",
+            )
+            .map_err(backend)?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, i64>(4)?,
+                    row.get::<_, i64>(5)?,
+                ))
+            })
+            .map_err(backend)?;
+        let raw = rows.collect::<Result<Vec<_>, _>>().map_err(backend)?;
+        raw.into_iter()
+            .map(
+                |(key, objective, checkpoint, status, created_ms, updated_ms)| {
+                    parse_goal_record(
+                        &key,
+                        &objective,
+                        &checkpoint,
+                        &status,
+                        created_ms,
+                        updated_ms,
+                    )
+                },
+            )
+            .collect()
+    }
+}
+
+impl ExecutionLeaseRepository for SqliteStore {
+    fn reserve_execution_attempt(
+        &self,
+        execution_key: &str,
+        at: Timestamp,
+        max_attempts: u32,
+    ) -> Result<bool, RepositoryError> {
+        let key = execution_key.trim();
+        if key.is_empty() || key.chars().count() > 240 || max_attempts == 0 {
+            return Err(RepositoryError::Corrupt(
+                "execution lease requires a key and positive attempt budget".to_owned(),
+            ));
+        }
+        let conn = self.lock()?;
+        conn.execute(
+            "INSERT OR IGNORE INTO execution_leases (execution_key) VALUES (?1)",
+            params![key],
+        )
+        .map_err(backend)?;
+        let changed = conn
+            .execute(
+                "UPDATE execution_leases
+                 SET attempts = attempts + 1, lease_until_ms=?2 + ?3
+                 WHERE execution_key=?1 AND attempts < ?4 AND lease_until_ms <= ?2",
+                params![
+                    key,
+                    at.unix_millis(),
+                    endora_application::EXECUTION_LEASE_MS,
+                    i64::from(max_attempts)
+                ],
+            )
+            .map_err(backend)?;
+        Ok(changed == 1)
+    }
+
+    fn release_execution_attempt(
+        &self,
+        execution_key: &str,
+        lease_until_ms: i64,
+    ) -> Result<(), RepositoryError> {
+        let key = execution_key.trim();
+        if key.is_empty() || key.chars().count() > 240 || lease_until_ms <= 0 {
+            return Err(RepositoryError::Corrupt(
+                "execution lease release requires a key and lease token".to_owned(),
+            ));
+        }
+        self.lock()?
+            .execute(
+                "UPDATE execution_leases SET lease_until_ms=0
+                 WHERE execution_key=?1 AND lease_until_ms=?2",
+                params![key, lease_until_ms],
+            )
+            .map_err(backend)?;
+        Ok(())
+    }
+}
+
+impl GoalRepository for SqliteStore {
+    fn save_goal(&self, record: &GoalRecord) -> Result<bool, RepositoryError> {
+        let key = record.request_key().trim();
+        if key.is_empty() || key.chars().count() > 200 {
+            return Err(RepositoryError::Corrupt(
+                "goal request key must be 1–200 characters".to_owned(),
+            ));
+        }
+        let objective = record.goal().objective();
+        if objective.is_empty() || objective.chars().count() > 4_000 {
+            return Err(RepositoryError::Corrupt(
+                "goal objective must be 1–4000 characters".to_owned(),
+            ));
+        }
+        let mut conn = self.lock()?;
+        let tx = conn.transaction().map_err(backend)?;
+        let existing: Option<(String, String)> = tx
+            .query_row(
+                "SELECT objective, status FROM execution_goals WHERE request_key=?1",
+                params![key],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()
+            .map_err(backend)?;
+        if let Some((prior_objective, prior_status)) = existing {
+            if prior_objective != objective {
+                return Err(RepositoryError::Backend(
+                    "goal request key was reused with different objective".to_owned(),
+                ));
+            }
+            if GoalStatus::from_name(&prior_status).is_some_and(GoalStatus::terminal)
+                && prior_status != record.goal().status().name()
+            {
+                return Ok(false);
+            }
+            tx.execute(
+                "UPDATE execution_goals SET checkpoint=?2, status=?3, lease_until_ms=0, updated_ms=?4
+                 WHERE request_key=?1",
+                params![
+                    key,
+                    record.goal().checkpoint(),
+                    record.goal().status().name(),
+                    record.updated_at().unix_millis()
+                ],
+            )
+            .map_err(backend)?;
+        } else {
+            tx.execute(
+                "INSERT INTO execution_goals
+                 (request_key, objective, checkpoint, status, created_ms, updated_ms)
+                 VALUES (?1,?2,?3,?4,?5,?6)",
+                params![
+                    key,
+                    objective,
+                    record.goal().checkpoint(),
+                    record.goal().status().name(),
+                    record.created_at().unix_millis(),
+                    record.updated_at().unix_millis()
+                ],
+            )
+            .map_err(backend)?;
+        }
+        tx.commit().map_err(backend)?;
+        Ok(true)
+    }
+
+    fn get_goal(&self, request_key: &str) -> Result<Option<GoalRecord>, RepositoryError> {
+        let key = request_key.trim();
+        if key.is_empty() || key.chars().count() > 200 {
+            return Err(RepositoryError::Corrupt(
+                "goal request key must be 1–200 characters".to_owned(),
+            ));
+        }
+        let conn = self.lock()?;
+        let raw: Option<(String, String, String, i64, i64)> = conn
+            .query_row(
+                "SELECT objective, checkpoint, status, created_ms, updated_ms
+                 FROM execution_goals WHERE request_key=?1",
+                params![key],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(backend)?;
+        raw.map(|(objective, checkpoint, status, created_ms, updated_ms)| {
+            parse_goal_record(
+                key,
+                &objective,
+                &checkpoint,
+                &status,
+                created_ms,
+                updated_ms,
+            )
+        })
+        .transpose()
+    }
+
+    fn active_goals(&self) -> Result<Vec<GoalRecord>, RepositoryError> {
+        let conn = self.lock()?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT request_key, objective, checkpoint, status, created_ms, updated_ms
+                 FROM execution_goals
+                 WHERE status IN ('planned','running','waiting')
+                 ORDER BY updated_ms ASC, request_key ASC",
+            )
+            .map_err(backend)?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, i64>(4)?,
+                    row.get::<_, i64>(5)?,
+                ))
+            })
+            .map_err(backend)?;
+        let raw = rows.collect::<Result<Vec<_>, _>>().map_err(backend)?;
+        raw.into_iter()
+            .map(
+                |(key, objective, checkpoint, status, created_ms, updated_ms)| {
+                    parse_goal_record(
+                        &key,
+                        &objective,
+                        &checkpoint,
+                        &status,
+                        created_ms,
+                        updated_ms,
+                    )
+                },
+            )
+            .collect()
+    }
+
+    fn reserve_goal_attempt(
+        &self,
+        request_key: &str,
+        at: Timestamp,
+    ) -> Result<bool, RepositoryError> {
+        let key = request_key.trim();
+        if key.is_empty() || key.chars().count() > 200 {
+            return Err(RepositoryError::Corrupt(
+                "goal request key must be 1–200 characters".to_owned(),
+            ));
+        }
+        let conn = self.lock()?;
+        let resumable: Option<String> = conn
+            .query_row(
+                "SELECT status FROM execution_goals WHERE request_key=?1",
+                params![key],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(backend)?;
+        let Some(status) = resumable else {
+            return Ok(false);
+        };
+        if !matches!(status.as_str(), "planned" | "running" | "waiting") {
+            return Ok(false);
+        }
+        drop(conn);
+        let lease_key = format!("goal:{key}");
+        let reserved = self.reserve_execution_attempt(&lease_key, at, 8)?;
+        if reserved {
+            self.lock()?
+                .execute(
+                    "UPDATE execution_goals SET updated_ms=?2 WHERE request_key=?1",
+                    params![key, at.unix_millis()],
+                )
+                .map_err(backend)?;
+        }
+        Ok(reserved)
+    }
+
+    fn cancel_goal(
+        &self,
+        request_key: &str,
+        reason: &str,
+        at: Timestamp,
+    ) -> Result<bool, RepositoryError> {
+        let key = request_key.trim();
+        let reason = reason.trim();
+        if key.is_empty() || key.chars().count() > 200 || reason.is_empty() {
+            return Err(RepositoryError::Corrupt(
+                "goal cancellation requires a key and reason".to_owned(),
+            ));
+        }
+        let mut conn = self.lock()?;
+        let tx = conn.transaction().map_err(backend)?;
+        let raw: Option<(String, String, String)> = tx
+            .query_row(
+                "SELECT objective, checkpoint, status FROM execution_goals WHERE request_key=?1",
+                params![key],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .optional()
+            .map_err(backend)?;
+        let Some((objective, checkpoint, status)) = raw else {
+            return Ok(false);
+        };
+        let Some(current_status) = GoalStatus::from_name(&status) else {
+            return Err(RepositoryError::Corrupt(
+                "invalid stored goal status".to_owned(),
+            ));
+        };
+        if current_status.terminal() {
+            return Ok(false);
+        }
+        let mut goal = Goal::from_checkpoint(&objective, &checkpoint).map_err(corrupt)?;
+        goal.cancel(reason);
+        let changed = tx
+            .execute(
+                "UPDATE execution_goals SET checkpoint=?2, status='cancelled', lease_until_ms=0, updated_ms=?3
+                 WHERE request_key=?1 AND status IN ('planned','running','waiting')",
+                params![key, goal.checkpoint(), at.unix_millis()],
+            )
+            .map_err(backend)?;
+        tx.commit().map_err(backend)?;
+        Ok(changed == 1)
+    }
+
+    fn mark_goal_announced(&self, request_key: &str) -> Result<(), RepositoryError> {
+        self.lock()?
+            .execute(
+                "UPDATE execution_goals SET completion_published=1 WHERE request_key=?1",
+                params![request_key.trim()],
+            )
+            .map_err(backend)?;
+        Ok(())
+    }
+
+    fn pending_goal_completions(&self) -> Result<Vec<GoalRecord>, RepositoryError> {
+        let conn = self.lock()?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT request_key, objective, checkpoint, status, created_ms, updated_ms
+                 FROM execution_goals
+                 WHERE status='complete' AND completion_published=0
+                 ORDER BY updated_ms ASC, request_key ASC",
+            )
+            .map_err(backend)?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, i64>(4)?,
+                    row.get::<_, i64>(5)?,
+                ))
+            })
+            .map_err(backend)?;
+        let raw = rows.collect::<Result<Vec<_>, _>>().map_err(backend)?;
+        raw.into_iter()
+            .map(
+                |(key, objective, checkpoint, status, created_ms, updated_ms)| {
+                    parse_goal_record(
+                        &key,
+                        &objective,
+                        &checkpoint,
+                        &status,
+                        created_ms,
+                        updated_ms,
+                    )
+                },
+            )
+            .collect()
+    }
+}
+
+impl GoalDelivery for SqliteStore {
+    fn publish_goal_completion(
+        &self,
+        record: &GoalRecord,
+        notice: &ChatMessage,
+    ) -> Result<bool, RepositoryError> {
+        if record.goal().status() != GoalStatus::Complete {
+            return Err(RepositoryError::Corrupt(
+                "cannot publish a non-complete goal".to_owned(),
+            ));
+        }
+        let mut conn = self.lock()?;
+        let tx = conn.transaction().map_err(backend)?;
+        let changed = tx
+            .execute(
+                "UPDATE execution_goals SET completion_published=1, updated_ms=?2
+                 WHERE request_key=?1 AND status='complete' AND completion_published=0",
+                params![record.request_key(), record.updated_at().unix_millis()],
+            )
+            .map_err(backend)?;
+        if changed == 0 {
+            return Ok(false);
+        }
+        tx.execute(
+            "INSERT INTO messages (id, role, body, at_ms) VALUES (?1,?2,?3,?4)",
+            params![
+                notice.id().value().to_string(),
+                notice.role().name(),
+                notice.text(),
+                notice.at().unix_millis()
+            ],
+        )
+        .map_err(backend)?;
+        tx.commit().map_err(backend)?;
+        Ok(true)
+    }
+}
+
+fn parse_goal_record(
+    request_key: &str,
+    objective: &str,
+    checkpoint: &str,
+    status: &str,
+    created_ms: i64,
+    updated_ms: i64,
+) -> Result<GoalRecord, RepositoryError> {
+    let goal = Goal::from_checkpoint(objective, checkpoint).map_err(corrupt)?;
+    if goal.status().name() != status {
+        return Err(RepositoryError::Corrupt(
+            "goal checkpoint status disagrees with stored status".to_owned(),
+        ));
+    }
+    let record = GoalRecord::new(request_key, goal, Timestamp::from_unix_millis(created_ms))
+        .map_err(corrupt)?;
+    Ok(record.with_goal(
+        Goal::from_checkpoint(objective, checkpoint).map_err(corrupt)?,
+        Timestamp::from_unix_millis(updated_ms),
+    ))
 }
 
 // The eight direction repositories are implemented by the direction context's
@@ -650,6 +1292,8 @@ impl SqliteStore {
 
 impl MemoryStore for SqliteStore {
     fn export(&self) -> Result<MemorySnapshot, RepositoryError> {
+        let research = endora_understanding::UnderstandingStore::new(self.db()).list_research()?;
+        let goals = self.all_goal_records()?;
         let conn = self.lock()?;
         Ok(MemorySnapshot {
             audit: all_audit(&conn)?,
@@ -658,6 +1302,8 @@ impl MemoryStore for SqliteStore {
             beliefs: all_beliefs(&conn)?,
             outcomes: all_outcomes(&conn)?,
             intentions: all_intentions(&conn)?,
+            research,
+            goals,
         })
     }
 
@@ -681,6 +1327,9 @@ impl MemoryStore for SqliteStore {
             "beliefs",
             "outcomes",
             "target_aliases",
+            "intention_research",
+            "execution_goals",
+            "execution_leases",
             "intentions",
             "events",
             "capability_config",
@@ -694,6 +1343,74 @@ impl MemoryStore for SqliteStore {
         }
         tx.commit().map_err(backend)?;
         Ok(())
+    }
+}
+
+impl ResearchDelivery for SqliteStore {
+    fn publish_research(
+        &self,
+        work: &ResearchAssignment,
+        notice: &ChatMessage,
+        audit: &[AuditRecord],
+    ) -> Result<bool, RepositoryError> {
+        let Some(report) = work.report() else {
+            return Err(RepositoryError::Corrupt(
+                "cannot publish research without a report".to_owned(),
+            ));
+        };
+        if work.status() != endora_application::ResearchStatus::Delivered {
+            return Err(RepositoryError::Corrupt(
+                "cannot publish non-delivered research".to_owned(),
+            ));
+        }
+        let mut conn = self.lock()?;
+        let tx = conn.transaction().map_err(backend)?;
+        let changed = tx.execute(
+            "UPDATE intention_research SET status='delivered', phase=?2, reason_code='', reason='',
+             checkpoint=?3, report_markdown=?4, report_partial=?5, report_created_ms=?6,
+             model_calls_used=?7, read_attempts_used=?8, updated_ms=?9
+             WHERE intention_id=?1 AND status NOT IN
+                ('delivered','blocked','budget_exhausted','cancelled','failed')",
+            params![
+                work.intention_id().value().to_string(), work.phase(), work.checkpoint(),
+                report.markdown(), report.partial(), report.created_at().unix_millis(),
+                work.model_calls_used(), work.read_attempts_used(), work.updated_at().unix_millis(),
+            ],
+        ).map_err(backend)?;
+        if changed == 0 {
+            return Ok(false);
+        }
+        tx.execute(
+            "UPDATE intentions SET state='done', last_progressed_ms=?2 WHERE id=?1",
+            params![
+                work.intention_id().value().to_string(),
+                work.updated_at().unix_millis()
+            ],
+        )
+        .map_err(backend)?;
+        tx.execute(
+            "INSERT INTO messages (id,role,body,at_ms) VALUES (?1,?2,?3,?4)",
+            params![
+                notice.id().value().to_string(),
+                notice.role().name(),
+                notice.text(),
+                notice.at().unix_millis()
+            ],
+        )
+        .map_err(backend)?;
+        for record in audit {
+            tx.execute(
+                "INSERT INTO audit_log (id,at_ms,summary) VALUES (?1,?2,?3)",
+                params![
+                    record.id().value().to_string(),
+                    record.at().unix_millis(),
+                    record.summary()
+                ],
+            )
+            .map_err(backend)?;
+        }
+        tx.commit().map_err(backend)?;
+        Ok(true)
     }
 }
 
@@ -775,8 +1492,8 @@ fn all_beliefs(conn: &Connection) -> Result<Vec<Belief>, RepositoryError> {
 fn all_intentions(conn: &Connection) -> Result<Vec<Intention>, RepositoryError> {
     let mut stmt = conn
         .prepare(
-            "SELECT id, statement, motivating_belief, note, state, created_ms, \
-             last_progressed_ms, steps_taken \
+            "SELECT id, statement, motivating_belief, origin, request_message_id, note, state,
+             created_ms, last_progressed_ms, steps_taken
              FROM intentions ORDER BY last_progressed_ms DESC, rowid DESC",
         )
         .map_err(backend)?;
@@ -785,23 +1502,36 @@ fn all_intentions(conn: &Connection) -> Result<Vec<Intention>, RepositoryError> 
             Ok((
                 r.get::<_, String>(0)?,
                 r.get::<_, String>(1)?,
-                r.get::<_, String>(2)?,
+                r.get::<_, Option<String>>(2)?,
                 r.get::<_, String>(3)?,
-                r.get::<_, String>(4)?,
-                r.get::<_, i64>(5)?,
-                r.get::<_, i64>(6)?,
-                r.get::<_, u32>(7)?,
+                r.get::<_, Option<String>>(4)?,
+                r.get::<_, String>(5)?,
+                r.get::<_, String>(6)?,
+                r.get::<_, i64>(7)?,
+                r.get::<_, i64>(8)?,
+                r.get::<_, u32>(9)?,
             ))
         })
         .map_err(backend)?;
     let mut out = Vec::new();
     for row in rows {
-        let (id, statement, belief, note, state, created_ms, progressed_ms, steps) =
+        let (id, statement, belief, origin, request, note, state, created_ms, progressed_ms, steps) =
             row.map_err(backend)?;
+        let origin = match (origin.as_str(), belief, request) {
+            ("belief", Some(id), None) => IntentionOrigin::Belief(BeliefId::new(parse_id(&id)?)),
+            ("user_request", None, Some(id)) => {
+                IntentionOrigin::UserRequest(MessageId::new(parse_id(&id)?))
+            }
+            _ => {
+                return Err(RepositoryError::Corrupt(
+                    "invalid intention provenance".to_owned(),
+                ));
+            }
+        };
         out.push(Intention::from_parts(
             IntentionId::new(parse_id(&id)?),
             statement,
-            BeliefId::new(parse_id(&belief)?),
+            origin,
             note,
             IntentionState::from_name(&state),
             Timestamp::from_unix_millis(created_ms),
@@ -1586,5 +2316,330 @@ mod the_schema_production_actually_runs {
         let back = NotionRepository::open(&understanding).expect("read back");
         assert_eq!(back.len(), 1);
         assert_eq!(back[0].support_count(), 2, "notion_citations");
+    }
+
+    #[test]
+    fn commissioned_research_survives_and_a_late_result_cannot_undo_cancellation() {
+        use endora_application::{
+            IntentionId, MemoryStore, MessageId, ResearchRepository, ResearchStatus, Timestamp,
+        };
+
+        let store = SqliteStore::open_in_memory().expect("open the production store");
+        let mut running = store
+            .commission_research(
+                IntentionId::new(10),
+                MessageId::new(11),
+                "request-1",
+                "Compare backup approaches",
+                r#"["https://example.com"]"#,
+                None,
+                Timestamp::from_unix_millis(1_000),
+            )
+            .expect("commission atomically");
+        assert!(running.reserve_model_call(Timestamp::from_unix_millis(1_001)));
+        let understanding = endora_understanding::UnderstandingStore::new(store.db());
+        understanding.save_research(&running).unwrap();
+
+        let mut cancelled = understanding
+            .research(IntentionId::new(10))
+            .unwrap()
+            .unwrap();
+        cancelled.cancel(Timestamp::from_unix_millis(1_002));
+        understanding.save_research(&cancelled).unwrap();
+
+        running.fail(
+            "late",
+            "late worker result",
+            Timestamp::from_unix_millis(1_003),
+        );
+        understanding.save_research(&running).unwrap();
+        assert_eq!(
+            understanding
+                .research(IntentionId::new(10))
+                .unwrap()
+                .unwrap()
+                .status(),
+            ResearchStatus::Cancelled,
+        );
+        assert_eq!(store.export().unwrap().research.len(), 1);
+        store.purge().unwrap();
+        assert!(store.export().unwrap().research.is_empty());
+    }
+
+    #[test]
+    fn publishing_research_commits_report_intention_and_notice_once() {
+        use endora_application::{
+            ChatMessage, IntentionRepository, MemoryStore, MessageId, MessageRole,
+            ResearchDelivery, ResearchReport, ResearchRepository, Timestamp,
+        };
+
+        let store = SqliteStore::open_in_memory().unwrap();
+        let mut work = store
+            .commission_research(
+                endora_application::IntentionId::new(30),
+                MessageId::new(31),
+                "request-publish",
+                "Research backups",
+                r#"["https://example.com"]"#,
+                None,
+                Timestamp::from_unix_millis(1_000),
+            )
+            .unwrap();
+        work.deliver(
+            ResearchReport::new(
+                work.intention_id(),
+                "# Report\n\n## Sources\n\n- [S1](https://example.com)",
+                false,
+                Timestamp::from_unix_millis(2_000),
+            )
+            .unwrap(),
+            Timestamp::from_unix_millis(2_000),
+        );
+        let notice = ChatMessage::new(
+            MessageId::new(32),
+            MessageRole::Butler,
+            "Your research report is ready.",
+            Timestamp::from_unix_millis(2_000),
+        )
+        .unwrap();
+
+        assert!(store.publish_research(&work, &notice, &[]).unwrap());
+        assert!(!store.publish_research(&work, &notice, &[]).unwrap());
+        let understanding = endora_understanding::UnderstandingStore::new(store.db());
+        assert!(
+            !understanding
+                .get(work.intention_id())
+                .unwrap()
+                .unwrap()
+                .is_active()
+        );
+        assert_eq!(
+            store.export().unwrap().messages.len(),
+            2,
+            "commission plus one notice"
+        );
+        assert_eq!(
+            understanding
+                .research(work.intention_id())
+                .unwrap()
+                .unwrap()
+                .status(),
+            endora_application::ResearchStatus::Delivered
+        );
+    }
+
+    #[test]
+    fn a_published_report_survives_reopening_the_production_database() {
+        use endora_application::{
+            ChatMessage, MemoryStore, MessageId, MessageRole, ResearchDelivery, ResearchReport,
+            Timestamp,
+        };
+        let path = std::env::temp_dir().join(format!(
+            "endora-research-restart-{}.sqlite",
+            uuid::Uuid::new_v4()
+        ));
+        {
+            let store = SqliteStore::open(path.to_str().unwrap()).unwrap();
+            let mut work = store
+                .commission_research(
+                    endora_application::IntentionId::new(40),
+                    MessageId::new(41),
+                    "restart-key",
+                    "Research backups",
+                    r#"["https://example.com"]"#,
+                    None,
+                    Timestamp::from_unix_millis(1_000),
+                )
+                .unwrap();
+            work.deliver(
+                ResearchReport::new(
+                    work.intention_id(),
+                    "# Report\n\nSaved.\n\n## Sources\n\n- [S1](https://example.com)",
+                    false,
+                    Timestamp::from_unix_millis(2_000),
+                )
+                .unwrap(),
+                Timestamp::from_unix_millis(2_000),
+            );
+            let notice = ChatMessage::new(
+                MessageId::new(42),
+                MessageRole::Butler,
+                "Your research report is ready.",
+                Timestamp::from_unix_millis(2_000),
+            )
+            .unwrap();
+            assert!(store.publish_research(&work, &notice, &[]).unwrap());
+        }
+        let reopened = SqliteStore::open(path.to_str().unwrap()).unwrap();
+        let snapshot = reopened.export().unwrap();
+        assert_eq!(snapshot.research.len(), 1);
+        assert!(snapshot.research[0].report().is_some());
+        drop(reopened);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn execution_goals_resume_idempotently_and_cancellation_wins_late_writes() {
+        use endora_application::{
+            Goal, GoalRecord, GoalRepository, GoalStatus, GoalVerdict, MemoryStore, Timestamp,
+        };
+
+        let store = SqliteStore::open_in_memory().unwrap();
+        let at = Timestamp::from_unix_millis(1_000);
+        let mut goal = Goal::new("find the next three games").unwrap();
+        goal.start("gathering", "sports_schedule");
+        let record = GoalRecord::new("panthers-next-three", goal.clone(), at).unwrap();
+        assert!(store.save_goal(&record).unwrap());
+        assert!(store.save_goal(&record).unwrap());
+        assert!(
+            store
+                .reserve_goal_attempt(record.request_key(), Timestamp::from_unix_millis(32_000))
+                .unwrap()
+        );
+        assert!(
+            !store
+                .reserve_goal_attempt(record.request_key(), Timestamp::from_unix_millis(32_100))
+                .unwrap()
+        );
+
+        let restored = store
+            .get_goal(record.request_key())
+            .unwrap()
+            .expect("goal survives a read");
+        assert_eq!(restored.goal().status(), GoalStatus::Running);
+        assert_eq!(store.active_goals().unwrap().len(), 1);
+
+        assert!(
+            store
+                .cancel_goal(
+                    record.request_key(),
+                    "cancelled by the person",
+                    Timestamp::from_unix_millis(2_000)
+                )
+                .unwrap()
+        );
+        assert!(
+            !store
+                .cancel_goal(
+                    record.request_key(),
+                    "late cancellation",
+                    Timestamp::from_unix_millis(3_000)
+                )
+                .unwrap()
+        );
+
+        let mut stale = restored.goal().clone();
+        stale.apply(GoalVerdict::Complete, "late result");
+        let stale_record = restored.with_goal(stale, Timestamp::from_unix_millis(4_000));
+        assert!(!store.save_goal(&stale_record).unwrap());
+        assert_eq!(
+            store
+                .get_goal(record.request_key())
+                .unwrap()
+                .unwrap()
+                .goal()
+                .status(),
+            GoalStatus::Cancelled
+        );
+        assert!(store.export().unwrap().goals.len() == 1);
+        store.purge().unwrap();
+        assert!(store.export().unwrap().goals.is_empty());
+    }
+
+    #[test]
+    fn goal_completion_notice_is_published_once_and_survives_restart() {
+        use endora_application::{
+            ChatMessage, Goal, GoalDelivery, GoalRecord, GoalRepository, GoalVerdict, MemoryStore,
+            MessageId, MessageRole, Timestamp,
+        };
+
+        let store = SqliteStore::open_in_memory().unwrap();
+        let at = Timestamp::from_unix_millis(1_000);
+        let mut goal = Goal::new("find the next three games").unwrap();
+        goal.start("gathering", "sports_schedule");
+        goal.commit("sports_schedule", "1. game\n2. game\n3. game\nSource: test");
+        goal.apply(GoalVerdict::Complete, "verified evidence");
+        let record = GoalRecord::new("completion-once", goal, at).unwrap();
+        assert!(store.save_goal(&record).unwrap());
+        assert_eq!(store.pending_goal_completions().unwrap().len(), 1);
+        let notice = ChatMessage::new(
+            MessageId::new(77),
+            MessageRole::Butler,
+            "Your request is complete.",
+            Timestamp::from_unix_millis(2_000),
+        )
+        .unwrap();
+        assert!(store.publish_goal_completion(&record, &notice).unwrap());
+        assert!(!store.publish_goal_completion(&record, &notice).unwrap());
+        assert!(store.pending_goal_completions().unwrap().is_empty());
+
+        // A goal answered inline in the turn that ran it is never announced again.
+        let mut inline = Goal::new("find the next two games").unwrap();
+        inline.start("gathering", "sports_schedule");
+        inline.commit("sports_schedule", "1. a\n2. b\n3. c\nSource: test");
+        inline.apply(GoalVerdict::Complete, "verified evidence");
+        let inline = GoalRecord::new("answered-inline", inline, at).unwrap();
+        assert!(store.save_goal(&inline).unwrap());
+        assert_eq!(store.pending_goal_completions().unwrap().len(), 1);
+        store.mark_goal_announced("answered-inline").unwrap();
+        assert!(store.pending_goal_completions().unwrap().is_empty());
+        assert_eq!(store.export().unwrap().messages.len(), 1);
+        store.purge().unwrap();
+        assert!(store.export().unwrap().goals.is_empty());
+    }
+
+    #[test]
+    fn research_and_goal_workers_share_reclaimable_execution_leases() {
+        use endora_application::{ExecutionLeaseRepository, Timestamp};
+
+        let store = SqliteStore::open_in_memory().unwrap();
+        let first = Timestamp::from_unix_millis(1_000);
+        assert!(
+            store
+                .reserve_execution_attempt("research:request-1", first, 16)
+                .unwrap()
+        );
+        assert!(
+            !store
+                .reserve_execution_attempt(
+                    "research:request-1",
+                    Timestamp::from_unix_millis(2_000),
+                    16
+                )
+                .unwrap()
+        );
+
+        // A dead worker's lease is reclaimable after the fixed 30-second window.
+        let reclaimed_at = Timestamp::from_unix_millis(31_001);
+        assert!(
+            store
+                .reserve_execution_attempt("research:request-1", reclaimed_at, 16)
+                .unwrap()
+        );
+
+        // A late worker cannot release the newer worker's lease token.
+        store
+            .release_execution_attempt("research:request-1", first.unix_millis() + 30_000)
+            .unwrap();
+        assert!(
+            !store
+                .reserve_execution_attempt(
+                    "research:request-1",
+                    Timestamp::from_unix_millis(31_002),
+                    16
+                )
+                .unwrap()
+        );
+        store
+            .release_execution_attempt(
+                "research:request-1",
+                reclaimed_at.unix_millis() + endora_application::EXECUTION_LEASE_MS,
+            )
+            .unwrap();
+        assert!(
+            store
+                .reserve_execution_attempt("goal:request-2", Timestamp::from_unix_millis(2_000), 8)
+                .unwrap()
+        );
     }
 }

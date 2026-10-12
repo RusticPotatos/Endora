@@ -8,12 +8,13 @@ use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::application::{
     BeliefRepository, IntentionRepository, NotionRepository, OutcomeRepository,
-    PreferenceRepository, SpecimenRepository,
+    PreferenceRepository, ResearchRepository, SpecimenRepository,
 };
 use crate::domain::{
-    Belief, BeliefKind, BeliefStatus, Citation, Confidence, Intention, IntentionState,
-    MOST_SPECIMENS_OPEN, Notion, NotionStatus, Outcome, Preference, PreferenceKind,
-    REPLAYS_BEFORE_GIVING_UP, Reaction, Source, Specimen, SpecimenState,
+    Belief, BeliefKind, BeliefStatus, Citation, Confidence, Intention, IntentionOrigin,
+    IntentionState, MOST_SPECIMENS_OPEN, Notion, NotionStatus, Outcome, Preference, PreferenceKind,
+    REPLAYS_BEFORE_GIVING_UP, Reaction, ResearchAssignment, ResearchReport, ResearchStatus, Source,
+    Specimen, SpecimenState,
 };
 
 /// Creates the understanding tables if absent (idempotent).
@@ -42,7 +43,9 @@ pub fn migrate(db: &Db) -> Result<(), RepositoryError> {
             CREATE TABLE IF NOT EXISTS intentions (
                 id                 TEXT PRIMARY KEY,
                 statement          TEXT NOT NULL,
-                motivating_belief  TEXT NOT NULL,
+                motivating_belief  TEXT,
+                origin             TEXT NOT NULL DEFAULT 'belief',
+                request_message_id TEXT,
                 note               TEXT NOT NULL,
                 state              TEXT NOT NULL,
                 created_ms         INTEGER NOT NULL,
@@ -86,6 +89,26 @@ pub fn migrate(db: &Db) -> Result<(), RepositoryError> {
             ) STRICT;",
         )
         .map_err(backend)?;
+    migrate_intentions_0077(db)?;
+    db.lock()?
+        .execute_batch(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_one_active_intention_origin
+            ON intentions(origin) WHERE state = 'active';
+         CREATE TABLE IF NOT EXISTS intention_research (
+            intention_id TEXT PRIMARY KEY, assignment TEXT NOT NULL,
+            request_key TEXT NOT NULL UNIQUE, source_urls_json TEXT NOT NULL,
+            search_capability_id TEXT, status TEXT NOT NULL, phase TEXT NOT NULL,
+            reason_code TEXT NOT NULL, reason TEXT NOT NULL, checkpoint TEXT NOT NULL,
+            report_markdown TEXT, report_partial INTEGER NOT NULL DEFAULT 0,
+            report_created_ms INTEGER, model_calls_used INTEGER NOT NULL,
+            read_attempts_used INTEGER NOT NULL, created_ms INTEGER NOT NULL,
+            updated_ms INTEGER NOT NULL, expires_ms INTEGER NOT NULL,
+            FOREIGN KEY (intention_id) REFERENCES intentions(id) ON DELETE CASCADE
+         ) STRICT;
+         CREATE INDEX IF NOT EXISTS idx_intention_research_status
+            ON intention_research(status);",
+        )
+        .map_err(backend)?;
     // Why a specimen finished, not merely that it did (ADR 0071). Additive for
     // databases created before the column existed; a fresh one gets it from the
     // CREATE, and the error on an already-present column is the expected case.
@@ -114,6 +137,59 @@ pub fn migrate(db: &Db) -> Result<(), RepositoryError> {
         )
         .map_err(backend)?;
     Ok(())
+}
+
+fn migrate_intentions_0077(db: &Db) -> Result<(), RepositoryError> {
+    let mut conn = db.lock()?;
+    let has_origin = {
+        let mut stmt = conn
+            .prepare("PRAGMA table_info(intentions)")
+            .map_err(backend)?;
+        let rows = stmt
+            .query_map([], |r| r.get::<_, String>(1))
+            .map_err(backend)?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(backend)?
+            .iter()
+            .any(|name| name == "origin")
+    };
+    if has_origin {
+        return Ok(());
+    }
+    let active: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM intentions WHERE state = 'active'",
+            [],
+            |r| r.get(0),
+        )
+        .map_err(backend)?;
+    if active > 1 {
+        return Err(RepositoryError::Corrupt(
+            "more than one active legacy intention; resolve it before upgrading".to_owned(),
+        ));
+    }
+    let tx = conn.transaction().map_err(backend)?;
+    tx.execute_batch(
+        "ALTER TABLE intentions RENAME TO intentions_before_0077;
+         CREATE TABLE intentions (
+            id TEXT PRIMARY KEY, statement TEXT NOT NULL, motivating_belief TEXT,
+            origin TEXT NOT NULL, request_message_id TEXT, note TEXT NOT NULL,
+            state TEXT NOT NULL, created_ms INTEGER NOT NULL,
+            last_progressed_ms INTEGER NOT NULL, steps_taken INTEGER NOT NULL,
+            CHECK ((origin = 'belief' AND motivating_belief IS NOT NULL AND request_message_id IS NULL)
+                OR (origin = 'user_request' AND motivating_belief IS NULL AND request_message_id IS NOT NULL))
+         ) STRICT;
+         INSERT INTO intentions
+            (id, statement, motivating_belief, origin, request_message_id, note, state,
+             created_ms, last_progressed_ms, steps_taken)
+         SELECT id, statement, motivating_belief, 'belief', NULL, note, state,
+                created_ms, last_progressed_ms, steps_taken
+         FROM intentions_before_0077;
+         DROP TABLE intentions_before_0077;
+         CREATE UNIQUE INDEX idx_one_active_intention_origin
+            ON intentions(origin) WHERE state = 'active';",
+    ).map_err(backend)?;
+    tx.commit().map_err(backend)
 }
 
 /// SQLite-backed store for beliefs, preferences and outcomes over the shared connection.
@@ -382,14 +458,23 @@ impl IntentionRepository for UnderstandingStore {
         self.db
             .lock()?
             .execute(
-                "INSERT OR REPLACE INTO intentions \
-                 (id, statement, motivating_belief, note, state, created_ms, \
-                  last_progressed_ms, steps_taken) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                "INSERT INTO intentions \
+                 (id, statement, motivating_belief, origin, request_message_id, note, state,
+                  created_ms, last_progressed_ms, steps_taken)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+                 ON CONFLICT(id) DO UPDATE SET
+                    note=excluded.note, state=excluded.state,
+                    last_progressed_ms=excluded.last_progressed_ms,
+                    steps_taken=excluded.steps_taken",
                 params![
                     id_text(intention.id().value()),
                     intention.statement(),
-                    id_text(intention.motivating_belief().value()),
+                    intention.motivating_belief().map(|id| id_text(id.value())),
+                    intention.origin().name(),
+                    match intention.origin() {
+                        IntentionOrigin::UserRequest(id) => Some(id_text(id.value())),
+                        _ => None,
+                    },
                     intention.note(),
                     intention.state().name(),
                     intention.created_at().unix_millis(),
@@ -424,8 +509,8 @@ impl IntentionRepository for UnderstandingStore {
 fn all_intentions(conn: &Connection) -> Result<Vec<Intention>, RepositoryError> {
     let mut stmt = conn
         .prepare(
-            "SELECT id, statement, motivating_belief, note, state, created_ms, \
-             last_progressed_ms, steps_taken \
+            "SELECT id, statement, motivating_belief, origin, request_message_id, note, state, created_ms,
+             last_progressed_ms, steps_taken
              FROM intentions ORDER BY last_progressed_ms DESC, rowid DESC",
         )
         .map_err(backend)?;
@@ -434,28 +519,184 @@ fn all_intentions(conn: &Connection) -> Result<Vec<Intention>, RepositoryError> 
             Ok((
                 r.get::<_, String>(0)?,
                 r.get::<_, String>(1)?,
-                r.get::<_, String>(2)?,
+                r.get::<_, Option<String>>(2)?,
                 r.get::<_, String>(3)?,
-                r.get::<_, String>(4)?,
-                r.get::<_, i64>(5)?,
-                r.get::<_, i64>(6)?,
-                r.get::<_, u32>(7)?,
+                r.get::<_, Option<String>>(4)?,
+                r.get::<_, String>(5)?,
+                r.get::<_, String>(6)?,
+                r.get::<_, i64>(7)?,
+                r.get::<_, i64>(8)?,
+                r.get::<_, u32>(9)?,
             ))
         })
         .map_err(backend)?;
     let mut out = Vec::new();
     for row in rows {
-        let (id, statement, belief, note, state, created_ms, progressed_ms, steps) =
+        let (id, statement, belief, origin, request, note, state, created_ms, progressed_ms, steps) =
             row.map_err(backend)?;
+        let origin = match (origin.as_str(), belief, request) {
+            ("belief", Some(id), None) => IntentionOrigin::Belief(BeliefId::new(parse_id(&id)?)),
+            ("user_request", None, Some(id)) => {
+                IntentionOrigin::UserRequest(endora_kernel::ids::MessageId::new(parse_id(&id)?))
+            }
+            _ => {
+                return Err(RepositoryError::Corrupt(
+                    "invalid intention provenance".to_owned(),
+                ));
+            }
+        };
         out.push(Intention::from_parts(
             IntentionId::new(parse_id(&id)?),
             statement,
-            BeliefId::new(parse_id(&belief)?),
+            origin,
             note,
             IntentionState::from_name(&state),
             Timestamp::from_unix_millis(created_ms),
             Timestamp::from_unix_millis(progressed_ms),
             steps,
+        ));
+    }
+    Ok(out)
+}
+
+impl ResearchRepository for UnderstandingStore {
+    fn save_research(&self, work: &ResearchAssignment) -> Result<(), RepositoryError> {
+        if work.status() == ResearchStatus::Delivered {
+            return Err(RepositoryError::Corrupt(
+                "delivered research must use the atomic publisher".to_owned(),
+            ));
+        }
+        let report = work.report();
+        self.db.lock()?.execute(
+            "UPDATE intention_research SET status=?2, phase=?3, reason_code=?4, reason=?5,
+             checkpoint=?6, report_markdown=?7, report_partial=?8, report_created_ms=?9,
+             model_calls_used=?10, read_attempts_used=?11, updated_ms=?12
+             WHERE intention_id=?1 AND status NOT IN ('delivered','blocked','budget_exhausted','cancelled','failed')",
+            params![id_text(work.intention_id().value()), work.status().name(), work.phase(),
+                work.reason_code(), work.reason(), work.checkpoint(), report.map(ResearchReport::markdown),
+                report.is_some_and(ResearchReport::partial), report.map(|r| r.created_at().unix_millis()),
+                work.model_calls_used(), work.read_attempts_used(), work.updated_at().unix_millis()],
+        ).map_err(backend)?;
+        Ok(())
+    }
+
+    fn research(&self, id: IntentionId) -> Result<Option<ResearchAssignment>, RepositoryError> {
+        let conn = self.db.lock()?;
+        Ok(
+            research_where(&conn, "WHERE intention_id=?1", &[&id_text(id.value())])?
+                .into_iter()
+                .next(),
+        )
+    }
+
+    fn active_research(&self) -> Result<Option<ResearchAssignment>, RepositoryError> {
+        let conn = self.db.lock()?;
+        Ok(research_where(
+            &conn,
+            "WHERE status NOT IN ('delivered','blocked','budget_exhausted','cancelled','failed')",
+            &[],
+        )?
+        .into_iter()
+        .next())
+    }
+
+    fn list_research(&self) -> Result<Vec<ResearchAssignment>, RepositoryError> {
+        let conn = self.db.lock()?;
+        research_where(&conn, "", &[])
+    }
+}
+
+/// Rows are filtered in SQL: the worker asks for the active assignment every few
+/// seconds, and each row carries a full report body.
+fn research_where(
+    conn: &Connection,
+    filter: &str,
+    args: &[&dyn rusqlite::ToSql],
+) -> Result<Vec<ResearchAssignment>, RepositoryError> {
+    let mut stmt = conn
+        .prepare(&format!(
+            "SELECT intention_id, assignment, request_key, source_urls_json, search_capability_id,
+         status, phase, reason_code, reason, checkpoint, report_markdown, report_partial,
+         report_created_ms, model_calls_used, read_attempts_used, created_ms, updated_ms, expires_ms
+         FROM intention_research {filter} ORDER BY updated_ms DESC, rowid DESC"
+        ))
+        .map_err(backend)?;
+    let rows = stmt
+        .query_map(args, |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, String>(3)?,
+                r.get::<_, Option<String>>(4)?,
+                r.get::<_, String>(5)?,
+                r.get::<_, String>(6)?,
+                r.get::<_, String>(7)?,
+                r.get::<_, String>(8)?,
+                r.get::<_, String>(9)?,
+                r.get::<_, Option<String>>(10)?,
+                r.get::<_, bool>(11)?,
+                r.get::<_, Option<i64>>(12)?,
+                r.get::<_, u32>(13)?,
+                r.get::<_, u32>(14)?,
+                r.get::<_, i64>(15)?,
+                r.get::<_, i64>(16)?,
+                r.get::<_, i64>(17)?,
+            ))
+        })
+        .map_err(backend)?;
+    let mut out = Vec::new();
+    for row in rows {
+        let (
+            id,
+            assignment,
+            key,
+            urls,
+            search,
+            status,
+            phase,
+            code,
+            reason,
+            checkpoint,
+            markdown,
+            partial,
+            report_ms,
+            model_calls,
+            reads,
+            created,
+            updated,
+            expires,
+        ) = row.map_err(backend)?;
+        let iid = IntentionId::new(parse_id(&id)?);
+        let report = match (markdown, report_ms) {
+            (Some(body), Some(at)) => Some(
+                ResearchReport::new(iid, &body, partial, Timestamp::from_unix_millis(at))
+                    .map_err(corrupt)?,
+            ),
+            (None, None) => None,
+            _ => {
+                return Err(RepositoryError::Corrupt(
+                    "incomplete research report".to_owned(),
+                ));
+            }
+        };
+        out.push(ResearchAssignment::from_parts(
+            iid,
+            assignment,
+            key,
+            urls,
+            search,
+            ResearchStatus::from_name(&status),
+            phase,
+            code,
+            reason,
+            checkpoint,
+            report,
+            model_calls,
+            reads,
+            Timestamp::from_unix_millis(created),
+            Timestamp::from_unix_millis(updated),
+            Timestamp::from_unix_millis(expires),
         ));
     }
     Ok(out)
@@ -734,6 +975,60 @@ mod tests {
     use endora_persistence::id_text;
     use rusqlite::params;
 
+    fn legacy_intentions(db: &Db) {
+        db.lock()
+            .unwrap()
+            .execute_batch(
+                "CREATE TABLE intentions (
+                id TEXT PRIMARY KEY, statement TEXT NOT NULL, motivating_belief TEXT NOT NULL,
+                note TEXT NOT NULL, state TEXT NOT NULL, created_ms INTEGER NOT NULL,
+                last_progressed_ms INTEGER NOT NULL, steps_taken INTEGER NOT NULL
+             ) STRICT;",
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn legacy_intentions_gain_explicit_belief_provenance_without_changing_ids() {
+        let db = Db::open_in_memory().unwrap();
+        legacy_intentions(&db);
+        db.lock()
+            .unwrap()
+            .execute(
+                "INSERT INTO intentions VALUES ('9','learn the routine','7','','active',10,10,0)",
+                [],
+            )
+            .unwrap();
+        migrate(&db).unwrap();
+        let stored = IntentionRepository::get(&UnderstandingStore::new(db), IntentionId::new(9))
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.motivating_belief(), Some(BeliefId::new(7)));
+    }
+
+    #[test]
+    fn ambiguous_legacy_active_work_fails_migration_without_rewriting_it() {
+        let db = Db::open_in_memory().unwrap();
+        legacy_intentions(&db);
+        db.lock()
+            .unwrap()
+            .execute_batch(
+                "INSERT INTO intentions VALUES ('1','first','7','','active',10,10,0);
+             INSERT INTO intentions VALUES ('2','second','8','','active',11,11,0);",
+            )
+            .unwrap();
+        assert!(migrate(&db).is_err());
+        let columns: Vec<String> = {
+            let conn = db.lock().unwrap();
+            let mut stmt = conn.prepare("PRAGMA table_info(intentions)").unwrap();
+            stmt.query_map([], |row| row.get(1))
+                .unwrap()
+                .collect::<Result<_, _>>()
+                .unwrap()
+        };
+        assert!(!columns.iter().any(|name| name == "origin"));
+    }
+
     #[test]
     fn a_failed_ask_is_filed_once_and_replays_decide_its_end() {
         use crate::application::SpecimenRepository;
@@ -986,7 +1281,7 @@ mod tests {
             .unwrap()
             .expect("saved");
         assert_eq!(stored, intention);
-        assert_eq!(stored.motivating_belief(), BeliefId::new(7));
+        assert_eq!(stored.motivating_belief(), Some(BeliefId::new(7)));
         assert_eq!(stored.note(), "They mentioned the room being too warm.");
         assert_eq!(stored.steps_taken(), 1);
     }

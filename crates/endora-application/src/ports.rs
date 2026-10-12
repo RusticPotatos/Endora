@@ -7,11 +7,17 @@
 
 use core::fmt;
 
+use crate::GoalRecord;
 use endora_capabilities::CapabilityUse;
 use endora_conversation::{ChatMessage, MessageRole};
 use endora_kernel::ids::{MessageId, Timestamp};
 use endora_platform::AuditRecord;
-use endora_understanding::{Belief, BeliefKind, Confidence, Intention, Outcome, Preference};
+use endora_understanding::{
+    Belief, BeliefKind, Confidence, Intention, Outcome, Preference, ResearchAssignment,
+};
+
+/// How long a worker reservation remains owned before restart recovery may reclaim it.
+pub const EXECUTION_LEASE_MS: i64 = 30_000;
 
 /// A complete snapshot of the user's stored data, for the memory rights of the
 /// constitution: it is what "export" hands back and what "delete" removes.
@@ -29,6 +35,10 @@ pub struct MemorySnapshot {
     pub outcomes: Vec<Outcome>,
     /// What Endora has pursued, is pursuing, and dropped (ADR 0052).
     pub intentions: Vec<Intention>,
+    /// User-commissioned research work and any saved reports (ADR 0077).
+    pub research: Vec<ResearchAssignment>,
+    /// User-requested execution goals and their resumable checkpoints.
+    pub goals: Vec<GoalRecord>,
 }
 
 /// The user's right to export and delete all of their data (constitution:
@@ -45,6 +55,98 @@ pub trait MemoryStore {
     /// # Errors
     /// [`RepositoryError`] if the backend fails.
     fn purge(&self) -> Result<(), RepositoryError>;
+}
+
+/// Durable storage for bounded, user-requested goal execution.
+///
+/// A repository implementation must preserve the immutable request key and
+/// objective, reject stale writes that would resurrect a terminal goal, and
+/// return queued/running/waiting records so a worker can resume after restart.
+pub trait GoalRepository {
+    /// Inserts or checkpoints a goal. Returns `false` when a terminal record
+    /// won a race against this stale non-terminal update.
+    fn save_goal(&self, record: &GoalRecord) -> Result<bool, RepositoryError>;
+
+    /// Fetches a goal by its idempotency key.
+    fn get_goal(&self, request_key: &str) -> Result<Option<GoalRecord>, RepositoryError>;
+
+    /// Returns all resumable goals, oldest update first.
+    fn active_goals(&self) -> Result<Vec<GoalRecord>, RepositoryError>;
+
+    /// Reserves one bounded external attempt before I/O. A running goal may be
+    /// reclaimed only after its checkpoint has been stale long enough to imply
+    /// the previous worker died. Returns `false` when another worker owns it or
+    /// the attempt budget is exhausted.
+    fn reserve_goal_attempt(
+        &self,
+        request_key: &str,
+        at: Timestamp,
+    ) -> Result<bool, RepositoryError>;
+
+    /// Cancels a non-terminal goal. Returns `false` when it was already terminal.
+    fn cancel_goal(
+        &self,
+        request_key: &str,
+        reason: &str,
+        at: Timestamp,
+    ) -> Result<bool, RepositoryError>;
+
+    /// Returns completed goals whose one completion notice is not committed yet.
+    fn pending_goal_completions(&self) -> Result<Vec<GoalRecord>, RepositoryError>;
+
+    /// Records that the person already received this goal's result in the turn that
+    /// ran it, so the background worker does not announce it a second time.
+    fn mark_goal_announced(&self, request_key: &str) -> Result<(), RepositoryError>;
+}
+
+/// Shared ownership boundary for resumable execution workers.
+///
+/// The key namespaces an execution stream (for example `goal:<request-key>` or
+/// `research:<request-key>`). A reservation is durable, bounded, and reclaimable
+/// after the lease expires when a worker dies. Implementations must compare the
+/// lease token on release so a late worker cannot clear a newer reservation.
+pub trait ExecutionLeaseRepository {
+    /// Reserves one bounded attempt for an execution stream.
+    fn reserve_execution_attempt(
+        &self,
+        execution_key: &str,
+        at: Timestamp,
+        max_attempts: u32,
+    ) -> Result<bool, RepositoryError>;
+
+    /// Releases the reservation identified by its lease expiry timestamp.
+    fn release_execution_attempt(
+        &self,
+        execution_key: &str,
+        lease_until_ms: i64,
+    ) -> Result<(), RepositoryError>;
+}
+
+/// Atomically publishes a goal's completion notice exactly once.
+pub trait GoalDelivery {
+    /// Returns `false` when another worker already published the notice or the
+    /// goal was cancelled/changed before publication.
+    fn publish_goal_completion(
+        &self,
+        record: &GoalRecord,
+        notice: &ChatMessage,
+    ) -> Result<bool, RepositoryError>;
+}
+
+/// Atomically publishes the final state of commissioned research across its
+/// understanding and conversation records (ADR 0077).
+pub trait ResearchDelivery {
+    /// Commits the report, completes its intention and appends its unique notice.
+    /// Returns `false` when cancellation or another terminal state won the race.
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if the transaction cannot be committed.
+    fn publish_research(
+        &self,
+        work: &ResearchAssignment,
+        notice: &ChatMessage,
+        audit: &[AuditRecord],
+    ) -> Result<bool, RepositoryError>;
 }
 
 // `RepositoryError` is the shared persistence-failure vocabulary; it lives in the

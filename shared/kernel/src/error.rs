@@ -105,6 +105,13 @@ pub enum AppError {
         /// A human-readable explanation.
         message: String,
     },
+    /// The request is valid but conflicts with current durable state.
+    Conflict {
+        /// Stable machine-readable reason.
+        code: &'static str,
+        /// Human-readable explanation.
+        message: String,
+    },
     /// A reasoning model was needed but unavailable or unusable.
     Model {
         /// A human-readable explanation.
@@ -119,6 +126,7 @@ impl fmt::Display for AppError {
             Self::Repository(e) => write!(f, "{e}"),
             Self::NotFound { entity } => write!(f, "{entity} not found"),
             Self::BadRequest { message } => write!(f, "{message}"),
+            Self::Conflict { message, .. } => write!(f, "{message}"),
             Self::Model { message } => write!(f, "{message}"),
         }
     }

@@ -4,6 +4,10 @@
 
 Accepted (2026-07-26). **Consolidates 0028, 0034, 0035 and 0037**, which are archived.
 
+[ADR 0077](0077-seeing-something-through.md) applies the same distinction to
+commissioned research: `delivered` means a sourced report was persisted; it does
+not claim that every model-written conclusion is semantically verified.
+
 ## Context
 
 The failure this document exists for is not a model doing the wrong thing. It is a model

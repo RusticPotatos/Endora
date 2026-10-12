@@ -134,7 +134,7 @@ smoke: ## Assert invariants against the DEPLOYED node (ENDORA_URL, or https://12
 	# where five of the last six bugs in this system were visible within a minute of the
 	# deploy that introduced them — nobody was looking. Set ENDORA_URL in local.mk to
 	# point at the deployed host.
-	ENDORA_URL="$(ENDORA_URL)" ENDORA_TOKEN="$(ENDORA_TOKEN)" cargo test -p endora-infrastructure --test live_smoke -- --ignored --test-threads=1
+	@ENDORA_URL="$(ENDORA_URL)" ENDORA_TOKEN="$(ENDORA_TOKEN)" cargo test -p endora-infrastructure --test live_smoke -- --ignored --test-threads=1
 
 .PHONY: deploy-check
 deploy-check: deploy ## Deploy, wait for the node to come up, then smoke it
@@ -176,6 +176,11 @@ watch: ## Re-run tests on file change (needs cargo-watch)
 ## ----------------------------------------------------------------------------
 ## Development: format, lint, test
 ## ----------------------------------------------------------------------------
+
+.PHONY: foundation-gate
+foundation-gate: ## Run foundation acceptance; missing coverage or failed behavior blocks release
+	python3 -m unittest discover -s scripts/foundation -p 'test_*.py'
+	python3 scripts/foundation/gate.py
 
 .PHONY: console-check
 console-check: ## Render every console screen in Node (catches a broken UI before a phone does)

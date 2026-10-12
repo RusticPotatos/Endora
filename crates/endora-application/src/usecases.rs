@@ -32,7 +32,8 @@ use endora_scheduling::{
 use crate::error::AppError;
 use crate::ports::{
     Butler, ButlerContext, ButlerReply, CapabilityTool, Clock, ConversationSummary,
-    ConversationSummaryStore, FormedBelief, IdSource, MemorySnapshot, MemoryStore, TurnMessage,
+    ConversationSummaryStore, FormedBelief, GoalRepository, IdSource, MemorySnapshot, MemoryStore,
+    TurnMessage,
 };
 
 /// Exports everything the user has stored (a memory right).
@@ -886,7 +887,7 @@ impl<'a> OutcomeSink<'a> {
     clippy::too_many_arguments,
     reason = "explicit dependencies, no hidden state"
 )]
-fn run_tool_turn(
+pub(crate) fn run_tool_turn(
     butler: &dyn Butler,
     capabilities: &dyn CapabilityRunner,
     audit: &dyn AuditLog,
@@ -1346,6 +1347,47 @@ pub fn send_to_butler(
     )
 }
 
+/// Non-streaming turn variant that checkpoints deterministic goal execution.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "explicit dependencies, no hidden state"
+)]
+pub fn send_to_butler_with_goals(
+    chat: &impl ChatRepository,
+    preferences: &impl PreferenceRepository,
+    beliefs: &impl BeliefRepository,
+    outcomes: &impl OutcomeRepository,
+    specimens: &impl SpecimenRepository,
+    capabilities: &dyn CapabilityRunner,
+    butler: &dyn Butler,
+    audit: &dyn AuditLog,
+    goals: &dyn GoalRepository,
+    ids: &impl IdSource,
+    clock: &impl Clock,
+    context: &ButlerContext,
+    text: &str,
+) -> Result<(ChatMessage, Vec<String>), AppError> {
+    send_to_butler_streaming_with_goals(
+        chat,
+        preferences,
+        beliefs,
+        outcomes,
+        specimens,
+        capabilities,
+        butler,
+        audit,
+        None,
+        Some(goals),
+        ids,
+        clock,
+        context,
+        text,
+        &mut |_| {},
+        &mut |_| {},
+        &mut Vec::new(),
+    )
+}
+
 /// Where a [`ButlerStep`] is in its lifecycle.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StepStatus {
@@ -1774,6 +1816,53 @@ pub fn send_to_butler_streaming(
     on_step: &mut dyn FnMut(ButlerStep),
     disclosures: &mut Vec<ActionDisclosure>,
 ) -> Result<(ChatMessage, Vec<String>), AppError> {
+    send_to_butler_streaming_with_goals(
+        chat,
+        preferences,
+        beliefs,
+        outcomes,
+        specimens,
+        capabilities,
+        butler,
+        audit,
+        summary,
+        None,
+        ids,
+        clock,
+        context,
+        text,
+        on_token,
+        on_step,
+        disclosures,
+    )
+}
+
+/// Streaming turn variant that can checkpoint deterministic goal execution.
+/// The ordinary public function remains unchanged for clients that do not wire
+/// a goal repository.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "explicit dependencies, no hidden state"
+)]
+pub fn send_to_butler_streaming_with_goals(
+    chat: &impl ChatRepository,
+    preferences: &impl PreferenceRepository,
+    beliefs: &impl BeliefRepository,
+    outcomes: &impl OutcomeRepository,
+    specimens: &impl SpecimenRepository,
+    capabilities: &dyn CapabilityRunner,
+    butler: &dyn Butler,
+    audit: &dyn AuditLog,
+    summary: Option<&dyn ConversationSummaryStore>,
+    goals: Option<&dyn GoalRepository>,
+    ids: &impl IdSource,
+    clock: &impl Clock,
+    context: &ButlerContext,
+    text: &str,
+    on_token: &mut dyn FnMut(&str),
+    on_step: &mut dyn FnMut(ButlerStep),
+    disclosures: &mut Vec<ActionDisclosure>,
+) -> Result<(ChatMessage, Vec<String>), AppError> {
     let user = ChatMessage::new(
         MessageId::new(ids.new_id()),
         MessageRole::User,
@@ -1835,6 +1924,7 @@ pub fn send_to_butler_streaming(
         text,
         capabilities,
         butler,
+        goals,
         ids,
         clock,
         on_token,
@@ -2503,6 +2593,7 @@ fn progress_label(id: &str) -> String {
     match id {
         "weather" => "Checking the weather",
         "news" | "local_news" => "Checking the news",
+        "sports_schedule" => "Checking the team's schedule",
         "safety_alerts" => "Checking safety alerts",
         "web_search" | "web_answers" => "Searching the web",
         "web_fetch" => "Reading the page",
@@ -3166,6 +3257,7 @@ fn standing_answer(
     text: &str,
     capabilities: &dyn CapabilityRunner,
     butler: &dyn Butler,
+    goals: Option<&dyn GoalRepository>,
     ids: &impl IdSource,
     clock: &impl Clock,
     on_token: &mut dyn FnMut(&str),
@@ -3192,7 +3284,244 @@ fn standing_answer(
             return Some(answer);
         }
     }
+    if let Some(answer) = sports_schedule_on_request(
+        text,
+        capabilities,
+        clock,
+        goals,
+        ids,
+        on_token,
+        on_step,
+        activity,
+    ) {
+        return Some(answer);
+    }
     None
+}
+
+/// Answers a current sports-schedule question from a live source. This route is
+/// deterministic because a small local model is particularly bad at deciding that a
+/// time-sensitive question needs a lookup, and worse at remembering to compare the
+/// returned dates with today. The capability owns team resolution and parsing; this
+/// function only recognises the ask and supplies the clock's date.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "explicit dependencies, no hidden state"
+)]
+fn sports_schedule_on_request(
+    text: &str,
+    capabilities: &dyn CapabilityRunner,
+    clock: &dyn Clock,
+    goals: Option<&dyn GoalRepository>,
+    ids: &impl IdSource,
+    on_token: &mut dyn FnMut(&str),
+    on_step: &mut dyn FnMut(ButlerStep),
+    activity: &mut Vec<String>,
+) -> Option<String> {
+    let team = sports_team_query(text)?;
+    if !capabilities
+        .available()
+        .iter()
+        .any(|s| s.id == "sports_schedule" && s.configured)
+    {
+        return None;
+    }
+    const ID: &str = "sports_schedule";
+    let step = |status: StepStatus, output: Option<String>| ButlerStep {
+        skill: ID.to_owned(),
+        status,
+        label: "Checking the team's schedule".to_owned(),
+        output,
+    };
+    let now_text = format_datetime_utc(clock.now().unix_millis());
+    let after = now_text.split_whitespace().nth(1).unwrap_or("");
+    let input = serde_json::json!({"team": team, "after": after, "count": 3}).to_string();
+    let mut goal = crate::Goal::new(text).ok()?;
+    let persisted = goals.and_then(|repository| {
+        let request_key = format!("chat-goal-{}", ids.new_id());
+        let record = crate::GoalRecord::new(&request_key, goal.clone(), clock.now()).ok()?;
+        // A read-only schedule answer remains useful if storage is temporarily
+        // unavailable, but the failure is visible in the activity trail rather
+        // than silently pretending this was durable work.
+        if repository.save_goal(&record).is_err() {
+            activity.push("Could not checkpoint the sports schedule goal".to_owned());
+            return None;
+        }
+        Some((repository, record))
+    });
+    let mut answer = String::new();
+    let status = goal.run_plan(
+        &[crate::GoalStep::new("gathering", ID).ok()?],
+        |_| {
+            on_step(step(StepStatus::Running, None));
+            match capabilities.run(ID, &input) {
+                Ok(output) if !output.trim().is_empty() => {
+                    answer = output.clone();
+                    on_step(step(StepStatus::Done, Some(output.clone())));
+                    Ok(output)
+                }
+                Ok(_) => {
+                    let error = "The sports source returned no schedule.".to_owned();
+                    on_step(step(StepStatus::Failed, Some(error.clone())));
+                    Err(error)
+                }
+                Err(error) => {
+                    on_step(step(StepStatus::Failed, Some(error.clone())));
+                    Err(error)
+                }
+            }
+        },
+        |goal, _| {
+            let latest = goal
+                .evidence()
+                .last()
+                .map(|e| e.output.as_str())
+                .unwrap_or("");
+            if sports_schedule_satisfied(latest) {
+                crate::GoalVerdict::Complete
+            } else {
+                crate::GoalVerdict::Partial
+            }
+        },
+    );
+    if let Some((repository, record)) = persisted {
+        let key = record.request_key().to_owned();
+        let saved = repository.save_goal(&record.with_goal(goal.clone(), clock.now()));
+        // The answer is delivered in this very turn; without this the background
+        // worker would post a second "your request is complete" message for it.
+        if matches!(saved, Ok(true)) && status == crate::GoalStatus::Complete {
+            let _ = repository.mark_goal_announced(&key);
+        }
+    }
+    match status {
+        crate::GoalStatus::Complete => {
+            activity.push("Checked and verified the live sports schedule".to_owned());
+            on_token(&answer);
+            Some(answer)
+        }
+        crate::GoalStatus::Partial => {
+            let answer = if answer.is_empty() {
+                "The sports source returned no schedule.".to_owned()
+            } else {
+                format!(
+                    "{answer}\n\nI found a result, but it did not prove all three requested games."
+                )
+            };
+            activity.push("The sports schedule was only partially verified".to_owned());
+            on_token(&answer);
+            Some(answer)
+        }
+        _ => {
+            let answer = goal.reason().to_owned();
+            let answer = if answer.is_empty() {
+                "I couldn't check that schedule right now.".to_owned()
+            } else {
+                format!("I couldn't check that schedule right now: {answer}")
+            };
+            activity.push("Couldn't check the sports schedule".to_owned());
+            on_token(&answer);
+            Some(answer)
+        }
+    }
+}
+
+fn sports_team_query(text: &str) -> Option<String> {
+    let words = words_of(text);
+    let has_sports_shape = words
+        .iter()
+        .any(|w| w == "game" || w == "games" || w == "schedule" || w == "match" || w == "matches")
+        && words
+            .iter()
+            .any(|w| w == "next" || w == "upcoming" || w == "schedule" || w == "when");
+    // Words that make "schedule"/"next" a question about the person's own day.
+    let personal = [
+        "my",
+        "mine",
+        "today",
+        "tomorrow",
+        "tonight",
+        "calendar",
+        "meeting",
+        "meetings",
+        "appointment",
+        "appointments",
+        "shift",
+        "class",
+        "reminder",
+        "todays",
+        "tomorrows",
+    ];
+    if !has_sports_shape || words.iter().any(|w| personal.contains(&w.as_str())) {
+        return None;
+    }
+    let stop = [
+        "what", "are", "the", "my", "me", "show", "give", "for", "this", "year", "thisyear",
+        "next", "three", "two", "one", "upcoming", "games", "game", "schedule", "match", "matches",
+        "when", "do", "does", "play", "playing",
+    ];
+    let team = words
+        .into_iter()
+        .filter(|word| !stop.contains(&word.as_str()))
+        .collect::<Vec<_>>()
+        .join(" ");
+    (!team.is_empty()).then_some(team)
+}
+
+fn sports_schedule_satisfied(answer: &str) -> bool {
+    (1..=3).all(|number| answer.contains(&format!("{number}."))) && answer.contains("Source:")
+}
+
+/// Resumes a persisted sports goal after a process restart. The worker owns the
+/// checkpoint and this function owns only the bounded read plus deterministic
+/// verifier; it never turns model prose into completion.
+pub fn resume_sports_goal(
+    record: &crate::GoalRecord,
+    capabilities: &dyn CapabilityRunner,
+    clock: &dyn Clock,
+) -> crate::GoalRecord {
+    let mut goal = record.goal().clone();
+    if goal.status().terminal() {
+        return record.clone();
+    }
+    let Some(team) = sports_team_query(goal.objective()) else {
+        goal.apply(
+            crate::GoalVerdict::Blocked,
+            "the saved goal is not a supported sports schedule request",
+        );
+        return record.with_goal(goal, clock.now());
+    };
+    if !capabilities
+        .available()
+        .iter()
+        .any(|s| s.id == "sports_schedule" && s.configured)
+    {
+        goal.apply(
+            crate::GoalVerdict::Blocked,
+            "the sports schedule capability is unavailable",
+        );
+        return record.with_goal(goal, clock.now());
+    }
+    let now_text = format_datetime_utc(clock.now().unix_millis());
+    let after = now_text.split_whitespace().nth(1).unwrap_or("");
+    let input = serde_json::json!({"team": team, "after": after, "count": 3}).to_string();
+    goal.run_plan(
+        &[crate::GoalStep::new("gathering", "sports_schedule")
+            .expect("the built-in sports step is valid")],
+        |_| capabilities.run("sports_schedule", &input),
+        |goal, _| {
+            let latest = goal
+                .evidence()
+                .last()
+                .map(|e| e.output.as_str())
+                .unwrap_or("");
+            if sports_schedule_satisfied(latest) {
+                crate::GoalVerdict::Complete
+            } else {
+                crate::GoalVerdict::Partial
+            }
+        },
+    );
+    record.with_goal(goal, clock.now())
 }
 
 /// Whether the person is asking for their brief — the standing order of ADR 0074.
@@ -3572,10 +3901,31 @@ pub fn run_due_brief(
     if !schedule.is_due(now) {
         return Ok(None);
     }
+    // A scheduled brief is unsolicited. If the person spoke recently, they are already
+    // present and the brief would be easy to mistake for the answer to their question
+    // (the phone screenshot that prompted this guard showed exactly that failure).
+    // Leave the schedule untouched so the next daily window can try again.
+    if person_spoke_recently(chat, now)? {
+        return Ok(None);
+    }
     // Mark fired first, so a slow compose can't double-post on the next tick.
     schedule.last_at = now;
     briefs.set(&schedule)?;
     daily_brief(chat, troubles, capabilities, butler, ids, clock, context)
+}
+
+/// Whether the person has spoken within the quiet period used by unsolicited work.
+/// Reads only the quiet window, never the whole history: this runs on every heartbeat
+/// while a brief is due and the person is chatting.
+fn person_spoke_recently(chat: &impl ChatRepository, now: Timestamp) -> Result<bool, AppError> {
+    const QUIET_AFTER_ACTIVITY_MS: i64 = 60 * 60 * 1_000;
+    let from = now
+        .unix_millis()
+        .saturating_sub(QUIET_AFTER_ACTIVITY_MS - 1);
+    Ok(chat
+        .between(from, now.unix_millis().saturating_add(1))?
+        .iter()
+        .any(|message| message.role() == MessageRole::User))
 }
 
 // ---------------------------------------------------------------------------
@@ -4306,7 +4656,7 @@ pub fn run_due_nightly_loop(
     // Overnight work traces to the belief that prompted it (ADR 0053/0036).
     let actions = OutcomeSink::motivated_by(
         outcomes,
-        intention.as_ref().map(Intention::motivating_belief),
+        intention.as_ref().and_then(Intention::motivating_belief),
     );
     let instruction = match intention.as_ref() {
         // Picked it up tonight — nothing found yet, so there is nothing to resume.
@@ -8521,6 +8871,37 @@ mod tests {
     }
 
     #[test]
+    fn a_current_team_schedule_is_recognised_without_model_routing() {
+        use super::{sports_schedule_satisfied, sports_team_query};
+
+        assert_eq!(
+            sports_team_query("What are the next three Panthers games"),
+            Some("panthers".to_owned())
+        );
+        assert_eq!(
+            sports_team_query("show me the Carolina Panthers schedule"),
+            Some("carolina panthers".to_owned())
+        );
+        assert!(sports_team_query("tell me a brief story about panthers").is_none());
+        // Personal-calendar questions share the words "schedule" and "next" with a
+        // team lookup; they must reach the model and the calendar, not a sports API.
+        for personal in [
+            "What's on my schedule today?",
+            "When is my next meeting?",
+            "Show me tomorrow's schedule",
+            "what is the schedule for my next appointment",
+        ] {
+            assert!(sports_team_query(personal).is_none(), "{personal}");
+        }
+        assert!(sports_schedule_satisfied(
+            "1. one\n2. two\n3. three\nSource: https://example.com"
+        ));
+        assert!(!sports_schedule_satisfied(
+            "1. one\n2. two\nSource: https://example.com"
+        ));
+    }
+
+    #[test]
     fn asking_for_the_brief_never_asks_the_model_to_route() {
         use super::send_to_butler_streaming;
 
@@ -8747,6 +9128,28 @@ mod tests {
         let news = calls.iter().find(|(id, _)| id == "news").expect("news ran");
         assert!(news.1.contains("\"count\":3"), "{}", news.1);
         assert!(news.1.contains("10001"), "{}", news.1);
+    }
+
+    #[test]
+    fn a_due_brief_stays_quiet_after_the_person_has_spoken() {
+        let store = FakeStore::default();
+        store
+            .append(
+                &ChatMessage::new(
+                    MessageId::new(1),
+                    MessageRole::User,
+                    "What are the next three Panthers games?",
+                    Timestamp::from_unix_millis(3_540_000),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        assert!(
+            super::person_spoke_recently(&store, Timestamp::from_unix_millis(3_600_000)).unwrap()
+        );
+        assert!(
+            !super::person_spoke_recently(&store, Timestamp::from_unix_millis(7_200_001)).unwrap()
+        );
     }
 
     /// A butler with no tool-calling and nothing to say — the brief must not need it.
@@ -9535,7 +9938,7 @@ mod tests {
 
         let held = intentions.list().unwrap();
         assert_eq!(held.len(), 1, "one thing at a time");
-        assert_eq!(held[0].motivating_belief(), BeliefId::new(7));
+        assert_eq!(held[0].motivating_belief(), Some(BeliefId::new(7)));
         assert_eq!(
             held[0].steps_taken(),
             1,

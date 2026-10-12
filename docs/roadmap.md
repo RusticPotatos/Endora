@@ -40,6 +40,9 @@ Built and working:
 - **Proactivity** — optional check-ins, a daily brief, and a nightly loop that
   researches whatever Endora is most sure the person is reaching for, reflects, and
   leaves a note (ADRs 0019, 0024).
+- **Commissioned research** — an explicit Research submission becomes durable,
+  bounded background work with cancellation and a locally saved Markdown report;
+  only successfully fetched pages are listed as sources (ADR 0077).
 - **A model layer that can improve itself** — a fitness battery and a deterministic
   adoption policy: auto-adopt a better local model, only *propose* a cloud one
   (ADR 0055).

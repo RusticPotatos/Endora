@@ -4,6 +4,10 @@
 
 Accepted (2026-07-26). **Consolidates 0017, 0019, 0025 and 0031**, which are archived.
 
+[ADR 0077](0077-seeing-something-through.md) gives explicit commissioned research
+the next background model slot. While it remains active, heartbeat housekeeping and
+sensing continue, but due model work is reconsidered later without spending its cadence.
+
 ## Context
 
 A butler that only answers when spoken to is a search box. One that interrupts on a timer is

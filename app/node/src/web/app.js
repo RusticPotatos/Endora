@@ -25,6 +25,13 @@ let TUNE_SCHED = { enabled: false, hour_utc: 4 }; // nightly self-improving mode
 let UNDERSTANDING = [];        // Endora's beliefs about the person (the home surface)
 let OUTCOMES = [];             // what Endora DID, and what it saw afterwards (ADR 0053)
 let INTENTIONS = [];           // what Endora is pursuing, and has pursued (ADR 0052)
+let RESEARCH = { items: [] };   // explicit durable research assignments (ADR 0077)
+let RESEARCH_READY = { ready: false, modes: [], search_tools: [] };
+let RESEARCH_MODE = localStorage.getItem("endora.researchmode") === "1";
+let RESEARCH_PENDING = (() => {
+  try { return JSON.parse(localStorage.getItem("endora.researchPending") || "null"); }
+  catch (_) { return null; }
+})();
 let NOTIONS = [];              // what Endora is still thinking about (ADR 0057)
 let CONNECTED = [];            // integrations already set up behind the channel (ADR 0058)
 let NEEDS_TOKEN = false;       // this device cannot prove who it is to the node
@@ -379,6 +386,8 @@ async function reload() {
   try { UNDERSTANDING = await api("GET", "/v1/understanding"); } catch (_) { UNDERSTANDING = []; }
   try { OUTCOMES = await api("GET", "/v1/outcomes"); } catch (_) { OUTCOMES = []; }
   try { INTENTIONS = await api("GET", "/v1/intentions"); } catch (_) { INTENTIONS = []; }
+  try { RESEARCH = await api("GET", "/v1/research"); } catch (_) { RESEARCH = { items: [] }; }
+  try { RESEARCH_READY = await api("GET", "/v1/research/readiness"); } catch (_) {}
   try { NOTIONS = await api("GET", "/v1/notions"); } catch (_) { NOTIONS = []; }
   try { CONNECTED = await api("GET", "/v1/connect/connected"); } catch (_) { CONNECTED = []; }
   try { SIGNIN = await api("GET", "/v1/session/setup"); } catch (_) { SIGNIN = null; }
@@ -409,6 +418,16 @@ function subscribeToActivity() {
       reload().catch(() => {});
     });
   } catch (_) { /* SSE unavailable: the UI still works, just not live. */ }
+}
+
+function pollActiveResearch() {
+  setInterval(() => {
+    const active = ((RESEARCH && RESEARCH.items) || []).some((item) =>
+      !["delivered", "blocked", "budget_exhausted", "cancelled", "failed"].includes(item.status));
+    const ae = document.activeElement;
+    if (!active || CHAT_STREAMING || (ae && /^(INPUT|TEXTAREA|SELECT)$/.test(ae.tagName))) return;
+    reload().catch(() => {});
+  }, 15000);
 }
 
 function go(v, id) { NAV = { v, id }; clearMsg(); closeMenu(); render(); }
@@ -706,26 +725,54 @@ function viewChat() {
          ${showing === today ? "" : `<button class="ghost" data-act="chat:day:${today}">Today</button>`}
        </div>`
     : "";
+  const research = viewResearch();
   const emptyToday = `<div class="empty">${showing === today && days.length > 1
       ? "A new day. Yesterday's conversation is a tap back."
       : "Say anything — Endora is listening."}</div>`;
   return `
     <div class="chat">
       ${dayBar}
+      ${research}
       <div id="chat-thread" class="chat-thread">${(msgs || (CHAT_STREAMING ? "" : emptyToday)) + (CHAT_STREAMING ? liveTurn : pending) + streamingActivity}</div>
       ${CHAT_STREAMING ? "" : viewNeedsYou()}
       <div class="composer">
-        <textarea id="chat-input" rows="1" placeholder="Talk to your butler…"></textarea>
+        <textarea id="chat-input" rows="1" placeholder="${RESEARCH_MODE ? "What should Endora research?" : "Talk to your butler…"}"></textarea>
+        ${RESEARCH_MODE ? `<textarea id="research-urls" rows="2" placeholder="Optional starting URLs, one per line"></textarea>` : ""}
         <div class="composer-actions">
           <div class="composer-secondary">
             ${speakBtn}
             ${micBtn}
+            <button class="ghost${RESEARCH_MODE ? " active" : ""}" data-act="toggle:research" title="commission durable, bounded research">${icon("note", 15)}<span>${RESEARCH_MODE ? "Research: on" : "Research"}</span></button>
             ${DEEP_MODEL.configured ? `<button class="ghost${DEEP_MODE ? " active" : ""}" data-act="toggle:deep" title="when on, your messages go to the bigger model">${icon("sparkle", 15)}<span>${DEEP_MODE ? "Deep: on" : "Ask deep"}</span></button>` : ""}
           </div>
-          <button class="primary" id="send-btn" data-act="${CHAT_STREAMING ? "chat:stop" : "chat:send"}">${CHAT_STREAMING ? `${icon("stop")}<span>Stop</span>` : `${icon("send")}<span>Send</span>`}</button>
+          <button class="primary" id="send-btn" data-act="${CHAT_STREAMING ? "chat:stop" : RESEARCH_MODE ? "research:start" : "chat:send"}">${CHAT_STREAMING ? `${icon("stop")}<span>Stop</span>` : `${icon("send")}<span>${RESEARCH_MODE ? "Start" : "Send"}</span>`}</button>
         </div>
       </div>
     </div>`;
+}
+
+function viewResearch() {
+  const items = (RESEARCH && RESEARCH.items) || [];
+  if (!items.length && !RESEARCH_MODE) return "";
+  const cards = items.map((item) => {
+    const terminal = ["delivered", "blocked", "budget_exhausted", "cancelled", "failed"].includes(item.status);
+    const detail = item.status === "delivered"
+      ? (item.partial ? "Partial report saved" : "Saved report ready")
+      : (item.reason || `${item.phase} · ${item.budget.model_calls_used}/${item.budget.model_calls_limit} model calls`);
+    return `<div class="card" style="margin:8px 0;">
+      <div class="row" style="justify-content:space-between;gap:8px;"><b>${esc(item.assignment)}</b><span class="sub">${esc(item.status.replaceAll("_", " "))}</span></div>
+      <div class="sub" style="margin-top:6px;">${esc(detail)}</div>
+      ${item.report_markdown ? `<details style="margin-top:8px;"><summary>View report</summary><div class="bubble butler" style="margin-top:8px;">${rich(item.report_markdown)}</div></details>` : ""}
+      <div class="row" style="gap:8px;margin-top:8px;">
+        ${item.report_available ? `<button class="ghost" data-act="research:download:${item.id}">Download report</button>` : ""}
+        ${!terminal ? `<button class="ghost" data-act="research:cancel:${item.id}">Cancel</button>` : ""}
+      </div></div>`;
+  }).join("");
+  const setup = RESEARCH_MODE
+    ? `<div class="card"><div class="sub">${RESEARCH_READY.ready
+        ? "Endora will keep working after you close this page and save a bounded Markdown report citing pages it read. It can search only through an approved Brave Search connection; otherwise add starting URLs."
+        : "Research needs the built-in web reader. Connect Brave Search for discovery, or add starting URLs after the reader is available."}</div></div>` : "";
+  return `<div aria-label="Research assignments">${setup}${cards}</div>`;
 }
 
 // Provider presets for the butler models. Each fills the endpoint + example
@@ -2485,6 +2532,43 @@ function sendChat() {
   drainChat();
 }
 
+async function startResearch() {
+  const input = document.getElementById("chat-input");
+  const assignment = input ? input.value.trim() : "";
+  if (!assignment) return;
+  const raw = (document.getElementById("research-urls") || {}).value || "";
+  const source_urls = raw.split(/[\n,]+/).map((url) => url.trim()).filter(Boolean);
+  const search = (RESEARCH_READY.search_tools || [])[0];
+  const signature = JSON.stringify({ assignment, source_urls, search: search ? search.id : null });
+  if (!RESEARCH_PENDING || RESEARCH_PENDING.signature !== signature) {
+    const key = globalThis.crypto && crypto.randomUUID
+      ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    RESEARCH_PENDING = { key, signature };
+    localStorage.setItem("endora.researchPending", JSON.stringify(RESEARCH_PENDING));
+  }
+  await api("POST", "/v1/research", {
+    request_key: RESEARCH_PENDING.key, assignment, source_urls,
+    search_capability_id: search ? search.id : null,
+  });
+  RESEARCH_PENDING = null;
+  localStorage.removeItem("endora.researchPending");
+  if (input) input.value = "";
+  flash("Research started. You can close this page; Endora will keep working.", "ok");
+  return reload();
+}
+
+async function downloadResearch(id) {
+  const res = await fetch(`/v1/research/${encodeURIComponent(id)}/report`, { headers: signed({}) });
+  if (!res.ok) throw new Error("report is not ready");
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = "endora-research.md";
+  link.click();
+  URL.revokeObjectURL(url);
+}
+
 // Process the queue one turn at a time.
 async function drainChat() {
   if (CHAT_STREAMING || !CHAT_QUEUE.length) return;
@@ -2665,6 +2749,13 @@ async function dispatch(act) {
     if (verb === "chat" && noun === "send") { await sendChat(); return; }
     if (verb === "chat" && noun === "mic") { listen(); return; }
     if (verb === "chat" && noun === "stop") { stopChat(); return; }
+    if (verb === "research" && noun === "start") { await startResearch(); return; }
+    if (verb === "research" && noun === "cancel") {
+      await api("POST", `/v1/research/${encodeURIComponent(id)}/cancel`);
+      flash("Research cancelled.", "ok");
+      return reload();
+    }
+    if (verb === "research" && noun === "download") { await downloadResearch(id); return; }
     // Ask the same thing again after a turn that never answered. It re-sends the person's
     // own last words rather than making them retype them, which is the whole difference
     // between a dead end and a hiccup.
@@ -2700,6 +2791,11 @@ async function dispatch(act) {
       updateDeepButton();
       flash(DEEP_MODE ? "Deep mode on — your messages go to the bigger model." : "Deep mode off.", "ok");
       return;
+    }
+    if (verb === "toggle" && noun === "research") {
+      RESEARCH_MODE = !RESEARCH_MODE;
+      localStorage.setItem("endora.researchmode", RESEARCH_MODE ? "1" : "0");
+      return render();
     }
     if (verb === "toggle" && noun === "menu") {
       const m = document.getElementById("menu");
@@ -3444,6 +3540,7 @@ function closeMenu() {
     setupHeader(health);
     await reload();
     subscribeToActivity();
+    pollActiveResearch();
   } catch (e) {
     // Say which half failed. This catch covers reaching the node AND drawing the page, and
     // it reported both as "couldn't reach the node" — so a missing function read as a

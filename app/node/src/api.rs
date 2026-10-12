@@ -20,11 +20,13 @@ use endora_application::Clock;
 use endora_application::{
     ActivityItem, AppError, AutonomyEnvelope, AutonomyEnvelopeRepository, BriefSchedule, Butler,
     ButlerModelConfig, ButlerModelConfigRepository, CapabilityConfigRepository,
-    CapabilitySettingsRepository, CheckinSchedule, DeepModelRepository, MemorySnapshot, ModelSlot,
-    ModelTuneScheduleRepository, RepositoryError, Sampling, usecases,
+    CapabilitySettingsRepository, CheckinSchedule, DeepModelRepository, ExecutionLeaseRepository,
+    GoalDelivery, GoalRepository, MemorySnapshot, ModelSlot, ModelTuneScheduleRepository,
+    RepositoryError, Sampling, usecases,
 };
 use endora_application::{
-    AuditRecord, Belief, BeliefId, ChatMessage, Preference, PreferenceId, PreferenceKind,
+    AuditRecord, Belief, BeliefId, ChatMessage, IdSource, IntentionRepository, Preference,
+    PreferenceId, PreferenceKind, ResearchAssignment, ResearchRepository, ResearchStatus,
 };
 use endora_infrastructure::{
     Capability, CapabilityError, RandomIdSource, SqliteStore, SystemClock,
@@ -1248,6 +1250,14 @@ pub fn app(state: AppState) -> Router {
         // Readable, never actionable — no companion POST exists (ADR 0057).
         .route("/v1/notions", get(list_notions))
         .route("/v1/intentions/{id}/drop", post(drop_intention))
+        .route("/v1/goals", get(list_goals))
+        .route("/v1/goals/{request_key}", get(get_goal))
+        .route("/v1/goals/{request_key}/cancel", post(cancel_goal))
+        .route("/v1/research/readiness", get(research_readiness))
+        .route("/v1/research", get(list_research).post(commission_research))
+        .route("/v1/research/{id}", get(get_research))
+        .route("/v1/research/{id}/cancel", post(cancel_research))
+        .route("/v1/research/{id}/report", get(research_report))
         .route("/v1/capabilities", get(list_capabilities))
         .route("/v1/capabilities/{id}/invoke", post(invoke_capability))
         .route("/v1/capabilities/{id}/test", post(test_capability))
@@ -2241,6 +2251,7 @@ async fn send_chat(
     State(state): State<AppState>,
     Json(req): Json<ChatRequest>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
+    let store = state.store.clone();
     let chat = state.chat.clone();
     let understanding = state.understanding.clone();
     let config = state.config.clone();
@@ -2271,7 +2282,7 @@ async fn send_chat(
             config.as_ref(),
             clock.as_ref(),
         )?;
-        let out = usecases::send_to_butler(
+        let out = usecases::send_to_butler_with_goals(
             chat.as_ref(),
             understanding.as_ref(),
             understanding.as_ref(),
@@ -2280,6 +2291,7 @@ async fn send_chat(
             &runner,
             butler.as_ref(),
             audit.as_ref(),
+            store.as_ref(),
             ids.as_ref(),
             clock.as_ref(),
             &context,
@@ -2375,6 +2387,7 @@ async fn stream_chat(
     State(state): State<AppState>,
     Json(req): Json<ChatRequest>,
 ) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
+    let store = state.store.clone();
     let chat = state.chat.clone();
     let understanding = state.understanding.clone();
     let config = state.config.clone();
@@ -2463,7 +2476,7 @@ async fn stream_chat(
                     e["type"] = json!("step");
                     let _ = tx.send(event(e));
                 };
-                usecases::send_to_butler_streaming(
+                usecases::send_to_butler_streaming_with_goals(
                     chat.as_ref(),
                     understanding.as_ref(),
                     understanding.as_ref(),
@@ -2473,6 +2486,7 @@ async fn stream_chat(
                     butler.as_ref(),
                     audit.as_ref(),
                     Some(&summary as &dyn endora_application::ConversationSummaryStore),
+                    Some(store.as_ref()),
                     ids.as_ref(),
                     clock.as_ref(),
                     &context,
@@ -2856,8 +2870,8 @@ fn intention_json(i: &endora_application::Intention) -> serde_json::Value {
     json!({
         "id": i.id().value().to_string(),
         "statement": i.statement(),
-        // Never null: an intention that cannot be explained cannot exist (ADR 0052).
-        "motivating_belief": i.motivating_belief().value().to_string(),
+        // User-request origins have no motivating belief; belief-origin intentions do.
+        "motivating_belief": i.motivating_belief().map(|id| id.value().to_string()),
         "note": i.note(),
         "state": i.state().name(),
         "active": i.is_active(),
@@ -2865,6 +2879,80 @@ fn intention_json(i: &endora_application::Intention) -> serde_json::Value {
         "created_ms": i.created_at().unix_millis(),
         "last_progressed_ms": i.last_progressed_at().unix_millis(),
     })
+}
+
+fn goal_json(record: &endora_application::GoalRecord) -> serde_json::Value {
+    let goal = record.goal();
+    json!({
+        "request_key": record.request_key(),
+        "objective": goal.objective(),
+        "status": goal.status().name(),
+        "phase": goal.phase(),
+        "next_step": goal.next_step(),
+        "reason": goal.reason(),
+        "evidence": goal.evidence().iter().map(|e| json!({"step": e.step, "output": e.output})).collect::<Vec<_>>(),
+        "created_ms": record.created_at().unix_millis(),
+        "updated_ms": record.updated_at().unix_millis(),
+    })
+}
+
+async fn list_goals(State(state): State<AppState>) -> Result<Json<serde_json::Value>, ApiError> {
+    let store = state.store.clone();
+    let goals = blocking(move || store.active_goals().map_err(AppError::from)).await?;
+    Ok(Json(json!({
+        "items": goals.iter().map(goal_json).collect::<Vec<_>>(),
+    })))
+}
+
+async fn get_goal(
+    State(state): State<AppState>,
+    Path(request_key): Path<String>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let store = state.store.clone();
+    let goal = blocking(move || store.get_goal(&request_key).map_err(AppError::from)).await?;
+    let Some(goal) = goal else {
+        return Err(ApiError(AppError::NotFound { entity: "goal" }));
+    };
+    Ok(Json(goal_json(&goal)))
+}
+
+#[derive(Deserialize)]
+struct CancelGoalRequest {
+    #[serde(default = "default_goal_cancel_reason")]
+    reason: String,
+}
+
+fn default_goal_cancel_reason() -> String {
+    "cancelled by the person".to_owned()
+}
+
+async fn cancel_goal(
+    State(state): State<AppState>,
+    Path(request_key): Path<String>,
+    Json(req): Json<CancelGoalRequest>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let store = state.store.clone();
+    let clock = state.clock.clone();
+    let key = request_key.clone();
+    let changed = blocking(move || {
+        store
+            .cancel_goal(&key, &req.reason, clock.now())
+            .map_err(AppError::from)
+    })
+    .await?;
+    if !changed {
+        return Err(ApiError(AppError::Conflict {
+            code: "goal_not_active",
+            message: "the goal is missing or already terminal".to_owned(),
+        }));
+    }
+    let _ = state.changes.send(());
+    let store = state.store.clone();
+    let goal = blocking(move || store.get_goal(&request_key).map_err(AppError::from)).await?;
+    let Some(goal) = goal else {
+        return Err(ApiError(AppError::NotFound { entity: "goal" }));
+    };
+    Ok(Json(goal_json(&goal)))
 }
 
 /// One notion, as the console reads it (ADR 0057).
@@ -2910,7 +2998,13 @@ async fn list_intentions(
 ) -> Result<Json<Vec<serde_json::Value>>, ApiError> {
     let understanding = state.understanding.clone();
     let items = blocking(move || usecases::intentions(understanding.as_ref())).await?;
-    Ok(Json(items.iter().map(intention_json).collect()))
+    Ok(Json(
+        items
+            .iter()
+            .filter(|item| item.motivating_belief().is_some())
+            .map(intention_json)
+            .collect(),
+    ))
 }
 
 /// The person tells Endora to stop working on something — their whole authority over
@@ -2930,6 +3024,235 @@ async fn drop_intention(
     let understanding = state.understanding.clone();
     let out = blocking(move || usecases::drop_intention(understanding.as_ref(), iid)).await?;
     Ok(Json(intention_json(&out)))
+}
+
+#[derive(Deserialize)]
+struct CommissionResearchRequest {
+    request_key: String,
+    assignment: String,
+    #[serde(default)]
+    source_urls: Vec<String>,
+    #[serde(default)]
+    search_capability_id: Option<String>,
+}
+
+fn research_capabilities(state: &AppState) -> (bool, Vec<String>) {
+    let runner = build_reversible_only_runner(
+        state.config.as_ref(),
+        state.capabilities.clone(),
+        mcp_snapshot(state),
+        proven_now(state.understanding.as_ref()),
+    );
+    let mut search = Vec::new();
+    let mut fetch = false;
+    for spec in endora_application::CapabilityRunner::available(&runner) {
+        if spec.id == "web_fetch" && spec.autonomous {
+            fetch = true;
+        }
+        let brave_tool = spec.id == "brave-search.brave_web_search"
+            || spec.id == "brave-search.brave_news_search";
+        if spec.autonomous && spec.third_party && brave_tool {
+            search.push(spec.id);
+        }
+    }
+    (fetch, search)
+}
+
+async fn research_readiness(State(state): State<AppState>) -> Json<serde_json::Value> {
+    let (fetch, search) = research_capabilities(&state);
+    let mut modes = Vec::new();
+    if fetch {
+        modes.push("sources");
+    }
+    if fetch && !search.is_empty() {
+        modes.push("search");
+    }
+    Json(json!({
+        "ready": fetch,
+        "modes": modes,
+        "search_tools": search.iter().map(|id| json!({"id":id,"name":id})).collect::<Vec<_>>(),
+        "reason_code": if fetch { serde_json::Value::Null } else { json!("web_fetch_unavailable") },
+    }))
+}
+
+async fn commission_research(
+    State(state): State<AppState>,
+    Json(req): Json<CommissionResearchRequest>,
+) -> Result<(StatusCode, Json<serde_json::Value>), ApiError> {
+    if req.source_urls.len() > 5
+        || req
+            .source_urls
+            .iter()
+            .any(|u| u.len() > 2048 || !(u.starts_with("https://") || u.starts_with("http://")))
+    {
+        return Err(ApiError(AppError::BadRequest {
+            message: "supply at most five http(s) source URLs".to_owned(),
+        }));
+    }
+    let (fetch, search) = research_capabilities(&state);
+    if !fetch || (req.source_urls.is_empty() && req.search_capability_id.is_none()) {
+        return Err(ApiError(AppError::Conflict {
+            code: "setup_required",
+            message: "Connect web search or supply a source URL.".to_owned(),
+        }));
+    }
+    if let Some(id) = req.search_capability_id.as_deref() {
+        if !search.iter().any(|candidate| candidate == id) {
+            return Err(ApiError(AppError::Conflict {
+                code: "setup_required",
+                message: "That search capability is not available for unattended research."
+                    .to_owned(),
+            }));
+        }
+    }
+    let store = state.store.clone();
+    let ids = state.ids.clone();
+    let clock = state.clock.clone();
+    let assignment = req.assignment;
+    let key = req.request_key;
+    let urls = serde_json::to_string(&req.source_urls).map_err(|_| {
+        ApiError(AppError::BadRequest {
+            message: "invalid source URLs".to_owned(),
+        })
+    })?;
+    let search_id = req.search_capability_id;
+    let created = blocking(move || {
+        store
+            .commission_research(
+                endora_application::IntentionId::new(ids.new_id()),
+                endora_application::MessageId::new(ids.new_id()),
+                &key,
+                &assignment,
+                &urls,
+                search_id.as_deref(),
+                clock.now(),
+            )
+            .map_err(|e| match &e {
+                RepositoryError::Backend(message)
+                    if message.contains("active") || message.contains("exists") =>
+                {
+                    AppError::Conflict {
+                        code: "occupied_slot",
+                        message: message.clone(),
+                    }
+                }
+                RepositoryError::Backend(message) if message.contains("request key") => {
+                    AppError::Conflict {
+                        code: "request_key_reused",
+                        message: message.clone(),
+                    }
+                }
+                _ => AppError::Repository(e),
+            })
+    })
+    .await?;
+    let _ = state.changes.send(());
+    Ok((StatusCode::ACCEPTED, Json(research_json(&created))))
+}
+
+fn research_json(work: &ResearchAssignment) -> serde_json::Value {
+    let checkpoint = serde_json::from_str::<serde_json::Value>(work.checkpoint())
+        .unwrap_or_else(|_| json!({"version": 1}));
+    json!({
+        "id": work.intention_id().value().to_string(), "assignment": work.assignment(),
+        "request_key": work.request_key(), "checkpoint": checkpoint,
+        "status": work.status().name(), "phase": work.phase(),
+        "reason_code": work.reason_code(), "reason": work.reason(),
+        "created_ms": work.created_at().unix_millis(), "updated_ms": work.updated_at().unix_millis(),
+        "expires_ms": work.expires_at().unix_millis(),
+        "budget": {"model_calls_used":work.model_calls_used(),"model_calls_limit":16,
+                   "read_attempts_used":work.read_attempts_used(),"read_attempts_limit":16},
+        "can_cancel": !work.status().terminal(), "report_available": work.report().is_some(),
+        "partial": work.report().is_some_and(endora_application::ResearchReport::partial),
+        "report_markdown": work.report().map(endora_application::ResearchReport::markdown),
+        "report_path": work.report().map(|_| format!("/v1/research/{}/report", work.intention_id().value())),
+    })
+}
+
+async fn list_research(State(state): State<AppState>) -> Result<Json<serde_json::Value>, ApiError> {
+    let understanding = state.understanding.clone();
+    let items = blocking(move || understanding.list_research().map_err(AppError::from)).await?;
+    Ok(Json(
+        json!({"items":items.iter().take(20).map(research_json).collect::<Vec<_>>() }),
+    ))
+}
+
+async fn get_research(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let id = id
+        .parse::<u128>()
+        .map(endora_application::IntentionId::new)
+        .map_err(|_| ApiError(AppError::NotFound { entity: "research" }))?;
+    let understanding = state.understanding.clone();
+    let work = blocking(move || understanding.research(id).map_err(AppError::from))
+        .await?
+        .ok_or(ApiError(AppError::NotFound { entity: "research" }))?;
+    Ok(Json(research_json(&work)))
+}
+
+async fn cancel_research(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let id = id
+        .parse::<u128>()
+        .map(endora_application::IntentionId::new)
+        .map_err(|_| ApiError(AppError::NotFound { entity: "research" }))?;
+    let store = state.store.clone();
+    let clock = state.clock.clone();
+    let work = blocking(move || {
+        store
+            .cancel_research(id, clock.now())
+            .map_err(|error| match &error {
+                RepositoryError::Backend(message) if message.contains("not found") => {
+                    AppError::NotFound { entity: "research" }
+                }
+                RepositoryError::Backend(message) if message.contains("terminal") => {
+                    AppError::Conflict {
+                        code: "already_terminal",
+                        message: message.clone(),
+                    }
+                }
+                _ => AppError::Repository(error),
+            })
+    })
+    .await?;
+    let _ = state.changes.send(());
+    Ok(Json(research_json(&work)))
+}
+
+async fn research_report(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Response, ApiError> {
+    let id = id
+        .parse::<u128>()
+        .map(endora_application::IntentionId::new)
+        .map_err(|_| ApiError(AppError::NotFound { entity: "research" }))?;
+    let understanding = state.understanding.clone();
+    let work = blocking(move || understanding.research(id).map_err(AppError::from))
+        .await?
+        .ok_or(ApiError(AppError::NotFound { entity: "research" }))?;
+    let report = work.report().ok_or(ApiError(AppError::Conflict {
+        code: "report_not_ready",
+        message: "The report is not ready.".to_owned(),
+    }))?;
+    Ok((
+        [
+            (
+                axum::http::header::CONTENT_TYPE,
+                "text/markdown; charset=utf-8",
+            ),
+            (
+                axum::http::header::CONTENT_DISPOSITION,
+                "attachment; filename=\"endora-research.md\"",
+            ),
+        ],
+        report.markdown().to_owned(),
+    )
+        .into_response())
 }
 
 /// How many outcomes the console shows — recent history, not an archive to manage.
@@ -5559,6 +5882,18 @@ pub fn spawn_heartbeat(state: AppState) {
                 tidy_understanding(&state);
                 watch_the_world(&state);
             }
+            // Explicit commissioned work has the next model slot. Sensing and
+            // housekeeping above remain live, while schedule reads below are deferred
+            // so a skipped heartbeat does not consume a due cadence (ADR 0077).
+            if state
+                .understanding
+                .active_research()
+                .ok()
+                .flatten()
+                .is_some()
+            {
+                continue;
+            }
             let events = state.events.clone();
             let chat = state.chat.clone();
             let schedules = state.schedules.clone();
@@ -5732,6 +6067,196 @@ pub fn spawn_heartbeat(state: AppState) {
     });
 }
 
+/// Advances the one explicit research assignment without holding the model for
+/// longer than one bounded turn. SQLite state makes the work survive restarts.
+pub fn spawn_research_worker(state: AppState) {
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(std::time::Duration::from_secs(5));
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            ticker.tick().await;
+            let Ok(Some(work)) = state.understanding.active_research() else {
+                continue;
+            };
+            let work_id = work.intention_id();
+            let lease_key = format!("research:{}", work.request_key());
+            // Take the turn lock BEFORE spending an attempt. Chat holds it for a whole
+            // turn, so reserving first burned one of the 16 attempts every 5 seconds the
+            // person was talking, until the assignment could never run again.
+            let Ok(_turn) = state.turn_lock.clone().try_lock_owned() else {
+                continue;
+            };
+            let reserved_at = state.clock.now();
+            if !state
+                .store
+                .reserve_execution_attempt(&lease_key, reserved_at, 16)
+                .unwrap_or(false)
+            {
+                continue;
+            }
+            let lease_until_ms = reserved_at.unix_millis() + endora_application::EXECUTION_LEASE_MS;
+            let understanding = state.understanding.clone();
+            let understanding_after = state.understanding.clone();
+            let delivery = state.store.clone();
+            let chat = state.chat.clone();
+            let config = state.config.clone();
+            let audit = state.audit.clone();
+            let ids = state.ids.clone();
+            let clock = state.clock.clone();
+            let butler = state.butler.clone();
+            let capabilities = state.capabilities.clone();
+            let mcp = mcp_snapshot(&state);
+            let result = tokio::task::spawn_blocking(move || {
+                let runner = build_reversible_only_runner(
+                    config.as_ref(),
+                    capabilities,
+                    mcp,
+                    proven_now(understanding.as_ref()),
+                );
+                let context = usecases::butler_context(
+                    understanding.as_ref(),
+                    understanding.as_ref(),
+                    understanding.as_ref(),
+                    config.as_ref(),
+                    chat.as_ref(),
+                    &runner,
+                    config.as_ref(),
+                    clock.as_ref(),
+                )?;
+                endora_application::conduct_research(
+                    understanding.as_ref(),
+                    delivery.as_ref(),
+                    understanding.as_ref(),
+                    &runner,
+                    butler.as_ref(),
+                    audit.as_ref(),
+                    ids.as_ref(),
+                    clock.as_ref(),
+                    &context,
+                    work,
+                )
+            })
+            .await;
+            if !matches!(result, Ok(Ok(_))) {
+                if let Ok(Some(mut active)) = understanding_after.research(work_id) {
+                    active.retry(
+                        "temporary_failure",
+                        "A research step failed and will be retried within the assignment budget.",
+                        state.clock.now(),
+                    );
+                    let _ = understanding_after.save_research(&active);
+                }
+            }
+            if let Ok(Some(terminal)) = understanding_after.research(work_id) {
+                if terminal.status().terminal() && terminal.status() != ResearchStatus::Delivered {
+                    if let Ok(Some(mut intention)) =
+                        understanding_after.get(terminal.intention_id())
+                    {
+                        intention.abandon();
+                        let _ = understanding_after.save(&intention);
+                    }
+                }
+            }
+            let _ = state
+                .store
+                .release_execution_attempt(&lease_key, lease_until_ms);
+            let _ = state.changes.send(());
+        }
+    });
+}
+
+/// Resumes one persisted deterministic goal at a time. The worker is deliberately
+/// small: SQLite is the queue, the goal repository is the ownership boundary, and
+/// the existing turn lock prevents it from competing with foreground chat.
+pub fn spawn_goal_worker(state: AppState) {
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(std::time::Duration::from_secs(5));
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            ticker.tick().await;
+            let pending_record = state
+                .store
+                .pending_goal_completions()
+                .ok()
+                .and_then(|pending| pending.into_iter().next());
+            if let Some(record) = pending_record {
+                let Ok(_turn) = state.turn_lock.clone().try_lock_owned() else {
+                    continue;
+                };
+                let notice = endora_application::ChatMessage::new(
+                    endora_application::MessageId::new(state.ids.new_id()),
+                    endora_application::MessageRole::Butler,
+                    &format!(
+                        "Your request is complete: {}. Open the goal to see the evidence.",
+                        record.goal().objective()
+                    ),
+                    state.clock.now(),
+                );
+                if let Ok(notice) = notice {
+                    if state
+                        .store
+                        .publish_goal_completion(&record, &notice)
+                        .unwrap_or(false)
+                    {
+                        let _ = state.changes.send(());
+                    }
+                }
+                continue;
+            }
+            let Ok(goals) = state.store.active_goals() else {
+                continue;
+            };
+            if goals.is_empty() {
+                continue;
+            }
+            // The turn lock first: a foreground chat turn holds it, and reserving an
+            // attempt before finding it busy spent the goal's budget for nothing.
+            let Ok(_turn) = state.turn_lock.clone().try_lock_owned() else {
+                continue;
+            };
+            let now = state.clock.now();
+            let Some(request_key) = goals
+                .into_iter()
+                .map(|goal| goal.request_key().to_owned())
+                .find(|key| state.store.reserve_goal_attempt(key, now).unwrap_or(false))
+            else {
+                continue;
+            };
+            let lease_key = format!("goal:{request_key}");
+            let lease_until_ms = now.unix_millis() + endora_application::EXECUTION_LEASE_MS;
+            let Ok(Some(record)) = state.store.get_goal(&request_key) else {
+                let _ = state
+                    .store
+                    .release_execution_attempt(&lease_key, lease_until_ms);
+                continue;
+            };
+            let store = state.store.clone();
+            let config = state.config.clone();
+            let understanding = state.understanding.clone();
+            let capabilities = state.capabilities.clone();
+            let clock = state.clock.clone();
+            let mcp = mcp_snapshot(&state);
+            let result = tokio::task::spawn_blocking(move || {
+                let runner = build_runner(
+                    config.as_ref(),
+                    capabilities,
+                    mcp,
+                    proven_now(understanding.as_ref()),
+                );
+                let updated = usecases::resume_sports_goal(&record, &runner, clock.as_ref());
+                store.save_goal(&updated).map(|_| ())
+            })
+            .await;
+            if matches!(result, Ok(Ok(()))) {
+                let _ = state.changes.send(());
+            }
+            let _ = state
+                .store
+                .release_execution_attempt(&lease_key, lease_until_ms);
+        }
+    });
+}
+
 #[derive(Serialize)]
 struct PreferenceResponse {
     id: String,
@@ -5817,6 +6342,10 @@ struct ExportResponse {
     messages: Vec<MessageResponse>,
     preferences: Vec<PreferenceResponse>,
     beliefs: Vec<serde_json::Value>,
+    outcomes: Vec<serde_json::Value>,
+    intentions: Vec<serde_json::Value>,
+    research: Vec<serde_json::Value>,
+    goals: Vec<serde_json::Value>,
 }
 
 impl From<&MemorySnapshot> for ExportResponse {
@@ -5826,6 +6355,10 @@ impl From<&MemorySnapshot> for ExportResponse {
             messages: s.messages.iter().map(MessageResponse::from).collect(),
             preferences: s.preferences.iter().map(PreferenceResponse::from).collect(),
             beliefs: s.beliefs.iter().map(stored_belief_json).collect(),
+            outcomes: s.outcomes.iter().map(outcome_json).collect(),
+            intentions: s.intentions.iter().map(intention_json).collect(),
+            research: s.research.iter().map(research_json).collect(),
+            goals: s.goals.iter().map(goal_json).collect(),
         }
     }
 }
@@ -5877,18 +6410,22 @@ struct ApiError(AppError);
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
-        let (status, message) = match &self.0 {
-            AppError::Domain(e) => (StatusCode::BAD_REQUEST, e.to_string()),
-            AppError::BadRequest { message } => (StatusCode::BAD_REQUEST, message.clone()),
-            AppError::NotFound { .. } => (StatusCode::NOT_FOUND, self.0.to_string()),
-            AppError::Model { message } => (StatusCode::SERVICE_UNAVAILABLE, message.clone()),
+        let (status, message, code) = match &self.0 {
+            AppError::Domain(e) => (StatusCode::BAD_REQUEST, e.to_string(), None),
+            AppError::BadRequest { message } => (StatusCode::BAD_REQUEST, message.clone(), None),
+            AppError::Conflict { code, message } => {
+                (StatusCode::CONFLICT, message.clone(), Some(*code))
+            }
+            AppError::NotFound { .. } => (StatusCode::NOT_FOUND, self.0.to_string(), None),
+            AppError::Model { message } => (StatusCode::SERVICE_UNAVAILABLE, message.clone(), None),
             // Don't leak backend detail to clients.
             AppError::Repository(_) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "internal error".to_owned(),
+                None,
             ),
         };
-        (status, Json(json!({ "error": message }))).into_response()
+        (status, Json(json!({ "error": message, "code": code }))).into_response()
     }
 }
 
@@ -6549,6 +7086,139 @@ mod tests {
         // It stays visible as something Endora once pursued, but is no longer current.
         let listed = json_body(app.oneshot(get("/v1/intentions")).await.unwrap()).await;
         assert_eq!(listed[0]["active"], false);
+    }
+
+    #[tokio::test]
+    async fn explicit_research_is_durable_idempotent_and_cancellable() {
+        let state = test_state();
+        let app = app(state);
+        let body = r#"{
+            "request_key":"request-1",
+            "assignment":"Compare two backup approaches and recommend one.",
+            "source_urls":["https://example.com/backup"]
+        }"#;
+
+        let first = app
+            .clone()
+            .oneshot(post("/v1/research", body))
+            .await
+            .unwrap();
+        assert_eq!(first.status(), StatusCode::ACCEPTED);
+        let first = json_body(first).await;
+        assert_eq!(first["status"], "queued");
+        assert_eq!(first["request_key"], "request-1");
+        assert_eq!(first["checkpoint"]["version"], 1);
+
+        let repeated = app
+            .clone()
+            .oneshot(post("/v1/research", body))
+            .await
+            .unwrap();
+        assert_eq!(repeated.status(), StatusCode::ACCEPTED);
+        assert_eq!(json_body(repeated).await["id"], first["id"]);
+
+        let changed = app
+            .clone()
+            .oneshot(post(
+                "/v1/research",
+                r#"{
+            "request_key":"request-1", "assignment":"Different assignment",
+            "source_urls":["https://example.com/backup"]
+        }"#,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(changed.status(), StatusCode::CONFLICT);
+        assert_eq!(json_body(changed).await["code"], "request_key_reused");
+
+        let occupied = app
+            .clone()
+            .oneshot(post(
+                "/v1/research",
+                r#"{
+            "request_key":"request-2", "assignment":"Another assignment",
+            "source_urls":["https://example.com/other"]
+        }"#,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(occupied.status(), StatusCode::CONFLICT);
+        assert_eq!(json_body(occupied).await["code"], "occupied_slot");
+
+        let legacy = json_body(app.clone().oneshot(get("/v1/intentions")).await.unwrap()).await;
+        assert!(
+            legacy.as_array().unwrap().is_empty(),
+            "user work stays out of belief intentions"
+        );
+        let listed = json_body(app.clone().oneshot(get("/v1/research")).await.unwrap()).await;
+        assert_eq!(listed["items"].as_array().unwrap().len(), 1);
+
+        let cancelled = json_body(
+            app.clone()
+                .oneshot(post(
+                    &format!("/v1/research/{}/cancel", first["id"].as_str().unwrap()),
+                    "{}",
+                ))
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(cancelled["status"], "cancelled");
+
+        let export = json_body(app.oneshot(get("/v1/export")).await.unwrap()).await;
+        assert_eq!(export["research"].as_array().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_saved_research_report_downloads_without_regeneration() {
+        use endora_application::{
+            ChatMessage, MessageRole, ResearchDelivery, ResearchReport, Timestamp,
+        };
+
+        let state = test_state();
+        let mut work = state
+            .store
+            .commission_research(
+                endora_application::IntentionId::new(20),
+                endora_application::MessageId::new(21),
+                "request-report",
+                "Research backups",
+                r#"["https://example.com/source"]"#,
+                None,
+                Timestamp::from_unix_millis(1_000),
+            )
+            .unwrap();
+        let markdown = "# Backup report\n\nUse snapshots.\n\n## Sources\n\n- [S1](https://example.com/source)\n";
+        work.deliver(
+            ResearchReport::new(
+                work.intention_id(),
+                markdown,
+                false,
+                Timestamp::from_unix_millis(2_000),
+            )
+            .unwrap(),
+            Timestamp::from_unix_millis(2_000),
+        );
+        let notice = ChatMessage::new(
+            endora_application::MessageId::new(22),
+            MessageRole::Butler,
+            "Your research report is ready.",
+            Timestamp::from_unix_millis(2_000),
+        )
+        .unwrap();
+        assert!(state.store.publish_research(&work, &notice, &[]).unwrap());
+
+        let response = app(state)
+            .oneshot(get("/v1/research/20/report"))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers()["content-type"],
+            "text/markdown; charset=utf-8"
+        );
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(String::from_utf8_lossy(&body), markdown.trim());
     }
 
     #[test]
@@ -7506,5 +8176,40 @@ mod tests {
         // so honestly instead of failing.
         assert_eq!(body["connected"], false);
         assert_eq!(body["tools_live"], 0);
+    }
+
+    #[tokio::test]
+    async fn goal_routes_show_evidence_and_cancel_a_running_goal() {
+        use endora_application::{Goal, GoalRecord, GoalRepository, Timestamp};
+
+        let state = test_state();
+        let mut goal = Goal::new("what are the next three panthers games").unwrap();
+        goal.start("gathering", "sports_schedule");
+        let record =
+            GoalRecord::new("api-goal-route", goal, Timestamp::from_unix_millis(1_000)).unwrap();
+        state.store.save_goal(&record).unwrap();
+        let router = app(state);
+
+        let listed = json_body(router.clone().oneshot(get("/v1/goals")).await.unwrap()).await;
+        assert_eq!(listed["items"][0]["request_key"], "api-goal-route");
+
+        let fetched = json_body(
+            router
+                .clone()
+                .oneshot(get("/v1/goals/api-goal-route"))
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(fetched["status"], "running");
+
+        let cancelled = json_body(
+            router
+                .oneshot(post("/v1/goals/api-goal-route/cancel", "{}"))
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(cancelled["status"], "cancelled");
     }
 }

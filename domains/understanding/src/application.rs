@@ -4,7 +4,19 @@
 use endora_kernel::RepositoryError;
 use endora_kernel::ids::{BeliefId, IntentionId, NotionId, OutcomeId, PreferenceId};
 
-use crate::domain::{Belief, Intention, Notion, Outcome, Preference};
+use crate::domain::{Belief, Intention, Notion, Outcome, Preference, ResearchAssignment};
+
+/// Persists research owned by a user-requested intention (ADR 0077).
+pub trait ResearchRepository {
+    /// Updates mutable lifecycle state for existing research.
+    fn save_research(&self, work: &ResearchAssignment) -> Result<(), RepositoryError>;
+    /// Fetches research by its owning intention.
+    fn research(&self, id: IntentionId) -> Result<Option<ResearchAssignment>, RepositoryError>;
+    /// Returns the one nonterminal user assignment, if any.
+    fn active_research(&self) -> Result<Option<ResearchAssignment>, RepositoryError>;
+    /// Returns all research, most recently updated first.
+    fn list_research(&self) -> Result<Vec<ResearchAssignment>, RepositoryError>;
+}
 
 /// Persists and retrieves [`Notion`]s — what Endora is still thinking about (ADR 0057).
 ///

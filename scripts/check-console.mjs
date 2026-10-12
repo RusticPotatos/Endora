@@ -148,6 +148,14 @@ runInContext(
   OUTCOMES = [{ id: "42", capability: "home.HassTurnOff", claim: "done",
                 observation: "still on", observed: true, reaction: null, at_ms: 1 }];
   INTENTIONS = [{ id: "1", summary: "find a running route", state: "active", steps_left: 3 }];
+  RESEARCH = { items: ["queued", "running", "retry_wait", "delivered", "blocked",
+    "budget_exhausted", "cancelled", "failed"].map((status, index) => ({
+      id: String(100 + index), assignment: index === 0 ? "<img src=x onerror=alert(1)>" : "Compare backups",
+      status, phase: "gathering", reason: status === "blocked" ? "A source could not be read." : "",
+      budget: { model_calls_used: 2, model_calls_limit: 16 },
+      report_available: status === "delivered", can_cancel: !["delivered", "blocked", "budget_exhausted", "cancelled", "failed"].includes(status),
+    })) };
+  RESEARCH_READY = { ready: true, modes: ["sources"], search_tools: [] };
   // Open, with evidence — an empty fixture once missed the very bug it was written for, and a
   // notion carrying no evidence would skip the one line here that can actually throw.
   // One offered service already set up, and one the person added themselves — both branches
@@ -551,6 +559,40 @@ console.log(`requests: sending a message signs its ${chat.length} request(s)`);
     process.exit(1);
   }
   console.log("chat: prose renders links, bullets and bold — and hostile text stays text");
+}
+
+// Every honest research state renders, terminal work cannot be cancelled, the report
+// can be downloaded, and assignment text stays text.
+{
+  runInContext(`RESEARCH = { items: ["queued", "running", "retry_wait", "delivered", "blocked",
+    "budget_exhausted", "cancelled", "failed"].map((status, index) => ({
+      id: String(100 + index), assignment: index === 0 ? "<img src=x onerror=alert(1)>" : "Compare backups",
+      status, phase: "gathering", reason: status === "blocked" ? "A source could not be read." : "",
+      budget: { model_calls_used: 2, model_calls_limit: 16 },
+      report_available: status === "delivered", partial: status === "delivered",
+      report_markdown: status === "delivered" ? "# Report\\n\\n## Sources\\n\\n- [S1](https://example.com)" : null,
+    })) };`, context);
+  const research = runInContext("viewResearch()", context);
+  for (const status of ["queued", "running", "retry wait", "delivered", "blocked",
+    "budget exhausted", "cancelled", "failed"]) {
+    if (!research.includes(status)) {
+      console.error(`research: ${status} has no visible state`);
+      process.exit(1);
+    }
+  }
+  if (research.includes("<img src=x")) {
+    console.error("research: assignment text became markup");
+    process.exit(1);
+  }
+  if (!/research:download:103/.test(research) || !/research:cancel:100/.test(research)) {
+    console.error("research: delivery or cancellation control is missing");
+    process.exit(1);
+  }
+  if (!research.includes("Partial report saved")) {
+    console.error("research: a partial report is not labelled partial");
+    process.exit(1);
+  }
+  console.log("research: every lifecycle state renders safely with its valid controls");
 }
 
 // The recipe authoring loop shows what it actually fetched, and every field it
