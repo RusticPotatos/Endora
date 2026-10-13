@@ -615,7 +615,6 @@ async fn the_deep_models_use_is_counted_and_priced_once_prices_are_known() {
     // 600k fresh * 0.30 + 400k cached * 0.03 + 500k out * 1.20, per million.
     let cost = after["month"]["cost_usd"].as_f64().unwrap();
     assert!((cost - (0.18 + 0.012 + 0.60)).abs() < 1e-9, "{cost}");
-    assert_eq!(after["recent"][0]["model"], "some-model");
 
     let bad = app(state.clone())
         .oneshot(post("/v1/deep-model/prices", r#"{"input":-1}"#))

@@ -23,7 +23,7 @@ Two things, kept apart because they answer different questions.
   that shows it (Settings → Models, or the inspector), reused for 30 seconds, never on a timer.
 - **What Endora's own calls used.** Every call to the deep model records the token counts the
   provider reports (`usage`, in either of the two shapes used for cached input) in a
-  `model_usage` table. The console shows this month and today, and the latest calls. A dollar
+  `model_usage` table. The console shows one line: this month's total (in dollars once priced, otherwise tokens). Individual calls are stored but not listed. A dollar
   figure appears only after the person enters what a million tokens cost, because Endora does
   not know any provider's prices; cached input can have its own price.
 

@@ -71,7 +71,7 @@ pub use ports::{
     ConversationSummaryStore, EXECUTION_LEASE_MS, ExecutionLeaseRepository, FormedBelief,
     GoalDelivery, GoalLease, GoalRepository, IdSource, MemorySnapshot, MemoryStore, ModelUsage,
     NeedKind, ProposalError, RepositoryError, ResearchDelivery, ToolCall, TurnMessage, UsageLog,
-    UsageRow, UsageTotals,
+    UsageTotals,
 };
 pub use research::{ResearchRun, conduct_research};
 pub use usecases::{

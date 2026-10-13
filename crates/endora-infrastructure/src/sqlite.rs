@@ -955,41 +955,6 @@ impl SqliteStore {
             cached_tokens: n(cached),
         })
     }
-
-    /// The most recent calls by `role`, newest first.
-    ///
-    /// # Errors
-    /// [`RepositoryError`] if the database cannot be read.
-    pub fn recent_model_usage(
-        &self,
-        role: &str,
-        limit: usize,
-    ) -> Result<Vec<endora_application::UsageRow>, RepositoryError> {
-        let conn = self.lock()?;
-        let mut stmt = conn
-            .prepare(
-                "SELECT at_ms, model, prompt, completion, cached FROM model_usage
-                 WHERE role=?1 ORDER BY id DESC LIMIT ?2",
-            )
-            .map_err(backend)?;
-        let rows = stmt
-            .query_map(params![role, i64::try_from(limit).unwrap_or(50)], |r| {
-                let n = |v: i64| u64::try_from(v).unwrap_or(0);
-                Ok(endora_application::UsageRow {
-                    at_ms: r.get(0)?,
-                    model: r.get(1)?,
-                    usage: endora_application::ModelUsage {
-                        prompt_tokens: n(r.get(2)?),
-                        completion_tokens: n(r.get(3)?),
-                        cached_tokens: n(r.get(4)?),
-                    },
-                })
-            })
-            .map_err(backend)?
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(backend)?;
-        Ok(rows)
-    }
 }
 
 impl ExecutionLeaseRepository for SqliteStore {

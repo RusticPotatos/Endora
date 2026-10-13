@@ -736,7 +736,7 @@ fn totals_json(t: &endora_application::UsageTotals, prices: &DeepPrices) -> serd
     })
 }
 
-/// What the deep model's calls have used: today, this month, and the latest few.
+/// What the deep model's calls have used this month, and what that comes to once priced.
 pub(super) async fn deep_usage(
     State(state): State<AppState>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
@@ -747,31 +747,11 @@ pub(super) async fn deep_usage(
         use endora_application::Clock as _;
         let now = clock.now().unix_millis();
         let prices = DeepPrices::read(config.as_ref());
-        let day = store
-            .model_usage_totals("deep", now - now.rem_euclid(86_400_000))
-            .map_err(AppError::Repository)?;
         let month = store
             .model_usage_totals("deep", month_start_ms(now))
             .map_err(AppError::Repository)?;
-        let recent = store
-            .recent_model_usage("deep", 12)
-            .map_err(AppError::Repository)?;
         Ok::<_, AppError>(json!({
-            "today": totals_json(&day, &prices),
             "month": totals_json(&month, &prices),
-            "recent": recent.iter().map(|r| json!({
-                "at_ms": r.at_ms,
-                "model": r.model,
-                "prompt_tokens": r.usage.prompt_tokens,
-                "completion_tokens": r.usage.completion_tokens,
-                "cached_tokens": r.usage.cached_tokens,
-                "cost_usd": prices.cost_usd(&endora_application::UsageTotals {
-                    calls: 1,
-                    prompt_tokens: r.usage.prompt_tokens,
-                    completion_tokens: r.usage.completion_tokens,
-                    cached_tokens: r.usage.cached_tokens,
-                }),
-            })).collect::<Vec<_>>(),
             "prices": { "input": prices.input, "output": prices.output, "cached": prices.cached },
         }))
     })

@@ -458,17 +458,6 @@ pub struct UsageTotals {
     pub cached_tokens: u64,
 }
 
-/// One recorded call.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct UsageRow {
-    /// When it happened.
-    pub at_ms: i64,
-    /// Which model.
-    pub model: String,
-    /// What it used.
-    pub usage: ModelUsage,
-}
-
 /// Somewhere to record what a paid model's calls used (ADR 0091). Recording must never fail a
 /// turn, so it returns nothing.
 pub trait UsageLog: Send + Sync {

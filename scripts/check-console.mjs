@@ -599,13 +599,13 @@ if (keys.length !== 3 || keys[0] !== keys[1] || keys[0] === keys[2]) {
     console.error("deep spend: text from the provider became markup");
     process.exit(1);
   }
-  if (!low.includes("9 calls, 38k tokens") || !low.includes("Set what a million tokens costs")) {
+  if (!low.includes("38k tokens") || !low.includes("see dollars") || low.includes("today")) {
     console.error(`deep spend: usage or the prompt to set prices is missing: ${low}`);
     process.exit(1);
   }
   runInContext(`DEEP_USAGE.month.cost_usd = 0.0213; DEEP_USAGE.today.cost_usd = 0.004; DEEP_BALANCE = { supported: false };`, context);
   const priced = runInContext("deepSpendHtml()", context);
-  if (!priced.includes("~$0.02") || priced.includes("Balance") || priced.includes("Set what a million")) {
+  if (!priced.includes("Spent this month") || !priced.includes("~$0.02") || priced.includes("Balance") || priced.includes("see dollars")) {
     console.error(`deep spend: a priced month, or a provider with no balance, renders wrongly: ${priced}`);
     process.exit(1);
   }

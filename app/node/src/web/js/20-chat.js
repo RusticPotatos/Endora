@@ -423,11 +423,11 @@ function deepSpendHtml() {
   }
   const u = DEEP_USAGE;
   if (u && u.month) {
-    const part = (t) => `${t.calls} call${t.calls === 1 ? "" : "s"}, ${kTokens(t.prompt_tokens + t.completion_tokens)} tokens` +
-      (t.cost_usd != null ? ` (~${money(t.cost_usd)})` : "");
-    rows.push(`<div class="spend-row"><span>This month</span><b>${part(u.month)}</b><em>today: ${part(u.today)}</em></div>`);
-    if (u.month.cost_usd == null) {
-      rows.push(`<div class="spend-row sub">Set what a million tokens costs under Settings → Models → Deep to see dollars. Token counts are what the provider reported.</div>`);
+    const tokens = kTokens(u.month.prompt_tokens + u.month.completion_tokens);
+    if (u.month.cost_usd != null) {
+      rows.push(`<div class="spend-row"><span>Spent this month</span><b>~${money(u.month.cost_usd)}</b><em>${tokens} tokens</em></div>`);
+    } else {
+      rows.push(`<div class="spend-row"><span>This month</span><b>${tokens} tokens</b><em>set prices under Settings → Models → Deep to see dollars</em></div>`);
     }
   }
   return rows.join("");
