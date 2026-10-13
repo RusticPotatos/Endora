@@ -274,6 +274,22 @@ pub struct ButlerReply {
     /// Silence is the default for a turn nobody requested, and a degraded turn has by
     /// definition produced no answer to override it.
     pub degraded: bool,
+    /// The endpoint stopped generating because this reply hit the token ceiling,
+    /// not because the model had finished (`finish_reason: "length"`).
+    ///
+    /// Distinct from [`degraded`](Self::degraded): the model was reachable and what
+    /// arrived is real — it is simply the first part of a longer answer, severed
+    /// mid-sentence. Treating the two the same would throw away a brief that is
+    /// nine-tenths complete.
+    ///
+    /// Reported by the endpoint rather than inferred. Before this existed the only
+    /// hint was an envelope that failed to parse, which is a *symptom* — it misses
+    /// every cut that happens to land on valid JSON, and it fires on malformed
+    /// output that was not cut at all. Callers that assess what a reply *left out*
+    /// need the difference: text stopped mid-word omits almost everything, and
+    /// concluding the model chose to omit it is how a cut brief ends up with the
+    /// raw material it was meant to be wording appended underneath it.
+    pub truncated: bool,
 }
 
 /// One tool call the model made through the endpoint's native tool-calling API — the

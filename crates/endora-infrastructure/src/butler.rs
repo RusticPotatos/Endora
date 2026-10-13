@@ -390,6 +390,10 @@ impl LlmButler {
         let reader = std::io::BufReader::new(response.into_body().into_reader());
         let mut raw = String::new(); // the accumulated JSON envelope from the model
         let mut emitted = 0usize; // bytes of prose preview already handed to on_token
+        // SSE reports the stop reason on the final chunk, so it has to be caught as
+        // it goes by — the accumulated envelope alone cannot say whether the model
+        // finished or ran out of room.
+        let mut cut_short = false;
         for line in std::io::BufRead::lines(reader) {
             // A mid-stream read error (e.g. the timeout) still leaves us whatever
             // prose already arrived; parse and return that rather than failing.
@@ -403,6 +407,7 @@ impl LlmButler {
             let Ok(chunk) = serde_json::from_str::<Value>(data) else {
                 continue;
             };
+            cut_short |= was_cut_short(&chunk["choices"][0]);
             if let Some(delta) = chunk["choices"][0]["delta"]["content"].as_str() {
                 raw.push_str(delta);
                 // Thinking is transport, not reply — never streamed to the person.
@@ -418,7 +423,10 @@ impl LlmButler {
         }
         // The authoritative reply (text + proposals) comes from a full parse of
         // the accumulated envelope; the streamed prose was a live preview.
-        Ok(parse_butler_json(&without_thinking(&raw)))
+        Ok(ButlerReply {
+            truncated: cut_short,
+            ..parse_butler_json(&without_thinking(&raw))
+        })
     }
 }
 
@@ -1683,12 +1691,25 @@ fn without_thinking(content: &str) -> String {
     out.trim().to_owned()
 }
 
+/// Whether the endpoint stopped this choice because it hit the generation ceiling
+/// rather than because the model finished.
+///
+/// `"length"` is the OpenAI-compatible reason for exhausting `max_tokens`. Anything
+/// else — including a response that says nothing — is read as *not* cut: the mark
+/// has to mean the endpoint reported it, or everything branching on it is guesswork.
+fn was_cut_short(choice: &Value) -> bool {
+    choice["finish_reason"].as_str() == Some("length")
+}
+
 /// Extracts the butler reply from a chat-completions response. Pure.
 fn parse_butler_response(json: &Value) -> Result<ButlerReply, ProposalError> {
     let content = json["choices"][0]["message"]["content"]
         .as_str()
         .ok_or_else(|| ProposalError::Unavailable("unexpected response shape".to_owned()))?;
-    Ok(parse_butler_json(&without_thinking(content)))
+    Ok(ButlerReply {
+        truncated: was_cut_short(&json["choices"][0]),
+        ..parse_butler_json(&without_thinking(content))
+    })
 }
 
 /// Parses a chat-completion response, preferring a **native tool call** when the
@@ -1715,6 +1736,7 @@ fn parse_model_reply(json: &Value, context: &ButlerContext) -> Result<ButlerRepl
             text,
             capability_use,
             tool_calls,
+            truncated: was_cut_short(&json["choices"][0]),
             ..ButlerReply::default()
         });
     }
@@ -1898,7 +1920,7 @@ mod tests {
     use super::{
         LlmButler, ScriptedButler, build_butler_request, build_turn_request, extract_json_object,
         extract_reply_preview, parse_butler_json, parse_butler_response, parse_model_reply,
-        test_connection,
+        test_connection, was_cut_short,
     };
     use endora_application::{BeliefKind, Butler, ButlerContext, Confidence};
     use endora_application::{ChatMessage, MessageId, MessageRole, Timestamp};
@@ -2583,6 +2605,78 @@ mod tests {
         );
         // The part that did arrive is kept; only the severed tail is lost.
         assert!(reply.text.contains("Charlotte: fog"), "{}", reply.text);
+    }
+
+    #[test]
+    fn a_reply_stopped_at_the_ceiling_is_marked_truncated() {
+        // Until now nothing in the tree read `finish_reason`, so "was this reply cut
+        // off?" could only ever be *inferred* — from a JSON envelope that failed to
+        // parse, which is a symptom and misses every truncation that happens to land
+        // on valid JSON. The endpoint states it outright; this reads what it says.
+        let cut = json!({"choices":[{
+            "finish_reason": "length",
+            "message": {"content": "{\"reply\":\"Good morning — here's your brief."}
+        }]});
+        let reply = parse_butler_response(&cut).unwrap();
+        assert!(
+            reply.truncated,
+            "the endpoint said it stopped on length, so the reply is incomplete"
+        );
+    }
+
+    #[test]
+    fn a_reply_that_finished_is_not_marked_truncated() {
+        let whole = json!({"choices":[{
+            "finish_reason": "stop",
+            "message": {"content": "{\"reply\":\"All done.\"}"}
+        }]});
+        let reply = parse_butler_response(&whole).unwrap();
+        assert!(!reply.truncated);
+        assert_eq!(reply.text, "All done.");
+
+        // A response that does not say is not treated as cut: the mark has to mean
+        // the endpoint reported it, or everything downstream of it is guesswork.
+        let silent = json!({"choices":[{"message":{"content":"{\"reply\":\"hi\"}"}}]});
+        assert!(!parse_butler_response(&silent).unwrap().truncated);
+    }
+
+    #[test]
+    fn was_cut_short_reads_only_the_length_reason() {
+        // The streaming path has no mock-endpoint harness, so the shared predicate
+        // it uses is covered here directly.
+        assert!(was_cut_short(&json!({"finish_reason": "length"})));
+        assert!(!was_cut_short(&json!({"finish_reason": "stop"})));
+        assert!(!was_cut_short(&json!({"finish_reason": "tool_calls"})));
+        assert!(!was_cut_short(&json!({"finish_reason": null})));
+        assert!(!was_cut_short(&json!({})));
+    }
+
+    #[test]
+    fn a_tool_calling_reply_carries_the_truncation_mark_too() {
+        // The native tool-call path builds its reply separately, so it needs the
+        // mark as much as the envelope path — a tool call cut mid-arguments is the
+        // worst kind to treat as whole.
+        let ctx = ButlerContext::default();
+        let cut = json!({"choices":[{
+            "finish_reason": "length",
+            "message": {"content": "", "tool_calls": [{
+                "id": "call_1",
+                "function": {"name": "weather", "arguments": "{\"place\":\"Char"}
+            }]}
+        }]});
+        let reply = parse_model_reply(&cut, &ctx).unwrap();
+        assert!(
+            !reply.tool_calls.is_empty(),
+            "exercises the tool-call branch"
+        );
+        assert!(reply.truncated);
+
+        // And the envelope branch of the same function.
+        let envelope = json!({"choices":[{
+            "finish_reason": "length",
+            "message": {"content": "{\"reply\":\"partial"}
+        }]});
+        assert!(parse_model_reply(&envelope, &ctx).unwrap().truncated);
     }
 
     #[test]
