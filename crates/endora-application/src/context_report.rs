@@ -157,6 +157,19 @@ pub fn context_report(
         .unwrap_or_default();
     let held_back: Vec<String> = context.deferred.iter().map(|t| t.id.clone()).collect();
 
+    // The plain skill list is only in the instructions when the skills are NOT also sent as tool
+    // definitions (ADR 0090); otherwise it would be the same skills twice.
+    let plain_skill_list = if context.tools.is_empty() {
+        section(
+            "skill_list",
+            "Skill list in the instructions",
+            "The skills, as a plain list (no tool definitions are sent).",
+            true,
+            &context.capabilities,
+        )
+    } else {
+        section("skill_list", "", "", true, &[])
+    };
     let mut sections = vec![
         section(
             "instructions",
@@ -209,13 +222,7 @@ pub fn context_report(
             false,
             &context.track_record,
         ),
-        section(
-            "skill_list",
-            "Skill list in the instructions",
-            "The same skills again, as a plain list.",
-            true,
-            &context.capabilities,
-        ),
+        plain_skill_list,
         section(
             "skills",
             "Skill definitions",
@@ -335,7 +342,7 @@ mod tests {
             .filter(|s| s.to_deep)
             .map(|s| s.key)
             .collect();
-        assert_eq!(deep, vec!["skill_list", "skills"]);
+        assert_eq!(deep, vec!["skills"]);
     }
 
     #[test]

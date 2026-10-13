@@ -1506,7 +1506,11 @@ fn build_butler_request(
             system.push_str(&format!("\n- {record}"));
         }
     }
-    if context.capabilities.is_empty() {
+    if offer_tools && !context.tools.is_empty() {
+        // The skills arrive as native tool definitions below; listing them here as well sent
+        // every one twice (ADR 0088 made the duplication visible) and spent a good share of the
+        // window on text the model had already been given.
+    } else if context.capabilities.is_empty() {
         system.push_str("\nYou have no skills available right now; set \"use\":null.");
     } else {
         system.push_str(

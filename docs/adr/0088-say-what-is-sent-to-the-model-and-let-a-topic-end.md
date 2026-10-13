@@ -35,8 +35,8 @@ It is in the "+" menu and the inspector.
 
 - The inspector shows an ordinary message. The "what I did lately" notes are left out, since
   they are only sent when the person asks about them (ADR 0087).
-- The skill list is sent twice (as text, then as tool definitions). The inspector shows both
-  so the duplication is visible; removing one is a separate change.
+- The skill list used to be sent twice (as text, then as tool definitions); the inspector made
+  that visible and ADR 0090 removed the text copy.
 - The estimate does not see the model server's own chat template or tool formatting.
 - A reset is one boundary, not a set of named conversations.
 
