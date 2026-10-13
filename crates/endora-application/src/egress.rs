@@ -156,9 +156,20 @@ impl Deeper {
             .0
             .take_turn(&hidden, prefs, &hidden_ctx)
             .map_err(|e| DoorRefusal::TheModelFailed(e.to_string()))?;
+        // What it chose to call carries the placeholders it was shown, too; a skill is run
+        // for the person, so it is asked about what they asked about.
+        let tool_calls = better
+            .tool_calls
+            .iter()
+            .map(|call| crate::ToolCall {
+                input_json: disguise.restore_in_json(&call.input_json),
+                ..call.clone()
+            })
+            .collect();
         Ok(ButlerReply {
             escalated: true,
             text: disguise.restore(&better.text),
+            tool_calls,
             ..better
         })
     }
@@ -414,6 +425,57 @@ mod tests {
             }
             other => panic!("a dead model must be named as one: {other:?}"),
         }
+    }
+
+    #[test]
+    fn a_skill_input_the_deep_model_chose_is_restored_before_it_runs() {
+        // The deep model saw "<person 1>", not the name, and echoes the placeholder into the
+        // skill's input. Run as written, a skill would be asked about "<person 1>"; restored
+        // as text, a name containing a quote would break the JSON it sits in.
+        struct CallsASkillWithWhatItSaw;
+        impl Butler for CallsASkillWithWhatItSaw {
+            fn respond(
+                &self,
+                _h: &[endora_conversation::ChatMessage],
+                _p: &[crate::Preference],
+                _c: &ButlerContext,
+            ) -> Result<ButlerReply, ProposalError> {
+                Ok(ButlerReply::default())
+            }
+            fn take_turn(
+                &self,
+                _conversation: &[TurnMessage],
+                _p: &[crate::Preference],
+                _x: &ButlerContext,
+            ) -> Result<ButlerReply, ProposalError> {
+                Ok(ButlerReply {
+                    tool_calls: vec![crate::ToolCall {
+                        id: "c1".to_owned(),
+                        capability: "web_search".to_owned(),
+                        input_json: r#"{"query":"is <person 1> home","count":3}"#.to_owned(),
+                    }],
+                    ..ButlerReply::default()
+                })
+            }
+        }
+        let door = Deeper::new(std::sync::Arc::new(CallsASkillWithWhatItSaw));
+        let context = ButlerContext {
+            present: vec![r#"Ann "Annie" Doe is not home"#.to_owned()],
+            ..ButlerContext::default()
+        };
+
+        let reply = door
+            .continue_turn(
+                &[TurnMessage::User("is Ann \"Annie\" Doe home?".to_owned())],
+                &[],
+                &context,
+            )
+            .expect("a clean turn escalates");
+
+        let input: serde_json::Value =
+            serde_json::from_str(&reply.tool_calls[0].input_json).expect("still valid JSON");
+        assert_eq!(input["query"], "is Ann \"Annie\" Doe home");
+        assert_eq!(input["count"], 3);
     }
 
     #[test]

@@ -53,8 +53,9 @@ Two models, two jobs. The split is the defence.
   week?") lack their context. A deliberate v1 trade for privacy.
 - The local reader can still be talked into saying something wrong by a page. The person
   sees it and can correct it; it cannot act.
-- Latent, not fixed here: `Deeper::continue_turn` does not restore pseudonyms inside tool
-  call arguments, so a redacted detail could appear in a skill input as its placeholder.
+- Fixed afterwards: `Deeper::continue_turn` did not restore pseudonyms inside tool call
+  arguments, so a skill could be asked about `<person 1>`. It now restores them string by string
+  inside the JSON (`Pseudonyms::restore_in_json`), so a value holding a quote cannot break it.
 
 ## Validation
 

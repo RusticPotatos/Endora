@@ -182,6 +182,10 @@ foundation-gate: ## Run foundation acceptance; missing coverage or failed behavi
 	python3 -m unittest discover -s scripts/foundation -p 'test_*.py'
 	python3 scripts/foundation/gate.py
 
+.PHONY: evals
+evals: ## Run the live model evaluations and keep a dated record (target/evals/); see scripts/run-live-evals.sh
+	@ENDORA_MODEL_URL="$(ENDORA_MODEL_URL)" ENDORA_MODEL="$(ENDORA_MODEL)" ./scripts/run-live-evals.sh
+
 .PHONY: goal-eval
 goal-eval: ## Can it actually accomplish a goal? Drives the real pass loop with the real model
 	# Live acceptance of the pass loop using production schema, reversible skills,

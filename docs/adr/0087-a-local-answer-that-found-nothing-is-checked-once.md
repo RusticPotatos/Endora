@@ -51,8 +51,9 @@ had the skills.
   from memory, is still not caught.
 - A model that answers wrongly without saying it found nothing is not caught.
 - The question, redacted, and the skill list leave the box on these turns (as in ADR 0086).
-- The first reply may have streamed to the console before the retry; the stored message is
-  the final one and replaces it when the turn completes.
+- The first reply may show in the console for a moment before the retry files it under
+  "Thinking" and empties the bubble; the stored message is the final one. Holding the draft back
+  would stop replies streaming for everyone with a deep model, so this is accepted.
 - Whether it helps depends on a search skill being in front; without one the deep model has
   nothing better to call.
 

@@ -82,6 +82,29 @@ impl Pseudonyms {
             })
     }
 
+    /// A skill's JSON input with placeholders swapped back, string by string.
+    ///
+    /// Not [`Self::restore`] on the whole text: a real value holding a quote or a backslash would
+    /// break the JSON it is put into. Input that does not parse is restored as plain text.
+    #[must_use]
+    pub fn restore_in_json(&self, input_json: &str) -> String {
+        fn walk(table: &Pseudonyms, value: &mut serde_json::Value) {
+            match value {
+                serde_json::Value::String(text) => *text = table.restore(text),
+                serde_json::Value::Array(items) => items.iter_mut().for_each(|i| walk(table, i)),
+                serde_json::Value::Object(map) => map.values_mut().for_each(|v| walk(table, v)),
+                _ => {}
+            }
+        }
+        match serde_json::from_str::<serde_json::Value>(input_json) {
+            Ok(mut value) => {
+                walk(self, &mut value);
+                value.to_string()
+            }
+            Err(_) => self.restore(input_json),
+        }
+    }
+
     /// The text as the person reads it: placeholders swapped back.
     ///
     /// A placeholder the model reworded is simply not replaced, and shows as itself. That is
