@@ -423,9 +423,10 @@ impl LlmButler {
         }
         // The authoritative reply (text + proposals) comes from a full parse of
         // the accumulated envelope; the streamed prose was a live preview.
+        let parsed = parse_butler_json(&without_thinking(&raw));
         Ok(ButlerReply {
-            truncated: cut_short,
-            ..parse_butler_json(&without_thinking(&raw))
+            truncated: parsed.truncated || cut_short,
+            ..parsed
         })
     }
 }
@@ -1706,9 +1707,14 @@ fn parse_butler_response(json: &Value) -> Result<ButlerReply, ProposalError> {
     let content = json["choices"][0]["message"]["content"]
         .as_str()
         .ok_or_else(|| ProposalError::Unavailable("unexpected response shape".to_owned()))?;
+    let parsed = parse_butler_json(&without_thinking(content));
     Ok(ButlerReply {
-        truncated: was_cut_short(&json["choices"][0]),
-        ..parse_butler_json(&without_thinking(content))
+        // Either signal means incomplete, so they combine. Writing this as
+        // `truncated: was_cut_short(..), ..parsed` would quietly discard the inner
+        // mark whenever the endpoint reported a clean stop — which is exactly the
+        // case a severed envelope presents.
+        truncated: parsed.truncated || was_cut_short(&json["choices"][0]),
+        ..parsed
     })
 }
 
@@ -1797,6 +1803,12 @@ fn parse_butler_json(content: &str) -> ButlerReply {
         if !recovered.trim().is_empty() {
             return ButlerReply {
                 text: recovered.trim().to_owned(),
+                // Recovery only happens on an envelope that never closed, so this
+                // text is incomplete whatever severed it — and the callers that
+                // branch on this care that it is incomplete, not why. Measured:
+                // the reported brief stopped near 300 tokens against a 1024
+                // ceiling, so `finish_reason` alone would have missed it.
+                truncated: true,
                 ..ButlerReply::default()
             };
         }
@@ -2638,6 +2650,45 @@ mod tests {
         // the endpoint reported it, or everything downstream of it is guesswork.
         let silent = json!({"choices":[{"message":{"content":"{\"reply\":\"hi\"}"}}]});
         assert!(!parse_butler_response(&silent).unwrap().truncated);
+    }
+
+    #[test]
+    fn a_recovered_envelope_counts_as_cut_whatever_severed_it() {
+        // Measured 2026-10-13: a brief comparable to the live one needs ~242
+        // completion tokens and the ceiling is 1024, so the reply in the report had
+        // stopped around 300 — nowhere near the limit. Whatever ended it, the
+        // endpoint did not say "length".
+        //
+        // That matters because the callers branching on `truncated` care whether the
+        // text is COMPLETE, not why it stopped. An envelope that had to be recovered
+        // is incomplete by construction — recovery only happens when the JSON never
+        // closed. Marking it covers the cause without having to identify it.
+        let severed = "{\"reply\":\"Good morning — here's your brief. The first head";
+        let reply = parse_butler_json(severed);
+        assert!(
+            reply.truncated,
+            "a recovered envelope is an incomplete reply"
+        );
+        assert!(reply.text.starts_with("Good morning"));
+
+        // A whole envelope is not marked, and neither is ordinary prose.
+        assert!(!parse_butler_json("{\"reply\":\"All done.\"}").truncated);
+        assert!(!parse_butler_json("Just prose.").truncated);
+    }
+
+    #[test]
+    fn a_recovered_envelope_stays_marked_even_when_the_endpoint_said_stop() {
+        // Struct-update order is a real trap here: setting `truncated` from
+        // `finish_reason` alongside `..parse_butler_json(..)` would silently discard
+        // the inner mark. The two signals have to combine, not overwrite.
+        let json = json!({"choices":[{
+            "finish_reason": "stop",
+            "message": {"content": "{\"reply\":\"half a sent"}
+        }]});
+        assert!(
+            parse_butler_response(&json).unwrap().truncated,
+            "the endpoint said stop, but the envelope never closed"
+        );
     }
 
     #[test]
