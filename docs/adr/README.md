@@ -7,9 +7,9 @@ and numbered in sequence.
 
 ## What they add up to
 
-Eight accepted records, two proposed, forty-eight archived, and a handful of ideas underneath
-all of them. Read this before reading
-any individual record; each line is a rule the code actually follows, with the decision
+Forty-one records stand, every one accepted, and forty-nine earlier ones are archived into them
+(the *Consolidates* column below). A handful of ideas sit underneath all of them. Read this before
+reading any individual record; each line is a rule the code actually follows, with the decision
 that established it.
 
 ### The spine
@@ -44,12 +44,10 @@ that established it.
   hardcodes and a leak into the protocol adapter came from fixing one integration at a time.
   Genuine quirks are allowed — behind that integration's own named boundary, never in shared
   code.
-- **Say what you know; everything else follows** ([0059](0059-one-fact-source-many-consumers.md),
-  proposed). One question — `current_states` — feeds the watch loop, the turn and the thinking.
+- **Say what you know; everything else follows** ([0059](0059-one-fact-source-many-consumers.md)). One question — `current_states` — feeds the watch loop, the turn and the thinking.
   A source implements it and is thereby joined up, with nothing to nominate and no wiring per
   integration. The turn hears what **changed**, bounded, which is why it can be automatic.
-- **MCP unless Endora needs a relationship** ([0058](0058-how-an-integration-gets-in.md),
-  proposed). A tool protocol expresses "call this"; it cannot express watching a service,
+- **MCP unless Endora needs a relationship** ([0058](0058-how-an-integration-gets-in.md)). A tool protocol expresses "call this"; it cannot express watching a service,
   supplying context, a setup flow, reversibility, or undo. Answers → MCP; relationship →
   native; both → both, as Home Assistant does.
 - **Ranked trust: confirmed > observed > declared** ([0038](0054-other-peoples-services.md)).
@@ -67,6 +65,27 @@ that established it.
 - **Resumable workers share one lease boundary** ([0078](0078-shared-execution-leases.md)).
   Goals and research keep separate evidence records, but reservations, bounded
   retries and crash recovery use the same durable ownership rule.
+
+### What we learned about asking a bigger model, and a smaller one
+
+- **Two models, two jobs, and the split is the defence** ([0086](0086-ask-deep-plans-and-the-house-reads.md)).
+  The bigger model chooses which skills to call and is told only *that* a skill ran and roughly
+  how much came back, in a sentence code wrote; the local model reads the results with no skills
+  to call. A stranger's words never reach a model that could be commanded by them, and never
+  leave the device ([0064](0053-honesty-about-what-it-did.md) still holds).
+- **A confident answer is not evidence** ([0085](0085-a-question-about-the-world-is-not-answered-from-the-house.md),
+  [0087](0087-a-local-answer-that-found-nothing-is-checked-once.md)). A small model with no skill
+  run invented a game's date, time and opponent. A question about the world answered with no
+  lookup is a guess, and gets one more try with the skills.
+- **The model sorts the message; word lists are only the fallback** ([0089](0089-a-model-sorts-the-message-not-a-word-list.md)).
+  Measured, not argued: 40/40 against the word list's 25/40 on the same phrasings.
+- **Say what is sent, and send it once** ([0088](0088-say-what-is-sent-to-the-model-and-let-a-topic-end.md),
+  [0090](0090-skills-are-sent-once.md)). A ring shows how full the window is, an inspector lists
+  every section, and "New topic" ends what the model reads without deleting anything.
+- **Unattended work is announced, visible and stoppable** ([0079](0079-goal-checkpoints-require-ownership.md),
+  [0080](0080-completion-uses-tool-observations.md), [0082](0082-announce-every-way-a-goal-ends.md),
+  [0083](0083-show-unattended-work-and-let-it-be-stopped.md)). Completion comes from tool
+  observations, every way a goal ends is told to the person, and a goal can be stopped.
 
 ### What we learned about the person's side
 
@@ -143,7 +162,7 @@ of an existing record and take the next number.
 | [0058](0058-how-an-integration-gets-in.md) | How an integration gets in | — |
 | [0059](0059-one-fact-source-many-consumers.md) | One fact source, many consumers | — |
 | [0060](0060-what-the-turn-is-offered.md) | What the turn is offered | — |
-| [0061](0061-answers-worth-keeping.md) | Answers worth keeping | — (proposed) |
+| [0061](0061-answers-worth-keeping.md) | Answers worth keeping | — |
 | [0062](0062-one-permission-surface.md) | One permission surface | — |
 | [0063](0063-waking-on-the-world.md) | Waking on the world | — |
 | [0064](0064-what-a-stranger-said.md) | What a stranger said | — |

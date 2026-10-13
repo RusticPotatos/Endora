@@ -1,6 +1,8 @@
-# 0081: Declare work and search for sources
+# 0081 — Declare work and search for sources
 
-2026-10-12. Accepted. AI-assisted implementation.
+## Status
+
+Accepted, 2026-10-12. AI-assisted implementation.
 
 ## Context
 

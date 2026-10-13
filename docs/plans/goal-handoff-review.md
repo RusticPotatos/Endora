@@ -250,3 +250,15 @@ should be one complete slice: request → persisted objective → retrieved evid
 → verified outcome → delivered chat result, including partial/blocked outcomes.
 Prove it through the actual worker, then repeat with a failed first source, process
 restart and cancellation. Do not add further capabilities until that path passes.
+
+## Phase 8: Ask deep, the router, and what is sent (2026-10-12)
+
+Not part of the goal runtime, recorded here because it grew out of the same live review.
+
+- Ask deep plans with skills while the local model reads (ADR 0086); a local answer that found
+  nothing, or a world question answered with no lookup, is retried once the same way (ADR 0087).
+- The local model sorts a message into lookup / personal / chat instead of a word list (ADR 0089).
+- The console shows what is sent and how full the window is, and a topic can end (ADR 0088);
+  skills are no longer sent twice (ADR 0090).
+- Deployed in steps on the NAS as build `dafd821`; the later commits on `cleanup` (dependency
+  bumps, router, single skill list, input restore, docs) are not deployed.

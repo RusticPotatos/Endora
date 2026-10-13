@@ -68,6 +68,14 @@ search capability. The goal worker also shares that lock, claims work atomically
 renews ownership during long passes, and fences checkpoints and dispatch with its
 current ownership token ([ADR 0079](adr/0079-goal-checkpoints-require-ownership.md)).
 Research still has its own lifecycle pending migration to the shared goal contract.
+
+Within `endora-application`, a few modules are the seams between a turn and the models it may
+use. `egress` is the only door to a bigger model (taint check, secret scan, disguise); `deep_turn`
+makes that model plan which skills to call while the local model reads the results
+([ADR 0086](adr/0086-ask-deep-plans-and-the-house-reads.md)); `context_report` measures what a turn
+sends and how full the model's window is ([ADR 0088](adr/0088-say-what-is-sent-to-the-model-and-let-a-topic-end.md)).
+`Butler::classify_need` lets the local model sort a message before the turn decides whether to
+look something up ([ADR 0089](adr/0089-a-model-sorts-the-message-not-a-word-list.md)).
 Goal checkpoints also distinguish actual tool observations from generated findings;
 supported schedule completion validates structured events and renders its answer
 from those fields ([ADR 0080](adr/0080-completion-uses-tool-observations.md)).

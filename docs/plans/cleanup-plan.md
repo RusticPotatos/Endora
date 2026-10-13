@@ -126,8 +126,10 @@ the measured second-hop success of local models was 1 in 12.
 
 ## 6. Refresh the docs (about 2 hours)
 
-**Why.** The ADR index summary counts "eight accepted", 30 lines show no status, and ADRs
-0079–0088 are not reflected in it.
+**Why.** The ADR index summary counted "eight accepted, two proposed" against 41 accepted records,
+still called two of them proposed, and ADRs 0079–0090 were not reflected in it. (An earlier note
+said 30 lines had no status; that was a misreading: the third column is *Consolidates*, and a dash
+means nothing was archived into that record.)
 
 **Steps.** Set a status on every ADR line; rewrite the "what they add up to" paragraph from the
 accepted ones; add short pointers from `architecture.md` to the new modules (`deep_turn`,
@@ -164,3 +166,18 @@ why it is last.
 | 2 | Approve branch deletions from the list |
 | 4 | Turn off unused tools; nominate Brave |
 | all | Say "deploy" after each change that should go live |
+
+---
+
+## Progress (2026-10-12)
+
+| Item | State |
+|------|-------|
+| 0 Rotate keys | Waiting on the person |
+| 1 Split the big PR | Done: #384 to #388 (stacked); #383 closed. The 32 unexecuted gate scenarios are still undecided |
+| 2 Housekeeping | Done: the four safe dependency bumps and rusqlite 0.40 (all six crates plus `shared/persistence`, which is why the single-crate PR could not resolve) are on `cleanup`; 113 local branches whose PRs were merged deleted (name-to-SHA list kept outside the repo); no remote branch needed deleting. The five Dependabot PRs become redundant once `cleanup` merges |
+| 3 Router | Done: ADR 0089, 40/40 against the word list's 25/40 |
+| 4 Smaller prompt | Skills are sent once (ADR 0090), tool choice unchanged within noise. Turning off unused tools and nominating Brave is the person's |
+| 5 Loose ends | Placeholders in skill inputs fixed; `make evals` added; the streaming flash is an accepted, documented limit. The Mac copy of ansible-nas has 2 unpushed commits that conflict with upstream: needs the person's decision |
+| 6 Docs | Done |
+| 7 Split the large files | Not started; last, and the only deploy |
