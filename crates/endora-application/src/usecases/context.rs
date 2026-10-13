@@ -561,7 +561,7 @@ pub(super) fn word_the_brief(
     facts: &str,
     ids: &impl IdSource,
     clock: &impl Clock,
-) -> Option<String> {
+) -> Option<crate::egress::Worded> {
     // The instruction is Endora's own sentence; the facts travel through the door, which
     // disguises them, scans what would leave, and restores the reply (ADR 0069).
     deeper.word(

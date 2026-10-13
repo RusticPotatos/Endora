@@ -51,8 +51,94 @@ fn only_the_facts_leave_and_they_leave_disguised() {
     assert!(sent.contains("names=[]"), "{sent}");
 
     // And what the person reads is their own words again.
-    assert!(written.contains("john"), "{written}");
-    assert!(written.contains("Jane Doe & John Doe"), "{written}");
+    assert!(written.text.contains("john"), "{}", written.text);
+    assert!(
+        written.text.contains("Jane Doe & John Doe"),
+        "{}",
+        written.text
+    );
+    assert!(!written.cut_short, "this stand-in finished its sentence");
+}
+
+/// A deep model whose reply the endpoint cut off at the token ceiling.
+struct CutOff;
+impl Butler for CutOff {
+    fn respond(
+        &self,
+        _h: &[ChatMessage],
+        _p: &[Preference],
+        _c: &ButlerContext,
+    ) -> Result<ButlerReply, crate::ProposalError> {
+        Ok(ButlerReply {
+            // Reads cleanly and simply stops — the shape seen live, where the brief
+            // ran out of room partway through the headlines.
+            text: "Good morning — here's your brief. john is not home, and outside \
+                   it is 77F and partly"
+                .to_owned(),
+            truncated: true,
+            ..ButlerReply::default()
+        })
+    }
+    fn deeper(&self) -> Option<crate::egress::Deeper> {
+        Some(crate::egress::Deeper::new(std::sync::Arc::new(CutOff)))
+    }
+}
+
+#[test]
+fn a_brief_cut_off_mid_sentence_posts_the_facts_instead_of_prose_plus_a_dump() {
+    // The second half of the live bug. The wording was severed by the generation
+    // ceiling, so `not_yet_said` found almost every fact unmentioned — correctly,
+    // since the model never reached them — and appended the raw gathered lines
+    // underneath the half-written prose. The person read a sentence that stopped
+    // mid-word, then `IMAP (…) Messages: 38303`, then the raw weather and news.
+    //
+    // Nothing was "left out" there: it was never reached. Append-never-rewrite
+    // (ADR 0056) answers a question that only makes sense about a reply that
+    // finished, so on a cut the facts post as themselves (ADR 0074) — complete,
+    // plainly worded, and nothing lost.
+    let facts = "- john is not home\n- outside it is 77F and partly cloudy\n\
+                 - 38303 messages in the mailbox";
+    let brief = worded_brief(&CutOff, facts, &FakeIds::default(), &FixedClock(0));
+
+    assert_eq!(
+        brief, facts,
+        "a cut wording must not become half a brief with the raw facts beneath it"
+    );
+    assert!(
+        !brief.contains("partly\n"),
+        "the severed sentence must not be shown: {brief}"
+    );
+}
+
+#[test]
+fn a_brief_that_finished_still_gets_what_it_left_out_appended() {
+    // The guard must not disable append-never-rewrite for ordinary briefs: a model
+    // that finished and genuinely skipped a fact still has it printed again.
+    struct Finished;
+    impl Butler for Finished {
+        fn respond(
+            &self,
+            _h: &[ChatMessage],
+            _p: &[Preference],
+            _c: &ButlerContext,
+        ) -> Result<ButlerReply, crate::ProposalError> {
+            Ok(ButlerReply {
+                text: "Good morning. john is not home.".to_owned(),
+                ..ButlerReply::default()
+            })
+        }
+        fn deeper(&self) -> Option<crate::egress::Deeper> {
+            Some(crate::egress::Deeper::new(std::sync::Arc::new(Finished)))
+        }
+    }
+    let facts = "- john is not home\n- outside it is 77F and partly cloudy";
+    let brief = worded_brief(&Finished, facts, &FakeIds::default(), &FixedClock(0));
+
+    assert!(brief.starts_with("Good morning."), "{brief}");
+    assert!(
+        brief.contains("77F and partly cloudy"),
+        "the fact it skipped is still printed: {brief}"
+    );
 }
 
 #[test]

@@ -1081,9 +1081,20 @@ pub(super) fn worded_brief(
         .deeper()
         .and_then(|deeper| word_the_brief(&deeper, facts, ids, clock))
     {
-        Some(written) => match not_yet_said(&written, facts) {
-            missed if missed.is_empty() => written,
-            missed => format!("{written}\n\n{}", missed.join("\n")),
+        // Cut off at the token ceiling. What arrived is real but partial, and the
+        // facts it never reached are not facts it *left out* — so asking what it
+        // omitted (append-never-rewrite, ADR 0056) answers a question that only
+        // makes sense about a reply that finished. Measured live: the appended
+        // answer was the whole raw gather — `IMAP (…) Messages: 38303`, the raw
+        // weather and headlines — printed under a sentence that stopped mid-word.
+        //
+        // So the facts post as themselves, which ADR 0074 already calls a brief:
+        // complete, plainly worded, and nothing lost. Half a brief with the raw
+        // material beneath it is the one shape that is worse than either.
+        Some(written) if written.cut_short => facts.to_owned(),
+        Some(written) => match not_yet_said(&written.text, facts) {
+            missed if missed.is_empty() => written.text,
+            missed => format!("{}\n\n{}", written.text, missed.join("\n")),
         },
         None => facts.to_owned(),
     }

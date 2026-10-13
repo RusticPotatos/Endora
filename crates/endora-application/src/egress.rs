@@ -185,7 +185,7 @@ impl Deeper {
         facts: &str,
         ids: &impl IdSource,
         clock: &impl Clock,
-    ) -> Option<String> {
+    ) -> Option<Worded> {
         let disguise = personal_values_in(&ButlerContext {
             present: facts
                 .lines()
@@ -208,10 +208,28 @@ impl Deeper {
             clock.now(),
         )
         .ok()?;
-        let written = self.0.respond(&[ask], &[], &bare).ok()?;
-        let written = disguise.restore(written.text.trim());
-        (!written.is_empty()).then_some(written)
+        let reply = self.0.respond(&[ask], &[], &bare).ok()?;
+        let written = disguise.restore(reply.text.trim());
+        (!written.is_empty()).then_some(Worded {
+            text: written,
+            cut_short: reply.truncated,
+        })
     }
+}
+
+/// What the deep model wrote, and whether it was allowed to finish writing it.
+///
+/// The flag travels with the text because the caller's next decision depends on it:
+/// judging what a reply *left out* is only meaningful when the reply ended by
+/// choice. Text stopped at the token ceiling omits nearly everything, and reading
+/// that as deliberate omission is what put the raw brief material underneath a
+/// half-written brief.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Worded {
+    /// The prose, with the person's own values restored.
+    pub text: String,
+    /// The endpoint stopped at the token ceiling: this ends mid-thought.
+    pub cut_short: bool,
 }
 
 /// A question the person typed for the deep model themselves, checked on the way out.
