@@ -391,8 +391,48 @@ function ctxPanelHtml() {
   return `<div class="ctx-head"><strong>What is sent with each message</strong><span class="sub">~${kTokens(CTX.total_tokens)} of ${kTokens(CTX.window_tokens)} tokens · ${pct}% · estimate</span></div>` +
     `<div class="ctx-bar">${bar}</div><div class="ctx-rows">${rows}</div>` +
     `<p class="sub ctx-foot">Ask deep and the automatic re-check send the other model only your question and the skill definitions, never what a skill returned.</p>` +
+    (DEEP_MODEL.configured ? `<div class="ctx-spend" id="ctx-spend">${deepSpendHtml()}</div>` : "") +
     `<div class="ctx-actions"><button class="ghost" data-act="ctx:reset" title="Stop sending earlier messages. They stay in the chat; what Endora has learned about you is kept.">${icon("plus", 14)}<span>New topic</span></button></div>`;
 }
+// ---- what the deep model costs (ADR 0091) --------------------------------
+async function loadDeepSpend() {
+  try { DEEP_USAGE = await api("GET", "/v1/deep-model/usage"); } catch (_) { DEEP_USAGE = null; }
+  try { DEEP_BALANCE = await api("GET", "/v1/deep-model/balance"); } catch (_) { DEEP_BALANCE = null; }
+}
+const money = (n) => (n == null ? "" : "$" + (n > 0 && n < 0.01 ? n.toFixed(4) : n.toFixed(2)));
+// The provider's own balance when it has one, then what Endora's calls to the deep model have
+// used (and, once prices are set, what that comes to). Empty when there is no deep model.
+function deepSpendHtml() {
+  if (!DEEP_MODEL.configured) return "";
+  const rows = [];
+  const b = DEEP_BALANCE;
+  if (b && b.supported) {
+    if (b.error) {
+      rows.push(`<div class="spend-row warn">${esc(b.error)}</div>`);
+    } else {
+      const list = Array.isArray(b.balances) ? b.balances : [];
+      const bal = list.find((x) => x.currency === "USD") || list[0];
+      if (bal) {
+        const total = parseFloat(bal.total);
+        const low = b.available === false || (bal.currency === "USD" && total < 1);
+        const sym = bal.currency === "USD" ? "$" : bal.currency + " ";
+        rows.push(`<div class="spend-row${low ? " warn" : ""}"><span>Balance</span><b>${sym}${esc(String(bal.total))}</b>` +
+          `<em>${low ? "running low · " : ""}granted ${sym}${esc(String(bal.granted))}, topped up ${sym}${esc(String(bal.topped_up))}</em></div>`);
+      }
+    }
+  }
+  const u = DEEP_USAGE;
+  if (u && u.month) {
+    const part = (t) => `${t.calls} call${t.calls === 1 ? "" : "s"}, ${kTokens(t.prompt_tokens + t.completion_tokens)} tokens` +
+      (t.cost_usd != null ? ` (~${money(t.cost_usd)})` : "");
+    rows.push(`<div class="spend-row"><span>This month</span><b>${part(u.month)}</b><em>today: ${part(u.today)}</em></div>`);
+    if (u.month.cost_usd == null) {
+      rows.push(`<div class="spend-row sub">Set what a million tokens costs under Settings → Models → Deep to see dollars. Token counts are what the provider reported.</div>`);
+    }
+  }
+  return rows.join("");
+}
+
 function refreshContextRing() {
   const ring = document.getElementById("ctx-ring");
   if (ring) { ring.innerHTML = ctxRingSvg(); ring.title = ctxRingTitle(); }

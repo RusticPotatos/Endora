@@ -66,6 +66,20 @@ fn scripted_reply(history: &[ChatMessage]) -> ButlerReply {
     }
 }
 
+/// What a chat-completions reply says it used, in either of the two shapes providers use for
+/// cached input (`prompt_cache_hit_tokens`, or `prompt_tokens_details.cached_tokens`).
+/// `None` when the reply carries no usage at all.
+fn usage_of(reply: &Value) -> Option<endora_application::ModelUsage> {
+    let usage = reply.get("usage")?;
+    let n = |v: &Value| v.as_u64().unwrap_or(0);
+    Some(endora_application::ModelUsage {
+        prompt_tokens: n(&usage["prompt_tokens"]),
+        completion_tokens: n(&usage["completion_tokens"]),
+        cached_tokens: n(&usage["prompt_cache_hit_tokens"])
+            .max(n(&usage["prompt_tokens_details"]["cached_tokens"])),
+    })
+}
+
 /// The reply an [`LlmButler`] gives when its model can't be reached or returns
 /// something unusable. Honest about the transient failure and — deliberately —
 /// carries **no beliefs**: a degraded turn must never mutate state. It answers the
@@ -92,6 +106,8 @@ pub struct LlmButler {
     api_key: String,
     /// Sampling parameters for this model's calls.
     sampling: Sampling,
+    /// Where to note what each call used, and under which name (a paid model's calls only).
+    usage: Option<(String, Arc<dyn endora_application::UsageLog>)>,
 }
 
 /// How long to wait for the whole model round-trip before giving up and using
@@ -127,7 +143,19 @@ impl LlmButler {
             model,
             api_key,
             sampling,
+            usage: None,
         }
+    }
+
+    /// Notes what each call to this model uses, under `role` (ADR 0091).
+    #[must_use]
+    pub fn with_usage_log(
+        mut self,
+        role: &str,
+        log: Arc<dyn endora_application::UsageLog>,
+    ) -> Self {
+        self.usage = Some((role.to_owned(), log));
+        self
     }
 
     /// Asks the model and parses its reply, or an error the caller can fall back
@@ -195,6 +223,9 @@ impl LlmButler {
             .body_mut()
             .read_json()
             .map_err(|e| ProposalError::Unavailable(e.to_string()))?;
+        if let (Some((role, log)), Some(used)) = (&self.usage, usage_of(&json)) {
+            log.record(role, &self.model, used);
+        }
         parse_model_reply(&json, context)
     }
 
@@ -705,6 +736,8 @@ pub struct ConfigurableButler {
     /// calls [`deeper`](Butler::deeper). `None` in tests and in any composition that has no
     /// deep model at all.
     deep: Option<Arc<dyn DeepModelRepository + Send + Sync>>,
+    /// Where the deep model's token use is noted (ADR 0091).
+    usage: Option<Arc<dyn endora_application::UsageLog>>,
     /// The deep brain, rebuilt when its configuration changes — same shape as `cache`.
     deep_cache: Mutex<Option<(DeepModel, Arc<dyn Butler + Send + Sync>)>>,
     /// The preferred rung's brain, rebuilt when its endpoint/model change.
@@ -729,6 +762,7 @@ impl ConfigurableButler {
             fallback,
             cache: Mutex::new(None),
             deep: None,
+            usage: None,
             deep_cache: Mutex::new(None),
             preferred_cache: Mutex::new(None),
             preferred_health: Mutex::new(None),
@@ -753,6 +787,13 @@ impl ConfigurableButler {
     #[must_use]
     pub fn also_knowing(mut self, deep: Arc<dyn DeepModelRepository + Send + Sync>) -> Self {
         self.deep = Some(deep);
+        self
+    }
+
+    /// Notes what the deep model's calls use, so the person can see what the fallback costs.
+    #[must_use]
+    pub fn with_usage_log(mut self, log: Arc<dyn endora_application::UsageLog>) -> Self {
+        self.usage = Some(log);
         self
     }
 
@@ -955,12 +996,16 @@ impl Butler for ConfigurableButler {
                 return Some(endora_application::egress::Deeper::new(Arc::clone(brain)));
             }
         }
-        let brain: Arc<dyn Butler + Send + Sync> = Arc::new(LlmButler::with_config(
+        let mut llm = LlmButler::with_config(
             config.url.clone(),
             config.model.clone(),
             config.api_key.clone(),
             endora_application::Sampling::default(),
-        ));
+        );
+        if let Some(log) = &self.usage {
+            llm = llm.with_usage_log("deep", Arc::clone(log));
+        }
+        let brain: Arc<dyn Butler + Send + Sync> = Arc::new(llm);
         *cache = Some((config, Arc::clone(&brain)));
         Some(endora_application::egress::Deeper::new(brain))
     }
@@ -1157,6 +1202,27 @@ pub fn ask_deep_model(
     } else {
         Ok(answer)
     }
+}
+
+/// What a provider says is left on the account, as its own JSON. Only DeepSeek publishes such a
+/// call (`GET /user/balance`), so the caller decides which hosts to ask; this does not guess.
+///
+/// # Errors
+/// A plain-language reason when the provider cannot be reached or does not answer in JSON.
+pub fn provider_balance(host: &str, api_key: &str) -> Result<Value, String> {
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .timeout_global(Some(std::time::Duration::from_secs(10)))
+        .build()
+        .into();
+    let mut response = agent
+        .get(&format!("https://{host}/user/balance"))
+        .header("Authorization", &format!("Bearer {api_key}"))
+        .call()
+        .map_err(|e| e.to_string())?;
+    response
+        .body_mut()
+        .read_json::<Value>()
+        .map_err(|e| e.to_string())
 }
 
 /// Transcribes recorded audio via an OpenAI-compatible speech-to-text endpoint
@@ -1786,6 +1852,28 @@ fn strip_code_fence(s: &str) -> &str {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn usage_is_read_in_either_providers_shape_and_absent_when_not_reported() {
+        let deepseek = serde_json::json!({"usage": {
+            "prompt_tokens": 1200, "completion_tokens": 80, "prompt_cache_hit_tokens": 1000}});
+        let openai = serde_json::json!({"usage": {
+            "prompt_tokens": 500, "completion_tokens": 20,
+            "prompt_tokens_details": {"cached_tokens": 256}}});
+        let bare = serde_json::json!({"choices": []});
+
+        let d = super::usage_of(&deepseek).unwrap();
+        assert_eq!(
+            (d.prompt_tokens, d.completion_tokens, d.cached_tokens),
+            (1200, 80, 1000)
+        );
+        let o = super::usage_of(&openai).unwrap();
+        assert_eq!(
+            (o.prompt_tokens, o.completion_tokens, o.cached_tokens),
+            (500, 20, 256)
+        );
+        assert!(super::usage_of(&bare).is_none());
+    }
+
     use super::{
         LlmButler, ScriptedButler, build_butler_request, build_turn_request, extract_json_object,
         extract_reply_preview, parse_butler_json, parse_butler_response, parse_model_reply,

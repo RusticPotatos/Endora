@@ -314,3 +314,11 @@
   .ctx-actions { display: flex; justify-content: flex-end; }
   .topic-divider { display: flex; align-items: center; gap: 10px; margin: 18px 0 6px; color: var(--muted); font-size: 12px; }
   .topic-divider::before, .topic-divider::after { content: ""; flex: 1; border-top: 1px solid var(--line); }
+
+  /* What the deep model costs: the provider's balance, then what Endora's calls have used. */
+  .ctx-spend { margin-top: 8px; padding-top: 8px; border-top: 1px dashed var(--line); font-size: 13px; }
+  .ctx-spend:empty { display: none; }
+  .spend-row { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; padding: 2px 0; }
+  .spend-row span { color: var(--muted); min-width: 5.5em; }
+  .spend-row em { font-style: normal; color: var(--muted); font-size: 12px; }
+  .spend-row.warn b, .spend-row.warn { color: var(--warn); }

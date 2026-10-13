@@ -434,6 +434,48 @@ pub trait ConversationSummaryStore {
     fn set(&self, summary: ConversationSummary);
 }
 
+/// What one model call used, as the provider reported it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ModelUsage {
+    /// Tokens sent in (cached ones included).
+    pub prompt_tokens: u64,
+    /// Tokens generated.
+    pub completion_tokens: u64,
+    /// Of the prompt, how many the provider served from its cache (cheaper), when it says.
+    pub cached_tokens: u64,
+}
+
+/// A running total of model calls.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct UsageTotals {
+    /// How many calls.
+    pub calls: u64,
+    /// Prompt tokens across them.
+    pub prompt_tokens: u64,
+    /// Generated tokens across them.
+    pub completion_tokens: u64,
+    /// Cached prompt tokens across them.
+    pub cached_tokens: u64,
+}
+
+/// One recorded call.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UsageRow {
+    /// When it happened.
+    pub at_ms: i64,
+    /// Which model.
+    pub model: String,
+    /// What it used.
+    pub usage: ModelUsage,
+}
+
+/// Somewhere to record what a paid model's calls used (ADR 0091). Recording must never fail a
+/// turn, so it returns nothing.
+pub trait UsageLog: Send + Sync {
+    /// Notes one call by `role` (for example `"deep"`) to `model`.
+    fn record(&self, role: &str, model: &str, usage: ModelUsage);
+}
+
 /// What a message needs, as judged by [`Butler::classify_need`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NeedKind {

@@ -541,6 +541,99 @@ async fn the_chat_says_what_it_would_send_and_a_new_topic_stops_sending_the_past
     assert_eq!(after["context_from_ms"].as_i64().unwrap(), at);
 }
 
+#[test]
+fn the_first_of_the_month_is_found_for_any_moment_in_it() {
+    // 2026-10-12 19:00 UTC and 2026-10-01 00:00:00 UTC exactly, plus a leap-year February.
+    assert_eq!(
+        super::models::month_start_ms(1_791_831_600_000),
+        1_790_812_800_000
+    );
+    assert_eq!(
+        super::models::month_start_ms(1_790_812_800_000),
+        1_790_812_800_000
+    );
+    // 2028-02-29 12:00 UTC -> 2028-02-01
+    assert_eq!(
+        super::models::month_start_ms(1_835_438_400_000),
+        1_832_976_000_000
+    );
+}
+
+#[tokio::test]
+async fn the_deep_models_use_is_counted_and_priced_once_prices_are_known() {
+    use endora_application::UsageLog as _;
+    let state = test_state();
+    state.store.record(
+        "deep",
+        "some-model",
+        endora_application::ModelUsage {
+            prompt_tokens: 1_000_000,
+            completion_tokens: 500_000,
+            cached_tokens: 400_000,
+        },
+    );
+    state.store.record(
+        "local",
+        "other",
+        endora_application::ModelUsage {
+            prompt_tokens: 9,
+            completion_tokens: 9,
+            cached_tokens: 0,
+        },
+    );
+
+    let before = json_body(
+        app(state.clone())
+            .oneshot(get("/v1/deep-model/usage"))
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(before["month"]["calls"], 1, "only the deep model's calls");
+    assert_eq!(before["month"]["prompt_tokens"], 1_000_000);
+    assert!(
+        before["month"]["cost_usd"].is_null(),
+        "no prices, no dollar figure"
+    );
+
+    let saved = app(state.clone())
+        .oneshot(post(
+            "/v1/deep-model/prices",
+            r#"{"input":0.30,"output":1.20,"cached":0.03}"#,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(saved.status(), StatusCode::OK);
+
+    let after = json_body(
+        app(state.clone())
+            .oneshot(get("/v1/deep-model/usage"))
+            .await
+            .unwrap(),
+    )
+    .await;
+    // 600k fresh * 0.30 + 400k cached * 0.03 + 500k out * 1.20, per million.
+    let cost = after["month"]["cost_usd"].as_f64().unwrap();
+    assert!((cost - (0.18 + 0.012 + 0.60)).abs() < 1e-9, "{cost}");
+    assert_eq!(after["recent"][0]["model"], "some-model");
+
+    let bad = app(state.clone())
+        .oneshot(post("/v1/deep-model/prices", r#"{"input":-1}"#))
+        .await
+        .unwrap();
+    assert_eq!(bad.status(), StatusCode::BAD_REQUEST);
+
+    // No deep model configured: the balance says so rather than guessing.
+    let balance = json_body(
+        app(state)
+            .oneshot(get("/v1/deep-model/balance"))
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(balance["supported"], false);
+}
+
 #[tokio::test]
 async fn an_unsigned_request_gets_nothing() {
     // The hole this exists for: every one of these answered anyone who could reach the

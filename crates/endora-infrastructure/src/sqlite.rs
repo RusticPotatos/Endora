@@ -190,6 +190,15 @@ CREATE TABLE IF NOT EXISTS model_tune_schedule (
     hour_utc INTEGER NOT NULL,
     last_ms  INTEGER NOT NULL
 ) STRICT;
+CREATE TABLE IF NOT EXISTS model_usage (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    at_ms      INTEGER NOT NULL,
+    role       TEXT NOT NULL,
+    model      TEXT NOT NULL,
+    prompt     INTEGER NOT NULL,
+    completion INTEGER NOT NULL,
+    cached     INTEGER NOT NULL
+) STRICT;
 CREATE TABLE IF NOT EXISTS events (
     id      INTEGER PRIMARY KEY AUTOINCREMENT,
     at_ms   INTEGER NOT NULL,
@@ -892,6 +901,94 @@ impl SqliteStore {
                 },
             )
             .collect()
+    }
+}
+
+impl endora_application::UsageLog for SqliteStore {
+    fn record(&self, role: &str, model: &str, usage: endora_application::ModelUsage) {
+        let at_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX));
+        // Best effort: bookkeeping must never fail the turn it describes.
+        if let Ok(conn) = self.lock() {
+            let _ = conn.execute(
+                "INSERT INTO model_usage (at_ms, role, model, prompt, completion, cached)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![
+                    at_ms,
+                    role,
+                    model,
+                    i64::try_from(usage.prompt_tokens).unwrap_or(i64::MAX),
+                    i64::try_from(usage.completion_tokens).unwrap_or(i64::MAX),
+                    i64::try_from(usage.cached_tokens).unwrap_or(i64::MAX),
+                ],
+            );
+        }
+    }
+}
+
+impl SqliteStore {
+    /// What `role`'s model calls have used since `since_ms`.
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if the database cannot be read.
+    pub fn model_usage_totals(
+        &self,
+        role: &str,
+        since_ms: i64,
+    ) -> Result<endora_application::UsageTotals, RepositoryError> {
+        let conn = self.lock()?;
+        let (calls, prompt, completion, cached): (i64, i64, i64, i64) = conn
+            .query_row(
+                "SELECT COUNT(*), COALESCE(SUM(prompt),0), COALESCE(SUM(completion),0),
+                        COALESCE(SUM(cached),0)
+                 FROM model_usage WHERE role=?1 AND at_ms>=?2",
+                params![role, since_ms],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .map_err(backend)?;
+        let n = |v: i64| u64::try_from(v).unwrap_or(0);
+        Ok(endora_application::UsageTotals {
+            calls: n(calls),
+            prompt_tokens: n(prompt),
+            completion_tokens: n(completion),
+            cached_tokens: n(cached),
+        })
+    }
+
+    /// The most recent calls by `role`, newest first.
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if the database cannot be read.
+    pub fn recent_model_usage(
+        &self,
+        role: &str,
+        limit: usize,
+    ) -> Result<Vec<endora_application::UsageRow>, RepositoryError> {
+        let conn = self.lock()?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT at_ms, model, prompt, completion, cached FROM model_usage
+                 WHERE role=?1 ORDER BY id DESC LIMIT ?2",
+            )
+            .map_err(backend)?;
+        let rows = stmt
+            .query_map(params![role, i64::try_from(limit).unwrap_or(50)], |r| {
+                let n = |v: i64| u64::try_from(v).unwrap_or(0);
+                Ok(endora_application::UsageRow {
+                    at_ms: r.get(0)?,
+                    model: r.get(1)?,
+                    usage: endora_application::ModelUsage {
+                        prompt_tokens: n(r.get(2)?),
+                        completion_tokens: n(r.get(3)?),
+                        cached_tokens: n(r.get(4)?),
+                    },
+                })
+            })
+            .map_err(backend)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(backend)?;
+        Ok(rows)
     }
 }
 

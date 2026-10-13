@@ -580,6 +580,43 @@ if (keys.length !== 3 || keys[0] !== keys[1] || keys[0] === keys[2]) {
   console.log("chat: the window ring, the inspector and the new-topic divider render");
 }
 
+// What the deep model costs (ADR 0091): the provider's balance when it has one, a warning when
+// it runs low, what Endora's calls have used, and dollars only once prices are known. Nothing a
+// provider says is trusted as markup.
+{
+  runInContext(`DEEP_MODEL = { configured: true, url: "https://api.deepseek.com/v1", model: "m", key_set: true };
+    DEEP_BALANCE = { supported: true, available: true,
+      balances: [{ currency: "USD", total: "0.42", granted: "0.00", topped_up: "<b>0.42</b>" }] };
+    DEEP_USAGE = { today: { calls: 2, prompt_tokens: 3000, completion_tokens: 500, cached_tokens: 0, cost_usd: null },
+      month: { calls: 9, prompt_tokens: 30000, completion_tokens: 8200, cached_tokens: 0, cost_usd: null },
+      recent: [], prices: { input: null, output: null, cached: null } };`, context);
+  const low = runInContext("deepSpendHtml()", context);
+  if (!low.includes("$0.42") || !low.includes("running low") || !low.includes("spend-row warn")) {
+    console.error(`deep spend: a balance under a dollar is not shown as low: ${low}`);
+    process.exit(1);
+  }
+  if (low.includes("<b>0.42</b>")) {
+    console.error("deep spend: text from the provider became markup");
+    process.exit(1);
+  }
+  if (!low.includes("9 calls, 38k tokens") || !low.includes("Set what a million tokens costs")) {
+    console.error(`deep spend: usage or the prompt to set prices is missing: ${low}`);
+    process.exit(1);
+  }
+  runInContext(`DEEP_USAGE.month.cost_usd = 0.0213; DEEP_USAGE.today.cost_usd = 0.004; DEEP_BALANCE = { supported: false };`, context);
+  const priced = runInContext("deepSpendHtml()", context);
+  if (!priced.includes("~$0.02") || priced.includes("Balance") || priced.includes("Set what a million")) {
+    console.error(`deep spend: a priced month, or a provider with no balance, renders wrongly: ${priced}`);
+    process.exit(1);
+  }
+  runInContext("DEEP_MODEL = { configured: false }; DEEP_USAGE = null; DEEP_BALANCE = null;", context);
+  if (runInContext("deepSpendHtml()", context) !== "") {
+    console.error("deep spend: something is shown when there is no deep model");
+    process.exit(1);
+  }
+  console.log("deep spend: balance, low warning, usage and prices render, and nothing without a deep model");
+}
+
 // Butler prose renders lightly, and nothing it carries can become markup.
 //
 // The brief's news section hands the chat 200-character URLs; rendered raw they

@@ -426,6 +426,9 @@ pub fn app(state: AppState) -> Router {
             get(get_nightly_loop_schedule).post(set_nightly_loop_schedule),
         )
         .route("/v1/deep-model", get(get_deep_model).post(set_deep_model))
+        .route("/v1/deep-model/usage", get(deep_usage))
+        .route("/v1/deep-model/balance", get(deep_balance))
+        .route("/v1/deep-model/prices", post(set_deep_prices))
         .route(
             "/v1/model-config",
             get(get_model_config).post(set_model_config),

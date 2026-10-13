@@ -327,6 +327,9 @@ async function reload() {
   // What the next message would send. Only asked for on the chat, since it builds the same
   // context a turn does.
   if (NAV.v === "chat") { try { CTX = await api("GET", "/v1/chat/context"); } catch (_) { CTX = null; } }
+  // What the deep model has cost, and what is left. The balance asks the provider, so it is
+  // fetched only on the screens that show it, never on a timer.
+  if ((NAV.v === "models" || NAV.v === "settings") && DEEP_MODEL.configured) { await loadDeepSpend(); }
   try { RECIPES = await api("GET", "/v1/recipes"); } catch (_) { RECIPES = []; }
   DB = db;
   // Attach each butler reply's persisted action trail (steps + sources) from the

@@ -192,6 +192,7 @@ of an existing record and take the next number.
 | [0088](0088-say-what-is-sent-to-the-model-and-let-a-topic-end.md) | Say what is sent to the model, and let a topic end | — |
 | [0089](0089-a-model-sorts-the-message-not-a-word-list.md) | The local model sorts the message, not a word list | — |
 | [0090](0090-skills-are-sent-once.md) | Skills are sent once | — |
+| [0091](0091-what-the-deep-model-costs.md) | What the deep model costs | — |
 
 The forty-eight decisions these consolidate are in [archive/](archive/) — kept in full,
 because the reasoning that produced a rule is the reason it survives an argument later.

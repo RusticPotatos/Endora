@@ -83,7 +83,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // local one fails a deterministic check, and only if the person turned that on (ADR
     // 0055). `ConfigStore` is both repositories, so this is the same handle.
     let brain = Arc::new(
-        ConfigurableButler::new(model_config.clone(), fallback).also_knowing(model_config),
+        ConfigurableButler::new(model_config.clone(), fallback)
+            .also_knowing(model_config)
+            .with_usage_log(store.clone()),
     );
     let butler: Arc<dyn Butler + Send + Sync> = brain.clone();
 

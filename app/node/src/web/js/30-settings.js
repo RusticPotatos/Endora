@@ -382,6 +382,18 @@ function modelsSection() {
         <span>Let Endora <b>use this on its own</b> — to fall back when the local model can't answer, and to word your daily brief.</span>
       </label>
       <div class="sub" style="margin:-6px 0 2px;">Off by default. In chat the local model is always tried first, three times, and when this steps in the reply says so. Your name, place names and appointment titles are swapped for placeholders before anything leaves and put back here — but <b>the shape of your day still goes out</b>: that you have something at 6:30, that the house is empty. Nothing else travels: no beliefs, no device names.</div>
+      <div class="field"><label>Balance and use</label>
+        <div id="deep-spend" class="ctx-spend">${deepSpendHtml() || '<span class="sub">Nothing used yet.</span>'}</div>
+        <div class="row" style="justify-content:flex-end;"><button class="ghost" data-act="deepspend:refresh" style="font-size:13px;">Refresh</button></div></div>
+      <details class="adv"><summary>Prices, to show dollars</summary>
+        <div class="sub" style="margin:4px 0 8px;">What a million tokens costs, in US dollars, from your provider's price page. Endora does not know any provider's prices, so a dollar figure only appears once you set these. Leave one blank to clear it.</div>
+        <div class="sampling-row">
+          <label>Input<input id="d-price-in" inputmode="decimal" placeholder="e.g. 0.30" value="${esc(DEEP_USAGE && DEEP_USAGE.prices && DEEP_USAGE.prices.input != null ? DEEP_USAGE.prices.input : "")}" /></label>
+          <label>Output<input id="d-price-out" inputmode="decimal" placeholder="e.g. 1.20" value="${esc(DEEP_USAGE && DEEP_USAGE.prices && DEEP_USAGE.prices.output != null ? DEEP_USAGE.prices.output : "")}" /></label>
+          <label>Cached input<input id="d-price-cached" inputmode="decimal" placeholder="optional" value="${esc(DEEP_USAGE && DEEP_USAGE.prices && DEEP_USAGE.prices.cached != null ? DEEP_USAGE.prices.cached : "")}" /></label>
+        </div>
+        <div class="row" style="justify-content:flex-end;margin-top:6px;"><button class="ghost" data-act="deepprices:save" style="font-size:13px;">Save prices</button></div>
+      </details>
       <div class="row" style="justify-content:flex-end;"><button class="primary" data-act="deepsave">Save deep</button></div>
     </div>
     </details>

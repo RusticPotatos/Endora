@@ -127,8 +127,32 @@ async function dispatch(act) {
       CTX_OPEN = !CTX_OPEN;
       const panel = document.getElementById("ctx-panel");
       if (panel) panel.hidden = !CTX_OPEN;
-      if (CTX_OPEN) { try { CTX = await api("GET", "/v1/chat/context"); refreshContextRing(); } catch (_) {} }
+      if (CTX_OPEN) {
+        try { CTX = await api("GET", "/v1/chat/context"); } catch (_) {}
+        if (DEEP_MODEL.configured) await loadDeepSpend();
+        refreshContextRing();
+      }
       return;
+    }
+    if (verb === "deepspend" && noun === "refresh") {
+      await loadDeepSpend();
+      const box = document.getElementById("deep-spend");
+      if (box) box.innerHTML = deepSpendHtml() || '<span class="sub">Nothing used yet.</span>';
+      return;
+    }
+    if (verb === "deepprices" && noun === "save") {
+      const num = (id) => {
+        const v = ((document.getElementById(id) || {}).value || "").trim();
+        return v === "" ? null : Number(v);
+      };
+      const body = { input: num("d-price-in"), output: num("d-price-out"), cached: num("d-price-cached") };
+      if (Object.values(body).some((v) => v !== null && !Number.isFinite(v))) {
+        flash("A price is a number, like 0.30.", "err");
+        return;
+      }
+      await api("POST", "/v1/deep-model/prices", body);
+      flash("Prices saved.", "ok");
+      return reload();
     }
     if (verb === "ctx" && noun === "reset") {
       await api("POST", "/v1/chat/context/reset");

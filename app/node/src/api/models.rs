@@ -540,7 +540,8 @@ pub(super) async fn deep_ask(
                 cfg.model.clone(),
                 cfg.api_key.clone(),
                 endora_application::Sampling::default(),
-            ),
+            )
+            .with_usage_log("deep", store.clone()),
         ));
         let planned =
             endora_application::deep_turn::PlannedByTheDeepModel::new(&deep, butler.as_ref());
@@ -660,4 +661,222 @@ pub(super) async fn set_nightly_loop_schedule(
     .await?;
     let _ = state.changes.send(());
     Ok(Json(nightly_loop_schedule_json(&s)))
+}
+
+// ---- what the deep model costs (ADR 0091) ----------------------------------
+
+/// Midnight UTC on the first of the month containing `now_ms`.
+pub(super) fn month_start_ms(now_ms: i64) -> i64 {
+    const DAY_MS: i64 = 86_400_000;
+    // Days since 1970-01-01 -> civil date, and back for the first of that month.
+    let z = now_ms.div_euclid(DAY_MS) + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = yoe + era * 400 + i64::from(month <= 2);
+    let y = year - i64::from(month <= 2);
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let doy = (153 * (if month > 2 { month - 3 } else { month + 9 }) + 2) / 5;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    (era * 146_097 + doe - 719_468) * DAY_MS
+}
+
+/// What the person says a million tokens cost, in US dollars. Endora does not know any
+/// provider's prices, so a cost is only shown once these are set.
+#[derive(Clone, Copy, Default)]
+pub(super) struct DeepPrices {
+    pub(super) input: Option<f64>,
+    pub(super) output: Option<f64>,
+    pub(super) cached: Option<f64>,
+}
+
+impl DeepPrices {
+    fn read(config: &endora_capabilities::ConfigStore) -> Self {
+        let settings = settings_map(config);
+        let get = |key: &str| {
+            settings
+                .get("deep_model")
+                .and_then(|m| m.get(key))
+                .and_then(|v| v.parse::<f64>().ok())
+                .filter(|v| v.is_finite() && *v >= 0.0)
+        };
+        Self {
+            input: get("price_input"),
+            output: get("price_output"),
+            cached: get("price_cached"),
+        }
+    }
+
+    /// Dollars for these totals, or `None` until input and output prices are known. Cached
+    /// input is billed at its own price when one is set, otherwise as ordinary input.
+    pub(super) fn cost_usd(&self, t: &endora_application::UsageTotals) -> Option<f64> {
+        let (input, output) = (self.input?, self.output?);
+        let cached_price = self.cached.unwrap_or(input);
+        let fresh = t.prompt_tokens.saturating_sub(t.cached_tokens);
+        Some(
+            (fresh as f64 * input
+                + t.cached_tokens as f64 * cached_price
+                + t.completion_tokens as f64 * output)
+                / 1_000_000.0,
+        )
+    }
+}
+
+fn totals_json(t: &endora_application::UsageTotals, prices: &DeepPrices) -> serde_json::Value {
+    json!({
+        "calls": t.calls,
+        "prompt_tokens": t.prompt_tokens,
+        "completion_tokens": t.completion_tokens,
+        "cached_tokens": t.cached_tokens,
+        "cost_usd": prices.cost_usd(t),
+    })
+}
+
+/// What the deep model's calls have used: today, this month, and the latest few.
+pub(super) async fn deep_usage(
+    State(state): State<AppState>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let store = state.store.clone();
+    let config = state.config.clone();
+    let clock = state.clock.clone();
+    let out = blocking(move || {
+        use endora_application::Clock as _;
+        let now = clock.now().unix_millis();
+        let prices = DeepPrices::read(config.as_ref());
+        let day = store
+            .model_usage_totals("deep", now - now.rem_euclid(86_400_000))
+            .map_err(AppError::Repository)?;
+        let month = store
+            .model_usage_totals("deep", month_start_ms(now))
+            .map_err(AppError::Repository)?;
+        let recent = store
+            .recent_model_usage("deep", 12)
+            .map_err(AppError::Repository)?;
+        Ok::<_, AppError>(json!({
+            "today": totals_json(&day, &prices),
+            "month": totals_json(&month, &prices),
+            "recent": recent.iter().map(|r| json!({
+                "at_ms": r.at_ms,
+                "model": r.model,
+                "prompt_tokens": r.usage.prompt_tokens,
+                "completion_tokens": r.usage.completion_tokens,
+                "cached_tokens": r.usage.cached_tokens,
+                "cost_usd": prices.cost_usd(&endora_application::UsageTotals {
+                    calls: 1,
+                    prompt_tokens: r.usage.prompt_tokens,
+                    completion_tokens: r.usage.completion_tokens,
+                    cached_tokens: r.usage.cached_tokens,
+                }),
+            })).collect::<Vec<_>>(),
+            "prices": { "input": prices.input, "output": prices.output, "cached": prices.cached },
+        }))
+    })
+    .await?;
+    Ok(Json(out))
+}
+
+#[derive(Deserialize)]
+pub(super) struct DeepPricesRequest {
+    input: Option<f64>,
+    output: Option<f64>,
+    cached: Option<f64>,
+}
+
+/// Stores what a million tokens cost, so a dollar figure can be shown. Blank clears one.
+pub(super) async fn set_deep_prices(
+    State(state): State<AppState>,
+    Json(req): Json<DeepPricesRequest>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    for v in [req.input, req.output, req.cached].into_iter().flatten() {
+        if !v.is_finite() || !(0.0..=10_000.0).contains(&v) {
+            return Err(ApiError(AppError::BadRequest {
+                message: "a price per million tokens is a number from 0 to 10000".to_owned(),
+            }));
+        }
+    }
+    let config = state.config.clone();
+    blocking(move || {
+        for (key, value) in [
+            ("price_input", req.input),
+            ("price_output", req.output),
+            ("price_cached", req.cached),
+        ] {
+            config
+                .set_setting(
+                    "deep_model",
+                    key,
+                    &value.map_or_else(String::new, |v| v.to_string()),
+                )
+                .map_err(AppError::Repository)?;
+        }
+        Ok::<_, AppError>(())
+    })
+    .await?;
+    Ok(Json(json!({ "ok": true })))
+}
+
+/// How long a fetched balance is reused, so opening two screens in a row asks the provider once.
+const BALANCE_REUSED_FOR: std::time::Duration = std::time::Duration::from_secs(30);
+
+static LAST_BALANCE: std::sync::Mutex<Option<(std::time::Instant, String, serde_json::Value)>> =
+    std::sync::Mutex::new(None);
+
+/// What the deep model's provider says is left on the account. Only DeepSeek publishes a
+/// balance endpoint, so for any other provider this says so and the local usage log is what
+/// there is. Asked when the person opens a screen that shows it, never on a timer.
+pub(super) async fn deep_balance(
+    State(state): State<AppState>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let config = state.config.clone();
+    let out = blocking(move || {
+        let Some(cfg) = DeepModelRepository::get(config.as_ref()).map_err(AppError::Repository)?
+        else {
+            return Ok::<_, AppError>(json!({ "supported": false, "reason": "no deep model" }));
+        };
+        let host = cfg
+            .url
+            .split("://")
+            .nth(1)
+            .and_then(|rest| rest.split('/').next())
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        if cfg.url.is_empty() || !(host == "api.deepseek.com" || host.ends_with(".deepseek.com")) {
+            return Ok(
+                json!({ "supported": false, "reason": "this provider has no balance lookup" }),
+            );
+        }
+        if let Ok(last) = LAST_BALANCE.lock() {
+            if let Some((at, url, body)) = last.as_ref() {
+                if url == &cfg.url && at.elapsed() < BALANCE_REUSED_FOR {
+                    return Ok(body.clone());
+                }
+            }
+        }
+        let answer = endora_infrastructure::provider_balance(&host, &cfg.api_key);
+        let body = match answer {
+            Ok(v) => json!({
+                "supported": true,
+                "available": v["is_available"],
+                "balances": v["balance_infos"].as_array().map(|list| list.iter().map(|b| json!({
+                    "currency": b["currency"],
+                    "total": b["total_balance"],
+                    "granted": b["granted_balance"],
+                    "topped_up": b["topped_up_balance"],
+                })).collect::<Vec<_>>()).unwrap_or_default(),
+            }),
+            Err(why) => {
+                json!({ "supported": true, "error": format!("couldn't read the balance: {why}") })
+            }
+        };
+        if let Ok(mut last) = LAST_BALANCE.lock() {
+            *last = Some((std::time::Instant::now(), cfg.url.clone(), body.clone()));
+        }
+        Ok(body)
+    })
+    .await?;
+    Ok(Json(out))
 }

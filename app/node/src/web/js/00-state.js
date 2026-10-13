@@ -50,6 +50,8 @@ let WORTH_KNOWING = { models: [], fits_gb: 12, asked: false }; // hub models tha
 let CHAT_DAY = null;           // which day's conversation is showing; null = today
 let CHAT_MSGS = [];            // just that day's messages, fetched rather than filtered
 let CTX = null;                // what the next message would send, and how full the window is (ADR 0088)
+let DEEP_USAGE = null;         // what the deep model's calls have used, and what that costs if priced (ADR 0091)
+let DEEP_BALANCE = null;       // what the deep model's provider says is left, when it can say
 let CTX_OPEN = false;          // whether the inspector is showing
 let CHAT_DAYS = [];            // [{day, messages}] — which days have anything, for the bar
 let LAST_VIEW = null;          // which screen was showing, so a change can reset the scroll
