@@ -1749,15 +1749,36 @@ fn parse_one_tool_call(call: &Value, context: &ButlerContext) -> endora_applicat
 /// always obey "output ONLY JSON" — they may wrap it in a code fence or emit prose
 /// *around* the JSON envelope. So: try a strict parse, else extract the first
 /// balanced `{…}` object and parse that (dropping any surrounding prose so the raw
-/// envelope never leaks into the reply). Only if there is no parseable object at
-/// all does the plain text become the reply.
+/// envelope never leaks into the reply), else — when the envelope was truncated and
+/// never closed — recover the `reply` field up to the cut. Only when there is no
+/// envelope at all does the plain text become the reply.
+///
+/// The ordering matters: truncation recovery is last, so it can never override a
+/// well-formed envelope's `reply`, and it fires only where the alternative is
+/// showing the person raw JSON.
 fn parse_butler_json(content: &str) -> ButlerReply {
     let cleaned = strip_code_fence(content.trim());
     let value = serde_json::from_str::<Value>(cleaned).ok().or_else(|| {
         extract_json_object(cleaned).and_then(|obj| serde_json::from_str::<Value>(&obj).ok())
     });
     let Some(value) = value else {
-        // No JSON envelope anywhere — treat the prose itself as the reply.
+        // Nothing parseable. Before falling back to the prose itself, try to
+        // recover a *truncated* envelope: generation is bounded, so a long reply
+        // can be severed mid-string, leaving JSON that will never parse and has no
+        // balanced object to extract — while the `reply` field is perfectly good up
+        // to the cut. Seen live on the morning brief, where the person read
+        // `{"reply":"Good morning …` with literal escapes, trailing off mid-word.
+        //
+        // This is the same reader the stream already uses to preview the reply as
+        // it arrives, so the recovered text is what they were being shown anyway.
+        let recovered = extract_reply_preview(cleaned);
+        if !recovered.trim().is_empty() {
+            return ButlerReply {
+                text: recovered.trim().to_owned(),
+                ..ButlerReply::default()
+            };
+        }
+        // No envelope anywhere — treat the prose itself as the reply.
         return ButlerReply {
             text: content.trim().to_owned(),
             ..ButlerReply::default()
@@ -2521,6 +2542,55 @@ mod tests {
             "the JSON envelope leaked: {}",
             reply.text
         );
+    }
+
+    #[test]
+    fn a_truncated_envelope_does_not_leak_raw_json_into_the_reply() {
+        // Seen live on the deployed node: the morning brief's envelope was cut off
+        // mid-string by the generation bound, so the strict parse failed, there was
+        // no balanced object for `extract_json_object` to find, and the raw JSON
+        // became the reply. The person read `{"reply":"Good morning …` in the chat,
+        // with literal \n escapes, trailing off mid-sentence.
+        //
+        // The envelope is recoverable even when it never closes: everything up to
+        // the cut is a complete, well-formed reply string, which is exactly what
+        // the streaming preview already reads.
+        let truncated = "{\"reply\":\"Good morning — here's your brief.\\n\\n\
+             Today's brief covers what's around the house.\\n\\n\
+             **Weather**\\nCharlotte: fog, 11°C / 53°F as of 7:00 AM.\\n\\n\
+             **News**\\n1. Match Preview: D.C. United at Charlotte FC (https";
+        let reply = parse_butler_json(truncated);
+
+        assert!(
+            !reply.text.contains("{\"reply\""),
+            "the raw envelope leaked: {}",
+            reply.text
+        );
+        assert!(
+            !reply.text.contains("\\n"),
+            "escapes must be unescaped, not shown literally: {}",
+            reply.text
+        );
+        assert!(
+            reply.text.starts_with("Good morning"),
+            "what did arrive is still worth showing: {}",
+            reply.text
+        );
+        assert!(
+            reply.text.contains("\n\nToday's brief"),
+            "real newlines: {:?}",
+            reply.text
+        );
+        // The part that did arrive is kept; only the severed tail is lost.
+        assert!(reply.text.contains("Charlotte: fog"), "{}", reply.text);
+    }
+
+    #[test]
+    fn prose_with_no_envelope_is_still_the_reply() {
+        // The recovery must not swallow the ordinary case: a model that answers in
+        // plain prose has no "reply" key, and its words are the answer.
+        let reply = parse_butler_json("No JSON at all, just an answer.");
+        assert_eq!(reply.text, "No JSON at all, just an answer.");
     }
 
     #[test]
