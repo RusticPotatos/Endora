@@ -34,6 +34,25 @@ pub(super) async fn console_css() -> impl axum::response::IntoResponse {
     )
 }
 
+/// The console's script, in the order it is joined. The parts share one global scope exactly
+/// as the single file did (they are concatenated, not loaded as modules), so each is a slice of
+/// the old `app.js`, cut at a top-level boundary. `scripts/check-console.mjs` joins the same
+/// files in the same order.
+const CONSOLE_SCRIPT_PARTS: [&str; 9] = [
+    include_str!("../web/js/00-state.js"),
+    include_str!("../web/js/10-core.js"),
+    include_str!("../web/js/20-chat.js"),
+    include_str!("../web/js/30-settings.js"),
+    include_str!("../web/js/40-skills.js"),
+    include_str!("../web/js/50-views.js"),
+    include_str!("../web/js/60-chat-actions.js"),
+    include_str!("../web/js/70-dispatch.js"),
+    include_str!("../web/js/80-boot.js"),
+];
+
+static CONSOLE_SCRIPT: std::sync::LazyLock<String> =
+    std::sync::LazyLock::new(|| CONSOLE_SCRIPT_PARTS.concat());
+
 /// The console's script (embedded). Immutable per build (see [`console_css`]).
 pub(super) async fn console_js() -> impl axum::response::IntoResponse {
     (
@@ -47,7 +66,7 @@ pub(super) async fn console_js() -> impl axum::response::IntoResponse {
                 "public, max-age=31536000, immutable",
             ),
         ],
-        include_str!("../web/app.js"),
+        CONSOLE_SCRIPT.as_str(),
     )
 }
 

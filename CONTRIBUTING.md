@@ -88,7 +88,7 @@ Rust half is enforced by the compiler; the console has no type checker and no li
 to a function that had been deleted stayed syntactically perfect, passed `node --check`,
 passed CI, passed the smoke tier — and rendered a blank page on a phone.
 
-`make console-check` loads `app.js` and **calls every screen**. Two things make it work:
+`make console-check` loads the console script (`app/node/src/web/js/*.js`, joined in file-name order exactly as the node serves it) and **calls every screen**. Two things make it work:
 
 - **Execution, not parsing.** A regex hunting "called but never defined" cannot be made sound
   — a JavaScript regex literal like `/https?:\/\//` reads as a line comment to a naive

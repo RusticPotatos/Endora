@@ -22,14 +22,20 @@
 // unknown global would make everything pass, including the exact failure this is here to
 // catch. If a real browser global is missing, this reports it by name and it gets added.
 
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { createContext, runInContext } from "node:vm";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 
 const here = dirname(fileURLToPath(import.meta.url));
-const appJs = resolve(here, "../app/node/src/web/app.js");
-const source = readFileSync(appJs, "utf8");
+// The console is a set of ordered parts that the node concatenates into one script (they share a
+// single global scope, as the one file did). Join them the same way: by file name, in order.
+const jsDir = resolve(here, "../app/node/src/web/js");
+const source = readdirSync(jsDir)
+  .filter((name) => name.endsWith(".js"))
+  .sort()
+  .map((name) => readFileSync(resolve(jsDir, name), "utf8"))
+  .join("");
 
 /** A DOM node that answers anything the renderers ask of it, without pretending to render. */
 const element = () => ({

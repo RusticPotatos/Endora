@@ -180,4 +180,4 @@ why it is last.
 | 4 Smaller prompt | Skills are sent once (ADR 0090), tool choice unchanged within noise. Turning off unused tools and nominating Brave is the person's |
 | 5 Loose ends | Placeholders in skill inputs fixed; `make evals` added; the streaming flash is an accepted, documented limit. The Mac copy of ansible-nas has 2 unpushed commits that conflict with upstream: needs the person's decision |
 | 6 Docs | Done |
-| 7 Split the large files | Not started; last, and the only deploy |
+| 7 Split the large files | Done, with no behaviour change: test modules moved out of `usecases.rs`, `api.rs` and the capabilities `infrastructure.rs`, then each split by seam (largest non-test file now 2.3k lines, `usecases/turn.rs`); `app.js` became nine ordered parts that the node concatenates into the same byte-identical script. 1,031 tests before and after. The test files themselves are still large (`usecases/tests.rs` 7.0k, `api/tests.rs` 2.3k, `infrastructure/tests.rs` 2.7k) |
