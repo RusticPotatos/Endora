@@ -434,6 +434,17 @@ pub trait ConversationSummaryStore {
     fn set(&self, summary: ConversationSummary);
 }
 
+/// What a message needs, as judged by [`Butler::classify_need`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NeedKind {
+    /// Current or outside facts: a schedule, a score, a price, news, opening hours.
+    Lookup,
+    /// The person's own things: home, devices, calendar, what Endora did or knows.
+    Personal,
+    /// Small talk, thanks, opinions, writing, arithmetic.
+    Chat,
+}
+
 /// A skill offered to the model through native tool-calling: its exact id, what it
 /// does, and its input schema (when it advertises one — MCP tools do; built-ins pass
 /// `None` and rely on the prompt's examples).
@@ -613,6 +624,16 @@ pub trait Butler {
             }
         }
         Ok(reply)
+    }
+
+    /// What kind of message this is, so the turn can tell a question that needs a look at the
+    /// outside world from one about the person's own things, or small talk (ADR 0089).
+    ///
+    /// One cheap call to the **local** model; nothing leaves the device. `None` means it could
+    /// not say (no model, or an answer that was not one of the three), and the caller falls
+    /// back to word lists.
+    fn classify_need(&self, _question: &str) -> Option<NeedKind> {
+        None
     }
 
     /// Compacts a chunk of conversation (optionally folding a prior summary) into a

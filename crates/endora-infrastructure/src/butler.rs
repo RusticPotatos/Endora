@@ -518,6 +518,46 @@ impl Butler for LlmButler {
                  staying brief:\n\n{transcript}"
             )
         };
+        self.plain_completion(system, &user, false)
+    }
+
+    fn classify_need(&self, question: &str) -> Option<endora_application::NeedKind> {
+        use endora_application::NeedKind;
+        let system = "You sort one message sent to a personal assistant into exactly one \
+            class. Reply with ONE word and nothing else.\n\
+            LOOKUP: answering well needs current or outside facts that change or that you \
+            could not know: schedules, scores, results, prices, news, weather, opening hours, \
+            who or what or when about the world, recent events.\n\
+            PERSONAL: it is about the person's own things: their home, devices, calendar, \
+            messages, preferences, or what the assistant did or knows about them.\n\
+            CHAT: greetings, thanks, opinions, writing or explaining something that needs no \
+            outside facts, arithmetic, small talk.";
+        let said = self
+            .plain_completion(system, &format!("Message: {question}\nClass:"), true)
+            .ok()?;
+        let word = said
+            .split(|c: char| !c.is_ascii_alphabetic())
+            .find(|w| !w.is_empty())?
+            .to_ascii_uppercase();
+        match word.as_str() {
+            "LOOKUP" => Some(NeedKind::Lookup),
+            "PERSONAL" => Some(NeedKind::Personal),
+            "CHAT" => Some(NeedKind::Chat),
+            _ => None,
+        }
+    }
+}
+
+impl LlmButler {
+    /// One plain, tool-less completion: a system line, a user line, the reply's text. Used
+    /// for the small judgements around a turn (summarising, sorting a message), which never
+    /// need the turn's context. `exact` pins the temperature to zero.
+    fn plain_completion(
+        &self,
+        system: &str,
+        user: &str,
+        exact: bool,
+    ) -> Result<String, ProposalError> {
         let mut body = json!({
             "model": self.model,
             "stream": false,
@@ -527,6 +567,9 @@ impl Butler for LlmButler {
             ],
         });
         apply_sampling(&mut body, &self.sampling);
+        if exact {
+            body["temperature"] = json!(0);
+        }
         let body = self.with_keep_alive(body);
         let url = format!("{}/chat/completions", self.base_url);
         let mut req = self.agent.post(&url);
@@ -637,6 +680,10 @@ impl Butler for MixtureButler {
     fn summarize(&self, prior: &str, transcript: &str) -> Result<String, ProposalError> {
         // Summarising is prose — the generalist synthesizer.
         self.synthesizer.summarize(prior, transcript)
+    }
+
+    fn classify_need(&self, question: &str) -> Option<endora_application::NeedKind> {
+        self.synthesizer.classify_need(question)
     }
 }
 
@@ -963,6 +1010,10 @@ impl Butler for ConfigurableButler {
 
     fn summarize(&self, prior: &str, transcript: &str) -> Result<String, ProposalError> {
         self.current().summarize(prior, transcript)
+    }
+
+    fn classify_need(&self, question: &str) -> Option<endora_application::NeedKind> {
+        self.current().classify_need(question)
     }
 }
 

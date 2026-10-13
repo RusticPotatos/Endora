@@ -69,8 +69,8 @@ pub use endora_understanding::{
 pub use ports::{
     Butler, ButlerContext, ButlerReply, CapabilityTool, Clock, ConversationSummary,
     ConversationSummaryStore, EXECUTION_LEASE_MS, ExecutionLeaseRepository, FormedBelief,
-    GoalDelivery, GoalLease, GoalRepository, IdSource, MemorySnapshot, MemoryStore, ProposalError,
-    RepositoryError, ResearchDelivery, ToolCall, TurnMessage,
+    GoalDelivery, GoalLease, GoalRepository, IdSource, MemorySnapshot, MemoryStore, NeedKind,
+    ProposalError, RepositoryError, ResearchDelivery, ToolCall, TurnMessage,
 };
 pub use research::{ResearchRun, conduct_research};
 pub use usecases::{

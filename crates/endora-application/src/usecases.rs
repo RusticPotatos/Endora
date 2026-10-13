@@ -2217,7 +2217,8 @@ pub fn send_to_butler_streaming_for_request(
     });
     let reply = if disclosures.is_empty()
         && !reply.escalated
-        && (says_it_found_nothing(&reply.text) || (looked_nothing_up && asks_about_the_world(text)))
+        && (says_it_found_nothing(&reply.text)
+            || (looked_nothing_up && butler.deeper().is_some() && needs_a_lookup(butler, text)))
     {
         match butler.deeper() {
             Some(deeper) => {
@@ -7785,6 +7786,119 @@ mod tests {
         assert!(text.contains("Sunday, October 18"), "{text}");
         assert!(!text.contains("8:15 PM"), "{text}");
         assert_eq!(skills.ran(), vec!["web_search".to_owned()]);
+    }
+
+    /// A local model that gives its first answer from memory and has a verdict on what the
+    /// message needs (or none, when its router is down).
+    struct WithARouter {
+        inner: LocalThatGivesUp,
+        verdict: Option<crate::NeedKind>,
+    }
+    impl Butler for WithARouter {
+        fn respond(
+            &self,
+            h: &[ChatMessage],
+            p: &[Preference],
+            c: &ButlerContext,
+        ) -> Result<ButlerReply, ProposalError> {
+            self.inner.respond(h, p, c)
+        }
+        fn take_turn(
+            &self,
+            conversation: &[crate::ports::TurnMessage],
+            p: &[Preference],
+            c: &ButlerContext,
+        ) -> Result<ButlerReply, ProposalError> {
+            self.inner.take_turn(conversation, p, c)
+        }
+        fn deeper(&self) -> Option<crate::egress::Deeper> {
+            self.inner.deeper()
+        }
+        fn classify_need(&self, _question: &str) -> Option<crate::NeedKind> {
+            self.verdict
+        }
+    }
+
+    fn routed_turn(
+        question: &str,
+        verdict: Option<crate::NeedKind>,
+    ) -> (String, std::sync::Arc<ScriptedDeep>) {
+        let deep = ScriptedDeep::new(vec![Plan::Call("web_search"), Plan::Says("done")]);
+        let local = WithARouter {
+            inner: LocalThatGivesUp {
+                first: "They won the last five.",
+                after_reading: "From the schedule: two wins and one loss.",
+                deep: Some(deep.clone()),
+            },
+            verdict,
+        };
+        let skills = TheSkills::new();
+        let store = FakeStore::default();
+        let tools = skills
+            .available()
+            .into_iter()
+            .map(|s| crate::CapabilityTool {
+                id: s.id,
+                description: s.description,
+                input_schema: None,
+            })
+            .collect();
+        let (message, _) = super::send_to_butler(
+            &store,
+            &store,
+            &store,
+            &FakeOutcomes::default(),
+            &crate::usecases::NoSpecimens,
+            &skills,
+            &local,
+            &FakeAudit::default(),
+            &SeqIds::default(),
+            &FixedClock(1_000),
+            &ButlerContext {
+                tools,
+                ..ButlerContext::default()
+            },
+            question,
+        )
+        .expect("the turn answers");
+        (message.text().to_owned(), deep)
+    }
+
+    #[test]
+    fn the_router_catches_a_phrasing_no_word_list_has_a_word_for() {
+        // The live miss: "what specific games did they win/loose" has none of the words.
+        let question = "what specific games did they win/loose";
+        assert!(!super::asks_about_the_world(question));
+
+        let (text, deep) = routed_turn(question, Some(crate::NeedKind::Lookup));
+
+        assert!(text.contains("two wins and one loss"), "{text}");
+        assert!(deep.rounds() > 0, "the deep model chose the skills");
+    }
+
+    #[test]
+    fn the_router_keeps_a_personal_question_local_even_with_a_world_word_in_it() {
+        // "when" is a world word, and this is about the person's own calendar.
+        let question = "when did you last tidy my calendar";
+        let (text, deep) = routed_turn(question, Some(crate::NeedKind::Personal));
+
+        assert!(text.contains("They won the last five."), "{text}");
+        assert_eq!(deep.rounds(), 0, "nothing left the box");
+    }
+
+    #[test]
+    fn with_no_router_the_word_lists_still_decide() {
+        let (text, deep) = routed_turn("when is the next game?", None);
+        assert!(text.contains("two wins and one loss"), "{text}");
+        assert!(deep.rounds() > 0);
+
+        let (text, deep) = routed_turn("what specific games did they win/loose", None);
+        assert!(text.contains("They won the last five."), "{text}");
+        assert_eq!(
+            deep.rounds(),
+            0,
+            "no router and no word: the old miss, now explicit"
+        );
     }
 
     #[test]
@@ -13754,7 +13868,8 @@ fn specimen_verdict(reply: &ButlerReply, context: &ButlerContext) -> Option<&'st
 /// up: when something is, what is next, a score, a schedule, a price. Words, not judgement,
 /// and the same bargain as [`says_it_found_nothing`]: a wrong yes costs one deep-model call.
 /// A question about the person's own things ("my", "our") is never one, so it stays local.
-fn asks_about_the_world(text: &str) -> bool {
+#[must_use]
+pub fn asks_about_the_world(text: &str) -> bool {
     let words = words_of(text);
     let has = |wanted: &str| words.iter().any(|w| w == wanted);
     if ["my", "mine", "our", "ours", "i", "we", "me"]
@@ -13780,6 +13895,17 @@ fn asks_about_the_world(text: &str) -> bool {
     ]
     .iter()
     .any(|w| has(w))
+}
+
+/// Whether a question needs a look at the outside world (ADR 0089). The local model sorts it
+/// (`classify_need`: one cheap call, nothing leaves the device); only when it cannot say do the
+/// word lists decide.
+fn needs_a_lookup(butler: &dyn Butler, text: &str) -> bool {
+    match butler.classify_need(text) {
+        Some(crate::NeedKind::Lookup) => true,
+        Some(_) => false,
+        None => asks_about_the_world(text),
+    }
 }
 
 /// The reply with any copy of the "what I did" record taken out, unless the person asked for
