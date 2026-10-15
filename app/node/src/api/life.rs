@@ -187,6 +187,9 @@ pub(super) fn goal_json(record: &endora_application::GoalRecord) -> serde_json::
         "request_key": record.request_key(),
         "objective": goal.objective(),
         "status": goal.status().name(),
+        // Which lane it runs in (ADR 0094): `person` for what was asked for, `record` for what
+        // Endora started itself. Additive, so existing clients are unaffected.
+        "origin": record.origin().name(),
         "phase": goal.phase(),
         "next_step": goal.next_step(),
         "reason": goal.reason(),

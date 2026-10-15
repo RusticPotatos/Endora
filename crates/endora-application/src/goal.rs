@@ -263,12 +263,65 @@ pub struct Goal {
     criteria: Option<crate::goal_request::GoalCriteria>,
 }
 
+/// Where a goal came from, which is also which lane it runs in (ADR 0094).
+///
+/// A fact about the *record*, like its request key, and immutable: it is never part of the
+/// goal's mutable state or its checkpoint. The checkpoint reads `criteria` only for version 4,
+/// so a version bump to carry this would have silently dropped every goal's completion
+/// criteria on load.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum GoalOrigin {
+    /// The person asked for it. What every goal was before ADR 0094, and so what an unmarked
+    /// one is. Claimed first, and capped at [`MAX_ACTIVE_GOALS`].
+    ///
+    /// [`MAX_ACTIVE_GOALS`]: crate::goal_request::MAX_ACTIVE_GOALS
+    #[default]
+    Person,
+    /// Endora started it for itself, from a record code derived. Never outranks a request, and
+    /// capped separately at one.
+    Record,
+}
+
+impl GoalOrigin {
+    /// Stable name for storage and the protocol.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Person => "person",
+            Self::Record => "record",
+        }
+    }
+
+    /// Parses a stored name. Anything that is not exactly `person` reads as
+    /// [`Record`](Self::Record): the person's lane outranks the other, so guessing wrong in
+    /// that direction would let a corrupt or newer value jump ahead of a request somebody just
+    /// made, while guessing wrong the other way only ever waits its turn.
+    #[must_use]
+    pub fn from_name(name: &str) -> Self {
+        if name == "person" {
+            Self::Person
+        } else {
+            Self::Record
+        }
+    }
+
+    /// How many goals this lane may hold open at once.
+    #[must_use]
+    pub const fn capacity(self) -> usize {
+        match self {
+            Self::Person => crate::goal_request::MAX_ACTIVE_GOALS,
+            Self::Record => crate::goal_request::MAX_ACTIVE_RECORD_GOALS,
+        }
+    }
+}
+
 /// A goal together with the stable request key and timestamps needed to resume it.
 /// The request key is immutable: retries of the same request address this record
 /// instead of creating another worker-owned goal.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GoalRecord {
     request_key: String,
+    origin: GoalOrigin,
     goal: Goal,
     created_at: Timestamp,
     updated_at: Timestamp,
@@ -283,10 +336,25 @@ impl GoalRecord {
         }
         Ok(Self {
             request_key: request_key.to_owned(),
+            origin: GoalOrigin::Person,
             goal,
             created_at: at,
             updated_at: at,
         })
+    }
+
+    /// Marks where this goal came from. A new record is the person's; only something that
+    /// starts work for itself (ADR 0094) says otherwise.
+    #[must_use]
+    pub fn with_origin(mut self, origin: GoalOrigin) -> Self {
+        self.origin = origin;
+        self
+    }
+
+    /// Where this goal came from, which decides its lane.
+    #[must_use]
+    pub const fn origin(&self) -> GoalOrigin {
+        self.origin
     }
 
     /// Returns the idempotency key supplied with the request.
@@ -318,6 +386,7 @@ impl GoalRecord {
     pub fn with_goal(&self, goal: Goal, at: Timestamp) -> Self {
         Self {
             request_key: self.request_key.clone(),
+            origin: self.origin,
             goal,
             created_at: self.created_at,
             updated_at: at,
@@ -850,7 +919,9 @@ impl Goal {
 
 #[cfg(test)]
 mod tests {
-    use super::{Goal, GoalObservation, GoalStatus, GoalStep, GoalVerdict, StepError};
+    use super::{
+        Goal, GoalObservation, GoalOrigin, GoalRecord, GoalStatus, GoalStep, GoalVerdict, StepError,
+    };
 
     /// A step that always works, for tests about the loop rather than the work.
     fn works(output: &str) -> Result<String, StepError> {
@@ -1539,5 +1610,80 @@ mod tests {
     fn an_unknown_checkpoint_version_is_visible() {
         let error = Goal::from_checkpoint("an objective", r#"{"version":99}"#).unwrap_err();
         assert_eq!(error, "unsupported goal checkpoint version");
+    }
+
+    #[test]
+    fn a_goal_is_the_persons_unless_something_says_otherwise() {
+        // Every goal that exists today was asked for, so that is what an unmarked one is.
+        assert_eq!(GoalOrigin::default(), GoalOrigin::Person);
+        let record = GoalRecord::new(
+            "asked-for",
+            Goal::new("find the next three games").unwrap(),
+            endora_kernel::Timestamp::from_unix_millis(1),
+        )
+        .unwrap();
+        assert_eq!(record.origin(), GoalOrigin::Person);
+    }
+
+    #[test]
+    fn origin_names_round_trip_and_an_unreadable_one_is_the_lane_that_never_outranks() {
+        for origin in [GoalOrigin::Person, GoalOrigin::Record] {
+            assert_eq!(GoalOrigin::from_name(origin.name()), origin);
+        }
+        // A corrupt or newer value must not be read as the person's: that lane outranks
+        // the other, so guessing wrong in that direction would let an unknown row jump
+        // ahead of a request somebody just made.
+        assert_eq!(GoalOrigin::from_name("garbage"), GoalOrigin::Record);
+        assert_eq!(GoalOrigin::from_name(""), GoalOrigin::Record);
+    }
+
+    #[test]
+    fn origin_is_part_of_a_records_identity_and_survives_a_checkpoint_update() {
+        let at = endora_kernel::Timestamp::from_unix_millis(1);
+        let record = GoalRecord::new("looking-into-it", Goal::new("a stuck device").unwrap(), at)
+            .unwrap()
+            .with_origin(GoalOrigin::Record);
+        assert_eq!(record.origin(), GoalOrigin::Record);
+
+        // `with_goal` is how every checkpoint is produced. It must carry identity forward,
+        // or the first pass would quietly turn a record goal into a person's.
+        let mut progressed = record.goal().clone();
+        progressed.start("gathering", "a step");
+        let after = record.with_goal(progressed, endora_kernel::Timestamp::from_unix_millis(9));
+        assert_eq!(after.origin(), GoalOrigin::Record);
+    }
+
+    #[test]
+    fn each_lane_has_its_own_capacity_and_the_persons_is_unchanged() {
+        // The person's cap is what MAX_ACTIVE_GOALS always was; the record lane is smaller.
+        assert_eq!(
+            GoalOrigin::Person.capacity(),
+            crate::goal_request::MAX_ACTIVE_GOALS
+        );
+        assert_eq!(GoalOrigin::Person.capacity(), 3);
+        assert_eq!(GoalOrigin::Record.capacity(), 1);
+    }
+
+    #[test]
+    fn a_checkpoint_does_not_carry_the_origin_and_still_loads_its_criteria() {
+        // Origin lives on the record, not in the checkpoint. The checkpoint reads `criteria`
+        // only for version 4, so a version bump to carry origin would have silently dropped
+        // every goal's completion criteria on load. Pin that the format did not move.
+        let goal = Goal::for_request(
+            "the next two Example FC games",
+            crate::goal_request::GoalCriteria::Schedule {
+                team: "Example FC".to_owned(),
+                count: 2,
+            },
+        )
+        .unwrap();
+        let checkpoint = goal.checkpoint();
+        assert!(!checkpoint.contains("origin"), "{checkpoint}");
+        let restored = Goal::from_checkpoint(goal.objective(), &checkpoint).unwrap();
+        assert_eq!(restored.criteria(), goal.criteria());
+        assert!(
+            restored.criteria().is_some(),
+            "criteria survived the round trip"
+        );
     }
 }

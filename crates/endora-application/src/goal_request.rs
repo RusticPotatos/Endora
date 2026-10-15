@@ -10,6 +10,10 @@ pub const BEGIN_GOAL: &str = "endora_begin_goal";
 /// Maximum concurrent durable requests, enforced during creation.
 pub const MAX_ACTIVE_GOALS: usize = 3;
 
+/// Maximum concurrent goals Endora starts for itself (ADR 0094). One, and counted
+/// separately from [`MAX_ACTIVE_GOALS`]: neither lane can exhaust the other's slots.
+pub const MAX_ACTIVE_RECORD_GOALS: usize = 1;
+
 /// Repository rejection that orchestration maps to an actionable conflict.
 pub const GOAL_CAPACITY_REACHED: &str = "goal capacity reached";
 
