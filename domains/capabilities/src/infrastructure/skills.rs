@@ -360,32 +360,43 @@ pub(super) fn between(s: &str, a: &str, b: &str) -> Option<String> {
 }
 
 /// Very small HTML-to-text: drops script/style, strips tags, collapses space.
+///
+/// Walks the text a character at a time and compares tag names against the original bytes,
+/// ignoring ASCII case. It used to step a byte at a time and slice a lowercased copy at each
+/// step, which panicked on the first character that is not ASCII (a live fetch of a page with
+/// an arrow in its navigation) and, had it not, would have read every byte of such a
+/// character as a character of its own.
 pub(super) fn strip_html(html: &str) -> String {
+    let bytes = html.as_bytes();
+    let starts_with_at = |i: usize, pattern: &str| {
+        bytes
+            .get(i..i + pattern.len())
+            .is_some_and(|window| window.eq_ignore_ascii_case(pattern.as_bytes()))
+    };
     let mut out = String::with_capacity(html.len() / 2);
     let mut in_tag = false;
     let mut skip_to: Option<&str> = None;
-    let lower = html.to_lowercase();
-    let bytes = html.as_bytes();
-    let mut i = 0;
-    while i < bytes.len() {
+    let mut chars = html.char_indices();
+    while let Some((i, c)) = chars.next() {
         if let Some(close) = skip_to {
-            if lower[i..].starts_with(close) {
+            if starts_with_at(i, close) {
                 skip_to = None;
-                i += close.len();
-            } else {
-                i += 1;
+                // The closing tag is ASCII, one byte a character, and its first character
+                // is the one just read.
+                for _ in 1..close.len() {
+                    chars.next();
+                }
             }
             continue;
         }
-        if lower[i..].starts_with("<script") {
+        if starts_with_at(i, "<script") {
             skip_to = Some("</script>");
             continue;
         }
-        if lower[i..].starts_with("<style") {
+        if starts_with_at(i, "<style") {
             skip_to = Some("</style>");
             continue;
         }
-        let c = bytes[i] as char;
         match c {
             '<' => in_tag = true,
             '>' => {
@@ -395,7 +406,6 @@ pub(super) fn strip_html(html: &str) -> String {
             _ if !in_tag => out.push(c),
             _ => {}
         }
-        i += 1;
     }
     out.split_whitespace().collect::<Vec<_>>().join(" ")
 }

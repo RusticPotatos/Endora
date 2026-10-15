@@ -867,6 +867,32 @@ fn strip_html_drops_tags_and_scripts() {
 }
 
 #[test]
+fn strip_html_survives_and_keeps_text_that_is_not_ascii() {
+    // Found by a live run: a page with an arrow in its navigation panicked the fetch
+    // ("byte index is not a char boundary"), because the scan stepped a byte at a time and
+    // sliced the string at each step. Before that it would have mangled every accented
+    // letter, by treating each byte of a character as a character of its own.
+    let t = strip_html("<nav>← Back</nav><p>Café — naïve 日本語</p>");
+    assert_eq!(t, "← Back Café — naïve 日本語");
+}
+
+#[test]
+fn strip_html_skips_a_script_or_style_whatever_it_contains_and_however_it_is_cased() {
+    let t = strip_html(
+        "<P>a</P><SCRIPT>var s = 'é←';</SCRIPT><p>b</p><Style>p::before{content:'→'}</Style><p>c</p>",
+    );
+    assert_eq!(t, "a b c");
+}
+
+#[test]
+fn strip_html_is_not_thrown_off_by_letters_that_change_length_when_lowercased() {
+    // 'İ' lowercases to two characters, so a lowercased copy no longer lines up with the
+    // original byte for byte; every position after it was then read from the wrong place.
+    let t = strip_html("<p>İstanbul</p><script>x</script><p>after</p>");
+    assert_eq!(t, "İstanbul after");
+}
+
+#[test]
 fn image_review_declares_a_model_setting_and_needs_it() {
     let cap = ImageReviewCapability {
         ollama_base: "http://localhost:11434".to_owned(),
