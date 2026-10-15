@@ -693,4 +693,6 @@ mod misc;
 use misc::*;
 
 #[cfg(test)]
+mod goal_lanes;
+#[cfg(test)]
 mod tests;

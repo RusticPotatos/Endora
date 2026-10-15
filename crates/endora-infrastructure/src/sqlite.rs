@@ -10,9 +10,9 @@ use endora_persistence::Db;
 
 use endora_application::{
     AuditId, AuditRecord, Belief, BeliefId, BeliefKind, BeliefStatus, ChatMessage, Confidence,
-    Goal, GoalRecord, GoalStatus, Intention, IntentionId, IntentionOrigin, IntentionState,
-    MessageId, MessageRole, Outcome, OutcomeId, Preference, PreferenceId, PreferenceKind, Reaction,
-    ResearchAssignment, Timestamp,
+    Goal, GoalOrigin, GoalRecord, GoalStatus, Intention, IntentionId, IntentionOrigin,
+    IntentionState, MessageId, MessageRole, Outcome, OutcomeId, Preference, PreferenceId,
+    PreferenceKind, Reaction, ResearchAssignment, Timestamp,
 };
 use endora_application::{
     ExecutionLeaseRepository, GoalDelivery, GoalLease, GoalRepository, MemorySnapshot, MemoryStore,
@@ -106,6 +106,7 @@ CREATE TABLE IF NOT EXISTS execution_goals (
     attempts    INTEGER NOT NULL DEFAULT 0,
     lease_until_ms INTEGER NOT NULL DEFAULT 0,
     completion_published INTEGER NOT NULL DEFAULT 0,
+    origin      TEXT NOT NULL DEFAULT 'person',
     created_ms  INTEGER NOT NULL,
     updated_ms  INTEGER NOT NULL
 ) STRICT;
@@ -787,6 +788,16 @@ impl SqliteStore {
             // Whether an action actually moved the world (ADR 0054). Existing rows read
             // back NULL — nothing to compare — which is the honest default.
             ensure_column(&conn, "outcomes", "changed", "INTEGER")?;
+            // Which lane a goal runs in (ADR 0094). Every goal that exists was asked for, which
+            // is what the default says. Added here as well as in SCHEMA for the same reason as
+            // every column above: `CREATE TABLE IF NOT EXISTS` does nothing to a table that is
+            // already there.
+            ensure_column(
+                &conn,
+                "execution_goals",
+                "origin",
+                "TEXT NOT NULL DEFAULT 'person'",
+            )?;
             // Sign-in with a password and an authenticator code. `node_auth` shipped hours
             // earlier holding only a token, and `CREATE TABLE IF NOT EXISTS` does nothing to a
             // table that already exists — the trap this repository has already fallen into
@@ -876,7 +887,7 @@ impl SqliteStore {
         let conn = self.lock()?;
         let mut stmt = conn
             .prepare(
-                "SELECT request_key, objective, checkpoint, status, created_ms, updated_ms
+                "SELECT request_key, objective, checkpoint, status, created_ms, updated_ms, origin
                  FROM execution_goals ORDER BY updated_ms DESC, request_key ASC",
             )
             .map_err(backend)?;
@@ -889,18 +900,20 @@ impl SqliteStore {
                     row.get::<_, String>(3)?,
                     row.get::<_, i64>(4)?,
                     row.get::<_, i64>(5)?,
+                    row.get::<_, String>(6)?,
                 ))
             })
             .map_err(backend)?;
         let raw = rows.collect::<Result<Vec<_>, _>>().map_err(backend)?;
         raw.into_iter()
             .map(
-                |(key, objective, checkpoint, status, created_ms, updated_ms)| {
+                |(key, objective, checkpoint, status, created_ms, updated_ms, origin)| {
                     parse_goal_record(
                         &key,
                         &objective,
                         &checkpoint,
                         &status,
+                        &origin,
                         created_ms,
                         updated_ms,
                     )
@@ -1038,15 +1051,22 @@ impl GoalRepository for SqliteStore {
         let tx = conn
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
             .map_err(backend)?;
-        let existing: Option<(String, String)> = tx
+        let existing: Option<(String, String, String)> = tx
             .query_row(
-                "SELECT objective, checkpoint FROM execution_goals WHERE request_key=?1",
+                "SELECT objective, checkpoint, origin FROM execution_goals WHERE request_key=?1",
                 params![key],
-                |row| Ok((row.get(0)?, row.get(1)?)),
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
             .optional()
             .map_err(backend)?;
-        if let Some((prior_objective, prior_checkpoint)) = existing {
+        if let Some((prior_objective, prior_checkpoint, prior_origin)) = existing {
+            // A retry of the same request must be the same request. Reusing a key with another
+            // origin would let a goal Endora started be swapped for a person's, or the reverse.
+            if GoalOrigin::from_name(&prior_origin) != record.origin() {
+                return Err(RepositoryError::Backend(
+                    "goal request key was reused with a different origin".to_owned(),
+                ));
+            }
             let prior =
                 endora_application::Goal::from_checkpoint(&prior_objective, &prior_checkpoint)
                     .map_err(corrupt)?;
@@ -1057,9 +1077,25 @@ impl GoalRepository for SqliteStore {
             }
             return Ok(false);
         } else {
-            let active: i64 = tx.query_row("SELECT count(*) FROM execution_goals WHERE status IN ('planned','running','waiting')", [], |row| row.get(0)).map_err(backend)?;
+            // Counted within the goal's own lane (ADR 0094), so neither can use up the
+            // other's slots. "Not person" is the record lane, matching `GoalOrigin::from_name`:
+            // a value this build cannot read is never counted as the person's.
+            let in_lane = match record.origin() {
+                GoalOrigin::Person => "origin = 'person'",
+                GoalOrigin::Record => "origin <> 'person'",
+            };
+            let active: i64 = tx
+                .query_row(
+                    &format!(
+                        "SELECT count(*) FROM execution_goals
+                         WHERE status IN ('planned','running','waiting') AND {in_lane}"
+                    ),
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(backend)?;
             if !record.goal().status().terminal()
-                && active >= endora_application::goal_request::MAX_ACTIVE_GOALS as i64
+                && usize::try_from(active).unwrap_or(usize::MAX) >= record.origin().capacity()
             {
                 return Err(RepositoryError::Backend(
                     endora_application::goal_request::GOAL_CAPACITY_REACHED.to_owned(),
@@ -1067,13 +1103,14 @@ impl GoalRepository for SqliteStore {
             }
             tx.execute(
                 "INSERT INTO execution_goals
-                 (request_key, objective, checkpoint, status, created_ms, updated_ms)
-                 VALUES (?1,?2,?3,?4,?5,?6)",
+                 (request_key, objective, checkpoint, status, origin, created_ms, updated_ms)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7)",
                 params![
                     key,
                     objective,
                     record.goal().checkpoint(),
                     record.goal().status().name(),
+                    record.origin().name(),
                     record.created_at().unix_millis(),
                     record.updated_at().unix_millis()
                 ],
@@ -1142,9 +1179,9 @@ impl GoalRepository for SqliteStore {
             ));
         }
         let conn = self.lock()?;
-        let raw: Option<(String, String, String, i64, i64)> = conn
+        let raw: Option<(String, String, String, i64, i64, String)> = conn
             .query_row(
-                "SELECT objective, checkpoint, status, created_ms, updated_ms
+                "SELECT objective, checkpoint, status, created_ms, updated_ms, origin
                  FROM execution_goals WHERE request_key=?1",
                 params![key],
                 |row| {
@@ -1154,21 +1191,25 @@ impl GoalRepository for SqliteStore {
                         row.get(2)?,
                         row.get(3)?,
                         row.get(4)?,
+                        row.get(5)?,
                     ))
                 },
             )
             .optional()
             .map_err(backend)?;
-        raw.map(|(objective, checkpoint, status, created_ms, updated_ms)| {
-            parse_goal_record(
-                key,
-                &objective,
-                &checkpoint,
-                &status,
-                created_ms,
-                updated_ms,
-            )
-        })
+        raw.map(
+            |(objective, checkpoint, status, created_ms, updated_ms, origin)| {
+                parse_goal_record(
+                    key,
+                    &objective,
+                    &checkpoint,
+                    &status,
+                    &origin,
+                    created_ms,
+                    updated_ms,
+                )
+            },
+        )
         .transpose()
     }
 
@@ -1176,10 +1217,10 @@ impl GoalRepository for SqliteStore {
         let conn = self.lock()?;
         let mut stmt = conn
             .prepare(
-                "SELECT request_key, objective, checkpoint, status, created_ms, updated_ms
+                "SELECT request_key, objective, checkpoint, status, created_ms, updated_ms, origin
                  FROM execution_goals
                  WHERE status IN ('planned','running','waiting')
-                 ORDER BY updated_ms ASC, request_key ASC",
+                 ORDER BY (origin = 'person') DESC, updated_ms ASC, request_key ASC",
             )
             .map_err(backend)?;
         let rows = stmt
@@ -1191,18 +1232,20 @@ impl GoalRepository for SqliteStore {
                     row.get::<_, String>(3)?,
                     row.get::<_, i64>(4)?,
                     row.get::<_, i64>(5)?,
+                    row.get::<_, String>(6)?,
                 ))
             })
             .map_err(backend)?;
         let raw = rows.collect::<Result<Vec<_>, _>>().map_err(backend)?;
         raw.into_iter()
             .map(
-                |(key, objective, checkpoint, status, created_ms, updated_ms)| {
+                |(key, objective, checkpoint, status, created_ms, updated_ms, origin)| {
                     parse_goal_record(
                         &key,
                         &objective,
                         &checkpoint,
                         &status,
+                        &origin,
                         created_ms,
                         updated_ms,
                     )
@@ -1365,7 +1408,7 @@ impl GoalRepository for SqliteStore {
         let conn = self.lock()?;
         let mut stmt = conn
             .prepare(&format!(
-                "SELECT request_key, objective, checkpoint, status, created_ms, updated_ms
+                "SELECT request_key, objective, checkpoint, status, created_ms, updated_ms, origin
                  FROM execution_goals
                  WHERE status IN ({ANNOUNCED_GOAL_STATUSES}) AND completion_published=0
                  ORDER BY updated_ms ASC, request_key ASC"
@@ -1380,18 +1423,20 @@ impl GoalRepository for SqliteStore {
                     row.get::<_, String>(3)?,
                     row.get::<_, i64>(4)?,
                     row.get::<_, i64>(5)?,
+                    row.get::<_, String>(6)?,
                 ))
             })
             .map_err(backend)?;
         let raw = rows.collect::<Result<Vec<_>, _>>().map_err(backend)?;
         raw.into_iter()
             .map(
-                |(key, objective, checkpoint, status, created_ms, updated_ms)| {
+                |(key, objective, checkpoint, status, created_ms, updated_ms, origin)| {
                     parse_goal_record(
                         &key,
                         &objective,
                         &checkpoint,
                         &status,
+                        &origin,
                         created_ms,
                         updated_ms,
                     )
@@ -1451,6 +1496,7 @@ fn parse_goal_record(
     objective: &str,
     checkpoint: &str,
     status: &str,
+    origin: &str,
     created_ms: i64,
     updated_ms: i64,
 ) -> Result<GoalRecord, RepositoryError> {
@@ -1461,7 +1507,8 @@ fn parse_goal_record(
         ));
     }
     let record = GoalRecord::new(request_key, goal, Timestamp::from_unix_millis(created_ms))
-        .map_err(corrupt)?;
+        .map_err(corrupt)?
+        .with_origin(GoalOrigin::from_name(origin));
     Ok(record.with_goal(
         Goal::from_checkpoint(objective, checkpoint).map_err(corrupt)?,
         Timestamp::from_unix_millis(updated_ms),

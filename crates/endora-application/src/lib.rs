@@ -27,8 +27,8 @@ pub mod usecases;
 
 pub use error::AppError;
 pub use goal::{
-    DeadEnd, GOAL_CHECKPOINT_VERSION, Goal, GoalEvidence, GoalObservation, GoalRecord, GoalStatus,
-    GoalStep, GoalVerdict, StepError,
+    DeadEnd, GOAL_CHECKPOINT_VERSION, Goal, GoalEvidence, GoalObservation, GoalOrigin, GoalRecord,
+    GoalStatus, GoalStep, GoalVerdict, StepError,
 };
 // The application layer re-exports the domain vocabulary of each context (models
 // + ids), so the adapter layers (infrastructure, the node) have one place to
