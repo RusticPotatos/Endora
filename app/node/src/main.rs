@@ -132,6 +132,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     api::spawn_homelab(state.clone());
     // Looking into things nobody asked about is off until the owner turns it on (ADR 0094).
     // Everything that makes it safe is already in the goal worker; this only lets it begin.
+    // The mail (ADR 0097): a read-only copy mounted at /mail, read by the local model only.
+    // Nothing happens without both the copy and the switch.
+    let state = match mail_copy("/mail") {
+        Some(copy) if state.own_work => {
+            println!("mail: reading the copy at /mail with the local model, in quiet time");
+            let reader: Arc<dyn endora_application::UntrustedReader + Send + Sync> = Arc::new(
+                endora_infrastructure::LlmButler::new(model_url.clone(), model.clone()),
+            );
+            state.with_mail(copy, reader)
+        }
+        _ => state,
+    };
+    if state.mail_copy.is_some() {
+        api::spawn_mail_reader(state.clone());
+    }
     if state.own_work {
         println!("own work: on — it will look into standing troubles when you have been quiet");
         api::spawn_own_work(state.clone());
@@ -172,4 +187,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         axum::serve(listener, app).await?;
     }
     Ok(())
+}
+
+/// The mail copy at `root`, if one is mounted there with at least one account in it.
+fn mail_copy(root: &str) -> Option<endora_mail::MaildirCopy> {
+    let accounts = std::fs::read_dir(root).ok()?;
+    let any = accounts
+        .flatten()
+        .any(|entry| entry.path().join("new").is_dir() || entry.path().join("cur").is_dir());
+    any.then(|| endora_mail::MaildirCopy::new(root))
 }

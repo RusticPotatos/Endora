@@ -156,6 +156,11 @@ something you asked for, and posts nothing to chat. Pressing Stop on one, or mar
 device "it's fine", means that item is not looked into again. With the switch on, the
 nightly loop stops replaying a question and keeping its own thread, since the lane does
 both; with it off, the nightly loop is exactly as it was.
+With the switch on, and **`ENDORA_MAIL_DIR`** set in `local.mk` to the read-only mail copy the
+ansible-nas `mail_mirror` role keeps (by default `/srv/mail-mirror/maildir` on the NAS), it
+also reads your mail in quiet time, one message at a time, with the local model only, and
+shows what matters in the trail, your brief and the console's **Mail** screen (ADR 0097).
+
 With the switch on it also reads the house's own log of what changed, and writes a line to
 the activity trail when something happens at about the same time on most days ("the front
 door goes on around 07:30, on 11 of the last 14 days"). That needs no model and sends

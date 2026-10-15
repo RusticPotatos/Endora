@@ -170,6 +170,15 @@ runInContext(
   // One enabled with a declared input (exercises the "needs" line and the "On"
   // pill) and one still off (the "Off" pill and its own button label) — both
   // branches of the enable toggle, which an empty list would never reach.
+  // Mail read, with something worth a look and a bucket with items, so every branch of the
+  // Mail screen renders. A sentence with markup in it, which must come out escaped.
+  MAIL = { mounted: true, reading: true, indexed: 412, unread_recent: 37,
+    important: [{ from: "Example Dental", at_ms: 1, bucket: "money", sentence: "A bill <b>due</b>.",
+                  why: ["asks for money"], amount: "180.00", dates: [{ date: "2026-10-30", what: "due" }],
+                  cautions: ["replies go to example.org"] }],
+    buckets: [{ name: "money", title: "Money", count: 1, recent: [{ from: "Example Dental", at_ms: 1,
+                bucket: "money", sentence: "A bill.", why: [], amount: null, dates: [] }] },
+              { name: "other", title: "Other", count: 0, recent: [] }] };
   RECIPES = [
     { id: "air_quality", capability_id: "recipe.air_quality",
       description: "Today's air quality where you are.",

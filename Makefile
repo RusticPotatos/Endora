@@ -74,6 +74,10 @@ export ENDORA_DATA_DIR
 export ENDORA_OWN_WORK
 export ENDORA_UTC_OFFSET_MINUTES
 
+# The read-only mail copy on the NAS (ansible-nas `mail_mirror` role, ADR 0097), e.g.
+# ENDORA_MAIL_DIR = /srv/mail-mirror/maildir in local.mk. Read only with ENDORA_OWN_WORK = 1.
+export ENDORA_MAIL_DIR
+
 COMPOSE = docker $(if $(DOCKER_CONTEXT),--context $(DOCKER_CONTEXT),) compose
 
 .DEFAULT_GOAL := help

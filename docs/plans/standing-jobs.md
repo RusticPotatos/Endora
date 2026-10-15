@@ -30,7 +30,16 @@ router, that is a different source (Prometheus, the router's own stats), and it 
 next job that reads the same way: aggregate by hour of day in code, and let a model only put
 the sentence into words.
 
-## Inbox triage (proposed)
+## Inbox triage (built, first slice: ADR 0097)
+
+*Built 2026-10-15.* The mirror runs on the NAS (Gmail over IMAP with an app password, iCloud
+when added). Endora indexes every message, reads the last 90 days in quiet time through the
+quarantined reader, sorts, flags what matters, and doubts forgeries by the receiving server's
+verdicts. Still to build from the design below: bills checked against the calendar, dates
+corroborated across messages and shown, and the chat ping for a person the owner writes to
+often. The rest of this section is the design as proposed.
+
+## Inbox triage (as proposed)
 
 **What the owner asked for:** read the mail, find the truly important things, sort it into
 buckets, keep doing it.

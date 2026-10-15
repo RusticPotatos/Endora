@@ -108,6 +108,13 @@ pub struct AppState {
     /// that depend on the time of day. The node stores instants and does not otherwise know
     /// where the person is. Zero unless set.
     pub utc_offset_minutes: i64,
+    /// What Endora has made of the mail (ADR 0097): an index of every message and a digest of
+    /// those it has read. Always present; empty until there is mail.
+    pub mail_store: Arc<endora_mail::MailStore>,
+    /// The read-only copy of the mail, when one is mounted.
+    pub mail_copy: Option<Arc<endora_mail::MaildirCopy>>,
+    /// The quarantined reader: the local model, with no tools and none of the person's context.
+    pub mail_reader: Option<Arc<dyn endora_application::UntrustedReader + Send + Sync>>,
 }
 
 /// Persistent [`ConversationSummaryStore`](endora_application::ConversationSummaryStore):
@@ -164,6 +171,10 @@ impl AppState {
         let config = Arc::new(endora_capabilities::ConfigStore::new(store.db()));
         let audit = Arc::new(endora_platform::AuditStore::new(store.db()));
         let events = Arc::new(endora_platform::EventStore::new(store.db()));
+        // Best-effort like the enrolment secret: a node whose mail tables cannot be made still
+        // runs, and simply has nothing to say about mail.
+        let _ = endora_mail::migrate(&store.db());
+        let mail_store = Arc::new(endora_mail::MailStore::new(store.db()));
         // Deployment policy: if a skills config file is set, apply its per-skill modes
         // at startup as the baseline (ADR 0051) — before MCP connects, so MCP-tool
         // modes are in place too.
@@ -240,7 +251,22 @@ impl AppState {
             started_ms,
             own_work: false,
             utc_offset_minutes: 0,
+            mail_store,
+            mail_copy: None,
+            mail_reader: None,
         }
+    }
+
+    /// Gives the node the mail: the read-only copy, and the reader that may look at it.
+    #[must_use]
+    pub fn with_mail(
+        mut self,
+        copy: endora_mail::MaildirCopy,
+        reader: Arc<dyn endora_application::UntrustedReader + Send + Sync>,
+    ) -> Self {
+        self.mail_copy = Some(Arc::new(copy));
+        self.mail_reader = Some(reader);
+        self
     }
 
     /// Sets the person's distance from UTC, in minutes (negative to the west).
@@ -423,6 +449,7 @@ pub fn app(state: AppState) -> Router {
         // Readable, never actionable — no companion POST exists (ADR 0057).
         .route("/v1/notions", get(list_notions))
         .route("/v1/intentions/{id}/drop", post(drop_intention))
+        .route("/v1/mail", get(mail::mail_digest))
         .route("/v1/goals", get(list_goals))
         .route("/v1/goals/{request_key}", get(get_goal))
         .route("/v1/goals/{request_key}/cancel", post(cancel_goal))
@@ -699,6 +726,8 @@ mod chat;
 use chat::*;
 
 mod life;
+
+mod mail;
 use life::*;
 
 mod trouble;
@@ -718,6 +747,8 @@ use misc::*;
 
 #[cfg(test)]
 mod goal_lanes;
+#[cfg(test)]
+mod mail_reading;
 #[cfg(test)]
 mod own_work;
 #[cfg(test)]

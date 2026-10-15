@@ -1,6 +1,7 @@
 "use strict";
 
 let DB = null;                 // latest /v1/export snapshot — NULL until one lands
+let MAIL = null;               // the mail digest (/v1/mail), fetched only on the Mail screen
 
 // The conversation, safely. `DB` is null before the first export and stays null when
 // the node is unreachable, so anything that runs on every render — the menu badge, in

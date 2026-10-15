@@ -516,6 +516,20 @@ pub struct CapabilityTool {
 // repositories — now live in the capabilities context (ADR 0050). They are
 // re-exported from `endora_application` (see lib.rs) so existing paths hold.
 
+/// The quarantined reader (ADR 0097): one call to the local model, with no tools, no
+/// conversation and no context, for text that came from someone else. It describes; it can do
+/// nothing else, and whatever it says is checked by code before anything keeps it.
+///
+/// Deliberately not part of [`Butler`]: a butler can escalate to the deep model and is handed
+/// the person's context, and this must do neither.
+pub trait UntrustedReader {
+    /// Reads `data` under `instructions`, and returns the reply's text.
+    ///
+    /// # Errors
+    /// [`ProposalError`] if the local model is unreachable.
+    fn read(&self, instructions: &str, data: &str) -> Result<String, ProposalError>;
+}
+
 /// The butler brain: given the conversation so far, produce a reply and any
 /// proposed actions.
 ///

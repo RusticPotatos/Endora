@@ -589,15 +589,8 @@ impl Butler for LlmButler {
 }
 
 impl LlmButler {
-    /// One plain, tool-less completion: a system line, a user line, the reply's text. Used
-    /// for the small judgements around a turn (summarising, sorting a message), which never
-    /// need the turn's context. `exact` pins the temperature to zero.
-    fn plain_completion(
-        &self,
-        system: &str,
-        user: &str,
-        exact: bool,
-    ) -> Result<String, ProposalError> {
+    /// The request [`completion`](Self::completion) sends: two messages, no tools, ever.
+    fn completion_body(&self, system: &str, user: &str, exact: bool, json_object: bool) -> Value {
         let mut body = json!({
             "model": self.model,
             "stream": false,
@@ -610,7 +603,46 @@ impl LlmButler {
         if exact {
             body["temperature"] = json!(0);
         }
-        let body = self.with_keep_alive(body);
+        if json_object {
+            body["response_format"] = json!({ "type": "json_object" });
+        }
+        self.with_keep_alive(body)
+    }
+}
+
+/// The quarantined reader (ADR 0097): this model, one tool-less call in JSON mode at
+/// temperature zero, with nothing of the person's context and no deep model behind it. Built
+/// from the local endpoint in the composition, so mail never leaves the house.
+impl endora_application::UntrustedReader for LlmButler {
+    fn read(&self, instructions: &str, data: &str) -> Result<String, ProposalError> {
+        self.completion(instructions, data, true, true)
+    }
+}
+
+impl LlmButler {
+    /// One plain, tool-less completion: a system line, a user line, the reply's text. Used
+    /// for the small judgements around a turn (summarising, sorting a message), which never
+    /// need the turn's context. `exact` pins the temperature to zero.
+    fn plain_completion(
+        &self,
+        system: &str,
+        user: &str,
+        exact: bool,
+    ) -> Result<String, ProposalError> {
+        self.completion(system, user, exact, false)
+    }
+
+    /// [`plain_completion`](Self::plain_completion), optionally asking the endpoint for a
+    /// JSON object (`response_format`), which the OpenAI-compatible endpoints enforce with a
+    /// grammar.
+    fn completion(
+        &self,
+        system: &str,
+        user: &str,
+        exact: bool,
+        json_object: bool,
+    ) -> Result<String, ProposalError> {
+        let body = self.completion_body(system, user, exact, json_object);
         let url = format!("{}/chat/completions", self.base_url);
         let mut req = self.agent.post(&url);
         if !self.api_key.is_empty() {
@@ -2271,6 +2303,21 @@ mod tests {
                 reply.text
             );
         }
+    }
+
+    #[test]
+    fn the_quarantined_reader_sends_two_messages_in_json_mode_and_no_tools() {
+        let local = LlmButler::new("http://127.0.0.1:11434/v1".to_owned(), "m".to_owned());
+        let body = local.completion_body("rules", "the mail", true, true);
+        assert_eq!(body["response_format"]["type"], "json_object");
+        assert_eq!(body["temperature"], 0);
+        assert!(body.get("tools").is_none() && body.get("tool_choice").is_none());
+        let messages = body["messages"].as_array().unwrap();
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[1]["content"], "the mail");
+        // And the ordinary small judgements stay as they were.
+        let plain = local.completion_body("rules", "a question", true, false);
+        assert!(plain.get("response_format").is_none());
     }
 
     #[test]

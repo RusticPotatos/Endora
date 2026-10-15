@@ -9,6 +9,19 @@ tagged release.
 
 ### Added
 
+- **Endora reads your mail, and tells you what matters** ([ADR 0097](docs/adr/0097-it-reads-the-mail.md)).
+  With `ENDORA_OWN_WORK=1` and `ENDORA_MAIL_DIR` pointing at the read-only copy the ansible-nas
+  `mail_mirror` role keeps, it reads one message at a time in quiet time, newest first, back
+  90 days. Code decides what it can: who you write to, which threads are yours, mailing lists,
+  invitations. The local model, with no tools and the message marked as data, only describes
+  it in a fixed shape that code checks field by field. Each message lands in a bucket
+  (People, Money, Security, Appointments, Orders, Your app, Updates, Newsletters, Other), and
+  the ones that matter (a reply in your thread, someone you write to waiting three days,
+  money due, account security, an appointment, an order problem) go to the activity trail,
+  a "Mail" section at the end of your morning brief, and a new **Mail** screen. A bill or a
+  security notice from a sender nothing vouches for is marked **may not be genuine** and
+  described by code, never in its own words. Nothing is opened, no link is followed, and no
+  mail text reaches the model that words the brief.
 - **What you set up on the handheld can now be asked about in chat.** The handheld's Docker,
   Portainer, Sonarr, Radarr and NAS-metrics entries were settings-only, so a service you had
   already configured was invisible to the one place you would naturally ask about it. Five

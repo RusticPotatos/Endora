@@ -167,6 +167,9 @@ pub use proactive::*;
 mod notions;
 pub use notions::*;
 
+mod mail;
+pub use mail::*;
+
 mod context;
 pub use context::*;
 

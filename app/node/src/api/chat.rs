@@ -190,6 +190,7 @@ pub(super) async fn brief(
     let ids = state.ids.clone();
     let clock = state.clock.clone();
     let capabilities = state.capabilities.clone();
+    let mail_lines = super::workers::mail_brief_lines(&state);
     let butler = state.butler.clone();
     let mcp = mcp_snapshot(&state);
     let result = blocking(move || {
@@ -219,6 +220,7 @@ pub(super) async fn brief(
             ids.as_ref(),
             clock.as_ref(),
             &context,
+            &mail_lines,
         )?;
         if let Some((_, activity)) = &out {
             for item in activity {

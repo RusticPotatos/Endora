@@ -21,6 +21,7 @@ endora-scheduling = { path = "../../domains/scheduling" }
 endora-understanding = { path = "../../domains/understanding" }
 endora-capabilities = { path = "../../domains/capabilities" }
 endora-platform = { path = "../../domains/platform" }
+endora-mail = { path = "../../domains/mail" }
 # The shared SQLite handle, for `endora-node backup` (a consistent snapshot of the live
 # database). An in-repo crate the contexts already share, not a new external dependency.
 endora-persistence = { path = "../../shared/persistence" }

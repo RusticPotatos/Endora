@@ -59,6 +59,11 @@ services:
       # be backed up instead — and run `make migrate-data` once first, or the node starts
       # on an empty folder (`make deploy` refuses that). See docs/hosting.md.
       - ${ENDORA_DATA_DIR:-endora-data}:/data
+      # The read-only copy of your mail that the ansible-nas `mail_mirror` role keeps
+      # (ADR 0097). Set ENDORA_MAIL_DIR in local.mk to its maildir folder on the NAS (by
+      # default /srv/mail-mirror/maildir). Unset, an empty volume is mounted and the node
+      # has no mail. Read-only: nothing in the node can change the copy.
+      - ${ENDORA_MAIL_DIR:-endora-no-mail}:/mail:ro
       # Permission-controlled host agent; read-only mount does not grant write APIs.
       # The agent authenticates requests and executes only its private fixed catalog.
       - /run/endora-jobs:/run/endora-jobs:ro
@@ -149,4 +154,6 @@ services:
 
 volumes:
   endora-data:
+  # Empty on purpose: what /mail is when no mail copy is configured.
+  endora-no-mail:
   endora-models:

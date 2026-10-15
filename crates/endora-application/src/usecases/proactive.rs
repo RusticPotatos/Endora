@@ -1176,6 +1176,7 @@ pub(super) fn worded_brief(
 ///
 /// # Errors
 /// [`AppError::Repository`] on a backend failure.
+#[allow(clippy::too_many_arguments)]
 pub fn daily_brief(
     chat: &impl ChatRepository,
     troubles: &impl endora_capabilities::StandingTroubleRepository,
@@ -1184,6 +1185,9 @@ pub fn daily_brief(
     ids: &impl IdSource,
     clock: &impl Clock,
     context: &ButlerContext,
+    // Lines added after the brief is worded, verbatim: what must never reach the model that
+    // words it, which may be the paid one (the mail section, ADR 0097).
+    appended: &[String],
 ) -> Result<Option<(ChatMessage, Vec<String>)>, AppError> {
     let mut activity: Vec<String> = Vec::new();
     let brief_ctx = ButlerContext {
@@ -1216,7 +1220,11 @@ pub fn daily_brief(
     // verbatim. Appending everything printed the brief twice on its first live run;
     // appending nothing would trust the model, which is what the appending exists to
     // avoid.
-    let text = worded_brief(butler, &facts, ids, clock);
+    let mut text = worded_brief(butler, &facts, ids, clock);
+    if !appended.is_empty() {
+        text.push_str("\n\n");
+        text.push_str(&appended.join("\n"));
+    }
     let message = post_butler_message(chat, ids, clock, &text)?;
     Ok(Some((message, activity)))
 }
@@ -1314,6 +1322,7 @@ pub fn run_due_brief(
     ids: &impl IdSource,
     clock: &impl Clock,
     context: &ButlerContext,
+    appended: &[String],
 ) -> Result<Option<(ChatMessage, Vec<String>)>, AppError> {
     let now = clock.now();
     let Some(mut schedule) = briefs.get()? else {
@@ -1332,7 +1341,16 @@ pub fn run_due_brief(
     // Mark fired first, so a slow compose can't double-post on the next tick.
     schedule.last_at = now;
     briefs.set(&schedule)?;
-    daily_brief(chat, troubles, capabilities, butler, ids, clock, context)
+    daily_brief(
+        chat,
+        troubles,
+        capabilities,
+        butler,
+        ids,
+        clock,
+        context,
+        appended,
+    )
 }
 
 /// Whether the person has spoken within the quiet period used by unsolicited work.

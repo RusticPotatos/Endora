@@ -480,6 +480,7 @@ pub fn spawn_heartbeat(state: AppState) {
             // Take the turn lock so a proactive brief/check-in never interleaves
             // with a chat reply; held across the blocking work below.
             let own_work = state.own_work;
+            let mail_lines = mail_brief_lines(&state);
             let _turn = state.turn_lock.clone().lock_owned().await;
             let posted = tokio::task::spawn_blocking(move || {
                 // Unattended: nobody is here to confirm anything, so only the reversible
@@ -529,6 +530,7 @@ pub fn spawn_heartbeat(state: AppState) {
                     ids.as_ref(),
                     clock.as_ref(),
                     &context,
+                    &mail_lines,
                 )?;
                 if let Some((_, activity)) = &briefed {
                     for item in activity {
@@ -849,6 +851,73 @@ pub(super) fn notice_rhythms_once(state: &AppState) -> bool {
     let _ = endora_application::EventLog::record(state.events.as_ref(), state.clock.now(), &said);
     let _ = state.changes.send(());
     true
+}
+
+/// Reads the mail, one message at a time, in quiet time (ADR 0097). Indexes what has arrived
+/// (headers only, no model) on every tick; reads one message only when the person has been
+/// quiet and no turn is running, holding the turn lock for that one message so a chat turn
+/// waits a few seconds at most. Something that matters and is recent goes to the activity
+/// trail. Run only when the node has the mail and the lane is on.
+pub fn spawn_mail_reader(state: AppState) {
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(std::time::Duration::from_secs(20));
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            ticker.tick().await;
+            read_mail_once(&state).await;
+        }
+    });
+}
+
+/// One tick of [`spawn_mail_reader`]. Returns what it read, if it read anything.
+pub(super) async fn read_mail_once(state: &AppState) -> Option<endora_mail::Digest> {
+    const RECENT_MS: i64 = 2 * 24 * 60 * 60 * 1000;
+    let (Some(copy), Some(reader)) = (state.mail_copy.clone(), state.mail_reader.clone()) else {
+        return None;
+    };
+    let store = state.mail_store.clone();
+    let indexing = (copy.clone(), store.clone());
+    let _ = tokio::task::spawn_blocking(move || usecases::index_new_mail(&indexing.0, &indexing.1))
+        .await;
+    let now = state.clock.now();
+    if !quiet_enough_for_own_work(state, now) {
+        return None;
+    }
+    let Ok(turn) = state.turn_lock.clone().try_lock_owned() else {
+        return None;
+    };
+    let clock = state.clock.clone();
+    let read = tokio::task::spawn_blocking(move || {
+        let _turn = turn;
+        usecases::read_one(&copy, &store, reader.as_ref(), clock.as_ref())
+    })
+    .await
+    .ok()?;
+    let digest = match read {
+        Ok(Some(digest)) => digest,
+        Ok(None) => return None,
+        Err(error) => {
+            // The model was unreachable: the message stays unread and is tried again. Said
+            // without the message, which is not in the error.
+            eprintln!("mail: not read this time ({error})");
+            return None;
+        }
+    };
+    if !digest.reasons.is_empty() && now.unix_millis() - digest.at_ms <= RECENT_MS {
+        let _ = endora_application::EventLog::record(
+            state.events.as_ref(),
+            now,
+            &format!("Mail worth a look: {}", usecases::mail_line(&digest)),
+        );
+        let _ = state.changes.send(());
+    }
+    Some(digest)
+}
+
+/// The mail section for the morning brief, or nothing.
+pub(super) fn mail_brief_lines(state: &AppState) -> Vec<String> {
+    usecases::mail_for_the_brief(state.mail_store.as_ref(), state.clock.as_ref())
+        .unwrap_or_default()
 }
 
 /// Starts looking into things unasked, on the slow cadence ADR 0094 sets. Run only when the

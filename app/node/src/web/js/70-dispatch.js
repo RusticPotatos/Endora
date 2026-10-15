@@ -13,6 +13,7 @@ function render() {
     : v === "prefs" ? viewPrefs()
     : v === "settings" ? viewSettings()
     : v === "inbox" ? viewInbox()
+    : v === "mail" ? viewMail()
     : v === "display" ? viewDisplay()
     : v === "models" ? viewModels()
     : v === "proactive" ? viewProactive()
@@ -879,6 +880,7 @@ function setupHeader(health) {
         // furniture, and one that never clears is a nag.
         unreadCount() ? `<span class="pill active">${unreadCount()}</span>` : "",
       ) +
+      item("go:mail", "inbox", "Mail") +
       item("go:settings", "prefs", "Settings") +
       `<div class="divider"></div>` +
       "";

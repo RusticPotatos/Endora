@@ -561,6 +561,44 @@ function viewInbox() {
     ${listOr(rows, "Nothing yet. When Endora has something worth saying unprompted, it lands here.")}`;
 }
 
+// What Endora made of the mail (ADR 0097): what is worth a look, then every bucket folded.
+// Only what it kept — who, a checked sentence, why it matters. Never a message body, and no
+// link to follow: nothing on this screen opens anything in the mail.
+function viewMail() {
+  const head = `
+    ${crumbs([{ label: "Home", act: "go:chat" }, { label: "Mail" }])}
+    <h2>Mail</h2>`;
+  if (!MAIL) return `${head}<div class="note">Loading…</div>`;
+  if (!MAIL.mounted) {
+    return `${head}<div class="note">No mail copy is connected. Set up the ansible-nas
+      <code>mail_mirror</code> role, then set <code>ENDORA_MAIL_DIR</code> in local.mk and deploy.</div>`;
+  }
+  const when = (ms) => new Date(ms).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+  const row = (m, showWhy) => `
+    <div class="card">
+      <div class="sub">${esc(when(m.at_ms))} · ${esc(m.from)}${m.amount ? ` · <strong>${esc(m.amount)}</strong>` : ""}</div>
+      <div class="title" style="font-weight:400;">${esc(m.sentence || "(no summary)")}</div>
+      ${showWhy && (m.why || []).length ? `<div class="sub">${esc(m.why.join(" · "))}</div>` : ""}
+      ${(m.dates || []).length ? `<div class="sub">${m.dates.map((d) => `${esc(d.date)}: ${esc(d.what)}`).join(" · ")}</div>` : ""}
+      ${(m.cautions || []).length ? `<div class="sub" style="color:var(--warn, #b45309);">${esc(m.cautions.join(" · "))}</div>` : ""}
+    </div>`;
+  const status = MAIL.reading
+    ? `Reading in quiet time. ${MAIL.unread_recent ? `${MAIL.unread_recent} of the last 90 days still to read.` : "Caught up."}`
+    : "Not reading right now: turn on ENDORA_OWN_WORK to let Endora read the mail.";
+  const important = (MAIL.important || []).map((m) => row(m, true));
+  const buckets = (MAIL.buckets || []).filter((b) => b.count).map((b) => `
+    <details class="card">
+      <summary><span class="title">${esc(b.title)}</span> <span class="pill">${b.count}</span></summary>
+      ${(b.recent || []).map((m) => row(m, true)).join("")}
+    </details>`);
+  return `${head}
+    <div class="note" style="margin-bottom:10px;">${esc(status)} ${MAIL.indexed} messages indexed. The last two weeks are shown.</div>
+    <h3>Worth a look</h3>
+    ${listOr(important, "Nothing that needs you in the last two weeks.")}
+    <h3>By bucket</h3>
+    ${listOr(buckets, "Nothing read yet.")}`;
+}
+
 // The plain on/off preferences. Their own screen, so Settings can stay a list.
 function viewDisplay() {
   const row = (on, act, label, note) => `

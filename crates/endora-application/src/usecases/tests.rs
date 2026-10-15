@@ -4976,6 +4976,7 @@ fn daily_brief_is_assembled_from_the_standing_order() {
         &ids,
         &clock,
         &ctx,
+        &[],
     )
     .unwrap()
     .unwrap();
@@ -5048,6 +5049,7 @@ fn a_brief_with_nothing_to_say_is_not_posted() {
             &SeqIds::default(),
             &FixedClock(1_000),
             &ButlerContext::default(),
+            &[],
         )
         .unwrap()
         .is_none()

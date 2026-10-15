@@ -72,8 +72,8 @@ pub use ports::{
     Butler, ButlerContext, ButlerReply, CapabilityTool, Clock, ConversationSummary,
     ConversationSummaryStore, EXECUTION_LEASE_MS, ExecutionLeaseRepository, FormedBelief,
     GoalDelivery, GoalLease, GoalRepository, IdSource, MemorySnapshot, MemoryStore, ModelUsage,
-    NeedKind, ProposalError, RepositoryError, ResearchDelivery, ToolCall, TurnMessage, UsageLog,
-    UsageTotals,
+    NeedKind, ProposalError, RepositoryError, ResearchDelivery, ToolCall, TurnMessage,
+    UntrustedReader, UsageLog, UsageTotals,
 };
 pub use research::{ResearchRun, conduct_research};
 pub use usecases::{
