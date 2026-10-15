@@ -94,7 +94,7 @@ pub fn find_rhythms(transitions: &[Transition], utc_offset_minutes: i64) -> Vec<
 
     let mut groups: BTreeMap<(&str, &str), Vec<&Transition>> = BTreeMap::new();
     for transition in transitions {
-        if is_not_a_routine(&transition.to) {
+        if is_not_a_routine(&transition.to) || keeps_time(&transition.key) {
             continue;
         }
         groups
@@ -145,6 +145,37 @@ fn is_not_a_routine(state: &str) -> bool {
         || crate::not_answering(state)
         || state.eq_ignore_ascii_case("unknown")
         || state.is_empty()
+        || reads_as_a_date_or_time(state)
+}
+
+/// `2026-10-15`, `07:30`, `2026-10-15T07:30:00`: a clock reading, which changes on schedule.
+fn reads_as_a_date_or_time(state: &str) -> bool {
+    let digits_and = |allowed: &[char]| {
+        state.chars().any(|c| c.is_ascii_digit())
+            && state
+                .chars()
+                .all(|c| c.is_ascii_digit() || allowed.contains(&c))
+    };
+    (state.len() >= 5 && digits_and(&['-', ':', 'T', '.', '+', 'Z', ' ']))
+        && (state.contains('-') || state.contains(':'))
+}
+
+/// Whether a thing changes on the clock or the sky by definition, so its "routine" is a fact
+/// about the calendar and not about the house: the sun rising, the moon's phase, a sensor
+/// whose state is today's date. Found on the first live run, where sunrise and sunset were
+/// two of the four patterns reported. A short list of what Home Assistant itself provides,
+/// matched on the thing's own name; a state that reads as a date or a time is caught below
+/// whatever the thing is called.
+fn keeps_time(key: &str) -> bool {
+    const CLOCKS: &[&str] = &[
+        "sun.",
+        "sensor.date",
+        "sensor.time",
+        "sensor.moon",
+        "sensor.season",
+    ];
+    let thing = key.rsplit("::").next().unwrap_or(key);
+    CLOCKS.iter().any(|clock| thing.starts_with(clock))
 }
 
 /// The `WITHIN_MINUTES` stretch of the day that the most separate days fall in, going round the

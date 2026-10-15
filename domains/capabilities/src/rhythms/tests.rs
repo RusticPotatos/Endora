@@ -107,6 +107,41 @@ fn a_thing_that_flaps_all_day_has_no_time_of_day() {
 }
 
 #[test]
+fn the_sky_and_the_clock_are_not_the_houses_routine() {
+    // Found on the first live run: "sun.sun goes above_horizon around 07:25, on 14 of the
+    // last 15 days". True every day by definition, and nothing about the house.
+    let mut log = a_fortnight(|day| Some(at(day, 7, 30)));
+    for day in 0..14 {
+        log.push(moved(
+            "home-assistant::sun.sun",
+            "above_horizon",
+            at(day, 7, 25),
+        ));
+        log.push(moved(
+            "home-assistant::sensor.date",
+            "2026-10-15",
+            at(day, 0, 0),
+        ));
+        log.push(moved(
+            "home-assistant::sensor.moon_phase",
+            "waxing_gibbous",
+            at(day, 0, 1),
+        ));
+    }
+    let found = find_rhythms(&log, 0);
+    assert!(
+        found.iter().any(|r| r.key.ends_with("front_door")),
+        "{found:?}"
+    );
+    assert!(
+        found.iter().all(|r| !r.key.contains("sun.")
+            && !r.key.contains("sensor.date")
+            && !r.key.contains("moon")),
+        "{found:?}"
+    );
+}
+
+#[test]
 fn readings_and_trouble_are_not_routines() {
     let mut log = a_fortnight(|_| None);
     for day in 0..14 {
@@ -272,4 +307,26 @@ fn a_routine_on_every_day_comes_before_one_on_most() {
         .unwrap();
     let porch = found.iter().position(|r| r.key.ends_with("porch")).unwrap();
     assert!(door < porch, "{found:?}");
+}
+
+#[test]
+fn a_state_that_is_a_date_or_a_time_is_a_clock_whatever_it_is_called() {
+    let mut log = a_fortnight(|_| None);
+    for day in 0..14 {
+        log.push(moved(
+            "home::sensor.phone_next_alarm",
+            &format!("2026-10-{:02}T07:00:00", day + 1),
+            at(day, 0, 5),
+        ));
+        log.push(moved(
+            "home::sensor.kettle_last_on",
+            "07:12",
+            at(day, 7, 12),
+        ));
+    }
+    let found = find_rhythms(&log, 0);
+    assert!(
+        found.iter().all(|r| r.key.ends_with("heartbeat")),
+        "{found:?}"
+    );
 }
