@@ -325,3 +325,173 @@ async fn a_person_goal_that_ends_still_posts_to_chat() {
     .await
     .expect("a request's ending must still reach chat");
 }
+
+// ---- specimens and beliefs (ADR 0095) ----
+
+use endora_application::{BeliefKind, Confidence};
+use endora_understanding::SpecimenRepository;
+
+/// An ask that failed `days_ago` days ago and has not been replayed.
+fn failed_ask(state: &AppState, id: &str, asked: &str, days_ago: i64) {
+    state
+        .understanding
+        .file_specimen(id, asked, "not an answer", now(state) - days_ago * DAY)
+        .unwrap();
+}
+
+fn strongly_believes(state: &AppState, statement: &str) {
+    endora_application::BeliefRepository::save(
+        state.understanding.as_ref(),
+        &endora_application::Belief::new(
+            endora_application::BeliefId::new(7),
+            statement,
+            BeliefKind::Intent,
+            Confidence::High,
+            "said so twice",
+            Timestamp::from_unix_millis(now(state)),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+}
+
+#[test]
+fn an_ask_that_failed_two_days_ago_is_asked_again_when_nothing_is_wrong_in_the_house() {
+    let state = state();
+    failed_ask(&state, "s1", "when is the next 41 bus?", 2);
+    assert!(super::start_own_work_once(&state));
+    let goals = own_goals(&state);
+    assert_eq!(goals.len(), 1);
+    assert!(goals[0].request_key().starts_with("own:specimen:s1"));
+    assert_eq!(goals[0].origin(), GoalOrigin::Record);
+}
+
+#[test]
+fn an_ask_that_failed_an_hour_ago_is_left_alone() {
+    let state = state();
+    state
+        .understanding
+        .file_specimen("s1", "q", "not an answer", now(&state) - 60 * 60 * 1000)
+        .unwrap();
+    assert!(!super::start_own_work_once(&state));
+}
+
+#[test]
+fn a_belief_is_looked_into_only_when_nothing_else_needs_it() {
+    let state = state();
+    strongly_believes(&state, "wants to sleep better");
+    assert!(super::start_own_work_once(&state));
+    let key = own_goals(&state)[0].request_key().to_owned();
+    assert!(key.starts_with("own:belief:7:"), "{key}");
+    assert!(
+        own_goals(&state)[0]
+            .goal()
+            .objective()
+            .contains("sleep better")
+    );
+
+    // With a trouble present it would have come first: a fresh node, same belief.
+    let busy = self::state();
+    strongly_believes(&busy, "wants to sleep better");
+    in_trouble(&busy, "sensor.garage_door", 4);
+    assert!(super::start_own_work_once(&busy));
+    assert!(
+        own_goals(&busy)[0].request_key().starts_with("own:trouble"),
+        "{}",
+        own_goals(&busy)[0].request_key()
+    );
+}
+
+#[tokio::test]
+async fn a_replay_the_worker_runs_ends_the_goal_and_leaves_the_result_in_the_trail_only() {
+    // S4. The lane asks the question again, judges it by the verdict that filed it, and the
+    // ending reaches the activity trail in the words the night used, never chat.
+    let state = state();
+    failed_ask(&state, "s1", "what lights are on?", 2);
+    assert!(super::start_own_work_once(&state));
+    let key = own_goals(&state)[0].request_key().to_owned();
+
+    super::spawn_goal_worker(state.clone());
+    let done = settled(&state, &key, Duration::from_secs(5))
+        .await
+        .expect("the worker never replayed the ask");
+    assert!(
+        matches!(
+            done.goal().status(),
+            GoalStatus::Complete | GoalStatus::Partial
+        ),
+        "{:?}",
+        done.goal().status()
+    );
+    // The specimen recorded the attempt: replayed once, whichever way it went.
+    let after = state
+        .understanding
+        .open_specimens()
+        .unwrap()
+        .into_iter()
+        .chain(state.understanding.gave_up_specimens().unwrap())
+        .find(|s| s.id == "s1");
+    if let Some(open) = after {
+        assert_eq!(open.replays, 1, "{open:?}");
+    }
+
+    tokio::time::timeout(Duration::from_secs(8), async {
+        loop {
+            if state.store.pending_goal_completions().unwrap().is_empty() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("the ending was never settled");
+    assert!(state.store.export().unwrap().messages.is_empty());
+    assert!(
+        trail(&state)
+            .iter()
+            .any(|line| line.contains("what lights are on")),
+        "{:?}",
+        trail(&state)
+    );
+}
+
+#[tokio::test]
+async fn an_ask_that_is_taken_off_the_shelf_withdraws_its_goal() {
+    let state = state();
+    failed_ask(&state, "s1", "what lights are on?", 2);
+    assert!(super::start_own_work_once(&state));
+    let key = own_goals(&state)[0].request_key().to_owned();
+    // Answered some other way before the worker got to it.
+    state
+        .understanding
+        .record_replay("s1", true, now(&state))
+        .unwrap();
+
+    super::spawn_goal_worker(state.clone());
+    let gone = settled(&state, &key, Duration::from_secs(3))
+        .await
+        .expect("the worker never withdrew the goal");
+    assert_eq!(gone.goal().status(), GoalStatus::Cancelled);
+}
+
+#[tokio::test]
+async fn a_belief_goal_whose_belief_has_gone_is_withdrawn() {
+    let state = state();
+    strongly_believes(&state, "wants to sleep better");
+    assert!(super::start_own_work_once(&state));
+    let key = own_goals(&state)[0].request_key().to_owned();
+    let mut belief = endora_application::BeliefRepository::get(
+        state.understanding.as_ref(),
+        endora_application::BeliefId::new(7),
+    )
+    .unwrap()
+    .unwrap();
+    belief.expire();
+    endora_application::BeliefRepository::save(state.understanding.as_ref(), &belief).unwrap();
+
+    super::spawn_goal_worker(state.clone());
+    let gone = settled(&state, &key, Duration::from_secs(3))
+        .await
+        .expect("the worker never withdrew the goal");
+    assert_eq!(gone.goal().status(), GoalStatus::Cancelled);
+}

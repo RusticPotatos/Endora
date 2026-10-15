@@ -31,6 +31,39 @@ pub enum WorkSource {
         /// When Endora first saw it this way.
         since_ms: i64,
     },
+    /// An ask the butler failed and is still worth asking again (ADR 0095). Done when a
+    /// replay passes the verdict that filed it.
+    Specimen {
+        /// The specimen's id.
+        id: String,
+    },
+    /// A belief Endora is most sure of, looked into where nothing else needs it (ADR 0095).
+    /// Its source cannot say it is done, so it ends partial.
+    Belief {
+        /// The belief's id.
+        id: String,
+    },
+}
+
+/// What a goal derived from a record may read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Skills {
+    /// Only what the house reports ([`crate::record_lane::HOUSE_SKILLS`]).
+    House,
+    /// The reversible, read-only skills, as a goal the person asked for has.
+    Reversible,
+}
+
+impl WorkSource {
+    /// The skills work from this source may use. Standing trouble is held to the house
+    /// (ADR 0094); the others are given what the thing they came from always had (ADR 0095).
+    #[must_use]
+    pub const fn skills(&self) -> Skills {
+        match self {
+            Self::Trouble { .. } => Skills::House,
+            Self::Specimen { .. } | Self::Belief { .. } => Skills::Reversible,
+        }
+    }
 }
 
 /// Explicit constraints proposed once and persisted with the original request.
@@ -81,6 +114,21 @@ impl GoalCriteria {
                             server: text("server")?,
                             thing: text("thing")?,
                             since_ms: value["since_ms"].as_i64().ok_or("invalid trouble source")?,
+                        },
+                    })
+                }
+                Some(kind @ ("specimen" | "belief")) => {
+                    let id = value["id"]
+                        .as_str()
+                        .map(str::trim)
+                        .filter(|t| !t.is_empty() && t.chars().count() <= 200)
+                        .map(str::to_owned)
+                        .ok_or("invalid work source")?;
+                    Ok(Self::Resolve {
+                        source: if kind == "specimen" {
+                            WorkSource::Specimen { id }
+                        } else {
+                            WorkSource::Belief { id }
                         },
                     })
                 }
@@ -144,6 +192,12 @@ impl GoalCriteria {
                 "kind":"resolve","source":"trouble",
                 "server":server,"thing":thing,"since_ms":since_ms
             }),
+            Self::Resolve {
+                source: WorkSource::Specimen { id },
+            } => json!({"kind":"resolve","source":"specimen","id":id}),
+            Self::Resolve {
+                source: WorkSource::Belief { id },
+            } => json!({"kind":"resolve","source":"belief","id":id}),
         }
     }
     /// Acknowledges the interpretation so the person can correct it.
@@ -154,6 +208,12 @@ impl GoalCriteria {
             Self::Resolve {
                 source: WorkSource::Trouble { thing, .. },
             } => format!("find out why {thing} is not answering, or that it is again"),
+            Self::Resolve {
+                source: WorkSource::Specimen { .. },
+            } => "ask the question again and see whether it can be answered now".to_owned(),
+            Self::Resolve {
+                source: WorkSource::Belief { .. },
+            } => "look into what would help with something you understand about them".to_owned(),
         }
     }
 }
@@ -275,6 +335,55 @@ mod tests {
             GoalCriteria::from_stored(&schedule.to_json()).unwrap(),
             schedule
         );
+    }
+
+    #[test]
+    fn every_source_reads_back_exactly_and_none_can_be_declared_by_a_model() {
+        for source in [
+            WorkSource::Specimen {
+                id: "s-1".to_owned(),
+            },
+            WorkSource::Belief {
+                id: "b-1".to_owned(),
+            },
+        ] {
+            let criteria = GoalCriteria::Resolve { source };
+            assert_eq!(
+                GoalCriteria::from_stored(&criteria.to_json()).unwrap(),
+                criteria
+            );
+            assert!(GoalCriteria::from_json(&criteria.to_json()).is_err());
+        }
+    }
+
+    #[test]
+    fn a_stored_specimen_or_belief_without_an_id_is_refused() {
+        for input in [
+            json!({"kind":"resolve","source":"specimen"}),
+            json!({"kind":"resolve","source":"specimen","id":""}),
+            json!({"kind":"resolve","source":"belief"}),
+            json!({"kind":"resolve","source":"belief","id":"   "}),
+        ] {
+            assert!(GoalCriteria::from_stored(&input).is_err(), "{input}");
+        }
+    }
+
+    #[test]
+    fn what_each_source_may_read_is_decided_by_the_source() {
+        // Standing trouble reads the house; a replayed ask and a belief are given the skills
+        // the thing they came from always had (ADR 0095).
+        let trouble = WorkSource::Trouble {
+            server: "home".to_owned(),
+            thing: "sensor.x".to_owned(),
+            since_ms: 1,
+        };
+        assert_eq!(trouble.skills(), Skills::House);
+        for source in [
+            WorkSource::Specimen { id: "s".to_owned() },
+            WorkSource::Belief { id: "b".to_owned() },
+        ] {
+            assert_eq!(source.skills(), Skills::Reversible);
+        }
     }
 
     #[test]

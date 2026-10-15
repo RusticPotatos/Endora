@@ -100,6 +100,10 @@ pub struct AppState {
     /// slow local model that catch-up degraded the first turns after every deploy — and
     /// the butler keeps the day's thread across restarts.
     pub summary: PersistentSummary,
+    /// Whether the node looks into things on its own (`ENDORA_OWN_WORK`, ADR 0094/0095).
+    /// Off unless the owner turned it on. When on, the nightly loop leaves the stumpers and
+    /// the long-running intention to that lane.
+    pub own_work: bool,
 }
 
 /// Persistent [`ConversationSummaryStore`](endora_application::ConversationSummaryStore):
@@ -230,7 +234,15 @@ impl AppState {
             summary,
             token,
             started_ms,
+            own_work: false,
         }
+    }
+
+    /// Turns on the record lane: the node starts looking into things on its own.
+    #[must_use]
+    pub fn with_own_work(mut self, on: bool) -> Self {
+        self.own_work = on;
+        self
     }
 
     /// Attaches the concrete brain, for facts only the composition can answer —

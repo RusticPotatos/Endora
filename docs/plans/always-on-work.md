@@ -221,7 +221,7 @@ acceptance evidence.
 | 1 | Provenance, lanes, claim priority | **none** | S1, S6; existing goal suite and `make goal-eval` unchanged |
 | 2 | `LocalOnly` clamp and the quiet gate, behind a flag | none yet | S2, S3 |
 | 3 | Selector + `Resolve` for **standing trouble only** | yes, first source, off unless `ENDORA_OWN_WORK=1` | S4, S5, S7 (trail), S8, S9 |
-| 4 | Specimens, then repairs, and **intentions folded in** (a belief as the last source; the nightly loop's own pursuit and stumper replay retired in the same edit) | yes | S4–S8 per source |
+| 4 | Specimens, and **intentions folded in** (a belief as the last source; the nightly loop's own pursuit and stumper replay retired in the same edit, behind the same switch). Repairs left out: see [ADR 0095](../adr/0095-more-sources-for-work-it-finds.md) | yes | S4–S8 per source |
 | 5 | Fold results into the brief | yes | S7 against a real brief |
 | 6 | Mail as a source (own ADR; prerequisites below) | yes | own scenarios |
 | 7 | Acting: drafts first, then anything needing an opened capability | yes | own ADR |
@@ -251,6 +251,18 @@ counted as a dead end, it ended Blocked in 22 seconds with "I found nothing usab
 is **not** known: what it writes when Home Assistant can actually be read, because the
 eval composition has no Home Assistant. That is the first thing to look at on the live
 node.
+
+*Phase 4, as built (2026-10-15).* Recorded in
+[ADR 0095](../adr/0095-more-sources-for-work-it-finds.md). `WorkSource` gains `Specimen`
+and `Belief`, and `next_work` takes them in that order after standing trouble. A specimen's
+"work" is not the open-ended goal loop but a single replay (`replay_specimen`, the nightly
+step moved), judged by the verdict that filed it and counted on the specimen. Each source
+sets what it may read: the house for a trouble, the reversible read-only skills for the
+other two, all on the local model. Repairs were considered and not made a source. The
+nightly loop's stumper replay and its intention step are skipped **only when the lane is
+on** (`ENDORA_OWN_WORK`), so there is never a time when neither runs and a node that has not
+turned it on is unchanged; the old paths and the condition are deleted once the lane has
+been observed. Not yet observed on a live node.
 
 ## Acceptance scenarios
 

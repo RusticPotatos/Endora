@@ -194,6 +194,7 @@ of an existing record and take the next number.
 | [0090](0090-skills-are-sent-once.md) | Skills are sent once | — |
 | [0091](0091-what-the-deep-model-costs.md) | What the deep model costs | — |
 | [0094](0094-work-it-finds-for-itself.md) | Work it finds for itself | — |
+| [0095](0095-more-sources-for-work-it-finds.md) | More sources for the work it finds | — |
 
 The forty-eight decisions these consolidate are in [archive/](archive/) — kept in full,
 because the reasoning that produced a rule is the reason it survives an argument later.

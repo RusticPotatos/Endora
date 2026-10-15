@@ -636,6 +636,10 @@ pub fn run_due_nightly_loop(
     ids: &impl IdSource,
     clock: &impl Clock,
     context: &ButlerContext,
+    // Whether the record lane is on (`ENDORA_OWN_WORK`, ADR 0095). When it is, the lane asks
+    // the stumpers again and looks into beliefs, so this loop stops doing both; when it is
+    // not, this loop does what it always did, so there is never a time when neither does.
+    lane_is_on: bool,
 ) -> Result<Option<(ChatMessage, Vec<String>)>, AppError> {
     let now = clock.now();
     let Some(mut schedule) = schedules.get()? else {
@@ -664,7 +668,12 @@ pub fn run_due_nightly_loop(
     // retires the specimen: the record notices the fleet getting better without the
     // person having to ask again. One per night, oldest first — unhurried, like the
     // rest — and judged by the same deterministic verdict that filed it.
-    if let Some(stumper) = specimens.open_specimens()?.into_iter().next() {
+    let stumper = if lane_is_on {
+        None
+    } else {
+        specimens.open_specimens()?.into_iter().next()
+    };
+    if let Some(stumper) = stumper {
         let ask = [ChatMessage::new(
             MessageId::new(ids.new_id()),
             MessageRole::User,
@@ -725,7 +734,10 @@ pub fn run_due_nightly_loop(
     }
     // Continue what Endora is already pursuing, or take something up. This is the
     // change ADR 0052 is for: seven nights on one thing, not seven unrelated evenings.
+    // With the lane on, the lane looks into the belief and this loop keeps no intention of its
+    // own; one that was already active is still retired above when it is spent or stale.
     let intention = match intentions.active()? {
+        _ if lane_is_on => None,
         Some(existing) => Some(existing),
         None => take_up_an_intention(intentions, beliefs, ids, clock, &mut activity)?,
     };
@@ -959,4 +971,134 @@ pub(super) fn nightly_focus(
             .map(|b| (b.id(), b.statement().to_owned()))
     };
     Ok(strongest(Some(crate::BeliefKind::Intent)).or_else(|| strongest(None)))
+}
+
+/// Asks again a question the butler once failed, as work in the record lane, and says what
+/// became of it (ADR 0095). The nightly loop's "replay one stumper" step, moved here.
+///
+/// Judged by the same deterministic verdict that filed the specimen
+/// ([`specimen_verdict`]), never by the model: a pass completes the goal and retires the
+/// specimen, a failure ends the goal `Partial` and counts against the specimen, which gives
+/// up after [`endora_understanding::REPLAYS_BEFORE_GIVING_UP`] of them. The specimen holds
+/// the count, so an ask is not replayed more often than it ever was.
+///
+/// Held to the local model, like all of the lane; allowed the skills the nightly replay had,
+/// because it is the person's own ask and a replay denied the skills it needs would always
+/// fail and falsely prove that nothing can answer it. Nothing is appended to the chat: a
+/// replay is the butler examining itself, not a conversation.
+///
+/// # Errors
+/// [`AppError::Repository`] if the replay cannot be recorded. Then the goal is left as it
+/// was and the worker tries again, rather than ending a goal whose result was not kept.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "explicit dependencies, no hidden state"
+)]
+pub fn replay_specimen(
+    record: &crate::GoalRecord,
+    specimen: &endora_understanding::Specimen,
+    butler: &dyn Butler,
+    capabilities: &dyn CapabilityRunner,
+    audit: &dyn AuditLog,
+    outcomes: &impl OutcomeRepository,
+    specimens: &impl SpecimenRepository,
+    preferences: &impl PreferenceRepository,
+    ids: &impl IdSource,
+    clock: &impl Clock,
+    context: &ButlerContext,
+) -> Result<crate::GoalRecord, AppError> {
+    let mut goal = record.goal().clone();
+    if goal.status().terminal() {
+        return Ok(record.clone());
+    }
+    let local_only = crate::record_lane::LocalOnly::new(butler);
+    let prefs = preferences.list_all()?;
+    let ask = [ChatMessage::new(
+        MessageId::new(ids.new_id()),
+        MessageRole::User,
+        &specimen.asked,
+        clock.now(),
+    )?];
+    // Unmotivated: a replay is not caused by any belief.
+    let unmotivated = OutcomeSink::unmotivated(outcomes);
+    let replayed = run_tool_turn(
+        &local_only,
+        capabilities,
+        audit,
+        &unmotivated,
+        ids,
+        clock,
+        &ask,
+        &|_id| Vec::new(),
+        &prefs,
+        context,
+        CHAT_TOOL_ROUNDS,
+        &mut |_step| {},
+        &mut |_token: &str| {},
+        &mut Vec::new(),
+        &mut Vec::new(),
+    );
+    let passed = replayed
+        .as_ref()
+        .map(|reply| specimen_verdict(reply, context).is_none())
+        .unwrap_or(false);
+    let landed = specimens.record_replay(&specimen.id, passed, clock.now().unix_millis())?;
+    // Three outcomes, not two. Giving up is the one worth naming: it is the point at which
+    // the record stops being "still trying" and becomes evidence that nothing here can
+    // answer this, which is what ADR 0071 reads as a proven gap.
+    let line = format!(
+        "{} \"{}\"",
+        match landed {
+            endora_understanding::SpecimenState::Answered =>
+                "A question that once stumped me answers now:",
+            endora_understanding::SpecimenState::GaveUp =>
+                "I've stopped re-asking this one — nothing I have can answer it:",
+            endora_understanding::SpecimenState::Open => "Replayed a stumper; it still fails:",
+        },
+        first_sentence_of(&specimen.asked)
+    );
+    goal.start("replay", "ask it again");
+    goal.commit("replay", &line);
+    if passed {
+        goal.apply(
+            crate::GoalVerdict::Complete,
+            "it passed the check that filed it",
+        );
+    } else {
+        goal.apply(crate::GoalVerdict::Partial, "it still fails the check");
+    }
+    Ok(record.with_goal(goal, clock.now()))
+}
+
+/// The belief Endora is most sure of, as the lane's last source (ADR 0095): the same choice
+/// the nightly loop made for its intention, by the same arithmetic. `None` when it understands
+/// nothing well enough yet.
+///
+/// # Errors
+/// [`AppError::Repository`] if the backend fails or stored data is corrupt.
+pub fn belief_to_look_into(
+    beliefs: &impl BeliefRepository,
+    clock: &impl Clock,
+) -> Result<Option<crate::own_work::Focus>, AppError> {
+    Ok(
+        nightly_focus(beliefs, clock)?.map(|(id, statement)| crate::own_work::Focus {
+            id: id.value().to_string(),
+            statement,
+        }),
+    )
+}
+
+/// The ids of the beliefs still held, in the form a goal's source records them, so that work
+/// begun about one can tell the belief has faded or been dropped.
+///
+/// # Errors
+/// [`AppError::Repository`] if the backend fails or stored data is corrupt.
+pub fn beliefs_still_held(
+    beliefs: &impl BeliefRepository,
+    clock: &impl Clock,
+) -> Result<Vec<String>, AppError> {
+    Ok(understanding(beliefs, clock)?
+        .iter()
+        .map(|belief| belief.id().value().to_string())
+        .collect())
 }

@@ -5556,6 +5556,7 @@ fn the_nightly_loop_reflects_and_leaves_an_overnight_note_when_due() {
         &ids,
         &clock,
         &ButlerContext::default(),
+        false,
     )
     .unwrap()
     .expect("the loop runs when due");
@@ -5650,6 +5651,7 @@ fn the_night_replays_the_oldest_stumper_and_a_pass_retires_it() {
         &SeqIds::default(),
         &FixedClock(27 * 3_600_000),
         &ButlerContext::default(),
+        false,
     )
     .unwrap()
     .expect("the loop runs when due");
@@ -5715,6 +5717,7 @@ fn the_night_says_so_when_it_gives_up_on_an_ask() {
         &SeqIds::default(),
         &FixedClock(27 * 3_600_000),
         &ButlerContext::default(),
+        false,
     )
     .unwrap()
     .expect("the loop runs when due");
@@ -5728,6 +5731,189 @@ fn the_night_says_so_when_it_gives_up_on_an_ask() {
         said.contains("stopped re-asking"),
         "the night that gives up has to say so, not repeat 'it still fails': {said}"
     );
+}
+
+fn a_goal_from_a_specimen(id: &str, asked: &str) -> crate::GoalRecord {
+    let goal = crate::Goal::for_request(
+        &format!("Ask again: \"{asked}\""),
+        crate::goal_request::GoalCriteria::Resolve {
+            source: crate::goal_request::WorkSource::Specimen { id: id.to_owned() },
+        },
+    )
+    .unwrap();
+    crate::GoalRecord::new(
+        &format!("own:specimen:{id}:1"),
+        goal,
+        endora_kernel::ids::Timestamp::from_unix_millis(1),
+    )
+    .unwrap()
+    .with_origin(crate::GoalOrigin::Record)
+}
+
+fn an_open_specimen(id: &str, asked: &str, replays: u32) -> endora_understanding::Specimen {
+    endora_understanding::Specimen {
+        id: id.to_owned(),
+        asked: asked.to_owned(),
+        verdict: "not an answer".to_owned(),
+        filed_ms: 1,
+        replays,
+        last_replay_ms: None,
+        state: endora_understanding::SpecimenState::Open,
+    }
+}
+
+fn replay(
+    record: &crate::GoalRecord,
+    specimen: &endora_understanding::Specimen,
+    shelf: &crate::usecases::RecordingShelf,
+    butler: &dyn Butler,
+) -> crate::GoalRecord {
+    super::replay_specimen(
+        record,
+        specimen,
+        butler,
+        &NoCapabilities,
+        &FakeAudit::default(),
+        &FakeOutcomes::default(),
+        shelf,
+        &FakeStore::default(),
+        &SeqIds::default(),
+        &FixedClock(27 * 3_600_000),
+        &ButlerContext::default(),
+    )
+    .unwrap()
+}
+
+#[test]
+fn a_replay_that_passes_completes_the_goal_and_retires_the_ask() {
+    // ADR 0095, the nightly step moved into the lane: judged by the verdict that filed it.
+    let shelf = crate::usecases::RecordingShelf::default();
+    let ask = an_open_specimen("s1", "what lights are on?", 3);
+    shelf.open.borrow_mut().push(ask.clone());
+    let butler = EchoesItsInstruction {
+        seen: RefCell::new(String::new()),
+    };
+    let after = replay(
+        &a_goal_from_a_specimen("s1", &ask.asked),
+        &ask,
+        &shelf,
+        &butler,
+    );
+    assert_eq!(*shelf.replays.borrow(), vec![("s1".to_owned(), true)]);
+    assert_eq!(after.goal().status(), crate::GoalStatus::Complete);
+    assert_eq!(after.origin(), crate::GoalOrigin::Record);
+    assert!(
+        after.goal().evidence()[0].output.contains("answers now"),
+        "{:?}",
+        after.goal().evidence()
+    );
+    assert!(
+        butler.seen.borrow().contains("what lights are on?"),
+        "it asked the ask"
+    );
+}
+
+#[test]
+fn a_replay_that_fails_ends_partial_and_counts_against_the_ask() {
+    let shelf = crate::usecases::RecordingShelf::default();
+    let ask = an_open_specimen("s1", "when is the next 41 bus?", 2);
+    shelf.open.borrow_mut().push(ask.clone());
+    let after = replay(
+        &a_goal_from_a_specimen("s1", &ask.asked),
+        &ask,
+        &shelf,
+        &StillCannot,
+    );
+    assert_eq!(*shelf.replays.borrow(), vec![("s1".to_owned(), false)]);
+    assert_eq!(after.goal().status(), crate::GoalStatus::Partial);
+    assert!(
+        after.goal().evidence()[0].output.contains("it still fails"),
+        "{:?}",
+        after.goal().evidence()
+    );
+}
+
+#[test]
+fn the_last_allowed_failure_says_it_has_stopped_asking() {
+    let shelf = crate::usecases::RecordingShelf::default();
+    let ask = an_open_specimen(
+        "s1",
+        "when is the next 41 bus?",
+        endora_understanding::REPLAYS_BEFORE_GIVING_UP - 1,
+    );
+    shelf.open.borrow_mut().push(ask.clone());
+    let after = replay(
+        &a_goal_from_a_specimen("s1", &ask.asked),
+        &ask,
+        &shelf,
+        &StillCannot,
+    );
+    let said = &after.goal().evidence()[0].output;
+    assert!(
+        said.contains("stopped re-asking") && said.contains("41 bus"),
+        "{said}"
+    );
+}
+
+#[test]
+fn a_replay_never_reaches_for_the_deep_model() {
+    // The spy's local model gives nothing useful, which is exactly when a turn escalates.
+    let spy = DeepModelSpy(std::sync::atomic::AtomicUsize::new(0));
+    let shelf = crate::usecases::RecordingShelf::default();
+    let ask = an_open_specimen("s1", "what lights are on?", 0);
+    shelf.open.borrow_mut().push(ask.clone());
+    replay(
+        &a_goal_from_a_specimen("s1", &ask.asked),
+        &ask,
+        &shelf,
+        &spy,
+    );
+    assert_eq!(times_the_deep_model_was_reached_for(&spy), 0);
+}
+
+#[test]
+fn a_goal_that_has_already_ended_is_not_replayed_again() {
+    let shelf = crate::usecases::RecordingShelf::default();
+    let ask = an_open_specimen("s1", "what lights are on?", 0);
+    let mut goal = a_goal_from_a_specimen("s1", &ask.asked);
+    let mut ended = goal.goal().clone();
+    ended.cancel("stopped");
+    goal = goal.with_goal(ended, endora_kernel::ids::Timestamp::from_unix_millis(2));
+    let after = replay(&goal, &ask, &shelf, &StillCannot);
+    assert!(
+        shelf.replays.borrow().is_empty(),
+        "a finished goal asked again"
+    );
+    assert_eq!(after.goal().status(), crate::GoalStatus::Cancelled);
+}
+
+#[test]
+fn a_replay_is_given_the_skills_the_ask_needs() {
+    // Not the house only: a replay denied the web would always fail on a question about the
+    // bus and falsely prove nothing here can answer it (the signal ADR 0071 draws from).
+    let shelf = crate::usecases::RecordingShelf::default();
+    let ask = an_open_specimen("s1", "what does example.test say?", 0);
+    shelf.open.borrow_mut().push(ask.clone());
+    let fetches = FetchesThenSays {
+        turns: std::cell::Cell::new(0),
+        then_says: "It says it is a page for use in documentation examples.",
+    };
+    let after = super::replay_specimen(
+        &a_goal_from_a_specimen("s1", &ask.asked),
+        &ask,
+        &fetches,
+        &FetchResult(Ok("Example Domain. For documentation.")),
+        &FakeAudit::default(),
+        &FakeOutcomes::default(),
+        &shelf,
+        &FakeStore::default(),
+        &SeqIds::default(),
+        &FixedClock(27 * 3_600_000),
+        &ButlerContext::default(),
+    )
+    .unwrap();
+    assert_eq!(after.goal().status(), crate::GoalStatus::Complete);
+    assert_eq!(fetches.turns.get(), 2, "it fetched, then answered");
 }
 
 /// A butler that comes back with something new on each pass.
@@ -6011,6 +6197,72 @@ fn a_goal_from_a_trouble() -> crate::GoalRecord {
     )
     .unwrap()
     .with_origin(crate::GoalOrigin::Record)
+}
+
+fn a_goal_from_a_belief() -> crate::GoalRecord {
+    let goal = crate::Goal::for_request(
+        "Look into what would help with: they want to run more often",
+        crate::goal_request::GoalCriteria::Resolve {
+            source: crate::goal_request::WorkSource::Belief {
+                id: "b-1".to_owned(),
+            },
+        },
+    )
+    .unwrap();
+    crate::GoalRecord::new(
+        "own:belief:b-1:1",
+        goal,
+        endora_kernel::ids::Timestamp::from_unix_millis(1),
+    )
+    .unwrap()
+    .with_origin(crate::GoalOrigin::Record)
+}
+
+#[test]
+fn a_goal_from_a_belief_may_read_the_outside_but_a_goal_from_a_trouble_may_not() {
+    // ADR 0095. Looking into something the person cares about needs more than the house,
+    // so the belief source is given what its predecessor, the nightly intention, had;
+    // standing trouble stays with the house (ADR 0094). Same model, same working fetch.
+    let page = Ok("Example Domain. A page that would be served.");
+    let belief = one_fetch_pass_on(&a_goal_from_a_belief(), page);
+    assert!(
+        belief
+            .goal()
+            .observations()
+            .iter()
+            .any(|o| o.error.is_none()),
+        "a belief goal was refused the web: {:?}",
+        belief.goal().observations()
+    );
+    let trouble = one_fetch_pass_on(&a_goal_from_a_trouble(), page);
+    assert!(
+        trouble
+            .goal()
+            .observations()
+            .iter()
+            .all(|o| o.error.is_some()),
+        "a trouble goal reached the web"
+    );
+}
+
+#[test]
+fn a_goal_from_a_belief_is_still_held_to_the_local_model() {
+    let spy = DeepModelSpy(std::sync::atomic::AtomicUsize::new(0));
+    one_pass(&a_goal_from_a_belief(), &spy);
+    assert_eq!(times_the_deep_model_was_reached_for(&spy), 0);
+}
+
+#[test]
+fn a_goal_from_a_belief_keeps_only_what_it_read_too() {
+    let after = one_pass_saying(
+        &a_goal_from_a_belief(),
+        "They probably want a running plan; most people do.",
+    );
+    assert!(
+        after.goal().evidence().is_empty(),
+        "{:?}",
+        after.goal().evidence()
+    );
 }
 
 #[test]
@@ -6477,6 +6729,23 @@ fn one_night(
     intentions: &FakeIntentions,
     clock: &FixedClock,
 ) -> (String, Vec<String>) {
+    one_night_with(
+        beliefs,
+        intentions,
+        &crate::usecases::NoSpecimens,
+        clock,
+        false,
+    )
+}
+
+/// [`one_night`], choosing whether the record lane is on and what is on the shelf.
+fn one_night_with(
+    beliefs: &FakeStore,
+    intentions: &FakeIntentions,
+    shelf: &impl endora_understanding::SpecimenRepository,
+    clock: &FixedClock,
+    lane_is_on: bool,
+) -> (String, Vec<String>) {
     let butler = EchoesItsInstruction {
         seen: RefCell::new(String::new()),
     };
@@ -6485,7 +6754,7 @@ fn one_night(
         beliefs,
         beliefs,
         &FakeOutcomes::default(),
-        &crate::usecases::NoSpecimens,
+        shelf,
         intentions,
         &super::tests::FakeNotions::default(),
         &[],
@@ -6497,11 +6766,136 @@ fn one_night(
         &SeqIds::default(),
         clock,
         &ButlerContext::default(),
+        lane_is_on,
     )
     .unwrap()
     .expect("the loop runs when due");
     let seen = butler.seen.borrow().clone();
     (seen, activity)
+}
+
+#[test]
+fn the_belief_to_look_into_is_the_one_the_night_would_have_taken_up() {
+    let store = store_with_a_belief();
+    let focus = super::belief_to_look_into(&store, &FixedClock(1_000))
+        .unwrap()
+        .expect("one belief, strong enough");
+    assert_eq!(focus.id, "7");
+    assert_eq!(focus.statement, "wants to sleep better");
+    assert_eq!(
+        super::beliefs_still_held(&store, &FixedClock(1_000)).unwrap(),
+        ["7"]
+    );
+    assert!(
+        super::belief_to_look_into(&FakeStore::default(), &FixedClock(1_000))
+            .unwrap()
+            .is_none(),
+        "nothing understood, nothing to look into"
+    );
+}
+
+#[test]
+fn with_the_lane_on_the_night_keeps_no_intention_of_its_own() {
+    // ADR 0095: the belief is looked into by the lane. The night still reflects and leaves
+    // its note; it just no longer forms or continues a thread.
+    let store = store_with_a_belief();
+    let intentions = FakeIntentions::default();
+    let (instruction, activity) = one_night_with(
+        &store,
+        &intentions,
+        &crate::usecases::NoSpecimens,
+        &FixedClock(27 * 3_600_000),
+        true,
+    );
+    assert!(
+        intentions.list().unwrap().is_empty(),
+        "an intention was formed"
+    );
+    assert!(!instruction.contains("taking up"), "{instruction}");
+    assert!(
+        !activity.iter().any(|a| a.contains("Started looking into")),
+        "{activity:?}"
+    );
+    assert!(
+        activity.iter().any(|a| a.contains("overnight note")),
+        "the note is kept"
+    );
+}
+
+#[test]
+fn with_the_lane_off_the_night_is_exactly_what_it_was() {
+    // The other half, and the reason the retirement is behind a switch: a node that has not
+    // turned the lane on loses nothing.
+    let store = store_with_a_belief();
+    let intentions = FakeIntentions::default();
+    one_night_with(
+        &store,
+        &intentions,
+        &crate::usecases::NoSpecimens,
+        &FixedClock(27 * 3_600_000),
+        false,
+    );
+    assert_eq!(intentions.list().unwrap().len(), 1);
+}
+
+#[test]
+fn with_the_lane_on_the_night_leaves_the_stumpers_to_it_and_with_it_off_replays_one() {
+    let ask = || endora_understanding::Specimen {
+        id: "s1".to_owned(),
+        asked: "what lights are on?".to_owned(),
+        verdict: "not an answer".to_owned(),
+        filed_ms: 1,
+        replays: 3,
+        last_replay_ms: None,
+        state: endora_understanding::SpecimenState::Open,
+    };
+    for (lane_is_on, replays) in [(true, 0), (false, 1)] {
+        let shelf = crate::usecases::RecordingShelf::default();
+        shelf.open.borrow_mut().push(ask());
+        one_night_with(
+            &FakeStore::default(),
+            &FakeIntentions::default(),
+            &shelf,
+            &FixedClock(27 * 3_600_000),
+            lane_is_on,
+        );
+        assert_eq!(
+            shelf.replays.borrow().len(),
+            replays,
+            "lane on: {lane_is_on}"
+        );
+    }
+}
+
+#[test]
+fn with_the_lane_on_an_intention_already_spent_is_still_retired() {
+    // Left active, a spent intention would sit in the list for ever, since nothing else
+    // retires it. The night keeps that one job.
+    let store = store_with_a_belief();
+    let intentions = FakeIntentions::default();
+    let stale = crate::Intention::form(
+        endora_kernel::ids::IntentionId::new(1),
+        "an old thread",
+        BeliefId::new(7),
+        Timestamp::from_unix_millis(0),
+    )
+    .unwrap();
+    intentions.save(&stale).unwrap();
+    let way_later = FixedClock((60 * 24 + 3) * 3_600_000);
+    let (_, activity) = one_night_with(
+        &store,
+        &intentions,
+        &crate::usecases::NoSpecimens,
+        &way_later,
+        true,
+    );
+    assert!(
+        activity
+            .iter()
+            .any(|a| a.contains("Stopped working on something")),
+        "{activity:?}"
+    );
+    assert!(intentions.active().unwrap().is_none());
 }
 
 /// A store holding one belief strong enough to be taken up.
@@ -6716,6 +7110,7 @@ fn the_nightly_loop_stays_quiet_when_not_due() {
         &ids,
         &clock,
         &ButlerContext::default(),
+        false,
     )
     .unwrap();
     assert!(out.is_none());
@@ -6874,6 +7269,7 @@ fn the_nightly_loop_researches_its_strongest_belief_reversibly() {
         &ids,
         &clock,
         &context,
+        false,
     )
     .unwrap()
     .expect("the loop runs when due");

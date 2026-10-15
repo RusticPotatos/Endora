@@ -76,14 +76,26 @@ change that once a private overlay or an authenticating proxy sits in front.
 ### Optional: let it look into things on its own
 
 Set **`ENDORA_OWN_WORK=1`** on the node and it will, while you are not talking to it,
-look into something in the house that has not answered for three days or more (a
-sensor, a device), one at a time, and write what it found to the activity trail. It
-is off by default. It reads and looks; it cannot change anything, and it reads only
-Home Assistant, not the web or your other skills. It uses the local
-model only (never the paid one), waits until you have been quiet for ten minutes,
-never takes the place of something you asked for, and posts nothing to chat.
-Pressing Stop on it, or marking the device "it's fine", means it is not looked into
-again. See [ADR 0094](adr/0094-work-it-finds-for-itself.md).
+look into things one at a time and write what it found to the activity trail. It is off
+by default. In this order, and only when the one before has nothing:
+
+1. Something in the house that has not answered for three days or more (a sensor, a
+   device). It reads only Home Assistant for this, not the web or your other skills.
+2. A question it once failed to answer, asked again a day after it failed. Judged by
+   the same check that filed it; it gives up after the same number of tries as before.
+3. Something it understands about you with confidence, looked into with the same
+   read-only skills the nightly loop's long-running thread used, **including the web**.
+   This is the one thing the lane does that sends a query out of the house, built from
+   a belief about you. Leave the switch off if you do not want that.
+
+It reads and looks; it cannot change anything. It uses the local model only (never the
+paid one), waits until you have been quiet for ten minutes, never takes the place of
+something you asked for, and posts nothing to chat. Pressing Stop on one, or marking a
+device "it's fine", means that item is not looked into again. With the switch on, the
+nightly loop stops replaying a question and keeping its own thread, since the lane does
+both; with it off, the nightly loop is exactly as it was.
+See [ADR 0094](adr/0094-work-it-finds-for-itself.md) and
+[ADR 0095](adr/0095-more-sources-for-work-it-finds.md).
 
 ## 3. Reach it securely from your phone and laptop
 

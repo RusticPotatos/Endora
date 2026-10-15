@@ -687,15 +687,25 @@ pub fn resume_goal(
     // point the butler has no deep model to escalate to, and the runner and the tools the
     // model is shown have nothing in them but the house.
     let from_a_record = record.origin() == crate::GoalOrigin::Record;
+    // The house, unless its source says it has earned more (ADR 0095). A record-lane goal
+    // with no source at all gets the narrower scope.
+    let house_only_scope = !matches!(
+        goal.criteria(),
+        Some(crate::goal_request::GoalCriteria::Resolve { source })
+            if source.skills() == crate::goal_request::Skills::Reversible
+    );
     let local_only;
     let house_only;
     let house_context;
     let (butler, capabilities, context): (&dyn Butler, &dyn CapabilityRunner, &ButlerContext) =
-        if from_a_record {
+        if from_a_record && house_only_scope {
             local_only = crate::record_lane::LocalOnly::new(butler);
             house_only = crate::record_lane::HouseOnlyRunner(capabilities);
             house_context = crate::record_lane::only_the_house(context);
             (&local_only, &house_only, &house_context)
+        } else if from_a_record {
+            local_only = crate::record_lane::LocalOnly::new(butler);
+            (&local_only, capabilities, context)
         } else {
             (butler, capabilities, context)
         };

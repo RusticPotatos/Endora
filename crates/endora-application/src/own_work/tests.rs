@@ -23,11 +23,25 @@ const NOW: i64 = 4 * DAY;
 fn situation<'a>(troubles: &'a [StandingTrouble], history: &'a [GoalRecord]) -> Situation<'a> {
     Situation {
         troubles,
+        specimens: &[],
+        focus: None,
         history,
         a_request_is_open: false,
         person_is_quiet: true,
         now: at(NOW),
     }
+}
+
+fn recheck_troubles(record: &GoalRecord, troubles: &[StandingTrouble], at: Timestamp) -> Recheck {
+    recheck(
+        record,
+        &Records {
+            troubles,
+            open_specimens: &[],
+            active_beliefs: &[],
+        },
+        at,
+    )
 }
 
 /// The goal `item` becomes, having reached `status` at `ended`.
@@ -276,7 +290,10 @@ fn started(troubles: &[StandingTrouble]) -> GoalRecord {
 fn while_the_trouble_stands_the_work_goes_on() {
     let troubles = [trouble("sensor.garage_door", 0)];
     let record = started(&troubles);
-    assert_eq!(recheck(&record, &troubles, at(NOW)), Recheck::Unchanged);
+    assert_eq!(
+        recheck_troubles(&record, &troubles, at(NOW)),
+        Recheck::Unchanged
+    );
 }
 
 #[test]
@@ -284,7 +301,7 @@ fn when_the_trouble_clears_the_source_completes_the_goal() {
     // S4's shape for troubles: done with no model verdict, because the record no longer says
     // it is wrong.
     let record = started(&[trouble("sensor.garage_door", 0)]);
-    let Recheck::Resolved(done) = recheck(&record, &[], at(NOW + MINUTE)) else {
+    let Recheck::Resolved(done) = recheck_troubles(&record, &[], at(NOW + MINUTE)) else {
         panic!("a trouble that cleared should resolve the goal");
     };
     assert_eq!(done.goal().status(), GoalStatus::Complete);
@@ -302,7 +319,7 @@ fn a_trouble_that_cleared_and_came_back_is_not_the_one_the_goal_was_for() {
     let record = started(&[trouble("sensor.garage_door", 0)]);
     let came_back = [trouble("sensor.garage_door", NOW - DAY)];
     assert!(matches!(
-        recheck(&record, &came_back, at(NOW)),
+        recheck_troubles(&record, &came_back, at(NOW)),
         Recheck::Resolved(_)
     ));
 }
@@ -311,10 +328,13 @@ fn a_trouble_that_cleared_and_came_back_is_not_the_one_the_goal_was_for() {
 fn another_things_clearing_does_not_resolve_this() {
     let record = started(&[trouble("sensor.garage_door", 0)]);
     let others = [trouble("sensor.garage_door", 0), trouble("sensor.other", 0)];
-    assert_eq!(recheck(&record, &others, at(NOW)), Recheck::Unchanged);
+    assert_eq!(
+        recheck_troubles(&record, &others, at(NOW)),
+        Recheck::Unchanged
+    );
     let only_other = [trouble("sensor.other", 0)];
     assert!(matches!(
-        recheck(&record, &only_other, at(NOW)),
+        recheck_troubles(&record, &only_other, at(NOW)),
         Recheck::Resolved(_)
     ));
 }
@@ -324,7 +344,7 @@ fn when_the_person_calls_it_fine_the_work_is_withdrawn() {
     let record = started(&[trouble("sensor.garage_door", 0)]);
     let mut fine = trouble("sensor.garage_door", 0);
     fine.accepted = true;
-    let Recheck::Withdrawn(why) = recheck(&record, &[fine], at(NOW)) else {
+    let Recheck::Withdrawn(why) = recheck_troubles(&record, &[fine], at(NOW)) else {
         panic!("a trouble marked fine should withdraw the work");
     };
     assert!(why.contains("sensor.garage_door"), "{why}");
@@ -338,7 +358,7 @@ fn calling_a_later_episode_fine_does_not_withdraw_the_work_for_the_earlier_one()
     let mut later = trouble("sensor.garage_door", NOW - DAY);
     later.accepted = true;
     assert!(matches!(
-        recheck(&record, &[later], at(NOW)),
+        recheck_troubles(&record, &[later], at(NOW)),
         Recheck::Resolved(_)
     ));
 }
@@ -347,13 +367,16 @@ fn calling_a_later_episode_fine_does_not_withdraw_the_work_for_the_earlier_one()
 fn a_goal_that_has_already_ended_is_left_as_it_is() {
     let item = first(&[trouble("sensor.garage_door", 0)], &[]).unwrap();
     let done = ended(item, GoalStatus::Partial, NOW);
-    assert_eq!(recheck(&done, &[], at(NOW + MINUTE)), Recheck::Unchanged);
+    assert_eq!(
+        recheck_troubles(&done, &[], at(NOW + MINUTE)),
+        Recheck::Unchanged
+    );
 }
 
 #[test]
 fn a_goal_the_person_asked_for_is_never_touched_by_a_source_check() {
     let asked = GoalRecord::new("asked", Goal::new("Read a source").unwrap(), at(1)).unwrap();
-    assert_eq!(recheck(&asked, &[], at(NOW)), Recheck::Unchanged);
+    assert_eq!(recheck_troubles(&asked, &[], at(NOW)), Recheck::Unchanged);
 }
 
 // ---- what the person reads ----
@@ -367,4 +390,290 @@ fn the_trail_line_says_what_was_looked_into_and_how_it_ended() {
     assert!(line.contains("partial"), "{line}");
     assert!(!line.contains('\n'), "a trail line is one line: {line}");
     assert!(line.chars().count() < 1000, "{}", line.len());
+}
+
+// ---- specimens (ADR 0095) ----
+
+use endora_understanding::{Specimen, SpecimenState};
+
+fn specimen(id: &str, asked: &str, filed_ms: i64, replays: u32, last: Option<i64>) -> Specimen {
+    Specimen {
+        id: id.to_owned(),
+        asked: asked.to_owned(),
+        verdict: "not an answer".to_owned(),
+        filed_ms,
+        replays,
+        last_replay_ms: last,
+        state: SpecimenState::Open,
+    }
+}
+
+fn with_specimens<'a>(specimens: &'a [Specimen], history: &'a [GoalRecord]) -> Situation<'a> {
+    Situation {
+        specimens,
+        ..situation(&[], history)
+    }
+}
+
+#[test]
+fn an_ask_that_failed_a_day_ago_is_asked_again() {
+    let shelf = [specimen(
+        "s1",
+        "when is the next 41 bus?",
+        NOW - DAY,
+        0,
+        None,
+    )];
+    let item = next_work(&with_specimens(&shelf, &[])).expect("a day is long enough");
+    assert_eq!(item.request_key, "own:specimen:s1:1");
+    assert_eq!(
+        item.source,
+        WorkSource::Specimen {
+            id: "s1".to_owned()
+        }
+    );
+    assert!(item.objective.contains("41 bus"), "{}", item.objective);
+}
+
+#[test]
+fn an_ask_that_only_just_failed_is_left_until_something_could_have_changed() {
+    let shelf = [specimen(
+        "s1",
+        "what lights are on?",
+        NOW - DAY + 1,
+        0,
+        None,
+    )];
+    assert_eq!(next_work(&with_specimens(&shelf, &[])), None);
+}
+
+#[test]
+fn the_wait_is_from_the_last_replay_when_there_has_been_one() {
+    let recent = [specimen("s1", "q", 0, 3, Some(NOW - DAY + 1))];
+    assert_eq!(next_work(&with_specimens(&recent, &[])), None);
+    let due = [specimen("s1", "q", 0, 3, Some(NOW - DAY))];
+    let item = next_work(&with_specimens(&due, &[])).unwrap();
+    assert_eq!(
+        item.request_key, "own:specimen:s1:4",
+        "the replays so far are counted"
+    );
+}
+
+#[test]
+fn the_oldest_ask_goes_first() {
+    let shelf = [
+        specimen("newer", "q2", 2 * DAY, 0, None),
+        specimen("older", "q1", DAY, 0, None),
+    ];
+    // Oldest by when it was last touched, which for a never-replayed ask is when it failed.
+    let item = next_work(&with_specimens(&shelf, &[])).unwrap();
+    assert_eq!(
+        item.source,
+        WorkSource::Specimen {
+            id: "older".to_owned()
+        }
+    );
+}
+
+#[test]
+fn an_ask_the_person_stopped_is_not_asked_again() {
+    let shelf = [specimen("s1", "q", 0, 0, None)];
+    let item = next_work(&with_specimens(&shelf, &[])).unwrap();
+    let stopped = ended(item, GoalStatus::Cancelled, NOW - 5 * DAY);
+    assert_eq!(next_work(&with_specimens(&shelf, &[stopped])), None);
+}
+
+#[test]
+fn the_start_gate_holds_for_asks_as_well() {
+    let shelf = [specimen("s1", "q", 0, 0, None)];
+    let mut s = with_specimens(&shelf, &[]);
+    s.a_request_is_open = true;
+    assert_eq!(next_work(&s), None);
+    let mut s = with_specimens(&shelf, &[]);
+    s.person_is_quiet = false;
+    assert_eq!(next_work(&s), None);
+}
+
+#[test]
+fn a_house_in_trouble_comes_before_an_ask_that_failed() {
+    let troubles = [trouble("sensor.garage_door", 0)];
+    let shelf = [specimen("s1", "q", 0, 0, None)];
+    let s = Situation {
+        specimens: &shelf,
+        ..situation(&troubles, &[])
+    };
+    assert!(
+        next_work(&s)
+            .unwrap()
+            .request_key
+            .contains("sensor.garage_door")
+    );
+}
+
+// ---- beliefs (ADR 0095) ----
+
+fn focus() -> Focus {
+    Focus {
+        id: "b-1".to_owned(),
+        statement: "they want to run more often".to_owned(),
+    }
+}
+
+fn with_focus<'a>(focus: &'a Focus, history: &'a [GoalRecord]) -> Situation<'a> {
+    Situation {
+        focus: Some(focus),
+        ..situation(&[], history)
+    }
+}
+
+#[test]
+fn with_nothing_else_to_do_it_looks_into_what_it_understands_best() {
+    let f = focus();
+    let item = next_work(&with_focus(&f, &[])).unwrap();
+    assert_eq!(item.request_key, "own:belief:b-1:1");
+    assert_eq!(
+        item.source,
+        WorkSource::Belief {
+            id: "b-1".to_owned()
+        }
+    );
+    assert!(
+        item.objective.contains("run more often"),
+        "{}",
+        item.objective
+    );
+}
+
+#[test]
+fn a_belief_is_the_last_thing_looked_into() {
+    let f = focus();
+    let troubles = [trouble("sensor.garage_door", 0)];
+    let shelf = [specimen("s1", "q", 0, 0, None)];
+    let everything = Situation {
+        specimens: &shelf,
+        focus: Some(&f),
+        ..situation(&troubles, &[])
+    };
+    assert!(
+        next_work(&everything)
+            .unwrap()
+            .request_key
+            .contains("garage_door")
+    );
+    let no_trouble = Situation {
+        troubles: &[],
+        ..everything
+    };
+    assert!(
+        next_work(&no_trouble)
+            .unwrap()
+            .request_key
+            .starts_with("own:specimen")
+    );
+    let only_the_belief = Situation {
+        specimens: &[],
+        ..no_trouble
+    };
+    assert!(
+        next_work(&only_the_belief)
+            .unwrap()
+            .request_key
+            .starts_with("own:belief")
+    );
+}
+
+#[test]
+fn a_belief_is_looked_into_at_most_twice_a_week_apart_and_never_after_a_stop() {
+    let f = focus();
+    let first = next_work(&with_focus(&f, &[])).unwrap();
+    let one = ended(first.clone(), GoalStatus::Partial, NOW - DAY);
+    assert_eq!(
+        next_work(&with_focus(&f, &[one])),
+        None,
+        "inside the cooldown"
+    );
+
+    let one = ended(first.clone(), GoalStatus::Partial, NOW - ITEM_COOLDOWN_MS);
+    let second = next_work(&with_focus(&f, std::slice::from_ref(&one))).unwrap();
+    assert!(second.request_key.ends_with(":2"), "{}", second.request_key);
+    let two = ended(second, GoalStatus::Partial, NOW - ITEM_COOLDOWN_MS);
+    assert_eq!(
+        next_work(&with_focus(&f, &[one, two])),
+        None,
+        "two attempts is all"
+    );
+
+    let stopped = ended(first, GoalStatus::Cancelled, NOW - 30 * DAY);
+    assert_eq!(next_work(&with_focus(&f, &[stopped])), None);
+}
+
+#[test]
+fn nothing_to_look_into_still_means_nothing() {
+    assert_eq!(next_work(&situation(&[], &[])), None);
+}
+
+// ---- re-reading the source, for the others ----
+
+fn started_from(item: WorkItem) -> GoalRecord {
+    item.into_record(at(1)).unwrap()
+}
+
+#[test]
+fn an_ask_that_is_no_longer_on_the_shelf_withdraws_its_goal() {
+    let shelf = [specimen("s1", "q", 0, 0, None)];
+    let record = started_from(next_work(&with_specimens(&shelf, &[])).unwrap());
+    let still = Records {
+        troubles: &[],
+        open_specimens: &shelf,
+        active_beliefs: &[],
+    };
+    assert_eq!(recheck(&record, &still, at(NOW)), Recheck::Unchanged);
+    let gone = Records {
+        open_specimens: &[],
+        ..still
+    };
+    assert!(matches!(
+        recheck(&record, &gone, at(NOW)),
+        Recheck::Withdrawn(_)
+    ));
+}
+
+#[test]
+fn a_belief_nothing_holds_any_more_withdraws_its_goal_and_never_completes_it() {
+    let f = focus();
+    let record = started_from(next_work(&with_focus(&f, &[])).unwrap());
+    let held = vec!["b-1".to_owned()];
+    let still = Records {
+        troubles: &[],
+        open_specimens: &[],
+        active_beliefs: &held,
+    };
+    assert_eq!(
+        recheck(&record, &still, at(NOW)),
+        Recheck::Unchanged,
+        "its source cannot say it is done"
+    );
+    let gone = Records {
+        active_beliefs: &[],
+        ..still
+    };
+    assert!(matches!(
+        recheck(&record, &gone, at(NOW)),
+        Recheck::Withdrawn(_)
+    ));
+}
+
+#[test]
+fn the_trail_says_a_replay_in_the_words_the_night_used() {
+    let shelf = [specimen("s1", "q", 0, 0, None)];
+    let record = started_from(next_work(&with_specimens(&shelf, &[])).unwrap());
+    let mut goal = record.goal().clone();
+    goal.start("replay", "asked again");
+    goal.commit(
+        "replay",
+        "A question that once stumped me answers now: \"q\"",
+    );
+    goal.apply(GoalVerdict::Complete, "answered");
+    let line = trail_line(&record.with_goal(goal, at(NOW)));
+    assert_eq!(line, "A question that once stumped me answers now: \"q\"");
 }

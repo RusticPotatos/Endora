@@ -430,3 +430,47 @@ fn a_goal_endora_started_about_a_silent_device_does_not_invent_a_cause() {
         goal.dead_ends().len()
     );
 }
+
+#[test]
+#[ignore = "needs a live model: set ENDORA_MODEL_URL and ENDORA_MODEL"]
+fn a_goal_endora_started_from_a_belief_ends_without_pretending_it_finished() {
+    // ADR 0095. The nightly intention folded into the lane: a belief Endora is sure of,
+    // looked into with the web and the other read-only skills, on the local model. Its
+    // source cannot say it is done, so whatever the model writes it must not finish as
+    // complete, and it must stop. What it found is printed to be read.
+    use endora_application::GoalOrigin;
+    use endora_application::goal_request::{GoalCriteria, WorkSource};
+    let live = live();
+    let goal = Goal::for_request(
+        "Look into what would help with: they want to understand how the Rust borrow checker works",
+        GoalCriteria::Resolve {
+            source: WorkSource::Belief {
+                id: "b-1".to_owned(),
+            },
+        },
+    )
+    .expect("a valid goal");
+    let record = GoalRecord::new("live-goal-eval-belief", goal, live.clock.now())
+        .expect("a valid goal record")
+        .with_origin(GoalOrigin::Record);
+    let record = drive(&live, record);
+    let goal = record.goal();
+
+    assert_ne!(
+        goal.status(),
+        GoalStatus::Complete,
+        "a belief has no source to say it is done: {}",
+        goal.reason()
+    );
+    assert!(
+        goal.status().terminal(),
+        "after {PASSES} passes it is still {:?}",
+        goal.status()
+    );
+    eprintln!(
+        "RESULT: {:?} after {} evidence / {} dead ends",
+        goal.status(),
+        goal.evidence().len(),
+        goal.dead_ends().len()
+    );
+}

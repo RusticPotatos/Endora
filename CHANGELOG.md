@@ -36,6 +36,18 @@ tagged release.
   The nightly loop's own long-running intention is to be folded into this lane in the
   next phase, with the stumper replay.
 
+- **The lane also asks failed questions again and looks into what Endora understands, and
+  the nightly loop hands both over** ([ADR 0095](docs/adr/0095-more-sources-for-work-it-finds.md),
+  Phase 4). Still behind `ENDORA_OWN_WORK=1`. With nothing wrong in the house, a question it
+  once failed to answer is asked again a day after it failed, judged by the same
+  check that filed it and giving up after the same number of tries; and failing that, the
+  belief it is most sure of is looked into, with the web and the other read-only skills
+  the nightly thread had, on the local model only. The nightly loop stops replaying a
+  stumper and keeping a thread of its own **only when the switch is on**; with it off, the
+  loop is exactly as it was, so deploying this changes nothing until the switch is
+  turned on. Repairs were considered and left out: they already end in a policy action
+  or a question only you can answer, so there is nothing for a goal to gather.
+
 - **A specimen records how it ended, and the night says when it gave up**
   ([ADR 0075](docs/adr/0075-failures-become-specimens.md), groundwork for
   [ADR 0071](docs/adr/0071-capabilities-it-writes-itself.md)). A failed ask that
@@ -66,6 +78,13 @@ tagged release.
   to be skipped, because a recipe reads object keys only.
 
 ### Fixed
+
+- **Fetching a web page that contains any non-ASCII character crashed the fetch.** The
+  page-to-text step stepped through the page a byte at a time and sliced it at each step,
+  so the first character outside ASCII (an arrow in a page's navigation, an accented
+  letter, a dash) made it panic, and a letter that changes length when lowercased threw
+  every later position off. Found by running a goal against the real model and the real
+  web. It now walks the page a character at a time and keeps the text it reads.
 
 - **A recipe could reach the house's own network.** The recipe interpreter
   ([ADR 0071](docs/adr/0071-capabilities-it-writes-itself.md)) fetched through the
