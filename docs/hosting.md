@@ -26,9 +26,71 @@ is light. Two ways to run it:
   keeps the database on a `/data` volume. See [README](../README.md#running-the-node).
 
 Your data lives in one SQLite file (`ENDORA_DB`, default `endora.db`; `/data/endora.db`
-in the container). Back it up by copying that file when the node is stopped, or
-at any time with `endora export > backup.json` (the export is a complete,
-portable snapshot — a memory right, see the [constitution](constitution.md)).
+in the container) — your settings and credentials as well as its memory. How to back it
+up properly, and where to keep it so a backup tool can reach it, is
+[below](#backing-up-your-data). `endora export` is **not** that backup.
+
+### Backing up your data
+
+**What is in `/data`.** `endora.db` holds everything: your settings, API keys and MCP
+tokens, sign-in secrets, and the node's memory. `tls-cert.pem` and `tls-key.pem` are the
+self-signed certificate (regenerated if lost; your browser asks you to accept it again).
+
+**`endora export` is not a backup.** It writes the node's *memory* — messages, beliefs,
+preferences, goals, audit — as your right to take it with you ([constitution](constitution.md)).
+It contains none of your configuration, and nothing can import it, so a node rebuilt from an
+export has lost every setting and key.
+
+**Take a snapshot, don't copy the file.** The node writes continuously, so copying
+`endora.db` while it runs can capture a write half-finished: a file that looks whole and
+will not open on the day you need it. Take the copy through SQLite instead:
+
+```bash
+make backup                       # the container; respects DOCKER_CONTEXT
+endora-node backup /safe/place/snapshot.db   # the binary, with ENDORA_DB set
+```
+
+It writes a consistent, integrity-checked copy that is readable only by its owner, and
+refuses to overwrite an earlier one. In the container it lands in `/data/backups/`, so a
+backup job that covers the data folder picks it up; old snapshots are not pruned, which is
+that job's business. Run it on a schedule just before the backup runs (on a NAS, a task
+that calls `docker exec endora-node endora-node backup /data/backups/<name>.db`). Copying
+the file by hand is only safe with the node stopped.
+
+**Keep the data where a backup tool can reach it.** In the container the data is a Docker
+*named volume* by default, which sits inside Docker's own storage. To keep it in a folder
+instead, set an **absolute path on the machine Docker runs on** in the git-ignored
+`local.mk` (on a NAS, a path on the NAS):
+
+```make
+ENDORA_DATA_DIR = /srv/endora
+```
+
+and move what you have there once — in this order:
+
+```bash
+make deploy-down       # stop the node: its database must not change mid-copy
+make migrate-data      # copy the volume into that folder, verified file by file; deletes nothing
+make deploy            # now starts on the folder
+```
+
+Do the migration *before* deploying. If `ENDORA_DATA_DIR` is set but empty, the node would
+start on nothing: a brand-new node with a new token and none of your settings, which looks
+exactly like data loss. `make deploy` refuses that case and tells you to migrate. The old
+volume is left in place as the way back; remove it (`docker volume rm endora_endora-data`)
+only once you have checked the node is right. Do not unset `ENDORA_DATA_DIR` afterwards —
+the node would go back to that now-stale volume.
+
+The folder must be on a **local disk** of that machine, not an NFS or SMB share: SQLite's file
+locking is not reliable over a network filesystem. It is created root-owned, since the
+container runs as root.
+
+**Treat the data folder and every snapshot as secrets.** They hold API keys, MCP bearer
+tokens, sign-in and authenticator secrets, and the TLS private key. Keep backups on storage
+you control and, if it leaves the machine, encrypted. Never commit them.
+
+**Restoring.** Stop the node, put the snapshot at `<data folder>/endora.db` (delete any
+`endora.db-journal` beside it), and start the node.
 
 ## 2. Keep it running (always-on)
 
@@ -162,6 +224,8 @@ browsers, streams audio to a cloud service — so voice is opt-in, off by defaul
 - [ ] Node bound to `127.0.0.1` (or a private-overlay IP), never public `0.0.0.0`.
 - [ ] Reached only over a private overlay, or through an authenticating TLS proxy.
 - [ ] Runs under a supervisor (systemd / `--restart`) so it survives reboots.
-- [ ] `ENDORA_DB` on persistent storage; periodic `endora export` backups.
+- [ ] `ENDORA_DB` on persistent storage a backup tool can reach, and snapshots taken with
+      `make backup` / `endora-node backup`. `endora export` holds memory only, none of your
+      settings — it is not a backup (see [Backing up your data](#backing-up-your-data)).
 - [ ] Reviewed [SECURITY.md](../SECURITY.md) — you understand the API is
       unauthenticated in `0.x`.

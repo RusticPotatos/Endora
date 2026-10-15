@@ -9,6 +9,28 @@ tagged release.
 
 ### Added
 
+- **The node's data can live outside the container, and be backed up safely.** Everything
+  stateful — every setting, API key and sign-in secret — is one SQLite file under `/data`,
+  which in the container was a Docker named volume buried in Docker's own storage. Setting
+  `ENDORA_DATA_DIR` in `local.mk` to an absolute host path now keeps it in a folder a backup
+  tool can reach; unset, nothing changes. `make migrate-data` copies an existing volume across
+  once (checksummed file by file, deleting nothing), and `make deploy` **refuses** to start on
+  an empty data folder while the volume still holds the node's data, because that would be a
+  brand-new node (new token, no settings) that looks exactly like data loss.
+  `endora-node backup <file>` (and `make backup`) takes a consistent, integrity-checked,
+  owner-only (`0600`) snapshot through SQLite while the node runs. A plain copy of a live
+  database can land mid-write and look whole until it will not open. The snapshot never
+  overwrites an earlier file, never creates a database from a mistyped path, and removes its
+  own output if the check fails. Proven end to end on the real schema: a snapshot taken from a
+  running node booted a second node on its own.
+
+### Fixed
+
+- **The docs called `endora export` "a complete" backup. It covers memory only.** It has
+  no settings, keys, stances, MCP servers or sign-in, and nothing can import it, so a node
+  rebuilt from an export had lost its whole configuration. `docs/hosting.md` now says so and
+  points at the snapshot.
+
 - **A specimen records how it ended, and the night says when it gave up**
   ([ADR 0075](docs/adr/0075-failures-become-specimens.md), groundwork for
   [ADR 0071](docs/adr/0071-capabilities-it-writes-itself.md)). A failed ask that

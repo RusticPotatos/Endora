@@ -480,6 +480,7 @@ dependencies = [
  "endora-capabilities",
  "endora-conversation",
  "endora-infrastructure",
+ "endora-persistence",
  "endora-platform",
  "endora-scheduling",
  "endora-understanding",

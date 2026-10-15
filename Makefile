@@ -58,6 +58,16 @@ ENDORA_PERSONAL_VALUES ?=
 COMPOSE_PROJECT_NAME ?= endora
 export COMPOSE_PROJECT_NAME
 
+# Where the node keeps its data (/data in the container): the database, which holds every
+# setting, API key and sign-in secret, and the TLS cert and key. Empty = a Docker named
+# volume, the default and what a fresh clone wants. Set an ABSOLUTE path in local.mk to keep
+# it in a folder your backup tool can reach — a path on the machine the Docker daemon runs
+# on, so on a NAS it is a path on the NAS, on a local disk and not a network share (SQLite's
+# locking is not reliable over one). Existing data is copied across once with
+# `make migrate-data`; see docs/hosting.md.
+ENDORA_DATA_DIR ?=
+export ENDORA_DATA_DIR
+
 COMPOSE = docker $(if $(DOCKER_CONTEXT),--context $(DOCKER_CONTEXT),) compose
 
 .DEFAULT_GOAL := help
@@ -117,10 +127,16 @@ docker-run: ## Run the node container (loopback-only on 8787, persists ./endora-
 	# securely from other devices.
 	docker run --rm -p 127.0.0.1:8787:8787 -v "$(CURDIR)/endora-data:/data" endora-node
 
+.PHONY: check-data-dir
+check-data-dir:
+	@DOCKER_CONTEXT="$(DOCKER_CONTEXT)" sh scripts/data-dir.sh check
+
 .PHONY: deploy
-deploy: ## Build + start the node via Compose (DOCKER_CONTEXT=nas to target a remote host)
+deploy: check-data-dir ## Build + start the node via Compose (DOCKER_CONTEXT=nas to target a remote host)
 	# Builds on the target host and starts it detached; data persists in the
-	# named volume `$(COMPOSE_PROJECT_NAME)_endora-data`. Runs against the local
+	# named volume `$(COMPOSE_PROJECT_NAME)_endora-data`, or in ENDORA_DATA_DIR when that
+	# is set (check-data-dir refuses to start on an empty one while the volume still
+	# holds the node's data — that would be a brand-new node). Runs against the local
 	# Docker daemon unless DOCKER_CONTEXT names a remote one (set it per-machine
 	# in local.mk). The 0.x API is unauthenticated — keep it on a trusted network.
 	# ENDORA_BUILD stamps the deploy's git short SHA into the image, so /health
@@ -165,6 +181,27 @@ deploy-logs: ## Follow the deployed node's logs (respects DOCKER_CONTEXT)
 .PHONY: deploy-down
 deploy-down: ## Stop the deployed node, keeping its data volume (respects DOCKER_CONTEXT)
 	$(COMPOSE) down
+
+.PHONY: migrate-data
+migrate-data: ## One-time: copy the data volume into ENDORA_DATA_DIR (stop the node first; deletes nothing)
+	@DOCKER_CONTEXT="$(DOCKER_CONTEXT)" sh scripts/data-dir.sh migrate
+
+.PHONY: backup
+backup: ## Snapshot the running node's database (settings, keys, memory) into its data dir
+	# A consistent copy taken through SQLite while the node runs — not a file copy, which can
+	# land mid-write. It goes to <data dir>/backups/, so whatever backs that folder up picks it
+	# up, and it is written owner-only (0600) because it holds the node's credentials. Old
+	# snapshots are not pruned; that is the backup tool's job. Respects DOCKER_CONTEXT.
+	#
+	# The first line refuses if the RUNNING binary predates the subcommand: an older node
+	# ignores `backup` as an argument and would start a second server inside the container.
+	@$(COMPOSE) exec -T node grep -qa 'usage: endora-node backup' /usr/local/bin/endora-node \
+		|| { echo "The running node predates 'endora-node backup'. Deploy this version first: make deploy"; exit 1; }
+	$(COMPOSE) exec -T node endora-node backup /data/backups/endora-$$(date +%Y%m%d-%H%M%S).db
+
+.PHONY: data-dir-test
+data-dir-test: ## Test the data-dir guard and migration against a fake docker (no daemon needed)
+	sh scripts/test-data-dir.sh
 
 .PHONY: watch
 watch: ## Re-run tests on file change (needs cargo-watch)
