@@ -422,13 +422,15 @@ pub(super) fn take_turn_retrying_empty(
     // and the taint refusal (ADR 0064) live inside `Deeper`, so this site decides only
     // *whether* escalation is wanted — never what may leave. The taint refusal lives in
     // the door, derived from the marks each time (ADR 0070) — nothing here to forget.
-    if let Some(why) = why_nothing_useful(&reply, conversation, context) {
-        eprintln!("turn: escalating to the deep model ({why})");
-    }
     if let Some(deeper) = butler
         .deeper()
         .filter(|_| gave_nothing_useful(&reply, conversation, context))
     {
+        // Said only when there is a deep model to escalate to. It used to print before the
+        // check, so a node with none configured logged "escalating" on every failed check.
+        if let Some(why) = why_nothing_useful(&reply, conversation, context) {
+            eprintln!("turn: escalating to the deep model ({why})");
+        }
         // Not streamed. The person has already seen whatever the local attempts emitted, and
         // a second voice writing into the same bubble would read as one confused answer.
         //

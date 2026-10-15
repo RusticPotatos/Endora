@@ -249,3 +249,78 @@ fn an_unreadable_stored_origin_is_a_records_and_waits_behind_a_person() {
     drop(store);
     std::fs::remove_file(path).unwrap();
 }
+
+fn from_a_trouble(key: &str, origin: GoalOrigin, created: i64) -> GoalRecord {
+    use endora_application::goal_request::{GoalCriteria, WorkSource};
+    let goal = Goal::for_request(
+        "sensor.garage_door has not answered for 4 days — find out why",
+        GoalCriteria::Resolve {
+            source: WorkSource::Trouble {
+                server: "home".to_owned(),
+                thing: "sensor.garage_door".to_owned(),
+                since_ms: 1,
+            },
+        },
+    )
+    .unwrap();
+    GoalRecord::new(key, goal, at(created))
+        .unwrap()
+        .with_origin(origin)
+}
+
+#[test]
+fn a_goal_that_resolves_from_a_record_reads_back_whole() {
+    let store = SqliteStore::open_in_memory().unwrap();
+    let own = from_a_trouble(
+        "own:trouble:home:sensor.garage_door:1:1",
+        GoalOrigin::Record,
+        5,
+    );
+    assert!(store.create_goal(&own).unwrap());
+    let back = store.get_goal(own.request_key()).unwrap().unwrap();
+    assert_eq!(back.goal().criteria(), own.goal().criteria());
+    assert_eq!(back.origin(), GoalOrigin::Record);
+}
+
+#[test]
+fn a_person_lane_goal_cannot_carry_a_source_only_endora_derives() {
+    // "Done when this record says so" is the authority of work Endora derived itself. A goal in
+    // the person's lane that carried it would be done on a record's say-so, not the person's.
+    let store = SqliteStore::open_in_memory().unwrap();
+    let borrowed = from_a_trouble("asked-for", GoalOrigin::Person, 5);
+    assert!(store.create_goal(&borrowed).is_err());
+    assert!(store.get_goal("asked-for").unwrap().is_none());
+}
+
+#[test]
+fn the_goals_endora_started_are_listed_without_the_persons() {
+    let store = SqliteStore::open_in_memory().unwrap();
+    store.create_goal(&person("asked", 100)).unwrap();
+    let old = from_a_trouble("own:old", GoalOrigin::Record, 10);
+    store.create_goal(&old).unwrap();
+    store.cancel_goal("own:old", "stopped", at(11)).unwrap();
+    store
+        .create_goal(&from_a_trouble("own:recent", GoalOrigin::Record, 200))
+        .unwrap();
+
+    let all = store.own_goals_since(at(0)).unwrap();
+    assert_eq!(keys(&all), ["own:old", "own:recent"]);
+
+    let recent = store.own_goals_since(at(100)).unwrap();
+    assert_eq!(
+        keys(&recent),
+        ["own:recent"],
+        "an ended goal older than the window is out of it"
+    );
+}
+
+#[test]
+fn a_goal_endora_started_is_listed_however_old_while_it_is_still_open() {
+    // The lane being occupied is a fact about now, not about when the goal began.
+    let store = SqliteStore::open_in_memory().unwrap();
+    store
+        .create_goal(&from_a_trouble("own:long-running", GoalOrigin::Record, 10))
+        .unwrap();
+    let listed = store.own_goals_since(at(1_000_000)).unwrap();
+    assert_eq!(keys(&listed), ["own:long-running"]);
+}

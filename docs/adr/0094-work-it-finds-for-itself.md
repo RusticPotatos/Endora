@@ -33,8 +33,12 @@ in the code:
   three-goal cap is one shared pool. Self-started work would queue ahead of, and could
   exhaust the slots of, the person's own requests.
 - Nothing caps the paid model. ADR 0091 *meters* deep-model use; a turn escalates through
-  one call (`butler.deeper()`), and goal passes run through that same turn. Observed live:
-  a goal pass against a refused source escalated twice per pass.
+  one call (`butler.deeper()`), and goal passes run through that same turn, so a goal
+  pass can reach the paid model whenever the person has turned escalation on. (The live
+  eval traces print "escalating to the deep model" on a refused source, but that line was
+  printed whether or not a deep model existed, and the eval has none; it showed that the
+  local model's answer failed the check, not that the paid model was reached. The line
+  is fixed to print only when escalation is possible.)
 - Nothing says where a goal came from, so nothing can treat the two differently.
 
 ## Decision
@@ -73,8 +77,20 @@ structurally — it is handed a butler that has no deep model to escalate to —
 setting. A budget is not built; revisit it only if a month of use shows the local model is
 the limit.
 
-**Gather and reversible only.** The existing reversible-only runner is unchanged. This
-decision adds no unattended action. Anything that would act needs its own record and must
+**Gather and reversible only, from the house.** The existing reversible-only runner is
+unchanged. This decision adds no unattended action. Work Endora starts for itself reads
+what its skills report about the house and nothing else: **an allow-list**
+(`record_lane::HOUSE_SKILLS`, today Home Assistant, which only reads), not a list of what
+is forbidden, so a skill added later is out of the lane until someone chooses it. Servers
+the person has connected are out too. The reason is a live run: with the web available it
+sent the name of something in the person's home to a search engine when nobody had asked
+for anything; and with the web removed but Wikipedia left in, it named a radio protocol the
+device was never said to use and wrote generic repair advice as though it had looked at
+the device. Enforced like the local-only rule, in the one place goal passes run, by a
+runner and a tool list with only the house in them. It also keeps as a finding only what a
+read supports: prose with nothing read behind it is recorded as a dead end ("it read
+nothing about this"), not as a cause. With nothing to read, the goal ends Blocked and says
+so, which the live run did in 22 seconds. Anything that would act needs its own record and must
 meet the bar `withdraw_what_never_works` documents: only ever undoes, a high threshold,
 one click to reverse, said out loud.
 
@@ -98,6 +114,41 @@ not invent an objective to look busy.
 3. Results appear in the activity trail and the next brief.
 4. Local model only.
 5. The starting numbers above.
+6. **Intentions are folded into the record lane** (answered later the same day, below).
+
+## Intentions are folded in
+
+The owner decided on 2026-10-15 that the nightly loop's intention is folded into the record
+lane rather than left beside it. A second mechanism for "something Endora is pursuing"
+is the thing the reset plan says not to keep, and the lane already has the bounds the
+intention was built to approximate by hand: one at a time (the lane's cap), a budget
+(the goal's passes, ending `Partial`), going stale (the per-item attempts and cooldown),
+and a way to see and stop it (the console strip).
+
+What that means precisely, so it is not over-read:
+
+- **A belief becomes a work source**, the lowest-priority one: after standing trouble,
+  specimens and repairs, and only when none of them has anything. It is chosen by the
+  same arithmetic the nightly loop uses today (the belief Endora is most sure of), and
+  the goal records which belief it came from, so it can still be explained.
+- **It is the one source that is not purely derived from a record.** A belief is formed
+  by a model from conversation, however correctable. ADR 0052 already accepted pursuing
+  one on those terms, and this keeps that acceptance and no more: it gathers and
+  suggests, it runs local-only and quietly like the rest of the lane, and it can be
+  stopped.
+- **It cannot be verified by its source, so it never ends `Complete`.** "You want to run
+  more often" has no record whose change says it is done. Such a goal runs its budget
+  and ends `Partial` with what it found. A model still never declares its own work
+  finished (0053/0077).
+- **The nightly loop keeps everything else:** reflecting, forming and ageing beliefs,
+  notions, the overnight note. It stops forming and continuing an intention of its own.
+
+**When.** Not in Phase 3, which builds standing trouble only. It lands in Phase 4 with
+specimens, in the same change, because both edit `run_due_nightly_loop` and because
+removing the working nightly intention before the record lane has run live would leave a
+gap with nothing in it. Phase 3's work source is an enum so the belief source is an
+addition, not a rewrite. The table of existing intentions stays for history; the person
+can still drop one.
 
 ## What this amends and retires
 
@@ -106,17 +157,19 @@ not invent an objective to look busy.
   of failed-answer creation stands.
 - **[0082](0082-announce-every-way-a-goal-ends.md)** — "every goal that ends is announced in
   chat" now applies to the person lane. The record lane goes to the trail and the brief.
+- **[0052](0052-what-it-knows-about-you.md)** — the nightly loop's own long-running
+  intention (one active, formed from the strongest belief, seven nights, kept as a prose
+  note) is replaced by the record lane (see "Intentions are folded in" below). Commissioned
+  research ([0077](0077-seeing-something-through.md)) is a different thing and is untouched.
 - **Retires, in Phase 4:** the nightly loop's "replay one stumper" step, which does the
   same job once per night for one item. It stays until specimens become a source, so one
-  item is never worked twice. No new worker and no new store are introduced: the record
+  item is never worked twice. The loop's intention step goes in the same change, for the
+  same reason: both are edits to `run_due_nightly_loop`. No new worker and no new store are introduced: the record
   lane runs on the existing worker, which is the answer to the reset plan's rule against
   maintaining two autonomous brains.
 
 ## Not decided here
 
-- **Intentions.** ADR 0052/0077 give the nightly loop its own durable pursuit, a second
-  mechanism beside goals and research. Whether to fold it into the record lane must be
-  settled before Phase 3. Phases 1 and 2 do not depend on it.
 - **Mail as a source**, and any unattended action. Each needs its own record. Mail also
   needs the egress disguise taught its line shapes first.
 - **A defect found while writing this.** The escalation door disguises the person's
@@ -131,6 +184,20 @@ not invent an objective to look busy.
   at a small, visible amount, and every such goal shows in the console strip with a Stop.
 - One GPU serves chat and background work. Whether the quiet gate and the single slot are
   enough is a Phase 3 measurement and not an assumption.
+- **Phase 3, as built (2026-10-15).** The first source is wired and off by default
+  (`ENDORA_OWN_WORK=1`). A standing trouble that
+  [`worth_raising`](../../domains/capabilities/src/domain.rs) already selects for the person
+  (three days or more, not marked fine, one per device) becomes a record-lane goal. Its
+  completion criterion is `Resolve`, which only code may create: a model cannot declare one
+  and a person-lane goal cannot carry one. The worker re-reads the source before it spends
+  a pass: a trouble that cleared completes the goal with no model; one the person called
+  fine cancels it. Starting is one pure function over stored records
+  (`own_work::next_work`): no request open, the person quiet, the lane empty, thirty
+  minutes since the last ending, then the oldest eligible item, at most twice, a week apart,
+  and never again once the person pressed Stop. A self-started goal's ending goes to the
+  activity trail and posts no chat message. Folding the result into the *brief* is Phase 5.
+  What the goal can do about a dead device is read and look and report; it cannot fix it,
+  and its instruction says so.
 - Phase 1 is deliberately behaviour-free: it adds the origin, the lanes and the claim
   order, and nothing creates a record goal until Phase 3. Its evidence is that the person
   lane behaves exactly as before, and that a record goal, once one exists, can neither

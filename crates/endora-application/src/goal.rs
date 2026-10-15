@@ -821,7 +821,7 @@ impl Goal {
         objective: &str,
         criteria: crate::goal_request::GoalCriteria,
     ) -> Result<Self, &'static str> {
-        let criteria = crate::goal_request::GoalCriteria::from_json(&criteria.to_json())?;
+        let criteria = crate::goal_request::GoalCriteria::from_stored(&criteria.to_json())?;
         let mut goal = Self::new(objective)?;
         goal.criteria = Some(criteria);
         Ok(goal)
@@ -887,7 +887,7 @@ impl Goal {
             }
         }
         if value["version"].as_u64() == Some(4) && !value["criteria"].is_null() {
-            goal.criteria = Some(crate::goal_request::GoalCriteria::from_json(
+            goal.criteria = Some(crate::goal_request::GoalCriteria::from_stored(
                 &value["criteria"],
             )?);
         }
@@ -1684,6 +1684,25 @@ mod tests {
         assert!(
             restored.criteria().is_some(),
             "criteria survived the round trip"
+        );
+    }
+
+    #[test]
+    fn a_goal_that_resolves_from_a_record_keeps_its_source_across_a_checkpoint() {
+        let criteria = crate::goal_request::GoalCriteria::Resolve {
+            source: crate::goal_request::WorkSource::Trouble {
+                server: "home".to_owned(),
+                thing: "sensor.garage_door".to_owned(),
+                since_ms: 42,
+            },
+        };
+        let goal =
+            Goal::for_request("find out why the garage door is quiet", criteria.clone()).unwrap();
+        let restored = Goal::from_checkpoint(goal.objective(), &goal.checkpoint()).unwrap();
+        assert_eq!(
+            restored.criteria(),
+            Some(&criteria),
+            "the source a goal was derived from is what lets code decide it is done"
         );
     }
 }

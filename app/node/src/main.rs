@@ -114,6 +114,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     api::spawn_research_worker(state.clone());
     api::spawn_goal_worker(state.clone());
     api::spawn_homelab(state.clone());
+    // Looking into things nobody asked about is off until the owner turns it on (ADR 0094).
+    // Everything that makes it safe is already in the goal worker; this only lets it begin.
+    if std::env::var("ENDORA_OWN_WORK").ok().as_deref() == Some("1") {
+        println!("own work: on — it will look into standing troubles when you have been quiet");
+        api::spawn_own_work(state.clone());
+    }
 
     let app = api::app(state);
 

@@ -558,10 +558,26 @@ pub(super) fn goal_key_for(ask: &str) -> String {
 /// Handing the dead ends back is what stops a pass re-running the approach that
 /// failed on the last one — the stall that looks identical to no progress at all.
 pub(super) fn goal_instruction(goal: &crate::Goal) -> String {
-    let mut ask = format!(
-        "You are working on something they asked you for: \"{}\".\n\n",
-        goal.objective()
+    // Work Endora started from a record is not something anyone asked for, and a model told
+    // it was will write as though to a person who is waiting (ADR 0094).
+    let noticed = matches!(
+        goal.criteria(),
+        Some(crate::goal_request::GoalCriteria::Resolve { .. })
     );
+    let mut ask = if noticed {
+        format!(
+            "You noticed this yourself: \"{}\". Nobody asked you to look into it, and \
+             nobody is waiting on the answer. You can read and look, but you cannot change \
+             or fix anything on your own; if you find a likely cause or a remedy, say what \
+             it is and leave it there.\n\n",
+            goal.objective()
+        )
+    } else {
+        format!(
+            "You are working on something they asked you for: \"{}\".\n\n",
+            goal.objective()
+        )
+    };
     if let Some(criteria) = goal.criteria() {
         ask.push_str(&format!(
             "Completion requirements: {}.\n",
@@ -665,16 +681,24 @@ pub fn resume_goal(
     if goal.status().terminal() {
         return record.clone();
     }
-    // Work Endora started for itself never reaches the paid model (ADR 0094). Decided here,
-    // where every goal pass runs, so no caller has to remember it: from this point the
-    // butler simply has no deep model to escalate to.
+    // Work Endora started for itself is held to the local model and to the house (ADR
+    // 0094): it never reaches the paid model and reads only the house.
+    // Decided here, where every goal pass runs, so no caller has to remember it. From this
+    // point the butler has no deep model to escalate to, and the runner and the tools the
+    // model is shown have nothing in them but the house.
+    let from_a_record = record.origin() == crate::GoalOrigin::Record;
     let local_only;
-    let butler: &dyn Butler = if record.origin() == crate::GoalOrigin::Record {
-        local_only = crate::record_lane::LocalOnly::new(butler);
-        &local_only
-    } else {
-        butler
-    };
+    let house_only;
+    let house_context;
+    let (butler, capabilities, context): (&dyn Butler, &dyn CapabilityRunner, &ButlerContext) =
+        if from_a_record {
+            local_only = crate::record_lane::LocalOnly::new(butler);
+            house_only = crate::record_lane::HouseOnlyRunner(capabilities);
+            house_context = crate::record_lane::only_the_house(context);
+            (&local_only, &house_only, &house_context)
+        } else {
+            (butler, capabilities, context)
+        };
     let prefs = preferences.list_all().unwrap_or_default();
     let actions = OutcomeSink::unmotivated(outcomes);
     // One step per pass, so the instruction is settled before the loop runs and
@@ -684,7 +708,10 @@ pub fn resume_goal(
         Some(crate::goal_request::GoalCriteria::Schedule { team, count }) => {
             (Some(team.clone()), *count)
         }
-        Some(crate::goal_request::GoalCriteria::Research { .. }) => (None, 0),
+        Some(
+            crate::goal_request::GoalCriteria::Research { .. }
+            | crate::goal_request::GoalCriteria::Resolve { .. },
+        ) => (None, 0),
         None => (
             sports_team_query(goal.objective()),
             requested_game_count(goal.objective()),
@@ -776,12 +803,22 @@ pub fn resume_goal(
                 let fresh = &seen[first_new_receipt..];
                 let retrieved_now = fresh.iter().any(|r| r.error.is_none());
                 let failed_ever = earlier_failed || fresh.iter().any(|r| r.error.is_some());
-                let barren =
-                    !retrieved_now && (!fresh.is_empty() || (!earlier_retrieved && failed_ever));
+                // Work Endora started for itself keeps only what a read supports: the house is
+                // the whole of its evidence, and a confident cause with nothing read behind
+                // it is invented (ADR 0094). A goal someone asked for keeps its old rule.
+                let barren = if from_a_record {
+                    !retrieved_now
+                } else {
+                    !retrieved_now && (!fresh.is_empty() || (!earlier_retrieved && failed_ever))
+                };
                 if barren {
                     let mut all = earlier_failures.clone();
                     all.extend(failure_lines(fresh));
-                    distinct_last(all, 3)
+                    let mut reasons = distinct_last(all, 3);
+                    if reasons.is_empty() {
+                        reasons.push("it read nothing about this".to_owned());
+                    }
+                    reasons
                 } else {
                     Vec::new()
                 }

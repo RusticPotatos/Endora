@@ -19,6 +19,7 @@ pub mod error;
 pub mod goal;
 pub mod goal_execution;
 pub mod goal_request;
+pub mod own_work;
 pub mod ports;
 pub mod pseudonyms;
 pub mod record_lane;

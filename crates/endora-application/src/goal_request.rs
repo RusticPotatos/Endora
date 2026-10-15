@@ -17,6 +17,22 @@ pub const MAX_ACTIVE_RECORD_GOALS: usize = 1;
 /// Repository rejection that orchestration maps to an actionable conflict.
 pub const GOAL_CAPACITY_REACHED: &str = "goal capacity reached";
 
+/// The record work that Endora started for itself was derived from (ADR 0094). Each is a fact
+/// code can re-read, which is what lets the source, not a model, say the work is done.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WorkSource {
+    /// Something in the house that stopped answering, as first seen at `since_ms`. The same
+    /// device failing again later is a new `since_ms`, so a new situation.
+    Trouble {
+        /// Which service it is in.
+        server: String,
+        /// What the service calls it.
+        thing: String,
+        /// When Endora first saw it this way.
+        since_ms: i64,
+    },
+}
+
 /// Explicit constraints proposed once and persisted with the original request.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[allow(missing_docs)]
@@ -25,12 +41,51 @@ pub enum GoalCriteria {
     Schedule { team: String, count: usize },
     /// Bounded research; unsupported semantic completion remains partial.
     Research { requirements: Vec<String> },
+    /// Done when the record it was derived from no longer says so. Only Endora creates
+    /// these, from stored records; see [`GoalCriteria::from_json`].
+    Resolve { source: WorkSource },
 }
 
 impl GoalCriteria {
     /// Validates the model proposal without granting capability permissions.
+    ///
+    /// A model can declare a schedule or a research goal. It can **not** declare a
+    /// [`Resolve`](Self::Resolve) one: that criterion says "done when this record says so",
+    /// and only code reading a stored record may claim it (ADR 0094). Rejecting it here, at
+    /// the one door the model's words come through, is what keeps a person's goal from
+    /// borrowing the lane's authority. Reading back what Endora itself stored is
+    /// [`from_stored`](Self::from_stored).
     pub fn from_json(value: &Value) -> Result<Self, &'static str> {
+        if value["kind"].as_str() == Some("resolve") {
+            return Err("a goal cannot declare that it resolves from a record");
+        }
+        Self::from_stored(value)
+    }
+
+    /// Reads criteria back from a checkpoint Endora wrote, including the ones only Endora
+    /// can create.
+    pub fn from_stored(value: &Value) -> Result<Self, &'static str> {
         match value["kind"].as_str() {
+            Some("resolve") => match value["source"].as_str() {
+                Some("trouble") => {
+                    let text = |key: &str| {
+                        value[key]
+                            .as_str()
+                            .map(str::trim)
+                            .filter(|t| !t.is_empty() && t.chars().count() <= 200)
+                            .map(str::to_owned)
+                            .ok_or("invalid trouble source")
+                    };
+                    Ok(Self::Resolve {
+                        source: WorkSource::Trouble {
+                            server: text("server")?,
+                            thing: text("thing")?,
+                            since_ms: value["since_ms"].as_i64().ok_or("invalid trouble source")?,
+                        },
+                    })
+                }
+                _ => Err("unknown work source"),
+            },
             Some("schedule") => {
                 let team = value["team"]
                     .as_str()
@@ -78,6 +133,17 @@ impl GoalCriteria {
             Self::Research { requirements } => {
                 json!({"kind":"research","requirements":requirements})
             }
+            Self::Resolve {
+                source:
+                    WorkSource::Trouble {
+                        server,
+                        thing,
+                        since_ms,
+                    },
+            } => json!({
+                "kind":"resolve","source":"trouble",
+                "server":server,"thing":thing,"since_ms":since_ms
+            }),
         }
     }
     /// Acknowledges the interpretation so the person can correct it.
@@ -85,6 +151,9 @@ impl GoalCriteria {
         match self {
             Self::Schedule { team, count } => format!("the next {count} {team} games"),
             Self::Research { requirements } => requirements.join("; "),
+            Self::Resolve {
+                source: WorkSource::Trouble { thing, .. },
+            } => format!("find out why {thing} is not answering, or that it is again"),
         }
     }
 }
@@ -167,6 +236,57 @@ mod tests {
             json!({"kind":"send_message"}),
         ] {
             assert!(GoalCriteria::from_json(&input).is_err());
+        }
+    }
+
+    fn trouble() -> GoalCriteria {
+        GoalCriteria::Resolve {
+            source: WorkSource::Trouble {
+                server: "home".to_owned(),
+                thing: "sensor.garage_door".to_owned(),
+                since_ms: 1_000,
+            },
+        }
+    }
+
+    #[test]
+    fn a_model_cannot_declare_that_a_goal_resolves_from_a_record() {
+        // The model's words come through `from_json`. If it accepted `resolve`, a request
+        // the person made could carry the authority of work Endora derived from a record,
+        // and the model would be choosing which records count.
+        let declared = trouble().to_json();
+        assert_eq!(declared["kind"], "resolve");
+        assert!(GoalCriteria::from_json(&declared).is_err());
+    }
+
+    #[test]
+    fn what_endora_stored_reads_back_exactly() {
+        let criteria = trouble();
+        assert_eq!(
+            GoalCriteria::from_stored(&criteria.to_json()).unwrap(),
+            criteria
+        );
+        // Ordinary criteria read back the same way through both doors.
+        let schedule = GoalCriteria::Schedule {
+            team: "Example Team".to_owned(),
+            count: 3,
+        };
+        assert_eq!(
+            GoalCriteria::from_stored(&schedule.to_json()).unwrap(),
+            schedule
+        );
+    }
+
+    #[test]
+    fn a_stored_source_that_cannot_be_read_is_refused() {
+        for input in [
+            json!({"kind":"resolve"}),
+            json!({"kind":"resolve","source":"something-newer"}),
+            json!({"kind":"resolve","source":"trouble","server":"home","thing":"","since_ms":1}),
+            json!({"kind":"resolve","source":"trouble","server":"home","thing":"x"}),
+            json!({"kind":"resolve","source":"trouble","thing":"x","since_ms":1}),
+        ] {
+            assert!(GoalCriteria::from_stored(&input).is_err(), "{input}");
         }
     }
 }

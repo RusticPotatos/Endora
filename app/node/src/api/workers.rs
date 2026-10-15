@@ -737,6 +737,80 @@ pub fn spawn_research_worker(state: AppState) {
     });
 }
 
+/// Looks for something worth looking into and, if everything allows it, starts it. Returns
+/// whether it started something. A normal outcome is that it does not (ADR 0094).
+///
+/// Everything it needs is read from stored records, and the decision is the pure
+/// [`endora_application::own_work::next_work`]. The turn lock is only checked, not held: a
+/// chat turn in progress means "not now", and the next check is five minutes away.
+pub(super) fn start_own_work_once(state: &AppState) -> bool {
+    use endora_application::own_work::{Situation, next_work};
+    if state.turn_lock.try_lock().is_err() {
+        return false;
+    }
+    let now = state.clock.now();
+    let Ok(troubles) =
+        endora_capabilities::StandingTroubleRepository::troubles(state.config.as_ref())
+    else {
+        return false;
+    };
+    // Sixty days is longer than any item's cooldown, so every attempt that still matters is
+    // inside it; an older one no longer counts against an item.
+    let since = endora_application::Timestamp::from_unix_millis(
+        now.unix_millis() - 60 * 24 * 60 * 60 * 1000,
+    );
+    let Ok(history) = state.store.own_goals_since(since) else {
+        return false;
+    };
+    let Ok(open) = state.store.active_goals() else {
+        return false;
+    };
+    let situation = Situation {
+        troubles: &troubles,
+        history: &history,
+        a_request_is_open: open
+            .iter()
+            .any(|goal| goal.origin() == endora_application::GoalOrigin::Person),
+        person_is_quiet: quiet_enough_for_own_work(state, now),
+        now,
+    };
+    let Some(item) = next_work(&situation) else {
+        return false;
+    };
+    let objective = item.objective.clone();
+    let Ok(record) = item.into_record(now) else {
+        return false;
+    };
+    // `false` means the same decision was already made; an error means the lane filled in
+    // the meantime. Either way, nothing new began.
+    if !state.store.create_goal(&record).unwrap_or(false) {
+        return false;
+    }
+    let _ = endora_application::EventLog::record(
+        state.events.as_ref(),
+        now,
+        &format!("Started looking into \"{objective}\" on my own"),
+    );
+    let _ = state.changes.send(());
+    true
+}
+
+/// Starts looking into things unasked, on the slow cadence ADR 0094 sets. Run only when the
+/// owner has turned it on (`ENDORA_OWN_WORK`); until then nothing creates this kind of work.
+pub fn spawn_own_work(state: AppState) {
+    tokio::spawn(async move {
+        let period = std::time::Duration::from_millis(
+            endora_application::own_work::START_CHECK_EVERY_MS.unsigned_abs(),
+        );
+        let mut ticker = tokio::time::interval(period);
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            ticker.tick().await;
+            start_own_work_once(&state);
+        }
+    });
+}
+
 /// Whether the person has been quiet long enough for a goal Endora started for itself to take
 /// a pass (ADR 0094).
 fn quiet_enough_for_own_work(state: &AppState, now: endora_application::Timestamp) -> bool {
@@ -781,6 +855,24 @@ pub fn spawn_goal_worker(state: AppState) {
                 .ok()
                 .and_then(|pending| pending.into_iter().next());
             if let Some(record) = pending_record {
+                // Work Endora started for itself does not post to chat (ADR 0094). Its ending
+                // goes to the activity trail; it is spent here, once, with no message and no
+                // turn lock to wait for.
+                if record.origin() == endora_application::GoalOrigin::Record {
+                    if state
+                        .store
+                        .mark_goal_announced(record.request_key())
+                        .is_ok()
+                    {
+                        let _ = endora_application::EventLog::record(
+                            state.events.as_ref(),
+                            state.clock.now(),
+                            &endora_application::own_work::trail_line(&record),
+                        );
+                        let _ = state.changes.send(());
+                    }
+                    continue;
+                }
                 let Ok(_turn) = state.turn_lock.clone().try_lock_owned() else {
                     continue;
                 };
@@ -849,7 +941,35 @@ pub fn spawn_goal_worker(state: AppState) {
             let chat = state.chat.clone();
             let mcp = mcp_snapshot(&state);
             let worker_lease = lease.clone();
+            let events = state.events.clone();
             let mut task = tokio::task::spawn_blocking(move || {
+                // Work derived from a record is finished by that record, not by a pass: read
+                // it again first (ADR 0094). A trouble that cleared completes the goal with
+                // no model call; one the person called fine stops it. If the record cannot
+                // be read, carry on as usual: failing to look is not a reason to end it.
+                if let Ok(troubles) =
+                    endora_capabilities::StandingTroubleRepository::troubles(config.as_ref())
+                {
+                    match endora_application::own_work::recheck(&record, &troubles, clock.now()) {
+                        endora_application::own_work::Recheck::Resolved(done) => {
+                            return store.checkpoint_goal(&done, &worker_lease, clock.now());
+                        }
+                        endora_application::own_work::Recheck::Withdrawn(why) => {
+                            let at = clock.now();
+                            let _ = store.cancel_goal(record.request_key(), &why, at);
+                            let _ = endora_application::EventLog::record(
+                                events.as_ref(),
+                                at,
+                                &format!(
+                                    "Stopped looking into \"{}\": {why}",
+                                    record.goal().objective()
+                                ),
+                            );
+                            return Ok(true);
+                        }
+                        endora_application::own_work::Recheck::Unchanged => {}
+                    }
+                }
                 // Clamped to the reversible bands, because nobody is watching. This
                 // worker used to build the unclamped runner, which was survivable
                 // only because the one thing it could resume was a schedule read;

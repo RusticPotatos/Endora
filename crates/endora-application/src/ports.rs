@@ -109,6 +109,10 @@ pub trait GoalRepository {
     /// Returns all resumable goals, oldest update first.
     fn active_goals(&self) -> Result<Vec<GoalRecord>, RepositoryError>;
 
+    /// Every goal Endora started for itself (ADR 0094), oldest first: those begun at or after
+    /// `since`, and any still open however old. What the decision to start more work rests on.
+    fn own_goals_since(&self, since: Timestamp) -> Result<Vec<GoalRecord>, RepositoryError>;
+
     /// Atomically claims active work and spends an attempt. Exhaustion after the
     /// last owner's expiry records an explicit terminal reason.
     fn claim_goal(
