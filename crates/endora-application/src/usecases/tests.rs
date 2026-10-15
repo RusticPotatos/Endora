@@ -5766,6 +5766,87 @@ fn one_pass(record: &crate::GoalRecord, butler: &dyn Butler) -> crate::GoalRecor
     )
 }
 
+/// A local model that gives nothing useful, with a deep model behind it — and a count of how
+/// often anything reached for that deep model.
+struct DeepModelSpy(std::sync::atomic::AtomicUsize);
+impl Butler for DeepModelSpy {
+    fn respond(
+        &self,
+        _h: &[ChatMessage],
+        _p: &[Preference],
+        _c: &ButlerContext,
+    ) -> Result<ButlerReply, ProposalError> {
+        Ok(ButlerReply::default())
+    }
+    fn deeper(&self) -> Option<crate::egress::Deeper> {
+        self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Some(crate::egress::Deeper::new(std::sync::Arc::new(
+            AnswersFromTheDeepModel,
+        )))
+    }
+}
+
+struct AnswersFromTheDeepModel;
+impl Butler for AnswersFromTheDeepModel {
+    fn respond(
+        &self,
+        _h: &[ChatMessage],
+        _p: &[Preference],
+        _c: &ButlerContext,
+    ) -> Result<ButlerReply, ProposalError> {
+        Ok(ButlerReply {
+            text: "an answer from the paid model".to_owned(),
+            ..ButlerReply::default()
+        })
+    }
+}
+
+fn times_the_deep_model_was_reached_for(spy: &DeepModelSpy) -> usize {
+    spy.0.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+#[test]
+fn a_pass_on_a_goal_endora_started_never_reaches_for_the_deep_model() {
+    // ADR 0094: self-started work is local-only, by construction rather than by setting.
+    // The spy's local model gives nothing useful, which is exactly the condition under
+    // which a turn escalates; the goal is the one the lane exists for.
+    let spy = DeepModelSpy(std::sync::atomic::AtomicUsize::new(0));
+    let own = a_goal("A device has stopped answering").with_origin(crate::GoalOrigin::Record);
+    one_pass(&own, &spy);
+    assert_eq!(
+        times_the_deep_model_was_reached_for(&spy),
+        0,
+        "a goal nobody asked for reached the paid model"
+    );
+}
+
+#[test]
+fn a_pass_on_a_goal_the_person_asked_for_still_can() {
+    // The other half, and what makes the test above mean anything: the same spy, the same
+    // empty local answer, a goal the person asked for. If this stopped reaching for the
+    // deep model the test above would pass for the wrong reason.
+    let spy = DeepModelSpy(std::sync::atomic::AtomicUsize::new(0));
+    one_pass(&a_goal("Read a source"), &spy);
+    assert!(
+        times_the_deep_model_was_reached_for(&spy) > 0,
+        "the spy is not live: nothing escalates, so the local-only test proves nothing"
+    );
+}
+
+#[test]
+fn a_goal_endora_started_is_still_worked_by_the_local_model() {
+    // Taking the deep model away must not take the work away.
+    let local = FindsSomethingEachPass(std::cell::Cell::new(0));
+    let own = a_goal("A device has stopped answering").with_origin(crate::GoalOrigin::Record);
+    let after = one_pass(&own, &local);
+    assert!(
+        !after.goal().evidence().is_empty(),
+        "the local model's finding was lost: {:?}",
+        after.goal().dead_ends()
+    );
+    assert_eq!(after.origin(), crate::GoalOrigin::Record);
+}
+
 /// A butler that calls `web_fetch` once, then answers in prose.
 struct FetchesThenSays {
     turns: std::cell::Cell<usize>,

@@ -63,6 +63,11 @@ cooldown has passed since the last one ended. Starting values, to be tuned after
 watching the activity trail: quiet window 10 minutes, cooldown 30 minutes, gate checked
 every 5 minutes.
 
+*As built (Phase 2).* The quiet window is applied each time the worker would claim a
+self-started goal, on the worker's own tick; the empty lane, cooldown and 5-minute
+cadence apply when a goal is *started*, and arrive with the thing that starts them in
+Phase 3.
+
 **Local model only.** A record-lane pass never reaches the paid model. This is enforced
 structurally — it is handed a butler that has no deep model to escalate to — and not by a
 setting. A budget is not built; revisit it only if a month of use shows the local model is

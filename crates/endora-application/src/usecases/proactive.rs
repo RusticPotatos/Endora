@@ -665,6 +665,16 @@ pub fn resume_goal(
     if goal.status().terminal() {
         return record.clone();
     }
+    // Work Endora started for itself never reaches the paid model (ADR 0094). Decided here,
+    // where every goal pass runs, so no caller has to remember it: from this point the
+    // butler simply has no deep model to escalate to.
+    let local_only;
+    let butler: &dyn Butler = if record.origin() == crate::GoalOrigin::Record {
+        local_only = crate::record_lane::LocalOnly::new(butler);
+        &local_only
+    } else {
+        butler
+    };
     let prefs = preferences.list_all().unwrap_or_default();
     let actions = OutcomeSink::unmotivated(outcomes);
     // One step per pass, so the instruction is settled before the loop runs and

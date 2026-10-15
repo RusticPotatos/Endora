@@ -172,11 +172,31 @@ All must hold, evaluated by code on a slower cadence than the 5 s worker tick
 
 *N* and *M* are placeholders to be argued from real use, not constants to ship.
 
+*As built in Phase 2, 2026-10-15.* The gate has two halves, and only the first
+exists yet. **Claiming** a self-started goal waits for the quiet window, every
+worker tick: a pass on such a goal begins only when the owner has not written in
+chat for *N* minutes (`record_lane::quiet_enough`, applied in the worker's claim).
+Because the cap is one and a pass is bounded, this is also the pass-boundary yield
+S1 asks for. It is checked on the 5-second tick rather than every 5 minutes: it is
+a read of the last few minutes of chat, and checking sooner only means stepping
+aside sooner. Only the owner's own messages count (Endora's briefs and check-ins
+do not), a message dated in the future counts as speech, and a chat that cannot be
+read counts as not quiet. **Starting** one (empty lane, cooldown *M*, the 5-minute
+cadence) belongs to the selector and arrives with it in Phase 3, because nothing
+yet decides to start anything. There is no flag: with nothing able to create a
+self-started goal, a flag would guard nothing. The switch that matters is at
+creation, and Phase 3 puts the selector behind one.
+
 ### 6. The cost clamp
 
 A thin `LocalOnly` wrapper over the butler whose `deeper()` returns `None`, used
-for every record-lane pass. The test is a spy: a butler whose `deeper()` would
-panic if consulted, driven through a full pass.
+for every record-lane pass. The test is a spy: a butler that counts every time
+`deeper()` is consulted, driven through a full pass, beside the same spy on a
+person's goal, which must reach for it (otherwise the first test proves nothing).
+
+*As built in Phase 2:* the clamp is inside `resume_goal`, the one place a goal pass
+runs, and chooses by the record's origin. No caller (the worker, the eval harness,
+a future selector) can forget it, and a person's goal is untouched.
 
 ### 7. Speech
 

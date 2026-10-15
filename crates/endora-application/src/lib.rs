@@ -21,6 +21,7 @@ pub mod goal_execution;
 pub mod goal_request;
 pub mod ports;
 pub mod pseudonyms;
+pub mod record_lane;
 pub mod research;
 pub mod schedule_verification;
 pub mod usecases;
