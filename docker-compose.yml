@@ -52,7 +52,13 @@ services:
     ports:
       - "8787:8787"
     volumes:
-      - endora-data:/data
+      # Everything stateful lives here: the SQLite database (every setting, API key and
+      # sign-in secret) and the TLS cert/key. By default a Docker named volume, which sits
+      # inside Docker's own data root where a backup tool cannot easily reach it. Set
+      # ENDORA_DATA_DIR in local.mk to an absolute host path to keep it somewhere that can
+      # be backed up instead — and run `make migrate-data` once first, or the node starts
+      # on an empty folder (`make deploy` refuses that). See docs/hosting.md.
+      - ${ENDORA_DATA_DIR:-endora-data}:/data
       # Permission-controlled host agent; read-only mount does not grant write APIs.
       # The agent authenticates requests and executes only its private fixed catalog.
       - /run/endora-jobs:/run/endora-jobs:ro

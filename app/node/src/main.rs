@@ -10,6 +10,7 @@
 
 mod api;
 mod auth;
+mod backup;
 mod homelab_setup;
 mod mcp_catalog;
 mod signin;
@@ -36,6 +37,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     // Local-first defaults; all overridable by environment.
     let db_path = std::env::var("ENDORA_DB").unwrap_or_else(|_| "endora.db".to_owned());
+    // `endora-node backup <file>`: a consistent copy of the database, then exit. Handled
+    // before anything starts, so it never opens a port or runs a migration against the
+    // live database.
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if let Some(done) = backup::dispatch(&args, &db_path) {
+        return done;
+    }
     let addr = std::env::var("ENDORA_ADDR").unwrap_or_else(|_| "127.0.0.1:8787".to_owned());
     // A local, OpenAI-compatible model endpoint (e.g. Ollama). Optional: the
     // node runs without it and only the drafting endpoint returns 503.
