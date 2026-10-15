@@ -27,3 +27,27 @@ submits arbitrary playbook paths, shell strings, extra variables, or credentials
 The Pi kernel currently has no suspend capability. Screen-off pocket mode and
 on-demand graphical sessions preserve a lightweight terminal experience; battery
 runtime and remote-access support require actual device measurements.
+
+## Amendment: the reads are also available to chat
+
+The handheld's entries in the skills list were settings-only so that nothing here reached the
+model. That was right for the console's operations and wrong for plain reading: a service the
+person had already set up could not be asked about in chat. Five read-only skills now borrow the
+settings of the entries they speak for, so nothing is configured twice and each is offered only
+once its entry is set up: the Docker and Portainer container lists, the Sonarr and Radarr queues,
+and the NAS figures.
+
+What does not change. The entries themselves stay settings-only. Mutations (container controls,
+media requests, jobs) stay on the explicit confirmed path and are not available to chat. The
+skills take no input, so the model supplies no address, path or parameter; they use the same
+bounded fetch as the Overview page; they return names, states, titles, progress and figures,
+never ids, labels, environment or logs. Container logs and media search remain handheld-only,
+as do Overseerr and the home screen.
+
+Privacy. These results describe the person's own infrastructure, so they are marked as outside
+material like mail is (ADR 0064): the turn that read them can answer but not act, and it is never
+escalated to the deep model, derived from the marks each time (ADR 0070). For the queues that is
+also simply correct, since their titles are release names written by indexers. Disguising names
+on the way out was considered and set aside: the escalation door disguises the person's messages
+and not what a skill returned, so a tool result carrying a real name reaches the deep model
+unchanged. That is true of every skill and is a separate defect, recorded here so it is not lost.

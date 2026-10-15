@@ -15,6 +15,8 @@ use std::time::Duration;
 
 /// Read-only, explicitly configured home-lab dashboard adapters.
 pub mod homelab;
+/// Chat-facing reads over the handheld's configured services (read-only; see ADR 0093).
+pub mod homelab_chat;
 /// Explicit, fixed-route handheld administration adapters.
 pub mod terminal;
 
@@ -415,6 +417,8 @@ pub fn default_capabilities() -> Vec<Arc<dyn Capability>> {
         Arc::new(HomeAssistantCapability),
     ];
     all.extend(terminal::handheld_sources());
+    // The reads of those same services, for chat: each borrows the settings entry above.
+    all.extend(homelab_chat::chat_skills());
     all
 }
 mod sports;

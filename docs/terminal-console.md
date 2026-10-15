@@ -28,10 +28,21 @@ are returned; Homepage links, icons and widget settings stay on the node.
 For a fixed list of Homepage widget types (Overseerr, Radarr, Sonarr, NZBGet, Prowlarr,
 Gatus, Prometheus, Backrest) the node also asks Homepage's own widget proxy for a few
 numbers and returns them as a short `detail` string per service; Homepage keeps the
-service credentials and the endpoints are fixed in code. These are settings-only
-entries: they are never ready for chat (`configured: false`), so the model is never
-offered them. Their `invoke` backs the settings Test button with one read-only
-request that reports a category, never upstream text or the key. Both routes write the same keys.
+service credentials and the endpoints are fixed in code. These entries only hold
+settings: they are never ready for chat themselves (`configured: false`), and their `invoke`
+backs the settings Test button with one read-only request that reports a category, never
+upstream text or the key. Both routes write the same keys.
+
+Once Docker, Portainer, Sonarr, Radarr or NAS metrics are set up here, chat can read them too,
+through separate read-only skills that borrow these settings: "What the containers are doing",
+"What the containers are doing (Portainer)", "What Sonarr is downloading", "What Radarr is
+downloading" and "How the NAS is doing". Nothing is configured twice, and a skill is offered only
+once its entry is set up. They take no input, so the model chooses no address, and they return
+names, states, titles, progress and figures only. They never start, stop or restart anything,
+never read container logs and never search media; those stay on the handheld, and Overseerr and
+the home screen stay handheld-only. Their results mark the turn like any other outside source
+(ADR 0064): it can answer but cannot act, and it is never escalated to the deep model, so
+container names and NAS figures stay on the device.
 
 Overseerr submissions require an explicitly selected numeric requesting user.
 The adapter sends `X-Api-User` alongside the server-side key so that user's

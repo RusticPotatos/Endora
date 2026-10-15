@@ -9,6 +9,17 @@ tagged release.
 
 ### Added
 
+- **What you set up on the handheld can now be asked about in chat.** The handheld's Docker,
+  Portainer, Sonarr, Radarr and NAS-metrics entries were settings-only, so a service you had
+  already configured was invisible to the one place you would naturally ask about it. Five
+  read-only skills now borrow those settings (nothing is configured twice, and each is offered
+  only once its entry is set up). They never start, stop or restart anything, read container
+  logs or search media, and take no input, so the model chooses no address. Their results mark
+  the turn as outside material, so a turn that read them cannot act and is never escalated to
+  the deep model: container names and NAS figures stay on the device. Overseerr and the home
+  screen stay handheld-only. ([ADR 0093](docs/adr/0093-the-handheld-is-an-explicit-home-console.md),
+  amended.)
+
 - **Goals know whose they are, and Endora's own wait for quiet and never use the paid
   model** ([ADR 0094](docs/adr/0094-work-it-finds-for-itself.md), Phases 1–2 of
   [the always-on plan](docs/plans/always-on-work.md)). Nothing starts work on its own
