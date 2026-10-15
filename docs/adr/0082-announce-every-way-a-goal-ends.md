@@ -53,3 +53,10 @@ terminal history in the console list, durable progress and cancellation in
 chat, and a real-model recovery evaluation. The delivery test runs in the node
 crate, so it does not count toward the foundation gate, which executes only the
 infrastructure `foundation_gate` target.
+
+## Amended by 0094 (2026-10-15)
+
+Everything above applies to goals the person asked for. Goals Endora starts for itself
+([ADR 0094](0094-work-it-finds-for-itself.md)) are not announced in chat when they end:
+they are written to the activity trail and folded into the next brief, and reach chat
+only when they need the person, so that always-working does not become always-talking.
