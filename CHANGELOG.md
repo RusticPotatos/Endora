@@ -9,6 +9,19 @@ tagged release.
 
 ### Added
 
+- **Goals know whose they are, and Endora's own wait for quiet and never use the paid
+  model** ([ADR 0094](docs/adr/0094-work-it-finds-for-itself.md), Phases 1–2 of
+  [the always-on plan](docs/plans/always-on-work.md)). Nothing starts work on its own
+  yet; this is the ground that makes it safe to. A goal now records whether the
+  person asked for it or Endora started it. The person keeps three goals; Endora's
+  own lane holds one, counted separately, so neither can use up the other's slots,
+  and the worker takes a request before work nobody asked for. A pass on a goal
+  Endora started runs on a butler with no deep model to escalate to, decided in the
+  one place goal passes run rather than by a setting, and takes no pass within ten
+  minutes of the person writing in chat. A database from before this reads every
+  goal as the person's, and an origin it cannot read is treated as Endora's own, the
+  lane that never outranks a request. The goals API reports each goal's `origin`.
+
 - **A specimen records how it ended, and the night says when it gave up**
   ([ADR 0075](docs/adr/0075-failures-become-specimens.md), groundwork for
   [ADR 0071](docs/adr/0071-capabilities-it-writes-itself.md)). A failed ask that

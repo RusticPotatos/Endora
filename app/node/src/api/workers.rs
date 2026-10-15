@@ -737,6 +737,35 @@ pub fn spawn_research_worker(state: AppState) {
     });
 }
 
+/// Whether the person has been quiet long enough for a goal Endora started for itself to take
+/// a pass (ADR 0094).
+fn quiet_enough_for_own_work(state: &AppState, now: endora_application::Timestamp) -> bool {
+    // Upper bound open: a message dated after `now` is found too, and the rule refuses it.
+    let from = now
+        .unix_millis()
+        .saturating_sub(endora_application::record_lane::QUIET_WINDOW_MS);
+    let recent = endora_conversation::ChatRepository::between(state.chat.as_ref(), from, i64::MAX);
+    quiet_given(now, recent)
+}
+
+/// The decision, given what the chat said. A chat that cannot be read counts as not quiet: the
+/// lane waits when it cannot tell, because waiting costs nothing.
+pub(super) fn quiet_given(
+    now: endora_application::Timestamp,
+    recent: Result<Vec<endora_application::ChatMessage>, endora_application::RepositoryError>,
+) -> bool {
+    let Ok(recent) = recent else {
+        return false;
+    };
+    let last_spoke = recent
+        .iter()
+        .filter(|message| message.role() == endora_application::MessageRole::User)
+        .map(|message| message.at().unix_millis())
+        .max()
+        .map(endora_application::Timestamp::from_unix_millis);
+    endora_application::record_lane::quiet_enough(now, last_spoke)
+}
+
 /// Resumes one persisted deterministic goal at a time. The worker is deliberately
 /// small: SQLite is the queue, the goal repository is the ownership boundary, and
 /// the existing turn lock prevents it from competing with foreground chat.
@@ -786,7 +815,17 @@ pub fn spawn_goal_worker(state: AppState) {
                 continue;
             };
             let now = state.clock.now();
+            // Person goals come first in this order, so reaching one Endora started for
+            // itself means no request is claimable. It still waits for quiet (ADR 0094):
+            // the first goal of its own that is reached asks once, and the answer holds for
+            // the rest of this tick.
+            let mut quiet: Option<bool> = None;
             let Some(lease) = goals.into_iter().find_map(|goal| {
+                if goal.origin() == endora_application::GoalOrigin::Record
+                    && !*quiet.get_or_insert_with(|| quiet_enough_for_own_work(&state, now))
+                {
+                    return None;
+                }
                 state
                     .store
                     .claim_goal(goal.request_key(), now)
