@@ -52,3 +52,10 @@ dedicated assignment worker has not migrated. Partial/blocked delivery, durable
 browser progress, retry keys across page reloads, timezone offsets, ambiguous
 teams, season completeness and the remaining acceptance scenarios are subsequent
 work. No new dependency, framework, deployment or provider account is introduced.
+
+## Amended by 0094 (2026-10-15)
+
+[ADR 0094](0094-work-it-finds-for-itself.md) lets a goal start without being declared,
+but only from a record that code derived (first: a device in standing trouble) and never
+from a failed answer. The retirement of failed-answer goal creation above stands: that
+objection was about speculation, and the new trigger is a fact, not a guess.

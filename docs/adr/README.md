@@ -193,6 +193,7 @@ of an existing record and take the next number.
 | [0089](0089-a-model-sorts-the-message-not-a-word-list.md) | The local model sorts the message, not a word list | — |
 | [0090](0090-skills-are-sent-once.md) | Skills are sent once | — |
 | [0091](0091-what-the-deep-model-costs.md) | What the deep model costs | — |
+| [0094](0094-work-it-finds-for-itself.md) | Work it finds for itself | — |
 
 The forty-eight decisions these consolidate are in [archive/](archive/) — kept in full,
 because the reasoning that produced a rule is the reason it survives an argument later.
