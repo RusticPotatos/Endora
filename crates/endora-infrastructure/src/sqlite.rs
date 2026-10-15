@@ -21,6 +21,12 @@ use endora_application::{
 use rusqlite::{Connection, OptionalExtension, params};
 
 const SCHEMA: &str = "
+CREATE TABLE IF NOT EXISTS terminal_operations (
+    id TEXT PRIMARY KEY,
+    fingerprint TEXT NOT NULL,
+    result TEXT NOT NULL,
+    created_ms INTEGER NOT NULL
+) STRICT;
 CREATE TABLE IF NOT EXISTS audit_log (
     id      TEXT PRIMARY KEY,
     at_ms   INTEGER NOT NULL,

@@ -254,6 +254,23 @@ pub(super) async fn mint_a_checking_token(
     })))
 }
 
+/// A narrowly scoped credential that can remain available while a device is locked.
+pub(super) async fn mint_a_dashboard_token(
+    State(state): State<AppState>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let store = state.store.clone();
+    let ids = state.ids.clone();
+    let now_ms = state.clock.now().unix_millis();
+    let token = blocking(move || {
+        use endora_application::IdSource as _;
+        let token = format!("{:032x}{:032x}", ids.new_id(), ids.new_id());
+        store.add_session(&token, "dashboard", now_ms, SESSIONS_LAST_MS)?;
+        Ok::<_, endora_application::AppError>(token)
+    })
+    .await?;
+    Ok(Json(json!({"token":token,"scope":"dashboard"})))
+}
+
 /// Whether sign-in has ever been set up. **Open, and a single boolean.**
 ///
 /// The console cannot choose its first screen without this, and the endpoint that knew was
@@ -458,7 +475,9 @@ pub(super) async fn require_the_token(
                 // scope nobody understands must not be read as permission.
                 let scope = match scope.as_str() {
                     "full" => crate::auth::Scope::Full,
-                    _ => crate::auth::Scope::Checks,
+                    "checks" => crate::auth::Scope::Checks,
+                    "dashboard" => crate::auth::Scope::Dashboard,
+                    _ => crate::auth::Scope::Denied,
                 };
                 (token, scope)
             }),

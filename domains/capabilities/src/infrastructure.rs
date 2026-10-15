@@ -13,6 +13,11 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+/// Read-only, explicitly configured home-lab dashboard adapters.
+pub mod homelab;
+/// Explicit, fixed-route handheld administration adapters.
+pub mod terminal;
+
 use crate::application::{CapabilityRunner, Recipe, Stance};
 use crate::domain::{RecipeInput, RecipeInputKind, placeholders_in};
 use endora_kernel::{Decision, Reversibility};
@@ -391,7 +396,7 @@ pub fn tools_to_open_on_connect(
 /// up as modules to enable rather than silently missing.
 #[must_use]
 pub fn default_capabilities() -> Vec<Arc<dyn Capability>> {
-    vec![
+    let mut all: Vec<Arc<dyn Capability>> = vec![
         Arc::new(WeatherCapability),
         Arc::new(WebSearchCapability),
         Arc::new(WebFetchCapability),
@@ -408,7 +413,9 @@ pub fn default_capabilities() -> Vec<Arc<dyn Capability>> {
         Arc::new(SafetyAlertsCapability),
         Arc::new(IncidentScannerCapability),
         Arc::new(HomeAssistantCapability),
-    ]
+    ];
+    all.extend(terminal::handheld_sources());
+    all
 }
 mod sports;
 use sports::*;

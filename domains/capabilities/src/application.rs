@@ -17,6 +17,60 @@ pub struct CapabilityRead {
 
 use crate::domain::{Change, Transition, Watched, note_reading};
 
+/// The handheld's explicit home administration surface, outside model context.
+pub trait HomeConsole: Send + Sync {
+    /// Reads a fixed named view with a bounded query or identifier.
+    /// # Errors
+    /// Safe configuration, protocol or connection category.
+    fn read(&self, view: &str, query: &str) -> Result<serde_json::Value, &'static str>;
+    /// Applies one explicitly confirmed action, deduplicated by request id.
+    /// # Errors
+    /// Invalid target, refusal or safe infrastructure category.
+    fn act(&self, request: &serde_json::Value) -> Result<serde_json::Value, &'static str>;
+    /// Looks up an operation without submitting it again.
+    /// # Errors
+    /// Unknown id or persistence unavailable.
+    fn operation(&self, id: &str) -> Result<serde_json::Value, &'static str>;
+}
+
+/// Validates the fixed explicit action vocabulary before any side effect.
+/// # Errors
+/// Missing confirmation, invalid identifier or unsupported operation.
+pub fn validate_console_action(request: &serde_json::Value) -> Result<(), &'static str> {
+    if request["confirmed"] != true {
+        return Err("confirmation_required");
+    }
+    let id = request["request_id"].as_str().ok_or("invalid_request")?;
+    let target = request["target"].as_str().ok_or("invalid_target")?;
+    let identifier = |s: &str| {
+        !s.is_empty()
+            && s.len() <= 128
+            && s.bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"-_.".contains(&b))
+    };
+    if !identifier(id) || !identifier(target) {
+        return Err("invalid_request");
+    }
+    let kind = request["kind"].as_str().ok_or("invalid_action")?;
+    let action = request["action"].as_str().ok_or("invalid_action")?;
+    let valid = match kind {
+        "home" => matches!(action, "on" | "off" | "scene") && target.contains('.'),
+        "favorite" => matches!(action, "add" | "remove") && target.contains('.'),
+        "media" => matches!(action, "movie" | "tv") && target.bytes().all(|b| b.is_ascii_digit()),
+        "container" => {
+            matches!(action, "start" | "stop" | "restart")
+                && target.len() == 64
+                && target.bytes().all(|b| b.is_ascii_hexdigit())
+        }
+        "job" => action == "run",
+        _ => false,
+    };
+    if !valid {
+        return Err("action_not_allowed");
+    }
+    Ok(())
+}
+
 pub use crate::domain::{
     AutonomyEnvelope, ConfigWrite, McpServer, McpTransport, Recipe, RecipeInput, RecipeInputKind,
     StandingTrouble, TargetAlias, WORTH_SAYING_AFTER_DAYS, WriteKind, a_pile_of, device_of,
@@ -223,6 +277,26 @@ pub trait CapabilitySettingsRepository {
         key: &str,
         value: &str,
     ) -> Result<(), RepositoryError>;
+}
+
+/// A dashboard reader, intentionally absent from the model's capability catalogue.
+pub trait HomelabObserver: Send + Sync {
+    /// Reads a bounded projection. Errors are safe categories, never upstream text.
+    ///
+    /// # Errors
+    /// A connection, authentication, configuration or protocol category.
+    fn observe(&self, service: &str) -> Result<serde_json::Value, &'static str>;
+}
+
+/// Observes sources independently; one unavailable source never hides the other two.
+pub fn observe_homelab(observer: &dyn HomelabObserver, now_ms: i64) -> serde_json::Value {
+    let services: Vec<_> = ["docker", "sonarr", "radarr"].into_iter().map(|name| {
+        match observer.observe(name) {
+            Ok(mut value) => { value["name"] = name.into(); value["observed_at_ms"] = now_ms.into(); value },
+            Err(error) => serde_json::json!({"name":name, "state":if error == "unconfigured" {"unconfigured"} else {"unavailable"}, "error":error, "items":[], "observed_at_ms":now_ms}),
+        }
+    }).collect();
+    serde_json::json!({"observed_at_ms":now_ms,"services":services})
 }
 
 /// The one stored word of a tool's permission (ADR 0062): may it run, and how.

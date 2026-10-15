@@ -6,13 +6,11 @@ authority; clients are thin and replaceable. This guide covers running the node
 **securely** from your other devices — including a phone browser — without
 exposing it to the open internet.
 
-> **Read this first.** The `0.x` HTTP API is **unauthenticated** by design (see
-> [SECURITY.md](../SECURITY.md) and [ADR 0050](adr/0050-the-shape-of-the-system.md)).
-> Anything that can reach the node's port can read and write everything. So the
-> whole security model here is **network reachability**: keep the node on a
-> trusted network (loopback or a private overlay), and if you ever expose it more
-> widely, put authentication in front of it. Authentication in the node itself is
-> tracked as pre-1.0 work.
+> The node authenticates `/v1` requests using bearer tokens. Normal sign-in uses
+> a password and authenticator code and creates a 30-day session. Initial enrollment
+> requires the bootstrap token held on the node. Keep the service on a trusted
+> network and protect transport with HTTPS or a private encrypted overlay.
+> Authentication is not transport encryption. See [SECURITY.md](../SECURITY.md).
 
 ## 1. Where to run it
 
@@ -84,8 +82,7 @@ and jot an observation, while the node stays private. Pick one:
 
 Put the node's machine and your devices on the same private network, then reach
 the node over that network only. Nothing is published to the public internet, and
-because the network itself is the trust boundary, you do not need to add
-authentication.
+the node's own sign-in remains required over the overlay.
 
 1. Install Tailscale (or set up WireGuard) on the node's machine and on your
    phone/laptop; sign them into the same tailnet.
@@ -101,7 +98,7 @@ This is the simplest secure setup and the one we recommend for personal use.
 ### Alternative: an authenticating reverse proxy (for wider exposure)
 
 If you must expose the node beyond a private network, **do not** publish its port
-directly — the API has no auth. Put a reverse proxy in front that terminates TLS
+directly. Put a reverse proxy in front that terminates TLS
 **and** requires authentication, and let only the proxy reach the node
 (bind the node to loopback). Example with Caddy and HTTP basic auth:
 
@@ -164,4 +161,4 @@ browsers, streams audio to a cloud service — so voice is opt-in, off by defaul
 - [ ] Runs under a supervisor (systemd / `--restart`) so it survives reboots.
 - [ ] `ENDORA_DB` on persistent storage; periodic `endora export` backups.
 - [ ] Reviewed [SECURITY.md](../SECURITY.md) — you understand the API is
-      unauthenticated in `0.x`.
+      bearer-authenticated, with public console assets and health checks.

@@ -1,0 +1,6 @@
+- name: Restart Endora job agent
+  ansible.builtin.systemd_service:
+    name: endora-terminal-jobs
+    daemon_reload: true
+    state: restarted
+  become: true

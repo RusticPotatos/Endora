@@ -9,6 +9,163 @@ use tower::ServiceExt; // for `oneshot`
 /// A known token, so the helpers below can sign like the console does.
 const TEST_TOKEN: &str = "a-token-for-tests";
 
+#[tokio::test]
+async fn dashboard_token_is_narrow_and_overview_does_not_disclose_items() {
+    let state = test_state();
+    *state.homelab.lock().unwrap() = serde_json::json!({"observed_at_ms":1,"services":[{"name":"docker","state":"healthy","total":1,"items":[{"name":"private-container"}]}]});
+    let router = app(state);
+    let minted = json_body(
+        router
+            .clone()
+            .oneshot(post("/v1/session/dashboard", "{}"))
+            .await
+            .unwrap(),
+    )
+    .await;
+    let token = minted["token"].as_str().unwrap();
+    for path in [
+        "/v1/homelab/overview",
+        "/v1/chat",
+        "/v1/homelab",
+        "/v1/activity",
+    ] {
+        let request = Request::builder()
+            .uri(path)
+            .header("authorization", format!("Bearer {token}"))
+            .body(Body::empty())
+            .unwrap();
+        let response = router.clone().oneshot(request).await.unwrap();
+        if path == "/v1/homelab/overview" {
+            assert_eq!(response.status(), StatusCode::OK);
+            assert!(
+                !json_body(response)
+                    .await
+                    .to_string()
+                    .contains("private-container")
+            );
+        } else {
+            assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        }
+    }
+}
+
+#[tokio::test]
+async fn handheld_actions_refuse_missing_confirmation_and_do_not_reserve_a_submission() {
+    let state = test_state();
+    let router = app(state);
+    let response=router.clone().oneshot(post("/v1/terminal/action",r#"{"request_id":"fictional-operation","kind":"home","action":"on","target":"light.example","confirmed":false}"#)).await.unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let result = json_body(response).await;
+    assert!(
+        result["error"]
+            .as_str()
+            .unwrap()
+            .contains("confirmation_required")
+    );
+    let result = router
+        .oneshot(get("/v1/terminal/operations/fictional-operation"))
+        .await
+        .unwrap();
+    assert_eq!(result.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn homelab_is_authenticated_and_unconfigured_by_default() {
+    let router = app(test_state());
+    let unsigned = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/v1/homelab")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(unsigned.status(), StatusCode::UNAUTHORIZED);
+    let response = router.oneshot(get("/v1/homelab")).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = json_body(response).await;
+    assert_eq!(body["services"].as_array().unwrap().len(), 3);
+    assert!(
+        body["services"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|s| s["state"] == "unconfigured")
+    );
+}
+
+#[tokio::test]
+async fn homelab_pages_and_marks_old_observations_stale() {
+    let state = test_state();
+    let items: Vec<_> = (0..50)
+        .map(|n| serde_json::json!({"title":format!("Example {n}")}))
+        .collect();
+    *state.homelab.lock().unwrap() = serde_json::json!({"observed_at_ms":1,"services":[{"name":"sonarr","state":"healthy","items":items,"total":50}]});
+    let response = app(state).oneshot(get("/v1/homelab?page=2")).await.unwrap();
+    let body = json_body(response).await;
+    assert_eq!(body["services"][0]["state"], "stale");
+    assert_eq!(body["services"][0]["items"].as_array().unwrap().len(), 20);
+    assert_eq!(body["services"][0]["items"][0]["title"], "Example 20");
+}
+
+#[tokio::test]
+async fn homelab_worker_reads_the_production_settings_and_projects_upstream_data() {
+    use endora_capabilities::CapabilitySettingsRepository;
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let origin = format!("http://{}", listener.local_addr().unwrap());
+    let thread = std::thread::spawn(move || {
+        let (mut socket, _) = listener.accept().unwrap();
+        socket
+            .set_read_timeout(Some(std::time::Duration::from_secs(3)))
+            .unwrap();
+        let mut request = [0; 4096];
+        let n = socket.read(&mut request).unwrap();
+        let request = String::from_utf8_lossy(&request[..n]);
+        assert!(request.starts_with("GET /api/v3/queue?page=1&pageSize=100"));
+        assert!(
+            request
+                .to_lowercase()
+                .contains("x-api-key: fictional-test-key")
+        );
+        let body = r#"{"totalRecords":1,"records":[{"title":"Example","size":100,"sizeleft":25,"status":"downloading","outputPath":"/private"}]}"#;
+        write!(
+            socket,
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+            body.len()
+        )
+        .unwrap();
+    });
+    let state = test_state();
+    state
+        .config
+        .set_setting("homelab-sonarr", "origin", &origin)
+        .unwrap();
+    state
+        .config
+        .set_setting("homelab-sonarr", "api_key", "fictional-test-key")
+        .unwrap();
+    super::spawn_homelab(state.clone());
+    tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        loop {
+            if state.homelab.lock().unwrap()["services"][1]["state"] == "healthy" {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let body = json_body(app(state).oneshot(get("/v1/homelab")).await.unwrap()).await;
+    assert_eq!(body["services"][1]["items"][0]["progress"], 75.0);
+    assert_eq!(body["services"][0]["state"], "unconfigured");
+    assert!(!body.to_string().contains("private"));
+    assert!(!body.to_string().contains("fictional-test-key"));
+    thread.join().unwrap();
+}
+
 fn test_state() -> AppState {
     let mut state = AppState::new(
         Arc::new(SqliteStore::open_in_memory().unwrap()),

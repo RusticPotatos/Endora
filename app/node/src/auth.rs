@@ -33,6 +33,10 @@ pub enum Scope {
     /// data" is the entire reason that tier exists. A credential blind to those would leave
     /// the tests unable to check anything worth checking.
     Checks,
+    /// Pocket-device overview only; no history, entities, logs or writes.
+    Dashboard,
+    /// Unknown persisted scope grants no access.
+    Denied,
 }
 
 /// The one route a browser cannot send a header on.
@@ -66,6 +70,8 @@ pub fn scope_permits(scope: Scope, path: &str, is_write: bool) -> bool {
     match scope {
         Scope::Full => true,
         Scope::Checks => !is_write && path != THE_ONE_THAT_HANDS_OVER_EVERYTHING,
+        Scope::Dashboard => !is_write && path == "/v1/homelab/overview",
+        Scope::Denied => false,
     }
 }
 
@@ -311,6 +317,30 @@ mod what_a_checking_credential_may_do {
     //! things that matter.
 
     use super::{Scope, scope_permits};
+
+    #[test]
+    fn pocket_dashboard_credential_cannot_read_private_conversations_or_write() {
+        assert!(scope_permits(
+            Scope::Dashboard,
+            "/v1/homelab/overview",
+            false
+        ));
+        for path in [
+            "/v1/chat",
+            "/v1/export",
+            "/v1/homelab",
+            "/v1/activity",
+            "/v1/terminal/home",
+            "/v1/terminal/jobs",
+        ] {
+            assert!(!scope_permits(Scope::Dashboard, path, false));
+        }
+        assert!(!scope_permits(
+            Scope::Dashboard,
+            "/v1/homelab/overview",
+            true
+        ));
+    }
 
     #[test]
     fn the_console_credential_is_unrestricted() {

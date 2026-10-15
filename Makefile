@@ -112,7 +112,7 @@ docker-build: ## Build the node container image (tag: endora-node)
 
 .PHONY: docker-run
 docker-run: ## Run the node container (loopback-only on 8787, persists ./endora-data)
-	# Bind the published port to loopback: the API is unauthenticated in 0.x, so
+	# Bind the published port to loopback: authentication does not encrypt transport, so
 	# it must not be reachable off this machine. See docs/hosting.md to reach it
 	# securely from other devices.
 	docker run --rm -p 127.0.0.1:8787:8787 -v "$(CURDIR)/endora-data:/data" endora-node
@@ -122,7 +122,7 @@ deploy: ## Build + start the node via Compose (DOCKER_CONTEXT=nas to target a re
 	# Builds on the target host and starts it detached; data persists in the
 	# named volume `$(COMPOSE_PROJECT_NAME)_endora-data`. Runs against the local
 	# Docker daemon unless DOCKER_CONTEXT names a remote one (set it per-machine
-	# in local.mk). The 0.x API is unauthenticated — keep it on a trusted network.
+	# in local.mk). Keep the bearer-authenticated API on a trusted network.
 	# ENDORA_BUILD stamps the deploy's git short SHA into the image, so /health
 	# and the console header show which build is live.
 	ENDORA_BUILD="$$(git rev-parse --short HEAD 2>/dev/null || echo dev)" $(COMPOSE) up -d --build
@@ -211,7 +211,7 @@ personal-check: ## Fail if anything personal is in the tree (a city and two name
 	# name and your own city, comes from ENDORA_PERSONAL_VALUES in the git-ignored
 	# local.mk. That is the rule stated as a mechanism: personal values are
 	# configuration, and configuration is not in the repository.
-	ENDORA_PERSONAL_VALUES="$(ENDORA_PERSONAL_VALUES)" node scripts/check-nothing-personal.mjs
+	@ENDORA_PERSONAL_VALUES="$(ENDORA_PERSONAL_VALUES)" node scripts/check-nothing-personal.mjs
 
 .PHONY: personal-check-published
 personal-check-published: ## Also check what this repo has PUBLISHED — PR bodies, issues, comments
@@ -219,7 +219,7 @@ personal-check-published: ## Also check what this repo has PUBLISHED — PR bodi
 	# tree scrub and two force-pushes sitting in a merged PR body, and nine more issues and
 	# PRs were carrying names, a device and a host address. Needs the network and `gh`, so
 	# it is not in `make ci`; run it after opening or editing anything.
-	ENDORA_PERSONAL_VALUES="$(ENDORA_PERSONAL_VALUES)" node scripts/check-nothing-personal.mjs --github
+	@ENDORA_PERSONAL_VALUES="$(ENDORA_PERSONAL_VALUES)" node scripts/check-nothing-personal.mjs --github
 
 .PHONY: fmt
 fmt: ## Format the code in place

@@ -1,0 +1,21 @@
+[Unit]
+Description=Private Endora Ansible job agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User={{ endora_terminal_agent_user }}
+ExecStart=/usr/bin/python3 /usr/local/libexec/endora-terminal-jobs.py --config {{ endora_terminal_agent_config }} --state /var/lib/endora-jobs
+RuntimeDirectory=endora-jobs
+RuntimeDirectoryMode=0750
+StateDirectory=endora-jobs
+StateDirectoryMode=0700
+UMask=0077
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=15
+KillMode=control-group
+
+[Install]
+WantedBy=multi-user.target

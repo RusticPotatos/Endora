@@ -21,10 +21,25 @@
 # then open https://<host>:8787  (ENDORA_TLS is on; accept the self-signed
 # cert once — see docs/hosting.md)
 #
-# Note: the 0.x HTTP API is UNAUTHENTICATED. Publishing 8787 makes it reachable
-# by anything on that host's network — fine for a trusted LAN during dev, but do
-# not port-forward it to the internet. See docs/hosting.md.
+# The node requires bearer authentication for /v1. Keep its published port on a
+# trusted network and use HTTPS for credentials. See docs/hosting.md.
 services:
+  docker-observer:
+    # Explicit opt-in; fixed GET routes are the boundary, not a read-only socket mount.
+    profiles: [homelab]
+    image: endora-node:latest
+    entrypoint: [python3, /usr/local/lib/endora/homelab-docker-proxy.py]
+    network_mode: "service:node"
+    depends_on:
+      node:
+        condition: service_started
+        restart: true
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    restart: unless-stopped
   node:
     build:
       context: .
@@ -38,6 +53,9 @@ services:
       - "8787:8787"
     volumes:
       - endora-data:/data
+      # Permission-controlled host agent; read-only mount does not grant write APIs.
+      # The agent authenticates requests and executes only its private fixed catalog.
+      - /run/endora-jobs:/run/endora-jobs:ro
     # The image already defaults ENDORA_ADDR=0.0.0.0:8787 and
     # ENDORA_DB=/data/endora.db. Point the butler/proposer at an Ollama running
     # on the host (host.docker.internal → the host gateway). Without a reachable

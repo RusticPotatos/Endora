@@ -43,6 +43,7 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /endora-node /usr/local/bin/endora-node
+COPY scripts/homelab-docker-proxy.py /usr/local/lib/endora/homelab-docker-proxy.py
 
 # Listen on all interfaces (so the mapped port is reachable) and keep the
 # local-first database on a volume so it survives container restarts.

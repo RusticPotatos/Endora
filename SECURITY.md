@@ -18,15 +18,22 @@ and the active branches receive security attention.
 Until a `1.0` release there is no long-term support window; upgrade to the latest
 `0.x` to receive fixes.
 
-## Deployment note (no authentication yet)
+## Deployment note
 
-Endora's HTTP API is **unauthenticated** in `0.x` — it is designed as a
-local-first, single-user service and binds to `127.0.0.1` by default. **Do not
-expose the node on an untrusted network.** In particular, the container image
-defaults to binding all interfaces (`0.0.0.0`); publish it only on loopback or a
-private network (e.g. `-p 127.0.0.1:8787:8787`), behind a reverse proxy that adds
-authentication if remote access is needed. Authentication is tracked as pre-1.0
-work.
+The node authenticates `/v1` requests with bearer credentials, except the sign-in
+endpoint. Enrollment uses a host-held bootstrap token; normal sign-in requires a
+password and authenticator code and creates a 30-day full session. Checking
+sessions permit reads but exclude bulk export and all writes. The console assets
+and health endpoint are public. Missing accepted credentials fail closed.
+
+The node remains a local-first, single-user service. Keep it on loopback or a
+private network. Containers listen on all interfaces internally; publish only to
+the intended host interface. Use verified HTTPS or a private encrypted overlay
+for credentials in transit. HTTP on a trusted LAN does not encrypt them.
+
+Dashboard integrations keep upstream keys on the node. Their fixed-route readers
+are not model tools. See [home-lab setup](docs/homelab.md) for Docker's restricted
+proxy; access to the raw Docker daemon is privileged host access.
 
 For running the node always-on and reaching it securely from other devices — a
 private overlay network (e.g. Tailscale/WireGuard) or an authenticating reverse

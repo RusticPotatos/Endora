@@ -6,3 +6,10 @@ target/
 **/*.db-shm
 .env
 .env.*
+local.mk
+docker-compose.override.yml
+**/*.local
+**/*.local.*
+**/*.pem
+**/*.key
+**/*.log

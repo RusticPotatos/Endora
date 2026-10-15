@@ -62,7 +62,7 @@ make docker-build && make docker-run
 - **Model recommendations, hardware guidance, tested setups, and private-egress /
   proxy notes:** [docs/model-hosting.md](docs/model-hosting.md).
 - **Always-on and reaching it from your phone:** [docs/hosting.md](docs/hosting.md).
-  The `0.x` API is unauthenticated, so keep it on a trusted network — see
+  The node authenticates `/v1` requests with bearer credentials; keep it on a trusted network — see
   [SECURITY.md](SECURITY.md).
 
 ## The safety model

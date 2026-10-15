@@ -47,6 +47,11 @@ jobs:
       - name: Tests
         run: cargo test --workspace --all-features
 
+      - name: Private observer and job agent contracts
+        run: |
+          python3 scripts/test-homelab-proxy.py
+          python3 scripts/test-terminal-jobs.py
+
       - name: Console screens render
         run: node scripts/check-console.mjs
 

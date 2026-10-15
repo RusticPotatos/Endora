@@ -2591,8 +2591,8 @@ mod tests {
         // the streaming preview already reads.
         let truncated = "{\"reply\":\"Good morning — here's your brief.\\n\\n\
              Today's brief covers what's around the house.\\n\\n\
-             **Weather**\\nCharlotte: fog, 11°C / 53°F as of 7:00 AM.\\n\\n\
-             **News**\\n1. Match Preview: D.C. United at Charlotte FC (https";
+             **Weather**\\nNew York: fog, 11°C / 53°F as of 7:00 AM.\\n\\n\
+             **News**\\n1. Match Preview: D.C. United at New York FC (https";
         let reply = parse_butler_json(truncated);
 
         assert!(
@@ -2616,7 +2616,7 @@ mod tests {
             reply.text
         );
         // The part that did arrive is kept; only the severed tail is lost.
-        assert!(reply.text.contains("Charlotte: fog"), "{}", reply.text);
+        assert!(reply.text.contains("New York: fog"), "{}", reply.text);
     }
 
     #[test]

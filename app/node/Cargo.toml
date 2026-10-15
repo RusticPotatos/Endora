@@ -45,6 +45,8 @@ argon2 = { version = "0.5.3", features = ["std"] }
 # something that silently will not scan. `svg` only — the default features pull in an image
 # encoder this has no use for.
 qrcode = { version = "0.14.1", default-features = false, features = ["svg"] }
+# Interactive host-only dashboard enrollment; masked entry must restore terminal echo.
+rpassword = "7"
 rustls = { version = "0.23.23", features = ["ring"] }
 
 [lints]

@@ -10,8 +10,10 @@
 
 mod api;
 mod auth;
+mod homelab_setup;
 mod mcp_catalog;
 mod signin;
+mod terminal_setup;
 mod tls;
 mod totp;
 
@@ -26,6 +28,12 @@ use endora_infrastructure::{
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    if std::env::args().skip(1).collect::<Vec<_>>() == ["homelab-setup"] {
+        return homelab_setup::run();
+    }
+    if std::env::args().skip(1).collect::<Vec<_>>() == ["terminal-setup"] {
+        return terminal_setup::run();
+    }
     // Local-first defaults; all overridable by environment.
     let db_path = std::env::var("ENDORA_DB").unwrap_or_else(|_| "endora.db".to_owned());
     let addr = std::env::var("ENDORA_ADDR").unwrap_or_else(|_| "127.0.0.1:8787".to_owned());
@@ -105,6 +113,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     api::spawn_heartbeat(state.clone());
     api::spawn_research_worker(state.clone());
     api::spawn_goal_worker(state.clone());
+    api::spawn_homelab(state.clone());
 
     let app = api::app(state);
 

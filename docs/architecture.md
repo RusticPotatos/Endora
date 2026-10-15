@@ -29,6 +29,11 @@ the node only through a stable, versioned protocol.
 
 ## The node is authoritative; clients are replaceable
 
+The home-lab dashboard is a separate read projection in capabilities: fixed-route
+adapters collect bounded Docker and media queue observations, and `/v1/homelab`
+serves them to authenticated clients. Observations and credentials are not included
+in model context or the model tool catalogue. See [ADR 0092](adr/0092-the-home-lab-is-a-server-owned-read-view.md).
+
 - All state, policy, and decision-making live in the node. A client renders and
   requests; it never holds authority.
 - Because clients are replaceable, no client technology is load-bearing. Endora

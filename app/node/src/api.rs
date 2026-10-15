@@ -39,6 +39,10 @@ use tokio::sync::broadcast;
 /// Shared state handed to every request handler.
 #[derive(Clone)]
 pub struct AppState {
+    /// Explicit handheld administration, with server-owned credentials and journal.
+    pub console: Arc<dyn endora_capabilities::application::HomeConsole>,
+    /// Bounded dashboard observations, never added to model context.
+    pub homelab: Arc<std::sync::Mutex<serde_json::Value>>,
     /// The persistence adapter (implements the repository ports not yet moved to
     /// their bounded context — ADR 0050).
     pub store: Arc<SqliteStore>,
@@ -197,6 +201,17 @@ impl AppState {
             all
         });
         Self {
+            console: Arc::new(endora_capabilities::infrastructure::terminal::Adapter::new(
+                config.clone(),
+                store.db(),
+            )),
+            homelab: Arc::new(std::sync::Mutex::new(
+                json!({"observed_at_ms":0,"services":[
+                    {"name":"docker","state":"unconfigured","items":[]},
+                    {"name":"sonarr","state":"unconfigured","items":[]},
+                    {"name":"radarr","state":"unconfigured","items":[]}
+                ]}),
+            )),
             brain: None,
             store,
             chat,
@@ -312,6 +327,7 @@ pub fn app(state: AppState) -> Router {
         .route("/styles.css", get(console_css))
         .route("/app.js", get(console_js))
         .route("/health", get(health))
+        .route("/v1/homelab", get(homelab::dashboard))
         .route("/v1/chat", post(send_chat).get(chat_history))
         .route("/v1/chat/days", get(chat_days))
         .route("/v1/chat/context", get(chat_context))
@@ -342,6 +358,19 @@ pub fn app(state: AppState) -> Router {
         .route("/v1/session/setup", get(sign_in_setup).post(set_sign_in))
         // A read-only credential for `make smoke`, behind a full one.
         .route("/v1/session/checks", post(mint_a_checking_token))
+        .route("/v1/session/dashboard", post(mint_a_dashboard_token))
+        .route("/v1/homelab/overview", get(homelab::overview))
+        .route("/v1/terminal/home", get(terminal::home))
+        .route("/v1/terminal/home/catalog", get(terminal::catalog))
+        .route("/v1/terminal/media", get(terminal::media))
+        .route("/v1/terminal/media/requests", get(terminal::requests))
+        .route("/v1/terminal/containers", get(terminal::containers))
+        .route("/v1/terminal/dashboard", get(terminal::dashboard))
+        .route("/v1/terminal/logs/{id}", get(terminal::logs))
+        .route("/v1/terminal/jobs", get(terminal::jobs))
+        .route("/v1/terminal/jobs/{id}", get(terminal::job))
+        .route("/v1/terminal/action", post(terminal::action))
+        .route("/v1/terminal/operations/{id}", get(terminal::operation))
         .route(
             "/v1/repairs/{server}/{thing}/leave",
             post(leave_this_one_alone),
@@ -462,7 +491,10 @@ pub fn app(state: AppState) -> Router {
         .with_state(state)
 }
 mod auth;
+mod homelab;
+mod terminal;
 use auth::*;
+pub(crate) use homelab::spawn as spawn_homelab;
 
 mod platform;
 use platform::*;

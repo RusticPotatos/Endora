@@ -1,0 +1,4 @@
+endora_terminal_agent_enabled: false
+endora_terminal_agent_user: "{{ ansible_user | default(ansible_user_id) }}"
+endora_terminal_agent_config: "{{ ansible_user_dir }}/.config/endora-jobs/config.json"
+endora_terminal_agent_source: ""
