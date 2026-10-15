@@ -68,6 +68,12 @@ export COMPOSE_PROJECT_NAME
 ENDORA_DATA_DIR ?=
 export ENDORA_DATA_DIR
 
+# Endora looking into things on its own (ADR 0094-0096): set ENDORA_OWN_WORK = 1 in local.mk to
+# turn it on, and ENDORA_UTC_OFFSET_MINUTES to your distance from UTC in minutes (e.g. -300 for
+# UTC-5) so patterns by time of day are in your hours. Both off / UTC when unset.
+export ENDORA_OWN_WORK
+export ENDORA_UTC_OFFSET_MINUTES
+
 COMPOSE = docker $(if $(DOCKER_CONTEXT),--context $(DOCKER_CONTEXT),) compose
 
 .DEFAULT_GOAL := help
