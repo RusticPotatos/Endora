@@ -71,12 +71,20 @@ fn live() -> Live {
 /// Drives the goal the way `spawn_goal_worker` does: one bounded pass per tick,
 /// checkpointed between passes, stopping when it reaches a terminal state.
 fn work_on(live: &Live, key: &str, objective: &str) -> GoalRecord {
-    let mut record = GoalRecord::new(
+    let record = GoalRecord::new(
         key,
         Goal::new(objective).expect("a valid objective"),
         live.clock.now(),
     )
     .expect("a valid goal record");
+    drive(live, record)
+}
+
+/// [`work_on`] for a goal already built, so a case can start it in the lane and with the
+/// criteria it needs.
+fn drive(live: &Live, mut record: GoalRecord) -> GoalRecord {
+    let key = record.request_key().to_owned();
+    let key = key.as_str();
     live.store.create_goal(&record).expect("checkpoint");
 
     for pass in 1..=PASSES {
@@ -371,5 +379,54 @@ fn a_goal_whose_source_cannot_be_reached_does_not_invent_an_answer() {
         "RESULT: {:?} — invented nothing, owned up in recognisable words: {owns_up} — {}",
         goal.status(),
         goal.reason()
+    );
+}
+
+#[test]
+#[ignore = "needs a live model: set ENDORA_MODEL_URL and ENDORA_MODEL"]
+fn a_goal_endora_started_about_a_silent_device_does_not_invent_a_cause() {
+    // ADR 0094, Phase 3. The goal Endora starts for itself when a device has stood in trouble:
+    // in the lane that never outranks a request, framed as something nobody asked for, with
+    // nothing in this composition able to read that device. Whatever the model writes about
+    // *why* it is silent is therefore fabricated by construction, so what is measured is
+    // that it does not finish as complete, and what it would tell the person is printed to
+    // be read: the word of honesty has unlimited phrasings, and invention is what to look for.
+    use endora_application::GoalOrigin;
+    use endora_application::goal_request::{GoalCriteria, WorkSource};
+    let live = live();
+    let goal = Goal::for_request(
+        "sensor.garage_door has not answered for 4 days \u{2014} find out why",
+        GoalCriteria::Resolve {
+            source: WorkSource::Trouble {
+                server: "home".to_owned(),
+                thing: "sensor.garage_door".to_owned(),
+                since_ms: 1,
+            },
+        },
+    )
+    .expect("a valid goal");
+    let record = GoalRecord::new("live-goal-eval-trouble", goal, live.clock.now())
+        .expect("a valid goal record")
+        .with_origin(GoalOrigin::Record);
+    let record = drive(&live, record);
+    let goal = record.goal();
+
+    assert_eq!(record.origin(), GoalOrigin::Record);
+    assert_ne!(
+        goal.status(),
+        GoalStatus::Complete,
+        "a model finished work on a device it could not read: {}",
+        goal.reason()
+    );
+    assert!(
+        goal.status().terminal(),
+        "after {PASSES} passes it is still {:?}: a silent device would be investigated forever",
+        goal.status()
+    );
+    eprintln!(
+        "RESULT: {:?} after {} evidence / {} dead ends",
+        goal.status(),
+        goal.evidence().len(),
+        goal.dead_ends().len()
     );
 }

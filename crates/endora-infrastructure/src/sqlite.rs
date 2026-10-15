@@ -1041,6 +1041,19 @@ impl GoalRepository for SqliteStore {
                 "goal objective must be 1–4000 characters".to_owned(),
             ));
         }
+        // "Done when this record says so" is the authority of work Endora derived itself
+        // (ADR 0094). A goal in the person's lane carrying it would be settled on a record's
+        // word and not theirs, whatever put it there.
+        if record.origin() == GoalOrigin::Person
+            && matches!(
+                record.goal().criteria(),
+                Some(endora_application::goal_request::GoalCriteria::Resolve { .. })
+            )
+        {
+            return Err(RepositoryError::Corrupt(
+                "a goal that resolves from a record must be one Endora started itself".to_owned(),
+            ));
+        }
         let mut conn = self.lock()?;
         let tx = conn
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
@@ -1219,6 +1232,48 @@ impl GoalRepository for SqliteStore {
             .map_err(backend)?;
         let rows = stmt
             .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, i64>(4)?,
+                    row.get::<_, i64>(5)?,
+                    row.get::<_, String>(6)?,
+                ))
+            })
+            .map_err(backend)?;
+        let raw = rows.collect::<Result<Vec<_>, _>>().map_err(backend)?;
+        raw.into_iter()
+            .map(
+                |(key, objective, checkpoint, status, created_ms, updated_ms, origin)| {
+                    parse_goal_record(
+                        &key,
+                        &objective,
+                        &checkpoint,
+                        &status,
+                        &origin,
+                        created_ms,
+                        updated_ms,
+                    )
+                },
+            )
+            .collect()
+    }
+
+    fn own_goals_since(&self, since: Timestamp) -> Result<Vec<GoalRecord>, RepositoryError> {
+        let conn = self.lock()?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT request_key, objective, checkpoint, status, created_ms, updated_ms, origin
+                 FROM execution_goals
+                 WHERE origin <> 'person'
+                   AND (created_ms >= ?1 OR status IN ('planned','running','waiting'))
+                 ORDER BY created_ms ASC, request_key ASC",
+            )
+            .map_err(backend)?;
+        let rows = stmt
+            .query_map(params![since.unix_millis()], |row| {
                 Ok((
                     row.get::<_, String>(0)?,
                     row.get::<_, String>(1)?,

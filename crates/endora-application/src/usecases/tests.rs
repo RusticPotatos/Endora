@@ -2144,6 +2144,12 @@ impl crate::GoalRepository for RecordingGoals {
             .cloned()
             .collect())
     }
+    fn own_goals_since(
+        &self,
+        _since: endora_kernel::ids::Timestamp,
+    ) -> Result<Vec<crate::GoalRecord>, endora_kernel::RepositoryError> {
+        Ok(Vec::new())
+    }
     fn claim_goal(
         &self,
         request_key: &str,
@@ -5836,21 +5842,286 @@ fn a_pass_on_a_goal_the_person_asked_for_still_can() {
 #[test]
 fn a_goal_endora_started_is_still_worked_by_the_local_model() {
     // Taking the deep model away must not take the work away.
-    let local = FindsSomethingEachPass(std::cell::Cell::new(0));
-    let own = a_goal("A device has stopped answering").with_origin(crate::GoalOrigin::Record);
-    let after = one_pass(&own, &local);
-    assert!(
-        !after.goal().evidence().is_empty(),
+    let own = a_goal_from_a_trouble();
+    let after = one_house_pass(
+        &own,
+        Ok("sensor.garage_door: unavailable since Tuesday"),
+        "The house reports sensor.garage_door unavailable since Tuesday.",
+    );
+    assert_eq!(
+        after.goal().evidence().len(),
+        1,
         "the local model's finding was lost: {:?}",
         after.goal().dead_ends()
     );
     assert_eq!(after.origin(), crate::GoalOrigin::Record);
 }
 
+#[test]
+fn work_endora_started_keeps_only_what_it_actually_read() {
+    // A model that writes a confident cause without having read anything is inventing one.
+    // For a goal the person asked for, prose with no read behind it can still be a finding
+    // (they may have asked for something that needs none). Here nobody asked, and the only
+    // honest thing is what the house said.
+    let invented = "It is probably the battery; these sensors usually die after a few years.";
+    let own = one_pass_saying(&a_goal_from_a_trouble(), invented);
+    assert!(
+        own.goal().evidence().is_empty(),
+        "an unread cause was kept as a finding: {:?}",
+        own.goal().evidence()
+    );
+    assert!(
+        own.goal()
+            .dead_ends()
+            .iter()
+            .any(|d| d.why.contains("read nothing")),
+        "and the gap is recorded: {:?}",
+        own.goal().dead_ends()
+    );
+
+    let theirs = one_pass_saying(&a_goal("Read a source"), invented);
+    assert_eq!(
+        theirs.goal().evidence().len(),
+        1,
+        "the control: a request's prose is kept"
+    );
+}
+
+/// Which tools the model was actually offered on a pass.
+struct SeesTools(std::cell::RefCell<Vec<String>>);
+impl Butler for SeesTools {
+    fn respond(
+        &self,
+        _h: &[ChatMessage],
+        _p: &[Preference],
+        _c: &ButlerContext,
+    ) -> Result<ButlerReply, ProposalError> {
+        Ok(ButlerReply::default())
+    }
+    fn take_turn(
+        &self,
+        _conversation: &[crate::TurnMessage],
+        _p: &[Preference],
+        context: &ButlerContext,
+    ) -> Result<ButlerReply, ProposalError> {
+        self.0
+            .borrow_mut()
+            .extend(context.tools.iter().map(|t| t.id.clone()));
+        Ok(ButlerReply {
+            text: "nothing".to_owned(),
+            ..ButlerReply::default()
+        })
+    }
+}
+
+fn tools_offered_on_a_pass(record: &crate::GoalRecord) -> Vec<String> {
+    let tool = |id: &str| crate::CapabilityTool {
+        id: id.to_owned(),
+        description: String::new(),
+        input_schema: None,
+    };
+    let context = ButlerContext {
+        tools: vec![
+            tool("web_search"),
+            tool("knowledge"),
+            tool("home_assistant"),
+        ],
+        ..ButlerContext::default()
+    };
+    let seen = SeesTools(std::cell::RefCell::new(Vec::new()));
+    super::resume_goal(
+        record,
+        &seen,
+        &NoCapabilities,
+        &FakeAudit::default(),
+        &FakeOutcomes::default(),
+        &FakeStore::default(),
+        &SeqIds::default(),
+        &FixedClock(1_000),
+        &context,
+    );
+    let mut ids = seen.0.into_inner();
+    ids.dedup();
+    ids
+}
+
+#[test]
+fn the_model_working_on_something_endora_noticed_is_offered_only_the_house() {
+    assert_eq!(
+        tools_offered_on_a_pass(&a_goal_from_a_trouble()),
+        ["home_assistant"]
+    );
+    // The control: the person's goal is offered what it always was.
+    assert_eq!(
+        tools_offered_on_a_pass(&a_goal("Read a source")),
+        ["web_search", "knowledge", "home_assistant"]
+    );
+}
+
+fn one_pass_saying(record: &crate::GoalRecord, text: &'static str) -> crate::GoalRecord {
+    struct Says(&'static str);
+    impl Butler for Says {
+        fn respond(
+            &self,
+            _h: &[ChatMessage],
+            _p: &[Preference],
+            _c: &ButlerContext,
+        ) -> Result<ButlerReply, ProposalError> {
+            Ok(ButlerReply {
+                text: self.0.to_owned(),
+                ..ButlerReply::default()
+            })
+        }
+    }
+    one_pass(record, &Says(text))
+}
+
+#[test]
+fn what_work_endora_started_read_about_the_house_is_kept() {
+    let after = one_house_pass(
+        &a_goal_from_a_trouble(),
+        Ok("sensor.garage_door: unavailable since Tuesday"),
+        "The house reports sensor.garage_door unavailable since Tuesday.",
+    );
+    assert_eq!(
+        after.goal().evidence().len(),
+        1,
+        "{:?}",
+        after.goal().dead_ends()
+    );
+    assert!(after.goal().evidence()[0].output.contains("since Tuesday"));
+}
+
+fn a_goal_from_a_trouble() -> crate::GoalRecord {
+    let goal = crate::Goal::for_request(
+        "Find out why sensor.garage_door has not answered for 4 days",
+        crate::goal_request::GoalCriteria::Resolve {
+            source: crate::goal_request::WorkSource::Trouble {
+                server: "home".to_owned(),
+                thing: "sensor.garage_door".to_owned(),
+                since_ms: 1,
+            },
+        },
+    )
+    .unwrap();
+    crate::GoalRecord::new(
+        "own:trouble:home:sensor.garage_door:1:1",
+        goal,
+        endora_kernel::ids::Timestamp::from_unix_millis(1),
+    )
+    .unwrap()
+    .with_origin(crate::GoalOrigin::Record)
+}
+
+#[test]
+fn work_endora_noticed_is_not_described_to_the_model_as_something_they_asked_for() {
+    // The instruction used to open "something they asked you for". For a goal Endora
+    // started, that is false, and a model told it will write as if to a person waiting.
+    let own = super::proactive::goal_instruction(a_goal_from_a_trouble().goal());
+    assert!(!own.contains("they asked you for"), "{own}");
+    assert!(own.contains("Nobody asked"), "{own}");
+    assert!(
+        own.contains("garage_door"),
+        "the objective is still there: {own}"
+    );
+    // And the person's goal reads as it always did.
+    let asked = super::proactive::goal_instruction(a_goal("Read a source").goal());
+    assert!(asked.contains("something they asked you for"), "{asked}");
+    assert!(!asked.contains("Nobody asked"), "{asked}");
+}
+
+#[test]
+fn a_goal_from_a_trouble_is_told_it_can_look_and_cannot_fix() {
+    let own = super::proactive::goal_instruction(a_goal_from_a_trouble().goal());
+    assert!(own.contains("cannot change or fix"), "{own}");
+}
+
 /// A butler that calls `web_fetch` once, then answers in prose.
 struct FetchesThenSays {
     turns: std::cell::Cell<usize>,
     then_says: &'static str,
+}
+
+/// A butler that calls one named tool once, then answers in prose.
+struct ReadsThenSays {
+    tool: &'static str,
+    turns: std::cell::Cell<usize>,
+    then_says: &'static str,
+}
+impl Butler for ReadsThenSays {
+    fn respond(
+        &self,
+        _h: &[ChatMessage],
+        _p: &[Preference],
+        _c: &ButlerContext,
+    ) -> Result<ButlerReply, ProposalError> {
+        Ok(ButlerReply::default())
+    }
+    fn take_turn(
+        &self,
+        _conversation: &[crate::TurnMessage],
+        _p: &[Preference],
+        _c: &ButlerContext,
+    ) -> Result<ButlerReply, ProposalError> {
+        let n = self.turns.get();
+        self.turns.set(n + 1);
+        if n == 0 {
+            return Ok(ButlerReply {
+                tool_calls: vec![crate::ToolCall {
+                    id: "c".to_owned(),
+                    capability: self.tool.to_owned(),
+                    input_json: "{}".to_owned(),
+                }],
+                ..ButlerReply::default()
+            });
+        }
+        Ok(ButlerReply {
+            text: self.then_says.to_owned(),
+            ..ButlerReply::default()
+        })
+    }
+}
+
+/// A house skill that reads one thing, or refuses.
+struct HouseRead(Result<&'static str, &'static str>);
+impl CapabilityRunner for HouseRead {
+    fn available(&self) -> Vec<endora_capabilities::CapabilitySpec> {
+        vec![endora_capabilities::CapabilitySpec {
+            id: "home_assistant".to_owned(),
+            wants_place: false,
+            third_party: false,
+            description: String::new(),
+            configured: true,
+            autonomous: true,
+            input_schema: None,
+            reversibility: Reversibility::Observe,
+        }]
+    }
+    fn run(&self, _id: &str, _input: &str) -> Result<String, String> {
+        self.0.map(str::to_owned).map_err(str::to_owned)
+    }
+}
+
+fn one_house_pass(
+    record: &crate::GoalRecord,
+    reads: Result<&'static str, &'static str>,
+    then_says: &'static str,
+) -> crate::GoalRecord {
+    super::resume_goal(
+        record,
+        &ReadsThenSays {
+            tool: "home_assistant",
+            turns: std::cell::Cell::new(0),
+            then_says,
+        },
+        &HouseRead(reads),
+        &FakeAudit::default(),
+        &FakeOutcomes::default(),
+        &FakeStore::default(),
+        &SeqIds::default(),
+        &FixedClock(1_000),
+        &ButlerContext::default(),
+    )
 }
 impl Butler for FetchesThenSays {
     fn respond(
@@ -5955,6 +6226,56 @@ fn a_pass_whose_every_tool_call_failed_records_the_failure_not_a_finding() {
     assert!(
         goal.observations().iter().any(|o| o.error.is_some()),
         "the receipt is still recorded"
+    );
+}
+
+fn one_fetch_pass_on(
+    record: &crate::GoalRecord,
+    fetch: Result<&'static str, &'static str>,
+) -> crate::GoalRecord {
+    super::resume_goal(
+        record,
+        &FetchesThenSays {
+            turns: std::cell::Cell::new(0),
+            then_says: "The page says the door sensor is offline.",
+        },
+        &FetchResult(fetch),
+        &FakeAudit::default(),
+        &FakeOutcomes::default(),
+        &FakeStore::default(),
+        &SeqIds::default(),
+        &FixedClock(1_000),
+        &ButlerContext::default(),
+    )
+}
+
+#[test]
+fn work_endora_started_cannot_read_the_web_even_when_the_model_asks_to() {
+    // ADR 0094. The same model, the same working fetch: for the person's goal the page is
+    // read and kept, for a goal Endora started the fetch is refused and nothing from the
+    // outside is kept as a finding.
+    let page = Ok("Example Domain. A page that would be served.");
+    let theirs = one_fetch_pass_on(&a_goal("Read http://example.test/"), page);
+    assert!(
+        theirs
+            .goal()
+            .observations()
+            .iter()
+            .any(|o| o.error.is_none()),
+        "the control: the person's goal reads the page"
+    );
+
+    let own = a_goal_from_a_trouble();
+    let after = one_fetch_pass_on(&own, page);
+    let receipts = after.goal().observations();
+    assert!(
+        receipts.iter().all(|o| o.error.is_some()),
+        "a web fetch was served to a goal nobody asked for: {receipts:?}"
+    );
+    assert!(
+        after.goal().evidence().is_empty(),
+        "and nothing from it was kept: {:?}",
+        after.goal().evidence()
     );
 }
 

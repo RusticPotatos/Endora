@@ -22,6 +22,20 @@ tagged release.
   goal as the person's, and an origin it cannot read is treated as Endora's own, the
   lane that never outranks a request. The goals API reports each goal's `origin`.
 
+- **Endora can look into a standing trouble on its own, quietly, behind a switch**
+  ([ADR 0094](docs/adr/0094-work-it-finds-for-itself.md), Phase 3). Off unless the node
+  is started with `ENDORA_OWN_WORK=1`. A device that has not answered for three days
+  (and which you have not called fine) can become a goal Endora starts itself, only when
+  you have been quiet, nothing you asked for is open, and half an hour has passed since
+  the last one. It reads and looks; it cannot change anything; it uses the local model
+  only and reads only the house (Home Assistant), not the web or any other skill,
+  keeping only what it actually read. It is finished by the record it came from, not by a model: when the device
+  answers again the goal completes with no further model call, and if you mark it fine
+  the work stops. Its ending goes to the activity trail and posts nothing to chat. An
+  item is looked into at most twice, a week apart, and never again once you press Stop.
+  The nightly loop's own long-running intention is to be folded into this lane in the
+  next phase, with the stumper replay.
+
 - **A specimen records how it ended, and the night says when it gave up**
   ([ADR 0075](docs/adr/0075-failures-become-specimens.md), groundwork for
   [ADR 0071](docs/adr/0071-capabilities-it-writes-itself.md)). A failed ask that

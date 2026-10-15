@@ -75,6 +75,18 @@ The image binds `0.0.0.0` **inside** the container so the mapped port works; the
 `127.0.0.1:` in `-p` is what keeps it off your machine's other interfaces. Only
 change that once a private overlay or an authenticating proxy sits in front.
 
+### Optional: let it look into things on its own
+
+Set **`ENDORA_OWN_WORK=1`** on the node and it will, while you are not talking to it,
+look into something in the house that has not answered for three days or more (a
+sensor, a device), one at a time, and write what it found to the activity trail. It
+is off by default. It reads and looks; it cannot change anything, and it reads only
+Home Assistant, not the web or your other skills. It uses the local
+model only (never the paid one), waits until you have been quiet for ten minutes,
+never takes the place of something you asked for, and posts nothing to chat.
+Pressing Stop on it, or marking the device "it's fine", means it is not looked into
+again. See [ADR 0094](adr/0094-work-it-finds-for-itself.md).
+
 ## 3. Reach it securely from your phone and laptop
 
 The goal — "mobile capture with no sync" — is to open the console from your phone

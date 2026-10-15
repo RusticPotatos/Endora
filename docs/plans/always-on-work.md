@@ -56,8 +56,11 @@ reconciles them rather than ignoring either (principle 1 below).
   its own context that an over-eager loop "would have been invisible until the
   provider's bill." Inside a turn, escalation is one call, `butler.deeper()`
   (`usecases/turn.rs`), and goal passes run through that same turn. A background
-  goal can already reach the paid model. This was observed in the live eval
-  traces ("escalating to the deep model" on a refused source).
+  goal can already reach the paid model, whenever escalation is on. (An earlier draft
+  said this was observed in the live eval traces. It was not: the "escalating to the
+  deep model" line printed whether or not a deep model existed, and the eval has none.
+  That line now prints only when escalation is possible. The risk is from reading the
+  code, not from a trace.)
 - **The worker is not fair.** It claims goals oldest-updated-first
   (`ORDER BY updated_ms ASC`) with no notion of whose they are, and the three-goal
   cap is one shared pool. Self-started work would queue ahead of, and could
@@ -217,8 +220,8 @@ acceptance evidence.
 | 0 | Decide the open questions below; write ADR 0094 | no | owner answers recorded |
 | 1 | Provenance, lanes, claim priority | **none** | S1, S6; existing goal suite and `make goal-eval` unchanged |
 | 2 | `LocalOnly` clamp and the quiet gate, behind a flag | none yet | S2, S3 |
-| 3 | Selector + `Resolve` for **standing trouble only** | yes, first source | S4, S5, S7, S8, S9 |
-| 4 | Specimens, then repairs | yes | S4–S8 per source |
+| 3 | Selector + `Resolve` for **standing trouble only** | yes, first source, off unless `ENDORA_OWN_WORK=1` | S4, S5, S7 (trail), S8, S9 |
+| 4 | Specimens, then repairs, and **intentions folded in** (a belief as the last source; the nightly loop's own pursuit and stumper replay retired in the same edit) | yes | S4–S8 per source |
 | 5 | Fold results into the brief | yes | S7 against a real brief |
 | 6 | Mail as a source (own ADR; prerequisites below) | yes | own scenarios |
 | 7 | Acting: drafts first, then anything needing an opened capability | yes | own ADR |
@@ -230,6 +233,24 @@ trouble, not specimens, was chosen as the first source: Phase 3 has nothing to
 overlap.) No new worker and no new store: the
 record lane reuses the existing one. That is the answer to the reset plan's
 "do not maintain two autonomous brains."
+
+*Phase 3, as built (2026-10-15).* `WorkSource` (an enum, so specimens, repairs and the
+belief source are additions), `GoalCriteria::Resolve`, and `own_work` (the pure start
+decision, the source re-read, the trail line). The worker re-reads the source before each
+pass and posts a self-started goal's ending to the activity trail, not chat. A starter
+loop, run only with `ENDORA_OWN_WORK=1`, makes the goals. The five-minute cadence the
+gate asks for is real here, unlike the claim-time check in Phase 2. The brief half of S7
+is Phase 5. Not yet observed on a live node.
+
+*What a live model did with it, 2026-10-15.* Three runs of the goal against the local
+model, recorded because each changed the design. With the web available it searched for
+generic advice and named a radio protocol the device was never said to use. With the web
+removed but Wikipedia left, it did the same from an encyclopedia and the invention was
+kept as a finding. With only the house allowed (`HOUSE_SKILLS`) and an unread cause
+counted as a dead end, it ended Blocked in 22 seconds with "I found nothing usable". What
+is **not** known: what it writes when Home Assistant can actually be read, because the
+eval composition has no Home Assistant. That is the first thing to look at on the live
+node.
 
 ## Acceptance scenarios
 
@@ -295,10 +316,12 @@ Answered by the owner on 2026-10-15, accepting each recommendation; recorded in
 5. **Starting numbers:** quiet window 10 minutes, cooldown 30 minutes, gate cadence
    5 minutes, tuned after a week watching the trail.
 
-**Still open, and needed before Phase 3:** *intentions.* ADR 0052/0077 give the
-nightly loop its own durable pursuit (one active, traced to a belief), a second
-durable-work mechanism beside goals and research. Fold it into the record lane, or
-leave the nightly loop untouched? Phase 1 and 2 do not depend on the answer.
+6. **Intentions are folded into the record lane** (answered 2026-10-15, after the five
+   above). The nightly loop's own pursuit becomes the lane's lowest-priority source, a
+   belief, and the loop stops keeping one of its own. It cannot be verified by its
+   source, so it ends `Partial`, never `Complete`. It lands in Phase 4 with specimens,
+   in the same edit to the nightly loop, not in Phase 3; the full reasoning and limits
+   are in [ADR 0094](../adr/0094-work-it-finds-for-itself.md#intentions-are-folded-in).
 
 ## Risks
 

@@ -282,3 +282,12 @@ deferral state. Nothing accumulates; nothing needs clearing. The same instinct p
   a chore, no.
 - **Merging contradictory beliefs** into one averaged statement.
 - **Keeping beliefs forever.** A model that only accumulates is a transcript.
+
+## Amended by 0094 (2026-10-15)
+
+[ADR 0094](0094-work-it-finds-for-itself.md) folds the nightly loop's intention (one
+active, formed from the strongest belief, kept as a prose note over seven nights) into the
+record lane, as its lowest-priority source. The intention still traces to a belief and can
+still be dropped by the person, but it is now a bounded goal that runs local-only, quietly,
+and ends `Partial`, rather than a mechanism of its own. This lands in Phase 4; until then
+the nightly loop behaves as described above.
