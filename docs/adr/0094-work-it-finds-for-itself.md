@@ -161,7 +161,7 @@ can still drop one.
   intention (one active, formed from the strongest belief, seven nights, kept as a prose
   note) is replaced by the record lane (see "Intentions are folded in" below). Commissioned
   research ([0077](0077-seeing-something-through.md)) is a different thing and is untouched.
-- **Retires, in Phase 4:** the nightly loop's "replay one stumper" step, which does the
+- **Retires, in Phase 4 ([0095](0095-more-sources-for-work-it-finds.md)):** the nightly loop's "replay one stumper" step, which does the
   same job once per night for one item. It stays until specimens become a source, so one
   item is never worked twice. The loop's intention step goes in the same change, for the
   same reason: both are edits to `run_due_nightly_loop`. No new worker and no new store are introduced: the record

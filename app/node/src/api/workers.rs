@@ -479,6 +479,7 @@ pub fn spawn_heartbeat(state: AppState) {
             let mcp = mcp_snapshot(&state);
             // Take the turn lock so a proactive brief/check-in never interleaves
             // with a chat reply; held across the blocking work below.
+            let own_work = state.own_work;
             let _turn = state.turn_lock.clone().lock_owned().await;
             let posted = tokio::task::spawn_blocking(move || {
                 // Unattended: nobody is here to confirm anything, so only the reversible
@@ -567,6 +568,7 @@ pub fn spawn_heartbeat(state: AppState) {
                     ids.as_ref(),
                     clock.as_ref(),
                     &context,
+                    own_work,
                 )?;
                 if let Some((_, activity)) = &reflected {
                     for item in activity {
@@ -765,8 +767,17 @@ pub(super) fn start_own_work_once(state: &AppState) -> bool {
     let Ok(open) = state.store.active_goals() else {
         return false;
     };
+    // Unreadable means nothing to offer, not a reason to stop looking at the rest.
+    let specimens =
+        endora_understanding::SpecimenRepository::open_specimens(state.understanding.as_ref())
+            .unwrap_or_default();
+    let focus = usecases::belief_to_look_into(state.understanding.as_ref(), state.clock.as_ref())
+        .ok()
+        .flatten();
     let situation = Situation {
         troubles: &troubles,
+        specimens: &specimens,
+        focus: focus.as_ref(),
         history: &history,
         a_request_is_open: open
             .iter()
@@ -945,12 +956,26 @@ pub fn spawn_goal_worker(state: AppState) {
             let mut task = tokio::task::spawn_blocking(move || {
                 // Work derived from a record is finished by that record, not by a pass: read
                 // it again first (ADR 0094). A trouble that cleared completes the goal with
-                // no model call; one the person called fine stops it. If the record cannot
-                // be read, carry on as usual: failing to look is not a reason to end it.
-                if let Ok(troubles) =
-                    endora_capabilities::StandingTroubleRepository::troubles(config.as_ref())
-                {
-                    match endora_application::own_work::recheck(&record, &troubles, clock.now()) {
+                // no model call; one the person called fine, an ask taken off the shelf, or a
+                // belief no longer held stops it. If the records cannot be read, skip the
+                // pass and leave the goal as it was: working blind is not worth a pass.
+                let mut replay_of = None;
+                if record.origin() == endora_application::GoalOrigin::Record {
+                    let troubles =
+                        endora_capabilities::StandingTroubleRepository::troubles(config.as_ref());
+                    let open = endora_understanding::SpecimenRepository::open_specimens(
+                        understanding.as_ref(),
+                    );
+                    let held = usecases::beliefs_still_held(understanding.as_ref(), clock.as_ref());
+                    let (Ok(troubles), Ok(open), Ok(held)) = (troubles, open, held) else {
+                        return Ok(false);
+                    };
+                    let records = endora_application::own_work::Records {
+                        troubles: &troubles,
+                        open_specimens: &open,
+                        active_beliefs: &held,
+                    };
+                    match endora_application::own_work::recheck(&record, &records, clock.now()) {
                         endora_application::own_work::Recheck::Resolved(done) => {
                             return store.checkpoint_goal(&done, &worker_lease, clock.now());
                         }
@@ -968,6 +993,14 @@ pub fn spawn_goal_worker(state: AppState) {
                             return Ok(true);
                         }
                         endora_application::own_work::Recheck::Unchanged => {}
+                    }
+                    // An ask that failed is not worked on by the open-ended loop: it is asked
+                    // again, once, and judged by the verdict that filed it (ADR 0095).
+                    if let Some(endora_application::goal_request::GoalCriteria::Resolve {
+                        source: endora_application::goal_request::WorkSource::Specimen { id },
+                    }) = record.goal().criteria()
+                    {
+                        replay_of = open.iter().find(|s| &s.id == id).cloned();
                     }
                 }
                 // Clamped to the reversible bands, because nobody is watching. This
@@ -1003,17 +1036,38 @@ pub fn spawn_goal_worker(state: AppState) {
                 ) else {
                     return Ok(false);
                 };
-                let updated = usecases::resume_goal(
-                    &record,
-                    butler.as_ref(),
-                    &runner,
-                    audit.as_ref(),
-                    understanding.as_ref(),
-                    understanding.as_ref(),
-                    ids.as_ref(),
-                    clock.as_ref(),
-                    &context,
-                );
+                let updated = if let Some(specimen) = &replay_of {
+                    // The result is recorded on the specimen first; if that fails, the goal
+                    // is left as it was and the next tick asks again.
+                    match usecases::replay_specimen(
+                        &record,
+                        specimen,
+                        butler.as_ref(),
+                        &runner,
+                        audit.as_ref(),
+                        understanding.as_ref(),
+                        understanding.as_ref(),
+                        understanding.as_ref(),
+                        ids.as_ref(),
+                        clock.as_ref(),
+                        &context,
+                    ) {
+                        Ok(done) => done,
+                        Err(_) => return Ok(false),
+                    }
+                } else {
+                    usecases::resume_goal(
+                        &record,
+                        butler.as_ref(),
+                        &runner,
+                        audit.as_ref(),
+                        understanding.as_ref(),
+                        understanding.as_ref(),
+                        ids.as_ref(),
+                        clock.as_ref(),
+                        &context,
+                    )
+                };
                 store.checkpoint_goal(&updated, &worker_lease, clock.now())
             });
             let mut heartbeat = tokio::time::interval(std::time::Duration::from_secs(10));

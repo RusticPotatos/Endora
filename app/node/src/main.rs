@@ -95,7 +95,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Arc::new(SystemClock),
         butler,
     )
-    .with_brain(brain);
+    .with_brain(brain)
+    .with_own_work(std::env::var("ENDORA_OWN_WORK").ok().as_deref() == Some("1"));
 
     println!("{}", endora_application::platform_identity());
     println!("drafting model: {model} via {model_url}  (optional; 503 if unavailable)");
@@ -107,7 +108,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     api::spawn_goal_worker(state.clone());
     // Looking into things nobody asked about is off until the owner turns it on (ADR 0094).
     // Everything that makes it safe is already in the goal worker; this only lets it begin.
-    if std::env::var("ENDORA_OWN_WORK").ok().as_deref() == Some("1") {
+    if state.own_work {
         println!("own work: on — it will look into standing troubles when you have been quiet");
         api::spawn_own_work(state.clone());
     }
