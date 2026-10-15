@@ -495,3 +495,105 @@ async fn a_belief_goal_whose_belief_has_gone_is_withdrawn() {
         .expect("the worker never withdrew the goal");
     assert_eq!(gone.goal().status(), GoalStatus::Cancelled);
 }
+
+// ---- the house's rhythms (ADR 0096) ----
+
+use endora_capabilities::{Transition, TransitionLog};
+
+/// A fortnight in which the front door opens at 07:30 UTC every day, with a heartbeat each day
+/// so the log covers all of them.
+fn a_house_with_a_routine(state: &AppState) {
+    let start = now(state) - 14 * DAY;
+    for day in 0..14 {
+        for (key, to, minutes) in [
+            ("home::sensor.heartbeat", "ok", 3 * 60),
+            ("home::binary_sensor.front_door", "on", 7 * 60 + 30),
+        ] {
+            state
+                .config
+                .record(&Transition {
+                    key: key.to_owned(),
+                    from: "other".to_owned(),
+                    to: to.to_owned(),
+                    at_ms: start - start.rem_euclid(DAY) + day * DAY + minutes * 60_000 + DAY,
+                })
+                .unwrap();
+        }
+    }
+}
+
+fn rhythm_lines(state: &AppState) -> Vec<String> {
+    trail(state)
+        .into_iter()
+        .filter(|line| line.starts_with("Regular patterns in the house"))
+        .collect()
+}
+
+#[test]
+fn a_routine_in_the_log_is_noticed_and_said_once() {
+    let state = state();
+    a_house_with_a_routine(&state);
+    assert!(super::notice_rhythms_once(&state));
+    let said = rhythm_lines(&state);
+    assert_eq!(said.len(), 1, "{:?}", trail(&state));
+    assert!(
+        said[0].contains("binary_sensor.front_door goes on around 07:30"),
+        "{}",
+        said[0]
+    );
+    assert!(
+        !super::notice_rhythms_once(&state),
+        "the same thing, said again"
+    );
+    assert_eq!(rhythm_lines(&state).len(), 1);
+}
+
+#[test]
+fn a_quiet_log_says_nothing() {
+    let state = state();
+    assert!(!super::notice_rhythms_once(&state));
+    assert!(rhythm_lines(&state).is_empty());
+}
+
+#[test]
+fn a_changed_picture_waits_hours_before_it_is_said_again() {
+    let state = state();
+    a_house_with_a_routine(&state);
+    // An earlier, different line from a few hours ago, and then one from over six hours ago.
+    endora_application::EventLog::record(
+        state.events.as_ref(),
+        Timestamp::from_unix_millis(now(&state) - 60 * 60 * 1000),
+        "Regular patterns in the house: something else entirely",
+    )
+    .unwrap();
+    assert!(
+        !super::notice_rhythms_once(&state),
+        "said an hour ago; the picture changing is not a reason to say it again so soon"
+    );
+}
+
+#[test]
+fn a_changed_picture_is_said_once_enough_time_has_passed() {
+    let state = state();
+    a_house_with_a_routine(&state);
+    endora_application::EventLog::record(
+        state.events.as_ref(),
+        Timestamp::from_unix_millis(now(&state) - 7 * 60 * 60 * 1000),
+        "Regular patterns in the house: something else entirely",
+    )
+    .unwrap();
+    assert!(super::notice_rhythms_once(&state));
+}
+
+#[test]
+fn the_persons_own_hours_are_used() {
+    // 07:30 UTC is 02:30 five hours west of it.
+    let state = state().with_utc_offset_minutes(-300);
+    a_house_with_a_routine(&state);
+    assert!(super::notice_rhythms_once(&state));
+    assert!(
+        rhythm_lines(&state)[0].contains("goes on around 02:30"),
+        "{:?}",
+        rhythm_lines(&state)
+    );
+}

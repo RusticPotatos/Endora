@@ -104,7 +104,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         butler,
     )
     .with_brain(brain)
-    .with_own_work(std::env::var("ENDORA_OWN_WORK").ok().as_deref() == Some("1"));
+    .with_own_work(std::env::var("ENDORA_OWN_WORK").ok().as_deref() == Some("1"))
+    .with_utc_offset_minutes(
+        std::env::var("ENDORA_UTC_OFFSET_MINUTES")
+            .ok()
+            .and_then(|minutes| minutes.trim().parse::<i64>().ok())
+            .filter(|minutes| minutes.abs() <= 14 * 60)
+            .unwrap_or(0),
+    );
 
     println!("{}", endora_application::platform_identity());
     println!("drafting model: {model} via {model_url}  (optional; 503 if unavailable)");
