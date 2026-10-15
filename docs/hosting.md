@@ -96,8 +96,14 @@ something you asked for, and posts nothing to chat. Pressing Stop on one, or mar
 device "it's fine", means that item is not looked into again. With the switch on, the
 nightly loop stops replaying a question and keeping its own thread, since the lane does
 both; with it off, the nightly loop is exactly as it was.
-See [ADR 0094](adr/0094-work-it-finds-for-itself.md) and
-[ADR 0095](adr/0095-more-sources-for-work-it-finds.md).
+With the switch on it also reads the house's own log of what changed, and writes a line to
+the activity trail when something happens at about the same time on most days ("the front
+door goes on around 07:30, on 11 of the last 14 days"). That needs no model and sends
+nothing anywhere. Set **`ENDORA_UTC_OFFSET_MINUTES`** (for example `-300` for US Eastern
+standard time, `60` for central Europe in winter) so the times are yours; unset, they are UTC.
+See [ADR 0094](adr/0094-work-it-finds-for-itself.md),
+[ADR 0095](adr/0095-more-sources-for-work-it-finds.md) and
+[ADR 0096](adr/0096-patterns-it-notices.md).
 
 ## 3. Reach it securely from your phone and laptop
 

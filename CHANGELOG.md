@@ -48,6 +48,17 @@ tagged release.
   turned on. Repairs were considered and left out: they already end in a policy action
   or a question only you can answer, so there is nothing for a goal to gather.
 
+- **Endora notices what the house does at the same time most days**
+  ([ADR 0096](docs/adr/0096-patterns-it-notices.md)). With `ENDORA_OWN_WORK=1`, it counts
+  the changes the house has settled on over the last fortnight and writes a line to the
+  activity trail when something happens at about the same time on most days: "the front
+  door goes on around 07:30, on 11 of the last 14 days". It is arithmetic with no model,
+  it says only what it counted, and it speaks again only when the picture changes (and not
+  more than every six hours). Set `ENDORA_UTC_OFFSET_MINUTES` for your hours. This is the
+  first standing job: a review that keeps running, not a goal that ends. Reading the mail
+  into buckets and a safe terminal sandbox are proposed in
+  [the standing-jobs plan](docs/plans/standing-jobs.md) and wait on your decisions.
+
 - **A specimen records how it ended, and the night says when it gave up**
   ([ADR 0075](docs/adr/0075-failures-become-specimens.md), groundwork for
   [ADR 0071](docs/adr/0071-capabilities-it-writes-itself.md)). A failed ask that

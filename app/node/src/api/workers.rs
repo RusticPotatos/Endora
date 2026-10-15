@@ -806,6 +806,51 @@ pub(super) fn start_own_work_once(state: &AppState) -> bool {
     true
 }
 
+/// Says what the house does at about the same time most days, when that has changed
+/// (ADR 0096). Returns whether it said anything.
+///
+/// Counting over the transition log, no model. The trail is where it is kept: the picture is
+/// compared with the last line of this kind there, and said again only if it differs and the
+/// last was at least six hours ago, so a pattern wavering at the edge of the bar does not
+/// fill the trail.
+pub(super) fn notice_rhythms_once(state: &AppState) -> bool {
+    const SAID_AT_MOST_EVERY_MS: i64 = 6 * 60 * 60 * 1000;
+    const HEADING: &str = "Regular patterns in the house";
+    const MOST_SAID: usize = 5;
+    let now = state.clock.now().unix_millis();
+    let Ok(transitions) = endora_capabilities::TransitionLog::since(
+        state.config.as_ref(),
+        now - endora_capabilities::KEEP_TRANSITIONS_FOR_MS,
+    ) else {
+        return false;
+    };
+    let rhythms = endora_capabilities::find_rhythms(&transitions, state.utc_offset_minutes);
+    if rhythms.is_empty() {
+        return false;
+    }
+    let said = format!(
+        "{HEADING}: {}",
+        rhythms
+            .iter()
+            .take(MOST_SAID)
+            .map(endora_capabilities::Rhythm::describe)
+            .collect::<Vec<_>>()
+            .join("; ")
+    );
+    let last = endora_application::EventLog::recent(state.events.as_ref(), 500)
+        .unwrap_or_default()
+        .into_iter()
+        .find(|event| event.summary.starts_with(HEADING));
+    if let Some(last) = last {
+        if last.summary == said || now - last.at.unix_millis() < SAID_AT_MOST_EVERY_MS {
+            return false;
+        }
+    }
+    let _ = endora_application::EventLog::record(state.events.as_ref(), state.clock.now(), &said);
+    let _ = state.changes.send(());
+    true
+}
+
 /// Starts looking into things unasked, on the slow cadence ADR 0094 sets. Run only when the
 /// owner has turned it on (`ENDORA_OWN_WORK`); until then nothing creates this kind of work.
 pub fn spawn_own_work(state: AppState) {
@@ -818,6 +863,7 @@ pub fn spawn_own_work(state: AppState) {
         loop {
             ticker.tick().await;
             start_own_work_once(&state);
+            notice_rhythms_once(&state);
         }
     });
 }

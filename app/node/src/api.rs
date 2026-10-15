@@ -100,6 +100,10 @@ pub struct AppState {
     /// Off unless the owner turned it on. When on, the nightly loop leaves the stumpers and
     /// the long-running intention to that lane.
     pub own_work: bool,
+    /// The person's distance from UTC in minutes (`ENDORA_UTC_OFFSET_MINUTES`), for patterns
+    /// that depend on the time of day. The node stores instants and does not otherwise know
+    /// where the person is. Zero unless set.
+    pub utc_offset_minutes: i64,
 }
 
 /// Persistent [`ConversationSummaryStore`](endora_application::ConversationSummaryStore):
@@ -220,7 +224,15 @@ impl AppState {
             token,
             started_ms,
             own_work: false,
+            utc_offset_minutes: 0,
         }
+    }
+
+    /// Sets the person's distance from UTC, in minutes (negative to the west).
+    #[must_use]
+    pub fn with_utc_offset_minutes(mut self, minutes: i64) -> Self {
+        self.utc_offset_minutes = minutes;
+        self
     }
 
     /// Turns on the record lane: the node starts looking into things on its own.
