@@ -24,8 +24,17 @@ function agendaAgo(at) {
   return `${d} day${d === 1 ? "" : "s"} ago`;
 }
 
-// "Watching 4 things · checked the NAS 1 min ago · 1 needs you". It opens Activity, the record of
-// everything the loop did and why.
+// What needs the owner, most pressing first: urgent before needs you, the house before the mail,
+// then the newest.
+function agendaPinned() {
+  const rank = (i) => (i.level === "urgent" ? 0 : 2) + (i.from_mail ? 1 : 0);
+  return ((AGENDA && AGENDA.items) || [])
+    .filter((i) => i.level === "needs_you" || i.level === "urgent")
+    .sort((a, b) => (rank(a) - rank(b)) || (b.opened_at - a.opened_at));
+}
+
+// "Watching 4 things · checked the NAS 1 min ago", which opens Activity, the record of everything
+// the loop did and why; and beside it, how many need the owner, which opens the list of them.
 function viewNowLine() {
   if (!AGENDA || !AGENDA.now) return "";
   const n = AGENDA.now;
@@ -35,26 +44,48 @@ function viewNowLine() {
   const rank = (s) => (order.includes(s) ? order.indexOf(s) : order.length);
   const latest = (n.checked || []).filter((c) => c.source !== "endora")
     .sort((a, b) => (b.at - a.at) || (rank(a.source) - rank(b.source)))[0];
-  const parts = [`Watching ${n.watching} thing${n.watching === 1 ? "" : "s"}`];
-  if (latest) parts.push(`checked ${AGENDA_SOURCES[latest.source] || esc(latest.source)} ${agendaAgo(latest.at)}`);
-  if (n.needs_you) parts.push(`<b>${n.needs_you} need${n.needs_you === 1 ? "s" : ""} you</b>`);
-  return `<button class="now-line" data-act="go:audit" title="Open Activity"><span class="now-dot"></span>${parts.join(" · ")}</button>`;
+  const said = [`Watching ${n.watching} thing${n.watching === 1 ? "" : "s"}`];
+  if (latest) said.push(`checked ${AGENDA_SOURCES[latest.source] || esc(latest.source)} ${agendaAgo(latest.at)}`);
+  const needs = n.needs_you
+    ? `<button class="now-pill" data-act="go:needs">${n.needs_you} need${n.needs_you === 1 ? "s" : ""} you ›</button>`
+    : "";
+  return `<div class="now-row"><button class="now-line" data-act="go:audit" title="Open Activity"><span class="now-dot"></span><span class="now-text">${said.join(" · ")}</span></button>${needs}</div>`;
 }
 
-// What needs the owner, pinned above the conversation until answered.
-function viewPinned() {
-  const items = ((AGENDA && AGENDA.items) || []).filter((i) => i.level === "needs_you" || i.level === "urgent");
-  return items.map((i) => `
-    <div class="card pinned ${i.level === "urgent" ? "urgent" : ""}">
-      <div class="sub">${esc(i.level_said)} · ${esc(i.kind_said)} · ${agendaAgo(i.opened_at)}</div>
-      <div class="title" style="font-weight:500;">${esc(i.sentence)}</div>
-      ${i.why ? `<div class="sub">${esc(i.why)}</div>` : ""}
+// One item, with its answers. Compact above the chat; in full on its own screen.
+function agendaCard(i, compact) {
+  return `
+    <div class="card pinned ${i.level === "urgent" ? "urgent" : i.level === "needs_you" ? "" : "quiet"} ${compact ? "compact" : ""}">
+      <div class="pinned-meta">${esc(i.level_said)} · ${esc(i.kind_said)} · ${agendaAgo(i.opened_at)}</div>
+      <div class="pinned-text">${esc(i.sentence)}</div>
+      ${i.why && !compact ? `<div class="sub">${esc(i.why)}</div>` : ""}
       <div class="row pinned-acts">
-        <button class="ghost" data-act="agenda:done:${i.id}">Done</button>
-        <button class="ghost" data-act="agenda:dismiss:${i.id}">Dismiss</button>
-        <button class="ghost danger" data-act="agenda:stop:${i.id}" title="${esc(i.stop_said)}">Stop</button>
+        <button class="ghost small" data-act="agenda:done:${i.id}">Done</button>
+        <button class="ghost small" data-act="agenda:dismiss:${i.id}">Dismiss</button>
+        <button class="ghost small danger" data-act="agenda:stop:${i.id}" title="${esc(i.stop_said)}">Stop</button>
       </div>
-    </div>`).join("");
+    </div>`;
+}
+
+// Above the chat: the most pressing one only. The rest are a tap away, so the conversation keeps
+// the screen.
+function viewPinned() {
+  const first = agendaPinned()[0];
+  return first ? agendaCard(first, true) : "";
+}
+
+// Everything that needs the owner, then what Endora is keeping an eye on.
+function viewNeeds() {
+  const head = `${crumbs([{ label: "Home", act: "go:chat" }, { label: "Needs you" }])}<h2>Needs you</h2>`;
+  if (!AGENDA) return `${head}<div class="empty">Loading…</div>`;
+  const pinned = agendaPinned();
+  const quiet = (AGENDA.items || []).filter((i) => i.level === "fyi")
+    .sort((a, b) => b.opened_at - a.opened_at);
+  return `${head}
+    <div class="note">Done when it's dealt with, Dismiss when it isn't worth it, Stop to never hear about that thing again (undo under Settings, What Endora watches). Every decision is in <a href="#" data-act="go:audit">Activity</a>.</div>
+    ${pinned.map((i) => agendaCard(i, false)).join("") || `<div class="empty">Nothing needs you.</div>`}
+    <h3 style="margin-top:22px;">Keeping an eye on</h3>
+    ${quiet.map((i) => agendaCard(i, false)).join("") || `<div class="empty">Nothing else.</div>`}`;
 }
 
 // Settings: what Endora does about each kind of thing, and the rules taught with Stop.
@@ -103,6 +134,8 @@ async function agendaDispatch(verb, noun, id, arg) {
     flash("Couldn't do that: " + e.message, "err");
   }
   await loadAgenda();
+  // The last one answered on its own screen: back to the chat.
+  if (NAV.v === "needs" && !agendaPinned().length && !((AGENDA && AGENDA.items) || []).some((i) => i.level === "fyi")) { go("chat"); return true; }
   if (NAV.v === "watching") { try { AGENDA_RULES = await api("GET", "/v1/agenda/rules"); } catch (_) {} }
   render();
   return true;

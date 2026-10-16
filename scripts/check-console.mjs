@@ -624,21 +624,34 @@ if (failures.length) {
 // owner is pinned, each with Done, Dismiss and Stop; what a mail says stays text.
 {
   const fail = (what) => { console.error(what); process.exit(1); };
-  runInContext(`AGENDA = { now: { watching: 3, needs_you: 1, checked: [{ source: "endora", at: Date.now() }, { source: "docker", at: Date.now() - 120000 }, { source: "mail", at: Date.now() - 900000 }] },
+  runInContext(`AGENDA = { now: { watching: 4, needs_you: 2, checked: [{ source: "endora", at: Date.now() }, { source: "docker", at: Date.now() - 120000 }, { source: "mail", at: Date.now() - 900000 }] },
     items: [
-      { id: 5, kind: "mail_money_due", kind_said: "Mail with money due", level: "needs_you", level_said: "Needs you",
+      { id: 5, kind: "mail_money_due", kind_said: "Mail with money due", level: "needs_you", level_said: "Needs you", from_mail: true,
         sentence: "<img src=x onerror=alert(1)> wants $12", why: "", opened_at: Date.now(), stop_said: "Don't tell me about mail from billing@example.com" },
       { id: 6, kind: "event", kind_said: "On the calendar", level: "fyi", level_said: "FYI", sentence: "Today: Dentist", why: "", opened_at: Date.now(), stop_said: "x" },
-      { id: 7, kind: "container_crashed", kind_said: "A container crashed", level: "handled", level_said: "Handled", sentence: "sonarr crashed (exit 1)", why: "Restarted it.", opened_at: Date.now(), stop_said: "x" }] };
+      { id: 7, kind: "container_crashed", kind_said: "A container crashed", level: "handled", level_said: "Handled", sentence: "sonarr crashed (exit 1)", why: "Restarted it.", opened_at: Date.now(), stop_said: "x" },
+      { id: 8, kind: "drive_failing", kind_said: "A drive is failing", level: "needs_you", level_said: "Needs you", from_mail: false,
+        sentence: "/dev/sda is failing its SMART health check", why: "", opened_at: Date.now() - 3600000, stop_said: "Don't tell me about DiskFailingSmart on /dev/sda" }] };
     NAV = { v: "chat" };`, context);
   const chat = runInContext("viewChat()", context);
-  if (!chat.includes("Watching 3 things · checked the NAS 2 min ago · <b>1 needs you</b>")) fail("agenda: the Now line does not say what it is doing");
+  if (!chat.includes("Watching 4 things · checked the NAS 2 min ago")) fail("agenda: the Now line does not say what it is doing");
   if (!chat.includes('class="now-line" data-act="go:audit"')) fail("agenda: the Now line does not open Activity");
-  for (const act of ["agenda:done:5", "agenda:dismiss:5", "agenda:stop:5"]) {
-    if (!chat.includes(`data-act="${act}"`)) fail(`agenda: a pinned card does not offer ${act}`);
+  if (!chat.includes('data-act="go:needs">2 need you ›')) fail("agenda: the Now line does not say how many need you, or open them");
+  // Above the chat, the most pressing one only: the house before the mail.
+  for (const act of ["agenda:done:8", "agenda:dismiss:8", "agenda:stop:8"]) {
+    if (!chat.includes(`data-act="${act}"`)) fail(`agenda: the pinned card does not offer ${act}`);
   }
+  if (chat.includes("agenda:done:5")) fail("agenda: more than one card took the chat's screen");
   if (chat.includes("agenda:done:6") || chat.includes("agenda:done:7")) fail("agenda: something that does not need the owner was pinned");
-  if (chat.includes("<img src=x")) fail("agenda: an item's text became markup");
+  runInContext('NAV = { v: "needs" };', context);
+  const needs = runInContext("viewNeeds()", context);
+  for (const act of ["agenda:done:8", "agenda:done:5", "agenda:dismiss:6"]) {
+    if (!needs.includes(`data-act="${act}"`)) fail(`agenda: Needs you does not offer ${act}`);
+  }
+  if (needs.indexOf("agenda:done:8") > needs.indexOf("agenda:done:5")) fail("agenda: the mail came before the house");
+  if (needs.includes("agenda:done:7")) fail("agenda: something handled is listed as needing you");
+  if (needs.includes("<img src=x")) fail("agenda: an item's text became markup");
+  runInContext('NAV = { v: "chat" };', context);
   runInContext(`AGENDA_RULES = { rules: [{ id: 2, said: "Leave the container ebooks alone", at: Date.now() }],
     kinds: [{ kind: "container_crashed", said: "A container crashed", response: "handle", default: "handle",
       allowed: [{ name: "handle", said: "Restart it" }, { name: "needs_you", said: "Needs you" }] }] };
