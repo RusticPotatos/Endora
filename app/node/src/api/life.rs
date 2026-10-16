@@ -1,59 +1,5 @@
 use super::*;
 
-/// The person's proactive check-in cadence.
-#[derive(Serialize)]
-pub(super) struct CheckinResponse {
-    enabled: bool,
-    interval_ms: i64,
-    next_at_ms: i64,
-}
-
-impl From<CheckinSchedule> for CheckinResponse {
-    fn from(s: CheckinSchedule) -> Self {
-        Self {
-            enabled: s.enabled,
-            interval_ms: s.interval_ms,
-            next_at_ms: s.next_at.unix_millis(),
-        }
-    }
-}
-
-pub(super) async fn get_checkin(
-    State(state): State<AppState>,
-) -> Result<Json<CheckinResponse>, ApiError> {
-    let schedules = state.schedules.clone();
-    let clock = state.clock.clone();
-    let schedule =
-        blocking(move || usecases::checkin_schedule(schedules.as_ref(), clock.as_ref())).await?;
-    Ok(Json(schedule.into()))
-}
-
-#[derive(Deserialize)]
-pub(super) struct SetCheckinRequest {
-    enabled: bool,
-    interval_ms: i64,
-}
-
-/// Sets the check-in cadence (on/off + interval). Enabling schedules the next one
-/// an interval from now, so it is not an instant ping.
-pub(super) async fn set_checkin(
-    State(state): State<AppState>,
-    Json(req): Json<SetCheckinRequest>,
-) -> Result<Json<CheckinResponse>, ApiError> {
-    let schedules = state.schedules.clone();
-    let clock = state.clock.clone();
-    let schedule = blocking(move || {
-        usecases::set_checkin_schedule(
-            schedules.as_ref(),
-            clock.as_ref(),
-            req.enabled,
-            req.interval_ms,
-        )
-    })
-    .await?;
-    Ok(Json(schedule.into()))
-}
-
 /// Serializes a belief for the console. `confidence` is the **decayed** value — how
 /// sure Endora is right now, given how long since anything reinforced it (ADR 0052) —
 /// not the value frozen at the moment it was formed. Showing the stored one would

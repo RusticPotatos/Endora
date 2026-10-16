@@ -56,9 +56,7 @@ pub use endora_capabilities::{
 pub use endora_conversation::{ChatMessage, ChatRepository, MessageRole};
 // The schedules live in the scheduling context (ADR 0050); re-exported so their
 // `endora_application::…` paths are unchanged.
-pub use endora_scheduling::{
-    BriefSchedule, BriefScheduleRepository, CheckinRepository, CheckinSchedule,
-};
+pub use endora_scheduling::{BriefSchedule, BriefScheduleRepository};
 // Belief/preference repositories live in the understanding context (ADR 0050);
 // re-exported so their `endora_application::…` paths are unchanged.
 pub use endora_understanding::{

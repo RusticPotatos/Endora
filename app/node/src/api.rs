@@ -20,9 +20,9 @@ use endora_application::Clock;
 use endora_application::{
     ActivityItem, AppError, AutonomyEnvelope, AutonomyEnvelopeRepository, BriefSchedule, Butler,
     ButlerModelConfig, ButlerModelConfigRepository, CapabilityConfigRepository,
-    CapabilitySettingsRepository, CheckinSchedule, DeepModelRepository, ExecutionLeaseRepository,
-    GoalDelivery, GoalRepository, MemorySnapshot, ModelSlot, ModelTuneScheduleRepository,
-    RepositoryError, Sampling, usecases,
+    CapabilitySettingsRepository, DeepModelRepository, ExecutionLeaseRepository, GoalDelivery,
+    GoalRepository, MemorySnapshot, ModelSlot, ModelTuneScheduleRepository, RepositoryError,
+    Sampling, usecases,
 };
 use endora_application::{
     AuditRecord, Belief, BeliefId, ChatMessage, IdSource, IntentionRepository, Preference,
@@ -383,7 +383,6 @@ pub fn app(state: AppState) -> Router {
         .route("/v1/chat/context", get(chat_context))
         .route("/v1/chat/context/reset", post(reset_chat_context))
         .route("/v1/chat/stream", post(stream_chat))
-        .route("/v1/checkin", get(get_checkin).post(set_checkin))
         .route("/v1/understanding", get(list_understanding))
         .route("/v1/understanding/forget", post(forget_what_it_learned))
         .route("/v1/understanding/{id}/affirm", post(affirm_belief))

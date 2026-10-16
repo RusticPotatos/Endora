@@ -25,8 +25,7 @@ use endora_understanding::{
 };
 
 use endora_scheduling::{
-    BriefSchedule, BriefScheduleRepository, CheckinRepository, CheckinSchedule,
-    NightlyLoopSchedule, NightlyLoopScheduleRepository,
+    BriefSchedule, BriefScheduleRepository, NightlyLoopSchedule, NightlyLoopScheduleRepository,
 };
 
 use crate::error::AppError;

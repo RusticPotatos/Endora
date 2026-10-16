@@ -207,21 +207,12 @@ pub(super) fn reach_out(
     }
 }
 
-/// Notes what is not answering in each service Endora has direct reach into (ADR 0056).
-///
-/// The whole reason this runs at all: without it there is no *since when*, and without a
-/// duration there is no problem statement — only a status line saying thirteen things are
-/// unavailable, which is a chore rather than a service.
-///
-/// Reads through the channel rather than the tool surface, because a hidden or broken
-/// entity is exactly what a tool surface leaves out ([0054](../../docs/adr/0054-other-peoples-services.md)),
-/// and those are the ones this is about. A service that cannot be reached this tick is
-/// skipped rather than treated as everything being fine — inventing recovery from a failed
-/// read would clear every clock in the house on one bad network moment.
+/// One pass over everything that can say what it currently knows: the native channels (Home
+/// Assistant and the like), then anything else the runner can read. What moved is kept in the
+/// transition log, which is what lets a chat turn say "the back door opened ten minutes ago"
+/// (ADR 0058). A service that cannot be reached this tick is skipped.
 pub(super) fn watch_the_world(state: &AppState) {
     let config = state.config.clone();
-    // Everything this pass records, for the wake decision at the end (ADR 0063).
-    let mut this_pass: Vec<endora_capabilities::Transition> = Vec::new();
     // Every thing a native channel reported, changed or not. Filtering the second pass by
     // what *changed* was not enough and made it subtler: the two paths keep separate stored
     // priors, so suppressing the duplicate stopped `skills::` updating its own prior and it
@@ -244,7 +235,7 @@ pub(super) fn watch_the_world(state: &AppState) {
                 ) {
                     // Kept for the chat's "what changed lately", not written to Activity:
                     // Activity records what Endora did, and a sensor tick is not that.
-                    Ok(moved) => this_pass.extend(moved),
+                    Ok(_) => {}
                     Err(e) => eprintln!("watching {server}: could not record what moved: {e}"),
                 }
             }
@@ -287,100 +278,10 @@ pub(super) fn watch_the_world(state: &AppState) {
         .collect();
     if !reading.is_empty() {
         match endora_capabilities::watch_for_change(config.as_ref(), "skills", &reading, now_ms) {
-            Ok(moved) => this_pass.extend(moved),
+            Ok(_) => {}
             Err(e) => eprintln!("watching skills: could not record what moved: {e}"),
         }
     }
-    wake_on_the_unusual(state, &this_pass, now_ms);
-}
-
-/// How long after one wake before another may happen (ADR 0063). In memory: a restart
-/// forgets it, which is at worst one extra consideration per restart — accepted over a
-/// stored timestamp whose only job is to be one.
-pub(super) const WAKE_COOLDOWN_MS: i64 = 60 * 60 * 1_000;
-pub(super) static LAST_WAKE_MS: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
-
-/// A rare change spends the check-in budget early (ADR 0063).
-///
-/// This adds no new way to speak. It pulls the existing check-in's `next_at` to now, so
-/// the next heartbeat runs the same `consider_reaching_out` a scheduled check-in runs —
-/// same agentic turn, same reversible-only clamp, same silence-is-the-default. The
-/// transition reaches that turn through the fact stream, so the butler wakes already
-/// knowing what woke it. No schedule means no waking: the person's one dial governs both.
-pub(super) fn wake_on_the_unusual(
-    state: &AppState,
-    this_pass: &[endora_capabilities::Transition],
-    now_ms: i64,
-) {
-    use std::sync::atomic::Ordering;
-    if this_pass.is_empty() {
-        return;
-    }
-    let last = LAST_WAKE_MS.load(Ordering::Relaxed);
-    if now_ms.saturating_sub(last) < WAKE_COOLDOWN_MS {
-        return;
-    }
-    // The whole window, including what this pass just recorded.
-    let Ok(history) = endora_capabilities::TransitionLog::since(
-        state.config.as_ref(),
-        now_ms - endora_capabilities::KEEP_TRANSITIONS_FOR_MS,
-    ) else {
-        return;
-    };
-    // Endora's own conduct is not the world changing (ADR 0052's oldest rule, in a place it
-    // had never reached). The entity it reaches the person through is a `notify` whose state
-    // is the timestamp of the last thing IT sent — so sending a message changed the house,
-    // rarely, and woke it to consider sending another. A butler that wakes itself up is not
-    // attentive, it is pacing.
-    //
-    // Seen live: three transitions on that entity, all of them Endora's own notifications,
-    // and one of them woke a check-in.
-    let its_own_doing: std::collections::HashSet<String> = settings_map(state.config.as_ref())
-        .values()
-        .filter_map(|s| s.get("notify_service").map(|v| v.trim().to_owned()))
-        .filter(|v| !v.is_empty())
-        // Stored as `notify.thing` or bare `thing` depending on how it was set.
-        .flat_map(|v| {
-            let bare = v.rsplit('.').next().unwrap_or(&v).to_owned();
-            [format!("notify.{bare}"), v]
-        })
-        .collect();
-    let world_changed: Vec<endora_capabilities::Transition> = this_pass
-        .iter()
-        .filter(|t| {
-            let thing = t.key.split_once("::").map_or(t.key.as_str(), |(_, x)| x);
-            !its_own_doing.contains(thing)
-        })
-        .cloned()
-        .collect();
-    let Some(unusual) = endora_capabilities::worth_waking_for(&world_changed, &history) else {
-        return;
-    };
-    // Only advance a budget that exists: check-ins off means waking off, same switch.
-    let Ok(Some(mut schedule)) =
-        endora_scheduling::CheckinRepository::get(state.schedules.as_ref())
-    else {
-        return;
-    };
-    if !schedule.enabled {
-        return;
-    }
-    schedule.next_at = endora_application::Timestamp::from_unix_millis(now_ms);
-    if endora_scheduling::CheckinRepository::set(state.schedules.as_ref(), &schedule).is_err() {
-        return;
-    }
-    LAST_WAKE_MS.store(now_ms, Ordering::Relaxed);
-    // Said in the trail, so "why did it message me?" has an answer even when the
-    // consideration ends in silence.
-    record_event(
-        state.events.as_ref(),
-        state.clock.as_ref(),
-        &format!(
-            "Something unusual: {} went from {} to {} — having a look now instead of \
-             waiting for the next check-in",
-            unusual.key, unusual.from, unusual.to
-        ),
-    );
 }
 
 /// Re-reads stored beliefs against the rules as they stand today (ADR 0052).

@@ -65,12 +65,6 @@ CREATE TABLE IF NOT EXISTS preferences (
     kind  TEXT NOT NULL,
     at_ms INTEGER NOT NULL
 ) STRICT;
-CREATE TABLE IF NOT EXISTS checkin (
-    id          INTEGER PRIMARY KEY CHECK (id = 0),
-    enabled     INTEGER NOT NULL,
-    interval_ms INTEGER NOT NULL,
-    next_at_ms  INTEGER NOT NULL
-) STRICT;
 CREATE TABLE IF NOT EXISTS beliefs (
     id               TEXT PRIMARY KEY,
     statement        TEXT NOT NULL,
@@ -1616,7 +1610,6 @@ impl MemoryStore for SqliteStore {
             "message_actions",
             "conversation_summary",
             "preferences",
-            "checkin",
             "beliefs",
             "outcomes",
             "target_aliases",

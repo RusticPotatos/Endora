@@ -58,7 +58,6 @@ const WHAT_THE_INTERFACE_LOADS: &[&str] = &[
     "/v1/autonomy",
     "/v1/audit",
     "/v1/chat",
-    "/v1/checkin",
     "/v1/deep-model",
 ];
 

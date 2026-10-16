@@ -336,8 +336,8 @@ pub enum TurnMessage {
 // BeliefRepository moved to the understanding context (ADR 0050); re-exported
 // from `endora_application` (see lib.rs) so existing paths hold.
 
-// The check-in and daily-brief schedules — CheckinSchedule, BriefSchedule, and
-// their repositories — now live in the scheduling context (ADR 0050). They are
+// The daily-brief schedule — BriefSchedule and its repository — lives in the scheduling
+// context (ADR 0050). They are
 // re-exported from `endora_application` (see lib.rs) so existing paths hold.
 
 /// A snapshot of what Endora currently knows, handed to the butler each turn so

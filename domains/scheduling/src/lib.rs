@@ -13,6 +13,6 @@ pub mod application;
 pub mod domain;
 pub mod infrastructure;
 
-pub use application::{BriefScheduleRepository, CheckinRepository, NightlyLoopScheduleRepository};
-pub use domain::{BriefSchedule, CheckinSchedule, NightlyLoopSchedule, same_local_hour};
+pub use application::{BriefScheduleRepository, NightlyLoopScheduleRepository};
+pub use domain::{BriefSchedule, NightlyLoopSchedule, same_local_hour};
 pub use infrastructure::{ScheduleStore, migrate};

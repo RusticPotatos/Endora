@@ -651,8 +651,6 @@ pub(super) fn repeats_its_last_answer(reply: &ButlerReply, conversation: &[TurnM
 /// tool round (retrying only on failure), so this only bounds a pathological loop —
 /// kept low to stay fast on a slow local model.
 pub(super) const CHAT_TOOL_ROUNDS: usize = 3;
-/// Tool rounds allowed in a proactive **check-in** — it mostly just needs to look.
-pub(super) const CHECKIN_TOOL_ROUNDS: usize = 3;
 /// Tool rounds allowed in the **nightly loop** — it researches one focus, unhurried.
 pub(super) const NIGHTLY_TOOL_ROUNDS: usize = 4;
 
