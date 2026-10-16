@@ -91,7 +91,7 @@
           - "{{ endora_root }}/docker-compose.override.yml"
         env_files:
           - "{{ endora_root }}/endora.env"
-        profiles: "{{ ['homelab'] if endora_docker_observer | bool else [] }}"
+        profiles: "{{ (['homelab'] if endora_docker_observer | bool else []) + (['hq'] if endora_hq | bool else []) }}"
         build: never
         pull: never
         state: present

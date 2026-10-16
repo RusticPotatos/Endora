@@ -17,16 +17,62 @@ pub type Hq = Engine<SqliteTeamStore, SimulatedRunner, api::SystemClock>;
 /// can never be set up with a guessable one.
 const SHORTEST_TOKEN: usize = 32;
 
+/// The token the node signs with: `HQ_TOKEN` if set, else the one in `HQ_TOKEN_FILE`, made
+/// there (random, readable by its owner only) the first time. The node reads the same file
+/// through a volume only the two of them mount, so nobody has to keep a secret by hand.
+fn the_token(env: Option<String>, file: Option<String>) -> Result<String, String> {
+    if let Some(token) = env.map(|t| t.trim().to_owned()).filter(|t| !t.is_empty()) {
+        if token.len() < SHORTEST_TOKEN {
+            return Err(format!(
+                "HQ_TOKEN is shorter than {SHORTEST_TOKEN} characters"
+            ));
+        }
+        return Ok(token);
+    }
+    let Some(file) = file.filter(|f| !f.trim().is_empty()) else {
+        return Err("neither HQ_TOKEN nor HQ_TOKEN_FILE is set".to_owned());
+    };
+    if let Ok(existing) = std::fs::read_to_string(&file) {
+        let existing = existing.trim().to_owned();
+        if existing.len() >= SHORTEST_TOKEN {
+            return Ok(existing);
+        }
+    }
+    let mut bytes = [0u8; 24];
+    std::io::Read::read_exact(
+        &mut std::fs::File::open("/dev/urandom").map_err(|e| format!("no randomness: {e}"))?,
+        &mut bytes,
+    )
+    .map_err(|e| format!("no randomness: {e}"))?;
+    let token: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
+    {
+        use std::io::Write as _;
+        use std::os::unix::fs::OpenOptionsExt as _;
+        let mut out = std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(&file)
+            .map_err(|e| format!("cannot write {file}: {e}"))?;
+        out.write_all(token.as_bytes())
+            .map_err(|e| format!("cannot write {file}: {e}"))?;
+    }
+    Ok(token)
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let token = std::env::var("HQ_TOKEN").unwrap_or_default();
-    if token.trim().len() < SHORTEST_TOKEN {
-        eprintln!(
-            "HQ_TOKEN must be set to the token the Endora node uses (at least {SHORTEST_TOKEN} \
-             characters). HQ does not start without one."
-        );
-        std::process::exit(2);
-    }
+    let token = match the_token(
+        std::env::var("HQ_TOKEN").ok(),
+        std::env::var("HQ_TOKEN_FILE").ok(),
+    ) {
+        Ok(token) => token,
+        Err(why) => {
+            eprintln!("hq: {why}. HQ does not start without a token for the node.");
+            std::process::exit(2);
+        }
+    };
     let db = std::env::var("HQ_DB").unwrap_or_else(|_| "hq.db".to_owned());
     let addr = std::env::var("HQ_ADDR").unwrap_or_else(|_| "127.0.0.1:8790".to_owned());
     let demo_mode = std::env::var("HQ_DEMO").is_ok_and(|v| v == "1");
@@ -82,4 +128,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     axum::serve(listener, app).await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::the_token;
+
+    #[test]
+    fn a_token_is_given_made_once_kept_and_never_short() {
+        let dir = std::env::temp_dir().join(format!("endora-hq-token-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let file = dir.join("token").to_string_lossy().into_owned();
+        let _ = std::fs::remove_file(&file);
+        let made = the_token(None, Some(file.clone())).unwrap();
+        assert_eq!(made.len(), 48);
+        assert_eq!(the_token(None, Some(file.clone())).unwrap(), made, "kept");
+        let mode = std::os::unix::fs::PermissionsExt::mode(
+            &std::fs::metadata(&file).unwrap().permissions(),
+        );
+        assert_eq!(mode & 0o777, 0o600, "its owner's only");
+        let given = "a-token-of-at-least-thirty-two-characters".to_owned();
+        assert_eq!(the_token(Some(given.clone()), Some(file)).unwrap(), given);
+        assert!(the_token(Some("short".to_owned()), None).is_err());
+        assert!(the_token(None, None).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

@@ -4,8 +4,9 @@
 
 Accepted, 2026-10-16, by the owner through a design interview (questions Q1–Q34). Prepared
 with AI assistance (Claude). Step 7 of [the always-on butler plan](../plans/always-on-butler.md);
-the specification is [Endora HQ: the design](../plans/endora-hq.md). Phase 1, the team core,
-is built in `domains/team`; the rest is not yet.
+the specification is [Endora HQ: the design](../plans/endora-hq.md). Phases 1 and 2 are built:
+the team core in `domains/team`, and the HQ service (`app/hq`) with the office in the console,
+on the simulated runner. The rest is not yet.
 
 ## Context
 

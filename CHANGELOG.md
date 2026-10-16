@@ -9,6 +9,20 @@ tagged release.
 
 ### Added
 
+- **Endora HQ, the service and the office** ([ADR 0102](docs/adr/0102-endora-hq.md), phase 2).
+  `endora-hq` runs the team in its own container (Compose profile `hq`, from the node's image),
+  with its own database, ticking every 30 seconds, and answers only the node, which signs every
+  request with a token HQ makes for itself in a volume only the two share. The console's new
+  **HQ** screen draws the team's office, phone first: members walk to their desks when a turn
+  starts, wakes fly from the server closet, the board has a sticky note per task, the burn gauge
+  is today's spend, the lever is the kill switch. Tap anyone or any note for its detail and its
+  chain of why. Below are your desk (approve or decline a proposed goal, try stuck work again or
+  drop it, mark finished work merged), the activity, and the team's budgets; you can set the
+  team a goal. Every decision and the kill switch go through the node, which records them in
+  Endora's audit log. Until real workers exist (phases 3 and 4) a scripted demo team works on
+  the simulated runner, labelled as such. Office art: Pixel Agents (MIT) and MetroCity by
+  JIK-A-4 (CC0), with its credits and licence served beside it.
+
 - **Endora HQ's team core** ([ADR 0102](docs/adr/0102-endora-hq.md), phase 1 of
   [its spec](docs/plans/endora-hq.md)): `domains/team`, with no models yet. A team works
   towards goals through a tree of tasks; a task has one owner at a time, taken in one atomic

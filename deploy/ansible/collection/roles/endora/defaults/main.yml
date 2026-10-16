@@ -51,3 +51,8 @@ endora_tls_san: "{{ ansible_default_ipv4.address | default('') }}"
 # Endora's read-only view of the containers on this host (its `homelab` Compose profile):
 # fixed GET routes over the Docker socket, nothing that starts, stops or execs.
 endora_docker_observer: false
+
+# Endora HQ (Endora ADR 0102): the team service, run beside the node from the same image, with a
+# scripted demo team until real workers exist. It makes its own token for the node.
+endora_hq: false
+endora_hq_demo: true

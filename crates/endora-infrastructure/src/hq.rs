@@ -33,10 +33,18 @@ impl core::fmt::Display for HqError {
 
 impl std::error::Error for HqError {}
 
+/// Where the client finds the token it signs with.
+enum Token {
+    /// Given once.
+    Fixed(String),
+    /// Read from a file HQ writes, each time: HQ may start after the node.
+    File(std::path::PathBuf),
+}
+
 /// The node's client for HQ.
 pub struct HqClient {
     url: String,
-    token: String,
+    token: Token,
     agent: ureq::Agent,
 }
 
@@ -46,12 +54,29 @@ impl HqClient {
     pub fn new(url: &str, token: &str) -> Self {
         Self {
             url: url.trim_end_matches('/').to_owned(),
-            token: token.to_owned(),
+            token: Token::Fixed(token.to_owned()),
             agent: ureq::Agent::config_builder()
                 .timeout_global(Some(ANSWERS_WITHIN))
                 .http_status_as_error(false)
                 .build()
                 .into(),
+        }
+    }
+
+    /// A client for HQ at `url`, signing with the token HQ keeps in `file`.
+    #[must_use]
+    pub fn with_token_file(url: &str, file: &std::path::Path) -> Self {
+        let mut client = Self::new(url, "");
+        client.token = Token::File(file.to_path_buf());
+        client
+    }
+
+    fn token(&self) -> Result<String, HqError> {
+        match &self.token {
+            Token::Fixed(token) => Ok(token.clone()),
+            Token::File(file) => std::fs::read_to_string(file)
+                .map(|t| t.trim().to_owned())
+                .map_err(|_| HqError::Unreachable("HQ has not made its token yet".to_owned())),
         }
     }
 
@@ -63,7 +88,7 @@ impl HqClient {
         let response = self
             .agent
             .get(&format!("{}{path}", self.url))
-            .header("authorization", &format!("Bearer {}", self.token))
+            .header("authorization", &format!("Bearer {}", self.token()?))
             .call();
         Self::read(response)
     }
@@ -76,7 +101,7 @@ impl HqClient {
         let response = self
             .agent
             .post(&format!("{}{path}", self.url))
-            .header("authorization", &format!("Bearer {}", self.token))
+            .header("authorization", &format!("Bearer {}", self.token()?))
             .send_json(body);
         Self::read(response)
     }
@@ -153,6 +178,29 @@ mod tests {
                 message: "this task is over".to_owned()
             })
         );
+    }
+
+    #[test]
+    fn the_token_is_read_from_hqs_file_each_time() {
+        let (url, seen) = one_answer("200 OK", "{}");
+        let dir = std::env::temp_dir().join(format!("endora-hq-client-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("token");
+        let _ = std::fs::remove_file(&file);
+        let hq = HqClient::with_token_file(&url, &file);
+        assert!(
+            matches!(hq.get("/v1/snapshot"), Err(HqError::Unreachable(_))),
+            "not made yet"
+        );
+        std::fs::write(&file, "made-by-hq-made-by-hq-made-by-hq-0123\n").unwrap();
+        hq.get("/v1/snapshot").unwrap();
+        assert!(
+            seen.join()
+                .unwrap()
+                .to_lowercase()
+                .contains("authorization: bearer made-by-hq-made-by-hq-made-by-hq-0123")
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
