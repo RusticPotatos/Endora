@@ -52,6 +52,9 @@ pub struct ContextSection {
     pub note: &'static str,
 }
 
+/// The note on what changes every message.
+const MOMENT: &str = "Sent with your latest message, so the rest can be reused.";
+
 /// The whole picture.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ContextReport {
@@ -130,13 +133,14 @@ pub fn context_report(
         })
         .collect();
     let nonempty = |s: &str| (!s.trim().is_empty()).then(|| s.to_owned());
-    let clock_and_place: Vec<String> = [
-        nonempty(&context.now).map(|n| format!("It is {n}")),
-        nonempty(&context.where_they_are).map(|p| format!("They are based in {p}")),
-    ]
-    .into_iter()
-    .flatten()
-    .collect();
+    let clock: Vec<String> = nonempty(&context.now)
+        .map(|n| format!("It is {n}"))
+        .into_iter()
+        .collect();
+    let place: Vec<String> = nonempty(&context.where_they_are)
+        .map(|p| format!("They are based in {p}"))
+        .into_iter()
+        .collect();
     let prefs: Vec<String> = preferences
         .iter()
         .map(|p| format!("({}) {}", p.kind().name(), p.text()))
@@ -178,14 +182,7 @@ pub fn context_report(
             false,
             &[instructions.to_owned()],
         ),
-        section("now", "Date and place", "", false, &clock_and_place),
-        section(
-            "summary",
-            "Summary of earlier chat",
-            "Older messages folded into a few sentences.",
-            false,
-            &summary_text,
-        ),
+        section("place", "Where you live", "", false, &place),
         section("preferences", "Your preferences", "", false, &prefs),
         section(
             "understanding",
@@ -193,20 +190,6 @@ pub fn context_report(
             "Its beliefs about you; separate from the chat.",
             false,
             &context.understanding,
-        ),
-        section(
-            "present",
-            "The house right now",
-            "",
-            false,
-            &context.present,
-        ),
-        section(
-            "did_lately",
-            "What Endora did lately",
-            "Only sent when you ask what it did.",
-            false,
-            &context.did_lately,
         ),
         section(
             "aliases",
@@ -236,6 +219,30 @@ pub fn context_report(
             "The last stretch of this chat, word for word.",
             false,
             &recent,
+        ),
+        // What changes every message goes with the latest one, so everything above it is the
+        // request the model server has just seen and is not read again.
+        section("now", "Date and time", MOMENT, false, &clock),
+        section(
+            "summary",
+            "Summary of earlier chat",
+            "Older messages folded into a few sentences; sent with your latest message.",
+            false,
+            &summary_text,
+        ),
+        section(
+            "present",
+            "The house right now",
+            MOMENT,
+            false,
+            &context.present,
+        ),
+        section(
+            "did_lately",
+            "What Endora did lately",
+            "Only sent when you ask what it did; with your latest message.",
+            false,
+            &context.did_lately,
         ),
     ];
     sections.retain(|s| s.count > 0);
@@ -277,6 +284,41 @@ mod tests {
         assert_eq!(estimate_tokens(""), 0);
         assert_eq!(estimate_tokens("abcd"), 1);
         assert_eq!(estimate_tokens("abcde"), 2);
+    }
+
+    #[test]
+    fn what_changes_every_message_is_listed_last_where_it_is_sent() {
+        // It goes with the latest message, after the reusable instructions, tools and chat.
+        let context = ButlerContext {
+            now: "Friday 9:00".to_owned(),
+            where_they_are: "New York".to_owned(),
+            present: vec!["Jane Doe is home".to_owned()],
+            understanding: vec!["They like early mornings".to_owned()],
+            ..ButlerContext::default()
+        };
+        let report = context_report(
+            &context,
+            &[],
+            &[],
+            Some("They asked about dinner."),
+            "be nice",
+            16_384,
+        );
+        let keys: Vec<&str> = report.sections.iter().map(|s| s.key).collect();
+        assert_eq!(
+            keys,
+            [
+                "instructions",
+                "place",
+                "understanding",
+                "now",
+                "summary",
+                "present"
+            ],
+            "{keys:?}"
+        );
+        let now = report.sections.iter().find(|s| s.key == "now").unwrap();
+        assert!(now.note.contains("latest message"), "{}", now.note);
     }
 
     #[test]

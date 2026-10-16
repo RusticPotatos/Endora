@@ -1198,7 +1198,7 @@ you need, and so on, until you have everything — then answer with \"use\":null
 when a request needs more than one thing (a morning brief is weather AND local \
 safety AND the news; 'plan my evening' might be weather THEN a search), gather them \
 across steps rather than answering half of it. You DO know the current date and time \
-(given below) — answer those directly, and never emit a placeholder like \
+(given with each message) — answer those directly, and never emit a placeholder like \
 [current_date]. But you do NOT know other live facts — the current weather, today's \
 news, or prices — from your own memory. If asked one (including a follow-up like \
 'right now?') and you have not just fetched it, you MUST use the matching skill; \
@@ -1484,8 +1484,8 @@ fn build_turn_request(
     // Reuse the system prompt, tools, and sampling from the standard builder (with an
     // empty history), then replace its messages with the real conversation.
     let mut body = build_butler_request(model, sampling, &[], preferences, context, true);
-    let system = body["messages"][0].clone();
-    let mut messages = vec![system];
+    let system = system_prompt(preferences, context, true);
+    let mut messages = vec![json!({ "role": "system", "content": system })];
     for turn in conversation {
         match turn {
             TurnMessage::User(text) => {
@@ -1523,6 +1523,7 @@ fn build_turn_request(
             }
         }
     }
+    with_the_moment(&mut messages, context);
     body["messages"] = json!(messages);
     body
 }
@@ -1535,10 +1536,51 @@ fn build_butler_request(
     context: &ButlerContext,
     offer_tools: bool,
 ) -> Value {
-    let mut system = BUTLER_SYSTEM_PROMPT.to_owned();
-    if !context.now.is_empty() {
-        system.push_str(&format!("\nThe current date and time is {}.", context.now));
+    let system = system_prompt(preferences, context, offer_tools);
+    let mut messages = vec![json!({ "role": "system", "content": system })];
+    for m in history {
+        let role = match m.role() {
+            MessageRole::User => "user",
+            MessageRole::Butler => "assistant",
+        };
+        messages.push(json!({ "role": role, "content": m.text() }));
     }
+    with_the_moment(&mut messages, context);
+    let mut body = json!({
+        "model": model,
+        "stream": false,
+        "messages": messages,
+        // Constrain the model to emit a well-formed JSON object (Ollama honours
+        // the OpenAI-style response_format; the prompt already says "JSON"). This
+        // grammar-constrains decoding so the envelope can't come out truncated or
+        // wrapped in prose — the defensive parser is then just a belt-and-braces
+        // fallback for endpoints that ignore this field.
+        "response_format": { "type": "json_object" },
+    });
+    // Native tool-calling for the tool-selection pass: give the model the exact tool
+    // names + schemas and let it emit a real `tool_call`, instead of hand-writing an
+    // id in prose that the weak local model mis-emits (it skips action tools and
+    // hallucinates namespaced ids). Mutually exclusive with the JSON-object grammar —
+    // drop `response_format` so the model is free to return `tool_calls`; it still has
+    // the envelope prompt for when it just talks.
+    if offer_tools && !context.tools.is_empty() {
+        if let Some(obj) = body.as_object_mut() {
+            obj.insert("tools".to_owned(), json!(native_tools(context)));
+            obj.remove("response_format");
+        }
+    }
+    apply_sampling(&mut body, sampling);
+    body
+}
+
+/// The system prompt: the instructions and what changes rarely (where they live, their
+/// preferences, what Endora understands, names, its track record). What changes every message
+/// is left out, for [`with_the_moment`]: a local model server reuses the start of a request it
+/// has just seen, and the tool list is written after the system prompt, so a clock in here made
+/// it read the whole prompt and every tool again for each message (5 s against 0.05 s for
+/// 7,000 tokens on the house's A2000).
+fn system_prompt(preferences: &[Preference], context: &ButlerContext, offer_tools: bool) -> String {
+    let mut system = BUTLER_SYSTEM_PROMPT.to_owned();
     // Stated, not inferred — the same treatment the date gets, and for the same reason.
     // Left as prose, the place was read out of preferences sitting beside the butler's own
     // past replies, so one wrong answer became three of the last twelve messages and it
@@ -1550,16 +1592,6 @@ fn build_butler_request(
              unqualified place refer to — use it for skill inputs that need a place, and \
              never a place you saw in an earlier reply.",
             context.where_they_are
-        ));
-    }
-    if let Some(summary) = context
-        .conversation_summary
-        .as_deref()
-        .filter(|s| !s.trim().is_empty())
-    {
-        system.push_str(&format!(
-            "\nEarlier in this conversation (summary of what came before the recent \
-             messages):\n{summary}"
         ));
     }
     if !preferences.is_empty() {
@@ -1582,27 +1614,6 @@ fn build_butler_request(
         );
         for u in &context.understanding {
             system.push_str(&format!("\n- {u}"));
-        }
-    }
-    // Where the person is, right now. Live state, so it sits with what the butler knows
-    // rather than with what it must do — but it is the difference between a check-in that
-    // reads the room and one that interrupts someone who is out.
-    if !context.present.is_empty() {
-        system.push_str("\nRight now:");
-        for line in &context.present {
-            system.push_str(&format!("\n- {line}"));
-        }
-    }
-    // What Endora itself has done lately (ADR 0056). Stated, not fetched: asked what it had
-    // done while the person was out, the model reached for a light switch. These are facts
-    // the butler reads, and the question they answer is one it must not get wrong.
-    if !context.did_lately.is_empty() {
-        system.push_str(
-            "\nWhat YOU have done in the last day — answer any question about your own \
-             activity from exactly this, and say plainly if it says nothing happened:",
-        );
-        for line in &context.did_lately {
-            system.push_str(&format!("\n- {line}"));
         }
     }
     // What things are actually called here (ADR 0054). Endora asked after watching the
@@ -1640,39 +1651,65 @@ fn build_butler_request(
             system.push_str(&format!("\n- {c}"));
         }
     }
-    let mut messages = vec![json!({ "role": "system", "content": system })];
-    for m in history {
-        let role = match m.role() {
-            MessageRole::User => "user",
-            MessageRole::Butler => "assistant",
-        };
-        messages.push(json!({ "role": role, "content": m.text() }));
+    system
+}
+
+/// What changes every message — the date and time, a summary of earlier chat, the house right
+/// now and what Endora did lately — put in front of the latest thing the person said. Earlier
+/// messages go as they were, so the request up to the latest one is the one the model server
+/// has just seen, and only that message and what follows are read again. With nothing the
+/// person said to carry it (a check-in), it goes at the end of the system prompt instead.
+fn with_the_moment(messages: &mut [Value], context: &ButlerContext) {
+    let mut moment = String::new();
+    if !context.now.is_empty() {
+        moment.push_str(&format!("\nThe current date and time is {}.", context.now));
     }
-    let mut body = json!({
-        "model": model,
-        "stream": false,
-        "messages": messages,
-        // Constrain the model to emit a well-formed JSON object (Ollama honours
-        // the OpenAI-style response_format; the prompt already says "JSON"). This
-        // grammar-constrains decoding so the envelope can't come out truncated or
-        // wrapped in prose — the defensive parser is then just a belt-and-braces
-        // fallback for endpoints that ignore this field.
-        "response_format": { "type": "json_object" },
-    });
-    // Native tool-calling for the tool-selection pass: give the model the exact tool
-    // names + schemas and let it emit a real `tool_call`, instead of hand-writing an
-    // id in prose that the weak local model mis-emits (it skips action tools and
-    // hallucinates namespaced ids). Mutually exclusive with the JSON-object grammar —
-    // drop `response_format` so the model is free to return `tool_calls`; it still has
-    // the envelope prompt for when it just talks.
-    if offer_tools && !context.tools.is_empty() {
-        if let Some(obj) = body.as_object_mut() {
-            obj.insert("tools".to_owned(), json!(native_tools(context)));
-            obj.remove("response_format");
+    if let Some(summary) = context
+        .conversation_summary
+        .as_deref()
+        .filter(|s| !s.trim().is_empty())
+    {
+        moment.push_str(&format!(
+            "\nEarlier in this conversation (summary of what came before the recent \
+             messages):\n{summary}"
+        ));
+    }
+    // Where the person is, right now. Live state, so it sits with what the butler knows
+    // rather than with what it must do — but it is the difference between a check-in that
+    // reads the room and one that interrupts someone who is out.
+    if !context.present.is_empty() {
+        moment.push_str("\nRight now:");
+        for line in &context.present {
+            moment.push_str(&format!("\n- {line}"));
         }
     }
-    apply_sampling(&mut body, sampling);
-    body
+    // What Endora itself has done lately (ADR 0056). Stated, not fetched: asked what it had
+    // done while the person was out, the model reached for a light switch. These are facts
+    // the butler reads, and the question they answer is one it must not get wrong.
+    if !context.did_lately.is_empty() {
+        moment.push_str(
+            "\nWhat YOU have done in the last day — answer any question about your own \
+             activity from exactly this, and say plainly if it says nothing happened:",
+        );
+        for line in &context.did_lately {
+            moment.push_str(&format!("\n- {line}"));
+        }
+    }
+    if moment.is_empty() {
+        return;
+    }
+    let latest = messages.iter_mut().rev().find(|m| m["role"] == "user");
+    let Some(latest) = latest else {
+        if let Some(system) = messages.first_mut() {
+            let text = system["content"].as_str().unwrap_or_default().to_owned();
+            system["content"] = json!(format!("{text}{moment}"));
+        }
+        return;
+    };
+    let said = latest["content"].as_str().unwrap_or_default().to_owned();
+    latest["content"] = json!(format!(
+        "[For this message, from Endora — not written by them]{moment}\n\n[Their message]\n{said}"
+    ));
 }
 
 /// The generation ceiling sent on every model call (`max_tokens`).
@@ -2527,6 +2564,81 @@ mod tests {
         let reply = parse_model_reply(&resp, &ctx).unwrap();
         assert_eq!(reply.text, "hello there");
         assert!(reply.capability_use.is_none());
+    }
+
+    #[test]
+    fn what_changes_every_message_travels_with_it_so_the_rest_is_reused() {
+        // A local model server reuses the start of a request it has just seen. Measured on the
+        // house's A2000: 0.05 s against 5 s to read the 7,000 tokens again. The clock and the
+        // house's state sat second in the system prompt, ahead of the instructions and the
+        // tool list, so every message was read again from there.
+        use endora_application::{CapabilityTool, TurnMessage};
+        let at = |now: &str, present: &str| ButlerContext {
+            now: now.to_owned(),
+            present: vec![present.to_owned()],
+            did_lately: vec!["Turned on the porch light".to_owned()],
+            conversation_summary: Some("They asked about dinner.".to_owned()),
+            understanding: vec!["They like early mornings".to_owned()],
+            tools: vec![CapabilityTool {
+                id: "home-assistant.HassTurnOn".to_owned(),
+                description: "Turns on a device".to_owned(),
+                input_schema: None,
+            }],
+            ..Default::default()
+        };
+        let earlier = at("Friday 9:00", "Jane Doe is home");
+        let later = at("Friday 9:07", "Jane Doe is out");
+        let ask = |ctx: &ButlerContext, said: &str| {
+            build_butler_request(
+                "qwen2.5:7b",
+                &Sampling::default(),
+                &[user("hello"), user(said)],
+                &[],
+                ctx,
+                true,
+            )
+        };
+        let (first, second) = (ask(&earlier, "lights?"), ask(&later, "and now?"));
+        assert_eq!(
+            first["messages"][0], second["messages"][0],
+            "the system prompt"
+        );
+        assert_eq!(first["tools"], second["tools"]);
+        let system = first["messages"][0]["content"].as_str().unwrap();
+        assert!(
+            system.contains("They like early mornings"),
+            "what rarely changes stays"
+        );
+        for moment in [
+            "Friday 9:00",
+            "Jane Doe is home",
+            "porch light",
+            "about dinner",
+        ] {
+            assert!(!system.contains(moment), "{moment} is in the system prompt");
+        }
+        // The latest message carries it, after the moment and before what the person said.
+        let latest = second["messages"][2]["content"].as_str().unwrap();
+        assert!(latest.contains("Friday 9:07") && latest.contains("Jane Doe is out"));
+        assert!(latest.contains("porch light") && latest.contains("about dinner"));
+        assert!(latest.ends_with("and now?"), "{latest}");
+        // Earlier messages are sent as they were, so they match what was reused.
+        assert_eq!(second["messages"][1]["content"], "hello");
+        // The tool-calling conversation does the same, so its tool rounds only add to the end.
+        let turn = build_turn_request(
+            "qwen2.5:7b",
+            &Sampling::default(),
+            &[TurnMessage::User("lights?".to_owned())],
+            &[],
+            &later,
+        );
+        assert_eq!(turn["messages"][0], second["messages"][0]);
+        assert!(
+            turn["messages"][1]["content"]
+                .as_str()
+                .unwrap()
+                .contains("Friday 9:07")
+        );
     }
 
     #[test]
