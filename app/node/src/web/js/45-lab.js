@@ -68,6 +68,9 @@ function viewLab() {
     const services = g.services || [];
     const up = services.filter((s) => s.state === "running").length;
     const trouble = services.some((s) => s.state === "unhealthy" || s.state === "stopped");
+    // Homepage's Alerts group holds firing alerts, which are counted, not "up".
+    const firing = /^alerts?$/i.test(g.name) ? services.filter((s) => s.state === "unhealthy").length : null;
+    const count = firing === null ? `${up} of ${services.length} up` : firing ? `${firing} firing` : "none firing";
     const rows = services.map((s) => `
       <div class="row" style="gap:8px;padding:6px 0;">
         <div class="grow"><div>${esc(s.name)}</div>${s.detail ? `<div class="sub">${esc(s.detail)}</div>` : ""}</div>
@@ -76,7 +79,7 @@ function viewLab() {
       </div>`).join("");
     return `
       <details class="card"${trouble ? " open" : ""}>
-        <summary><span class="title">${esc(g.name)}</span> <span class="pill${trouble ? " rejected" : ""}">${up} of ${services.length} up</span></summary>
+        <summary><span class="title">${esc(g.name)}</span> <span class="pill${trouble ? " rejected" : ""}">${count}</span></summary>
         ${rows}
       </details>`;
   }).join("");
@@ -132,6 +135,10 @@ function viewJobs() {
   const head = `${labCrumbs({ label: "Home lab", act: "go:lab" }, { label: "Jobs" })}<h2>Jobs</h2>
     <div class="note" style="margin-bottom:10px;">Only the runs listed in the job agent's own configuration on the NAS. Each one is asked before it starts.</div>`;
   if (!page) return `${head}<div class="note">Asking the job agent…</div>`;
+  // Its address and key are set by installing it, not under Connections.
+  if (page.error && /^Not set up/.test(page.error)) {
+    return `${head}<div class="note">The job agent is not installed on the NAS yet. The <code>endora_terminal_agent</code> role in ansible-nas installs it.</div>`;
+  }
   if (page.error) return `${head}${labError(page)}`;
   const rows = labItems(page).map((j) => `
     <div class="card"><div class="row" style="gap:8px;">

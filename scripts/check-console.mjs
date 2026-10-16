@@ -542,6 +542,8 @@ if (failures.length) {
     fail("containers: Endora's own path can be stopped, or a container cannot be stopped or started");
   }
   if (containers.indexOf("radarr") > containers.indexOf("sonarr")) fail("containers: a stopped one is not listed first");
+  runInContext('LAB.dashboard.groups.unshift({ name: "Alerts", services: [{ name: "DiskLow", state: "unhealthy" }] })', context);
+  if (!runInContext("viewLab()", context).includes("1 firing")) fail("home lab: firing alerts are counted as services that are down");
   if (runInContext("viewLogs()", context).includes("<script>")) fail("logs: a log line became markup");
   const jobs = runInContext("viewJobs()", context);
   if (!jobs.includes("lab:job:run:check") || !jobs.includes("go:job:web-abc") || jobs.includes("go:job:null")) {
