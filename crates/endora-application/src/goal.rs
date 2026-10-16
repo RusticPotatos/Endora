@@ -1690,10 +1690,8 @@ mod tests {
     #[test]
     fn a_goal_that_resolves_from_a_record_keeps_its_source_across_a_checkpoint() {
         let criteria = crate::goal_request::GoalCriteria::Resolve {
-            source: crate::goal_request::WorkSource::Trouble {
-                server: "home".to_owned(),
-                thing: "sensor.garage_door".to_owned(),
-                since_ms: 42,
+            source: crate::goal_request::WorkSource::Specimen {
+                id: "fictional-specimen".to_owned(),
             },
         };
         let goal =

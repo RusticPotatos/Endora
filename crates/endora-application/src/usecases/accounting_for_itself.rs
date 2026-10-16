@@ -54,23 +54,6 @@ impl endora_capabilities::ConfigWriteLog for Nothing {
         Ok(())
     }
 }
-impl endora_capabilities::StandingTroubleRepository for Nothing {
-    fn note_trouble(
-        &self,
-        _t: &endora_capabilities::StandingTrouble,
-    ) -> Result<(), RepositoryError> {
-        Ok(())
-    }
-    fn clear_trouble(&self, _s: &str, _t: &str) -> Result<(), RepositoryError> {
-        Ok(())
-    }
-    fn troubles(&self) -> Result<Vec<endora_capabilities::StandingTrouble>, RepositoryError> {
-        Ok(Vec::new())
-    }
-    fn accept_trouble(&self, _s: &str, _t: &str) -> Result<(), RepositoryError> {
-        Ok(())
-    }
-}
 
 fn message(role: MessageRole, text: &str, at_ms: i64) -> ChatMessage {
     ChatMessage::new(
@@ -103,8 +86,7 @@ fn the_brief_it_posted_is_in_the_answer() {
             BRIEF_AT + 2_000,
         ),
     ]);
-    let report =
-        what_it_has_been_doing(&said, &Nothing, &Nothing, &Nothing, 0, A_DAY_MS).expect("report");
+    let report = what_it_has_been_doing(&said, &Nothing, &Nothing, 0, A_DAY_MS).expect("report");
 
     assert!(report.contains("11:01"), "{report}");
     assert!(report.contains("unprompted"), "{report}");
@@ -120,8 +102,7 @@ fn a_quiet_day_says_so_without_claiming_nothing_was_recorded() {
     // different claim from "nothing happened" even if it were true. Endora reports what
     // it did, not what its own storage managed to capture.
     let report =
-        what_it_has_been_doing(&Said(Vec::new()), &Nothing, &Nothing, &Nothing, 0, A_DAY_MS)
-            .expect("report");
+        what_it_has_been_doing(&Said(Vec::new()), &Nothing, &Nothing, 0, A_DAY_MS).expect("report");
     assert!(report.starts_with("Nothing."), "{report}");
     assert!(!report.to_lowercase().contains("recorded"), "{report}");
 }
@@ -140,8 +121,7 @@ fn two_unprompted_messages_are_both_reported_oldest_first() {
             BRIEF_AT,
         ),
     ]);
-    let report =
-        what_it_has_been_doing(&said, &Nothing, &Nothing, &Nothing, 0, A_DAY_MS).expect("report");
+    let report = what_it_has_been_doing(&said, &Nothing, &Nothing, 0, A_DAY_MS).expect("report");
     let checkin = report.find("04:18").expect("the check-in");
     let brief = report.find("11:01").expect("the brief");
     assert!(checkin < brief, "oldest first, got: {report}");

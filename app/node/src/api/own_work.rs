@@ -1,5 +1,5 @@
 //! Work Endora finds for itself, end to end through the node's workers (ADR 0094, Phase 3):
-//! the starter that makes a goal from a standing trouble, the goal worker that re-reads the
+//! the starter that makes a goal from a stored record, the goal worker that re-reads the
 //! source before spending a pass, and what the person sees when it ends. Deterministic: the
 //! scripted butler, an in-memory store, no network.
 use super::AppState;
@@ -7,7 +7,6 @@ use endora_application::{
     ChatMessage, ChatRepository, Clock, EventLog, Goal, GoalOrigin, GoalRecord, GoalRepository,
     GoalStatus, IdSource, MemoryStore, MessageId, MessageRole, Timestamp,
 };
-use endora_capabilities::{StandingTrouble, StandingTroubleRepository};
 use endora_infrastructure::{RandomIdSource, ScriptedButler, SqliteStore, SystemClock};
 use std::sync::Arc;
 use std::time::Duration;
@@ -25,20 +24,6 @@ fn state() -> AppState {
 
 fn now(state: &AppState) -> i64 {
     state.clock.now().unix_millis()
-}
-
-/// A thing that has not answered for `days`, as the house watcher would have recorded it.
-fn in_trouble(state: &AppState, thing: &str, days: i64) {
-    state
-        .config
-        .note_trouble(&StandingTrouble {
-            server: "home".to_owned(),
-            thing: thing.to_owned(),
-            trouble: "unavailable".to_owned(),
-            since_ms: now(state) - days * DAY,
-            accepted: false,
-        })
-        .unwrap();
 }
 
 fn own_goals(state: &AppState) -> Vec<GoalRecord> {
@@ -73,19 +58,19 @@ fn wrote(state: &AppState, role: MessageRole, minutes_ago: i64) {
 // ---- the starter ----
 
 #[test]
-fn a_standing_trouble_becomes_a_goal_in_the_lane_that_never_outranks_a_request() {
+fn a_failed_ask_becomes_a_goal_in_the_lane_that_never_outranks_a_request() {
     let state = state();
-    in_trouble(&state, "sensor.garage_door", 4);
+    failed_ask(&state, "s1", "when is the next 41 bus?", 2);
     assert!(super::start_own_work_once(&state));
 
     let goals = own_goals(&state);
     assert_eq!(goals.len(), 1);
     assert_eq!(goals[0].origin(), GoalOrigin::Record);
-    assert!(goals[0].goal().objective().contains("sensor.garage_door"));
+    assert!(goals[0].goal().objective().contains("41 bus"));
     assert!(
         trail(&state)
             .iter()
-            .any(|line| line.contains("sensor.garage_door") && line.contains("on my own")),
+            .any(|line| line.contains("41 bus") && line.contains("on my own")),
         "starting is said in the trail: {:?}",
         trail(&state)
     );
@@ -101,17 +86,10 @@ fn with_nothing_wrong_the_node_idles_and_makes_nothing_up() {
 }
 
 #[test]
-fn a_trouble_too_young_to_be_worth_raising_is_left_alone() {
-    let state = state();
-    in_trouble(&state, "sensor.garage_door", 1);
-    assert!(!super::start_own_work_once(&state));
-}
-
-#[test]
 fn it_does_not_start_a_second_while_one_is_open() {
     let state = state();
-    in_trouble(&state, "sensor.garage_door", 4);
-    in_trouble(&state, "sensor.other", 5);
+    failed_ask(&state, "s1", "q1", 2);
+    failed_ask(&state, "s2", "q2", 3);
     assert!(super::start_own_work_once(&state));
     assert!(!super::start_own_work_once(&state));
     assert_eq!(own_goals(&state).len(), 1);
@@ -120,7 +98,7 @@ fn it_does_not_start_a_second_while_one_is_open() {
 #[test]
 fn it_does_not_start_while_the_persons_own_request_is_open() {
     let state = state();
-    in_trouble(&state, "sensor.garage_door", 4);
+    failed_ask(&state, "s1", "q", 2);
     let asked = GoalRecord::new(
         "asked-for",
         Goal::new("Read a source").unwrap(),
@@ -135,7 +113,7 @@ fn it_does_not_start_while_the_persons_own_request_is_open() {
 fn it_does_not_start_while_the_person_is_talking_but_does_once_they_are_quiet() {
     // S2 at the starting end.
     let state = state();
-    in_trouble(&state, "sensor.garage_door", 4);
+    failed_ask(&state, "s1", "q", 2);
     wrote(&state, MessageRole::User, 2);
     assert!(!super::start_own_work_once(&state));
     assert!(own_goals(&state).is_empty());
@@ -146,7 +124,7 @@ fn it_does_not_start_while_the_person_is_talking_but_does_once_they_are_quiet() 
 
 fn state_with_quiet_person() -> AppState {
     let state = state();
-    in_trouble(&state, "sensor.garage_door", 4);
+    failed_ask(&state, "s1", "q", 2);
     wrote(&state, MessageRole::User, 30);
     state
 }
@@ -154,40 +132,25 @@ fn state_with_quiet_person() -> AppState {
 #[test]
 fn it_does_not_start_while_a_chat_turn_holds_the_turn_lock() {
     let state = state();
-    in_trouble(&state, "sensor.garage_door", 4);
+    failed_ask(&state, "s1", "q", 2);
     let _turn = state.turn_lock.clone().try_lock_owned().unwrap();
     assert!(!super::start_own_work_once(&state));
     assert!(own_goals(&state).is_empty());
 }
 
 #[test]
-fn a_trouble_the_person_called_fine_is_not_started() {
-    let state = state();
-    in_trouble(&state, "sensor.garage_door", 4);
-    state
-        .config
-        .accept_trouble("home", "sensor.garage_door")
-        .unwrap();
-    assert!(!super::start_own_work_once(&state));
-}
-
-#[test]
 fn after_one_ends_the_next_waits_out_the_cooldown() {
     // The lane being empty is not enough: thirty minutes have to pass as well, so a row of
-    // troubles is looked into one at a time, spread out, not back to back.
+    // asks is looked into one at a time, spread out, not back to back.
     let state = state();
-    in_trouble(&state, "sensor.garage_door", 5);
-    in_trouble(&state, "sensor.other", 4);
+    failed_ask(&state, "s1", "q1", 3);
+    failed_ask(&state, "s2", "q2", 2);
     assert!(super::start_own_work_once(&state));
     let key = own_goals(&state)[0].request_key().to_owned();
+    // The first is stopped, so the only thing left to start is the second.
     state
         .store
         .cancel_goal(&key, "stopped from the console", state.clock.now())
-        .unwrap();
-    // The first device is out of the picture, so the only thing left to start is the second.
-    state
-        .config
-        .clear_trouble("home", "sensor.garage_door")
         .unwrap();
 
     assert!(
@@ -201,7 +164,7 @@ fn after_one_ends_the_next_waits_out_the_cooldown() {
 fn a_goal_the_person_stopped_is_not_started_again() {
     // S8, through the real store: Stop cancels it, and the next look does not recreate it.
     let state = state();
-    in_trouble(&state, "sensor.garage_door", 4);
+    failed_ask(&state, "s1", "q", 2);
     assert!(super::start_own_work_once(&state));
     let key = own_goals(&state)[0].request_key().to_owned();
     state
@@ -230,71 +193,33 @@ async fn settled(state: &AppState, key: &str, wait: Duration) -> Option<GoalReco
 }
 
 #[tokio::test]
-async fn when_the_trouble_clears_the_worker_finishes_the_goal_without_a_model_and_without_a_chat_message()
- {
-    // S4 and S7 together. The source says it is over; no pass is spent, nothing is posted to
-    // chat, and the trail says what happened.
+async fn work_on_a_device_stored_before_it_was_turned_off_is_withdrawn_quietly() {
+    // Endora no longer looks into devices that stopped answering (2026-10-16). A goal it
+    // started about one before is stopped by the worker: no pass, no chat message, a line in
+    // the trail.
     let state = state();
-    in_trouble(&state, "sensor.garage_door", 4);
-    assert!(super::start_own_work_once(&state));
-    let key = own_goals(&state)[0].request_key().to_owned();
-    state
-        .config
-        .clear_trouble("home", "sensor.garage_door")
-        .unwrap();
+    let goal = Goal::for_request(
+        "Find out why sensor.garage_door has not answered for 4 days",
+        endora_application::goal_request::GoalCriteria::Resolve {
+            source: endora_application::goal_request::WorkSource::Retired,
+        },
+    )
+    .unwrap();
+    let key = "own:trouble:home:sensor.garage_door:1:1";
+    let record = GoalRecord::new(key, goal, Timestamp::from_unix_millis(now(&state)))
+        .unwrap()
+        .with_origin(GoalOrigin::Record);
+    state.store.create_goal(&record).unwrap();
 
     super::spawn_goal_worker(state.clone());
-    let done = settled(&state, &key, Duration::from_secs(3))
+    let stopped = settled(&state, key, Duration::from_secs(3))
         .await
-        .expect("the worker never finished a goal whose trouble had cleared");
-    assert_eq!(done.goal().status(), GoalStatus::Complete);
-    assert_eq!(done.origin(), GoalOrigin::Record);
-
-    // Published quietly: the one-time notice is spent without a chat message.
-    tokio::time::timeout(Duration::from_secs(8), async {
-        loop {
-            if state.store.pending_goal_completions().unwrap().is_empty() {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-    })
-    .await
-    .expect("the ending was never settled");
-    assert!(
-        state.store.export().unwrap().messages.is_empty(),
-        "self-started work posted to chat: {:?}",
-        state.store.export().unwrap().messages
-    );
-    assert!(
-        trail(&state)
-            .iter()
-            .any(|line| line.starts_with("On my own I looked into") && line.contains("complete")),
-        "the ending is in the trail: {:?}",
-        trail(&state)
-    );
-}
-
-#[tokio::test]
-async fn when_the_person_calls_the_trouble_fine_the_worker_stops_the_goal() {
-    let state = state();
-    in_trouble(&state, "sensor.garage_door", 4);
-    assert!(super::start_own_work_once(&state));
-    let key = own_goals(&state)[0].request_key().to_owned();
-    state
-        .config
-        .accept_trouble("home", "sensor.garage_door")
-        .unwrap();
-
-    super::spawn_goal_worker(state.clone());
-    let stopped = settled(&state, &key, Duration::from_secs(3))
-        .await
-        .expect("the worker never stopped work on a trouble the person called fine");
+        .expect("the worker never stopped retired work");
     assert_eq!(stopped.goal().status(), GoalStatus::Cancelled);
     assert!(
         trail(&state)
             .iter()
-            .any(|line| line.contains("fine") && line.contains("sensor.garage_door")),
+            .any(|line| line.starts_with("Stopped looking into") && line.contains("no longer")),
         "{:?}",
         trail(&state)
     );
@@ -356,7 +281,7 @@ fn strongly_believes(state: &AppState, statement: &str) {
 }
 
 #[test]
-fn an_ask_that_failed_two_days_ago_is_asked_again_when_nothing_is_wrong_in_the_house() {
+fn an_ask_that_failed_two_days_ago_is_asked_again() {
     let state = state();
     failed_ask(&state, "s1", "when is the next 41 bus?", 2);
     assert!(super::start_own_work_once(&state));
@@ -390,13 +315,15 @@ fn a_belief_is_looked_into_only_when_nothing_else_needs_it() {
             .contains("sleep better")
     );
 
-    // With a trouble present it would have come first: a fresh node, same belief.
+    // With a failed ask present it would have come first: a fresh node, same belief.
     let busy = self::state();
     strongly_believes(&busy, "wants to sleep better");
-    in_trouble(&busy, "sensor.garage_door", 4);
+    failed_ask(&busy, "s1", "q", 2);
     assert!(super::start_own_work_once(&busy));
     assert!(
-        own_goals(&busy)[0].request_key().starts_with("own:trouble"),
+        own_goals(&busy)[0]
+            .request_key()
+            .starts_with("own:specimen"),
         "{}",
         own_goals(&busy)[0].request_key()
     );

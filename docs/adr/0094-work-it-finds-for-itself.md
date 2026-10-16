@@ -7,6 +7,12 @@ The owner answered the plan's five open questions on that date; each answer is r
 below. Later phases — more sources, mail, any unattended action — are **not** accepted
 here and need their own records. Prepared with AI assistance (Claude).
 
+**Amended 2026-10-16.** Standing trouble, the first source, is gone with the feature it came
+from (ADR 0056's amendment): the owner did not want Endora asking about devices that stopped
+answering. The lane now starts work only from asks that failed and from beliefs. A goal
+stored from a trouble before reads back as retired work, held to the house, and the next
+check withdraws it. The rest of this record stands.
+
 ## Context
 
 The owner's aim is an Endora that is always doing something: when nothing has been asked

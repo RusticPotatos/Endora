@@ -6087,7 +6087,7 @@ fn a_pass_on_a_goal_the_person_asked_for_still_can() {
 #[test]
 fn a_goal_endora_started_is_still_worked_by_the_local_model() {
     // Taking the deep model away must not take the work away.
-    let own = a_goal_from_a_trouble();
+    let own = a_goal_held_to_the_house();
     let after = one_house_pass(
         &own,
         Ok("sensor.garage_door: unavailable since Tuesday"),
@@ -6109,7 +6109,7 @@ fn work_endora_started_keeps_only_what_it_actually_read() {
     // (they may have asked for something that needs none). Here nobody asked, and the only
     // honest thing is what the house said.
     let invented = "It is probably the battery; these sensors usually die after a few years.";
-    let own = one_pass_saying(&a_goal_from_a_trouble(), invented);
+    let own = one_pass_saying(&a_goal_held_to_the_house(), invented);
     assert!(
         own.goal().evidence().is_empty(),
         "an unread cause was kept as a finding: {:?}",
@@ -6193,7 +6193,7 @@ fn tools_offered_on_a_pass(record: &crate::GoalRecord) -> Vec<String> {
 #[test]
 fn the_model_working_on_something_endora_noticed_is_offered_only_the_house() {
     assert_eq!(
-        tools_offered_on_a_pass(&a_goal_from_a_trouble()),
+        tools_offered_on_a_pass(&a_goal_held_to_the_house()),
         ["home_assistant"]
     );
     // The control: the person's goal is offered what it always was.
@@ -6224,7 +6224,7 @@ fn one_pass_saying(record: &crate::GoalRecord, text: &'static str) -> crate::Goa
 #[test]
 fn what_work_endora_started_read_about_the_house_is_kept() {
     let after = one_house_pass(
-        &a_goal_from_a_trouble(),
+        &a_goal_held_to_the_house(),
         Ok("sensor.garage_door: unavailable since Tuesday"),
         "The house reports sensor.garage_door unavailable since Tuesday.",
     );
@@ -6237,15 +6237,14 @@ fn what_work_endora_started_read_about_the_house_is_kept() {
     assert!(after.goal().evidence()[0].output.contains("since Tuesday"));
 }
 
-fn a_goal_from_a_trouble() -> crate::GoalRecord {
+/// Work Endora started that is not given the reversible skills, so the lane holds it to the
+/// house. Today only retired work is (a device that stopped answering, stored before it was
+/// turned off); the clamp is what keeps anything not explicitly given more from having it.
+fn a_goal_held_to_the_house() -> crate::GoalRecord {
     let goal = crate::Goal::for_request(
         "Find out why sensor.garage_door has not answered for 4 days",
         crate::goal_request::GoalCriteria::Resolve {
-            source: crate::goal_request::WorkSource::Trouble {
-                server: "home".to_owned(),
-                thing: "sensor.garage_door".to_owned(),
-                since_ms: 1,
-            },
+            source: crate::goal_request::WorkSource::Retired,
         },
     )
     .unwrap();
@@ -6278,10 +6277,10 @@ fn a_goal_from_a_belief() -> crate::GoalRecord {
 }
 
 #[test]
-fn a_goal_from_a_belief_may_read_the_outside_but_a_goal_from_a_trouble_may_not() {
+fn a_goal_from_a_belief_may_read_the_outside_but_a_goal_held_to_the_house_may_not() {
     // ADR 0095. Looking into something the person cares about needs more than the house,
-    // so the belief source is given what its predecessor, the nightly intention, had;
-    // standing trouble stays with the house (ADR 0094). Same model, same working fetch.
+    // so the belief source is given what its predecessor, the nightly intention, had; work
+    // not given that stays with the house (ADR 0094). Same model, same working fetch.
     let page = Ok("Example Domain. A page that would be served.");
     let belief = one_fetch_pass_on(&a_goal_from_a_belief(), page);
     assert!(
@@ -6293,7 +6292,7 @@ fn a_goal_from_a_belief_may_read_the_outside_but_a_goal_from_a_trouble_may_not()
         "a belief goal was refused the web: {:?}",
         belief.goal().observations()
     );
-    let trouble = one_fetch_pass_on(&a_goal_from_a_trouble(), page);
+    let trouble = one_fetch_pass_on(&a_goal_held_to_the_house(), page);
     assert!(
         trouble
             .goal()
@@ -6328,7 +6327,7 @@ fn a_goal_from_a_belief_keeps_only_what_it_read_too() {
 fn work_endora_noticed_is_not_described_to_the_model_as_something_they_asked_for() {
     // The instruction used to open "something they asked you for". For a goal Endora
     // started, that is false, and a model told it will write as if to a person waiting.
-    let own = super::proactive::goal_instruction(a_goal_from_a_trouble().goal());
+    let own = super::proactive::goal_instruction(a_goal_held_to_the_house().goal());
     assert!(!own.contains("they asked you for"), "{own}");
     assert!(own.contains("Nobody asked"), "{own}");
     assert!(
@@ -6342,8 +6341,8 @@ fn work_endora_noticed_is_not_described_to_the_model_as_something_they_asked_for
 }
 
 #[test]
-fn a_goal_from_a_trouble_is_told_it_can_look_and_cannot_fix() {
-    let own = super::proactive::goal_instruction(a_goal_from_a_trouble().goal());
+fn a_goal_held_to_the_house_is_told_it_can_look_and_cannot_fix() {
+    let own = super::proactive::goal_instruction(a_goal_held_to_the_house().goal());
     assert!(own.contains("cannot change or fix"), "{own}");
 }
 
@@ -6576,7 +6575,7 @@ fn work_endora_started_cannot_read_the_web_even_when_the_model_asks_to() {
         "the control: the person's goal reads the page"
     );
 
-    let own = a_goal_from_a_trouble();
+    let own = a_goal_held_to_the_house();
     let after = one_fetch_pass_on(&own, page);
     let receipts = after.goal().observations();
     assert!(

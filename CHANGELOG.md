@@ -80,6 +80,12 @@ tagged release.
 
 ### Fixed
 
+- **Endora no longer asks about devices that stopped answering** (the "Still yours?" card).
+  The owner did not want it. It is removed with what was under it: the card and its routes,
+  the morning brief's lines, the own-work lane's items, and the detection and its store. Work
+  Endora started about such a device before is withdrawn at the next check; an existing
+  database keeps its old table, unread.
+
 - **Endora answered faster, and about the right day.** Measured on the house's A2000, with qwen2.5:7b:
   - **The prompt was read from the clock onward on every message.** The date and time sat
     second in the request, ahead of the instructions and the tool list. They now travel with

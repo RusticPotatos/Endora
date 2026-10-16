@@ -3,11 +3,10 @@
 //!
 //! All of it is a pure function of stored facts, so every rule is a unit test and none
 //! needs a model. Nothing here guesses: an item is only ever a record code already derived
-//! (today, a standing trouble), the source is re-read to say it is finished, and when
+//! (an ask that failed, a belief), the source is re-read to say it is finished, and when
 //! there is nothing the answer is `None`, which is a normal outcome.
 use crate::goal_request::{GoalCriteria, WorkSource};
-use crate::{Goal, GoalOrigin, GoalRecord, GoalStatus, GoalVerdict, Timestamp};
-use endora_capabilities::StandingTrouble;
+use crate::{Goal, GoalOrigin, GoalRecord, GoalStatus, Timestamp};
 use endora_understanding::Specimen;
 
 /// After one self-started goal ends, how long before the next may begin. Thirty minutes to
@@ -80,8 +79,6 @@ pub struct Focus {
 /// Everything the decision to start something rests on.
 #[derive(Debug, Clone, Copy)]
 pub struct Situation<'a> {
-    /// What is wrong in the house right now.
-    pub troubles: &'a [StandingTrouble],
     /// The asks that failed and are still worth asking again.
     pub specimens: &'a [Specimen],
     /// The belief Endora is most sure of, if there is one.
@@ -100,12 +97,10 @@ pub struct Situation<'a> {
 ///
 /// Starts nothing unless **all** of these hold: no request of the person's is open, they have
 /// been quiet, Endora's own lane is empty, and the cooldown since its last goal ended has
-/// passed. Then, in order: the oldest standing trouble worth raising
-/// ([`endora_capabilities::worth_raising`]) that has not been looked into too often, was not
-/// stopped by the person, and is not still inside its own cooldown; else the oldest ask that
-/// failed and has waited a day; else the belief it is most sure of, on the same terms as a
-/// trouble. An item the person marked "it's fine" never reaches here, because `worth_raising`
-/// excludes it.
+/// passed. Then, in order: the oldest ask that failed and has waited a day; else the belief it
+/// is most sure of, if it has not been looked into too often, was not stopped by the person,
+/// and is not still inside its own cooldown. (Devices that stopped answering were the first
+/// source; they were turned off on 2026-10-16.)
 #[must_use]
 pub fn next_work(situation: &Situation<'_>) -> Option<WorkItem> {
     if situation.a_request_is_open || !situation.person_is_quiet {
@@ -127,44 +122,12 @@ pub fn next_work(situation: &Situation<'_>) -> Option<WorkItem> {
     if last_ended.is_some_and(|ended| now_ms.saturating_sub(ended) < COOLDOWN_AFTER_ENDING_MS) {
         return None;
     }
-    // In this order, and only when the one before has nothing: a thing in the house that has
-    // stopped answering, then an ask that failed, then something it understands about them.
-    endora_capabilities::worth_raising(situation.troubles, now_ms)
-        .into_iter()
-        .find_map(|trouble| item_for(trouble, situation.history, now_ms))
-        .or_else(|| specimen_item(situation.specimens, situation.history, now_ms))
-        .or_else(|| {
-            situation
-                .focus
-                .and_then(|focus| belief_item(focus, situation.history, now_ms))
-        })
-}
-
-fn item_for(trouble: &StandingTrouble, history: &[GoalRecord], now_ms: i64) -> Option<WorkItem> {
-    // A name too long to store as the source cannot be re-read later to say the work is done,
-    // so it is not started. No real service names a thing this way.
-    if trouble.thing.chars().count() > SOURCE_NAME_CHARS
-        || trouble.server.chars().count() > SOURCE_NAME_CHARS
-    {
-        return None;
-    }
-    let stem = format!(
-        "own:trouble:{}:{}:{}",
-        clip(&trouble.server),
-        clip(&trouble.thing),
-        trouble.since_ms
-    );
-    // A stopped trouble comes back as a new situation with a different `since_ms`, so a
-    // different stem.
-    let attempt = next_attempt(&stem, history, now_ms)?;
-    Some(WorkItem {
-        request_key: format!("{stem}:{attempt}"),
-        objective: format!("{} — find out why", trouble.statement(now_ms)),
-        source: WorkSource::Trouble {
-            server: trouble.server.clone(),
-            thing: trouble.thing.clone(),
-            since_ms: trouble.since_ms,
-        },
+    // In this order, and only when the one before has nothing: an ask that failed, then
+    // something it understands about them.
+    specimen_item(situation.specimens, situation.history, now_ms).or_else(|| {
+        situation
+            .focus
+            .and_then(|focus| belief_item(focus, situation.history, now_ms))
     })
 }
 
@@ -251,17 +214,13 @@ fn clip(text: &str) -> String {
 pub enum Recheck {
     /// The condition still holds; carry on.
     Unchanged,
-    /// The condition no longer holds. The goal, completed by the source and not by any model.
-    Resolved(Box<GoalRecord>),
-    /// The person said it is fine. The work is stopped, with the reason.
+    /// What it was for is gone. The work is stopped, with the reason.
     Withdrawn(String),
 }
 
 /// The stored records a source is checked against.
 #[derive(Debug, Clone, Copy)]
 pub struct Records<'a> {
-    /// What is wrong in the house now.
-    pub troubles: &'a [StandingTrouble],
     /// The asks still open.
     pub open_specimens: &'a [Specimen],
     /// The ids of the beliefs still held.
@@ -271,11 +230,11 @@ pub struct Records<'a> {
 /// Re-reads the record a self-started goal was derived from.
 ///
 /// **The source is the verifier** (ADR 0094): a model never declares this work finished.
-/// Only a goal that resolves from a record, still open, is ever changed here. A trouble that
-/// cleared completes it. An ask no longer on the shelf, or a belief no longer held, withdraws
-/// it: the thing it was for is gone, and nothing was answered.
+/// Only a goal that resolves from a record, still open, is ever changed here. An ask no longer
+/// on the shelf, or a belief no longer held, withdraws it: the thing it was for is gone, and
+/// nothing was answered. Retired work (a device that stopped answering) is withdrawn too.
 #[must_use]
-pub fn recheck(record: &GoalRecord, records: &Records<'_>, at: Timestamp) -> Recheck {
+pub fn recheck(record: &GoalRecord, records: &Records<'_>) -> Recheck {
     let Some(GoalCriteria::Resolve { source }) = record.goal().criteria() else {
         return Recheck::Unchanged;
     };
@@ -283,39 +242,10 @@ pub fn recheck(record: &GoalRecord, records: &Records<'_>, at: Timestamp) -> Rec
         return Recheck::Unchanged;
     }
     match source {
-        WorkSource::Trouble {
-            server,
-            thing,
-            since_ms,
-        } => {
-            let current = records
-                .troubles
-                .iter()
-                .find(|trouble| &trouble.server == server && &trouble.thing == thing);
-            match current {
-                Some(trouble) if trouble.since_ms == *since_ms && trouble.accepted => {
-                    Recheck::Withdrawn(format!("you said {thing} is fine"))
-                }
-                Some(trouble) if trouble.since_ms == *since_ms => Recheck::Unchanged,
-                // Gone, or gone and back since: either way the situation it was started for
-                // is over.
-                _ => {
-                    let mut goal = record.goal().clone();
-                    goal.start("checking the source", "read the record again");
-                    goal.commit(
-                        "checking the source",
-                        &format!(
-                            "{thing} is answering again, so there is nothing left to find out."
-                        ),
-                    );
-                    goal.apply(
-                        GoalVerdict::Complete,
-                        "the record it was started from no longer says it is wrong",
-                    );
-                    Recheck::Resolved(Box::new(record.with_goal(goal, at)))
-                }
-            }
-        }
+        // Nothing makes these any more; one stored before is stopped, not pursued.
+        WorkSource::Retired => Recheck::Withdrawn(
+            "Endora no longer looks into devices that stopped answering".to_owned(),
+        ),
         WorkSource::Specimen { id } => {
             if records.open_specimens.iter().any(|s| &s.id == id) {
                 Recheck::Unchanged

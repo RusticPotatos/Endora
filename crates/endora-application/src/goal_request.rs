@@ -21,16 +21,10 @@ pub const GOAL_CAPACITY_REACHED: &str = "goal capacity reached";
 /// code can re-read, which is what lets the source, not a model, say the work is done.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WorkSource {
-    /// Something in the house that stopped answering, as first seen at `since_ms`. The same
-    /// device failing again later is a new `since_ms`, so a new situation.
-    Trouble {
-        /// Which service it is in.
-        server: String,
-        /// What the service calls it.
-        thing: String,
-        /// When Endora first saw it this way.
-        since_ms: i64,
-    },
+    /// Work Endora no longer does: a device that stopped answering (ADR 0056, turned off
+    /// 2026-10-16). Only read back from goals stored before; nothing makes one now, and the
+    /// lane withdraws any still open.
+    Retired,
     /// An ask the butler failed and is still worth asking again (ADR 0095). Done when a
     /// replay passes the verdict that filed it.
     Specimen {
@@ -55,12 +49,13 @@ pub enum Skills {
 }
 
 impl WorkSource {
-    /// The skills work from this source may use. Standing trouble is held to the house
-    /// (ADR 0094); the others are given what the thing they came from always had (ADR 0095).
+    /// The skills work from this source may use. Retired work is held to the house, as it
+    /// always was (ADR 0094); the others are given what the thing they came from always had
+    /// (ADR 0095).
     #[must_use]
     pub const fn skills(&self) -> Skills {
         match self {
-            Self::Trouble { .. } => Skills::House,
+            Self::Retired => Skills::House,
             Self::Specimen { .. } | Self::Belief { .. } => Skills::Reversible,
         }
     }
@@ -100,23 +95,11 @@ impl GoalCriteria {
     pub fn from_stored(value: &Value) -> Result<Self, &'static str> {
         match value["kind"].as_str() {
             Some("resolve") => match value["source"].as_str() {
-                Some("trouble") => {
-                    let text = |key: &str| {
-                        value[key]
-                            .as_str()
-                            .map(str::trim)
-                            .filter(|t| !t.is_empty() && t.chars().count() <= 200)
-                            .map(str::to_owned)
-                            .ok_or("invalid trouble source")
-                    };
-                    Ok(Self::Resolve {
-                        source: WorkSource::Trouble {
-                            server: text("server")?,
-                            thing: text("thing")?,
-                            since_ms: value["since_ms"].as_i64().ok_or("invalid trouble source")?,
-                        },
-                    })
-                }
+                // A goal stored before devices that stopped answering were turned off still
+                // reads, so the goals around it do too.
+                Some("trouble" | "retired") => Ok(Self::Resolve {
+                    source: WorkSource::Retired,
+                }),
                 Some(kind @ ("specimen" | "belief")) => {
                     let id = value["id"]
                         .as_str()
@@ -182,16 +165,8 @@ impl GoalCriteria {
                 json!({"kind":"research","requirements":requirements})
             }
             Self::Resolve {
-                source:
-                    WorkSource::Trouble {
-                        server,
-                        thing,
-                        since_ms,
-                    },
-            } => json!({
-                "kind":"resolve","source":"trouble",
-                "server":server,"thing":thing,"since_ms":since_ms
-            }),
+                source: WorkSource::Retired,
+            } => json!({"kind":"resolve","source":"retired"}),
             Self::Resolve {
                 source: WorkSource::Specimen { id },
             } => json!({"kind":"resolve","source":"specimen","id":id}),
@@ -206,8 +181,8 @@ impl GoalCriteria {
             Self::Schedule { team, count } => format!("the next {count} {team} games"),
             Self::Research { requirements } => requirements.join("; "),
             Self::Resolve {
-                source: WorkSource::Trouble { thing, .. },
-            } => format!("find out why {thing} is not answering, or that it is again"),
+                source: WorkSource::Retired,
+            } => "work Endora no longer does".to_owned(),
             Self::Resolve {
                 source: WorkSource::Specimen { .. },
             } => "ask the question again and see whether it can be answered now".to_owned(),
@@ -299,12 +274,10 @@ mod tests {
         }
     }
 
-    fn trouble() -> GoalCriteria {
+    fn from_a_record() -> GoalCriteria {
         GoalCriteria::Resolve {
-            source: WorkSource::Trouble {
-                server: "home".to_owned(),
-                thing: "sensor.garage_door".to_owned(),
-                since_ms: 1_000,
+            source: WorkSource::Specimen {
+                id: "fictional-specimen".to_owned(),
             },
         }
     }
@@ -314,14 +287,14 @@ mod tests {
         // The model's words come through `from_json`. If it accepted `resolve`, a request
         // the person made could carry the authority of work Endora derived from a record,
         // and the model would be choosing which records count.
-        let declared = trouble().to_json();
+        let declared = from_a_record().to_json();
         assert_eq!(declared["kind"], "resolve");
         assert!(GoalCriteria::from_json(&declared).is_err());
     }
 
     #[test]
     fn what_endora_stored_reads_back_exactly() {
-        let criteria = trouble();
+        let criteria = from_a_record();
         assert_eq!(
             GoalCriteria::from_stored(&criteria.to_json()).unwrap(),
             criteria
@@ -370,14 +343,9 @@ mod tests {
 
     #[test]
     fn what_each_source_may_read_is_decided_by_the_source() {
-        // Standing trouble reads the house; a replayed ask and a belief are given the skills
+        // Retired work is held to the house; a replayed ask and a belief are given the skills
         // the thing they came from always had (ADR 0095).
-        let trouble = WorkSource::Trouble {
-            server: "home".to_owned(),
-            thing: "sensor.x".to_owned(),
-            since_ms: 1,
-        };
-        assert_eq!(trouble.skills(), Skills::House);
+        assert_eq!(WorkSource::Retired.skills(), Skills::House);
         for source in [
             WorkSource::Specimen { id: "s".to_owned() },
             WorkSource::Belief { id: "b".to_owned() },
@@ -391,11 +359,17 @@ mod tests {
         for input in [
             json!({"kind":"resolve"}),
             json!({"kind":"resolve","source":"something-newer"}),
-            json!({"kind":"resolve","source":"trouble","server":"home","thing":"","since_ms":1}),
-            json!({"kind":"resolve","source":"trouble","server":"home","thing":"x"}),
-            json!({"kind":"resolve","source":"trouble","thing":"x","since_ms":1}),
         ] {
             assert!(GoalCriteria::from_stored(&input).is_err(), "{input}");
         }
+        // Any stored trouble reads back as retired work, whatever it held, so a goal stored
+        // before devices that stopped answering were turned off never breaks the ones around it.
+        let old = json!({"kind":"resolve","source":"trouble","thing":"x"});
+        assert_eq!(
+            GoalCriteria::from_stored(&old),
+            Ok(GoalCriteria::Resolve {
+                source: WorkSource::Retired
+            })
+        );
     }
 }

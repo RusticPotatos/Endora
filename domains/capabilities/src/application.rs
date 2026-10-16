@@ -73,8 +73,7 @@ pub fn validate_console_action(request: &serde_json::Value) -> Result<(), &'stat
 
 pub use crate::domain::{
     AutonomyEnvelope, ConfigWrite, McpServer, McpTransport, Recipe, RecipeInput, RecipeInputKind,
-    StandingTrouble, TargetAlias, WORTH_SAYING_AFTER_DAYS, WriteKind, a_pile_of, device_of,
-    how_many_things, not_answering, worth_raising,
+    TargetAlias, WriteKind, not_answering,
 };
 
 /// An optional **deep model** — a bigger/cloud AI the person configures for hard
@@ -394,39 +393,6 @@ pub trait ConfigWriteLog {
     fn mark_undone(&self, id: u128) -> Result<(), RepositoryError>;
 }
 
-/// What is currently wrong in the services, and since when (ADR 0056).
-///
-/// Deliberately not a log. There is one row per thing-that-is-wrong-right-now, created the
-/// first time it is seen and **deleted the moment it is well again** — so the store is
-/// bounded by the state of the world rather than by how long Endora has been watching it.
-pub trait StandingTroubleRepository {
-    /// Records that something is in trouble, keeping the earliest sighting. Called every
-    /// time it is seen that way; only the first one sets the clock.
-    ///
-    /// # Errors
-    /// [`RepositoryError`] if the backend fails.
-    fn note_trouble(&self, trouble: &StandingTrouble) -> Result<(), RepositoryError>;
-
-    /// Forgets a thing that is well again — including anything the person had accepted,
-    /// because a device that comes back is a different situation from one that never did.
-    ///
-    /// # Errors
-    /// [`RepositoryError`] if the backend fails.
-    fn clear_trouble(&self, server: &str, thing: &str) -> Result<(), RepositoryError>;
-
-    /// Everything currently wrong, oldest first.
-    ///
-    /// # Errors
-    /// [`RepositoryError`] if the backend fails.
-    fn troubles(&self) -> Result<Vec<StandingTrouble>, RepositoryError>;
-
-    /// Marks one as the person's business rather than a problem, so it stops being raised.
-    ///
-    /// # Errors
-    /// [`RepositoryError`] if the backend fails.
-    fn accept_trouble(&self, server: &str, thing: &str) -> Result<(), RepositoryError>;
-}
-
 /// Stores the person's own recipes (ADR 0071) — capabilities that are data, not
 /// code.
 pub trait RecipeRepository {
@@ -717,10 +683,8 @@ pub trait TransitionLog {
 
 /// Notes one pass over a server's readings, returning the changes that really happened.
 ///
-/// The counterpart to [`watch_for_trouble`], and the reason the watch loop is worth more than
-/// it was: that one only ever asks *"is this thing answering?"*, so a house could change all
-/// day and Endora would carry nothing out of it. This asks *"did something move?"* and keeps
-/// the answer.
+/// What makes the watch loop worth running: it asks *"did something move?"* and keeps the
+/// answer, so a house that changes all day leaves something Endora can carry.
 ///
 /// A change is only written down once it has held for [`crate::domain::DWELL_MS`] — see
 /// [`note_reading`](crate::domain::note_reading), where all of that judgement lives
@@ -818,35 +782,10 @@ fn quarter_of_day(at_ms: i64) -> i64 {
     (at_ms / 3_600_000).rem_euclid(24) / 6
 }
 
-/// # Errors
-/// [`RepositoryError`] if the backend fails.
-pub fn watch_for_trouble(
-    repo: &impl StandingTroubleRepository,
-    server: &str,
-    reading: &[(String, String)],
-    now_ms: i64,
-) -> Result<(), RepositoryError> {
-    for (thing, state) in reading {
-        if not_answering(state) {
-            repo.note_trouble(&StandingTrouble {
-                server: server.to_owned(),
-                thing: thing.clone(),
-                trouble: state.trim().to_lowercase(),
-                since_ms: now_ms,
-                accepted: false,
-            })?;
-            continue;
-        }
-        repo.clear_trouble(server, thing)?;
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod keeping_a_record_of_what_moved {
-    //! `watch_for_change` (ADR 0058). Its sibling `watch_for_trouble` has no tests; this one
-    //! does, because a transition log that lies quietly is worse than no log — everything
-    //! downstream inherits the noise.
+    //! `watch_for_change` (ADR 0058). Tested because a transition log that lies quietly is
+    //! worse than no log — everything downstream inherits the noise.
 
     use super::{TransitionLog, watch_for_change};
     #[test]
@@ -1092,8 +1031,8 @@ mod keeping_a_record_of_what_moved {
 
     #[test]
     fn the_log_forgets_on_its_own() {
-        // Bounded by the retention window rather than by uptime, the same argument that made
-        // standing trouble safe to store. Nothing here needs anybody to clear it.
+        // Bounded by the retention window rather than by uptime. Nothing here needs anybody
+        // to clear it.
         let log = FakeLog::default();
         watch_for_change(
             &log,

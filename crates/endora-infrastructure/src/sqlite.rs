@@ -227,14 +227,8 @@ CREATE TABLE IF NOT EXISTS config_writes (
     undone  INTEGER NOT NULL DEFAULT 0,
     kind    TEXT NOT NULL DEFAULT 'name'
 ) STRICT;
-CREATE TABLE IF NOT EXISTS standing_trouble (
-    server   TEXT NOT NULL,
-    thing    TEXT NOT NULL,
-    trouble  TEXT NOT NULL,
-    since_ms INTEGER NOT NULL,
-    accepted INTEGER NOT NULL DEFAULT 0,
-    PRIMARY KEY (server, thing, trouble)
-) STRICT;
+-- standing_trouble (ADR 0056, devices that stopped answering) is no longer created or used
+-- (2026-10-16). A database made before keeps the table, untouched.
 -- The person's own capabilities (ADR 0071) — five fields, validated at authoring
 -- time, never code.
 CREATE TABLE IF NOT EXISTS recipes (
@@ -2450,8 +2444,8 @@ mod tests {
 mod the_schema_production_actually_runs {
     use super::SqliteStore;
     use endora_capabilities::{
-        ConfigStore, ConfigWrite, ConfigWriteLog, Recipe, RecipeRepository, StandingTrouble,
-        StandingTroubleRepository, TargetAlias, TargetAliasRepository, WriteKind,
+        ConfigStore, ConfigWrite, ConfigWriteLog, Recipe, RecipeRepository, TargetAlias,
+        TargetAliasRepository, WriteKind,
     };
 
     /// Builds the stores exactly as `main.rs` does: one production [`SqliteStore`], with the
@@ -2567,23 +2561,6 @@ mod the_schema_production_actually_runs {
             .set_alias(&TargetAlias::new("house", "the lamp", "Living Room Lamp").unwrap())
             .expect("target_aliases");
         assert_eq!(config.aliases().expect("read back").len(), 1);
-
-        config
-            .note_trouble(&StandingTrouble {
-                server: "house".to_owned(),
-                thing: "Living Room Lamp".to_owned(),
-                trouble: "unavailable".to_owned(),
-                since_ms: 1_000,
-                accepted: false,
-            })
-            .expect("standing_trouble");
-        assert_eq!(config.troubles().expect("read back").len(), 1);
-        config
-            .accept_trouble("house", "Living Room Lamp")
-            .expect("accept");
-        config
-            .clear_trouble("house", "Living Room Lamp")
-            .expect("clear");
 
         // A third time would be its own kind of lesson: the recipes table (ADR
         // 0071) went into `endora_capabilities::migrate` alone on the first pass

@@ -231,7 +231,6 @@ pub fn what_it_has_been_doing(
     chat: &impl ChatRepository,
     outcomes: &impl OutcomeRepository,
     writes: &impl endora_capabilities::ConfigWriteLog,
-    troubles: &impl endora_capabilities::StandingTroubleRepository,
     since_ms: i64,
     now_ms: i64,
 ) -> Result<String, AppError> {
@@ -301,21 +300,6 @@ pub fn what_it_has_been_doing(
             clock_time_of(write.at_ms),
             write.target,
             write.server
-        ));
-    }
-
-    // Things it started watching. Not the ones it is *raising* — those are a question the
-    // person answers, and this is a report of what happened.
-    for trouble in troubles
-        .troubles()?
-        .iter()
-        .filter(|t| t.since_ms >= since_ms)
-        .take(ENOUGH_OF_ANY_ONE_THING)
-    {
-        lines.push(format!(
-            "{} — noticed {} stopped answering",
-            clock_time_of(trouble.since_ms),
-            trouble.thing
         ));
     }
 

@@ -161,7 +161,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         api::spawn_mail_reader(state.clone());
     }
     if state.own_work {
-        println!("own work: on — it will look into standing troubles when you have been quiet");
+        println!(
+            "own work: on — it will ask failed questions again, and look into what it understands, when you have been quiet"
+        );
         api::spawn_own_work(state.clone());
     }
 

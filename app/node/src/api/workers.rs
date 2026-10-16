@@ -64,7 +64,6 @@ impl endora_capabilities::Capability for WhatIHaveBeenDoing {
             self.chat.as_ref(),
             self.understanding.as_ref(),
             self.config.as_ref(),
-            self.config.as_ref(),
             since_ms,
             now_ms,
         )
@@ -237,17 +236,8 @@ pub(super) fn watch_the_world(state: &AppState) {
         match channel.states() {
             Ok(reading) => {
                 the_house_reported.extend(reading.iter().map(|(thing, _)| thing.clone()));
-                if let Err(e) = endora_capabilities::watch_for_trouble(
-                    config.as_ref(),
-                    &server,
-                    &reading,
-                    now_ms,
-                ) {
-                    eprintln!("watching {server}: could not record what is wrong: {e}");
-                }
-                // The same reading, asked a second question. `watch_for_trouble` only ever
-                // asks "is this answering?", so a house could change all day and Endora would
-                // carry nothing out of it (ADR 0058).
+                // What moved, so the turn can say "the back door opened ten minutes ago"
+                // (ADR 0058).
                 match endora_capabilities::watch_for_change(
                     config.as_ref(),
                     &server,
@@ -308,11 +298,6 @@ pub(super) fn watch_the_world(state: &AppState) {
         })
         .collect();
     if !reading.is_empty() {
-        if let Err(e) =
-            endora_capabilities::watch_for_trouble(config.as_ref(), "skills", &reading, now_ms)
-        {
-            eprintln!("watching skills: could not record what is wrong: {e}");
-        }
         match endora_capabilities::watch_for_change(config.as_ref(), "skills", &reading, now_ms) {
             Ok(moved) => {
                 for change in moved {
@@ -777,11 +762,6 @@ pub(super) fn start_own_work_once(state: &AppState) -> bool {
         return false;
     }
     let now = state.clock.now();
-    let Ok(troubles) =
-        endora_capabilities::StandingTroubleRepository::troubles(state.config.as_ref())
-    else {
-        return false;
-    };
     // Sixty days is longer than any item's cooldown, so every attempt that still matters is
     // inside it; an older one no longer counts against an item.
     let since = endora_application::Timestamp::from_unix_millis(
@@ -801,7 +781,6 @@ pub(super) fn start_own_work_once(state: &AppState) -> bool {
         .ok()
         .flatten();
     let situation = Situation {
-        troubles: &troubles,
         specimens: &specimens,
         focus: focus.as_ref(),
         history: &history,
@@ -1171,30 +1150,24 @@ pub fn spawn_goal_worker(state: AppState) {
             let events = state.events.clone();
             let mut task = tokio::task::spawn_blocking(move || {
                 // Work derived from a record is finished by that record, not by a pass: read
-                // it again first (ADR 0094). A trouble that cleared completes the goal with
-                // no model call; one the person called fine, an ask taken off the shelf, or a
-                // belief no longer held stops it. If the records cannot be read, skip the
-                // pass and leave the goal as it was: working blind is not worth a pass.
+                // it again first (ADR 0094). An ask taken off the shelf, a belief no longer
+                // held, or retired work (a device that stopped answering) stops it. If the
+                // records cannot be read, skip the pass and leave the goal as it was: working
+                // blind is not worth a pass.
                 let mut replay_of = None;
                 if record.origin() == endora_application::GoalOrigin::Record {
-                    let troubles =
-                        endora_capabilities::StandingTroubleRepository::troubles(config.as_ref());
                     let open = endora_understanding::SpecimenRepository::open_specimens(
                         understanding.as_ref(),
                     );
                     let held = usecases::beliefs_still_held(understanding.as_ref(), clock.as_ref());
-                    let (Ok(troubles), Ok(open), Ok(held)) = (troubles, open, held) else {
+                    let (Ok(open), Ok(held)) = (open, held) else {
                         return Ok(false);
                     };
                     let records = endora_application::own_work::Records {
-                        troubles: &troubles,
                         open_specimens: &open,
                         active_beliefs: &held,
                     };
-                    match endora_application::own_work::recheck(&record, &records, clock.now()) {
-                        endora_application::own_work::Recheck::Resolved(done) => {
-                            return store.checkpoint_goal(&done, &worker_lease, clock.now());
-                        }
+                    match endora_application::own_work::recheck(&record, &records) {
                         endora_application::own_work::Recheck::Withdrawn(why) => {
                             let at = clock.now();
                             let _ = store.cancel_goal(record.request_key(), &why, at);
