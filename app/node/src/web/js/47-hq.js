@@ -391,9 +391,13 @@ function viewHQ() {
   const tab = (name, label, n) => `<button class="${HQ.tab === name ? "primary" : "ghost"}" data-act="hq:tab:${name}">${label}${n ? ` (${n})` : ""}</button>`;
   const desk = (s.desk || []).map((d) => {
     const choices = { goal: [["approve", "Approve"], ["decline", "Decline"]], stuck: [["retry", "Try again"], ["drop", "Drop it"]],
-      ready_to_merge: [["merged", "Merged"], ["not_now", "Not now"]] }[d.kind] || [];
-    return `<div class="card"><div class="title">${esc(d.text)}</div>
-      <div class="sub">${esc(String(d.kind).replace(/_/g, " "))}${d.task ? ` · #${d.task}` : ""}</div>
+      ready_to_merge: [["merged", "Mark merged"], ["not_now", "Not now"]],
+      ready_to_read: [["read", "Mark read"], ["not_now", "Not now"]] }[d.kind] || [];
+    // In the demo nothing behind a card is real: say so on the card, not only in the header.
+    const demoNote = s.demo ? (d.kind === "ready_to_merge" ? " · demo: there is no pull request behind this"
+      : d.kind === "ready_to_read" ? " · demo: there is no write-up behind this" : " · demo") : "";
+    return `<div class="card"><div class="title">${s.demo ? "Demo: " : ""}${esc(d.text)}</div>
+      <div class="sub">${esc(String(d.kind).replace(/_/g, " "))}${d.task ? ` · #${d.task}` : ""}${demoNote}</div>
       <div class="row" style="gap:8px;margin-top:8px;">${choices.map(([v, l]) => `<button class="ghost" data-act="hq:decide:${d.id}:${v}">${l}</button>`).join("")}</div></div>`;
   });
   const log = HQ.log.slice(0, 50).map((l) => `<div class="row" style="gap:8px;"><span class="sub" style="min-width:44px;">${esc(l.at)}</span><span>${esc(l.text)}</span></div>`);
@@ -416,7 +420,8 @@ function viewHQ() {
     <canvas id="hq-office" width="${HQ_W}" height="${HQ_H}" style="width:100%;height:auto;image-rendering:pixelated;border-radius:6px;cursor:pointer;"
       aria-label="The team's office: members at their desks, the board of tasks, the server closet, your desk"></canvas>
     <div class="row" style="gap:6px;flex-wrap:wrap;margin:8px 0;">
-      <span class="sub">Spent today ${money(pool.committed)} of ${money(pool.per_day)}</span>
+      <span class="sub">${s.demo ? `Demo: nothing is spent; turns reserve ${money(pool.committed)} of ${money(pool.per_day)} as real ones will`
+        : `Spent today ${money(pool.committed)} of ${money(pool.per_day)}`}</span>
       <span class="grow"></span>
       <button class="ghost ${s.stopped ? "" : "danger"}" data-act="${s.stopped ? "hq:resume" : "hq:stop"}">${s.stopped ? "Resume" : "Kill switch"}</button>
     </div>

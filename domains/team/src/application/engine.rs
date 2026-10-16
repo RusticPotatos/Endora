@@ -565,7 +565,9 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     }
 
     /// A member approves work under review. It is done only when the gate passed and the
-    /// reviewer is not the one who did it; then it is on the owner's desk, ready to merge.
+    /// reviewer is not the one who did it. Then a whole piece of work (one that is not part of
+    /// another) is on the owner's desk: ready to merge, or ready to read when a researcher did
+    /// it. A part goes to whoever owns the whole, not to the owner's desk.
     ///
     /// # Errors
     /// [`EngineError::Refused`] if it is the reviewer's own work, the gate has not passed, or
@@ -583,22 +585,33 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         let gate = self.store.gate(task)?.unwrap_or(false);
         work::is_done(gate, current.owner, reviewer).map_err(EngineError::Refused)?;
         self.store.set_task_status(task, TaskStatus::Done)?;
-        let desk = self.store.add_desk(
-            "ready_to_merge",
-            Some(task),
-            None,
-            &format!("Ready to merge: {}", current.title),
-            self.clock.now(),
-        )?;
         self.emit(
             EventKind::TaskChanged,
             json!({ "task": task.0, "goal": current.goal.0, "owner": current.owner.map(|o| o.0),
                     "status": TaskStatus::Done.name(), "priority": current.priority.name() }),
         )?;
-        self.emit(
-            EventKind::DeskAdded,
-            json!({ "item": desk.0, "kind": "ready_to_merge", "task": task.0 }),
-        )?;
+        if current.parent.is_none() {
+            let researched = match current.owner {
+                Some(worker) => self.member(worker)?.role == Role::Researcher,
+                None => false,
+            };
+            let (kind, says) = if researched {
+                ("ready_to_read", "Ready to read")
+            } else {
+                ("ready_to_merge", "Ready to merge")
+            };
+            let desk = self.store.add_desk(
+                kind,
+                Some(task),
+                None,
+                &format!("{says}: {}", current.title),
+                self.clock.now(),
+            )?;
+            self.emit(
+                EventKind::DeskAdded,
+                json!({ "item": desk.0, "kind": kind, "task": task.0 }),
+            )?;
+        }
         self.after_finishing(&current)?;
         Ok(())
     }
@@ -1085,7 +1098,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 self.store.set_task_status(task.id, TaskStatus::Dropped)?;
                 self.after_finishing(&task)?;
             }
-            ("ready_to_merge", "merged" | "not_now") => {}
+            ("ready_to_merge", "merged" | "not_now") | ("ready_to_read", "read" | "not_now") => {}
             _ => return Err(EngineError::Unknown("decision for this item")),
         }
         self.store.set_desk_status(item, decision)?;

@@ -578,15 +578,20 @@ if (failures.length) {
                 gate: null, why: ["<b>Fix</b> it", "Goal: Keep the home lab healthy"], thread: [{ author: "Bo", text: "On it", at: 1 }] }],
       runs: [{ id: 3, member: 2, task: 7, status: "running" }],
       desk: [{ id: 11, kind: "goal", text: "A goal: Tidy the lab" }, { id: 12, kind: "stuck", task: 7, text: "Stuck: x" },
-             { id: 13, kind: "ready_to_merge", task: 7, text: "Ready to merge: y" }] };`, context);
+             { id: 13, kind: "ready_to_merge", task: 7, text: "Ready to merge: y" },
+             { id: 14, kind: "ready_to_read", task: 7, text: "Ready to read: z" }] };`, context);
   const office = runInContext("viewHQ()", context);
   if (!office.includes("Demo · scripted team")) fail("hq: demo mode is not labelled");
   if (!office.includes('id="hq-office"')) fail("hq: the office is not drawn");
   for (const act of ["hq:decide:11:approve", "hq:decide:11:decline", "hq:decide:12:retry", "hq:decide:12:drop",
-    "hq:decide:13:merged", "hq:decide:13:not_now", "hq:stop"]) {
+    "hq:decide:13:merged", "hq:decide:13:not_now", "hq:decide:14:read", "hq:stop"]) {
     if (!office.includes(`data-act="${act}"`)) fail(`hq: the desk does not offer ${act}`);
   }
   if (office.includes("hq:decide:11:retry")) fail("hq: a goal was offered a choice for stuck work");
+  if (!office.includes("Demo: Ready to merge: y") || !office.includes("no pull request behind this")) {
+    fail("hq: a demo card does not say it is a demo");
+  }
+  if (!office.includes("nothing is spent")) fail("hq: the demo's spend line reads as real money");
   if (office.includes("<img src=x") || office.includes("<b>Fix</b>")) fail("hq: a task's text became markup");
   if (!office.includes("Goal: Keep the home lab healthy")) fail("hq: a task's chain of why is missing");
   runInContext("HQ.snap.stopped = true;", context);
