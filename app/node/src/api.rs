@@ -558,7 +558,6 @@ pub fn app(state: AppState) -> Router {
         .route("/v1/models/discover", post(discover_models))
         .route("/v1/models/test", post(test_model_connection))
         .route("/v1/model-layer/run", post(run_model_layer_now))
-        .route("/v1/transcribe", post(transcribe))
         .route("/v1/deep-ask", post(deep_ask))
         .route(
             "/v1/preferences",

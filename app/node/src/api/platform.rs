@@ -73,7 +73,6 @@ pub(super) async fn console_js() -> impl axum::response::IntoResponse {
 }
 
 pub(super) async fn health(State(state): State<AppState>) -> Json<serde_json::Value> {
-    let stt = super::ai::speech_url(state.config.as_ref()).is_some();
     // Whether a turn is being taken right now.
     //
     // The console decides whether to show a thinking bubble, and it could only ever ask
@@ -101,52 +100,7 @@ pub(super) async fn health(State(state): State<AppState>) -> Json<serde_json::Va
         "service": endora_application::platform_identity(),
         "version": endora_application::version(),
         "build": endora_application::build_id(),
-        // Whether a speech-to-text server is configured, so the console can use
-        // real transcription for push-to-talk instead of the browser's flaky one.
-        "stt": stt,
     }))
-}
-
-/// Whisper (and similar STT) hallucinate a stock phrase repeated many times when
-/// handed near-silent or non-speech audio — e.g. "Torsdagsfotografi" twenty times in
-/// a row. Real speech varies; a hallucinated loop is one or two tokens over and over.
-/// We treat such a transcript as nothing said (so conversation mode keeps listening
-/// and push-to-talk inserts nothing) rather than send it as if the person spoke it.
-pub(super) fn looks_like_stt_hallucination(text: &str) -> bool {
-    let words: Vec<&str> = text.split_whitespace().collect();
-    if words.len() < 6 {
-        return false;
-    }
-    let distinct: std::collections::HashSet<String> =
-        words.iter().map(|w| w.to_lowercase()).collect();
-    (distinct.len() as f64) / (words.len() as f64) <= 0.34
-}
-
-/// Transcribes a recording (raw audio bytes in the body) via the configured
-/// speech-to-text server (`ENDORA_STT_URL`, OpenAI-compatible). The node proxies
-/// it so the STT host is never exposed to the page; 503 when none is configured.
-pub(super) async fn transcribe(
-    State(state): State<AppState>,
-    body: axum::body::Bytes,
-) -> Result<Json<serde_json::Value>, ApiError> {
-    // The server chosen on the AI screen, or the deployment's.
-    let Some(url) = super::ai::speech_url(state.config.as_ref()) else {
-        return Err(ApiError(AppError::Model {
-            message: "no speech-to-text server configured".to_owned(),
-        }));
-    };
-    let text = blocking(move || {
-        endora_infrastructure::transcribe_audio(url.trim(), &body)
-            .map_err(|e| AppError::Model { message: e })
-    })
-    .await?;
-    // Drop the classic silence-hallucination so it never reaches the conversation.
-    let text = if looks_like_stt_hallucination(&text) {
-        String::new()
-    } else {
-        text
-    };
-    Ok(Json(json!({ "text": text })))
 }
 
 #[derive(Deserialize)]
