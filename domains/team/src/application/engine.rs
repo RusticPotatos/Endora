@@ -178,9 +178,18 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     ///
     /// # Errors
     /// [`EngineError::Store`] if the store fails.
-    pub fn hire(&self, name: &str, role: Role, share_percent: u8, slots: u8) -> Done<MemberId> {
+    pub fn hire(
+        &self,
+        name: &str,
+        role: Role,
+        share_percent: u8,
+        slots: u8,
+        look: u8,
+    ) -> Done<MemberId> {
         let _held = self.held();
-        Ok(self.store.add_member(name, role, share_percent, slots)?)
+        Ok(self
+            .store
+            .add_member(name, role, share_percent, slots, look)?)
     }
 
     /// Pauses or resumes a member: a paused member's wakes are turned away.
@@ -206,9 +215,13 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         };
         let goal = self.store.add_goal(title, reason, status, None)?;
         if proposed {
-            let desk =
-                self.store
-                    .add_desk("goal", None, &format!("A goal: {title}"), self.clock.now())?;
+            let desk = self.store.add_desk(
+                "goal",
+                None,
+                Some(goal),
+                &format!("A goal: {title}"),
+                self.clock.now(),
+            )?;
             self.emit(
                 EventKind::GoalProposed,
                 json!({ "goal": goal.0, "title": title }),
@@ -573,6 +586,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         let desk = self.store.add_desk(
             "ready_to_merge",
             Some(task),
+            None,
             &format!("Ready to merge: {}", current.title),
             self.clock.now(),
         )?;
@@ -912,6 +926,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             let desk = self.store.add_desk(
                 "stuck",
                 Some(task.id),
+                None,
                 &format!(
                     "Stuck: {}. It was nudged once and did not move.",
                     task.title
@@ -1014,6 +1029,161 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             started += 1;
         }
         Ok(started)
+    }
+
+    // ---- the owner's desk ---------------------------------------------------------------
+
+    /// The owner decides an item on their desk. A proposed goal is `approve`d (it becomes
+    /// active) or `decline`d (dropped); stuck work is tried again (`retry`: back to its
+    /// assignee, with a fresh nudge) or `drop`ped; finished work is `merged` or left
+    /// `not_now`. Each item is decided once.
+    ///
+    /// # Errors
+    /// [`EngineError::Unknown`] for an item that does not exist or a decision it does not
+    /// take; [`EngineError::Refused`] with [`Refusal::Finished`] if it is already decided.
+    pub fn decide(&self, item: crate::domain::DeskId, decision: &str) -> Done<()> {
+        let _held = self.held();
+        let found = self
+            .store
+            .desk()?
+            .into_iter()
+            .find(|d| d.id == item)
+            .ok_or(EngineError::Unknown("desk item"))?;
+        if found.status != "waiting" {
+            return Err(EngineError::Refused(Refusal::Finished));
+        }
+        match (found.kind.as_str(), decision) {
+            ("goal", "approve" | "decline") => {
+                let goal = found
+                    .goal
+                    .and_then(|id| self.store.goal(id).transpose())
+                    .transpose()?
+                    .ok_or(EngineError::Unknown("goal"))?;
+                let status = if decision == "approve" {
+                    GoalStatus::Active
+                } else {
+                    GoalStatus::Dropped
+                };
+                self.store.set_goal_status(goal.id, status)?;
+                self.emit(
+                    EventKind::GoalChanged,
+                    json!({ "goal": goal.id.0, "title": goal.title, "status": status.name() }),
+                )?;
+            }
+            ("stuck", "retry") => {
+                let task = self.task(found.task.ok_or(EngineError::Unknown("task"))?)?;
+                let to = task.owner.or(task.assignee);
+                self.store.release(task.id)?;
+                self.store.set_task_status(task.id, TaskStatus::Todo)?;
+                self.store.set_nudged(task.id, false)?;
+                if let Some(member) = to {
+                    self.wake_held_lock(member, Some(task.id), WakeReason::ProposalDecided)?;
+                }
+            }
+            ("stuck", "drop") => {
+                let task = self.task(found.task.ok_or(EngineError::Unknown("task"))?)?;
+                self.store.set_task_status(task.id, TaskStatus::Dropped)?;
+                self.after_finishing(&task)?;
+            }
+            ("ready_to_merge", "merged" | "not_now") => {}
+            _ => return Err(EngineError::Unknown("decision for this item")),
+        }
+        self.store.set_desk_status(item, decision)?;
+        self.emit(
+            EventKind::DeskDecided,
+            json!({ "item": item.0, "kind": found.kind, "decision": decision }),
+        )?;
+        Ok(())
+    }
+
+    // ---- what the office shows ------------------------------------------------------------
+
+    /// Everything on screen now (spec section 12), and the id of the last event in it: the
+    /// event stream resumes after that id, so nothing is shown twice or missed.
+    ///
+    /// # Errors
+    /// [`EngineError::Store`] if the store fails.
+    pub fn snapshot(&self) -> Done<serde_json::Value> {
+        let _held = self.held();
+        let day = self.today();
+        let pool = self.settings.pool_per_month;
+        let runs: Vec<Run> = self
+            .store
+            .runs()?
+            .into_iter()
+            .filter(|r| r.status.live())
+            .collect();
+        let tasks = self.store.tasks()?;
+        let goals = self.store.goals()?;
+        let mut members = Vec::new();
+        for m in self.store.members()? {
+            members.push(json!({
+                "id": m.id.0, "name": m.name, "role": m.role.name(), "look": m.look,
+                "paused": m.paused, "slots": m.slots,
+                "per_day": money::member_a_day(pool, m.share_percent),
+                "committed": self.store.committed(Some(m.id), day)?,
+                "running": runs.iter().filter(|r| r.member == m.id && r.status == RunStatus::Running)
+                    .map(|r| json!({ "run": r.id.0, "task": r.task.map(|t| t.0) }))
+                    .collect::<Vec<_>>(),
+            }));
+        }
+        let why = |task: &Task| {
+            let mut chain = vec![task.title.clone()];
+            let mut parent = task.parent;
+            while let Some(id) = parent {
+                let Some(up) = tasks.iter().find(|t| t.id == id) else {
+                    break;
+                };
+                chain.push(up.title.clone());
+                parent = up.parent;
+            }
+            if let Some(goal) = goals.iter().find(|g| g.id == task.goal) {
+                chain.push(format!("Goal: {}", goal.title));
+            }
+            chain
+        };
+        let mut task_rows = Vec::new();
+        for t in &tasks {
+            task_rows.push(json!({
+                "id": t.id.0, "goal": t.goal.0, "parent": t.parent.map(|p| p.0), "title": t.title,
+                "description": t.description, "owner": t.owner.map(|o| o.0),
+                "assignee": t.assignee.map(|a| a.0), "status": t.status.name(),
+                "priority": t.priority.name(), "depth": t.depth,
+                "waits_on": t.waits_on.iter().map(|w| w.0).collect::<Vec<_>>(),
+                "gate": self.store.gate(t.id)?, "why": why(t),
+                "thread": self.store.thread(t.id)?.iter()
+                    .map(|p| json!({ "author": p.author, "text": p.text, "at": p.at }))
+                    .collect::<Vec<_>>(),
+            }));
+        }
+        Ok(json!({
+            "stopped": self.store.stopped()?,
+            "last_event": self.store.last_event()?,
+            "pool": { "per_day": money::pool_a_day(pool), "committed": self.store.committed(None, day)? },
+            "members": members,
+            "goals": goals.iter().map(|g| json!({
+                "id": g.id.0, "title": g.title, "reason": g.reason, "status": g.status.name(),
+                "parent": g.parent.map(|p| p.0),
+            })).collect::<Vec<_>>(),
+            "tasks": task_rows,
+            "runs": runs.iter().map(|r| json!({
+                "id": r.id.0, "member": r.member.0, "task": r.task.map(|t| t.0),
+                "status": r.status.name(), "started_at": r.started_at, "reserved": r.reserved,
+                "spent": r.spent,
+            })).collect::<Vec<_>>(),
+            "desk": self.store.desk()?.iter().filter(|d| d.status == "waiting").map(|d| json!({
+                "id": d.id.0, "kind": d.kind, "task": d.task.map(|t| t.0), "goal": d.goal.map(|g| g.0),
+                "text": d.text, "at": d.at,
+            })).collect::<Vec<_>>(),
+        }))
+    }
+
+    /// The events after `id`, for the stream.
+    ///
+    /// # Errors
+    /// [`EngineError::Store`] if the store fails.
+    pub fn events_after(&self, id: i64) -> Done<Vec<crate::domain::Event>> {
+        Ok(self.store.events_after(id)?)
     }
 
     /// Every wake, with its receipt.

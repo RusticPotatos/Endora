@@ -117,6 +117,8 @@ pub struct DeskItem {
     pub kind: String,
     /// The task it is about, if any.
     pub task: Option<TaskId>,
+    /// The goal it is about, if any.
+    pub goal: Option<GoalId>,
     /// What the owner is shown.
     pub text: String,
     /// `waiting`, or how the owner decided.
@@ -147,7 +149,14 @@ pub trait TeamStore {
     ///
     /// # Errors
     /// [`StoreError`] if the store fails.
-    fn add_member(&self, name: &str, role: Role, share_percent: u8, slots: u8) -> Stored<MemberId>;
+    fn add_member(
+        &self,
+        name: &str,
+        role: Role,
+        share_percent: u8,
+        slots: u8,
+        look: u8,
+    ) -> Stored<MemberId>;
     /// Every member, in the order they joined.
     ///
     /// # Errors
@@ -175,6 +184,11 @@ pub trait TeamStore {
     /// # Errors
     /// [`StoreError`] if the store fails.
     fn goal(&self, id: GoalId) -> Stored<Option<Goal>>;
+    /// Every goal, oldest first.
+    ///
+    /// # Errors
+    /// [`StoreError`] if the store fails.
+    fn goals(&self) -> Stored<Vec<Goal>>;
     /// Sets a goal's status.
     ///
     /// # Errors
@@ -346,13 +360,18 @@ pub trait TeamStore {
     /// # Errors
     /// [`StoreError`] if the store fails.
     fn emit(&self, at: Millis, kind: &str, data: &serde_json::Value) -> Stored<i64>;
+    /// The id of the latest event, 0 when there is none.
+    ///
+    /// # Errors
+    /// [`StoreError`] if the store fails.
+    fn last_event(&self) -> Stored<i64>;
     /// The events after `id`, oldest first.
     ///
     /// # Errors
     /// [`StoreError`] if the store fails.
     fn events_after(&self, id: i64) -> Stored<Vec<Event>>;
 
-    /// Puts something on the owner's desk.
+    /// Puts something on the owner's desk, about a task or a goal.
     ///
     /// # Errors
     /// [`StoreError`] if the store fails.
@@ -360,9 +379,15 @@ pub trait TeamStore {
         &self,
         kind: &str,
         task: Option<TaskId>,
+        goal: Option<GoalId>,
         text: &str,
         at: Millis,
     ) -> Stored<crate::domain::DeskId>;
+    /// Records how the owner decided a desk item.
+    ///
+    /// # Errors
+    /// [`StoreError`] if the store fails.
+    fn set_desk_status(&self, id: crate::domain::DeskId, status: &str) -> Stored<()>;
     /// Everything on the desk, oldest first.
     ///
     /// # Errors

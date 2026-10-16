@@ -51,9 +51,9 @@ struct Team {
 
 fn team(hq: &Hq<'_>) -> Team {
     Team {
-        lead: hq.hire("Ada", Role::Lead, 25, 2).unwrap(),
-        dev: hq.hire("Linus", Role::Developer, 40, 2).unwrap(),
-        reviewer: hq.hire("Grace", Role::Reviewer, 20, 2).unwrap(),
+        lead: hq.hire("Ada", Role::Lead, 25, 2, 0).unwrap(),
+        dev: hq.hire("Linus", Role::Developer, 40, 2, 0).unwrap(),
+        reviewer: hq.hire("Grace", Role::Reviewer, 20, 2, 0).unwrap(),
         goal: hq
             .set_goal("Ship the watch tracker", "you asked for it", Author::Owner)
             .unwrap(),
@@ -422,7 +422,7 @@ fn a_member_whose_day_is_spent_is_turned_away() {
     let hq = hq(&clock, 8);
     let t = team(&hq);
     // The researcher's day is about $0.35: one turn reserves it all.
-    let researcher = hq.hire("Marie", Role::Researcher, 15, 4).unwrap();
+    let researcher = hq.hire("Marie", Role::Researcher, 15, 4, 0).unwrap();
     let first = task_for(&hq, t.goal, Some(researcher), "Read up on straps");
     hq.tick().unwrap();
     assert_eq!(hq.store().runs().unwrap()[0].task, Some(first));
@@ -648,4 +648,113 @@ fn a_timer_wakes_the_lead_and_a_late_tick_fires_it_once() {
     );
     let wake = &hq.wakes().unwrap()[0];
     assert_eq!((wake.member, wake.reason), (t.lead, WakeReason::LeadReview));
+}
+
+#[test]
+fn the_snapshot_holds_what_is_on_screen_and_where_the_stream_resumes() {
+    let clock = hands();
+    let hq = hq(&clock, 4);
+    let t = team(&hq);
+    let parent = task_for(&hq, t.goal, Some(t.lead), "Plan the tracker");
+    let child = hq
+        .add_task(
+            Author::Member(t.lead),
+            NewTask {
+                goal: t.goal,
+                parent: Some(parent),
+                title: "Build the list".to_owned(),
+                description: String::new(),
+                assignee: Some(t.dev),
+                priority: Priority::High,
+                waits_on: Vec::new(),
+            },
+        )
+        .unwrap();
+    hq.tick().unwrap();
+    let snap = hq.snapshot().unwrap();
+    assert_eq!(snap["stopped"], false);
+    assert_eq!(snap["members"].as_array().unwrap().len(), 3);
+    assert_eq!(snap["members"][1]["per_day"], 933_333);
+    let row = snap["tasks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["id"] == child.0)
+        .unwrap()
+        .clone();
+    assert_eq!(
+        row["why"],
+        serde_json::json!([
+            "Build the list",
+            "Plan the tracker",
+            "Goal: Ship the watch tracker"
+        ])
+    );
+    assert_eq!(
+        snap["runs"].as_array().unwrap().len(),
+        2,
+        "both turns are live"
+    );
+    let last = snap["last_event"].as_i64().unwrap();
+    assert!(
+        hq.events_after(last).unwrap().is_empty(),
+        "nothing after the snapshot yet"
+    );
+    hq.post(Author::Owner, child, "How is it going?").unwrap();
+    assert_eq!(hq.events_after(last).unwrap()[0].kind, "thread.posted");
+}
+
+#[test]
+fn the_owner_decides_each_desk_item_once() {
+    let clock = hands();
+    let hq = hq(&clock, 4);
+    let t = team(&hq);
+    let proposed = hq
+        .set_goal(
+            "Tidy the home lab",
+            "containers keep restarting",
+            Author::Endora,
+        )
+        .unwrap();
+    let item = hq.store().desk().unwrap()[0].id;
+    hq.decide(item, "approve").unwrap();
+    assert_eq!(
+        hq.store().goal(proposed).unwrap().unwrap().status,
+        crate::domain::GoalStatus::Active
+    );
+    assert_eq!(
+        hq.decide(item, "approve"),
+        Err(EngineError::Refused(Refusal::Finished))
+    );
+    assert!(
+        hq.snapshot().unwrap()["desk"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+
+    // Stuck work, tried again: back to its member with a fresh nudge.
+    hq.runner().script(t.dev, Script::Succeeds);
+    let task = task_for(&hq, t.goal, None, "Pick a database");
+    hq.claim(t.dev, task).unwrap();
+    hq.tick().unwrap();
+    hq.tick().unwrap();
+    hq.tick().unwrap();
+    let stuck = hq.store().desk().unwrap().pop().unwrap();
+    assert_eq!(stuck.kind, "stuck");
+    assert_eq!(
+        hq.decide(stuck.id, "approve"),
+        Err(EngineError::Unknown("decision for this item"))
+    );
+    hq.decide(stuck.id, "retry").unwrap();
+    let now = hq.store().task(task).unwrap().unwrap();
+    assert_eq!(
+        (now.status, now.owner, now.nudged),
+        (TaskStatus::Todo, None, false)
+    );
+    let wake = hq.wakes().unwrap().pop().unwrap();
+    assert_eq!(
+        (wake.member, wake.reason),
+        (t.dev, WakeReason::ProposalDecided)
+    );
 }

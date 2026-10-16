@@ -105,6 +105,8 @@ pub struct Member {
     pub share_percent: u8,
     /// How many tasks it may work at once.
     pub slots: u8,
+    /// Which character it looks like in the office.
+    pub look: u8,
     /// Whether the owner has paused it.
     pub paused: bool,
 }
@@ -420,6 +422,7 @@ mod tests {
             role,
             share_percent: 25,
             slots: 2,
+            look: 0,
             paused: false,
         }
     }
