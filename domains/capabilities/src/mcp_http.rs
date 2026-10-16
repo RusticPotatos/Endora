@@ -35,9 +35,11 @@ const PROTOCOL_VERSION: &str = "2024-11-05";
 /// upstream, but a turn must not hang indefinitely — ADR 0054 health).
 const TIMEOUT: Duration = Duration::from_secs(30);
 
-/// How long an event stream may take to connect and to answer with its headers. The
-/// stream itself may then stay open as long as it likes.
-const STREAM_OPENS_WITHIN: Duration = Duration::from_secs(10);
+/// How long an event stream may take to connect and to answer with its headers: the same
+/// bound as every other call. Measured on the house's Home Assistant just after a restart: 13.6 s
+/// to refuse a request, so ten was too tight. The stream itself may then stay open as long as
+/// it likes.
+const STREAM_OPENS_WITHIN: Duration = TIMEOUT;
 /// Cap on a single response body.
 const MAX_BYTES: u64 = 4 * 1024 * 1024;
 
@@ -400,13 +402,18 @@ fn result_of(msg: &Value) -> Result<Value, String> {
 /// Returns `None` when the endpoint isn't an event stream (so the caller uses the
 /// streamable POST transport instead) or the handshake stalls.
 fn open_sse(url: &str, auth: &str) -> Option<SseConn> {
+    open_sse_within(url, auth, STREAM_OPENS_WITHIN)
+}
+
+/// [`open_sse`], with the bound on connecting and on the reply's headers given.
+fn open_sse_within(url: &str, auth: &str, within: Duration) -> Option<SseConn> {
     // A dedicated agent with NO global timeout — the GET is a long-lived stream. Connecting
     // and the reply's headers are bounded, though: a server that accepts the connection and
     // never answers (observed: a hung Home Assistant) held this call, and with it the node's
     // whole start-up, forever.
     let agent: ureq::Agent = ureq::Agent::config_builder()
-        .timeout_connect(Some(STREAM_OPENS_WITHIN))
-        .timeout_recv_response(Some(STREAM_OPENS_WITHIN))
+        .timeout_connect(Some(within))
+        .timeout_recv_response(Some(within))
         .build()
         .into();
     let mut builder = agent.get(url).header("accept", "text/event-stream");
@@ -578,9 +585,10 @@ mod tests {
             drop(socket);
         });
         let started = std::time::Instant::now();
-        assert!(super::open_sse(&url, "").is_none());
+        let within = std::time::Duration::from_secs(1);
+        assert!(super::open_sse_within(&url, "", within).is_none());
         assert!(
-            started.elapsed() < super::STREAM_OPENS_WITHIN + std::time::Duration::from_secs(5),
+            started.elapsed() < within + std::time::Duration::from_secs(5),
             "took {:?}",
             started.elapsed()
         );
