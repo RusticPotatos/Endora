@@ -355,7 +355,11 @@ pub fn migrate(db: &Db) -> Result<(), RepositoryError> {
                 read_ok       INTEGER
             ) STRICT;
             CREATE INDEX IF NOT EXISTS mail_messages_untriaged
-                ON mail_messages (triaged_ms, at_ms);",
+                ON mail_messages (triaged_ms, at_ms);
+            CREATE TABLE IF NOT EXISTS mail_meta (
+                key   TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            ) STRICT;",
         )
         .map_err(backend)?;
     Ok(())
@@ -522,6 +526,7 @@ impl MailStore {
             "money_due": d.flags.money_due,
             "amount": d.flags.amount,
             "account_change": d.flags.account_change,
+            "one_time_code": d.flags.one_time_code,
             "order_problem": d.flags.order_problem,
             "needs_reply": d.flags.needs_reply,
             "dates": d.flags.dates.iter().map(|(date, what)| serde_json::json!({"date": date, "what": what})).collect::<Vec<_>>(),
@@ -563,6 +568,59 @@ impl MailStore {
             )
             .map_err(backend)?;
         Ok(())
+    }
+
+    /// A small stored fact about the reading, such as which version of the reader's
+    /// instructions the digest was made with.
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if the backend fails.
+    pub fn meta(&self, key: &str) -> Result<Option<String>, RepositoryError> {
+        use rusqlite::OptionalExtension;
+        self.db
+            .lock()?
+            .query_row(
+                "SELECT value FROM mail_meta WHERE key = ?1",
+                params![key],
+                |r| r.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(backend)
+    }
+
+    /// Stores one of those facts.
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if the backend fails.
+    pub fn set_meta(&self, key: &str, value: &str) -> Result<(), RepositoryError> {
+        self.db
+            .lock()?
+            .execute(
+                "INSERT INTO mail_meta (key, value) VALUES (?1, ?2)
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                params![key, value],
+            )
+            .map_err(backend)?;
+        Ok(())
+    }
+
+    /// Forgets what was made of mail sent at or after `since_ms`, so it is read again. The
+    /// index (who, to whom, which thread) is kept; only the reading goes.
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if the backend fails.
+    pub fn forget_readings_since(&self, since_ms: i64) -> Result<usize, RepositoryError> {
+        let changed = self
+            .db
+            .lock()?
+            .execute(
+                "UPDATE mail_messages SET triaged_ms = NULL, from_name = NULL, bucket = NULL,
+                 reasons = NULL, sentence = NULL, flags = NULL, read_ok = NULL
+                 WHERE at_ms >= ?1 AND triaged_ms IS NOT NULL",
+                params![since_ms],
+            )
+            .map_err(backend)?;
+        Ok(changed)
     }
 
     /// What was made of the mail sent at or after `since_ms`, newest first.
@@ -615,6 +673,7 @@ impl MailStore {
                     money_due: f["money_due"].as_bool().unwrap_or(false),
                     amount: f["amount"].as_str().map(str::to_owned),
                     account_change: f["account_change"].as_bool().unwrap_or(false),
+                    one_time_code: f["one_time_code"].as_bool().unwrap_or(false),
                     order_problem: f["order_problem"].as_bool().unwrap_or(false),
                     needs_reply: f["needs_reply"].as_bool().unwrap_or(false),
                     dates: f["dates"]

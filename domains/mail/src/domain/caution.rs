@@ -6,6 +6,9 @@
 
 use super::{Mailbox, Message, Verdict, domain_of, registered_domain};
 
+/// Messages from a domain after which it is an established sender, not a possible forger.
+const ESTABLISHED_AFTER: usize = 2;
+
 /// One reason for caution.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Caution {
@@ -13,8 +16,12 @@ pub enum Caution {
     SenderChecksFailed,
     /// Neither DKIM nor DMARC passed: nothing vouches for the sender.
     SenderNotVouchedFor,
-    /// Replies would go to a different domain from the sender's.
+    /// Replies would go to a different domain from the sender's, from a new sender or one DMARC
+    /// does not vouch for.
     RepliesGoElsewhere(String),
+    /// Replies would go elsewhere, from an established sender DMARC vouches for: worth knowing,
+    /// and ordinary for large senders.
+    RepliesElsewhereKnownSender(String),
     /// The sender's domain is a near miss for one the owner already hears from.
     LooksLike(String),
     /// The first message ever seen from this domain.
@@ -42,7 +49,9 @@ impl Caution {
         match self {
             Self::SenderChecksFailed => "the sender's checks failed".to_owned(),
             Self::SenderNotVouchedFor => "nothing vouches for the sender".to_owned(),
-            Self::RepliesGoElsewhere(d) => format!("replies go to {d}"),
+            Self::RepliesGoElsewhere(d) | Self::RepliesElsewhereKnownSender(d) => {
+                format!("replies go to {d}")
+            }
             Self::LooksLike(d) => format!("the sender's domain looks like {d} but is not"),
             Self::NewSender => "the first message from this sender".to_owned(),
             Self::LinksGoElsewhere(d) => format!("links go to {}", d.join(", ")),
@@ -67,20 +76,28 @@ pub fn cautions(m: &Message, mailbox: &Mailbox) -> Vec<Caution> {
     }
     let from_domain = domain_of(&m.from_address);
     let from_registered = registered_domain(&from_domain);
+    let heard_from = mailbox.domains.get(&from_domain).map_or(0, |(_, n)| *n);
+    // Tuned on the first live run: established senders that DMARC vouches for took replies at
+    // another of their own domains, and a sender heard from many times was called a lookalike
+    // of another. Both are doubt only where a forger could stand: a new sender, or one DMARC
+    // does not vouch for.
+    let could_be_forged = a.dmarc != Verdict::Pass || heard_from <= ESTABLISHED_AFTER;
     if let Some(reply_to) = &m.reply_to {
         let reply_registered = registered_domain(&domain_of(reply_to));
         if reply_registered != from_registered {
-            out.push(Caution::RepliesGoElsewhere(reply_registered));
+            out.push(if could_be_forged {
+                Caution::RepliesGoElsewhere(reply_registered)
+            } else {
+                Caution::RepliesElsewhereKnownSender(reply_registered)
+            });
         }
     }
-    if let Some(known) = near_miss(&from_registered, mailbox) {
-        out.push(Caution::LooksLike(known));
+    if heard_from <= ESTABLISHED_AFTER {
+        if let Some(known) = near_miss(&from_registered, mailbox) {
+            out.push(Caution::LooksLike(known));
+        }
     }
-    if mailbox
-        .domains
-        .get(&from_domain)
-        .is_none_or(|(_, n)| *n <= 1)
-    {
+    if heard_from <= 1 {
         out.push(Caution::NewSender);
     }
     let mut elsewhere: Vec<String> = m
@@ -121,8 +138,15 @@ fn near_miss(registered: &str, mailbox: &Mailbox) -> Option<String> {
     known.into_iter().filter(|k| k != registered).find(|k| {
         let theirs = label(k);
         (registered.starts_with("xn--") && !theirs.is_empty())
-            || (theirs.len() >= 4 && mine != theirs && edits(&mine, &theirs) <= 2)
+            || (theirs.len() >= 4 && mine != theirs && edits(&mine, &theirs) <= allowed(&theirs))
     })
+}
+
+/// How far off a name may be and still be a near miss: one letter for a short name, where two
+/// letters of difference is simply another name (live, a short name was matched against
+/// several unrelated ones), two for a longer one.
+fn allowed(name: &str) -> usize {
+    if name.chars().count() <= 6 { 1 } else { 2 }
 }
 
 /// Levenshtein distance, which is all a near miss needs.

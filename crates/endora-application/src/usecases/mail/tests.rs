@@ -606,3 +606,57 @@ fn a_date_from_a_message_that_may_not_be_genuine_is_never_confirmed() {
         "two forged messages confirmed each other: {upcoming:?}"
     );
 }
+
+#[test]
+fn when_the_readers_instructions_change_the_recent_mail_is_read_again_once() {
+    let f = Fixture::new("version").with_history();
+    f.put(
+        "bill",
+        &email(
+            "Example Dental <billing@example.net>",
+            "john@example.com",
+            NOW - DAY,
+            "<bill@example.net>",
+            VOUCHED,
+            "pay",
+        ),
+    );
+    index_new_mail(&f.copy, &f.store).unwrap();
+    let reader = Reader::says(BILL_REPLY);
+    assert!(
+        read_one(&f.copy, &f.store, &reader, None, &Clock(NOW))
+            .unwrap()
+            .is_some()
+    );
+    assert!(
+        read_one(&f.copy, &f.store, &reader, None, &Clock(NOW))
+            .unwrap()
+            .is_none(),
+        "all read"
+    );
+    // A digest made under older instructions.
+    f.store.set_meta("reader_version", "1").unwrap();
+    assert!(
+        read_one(&f.copy, &f.store, &reader, None, &Clock(NOW))
+            .unwrap()
+            .is_some(),
+        "read again under the new instructions"
+    );
+    assert!(
+        read_one(&f.copy, &f.store, &reader, None, &Clock(NOW))
+            .unwrap()
+            .is_none(),
+        "and only once"
+    );
+    assert_eq!(f.store.known_keys().unwrap().len(), 5, "the index was kept");
+    assert!(
+        reader
+            .seen
+            .borrow()
+            .last()
+            .unwrap()
+            .0
+            .contains("one_time_code"),
+        "the new instructions were the ones used"
+    );
+}

@@ -11,6 +11,11 @@ use endora_mail::{
 /// used only for lookups.
 pub const READ_BACK_MS: i64 = 90 * 24 * 60 * 60 * 1000;
 
+/// Which version of the reader's instructions the digest is made with. When the instructions
+/// change, the last [`READ_BACK_MS`] are read again under the new ones, so the digest never
+/// mixes two sets of rules. Version 2: one-time codes are told apart from account changes.
+pub const READER_VERSION: &str = "2";
+
 /// Most messages indexed in one pass, so a first look at a large copy is spread out.
 pub const MOST_INDEXED_PER_PASS: usize = 2000;
 
@@ -34,8 +39,10 @@ fn instructions(today: &str) -> String {
          anything, it asks of the owner.\n\
          \"money_due\": true only if it asks the owner to pay something.\n\
          \"amount\": the amount to pay as a number, or null.\n\
-         \"account_change\": true only if it reports a sign-in, a password or security change, or \
-         a code.\n\
+         \"account_change\": true only if it reports a new sign-in, a password change, or a change \
+         to security settings.\n\
+         \"one_time_code\": true if it only delivers a code or a link for a sign-in or \
+         verification the owner would have just started.\n\
          \"order_problem\": true only if an order or delivery went wrong.\n\
          \"needs_reply\": true only if a person asks the owner something or is waiting on them.\n\
          \"dates\": up to 3 specific dates it mentions for something that will happen or is due, \
@@ -97,6 +104,10 @@ pub fn read_one(
     clock: &impl Clock,
 ) -> Result<Option<Digest>, AppError> {
     let now = clock.now().unix_millis();
+    if store.meta("reader_version")?.as_deref() != Some(READER_VERSION) {
+        store.forget_readings_since(now - READ_BACK_MS)?;
+        store.set_meta("reader_version", READER_VERSION)?;
+    }
     let Some(key) = store
         .unread_since(now - READ_BACK_MS, 1)?
         .into_iter()

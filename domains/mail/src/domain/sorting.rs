@@ -96,6 +96,8 @@ pub struct Flags {
     pub amount: Option<String>,
     /// It is about the account itself: a new sign-in, a password or security change.
     pub account_change: bool,
+    /// It only delivers a code or a link for a sign-in the owner just started: routine.
+    pub one_time_code: bool,
     /// Something went wrong with an order or delivery.
     pub order_problem: bool,
     /// It asks the owner something, or waits on them.
@@ -216,7 +218,9 @@ pub fn why_important(
     if bucket == Bucket::Money && flags.money_due {
         reasons.push(Reason::MoneyDue);
     }
-    if bucket == Bucket::Security && flags.account_change {
+    // A code the owner just asked for is routine: on the first live run, 16 of 27 security
+    // messages were codes, and calling each one important buried the one that was not.
+    if bucket == Bucket::Security && flags.account_change && !flags.one_time_code {
         reasons.push(Reason::AccountSecurity);
     }
     if bucket == Bucket::Appointments {
@@ -293,6 +297,7 @@ pub fn read_reply(raw: &str, today_days: i64) -> Option<(Option<Bucket>, Option<
             money_due: yes("money_due"),
             amount,
             account_change: yes("account_change"),
+            one_time_code: yes("one_time_code"),
             order_problem: yes("order_problem"),
             needs_reply: yes("needs_reply"),
             dates,

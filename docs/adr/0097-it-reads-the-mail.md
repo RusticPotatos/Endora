@@ -81,6 +81,13 @@ a person the owner writes to often.
   or more messages say it, or an earlier calendar entry shares a word with it; one already on
   the calendar that day is not repeated, and a message that may not be genuine contributes
   nothing. The rest are counted as held back.
+- **Tuned on the first 138 real messages.** 21 were "important account security", 16 of them
+  codes the owner had asked for: the reader now says when a message only delivers a code, and
+  that is not important. A reply-to elsewhere and a lookalike domain are doubt only where a
+  forger could stand (a new sender, or one DMARC does not vouch for); two established senders
+  had been doubted for one and a sender heard from many times for the other, and a short name
+  now has to be within one letter to count as a lookalike. When the reader's instructions
+  change, the last 90 days are read again under the new ones (`READER_VERSION`).
 - **The ping is nameless.** For fresh mail (under two hours old) from someone the owner writes
   to, chat says "Someone you write to sent mail that may need you", at most twice a day. It
   names nobody and quotes nothing, because chat is history the deep model may later see, and

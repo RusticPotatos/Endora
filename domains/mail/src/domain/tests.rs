@@ -473,12 +473,13 @@ fn a_failed_check_or_none_at_all_is_doubt() {
 
 #[test]
 fn replies_that_go_somewhere_else_are_doubt() {
-    let mut m = vouched(message("billing@example.net"));
+    // A sender the mailbox has not heard from before (example.net is established here).
+    let mut m = vouched(message("billing@example.com"));
     m.reply_to = Some("pay@example.org".to_owned());
     assert!(
         cautions(&m, &mailbox()).contains(&Caution::RepliesGoElsewhere("example.org".to_owned()))
     );
-    m.reply_to = Some("help@example.net".to_owned());
+    m.reply_to = Some("help@example.com".to_owned());
     assert!(
         !cautions(&m, &mailbox())
             .iter()
@@ -691,4 +692,126 @@ fn an_appointment_months_before_a_bill_is_not_the_one_it_is_for() {
         ),
         None
     );
+}
+
+// ---- tuned on the first live run ----
+
+#[test]
+fn replies_elsewhere_from_an_established_sender_dmarc_vouches_for_is_not_doubt() {
+    // Live: two large senders took replies at another of their own domains.
+    let mut all: Vec<Headline> = (0..5)
+        .map(|n| {
+            headline(
+                "alerts@example.net",
+                &[OWNER],
+                &format!("<e{n}>"),
+                &[],
+                Some(OWNER),
+            )
+        })
+        .collect();
+    all.extend((0..3).map(|n| {
+        headline(
+            "x@example.org",
+            &[OWNER],
+            &format!("<x{n}>"),
+            &[],
+            Some(OWNER),
+        )
+    }));
+    let mb = Mailbox::learn(&all);
+    let mut m = vouched(message("alerts@example.net"));
+    m.reply_to = Some("help@example.com".to_owned());
+    let found = cautions(&m, &mb);
+    assert!(
+        found
+            .iter()
+            .any(|c| matches!(c, Caution::RepliesElsewhereKnownSender(_))),
+        "still recorded, as something to know"
+    );
+    assert!(found.iter().all(|c| !c.serious()), "{found:?}");
+    // From a new sender, or one DMARC does not vouch for, it is doubt.
+    let mut new = vouched(message("alerts@example.com"));
+    new.reply_to = Some("help@example.org".to_owned());
+    assert!(cautions(&new, &mb).iter().any(Caution::serious));
+}
+
+#[test]
+fn a_short_name_one_letter_off_from_a_new_sender_is_a_lookalike_and_an_established_one_is_not() {
+    let mut all: Vec<Headline> = (0..5)
+        .map(|n| {
+            headline(
+                &format!("hi@{}", "july.example"),
+                &[OWNER],
+                &format!("<j{n}>"),
+                &[],
+                Some(OWNER),
+            )
+        })
+        .collect();
+    all.extend((0..4).map(|n| {
+        headline(
+            &format!("hi@{}", "jury.example"),
+            &[OWNER],
+            &format!("<r{n}>"),
+            &[],
+            Some(OWNER),
+        )
+    }));
+    all.extend((0..3).map(|n| {
+        headline(
+            "x@example.org",
+            &[OWNER],
+            &format!("<x{n}>"),
+            &[],
+            Some(OWNER),
+        )
+    }));
+    let mb = Mailbox::learn(&all);
+    let established = vouched(message(&format!("hi@{}", "jury.example")));
+    assert!(
+        !cautions(&established, &mb)
+            .iter()
+            .any(|c| matches!(c, Caution::LooksLike(_))),
+        "a sender heard from four times is not a lookalike of anyone"
+    );
+    let new_and_close = vouched(message(&format!("hi@{}", "jula.example")));
+    assert!(
+        cautions(&new_and_close, &mb)
+            .iter()
+            .any(|c| matches!(c, Caution::LooksLike(_)))
+    );
+    let new_and_two_off = vouched(message(&format!("hi@{}", "jyla.example")));
+    assert!(
+        !cautions(&new_and_two_off, &mb)
+            .iter()
+            .any(|c| matches!(c, Caution::LooksLike(_))),
+        "two letters off a four-letter name is just a different name"
+    );
+}
+
+#[test]
+fn a_one_time_code_is_not_important_and_an_unexpected_sign_in_is() {
+    let m = message("security@example.net");
+    let mb = mailbox();
+    let code = Flags {
+        account_change: true,
+        one_time_code: true,
+        ..Flags::default()
+    };
+    assert!(why_important(&m, &mb, Bucket::Security, &code, 0).is_empty());
+    let sign_in = Flags {
+        account_change: true,
+        ..Flags::default()
+    };
+    assert_eq!(
+        why_important(&m, &mb, Bucket::Security, &sign_in, 0),
+        [Reason::AccountSecurity]
+    );
+    let (.., f) = read_reply(
+        r#"{"bucket":"security","account_change":true,"one_time_code":true}"#,
+        TODAY,
+    )
+    .unwrap();
+    assert!(f.one_time_code);
 }
