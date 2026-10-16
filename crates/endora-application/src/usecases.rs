@@ -157,6 +157,9 @@ pub use proactive::*;
 mod mail;
 pub use mail::*;
 
+mod agenda;
+pub use agenda::*;
+
 mod clock;
 pub use clock::*;
 

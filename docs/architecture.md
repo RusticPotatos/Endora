@@ -61,6 +61,7 @@ domains/     one crate per bounded context, each layered internally:
   conversation     the chat model + repository
   scheduling       the daily brief's cadence
   team             Endora HQ's team core: goals, tasks, wakes, runs, the tick, the ledger
+  agenda           the agenda loop: signals become items at four levels, restarts, taught rules
 shared/      kernel (ids, time, errors, AutonomyLevel, Reversibility),
              persistence (Db handle)
 ```
@@ -184,6 +185,7 @@ domains/
   scheduling/          # Proactive cadences
   platform/            # Audit trail + event log
   team/                # Endora HQ: its own store and engine, no dependency on the node
+  agenda/              # The agenda loop (ADR 0103): signals, items, restarts, taught rules
 shared/
   kernel/              # Ids, time, errors, AutonomyLevel, Reversibility — pure
   persistence/         # The shared SQLite handle

@@ -16,6 +16,7 @@ endora-understanding = { path = "../../domains/understanding" }
 endora-conversation = { path = "../../domains/conversation" }
 endora-scheduling = { path = "../../domains/scheduling" }
 endora-mail = { path = "../../domains/mail" }
+endora-agenda = { path = "../../domains/agenda" }
 # The standing-order brief (ADR 0074) builds tool arguments here — hand-formatted
 # JSON would be an escaping bug the first time a place name carries a quote.
 serde_json = "1.0.150"

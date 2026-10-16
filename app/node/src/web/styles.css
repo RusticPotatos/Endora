@@ -410,3 +410,17 @@
   .hq-legend span::before { content: ""; display: inline-block; width: 9px; height: 9px; margin-right: 5px; border-radius: 2px; background: var(--c); vertical-align: -1px; }
   .hq-note { color: var(--hq-muted); font-size: 12px; max-width: 80ch; margin: 8px 0 0; }
   @media (prefers-reduced-motion: reduce) { .hq .hq-btn:active { transform: none; } }
+
+  /* ---- The agenda (ADR 0103): the Now line and what is pinned above the chat ------------- */
+  .chat-top { flex: none; max-height: 42vh; overflow-y: auto; padding: 8px 16px 0; }
+  .now-line {
+    display: flex; align-items: center; gap: 8px; width: 100%; text-align: left;
+    background: none; border: 0; box-shadow: none; padding: 4px 2px; cursor: pointer;
+    font-size: 13px; color: var(--muted);
+  }
+  .now-line b { color: var(--ink); font-weight: 600; }
+  .now-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--ok); flex: none;
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--ok) 18%, transparent); }
+  .card.pinned { margin: 6px 0; border-left: 3px solid var(--warn); }
+  .card.pinned.urgent { border-left-color: var(--bad); }
+  .pinned-acts { gap: 6px; justify-content: flex-end; margin-top: 6px; flex-wrap: wrap; }

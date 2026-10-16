@@ -189,7 +189,7 @@ pub(super) async fn brief(
     let ids = state.ids.clone();
     let clock = state.clock.clone();
     let capabilities = state.capabilities.clone();
-    let mail_lines = super::workers::mail_brief_lines(&state);
+    let mail_lines = super::workers::brief_lines(&state);
     let butler = state.butler.clone();
     let mcp = mcp_snapshot(&state);
     let result = blocking(move || {
