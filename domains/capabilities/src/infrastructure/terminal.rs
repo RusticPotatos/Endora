@@ -1030,6 +1030,41 @@ const OVERSEERR_SETTINGS: &[super::SettingSpec] = &[
         false,
     ),
 ];
+const PIHOLE_SETTINGS: &[super::SettingSpec] = &[
+    field(
+        "origin",
+        "Pi-hole address, e.g. http://192.168.1.10",
+        false,
+        false,
+    ),
+    field(
+        "password",
+        "Pi-hole app password (Settings > Web interface / API > Configure app password)",
+        true,
+        false,
+    ),
+];
+const UNIFI_SETTINGS: &[super::SettingSpec] = &[
+    field(
+        "origin",
+        "UniFi Network address, e.g. https://192.168.1.10:8443",
+        false,
+        false,
+    ),
+    field(
+        "username",
+        "A View Only local admin's username",
+        false,
+        false,
+    ),
+    field("password", "That admin's password", true, false),
+    field(
+        "site",
+        "Site name (blank for the default site)",
+        false,
+        true,
+    ),
+];
 const PORTAINER_SETTINGS: &[super::SettingSpec] = &[
     field(
         "origin",
@@ -1112,6 +1147,50 @@ pub fn metric_queries(host: &str) -> Result<Vec<(&'static str, String)>, &'stati
     ])
 }
 
+/// Pi-hole v6's settings test: exchanges the app password for a session, then gives the
+/// session back, since Pi-hole allows only a few at once. Reports a category, never what
+/// Pi-hole said or the password.
+fn pihole_signs_in(origin: &str, password: &str) -> Result<(), super::CapabilityError> {
+    let unavailable = |m: &str| super::CapabilityError::Unavailable(m.into());
+    if password.is_empty() {
+        return Err(unavailable("the app password is not set"));
+    }
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .timeout_global(Some(Duration::from_secs(8)))
+        .max_redirects(0)
+        .proxy(None)
+        .http_status_as_error(false)
+        .build()
+        .into();
+    let mut response = agent
+        .post(format!("{origin}/api/auth"))
+        .send_json(json!({ "password": password }))
+        .map_err(|_| unavailable("connection"))?;
+    match response.status().as_u16() {
+        200..=299 => {}
+        401 | 403 => return Err(unavailable("authentication")),
+        _ => return Err(unavailable("upstream")),
+    }
+    let mut bytes = Vec::new();
+    response
+        .body_mut()
+        .as_reader()
+        .take(16 * 1024)
+        .read_to_end(&mut bytes)
+        .map_err(|_| unavailable("protocol"))?;
+    let body: Value = serde_json::from_slice(&bytes).map_err(|_| unavailable("protocol"))?;
+    if body["session"]["valid"] != true {
+        return Err(unavailable("authentication"));
+    }
+    if let Some(sid) = body["session"]["sid"].as_str().filter(|s| !s.is_empty()) {
+        let _ = agent
+            .delete(format!("{origin}/api/auth"))
+            .header("X-FTL-SID", sid)
+            .call();
+    }
+    Ok(())
+}
+
 /// What a [`HandheldSource`] says it needs: it only holds settings.
 const SETTINGS_ONLY_NEEDS: &str = "set up here; the handheld console uses it";
 
@@ -1146,6 +1225,8 @@ pub fn handheld_sources() -> Vec<Arc<dyn super::Capability>> {
         ("homelab-sonarr", "Sonarr", "The download queue on the handheld's Overview page, and what chat reads about it.", "media", ARR_SETTINGS),
         ("homelab-radarr", "Radarr", "The download queue on the handheld's Overview page, and what chat reads about it.", "media", ARR_SETTINGS),
         ("terminal-metrics", "Prometheus", "NAS figures (load, memory, disk) on the handheld, and what chat reads about the NAS.", "information", METRICS_SETTINGS),
+        ("network-pihole", "Pi-hole", "Your network's DNS and what it blocks, for what Endora reads about the network. Only ever read: Pi-hole's app password could change settings, and Endora never does.", "information", PIHOLE_SETTINGS),
+        ("network-unifi", "UniFi", "Your network's devices and Wi-Fi, for what Endora reads about the network. Give it a View Only local admin.", "information", UNIFI_SETTINGS),
     ]
     .into_iter()
     .map(|(id, name, description, category, settings)| {
@@ -1189,6 +1270,17 @@ impl super::Capability for HandheldSource {
         }
         super::homelab::validate_origin(origin)
             .map_err(|_| unavailable("configuration: use http://host:port with no path"))?;
+        if self.id == "network-pihole" {
+            return pihole_signs_in(origin, get("password"))
+                .map(|()| json!({"ok": true, "checked": self.name}));
+        }
+        if self.id == "network-unifi" {
+            // UniFi answers only over HTTPS with a certificate it made itself, which this
+            // client does not trust yet; how it should is the owner's choice.
+            return Err(unavailable(
+                "certificate: UniFi's own certificate is not trusted yet",
+            ));
+        }
         let (path, key) = match self.id {
             "terminal-overseerr" => ("/api/v1/auth/me".to_owned(), get("api_key")),
             "terminal-portainer" => ("/api/endpoints".to_owned(), get("api_key")),

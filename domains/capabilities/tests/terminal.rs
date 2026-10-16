@@ -415,6 +415,114 @@ fn the_settings_test_button_checks_the_service_and_never_echoes_the_key() {
     );
 }
 
+/// A service answering several requests in turn; returns what each one asked, lowercased.
+fn fake_answering(
+    answers: Vec<(&'static str, &'static str)>,
+) -> (String, std::thread::JoinHandle<Vec<String>>) {
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let origin = format!("http://{}", listener.local_addr().unwrap());
+    let thread = std::thread::spawn(move || {
+        let mut asked = Vec::new();
+        for (status, body) in answers {
+            let (mut socket, _) = listener.accept().unwrap();
+            // The headers, then as much body as they announce, however the packets fall.
+            let mut data = Vec::new();
+            let mut chunk = [0u8; 4096];
+            loop {
+                let n = socket.read(&mut chunk).unwrap();
+                data.extend_from_slice(&chunk[..n]);
+                let text = String::from_utf8_lossy(&data).to_lowercase();
+                let Some(end) = text.find("\r\n\r\n") else {
+                    continue;
+                };
+                let length = text
+                    .lines()
+                    .find_map(|l| l.strip_prefix("content-length: "))
+                    .and_then(|v| v.trim().parse::<usize>().ok())
+                    .unwrap_or(0);
+                if n == 0 || data.len() >= end + 4 + length {
+                    break;
+                }
+            }
+            asked.push(String::from_utf8_lossy(&data).to_lowercase());
+            write!(
+                socket,
+                "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            )
+            .unwrap();
+        }
+        asked
+    });
+    (origin, thread)
+}
+
+#[test]
+fn the_pihole_test_signs_in_with_the_app_password_and_signs_out_again() {
+    use endora_capabilities::infrastructure::default_capabilities;
+    let all = default_capabilities();
+    let pihole = all
+        .iter()
+        .find(|c| c.info().id == "network-pihole")
+        .unwrap()
+        .clone();
+    let settings = |origin: &str| -> std::collections::BTreeMap<String, String> {
+        [("origin", origin), ("password", "fictional-app-password")]
+            .iter()
+            .map(|(k, v)| ((*k).into(), (*v).into()))
+            .collect()
+    };
+    let (origin, thread) = fake_answering(vec![
+        (
+            "200 OK",
+            r#"{"session":{"valid":true,"sid":"fictional-sid"}}"#,
+        ),
+        ("200 OK", ""),
+    ]);
+    let ok = pihole.invoke(&json!({}), &settings(&origin)).unwrap();
+    assert_eq!(ok["ok"], true);
+    assert!(!ok.to_string().contains("fictional"));
+    let asked = thread.join().unwrap();
+    assert!(asked[0].starts_with("post /api/auth ") && asked[0].contains("fictional-app-password"));
+    // Pi-hole allows only a few sessions at once: the one the test made is given back.
+    assert!(
+        asked[1].starts_with("delete /api/auth ") && asked[1].contains("x-ftl-sid: fictional-sid")
+    );
+    // A wrong password is reported as a category.
+    let (origin, thread) = fake_answering(vec![(
+        "401 Unauthorized",
+        r#"{"session":{"valid":false},"error":"secret upstream detail"}"#,
+    )]);
+    let err = pihole
+        .invoke(&json!({}), &settings(&origin))
+        .unwrap_err()
+        .to_string();
+    assert!(
+        err.contains("authentication") && !err.contains("secret"),
+        "{err}"
+    );
+    thread.join().unwrap();
+    // The model is never offered it: it only holds settings.
+    assert!(!pihole.info().configured);
+    let unifi = all.iter().find(|c| c.info().id == "network-unifi").unwrap();
+    let keys: Vec<_> = unifi
+        .info()
+        .settings
+        .iter()
+        .map(|s| (s.key, s.secret))
+        .collect();
+    assert_eq!(
+        keys,
+        [
+            ("origin", false),
+            ("username", false),
+            ("password", true),
+            ("site", false)
+        ]
+    );
+}
+
 #[test]
 fn media_requests_show_titles_and_years_not_database_numbers() {
     use endora_capabilities::application::HomeConsole;
