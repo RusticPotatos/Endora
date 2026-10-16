@@ -524,6 +524,17 @@ if (failures.length) {
   console.log("settings: 8 entries; skills a list, each with its own screen; connections and permissions their own");
 }
 
+// A long link must wrap inside a card on every screen, not run off a phone's edge. It did on
+// Activity, Inbox and others, which the chat bubbles never did because they had the rule.
+{
+  const css = readFileSync(resolve(here, "../app/node/src/web/styles.css"), "utf8");
+  const card = (css.match(/\n\s*\.card \{[^}]*\}/) || [""])[0];
+  if (!/overflow-wrap:\s*anywhere/.test(card)) {
+    console.error("styles: .card lost overflow-wrap, so long links run off the screen again");
+    process.exit(1);
+  }
+}
+
 // Devices that stopped answering are never asked about: the owner turned it off for good
 // (2026-10-16), so nothing may bring the card or its actions back.
 if (/Still yours\?|data-act="trouble:|standing-trouble/.test(source)) {
