@@ -781,19 +781,6 @@ async function dispatch(act) {
     // Answer a problem statement about something in your world (ADR 0056). Both answers
     // end it: one changes the service, the other says it is meant to be like that. There
     // is deliberately no "remind me later" — that is how a queue starts.
-    if (verb === "trouble") {
-      // Re-split from the raw action: a thing's name is the last field and may itself
-      // contain a colon, so the fixed four-way destructure above would truncate it.
-      const parts = act.split(":");
-      const answer = String(noun || "");
-      const server = parts[2] || "";
-      const thing = parts.slice(3).join(":");
-      try {
-        const said = await api("POST", "/v1/standing-trouble/answer", { server, thing, answer });
-        flash(said.done ? said.done.charAt(0).toUpperCase() + said.done.slice(1) : "Noted.", "ok");
-      } catch (e) { flash("Couldn't do that: " + e.message, "err"); }
-      return reload();
-    }
     // Stop working on something. The person's ONLY verb over an intention — there is
     // deliberately no way to create or edit one (ADR 0052).
     if (verb === "dropintention") {

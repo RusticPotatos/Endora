@@ -267,8 +267,6 @@ runInContext(
                settles_when: "", status: "died", created_ms: 1, last_supported_ms: 1 }];
   REPAIRS = [{ capability: "home.HassTurnOff", target: "kitchen", attempts: 3,
                remedy: "name_the_target" }];
-  TROUBLE = [{ server: "home-assistant", thing: "living room lamp", trouble: "unavailable",
-               days: 4, statement: "living room lamp has not answered for 4 days" }];
   LANDING = { considered: 50, changed: 8, unchanged: 23, failed: 19, unchecked: 0,
               worst_offender: { capability: "home.HassTurnOff", times: 13 },
               in_words: "8 of 50 verified" };
@@ -524,6 +522,13 @@ if (failures.length) {
   }
   runInContext("NAV = globalThis.__nav", context);
   console.log("settings: 8 entries; skills a list, each with its own screen; connections and permissions their own");
+}
+
+// Devices that stopped answering are never asked about: the owner turned it off for good
+// (2026-10-16), so nothing may bring the card or its actions back.
+if (/Still yours\?|data-act="trouble:|standing-trouble/.test(source)) {
+  console.error("chat: the \"Still yours?\" card for devices that stopped answering is back");
+  process.exit(1);
 }
 
 // The handheld's features on the web (plan phase 4): the web console is the full set.

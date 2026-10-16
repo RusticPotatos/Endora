@@ -449,8 +449,6 @@ pub fn app(state: AppState) -> Router {
         .route("/v1/connect/connected", get(what_is_connected))
         .route("/v1/connect/begin", post(begin_connecting))
         .route("/v1/connect/finish", post(finish_connecting))
-        .route("/v1/standing-trouble", get(list_standing_trouble))
-        .route("/v1/standing-trouble/answer", post(answer_standing_trouble))
         .route("/v1/config-writes", get(list_config_writes))
         .route("/v1/config-writes/{id}/undo", post(undo_config_write))
         .route("/v1/outcomes/{id}/reaction", post(react_to_outcome))

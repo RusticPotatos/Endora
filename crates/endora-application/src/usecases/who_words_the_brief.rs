@@ -185,31 +185,11 @@ fn the_morning_facts_drop_raw_transitions_and_keep_curated_ones() {
         ],
         ..ButlerContext::default()
     };
-    let said = whats_worth_saying_this_morning(&ctx, &[], 0).expect("something to say");
+    let said = whats_worth_saying_this_morning(&ctx).expect("something to say");
     assert!(said.contains("rustic is not home"), "{said}");
     assert!(said.contains("partly cloudy"), "{said}");
     assert!(!said.contains("bambam_pressure"), "{said}");
     assert!(!said.contains("sun.sun"), "{said}");
-}
-
-#[test]
-fn a_problem_statement_says_how_long_it_has_been_wrong() {
-    // The first brief to carry these said "has not answered since earlier today" about
-    // seven things silent for three days, because the duration was measured against
-    // when it started rather than against now. The duration is the entire reason a
-    // problem statement is not a status line (ADR 0056).
-    const DAY: i64 = 86_400_000;
-    let lamp = endora_capabilities::StandingTrouble {
-        server: "home-assistant".to_owned(),
-        thing: "living room lamp".to_owned(),
-        trouble: "unavailable".to_owned(),
-        since_ms: 0,
-        accepted: false,
-    };
-    let said = whats_worth_saying_this_morning(&ButlerContext::default(), &[&lamp], 3 * DAY)
-        .expect("something to say");
-    assert!(said.contains("for 3 days"), "{said}");
-    assert!(!said.contains("earlier today"), "{said}");
 }
 
 #[test]

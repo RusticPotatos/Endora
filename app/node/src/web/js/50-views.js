@@ -275,21 +275,8 @@ function viewNeedsYou() {
       </div>`;
   }
 
-  // The person's own world first — a broken lamp is theirs, a misfiring tool is Endora's.
-  const trouble = (TROUBLE || [])[0];
-  if (trouble) {
-    return `
-      <div class="card" style="margin:6px 0;border-color:color-mix(in srgb, var(--accent) 30%, var(--line));">
-        <div class="row" style="align-items:center;gap:10px;">
-          <div class="grow">
-            <div class="title" style="font-weight:500;">${esc(trouble.thing)}</div>
-            <div class="sub">Hasn't answered ${trouble.days === 1 ? "since yesterday" : `for ${trouble.days} days`}. Still yours?</div>
-          </div>
-          <button class="ghost" data-act="trouble:gone:${esc(trouble.server)}:${esc(trouble.thing)}" title="Hide it in the service that owns it. Nothing is deleted, and you can put it back.">It's gone</button>
-          <button class="ghost" data-act="trouble:fine:${esc(trouble.server)}:${esc(trouble.thing)}" title="Leave it exactly as it is and stop mentioning it.">It's fine</button>
-        </div>
-      </div>`;
-  }
+  // Devices that stopped answering are not asked about: the owner did not want it
+  // (2026-10-16). A misfiring tool is Endora's own, and still is.
   const repair = (REPAIRS || [])[0];
   if (!repair) return "";
   if (repair.remedy === "stop_offering_it") {

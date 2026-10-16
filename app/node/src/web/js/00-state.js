@@ -61,7 +61,6 @@ let CTX_OPEN = false;          // whether the inspector is showing
 let CHAT_DAYS = [];            // [{day, messages}] — which days have anything, for the bar
 let LAST_VIEW = null;          // which screen was showing, so a change can reset the scroll
 let REPAIRS = [];              // tooling Endora has noticed keeps not working (ADR 0054)
-let TROUBLE = [];              // things in your world that stopped answering (ADR 0056)
 let LANDING = null;            // how Endora's recent actions actually landed (ADR 0053)
 let CONNECT = null;            // a setup form a service is asking us to fill in (ADR 0054)
 let CONFIG_WRITES = [];        // changes Endora made to your services' own settings (ADR 0054)

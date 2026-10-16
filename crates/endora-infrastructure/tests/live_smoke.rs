@@ -52,7 +52,6 @@ const WHAT_THE_INTERFACE_LOADS: &[&str] = &[
     "/v1/notions",
     "/v1/outcomes",
     "/v1/repairs",
-    "/v1/standing-trouble",
     "/v1/reliability",
     "/v1/context",
     "/v1/config-writes",
@@ -62,14 +61,6 @@ const WHAT_THE_INTERFACE_LOADS: &[&str] = &[
     "/v1/checkin",
     "/v1/deep-model",
 ];
-
-/// More things than this being raised at once is a failure whatever the cause.
-///
-/// Not a diagnosis — a tripwire. The absence-word list once flagged 28 healthy scenes, and
-/// the specific reason was unguessable in advance; the *shape* of the failure was not. A
-/// butler asking about more than a handful of things at once has stopped being a butler,
-/// so this fires and someone goes and looks.
-const MOST_IT_MAY_EVER_RAISE: usize = 10;
 
 fn agent() -> ureq::Agent {
     // The node serves self-signed TLS on the person's own network, which is the whole
@@ -241,20 +232,6 @@ fn a_settled_belief_is_never_also_a_question() {
             "settled while contradicting something: {belief}"
         );
     }
-}
-
-#[test]
-#[ignore = "talks to a deployed node: run with `make smoke` after `make deploy`"]
-fn it_is_not_asking_about_half_the_house() {
-    // The tripwire. The absence-word list once flagged 28 healthy scenes against 7 real
-    // devices; three days later the person would have been asked about all of them. The
-    // specific cause was unguessable, the shape was not.
-    let raised = get("/v1/standing-trouble");
-    let count = raised.as_array().map_or(0, Vec::len);
-    assert!(
-        count <= MOST_IT_MAY_EVER_RAISE,
-        "raising {count} problems at once is a pile of chores, not a butler: {raised:#}"
-    );
 }
 
 #[test]

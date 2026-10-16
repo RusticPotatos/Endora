@@ -164,13 +164,7 @@ impl endora_capabilities::Capability for TheWholeBrief {
         )
         .map_err(|e| unavailable(e.to_string()))?;
         let mut activity = Vec::new();
-        let facts = usecases::assembled_brief_facts(
-            &runner,
-            self.config.as_ref(),
-            &context,
-            self.clock.now().unix_millis(),
-            &mut activity,
-        );
+        let facts = usecases::assembled_brief_facts(&runner, &context, &mut activity);
         Ok(json!({
             "brief": facts.unwrap_or_else(|| {
                 "There's nothing to brief yet — set a home location and enable some \
@@ -554,7 +548,6 @@ pub fn spawn_heartbeat(state: AppState) {
                 // A daily brief, if one is due (reversible skills only).
                 let briefed = usecases::run_due_brief(
                     chat.as_ref(),
-                    config.as_ref(),
                     schedules.as_ref(),
                     &runner,
                     butler.as_ref(),

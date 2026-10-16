@@ -4966,14 +4966,8 @@ fn the_assembled_brief_has_an_overview_and_blank_lines_between_sections() {
         ..ButlerContext::default()
     };
     let mut activity = Vec::new();
-    let facts = super::assembled_brief_facts(
-        &TwoSections,
-        &crate::usecases::NoTrouble,
-        &ctx,
-        0,
-        &mut activity,
-    )
-    .expect("something to say");
+    let facts =
+        super::assembled_brief_facts(&TwoSections, &ctx, &mut activity).expect("something to say");
 
     // A one-line lead naming what follows, ahead of everything else.
     let overview = facts.lines().next().unwrap_or_default();
@@ -5041,18 +5035,9 @@ fn daily_brief_is_assembled_from_the_standing_order() {
     // With no deep model, the facts stand as their own brief — assembled sections
     // do not need a model at all (ADR 0074; the local model, measured, wrote
     // about lights when handed exactly these facts).
-    let (msg, activity) = daily_brief(
-        &store,
-        &crate::usecases::NoTrouble,
-        &skills,
-        &ScriptedNoTools,
-        &ids,
-        &clock,
-        &ctx,
-        &[],
-    )
-    .unwrap()
-    .unwrap();
+    let (msg, activity) = daily_brief(&store, &skills, &ScriptedNoTools, &ids, &clock, &ctx, &[])
+        .unwrap()
+        .unwrap();
     assert!(msg.text().contains("25C"), "{}", msg.text());
     assert!(msg.text().contains("umbrella"), "{}", msg.text());
     assert!(msg.text().contains("Big local story"), "{}", msg.text());
@@ -5116,7 +5101,6 @@ fn a_brief_with_nothing_to_say_is_not_posted() {
     assert!(
         super::daily_brief(
             &store,
-            &crate::usecases::NoTrouble,
             &NoSections,
             &ScriptedNoTools,
             &SeqIds::default(),

@@ -348,7 +348,6 @@ async function reload() {
   try { CONNECTED = await api("GET", "/v1/connect/connected"); } catch (_) { CONNECTED = []; }
   try { SIGNIN = await api("GET", "/v1/session/setup"); } catch (_) { SIGNIN = null; }
   try { REPAIRS = await api("GET", "/v1/repairs"); } catch (_) { REPAIRS = []; }
-  try { TROUBLE = await api("GET", "/v1/standing-trouble"); } catch (_) { TROUBLE = []; }
   try { LANDING = await api("GET", "/v1/reliability"); } catch (_) { LANDING = null; }
   try { CONFIG_WRITES = await api("GET", "/v1/config-writes"); } catch (_) { CONFIG_WRITES = []; }
   render();

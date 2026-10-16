@@ -621,18 +621,14 @@ pub(super) fn is_a_raw_transition(line: &str) -> bool {
 ///
 /// The brief was one instruction — *"reach for whatever's relevant"* — and four days of them
 /// read like "the kitchen and garage lights are on". Every fact worth having was already in
-/// the turn: what is on today, what it is like outside, what has stopped answering, what
-/// Endora did overnight. None of it depended on the model choosing a tool, and all of it was
+/// the turn: what is on today, what it is like outside, what Endora did overnight. (Not what
+/// has stopped answering: the owner turned that off, 2026-10-16.) None of it depended on the model choosing a tool, and all of it was
 /// left to the model to choose a tool for.
 ///
 /// Assembled deterministically for the same reason the activity account is
 /// ([0056](../../docs/adr/0056-how-it-behaves-toward-you.md)): a report of stored facts is
 /// the one thing Endora is entitled to assert, and the model's job is to say it nicely.
-pub(super) fn whats_worth_saying_this_morning(
-    context: &ButlerContext,
-    troubles: &[&endora_capabilities::StandingTrouble],
-    now_ms: i64,
-) -> Option<String> {
+pub(super) fn whats_worth_saying_this_morning(context: &ButlerContext) -> Option<String> {
     let mut lines: Vec<String> = Vec::new();
     // One fact per line. The services join theirs with "; ", which reads as a run-on in a
     // brief and — more importantly — makes coverage all-or-nothing: a written brief that
@@ -653,15 +649,6 @@ pub(super) fn whats_worth_saying_this_morning(
             .flat_map(|line| line.split("; "))
             .map(str::to_owned),
     );
-    // Things that have been wrong long enough to be worth a mention. Only the ones already
-    // judged worth raising, so the brief cannot become the pile of chores ADR 0056 forbids.
-    for trouble in troubles {
-        // Measured against NOW, not against when it started. Passing `since_ms` here made
-        // every duration zero, so the first brief to carry these said "has not answered
-        // since earlier today" about seven things that had been silent for three days —
-        // and the duration is the entire reason a problem statement is not a status line.
-        lines.push(trouble.statement(now_ms));
-    }
     // Deliberately NOT what Endora has been doing. That answers "did you do anything while
     // I was out?", which is a different question — and put in a brief it reads as Endora
     // quoting its own message log back, including the messages that went wrong:

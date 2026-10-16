@@ -214,7 +214,6 @@ pub(super) async fn brief(
         )?;
         let out = usecases::daily_brief(
             chat.as_ref(),
-            config.as_ref(),
             &runner,
             butler.as_ref(),
             ids.as_ref(),

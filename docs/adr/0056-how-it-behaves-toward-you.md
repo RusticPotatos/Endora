@@ -4,6 +4,13 @@
 
 Accepted (2026-07-26). **Consolidates 0017, 0019, 0025 and 0031**, which are archived.
 
+**Amended 2026-10-16: devices that stopped answering are no longer raised.** The owner did
+not want the "Still yours?" card, and asked for it gone. Endora no longer shows it in the
+chat or lists those devices in the morning brief, and the routes behind the card are
+removed. The console check fails if the card returns. The "own work" lane can still look
+into them, recording the result in Activity only; removing that and the detection
+underneath is a separate cleanup. The rest of this record stands.
+
 [ADR 0077](0077-seeing-something-through.md) gives explicit commissioned research
 the next background model slot. While it remains active, heartbeat housekeeping and
 sensing continue, but due model work is reconsidered later without spending its cadence.

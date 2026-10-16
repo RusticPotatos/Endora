@@ -567,32 +567,6 @@ impl SpecimenRepository for RecordingShelf {
     }
 }
 
-/// A world with nothing wrong in it, for tests about something else.
-#[cfg(test)]
-#[derive(Default)]
-struct NoTrouble;
-
-#[cfg(test)]
-impl endora_capabilities::StandingTroubleRepository for NoTrouble {
-    fn note_trouble(
-        &self,
-        _t: &endora_capabilities::StandingTrouble,
-    ) -> Result<(), endora_kernel::RepositoryError> {
-        Ok(())
-    }
-    fn clear_trouble(&self, _s: &str, _t: &str) -> Result<(), endora_kernel::RepositoryError> {
-        Ok(())
-    }
-    fn troubles(
-        &self,
-    ) -> Result<Vec<endora_capabilities::StandingTrouble>, endora_kernel::RepositoryError> {
-        Ok(Vec::new())
-    }
-    fn accept_trouble(&self, _s: &str, _t: &str) -> Result<(), endora_kernel::RepositoryError> {
-        Ok(())
-    }
-}
-
 #[cfg(test)]
 mod accounting_for_itself;
 

@@ -363,19 +363,15 @@ pub(super) fn brief_overview(named: &[&str]) -> Option<String> {
 }
 
 /// Everything a brief has to say, assembled deterministically (ADR 0074): what
-/// Endora already holds (presence, today's calendar, standing troubles — via
+/// Endora already holds (presence, today's calendar — via
 /// [`whats_worth_saying_this_morning`]) plus the standing-order sections gathered
 /// fresh by [`gathered_brief_sections`]. `None` means there is genuinely nothing —
 /// no brief, rather than a cheerful nothing.
 pub fn assembled_brief_facts(
     capabilities: &dyn CapabilityRunner,
-    troubles: &impl endora_capabilities::StandingTroubleRepository,
     context: &ButlerContext,
-    now_ms: i64,
     activity: &mut Vec<String>,
 ) -> Option<String> {
-    let open = troubles.troubles().unwrap_or_default();
-    let raisable = endora_capabilities::worth_raising(&open, now_ms);
     // Each block gets its own heading and stands apart from its neighbours by a
     // blank line — a single run of bullets with no pacing was the thing that made
     // this unreadable in the first place, and a blank line is the one separator
@@ -383,7 +379,7 @@ pub fn assembled_brief_facts(
     // notification, plain mail).
     let mut blocks: Vec<String> = Vec::new();
     let mut named: Vec<&str> = Vec::new();
-    if let Some(known) = whats_worth_saying_this_morning(context, &raisable, now_ms) {
+    if let Some(known) = whats_worth_saying_this_morning(context) {
         named.push("what's around the house");
         blocks.push(format!("**Around the house**\n{known}"));
     }
@@ -1179,7 +1175,6 @@ pub(super) fn worded_brief(
 #[allow(clippy::too_many_arguments)]
 pub fn daily_brief(
     chat: &impl ChatRepository,
-    troubles: &impl endora_capabilities::StandingTroubleRepository,
     capabilities: &dyn CapabilityRunner,
     butler: &dyn Butler,
     ids: &impl IdSource,
@@ -1194,13 +1189,7 @@ pub fn daily_brief(
         now: clock_line(clock),
         ..context.clone()
     };
-    let Some(facts) = assembled_brief_facts(
-        capabilities,
-        troubles,
-        &brief_ctx,
-        clock.now().unix_millis(),
-        &mut activity,
-    ) else {
+    let Some(facts) = assembled_brief_facts(capabilities, &brief_ctx, &mut activity) else {
         // Nothing known and nothing gathered: no brief. A scripted one would be
         // Endora claiming to have thought about the day (ADR 0053).
         return Ok(None);
@@ -1315,7 +1304,6 @@ pub fn set_brief_schedule(
 )]
 pub fn run_due_brief(
     chat: &impl ChatRepository,
-    troubles: &impl endora_capabilities::StandingTroubleRepository,
     briefs: &impl BriefScheduleRepository,
     capabilities: &dyn CapabilityRunner,
     butler: &dyn Butler,
@@ -1341,16 +1329,7 @@ pub fn run_due_brief(
     // Mark fired first, so a slow compose can't double-post on the next tick.
     schedule.last_at = now;
     briefs.set(&schedule)?;
-    daily_brief(
-        chat,
-        troubles,
-        capabilities,
-        butler,
-        ids,
-        clock,
-        context,
-        appended,
-    )
+    daily_brief(chat, capabilities, butler, ids, clock, context, appended)
 }
 
 /// Whether the person has spoken within the quiet period used by unsolicited work.
