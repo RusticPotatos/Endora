@@ -863,8 +863,12 @@ pub fn spawn_mail_reader(state: AppState) {
         let mut ticker = tokio::time::interval(std::time::Duration::from_secs(20));
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
-            ticker.tick().await;
-            read_mail_once(&state).await;
+            // After a message is read, the next is tried at once: the backlog is read as fast as
+            // quiet time allows. The turn lock is let go between messages, so a chat turn waits
+            // one message at most. When there is nothing to read, or it is not the time, wait.
+            if read_mail_once(&state).await.is_none() {
+                ticker.tick().await;
+            }
         }
     });
 }
