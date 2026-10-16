@@ -18,7 +18,6 @@ use endora_conversation::ChatRepository;
 use endora_platform::{AuditLog, EventLog};
 use endora_understanding::{
     BeliefRepository, IntentionRepository, OutcomeRepository, PreferenceRepository,
-    SpecimenRepository,
 };
 
 use endora_scheduling::{BriefSchedule, BriefScheduleRepository};
@@ -313,19 +312,6 @@ fn clock_time_of(ms: i64) -> String {
     format!("{:02}:{:02}", secs / 3600, (secs % 3600) / 60)
 }
 
-/// Which deterministic check marks a turn's reply as a failure worth keeping
-/// (ADR 0075). The same predicates that gate retries and escalation — never the
-/// model's opinion of itself. `None` is a turn that answered.
-fn specimen_verdict(reply: &ButlerReply, context: &ButlerContext) -> Option<&'static str> {
-    if reply.degraded {
-        return Some("ended at the honesty valve, or the model was unreachable");
-    }
-    if not_an_answer(reply, context) {
-        return Some("not an answer — empty, plumbing, or described a tool");
-    }
-    None
-}
-
 /// Whether the question is about something out in the world, answerable only by looking it
 /// up: when something is, what is next, a score, a schedule, a price. Words, not judgement,
 /// and the same bargain as [`says_it_found_nothing`]: a wrong yes costs one deep-model call.
@@ -447,98 +433,6 @@ fn first_sentence_of(text: &str) -> String {
         out.push('…');
     }
     out
-}
-
-/// A shelf that takes nothing and holds nothing, for tests about something else.
-#[cfg(test)]
-#[derive(Default)]
-struct NoSpecimens;
-
-#[cfg(test)]
-impl SpecimenRepository for NoSpecimens {
-    fn file_specimen(
-        &self,
-        _id: &str,
-        _asked: &str,
-        _verdict: &str,
-        _now_ms: i64,
-    ) -> Result<bool, endora_kernel::RepositoryError> {
-        Ok(false)
-    }
-    fn open_specimens(
-        &self,
-    ) -> Result<Vec<endora_understanding::Specimen>, endora_kernel::RepositoryError> {
-        Ok(Vec::new())
-    }
-    fn gave_up_specimens(
-        &self,
-    ) -> Result<Vec<endora_understanding::Specimen>, endora_kernel::RepositoryError> {
-        Ok(Vec::new())
-    }
-    fn record_replay(
-        &self,
-        _id: &str,
-        _passed: bool,
-        _now_ms: i64,
-    ) -> Result<endora_understanding::SpecimenState, endora_kernel::RepositoryError> {
-        Ok(endora_understanding::SpecimenState::Open)
-    }
-}
-
-/// A shelf that remembers everything done to it, for the specimen tests.
-#[cfg(test)]
-#[derive(Default)]
-struct RecordingShelf {
-    filed: std::cell::RefCell<Vec<(String, String)>>,
-    open: std::cell::RefCell<Vec<endora_understanding::Specimen>>,
-    gave_up: std::cell::RefCell<Vec<endora_understanding::Specimen>>,
-    replays: std::cell::RefCell<Vec<(String, bool)>>,
-}
-
-#[cfg(test)]
-impl SpecimenRepository for RecordingShelf {
-    fn file_specimen(
-        &self,
-        _id: &str,
-        asked: &str,
-        verdict: &str,
-        _now_ms: i64,
-    ) -> Result<bool, endora_kernel::RepositoryError> {
-        self.filed
-            .borrow_mut()
-            .push((asked.to_owned(), verdict.to_owned()));
-        Ok(true)
-    }
-    fn open_specimens(
-        &self,
-    ) -> Result<Vec<endora_understanding::Specimen>, endora_kernel::RepositoryError> {
-        Ok(self.open.borrow().clone())
-    }
-    fn gave_up_specimens(
-        &self,
-    ) -> Result<Vec<endora_understanding::Specimen>, endora_kernel::RepositoryError> {
-        Ok(self.gave_up.borrow().clone())
-    }
-    fn record_replay(
-        &self,
-        id: &str,
-        passed: bool,
-        _now_ms: i64,
-    ) -> Result<endora_understanding::SpecimenState, endora_kernel::RepositoryError> {
-        self.replays.borrow_mut().push((id.to_owned(), passed));
-        // The real store's rule, from the domain rather than restated here, so the
-        // double cannot quietly disagree with the thing it stands in for.
-        let replays_before = self
-            .open
-            .borrow()
-            .iter()
-            .find(|s| s.id == id)
-            .map_or(0, |s| s.replays);
-        Ok(endora_understanding::SpecimenState::after_replay(
-            replays_before,
-            passed,
-        ))
-    }
 }
 
 #[cfg(test)]

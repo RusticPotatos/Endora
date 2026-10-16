@@ -576,7 +576,6 @@ fn sending_to_the_butler_records_both_turns() {
         &store,
         &store,
         &FakeOutcomes::default(),
-        &crate::usecases::NoSpecimens,
         &NoCapabilities,
         &ScriptedTestButler,
         &FakeAudit::default(),
@@ -654,7 +653,6 @@ fn a_status_ask_is_answered_from_the_reading_and_the_model_is_never_consulted() 
         &FakeStore::default(),
         &FakeStore::default(),
         &FakeOutcomes::default(),
-        &crate::usecases::NoSpecimens,
         &HouseReader,
         &NeverConsulted,
         &FakeAudit::default(),
@@ -838,7 +836,6 @@ fn a_question_about_a_city_reaches_the_model_and_not_the_house_reading() {
         &FakeStore::default(),
         &FakeStore::default(),
         &FakeOutcomes::default(),
-        &crate::usecases::NoSpecimens,
         &AHouse,
         &AnswersIt,
         &FakeAudit::default(),
@@ -917,7 +914,6 @@ fn a_turn_with_a_record(asked: &str, the_butler_says: &'static str) -> String {
         &FakeStore::default(),
         &FakeStore::default(),
         &FakeOutcomes::default(),
-        &crate::usecases::NoSpecimens,
         &NoCapabilities,
         &SaysOnly(the_butler_says),
         &FakeAudit::default(),
@@ -1455,7 +1451,6 @@ fn an_ordinary_chat_turn(
         &store,
         &store,
         &FakeOutcomes::default(),
-        &crate::usecases::NoSpecimens,
         skills,
         local,
         &FakeAudit::default(),
@@ -1522,7 +1517,6 @@ fn a_new_topic_keeps_old_messages_in_the_chat_but_not_in_what_the_model_is_sent(
         &store,
         &store,
         &FakeOutcomes::default(),
-        &crate::usecases::NoSpecimens,
         &NoCapabilities,
         &butler,
         &FakeAudit::default(),
@@ -1595,7 +1589,6 @@ fn the_retry_is_announced_as_a_step_so_the_first_answer_can_be_filed_as_working_
         &store,
         &store,
         &FakeOutcomes::default(),
-        &crate::usecases::NoSpecimens,
         &skills,
         &local,
         &FakeAudit::default(),
@@ -1715,7 +1708,6 @@ fn routed_turn(
         &store,
         &store,
         &FakeOutcomes::default(),
-        &crate::usecases::NoSpecimens,
         &skills,
         &local,
         &FakeAudit::default(),
@@ -2056,66 +2048,6 @@ fn a_question_that_looks_like_a_secret_is_not_sent_and_is_answered_locally() {
 }
 
 #[test]
-fn a_failed_turn_is_kept_to_retry_and_an_answered_one_is_not() {
-    use super::send_to_butler;
-    // ADR 0075: the verdict that files a specimen is the same deterministic
-    // check that gates retries — never the model's opinion of itself.
-    struct Stumped;
-    impl Butler for Stumped {
-        fn respond(
-            &self,
-            _h: &[ChatMessage],
-            _p: &[Preference],
-            _c: &ButlerContext,
-        ) -> Result<ButlerReply, ProposalError> {
-            Ok(ButlerReply {
-                text: "Sorry — I couldn't follow that.".to_owned(),
-                degraded: true,
-                ..ButlerReply::default()
-            })
-        }
-    }
-    let shelf = crate::usecases::RecordingShelf::default();
-    let _ = send_to_butler(
-        &FakeStore::default(),
-        &FakeStore::default(),
-        &FakeStore::default(),
-        &FakeOutcomes::default(),
-        &shelf,
-        &NoCapabilities,
-        &Stumped,
-        &FakeAudit::default(),
-        &SeqIds::default(),
-        &FixedClock(1_000),
-        &ButlerContext::default(),
-        "what lights are on?",
-    )
-    .unwrap();
-    let filed = shelf.filed.borrow();
-    assert_eq!(filed.len(), 1, "{filed:?}");
-    assert_eq!(filed[0].0, "what lights are on?");
-
-    // A turn that answered files nothing — the shelf holds failures only.
-    let fine = crate::usecases::RecordingShelf::default();
-    let _ = send_to_butler(
-        &FakeStore::default(),
-        &FakeStore::default(),
-        &FakeStore::default(),
-        &FakeOutcomes::default(),
-        &fine,
-        &NoCapabilities,
-        &ScriptedTestButler,
-        &FakeAudit::default(),
-        &SeqIds::default(),
-        &FixedClock(1_000),
-        &ButlerContext::default(),
-        "what lights are on?",
-    )
-    .unwrap();
-    assert!(fine.filed.borrow().is_empty());
-}
-
-#[test]
 fn a_cleared_skill_runs_and_the_butler_answers_with_its_result() {
     use super::send_to_butler;
 
@@ -2179,7 +2111,6 @@ fn a_cleared_skill_runs_and_the_butler_answers_with_its_result() {
         &store,
         &store,
         &FakeOutcomes::default(),
-        &crate::usecases::NoSpecimens,
         &OneSkill,
         &ToolButler,
         &FakeAudit::default(),
@@ -2250,7 +2181,6 @@ fn a_failing_tool_is_not_retried_more_than_twice() {
         &store,
         &store,
         &FakeOutcomes::default(),
-        &crate::usecases::NoSpecimens,
         &AlwaysFails,
         &RelentlessButler,
         &FakeAudit::default(),
@@ -4113,7 +4043,6 @@ fn an_unconfigured_skill_is_not_run_and_the_first_reply_stands() {
         &store,
         &store,
         &FakeOutcomes::default(),
-        &crate::usecases::NoSpecimens,
         &GatedSkill,
         &ToolButler,
         &FakeAudit::default(),
@@ -4186,7 +4115,6 @@ fn a_blocked_consequential_decision_is_recorded_in_the_audit_trail() {
         &store,
         &store,
         &FakeOutcomes::default(),
-        &crate::usecases::NoSpecimens,
         &BlockedSkill,
         &BookingButler,
         &audit,
@@ -4244,7 +4172,6 @@ fn a_local_model_that_comes_up_empty_says_so_rather_than_inventing_a_second_rung
         &store,
         &store,
         &FakeOutcomes::default(),
-        &crate::usecases::NoSpecimens,
         &NoCapabilities,
         &EmptyButler,
         &FakeAudit::default(),
@@ -4363,7 +4290,6 @@ fn a_tainted_turn_cannot_reach_the_deep_model_by_any_route() {
         &store,
         &store,
         &FakeOutcomes::default(),
-        &crate::usecases::NoSpecimens,
         &Newsreader,
         &CallsNewsThenSaysNothing,
         &FakeAudit::default(),
@@ -4453,7 +4379,6 @@ fn the_ladder_leaves_a_good_local_answer_alone() {
         &store,
         &store,
         &FakeOutcomes::default(),
-        &crate::usecases::NoSpecimens,
         &NoCapabilities,
         &GoodButler,
         &FakeAudit::default(),
@@ -4639,7 +4564,6 @@ fn asking_for_the_brief_never_asks_the_model_to_route() {
         &store,
         &store,
         &FakeOutcomes::default(),
-        &crate::usecases::NoSpecimens,
         &BriefOnly,
         &NeverRoutes,
         &FakeAudit::default(),
@@ -4884,7 +4808,6 @@ fn butler_forms_understanding_that_is_reviewable_and_correctable() {
         &store,
         &store,
         &FakeOutcomes::default(),
-        &crate::usecases::NoSpecimens,
         &NoCapabilities,
         &BeliefButler,
         &FakeAudit::default(),
@@ -5175,7 +5098,6 @@ fn a_line_before_a_tool_call_does_not_make_the_answer_arrive_twice() {
         &store,
         &store,
         &FakeOutcomes::default(),
-        &crate::usecases::NoSpecimens,
         &NoCapabilities,
         &ThinksAloudThenAnswers {
             round: std::cell::Cell::new(0),

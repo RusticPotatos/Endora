@@ -146,7 +146,6 @@ pub(super) async fn send_chat(
             understanding.as_ref(),
             understanding.as_ref(),
             understanding.as_ref(),
-            understanding.as_ref(),
             &runner,
             butler.as_ref(),
             audit.as_ref(),
@@ -375,7 +374,6 @@ pub(super) async fn stream_chat(
                 };
                 usecases::send_to_butler_streaming_for_request(
                     chat.as_ref(),
-                    understanding.as_ref(),
                     understanding.as_ref(),
                     understanding.as_ref(),
                     understanding.as_ref(),

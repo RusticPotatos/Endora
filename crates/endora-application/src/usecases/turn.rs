@@ -1148,7 +1148,6 @@ pub fn send_to_butler(
     preferences: &impl PreferenceRepository,
     beliefs: &impl BeliefRepository,
     outcomes: &impl OutcomeRepository,
-    specimens: &impl SpecimenRepository,
     capabilities: &dyn CapabilityRunner,
     butler: &dyn Butler,
     audit: &dyn AuditLog,
@@ -1164,7 +1163,6 @@ pub fn send_to_butler(
         preferences,
         beliefs,
         outcomes,
-        specimens,
         capabilities,
         butler,
         audit,
@@ -1636,7 +1634,6 @@ pub fn send_to_butler_streaming(
     preferences: &impl PreferenceRepository,
     beliefs: &impl BeliefRepository,
     outcomes: &impl OutcomeRepository,
-    specimens: &impl SpecimenRepository,
     capabilities: &dyn CapabilityRunner,
     butler: &dyn Butler,
     audit: &dyn AuditLog,
@@ -1654,7 +1651,6 @@ pub fn send_to_butler_streaming(
         preferences,
         beliefs,
         outcomes,
-        specimens,
         capabilities,
         butler,
         audit,
@@ -1677,7 +1673,6 @@ pub fn send_to_butler_streaming_for_request(
     preferences: &impl PreferenceRepository,
     beliefs: &impl BeliefRepository,
     outcomes: &impl OutcomeRepository,
-    specimens: &impl SpecimenRepository,
     capabilities: &dyn CapabilityRunner,
     butler: &dyn Butler,
     audit: &dyn AuditLog,
@@ -1893,30 +1888,6 @@ pub fn send_to_butler_streaming_for_request(
     // refusals it overrode were the taint rule (ADR 0064) and the person's own consent to
     // automatic escalation (ADR 0055), both of which are checked in `run_tool_turn` and
     // neither of which existed here.
-    //
-    // A turn that ended in a failure the code itself judged files a SPECIMEN
-    // (ADR 0075) — the ask and the verdict, kept in the house's own record so the
-    // nightly loop can re-ask it and notice when it starts passing. Only
-    // answer-shaped failures: a turn that acted already has an outcome record, and
-    // replaying an action unattended would be a different mechanism entirely. The
-    // verdict is the same deterministic check that gated retries and escalation;
-    // the model's opinion of itself files nothing. Best-effort — a full shelf or a
-    // failed write must never break the reply.
-    if disclosures.is_empty() {
-        if let Some(why) = specimen_verdict(&reply, context) {
-            let filed = specimens
-                .file_specimen(
-                    &ids.new_id().to_string(),
-                    text,
-                    why,
-                    clock.now().unix_millis(),
-                )
-                .unwrap_or(false);
-            if filed {
-                activity.push("Couldn't answer this one — kept it to retry overnight".to_owned());
-            }
-        }
-    }
 
     // Whether the answering round spoke for itself. When it did, that text has already
     // reached the person token by token; when it did not, whatever stands in for it is

@@ -1381,7 +1381,8 @@ fn drop_goal_tracker(conn: &Connection) -> Result<(), RepositoryError> {
 }
 
 /// Drops what the clean slate removed (owner, 2026-10-16): the check-in, the nightly loop
-/// and model-tune schedules, notions, standing trouble, and durable goals with their leases. For the same
+/// and model-tune schedules, notions, standing trouble, the failed asks kept for the nightly loop to
+/// replay (specimens), and durable goals with their leases. For the same
 /// reason as [`drop_goal_tracker`]: a table nothing reads is data nothing can export or
 /// delete (constitution §6). A no-op on a fresh database.
 fn drop_the_clean_slate(conn: &Connection) -> Result<(), RepositoryError> {
@@ -1392,6 +1393,7 @@ fn drop_the_clean_slate(conn: &Connection) -> Result<(), RepositoryError> {
          DROP TABLE IF EXISTS notion_citations;
          DROP TABLE IF EXISTS notions;
          DROP TABLE IF EXISTS standing_trouble;
+         DROP TABLE IF EXISTS specimens;
          DROP INDEX IF EXISTS idx_execution_goals_active;
          DROP TABLE IF EXISTS execution_goals;",
     )
@@ -2207,6 +2209,7 @@ mod the_schema_production_actually_runs {
              CREATE TABLE notions (id INTEGER PRIMARY KEY);
              CREATE TABLE notion_citations (notion INTEGER);
              CREATE TABLE standing_trouble (entity TEXT PRIMARY KEY);
+             CREATE TABLE specimens (id TEXT PRIMARY KEY, asked TEXT);
              CREATE TABLE execution_goals (request_key TEXT PRIMARY KEY, objective TEXT);
              INSERT INTO execution_goals VALUES ('ask-1', 'find John Doe a plumber');
              CREATE TABLE execution_leases (
@@ -2235,6 +2238,7 @@ mod the_schema_production_actually_runs {
             "notions",
             "notion_citations",
             "standing_trouble",
+            "specimens",
             "execution_goals",
         ] {
             assert!(!tables.iter().any(|t| t == gone), "{gone} is still there");

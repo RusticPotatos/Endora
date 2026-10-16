@@ -97,7 +97,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         &understanding,
         &understanding,
         &understanding,
-        &understanding,
         &runner,
         &butler,
         &audit,

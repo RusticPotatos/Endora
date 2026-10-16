@@ -525,7 +525,6 @@ pub(super) async fn deep_ask(
             understanding.as_ref(),
             understanding.as_ref(),
             understanding.as_ref(),
-            understanding.as_ref(),
             &runner,
             &planned,
             audit.as_ref(),
