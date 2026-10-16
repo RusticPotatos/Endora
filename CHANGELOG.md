@@ -56,6 +56,10 @@ tagged release.
 
 ### Fixed
 
+- **The handheld's Home catalog never loaded when Home Assistant's address was typed without
+  `http://`.** The Home Assistant skill accepted `host:8123`; the console's own requests
+  refused it as a configuration error. Both read it the same way now.
+
 - **The model settings answered "internal error" on any node older than the preferred
   endpoint.** Its two columns were added only by a migration that runs in tests, never in
   production, so `GET /v1/model-config` (the Models screen's everyday card, and the new AI

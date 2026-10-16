@@ -519,7 +519,9 @@ impl Adapter {
                 "X-Api-Key",
             )
         };
-        let origin = self.setting(&id, origin_key)?;
+        // An address typed as `host:8123` is read as `http://host:8123`, as the Home Assistant
+        // skill reads it: the same setting cannot work in one place and not the other.
+        let origin = super::as_url(&self.setting(&id, origin_key)?);
         let origin = origin.trim_end_matches('/');
         if origin.is_empty() {
             return Err("unconfigured");

@@ -124,6 +124,19 @@ fn mock_adapter(
     endora_capabilities::infrastructure::terminal::Adapter,
     std::thread::JoinHandle<()>,
 ) {
+    mock_adapter_with(service, responses, true)
+}
+
+/// [`mock_adapter`], with the service's address stored with or without `http://`, as a person
+/// may type it.
+fn mock_adapter_with(
+    service: &'static str,
+    responses: Vec<(&'static str, serde_json::Value)>,
+    with_scheme: bool,
+) -> (
+    endora_capabilities::infrastructure::terminal::Adapter,
+    std::thread::JoinHandle<()>,
+) {
     use endora_capabilities::{CapabilitySettingsRepository, ConfigStore};
     use std::{
         io::{Read, Write},
@@ -132,7 +145,12 @@ fn mock_adapter(
         time::Duration,
     };
     let listener = TcpListener::bind("localhost:0").unwrap();
-    let origin = format!("http://{}", listener.local_addr().unwrap());
+    let address = listener.local_addr().unwrap().to_string();
+    let origin = if with_scheme {
+        format!("http://{address}")
+    } else {
+        address
+    };
     let db = Db::open_in_memory().unwrap();
     endora_capabilities::migrate(&db).unwrap();
     let settings = Arc::new(ConfigStore::new(db.clone()));
@@ -652,4 +670,23 @@ fn the_home_screen_and_favorites_fit_the_protocol() {
     let typed: endora_protocol::ConsoleView = fits(&home);
     assert_eq!(typed.items.len(), 2);
     assert_eq!(typed.items[0].id.as_deref(), Some("light.example"));
+}
+
+#[test]
+fn a_home_assistant_address_typed_without_http_still_reaches_the_catalog() {
+    // Live: the Home Assistant skill accepted an address typed as `host:8123`, the console's
+    // own requests refused it as "configuration", and the handheld's Home catalog never loaded.
+    use endora_capabilities::application::HomeConsole;
+    let (adapter, mock) = mock_adapter_with(
+        "home",
+        vec![(
+            "GET /api/states ",
+            json!([{"entity_id": "light.example", "state": "on", "attributes": {"friendly_name": "Example lamp"}}]),
+        )],
+        false,
+    );
+    let result = adapter.read("home-catalog", "").expect("the catalog loads");
+    mock.join().unwrap();
+    let view: endora_protocol::ConsoleView = fits(&result);
+    assert_eq!(view.items[0].label, "Example lamp");
 }
