@@ -18,6 +18,10 @@ tagged release.
   The handheld's Music page now plays with it: it borrows the token through the unlocked
   session, hands over a sign-in it made by itself and then deletes its copy, and its setup
   starts and finishes the sign-in on Endora. Locking the handheld drops the borrowed session.
+- **Pi-hole and UniFi connections** (Settings → Connections → Home lab). They hold the
+  credentials for what Endora will read about your network. Each has a Test button that
+  signs in and signs out again. Pi-hole's app password is only ever used to read. UniFi
+  takes a View Only local admin, and its self-made certificate is not checked.
 - **The web console does what the handheld does.** Music (what is playing, play and pause,
   skip, volume, choose the device, search, playlists, through the borrowed token), Smart home
   (switch favorites, set scenes, choose favorites), Media (search and request, recent requests)
@@ -75,6 +79,23 @@ tagged release.
   how far Endora may act on its own.
 
 ### Fixed
+
+- **Endora answered faster, and about the right day.** Measured on the house's A2000, with qwen2.5:7b:
+  - **The prompt was read from the clock onward on every message.** The date and time sat
+    second in the request, ahead of the instructions and the tool list. They now travel with
+    the latest message, so the model reuses the rest: the next message starts answering in
+    about 0.6 s instead of about 5.5 s.
+  - **Endora asked Ollama to unload its model after 30 minutes**, which overrode a server set
+    to keep it loaded, so the first message after a pause paid a 13-second reload. It now asks
+    to keep it loaded.
+  - **The clock it was told was UTC.** It is now local time with its offset, so a summer
+    evening is no longer "tomorrow".
+  - **"What day is today?" went to the deep model.** The small model filed it as needing
+    a lookup, though the date is in every request; date and time questions now stay local.
+  - **One-off events tied to a day became beliefs.** "An appointment tomorrow at 6:30" was
+    filed as something Endora understands about you, was still "tomorrow" the next day, and
+    was trusted over the calendar. Statements tied to today, tomorrow, tonight or yesterday
+    are no longer kept as understanding.
 
 - **Opening Mail, AI or Spotify from the menu could show "Loading…"** until something else
   reloaded the console; a screen now fetches what it shows when it opens.

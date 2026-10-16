@@ -1191,6 +1191,57 @@ fn pihole_signs_in(origin: &str, password: &str) -> Result<(), super::Capability
     Ok(())
 }
 
+/// The self-hosted UniFi Network Application's settings test: signs in with the View Only local
+/// admin, then signs out. UniFi answers only over HTTPS with a certificate it made itself, and
+/// the owner chose not to check it for this address (a LAN service, a view-only account).
+/// Reports a category, never what UniFi said or the password.
+fn unifi_signs_in(
+    origin: &str,
+    username: &str,
+    password: &str,
+) -> Result<(), super::CapabilityError> {
+    let unavailable = |m: &str| super::CapabilityError::Unavailable(m.into());
+    if username.is_empty() || password.is_empty() {
+        return Err(unavailable("the username or password is not set"));
+    }
+    let tls = ureq::tls::TlsConfig::builder()
+        .disable_verification(true)
+        .build();
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .timeout_global(Some(Duration::from_secs(8)))
+        .max_redirects(0)
+        .proxy(None)
+        .http_status_as_error(false)
+        .tls_config(tls)
+        .build()
+        .into();
+    let response = agent
+        .post(format!("{origin}/api/login"))
+        .send_json(json!({ "username": username, "password": password }))
+        .map_err(|_| unavailable("connection"))?;
+    match response.status().as_u16() {
+        200..=299 => {}
+        400 | 401 | 403 => return Err(unavailable("authentication")),
+        _ => return Err(unavailable("upstream")),
+    }
+    // The session cookie, given back so the test leaves no session behind.
+    let session = response
+        .headers()
+        .get_all("set-cookie")
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .filter_map(|v| v.split(';').next())
+        .find(|c| c.starts_with("unifises=") || c.starts_with("TOKEN="))
+        .map(str::to_owned);
+    if let Some(cookie) = session {
+        let _ = agent
+            .post(format!("{origin}/api/logout"))
+            .header("Cookie", &cookie)
+            .send_empty();
+    }
+    Ok(())
+}
+
 /// What a [`HandheldSource`] says it needs: it only holds settings.
 const SETTINGS_ONLY_NEEDS: &str = "set up here; the handheld console uses it";
 
@@ -1226,7 +1277,7 @@ pub fn handheld_sources() -> Vec<Arc<dyn super::Capability>> {
         ("homelab-radarr", "Radarr", "The download queue on the handheld's Overview page, and what chat reads about it.", "media", ARR_SETTINGS),
         ("terminal-metrics", "Prometheus", "NAS figures (load, memory, disk) on the handheld, and what chat reads about the NAS.", "information", METRICS_SETTINGS),
         ("network-pihole", "Pi-hole", "Your network's DNS and what it blocks, for what Endora reads about the network. Only ever read: Pi-hole's app password could change settings, and Endora never does.", "information", PIHOLE_SETTINGS),
-        ("network-unifi", "UniFi", "Your network's devices and Wi-Fi, for what Endora reads about the network. Give it a View Only local admin.", "information", UNIFI_SETTINGS),
+        ("network-unifi", "UniFi", "Your network's devices and Wi-Fi, for what Endora reads about the network. Give it a View Only local admin. UniFi's own certificate is not checked.", "information", UNIFI_SETTINGS),
     ]
     .into_iter()
     .map(|(id, name, description, category, settings)| {
@@ -1275,11 +1326,8 @@ impl super::Capability for HandheldSource {
                 .map(|()| json!({"ok": true, "checked": self.name}));
         }
         if self.id == "network-unifi" {
-            // UniFi answers only over HTTPS with a certificate it made itself, which this
-            // client does not trust yet; how it should is the owner's choice.
-            return Err(unavailable(
-                "certificate: UniFi's own certificate is not trusted yet",
-            ));
+            return unifi_signs_in(origin, get("username"), get("password"))
+                .map(|()| json!({"ok": true, "checked": self.name}));
         }
         let (path, key) = match self.id {
             "terminal-overseerr" => ("/api/v1/auth/me".to_owned(), get("api_key")),
