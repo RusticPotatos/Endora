@@ -2,9 +2,9 @@
 //! outcomes and intentions.
 
 use endora_kernel::RepositoryError;
-use endora_kernel::ids::{BeliefId, IntentionId, OutcomeId, PreferenceId};
+use endora_kernel::ids::{IntentionId, OutcomeId, PreferenceId};
 
-use crate::domain::{Belief, Intention, Outcome, Preference, ResearchAssignment};
+use crate::domain::{Intention, Outcome, Preference, ResearchAssignment};
 
 use crate::domain::PagePath;
 
@@ -138,8 +138,8 @@ pub trait IntentionRepository {
 
 /// Persists and retrieves [`Outcome`]s — what happened after Endora acted (ADR 0053).
 ///
-/// The counterpart to [`BeliefRepository`]: one holds what Endora understands, the other
-/// what it did and what the world looked like afterwards.
+/// The counterpart to the [`Brain`]: one holds what Endora knows about the person, the
+/// other what it did and what the world looked like afterwards.
 pub trait OutcomeRepository {
     /// Inserts an outcome, or replaces the one with the same id (record + react).
     ///
@@ -158,35 +158,6 @@ pub trait OutcomeRepository {
     /// # Errors
     /// [`RepositoryError`] if the backend fails or stored data is corrupt.
     fn list(&self) -> Result<Vec<Outcome>, RepositoryError>;
-}
-
-/// Persists and retrieves [`Belief`]s — what the butler currently understands
-/// about the person.
-pub trait BeliefRepository {
-    /// Inserts a belief, or replaces the one with the same id (create + update).
-    ///
-    /// # Errors
-    /// [`RepositoryError`] if the backend fails.
-    fn save(&self, belief: &Belief) -> Result<(), RepositoryError>;
-
-    /// Fetches a belief by id, `None` if absent.
-    ///
-    /// # Errors
-    /// [`RepositoryError`] if the backend fails or stored data is corrupt.
-    fn get(&self, id: BeliefId) -> Result<Option<Belief>, RepositoryError>;
-
-    /// Lists all beliefs, most-recently-affirmed first.
-    ///
-    /// # Errors
-    /// [`RepositoryError`] if the backend fails or stored data is corrupt.
-    fn list(&self) -> Result<Vec<Belief>, RepositoryError>;
-
-    /// Deletes every belief, and says how many there were. The person's own preferences are a
-    /// different store and are not touched.
-    ///
-    /// # Errors
-    /// [`RepositoryError`] if the backend fails.
-    fn forget_all(&self) -> Result<usize, RepositoryError>;
 }
 
 /// Persists and retrieves [`Preference`]s — durable things the person wants the

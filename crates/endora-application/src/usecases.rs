@@ -10,15 +10,13 @@ use endora_kernel::ids::{AuditId, BeliefId, MessageId, OutcomeId, PreferenceId, 
 use endora_kernel::{Decision, Reversibility};
 use endora_platform::AuditRecord;
 use endora_understanding::{
-    Belief, Intention, Outcome, Preference, PreferenceKind, Reaction, RepairProposal,
+    Intention, Outcome, Preference, PreferenceKind, Reaction, RepairProposal,
 };
 
 use endora_capabilities::{CapabilityRunner, CapabilitySpec};
 use endora_conversation::ChatRepository;
 use endora_platform::{AuditLog, EventLog};
-use endora_understanding::{
-    BeliefRepository, Brain, IntentionRepository, OutcomeRepository, PreferenceRepository,
-};
+use endora_understanding::{Brain, IntentionRepository, OutcomeRepository, PreferenceRepository};
 
 use endora_scheduling::{BriefSchedule, BriefScheduleRepository};
 
@@ -170,12 +168,6 @@ pub use brain::*;
 
 #[cfg(test)]
 mod tests;
-
-#[cfg(test)]
-mod three_cards_for_one_fact;
-
-#[cfg(test)]
-mod re_reading_what_is_stored;
 
 #[cfg(test)]
 mod what_a_read_gets_back;
@@ -464,9 +456,6 @@ mod one_fact_source_reaches_everything;
 
 #[cfg(test)]
 mod what_a_stranger_said;
-
-#[cfg(test)]
-mod a_short_belief_is_not_a_copy_of_a_long_one;
 
 #[cfg(test)]
 mod where_they_are_is_a_fact;

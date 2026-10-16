@@ -24,7 +24,9 @@ let BRIEF_SCHED = { enabled: false, hour_utc: 12 }; // daily-brief schedule
 let DEEP_MODEL = { configured: false, key_set: false, url: "", model: "" }; // optional bigger AI
 let MODEL_CONFIG = { configured: false, key_set: false, base_url: "", mixture: false,
   single: {}, router: {}, synth: {} }; // the butler's own models, editable at runtime (ADR 0055)
-let UNDERSTANDING = [];        // Endora's beliefs about the person (the home surface)
+let BRAIN = null;              // What Endora knows about you: memory and its pages (ADR 0101)
+let BRAIN_PAGE = null;         // The page open on its own screen, with its history
+let BRAIN_EDITING = false;     // Whether that page is open as text to edit
 let OUTCOMES = [];             // what Endora DID, and what it saw afterwards (ADR 0053)
 let RESEARCH = { items: [] };   // explicit durable research assignments (ADR 0077)
 let RESEARCH_READY = { ready: false, modes: [], search_tools: [] };

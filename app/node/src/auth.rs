@@ -370,18 +370,19 @@ mod what_a_checking_credential_may_do {
 
     #[test]
     fn a_checking_credential_cannot_pull_everything_at_once() {
-        // Every other read is a slice; this one is the whole conversation, every belief and
+        // Every other read is a slice; this one is the whole conversation, every page and
         // the audit trail in a single call. The suite never touches it.
         assert!(!scope_permits(Scope::Checks, "/v1/export", false));
     }
 
     #[test]
     fn a_checking_credential_can_still_read_what_the_suite_asserts_on() {
-        // Not an oversight. Three of the nine invariants assert on real belief statements, and
+        // Not an oversight. The suite asserts on what the brain's pages really hold, and
         // "asserts about real data" is why that tier exists at all — a credential blind to
         // them would leave the tests unable to check anything worth checking.
         for path in [
-            "/v1/understanding",
+            "/v1/brain",
+            "/v1/brain/pages/hobbies/watches",
             "/v1/context",
             "/v1/reliability",
             "/v1/chat",

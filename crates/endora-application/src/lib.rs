@@ -50,10 +50,10 @@ pub use endora_scheduling::{BriefSchedule, BriefScheduleRepository};
 // Belief/preference repositories live in the understanding context (ADR 0050);
 // re-exported so their `endora_application::…` paths are unchanged.
 pub use endora_understanding::{
-    Belief, BeliefKind, BeliefRepository, BeliefStatus, Confidence, Intention, IntentionOrigin,
-    IntentionRepository, IntentionState, Outcome, OutcomeRepository, Preference, PreferenceKind,
-    PreferenceRepository, Reaction, RepairProposal, ResearchAssignment, ResearchReport,
-    ResearchRepository, ResearchStatus,
+    BeliefKind, Brain, BrainFolder, Confidence, Intention, IntentionOrigin, IntentionRepository,
+    IntentionState, Outcome, OutcomeRepository, PageChange, PageInfo, PagePath, Preference,
+    PreferenceKind, PreferenceRepository, Reaction, RepairProposal, ResearchAssignment,
+    ResearchReport, ResearchRepository, ResearchStatus,
 };
 pub use ports::{
     Butler, ButlerContext, ButlerReply, Calendar, CapabilityTool, Clock, ConversationSummary,

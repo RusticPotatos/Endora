@@ -1145,8 +1145,8 @@ pub(crate) fn run_tool_turn(
 )]
 pub fn send_to_butler(
     chat: &impl ChatRepository,
-    preferences: &impl PreferenceRepository,
-    beliefs: &impl BeliefRepository,
+    // What they told Endora, and the brain its learning is noted into (ADR 0101).
+    knowledge: &(impl PreferenceRepository + Brain),
     outcomes: &impl OutcomeRepository,
     capabilities: &dyn CapabilityRunner,
     butler: &dyn Butler,
@@ -1160,8 +1160,7 @@ pub fn send_to_butler(
     // escalation is wired on the streaming (primary chat) path; None here.
     send_to_butler_streaming(
         chat,
-        preferences,
-        beliefs,
+        knowledge,
         outcomes,
         capabilities,
         butler,
@@ -1631,8 +1630,8 @@ pub(super) fn render_transcript(messages: &[ChatMessage]) -> String {
 )]
 pub fn send_to_butler_streaming(
     chat: &impl ChatRepository,
-    preferences: &impl PreferenceRepository,
-    beliefs: &impl BeliefRepository,
+    // What they told Endora, and the brain its learning is noted into (ADR 0101).
+    knowledge: &(impl PreferenceRepository + Brain),
     outcomes: &impl OutcomeRepository,
     capabilities: &dyn CapabilityRunner,
     butler: &dyn Butler,
@@ -1648,8 +1647,7 @@ pub fn send_to_butler_streaming(
 ) -> Result<(ChatMessage, Vec<String>), AppError> {
     send_to_butler_streaming_for_request(
         chat,
-        preferences,
-        beliefs,
+        knowledge,
         outcomes,
         capabilities,
         butler,
@@ -1670,8 +1668,8 @@ pub fn send_to_butler_streaming(
 #[expect(clippy::too_many_arguments, reason = "explicit dependencies")]
 pub fn send_to_butler_streaming_for_request(
     chat: &impl ChatRepository,
-    preferences: &impl PreferenceRepository,
-    beliefs: &impl BeliefRepository,
+    // What they told Endora, and the brain its learning is noted into (ADR 0101).
+    knowledge: &(impl PreferenceRepository + Brain),
     outcomes: &impl OutcomeRepository,
     capabilities: &dyn CapabilityRunner,
     butler: &dyn Butler,
@@ -1746,7 +1744,7 @@ pub fn send_to_butler_streaming_for_request(
         context.did_lately.clear();
     }
     let context = &context;
-    let prefs = preferences.list_all()?;
+    let prefs = knowledge.list_all()?;
 
     // `activity` — a plain-language record of what the butler did this turn.
     let mut activity: Vec<String> = Vec::new();
@@ -1970,23 +1968,31 @@ pub fn send_to_butler_streaming_for_request(
     )?;
     chat.append(&butler_msg)?;
 
-    // Understanding is KEPT (ADR 0052) — but only on a CONVERSATION turn. On an action
-    // turn (a tool ran, failed, or was blocked) we skip the extra model round: it's the
-    // biggest latency saving on a slow model, and belief-forming matters far less when
-    // the person was giving a command than when they were talking. On a pure chat turn,
-    // a tools-OFF envelope pass forms beliefs (an empty `tools` context keeps the JSON
-    // envelope, so understanding comes back without pulling the model into an action).
+    // What it learned goes into the brain (ADR 0101) — but only on a CONVERSATION turn. On
+    // an action turn (a tool ran, failed, or was blocked) the extra model round is skipped:
+    // it's the biggest latency saving on a slow model, and learning matters far less when
+    // the person was giving a command than when they were talking. A tools-OFF envelope
+    // pass proposes what to note (an empty `tools` context keeps the JSON envelope).
+    //
+    // It reads only the person's own messages. A reply of Endora's may relay what a mail or
+    // a web page said, and a "fact" taken from that would ride in every turn after it from
+    // memory — untrusted words must never be able to write themselves into the brain.
     let acted = activity.iter().any(|a| {
         a.starts_with("Used the ") || a.starts_with("Tried the ") || a.starts_with("Couldn't use ")
     });
     if !acted {
-        let mut belief_ctx = context.clone();
-        belief_ctx.tools = Vec::new();
+        let mut learning_ctx = context.clone();
+        learning_ctx.tools = Vec::new();
+        let theirs: Vec<ChatMessage> = history
+            .iter()
+            .filter(|m| m.role() == MessageRole::User)
+            .cloned()
+            .collect();
         let formed = butler
-            .respond(&history, &prefs, &belief_ctx)
+            .respond(&theirs, &prefs, &learning_ctx)
             .map(|r| r.beliefs)
             .unwrap_or_default();
-        record_formed_beliefs(beliefs, formed, ids, clock, &mut activity)?;
+        note_what_it_learned(knowledge, formed, &today(clock), &mut activity)?;
     }
 
     Ok((butler_msg, activity))

@@ -24,8 +24,8 @@ use endora_application::{
     ModelSlot, RepositoryError, Sampling, usecases,
 };
 use endora_application::{
-    AuditRecord, Belief, BeliefId, ChatMessage, IdSource, IntentionRepository, Preference,
-    PreferenceId, PreferenceKind, ResearchAssignment, ResearchRepository, ResearchStatus,
+    AuditRecord, ChatMessage, IdSource, IntentionRepository, Preference, PreferenceId,
+    PreferenceKind, ResearchAssignment, ResearchRepository, ResearchStatus,
 };
 use endora_infrastructure::{
     Capability, CapabilityError, RandomIdSource, SqliteStore, SystemClock,
@@ -392,10 +392,15 @@ pub fn app(state: AppState) -> Router {
         .route("/v1/chat/context", get(chat_context))
         .route("/v1/chat/context/reset", post(reset_chat_context))
         .route("/v1/chat/stream", post(stream_chat))
-        .route("/v1/understanding", get(list_understanding))
-        .route("/v1/understanding/forget", post(forget_what_it_learned))
-        .route("/v1/understanding/{id}/affirm", post(affirm_belief))
-        .route("/v1/understanding/{id}/correct", post(correct_belief))
+        // What Endora knows about the person, page by page (ADR 0101).
+        .route("/v1/brain", get(brain_overview))
+        .route("/v1/brain/forget", post(forget_what_it_learned))
+        .route(
+            "/v1/brain/pages/{*path}",
+            get(read_brain_page)
+                .put(write_brain_page)
+                .delete(delete_brain_page),
+        )
         .route("/v1/outcomes", get(list_outcomes))
         .route("/v1/repairs", get(list_repairs))
         .route(
@@ -730,6 +735,8 @@ fn context_window_tokens() -> usize {
 mod chat;
 use chat::*;
 
+mod brain;
+use brain::*;
 mod life;
 
 mod mail;

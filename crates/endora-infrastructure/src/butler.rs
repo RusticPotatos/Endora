@@ -1171,9 +1171,12 @@ message>\",\"understanding\":[<zero or more beliefs>],\
 Each understanding item is {\"statement\":\"<what you now believe, addressing them as \
 'you', e.g. 'you want more energy to travel' or 'you find mornings hard'>\",\
 \"kind\":\"intent|value|preference|pattern|motivation|frustration|stressor|relationship|other\",\
-\"confidence\":\"low|medium|high\",\"evidence\":\"<what they said that supports it>\"}. \
-Only include NEW or changed understanding you have real evidence for; [] is fine, and \
-do not repeat what you already understand (listed below). The JSON field names are \
+\"confidence\":\"low|medium|high\",\"evidence\":\"<what they said that supports it>\",\
+\"page\":\"<the page of your brain it belongs on, such as hobbies/watches or routine/weekdays: \
+one of your pages when one fits, otherwise a short new name>\"}. \
+Only include NEW, LASTING things you have real evidence for — never a one-off question, an \
+event, or anything tied to a day; [] is fine, and do not repeat what your memory and pages \
+already say (listed below). The JSON field names are \
 the machine layer — keep those words OUT of the \"reply\" text. \
 You also have SKILLS you can actually use — both to get real information AND to \
 CARRY OUT actions the person asks for, like controlling the home, lights, switches, \
@@ -1947,6 +1950,7 @@ fn parse_belief(value: &Value) -> Option<FormedBelief> {
         kind: BeliefKind::from_name(value["kind"].as_str().unwrap_or("other")),
         confidence: Confidence::from_name(value["confidence"].as_str().unwrap_or("low")),
         evidence: value["evidence"].as_str().unwrap_or("").trim().to_owned(),
+        page: value["page"].as_str().unwrap_or("").trim().to_owned(),
     })
 }
 

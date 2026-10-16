@@ -12,7 +12,7 @@ use endora_conversation::{ChatMessage, MessageRole};
 use endora_kernel::ids::{MessageId, Timestamp};
 use endora_platform::AuditRecord;
 use endora_understanding::{
-    Belief, BeliefKind, Confidence, Intention, Outcome, Preference, ResearchAssignment,
+    BeliefKind, Confidence, Intention, Outcome, Preference, ResearchAssignment,
 };
 
 /// How long a worker reservation remains owned before restart recovery may reclaim it.
@@ -26,8 +26,6 @@ pub struct MemorySnapshot {
     pub audit: Vec<AuditRecord>,
     /// The whole conversation with the butler.
     pub messages: Vec<ChatMessage>,
-    /// Endora's understanding of the person — the beliefs it holds.
-    pub beliefs: Vec<Belief>,
     /// What happened after Endora acted — claim, observation and reaction (ADR 0053).
     pub outcomes: Vec<Outcome>,
     /// What Endora has pursued, is pursuing, and dropped (ADR 0052).
@@ -134,6 +132,9 @@ pub struct FormedBelief {
     pub confidence: Confidence,
     /// What in the conversation supports it.
     pub evidence: String,
+    /// Which page of the brain it belongs on, as the model named it (`hobbies/watches`).
+    /// Code decides whether that is a page it may write to (ADR 0101).
+    pub page: String,
 }
 
 /// What the butler says back: a reply, any actions it proposes, and any

@@ -10,13 +10,11 @@ mod brain_folder;
 pub use brain_folder::BrainFolder;
 
 use crate::application::{
-    BeliefRepository, IntentionRepository, OutcomeRepository, PreferenceRepository,
-    ResearchRepository,
+    IntentionRepository, OutcomeRepository, PreferenceRepository, ResearchRepository,
 };
 use crate::domain::{
-    Belief, BeliefKind, BeliefStatus, Confidence, Intention, IntentionOrigin, IntentionState,
-    Outcome, Preference, PreferenceKind, Reaction, ResearchAssignment, ResearchReport,
-    ResearchStatus,
+    Intention, IntentionOrigin, IntentionState, Outcome, Preference, PreferenceKind, Reaction,
+    ResearchAssignment, ResearchReport, ResearchStatus,
 };
 
 /// Creates the understanding tables if absent (idempotent).
@@ -26,17 +24,7 @@ use crate::domain::{
 pub fn migrate(db: &Db) -> Result<(), RepositoryError> {
     db.lock()?
         .execute_batch(
-            "CREATE TABLE IF NOT EXISTS beliefs (
-                id               TEXT PRIMARY KEY,
-                statement        TEXT NOT NULL,
-                kind             TEXT NOT NULL,
-                confidence       TEXT NOT NULL,
-                evidence         TEXT NOT NULL,
-                created_ms       INTEGER NOT NULL,
-                last_affirmed_ms INTEGER NOT NULL,
-                status           TEXT NOT NULL
-            ) STRICT;
-            CREATE TABLE IF NOT EXISTS intentions (
+            "CREATE TABLE IF NOT EXISTS intentions (
                 id                 TEXT PRIMARY KEY,
                 statement          TEXT NOT NULL,
                 motivating_belief  TEXT,
@@ -147,47 +135,6 @@ impl UnderstandingStore {
     #[must_use]
     pub fn new(db: Db) -> Self {
         Self { db }
-    }
-}
-
-impl BeliefRepository for UnderstandingStore {
-    fn save(&self, belief: &Belief) -> Result<(), RepositoryError> {
-        self.db
-            .lock()?
-            .execute(
-                "INSERT OR REPLACE INTO beliefs \
-                 (id, statement, kind, confidence, evidence, created_ms, last_affirmed_ms, status) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-                params![
-                    id_text(belief.id().value()),
-                    belief.statement(),
-                    belief.kind().name(),
-                    belief.confidence().name(),
-                    belief.evidence(),
-                    belief.created_at().unix_millis(),
-                    belief.last_affirmed_at().unix_millis(),
-                    belief.status().name(),
-                ],
-            )
-            .map_err(backend)?;
-        Ok(())
-    }
-
-    fn get(&self, id: BeliefId) -> Result<Option<Belief>, RepositoryError> {
-        let conn = self.db.lock()?;
-        Ok(all_beliefs(&conn)?.into_iter().find(|b| b.id() == id))
-    }
-
-    fn list(&self) -> Result<Vec<Belief>, RepositoryError> {
-        let conn = self.db.lock()?;
-        all_beliefs(&conn)
-    }
-
-    fn forget_all(&self) -> Result<usize, RepositoryError> {
-        self.db
-            .lock()?
-            .execute("DELETE FROM beliefs", [])
-            .map_err(backend)
     }
 }
 
@@ -601,51 +548,10 @@ fn all_preferences(conn: &Connection) -> Result<Vec<Preference>, RepositoryError
     Ok(out)
 }
 
-fn all_beliefs(conn: &Connection) -> Result<Vec<Belief>, RepositoryError> {
-    let mut stmt = conn
-        .prepare(
-            "SELECT id, statement, kind, confidence, evidence, created_ms, last_affirmed_ms, status \
-             FROM beliefs ORDER BY last_affirmed_ms DESC, rowid DESC",
-        )
-        .map_err(backend)?;
-    let rows = stmt
-        .query_map([], |r| {
-            Ok((
-                r.get::<_, String>(0)?,
-                r.get::<_, String>(1)?,
-                r.get::<_, String>(2)?,
-                r.get::<_, String>(3)?,
-                r.get::<_, String>(4)?,
-                r.get::<_, i64>(5)?,
-                r.get::<_, i64>(6)?,
-                r.get::<_, String>(7)?,
-            ))
-        })
-        .map_err(backend)?;
-    let mut out = Vec::new();
-    for row in rows {
-        let (id, statement, kind, confidence, evidence, created_ms, affirmed_ms, status) =
-            row.map_err(backend)?;
-        out.push(Belief::from_parts(
-            BeliefId::new(parse_id(&id)?),
-            statement,
-            BeliefKind::from_name(&kind),
-            Confidence::from_name(&confidence),
-            evidence,
-            Timestamp::from_unix_millis(created_ms),
-            Timestamp::from_unix_millis(affirmed_ms),
-            BeliefStatus::from_name(&status),
-        ));
-    }
-    Ok(out)
-}
-
 #[cfg(test)]
 mod tests {
     use super::{BrainFolder, UnderstandingStore, migrate, move_told_into_the_brain};
-    use crate::application::{
-        BeliefRepository, IntentionRepository, OutcomeRepository, PreferenceRepository,
-    };
+    use crate::application::{IntentionRepository, OutcomeRepository, PreferenceRepository};
     use crate::domain::{Intention, Outcome, Reaction};
     use endora_kernel::ids::{BeliefId, IntentionId, OutcomeId, Timestamp};
     use endora_persistence::Db;
@@ -739,31 +645,6 @@ mod tests {
     }
 
     #[test]
-    fn forgetting_what_it_learned_deletes_every_belief_and_keeps_what_they_said() {
-        use crate::domain::{Belief, BeliefKind, Confidence};
-        let db = Db::open_in_memory().unwrap();
-        migrate(&db).unwrap();
-        let store = UnderstandingStore::new(db);
-        for (id, said) in [(1, "prefers Fahrenheit"), (2, "wants to know the score")] {
-            BeliefRepository::save(
-                &store,
-                &Belief::new(
-                    BeliefId::new(id),
-                    said,
-                    BeliefKind::Preference,
-                    Confidence::High,
-                    "said so",
-                    Timestamp::from_unix_millis(1),
-                )
-                .unwrap(),
-            )
-            .unwrap();
-        }
-        assert_eq!(store.forget_all().unwrap(), 2);
-        assert!(BeliefRepository::list(&store).unwrap().is_empty());
-    }
-
-    #[test]
     fn what_they_told_it_moves_into_the_brain_once_and_the_table_goes() {
         let db = Db::open_in_memory().unwrap();
         migrate(&db).unwrap();
@@ -803,14 +684,6 @@ mod tests {
             0,
             "and only once"
         );
-    }
-
-    #[test]
-    fn beliefs_list_is_empty_initially() {
-        let db = Db::open_in_memory().unwrap();
-        migrate(&db).unwrap();
-        let store = UnderstandingStore::new(db);
-        assert!(BeliefRepository::list(&store).unwrap().is_empty());
     }
 
     #[test]

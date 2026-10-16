@@ -148,9 +148,11 @@ runInContext(
       } },
   ];
   CHAT_DAYS = [{ day: "2026-07-30", count: 2 }];
-  UNDERSTANDING = [{ id: "1", statement: "you prefer temperatures in Fahrenheit",
-                     kind: "preference", confidence: "high", evidence: "you asked for it",
-                     settled: true, last_affirmed_ms: 1 }];
+  BRAIN = { memory: "# Memory\\n\\n## What you told me\\n\\n- Based in: New York\\n\\n## What I know best\\n\\n- Busy Monday to Friday\\n",
+            pages: [{ path: "hobbies/watches", title: "Watches", line: "Collects dive watches" }] };
+  BRAIN_PAGE = { path: "hobbies/watches",
+                 text: "# Watches\\n\\nCollects <b>dive</b> watches.\\n\\n## Timeline\\n\\n- 2026-10-16: Collects dive watches\\n",
+                 history: [{ at: "2026-10-16T12:00:00-04:00", why: "noted from chat" }] };
   OUTCOMES = [{ id: "42", capability: "home.HassTurnOff", claim: "done",
                 observation: "still on", observed: true, reaction: null, at_ms: 1 }];
   RESEARCH = { items: ["queued", "running", "retry_wait", "delivered", "blocked",
@@ -529,21 +531,38 @@ if (failures.length) {
 }
 
 // The clean slate (owner, 2026-10-16): no Inbox, no check-in or nightly review to switch on,
-// no durable goals to watch or stop, no beliefs listed kind by kind; About you offers to forget what it learned and keeps what
-// they told it.
+// no durable goals to watch or stop, no beliefs listed kind by kind.
 {
-  for (const gone of ["go:inbox", "nightsched", "data-change=\"checkin\"", "tunesave", "affirm:belief", "viewGoals", "/v1/goals"]) {
+  for (const gone of ["go:inbox", "nightsched", "data-change=\"checkin\"", "tunesave", "affirm:belief",
+    "viewGoals", "/v1/goals", "/v1/understanding"]) {
     if (source.includes(gone)) {
       console.error(`clean slate: ${gone} is back`);
       process.exit(1);
     }
   }
-  runInContext('UNDERSTANDING = [{ id: "1", statement: "prefers Fahrenheit", kind: "preference" }]', context);
+}
+
+// About you is the brain (ADR 0101): what it knows best, its pages one tap away, and a way to
+// start fresh; a page reads as text, edits as text, says what happened to it, and only a page
+// that is not memory can be deleted.
+{
+  const fail = (what) => { console.error(what); process.exit(1); };
   const about = runInContext("viewUnderstanding()", context);
-  if (!about.includes("forgetlearned") || !about.includes("1 thing about you")) {
-    console.error("about you: the way to start fresh is missing");
-    process.exit(1);
-  }
+  if (!about.includes("Busy Monday to Friday")) fail("about you: what it knows best is missing");
+  if (!about.includes('data-act="go:brainpage:hobbies/watches"')) fail("about you: a page cannot be opened");
+  if (!about.includes("forgetlearned")) fail("about you: the way to start fresh is missing");
+  runInContext('NAV = { v: "brainpage", id: "hobbies/watches" }; BRAIN_EDITING = false;', context);
+  const page = runInContext("viewBrainPage()", context);
+  if (page.includes("<b>dive</b>")) fail("brain page: the page's text became markup");
+  if (!page.includes("noted from chat")) fail("brain page: its history is missing");
+  if (!page.includes('data-act="braindelete:hobbies/watches"')) fail("brain page: it cannot be deleted");
+  runInContext("BRAIN_EDITING = true;", context);
+  const editing = runInContext("viewBrainPage()", context);
+  if (!editing.includes('id="brain-text"') || editing.includes("<b>dive</b>")) fail("brain page: editing does not show the text safely");
+  runInContext('NAV = { v: "brainpage", id: "memory" }; BRAIN_EDITING = false;', context);
+  if (runInContext("viewBrainPage()", context).includes("braindelete")) fail("brain page: memory can be deleted");
+  runInContext('NAV = { v: "chat" }; BRAIN_EDITING = false;', context);
+  console.log("about you: the brain's pages open, edit as text, and memory stays");
 }
 
 // Devices that stopped answering are never asked about: the owner turned it off for good

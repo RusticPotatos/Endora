@@ -19,7 +19,7 @@ const UNDER_SETTINGS = [
   { view: "connections", icon: "gear", label: "Connections", note: "Home Assistant, your home lab's services, and tool servers" },
   { view: "skills", icon: "skills", label: "Skills", note: "what Endora can do in chat, and skills you teach it" },
   { view: "permissions", icon: "scale", label: "Permissions", note: "how far Endora may act on its own" },
-  { view: "understanding", icon: "person", label: "About you", note: "what you've told it, what it has learned, and what it's working on" },
+  { view: "understanding", icon: "person", label: "About you", note: "what you've told it, and the pages of what it knows" },
   { view: "signin", icon: "lock", label: "Your sign-in", note: "password, authenticator, and tokens for scripts" },
   { view: "data", icon: "export", label: "Your data", note: "take a copy of what Endora knows, or delete it" },
 ];
