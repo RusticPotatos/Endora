@@ -247,3 +247,41 @@ async fn reading_an_old_backlog_pings_nobody() {
     while super::workers::read_mail_once(&state).await.is_some() {}
     assert!(state.chat.list().unwrap().is_empty());
 }
+
+#[test]
+fn a_chat_that_cannot_be_read_is_not_quiet() {
+    // Not being able to tell is a reason to wait, never a reason to start.
+    let now = Timestamp::from_unix_millis(100 * 60_000);
+    assert!(!super::workers::quiet_given(
+        now,
+        Err(endora_application::RepositoryError::Backend(
+            "the chat is unavailable".to_owned()
+        ))
+    ));
+    assert!(
+        super::workers::quiet_given(now, Ok(Vec::new())),
+        "and an empty chat is the opposite: nobody has spoken"
+    );
+}
+
+#[test]
+fn endoras_own_messages_do_not_count_as_the_person_speaking() {
+    let now = Timestamp::from_unix_millis(100 * 60_000);
+    let said = |role| {
+        ChatMessage::new(
+            MessageId::new(1),
+            role,
+            "are you there?",
+            Timestamp::from_unix_millis(now.unix_millis() - 60_000),
+        )
+        .unwrap()
+    };
+    assert!(super::workers::quiet_given(
+        now,
+        Ok(vec![said(MessageRole::Butler)])
+    ));
+    assert!(!super::workers::quiet_given(
+        now,
+        Ok(vec![said(MessageRole::User)])
+    ));
+}

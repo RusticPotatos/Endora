@@ -121,6 +121,15 @@ fn pretty_metric(label: &str, detail: &str) -> String {
         _ => format!("Net {}/s", human_bytes(n)),
     }
 }
+/// The NAS figures, one short line each ("CPU 7%", "Free 13.8 TB"), wherever they are shown.
+pub fn nas_figures(metrics: &Value) -> Vec<String> {
+    metrics["items"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|i| pretty_metric(&safe(&i["label"]), &safe(&i["detail"])))
+        .collect()
+}
 fn human_bytes(mut n: f64) -> String {
     let units = ["B", "kB", "MB", "GB", "TB", "PB"];
     let mut unit = 0;
@@ -232,16 +241,7 @@ pub fn project_dashboard_with(
             json!({"name": safe(&group["name"]).chars().take(40).collect::<String>(), "services": services})
         })
         .collect();
-    let stats: Vec<_> = metrics
-        .map(|m| {
-            m["items"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .map(|i| pretty_metric(&safe(&i["label"]), &safe(&i["detail"])))
-                .collect()
-        })
-        .unwrap_or_default();
+    let stats = metrics.map(nas_figures).unwrap_or_default();
     let alerts: Vec<_> = alerts.iter().take(10).collect();
     json!({"stats": stats, "alerts": alerts, "groups": groups})
 }
@@ -937,16 +937,10 @@ impl HomeConsole for Adapter {
             "containers" => {
                 let result = self.containers()?;
                 let items:Vec<_>=result.as_array().into_iter().flatten().take(100).map(|item|json!({"id":safe(&item["Id"]),"label":safe(&item["Names"][0]).trim_start_matches('/'),"detail":format!("{} {}",safe(&item["State"]),safe(&item["Status"])),"protected":protected_container(item)})).collect();
-                let metrics = self
+                let summary = self
                     .metrics()
-                    .unwrap_or(json!({"summary":"Metrics need private setup","items":[]}));
-                let summary = metrics["items"]
-                    .as_array()
-                    .into_iter()
-                    .flatten()
-                    .map(|item| format!("{}: {}", safe(&item["label"]), safe(&item["detail"])))
-                    .collect::<Vec<_>>()
-                    .join(" | ");
+                    .map(|m| nas_figures(&m).join(" | "))
+                    .unwrap_or_default();
                 Ok(json!({"summary":summary,"items":items}))
             }
             "logs" => {
@@ -1036,6 +1030,41 @@ const OVERSEERR_SETTINGS: &[super::SettingSpec] = &[
         false,
     ),
 ];
+const PIHOLE_SETTINGS: &[super::SettingSpec] = &[
+    field(
+        "origin",
+        "Pi-hole address, e.g. http://192.168.1.10",
+        false,
+        false,
+    ),
+    field(
+        "password",
+        "Pi-hole app password (Settings > Web interface / API > Configure app password)",
+        true,
+        false,
+    ),
+];
+const UNIFI_SETTINGS: &[super::SettingSpec] = &[
+    field(
+        "origin",
+        "UniFi Network address, e.g. https://192.168.1.10:8443",
+        false,
+        false,
+    ),
+    field(
+        "username",
+        "A View Only local admin's username",
+        false,
+        false,
+    ),
+    field("password", "That admin's password", true, false),
+    field(
+        "site",
+        "Site name (blank for the default site)",
+        false,
+        true,
+    ),
+];
 const PORTAINER_SETTINGS: &[super::SettingSpec] = &[
     field(
         "origin",
@@ -1118,6 +1147,101 @@ pub fn metric_queries(host: &str) -> Result<Vec<(&'static str, String)>, &'stati
     ])
 }
 
+/// Pi-hole v6's settings test: exchanges the app password for a session, then gives the
+/// session back, since Pi-hole allows only a few at once. Reports a category, never what
+/// Pi-hole said or the password.
+fn pihole_signs_in(origin: &str, password: &str) -> Result<(), super::CapabilityError> {
+    let unavailable = |m: &str| super::CapabilityError::Unavailable(m.into());
+    if password.is_empty() {
+        return Err(unavailable("the app password is not set"));
+    }
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .timeout_global(Some(Duration::from_secs(8)))
+        .max_redirects(0)
+        .proxy(None)
+        .http_status_as_error(false)
+        .build()
+        .into();
+    let mut response = agent
+        .post(format!("{origin}/api/auth"))
+        .send_json(json!({ "password": password }))
+        .map_err(|_| unavailable("connection"))?;
+    match response.status().as_u16() {
+        200..=299 => {}
+        401 | 403 => return Err(unavailable("authentication")),
+        _ => return Err(unavailable("upstream")),
+    }
+    let mut bytes = Vec::new();
+    response
+        .body_mut()
+        .as_reader()
+        .take(16 * 1024)
+        .read_to_end(&mut bytes)
+        .map_err(|_| unavailable("protocol"))?;
+    let body: Value = serde_json::from_slice(&bytes).map_err(|_| unavailable("protocol"))?;
+    if body["session"]["valid"] != true {
+        return Err(unavailable("authentication"));
+    }
+    if let Some(sid) = body["session"]["sid"].as_str().filter(|s| !s.is_empty()) {
+        let _ = agent
+            .delete(format!("{origin}/api/auth"))
+            .header("X-FTL-SID", sid)
+            .call();
+    }
+    Ok(())
+}
+
+/// The self-hosted UniFi Network Application's settings test: signs in with the View Only local
+/// admin, then signs out. UniFi answers only over HTTPS with a certificate it made itself, and
+/// the owner chose not to check it for this address (a LAN service, a view-only account).
+/// Reports a category, never what UniFi said or the password.
+fn unifi_signs_in(
+    origin: &str,
+    username: &str,
+    password: &str,
+) -> Result<(), super::CapabilityError> {
+    let unavailable = |m: &str| super::CapabilityError::Unavailable(m.into());
+    if username.is_empty() || password.is_empty() {
+        return Err(unavailable("the username or password is not set"));
+    }
+    let tls = ureq::tls::TlsConfig::builder()
+        .disable_verification(true)
+        .build();
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .timeout_global(Some(Duration::from_secs(8)))
+        .max_redirects(0)
+        .proxy(None)
+        .http_status_as_error(false)
+        .tls_config(tls)
+        .build()
+        .into();
+    let response = agent
+        .post(format!("{origin}/api/login"))
+        .send_json(json!({ "username": username, "password": password }))
+        .map_err(|_| unavailable("connection"))?;
+    match response.status().as_u16() {
+        200..=299 => {}
+        400 | 401 | 403 => return Err(unavailable("authentication")),
+        _ => return Err(unavailable("upstream")),
+    }
+    // The session cookie, given back so the test leaves no session behind.
+    let session = response
+        .headers()
+        .get_all("set-cookie")
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .filter_map(|v| v.split(';').next())
+        .find(|c| c.starts_with("unifises=") || c.starts_with("TOKEN="))
+        .map(str::to_owned);
+    if let Some(cookie) = session {
+        let _ = agent
+            .post(format!("{origin}/api/logout"))
+            .header("Cookie", &cookie)
+            .send_empty();
+    }
+    Ok(())
+}
+
 /// What a [`HandheldSource`] says it needs: it only holds settings.
 const SETTINGS_ONLY_NEEDS: &str = "set up here; the handheld console uses it";
 
@@ -1152,6 +1276,8 @@ pub fn handheld_sources() -> Vec<Arc<dyn super::Capability>> {
         ("homelab-sonarr", "Sonarr", "The download queue on the handheld's Overview page, and what chat reads about it.", "media", ARR_SETTINGS),
         ("homelab-radarr", "Radarr", "The download queue on the handheld's Overview page, and what chat reads about it.", "media", ARR_SETTINGS),
         ("terminal-metrics", "Prometheus", "NAS figures (load, memory, disk) on the handheld, and what chat reads about the NAS.", "information", METRICS_SETTINGS),
+        ("network-pihole", "Pi-hole", "Your network's DNS and what it blocks, for what Endora reads about the network. Only ever read: Pi-hole's app password could change settings, and Endora never does.", "information", PIHOLE_SETTINGS),
+        ("network-unifi", "UniFi", "Your network's devices and Wi-Fi, for what Endora reads about the network. Give it a View Only local admin. UniFi's own certificate is not checked.", "information", UNIFI_SETTINGS),
     ]
     .into_iter()
     .map(|(id, name, description, category, settings)| {
@@ -1195,6 +1321,14 @@ impl super::Capability for HandheldSource {
         }
         super::homelab::validate_origin(origin)
             .map_err(|_| unavailable("configuration: use http://host:port with no path"))?;
+        if self.id == "network-pihole" {
+            return pihole_signs_in(origin, get("password"))
+                .map(|()| json!({"ok": true, "checked": self.name}));
+        }
+        if self.id == "network-unifi" {
+            return unifi_signs_in(origin, get("username"), get("password"))
+                .map(|()| json!({"ok": true, "checked": self.name}));
+        }
         let (path, key) = match self.id {
             "terminal-overseerr" => ("/api/v1/auth/me".to_owned(), get("api_key")),
             "terminal-portainer" => ("/api/endpoints".to_owned(), get("api_key")),

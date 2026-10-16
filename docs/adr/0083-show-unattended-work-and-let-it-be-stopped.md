@@ -4,6 +4,9 @@
 
 Accepted, 2026-10-12. Prepared with AI assistance (Claude).
 
+**Superseded 2026-10-16 by [0100](0100-the-clean-slate.md).** The goal strip and its Stop
+button are removed with durable goals; research keeps its own card.
+
 ## Context
 
 ADR 0082 made every way a goal ends reach the chat once. The console itself still

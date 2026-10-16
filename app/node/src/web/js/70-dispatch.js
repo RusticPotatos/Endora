@@ -15,10 +15,18 @@ function render() {
     : v === "permissions" ? viewPermissions()
     : v === "toolserver" ? viewToolServer()
     : v === "data" ? viewData()
+    : v === "spotify" ? viewSpotify()
+    : v === "lab" ? viewLab()
+    : v === "containers" ? viewContainers()
+    : v === "logs" ? viewLogs()
+    : v === "jobs" ? viewJobs()
+    : v === "job" ? viewJob()
+    : v === "media" ? viewMedia()
+    : v === "house" ? viewHouse()
+    : v === "music" ? viewMusic()
     // Older links: what it remembers is now part of About you.
     : v === "prefs" ? viewUnderstanding()
     : v === "settings" ? viewSettings()
-    : v === "inbox" ? viewInbox()
     : v === "mail" ? viewMail()
     : v === "display" ? viewDisplay()
     : v === "models" ? viewModels()
@@ -61,6 +69,29 @@ async function dispatch(act) {
   }
   try {
     if (verb === "reload") { location.reload(); return; }
+    // The home lab, media, smart home and music.
+    if (await labDispatch(verb, noun, id, arg)) return;
+    // Spotify: one sign-in, held by the node, started or finished from any device.
+    if (verb === "spotify") {
+      try {
+        if (noun === "begin") {
+          const field = document.getElementById("spotify-client");
+          SPOTIFY = await api("POST", "/v1/connections/spotify/begin", { client_id: field ? field.value : "", via: id });
+          // Approving here: go straight to Spotify; it sends you back to Endora.
+          if (id === "endora" && SPOTIFY.sign_in_url) { location.href = SPOTIFY.sign_in_url; return; }
+        } else if (noun === "finish") {
+          const field = document.getElementById("spotify-returned");
+          SPOTIFY = await api("POST", "/v1/connections/spotify/finish", { returned: field ? field.value : "" });
+          flash(SPOTIFY.detail, "ok");
+        } else if (noun === "disconnect") {
+          if (!confirm("Disconnect Spotify from Endora? Every device loses it until you connect again.")) return;
+          SPOTIFY = await api("POST", "/v1/connections/spotify/disconnect", {});
+        } else {
+          SPOTIFY = await api("GET", "/v1/connections/spotify");
+        }
+      } catch (e) { flash("Spotify: " + e.message, "err"); }
+      return render();
+    }
     // The AI screen's own choices: the mail reader's model and the speech server.
     if (verb === "ai" && (noun === "mailreader" || noun === "speech")) {
       const input = document.getElementById(noun === "mailreader" ? "ai-mail-reader" : "ai-speech");
@@ -86,18 +117,6 @@ async function dispatch(act) {
       return reload();
     }
     if (verb === "research" && noun === "download") { await downloadResearch(id); return; }
-    if (verb === "goal" && noun === "cancel") {
-      // `id` is still URI-encoded: a goal's key can contain ":", which the split above would
-      // otherwise have cut in two.
-      try {
-        await api("POST", `/v1/goals/${id}/cancel`, {});
-        flash("Stopped.", "ok");
-      } catch (e) {
-        // Usually it finished while the button was on screen; the refresh shows how it ended.
-        flash(String(e.message || e), "warn");
-      }
-      return reload();
-    }
     // Ask the same thing again after a turn that never answered. It re-sends the person's
     // own last words rather than making them retype them, which is the whole difference
     // between a dead end and a hiccup.
@@ -588,20 +607,6 @@ async function dispatch(act) {
     // Discover the models an endpoint offers, into its picker.
     if (verb === "discover") { await discoverModels(noun); return; }
     if (verb === "testconn") { await testConnection(noun); return; }
-    // Kick off the self-improving model layer (background; results go to Activity).
-    if (verb === "modeltune") {
-      try { await api("POST", "/v1/model-layer/run", {}); flash("Evaluating your local models — watch Activity for scores and the result.", "ok"); }
-      catch (e) { flash("Couldn't start the tune: " + e.message, "err"); }
-      return;
-    }
-    // Save the nightly auto-tune schedule.
-    if (verb === "tunesave") {
-      const enabled = !!(document.getElementById("tune-nightly") || {}).checked;
-      const hour_utc = Number((document.getElementById("tune-hour") || {}).value || 4);
-      try { await api("POST", "/v1/model-tune/schedule", { enabled, hour_utc }); flash(enabled ? "Nightly auto-tune on." : "Nightly auto-tune off.", "ok"); }
-      catch (e) { flash("Couldn't save the schedule: " + e.message, "err"); }
-      return reload();
-    }
     // Save the butler models. A blank key keeps the stored one; blank sampling
     // fields mean "use the endpoint default". Applies on the next message.
     if (verb === "modelsave") {
@@ -749,24 +754,16 @@ async function dispatch(act) {
     // Answer a problem statement about something in your world (ADR 0056). Both answers
     // end it: one changes the service, the other says it is meant to be like that. There
     // is deliberately no "remind me later" — that is how a queue starts.
-    if (verb === "trouble") {
-      // Re-split from the raw action: a thing's name is the last field and may itself
-      // contain a colon, so the fixed four-way destructure above would truncate it.
-      const parts = act.split(":");
-      const answer = String(noun || "");
-      const server = parts[2] || "";
-      const thing = parts.slice(3).join(":");
-      try {
-        const said = await api("POST", "/v1/standing-trouble/answer", { server, thing, answer });
-        flash(said.done ? said.done.charAt(0).toUpperCase() + said.done.slice(1) : "Noted.", "ok");
-      } catch (e) { flash("Couldn't do that: " + e.message, "err"); }
-      return reload();
-    }
     // Stop working on something. The person's ONLY verb over an intention — there is
     // deliberately no way to create or edit one (ADR 0052).
-    if (verb === "dropintention") {
-      try { await api("POST", `/v1/intentions/${id}/drop`); flash("Alright — I'll leave that.", "ok"); }
-      catch (e) { flash("Couldn't stop that: " + e.message, "err"); }
+    // Start fresh: forget everything Endora learned, keeping what they told it.
+    if (verb === "forgetlearned") {
+      if (!confirm("Forget everything Endora has learned about you? What you told it yourself stays. This can't be undone.")) return;
+      try {
+        const done = await api("POST", "/v1/understanding/forget", { confirm: true });
+        const meant = done.intentions ? `, and ${done.intentions} thing${done.intentions === 1 ? "" : "s"} it meant to do` : "";
+        flash(`Forgot ${done.forgot} thing${done.forgot === 1 ? "" : "s"} it had learned${meant}.`, "ok");
+      } catch (e) { flash("Couldn't forget: " + e.message, "err"); }
       return reload();
     }
     // How an action landed. Offered where the action appears; never asked for, and
@@ -778,14 +775,6 @@ async function dispatch(act) {
       } catch (e) { flash("Couldn't note that: " + e.message, "err"); }
       return reload();
     }
-    // Set the proactive check-in cadence (noun is "off" or an interval in ms).
-    if (verb === "checkin") {
-      const enabled = noun !== "off";
-      const interval_ms = enabled ? Number(noun) : (CHECKIN.interval_ms || 86400000);
-      await api("POST", "/v1/checkin", { enabled, interval_ms });
-      flash(enabled ? "The butler will check in with you." : "Check-ins off.", "ok");
-      return reload();
-    }
     // Daily-brief schedule: `noun` is "off" or a LOCAL hour; convert to UTC.
     if (verb === "briefsched") {
       const enabled = noun !== "off";
@@ -793,15 +782,6 @@ async function dispatch(act) {
       const hour_utc = enabled ? ((Number(noun) + tzOff) % 24 + 24) % 24 : (BRIEF_SCHED.hour_utc || 12);
       await api("POST", "/v1/brief/schedule", { enabled, hour_utc });
       flash(enabled ? "The butler will bring you a daily brief." : "Daily brief off.", "ok");
-      return reload();
-    }
-    // Nightly self-improvement loop (ADR 0051): `noun` is "off" or a LOCAL hour.
-    if (verb === "nightsched") {
-      const enabled = noun !== "off";
-      const tzOff = new Date().getTimezoneOffset() / 60;
-      const hour_utc = enabled ? ((Number(noun) + tzOff) % 24 + 24) % 24 : (NIGHT_SCHED.hour_utc || 3);
-      await api("POST", "/v1/nightly-loop/schedule", { enabled, hour_utc });
-      flash(enabled ? "The butler will review the day and reflect overnight." : "Nightly review off.", "ok");
       return reload();
     }
     if (verb === "create" && noun === "pref") {
@@ -893,15 +873,11 @@ function setupHeader(health) {
     // (Skills, preferences, export) lives inside Settings.
     menu.innerHTML =
       item("go:chat", "chat", "Home") +
-      item(
-        "go:inbox",
-        "inbox",
-        "Inbox",
-        // A count only when there is something unread — a badge showing "0" is just
-        // furniture, and one that never clears is a nag.
-        unreadCount() ? `<span class="pill active">${unreadCount()}</span>` : "",
-      ) +
       item("go:mail", "inbox", "Mail") +
+      item("go:music", "music", "Music") +
+      item("go:house", "house", "Smart home") +
+      item("go:media", "film", "Media") +
+      item("go:lab", "server", "Home lab") +
       item("go:audit", "audit", "Activity") +
       item("go:settings", "gear", "Settings") +
       `<div class="divider"></div>` +

@@ -322,15 +322,11 @@ pub(super) async fn test_model_connection(
     }))
 }
 
-/// Kicks off the self-improving model layer (ADR 0055) in the background:
-/// discover the models on the local endpoint, score each with the fitness
-/// function, and gate-adopt the best **local** one (auto-adopt local, propose
-/// cloud). Slow (it runs the eval per candidate), so it runs detached and records
-/// its progress + result to the activity log; the response returns immediately.
 /// Runs the model layer synchronously (discover local models → evaluate each →
 /// gated adoption), recording progress + the result to the activity log. Slow
-/// (it runs the eval per candidate). Shared by the manual `/v1/model-layer/run`
-/// and the scheduled nightly tune.
+/// (it runs the eval per candidate). Used by the manual `/v1/model-layer/run`; the
+/// nightly schedule is gone (owner, 2026-10-16), and the model comparison will run it
+/// on purpose.
 pub(super) fn run_model_tune(
     butler: &(dyn Butler + Send + Sync),
     config: &endora_capabilities::ConfigStore,
@@ -424,6 +420,11 @@ pub(super) fn tune_model_url() -> String {
     std::env::var("ENDORA_MODEL_URL").unwrap_or_else(|_| "http://localhost:11434/v1".to_owned())
 }
 
+/// Kicks off the self-improving model layer (ADR 0055) in the background:
+/// discover the models on the local endpoint, score each with the fitness
+/// function, and gate-adopt the best **local** one (auto-adopt local, propose
+/// cloud). Slow (it runs the eval per candidate), so it runs detached and records
+/// its progress + result to the activity log; the response returns immediately.
 pub(super) async fn run_model_layer_now(
     State(state): State<AppState>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
@@ -442,49 +443,6 @@ pub(super) async fn run_model_layer_now(
         );
     });
     Ok(Json(json!({ "started": true })))
-}
-
-/// The nightly model-tune schedule (ADR 0055) — off by default.
-pub(super) async fn get_tune_schedule(
-    State(state): State<AppState>,
-) -> Result<Json<serde_json::Value>, ApiError> {
-    let config = state.config.clone();
-    let s = blocking(move || {
-        ModelTuneScheduleRepository::get(config.as_ref()).map_err(AppError::Repository)
-    })
-    .await?;
-    Ok(Json(
-        json!({ "enabled": s.enabled, "hour_utc": s.hour_utc }),
-    ))
-}
-
-#[derive(Deserialize)]
-pub(super) struct TuneScheduleRequest {
-    enabled: bool,
-    hour_utc: u8,
-}
-
-pub(super) async fn set_tune_schedule(
-    State(state): State<AppState>,
-    Json(req): Json<TuneScheduleRequest>,
-) -> Result<Json<serde_json::Value>, ApiError> {
-    let config = state.config.clone();
-    blocking(move || {
-        let current =
-            ModelTuneScheduleRepository::get(config.as_ref()).map_err(AppError::Repository)?;
-        ModelTuneScheduleRepository::set(
-            config.as_ref(),
-            &endora_application::ModelTuneSchedule {
-                enabled: req.enabled,
-                hour_utc: req.hour_utc.min(23),
-                last_ms: current.last_ms, // keep last-run so toggling doesn't re-fire
-            },
-        )
-        .map_err(AppError::Repository)
-    })
-    .await?;
-    let _ = state.changes.send(());
-    Ok(Json(json!({ "ok": true })))
 }
 
 #[derive(Deserialize)]
@@ -567,12 +525,10 @@ pub(super) async fn deep_ask(
             understanding.as_ref(),
             understanding.as_ref(),
             understanding.as_ref(),
-            understanding.as_ref(),
             &runner,
             &planned,
             audit.as_ref(),
             None,
-            Some(store.as_ref()),
             ids.as_ref(),
             clock.as_ref(),
             &context,
@@ -629,38 +585,6 @@ pub(super) async fn set_brief_schedule(
     .await?;
     let _ = state.changes.send(());
     Ok(Json(brief_schedule_json(&s)))
-}
-
-pub(super) fn nightly_loop_schedule_json(
-    s: &endora_scheduling::NightlyLoopSchedule,
-) -> serde_json::Value {
-    json!({ "enabled": s.enabled, "hour_utc": s.hour_utc })
-}
-
-/// The nightly self-improvement loop schedule (ADR 0051) — when the butler reviews
-/// the day and reflects, overnight, within the reversible band.
-pub(super) async fn get_nightly_loop_schedule(
-    State(state): State<AppState>,
-) -> Result<Json<serde_json::Value>, ApiError> {
-    let schedules = state.schedules.clone();
-    let s = blocking(move || usecases::nightly_loop_schedule(schedules.as_ref())).await?;
-    Ok(Json(nightly_loop_schedule_json(&s)))
-}
-
-/// Sets the nightly-loop schedule. `hour_utc` is the UTC hour (the console converts
-/// the person's local hour). The loop only ever reflects/drafts — never anything
-/// irreversible.
-pub(super) async fn set_nightly_loop_schedule(
-    State(state): State<AppState>,
-    Json(req): Json<BriefScheduleRequest>,
-) -> Result<Json<serde_json::Value>, ApiError> {
-    let schedules = state.schedules.clone();
-    let s = blocking(move || {
-        usecases::set_nightly_loop_schedule(schedules.as_ref(), req.enabled, req.hour_utc)
-    })
-    .await?;
-    let _ = state.changes.send(());
-    Ok(Json(nightly_loop_schedule_json(&s)))
 }
 
 // ---- what the deep model costs (ADR 0091) ----------------------------------

@@ -2,9 +2,9 @@
 //! outcomes and intentions.
 
 use endora_kernel::RepositoryError;
-use endora_kernel::ids::{BeliefId, IntentionId, NotionId, OutcomeId, PreferenceId};
+use endora_kernel::ids::{BeliefId, IntentionId, OutcomeId, PreferenceId};
 
-use crate::domain::{Belief, Intention, Notion, Outcome, Preference, ResearchAssignment};
+use crate::domain::{Belief, Intention, Outcome, Preference, ResearchAssignment};
 
 /// Persists research owned by a user-requested intention (ADR 0077).
 pub trait ResearchRepository {
@@ -16,41 +16,6 @@ pub trait ResearchRepository {
     fn active_research(&self) -> Result<Option<ResearchAssignment>, RepositoryError>;
     /// Returns all research, most recently updated first.
     fn list_research(&self) -> Result<Vec<ResearchAssignment>, RepositoryError>;
-}
-
-/// Persists and retrieves [`Notion`]s — what Endora is still thinking about (ADR 0057).
-///
-/// The counterpart to [`BeliefRepository`] one stage earlier: that one holds what Endora has
-/// earned the right to believe, this one what it suspects and is still gathering evidence for.
-///
-/// [`open`](Self::open) is the load-bearing query, because the cap is enforced against it. A
-/// notion that matured or died is kept but is no longer thought about, so the working set stays
-/// bounded however long the history grows.
-pub trait NotionRepository {
-    /// Inserts a notion, or replaces the one with the same id (form + support).
-    ///
-    /// # Errors
-    /// [`RepositoryError`] if the backend fails.
-    fn save(&self, notion: &Notion) -> Result<(), RepositoryError>;
-
-    /// Fetches a notion by id, `None` if absent.
-    ///
-    /// # Errors
-    /// [`RepositoryError`] if the backend fails or stored data is corrupt.
-    fn get(&self, id: NotionId) -> Result<Option<Notion>, RepositoryError>;
-
-    /// The ones still being thought about, best-supported first.
-    ///
-    /// # Errors
-    /// [`RepositoryError`] if the backend fails or stored data is corrupt.
-    fn open(&self) -> Result<Vec<Notion>, RepositoryError>;
-
-    /// Every notion, most recently supported first — including the ones that matured or
-    /// died, so what Endora dropped on its own stays visible rather than vanishing.
-    ///
-    /// # Errors
-    /// [`RepositoryError`] if the backend fails or stored data is corrupt.
-    fn list(&self) -> Result<Vec<Notion>, RepositoryError>;
 }
 
 /// Persists and retrieves [`Intention`]s — what Endora is pursuing (ADR 0052).
@@ -83,6 +48,13 @@ pub trait IntentionRepository {
     /// # Errors
     /// [`RepositoryError`] if the backend fails or stored data is corrupt.
     fn list(&self) -> Result<Vec<Intention>, RepositoryError>;
+
+    /// Deletes every intention Endora formed from a belief, and says how many there were.
+    /// Research the person asked for is a different origin and is not touched.
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if the backend fails.
+    fn forget_its_own(&self) -> Result<usize, RepositoryError>;
 }
 
 /// Persists and retrieves [`Outcome`]s — what happened after Endora acted (ADR 0053).
@@ -109,67 +81,6 @@ pub trait OutcomeRepository {
     fn list(&self) -> Result<Vec<Outcome>, RepositoryError>;
 }
 
-/// Keeps the asks the butler failed, so it can notice itself improving (ADR 0075).
-///
-/// Intent-named, no storage vocabulary: a failure is *filed*, a night's attempt is
-/// *recorded*, and what remains to try is *open*. Retirement is derived inside the
-/// record calls — passing a replay retires, and so does failing enough of them —
-/// never decided by a caller.
-pub trait SpecimenRepository {
-    /// Files a failed ask. Returns `false` — and files nothing — when the same ask
-    /// is already open (asking twice is one problem) or the shelf is full
-    /// ([`MOST_SPECIMENS_OPEN`](crate::domain::MOST_SPECIMENS_OPEN)).
-    ///
-    /// # Errors
-    /// [`RepositoryError`] if the backend fails.
-    fn file_specimen(
-        &self,
-        id: &str,
-        asked: &str,
-        verdict: &str,
-        now_ms: i64,
-    ) -> Result<bool, RepositoryError>;
-
-    /// The specimens still worth replaying, oldest first.
-    ///
-    /// # Errors
-    /// [`RepositoryError`] if the backend fails.
-    fn open_specimens(&self) -> Result<Vec<crate::domain::Specimen>, RepositoryError>;
-
-    /// The asks the machinery gave up on, oldest first — the proven gaps.
-    ///
-    /// Deliberately *not* a widening of [`open_specimens`](Self::open_specimens),
-    /// which means "still worth re-asking" and is what the nightly loop replays.
-    /// This is the other population: questions the house really asked, replayed to
-    /// exhaustion, still unanswered. Arithmetic over stored records with no model
-    /// anywhere in it, and the only trigger
-    /// [ADR 0071](../../../docs/adr/0071-capabilities-it-writes-itself.md) allows
-    /// for drafting a new capability.
-    ///
-    /// # Errors
-    /// [`RepositoryError`] if the backend fails.
-    fn gave_up_specimens(&self) -> Result<Vec<crate::domain::Specimen>, RepositoryError>;
-
-    /// Records one nightly replay and reports where the specimen landed. A pass
-    /// answers it; the
-    /// [`REPLAYS_BEFORE_GIVING_UP`](crate::domain::REPLAYS_BEFORE_GIVING_UP)th
-    /// failure gives up, because re-asking past that stops being information.
-    ///
-    /// The resulting state is **returned rather than looked up again**, so the
-    /// caller can say what became of the ask without a second read racing the
-    /// first — and so "it gave up" is recorded at the moment it happens instead of
-    /// being inferred afterwards from a replay count.
-    ///
-    /// # Errors
-    /// [`RepositoryError`] if the backend fails.
-    fn record_replay(
-        &self,
-        id: &str,
-        passed: bool,
-        now_ms: i64,
-    ) -> Result<crate::domain::SpecimenState, RepositoryError>;
-}
-
 /// Persists and retrieves [`Belief`]s — what the butler currently understands
 /// about the person.
 pub trait BeliefRepository {
@@ -190,6 +101,13 @@ pub trait BeliefRepository {
     /// # Errors
     /// [`RepositoryError`] if the backend fails or stored data is corrupt.
     fn list(&self) -> Result<Vec<Belief>, RepositoryError>;
+
+    /// Deletes every belief, and says how many there were. The person's own preferences are a
+    /// different store and are not touched.
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if the backend fails.
+    fn forget_all(&self) -> Result<usize, RepositoryError>;
 }
 
 /// Persists and retrieves [`Preference`]s — durable things the person wants the

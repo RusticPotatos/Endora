@@ -20,9 +20,8 @@ use endora_application::Clock;
 use endora_application::{
     ActivityItem, AppError, AutonomyEnvelope, AutonomyEnvelopeRepository, BriefSchedule, Butler,
     ButlerModelConfig, ButlerModelConfigRepository, CapabilityConfigRepository,
-    CapabilitySettingsRepository, CheckinSchedule, DeepModelRepository, ExecutionLeaseRepository,
-    GoalDelivery, GoalRepository, MemorySnapshot, ModelSlot, ModelTuneScheduleRepository,
-    RepositoryError, Sampling, usecases,
+    CapabilitySettingsRepository, DeepModelRepository, ExecutionLeaseRepository, MemorySnapshot,
+    ModelSlot, RepositoryError, Sampling, usecases,
 };
 use endora_application::{
     AuditRecord, Belief, BeliefId, ChatMessage, IdSource, IntentionRepository, Preference,
@@ -100,10 +99,6 @@ pub struct AppState {
     /// slow local model that catch-up degraded the first turns after every deploy — and
     /// the butler keeps the day's thread across restarts.
     pub summary: PersistentSummary,
-    /// Whether the node looks into things on its own (`ENDORA_OWN_WORK`, ADR 0094/0095).
-    /// Off unless the owner turned it on. When on, the nightly loop leaves the stumpers and
-    /// the long-running intention to that lane.
-    pub own_work: bool,
     /// The person's time zone (`ENDORA_TIME_ZONE`, or the fixed `ENDORA_UTC_OFFSET_MINUTES`),
     /// for patterns that depend on the time of day and for keeping daily hours on their clock.
     /// The node stores instants and does not otherwise know where the person is. UTC unless set.
@@ -260,7 +255,6 @@ impl AppState {
             summary,
             token,
             started_ms,
-            own_work: false,
             time_zone: endora_infrastructure::TimeZone::fixed(0),
             mail_store,
             mail_copy: None,
@@ -285,13 +279,6 @@ impl AppState {
     #[must_use]
     pub fn with_time_zone(mut self, time_zone: endora_infrastructure::TimeZone) -> Self {
         self.time_zone = time_zone;
-        self
-    }
-
-    /// Turns on the record lane: the node starts looking into things on its own.
-    #[must_use]
-    pub fn with_own_work(mut self, on: bool) -> Self {
-        self.own_work = on;
         self
     }
 
@@ -395,8 +382,8 @@ pub fn app(state: AppState) -> Router {
         .route("/v1/chat/context", get(chat_context))
         .route("/v1/chat/context/reset", post(reset_chat_context))
         .route("/v1/chat/stream", post(stream_chat))
-        .route("/v1/checkin", get(get_checkin).post(set_checkin))
         .route("/v1/understanding", get(list_understanding))
+        .route("/v1/understanding/forget", post(forget_what_it_learned))
         .route("/v1/understanding/{id}/affirm", post(affirm_belief))
         .route("/v1/understanding/{id}/correct", post(correct_belief))
         .route("/v1/outcomes", get(list_outcomes))
@@ -449,23 +436,26 @@ pub fn app(state: AppState) -> Router {
         .route("/v1/connect/connected", get(what_is_connected))
         .route("/v1/connect/begin", post(begin_connecting))
         .route("/v1/connect/finish", post(finish_connecting))
-        .route("/v1/standing-trouble", get(list_standing_trouble))
-        .route("/v1/standing-trouble/answer", post(answer_standing_trouble))
         .route("/v1/config-writes", get(list_config_writes))
         .route("/v1/config-writes/{id}/undo", post(undo_config_write))
         .route("/v1/outcomes/{id}/reaction", post(react_to_outcome))
-        // Read and drop only. There is deliberately NO create or edit route: Endora
-        // forms its own intentions, and the person's whole side of the interface is
-        // "stop doing that" (ADR 0052).
-        .route("/v1/intentions", get(list_intentions))
-        // Readable, never actionable — no companion POST exists (ADR 0057).
-        .route("/v1/notions", get(list_notions))
-        .route("/v1/intentions/{id}/drop", post(drop_intention))
         .route("/v1/mail", get(mail::mail_digest))
         .route("/v1/ai", get(ai::ai_overview).post(ai::set_ai))
-        .route("/v1/goals", get(list_goals))
-        .route("/v1/goals/{request_key}", get(get_goal))
-        .route("/v1/goals/{request_key}/cancel", post(cancel_goal))
+        // Spotify, held here and lent to every device; its callback is outside /v1 because a
+        // browser redirect carries no token (the waiting sign-in's state authorizes it).
+        .route("/v1/connections/spotify", get(spotify::status))
+        .route("/v1/connections/spotify/begin", post(spotify::begin))
+        .route("/v1/connections/spotify/finish", post(spotify::finish))
+        .route("/v1/connections/spotify/token", post(spotify::token))
+        .route(
+            "/v1/connections/spotify/take-over",
+            post(spotify::take_over),
+        )
+        .route(
+            "/v1/connections/spotify/disconnect",
+            post(spotify::disconnect),
+        )
+        .route("/connect/spotify/callback", get(spotify::callback))
         .route("/v1/research/readiness", get(research_readiness))
         .route("/v1/research", get(list_research).post(commission_research))
         .route("/v1/research/{id}", get(get_research))
@@ -514,10 +504,6 @@ pub fn app(state: AppState) -> Router {
             "/v1/brief/schedule",
             get(get_brief_schedule).post(set_brief_schedule),
         )
-        .route(
-            "/v1/nightly-loop/schedule",
-            get(get_nightly_loop_schedule).post(set_nightly_loop_schedule),
-        )
         .route("/v1/deep-model", get(get_deep_model).post(set_deep_model))
         .route("/v1/deep-model/usage", get(deep_usage))
         .route("/v1/deep-model/balance", get(deep_balance))
@@ -529,10 +515,6 @@ pub fn app(state: AppState) -> Router {
         .route("/v1/models/discover", post(discover_models))
         .route("/v1/models/test", post(test_model_connection))
         .route("/v1/model-layer/run", post(run_model_layer_now))
-        .route(
-            "/v1/model-tune/schedule",
-            get(get_tune_schedule).post(set_tune_schedule),
-        )
         .route("/v1/transcribe", post(transcribe))
         .route("/v1/deep-ask", post(deep_ask))
         .route(
@@ -755,6 +737,8 @@ use models::*;
 mod workers;
 // The AI screen: every model Endora uses, where it runs and what it sees.
 mod ai;
+// Spotify, held by the node and lent to every device.
+mod spotify;
 pub use ai::MailReader;
 // Endora's nightly copies of its own database.
 mod snapshots;
@@ -765,10 +749,6 @@ mod misc;
 use misc::*;
 
 #[cfg(test)]
-mod goal_lanes;
-#[cfg(test)]
 mod mail_reading;
-#[cfg(test)]
-mod own_work;
 #[cfg(test)]
 mod tests;

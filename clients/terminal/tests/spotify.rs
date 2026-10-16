@@ -1,67 +1,5 @@
-use endora_terminal::spotify::{
-    Item, NowPlaying, Tokens, auth_url, new_verifier, parse_callback, parse_items, parse_now,
-    pkce_challenge, time_text,
-};
+use endora_terminal::spotify::{Item, NowPlaying, Tokens, parse_items, parse_now, time_text};
 use serde_json::json;
-
-#[test]
-fn pkce_challenge_matches_the_published_rfc_7636_vector() {
-    assert_eq!(
-        pkce_challenge("dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"),
-        "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
-    );
-    let a = new_verifier();
-    assert!((43..=128).contains(&a.len()));
-    assert!(a.bytes().all(|b| b.is_ascii_alphanumeric()));
-    assert_ne!(a, new_verifier(), "verifiers are random");
-}
-
-#[test]
-fn the_login_url_asks_for_playback_control_with_pkce_and_no_secret() {
-    let url = auth_url("fictionalclientid", "CHALLENGE", "state123");
-    assert!(url.starts_with("https://accounts.spotify.com/authorize?"));
-    for part in [
-        "client_id=fictionalclientid",
-        "response_type=code",
-        "code_challenge_method=S256",
-        "code_challenge=CHALLENGE",
-        "state=state123",
-        "redirect_uri=http%3A%2F%2F127.0.0.1%3A8888%2Fcallback",
-        "user-modify-playback-state",
-        "user-read-playback-state",
-    ] {
-        assert!(url.contains(part), "{part}: {url}");
-    }
-    assert!(!url.contains("client_secret"));
-}
-
-#[test]
-fn the_pasted_redirect_address_yields_the_code_only_when_the_state_matches() {
-    let ok = "http://127.0.0.1:8888/callback?code=abc123&state=state123";
-    assert_eq!(parse_callback(ok, "state123").unwrap(), "abc123");
-    // Quotes, spaces and a missing scheme from a hasty paste are tolerated.
-    assert_eq!(
-        parse_callback(
-            " '127.0.0.1:8888/callback?code=abc123&state=state123' ",
-            "state123"
-        )
-        .unwrap(),
-        "abc123"
-    );
-    assert!(
-        parse_callback(ok, "other").is_err(),
-        "wrong state is refused"
-    );
-    assert!(
-        parse_callback(
-            "http://127.0.0.1:8888/callback?error=access_denied&state=state123",
-            "state123"
-        )
-        .is_err()
-    );
-    assert!(parse_callback("http://127.0.0.1:8888/callback?state=state123", "state123").is_err());
-    assert!(parse_callback("", "state123").is_err());
-}
 
 #[test]
 fn tokens_refresh_a_minute_before_they_expire() {
@@ -141,14 +79,10 @@ fn search_and_library_results_become_playable_items() {
 #[test]
 fn the_login_link_fits_on_the_small_screen_as_a_qr_code() {
     use endora_terminal::spotify::qr_lines;
-    // Built at run time so no key-shaped text sits in the repository.
-    let client = "ab12".repeat(8);
-    let state = "cd34".repeat(8);
-    let url = auth_url(
-        &client,
-        &pkce_challenge("dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"),
-        &state,
-    );
+    // An address as long as the ones Endora builds, which the node's tests hold it to.
+    let url = endora_protocol::samples::connection_waiting()
+        .sign_in_url
+        .unwrap();
     let lines = qr_lines(&url).unwrap();
     let width = lines.iter().map(|l| l.chars().count()).max().unwrap();
     assert!(width <= 88, "too wide for a 90-column screen: {width}");
@@ -220,12 +154,9 @@ fn the_paste_page_accepts_one_answer_only_on_its_secret_path() {
 #[test]
 fn each_sign_in_qr_code_gets_its_own_cleared_screen_that_fits_the_console() {
     use endora_terminal::spotify::{qr_lines, qr_page};
-    let client = "ab12".repeat(8);
-    let login = auth_url(
-        &client,
-        &pkce_challenge("dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"),
-        &"cd34".repeat(8),
-    );
+    let login = endora_protocol::samples::connection_waiting()
+        .sign_in_url
+        .unwrap();
     let paste = format!(
         "http://{}:8899/{}",
         std::net::Ipv4Addr::new(10, 1, 2, 3),
@@ -299,9 +230,14 @@ fn artists_and_saved_albums_become_items_and_artists_open_instead_of_playing() {
 
 #[test]
 fn browsing_your_top_artists_and_saved_albums_needs_the_top_read_permission() {
-    let url = auth_url("fictionalclientid", "CHALLENGE", "state123");
+    // Endora's sign-in asks for what this device's Music page does: top artists, saved albums,
+    // and Like.
+    let url = endora_protocol::samples::connection_waiting()
+        .sign_in_url
+        .unwrap();
     assert!(url.contains("user-top-read"), "{url}");
     assert!(url.contains("user-library-read"));
+    assert!(url.contains("user-library-modify"));
 }
 
 #[test]
@@ -385,12 +321,6 @@ fn discovery_reports_spotifys_error_when_no_artist_could_be_looked_up() {
             .unwrap()
             .is_empty()
     );
-}
-
-#[test]
-fn saving_songs_needs_the_library_modify_permission() {
-    let url = auth_url("fictionalclientid", "CHALLENGE", "state123");
-    assert!(url.contains("user-library-modify"), "{url}");
 }
 
 #[test]
@@ -520,6 +450,32 @@ fn sign_in_steps_are_numbered_for_the_steps_actually_shown() {
     use endora_terminal::spotify::step_heading;
     assert_eq!(step_heading(1, 2, "scan this"), "Step 1 of 2: scan this");
     assert_eq!(step_heading(3, 4, "scan this"), "Step 3 of 4: scan this");
+}
+
+#[test]
+fn a_token_lent_by_endora_is_used_until_a_minute_before_it_runs_out() {
+    use endora_terminal::spotify::lent_tokens;
+    let tokens = lent_tokens(&json!({"access_token": "lent", "expires_in": 3600}), 1_000).unwrap();
+    assert_eq!(tokens.access, "lent");
+    assert!(
+        tokens.refresh.is_empty(),
+        "the refresh token stays on Endora"
+    );
+    assert!(!tokens.needs_refresh(1_000 + 3_500));
+    assert!(tokens.needs_refresh(1_000 + 3_541));
+    assert!(lent_tokens(&json!({"expires_in": 3600}), 0).is_err());
+}
+
+#[test]
+fn a_sign_in_this_device_still_holds_goes_to_endora_once_and_is_then_forgotten() {
+    use endora_terminal::spotify::{Handover, handover};
+    // Endora has none: this device's becomes Endora's, for every device.
+    assert_eq!(handover("not_set_up", true), Handover::TakeOver);
+    assert_eq!(handover("waiting", true), Handover::TakeOver);
+    // Endora has one already: this device's is not needed.
+    assert_eq!(handover("connected", true), Handover::Forget);
+    assert_eq!(handover("connected", false), Handover::Nothing);
+    assert_eq!(handover("not_set_up", false), Handover::Nothing);
 }
 
 #[test]

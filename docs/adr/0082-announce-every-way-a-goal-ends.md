@@ -4,6 +4,9 @@
 
 Accepted, 2026-10-12. Prepared with AI assistance (Claude).
 
+**Superseded 2026-10-16 by [0100](0100-the-clean-slate.md).** Durable goals are removed.
+Announcing every way unattended work ends is a rule the agenda loop is to keep.
+
 ## Context
 
 The handoff review (finding 2) showed that a goal could run, settle as

@@ -197,6 +197,12 @@ function viewConnections() {
     <h3>Home Assistant</h3>
     ${haRow}
     ${viewConnect()}
+    <h3>Accounts</h3>
+    <div class="card nav-list">
+      <button class="ghost" data-act="go:spotify">
+        <span class="grow" style="text-align:left;">Spotify<span class="sub one-line">one sign-in for the web console, the handheld and chat</span></span>
+        <span class="pill ${SPOTIFY && SPOTIFY.state === "connected" ? "concluded" : ""}">${esc(SPOTIFY ? ({ connected: "Connected", waiting: "Waiting" }[SPOTIFY.state] || "Not connected") : "…")}</span>${icon("chevron", 15)}</button>
+    </div>
     <h3>Home lab</h3>
     <div class="note">Services on your network. The handheld uses them, and chat reads from the ones its skills name.</div>
     ${lab.length ? `<div class="card nav-list">${lab.map(labRow).join("")}</div>` : `<div class="empty">No home-lab services are offered by this node.</div>`}
@@ -557,4 +563,54 @@ const BELIEF_KIND_LABEL = {
   stressor: "Stressors", relationship: "People who matter", other: "Other",
 };
 const BELIEF_KIND_ORDER = ["intent","value","motivation","pattern","preference","frustration","stressor","relationship","other"];
+
+// Spotify, held by the node (plan phase 4). The same sign-in for every device: one started on
+// the handheld shows here as waiting and can be finished here, and the other way round.
+function viewSpotify() {
+  const trail = crumbs([
+    { label: "Home", act: "go:chat" },
+    { label: "Settings", act: "go:settings" },
+    { label: "Connections", act: "go:connections" },
+    { label: "Spotify" },
+  ]);
+  const s = SPOTIFY;
+  if (!s) return `${trail}<h2>Spotify</h2><div class="note">Asking Endora…</div>`;
+  const callback = `${location.origin}/connect/spotify/callback`;
+  const setup = `
+    <details class="adv"><summary>Your Spotify app</summary>
+      <div class="note" style="margin-top:8px;">Endora signs in with your own app from Spotify's developer dashboard. Add both of these as its redirect addresses, exactly:</div>
+      <div class="card"><div class="sub mono" style="overflow-wrap:anywhere;">${esc(callback)}</div><div class="sub mono">http://127.0.0.1:8888/callback</div></div>
+    </details>`;
+  if (s.state === "connected") {
+    return `${trail}<h2>Spotify</h2>
+      <div class="card"><div class="title">${esc(s.detail)} <span class="pill concluded">Connected</span></div>
+        <div class="sub">The web console, the handheld and chat all use this one sign-in; it stays on Endora.</div>
+        <div class="row" style="justify-content:flex-end;margin-top:8px;"><button class="ghost danger" data-act="spotify:disconnect">Disconnect</button></div>
+      </div>${setup}`;
+  }
+  if (s.state === "waiting") {
+    const started = s.started_ms ? new Date(s.started_ms).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) : "";
+    const pasted = (s.redirect || "").startsWith("http://127.0.0.1");
+    return `${trail}<h2>Spotify</h2>
+      <div class="card"><div class="title">${esc(s.detail)} <span class="pill">Waiting</span></div>
+        <div class="sub">Started ${esc(started)}, on this or another of your devices. Open the address, approve Endora, and ${pasted ? "paste the address Spotify sends you to (it will not load; that is expected) below" : "you will come back here by yourself"}.</div>
+        <div class="row" style="gap:8px;margin-top:8px;"><a class="ghost" href="${esc(s.sign_in_url || "#")}" rel="noreferrer">Open Spotify to approve</a>
+          <button class="ghost" data-act="spotify:check">Check again</button></div>
+        <div class="form" style="margin-top:8px;">
+          <input id="spotify-returned" placeholder="http://127.0.0.1:8888/callback?code=…" autocomplete="off" />
+          <button class="primary" data-act="spotify:finish">Finish</button>
+        </div>
+        <div class="row" style="justify-content:flex-end;"><button class="ghost" data-act="spotify:begin:paste">Start over</button></div>
+      </div>${setup}`;
+  }
+  return `${trail}<h2>Spotify</h2>
+    <div class="card"><div class="title">Not connected</div>
+      <div class="sub">Connect once here or on the handheld; both use it, and chat can say what is playing and play things.</div>
+      ${s.client_id_set ? "" : `<div class="form" style="margin-top:8px;"><input id="spotify-client" placeholder="your Spotify app's client id" autocomplete="off" /></div>`}
+      <div class="row" style="gap:8px;flex-wrap:wrap;margin-top:8px;">
+        <button class="primary" data-act="spotify:begin:endora">Approve on this device</button>
+        <button class="ghost" data-act="spotify:begin:paste">Approve on another device</button>
+      </div>
+    </div>${setup}`;
+}
 

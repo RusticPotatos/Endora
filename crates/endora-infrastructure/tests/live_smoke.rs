@@ -35,7 +35,6 @@
 //! assert on real belief statements, and asserting about real data is why this tier exists.
 
 use endora_application::{reads_as_an_instruction, says_the_same_thing, statements_disagree};
-use endora_understanding::domain::notions::MOST_NOTIONS_AT_ONCE;
 use serde_json::Value;
 
 /// Where the node is, unless told otherwise.
@@ -48,28 +47,16 @@ const WHAT_THE_INTERFACE_LOADS: &[&str] = &[
     "/v1/understanding",
     "/v1/capabilities",
     "/v1/activity",
-    "/v1/intentions",
-    "/v1/notions",
     "/v1/outcomes",
     "/v1/repairs",
-    "/v1/standing-trouble",
     "/v1/reliability",
     "/v1/context",
     "/v1/config-writes",
     "/v1/autonomy",
     "/v1/audit",
     "/v1/chat",
-    "/v1/checkin",
     "/v1/deep-model",
 ];
-
-/// More things than this being raised at once is a failure whatever the cause.
-///
-/// Not a diagnosis — a tripwire. The absence-word list once flagged 28 healthy scenes, and
-/// the specific reason was unguessable in advance; the *shape* of the failure was not. A
-/// butler asking about more than a handful of things at once has stopped being a butler,
-/// so this fires and someone goes and looks.
-const MOST_IT_MAY_EVER_RAISE: usize = 10;
 
 fn agent() -> ureq::Agent {
     // The node serves self-signed TLS on the person's own network, which is the whole
@@ -245,20 +232,6 @@ fn a_settled_belief_is_never_also_a_question() {
 
 #[test]
 #[ignore = "talks to a deployed node: run with `make smoke` after `make deploy`"]
-fn it_is_not_asking_about_half_the_house() {
-    // The tripwire. The absence-word list once flagged 28 healthy scenes against 7 real
-    // devices; three days later the person would have been asked about all of them. The
-    // specific cause was unguessable, the shape was not.
-    let raised = get("/v1/standing-trouble");
-    let count = raised.as_array().map_or(0, Vec::len);
-    assert!(
-        count <= MOST_IT_MAY_EVER_RAISE,
-        "raising {count} problems at once is a pile of chores, not a butler: {raised:#}"
-    );
-}
-
-#[test]
-#[ignore = "talks to a deployed node: run with `make smoke` after `make deploy`"]
 fn most_of_what_it_tries_is_not_failing_outright() {
     // The tripwire for the system rather than the model. An outright error is the most
     // visible kind of failure and the easiest to fix, so a majority of them means something
@@ -309,39 +282,6 @@ fn the_butler_is_told_where_the_person_is() {
         !place.trim().is_empty(),
         "the node does not know where the person lives, so every skill that needs a \
          place will be asked without one: {told:#}"
-    );
-}
-
-#[test]
-#[ignore = "talks to a deployed node: run with `make smoke` after `make deploy`"]
-fn nothing_it_wonders_about_is_unfounded() {
-    // The one guarantee ADR 0057 rests on, checked against the real thing rather than a
-    // fixture: a notion exists only if records that exist bore it out. A statement about the
-    // person with no evidence behind it is the failure this whole feature was designed around,
-    // and it is the kind that would be invisible — the card would read perfectly well.
-    //
-    // Uses the production constant rather than a copy: a smoke test with its own idea of the
-    // cap is testing its own idea.
-    let wondering = get("/v1/notions");
-    let open = wondering.as_array().cloned().unwrap_or_default();
-
-    for notion in &open {
-        let because = notion["because"].as_array().cloned().unwrap_or_default();
-        assert!(
-            !because.is_empty(),
-            "this is a statement about the person with nothing behind it: {notion:#}"
-        );
-        assert!(
-            !notion["statement"].as_str().unwrap_or_default().is_empty(),
-            "a notion with no statement: {notion:#}"
-        );
-    }
-
-    assert!(
-        open.len() <= MOST_NOTIONS_AT_ONCE,
-        "{} open notions is past the cap of {MOST_NOTIONS_AT_ONCE} — the bound that keeps this \
-         a cursor rather than the queue ADR 0029 deleted: {wondering:#}",
-        open.len()
     );
 }
 

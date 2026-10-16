@@ -16,22 +16,13 @@ pub mod context_report;
 pub mod deep_turn;
 pub mod egress;
 pub mod error;
-pub mod goal;
-pub mod goal_execution;
-pub mod goal_request;
-pub mod own_work;
 pub mod ports;
 pub mod pseudonyms;
-pub mod record_lane;
+pub mod quiet;
 pub mod research;
-pub mod schedule_verification;
 pub mod usecases;
 
 pub use error::AppError;
-pub use goal::{
-    DeadEnd, GOAL_CHECKPOINT_VERSION, Goal, GoalEvidence, GoalObservation, GoalOrigin, GoalRecord,
-    GoalStatus, GoalStep, GoalVerdict, StepError,
-};
 // The application layer re-exports the domain vocabulary of each context (models
 // + ids), so the adapter layers (infrastructure, the node) have one place to
 // import the types they translate to and from — the orchestration layer is the
@@ -48,32 +39,27 @@ pub use endora_platform::{ActivityEvent, AuditLog, AuditRecord, EventLog};
 pub use endora_capabilities::{
     AutonomyEnvelope, AutonomyEnvelopeRepository, ButlerModelConfig, ButlerModelConfigRepository,
     CapabilityConfigRepository, CapabilityRead, CapabilityRunner, CapabilitySettingsRepository,
-    CapabilitySpec, CapabilityUse, DeepModel, DeepModelRepository, ModelSlot, ModelTuneSchedule,
-    ModelTuneScheduleRepository, Sampling,
+    CapabilitySpec, CapabilityUse, DeepModel, DeepModelRepository, ModelSlot, Sampling,
 };
 // The chat repository lives in the conversation context (ADR 0050); re-exported
 // so `endora_application::ChatRepository` is unchanged.
 pub use endora_conversation::{ChatMessage, ChatRepository, MessageRole};
 // The schedules live in the scheduling context (ADR 0050); re-exported so their
 // `endora_application::…` paths are unchanged.
-pub use endora_scheduling::{
-    BriefSchedule, BriefScheduleRepository, CheckinRepository, CheckinSchedule,
-};
+pub use endora_scheduling::{BriefSchedule, BriefScheduleRepository};
 // Belief/preference repositories live in the understanding context (ADR 0050);
 // re-exported so their `endora_application::…` paths are unchanged.
 pub use endora_understanding::{
-    Belief, BeliefKind, BeliefRepository, BeliefStatus, Citation, Confidence, Intention,
-    IntentionOrigin, IntentionRepository, IntentionState, Notion, NotionRepository, NotionStatus,
-    Outcome, OutcomeRepository, Preference, PreferenceKind, PreferenceRepository, Reaction,
-    RepairProposal, ResearchAssignment, ResearchReport, ResearchRepository, ResearchStatus, Source,
-    make_way_for_a_new_one,
+    Belief, BeliefKind, BeliefRepository, BeliefStatus, Confidence, Intention, IntentionOrigin,
+    IntentionRepository, IntentionState, Outcome, OutcomeRepository, Preference, PreferenceKind,
+    PreferenceRepository, Reaction, RepairProposal, ResearchAssignment, ResearchReport,
+    ResearchRepository, ResearchStatus,
 };
 pub use ports::{
     Butler, ButlerContext, ButlerReply, Calendar, CapabilityTool, Clock, ConversationSummary,
-    ConversationSummaryStore, EXECUTION_LEASE_MS, ExecutionLeaseRepository, FormedBelief,
-    GoalDelivery, GoalLease, GoalRepository, IdSource, MemorySnapshot, MemoryStore, ModelUsage,
-    NeedKind, ProposalError, RepositoryError, ResearchDelivery, ToolCall, TurnMessage,
-    UntrustedReader, UsageLog, UsageTotals,
+    ConversationSummaryStore, EXECUTION_LEASE_MS, ExecutionLeaseRepository, FormedBelief, IdSource,
+    MemorySnapshot, MemoryStore, ModelUsage, NeedKind, ProposalError, RepositoryError,
+    ResearchDelivery, ToolCall, TurnMessage, UntrustedReader, UsageLog, UsageTotals,
 };
 pub use research::{ResearchRun, conduct_research};
 pub use usecases::{

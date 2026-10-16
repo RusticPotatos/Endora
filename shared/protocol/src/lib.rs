@@ -106,6 +106,41 @@ pub struct Operation {
     pub error: Option<String>,
 }
 
+/// Where a connection's sign-in stands (`GET /v1/connections/spotify`), the same for every
+/// device: one started on the handheld shows as waiting on the phone, and the other way round.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ConnectionStatus {
+    /// `not_set_up`, `waiting` or `connected`.
+    pub state: String,
+    /// One line for the person.
+    pub detail: String,
+    /// Whether the app's client id is saved.
+    #[serde(default)]
+    pub client_id_set: bool,
+    /// While waiting: the address to open to approve it.
+    #[serde(default)]
+    pub sign_in_url: Option<String>,
+    /// While waiting: where the provider sends the person back.
+    #[serde(default)]
+    pub redirect: Option<String>,
+    /// While waiting: when it was started.
+    #[serde(default)]
+    pub started_ms: Option<i64>,
+    /// When connected: whose account.
+    #[serde(default)]
+    pub account: Option<String>,
+}
+
+/// An access token lent by the node (`POST /v1/connections/spotify/token`). The node keeps the
+/// sign-in; a device borrows this and asks again when it runs out.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LentToken {
+    /// The token, sent to the provider as a bearer token.
+    pub access_token: String,
+    /// Seconds it has left.
+    pub expires_in: i64,
+}
+
 /// One event of a streamed chat reply (`POST /v1/chat/stream`, Server-Sent Events).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
@@ -153,8 +188,8 @@ pub struct Reply {
 /// One canonical value of each shape, for both sides' tests. Fictional throughout.
 pub mod samples {
     use super::{
-        ConsoleItem, ConsoleView, Dashboard, DashboardGroup, DashboardService, Operation, Reply,
-        StreamEvent,
+        ConnectionStatus, ConsoleItem, ConsoleView, Dashboard, DashboardGroup, DashboardService,
+        Operation, Reply, StreamEvent,
     };
 
     /// The home page: two favorites.
@@ -249,6 +284,32 @@ pub mod samples {
         }
     }
 
+    /// A sign-in waiting to be approved.
+    #[must_use]
+    pub fn connection_waiting() -> ConnectionStatus {
+        // As long as a real one: the handheld draws it as a QR code, which has to fit its
+        // screen, and the node's tests prove it builds exactly this address. The client id and
+        // state are made at run time so nothing key-shaped sits in the repository; the challenge
+        // is RFC 7636's own example.
+        let sign_in = format!(
+            "https://accounts.spotify.com/authorize?client_id={}&response_type=code&redirect_uri={}&scope={}&code_challenge_method=S256&code_challenge={}&state={}",
+            "ab12".repeat(8),
+            "http%3A%2F%2F127.0.0.1%3A8888%2Fcallback",
+            "user-read-playback-state%20user-modify-playback-state%20playlist-read-private%20user-library-read%20user-read-recently-played%20user-top-read%20user-library-modify",
+            "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM",
+            "cd34".repeat(8),
+        );
+        ConnectionStatus {
+            state: "waiting".to_owned(),
+            detail: "Waiting for you to approve Endora on Spotify".to_owned(),
+            client_id_set: true,
+            sign_in_url: Some(sign_in),
+            redirect: Some("http://127.0.0.1:8888/callback".to_owned()),
+            started_ms: Some(1_792_065_600_000),
+            account: None,
+        }
+    }
+
     /// One of each chat stream event.
     #[must_use]
     pub fn stream() -> Vec<StreamEvent> {
@@ -334,6 +395,11 @@ mod tests {
         assert_eq!(
             serde_json::from_value::<Operation>(op).unwrap(),
             samples::operation()
+        );
+        let waiting = serde_json::to_value(samples::connection_waiting()).unwrap();
+        assert_eq!(
+            serde_json::from_value::<ConnectionStatus>(waiting).unwrap(),
+            samples::connection_waiting()
         );
         for event in samples::stream() {
             let wire = serde_json::to_value(&event).unwrap();

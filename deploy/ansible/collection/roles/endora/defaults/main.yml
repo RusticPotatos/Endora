@@ -34,9 +34,6 @@ endora_mail_dir: "{{ (mail_mirror_root | default('/srv/mail-mirror')) ~ '/maildi
 endora_model_url: http://host.docker.internal:11434/v1
 endora_model: qwen2.5:7b
 
-# Endora looking into things on its own and noticing the house's daily patterns (Endora
-# ADR 0094-0096).
-endora_own_work: false
 # Your time zone by name, so patterns are on your clock and the daily brief keeps its hour when
 # the clocks change. The NAS's own zone by default.
 endora_time_zone: "{{ ansible_nas_timezone | default('') }}"

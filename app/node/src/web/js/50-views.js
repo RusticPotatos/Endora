@@ -1,26 +1,14 @@
 function viewUnderstanding() {
-  const byKind = {};
-  for (const b of (UNDERSTANDING || [])) (byKind[b.kind] = byKind[b.kind] || []).push(b);
-  const groups = BELIEF_KIND_ORDER.filter(k => byKind[k]).map((k) => {
-    const rows = byKind[k].map((b) => `
-      <div class="card"><div class="row">
-        <div class="grow">
-          <div class="title">${esc(b.statement)} <span class="pill ${b.confidence === "high" ? "active" : b.confidence === "low" ? "pending" : ""}">${b.settled ? "settled" : b.confidence + " confidence"}</span></div>
-          ${b.evidence ? `<div class="sub">because ${esc(b.evidence)}</div>` : ""}
-          ${b.contradicts ? `<div class="sub" style="margin-top:6px;color:var(--warn,#c9a227);">This sits oddly with something else I think: &ldquo;${esc(b.contradicts)}&rdquo; — one of us is wrong.</div>` : ""}
-        </div>
-        ${b.settled
-          ? `<button class="ghost" data-act="correct:belief:${b.id}" title="not quite">Not quite</button>`
-          : `<button class="ghost" data-act="affirm:belief:${b.id}" title="that's right">That's right</button>
-             <button class="ghost" data-act="correct:belief:${b.id}" title="not quite">Not quite</button>`}
-      </div></div>`).join("");
-    return `<div class="sub" style="margin:14px 0 6px;font-weight:600;">${BELIEF_KIND_LABEL[k] || k}</div>${rows}`;
-  }).join("");
-  // A gentle one-line setup for basic context (location) so skills like weather
-  // and the guard dog have somewhere to start. Stored as a preference, which the
-  // butler already reads — no separate onboarding.
-  // Location is asked in the chat now, where questions belong — see `viewNeedsYou`. Asking
-  // in both places would be the same question twice, which is how a prompt becomes a chore.
+  // What it learned is no longer listed kind by kind with confidence and buttons (owner,
+  // 2026-10-16): it is being moved into pages it organises itself. Until then, how much there
+  // is, and a way to start fresh.
+  const learned = (UNDERSTANDING || []).length;
+  const forget = learned ? `
+    <div class="card"><div class="row" style="align-items:center;gap:10px;">
+      <div class="grow"><div class="title" style="font-weight:500;">It has learned ${learned} thing${learned === 1 ? "" : "s"} about you</div>
+        <div class="sub">Start fresh: forget all of it. What you told it yourself, above, stays.</div></div>
+      <button class="ghost danger" data-act="forgetlearned">Forget</button>
+    </div></div>` : "";
   const knowsLocation = true;
   const knowsAddress = (DB.preferences || []).some((p) => /^\s*address me as\b/i.test(p.text));
   const locationSetup = knowsLocation ? "" : `
@@ -46,57 +34,7 @@ function viewUnderstanding() {
 
     ${setup}
     ${rememberedSection()}
-    <h3 style="margin-top:22px;">What it has learned</h3>
-    ${groups || `<div class="empty">Nothing yet. Talk with Endora and it will start to understand you — you'll see it here.</div>`}
-    ${viewIntention()}
-    ${viewNotions()}`;
-}
-
-// What Endora is still turning over (ADR 0057).
-//
-// Deliberately the plainest thing on this screen: no buttons, no count, no badge. The person
-// may look at what their butler is chewing on — holding private theories about somebody is not
-// something this system does — but there is nothing here for them to answer, dismiss or keep
-// tidy. A notion that comes to something becomes a belief above; one that does not lets itself
-// go. Both happen without anyone doing anything.
-function viewNotions() {
-  const open = (NOTIONS || []).filter((n) => n.status === "open");
-  if (!open.length) return "";
-  const rows = open.map((n) => `
-    <div class="card"><div class="row"><div class="grow">
-      <div class="title" style="font-weight:500;">${esc(n.statement)}</div>
-      <div class="sub">from ${esc((n.because || []).join(", "))}</div>
-      ${n.settles_when ? `<div class="sub">watching for: ${esc(n.settles_when)}</div>` : ""}
-    </div></div></div>`).join("");
-  return `<h3 style="margin-top:16px;">Still wondering</h3>
-    <div class="sub" style="margin-bottom:8px;">Not settled — nothing for you to do with these.</div>
-    ${rows}`;
-}
-
-// What Endora is currently working on (ADR 0052).
-//
-// One thing at a time — a cursor, not a queue — and the person's only verb is to stop
-// it. There is deliberately no "add" control here: Endora forms its own intentions from
-// what it understands, and a console that let you file work would make this the goal
-// tracker ADR 0052 deleted.
-function viewIntention() {
-  const current = (INTENTIONS || []).find((i) => i.active);
-  if (!current) return "";
-  // An intention taken up from a belief reuses its wording, so showing "because it
-  // believes <the same sentence>" reads as a stutter. Only name the belief when it
-  // actually adds something.
-  const source = (UNDERSTANDING || []).find((b) => b.id === current.motivating_belief);
-  const belief = source && source.statement.trim() !== current.statement.trim() ? source : null;
-  return `
-    <h3 style="margin-top:22px;">What Endora is working on</h3>
-    <div class="card"><div class="row">
-      <div class="grow">
-        <div class="title">${esc(current.statement)} <span class="pill">night ${current.steps_taken + 1}</span></div>
-        ${belief ? `<div class="sub">because it believes: ${esc(belief.statement)}</div>` : ""}
-        ${current.note ? `<div class="sub">last night: ${esc(current.note)}</div>` : `<div class="sub">hasn't got to it yet.</div>`}
-      </div>
-      <button class="ghost" data-act="dropintention::${current.id}" title="stop working on this">Leave it</button>
-    </div></div>`;
+    ${forget}`;
 }
 
 // How Endora's own actions have actually landed (ADR 0053).
@@ -275,21 +213,8 @@ function viewNeedsYou() {
       </div>`;
   }
 
-  // The person's own world first — a broken lamp is theirs, a misfiring tool is Endora's.
-  const trouble = (TROUBLE || [])[0];
-  if (trouble) {
-    return `
-      <div class="card" style="margin:6px 0;border-color:color-mix(in srgb, var(--accent) 30%, var(--line));">
-        <div class="row" style="align-items:center;gap:10px;">
-          <div class="grow">
-            <div class="title" style="font-weight:500;">${esc(trouble.thing)}</div>
-            <div class="sub">Hasn't answered ${trouble.days === 1 ? "since yesterday" : `for ${trouble.days} days`}. Still yours?</div>
-          </div>
-          <button class="ghost" data-act="trouble:gone:${esc(trouble.server)}:${esc(trouble.thing)}" title="Hide it in the service that owns it. Nothing is deleted, and you can put it back.">It's gone</button>
-          <button class="ghost" data-act="trouble:fine:${esc(trouble.server)}:${esc(trouble.thing)}" title="Leave it exactly as it is and stop mentioning it.">It's fine</button>
-        </div>
-      </div>`;
-  }
+  // Devices that stopped answering are not asked about: the owner did not want it
+  // (2026-10-16). A misfiring tool is Endora's own, and still is.
   const repair = (REPAIRS || [])[0];
   if (!repair) return "";
   if (repair.remedy === "stop_offering_it") {

@@ -1,6 +1,6 @@
 [package]
 name = "endora-terminal"
-version = "0.13.2"
+version = "0.14.0"
 edition = "2024"
 rust-version = "1.87"
 description = "A thin Endora terminal client for Linux appliances"
@@ -24,9 +24,6 @@ unicode-width = "0.2"
 argon2 = "0.5"
 chacha20poly1305 = "0.10"
 zeroize = {version = "1", features = ["derive"]}
-# Spotify sign-in (PKCE): SHA-256 of the verifier, URL-safe base64.
-sha2 = "0.10"
-base64 = "0.22"
 # Draws the sign-in link as a QR code in the terminal (text output only, no images).
 qrcode = { version = "0.14", default-features = false }
 

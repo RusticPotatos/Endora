@@ -261,7 +261,7 @@ mod tests {
 
     #[test]
     fn a_snapshot_taken_mid_write_is_whole_and_leaves_the_live_node_alone() {
-        // The node writes constantly (the goal worker checkpoints every few seconds), so
+        // The node writes constantly (workers record as they go), so
         // a backup will often land inside a transaction. The snapshot must be a view of
         // what was committed — never half of a change — and must not stop the node from
         // finishing its write. This pins those two things. It does not reproduce a tear

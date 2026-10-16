@@ -6,34 +6,26 @@
 //! and the use cases stay testable with fakes.
 
 use endora_conversation::{ChatMessage, MessageRole};
-use endora_kernel::ids::{
-    AuditId, BeliefId, IntentionId, MessageId, NotionId, OutcomeId, PreferenceId, Timestamp,
-};
+use endora_kernel::ids::{AuditId, BeliefId, MessageId, OutcomeId, PreferenceId, Timestamp};
 use endora_kernel::{Decision, Reversibility};
 use endora_platform::AuditRecord;
 use endora_understanding::{
-    Belief, BeliefKind, Citation, Confidence, Intention, Notion, Outcome, Preference,
-    PreferenceKind, Reaction, RepairProposal, Source, make_way_for_a_new_one,
+    Belief, Intention, Outcome, Preference, PreferenceKind, Reaction, RepairProposal,
 };
 
 use endora_capabilities::{CapabilityRunner, CapabilitySpec};
 use endora_conversation::ChatRepository;
 use endora_platform::{AuditLog, EventLog};
 use endora_understanding::{
-    BeliefRepository, IntentionRepository, NotionRepository, OutcomeRepository,
-    PreferenceRepository, SpecimenRepository,
+    BeliefRepository, IntentionRepository, OutcomeRepository, PreferenceRepository,
 };
 
-use endora_scheduling::{
-    BriefSchedule, BriefScheduleRepository, CheckinRepository, CheckinSchedule,
-    NightlyLoopSchedule, NightlyLoopScheduleRepository,
-};
+use endora_scheduling::{BriefSchedule, BriefScheduleRepository};
 
 use crate::error::AppError;
 use crate::ports::{
     Butler, ButlerContext, ButlerReply, CapabilityTool, Clock, ConversationSummary,
-    ConversationSummaryStore, FormedBelief, GoalRepository, IdSource, MemorySnapshot, MemoryStore,
-    TurnMessage,
+    ConversationSummaryStore, FormedBelief, IdSource, MemorySnapshot, MemoryStore, TurnMessage,
 };
 
 /// Exports everything the user has stored (a memory right).
@@ -164,9 +156,6 @@ pub use beliefs::*;
 mod proactive;
 pub use proactive::*;
 
-mod notions;
-pub use notions::*;
-
 mod mail;
 pub use mail::*;
 
@@ -231,7 +220,6 @@ pub fn what_it_has_been_doing(
     chat: &impl ChatRepository,
     outcomes: &impl OutcomeRepository,
     writes: &impl endora_capabilities::ConfigWriteLog,
-    troubles: &impl endora_capabilities::StandingTroubleRepository,
     since_ms: i64,
     now_ms: i64,
 ) -> Result<String, AppError> {
@@ -304,21 +292,6 @@ pub fn what_it_has_been_doing(
         ));
     }
 
-    // Things it started watching. Not the ones it is *raising* — those are a question the
-    // person answers, and this is a report of what happened.
-    for trouble in troubles
-        .troubles()?
-        .iter()
-        .filter(|t| t.since_ms >= since_ms)
-        .take(ENOUGH_OF_ANY_ONE_THING)
-    {
-        lines.push(format!(
-            "{} — noticed {} stopped answering",
-            clock_time_of(trouble.since_ms),
-            trouble.thing
-        ));
-    }
-
     if lines.is_empty() {
         // The honest empty answer, and deliberately not "no activities were recorded".
         // Nothing happening and nothing being *recorded* are different claims, and the
@@ -337,19 +310,6 @@ pub fn what_it_has_been_doing(
 fn clock_time_of(ms: i64) -> String {
     let secs = ms.rem_euclid(A_DAY_MS) / 1000;
     format!("{:02}:{:02}", secs / 3600, (secs % 3600) / 60)
-}
-
-/// Which deterministic check marks a turn's reply as a failure worth keeping
-/// (ADR 0075). The same predicates that gate retries and escalation — never the
-/// model's opinion of itself. `None` is a turn that answered.
-fn specimen_verdict(reply: &ButlerReply, context: &ButlerContext) -> Option<&'static str> {
-    if reply.degraded {
-        return Some("ended at the honesty valve, or the model was unreachable");
-    }
-    if not_an_answer(reply, context) {
-        return Some("not an answer — empty, plumbing, or described a tool");
-    }
-    None
 }
 
 /// Whether the question is about something out in the world, answerable only by looking it
@@ -385,10 +345,38 @@ pub fn asks_about_the_world(text: &str) -> bool {
     .any(|w| has(w))
 }
 
+/// Whether a message only asks the date, the day or the time.
+fn asks_the_clock(text: &str) -> bool {
+    let lowered = text.to_lowercase().replace('\u{2019}', "'");
+    let asked = lowered.trim().trim_end_matches(['?', '.', '!']).trim();
+    [
+        "what day is it",
+        "what day is today",
+        "what is today",
+        "what's today",
+        "what's the date",
+        "what is the date",
+        "what's today's date",
+        "what is today's date",
+        "what date is it",
+        "what time is it",
+        "what's the time",
+        "what is the time",
+        "what's the date today",
+        "what is the date today",
+    ]
+    .contains(&asked)
+}
+
 /// Whether a question needs a look at the outside world (ADR 0089). The local model sorts it
 /// (`classify_need`: one cheap call, nothing leaves the device); only when it cannot say do the
 /// word lists decide.
 fn needs_a_lookup(butler: &dyn Butler, text: &str) -> bool {
+    // The date and time are in every request, so asking them is answered, not looked up,
+    // whatever the classifier makes of "today".
+    if asks_the_clock(text) {
+        return false;
+    }
     match butler.classify_need(text) {
         Some(crate::NeedKind::Lookup) => true,
         Some(_) => false,
@@ -447,124 +435,6 @@ fn first_sentence_of(text: &str) -> String {
     out
 }
 
-/// A shelf that takes nothing and holds nothing, for tests about something else.
-#[cfg(test)]
-#[derive(Default)]
-struct NoSpecimens;
-
-#[cfg(test)]
-impl SpecimenRepository for NoSpecimens {
-    fn file_specimen(
-        &self,
-        _id: &str,
-        _asked: &str,
-        _verdict: &str,
-        _now_ms: i64,
-    ) -> Result<bool, endora_kernel::RepositoryError> {
-        Ok(false)
-    }
-    fn open_specimens(
-        &self,
-    ) -> Result<Vec<endora_understanding::Specimen>, endora_kernel::RepositoryError> {
-        Ok(Vec::new())
-    }
-    fn gave_up_specimens(
-        &self,
-    ) -> Result<Vec<endora_understanding::Specimen>, endora_kernel::RepositoryError> {
-        Ok(Vec::new())
-    }
-    fn record_replay(
-        &self,
-        _id: &str,
-        _passed: bool,
-        _now_ms: i64,
-    ) -> Result<endora_understanding::SpecimenState, endora_kernel::RepositoryError> {
-        Ok(endora_understanding::SpecimenState::Open)
-    }
-}
-
-/// A shelf that remembers everything done to it, for the specimen tests.
-#[cfg(test)]
-#[derive(Default)]
-struct RecordingShelf {
-    filed: std::cell::RefCell<Vec<(String, String)>>,
-    open: std::cell::RefCell<Vec<endora_understanding::Specimen>>,
-    gave_up: std::cell::RefCell<Vec<endora_understanding::Specimen>>,
-    replays: std::cell::RefCell<Vec<(String, bool)>>,
-}
-
-#[cfg(test)]
-impl SpecimenRepository for RecordingShelf {
-    fn file_specimen(
-        &self,
-        _id: &str,
-        asked: &str,
-        verdict: &str,
-        _now_ms: i64,
-    ) -> Result<bool, endora_kernel::RepositoryError> {
-        self.filed
-            .borrow_mut()
-            .push((asked.to_owned(), verdict.to_owned()));
-        Ok(true)
-    }
-    fn open_specimens(
-        &self,
-    ) -> Result<Vec<endora_understanding::Specimen>, endora_kernel::RepositoryError> {
-        Ok(self.open.borrow().clone())
-    }
-    fn gave_up_specimens(
-        &self,
-    ) -> Result<Vec<endora_understanding::Specimen>, endora_kernel::RepositoryError> {
-        Ok(self.gave_up.borrow().clone())
-    }
-    fn record_replay(
-        &self,
-        id: &str,
-        passed: bool,
-        _now_ms: i64,
-    ) -> Result<endora_understanding::SpecimenState, endora_kernel::RepositoryError> {
-        self.replays.borrow_mut().push((id.to_owned(), passed));
-        // The real store's rule, from the domain rather than restated here, so the
-        // double cannot quietly disagree with the thing it stands in for.
-        let replays_before = self
-            .open
-            .borrow()
-            .iter()
-            .find(|s| s.id == id)
-            .map_or(0, |s| s.replays);
-        Ok(endora_understanding::SpecimenState::after_replay(
-            replays_before,
-            passed,
-        ))
-    }
-}
-
-/// A world with nothing wrong in it, for tests about something else.
-#[cfg(test)]
-#[derive(Default)]
-struct NoTrouble;
-
-#[cfg(test)]
-impl endora_capabilities::StandingTroubleRepository for NoTrouble {
-    fn note_trouble(
-        &self,
-        _t: &endora_capabilities::StandingTrouble,
-    ) -> Result<(), endora_kernel::RepositoryError> {
-        Ok(())
-    }
-    fn clear_trouble(&self, _s: &str, _t: &str) -> Result<(), endora_kernel::RepositoryError> {
-        Ok(())
-    }
-    fn troubles(
-        &self,
-    ) -> Result<Vec<endora_capabilities::StandingTrouble>, endora_kernel::RepositoryError> {
-        Ok(Vec::new())
-    }
-    fn accept_trouble(&self, _s: &str, _t: &str) -> Result<(), endora_kernel::RepositoryError> {
-        Ok(())
-    }
-}
-
 #[cfg(test)]
 mod accounting_for_itself;
 
@@ -587,15 +457,6 @@ mod its_own_behaviour_is_not_evidence_about_you;
 mod who_words_the_brief;
 
 #[cfg(test)]
-mod telling_the_person_from_the_household;
-
-#[cfg(test)]
-mod what_the_record_will_bear;
-
-#[cfg(test)]
-mod a_night_spent_thinking;
-
-#[cfg(test)]
 mod one_fact_source_reaches_everything;
 
 #[cfg(test)]
@@ -609,9 +470,6 @@ mod where_they_are_is_a_fact;
 
 #[cfg(test)]
 mod escalation_is_a_habit;
-
-#[cfg(test)]
-mod the_thinking_reaches_the_sensing;
 
 #[cfg(test)]
 mod it_keeps_its_own_score;

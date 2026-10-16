@@ -10,13 +10,12 @@ use endora_persistence::Db;
 
 use endora_application::{
     AuditId, AuditRecord, Belief, BeliefId, BeliefKind, BeliefStatus, ChatMessage, Confidence,
-    Goal, GoalOrigin, GoalRecord, GoalStatus, Intention, IntentionId, IntentionOrigin,
-    IntentionState, MessageId, MessageRole, Outcome, OutcomeId, Preference, PreferenceId,
-    PreferenceKind, Reaction, ResearchAssignment, Timestamp,
+    Intention, IntentionId, IntentionOrigin, IntentionState, MessageId, MessageRole, Outcome,
+    OutcomeId, Preference, PreferenceId, PreferenceKind, Reaction, ResearchAssignment, Timestamp,
 };
 use endora_application::{
-    ExecutionLeaseRepository, GoalDelivery, GoalLease, GoalRepository, MemorySnapshot, MemoryStore,
-    RepositoryError, ResearchDelivery, ResearchRepository,
+    ExecutionLeaseRepository, MemorySnapshot, MemoryStore, RepositoryError, ResearchDelivery,
+    ResearchRepository,
 };
 use rusqlite::{Connection, OptionalExtension, params};
 
@@ -65,12 +64,6 @@ CREATE TABLE IF NOT EXISTS preferences (
     kind  TEXT NOT NULL,
     at_ms INTEGER NOT NULL
 ) STRICT;
-CREATE TABLE IF NOT EXISTS checkin (
-    id          INTEGER PRIMARY KEY CHECK (id = 0),
-    enabled     INTEGER NOT NULL,
-    interval_ms INTEGER NOT NULL,
-    next_at_ms  INTEGER NOT NULL
-) STRICT;
 CREATE TABLE IF NOT EXISTS beliefs (
     id               TEXT PRIMARY KEY,
     statement        TEXT NOT NULL,
@@ -95,26 +88,9 @@ CREATE TABLE IF NOT EXISTS intentions (
     CHECK ((origin = 'belief' AND motivating_belief IS NOT NULL AND request_message_id IS NULL)
         OR (origin = 'user_request' AND motivating_belief IS NULL AND request_message_id IS NOT NULL))
 ) STRICT;
--- User-requested bounded execution. This is deliberately not named `goals`: that
--- table belonged to the retired long-lived goal tracker and is removed by the
--- migration below. These records are resumable work, not a second memory model.
-CREATE TABLE IF NOT EXISTS execution_goals (
-    request_key TEXT PRIMARY KEY,
-    objective   TEXT NOT NULL,
-    checkpoint  TEXT NOT NULL,
-    status      TEXT NOT NULL,
-    attempts    INTEGER NOT NULL DEFAULT 0,
-    lease_until_ms INTEGER NOT NULL DEFAULT 0,
-    completion_published INTEGER NOT NULL DEFAULT 0,
-    origin      TEXT NOT NULL DEFAULT 'person',
-    created_ms  INTEGER NOT NULL,
-    updated_ms  INTEGER NOT NULL
-) STRICT;
-CREATE INDEX IF NOT EXISTS idx_execution_goals_active
-    ON execution_goals(status, updated_ms);
 -- One durable lease table is shared by every resumable worker. The execution
--- key is namespaced by its owner (`goal:` or `research:`), so domains retain
--- their own checkpoints while worker ownership follows one contract.
+-- key is namespaced by its owner (`research:`), so domains retain their own
+-- checkpoints while worker ownership follows one contract.
 CREATE TABLE IF NOT EXISTS execution_leases (
     execution_key TEXT PRIMARY KEY,
     attempts INTEGER NOT NULL DEFAULT 0,
@@ -155,12 +131,6 @@ CREATE TABLE IF NOT EXISTS brief_schedule (
     hour_utc  INTEGER NOT NULL,
     last_ms   INTEGER NOT NULL
 ) STRICT;
-CREATE TABLE IF NOT EXISTS night_loop_schedule (
-    id        INTEGER PRIMARY KEY CHECK (id = 0),
-    enabled   INTEGER NOT NULL,
-    hour_utc  INTEGER NOT NULL,
-    last_ms   INTEGER NOT NULL
-) STRICT;
 CREATE TABLE IF NOT EXISTS deep_model (
     id       INTEGER PRIMARY KEY CHECK (id = 0),
     url      TEXT NOT NULL,
@@ -190,12 +160,6 @@ CREATE TABLE IF NOT EXISTS butler_model_config (
     synth_repeat  REAL,
     preferred_url   TEXT NOT NULL DEFAULT '',
     preferred_model TEXT NOT NULL DEFAULT ''
-) STRICT;
-CREATE TABLE IF NOT EXISTS model_tune_schedule (
-    id       INTEGER PRIMARY KEY CHECK (id = 0),
-    enabled  INTEGER NOT NULL,
-    hour_utc INTEGER NOT NULL,
-    last_ms  INTEGER NOT NULL
 ) STRICT;
 CREATE TABLE IF NOT EXISTS model_usage (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -227,14 +191,8 @@ CREATE TABLE IF NOT EXISTS config_writes (
     undone  INTEGER NOT NULL DEFAULT 0,
     kind    TEXT NOT NULL DEFAULT 'name'
 ) STRICT;
-CREATE TABLE IF NOT EXISTS standing_trouble (
-    server   TEXT NOT NULL,
-    thing    TEXT NOT NULL,
-    trouble  TEXT NOT NULL,
-    since_ms INTEGER NOT NULL,
-    accepted INTEGER NOT NULL DEFAULT 0,
-    PRIMARY KEY (server, thing, trouble)
-) STRICT;
+-- standing_trouble (ADR 0056, devices that stopped answering) is no longer created or used
+-- (2026-10-16). A database made before keeps the table, untouched.
 -- The person's own capabilities (ADR 0071) — five fields, validated at authoring
 -- time, never code.
 CREATE TABLE IF NOT EXISTS recipes (
@@ -291,24 +249,6 @@ CREATE TABLE IF NOT EXISTS transitions (
     PRIMARY KEY (key, at_ms)
 ) STRICT;
 CREATE INDEX IF NOT EXISTS idx_transitions_at ON transitions(at_ms);
-CREATE TABLE IF NOT EXISTS notions (
-    id                TEXT PRIMARY KEY,
-    statement         TEXT NOT NULL,
-    settles_when      TEXT NOT NULL,
-    created_ms        INTEGER NOT NULL,
-    last_supported_ms INTEGER NOT NULL,
-    status            TEXT NOT NULL
-) STRICT;
--- One row per distinct record behind a notion (ADR 0057). The composite primary key is the
--- schema-level half of the rule that the same record cited twice is one piece of evidence:
--- the domain refuses the duplicate and the table cannot store it either, so no path adds the
--- same evidence twice however a notion comes to be written.
-CREATE TABLE IF NOT EXISTS notion_citations (
-    notion_id TEXT NOT NULL,
-    source    TEXT NOT NULL,
-    reference TEXT NOT NULL,
-    PRIMARY KEY (notion_id, source, reference)
-) STRICT;
 CREATE TABLE IF NOT EXISTS mcp_servers (
     name    TEXT PRIMARY KEY,
     kind    TEXT NOT NULL,
@@ -706,6 +646,7 @@ impl SqliteStore {
             // Drop the goal-tracker schema before creating anything, so an existing
             // database sheds it rather than carrying dead tables forever.
             drop_goal_tracker(&conn)?;
+            drop_the_clean_slate(&conn)?;
             conn.execute_batch(SCHEMA).map_err(backend)?;
             // What sort of change a config write was (ADR 0054). Existing rows are all
             // name changes, which is what the default says — and adding it here as well
@@ -803,16 +744,6 @@ impl SqliteStore {
             // Whether an action actually moved the world (ADR 0054). Existing rows read
             // back NULL — nothing to compare — which is the honest default.
             ensure_column(&conn, "outcomes", "changed", "INTEGER")?;
-            // Which lane a goal runs in (ADR 0094). Every goal that exists was asked for, which
-            // is what the default says. Added here as well as in SCHEMA for the same reason as
-            // every column above: `CREATE TABLE IF NOT EXISTS` does nothing to a table that is
-            // already there.
-            ensure_column(
-                &conn,
-                "execution_goals",
-                "origin",
-                "TEXT NOT NULL DEFAULT 'person'",
-            )?;
             // Sign-in with a password and an authenticator code. `node_auth` shipped hours
             // earlier holding only a token, and `CREATE TABLE IF NOT EXISTS` does nothing to a
             // table that already exists — the trap this repository has already fallen into
@@ -851,37 +782,10 @@ impl SqliteStore {
             )?;
             ensure_column(
                 &conn,
-                "execution_goals",
-                "attempts",
-                "INTEGER NOT NULL DEFAULT 0",
-            )?;
-            ensure_column(
-                &conn,
-                "execution_goals",
-                "lease_until_ms",
-                "INTEGER NOT NULL DEFAULT 0",
-            )?;
-            ensure_column(
-                &conn,
-                "execution_goals",
-                "completion_published",
-                "INTEGER NOT NULL DEFAULT 0",
-            )?;
-            ensure_column(
-                &conn,
                 "execution_leases",
                 "owner_token",
                 "TEXT NOT NULL DEFAULT ''",
             )?;
-            // Goal leases moved into the shared execution table so research and
-            // goals use the same restart/reclaim boundary. Preserve counters from
-            // older goal rows when this migration first runs.
-            conn.execute(
-                "INSERT OR IGNORE INTO execution_leases (execution_key, attempts, lease_until_ms)
-                 SELECT 'goal:' || request_key, attempts, lease_until_ms FROM execution_goals",
-                [],
-            )
-            .map_err(backend)?;
         }
         endora_understanding::migrate(&db)?;
         Ok(Self { db })
@@ -896,45 +800,6 @@ impl SqliteStore {
 
     fn lock(&self) -> Result<std::sync::MutexGuard<'_, Connection>, RepositoryError> {
         self.db.lock()
-    }
-
-    fn all_goal_records(&self) -> Result<Vec<GoalRecord>, RepositoryError> {
-        let conn = self.lock()?;
-        let mut stmt = conn
-            .prepare(
-                "SELECT request_key, objective, checkpoint, status, created_ms, updated_ms, origin
-                 FROM execution_goals ORDER BY updated_ms DESC, request_key ASC",
-            )
-            .map_err(backend)?;
-        let rows = stmt
-            .query_map([], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
-                    row.get::<_, String>(3)?,
-                    row.get::<_, i64>(4)?,
-                    row.get::<_, i64>(5)?,
-                    row.get::<_, String>(6)?,
-                ))
-            })
-            .map_err(backend)?;
-        let raw = rows.collect::<Result<Vec<_>, _>>().map_err(backend)?;
-        raw.into_iter()
-            .map(
-                |(key, objective, checkpoint, status, created_ms, updated_ms, origin)| {
-                    parse_goal_record(
-                        &key,
-                        &objective,
-                        &checkpoint,
-                        &status,
-                        &origin,
-                        created_ms,
-                        updated_ms,
-                    )
-                },
-            )
-            .collect()
     }
 }
 
@@ -1048,543 +913,6 @@ impl ExecutionLeaseRepository for SqliteStore {
     }
 }
 
-impl GoalRepository for SqliteStore {
-    fn create_goal(&self, record: &GoalRecord) -> Result<bool, RepositoryError> {
-        let key = record.request_key().trim();
-        if key.is_empty() || key.chars().count() > 200 {
-            return Err(RepositoryError::Corrupt(
-                "goal request key must be 1–200 characters".to_owned(),
-            ));
-        }
-        let objective = record.goal().objective();
-        if objective.is_empty() || objective.chars().count() > 4_000 {
-            return Err(RepositoryError::Corrupt(
-                "goal objective must be 1–4000 characters".to_owned(),
-            ));
-        }
-        // "Done when this record says so" is the authority of work Endora derived itself
-        // (ADR 0094). A goal in the person's lane carrying it would be settled on a record's
-        // word and not theirs, whatever put it there.
-        if record.origin() == GoalOrigin::Person
-            && matches!(
-                record.goal().criteria(),
-                Some(endora_application::goal_request::GoalCriteria::Resolve { .. })
-            )
-        {
-            return Err(RepositoryError::Corrupt(
-                "a goal that resolves from a record must be one Endora started itself".to_owned(),
-            ));
-        }
-        let mut conn = self.lock()?;
-        let tx = conn
-            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
-            .map_err(backend)?;
-        let existing: Option<(String, String, String)> = tx
-            .query_row(
-                "SELECT objective, checkpoint, origin FROM execution_goals WHERE request_key=?1",
-                params![key],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-            )
-            .optional()
-            .map_err(backend)?;
-        if let Some((prior_objective, prior_checkpoint, prior_origin)) = existing {
-            // A retry of the same request must be the same request. Reusing a key with another
-            // origin would let a goal Endora started be swapped for a person's, or the reverse.
-            if GoalOrigin::from_name(&prior_origin) != record.origin() {
-                return Err(RepositoryError::Backend(
-                    "goal request key was reused with a different origin".to_owned(),
-                ));
-            }
-            let prior =
-                endora_application::Goal::from_checkpoint(&prior_objective, &prior_checkpoint)
-                    .map_err(corrupt)?;
-            if prior_objective != objective || prior.criteria() != record.goal().criteria() {
-                return Err(RepositoryError::Backend(
-                    "goal request key was reused with different objective or criteria".to_owned(),
-                ));
-            }
-            return Ok(false);
-        } else {
-            // Counted within the goal's own lane (ADR 0094), so neither can use up the
-            // other's slots. "Not person" is the record lane, matching `GoalOrigin::from_name`:
-            // a value this build cannot read is never counted as the person's.
-            let in_lane = match record.origin() {
-                GoalOrigin::Person => "origin = 'person'",
-                GoalOrigin::Record => "origin <> 'person'",
-            };
-            let active: i64 = tx
-                .query_row(
-                    &format!(
-                        "SELECT count(*) FROM execution_goals
-                         WHERE status IN ('planned','running','waiting') AND {in_lane}"
-                    ),
-                    [],
-                    |row| row.get(0),
-                )
-                .map_err(backend)?;
-            if !record.goal().status().terminal()
-                && usize::try_from(active).unwrap_or(usize::MAX) >= record.origin().capacity()
-            {
-                return Err(RepositoryError::Backend(
-                    endora_application::goal_request::GOAL_CAPACITY_REACHED.to_owned(),
-                ));
-            }
-            tx.execute(
-                "INSERT INTO execution_goals
-                 (request_key, objective, checkpoint, status, origin, created_ms, updated_ms)
-                 VALUES (?1,?2,?3,?4,?5,?6,?7)",
-                params![
-                    key,
-                    objective,
-                    record.goal().checkpoint(),
-                    record.goal().status().name(),
-                    record.origin().name(),
-                    record.created_at().unix_millis(),
-                    record.updated_at().unix_millis()
-                ],
-            )
-            .map_err(backend)?;
-        }
-        tx.commit().map_err(backend)?;
-        Ok(true)
-    }
-
-    fn checkpoint_goal(
-        &self,
-        record: &GoalRecord,
-        lease: &GoalLease,
-        at: Timestamp,
-    ) -> Result<bool, RepositoryError> {
-        if record.request_key() != lease.request_key() || lease.owner().is_empty() {
-            return Err(corrupt("checkpoint requires the goal's ownership token"));
-        }
-        let mut conn = self.lock()?;
-        let tx = conn
-            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
-            .map_err(backend)?;
-        let prior: Option<(String, String)> = tx
-            .query_row(
-                "SELECT objective, checkpoint FROM execution_goals WHERE request_key=?1",
-                params![record.request_key()],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
-            .optional()
-            .map_err(backend)?;
-        let Some((objective, checkpoint)) = prior else {
-            return Ok(false);
-        };
-        let prior =
-            endora_application::Goal::from_checkpoint(&objective, &checkpoint).map_err(corrupt)?;
-        if prior.criteria() != record.goal().criteria() {
-            return Ok(false);
-        }
-        let changed = tx
-            .execute(
-                "UPDATE execution_goals SET checkpoint=?2, status=?3, updated_ms=?4
-             WHERE request_key=?1 AND objective=?5 AND status IN ('planned','running','waiting')
-             AND EXISTS (SELECT 1 FROM execution_leases WHERE execution_key='goal:' || ?1
-                         AND owner_token=?6 AND lease_until_ms>?7)",
-                params![
-                    record.request_key(),
-                    record.goal().checkpoint(),
-                    record.goal().status().name(),
-                    record.updated_at().unix_millis(),
-                    record.goal().objective(),
-                    lease.owner(),
-                    at.unix_millis()
-                ],
-            )
-            .map_err(backend)?;
-        tx.commit().map_err(backend)?;
-        Ok(changed == 1)
-    }
-
-    fn get_goal(&self, request_key: &str) -> Result<Option<GoalRecord>, RepositoryError> {
-        let key = request_key.trim();
-        if key.is_empty() || key.chars().count() > 200 {
-            return Err(RepositoryError::Corrupt(
-                "goal request key must be 1–200 characters".to_owned(),
-            ));
-        }
-        let conn = self.lock()?;
-        let raw: Option<(String, String, String, i64, i64, String)> = conn
-            .query_row(
-                "SELECT objective, checkpoint, status, created_ms, updated_ms, origin
-                 FROM execution_goals WHERE request_key=?1",
-                params![key],
-                |row| {
-                    Ok((
-                        row.get(0)?,
-                        row.get(1)?,
-                        row.get(2)?,
-                        row.get(3)?,
-                        row.get(4)?,
-                        row.get(5)?,
-                    ))
-                },
-            )
-            .optional()
-            .map_err(backend)?;
-        raw.map(
-            |(objective, checkpoint, status, created_ms, updated_ms, origin)| {
-                parse_goal_record(
-                    key,
-                    &objective,
-                    &checkpoint,
-                    &status,
-                    &origin,
-                    created_ms,
-                    updated_ms,
-                )
-            },
-        )
-        .transpose()
-    }
-
-    fn active_goals(&self) -> Result<Vec<GoalRecord>, RepositoryError> {
-        let conn = self.lock()?;
-        let mut stmt = conn
-            .prepare(
-                "SELECT request_key, objective, checkpoint, status, created_ms, updated_ms, origin
-                 FROM execution_goals
-                 WHERE status IN ('planned','running','waiting')
-                 ORDER BY (origin = 'person') DESC, updated_ms ASC, request_key ASC",
-            )
-            .map_err(backend)?;
-        let rows = stmt
-            .query_map([], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
-                    row.get::<_, String>(3)?,
-                    row.get::<_, i64>(4)?,
-                    row.get::<_, i64>(5)?,
-                    row.get::<_, String>(6)?,
-                ))
-            })
-            .map_err(backend)?;
-        let raw = rows.collect::<Result<Vec<_>, _>>().map_err(backend)?;
-        raw.into_iter()
-            .map(
-                |(key, objective, checkpoint, status, created_ms, updated_ms, origin)| {
-                    parse_goal_record(
-                        &key,
-                        &objective,
-                        &checkpoint,
-                        &status,
-                        &origin,
-                        created_ms,
-                        updated_ms,
-                    )
-                },
-            )
-            .collect()
-    }
-
-    fn own_goals_since(&self, since: Timestamp) -> Result<Vec<GoalRecord>, RepositoryError> {
-        let conn = self.lock()?;
-        let mut stmt = conn
-            .prepare(
-                "SELECT request_key, objective, checkpoint, status, created_ms, updated_ms, origin
-                 FROM execution_goals
-                 WHERE origin <> 'person'
-                   AND (created_ms >= ?1 OR status IN ('planned','running','waiting'))
-                 ORDER BY created_ms ASC, request_key ASC",
-            )
-            .map_err(backend)?;
-        let rows = stmt
-            .query_map(params![since.unix_millis()], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
-                    row.get::<_, String>(3)?,
-                    row.get::<_, i64>(4)?,
-                    row.get::<_, i64>(5)?,
-                    row.get::<_, String>(6)?,
-                ))
-            })
-            .map_err(backend)?;
-        let raw = rows.collect::<Result<Vec<_>, _>>().map_err(backend)?;
-        raw.into_iter()
-            .map(
-                |(key, objective, checkpoint, status, created_ms, updated_ms, origin)| {
-                    parse_goal_record(
-                        &key,
-                        &objective,
-                        &checkpoint,
-                        &status,
-                        &origin,
-                        created_ms,
-                        updated_ms,
-                    )
-                },
-            )
-            .collect()
-    }
-
-    fn claim_goal(
-        &self,
-        request_key: &str,
-        at: Timestamp,
-    ) -> Result<Option<GoalLease>, RepositoryError> {
-        let key = request_key.trim();
-        if key.is_empty() || key.chars().count() > 200 {
-            return Err(RepositoryError::Corrupt(
-                "goal request key must be 1–200 characters".to_owned(),
-            ));
-        }
-        let mut conn = self.lock()?;
-        let tx = conn
-            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
-            .map_err(backend)?;
-        let resumable: Option<(String, String, String)> = tx
-            .query_row(
-                "SELECT objective, checkpoint, status FROM execution_goals WHERE request_key=?1",
-                params![key],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-            )
-            .optional()
-            .map_err(backend)?;
-        let Some((objective, checkpoint, status)) = resumable else {
-            return Ok(None);
-        };
-        if !matches!(status.as_str(), "planned" | "running" | "waiting") {
-            return Ok(None);
-        }
-        let lease_key = format!("goal:{key}");
-        tx.execute(
-            "INSERT OR IGNORE INTO execution_leases (execution_key) VALUES (?1)",
-            params![lease_key],
-        )
-        .map_err(backend)?;
-        let (attempts, until): (i64, i64) = tx
-            .query_row(
-                "SELECT attempts, lease_until_ms FROM execution_leases WHERE execution_key=?1",
-                params![lease_key],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
-            .map_err(backend)?;
-        if until > at.unix_millis() {
-            return Ok(None);
-        }
-        if attempts >= 8 {
-            let mut goal = Goal::from_checkpoint(&objective, &checkpoint).map_err(corrupt)?;
-            goal.apply(
-                endora_application::GoalVerdict::Blocked,
-                "execution attempt budget exhausted",
-            );
-            tx.execute("UPDATE execution_goals SET checkpoint=?2, status='blocked', updated_ms=?3 WHERE request_key=?1",
-                       params![key, goal.checkpoint(), at.unix_millis()]).map_err(backend)?;
-            tx.execute("UPDATE execution_leases SET owner_token='', lease_until_ms=0 WHERE execution_key=?1", params![lease_key]).map_err(backend)?;
-            tx.commit().map_err(backend)?;
-            return Ok(None);
-        }
-        let owner = uuid::Uuid::new_v4().to_string();
-        tx.execute("UPDATE execution_leases SET attempts=attempts+1, owner_token=?2, lease_until_ms=?3 WHERE execution_key=?1",
-                   params![lease_key, owner, at.unix_millis() + endora_application::EXECUTION_LEASE_MS]).map_err(backend)?;
-        tx.execute(
-            "UPDATE execution_goals SET updated_ms=?2 WHERE request_key=?1",
-            params![key, at.unix_millis()],
-        )
-        .map_err(backend)?;
-        tx.commit().map_err(backend)?;
-        Ok(Some(GoalLease::new(key, &owner)))
-    }
-
-    fn goal_owned(&self, lease: &GoalLease, at: Timestamp) -> Result<bool, RepositoryError> {
-        self.lock()?.query_row(
-            "SELECT EXISTS (SELECT 1 FROM execution_goals g JOIN execution_leases l ON l.execution_key='goal:' || g.request_key
-             WHERE g.request_key=?1 AND g.status IN ('planned','running','waiting') AND l.owner_token=?2 AND l.owner_token<>'' AND l.lease_until_ms>?3)",
-            params![lease.request_key(), lease.owner(), at.unix_millis()], |row| row.get(0),
-        ).map_err(backend)
-    }
-
-    fn renew_goal(&self, lease: &GoalLease, at: Timestamp) -> Result<bool, RepositoryError> {
-        let changed = self.lock()?.execute(
-            "UPDATE execution_leases SET lease_until_ms=?3 + ?4
-             WHERE execution_key='goal:' || ?1 AND owner_token=?2 AND owner_token<>'' AND lease_until_ms>?3
-             AND EXISTS (SELECT 1 FROM execution_goals WHERE request_key=?1 AND status IN ('planned','running','waiting'))",
-            params![lease.request_key(), lease.owner(), at.unix_millis(), endora_application::EXECUTION_LEASE_MS],
-        ).map_err(backend)?;
-        Ok(changed == 1)
-    }
-
-    fn release_goal(&self, lease: &GoalLease) -> Result<(), RepositoryError> {
-        self.lock()?.execute("UPDATE execution_leases SET lease_until_ms=0, owner_token='' WHERE execution_key='goal:' || ?1 AND owner_token=?2 AND owner_token<>''",
-                             params![lease.request_key(), lease.owner()]).map_err(backend)?;
-        Ok(())
-    }
-
-    fn cancel_goal(
-        &self,
-        request_key: &str,
-        reason: &str,
-        at: Timestamp,
-    ) -> Result<bool, RepositoryError> {
-        let key = request_key.trim();
-        let reason = reason.trim();
-        if key.is_empty() || key.chars().count() > 200 || reason.is_empty() {
-            return Err(RepositoryError::Corrupt(
-                "goal cancellation requires a key and reason".to_owned(),
-            ));
-        }
-        let mut conn = self.lock()?;
-        let tx = conn.transaction().map_err(backend)?;
-        let raw: Option<(String, String, String)> = tx
-            .query_row(
-                "SELECT objective, checkpoint, status FROM execution_goals WHERE request_key=?1",
-                params![key],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-            )
-            .optional()
-            .map_err(backend)?;
-        let Some((objective, checkpoint, status)) = raw else {
-            return Ok(false);
-        };
-        let Some(current_status) = GoalStatus::from_name(&status) else {
-            return Err(RepositoryError::Corrupt(
-                "invalid stored goal status".to_owned(),
-            ));
-        };
-        if current_status.terminal() {
-            return Ok(false);
-        }
-        let mut goal = Goal::from_checkpoint(&objective, &checkpoint).map_err(corrupt)?;
-        goal.cancel(reason);
-        let changed = tx
-            .execute(
-                "UPDATE execution_goals SET checkpoint=?2, status='cancelled', lease_until_ms=0, updated_ms=?3
-                 WHERE request_key=?1 AND status IN ('planned','running','waiting')",
-                params![key, goal.checkpoint(), at.unix_millis()],
-            )
-            .map_err(backend)?;
-        tx.commit().map_err(backend)?;
-        Ok(changed == 1)
-    }
-
-    fn mark_goal_announced(&self, request_key: &str) -> Result<(), RepositoryError> {
-        self.lock()?
-            .execute(
-                "UPDATE execution_goals SET completion_published=1 WHERE request_key=?1",
-                params![request_key.trim()],
-            )
-            .map_err(backend)?;
-        Ok(())
-    }
-
-    fn pending_goal_completions(&self) -> Result<Vec<GoalRecord>, RepositoryError> {
-        let conn = self.lock()?;
-        let mut stmt = conn
-            .prepare(&format!(
-                "SELECT request_key, objective, checkpoint, status, created_ms, updated_ms, origin
-                 FROM execution_goals
-                 WHERE status IN ({ANNOUNCED_GOAL_STATUSES}) AND completion_published=0
-                 ORDER BY updated_ms ASC, request_key ASC"
-            ))
-            .map_err(backend)?;
-        let rows = stmt
-            .query_map([], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
-                    row.get::<_, String>(3)?,
-                    row.get::<_, i64>(4)?,
-                    row.get::<_, i64>(5)?,
-                    row.get::<_, String>(6)?,
-                ))
-            })
-            .map_err(backend)?;
-        let raw = rows.collect::<Result<Vec<_>, _>>().map_err(backend)?;
-        raw.into_iter()
-            .map(
-                |(key, objective, checkpoint, status, created_ms, updated_ms, origin)| {
-                    parse_goal_record(
-                        &key,
-                        &objective,
-                        &checkpoint,
-                        &status,
-                        &origin,
-                        created_ms,
-                        updated_ms,
-                    )
-                },
-            )
-            .collect()
-    }
-}
-
-/// The goal statuses whose outcome is delivered to chat, as an SQL list. This
-/// restates [`GoalStatus::announced`] for the queries that cannot call it; a test
-/// fails if the two ever disagree.
-const ANNOUNCED_GOAL_STATUSES: &str = "'complete','partial','blocked','failed'";
-
-impl GoalDelivery for SqliteStore {
-    fn publish_goal_completion(
-        &self,
-        record: &GoalRecord,
-        notice: &ChatMessage,
-    ) -> Result<bool, RepositoryError> {
-        if !record.goal().status().announced() {
-            return Err(RepositoryError::Corrupt(
-                "cannot publish a goal that has not ended on its own".to_owned(),
-            ));
-        }
-        let mut conn = self.lock()?;
-        let tx = conn.transaction().map_err(backend)?;
-        let changed = tx
-            .execute(
-                &format!(
-                    "UPDATE execution_goals SET completion_published=1, updated_ms=?2
-                     WHERE request_key=?1 AND status IN ({ANNOUNCED_GOAL_STATUSES}) AND completion_published=0"
-                ),
-                params![record.request_key(), record.updated_at().unix_millis()],
-            )
-            .map_err(backend)?;
-        if changed == 0 {
-            return Ok(false);
-        }
-        tx.execute(
-            "INSERT INTO messages (id, role, body, at_ms) VALUES (?1,?2,?3,?4)",
-            params![
-                notice.id().value().to_string(),
-                notice.role().name(),
-                notice.text(),
-                notice.at().unix_millis()
-            ],
-        )
-        .map_err(backend)?;
-        tx.commit().map_err(backend)?;
-        Ok(true)
-    }
-}
-
-fn parse_goal_record(
-    request_key: &str,
-    objective: &str,
-    checkpoint: &str,
-    status: &str,
-    origin: &str,
-    created_ms: i64,
-    updated_ms: i64,
-) -> Result<GoalRecord, RepositoryError> {
-    let goal = Goal::from_checkpoint(objective, checkpoint).map_err(corrupt)?;
-    if goal.status().name() != status {
-        return Err(RepositoryError::Corrupt(
-            "goal checkpoint status disagrees with stored status".to_owned(),
-        ));
-    }
-    let record = GoalRecord::new(request_key, goal, Timestamp::from_unix_millis(created_ms))
-        .map_err(corrupt)?
-        .with_origin(GoalOrigin::from_name(origin));
-    Ok(record.with_goal(
-        Goal::from_checkpoint(objective, checkpoint).map_err(corrupt)?,
-        Timestamp::from_unix_millis(updated_ms),
-    ))
-}
-
 // The eight direction repositories are implemented by the direction context's
 // DirectionStore over the shared Db now (ADR 0050); the all_*/parse_* helpers
 // below remain for MemoryStore's export.
@@ -1592,7 +920,6 @@ fn parse_goal_record(
 impl MemoryStore for SqliteStore {
     fn export(&self) -> Result<MemorySnapshot, RepositoryError> {
         let research = endora_understanding::UnderstandingStore::new(self.db()).list_research()?;
-        let goals = self.all_goal_records()?;
         let conn = self.lock()?;
         Ok(MemorySnapshot {
             audit: all_audit(&conn)?,
@@ -1602,7 +929,6 @@ impl MemoryStore for SqliteStore {
             outcomes: all_outcomes(&conn)?,
             intentions: all_intentions(&conn)?,
             research,
-            goals,
         })
     }
 
@@ -1622,12 +948,10 @@ impl MemoryStore for SqliteStore {
             "message_actions",
             "conversation_summary",
             "preferences",
-            "checkin",
             "beliefs",
             "outcomes",
             "target_aliases",
             "intention_research",
-            "execution_goals",
             "execution_leases",
             "intentions",
             "events",
@@ -2056,6 +1380,42 @@ fn drop_goal_tracker(conn: &Connection) -> Result<(), RepositoryError> {
     .map_err(backend)
 }
 
+/// Drops what the clean slate removed (owner, 2026-10-16): the check-in, the nightly loop
+/// and model-tune schedules, notions, standing trouble, the failed asks kept for the nightly loop to
+/// replay (specimens), and durable goals with their leases. For the same
+/// reason as [`drop_goal_tracker`]: a table nothing reads is data nothing can export or
+/// delete (constitution §6). A no-op on a fresh database.
+fn drop_the_clean_slate(conn: &Connection) -> Result<(), RepositoryError> {
+    conn.execute_batch(
+        "DROP TABLE IF EXISTS checkin;
+         DROP TABLE IF EXISTS night_loop_schedule;
+         DROP TABLE IF EXISTS model_tune_schedule;
+         DROP TABLE IF EXISTS notion_citations;
+         DROP TABLE IF EXISTS notions;
+         DROP TABLE IF EXISTS standing_trouble;
+         DROP TABLE IF EXISTS specimens;
+         DROP INDEX IF EXISTS idx_execution_goals_active;
+         DROP TABLE IF EXISTS execution_goals;",
+    )
+    .map_err(backend)?;
+    // Leases are shared with research; only the goals' own go.
+    let leases_exist: bool = conn
+        .query_row(
+            "SELECT EXISTS (SELECT 1 FROM sqlite_master WHERE type='table' AND name='execution_leases')",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(backend)?;
+    if leases_exist {
+        conn.execute(
+            "DELETE FROM execution_leases WHERE execution_key LIKE 'goal:%'",
+            [],
+        )
+        .map_err(backend)?;
+    }
+    Ok(())
+}
+
 /// Maps any backend error into a [`RepositoryError::Backend`].
 fn backend(error: impl core::fmt::Display) -> RepositoryError {
     RepositoryError::Backend(error.to_string())
@@ -2299,27 +1659,6 @@ mod tests {
     }
 
     #[test]
-    fn model_tune_schedule_defaults_off_then_round_trips() {
-        use endora_application::{ModelTuneSchedule, ModelTuneScheduleRepository};
-        let store = store();
-        let cfg = cfg_store(&store);
-        let repo: &dyn ModelTuneScheduleRepository = &cfg;
-        // Unset ⇒ off.
-        assert_eq!(repo.get().unwrap(), ModelTuneSchedule::disabled_default());
-        let sched = ModelTuneSchedule {
-            enabled: true,
-            hour_utc: 3,
-            last_ms: 123,
-        };
-        repo.set(&sched).unwrap();
-        assert_eq!(repo.get().unwrap(), sched);
-        // is_due: on, at hour 3 UTC, and >20h since last run (day 1, hour 3).
-        let hour = 3_600_000_i64;
-        assert!(sched.is_due((24 + 3) * hour)); // hour 3, ~27h since last ⇒ due
-        assert!(!sched.is_due((24 + 4) * hour)); // hour 4 ⇒ wrong hour, not due
-    }
-
-    #[test]
     fn butler_model_config_round_trips() {
         use endora_application::{
             ButlerModelConfig, ButlerModelConfigRepository, ModelSlot, Sampling,
@@ -2450,8 +1789,8 @@ mod tests {
 mod the_schema_production_actually_runs {
     use super::SqliteStore;
     use endora_capabilities::{
-        ConfigStore, ConfigWrite, ConfigWriteLog, Recipe, RecipeRepository, StandingTrouble,
-        StandingTroubleRepository, TargetAlias, TargetAliasRepository, WriteKind,
+        ConfigStore, ConfigWrite, ConfigWriteLog, Recipe, RecipeRepository, TargetAlias,
+        TargetAliasRepository, WriteKind,
     };
 
     /// Builds the stores exactly as `main.rs` does: one production [`SqliteStore`], with the
@@ -2568,23 +1907,6 @@ mod the_schema_production_actually_runs {
             .expect("target_aliases");
         assert_eq!(config.aliases().expect("read back").len(), 1);
 
-        config
-            .note_trouble(&StandingTrouble {
-                server: "house".to_owned(),
-                thing: "Living Room Lamp".to_owned(),
-                trouble: "unavailable".to_owned(),
-                since_ms: 1_000,
-                accepted: false,
-            })
-            .expect("standing_trouble");
-        assert_eq!(config.troubles().expect("read back").len(), 1);
-        config
-            .accept_trouble("house", "Living Room Lamp")
-            .expect("accept");
-        config
-            .clear_trouble("house", "Living Room Lamp")
-            .expect("clear");
-
         // A third time would be its own kind of lesson: the recipes table (ADR
         // 0071) went into `endora_capabilities::migrate` alone on the first pass
         // and was invisible here — every unit test green, `/v1/recipes` a 500 on
@@ -2654,37 +1976,6 @@ mod the_schema_production_actually_runs {
                 .is_empty(),
             "the log forgets on its own"
         );
-    }
-
-    #[test]
-    fn a_notion_can_be_stored_by_the_schema_production_runs() {
-        // `endora_understanding::migrate` is the same shortcut the test above was written
-        // about: called by that crate's own tests and by nothing else. Notions live in two
-        // tables, so this is exactly the shape that has twice shipped a green suite and an
-        // "internal error" in the person's house — and the second table, holding the
-        // evidence, is the one whose absence would silently turn every notion into an
-        // unfounded statement about them (ADR 0057).
-        use endora_application::{Citation, Notion, NotionId, NotionRepository, Source, Timestamp};
-
-        let store = SqliteStore::open_in_memory().expect("open the production store");
-        let understanding = endora_understanding::UnderstandingStore::new(store.db());
-
-        let notion = Notion::new(
-            NotionId::new(1),
-            "the Monday gym block gets cancelled",
-            vec![
-                Citation::new(Source::Outcome, "outcome-7").unwrap(),
-                Citation::new(Source::Message, "msg-2").unwrap(),
-            ],
-            "whether next Monday's block survives",
-            Timestamp::from_unix_millis(1_000),
-        )
-        .unwrap();
-        NotionRepository::save(&understanding, &notion).expect("notions");
-
-        let back = NotionRepository::open(&understanding).expect("read back");
-        assert_eq!(back.len(), 1);
-        assert_eq!(back[0].support_count(), 2, "notion_citations");
     }
 
     #[test]
@@ -2848,229 +2139,7 @@ mod the_schema_production_actually_runs {
     }
 
     #[test]
-    fn execution_goals_resume_idempotently_and_cancellation_wins_late_writes() {
-        use endora_application::{
-            Goal, GoalRecord, GoalRepository, GoalStatus, GoalVerdict, MemoryStore, Timestamp,
-        };
-
-        let store = SqliteStore::open_in_memory().unwrap();
-        let at = Timestamp::from_unix_millis(1_000);
-        let mut goal = Goal::new("find the next three games").unwrap();
-        goal.start("gathering", "sports_schedule");
-        let record = GoalRecord::new("panthers-next-three", goal.clone(), at).unwrap();
-        assert!(store.create_goal(&record).unwrap());
-        assert!(!store.create_goal(&record).unwrap());
-        assert!(
-            store
-                .claim_goal(record.request_key(), Timestamp::from_unix_millis(32_000))
-                .unwrap()
-                .is_some()
-        );
-        assert!(
-            store
-                .claim_goal(record.request_key(), Timestamp::from_unix_millis(32_100))
-                .unwrap()
-                .is_none()
-        );
-
-        let restored = store
-            .get_goal(record.request_key())
-            .unwrap()
-            .expect("goal survives a read");
-        assert_eq!(restored.goal().status(), GoalStatus::Running);
-        assert_eq!(store.active_goals().unwrap().len(), 1);
-
-        assert!(
-            store
-                .cancel_goal(
-                    record.request_key(),
-                    "cancelled by the person",
-                    Timestamp::from_unix_millis(2_000)
-                )
-                .unwrap()
-        );
-        assert!(
-            !store
-                .cancel_goal(
-                    record.request_key(),
-                    "late cancellation",
-                    Timestamp::from_unix_millis(3_000)
-                )
-                .unwrap()
-        );
-
-        let mut stale = restored.goal().clone();
-        stale.apply(GoalVerdict::Complete, "late result");
-        let stale_record = restored.with_goal(stale, Timestamp::from_unix_millis(4_000));
-        assert!(!store.create_goal(&stale_record).unwrap());
-        assert_eq!(
-            store
-                .get_goal(record.request_key())
-                .unwrap()
-                .unwrap()
-                .goal()
-                .status(),
-            GoalStatus::Cancelled
-        );
-        assert!(store.export().unwrap().goals.len() == 1);
-        store.purge().unwrap();
-        assert!(store.export().unwrap().goals.is_empty());
-    }
-
-    #[test]
-    fn the_sql_status_list_matches_what_the_domain_announces() {
-        use endora_application::GoalStatus;
-
-        let listed: Vec<&str> = super::ANNOUNCED_GOAL_STATUSES
-            .split(',')
-            .map(|name| name.trim_matches('\''))
-            .collect();
-        for name in [
-            "planned",
-            "running",
-            "waiting",
-            "complete",
-            "partial",
-            "blocked",
-            "failed",
-            "cancelled",
-        ] {
-            let status = GoalStatus::from_name(name).expect("a real status name");
-            assert_eq!(
-                listed.contains(&name),
-                status.announced(),
-                "{name}: the SQL list and `GoalStatus::announced` disagree"
-            );
-        }
-    }
-
-    #[test]
-    fn every_unfinished_ending_is_published_once_but_a_cancellation_is_not() {
-        use endora_application::{
-            ChatMessage, Goal, GoalDelivery, GoalRecord, GoalRepository, GoalVerdict, MemoryStore,
-            MessageId, MessageRole, Timestamp,
-        };
-
-        let store = SqliteStore::open_in_memory().unwrap();
-        let at = Timestamp::from_unix_millis(1_000);
-        let notice = |id| {
-            ChatMessage::new(
-                MessageId::new(id),
-                MessageRole::Butler,
-                "outcome",
-                Timestamp::from_unix_millis(2_000),
-            )
-            .unwrap()
-        };
-        let record = |key: &str, goal: Goal| GoalRecord::new(key, goal, at).unwrap();
-
-        // Review finding 2: the queue and the publisher both selected only
-        // `complete`, so partial, blocked and failed work settled and vanished.
-        for (id, (key, verdict)) in [
-            ("ended-partial", GoalVerdict::Partial),
-            ("ended-blocked", GoalVerdict::Blocked),
-            ("ended-failed", GoalVerdict::Failed),
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            let mut goal = Goal::new("compare the supplied products").unwrap();
-            goal.commit("read", &format!("a finding for {key}"));
-            goal.apply(verdict, "what could not be done");
-            let record = record(key, goal);
-            assert!(store.create_goal(&record).unwrap());
-            assert!(
-                store
-                    .pending_goal_completions()
-                    .unwrap()
-                    .iter()
-                    .any(|pending| pending.request_key() == key),
-                "{key} must be queued for delivery"
-            );
-            let notice = notice(100 + id as u128);
-            assert!(
-                store.publish_goal_completion(&record, &notice).unwrap(),
-                "{key} must publish"
-            );
-            assert!(
-                !store.publish_goal_completion(&record, &notice).unwrap(),
-                "{key} must publish only once"
-            );
-        }
-        assert!(store.pending_goal_completions().unwrap().is_empty());
-        assert_eq!(store.export().unwrap().messages.len(), 3);
-
-        // The person cancelled it; telling them so would be noise.
-        let mut cancelled = Goal::new("compare the other products").unwrap();
-        cancelled.cancel("no longer needed");
-        let cancelled = record("ended-cancelled", cancelled);
-        assert!(store.create_goal(&cancelled).unwrap());
-        assert!(store.pending_goal_completions().unwrap().is_empty());
-        assert!(
-            store
-                .publish_goal_completion(&cancelled, &notice(200))
-                .is_err()
-        );
-
-        // Work still in progress has no outcome to announce.
-        let running = record(
-            "still-running",
-            Goal::new("compare the third set of products").unwrap(),
-        );
-        assert!(store.create_goal(&running).unwrap());
-        assert!(store.pending_goal_completions().unwrap().is_empty());
-        assert!(
-            store
-                .publish_goal_completion(&running, &notice(201))
-                .is_err()
-        );
-        assert_eq!(store.export().unwrap().messages.len(), 3);
-    }
-
-    #[test]
-    fn goal_completion_notice_is_published_once_and_survives_restart() {
-        use endora_application::{
-            ChatMessage, Goal, GoalDelivery, GoalRecord, GoalRepository, GoalVerdict, MemoryStore,
-            MessageId, MessageRole, Timestamp,
-        };
-
-        let store = SqliteStore::open_in_memory().unwrap();
-        let at = Timestamp::from_unix_millis(1_000);
-        let mut goal = Goal::new("find the next three games").unwrap();
-        goal.start("gathering", "sports_schedule");
-        goal.commit("sports_schedule", "1. game\n2. game\n3. game\nSource: test");
-        goal.apply(GoalVerdict::Complete, "verified evidence");
-        let record = GoalRecord::new("completion-once", goal, at).unwrap();
-        assert!(store.create_goal(&record).unwrap());
-        assert_eq!(store.pending_goal_completions().unwrap().len(), 1);
-        let notice = ChatMessage::new(
-            MessageId::new(77),
-            MessageRole::Butler,
-            "Your request is complete.",
-            Timestamp::from_unix_millis(2_000),
-        )
-        .unwrap();
-        assert!(store.publish_goal_completion(&record, &notice).unwrap());
-        assert!(!store.publish_goal_completion(&record, &notice).unwrap());
-        assert!(store.pending_goal_completions().unwrap().is_empty());
-
-        // A goal answered inline in the turn that ran it is never announced again.
-        let mut inline = Goal::new("find the next two games").unwrap();
-        inline.start("gathering", "sports_schedule");
-        inline.commit("sports_schedule", "1. a\n2. b\n3. c\nSource: test");
-        inline.apply(GoalVerdict::Complete, "verified evidence");
-        let inline = GoalRecord::new("answered-inline", inline, at).unwrap();
-        assert!(store.create_goal(&inline).unwrap());
-        assert_eq!(store.pending_goal_completions().unwrap().len(), 1);
-        store.mark_goal_announced("answered-inline").unwrap();
-        assert!(store.pending_goal_completions().unwrap().is_empty());
-        assert_eq!(store.export().unwrap().messages.len(), 1);
-        store.purge().unwrap();
-        assert!(store.export().unwrap().goals.is_empty());
-    }
-
-    #[test]
-    fn research_and_goal_workers_share_reclaimable_execution_leases() {
+    fn research_workers_share_reclaimable_execution_leases() {
         use endora_application::{ExecutionLeaseRepository, Timestamp};
 
         let store = SqliteStore::open_in_memory().unwrap();
@@ -3119,7 +2188,74 @@ mod the_schema_production_actually_runs {
             .unwrap();
         assert!(
             store
-                .reserve_execution_attempt("goal:request-2", Timestamp::from_unix_millis(2_000), 8)
+                .reserve_execution_attempt(
+                    "research:request-2",
+                    Timestamp::from_unix_millis(2_000),
+                    8
+                )
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn an_existing_database_sheds_what_the_clean_slate_removed() {
+        use endora_application::{ExecutionLeaseRepository, Timestamp};
+
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE checkin (id INTEGER PRIMARY KEY);
+             CREATE TABLE night_loop_schedule (id INTEGER PRIMARY KEY);
+             CREATE TABLE model_tune_schedule (id INTEGER PRIMARY KEY);
+             CREATE TABLE notions (id INTEGER PRIMARY KEY);
+             CREATE TABLE notion_citations (notion INTEGER);
+             CREATE TABLE standing_trouble (entity TEXT PRIMARY KEY);
+             CREATE TABLE specimens (id TEXT PRIMARY KEY, asked TEXT);
+             CREATE TABLE execution_goals (request_key TEXT PRIMARY KEY, objective TEXT);
+             INSERT INTO execution_goals VALUES ('ask-1', 'find John Doe a plumber');
+             CREATE TABLE execution_leases (
+                 execution_key TEXT PRIMARY KEY,
+                 attempts INTEGER NOT NULL DEFAULT 0,
+                 lease_until_ms INTEGER NOT NULL DEFAULT 0
+             );
+             INSERT INTO execution_leases (execution_key, attempts) VALUES ('goal:ask-1', 1);
+             INSERT INTO execution_leases (execution_key, attempts) VALUES ('research:r-1', 1);",
+        )
+        .unwrap();
+        let store =
+            SqliteStore::from_db(endora_persistence::Db::from_connection(conn).unwrap()).unwrap();
+        let conn = store.lock().unwrap();
+        let tables: Vec<String> = conn
+            .prepare("SELECT name FROM sqlite_master WHERE type='table'")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        for gone in [
+            "checkin",
+            "night_loop_schedule",
+            "model_tune_schedule",
+            "notions",
+            "notion_citations",
+            "standing_trouble",
+            "specimens",
+            "execution_goals",
+        ] {
+            assert!(!tables.iter().any(|t| t == gone), "{gone} is still there");
+        }
+        let leases: Vec<String> = conn
+            .prepare("SELECT execution_key FROM execution_leases")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(leases, ["research:r-1"], "research keeps its lease");
+        drop(conn);
+        // And research still reserves through the table that stayed.
+        assert!(
+            store
+                .reserve_execution_attempt("research:r-2", Timestamp::from_unix_millis(1_000), 4)
                 .unwrap()
         );
     }

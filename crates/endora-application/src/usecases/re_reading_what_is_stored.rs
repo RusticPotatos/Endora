@@ -27,6 +27,9 @@ impl BeliefRepository for Remembered {
     fn list(&self) -> Result<Vec<Belief>, endora_kernel::RepositoryError> {
         Ok(self.0.lock().unwrap().clone())
     }
+    fn forget_all(&self) -> Result<usize, endora_kernel::RepositoryError> {
+        Ok(self.0.lock().unwrap().drain(..).count())
+    }
 }
 
 fn stored(id: u128, statement: &str, created_ms: i64) -> Belief {

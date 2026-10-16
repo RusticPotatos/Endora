@@ -23,7 +23,6 @@ step with Endora's `local.mk`, or run this role after a deploy.
 ```yaml
 endora_enabled: true
 endora_version: develop          # where the compose file comes from: a branch, tag or commit
-endora_own_work: true            # looks into things on its own when you are quiet
 endora_docker_observer: true     # a read-only view of this host's containers
 ```
 

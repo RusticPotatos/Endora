@@ -3,6 +3,9 @@
 let DB = null;                 // latest /v1/export snapshot — NULL until one lands
 let MAIL = null;               // the mail digest (/v1/mail), fetched only on the Mail screen
 let AI = null;                 // every model Endora uses (/v1/ai), fetched only on the AI screen
+let SPOTIFY = null;            // the Spotify sign-in, held by the node (/v1/connections/spotify)
+let LAB = {};                  // the home lab, media and smart-home pages, by name (/v1/terminal/*)
+let MUSIC = { now: null, devices: [], found: [], lists: [], query: "", error: "" }; // what Spotify says
 
 // The conversation, safely. `DB` is null before the first export and stays null when
 // the node is unreachable, so anything that runs on every render — the menu badge, in
@@ -13,20 +16,16 @@ function messages() {
   return (DB && DB.messages) || [];
 }
 let ACTIVITY = [];             // latest /v1/activity feed (newest first)
-let CHECKIN = { enabled: false, interval_ms: 0 }; // proactive check-in cadence
 let CAPS = [];                 // the butler's capabilities/skills (modules)
 let MCP_SERVERS = { servers: [] }; // connected MCP servers + their tools (ADR 0054)
 let RECIPES = [];              // the person's own capabilities — five fields, no code (ADR 0071)
 let AUTONOMY = { auto_external: true, auto_consequential: false }; // the autonomy envelope (ADR 0051)
 let BRIEF_SCHED = { enabled: false, hour_utc: 12 }; // daily-brief schedule
-let NIGHT_SCHED = { enabled: false, hour_utc: 3 }; // nightly self-improvement loop (ADR 0051)
 let DEEP_MODEL = { configured: false, key_set: false, url: "", model: "" }; // optional bigger AI
 let MODEL_CONFIG = { configured: false, key_set: false, base_url: "", mixture: false,
   single: {}, router: {}, synth: {} }; // the butler's own models, editable at runtime (ADR 0055)
-let TUNE_SCHED = { enabled: false, hour_utc: 4 }; // nightly self-improving model tune (ADR 0055)
 let UNDERSTANDING = [];        // Endora's beliefs about the person (the home surface)
 let OUTCOMES = [];             // what Endora DID, and what it saw afterwards (ADR 0053)
-let INTENTIONS = [];           // what Endora is pursuing, and has pursued (ADR 0052)
 let RESEARCH = { items: [] };   // explicit durable research assignments (ADR 0077)
 let RESEARCH_READY = { ready: false, modes: [], search_tools: [] };
 let RESEARCH_MODE = localStorage.getItem("endora.researchmode") === "1";
@@ -34,7 +33,6 @@ let RESEARCH_PENDING = (() => {
   try { return JSON.parse(localStorage.getItem("endora.researchPending") || "null"); }
   catch (_) { return null; }
 })();
-let NOTIONS = [];              // what Endora is still thinking about (ADR 0057)
 let CONNECTED = [];            // integrations already set up behind the channel (ADR 0058)
 let NEEDS_TOKEN = false;       // this device cannot prove who it is to the node
 let SIGNIN = null;             // whether a password and authenticator are set up
@@ -58,7 +56,6 @@ let CTX_OPEN = false;          // whether the inspector is showing
 let CHAT_DAYS = [];            // [{day, messages}] — which days have anything, for the bar
 let LAST_VIEW = null;          // which screen was showing, so a change can reset the scroll
 let REPAIRS = [];              // tooling Endora has noticed keeps not working (ADR 0054)
-let TROUBLE = [];              // things in your world that stopped answering (ADR 0056)
 let LANDING = null;            // how Endora's recent actions actually landed (ADR 0053)
 let CONNECT = null;            // a setup form a service is asking us to fill in (ADR 0054)
 let CONFIG_WRITES = [];        // changes Endora made to your services' own settings (ADR 0054)
@@ -114,6 +111,11 @@ const ICONS = {
   check: '<path d="M5 13l4 4L19 7"/>',
   person: '<circle cx="12" cy="8.5" r="3.6"/><path d="M4.5 20a7.5 7.5 0 0 1 15 0"/>',
   lock: '<rect x="5" y="10.5" width="14" height="10" rx="2"/><path d="M8 10.5V7.5a4 4 0 0 1 8 0v3"/>',
+  music: '<path d="M9 18V5.5l11-2V16"/><circle cx="6.5" cy="18" r="2.5"/><circle cx="17.5" cy="16" r="2.5"/>',
+  house: '<path d="M3.5 11L12 4l8.5 7"/><path d="M6 9.5V20h12V9.5"/><path d="M10 20v-5h4v5"/>',
+  film: '<rect x="3.5" y="5" width="17" height="14" rx="2"/><path d="M3.5 9.5h17M3.5 14.5h17M8 5v14M16 5v14"/>',
+  server: '<rect x="4" y="4" width="16" height="7" rx="1.5"/><rect x="4" y="13" width="16" height="7" rx="1.5"/><path d="M7.5 7.5h.01M7.5 16.5h.01"/>',
+  box: '<path d="M12 3l8 4.5v9L12 21l-8-4.5v-9z"/><path d="M4 7.5l8 4.5 8-4.5M12 12v9"/>',
 };
 function icon(name, size = 17) {
   const p = ICONS[name];

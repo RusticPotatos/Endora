@@ -274,19 +274,27 @@ Spotify's Web API, and sound comes from the device, so it works with the screen 
 Spotify Premium and a free Spotify developer app (Web API only) whose redirect URI is exactly
 `http://127.0.0.1:8888/callback`.
 
-- **Sign in once (one QR code per sign-in):** on the Music page press `Y` (or Settings → Accounts →
-  `S`, or run `endora-terminal music setup`) and give the app's Client ID. Each sign-in shows one QR
-  code; scanning it opens a small page the device serves on your local network at a secret address
-  (only while setup waits, up to 5 minutes). On it, tap "Open the Spotify sign-in", sign in and
-  press Agree; the page after Agree will not load, which is expected: copy its address, come back to
-  the first tab and paste it. Step 1 signs the app in for control; step 2 signs in this device's
-  speaker, so it is on your account by itself after every reboot and the handheld can play without
-  a phone choosing it (no Spotify app needed anywhere else). When Spotify is already signed in,
-  setup asks first: `S` signs in only the speaker, `A` signs in again (needed once for Like). If
-  your phone can't reach the device, the sign-in address is printed to open in any browser and the
-  final address is typed on the handheld. No client secret is used (PKCE). The Client ID and the
-  sign-in tokens are kept only in `~/.local/state/endora-terminal/spotify`, mode 0600, and the
-  speaker's saved sign-in in `~/.local/state/librespot`, never in the repository.
+- **One sign-in, Endora's:** Spotify is connected once, in Endora, and every device uses it: this
+  one, the web console and chat. The handheld borrows an access token from the node (an hour at a
+  time) and asks again when it runs out; the refresh token never leaves Endora. So the Music page
+  needs the device unlocked and the node reachable.
+- **Connecting from the handheld:** on the Music page press `Y` (or Settings → Accounts → `S`, or
+  run `endora-terminal music setup`, which asks for the passcode) and give the app's Client ID if
+  Endora does not have it yet. Setup starts the sign-in on Endora and shows one QR code; scanning
+  it opens a small page the device serves on your local network at a secret address (only while
+  setup waits, up to 5 minutes). On it, tap "Open the Spotify sign-in", sign in and press Agree;
+  the page after Agree will not load, which is expected: copy its address, come back to the first
+  tab and paste it, and Endora finishes the sign-in. A sign-in started in the web console shows on
+  the handheld as waiting, and the other way round. Step 2 signs in this device's speaker, so it is
+  on your account by itself after every reboot and the handheld can play without a phone choosing
+  it. When Spotify is already connected, setup asks first: `S` signs in only the speaker, `A`
+  connects again (for every device). If your phone can't reach the device, the sign-in address is
+  printed to open in any browser and the final address is typed on the handheld. No client secret
+  is used (PKCE, done by Endora). The speaker's saved sign-in stays in `~/.local/state/librespot`.
+- **A sign-in made here before:** a device that signed in by itself, before Endora held the
+  sign-in, hands it to Endora the first time Music runs with the node reachable (when Endora has
+  none) and then deletes its copy from `~/.local/state/endora-terminal/spotify`. Until then it is
+  used as before.
 - **The speaker:** `librespot` runs as the `spotify-speaker` user service with the PulseAudio
   backend, so its sound goes through PipeWire and mixes with Bluetooth streams (a Mac or phone
   playing to the device) into the current output. It replaces the old `raspotify` system service,
@@ -305,8 +313,7 @@ Spotify Premium and a free Spotify developer app (Web API only) whose redirect U
   plays from there, and playing anything else ends the radio. Spotify no longer offers its
   recommendation or radio feeds to personal apps, and its DJ and Radio cannot be started from
   here, so the stream is built from your own listening. Saving songs needs the "library modify"
-  permission and top artists the "top read" permission: if the page asks, sign in again once
-  (Settings → Accounts → `S`).
+  permission and top artists the "top read" permission, which Endora's sign-in asks for.
 - **Like and dislike (`H`, `X`):** on any song, from the Music page (listed under Playback). `H`
   saves the song to Liked songs; `X` skips it and leaves that artist out of the Discover radio and
   smart shuffle for the rest of the session.

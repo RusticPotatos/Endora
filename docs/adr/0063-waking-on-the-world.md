@@ -6,6 +6,10 @@ Accepted (2026-08-03). The gap [0057](0057-thinking-between-turns.md) named and 
 *"nothing in this system is yet triggered by the world changing"* — closed, under the
 widened autonomy grant.
 
+**Superseded 2026-10-16 by [0100](0100-the-clean-slate.md).** The check-in is removed, so there
+is nothing for an unusual change to wake. The reasoning below is kept for the agenda loop that
+replaces it.
+
 ## Context
 
 Everything proactive in this system happens on a clock. The brief has an hour, the nightly

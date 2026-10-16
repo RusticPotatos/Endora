@@ -158,45 +158,25 @@ The image binds `0.0.0.0` **inside** the container so the mapped port works; the
 `127.0.0.1:` in `-p` is what keeps it off your machine's other interfaces. Only
 change that once a private overlay or an authenticating proxy sits in front.
 
-### Optional: let it look into things on its own
+### Optional: the mail
 
-Set **`ENDORA_OWN_WORK=1`** on the node and it will, while you are not talking to it,
-look into things one at a time and write what it found to the activity trail. It is off
-by default. In this order, and only when the one before has nothing:
+Set **`ENDORA_MAIL_DIR`** in `local.mk` to the read-only mail copy the ansible-nas
+`mail_mirror` role keeps (by default `/srv/mail-mirror/maildir` on the NAS), and Endora
+reads your mail in quiet time, one message at a time, with the local model only, and shows
+what matters in your brief and the console's **Mail** screen (ADR 0097).
 
-1. Something in the house that has not answered for three days or more (a sensor, a
-   device). It reads only Home Assistant for this, not the web or your other skills.
-2. A question it once failed to answer, asked again a day after it failed. Judged by
-   the same check that filed it; it gives up after the same number of tries as before.
-3. Something it understands about you with confidence, looked into with the same
-   read-only skills the nightly loop's long-running thread used, **including the web**.
-   This is the one thing the lane does that sends a query out of the house, built from
-   a belief about you. Leave the switch off if you do not want that.
+(Looking into things on its own, the `ENDORA_OWN_WORK` switch, was removed on 2026-10-16: see
+[the always-on butler plan](plans/always-on-butler.md) for what replaces it.)
 
-It reads and looks; it cannot change anything. It uses the local model only (never the
-paid one), waits until you have been quiet for ten minutes, never takes the place of
-something you asked for, and posts nothing to chat. Pressing Stop on one, or marking a
-device "it's fine", means that item is not looked into again. With the switch on, the
-nightly loop stops replaying a question and keeping its own thread, since the lane does
-both; with it off, the nightly loop is exactly as it was.
-With the switch on, and **`ENDORA_MAIL_DIR`** set in `local.mk` to the read-only mail copy the
-ansible-nas `mail_mirror` role keeps (by default `/srv/mail-mirror/maildir` on the NAS), it
-also reads your mail in quiet time, one message at a time, with the local model only, and
-shows what matters in the trail, your brief and the console's **Mail** screen (ADR 0097).
+### Time zone
 
-With the switch on it also reads the house's own log of what changed, and writes a line to
-the activity trail when something happens at about the same time on most days ("the front
-door goes on around 07:30, on 11 of the last 14 days"). That needs no model and sends
-nothing anywhere. Set **`ENDORA_TIME_ZONE`** to your zone by name (for example
+Set **`ENDORA_TIME_ZONE`** to your zone by name (for example
 `America/New_York` or `Europe/Berlin`) so the times are yours, either side of a clock change.
-The same setting keeps the daily brief and the nightly loop at their local hour when the clocks
-change; they are stored as UTC hours, which would otherwise arrive an hour early or late for
-half the year. A name the node does not know stops it at start rather than becoming UTC.
+The model is told your local time, and the daily brief keeps its local hour when the clocks
+change; it is stored as a UTC hour, which would otherwise arrive an hour early or late for half
+the year. A name the node does not know stops it at start rather than becoming UTC.
 `ENDORA_UTC_OFFSET_MINUTES` (for example `-300`) is a fixed fallback; with neither, times are
 UTC.
-See [ADR 0094](adr/0094-work-it-finds-for-itself.md),
-[ADR 0095](adr/0095-more-sources-for-work-it-finds.md) and
-[ADR 0096](adr/0096-patterns-it-notices.md).
 
 ## 3. Reach it securely from your phone and laptop
 

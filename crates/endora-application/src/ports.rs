@@ -7,7 +7,6 @@
 
 use core::fmt;
 
-use crate::GoalRecord;
 use endora_capabilities::CapabilityUse;
 use endora_conversation::{ChatMessage, MessageRole};
 use endora_kernel::ids::{MessageId, Timestamp};
@@ -18,33 +17,6 @@ use endora_understanding::{
 
 /// How long a worker reservation remains owned before restart recovery may reclaim it.
 pub const EXECUTION_LEASE_MS: i64 = 30_000;
-
-/// Identifies one claim of a goal. Tokens never repeat, including after deletion.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct GoalLease {
-    request_key: String,
-    owner: String,
-}
-
-impl GoalLease {
-    /// Constructs a storage-issued ownership token.
-    pub fn new(request_key: &str, owner: &str) -> Self {
-        Self {
-            request_key: request_key.to_owned(),
-            owner: owner.to_owned(),
-        }
-    }
-
-    /// The goal covered by this claim.
-    pub fn request_key(&self) -> &str {
-        &self.request_key
-    }
-
-    /// Opaque token checked by persistence on every mutation.
-    pub fn owner(&self) -> &str {
-        &self.owner
-    }
-}
 
 /// A complete snapshot of the user's stored data, for the memory rights of the
 /// constitution: it is what "export" hands back and what "delete" removes.
@@ -64,8 +36,6 @@ pub struct MemorySnapshot {
     pub intentions: Vec<Intention>,
     /// User-commissioned research work and any saved reports (ADR 0077).
     pub research: Vec<ResearchAssignment>,
-    /// User-requested execution goals and their resumable checkpoints.
-    pub goals: Vec<GoalRecord>,
 }
 
 /// The user's right to export and delete all of their data (constitution:
@@ -84,71 +54,9 @@ pub trait MemoryStore {
     fn purge(&self) -> Result<(), RepositoryError>;
 }
 
-/// Durable storage for bounded, user-requested goal execution.
-///
-/// A repository implementation must preserve the immutable request key and
-/// objective, reject stale writes that would resurrect a terminal goal, and
-/// return queued/running/waiting records so a worker can resume after restart.
-pub trait GoalRepository {
-    /// Creates a goal without overwriting existing work. A conflicting objective
-    /// is an error; a duplicate request returns `false`.
-    fn create_goal(&self, record: &GoalRecord) -> Result<bool, RepositoryError>;
-
-    /// Updates existing active work only for its current, unexpired owner.
-    /// Never inserts; deletion, cancellation or replacement returns `false`.
-    fn checkpoint_goal(
-        &self,
-        record: &GoalRecord,
-        lease: &GoalLease,
-        at: Timestamp,
-    ) -> Result<bool, RepositoryError>;
-
-    /// Fetches a goal by its idempotency key.
-    fn get_goal(&self, request_key: &str) -> Result<Option<GoalRecord>, RepositoryError>;
-
-    /// Returns all resumable goals, oldest update first.
-    fn active_goals(&self) -> Result<Vec<GoalRecord>, RepositoryError>;
-
-    /// Every goal Endora started for itself (ADR 0094), oldest first: those begun at or after
-    /// `since`, and any still open however old. What the decision to start more work rests on.
-    fn own_goals_since(&self, since: Timestamp) -> Result<Vec<GoalRecord>, RepositoryError>;
-
-    /// Atomically claims active work and spends an attempt. Exhaustion after the
-    /// last owner's expiry records an explicit terminal reason.
-    fn claim_goal(
-        &self,
-        request_key: &str,
-        at: Timestamp,
-    ) -> Result<Option<GoalLease>, RepositoryError>;
-
-    /// Checks current ownership before a new external operation is dispatched.
-    fn goal_owned(&self, lease: &GoalLease, at: Timestamp) -> Result<bool, RepositoryError>;
-
-    /// Extends an unexpired claim; expired or revoked ownership cannot renew.
-    fn renew_goal(&self, lease: &GoalLease, at: Timestamp) -> Result<bool, RepositoryError>;
-
-    /// Releases this claim without clearing a replacement owner's lease.
-    fn release_goal(&self, lease: &GoalLease) -> Result<(), RepositoryError>;
-
-    /// Cancels a non-terminal goal. Returns `false` when it was already terminal.
-    fn cancel_goal(
-        &self,
-        request_key: &str,
-        reason: &str,
-        at: Timestamp,
-    ) -> Result<bool, RepositoryError>;
-
-    /// Returns completed goals whose one completion notice is not committed yet.
-    fn pending_goal_completions(&self) -> Result<Vec<GoalRecord>, RepositoryError>;
-
-    /// Records that the person already received this goal's result in the turn that
-    /// ran it, so the background worker does not announce it a second time.
-    fn mark_goal_announced(&self, request_key: &str) -> Result<(), RepositoryError>;
-}
-
 /// Shared ownership boundary for resumable execution workers.
 ///
-/// The key namespaces an execution stream (for example `goal:<request-key>` or
+/// The key namespaces an execution stream (for example
 /// `research:<request-key>`). A reservation is durable, bounded, and reclaimable
 /// after the lease expires when a worker dies. Implementations must compare the
 /// lease token on release so a late worker cannot clear a newer reservation.
@@ -167,17 +75,6 @@ pub trait ExecutionLeaseRepository {
         execution_key: &str,
         lease_until_ms: i64,
     ) -> Result<(), RepositoryError>;
-}
-
-/// Atomically publishes a goal's completion notice exactly once.
-pub trait GoalDelivery {
-    /// Returns `false` when another worker already published the notice or the
-    /// goal was cancelled/changed before publication.
-    fn publish_goal_completion(
-        &self,
-        record: &GoalRecord,
-        notice: &ChatMessage,
-    ) -> Result<bool, RepositoryError>;
 }
 
 /// Atomically publishes the final state of commissioned research across its
@@ -336,8 +233,8 @@ pub enum TurnMessage {
 // BeliefRepository moved to the understanding context (ADR 0050); re-exported
 // from `endora_application` (see lib.rs) so existing paths hold.
 
-// The check-in and daily-brief schedules — CheckinSchedule, BriefSchedule, and
-// their repositories — now live in the scheduling context (ADR 0050). They are
+// The daily-brief schedule — BriefSchedule and its repository — lives in the scheduling
+// context (ADR 0050). They are
 // re-exported from `endora_application` (see lib.rs) so existing paths hold.
 
 /// A snapshot of what Endora currently knows, handed to the butler each turn so

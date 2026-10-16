@@ -18,6 +18,7 @@ pub mod homelab;
 /// Chat-facing reads over the handheld's configured services (read-only; see ADR 0093).
 pub mod homelab_chat;
 /// Explicit, fixed-route handheld administration adapters.
+pub mod spotify;
 pub mod terminal;
 
 use crate::application::{CapabilityRunner, Recipe, Stance};

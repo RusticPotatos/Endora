@@ -153,7 +153,6 @@ runInContext(
                      settled: true, last_affirmed_ms: 1 }];
   OUTCOMES = [{ id: "42", capability: "home.HassTurnOff", claim: "done",
                 observation: "still on", observed: true, reaction: null, at_ms: 1 }];
-  INTENTIONS = [{ id: "1", summary: "find a running route", state: "active", steps_left: 3 }];
   RESEARCH = { items: ["queued", "running", "retry_wait", "delivered", "blocked",
     "budget_exhausted", "cancelled", "failed"].map((status, index) => ({
       id: String(100 + index), assignment: index === 0 ? "<img src=x onerror=alert(1)>" : "Compare backups",
@@ -187,6 +186,43 @@ runInContext(
       local: true, on: false, change: "vision", sees: "The image.", runtime: null },
     { id: "speech", name: "Hearing you", does: "Speech.", model: "", endpoint: "", local: true, on: true,
       change: "speech", sees: "Your voice.", runtime: null }] };
+  // A Spotify sign-in started elsewhere, waiting to be finished here.
+  SPOTIFY = { state: "waiting", detail: "Waiting for you to approve Endora on Spotify", client_id_set: true,
+    sign_in_url: "https://accounts.spotify.com/authorize?client_id=example", redirect: "http://127.0.0.1:8888/callback",
+    started_ms: 1, account: null };
+  // The home lab, media and smart home as the node's typed endpoints give them.
+  LAB = {
+    dashboard: { stats: ["CPU 7%", "Free 13.8 TB"], alerts: ["DiskLow"], groups: [
+      { name: "Media", services: [
+        { name: "Overseerr", state: "running", id: "${"1".repeat(64)}", detail: "0 pending" },
+        { name: "<b>Plex</b>", state: "unhealthy" }] }] },
+    containers: { summary: "CPU 7% | Mem 54%", items: [
+      { id: "${"2".repeat(64)}", label: "endora-node", detail: "running Up 4 minutes", protected: true },
+      { id: "${"3".repeat(64)}", label: "sonarr", detail: "running Up 2 days", protected: false },
+      { id: "${"4".repeat(64)}", label: "radarr", detail: "exited Exited (0) 1 hour ago", protected: false }] },
+    logs: { summary: "line one\\n<script>no</script>", items: [] },
+    jobs: { summary: "Allowlisted Ansible jobs", items: [
+      { id: "check", label: "Check the NAS", detail: "complete", latest_id: "web-abc" },
+      { id: "apply", label: "Apply the NAS", detail: "not run", latest_id: null }] },
+    job: { summary: "PLAY RECAP ok=12", state: "complete", items: [] },
+    mediaQuery: "dune",
+    found: { summary: "", items: [
+      { id: "438631", label: "Dune (2021)", detail: "movie | Availability: not requested", media_type: "movie" },
+      { id: "90228", label: "Dune: Prophecy (2024)", detail: "tv | Availability: available", media_type: "tv" }] },
+    requests: { summary: "Recent media requests", items: [{ id: "1", label: "Fall (2022)", detail: "movie | completed", media_type: "movie" }] },
+    favorites: { summary: "Home favorites", items: [
+      { id: "light.kitchen", label: "Kitchen", detail: "on " },
+      { id: "scene.movie", label: "Movie night", detail: "scening " },
+      { id: "sensor.porch", label: "Porch", detail: "21 °C" }] },
+    catalogQuery: "",
+    catalog: { summary: "", items: [{ id: "light.kitchen", label: "Kitchen", detail: "on", favorite: true },
+      { id: "switch.fan", label: "Fan", detail: "off", favorite: false }] },
+  };
+  MUSIC = { now: { is_playing: true, device: { name: "Living room", volume_percent: 40 },
+      item: { name: "A <i>song</i>", artists: [{ name: "Jane Doe" }], album: { images: [{ url: "https://i.scdn.co/image/example" }] } } },
+    devices: [{ id: "abc123", name: "Living room", is_active: true }, { id: "def456", name: "Handheld", is_active: false }],
+    found: [{ uri: "spotify:track:abc", name: "Found", kind: "track", who: "Jane Doe" }],
+    lists: [{ uri: "spotify:playlist:def", name: "Mine", kind: "playlist", who: "John Doe" }], query: "x", error: "" };
   MAIL = { mounted: true, reading: true, indexed: 412, unread_recent: 37,
     important: [{ from: "Example Dental", at_ms: 1, bucket: "money", sentence: "A bill <b>due</b>.",
                   why: ["asks for money"], amount: "180.00", dates: [{ date: "2026-10-30", what: "due" }],
@@ -222,16 +258,8 @@ runInContext(
   // other screens and would otherwise never be rendered by this check.
   JUST_ENROLLED = "otpauth://totp/Endora:you?secret=AAAA&issuer=Endora";
   JUST_ENROLLED_QR = "<svg xmlns='http://www.w3.org/2000/svg'><rect/></svg>";
-  NOTIONS = [{ id: "1", statement: "the Monday gym block gets cancelled",
-               because: ["message:12", "reading:calendar.rustic"],
-               settles_when: "whether next Monday's block survives",
-               status: "open", created_ms: 1, last_supported_ms: 2 },
-             { id: "2", statement: "a thought that came to nothing", because: ["message:3"],
-               settles_when: "", status: "died", created_ms: 1, last_supported_ms: 1 }];
   REPAIRS = [{ capability: "home.HassTurnOff", target: "kitchen", attempts: 3,
                remedy: "name_the_target" }];
-  TROUBLE = [{ server: "home-assistant", thing: "living room lamp", trouble: "unavailable",
-               days: 4, statement: "living room lamp has not answered for 4 days" }];
   LANDING = { considered: 50, changed: 8, unchanged: 23, failed: 19, unchecked: 0,
               worst_offender: { capability: "home.HassTurnOff", times: 13 },
               in_words: "8 of 50 verified" };
@@ -467,12 +495,121 @@ if (failures.length) {
       process.exit(1);
     }
   }
+  // Spotify: whichever device started the sign-in, this one shows it and can finish it.
+  const spotify = (state) => runInContext(`SPOTIFY = Object.assign({}, SPOTIFY, { state: "${state}" }); viewSpotify()`, context);
+  const waiting = spotify("waiting");
+  if (!waiting.includes("spotify:finish") || !waiting.includes("accounts.spotify.com/authorize")
+      || !waiting.includes("/connect/spotify/callback")) {
+    console.error("spotify: a waiting sign-in cannot be finished here, or the app's addresses are not shown");
+    process.exit(1);
+  }
+  if (!spotify("connected").includes("spotify:disconnect") || !spotify("not_set_up").includes("spotify:begin:endora")
+      || !runInContext("viewConnections()", context).includes("go:spotify")) {
+    console.error("spotify: connecting or disconnecting is missing, or Connections does not lead to it");
+    process.exit(1);
+  }
+  runInContext('SPOTIFY = Object.assign({}, SPOTIFY, { state: "waiting" })', context);
   if (!runInContext("viewPermissions()", context).includes("autonomy:external")) {
     console.error("permissions: the autonomy switches are not on Permissions");
     process.exit(1);
   }
   runInContext("NAV = globalThis.__nav", context);
   console.log("settings: 8 entries; skills a list, each with its own screen; connections and permissions their own");
+}
+
+// A long link must wrap inside a card on every screen, not run off a phone's edge. It did on
+// Activity, Inbox and others, which the chat bubbles never did because they had the rule.
+{
+  const css = readFileSync(resolve(here, "../app/node/src/web/styles.css"), "utf8");
+  const card = (css.match(/\n\s*\.card \{[^}]*\}/) || [""])[0];
+  if (!/overflow-wrap:\s*anywhere/.test(card)) {
+    console.error("styles: .card lost overflow-wrap, so long links run off the screen again");
+    process.exit(1);
+  }
+}
+
+// The clean slate (owner, 2026-10-16): no Inbox, no check-in or nightly review to switch on,
+// no durable goals to watch or stop, no beliefs listed kind by kind; About you offers to forget what it learned and keeps what
+// they told it.
+{
+  for (const gone of ["go:inbox", "nightsched", "data-change=\"checkin\"", "tunesave", "affirm:belief", "viewGoals", "/v1/goals"]) {
+    if (source.includes(gone)) {
+      console.error(`clean slate: ${gone} is back`);
+      process.exit(1);
+    }
+  }
+  runInContext('UNDERSTANDING = [{ id: "1", statement: "prefers Fahrenheit", kind: "preference" }]', context);
+  const about = runInContext("viewUnderstanding()", context);
+  if (!about.includes("forgetlearned") || !about.includes("1 thing about you")) {
+    console.error("about you: the way to start fresh is missing");
+    process.exit(1);
+  }
+}
+
+// Devices that stopped answering are never asked about: the owner turned it off for good
+// (2026-10-16), so nothing may bring the card or its actions back.
+if (/Still yours\?|data-act="trouble:|standing-trouble/.test(source)) {
+  console.error("chat: the \"Still yours?\" card for devices that stopped answering is back");
+  process.exit(1);
+}
+
+// The handheld's features on the web (plan phase 4): the web console is the full set.
+{
+  const fail = (what) => { console.error(what); process.exit(1); };
+  const id = (digit) => digit.repeat(64);
+  const lab = runInContext("viewLab()", context);
+  if (!lab.includes("go:containers") || !lab.includes("go:jobs") || !lab.includes("CPU 7%")
+      || !lab.includes(`go:logs:${id("1")}`) || lab.includes("<b>Plex</b>")) {
+    fail("home lab: the figures, a service's logs or the way to containers and jobs is missing, or a name is not escaped");
+  }
+  const containers = runInContext("viewContainers()", context);
+  // Endora's own path is never offered a stop; a running container can stop, a stopped one start.
+  if (containers.includes(`stop:${id("2")}`) || containers.includes(`restart:${id("2")}`)
+      || !containers.includes(`lab:container:stop:${id("3")}`) || !containers.includes(`lab:container:start:${id("4")}`)) {
+    fail("containers: Endora's own path can be stopped, or a container cannot be stopped or started");
+  }
+  if (containers.indexOf("radarr") > containers.indexOf("sonarr")) fail("containers: a stopped one is not listed first");
+  runInContext('LAB.dashboard.groups.unshift({ name: "Alerts", services: [{ name: "DiskLow", state: "unhealthy" }] })', context);
+  if (!runInContext("viewLab()", context).includes("1 firing")) fail("home lab: firing alerts are counted as services that are down");
+  if (runInContext("viewLogs()", context).includes("<script>")) fail("logs: a log line became markup");
+  const jobs = runInContext("viewJobs()", context);
+  if (!jobs.includes("lab:job:run:check") || !jobs.includes("go:job:web-abc") || jobs.includes("go:job:null")) {
+    fail("jobs: a job cannot be run, its last run opened, or one never run offers a run to open");
+  }
+  const media = runInContext("viewMedia()", context);
+  if (!media.includes("media:request:movie:438631") || media.includes("media:request:tv:90228") || !media.includes("Fall (2022)")) {
+    fail("media: only what is not requested yet may be requested, and recent requests show");
+  }
+  const house = runInContext("viewHouse()", context);
+  // Only what can be switched is offered a switch; a sensor is only read.
+  if (!house.includes("house:home:on:light.kitchen") || !house.includes("house:home:off:light.kitchen")
+      || !house.includes("house:home:scene:scene.movie") || house.includes(":sensor.porch")
+      || !house.includes("house:favorite:remove:light.kitchen") || !house.includes("house:favorite:add:switch.fan")) {
+    fail("smart home: a favorite's switch, a scene, or choosing favorites is wrong");
+  }
+  runInContext('SPOTIFY = Object.assign({}, SPOTIFY, { state: "connected" })', context);
+  const music = runInContext("viewMusic()", context);
+  if (!music.includes("music:toggle") || !music.includes("Pause") || !music.includes("music:device:def456")
+      || !music.includes("music:play:f0") || !music.includes("music:play:l0") || music.includes("<i>song</i>")) {
+    fail("music: playing, choosing a device or playing a find or a playlist is missing, or a title is not escaped");
+  }
+  runInContext('SPOTIFY = Object.assign({}, SPOTIFY, { state: "not_set_up" })', context);
+  if (!runInContext("viewMusic()", context).includes("go:spotify")) fail("music: not connected, it does not lead to connecting");
+  runInContext('SPOTIFY = Object.assign({}, SPOTIFY, { state: "waiting" })', context);
+  for (const view of ["music", "house", "media", "lab"]) {
+    if (!source.includes(`item("go:${view}"`)) fail(`menu: ${view} is not in the menu`);
+  }
+  // A screen that fetches its own data must be fetched when it is opened, or it shows
+  // "Loading…" until something else happens to reload the console — which Mail did.
+  const fetched = new Set();
+  for (const fn of ["loadView", "loadLab"]) {
+    const body = (source.match(new RegExp(`async function ${fn}\\([\\s\\S]*?\\n}\\n`)) || [""])[0];
+    for (const m of body.matchAll(/v === "([a-z]+)"/g)) fetched.add(m[1]);
+  }
+  const opened = runInContext("FETCHES_ITS_OWN", context);
+  const missing = [...fetched].filter((v) => !opened.includes(v));
+  if (fetched.size < 10 || missing.length) fail(`navigation: these screens fetch data that opening them does not: ${missing.join(", ")}`);
+  console.log(`home lab, media, smart home, music: render, act through the allowlist, and fetch when opened (${fetched.size} screens)`);
 }
 
 
@@ -513,8 +650,19 @@ if (missing.length) {
 // literal on a `fetch`) rather than trying to understand the file. A false positive here is
 // somebody writing headers a new way and being told to route them through `signed`, which is
 // the right answer anyway.
+// Another site's `/v1` (Spotify's) is not this node, and is the opposite case: see below.
 const unsigned = [...source.matchAll(/fetch\(\s*["'`]([^"'`]*\/v1[^"'`]*)[\s\S]{0,200}?headers:\s*\{/g)]
+  .map((m) => m[1])
+  .filter((url) => !/^https?:\/\//.test(url));
+// And this node's credential goes to this node only. Music calls Spotify from the browser with
+// a token the node lends; signing that request would hand Endora's own token to Spotify.
+const leaks = [...source.matchAll(/fetch\(\s*["'`](https?:\/\/[^"'`]*)[\s\S]{0,300}?\)\s*;/g)]
+  .filter((m) => /signed\(|token\(\)/.test(m[0]))
   .map((m) => m[1]);
+if (leaks.length) {
+  console.error(`requests: these send Endora's credential to another site: ${leaks.join(", ")}`);
+  process.exit(1);
+}
 if (unsigned.length) {
   console.error(
     `requests: these reach /v1 without going through signed(): ${unsigned.join(", ")}`
@@ -856,74 +1004,6 @@ if (keys.length !== 3 || keys[0] !== keys[1] || keys[0] === keys[2]) {
     process.exit(1);
   }
   console.log("research: every lifecycle state renders safely with its valid controls");
-}
-
-// Work Endora does on its own is visible while it runs, can be stopped, and never just
-// vanishes when it ends (ADR 0083). A goal that settled as partial used to leave no trace
-// anywhere in the console: stored, finished, and invisible.
-{
-  const goal = (key, objective, status, extra = {}) => ({
-    request_key: key, objective, status, phase: "gathering", next_step: "", reason: "",
-    evidence: [], outcome: null, updated_ms: 1000, ...extra,
-  });
-  context.__goals = [
-    goal("chat:abc 1", "Find <b>three</b> games", "running", {
-      next_step: "web_fetch", evidence: [{ step: "read", output: "one" }] }),
-    goal("k-complete", "Check the bus", "complete", { outcome: "The 41 arrives at 14:05.", updated_ms: 6000 }),
-    goal("k-partial", "Compare backups", "partial", {
-      outcome: "Here is what I found on: Compare backups\n- Product A costs 10 dollars\nI couldn't confirm this fully answers your request.", updated_ms: 5000 }),
-    goal("k-blocked", "Read the manual", "blocked", { outcome: "I'm blocked on: Read the manual", updated_ms: 4000 }),
-    goal("k-failed", "Water the plants", "failed", { outcome: "I couldn't do: Water the plants", updated_ms: 3000 }),
-    goal("k-cancelled", "Plan the trip", "cancelled", { outcome: "You cancelled: Plan the trip", updated_ms: 2000 }),
-  ];
-  runInContext("globalThis.__savedDb = DB; DB = Object.assign({ messages: [] }, DB, { goals: __goals });", context);
-  const goals = runInContext("viewGoals()", context);
-  for (const label of ["working", "done", "partly done", "blocked", "could not do it", "cancelled"]) {
-    if (!goals.toLowerCase().includes(label)) {
-      console.error(`goals: ${label} has no visible state`);
-      process.exit(1);
-    }
-  }
-  if (!goals.includes("1 finding") || !goals.includes("gathering")) {
-    console.error("goals: running work does not say where it is or what it has found");
-    process.exit(1);
-  }
-  if (goals.includes("<b>three</b>") || !goals.includes("&lt;b&gt;three")) {
-    console.error("goals: an objective became markup");
-    process.exit(1);
-  }
-  for (const outcome of ["14:05", "Here is what I found", "couldn&#39;t confirm", "blocked on", "couldn&#39;t do", "You cancelled"]) {
-    if (!goals.includes(outcome) && !goals.includes(outcome.replace("'", "&#39;"))) {
-      console.error(`goals: an ended goal hid its outcome (${outcome})`);
-      process.exit(1);
-    }
-  }
-  const stops = goals.match(/data-act="goal:cancel:[^"]*"/g) || [];
-  if (stops.length !== 1 || !stops[0].includes("goal:cancel:chat%3Aabc%201")) {
-    console.error(`goals: only running work can be stopped, by its encoded key: ${stops.join(" ")}`);
-    process.exit(1);
-  }
-  if (!runInContext("viewChat()", context).includes("Endora's own work")) {
-    console.error("goals: the chat does not show the goals strip");
-    process.exit(1);
-  }
-
-  // Stopping one reaches the node with the key intact (a `:` would break the dispatcher).
-  context.__realReload = runInContext("reload", context);
-  runInContext("reload = async () => {}", context);
-  const before = sent.length;
-  await runInContext('dispatch("goal:cancel:chat%3Aabc%201")', context);
-  const stop = sent.slice(before).find((r) => String(r.path).includes("/cancel"));
-  if (!stop || stop.method !== "POST" || stop.path !== "/v1/goals/chat%3Aabc%201/cancel") {
-    console.error(`goals: Stop did not POST the goal's cancel route: ${JSON.stringify(stop)}`);
-    process.exit(1);
-  }
-  if (!stop.headers.authorization) {
-    console.error("goals: Stop went out without a credential");
-    process.exit(1);
-  }
-  runInContext("reload = __realReload; DB = __savedDb;", context);
-  console.log("goals: running work shows progress and can be stopped; ended work keeps its outcome");
 }
 
 // The recipe authoring loop shows what it actually fetched, and every field it

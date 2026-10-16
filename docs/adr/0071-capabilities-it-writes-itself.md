@@ -11,6 +11,10 @@ ordinary PR against this record. The last rung of the master plan, and the first
 step onto the capability ladder's "infra skills" rung
 ([0055](0055-the-model-layer.md)).
 
+**Amended 2026-10-16:** specimens are removed ([0100](0100-the-clean-slate.md)), so the
+gap-detection trigger below has nothing to read. Recipes are still written with the person,
+through the authoring loop.
+
 ## Context
 
 Every capability Endora has, somebody built by hand. The butler can notice a gap — asked

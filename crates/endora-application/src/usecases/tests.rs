@@ -10,10 +10,7 @@ use endora_capabilities::CapabilityRunner;
 use endora_conversation::ChatRepository;
 use endora_kernel::Reversibility;
 use endora_platform::AuditLog;
-use endora_scheduling::{CheckinRepository, CheckinSchedule};
-use endora_understanding::{
-    BeliefRepository, IntentionRepository, OutcomeRepository, PreferenceRepository,
-};
+use endora_understanding::{BeliefRepository, OutcomeRepository, PreferenceRepository};
 use std::cell::{Cell, RefCell};
 
 /// An in-memory store implementing the repository ports, for tests only.
@@ -33,7 +30,6 @@ impl CapabilityRunner for NoCapabilities {
 struct FakeStore {
     messages: RefCell<Vec<ChatMessage>>,
     preferences: RefCell<Vec<Preference>>,
-    checkin: RefCell<Option<CheckinSchedule>>,
     beliefs: RefCell<Vec<Belief>>,
 }
 
@@ -53,15 +49,8 @@ impl BeliefRepository for FakeStore {
     fn list(&self) -> Result<Vec<Belief>, RepositoryError> {
         Ok(self.beliefs.borrow().clone())
     }
-}
-
-impl CheckinRepository for FakeStore {
-    fn get(&self) -> Result<Option<CheckinSchedule>, RepositoryError> {
-        Ok(*self.checkin.borrow())
-    }
-    fn set(&self, schedule: &CheckinSchedule) -> Result<(), RepositoryError> {
-        *self.checkin.borrow_mut() = Some(*schedule);
-        Ok(())
+    fn forget_all(&self) -> Result<usize, RepositoryError> {
+        Ok(self.beliefs.borrow_mut().drain(..).count())
     }
 }
 
@@ -417,6 +406,82 @@ mod instructions {
     }
 }
 
+/// Only durable things are kept as understanding (owner, 2026-10-16). Every junk belief in the
+/// live list was an "intent" (a one-off question: "you want to know the specific games …") or
+/// "other" (an event, a passing remark).
+#[test]
+fn a_one_off_question_or_a_passing_remark_is_not_kept_as_understanding() {
+    use crate::{BeliefKind, Confidence, FormedBelief};
+    let store = FakeStore::default();
+    let formed = |statement: &str, kind| FormedBelief {
+        statement: statement.to_owned(),
+        kind,
+        confidence: Confidence::High,
+        evidence: "said so".to_owned(),
+    };
+    let mut activity = Vec::new();
+    super::beliefs::record_formed_beliefs(
+        &store,
+        vec![
+            formed("you want to know when the next game is", BeliefKind::Intent),
+            formed("you like a friendly greeting", BeliefKind::Other),
+            formed(
+                "you prefer temperatures in Fahrenheit",
+                BeliefKind::Preference,
+            ),
+            formed("you run on Tuesdays and Thursdays", BeliefKind::Pattern),
+        ],
+        &SeqIds::default(),
+        &FixedClock(1_000),
+        &mut activity,
+    )
+    .unwrap();
+    let kept: Vec<String> = BeliefRepository::list(&store)
+        .unwrap()
+        .iter()
+        .map(|b| b.statement().to_owned())
+        .collect();
+    assert_eq!(
+        kept,
+        [
+            "you prefer temperatures in Fahrenheit",
+            "you run on Tuesdays and Thursdays"
+        ]
+    );
+}
+
+/// An event is not understanding. Live data had "you have an appointment with … tomorrow at
+/// 6:30 PM" filed as a belief; the next day it was still "tomorrow", and the model trusted it
+/// over the calendar and said the appointment was a day later than it was.
+mod pinned_to_a_day {
+    use super::super::pinned_to_a_day;
+
+    #[test]
+    fn a_statement_tied_to_a_day_is_not_kept() {
+        for event in [
+            "you have an appointment with Jane Doe scheduled for tomorrow at 6:30 PM",
+            "you want to know if any movies were watched today",
+            "you are going out tonight",
+            "you were tired yesterday",
+            "You have a dentist visit Tomorrow.",
+        ] {
+            assert!(pinned_to_a_day(event), "should drop: {event:?}");
+        }
+    }
+
+    #[test]
+    fn habits_and_preferences_are_kept() {
+        for belief in [
+            "you usually walk the dog at 6:30 AM",
+            "you prefer temperatures in Fahrenheit",
+            "you find mornings hard",
+            "you like a summary of the day each evening",
+        ] {
+            assert!(!pinned_to_a_day(belief), "should keep: {belief:?}");
+        }
+    }
+}
+
 /// The most recent skill result in the conversation, for test butlers that have
 /// no native tool-calling. The default [`Butler::take_turn`] shim folds each tool
 /// result into the history as a `[skill result] …` turn (ADR 0053 — results ride
@@ -483,68 +548,6 @@ impl OutcomeRepository for FakeOutcomes {
     }
 }
 
-/// An in-memory [`IntentionRepository`] (ADR 0052), so a test can watch Endora
-/// take something up, carry it across nights, and drop it.
-#[derive(Default)]
-struct FakeIntentions {
-    saved: RefCell<Vec<crate::Intention>>,
-}
-
-impl IntentionRepository for FakeIntentions {
-    fn save(&self, intention: &crate::Intention) -> Result<(), RepositoryError> {
-        let mut all = self.saved.borrow_mut();
-        if let Some(existing) = all.iter_mut().find(|i| i.id() == intention.id()) {
-            *existing = intention.clone();
-            return Ok(());
-        }
-        all.push(intention.clone());
-        Ok(())
-    }
-    fn get(&self, id: crate::IntentionId) -> Result<Option<crate::Intention>, RepositoryError> {
-        Ok(self.saved.borrow().iter().find(|i| i.id() == id).cloned())
-    }
-    fn active(&self) -> Result<Option<crate::Intention>, RepositoryError> {
-        Ok(self.saved.borrow().iter().find(|i| i.is_active()).cloned())
-    }
-    fn list(&self) -> Result<Vec<crate::Intention>, RepositoryError> {
-        Ok(self.saved.borrow().clone())
-    }
-}
-
-/// An in-memory [`NotionRepository`] (ADR 0057). Shared with the other test modules in
-/// this file, since every nightly-loop test now needs somewhere for a thought to live.
-#[derive(Default)]
-pub(super) struct FakeNotions {
-    saved: RefCell<Vec<crate::Notion>>,
-}
-
-impl crate::NotionRepository for FakeNotions {
-    fn save(&self, notion: &crate::Notion) -> Result<(), RepositoryError> {
-        let mut all = self.saved.borrow_mut();
-        if let Some(existing) = all.iter_mut().find(|n| n.id() == notion.id()) {
-            *existing = notion.clone();
-            return Ok(());
-        }
-        all.push(notion.clone());
-        Ok(())
-    }
-    fn get(&self, id: crate::NotionId) -> Result<Option<crate::Notion>, RepositoryError> {
-        Ok(self.saved.borrow().iter().find(|n| n.id() == id).cloned())
-    }
-    fn open(&self) -> Result<Vec<crate::Notion>, RepositoryError> {
-        Ok(self
-            .saved
-            .borrow()
-            .iter()
-            .filter(|n| n.status() == crate::NotionStatus::Open)
-            .cloned()
-            .collect())
-    }
-    fn list(&self) -> Result<Vec<crate::Notion>, RepositoryError> {
-        Ok(self.saved.borrow().clone())
-    }
-}
-
 /// An [`OutcomeRepository`] whose writes always fail — ADR 0053 makes recording
 /// best-effort, so a broken store must never break a working action.
 struct BrokenOutcomes;
@@ -573,7 +576,6 @@ fn sending_to_the_butler_records_both_turns() {
         &store,
         &store,
         &FakeOutcomes::default(),
-        &crate::usecases::NoSpecimens,
         &NoCapabilities,
         &ScriptedTestButler,
         &FakeAudit::default(),
@@ -651,7 +653,6 @@ fn a_status_ask_is_answered_from_the_reading_and_the_model_is_never_consulted() 
         &FakeStore::default(),
         &FakeStore::default(),
         &FakeOutcomes::default(),
-        &crate::usecases::NoSpecimens,
         &HouseReader,
         &NeverConsulted,
         &FakeAudit::default(),
@@ -835,7 +836,6 @@ fn a_question_about_a_city_reaches_the_model_and_not_the_house_reading() {
         &FakeStore::default(),
         &FakeStore::default(),
         &FakeOutcomes::default(),
-        &crate::usecases::NoSpecimens,
         &AHouse,
         &AnswersIt,
         &FakeAudit::default(),
@@ -914,7 +914,6 @@ fn a_turn_with_a_record(asked: &str, the_butler_says: &'static str) -> String {
         &FakeStore::default(),
         &FakeStore::default(),
         &FakeOutcomes::default(),
-        &crate::usecases::NoSpecimens,
         &NoCapabilities,
         &SaysOnly(the_butler_says),
         &FakeAudit::default(),
@@ -1452,7 +1451,6 @@ fn an_ordinary_chat_turn(
         &store,
         &store,
         &FakeOutcomes::default(),
-        &crate::usecases::NoSpecimens,
         skills,
         local,
         &FakeAudit::default(),
@@ -1519,7 +1517,6 @@ fn a_new_topic_keeps_old_messages_in_the_chat_but_not_in_what_the_model_is_sent(
         &store,
         &store,
         &FakeOutcomes::default(),
-        &crate::usecases::NoSpecimens,
         &NoCapabilities,
         &butler,
         &FakeAudit::default(),
@@ -1587,16 +1584,14 @@ fn the_retry_is_announced_as_a_step_so_the_first_answer_can_be_filed_as_working_
     let mut steps: Vec<String> = Vec::new();
     let mut streamed = String::new();
 
-    super::send_to_butler_streaming_with_goals(
+    super::send_to_butler_streaming(
         &store,
         &store,
         &store,
         &FakeOutcomes::default(),
-        &crate::usecases::NoSpecimens,
         &skills,
         &local,
         &FakeAudit::default(),
-        None,
         None,
         &SeqIds::default(),
         &FixedClock(1_000),
@@ -1713,7 +1708,6 @@ fn routed_turn(
         &store,
         &store,
         &FakeOutcomes::default(),
-        &crate::usecases::NoSpecimens,
         &skills,
         &local,
         &FakeAudit::default(),
@@ -1727,6 +1721,21 @@ fn routed_turn(
     )
     .expect("the turn answers");
     (message.text().to_owned(), deep)
+}
+
+#[test]
+fn the_date_and_time_are_known_so_asking_them_never_goes_to_the_deep_model() {
+    // The live miss: the local model sorted "What day is today?" as a lookup, answered it
+    // without a skill (rightly: the date is in every request), and was sent to the deep model.
+    for question in [
+        "What day is today?",
+        "what's the date",
+        "What time is it?",
+        "what is today",
+    ] {
+        let (_, deep) = routed_turn(question, Some(crate::NeedKind::Lookup));
+        assert_eq!(deep.rounds(), 0, "{question}");
+    }
 }
 
 #[test]
@@ -2039,257 +2048,6 @@ fn a_question_that_looks_like_a_secret_is_not_sent_and_is_answered_locally() {
 }
 
 #[test]
-fn a_failed_turn_is_kept_to_retry_and_an_answered_one_is_not() {
-    use super::send_to_butler;
-    // ADR 0075: the verdict that files a specimen is the same deterministic
-    // check that gates retries — never the model's opinion of itself.
-    struct Stumped;
-    impl Butler for Stumped {
-        fn respond(
-            &self,
-            _h: &[ChatMessage],
-            _p: &[Preference],
-            _c: &ButlerContext,
-        ) -> Result<ButlerReply, ProposalError> {
-            Ok(ButlerReply {
-                text: "Sorry — I couldn't follow that.".to_owned(),
-                degraded: true,
-                ..ButlerReply::default()
-            })
-        }
-    }
-    let shelf = crate::usecases::RecordingShelf::default();
-    let _ = send_to_butler(
-        &FakeStore::default(),
-        &FakeStore::default(),
-        &FakeStore::default(),
-        &FakeOutcomes::default(),
-        &shelf,
-        &NoCapabilities,
-        &Stumped,
-        &FakeAudit::default(),
-        &SeqIds::default(),
-        &FixedClock(1_000),
-        &ButlerContext::default(),
-        "what lights are on?",
-    )
-    .unwrap();
-    let filed = shelf.filed.borrow();
-    assert_eq!(filed.len(), 1, "{filed:?}");
-    assert_eq!(filed[0].0, "what lights are on?");
-
-    // A turn that answered files nothing — the shelf holds failures only.
-    let fine = crate::usecases::RecordingShelf::default();
-    let _ = send_to_butler(
-        &FakeStore::default(),
-        &FakeStore::default(),
-        &FakeStore::default(),
-        &FakeOutcomes::default(),
-        &fine,
-        &NoCapabilities,
-        &ScriptedTestButler,
-        &FakeAudit::default(),
-        &SeqIds::default(),
-        &FixedClock(1_000),
-        &ButlerContext::default(),
-        "what lights are on?",
-    )
-    .unwrap();
-    assert!(fine.filed.borrow().is_empty());
-}
-
-/// A goal store that remembers what it was handed, for the autonomy tests.
-#[derive(Default)]
-struct RecordingGoals {
-    saved: std::cell::RefCell<Vec<crate::GoalRecord>>,
-}
-
-impl crate::GoalRepository for RecordingGoals {
-    fn create_goal(
-        &self,
-        record: &crate::GoalRecord,
-    ) -> Result<bool, endora_kernel::RepositoryError> {
-        let mut saved = self.saved.borrow_mut();
-        if let Some(slot) = saved
-            .iter()
-            .find(|r| r.request_key() == record.request_key())
-        {
-            if slot.goal().objective() != record.goal().objective() {
-                return Err(endora_kernel::RepositoryError::Backend(
-                    "conflicting objective".to_owned(),
-                ));
-            }
-            return Ok(false);
-        }
-        saved.push(record.clone());
-        Ok(true)
-    }
-    fn get_goal(
-        &self,
-        request_key: &str,
-    ) -> Result<Option<crate::GoalRecord>, endora_kernel::RepositoryError> {
-        Ok(self
-            .saved
-            .borrow()
-            .iter()
-            .find(|r| r.request_key() == request_key)
-            .cloned())
-    }
-    fn active_goals(&self) -> Result<Vec<crate::GoalRecord>, endora_kernel::RepositoryError> {
-        Ok(self
-            .saved
-            .borrow()
-            .iter()
-            .filter(|r| !r.goal().status().terminal())
-            .cloned()
-            .collect())
-    }
-    fn own_goals_since(
-        &self,
-        _since: endora_kernel::ids::Timestamp,
-    ) -> Result<Vec<crate::GoalRecord>, endora_kernel::RepositoryError> {
-        Ok(Vec::new())
-    }
-    fn claim_goal(
-        &self,
-        request_key: &str,
-        _at: endora_kernel::ids::Timestamp,
-    ) -> Result<Option<crate::GoalLease>, endora_kernel::RepositoryError> {
-        Ok(Some(crate::GoalLease::new(request_key, "test-owner")))
-    }
-    fn checkpoint_goal(
-        &self,
-        record: &crate::GoalRecord,
-        _lease: &crate::GoalLease,
-        _at: Timestamp,
-    ) -> Result<bool, endora_kernel::RepositoryError> {
-        let mut saved = self.saved.borrow_mut();
-        let Some(slot) = saved
-            .iter_mut()
-            .find(|r| r.request_key() == record.request_key() && !r.goal().status().terminal())
-        else {
-            return Ok(false);
-        };
-        *slot = record.clone();
-        Ok(true)
-    }
-    fn goal_owned(
-        &self,
-        _lease: &crate::GoalLease,
-        _at: Timestamp,
-    ) -> Result<bool, endora_kernel::RepositoryError> {
-        Ok(true)
-    }
-    fn renew_goal(
-        &self,
-        _lease: &crate::GoalLease,
-        _at: Timestamp,
-    ) -> Result<bool, endora_kernel::RepositoryError> {
-        Ok(true)
-    }
-    fn release_goal(
-        &self,
-        _lease: &crate::GoalLease,
-    ) -> Result<(), endora_kernel::RepositoryError> {
-        Ok(())
-    }
-    fn cancel_goal(
-        &self,
-        _request_key: &str,
-        _reason: &str,
-        _at: endora_kernel::ids::Timestamp,
-    ) -> Result<bool, endora_kernel::RepositoryError> {
-        Ok(false)
-    }
-    fn pending_goal_completions(
-        &self,
-    ) -> Result<Vec<crate::GoalRecord>, endora_kernel::RepositoryError> {
-        Ok(Vec::new())
-    }
-    fn mark_goal_announced(
-        &self,
-        _request_key: &str,
-    ) -> Result<(), endora_kernel::RepositoryError> {
-        Ok(())
-    }
-}
-
-/// A butler that cannot answer, so the deterministic honesty verdict fires.
-struct Stumped;
-impl Butler for Stumped {
-    fn respond(
-        &self,
-        _h: &[ChatMessage],
-        _p: &[Preference],
-        _c: &ButlerContext,
-    ) -> Result<ButlerReply, ProposalError> {
-        Ok(ButlerReply {
-            text: "Sorry — I couldn't follow that.".to_owned(),
-            degraded: true,
-            ..ButlerReply::default()
-        })
-    }
-}
-
-fn one_turn(goals: &RecordingGoals, butler: &dyn Butler, ask: &str) -> (ChatMessage, Vec<String>) {
-    super::send_to_butler_with_goals(
-        &FakeStore::default(),
-        &FakeStore::default(),
-        &FakeStore::default(),
-        &FakeOutcomes::default(),
-        &crate::usecases::RecordingShelf::default(),
-        &NoCapabilities,
-        butler,
-        &FakeAudit::default(),
-        goals,
-        &SeqIds::default(),
-        &FixedClock(1_000),
-        &ButlerContext::default(),
-        ask,
-    )
-    .unwrap()
-}
-
-#[test]
-fn a_failed_answer_does_not_speculate_about_background_work() {
-    let goals = RecordingGoals::default();
-    let (_, activity) = one_turn(&goals, &Stumped, "when is the next 41 bus?");
-    assert!(goals.saved.borrow().is_empty());
-    assert!(!activity.iter().any(|item| item.contains("started working")));
-}
-
-#[test]
-fn an_ask_it_answered_starts_nothing() {
-    // Autonomy is not indiscriminate: an answered turn is finished business.
-    let goals = RecordingGoals::default();
-    one_turn(&goals, &ScriptedTestButler, "what lights are on?");
-    assert!(goals.saved.borrow().is_empty());
-}
-
-#[test]
-fn repeated_failed_answers_do_not_create_work() {
-    let goals = RecordingGoals::default();
-    one_turn(&goals, &Stumped, "when is the next 41 bus?");
-    one_turn(&goals, &Stumped, "When is the next 41 bus??");
-    assert_eq!(
-        goals.saved.borrow().len(),
-        0,
-        "asking twice is one problem, as it is for specimens"
-    );
-}
-
-#[test]
-fn failed_answers_do_not_fill_the_goal_queue() {
-    // Starting without being asked has to stay bounded, or a bad afternoon fills
-    // the worker with objectives and none of them gets anywhere.
-    let goals = RecordingGoals::default();
-    for n in 0..super::MOST_GOALS_AT_ONCE + 2 {
-        one_turn(&goals, &Stumped, &format!("an unanswerable question {n}"));
-    }
-    assert!(goals.saved.borrow().is_empty());
-}
-
-#[test]
 fn a_cleared_skill_runs_and_the_butler_answers_with_its_result() {
     use super::send_to_butler;
 
@@ -2353,7 +2111,6 @@ fn a_cleared_skill_runs_and_the_butler_answers_with_its_result() {
         &store,
         &store,
         &FakeOutcomes::default(),
-        &crate::usecases::NoSpecimens,
         &OneSkill,
         &ToolButler,
         &FakeAudit::default(),
@@ -2424,7 +2181,6 @@ fn a_failing_tool_is_not_retried_more_than_twice() {
         &store,
         &store,
         &FakeOutcomes::default(),
-        &crate::usecases::NoSpecimens,
         &AlwaysFails,
         &RelentlessButler,
         &FakeAudit::default(),
@@ -3604,21 +3360,6 @@ fn an_unverifiable_action_records_no_observation_rather_than_a_blank_one() {
 }
 
 #[test]
-fn an_action_taken_for_a_reason_traces_back_to_the_belief() {
-    let store = FakeOutcomes::default();
-    let recorded = outcomes_of(
-        &BandedSkill {
-            id: "home.HassTurnOff",
-            band: Reversibility::Irreversible,
-            result: Ok("done".to_owned()),
-            reads_back: None,
-        },
-        &OutcomeSink::motivated_by(&store, Some(BeliefId::new(7))),
-    );
-    assert_eq!(recorded[0].motivating_belief(), Some(BeliefId::new(7)));
-}
-
-#[test]
 fn a_broken_outcome_store_never_breaks_a_working_action() {
     // Best-effort recording (ADR 0053), the same rule ADR 0053 set for
     // verification: checking what happened must not break what happened.
@@ -4302,7 +4043,6 @@ fn an_unconfigured_skill_is_not_run_and_the_first_reply_stands() {
         &store,
         &store,
         &FakeOutcomes::default(),
-        &crate::usecases::NoSpecimens,
         &GatedSkill,
         &ToolButler,
         &FakeAudit::default(),
@@ -4375,7 +4115,6 @@ fn a_blocked_consequential_decision_is_recorded_in_the_audit_trail() {
         &store,
         &store,
         &FakeOutcomes::default(),
-        &crate::usecases::NoSpecimens,
         &BlockedSkill,
         &BookingButler,
         &audit,
@@ -4433,7 +4172,6 @@ fn a_local_model_that_comes_up_empty_says_so_rather_than_inventing_a_second_rung
         &store,
         &store,
         &FakeOutcomes::default(),
-        &crate::usecases::NoSpecimens,
         &NoCapabilities,
         &EmptyButler,
         &FakeAudit::default(),
@@ -4552,7 +4290,6 @@ fn a_tainted_turn_cannot_reach_the_deep_model_by_any_route() {
         &store,
         &store,
         &FakeOutcomes::default(),
-        &crate::usecases::NoSpecimens,
         &Newsreader,
         &CallsNewsThenSaysNothing,
         &FakeAudit::default(),
@@ -4642,7 +4379,6 @@ fn the_ladder_leaves_a_good_local_answer_alone() {
         &store,
         &store,
         &FakeOutcomes::default(),
-        &crate::usecases::NoSpecimens,
         &NoCapabilities,
         &GoodButler,
         &FakeAudit::default(),
@@ -4659,6 +4395,32 @@ fn the_ladder_leaves_a_good_local_answer_alone() {
 
     assert!(msg.text().contains("glad to help"));
     assert!(activity.iter().all(|a| !a.contains("deep model")));
+}
+
+#[test]
+fn the_clock_line_is_the_persons_local_time() {
+    // It was UTC, so on a summer evening in New York the model was told it was the next day,
+    // and called an appointment that evening "tomorrow".
+    use super::clock_line;
+    struct NewYorkSummer;
+    impl Clock for NewYorkSummer {
+        fn now(&self) -> Timestamp {
+            // Sat 2026-10-17 00:30 UTC: still Friday evening in New York.
+            Timestamp::from_unix_millis(1_792_197_000_000)
+        }
+        fn utc_offset_minutes(&self) -> i64 {
+            -240
+        }
+    }
+    assert_eq!(
+        clock_line(&NewYorkSummer),
+        "Friday, 2026-10-16 20:30 (UTC-04:00)"
+    );
+    // A clock that does not know the zone keeps saying UTC, as before.
+    assert_eq!(
+        clock_line(&FixedClock(1_700_000_000_000)),
+        "Tuesday, 2023-11-14 22:13 UTC"
+    );
 }
 
 #[test]
@@ -4739,33 +4501,6 @@ fn a_brief_ask_is_recognised_and_an_adjective_is_not() {
 }
 
 #[test]
-fn a_current_team_schedule_is_recognised_without_model_routing() {
-    use super::{requested_game_count, sports_team_query};
-
-    assert_eq!(
-        sports_team_query("What are the next three Panthers games"),
-        Some("panthers".to_owned())
-    );
-    assert_eq!(
-        sports_team_query("show me the Carolina Panthers schedule"),
-        Some("carolina panthers".to_owned())
-    );
-    assert!(sports_team_query("tell me a brief story about panthers").is_none());
-    // Personal-calendar questions share the words "schedule" and "next" with a
-    // team lookup; they must reach the model and the calendar, not a sports API.
-    for personal in [
-        "What's on my schedule today?",
-        "When is my next meeting?",
-        "Show me tomorrow's schedule",
-        "what is the schedule for my next appointment",
-    ] {
-        assert!(sports_team_query(personal).is_none(), "{personal}");
-    }
-    assert_eq!(requested_game_count("next five Panthers games"), 5);
-    assert_eq!(requested_game_count("next 2 Panthers games"), 2);
-}
-
-#[test]
 fn asking_for_the_brief_never_asks_the_model_to_route() {
     use super::send_to_butler_streaming;
 
@@ -4829,7 +4564,6 @@ fn asking_for_the_brief_never_asks_the_model_to_route() {
         &store,
         &store,
         &FakeOutcomes::default(),
-        &crate::usecases::NoSpecimens,
         &BriefOnly,
         &NeverRoutes,
         &FakeAudit::default(),
@@ -4893,14 +4627,8 @@ fn the_assembled_brief_has_an_overview_and_blank_lines_between_sections() {
         ..ButlerContext::default()
     };
     let mut activity = Vec::new();
-    let facts = super::assembled_brief_facts(
-        &TwoSections,
-        &crate::usecases::NoTrouble,
-        &ctx,
-        0,
-        &mut activity,
-    )
-    .expect("something to say");
+    let facts =
+        super::assembled_brief_facts(&TwoSections, &ctx, &mut activity).expect("something to say");
 
     // A one-line lead naming what follows, ahead of everything else.
     let overview = facts.lines().next().unwrap_or_default();
@@ -4968,18 +4696,9 @@ fn daily_brief_is_assembled_from_the_standing_order() {
     // With no deep model, the facts stand as their own brief — assembled sections
     // do not need a model at all (ADR 0074; the local model, measured, wrote
     // about lights when handed exactly these facts).
-    let (msg, activity) = daily_brief(
-        &store,
-        &crate::usecases::NoTrouble,
-        &skills,
-        &ScriptedNoTools,
-        &ids,
-        &clock,
-        &ctx,
-        &[],
-    )
-    .unwrap()
-    .unwrap();
+    let (msg, activity) = daily_brief(&store, &skills, &ScriptedNoTools, &ids, &clock, &ctx, &[])
+        .unwrap()
+        .unwrap();
     assert!(msg.text().contains("25C"), "{}", msg.text());
     assert!(msg.text().contains("umbrella"), "{}", msg.text());
     assert!(msg.text().contains("Big local story"), "{}", msg.text());
@@ -5043,7 +4762,6 @@ fn a_brief_with_nothing_to_say_is_not_posted() {
     assert!(
         super::daily_brief(
             &store,
-            &crate::usecases::NoTrouble,
             &NoSections,
             &ScriptedNoTools,
             &SeqIds::default(),
@@ -5053,371 +4771,6 @@ fn a_brief_with_nothing_to_say_is_not_posted() {
         )
         .unwrap()
         .is_none()
-    );
-}
-
-#[test]
-fn the_butler_speaks_only_when_it_has_something_and_the_budget_allows() {
-    use super::{chat_history, consider_reaching_out, set_checkin_schedule};
-    use std::cell::RefCell;
-    let store = FakeStore::default();
-    let ids = SeqIds::default();
-    let ctx = ButlerContext::default();
-    let audit = FakeAudit {
-        records: RefCell::new(Vec::new()),
-    };
-
-    /// A butler that has something to say.
-    struct HasSomething;
-    impl Butler for HasSomething {
-        fn respond(
-            &self,
-            _h: &[ChatMessage],
-            _p: &[Preference],
-            _c: &ButlerContext,
-        ) -> Result<ButlerReply, ProposalError> {
-            Ok(ButlerReply {
-                text: "That storm you mentioned is due tonight.".to_owned(),
-                ..ButlerReply::default()
-            })
-        }
-    }
-
-    let reach = |clock_ms: i64, butler: &dyn Butler| {
-        consider_reaching_out(
-            &store,
-            &store,
-            &store,
-            &FakeOutcomes::default(),
-            &NoCapabilities,
-            butler,
-            &audit,
-            &ids,
-            &FixedClock(clock_ms),
-            &ctx,
-        )
-        .unwrap()
-    };
-
-    // Off by default: the butler never speaks uninvited until asked to.
-    assert!(reach(1_000, &HasSomething).is_none());
-
-    let sched = set_checkin_schedule(&store, &FixedClock(1_000), true, 60_000).unwrap();
-    assert_eq!(sched.next_at.unix_millis(), 61_000);
-
-    // Inside the budget window: not yet allowed, however much it has to say.
-    assert!(reach(30_000, &HasSomething).is_none());
-
-    // Budget available AND something to say → it speaks.
-    let (msg, activity) = reach(61_000, &HasSomething).expect("should have reached out");
-    assert_eq!(msg.role(), MessageRole::Butler);
-    assert!(msg.text().contains("storm"));
-    assert_eq!(chat_history(&store).unwrap().len(), 1);
-    assert!(activity.iter().any(|a| a.contains("worth raising")));
-    // The budget advanced, so it cannot immediately speak again.
-    assert!(reach(61_500, &HasSomething).is_none());
-}
-
-#[test]
-fn having_nothing_to_say_posts_nothing_and_still_spends_the_budget() {
-    use super::{chat_history, consider_reaching_out, set_checkin_schedule};
-    use std::cell::RefCell;
-    let store = FakeStore::default();
-    let ids = SeqIds::default();
-    let ctx = ButlerContext::default();
-    let audit = FakeAudit {
-        records: RefCell::new(Vec::new()),
-    };
-
-    /// A butler with nothing worth raising — the common, correct case.
-    struct Quiet;
-    impl Butler for Quiet {
-        fn respond(
-            &self,
-            _h: &[ChatMessage],
-            _p: &[Preference],
-            _c: &ButlerContext,
-        ) -> Result<ButlerReply, ProposalError> {
-            Ok(ButlerReply::default())
-        }
-    }
-
-    set_checkin_schedule(&store, &FixedClock(1_000), true, 60_000).unwrap();
-    let out = consider_reaching_out(
-        &store,
-        &store,
-        &store,
-        &FakeOutcomes::default(),
-        &NoCapabilities,
-        &Quiet,
-        &audit,
-        &ids,
-        &FixedClock(61_000),
-        &ctx,
-    )
-    .unwrap();
-    assert!(out.is_none(), "silence must post nothing");
-    assert!(chat_history(&store).unwrap().is_empty());
-
-    // Crucially the budget is still spent: a "nothing to say" must not become a
-    // retry loop that asks again every tick until it talks itself into speaking.
-    assert_eq!(
-        CheckinRepository::get(&store)
-            .unwrap()
-            .unwrap()
-            .next_at
-            .unix_millis(),
-        121_000
-    );
-}
-
-#[test]
-fn a_checkin_does_not_repeat_what_it_already_said() {
-    // Observed live: the same lights complaint went out four times in one day,
-    // reworded a little each time. The chat history holds what was already said;
-    // this makes it the code's fact rather than the model's memory (ADR 0068).
-    use super::{chat_history, consider_reaching_out, set_checkin_schedule};
-    use std::cell::RefCell;
-    let store = FakeStore::default();
-    let ids = SeqIds::default();
-    let ctx = ButlerContext::default();
-    let audit = FakeAudit {
-        records: RefCell::new(Vec::new()),
-    };
-
-    struct SameThought;
-    impl Butler for SameThought {
-        fn respond(
-            &self,
-            _h: &[ChatMessage],
-            _p: &[Preference],
-            _c: &ButlerContext,
-        ) -> Result<ButlerReply, ProposalError> {
-            Ok(ButlerReply::default())
-        }
-        fn take_turn(
-            &self,
-            _c: &[crate::TurnMessage],
-            _p: &[Preference],
-            _x: &ButlerContext,
-        ) -> Result<ButlerReply, ProposalError> {
-            Ok(ButlerReply {
-                text: "The lights in the guest bedroom and living room are \
-                       experiencing technical issues at the moment."
-                    .to_owned(),
-                ..ButlerReply::default()
-            })
-        }
-    }
-
-    // What the last check-in already said, in different words.
-    let earlier = ChatMessage::new(
-        MessageId::new(ids.new_id()),
-        MessageRole::Butler,
-        "I noticed the lights in the guest bedroom and living room are \
-         experiencing technical issues. I'm working on it right away.",
-        Timestamp::from_unix_millis(500),
-    )
-    .unwrap();
-    store.append(&earlier).unwrap();
-
-    set_checkin_schedule(&store, &FixedClock(1_000), true, 60_000).unwrap();
-    let out = consider_reaching_out(
-        &store,
-        &store,
-        &store,
-        &FakeOutcomes::default(),
-        &NoCapabilities,
-        &SameThought,
-        &audit,
-        &ids,
-        &FixedClock(61_000),
-        &ctx,
-    )
-    .unwrap();
-    assert!(out.is_none(), "the same concern must not be raised twice");
-    assert_eq!(
-        chat_history(&store).unwrap().len(),
-        1,
-        "nothing new was posted"
-    );
-}
-
-#[test]
-fn the_person_replying_makes_it_fair_to_raise_again() {
-    // An unacknowledged concern in a *new* conversation is service, not nagging —
-    // the window resets when the person speaks.
-    use super::{consider_reaching_out, set_checkin_schedule};
-    use std::cell::RefCell;
-    let store = FakeStore::default();
-    let ids = SeqIds::default();
-    let ctx = ButlerContext::default();
-    let audit = FakeAudit {
-        records: RefCell::new(Vec::new()),
-    };
-
-    struct SameThought;
-    impl Butler for SameThought {
-        fn respond(
-            &self,
-            _h: &[ChatMessage],
-            _p: &[Preference],
-            _c: &ButlerContext,
-        ) -> Result<ButlerReply, ProposalError> {
-            Ok(ButlerReply::default())
-        }
-        fn take_turn(
-            &self,
-            _c: &[crate::TurnMessage],
-            _p: &[Preference],
-            _x: &ButlerContext,
-        ) -> Result<ButlerReply, ProposalError> {
-            Ok(ButlerReply {
-                // Opens with the forbidden salutation, so this test also proves
-                // the strip happens on the real path, not only in the unit test.
-                text: "Morning, sir. The lights in the guest bedroom are \
-                       experiencing technical issues at the moment."
-                    .to_owned(),
-                ..ButlerReply::default()
-            })
-        }
-    }
-
-    let earlier = ChatMessage::new(
-        MessageId::new(ids.new_id()),
-        MessageRole::Butler,
-        "I noticed the lights in the guest bedroom are experiencing technical \
-         issues.",
-        Timestamp::from_unix_millis(400),
-    )
-    .unwrap();
-    store.append(&earlier).unwrap();
-    // The person replied after it — long enough ago that the quiet-hours guard
-    // does not swallow the check-in.
-    let reply = ChatMessage::new(
-        MessageId::new(ids.new_id()),
-        MessageRole::User,
-        "thanks, keep an eye on it",
-        Timestamp::from_unix_millis(500),
-    )
-    .unwrap();
-    store.append(&reply).unwrap();
-
-    set_checkin_schedule(&store, &FixedClock(1_000), true, 60_000).unwrap();
-    let out = consider_reaching_out(
-        &store,
-        &store,
-        &store,
-        &FakeOutcomes::default(),
-        &NoCapabilities,
-        &SameThought,
-        &audit,
-        &ids,
-        &FixedClock(100_000_000),
-        &ctx,
-    )
-    .unwrap();
-    let (msg, _) = out.expect("after the person spoke, a standing concern may be raised again");
-    assert!(
-        msg.text().starts_with("The lights"),
-        "the salutation must be stripped on the real path: {}",
-        msg.text()
-    );
-}
-
-#[test]
-fn a_salutation_is_removed_so_the_message_opens_with_the_thing_itself() {
-    use super::opened_plainly;
-    // The observed failure: "Morning, sir" at half past one in the afternoon.
-    assert_eq!(
-        opened_plainly("Morning, sir. The lights in the guest bedroom stopped answering."),
-        "The lights in the guest bedroom stopped answering."
-    );
-    assert_eq!(
-        opened_plainly("Good afternoon! I found the window sensor offline."),
-        "I found the window sensor offline."
-    );
-    // A message that is only a greeting becomes empty — and the empty check then
-    // declines to send it, which is the right end for a content-free check-in.
-    assert_eq!(opened_plainly("Hello."), "");
-}
-
-#[test]
-fn a_message_that_opens_with_a_fact_is_left_alone() {
-    use super::opened_plainly;
-    // "Morning" the time of day, not the greeting.
-    for opens_plainly in [
-        "Morning traffic is heavy on the ring road.",
-        "Evening walk suggestion: the rain stops at six.",
-        "The lights in the guest bedroom stopped answering.",
-    ] {
-        assert_eq!(opened_plainly(opens_plainly), opens_plainly);
-    }
-}
-
-#[test]
-fn the_butler_does_not_talk_over_someone_who_just_spoke() {
-    use super::{consider_reaching_out, post_user_message, set_checkin_schedule};
-    use std::cell::RefCell;
-    let store = FakeStore::default();
-    let ids = SeqIds::default();
-    let ctx = ButlerContext::default();
-    let audit = FakeAudit {
-        records: RefCell::new(Vec::new()),
-    };
-
-    struct HasSomething;
-    impl Butler for HasSomething {
-        fn respond(
-            &self,
-            _h: &[ChatMessage],
-            _p: &[Preference],
-            _c: &ButlerContext,
-        ) -> Result<ButlerReply, ProposalError> {
-            Ok(ButlerReply {
-                text: "Something worth saying.".to_owned(),
-                ..ButlerReply::default()
-            })
-        }
-    }
-
-    set_checkin_schedule(&store, &FixedClock(1_000), true, 60_000).unwrap();
-    // The person spoke a minute ago — they are present and can simply ask.
-    post_user_message(&store, &ids, &FixedClock(61_000), "hey").unwrap();
-    assert!(
-        consider_reaching_out(
-            &store,
-            &store,
-            &store,
-            &FakeOutcomes::default(),
-            &NoCapabilities,
-            &HasSomething,
-            &audit,
-            &ids,
-            &FixedClock(61_000),
-            &ctx,
-        )
-        .unwrap()
-        .is_none(),
-        "must not reach out on top of an active conversation"
-    );
-
-    // An hour after they last spoke, it may.
-    assert!(
-        consider_reaching_out(
-            &store,
-            &store,
-            &store,
-            &FakeOutcomes::default(),
-            &NoCapabilities,
-            &HasSomething,
-            &audit,
-            &ids,
-            &FixedClock(61_000 + 60 * 60 * 1_000),
-            &ctx,
-        )
-        .unwrap()
-        .is_some()
     );
 }
 
@@ -5438,7 +4791,7 @@ fn butler_forms_understanding_that_is_reviewable_and_correctable() {
                 text: "Travel seems to matter to you.".to_owned(),
                 beliefs: vec![crate::ports::FormedBelief {
                     statement: "wants energy to travel".to_owned(),
-                    kind: BeliefKind::Intent,
+                    kind: BeliefKind::Motivation,
                     confidence: Confidence::Low,
                     evidence: "mentioned wanting to travel".to_owned(),
                 }],
@@ -5455,7 +4808,6 @@ fn butler_forms_understanding_that_is_reviewable_and_correctable() {
         &store,
         &store,
         &FakeOutcomes::default(),
-        &crate::usecases::NoSpecimens,
         &NoCapabilities,
         &BeliefButler,
         &FakeAudit::default(),
@@ -5484,1806 +4836,6 @@ fn butler_forms_understanding_that_is_reviewable_and_correctable() {
         understanding(&store, &FixedClock(1_000))
             .unwrap()
             .is_empty()
-    );
-}
-
-#[test]
-fn the_nightly_loop_reflects_and_leaves_an_overnight_note_when_due() {
-    use super::{run_due_nightly_loop, understanding};
-    use crate::{BeliefKind, Confidence};
-    use endora_scheduling::{NightlyLoopSchedule, NightlyLoopScheduleRepository};
-    use std::cell::RefCell;
-
-    // Overnight, the butler reflects: forms a belief and writes a short note.
-    struct ReflectiveButler;
-    impl Butler for ReflectiveButler {
-        fn respond(
-            &self,
-            _h: &[ChatMessage],
-            _p: &[crate::Preference],
-            _c: &ButlerContext,
-        ) -> Result<ButlerReply, ProposalError> {
-            Ok(ButlerReply {
-                text: "Evening — I've noticed sleep is on your mind. I'll keep an eye on it."
-                    .to_owned(),
-                beliefs: vec![crate::ports::FormedBelief {
-                    statement: "wants more consistent sleep".to_owned(),
-                    kind: BeliefKind::Intent,
-                    confidence: Confidence::Low,
-                    evidence: "mentioned being tired several times".to_owned(),
-                }],
-                ..ButlerReply::default()
-            })
-        }
-    }
-
-    // A due schedule: hour 3, clock at 27h (UTC hour 3, a day on from last_at 0).
-    struct DueSchedule(RefCell<NightlyLoopSchedule>);
-    impl NightlyLoopScheduleRepository for DueSchedule {
-        fn get(&self) -> Result<Option<NightlyLoopSchedule>, RepositoryError> {
-            Ok(Some(*self.0.borrow()))
-        }
-        fn set(&self, s: &NightlyLoopSchedule) -> Result<(), RepositoryError> {
-            *self.0.borrow_mut() = *s;
-            Ok(())
-        }
-    }
-
-    let store = FakeStore::default();
-    let ids = SeqIds::default();
-    let clock = FixedClock(27 * 3_600_000);
-    let sched = DueSchedule(RefCell::new(NightlyLoopSchedule {
-        enabled: true,
-        hour_utc: 3,
-        last_at: Timestamp::from_unix_millis(0),
-    }));
-
-    let audit = FakeAudit {
-        records: RefCell::new(Vec::new()),
-    };
-    let (msg, activity) = run_due_nightly_loop(
-        &store,
-        &store,
-        &store,
-        &FakeOutcomes::default(),
-        &crate::usecases::NoSpecimens,
-        &FakeIntentions::default(),
-        &FakeNotions::default(),
-        &[],
-        &sched,
-        &NoCapabilities,
-        &[],
-        &ReflectiveButler,
-        &audit,
-        &ids,
-        &clock,
-        &ButlerContext::default(),
-        false,
-    )
-    .unwrap()
-    .expect("the loop runs when due");
-
-    // Surfaced an overnight note...
-    assert!(msg.text().contains("sleep"));
-    assert!(activity.iter().any(|a| a.contains("overnight note")));
-    // ...reflected (formed and saved a belief)...
-    let u = understanding(&store, &FixedClock(1_000)).unwrap();
-    assert!(u.iter().any(|b| b.statement().contains("sleep")));
-    assert!(activity.iter().any(|a| a.contains("Learned")));
-    // ...and marked itself fired, so it won't run again tonight.
-    assert!(!sched.0.borrow().is_due(clock.now()));
-}
-
-/// A due nightly schedule at UTC hour 3 — the setup every intention test needs.
-fn due_nightly() -> impl endora_scheduling::NightlyLoopScheduleRepository {
-    use endora_scheduling::{NightlyLoopSchedule, NightlyLoopScheduleRepository};
-    struct Due(RefCell<NightlyLoopSchedule>);
-    impl NightlyLoopScheduleRepository for Due {
-        fn get(&self) -> Result<Option<NightlyLoopSchedule>, RepositoryError> {
-            Ok(Some(*self.0.borrow()))
-        }
-        fn set(&self, s: &NightlyLoopSchedule) -> Result<(), RepositoryError> {
-            *self.0.borrow_mut() = *s;
-            Ok(())
-        }
-    }
-    Due(RefCell::new(NightlyLoopSchedule {
-        enabled: true,
-        hour_utc: 3,
-        last_at: Timestamp::from_unix_millis(0),
-    }))
-}
-
-/// A butler that reports back whatever it was told, so a test can see exactly
-/// what instruction the loop handed it, and leaves a note.
-struct EchoesItsInstruction {
-    seen: RefCell<String>,
-}
-impl Butler for EchoesItsInstruction {
-    fn respond(
-        &self,
-        history: &[ChatMessage],
-        _p: &[crate::Preference],
-        _c: &ButlerContext,
-    ) -> Result<ButlerReply, ProposalError> {
-        let last = history.last().map(ChatMessage::text).unwrap_or_default();
-        self.seen.borrow_mut().push_str(last);
-        Ok(ButlerReply {
-            text: "Tonight I read about room temperature.".to_owned(),
-            ..ButlerReply::default()
-        })
-    }
-}
-
-#[test]
-fn the_night_replays_the_oldest_stumper_and_a_pass_retires_it() {
-    // ADR 0075: a question that once ended at the honesty valve is re-asked
-    // against tonight's machinery, and passing is judged by the same
-    // deterministic verdict that filed it — never the model's self-opinion.
-    let shelf = crate::usecases::RecordingShelf::default();
-    shelf
-        .open
-        .borrow_mut()
-        .push(endora_understanding::Specimen {
-            id: "s1".to_owned(),
-            asked: "what lights are on?".to_owned(),
-            verdict: "not an answer".to_owned(),
-            filed_ms: 1,
-            replays: 3,
-            last_replay_ms: None,
-            state: endora_understanding::SpecimenState::Open,
-        });
-    let butler = EchoesItsInstruction {
-        seen: RefCell::new(String::new()),
-    };
-    let (_, activity) = super::run_due_nightly_loop(
-        &FakeStore::default(),
-        &FakeStore::default(),
-        &FakeStore::default(),
-        &FakeOutcomes::default(),
-        &shelf,
-        &FakeIntentions::default(),
-        &super::tests::FakeNotions::default(),
-        &[],
-        &due_nightly(),
-        &NoCapabilities,
-        &[],
-        &butler,
-        &FakeAudit::default(),
-        &SeqIds::default(),
-        &FixedClock(27 * 3_600_000),
-        &ButlerContext::default(),
-        false,
-    )
-    .unwrap()
-    .expect("the loop runs when due");
-    // The butler answered with real prose, so the replay passed and was recorded.
-    assert_eq!(*shelf.replays.borrow(), vec![("s1".to_owned(), true)]);
-    assert!(
-        activity.iter().any(|a| a.contains("answers now")),
-        "{activity:?}"
-    );
-}
-
-/// A butler that cannot reach its model, so every replay fails the verdict.
-struct StillCannot;
-impl Butler for StillCannot {
-    fn respond(
-        &self,
-        _history: &[ChatMessage],
-        _p: &[crate::Preference],
-        _c: &ButlerContext,
-    ) -> Result<ButlerReply, ProposalError> {
-        Ok(ButlerReply {
-            text: "Sorry — I couldn't reach my language model just now.".to_owned(),
-            degraded: true,
-            ..ButlerReply::default()
-        })
-    }
-}
-
-#[test]
-fn the_night_says_so_when_it_gives_up_on_an_ask() {
-    // ADR 0075 promised the activity trail would carry the fact that a specimen
-    // was given up on; it only ever said "it still fails", identically on the
-    // first failed replay and on the last. So the moment the record proves a gap
-    // — the moment ADR 0071 draws a recipe proposal from — went by unremarked.
-    let shelf = crate::usecases::RecordingShelf::default();
-    shelf
-        .open
-        .borrow_mut()
-        .push(endora_understanding::Specimen {
-            id: "s1".to_owned(),
-            asked: "when is the next 41 bus?".to_owned(),
-            verdict: "not an answer".to_owned(),
-            filed_ms: 1,
-            // One short of the limit: tonight's failure is the last one allowed.
-            replays: endora_understanding::REPLAYS_BEFORE_GIVING_UP - 1,
-            last_replay_ms: None,
-            state: endora_understanding::SpecimenState::Open,
-        });
-    let (_, activity) = super::run_due_nightly_loop(
-        &FakeStore::default(),
-        &FakeStore::default(),
-        &FakeStore::default(),
-        &FakeOutcomes::default(),
-        &shelf,
-        &FakeIntentions::default(),
-        &super::tests::FakeNotions::default(),
-        &[],
-        &due_nightly(),
-        &NoCapabilities,
-        &[],
-        &StillCannot,
-        &FakeAudit::default(),
-        &SeqIds::default(),
-        &FixedClock(27 * 3_600_000),
-        &ButlerContext::default(),
-        false,
-    )
-    .unwrap()
-    .expect("the loop runs when due");
-
-    assert_eq!(*shelf.replays.borrow(), vec![("s1".to_owned(), false)]);
-    let said = activity
-        .iter()
-        .find(|a| a.contains("41 bus"))
-        .unwrap_or_else(|| panic!("{activity:?}"));
-    assert!(
-        said.contains("stopped re-asking"),
-        "the night that gives up has to say so, not repeat 'it still fails': {said}"
-    );
-}
-
-fn a_goal_from_a_specimen(id: &str, asked: &str) -> crate::GoalRecord {
-    let goal = crate::Goal::for_request(
-        &format!("Ask again: \"{asked}\""),
-        crate::goal_request::GoalCriteria::Resolve {
-            source: crate::goal_request::WorkSource::Specimen { id: id.to_owned() },
-        },
-    )
-    .unwrap();
-    crate::GoalRecord::new(
-        &format!("own:specimen:{id}:1"),
-        goal,
-        endora_kernel::ids::Timestamp::from_unix_millis(1),
-    )
-    .unwrap()
-    .with_origin(crate::GoalOrigin::Record)
-}
-
-fn an_open_specimen(id: &str, asked: &str, replays: u32) -> endora_understanding::Specimen {
-    endora_understanding::Specimen {
-        id: id.to_owned(),
-        asked: asked.to_owned(),
-        verdict: "not an answer".to_owned(),
-        filed_ms: 1,
-        replays,
-        last_replay_ms: None,
-        state: endora_understanding::SpecimenState::Open,
-    }
-}
-
-fn replay(
-    record: &crate::GoalRecord,
-    specimen: &endora_understanding::Specimen,
-    shelf: &crate::usecases::RecordingShelf,
-    butler: &dyn Butler,
-) -> crate::GoalRecord {
-    super::replay_specimen(
-        record,
-        specimen,
-        butler,
-        &NoCapabilities,
-        &FakeAudit::default(),
-        &FakeOutcomes::default(),
-        shelf,
-        &FakeStore::default(),
-        &SeqIds::default(),
-        &FixedClock(27 * 3_600_000),
-        &ButlerContext::default(),
-    )
-    .unwrap()
-}
-
-#[test]
-fn a_replay_that_passes_completes_the_goal_and_retires_the_ask() {
-    // ADR 0095, the nightly step moved into the lane: judged by the verdict that filed it.
-    let shelf = crate::usecases::RecordingShelf::default();
-    let ask = an_open_specimen("s1", "what lights are on?", 3);
-    shelf.open.borrow_mut().push(ask.clone());
-    let butler = EchoesItsInstruction {
-        seen: RefCell::new(String::new()),
-    };
-    let after = replay(
-        &a_goal_from_a_specimen("s1", &ask.asked),
-        &ask,
-        &shelf,
-        &butler,
-    );
-    assert_eq!(*shelf.replays.borrow(), vec![("s1".to_owned(), true)]);
-    assert_eq!(after.goal().status(), crate::GoalStatus::Complete);
-    assert_eq!(after.origin(), crate::GoalOrigin::Record);
-    assert!(
-        after.goal().evidence()[0].output.contains("answers now"),
-        "{:?}",
-        after.goal().evidence()
-    );
-    assert!(
-        butler.seen.borrow().contains("what lights are on?"),
-        "it asked the ask"
-    );
-}
-
-#[test]
-fn a_replay_that_fails_ends_partial_and_counts_against_the_ask() {
-    let shelf = crate::usecases::RecordingShelf::default();
-    let ask = an_open_specimen("s1", "when is the next 41 bus?", 2);
-    shelf.open.borrow_mut().push(ask.clone());
-    let after = replay(
-        &a_goal_from_a_specimen("s1", &ask.asked),
-        &ask,
-        &shelf,
-        &StillCannot,
-    );
-    assert_eq!(*shelf.replays.borrow(), vec![("s1".to_owned(), false)]);
-    assert_eq!(after.goal().status(), crate::GoalStatus::Partial);
-    assert!(
-        after.goal().evidence()[0].output.contains("it still fails"),
-        "{:?}",
-        after.goal().evidence()
-    );
-}
-
-#[test]
-fn the_last_allowed_failure_says_it_has_stopped_asking() {
-    let shelf = crate::usecases::RecordingShelf::default();
-    let ask = an_open_specimen(
-        "s1",
-        "when is the next 41 bus?",
-        endora_understanding::REPLAYS_BEFORE_GIVING_UP - 1,
-    );
-    shelf.open.borrow_mut().push(ask.clone());
-    let after = replay(
-        &a_goal_from_a_specimen("s1", &ask.asked),
-        &ask,
-        &shelf,
-        &StillCannot,
-    );
-    let said = &after.goal().evidence()[0].output;
-    assert!(
-        said.contains("stopped re-asking") && said.contains("41 bus"),
-        "{said}"
-    );
-}
-
-#[test]
-fn a_replay_never_reaches_for_the_deep_model() {
-    // The spy's local model gives nothing useful, which is exactly when a turn escalates.
-    let spy = DeepModelSpy(std::sync::atomic::AtomicUsize::new(0));
-    let shelf = crate::usecases::RecordingShelf::default();
-    let ask = an_open_specimen("s1", "what lights are on?", 0);
-    shelf.open.borrow_mut().push(ask.clone());
-    replay(
-        &a_goal_from_a_specimen("s1", &ask.asked),
-        &ask,
-        &shelf,
-        &spy,
-    );
-    assert_eq!(times_the_deep_model_was_reached_for(&spy), 0);
-}
-
-#[test]
-fn a_goal_that_has_already_ended_is_not_replayed_again() {
-    let shelf = crate::usecases::RecordingShelf::default();
-    let ask = an_open_specimen("s1", "what lights are on?", 0);
-    let mut goal = a_goal_from_a_specimen("s1", &ask.asked);
-    let mut ended = goal.goal().clone();
-    ended.cancel("stopped");
-    goal = goal.with_goal(ended, endora_kernel::ids::Timestamp::from_unix_millis(2));
-    let after = replay(&goal, &ask, &shelf, &StillCannot);
-    assert!(
-        shelf.replays.borrow().is_empty(),
-        "a finished goal asked again"
-    );
-    assert_eq!(after.goal().status(), crate::GoalStatus::Cancelled);
-}
-
-#[test]
-fn a_replay_is_given_the_skills_the_ask_needs() {
-    // Not the house only: a replay denied the web would always fail on a question about the
-    // bus and falsely prove nothing here can answer it (the signal ADR 0071 draws from).
-    let shelf = crate::usecases::RecordingShelf::default();
-    let ask = an_open_specimen("s1", "what does example.test say?", 0);
-    shelf.open.borrow_mut().push(ask.clone());
-    let fetches = FetchesThenSays {
-        turns: std::cell::Cell::new(0),
-        then_says: "It says it is a page for use in documentation examples.",
-    };
-    let after = super::replay_specimen(
-        &a_goal_from_a_specimen("s1", &ask.asked),
-        &ask,
-        &fetches,
-        &FetchResult(Ok("Example Domain. For documentation.")),
-        &FakeAudit::default(),
-        &FakeOutcomes::default(),
-        &shelf,
-        &FakeStore::default(),
-        &SeqIds::default(),
-        &FixedClock(27 * 3_600_000),
-        &ButlerContext::default(),
-    )
-    .unwrap();
-    assert_eq!(after.goal().status(), crate::GoalStatus::Complete);
-    assert_eq!(fetches.turns.get(), 2, "it fetched, then answered");
-}
-
-/// A butler that comes back with something new on each pass.
-struct FindsSomethingEachPass(std::cell::Cell<usize>);
-impl Butler for FindsSomethingEachPass {
-    fn respond(
-        &self,
-        _history: &[ChatMessage],
-        _p: &[crate::Preference],
-        _c: &ButlerContext,
-    ) -> Result<ButlerReply, ProposalError> {
-        let n = self.0.get() + 1;
-        self.0.set(n);
-        Ok(ButlerReply {
-            text: format!("found thing {n}"),
-            ..ButlerReply::default()
-        })
-    }
-}
-
-fn a_goal(objective: &str) -> crate::GoalRecord {
-    crate::GoalRecord::new(
-        "test-goal",
-        crate::Goal::new(objective).unwrap(),
-        endora_kernel::ids::Timestamp::from_unix_millis(1),
-    )
-    .unwrap()
-}
-
-/// Runs one pass of `resume_goal` with everything else faked out.
-fn one_pass(record: &crate::GoalRecord, butler: &dyn Butler) -> crate::GoalRecord {
-    super::resume_goal(
-        record,
-        butler,
-        &NoCapabilities,
-        &FakeAudit::default(),
-        &FakeOutcomes::default(),
-        &FakeStore::default(),
-        &SeqIds::default(),
-        &FixedClock(1_000),
-        &ButlerContext::default(),
-    )
-}
-
-/// A local model that gives nothing useful, with a deep model behind it — and a count of how
-/// often anything reached for that deep model.
-struct DeepModelSpy(std::sync::atomic::AtomicUsize);
-impl Butler for DeepModelSpy {
-    fn respond(
-        &self,
-        _h: &[ChatMessage],
-        _p: &[Preference],
-        _c: &ButlerContext,
-    ) -> Result<ButlerReply, ProposalError> {
-        Ok(ButlerReply::default())
-    }
-    fn deeper(&self) -> Option<crate::egress::Deeper> {
-        self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        Some(crate::egress::Deeper::new(std::sync::Arc::new(
-            AnswersFromTheDeepModel,
-        )))
-    }
-}
-
-struct AnswersFromTheDeepModel;
-impl Butler for AnswersFromTheDeepModel {
-    fn respond(
-        &self,
-        _h: &[ChatMessage],
-        _p: &[Preference],
-        _c: &ButlerContext,
-    ) -> Result<ButlerReply, ProposalError> {
-        Ok(ButlerReply {
-            text: "an answer from the paid model".to_owned(),
-            ..ButlerReply::default()
-        })
-    }
-}
-
-fn times_the_deep_model_was_reached_for(spy: &DeepModelSpy) -> usize {
-    spy.0.load(std::sync::atomic::Ordering::SeqCst)
-}
-
-#[test]
-fn a_pass_on_a_goal_endora_started_never_reaches_for_the_deep_model() {
-    // ADR 0094: self-started work is local-only, by construction rather than by setting.
-    // The spy's local model gives nothing useful, which is exactly the condition under
-    // which a turn escalates; the goal is the one the lane exists for.
-    let spy = DeepModelSpy(std::sync::atomic::AtomicUsize::new(0));
-    let own = a_goal("A device has stopped answering").with_origin(crate::GoalOrigin::Record);
-    one_pass(&own, &spy);
-    assert_eq!(
-        times_the_deep_model_was_reached_for(&spy),
-        0,
-        "a goal nobody asked for reached the paid model"
-    );
-}
-
-#[test]
-fn a_pass_on_a_goal_the_person_asked_for_still_can() {
-    // The other half, and what makes the test above mean anything: the same spy, the same
-    // empty local answer, a goal the person asked for. If this stopped reaching for the
-    // deep model the test above would pass for the wrong reason.
-    let spy = DeepModelSpy(std::sync::atomic::AtomicUsize::new(0));
-    one_pass(&a_goal("Read a source"), &spy);
-    assert!(
-        times_the_deep_model_was_reached_for(&spy) > 0,
-        "the spy is not live: nothing escalates, so the local-only test proves nothing"
-    );
-}
-
-#[test]
-fn a_goal_endora_started_is_still_worked_by_the_local_model() {
-    // Taking the deep model away must not take the work away.
-    let own = a_goal_from_a_trouble();
-    let after = one_house_pass(
-        &own,
-        Ok("sensor.garage_door: unavailable since Tuesday"),
-        "The house reports sensor.garage_door unavailable since Tuesday.",
-    );
-    assert_eq!(
-        after.goal().evidence().len(),
-        1,
-        "the local model's finding was lost: {:?}",
-        after.goal().dead_ends()
-    );
-    assert_eq!(after.origin(), crate::GoalOrigin::Record);
-}
-
-#[test]
-fn work_endora_started_keeps_only_what_it_actually_read() {
-    // A model that writes a confident cause without having read anything is inventing one.
-    // For a goal the person asked for, prose with no read behind it can still be a finding
-    // (they may have asked for something that needs none). Here nobody asked, and the only
-    // honest thing is what the house said.
-    let invented = "It is probably the battery; these sensors usually die after a few years.";
-    let own = one_pass_saying(&a_goal_from_a_trouble(), invented);
-    assert!(
-        own.goal().evidence().is_empty(),
-        "an unread cause was kept as a finding: {:?}",
-        own.goal().evidence()
-    );
-    assert!(
-        own.goal()
-            .dead_ends()
-            .iter()
-            .any(|d| d.why.contains("read nothing")),
-        "and the gap is recorded: {:?}",
-        own.goal().dead_ends()
-    );
-
-    let theirs = one_pass_saying(&a_goal("Read a source"), invented);
-    assert_eq!(
-        theirs.goal().evidence().len(),
-        1,
-        "the control: a request's prose is kept"
-    );
-}
-
-/// Which tools the model was actually offered on a pass.
-struct SeesTools(std::cell::RefCell<Vec<String>>);
-impl Butler for SeesTools {
-    fn respond(
-        &self,
-        _h: &[ChatMessage],
-        _p: &[Preference],
-        _c: &ButlerContext,
-    ) -> Result<ButlerReply, ProposalError> {
-        Ok(ButlerReply::default())
-    }
-    fn take_turn(
-        &self,
-        _conversation: &[crate::TurnMessage],
-        _p: &[Preference],
-        context: &ButlerContext,
-    ) -> Result<ButlerReply, ProposalError> {
-        self.0
-            .borrow_mut()
-            .extend(context.tools.iter().map(|t| t.id.clone()));
-        Ok(ButlerReply {
-            text: "nothing".to_owned(),
-            ..ButlerReply::default()
-        })
-    }
-}
-
-fn tools_offered_on_a_pass(record: &crate::GoalRecord) -> Vec<String> {
-    let tool = |id: &str| crate::CapabilityTool {
-        id: id.to_owned(),
-        description: String::new(),
-        input_schema: None,
-    };
-    let context = ButlerContext {
-        tools: vec![
-            tool("web_search"),
-            tool("knowledge"),
-            tool("home_assistant"),
-        ],
-        ..ButlerContext::default()
-    };
-    let seen = SeesTools(std::cell::RefCell::new(Vec::new()));
-    super::resume_goal(
-        record,
-        &seen,
-        &NoCapabilities,
-        &FakeAudit::default(),
-        &FakeOutcomes::default(),
-        &FakeStore::default(),
-        &SeqIds::default(),
-        &FixedClock(1_000),
-        &context,
-    );
-    let mut ids = seen.0.into_inner();
-    ids.dedup();
-    ids
-}
-
-#[test]
-fn the_model_working_on_something_endora_noticed_is_offered_only_the_house() {
-    assert_eq!(
-        tools_offered_on_a_pass(&a_goal_from_a_trouble()),
-        ["home_assistant"]
-    );
-    // The control: the person's goal is offered what it always was.
-    assert_eq!(
-        tools_offered_on_a_pass(&a_goal("Read a source")),
-        ["web_search", "knowledge", "home_assistant"]
-    );
-}
-
-fn one_pass_saying(record: &crate::GoalRecord, text: &'static str) -> crate::GoalRecord {
-    struct Says(&'static str);
-    impl Butler for Says {
-        fn respond(
-            &self,
-            _h: &[ChatMessage],
-            _p: &[Preference],
-            _c: &ButlerContext,
-        ) -> Result<ButlerReply, ProposalError> {
-            Ok(ButlerReply {
-                text: self.0.to_owned(),
-                ..ButlerReply::default()
-            })
-        }
-    }
-    one_pass(record, &Says(text))
-}
-
-#[test]
-fn what_work_endora_started_read_about_the_house_is_kept() {
-    let after = one_house_pass(
-        &a_goal_from_a_trouble(),
-        Ok("sensor.garage_door: unavailable since Tuesday"),
-        "The house reports sensor.garage_door unavailable since Tuesday.",
-    );
-    assert_eq!(
-        after.goal().evidence().len(),
-        1,
-        "{:?}",
-        after.goal().dead_ends()
-    );
-    assert!(after.goal().evidence()[0].output.contains("since Tuesday"));
-}
-
-fn a_goal_from_a_trouble() -> crate::GoalRecord {
-    let goal = crate::Goal::for_request(
-        "Find out why sensor.garage_door has not answered for 4 days",
-        crate::goal_request::GoalCriteria::Resolve {
-            source: crate::goal_request::WorkSource::Trouble {
-                server: "home".to_owned(),
-                thing: "sensor.garage_door".to_owned(),
-                since_ms: 1,
-            },
-        },
-    )
-    .unwrap();
-    crate::GoalRecord::new(
-        "own:trouble:home:sensor.garage_door:1:1",
-        goal,
-        endora_kernel::ids::Timestamp::from_unix_millis(1),
-    )
-    .unwrap()
-    .with_origin(crate::GoalOrigin::Record)
-}
-
-fn a_goal_from_a_belief() -> crate::GoalRecord {
-    let goal = crate::Goal::for_request(
-        "Look into what would help with: they want to run more often",
-        crate::goal_request::GoalCriteria::Resolve {
-            source: crate::goal_request::WorkSource::Belief {
-                id: "b-1".to_owned(),
-            },
-        },
-    )
-    .unwrap();
-    crate::GoalRecord::new(
-        "own:belief:b-1:1",
-        goal,
-        endora_kernel::ids::Timestamp::from_unix_millis(1),
-    )
-    .unwrap()
-    .with_origin(crate::GoalOrigin::Record)
-}
-
-#[test]
-fn a_goal_from_a_belief_may_read_the_outside_but_a_goal_from_a_trouble_may_not() {
-    // ADR 0095. Looking into something the person cares about needs more than the house,
-    // so the belief source is given what its predecessor, the nightly intention, had;
-    // standing trouble stays with the house (ADR 0094). Same model, same working fetch.
-    let page = Ok("Example Domain. A page that would be served.");
-    let belief = one_fetch_pass_on(&a_goal_from_a_belief(), page);
-    assert!(
-        belief
-            .goal()
-            .observations()
-            .iter()
-            .any(|o| o.error.is_none()),
-        "a belief goal was refused the web: {:?}",
-        belief.goal().observations()
-    );
-    let trouble = one_fetch_pass_on(&a_goal_from_a_trouble(), page);
-    assert!(
-        trouble
-            .goal()
-            .observations()
-            .iter()
-            .all(|o| o.error.is_some()),
-        "a trouble goal reached the web"
-    );
-}
-
-#[test]
-fn a_goal_from_a_belief_is_still_held_to_the_local_model() {
-    let spy = DeepModelSpy(std::sync::atomic::AtomicUsize::new(0));
-    one_pass(&a_goal_from_a_belief(), &spy);
-    assert_eq!(times_the_deep_model_was_reached_for(&spy), 0);
-}
-
-#[test]
-fn a_goal_from_a_belief_keeps_only_what_it_read_too() {
-    let after = one_pass_saying(
-        &a_goal_from_a_belief(),
-        "They probably want a running plan; most people do.",
-    );
-    assert!(
-        after.goal().evidence().is_empty(),
-        "{:?}",
-        after.goal().evidence()
-    );
-}
-
-#[test]
-fn work_endora_noticed_is_not_described_to_the_model_as_something_they_asked_for() {
-    // The instruction used to open "something they asked you for". For a goal Endora
-    // started, that is false, and a model told it will write as if to a person waiting.
-    let own = super::proactive::goal_instruction(a_goal_from_a_trouble().goal());
-    assert!(!own.contains("they asked you for"), "{own}");
-    assert!(own.contains("Nobody asked"), "{own}");
-    assert!(
-        own.contains("garage_door"),
-        "the objective is still there: {own}"
-    );
-    // And the person's goal reads as it always did.
-    let asked = super::proactive::goal_instruction(a_goal("Read a source").goal());
-    assert!(asked.contains("something they asked you for"), "{asked}");
-    assert!(!asked.contains("Nobody asked"), "{asked}");
-}
-
-#[test]
-fn a_goal_from_a_trouble_is_told_it_can_look_and_cannot_fix() {
-    let own = super::proactive::goal_instruction(a_goal_from_a_trouble().goal());
-    assert!(own.contains("cannot change or fix"), "{own}");
-}
-
-/// A butler that calls `web_fetch` once, then answers in prose.
-struct FetchesThenSays {
-    turns: std::cell::Cell<usize>,
-    then_says: &'static str,
-}
-
-/// A butler that calls one named tool once, then answers in prose.
-struct ReadsThenSays {
-    tool: &'static str,
-    turns: std::cell::Cell<usize>,
-    then_says: &'static str,
-}
-impl Butler for ReadsThenSays {
-    fn respond(
-        &self,
-        _h: &[ChatMessage],
-        _p: &[Preference],
-        _c: &ButlerContext,
-    ) -> Result<ButlerReply, ProposalError> {
-        Ok(ButlerReply::default())
-    }
-    fn take_turn(
-        &self,
-        _conversation: &[crate::TurnMessage],
-        _p: &[Preference],
-        _c: &ButlerContext,
-    ) -> Result<ButlerReply, ProposalError> {
-        let n = self.turns.get();
-        self.turns.set(n + 1);
-        if n == 0 {
-            return Ok(ButlerReply {
-                tool_calls: vec![crate::ToolCall {
-                    id: "c".to_owned(),
-                    capability: self.tool.to_owned(),
-                    input_json: "{}".to_owned(),
-                }],
-                ..ButlerReply::default()
-            });
-        }
-        Ok(ButlerReply {
-            text: self.then_says.to_owned(),
-            ..ButlerReply::default()
-        })
-    }
-}
-
-/// A house skill that reads one thing, or refuses.
-struct HouseRead(Result<&'static str, &'static str>);
-impl CapabilityRunner for HouseRead {
-    fn available(&self) -> Vec<endora_capabilities::CapabilitySpec> {
-        vec![endora_capabilities::CapabilitySpec {
-            id: "home_assistant".to_owned(),
-            wants_place: false,
-            third_party: false,
-            description: String::new(),
-            configured: true,
-            autonomous: true,
-            input_schema: None,
-            reversibility: Reversibility::Observe,
-        }]
-    }
-    fn run(&self, _id: &str, _input: &str) -> Result<String, String> {
-        self.0.map(str::to_owned).map_err(str::to_owned)
-    }
-}
-
-fn one_house_pass(
-    record: &crate::GoalRecord,
-    reads: Result<&'static str, &'static str>,
-    then_says: &'static str,
-) -> crate::GoalRecord {
-    super::resume_goal(
-        record,
-        &ReadsThenSays {
-            tool: "home_assistant",
-            turns: std::cell::Cell::new(0),
-            then_says,
-        },
-        &HouseRead(reads),
-        &FakeAudit::default(),
-        &FakeOutcomes::default(),
-        &FakeStore::default(),
-        &SeqIds::default(),
-        &FixedClock(1_000),
-        &ButlerContext::default(),
-    )
-}
-impl Butler for FetchesThenSays {
-    fn respond(
-        &self,
-        _h: &[ChatMessage],
-        _p: &[Preference],
-        _c: &ButlerContext,
-    ) -> Result<ButlerReply, ProposalError> {
-        Ok(ButlerReply::default())
-    }
-    fn take_turn(
-        &self,
-        _conversation: &[crate::TurnMessage],
-        _p: &[Preference],
-        _c: &ButlerContext,
-    ) -> Result<ButlerReply, ProposalError> {
-        let n = self.turns.get();
-        self.turns.set(n + 1);
-        if n == 0 {
-            return Ok(ButlerReply {
-                tool_calls: vec![crate::ToolCall {
-                    id: "c".to_owned(),
-                    capability: "web_fetch".to_owned(),
-                    input_json: r#"{"url":"http://example.test/"}"#.to_owned(),
-                }],
-                ..ButlerReply::default()
-            });
-        }
-        Ok(ButlerReply {
-            text: self.then_says.to_owned(),
-            ..ButlerReply::default()
-        })
-    }
-}
-
-/// A `web_fetch` that either serves a page or refuses, nothing else.
-struct FetchResult(Result<&'static str, &'static str>);
-impl CapabilityRunner for FetchResult {
-    fn available(&self) -> Vec<endora_capabilities::CapabilitySpec> {
-        vec![endora_capabilities::CapabilitySpec {
-            id: "web_fetch".to_owned(),
-            wants_place: false,
-            third_party: false,
-            description: String::new(),
-            configured: true,
-            autonomous: true,
-            input_schema: None,
-            reversibility: Reversibility::Observe,
-        }]
-    }
-    fn run(&self, _id: &str, _input: &str) -> Result<String, String> {
-        self.0.map(str::to_owned).map_err(str::to_owned)
-    }
-}
-
-fn one_fetch_pass(
-    objective: &str,
-    fetch: Result<&'static str, &'static str>,
-    then_says: &'static str,
-) -> crate::GoalRecord {
-    super::resume_goal(
-        &a_goal(objective),
-        &FetchesThenSays {
-            turns: std::cell::Cell::new(0),
-            then_says,
-        },
-        &FetchResult(fetch),
-        &FakeAudit::default(),
-        &FakeOutcomes::default(),
-        &FakeStore::default(),
-        &SeqIds::default(),
-        &FixedClock(1_000),
-        &ButlerContext::default(),
-    )
-}
-
-#[test]
-fn a_pass_whose_every_tool_call_failed_records_the_failure_not_a_finding() {
-    // Measured live: the guard refused a private address and the model's reply — an
-    // apology and a question back to the person — was kept as a finding, then shown
-    // under "What I found" while the refusal itself never reached the message.
-    let refusal = "bad input: refusing to fetch a private/internal address (169.254.169.254)";
-    let after = one_fetch_pass(
-        "Read http://169.254.169.254/ and tell me what it says",
-        Err(refusal),
-        "I'm sorry, that address is private. Is there another URL I can use?",
-    );
-    let goal = after.goal();
-
-    assert!(
-        goal.evidence().is_empty(),
-        "an apology after a refusal is not a finding: {:?}",
-        goal.evidence()
-    );
-    assert!(
-        goal.dead_ends().iter().any(|d| d
-            .why
-            .contains("refusing to fetch a private/internal address")),
-        "the real refusal must be what is remembered: {:?}",
-        goal.dead_ends()
-    );
-    assert!(
-        goal.observations().iter().any(|o| o.error.is_some()),
-        "the receipt is still recorded"
-    );
-}
-
-fn one_fetch_pass_on(
-    record: &crate::GoalRecord,
-    fetch: Result<&'static str, &'static str>,
-) -> crate::GoalRecord {
-    super::resume_goal(
-        record,
-        &FetchesThenSays {
-            turns: std::cell::Cell::new(0),
-            then_says: "The page says the door sensor is offline.",
-        },
-        &FetchResult(fetch),
-        &FakeAudit::default(),
-        &FakeOutcomes::default(),
-        &FakeStore::default(),
-        &SeqIds::default(),
-        &FixedClock(1_000),
-        &ButlerContext::default(),
-    )
-}
-
-#[test]
-fn work_endora_started_cannot_read_the_web_even_when_the_model_asks_to() {
-    // ADR 0094. The same model, the same working fetch: for the person's goal the page is
-    // read and kept, for a goal Endora started the fetch is refused and nothing from the
-    // outside is kept as a finding.
-    let page = Ok("Example Domain. A page that would be served.");
-    let theirs = one_fetch_pass_on(&a_goal("Read http://example.test/"), page);
-    assert!(
-        theirs
-            .goal()
-            .observations()
-            .iter()
-            .any(|o| o.error.is_none()),
-        "the control: the person's goal reads the page"
-    );
-
-    let own = a_goal_from_a_trouble();
-    let after = one_fetch_pass_on(&own, page);
-    let receipts = after.goal().observations();
-    assert!(
-        receipts.iter().all(|o| o.error.is_some()),
-        "a web fetch was served to a goal nobody asked for: {receipts:?}"
-    );
-    assert!(
-        after.goal().evidence().is_empty(),
-        "and nothing from it was kept: {:?}",
-        after.goal().evidence()
-    );
-}
-
-#[test]
-fn a_pass_that_read_something_keeps_its_answer_as_a_finding() {
-    // The other half of the rule: it applies only when nothing was retrieved. A pass
-    // that fetched a page and described it has a finding, whatever else went wrong.
-    let after = one_fetch_pass(
-        "Read http://example.test/ and say what it is for",
-        Ok("Example Domain. This domain is for use in documentation examples."),
-        "The page is titled Example Domain and is meant for documentation examples.",
-    );
-    let goal = after.goal();
-
-    assert_eq!(goal.evidence().len(), 1, "{:?}", goal.dead_ends());
-    assert!(goal.evidence()[0].output.contains("Example Domain"));
-    assert!(goal.dead_ends().is_empty(), "{:?}", goal.dead_ends());
-}
-
-fn a_receipt(tool: &str, error: Option<&str>) -> crate::GoalObservation {
-    crate::GoalObservation {
-        tool: tool.to_owned(),
-        input: String::new(),
-        output: String::new(),
-        data: None,
-        error: error.map(str::to_owned),
-        at: endora_kernel::ids::Timestamp::from_unix_millis(1),
-    }
-}
-
-/// A goal that has already had a pass or two, leaving these receipts behind.
-fn a_goal_that_already_tried(receipts: Vec<crate::GoalObservation>) -> crate::GoalRecord {
-    let mut goal =
-        crate::Goal::new("Read http://169.254.169.254/ and tell me what it says").unwrap();
-    goal.record_observations(receipts);
-    crate::GoalRecord::new(
-        "test-goal",
-        goal,
-        endora_kernel::ids::Timestamp::from_unix_millis(1),
-    )
-    .unwrap()
-}
-
-#[test]
-fn a_note_about_a_refusal_is_not_a_finding_when_nothing_was_ever_retrieved() {
-    // Measured live, third pass: told what had already failed, the model made no
-    // call and wrote "the address is private and cannot be fetched". Nothing had
-    // ever been read, so that is the model talking about the failure, and kept as a
-    // finding it turned a blocked goal into a "partial" one with an apology in it.
-    let refusal = "bad input: refusing to fetch a private/internal address (169.254.169.254)";
-    let record = a_goal_that_already_tried(vec![a_receipt("web_fetch", Some(refusal))]);
-
-    let after = one_pass(&record, &FindsSomethingEachPass(std::cell::Cell::new(0)));
-    let goal = after.goal();
-
-    assert!(
-        goal.evidence().is_empty(),
-        "a note about a failure is not a finding: {:?}",
-        goal.evidence()
-    );
-    assert!(
-        goal.dead_ends().iter().any(|d| d
-            .why
-            .contains("refusing to fetch a private/internal address")),
-        "the real refusal is what is remembered: {:?}",
-        goal.dead_ends()
-    );
-}
-
-#[test]
-fn prose_after_an_earlier_successful_read_is_still_a_finding() {
-    // The control: once anything has been retrieved, what the model writes about it
-    // can be a finding, and the novelty check — not this rule — keeps out repeats.
-    let record = a_goal_that_already_tried(vec![
-        a_receipt("web_fetch", Some("the first mirror was down")),
-        a_receipt("web_fetch", None),
-    ]);
-
-    let after = one_pass(&record, &FindsSomethingEachPass(std::cell::Cell::new(0)));
-
-    assert_eq!(
-        after.goal().evidence().len(),
-        1,
-        "{:?}",
-        after.goal().dead_ends()
-    );
-}
-
-#[test]
-fn a_goal_that_has_not_touched_a_tool_still_gathers_what_the_model_says() {
-    // Nothing failed and nothing was retrieved: there is no failure to be talking
-    // about, so this rule has no business with it.
-    let record = a_goal_that_already_tried(Vec::new());
-
-    let after = one_pass(&record, &FindsSomethingEachPass(std::cell::Cell::new(0)));
-
-    assert_eq!(
-        after.goal().evidence().len(),
-        1,
-        "{:?}",
-        after.goal().dead_ends()
-    );
-}
-
-#[test]
-fn a_goal_gathers_across_successive_passes() {
-    // The defect: the worker took one step and the objective was over. A pass
-    // must leave the goal resumable, and the next one must add to what the last
-    // one found rather than starting again.
-    let butler = FindsSomethingEachPass(std::cell::Cell::new(0));
-    let first = one_pass(&a_goal("find somewhere to eat on Sunday"), &butler);
-    assert_eq!(first.goal().evidence().len(), 1, "{:?}", first.goal());
-    assert!(
-        !first.goal().status().terminal(),
-        "one pass must not finish the objective: {:?}",
-        first.goal().status()
-    );
-
-    let second = one_pass(&first, &butler);
-    assert_eq!(
-        second.goal().evidence().len(),
-        2,
-        "the second pass adds to the first"
-    );
-    assert_ne!(
-        second.goal().evidence()[0].output,
-        second.goal().evidence()[1].output,
-        "and gathers something new rather than repeating itself"
-    );
-}
-
-#[test]
-fn an_unreachable_model_is_a_dead_end_not_a_dead_goal() {
-    // `StillCannot` returns a degraded reply, which used to be indistinguishable
-    // from the objective failing. It is a reason to try again later.
-    let record = one_pass(&a_goal("an objective"), &StillCannot);
-    assert!(
-        !record.goal().status().terminal(),
-        "a degraded pass must leave the goal alive: {:?}",
-        record.goal().status()
-    );
-    assert_eq!(record.goal().evidence().len(), 0, "and commits no evidence");
-    assert_eq!(
-        record.goal().dead_ends().len(),
-        1,
-        "but remembers the attempt"
-    );
-}
-
-#[test]
-fn a_spent_objective_stops_and_keeps_what_it_found() {
-    // Progress is bounded: an objective that never satisfies a deterministic
-    // check cannot keep spending the model forever. It stops and shows its work.
-    let mut goal = crate::Goal::new("an endless objective").unwrap();
-    for n in 0..super::MOST_GOAL_PASSES {
-        goal.start("gathering", "next step");
-        goal.commit("next step", &format!("partial finding {n}"));
-    }
-    let record = crate::GoalRecord::new(
-        "spent",
-        goal,
-        endora_kernel::ids::Timestamp::from_unix_millis(1),
-    )
-    .unwrap();
-
-    let butler = FindsSomethingEachPass(std::cell::Cell::new(0));
-    let after = one_pass(&record, &butler);
-    assert_eq!(after.goal().status(), crate::GoalStatus::Partial);
-    assert_eq!(
-        after.goal().evidence().len(),
-        super::MOST_GOAL_PASSES,
-        "what it gathered is kept, not discarded on the way out"
-    );
-}
-
-#[test]
-fn a_finished_goal_is_left_alone() {
-    let mut goal = crate::Goal::new("an objective").unwrap();
-    goal.cancel("the person stopped it");
-    let record = crate::GoalRecord::new(
-        "cancelled",
-        goal,
-        endora_kernel::ids::Timestamp::from_unix_millis(1),
-    )
-    .unwrap();
-    let butler = FindsSomethingEachPass(std::cell::Cell::new(0));
-    let after = one_pass(&record, &butler);
-    assert_eq!(after.goal().status(), crate::GoalStatus::Cancelled);
-    assert_eq!(
-        after.goal().evidence().len(),
-        0,
-        "a late pass cannot add to it"
-    );
-}
-
-/// Runs one night and hands back the instruction the butler was given.
-fn one_night(
-    beliefs: &FakeStore,
-    intentions: &FakeIntentions,
-    clock: &FixedClock,
-) -> (String, Vec<String>) {
-    one_night_with(
-        beliefs,
-        intentions,
-        &crate::usecases::NoSpecimens,
-        clock,
-        false,
-    )
-}
-
-/// [`one_night`], choosing whether the record lane is on and what is on the shelf.
-fn one_night_with(
-    beliefs: &FakeStore,
-    intentions: &FakeIntentions,
-    shelf: &impl endora_understanding::SpecimenRepository,
-    clock: &FixedClock,
-    lane_is_on: bool,
-) -> (String, Vec<String>) {
-    let butler = EchoesItsInstruction {
-        seen: RefCell::new(String::new()),
-    };
-    let (_, activity) = super::run_due_nightly_loop(
-        beliefs,
-        beliefs,
-        beliefs,
-        &FakeOutcomes::default(),
-        shelf,
-        intentions,
-        &super::tests::FakeNotions::default(),
-        &[],
-        &due_nightly(),
-        &NoCapabilities,
-        &[],
-        &butler,
-        &FakeAudit::default(),
-        &SeqIds::default(),
-        clock,
-        &ButlerContext::default(),
-        lane_is_on,
-    )
-    .unwrap()
-    .expect("the loop runs when due");
-    let seen = butler.seen.borrow().clone();
-    (seen, activity)
-}
-
-#[test]
-fn the_belief_to_look_into_is_the_one_the_night_would_have_taken_up() {
-    let store = store_with_a_belief();
-    let focus = super::belief_to_look_into(&store, &FixedClock(1_000))
-        .unwrap()
-        .expect("one belief, strong enough");
-    assert_eq!(focus.id, "7");
-    assert_eq!(focus.statement, "wants to sleep better");
-    assert_eq!(
-        super::beliefs_still_held(&store, &FixedClock(1_000)).unwrap(),
-        ["7"]
-    );
-    assert!(
-        super::belief_to_look_into(&FakeStore::default(), &FixedClock(1_000))
-            .unwrap()
-            .is_none(),
-        "nothing understood, nothing to look into"
-    );
-}
-
-#[test]
-fn with_the_lane_on_the_night_keeps_no_intention_of_its_own() {
-    // ADR 0095: the belief is looked into by the lane. The night still reflects and leaves
-    // its note; it just no longer forms or continues a thread.
-    let store = store_with_a_belief();
-    let intentions = FakeIntentions::default();
-    let (instruction, activity) = one_night_with(
-        &store,
-        &intentions,
-        &crate::usecases::NoSpecimens,
-        &FixedClock(27 * 3_600_000),
-        true,
-    );
-    assert!(
-        intentions.list().unwrap().is_empty(),
-        "an intention was formed"
-    );
-    assert!(!instruction.contains("taking up"), "{instruction}");
-    assert!(
-        !activity.iter().any(|a| a.contains("Started looking into")),
-        "{activity:?}"
-    );
-    assert!(
-        activity.iter().any(|a| a.contains("overnight note")),
-        "the note is kept"
-    );
-}
-
-#[test]
-fn with_the_lane_off_the_night_is_exactly_what_it_was() {
-    // The other half, and the reason the retirement is behind a switch: a node that has not
-    // turned the lane on loses nothing.
-    let store = store_with_a_belief();
-    let intentions = FakeIntentions::default();
-    one_night_with(
-        &store,
-        &intentions,
-        &crate::usecases::NoSpecimens,
-        &FixedClock(27 * 3_600_000),
-        false,
-    );
-    assert_eq!(intentions.list().unwrap().len(), 1);
-}
-
-#[test]
-fn with_the_lane_on_the_night_leaves_the_stumpers_to_it_and_with_it_off_replays_one() {
-    let ask = || endora_understanding::Specimen {
-        id: "s1".to_owned(),
-        asked: "what lights are on?".to_owned(),
-        verdict: "not an answer".to_owned(),
-        filed_ms: 1,
-        replays: 3,
-        last_replay_ms: None,
-        state: endora_understanding::SpecimenState::Open,
-    };
-    for (lane_is_on, replays) in [(true, 0), (false, 1)] {
-        let shelf = crate::usecases::RecordingShelf::default();
-        shelf.open.borrow_mut().push(ask());
-        one_night_with(
-            &FakeStore::default(),
-            &FakeIntentions::default(),
-            &shelf,
-            &FixedClock(27 * 3_600_000),
-            lane_is_on,
-        );
-        assert_eq!(
-            shelf.replays.borrow().len(),
-            replays,
-            "lane on: {lane_is_on}"
-        );
-    }
-}
-
-#[test]
-fn with_the_lane_on_an_intention_already_spent_is_still_retired() {
-    // Left active, a spent intention would sit in the list for ever, since nothing else
-    // retires it. The night keeps that one job.
-    let store = store_with_a_belief();
-    let intentions = FakeIntentions::default();
-    let stale = crate::Intention::form(
-        endora_kernel::ids::IntentionId::new(1),
-        "an old thread",
-        BeliefId::new(7),
-        Timestamp::from_unix_millis(0),
-    )
-    .unwrap();
-    intentions.save(&stale).unwrap();
-    let way_later = FixedClock((60 * 24 + 3) * 3_600_000);
-    let (_, activity) = one_night_with(
-        &store,
-        &intentions,
-        &crate::usecases::NoSpecimens,
-        &way_later,
-        true,
-    );
-    assert!(
-        activity
-            .iter()
-            .any(|a| a.contains("Stopped working on something")),
-        "{activity:?}"
-    );
-    assert!(intentions.active().unwrap().is_none());
-}
-
-/// A store holding one belief strong enough to be taken up.
-fn store_with_a_belief() -> FakeStore {
-    use crate::{BeliefKind, Confidence};
-    let store = FakeStore::default();
-    BeliefRepository::save(
-        &store,
-        &Belief::new(
-            BeliefId::new(7),
-            "wants to sleep better",
-            BeliefKind::Intent,
-            Confidence::High,
-            "said so twice",
-            Timestamp::from_unix_millis(0),
-        )
-        .unwrap(),
-    )
-    .unwrap();
-    store
-}
-
-#[test]
-fn the_nightly_loop_takes_up_one_thing_and_says_what_it_came_from() {
-    // ADR 0052: Endora forms the intention itself, and it traces to a belief.
-    let store = store_with_a_belief();
-    let intentions = FakeIntentions::default();
-    let (instruction, activity) = one_night(&store, &intentions, &FixedClock(27 * 3_600_000));
-
-    assert!(
-        instruction.contains("taking up") && instruction.contains("sleep better"),
-        "night one starts the thread: {instruction}"
-    );
-    assert!(activity.iter().any(|a| a.contains("Started looking into")));
-
-    let held = intentions.list().unwrap();
-    assert_eq!(held.len(), 1, "one thing at a time");
-    assert_eq!(held[0].motivating_belief(), Some(BeliefId::new(7)));
-    assert_eq!(
-        held[0].steps_taken(),
-        1,
-        "tonight counted as a night's work"
-    );
-    assert_eq!(held[0].note(), "Tonight I read about room temperature.");
-}
-
-#[test]
-fn the_next_night_continues_the_thread_instead_of_starting_over() {
-    // The whole point of ADR 0052. Night two must be handed night one's findings
-    // and told to carry on — not to take the same thing up afresh.
-    let store = store_with_a_belief();
-    let intentions = FakeIntentions::default();
-    one_night(&store, &intentions, &FixedClock(27 * 3_600_000));
-    let (instruction, _) = one_night(&store, &intentions, &FixedClock(51 * 3_600_000));
-
-    assert!(
-        instruction.contains("already looking into"),
-        "night two resumes: {instruction}"
-    );
-    assert!(
-        instruction.contains("night 2"),
-        "it knows how far in it is: {instruction}"
-    );
-    assert!(
-        instruction.contains("Tonight I read about room temperature."),
-        "it is handed its own findings back: {instruction}"
-    );
-    assert!(
-        !instruction.contains("taking up"),
-        "it must not start over: {instruction}"
-    );
-
-    let held = intentions.list().unwrap();
-    assert_eq!(held.len(), 1, "still one thread, not two");
-    assert_eq!(held[0].steps_taken(), 2);
-}
-
-#[test]
-fn a_second_belief_does_not_start_a_second_thread() {
-    // The cursor-not-queue rule (ADR 0052). Even with something new and strong to
-    // chase, Endora finishes what it is on.
-    use crate::{BeliefKind, Confidence};
-    let store = store_with_a_belief();
-    let intentions = FakeIntentions::default();
-    one_night(&store, &intentions, &FixedClock(27 * 3_600_000));
-
-    BeliefRepository::save(
-        &store,
-        &Belief::new(
-            BeliefId::new(9),
-            "wants to travel more",
-            BeliefKind::Intent,
-            Confidence::High,
-            "brought it up today",
-            Timestamp::from_unix_millis(30 * 3_600_000),
-        )
-        .unwrap(),
-    )
-    .unwrap();
-    one_night(&store, &intentions, &FixedClock(51 * 3_600_000));
-
-    assert_eq!(
-        intentions.list().unwrap().len(),
-        1,
-        "a shinier belief must not open a second thread"
-    );
-}
-
-#[test]
-fn a_spent_thread_is_dropped_so_something_else_can_be_taken_up() {
-    // Nothing rots: the step budget frees the one slot on its own, visibly.
-    let store = store_with_a_belief();
-    let intentions = FakeIntentions::default();
-    // Seven nights in, and spent.
-    let mut spent = crate::Intention::form(
-        crate::IntentionId::new(1),
-        "an exhausted thread",
-        BeliefId::new(7),
-        Timestamp::from_unix_millis(0),
-    )
-    .unwrap();
-    for _ in 0..7 {
-        spent.progress("looked into it", Timestamp::from_unix_millis(0));
-    }
-    intentions.save(&spent).unwrap();
-
-    let (instruction, activity) = one_night(&store, &intentions, &FixedClock(27 * 3_600_000));
-
-    assert!(
-        activity
-            .iter()
-            .any(|a| a.contains("Stopped working on something")),
-        "it says it gave up, in the trail: {activity:?}"
-    );
-    assert!(
-        instruction.contains("taking up"),
-        "the freed slot is used for something new: {instruction}"
-    );
-    assert_eq!(
-        intentions
-            .list()
-            .unwrap()
-            .iter()
-            .filter(|i| i.is_active())
-            .count(),
-        1,
-        "still exactly one active"
-    );
-}
-
-#[test]
-fn with_nothing_understood_yet_the_loop_still_reflects_without_a_thread() {
-    // A new Endora has no belief strong enough to pursue. It must still run.
-    let store = FakeStore::default();
-    let intentions = FakeIntentions::default();
-    let (instruction, _) = one_night(&store, &intentions, &FixedClock(27 * 3_600_000));
-
-    assert!(
-        !instruction.contains("taking up") && !instruction.contains("already looking into"),
-        "no thread invented from nothing: {instruction}"
-    );
-    assert!(intentions.list().unwrap().is_empty());
-}
-
-#[test]
-fn the_nightly_loop_stays_quiet_when_not_due() {
-    use super::run_due_nightly_loop;
-    use endora_scheduling::{NightlyLoopSchedule, NightlyLoopScheduleRepository};
-
-    struct NeverButler;
-    impl Butler for NeverButler {
-        fn respond(
-            &self,
-            _h: &[ChatMessage],
-            _p: &[crate::Preference],
-            _c: &ButlerContext,
-        ) -> Result<ButlerReply, ProposalError> {
-            panic!("the butler must not be consulted when the loop isn't due");
-        }
-    }
-    // Off by default: never due, butler never called.
-    struct OffSchedule;
-    impl NightlyLoopScheduleRepository for OffSchedule {
-        fn get(&self) -> Result<Option<NightlyLoopSchedule>, RepositoryError> {
-            Ok(Some(NightlyLoopSchedule::disabled_default()))
-        }
-        fn set(&self, _s: &NightlyLoopSchedule) -> Result<(), RepositoryError> {
-            Ok(())
-        }
-    }
-
-    let store = FakeStore::default();
-    let ids = SeqIds::default();
-    let clock = FixedClock(27 * 3_600_000);
-    let audit = FakeAudit {
-        records: std::cell::RefCell::new(Vec::new()),
-    };
-    let out = run_due_nightly_loop(
-        &store,
-        &store,
-        &store,
-        &FakeOutcomes::default(),
-        &crate::usecases::NoSpecimens,
-        &FakeIntentions::default(),
-        &super::tests::FakeNotions::default(),
-        &[],
-        &OffSchedule,
-        &NoCapabilities,
-        &[],
-        &NeverButler,
-        &audit,
-        &ids,
-        &clock,
-        &ButlerContext::default(),
-        false,
-    )
-    .unwrap();
-    assert!(out.is_none());
-}
-
-#[test]
-fn the_nightly_loop_researches_its_strongest_belief_reversibly() {
-    use super::{run_due_nightly_loop, understanding};
-    use endora_capabilities::CapabilitySpec;
-    use endora_scheduling::{NightlyLoopSchedule, NightlyLoopScheduleRepository};
-    use std::cell::RefCell;
-
-    // A reversible research skill: `web_answers`, configured and cleared to run
-    // on its own. It must be the ONLY skill the loop invokes.
-    struct ResearchRunner;
-    impl CapabilityRunner for ResearchRunner {
-        fn available(&self) -> Vec<CapabilitySpec> {
-            vec![
-                CapabilitySpec {
-                    id: "web_answers".to_owned(),
-                    wants_place: false,
-                    third_party: false,
-                    description: "answer a question".to_owned(),
-                    configured: true,
-                    autonomous: true,
-                    input_schema: None,
-                    reversibility: endora_kernel::Reversibility::Observe,
-                },
-                // A consequential skill the loop must never reach for.
-                CapabilitySpec {
-                    id: "flights".to_owned(),
-                    wants_place: false,
-                    third_party: false,
-                    description: "book flights".to_owned(),
-                    configured: true,
-                    autonomous: false,
-                    input_schema: None,
-                    reversibility: endora_kernel::Reversibility::Observe,
-                },
-            ]
-        }
-        fn run(&self, id: &str, input_json: &str) -> Result<String, String> {
-            assert_eq!(id, "web_answers", "the loop must only run the cleared read");
-            assert!(input_json.contains("sleep"), "researches the focus topic");
-            Ok("Consistent sleep schedules improve energy and mood.".to_owned())
-        }
-    }
-
-    // A butler that CHOOSES to research the focus (agentic): it reaches for the
-    // reversible read first, then — once the finding is fed back — reflects.
-    struct ResearchButler;
-    impl Butler for ResearchButler {
-        fn respond(
-            &self,
-            history: &[ChatMessage],
-            _p: &[crate::Preference],
-            _c: &ButlerContext,
-        ) -> Result<ButlerReply, ProposalError> {
-            let researched =
-                last_skill_result(history).is_some_and(|t| t.contains("Consistent sleep"));
-            if !researched {
-                // First pass: pick the reversible read to look into the focus.
-                return Ok(ButlerReply {
-                    capability_use: Some(endora_capabilities::CapabilityUse {
-                        capability: "web_answers".to_owned(),
-                        input_json: "{\"query\":\"sleep habits\"}".to_owned(),
-                    }),
-                    ..ButlerReply::default()
-                });
-            }
-            // The finding is fed back — reflect and form a belief.
-            Ok(ButlerReply {
-                text: "I looked into sleep tonight — worth keeping steady hours.".to_owned(),
-                beliefs: vec![crate::ports::FormedBelief {
-                    statement: "benefits from consistent sleep".to_owned(),
-                    kind: crate::BeliefKind::Intent,
-                    confidence: crate::Confidence::Low,
-                    evidence: "researched overnight".to_owned(),
-                }],
-                ..ButlerReply::default()
-            })
-        }
-    }
-
-    struct DueSchedule(RefCell<NightlyLoopSchedule>);
-    impl NightlyLoopScheduleRepository for DueSchedule {
-        fn get(&self) -> Result<Option<NightlyLoopSchedule>, RepositoryError> {
-            Ok(Some(*self.0.borrow()))
-        }
-        fn set(&self, s: &NightlyLoopSchedule) -> Result<(), RepositoryError> {
-            *self.0.borrow_mut() = *s;
-            Ok(())
-        }
-    }
-
-    let store = FakeStore::default();
-    let ids = SeqIds::default();
-    let clock = FixedClock(27 * 3_600_000);
-    let sched = DueSchedule(RefCell::new(NightlyLoopSchedule {
-        enabled: true,
-        hour_utc: 3,
-        last_at: Timestamp::from_unix_millis(0),
-    }));
-    // The focus comes from what Endora understands (ADR 0052): the intent it is
-    // most sure of wins, over a weaker belief and a stronger non-intent one.
-    for (statement, kind, confidence) in [
-        (
-            "you want to sleep better",
-            crate::BeliefKind::Intent,
-            crate::Confidence::High,
-        ),
-        (
-            "you want to read more",
-            crate::BeliefKind::Intent,
-            crate::Confidence::Low,
-        ),
-        (
-            "you find noise stressful",
-            crate::BeliefKind::Stressor,
-            crate::Confidence::High,
-        ),
-    ] {
-        BeliefRepository::save(
-            &store,
-            &Belief::new(
-                BeliefId::new(ids.new_id()),
-                statement,
-                kind,
-                confidence,
-                "said so",
-                clock.now(),
-            )
-            .unwrap(),
-        )
-        .unwrap();
-    }
-    let context = ButlerContext::default();
-
-    let audit = FakeAudit {
-        records: RefCell::new(Vec::new()),
-    };
-    let (msg, activity) = run_due_nightly_loop(
-        &store,
-        &store,
-        &store,
-        &FakeOutcomes::default(),
-        &crate::usecases::NoSpecimens,
-        &FakeIntentions::default(),
-        &super::tests::FakeNotions::default(),
-        &[],
-        &sched,
-        &ResearchRunner,
-        &[],
-        &ResearchButler,
-        &audit,
-        &ids,
-        &clock,
-        &context,
-        false,
-    )
-    .unwrap()
-    .expect("the loop runs when due");
-
-    // It chose the reversible read to research the focus, reflected, and left a note.
-    assert!(activity.iter().any(|a| a.contains("web_answers")));
-    assert!(msg.text().contains("sleep"));
-    assert!(
-        understanding(&store, &FixedClock(1_000))
-            .unwrap()
-            .iter()
-            .any(|b| b.statement().contains("sleep"))
     );
 }
 
@@ -7546,7 +5098,6 @@ fn a_line_before_a_tool_call_does_not_make_the_answer_arrive_twice() {
         &store,
         &store,
         &FakeOutcomes::default(),
-        &crate::usecases::NoSpecimens,
         &NoCapabilities,
         &ThinksAloudThenAnswers {
             round: std::cell::Cell::new(0),

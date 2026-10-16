@@ -1,59 +1,5 @@
 use super::*;
 
-/// The person's proactive check-in cadence.
-#[derive(Serialize)]
-pub(super) struct CheckinResponse {
-    enabled: bool,
-    interval_ms: i64,
-    next_at_ms: i64,
-}
-
-impl From<CheckinSchedule> for CheckinResponse {
-    fn from(s: CheckinSchedule) -> Self {
-        Self {
-            enabled: s.enabled,
-            interval_ms: s.interval_ms,
-            next_at_ms: s.next_at.unix_millis(),
-        }
-    }
-}
-
-pub(super) async fn get_checkin(
-    State(state): State<AppState>,
-) -> Result<Json<CheckinResponse>, ApiError> {
-    let schedules = state.schedules.clone();
-    let clock = state.clock.clone();
-    let schedule =
-        blocking(move || usecases::checkin_schedule(schedules.as_ref(), clock.as_ref())).await?;
-    Ok(Json(schedule.into()))
-}
-
-#[derive(Deserialize)]
-pub(super) struct SetCheckinRequest {
-    enabled: bool,
-    interval_ms: i64,
-}
-
-/// Sets the check-in cadence (on/off + interval). Enabling schedules the next one
-/// an interval from now, so it is not an instant ping.
-pub(super) async fn set_checkin(
-    State(state): State<AppState>,
-    Json(req): Json<SetCheckinRequest>,
-) -> Result<Json<CheckinResponse>, ApiError> {
-    let schedules = state.schedules.clone();
-    let clock = state.clock.clone();
-    let schedule = blocking(move || {
-        usecases::set_checkin_schedule(
-            schedules.as_ref(),
-            clock.as_ref(),
-            req.enabled,
-            req.interval_ms,
-        )
-    })
-    .await?;
-    Ok(Json(schedule.into()))
-}
-
 /// Serializes a belief for the console. `confidence` is the **decayed** value — how
 /// sure Endora is right now, given how long since anything reinforced it (ADR 0052) —
 /// not the value frozen at the moment it was formed. Showing the stored one would
@@ -166,6 +112,38 @@ pub(super) async fn correct_belief(
     Ok(Json(json!({ "corrected": true })))
 }
 
+#[derive(Deserialize)]
+pub(super) struct ForgetRequest {
+    #[serde(default)]
+    confirm: bool,
+}
+
+/// Deletes everything Endora learned about the person, and every intention it formed from that,
+/// keeping what they told it themselves (their preferences, where they are, how to address them)
+/// and the research they asked for. The owner's "start fresh", 2026-10-16. Needs
+/// `{"confirm": true}`, like the full purge.
+pub(super) async fn forget_what_it_learned(
+    State(state): State<AppState>,
+    Json(req): Json<ForgetRequest>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    if !req.confirm {
+        return Err(ApiError(AppError::BadRequest {
+            message: r#"send {"confirm": true} to delete everything Endora learned"#.to_owned(),
+        }));
+    }
+    let understanding = state.understanding.clone();
+    let (forgot, intentions) = blocking(move || {
+        let beliefs = endora_application::BeliefRepository::forget_all(understanding.as_ref())
+            .map_err(AppError::Repository)?;
+        let intentions =
+            endora_application::IntentionRepository::forget_its_own(understanding.as_ref())
+                .map_err(AppError::Repository)?;
+        Ok::<_, AppError>((beliefs, intentions))
+    })
+    .await?;
+    Ok(Json(json!({ "forgot": forgot, "intentions": intentions })))
+}
+
 pub(super) fn intention_json(i: &endora_application::Intention) -> serde_json::Value {
     json!({
         "id": i.id().value().to_string(),
@@ -179,161 +157,6 @@ pub(super) fn intention_json(i: &endora_application::Intention) -> serde_json::V
         "created_ms": i.created_at().unix_millis(),
         "last_progressed_ms": i.last_progressed_at().unix_millis(),
     })
-}
-
-pub(super) fn goal_json(record: &endora_application::GoalRecord) -> serde_json::Value {
-    let goal = record.goal();
-    json!({
-        "request_key": record.request_key(),
-        "objective": goal.objective(),
-        "status": goal.status().name(),
-        // Which lane it runs in (ADR 0094): `person` for what was asked for, `record` for what
-        // Endora started itself. Additive, so existing clients are unaffected.
-        "origin": record.origin().name(),
-        "phase": goal.phase(),
-        "next_step": goal.next_step(),
-        "reason": goal.reason(),
-        // The words the chat uses for how it ended, so the console shows the same text.
-        // Only for an ended goal: before then there is no outcome to describe.
-        "outcome": goal.status().terminal().then(|| goal.outcome_notice()),
-        "criteria": goal.criteria().map(endora_application::goal_request::GoalCriteria::to_json),
-        "evidence": goal.evidence().iter().map(|e| json!({"step": e.step, "output": e.output})).collect::<Vec<_>>(),
-        "observations": goal.observations().iter().map(|o| json!({"tool":o.tool,"input":o.input,"output":o.output,"data":o.data,"error":o.error,"retrieved_ms":o.at.unix_millis()})).collect::<Vec<_>>(),
-        "created_ms": record.created_at().unix_millis(),
-        "updated_ms": record.updated_at().unix_millis(),
-    })
-}
-
-pub(super) async fn list_goals(
-    State(state): State<AppState>,
-) -> Result<Json<serde_json::Value>, ApiError> {
-    let store = state.store.clone();
-    let goals = blocking(move || store.active_goals().map_err(AppError::from)).await?;
-    Ok(Json(json!({
-        "items": goals.iter().map(goal_json).collect::<Vec<_>>(),
-    })))
-}
-
-pub(super) async fn get_goal(
-    State(state): State<AppState>,
-    Path(request_key): Path<String>,
-) -> Result<Json<serde_json::Value>, ApiError> {
-    let store = state.store.clone();
-    let goal = blocking(move || store.get_goal(&request_key).map_err(AppError::from)).await?;
-    let Some(goal) = goal else {
-        return Err(ApiError(AppError::NotFound { entity: "goal" }));
-    };
-    Ok(Json(goal_json(&goal)))
-}
-
-#[derive(Deserialize)]
-pub(super) struct CancelGoalRequest {
-    #[serde(default = "default_goal_cancel_reason")]
-    reason: String,
-}
-
-pub(super) fn default_goal_cancel_reason() -> String {
-    "cancelled by the person".to_owned()
-}
-
-pub(super) async fn cancel_goal(
-    State(state): State<AppState>,
-    Path(request_key): Path<String>,
-    Json(req): Json<CancelGoalRequest>,
-) -> Result<Json<serde_json::Value>, ApiError> {
-    let store = state.store.clone();
-    let clock = state.clock.clone();
-    let key = request_key.clone();
-    let changed = blocking(move || {
-        store
-            .cancel_goal(&key, &req.reason, clock.now())
-            .map_err(AppError::from)
-    })
-    .await?;
-    if !changed {
-        return Err(ApiError(AppError::Conflict {
-            code: "goal_not_active",
-            message: "the goal is missing or already terminal".to_owned(),
-        }));
-    }
-    let _ = state.changes.send(());
-    let store = state.store.clone();
-    let goal = blocking(move || store.get_goal(&request_key).map_err(AppError::from)).await?;
-    let Some(goal) = goal else {
-        return Err(ApiError(AppError::NotFound { entity: "goal" }));
-    };
-    Ok(Json(goal_json(&goal)))
-}
-
-/// One notion, as the console reads it (ADR 0057).
-///
-/// Carries its evidence, because a statement about somebody with the reasoning stripped off is
-/// the thing this design is most careful not to produce. There is **no verb here and no count
-/// anywhere** — the person may look at what Endora is chewing on and cannot be asked to
-/// maintain it.
-pub(super) fn notion_json(n: &endora_application::Notion) -> serde_json::Value {
-    json!({
-        "id": n.id().value().to_string(),
-        "statement": n.statement(),
-        "because": n.citations()
-            .iter()
-            .map(|c| format!("{}:{}", c.source().name(), c.reference()))
-            .collect::<Vec<_>>(),
-        "settles_when": n.settles_when(),
-        "status": n.status().name(),
-        "created_ms": n.created_at().unix_millis(),
-        "last_supported_ms": n.last_supported_at().unix_millis(),
-    })
-}
-
-/// What Endora is still thinking about (ADR 0057).
-///
-/// Read-only, deliberately and permanently: there is no companion `POST` anywhere in this file
-/// because a screen with an action on it becomes a chore list whatever its cards say.
-pub(super) async fn list_notions(
-    State(state): State<AppState>,
-) -> Result<Json<Vec<serde_json::Value>>, ApiError> {
-    let understanding = state.understanding.clone();
-    let items = blocking(move || {
-        endora_application::NotionRepository::open(understanding.as_ref())
-            .map_err(endora_application::AppError::from)
-    })
-    .await?;
-    Ok(Json(items.iter().map(notion_json).collect()))
-}
-
-/// What Endora is pursuing, and what it has pursued before (ADR 0052).
-pub(super) async fn list_intentions(
-    State(state): State<AppState>,
-) -> Result<Json<Vec<serde_json::Value>>, ApiError> {
-    let understanding = state.understanding.clone();
-    let items = blocking(move || usecases::intentions(understanding.as_ref())).await?;
-    Ok(Json(
-        items
-            .iter()
-            .filter(|item| item.motivating_belief().is_some())
-            .map(intention_json)
-            .collect(),
-    ))
-}
-
-/// The person tells Endora to stop working on something — their whole authority over
-/// an intention, and the only verb they have (ADR 0052).
-pub(super) async fn drop_intention(
-    State(state): State<AppState>,
-    Path(id): Path<String>,
-) -> Result<Json<serde_json::Value>, ApiError> {
-    let iid = id
-        .parse::<u128>()
-        .map(endora_application::IntentionId::new)
-        .map_err(|_| {
-            ApiError(AppError::NotFound {
-                entity: "intention",
-            })
-        })?;
-    let understanding = state.understanding.clone();
-    let out = blocking(move || usecases::drop_intention(understanding.as_ref(), iid)).await?;
-    Ok(Json(intention_json(&out)))
 }
 
 #[derive(Deserialize)]

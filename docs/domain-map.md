@@ -46,9 +46,10 @@ authorized, and never trusts a model's request directly (ADRs 0005, 0021, 0022,
 
 ## Scheduling
 
-`domains/scheduling` — the cadences for Endora's proactive moments: check-ins, the
-daily brief, the nightly self-improvement loop, and the model-tuning sweep. Off by
-default; the person owns whether each runs and when.
+`domains/scheduling` — the cadence of Endora's one proactive moment, the daily brief,
+kept on the person's local hour across clock changes. Off by default; the person owns
+whether it runs and when. The check-in, the nightly loop and the model-tuning sweep were
+removed in the clean slate (ADR 0100).
 
 ## Platform
 
@@ -94,7 +95,7 @@ a bug.
                         │        │
                         └────────┴──────▶ platform (audit + event log)
 
-  scheduling ──▶ triggers a proactive turn (check-in / brief / nightly loop)
+  scheduling ──▶ triggers a proactive turn (the daily brief)
 ```
 
 The model never reaches execution directly. Understanding is the one thing the

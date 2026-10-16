@@ -31,6 +31,19 @@ pub(super) fn record_formed_beliefs(
         if is_about_endora_itself(&belief.evidence) {
             continue;
         }
+        // Nor is an event: tied to "tomorrow", it is wrong the next day and outranks the
+        // calendar that has it right.
+        if pinned_to_a_day(&belief.statement) {
+            continue;
+        }
+        // Only durable kinds are understanding (owner, 2026-10-16). An "intent" was a one-off
+        // question filed as a goal of theirs, and "other" a passing remark or an event.
+        if matches!(
+            belief.kind,
+            crate::BeliefKind::Intent | crate::BeliefKind::Other
+        ) {
+            continue;
+        }
         if let Some(mut prior) = existing
             .iter()
             .find(|b| similar(b.statement(), &belief.statement))
@@ -144,6 +157,16 @@ pub(super) const ACTION_VERBS: &[&str] = &[
     "open", "close", "start", "stop", "send", "add", "remove", "delete", "book", "order", "buy",
     "schedule", "cancel", "call", "text", "email", "post", "put", "move",
 ];
+
+/// Whether a proposed belief is tied to a day ("tomorrow", "today", "tonight",
+/// "yesterday"). That is an event, not understanding: it is wrong the next day, and the model
+/// trusts a belief over the calendar that has the event right.
+pub fn pinned_to_a_day(statement: &str) -> bool {
+    let lowered = statement.to_lowercase();
+    lowered
+        .split(|c: char| !c.is_alphanumeric())
+        .any(|w| matches!(w, "today" | "tomorrow" | "tonight" | "yesterday"))
+}
 
 /// Whether a "belief" is really a **one-off instruction** the person gave, rather
 /// than something true about them.
@@ -498,9 +521,25 @@ pub(super) fn progress_label(id: &str) -> String {
     .to_owned()
 }
 
+/// The current date and time where the person is, for the model: "Friday, 2026-10-16 20:30
+/// (UTC-04:00)", or the UTC form when the clock does not know the zone. It was always UTC, so
+/// on a summer evening the model was told it was already the next day.
+pub(crate) fn clock_line(clock: &(impl Clock + ?Sized)) -> String {
+    let now = clock.now().unix_millis();
+    let offset = clock.utc_offset_minutes();
+    if offset == 0 {
+        return format_datetime_utc(now);
+    }
+    let local = format_datetime_utc(now + offset * 60_000);
+    let wall = local.trim_end_matches(" UTC");
+    let sign = if offset < 0 { '-' } else { '+' };
+    let (h, m) = (offset.abs() / 60, offset.abs() % 60);
+    format!("{wall} (UTC{sign}{h:02}:{m:02})")
+}
+
 /// Formats a Unix-millisecond timestamp as `"Weekday, YYYY-MM-DD HH:MM UTC"` — no
-/// date dependency, using the standard civil-from-days algorithm. UTC for now; a
-/// later refinement can localise from the person's known location.
+/// date dependency, using the standard civil-from-days algorithm. For the person's own
+/// time, [`clock_line`].
 pub(crate) fn format_datetime_utc(ms: i64) -> String {
     let day = ms.div_euclid(86_400_000);
     let secs = ms.rem_euclid(86_400_000) / 1000;
@@ -626,26 +665,6 @@ pub fn repairs(
         &outcomes.list()?,
         answered,
     ))
-}
-
-/// The person tells Endora to stop working on something (ADR 0052).
-///
-/// Their whole authority over an intention, and deliberately the only verb they have:
-/// Endora forms its own, from what it understands, and there is no path by which the
-/// person can create or edit one.
-///
-/// # Errors
-/// [`AppError::NotFound`] if there is no such intention, or [`AppError::Repository`].
-pub fn drop_intention(
-    intentions: &impl IntentionRepository,
-    id: IntentionId,
-) -> Result<Intention, AppError> {
-    let mut intention = intentions.get(id)?.ok_or(AppError::NotFound {
-        entity: "intention",
-    })?;
-    intention.abandon();
-    intentions.save(&intention)?;
-    Ok(intention)
 }
 
 /// The outcomes of what Endora has done, most recent first (ADR 0053) — the memory

@@ -5,6 +5,9 @@
 Accepted (2026-07-26). **Consolidates 0005, 0010, 0022, 0023, 0024 and 0044**, which are
 archived. The single most load-bearing document in this repository.
 
+**Amended 2026-10-16:** the nightly loop is gone ([0100](0100-the-clean-slate.md)). The
+heartbeat's clamp to the reversible bands stands.
+
 ## Context
 
 Endora is trusted to act — to switch things on in someone's home, to send things outward,

@@ -933,8 +933,7 @@ fn describe_weather(e: &Entity) -> Option<String> {
 ///
 /// The registry stores an entity's own name. The states reading shows a **composed** display
 /// name — the device's name and the entity's together, `Pixel` + `Kiosk Brightness` — and
-/// that composed form is what every screen says, what standing trouble is raised with, and
-/// what the person taps.
+/// that composed form is what every screen says and what the person taps.
 ///
 /// Resolving only against the registry meant anything belonging to a named device could be
 /// complained about and never acted on: *"nothing here is called Pixel Kiosk Brightness"*,
@@ -978,7 +977,7 @@ fn entity_named(registry: &Value, reading: &[Entity], wanted: &str) -> Option<St
 /// A todo entity's state is the number of things left on it. `None` for anything that is not a
 /// list, for an empty one — the same judgement [`describe_engagement`] makes about an empty
 /// day — and for a list that is not answering, since "unavailable things on your list" is
-/// worse than silence and a broken entity belongs in standing trouble.
+/// worse than silence.
 fn describe_outstanding(e: &Entity) -> Option<String> {
     if !e.id.starts_with("todo.") {
         return None;
@@ -2385,7 +2384,7 @@ mod what_is_still_outstanding {
     #[test]
     fn a_list_that_is_not_answering_says_nothing_rather_than_guessing() {
         // `unavailable` is not a count, and reporting "unavailable things on your list" is
-        // worse than silence. Standing trouble is where a broken entity belongs.
+        // worse than silence.
         for state in ["unavailable", "unknown", "", "lots"] {
             assert_eq!(
                 describe_outstanding(&list("Reminders", "reminders", state)),

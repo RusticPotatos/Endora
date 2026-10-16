@@ -1,8 +1,7 @@
 //! Local-model benchmark through Endora's production chat use case and SQLite.
 //! Fixture tools replace external services, never the model or orchestration.
 use endora_application::{
-    ButlerContext, CapabilityRunner, CapabilitySpec, Clock, GoalRepository, Reversibility,
-    Timestamp, usecases,
+    ButlerContext, CapabilityRunner, CapabilitySpec, Clock, Reversibility, Timestamp, usecases,
 };
 use endora_infrastructure::{LlmButler, RandomIdSource, SqliteStore};
 use serde_json::{Value, json};
@@ -93,9 +92,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let start = Instant::now();
     let mut events = Vec::new();
     let mut tokens = Vec::new();
-    let (answer, _) = usecases::send_to_butler_streaming_with_goals(
+    let (answer, _) = usecases::send_to_butler_streaming(
         &chat,
-        &understanding,
         &understanding,
         &understanding,
         &understanding,
@@ -103,7 +101,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         &butler,
         &audit,
         None,
-        Some(&store),
         &RandomIdSource,
         &FixtureClock,
         &context,
@@ -119,7 +116,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         json!({"runtime":"endora","case":case,"model":model,
         "elapsed_ms":start.elapsed().as_millis(),"answer":answer.text(),
         "calls":runner.calls.into_inner().unwrap(),"tokens":tokens,"events":events,
-        "active_goals":store.active_goals()?.len(),"review_status":"unreviewed"})
+        "review_status":"unreviewed"})
     );
     Ok(())
 }

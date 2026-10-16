@@ -4,6 +4,9 @@
 
 Accepted, 2026-10-12. AI-assisted implementation.
 
+**Superseded 2026-10-16 by [0100](0100-the-clean-slate.md).** The chat's intake tool and
+durable goals are removed. Built-in search for research stays.
+
 ## Context
 
 Keyword routing special-cased three sports games, while failed answers could

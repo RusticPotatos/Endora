@@ -47,6 +47,11 @@ pub struct LabItem {
     pub status: Option<String>,
 }
 
+/// The node's connection routes (`/v1/connections/…`) say what went wrong in their own words.
+fn own_words(path: &str) -> bool {
+    path.starts_with("/v1/connections/")
+}
+
 impl Client {
     pub fn new(config: &Config, token: Option<String>) -> Result<Self> {
         config.validate()?;
@@ -90,7 +95,9 @@ impl Client {
         req
     }
 
-    async fn response(req: reqwest::RequestBuilder) -> Result<reqwest::Response> {
+    /// `own_words`: the request was to one of the node's connection routes, whose messages it
+    /// writes itself, so a short one is shown as written.
+    async fn response(req: reqwest::RequestBuilder, own_words: bool) -> Result<reqwest::Response> {
         let response = req
             .send()
             .await
@@ -152,6 +159,11 @@ impl Client {
                         "The node does not allow that action on that target".into()
                     }
                     Some("favorite_limit") => "Favorite limit reached".into(),
+                    // A connection's setup ("No sign-in is waiting; start it again"): the node
+                    // writes these itself rather than passing on what a provider said.
+                    Some(s) if own_words && s.len() <= 100 && !s.chars().any(char::is_control) => {
+                        s.to_owned()
+                    }
                     Some("storage") => "Node storage unavailable".into(),
                     _ => format!("Node rejected request ({code})"),
                 })
@@ -160,8 +172,8 @@ impl Client {
         }
     }
 
-    async fn json(req: reqwest::RequestBuilder) -> Result<Value> {
-        let mut response = Self::response(req).await?;
+    async fn json(req: reqwest::RequestBuilder, own_words: bool) -> Result<Value> {
+        let mut response = Self::response(req, own_words).await?;
         let mut bytes = Vec::new();
         while let Some(chunk) = response.chunk().await.map_err(|_| "Response interrupted")? {
             if bytes.len() + chunk.len() > 2 * 1024 * 1024 {
@@ -173,16 +185,21 @@ impl Client {
     }
 
     pub async fn get(&self, path: &str) -> Result<Value> {
-        Self::json(self.request(reqwest::Method::GET, path)).await
+        Self::json(self.request(reqwest::Method::GET, path), own_words(path)).await
     }
     pub async fn post(&self, path: &str, value: &Value) -> Result<Value> {
-        Self::json(self.request(reqwest::Method::POST, path).json(value)).await
+        Self::json(
+            self.request(reqwest::Method::POST, path).json(value),
+            own_words(path),
+        )
+        .await
     }
 
     pub async fn sign_in(&self, password: String, code: String) -> Result<String> {
         let result = Self::json(
             self.request(reqwest::Method::POST, "/v1/session")
                 .json(&json!({"password": password, "code": code})),
+            false,
         )
         .await?;
         result["token"]
@@ -197,7 +214,7 @@ impl Client {
             .request(reqwest::Method::POST, "/v1/chat/stream")
             .header("Accept", "text/event-stream")
             .json(&json!({"message": message, "request_id": uuid::Uuid::new_v4().to_string()}));
-        let mut response = Self::response(request).await?;
+        let mut response = Self::response(request, false).await?;
         let mut sse = Sse::default();
         while let Some(bytes) = response
             .chunk()

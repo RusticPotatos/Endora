@@ -20,7 +20,6 @@ pub mod infrastructure;
 pub mod mcp_http;
 pub mod mcp_registry;
 pub mod mcp_stdio;
-pub mod rhythms;
 pub mod store;
 pub mod target_search;
 
@@ -28,11 +27,10 @@ pub use application::{
     AutonomyEnvelope, AutonomyEnvelopeRepository, ButlerModelConfig, ButlerModelConfigRepository,
     CapabilityConfigRepository, CapabilityRead, CapabilityRunner, CapabilitySettingsRepository,
     CapabilitySpec, CapabilityUse, ConfigWrite, ConfigWriteLog, DeepModel, DeepModelRepository,
-    KEEP_TRANSITIONS_FOR_MS, McpServer, McpServerRegistry, McpTransport, ModelSlot,
-    ModelTuneSchedule, ModelTuneScheduleRepository, Recipe, RecipeInput, RecipeInputKind,
-    RecipeRepository, Sampling, Stance, StandingTrouble, StandingTroubleRepository, TargetAlias,
-    TargetAliasRepository, TransitionLog, WriteKind, a_pile_of, device_of, how_many_things,
-    not_answering, watch_for_change, watch_for_trouble, worth_raising, worth_waking_for,
+    KEEP_TRANSITIONS_FOR_MS, McpServer, McpServerRegistry, McpTransport, ModelSlot, Recipe,
+    RecipeInput, RecipeInputKind, RecipeRepository, Sampling, Stance, TargetAlias,
+    TargetAliasRepository, TransitionLog, WriteKind, not_answering, watch_for_change,
+    worth_waking_for,
 };
 pub use domain::{DWELL_MS, SetupField, SetupForm, Transition, Watched};
 pub use home_assistant::{HomeAssistant, paired_server};
@@ -47,7 +45,6 @@ pub use infrastructure::{
 };
 pub use mcp_http::HttpMcpClient;
 pub use mcp_stdio::StdioMcpClient;
-pub use rhythms::{Rhythm, find_rhythms};
 pub use store::{ConfigStore, migrate};
 pub use target_search::{
     Candidate, candidates, is_fragment_of, only_real_match, retarget, shortlist, target_fields,

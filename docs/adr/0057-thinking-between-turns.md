@@ -5,6 +5,9 @@
 Accepted (2026-08-02). Extends [0052](0052-what-it-knows-about-you.md), whose central rule it
 has to survive rather than quietly amend.
 
+**Superseded 2026-10-16 by [0100](0100-the-clean-slate.md).** The nightly loop and notions are
+removed, code and storage. The reasoning below is kept; none of its mechanism runs.
+
 Proposed 2026-08-01 and accepted after the two departures below were put to the person
 explicitly: that beliefs may now arrive from **observation** as well as conversation, and that
 notions are **stored rather than derived**. Both are real widenings of 0052 and 0054, and both

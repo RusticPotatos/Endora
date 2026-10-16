@@ -70,6 +70,92 @@ async fn handheld_actions_refuse_missing_confirmation_and_do_not_reserve_a_submi
 }
 
 #[tokio::test]
+async fn forgetting_what_it_learned_needs_confirming_and_keeps_what_they_said() {
+    use endora_application::{
+        Belief, BeliefId, BeliefKind, BeliefRepository, Confidence, Intention, IntentionId,
+        IntentionRepository, Preference, PreferenceId, PreferenceKind, PreferenceRepository,
+        Timestamp,
+    };
+    let state = test_state();
+    BeliefRepository::save(
+        state.understanding.as_ref(),
+        &Belief::new(
+            BeliefId::new(1),
+            "wants to know the score",
+            BeliefKind::Intent,
+            Confidence::High,
+            "asked",
+            Timestamp::from_unix_millis(1),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    PreferenceRepository::save(
+        state.understanding.as_ref(),
+        &Preference::new(
+            PreferenceId::new(2),
+            "based in New York",
+            PreferenceKind::Context,
+            Timestamp::from_unix_millis(1),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    IntentionRepository::save(
+        state.understanding.as_ref(),
+        &Intention::form(
+            IntentionId::new(3),
+            "run more often",
+            BeliefId::new(1),
+            Timestamp::from_unix_millis(1),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let router = app(state.clone());
+    let unconfirmed = router
+        .clone()
+        .oneshot(post("/v1/understanding/forget", "{}"))
+        .await
+        .unwrap();
+    assert_eq!(unconfirmed.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(
+        BeliefRepository::list(state.understanding.as_ref())
+            .unwrap()
+            .len(),
+        1
+    );
+
+    let done = router
+        .oneshot(post("/v1/understanding/forget", r#"{"confirm":true}"#))
+        .await
+        .unwrap();
+    assert_eq!(done.status(), StatusCode::OK);
+    let body = json_body(done).await;
+    assert_eq!(
+        (body["forgot"].clone(), body["intentions"].clone()),
+        (1.into(), 1.into())
+    );
+    assert!(
+        IntentionRepository::list(state.understanding.as_ref())
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        BeliefRepository::list(state.understanding.as_ref())
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        PreferenceRepository::list_all(state.understanding.as_ref())
+            .unwrap()
+            .len(),
+        1,
+        "what they told it stays"
+    );
+}
+
+#[tokio::test]
 async fn homelab_is_authenticated_and_unconfigured_by_default() {
     let router = app(test_state());
     let unsigned = router
@@ -177,450 +263,6 @@ fn test_state() -> AppState {
     // generated-on-first-run path is exercised by `the_node_makes_and_keeps_a_token`.
     state.token = Arc::new(TEST_TOKEN.to_owned());
     state
-}
-
-#[tokio::test]
-async fn goal_worker_delivers_its_terminal_partial_result() {
-    use endora_application::{Goal, GoalRecord, GoalRepository, GoalStatus, MemoryStore};
-
-    let state = test_state();
-    let mut goal = Goal::new("Compare the supplied fictional products").unwrap();
-    for n in 0..4 {
-        goal.commit("read", &format!("distinct source finding {n}"));
-    }
-    let record = GoalRecord::new(
-        "worker-delivery-review",
-        goal,
-        endora_application::Timestamp::from_unix_millis(1),
-    )
-    .unwrap();
-    state.store.create_goal(&record).unwrap();
-    super::spawn_goal_worker(state.clone());
-
-    tokio::time::timeout(std::time::Duration::from_secs(2), async {
-        loop {
-            let saved = state.store.get_goal(record.request_key()).unwrap().unwrap();
-            if saved.goal().status() == GoalStatus::Partial {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-        }
-    })
-    .await
-    .expect("the actual worker must settle the exhausted goal");
-
-    // Give the real publisher its following tick. A direct call to the SQL
-    // publication method would miss the worker's status filter.
-    tokio::time::timeout(std::time::Duration::from_secs(6), async {
-        loop {
-            if !state.store.export().unwrap().messages.is_empty() {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-        }
-    })
-    .await
-    .expect("terminal partial findings must be delivered, not silently disappear");
-
-    // Delivered is not the same as useful: the message has to say what was asked,
-    // what was found, and that this is *not* the finished answer.
-    let messages = state.store.export().unwrap().messages;
-    assert_eq!(messages.len(), 1, "one outcome, delivered once");
-    let text = messages[0].text();
-    assert!(
-        text.contains("Compare the supplied fictional products"),
-        "{text}"
-    );
-    assert!(text.contains("distinct source finding 3"), "{text}");
-    assert!(
-        text.starts_with("Here is what I found on")
-            && text.contains("couldn't confirm")
-            && !text.to_lowercase().contains("is complete"),
-        "a partial outcome must show its findings and say it is unconfirmed: {text}"
-    );
-
-    // And it stays delivered: a later tick must not announce it again.
-    tokio::time::sleep(std::time::Duration::from_secs(6)).await;
-    assert_eq!(state.store.export().unwrap().messages.len(), 1);
-}
-
-#[tokio::test]
-async fn goal_worker_waiting_for_chat_does_not_reserve_an_attempt() {
-    use endora_application::{Goal, GoalRecord, GoalRepository, Timestamp};
-    let state = test_state();
-    let record = GoalRecord::new(
-        "waiting-for-chat",
-        Goal::new("Read a source").unwrap(),
-        Timestamp::from_unix_millis(1),
-    )
-    .unwrap();
-    state.store.create_goal(&record).unwrap();
-    let _turn = state.turn_lock.clone().lock_owned().await;
-    super::spawn_goal_worker(state.clone());
-    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-    let saved = state.store.get_goal(record.request_key()).unwrap().unwrap();
-    assert_eq!(
-        saved.updated_at(),
-        record.updated_at(),
-        "a reservation would change this timestamp"
-    );
-}
-
-#[tokio::test]
-#[ignore = "worker ownership acceptance: runs past the 30-second lease"]
-async fn goal_worker_renews_while_the_model_is_running() {
-    use endora_application::{
-        Butler, ButlerContext, ButlerReply, ChatMessage, Goal, GoalRecord, GoalRepository,
-        Preference, ProposalError, Timestamp,
-    };
-    struct SlowButler(std::sync::atomic::AtomicBool);
-    impl Butler for SlowButler {
-        fn respond(
-            &self,
-            _: &[ChatMessage],
-            _: &[Preference],
-            _: &ButlerContext,
-        ) -> Result<ButlerReply, ProposalError> {
-            if !self.0.swap(true, std::sync::atomic::Ordering::SeqCst) {
-                std::thread::sleep(std::time::Duration::from_secs(35));
-            }
-            Ok(ButlerReply {
-                text: "A useful finding about the fictional objective.".to_owned(),
-                ..Default::default()
-            })
-        }
-    }
-    let mut state = test_state();
-    state.butler = Arc::new(SlowButler(std::sync::atomic::AtomicBool::new(false)));
-    let record = GoalRecord::new(
-        "slow-worker",
-        Goal::new("Describe the fictional objective").unwrap(),
-        Timestamp::from_unix_millis(1),
-    )
-    .unwrap();
-    state.store.create_goal(&record).unwrap();
-    super::spawn_goal_worker(state.clone());
-    tokio::time::timeout(std::time::Duration::from_secs(40), async {
-        loop {
-            let saved = state.store.get_goal(record.request_key()).unwrap().unwrap();
-            if !saved.goal().evidence().is_empty() {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-        }
-    })
-    .await
-    .expect("heartbeat must keep the claim valid so a slow pass can checkpoint");
-}
-
-#[tokio::test]
-async fn goal_worker_completes_from_real_tool_data_instead_of_model_claims() {
-    use endora_application::{
-        Butler, ButlerContext, ButlerReply, ChatMessage, Goal, GoalRecord, GoalRepository,
-        GoalStatus, Preference, ProposalError, Timestamp, ToolCall, TurnMessage,
-    };
-    use endora_capabilities::{CapabilityError, CapabilityInfo, CapabilitySettings};
-    struct FixtureSports;
-    impl Capability for FixtureSports {
-        fn info(&self) -> CapabilityInfo {
-            endora_capabilities::default_capabilities()
-                .into_iter()
-                .find(|cap| cap.info().id == "sports_schedule")
-                .unwrap()
-                .info()
-        }
-        fn invoke(
-            &self,
-            _: &serde_json::Value,
-            _: &CapabilitySettings,
-        ) -> Result<serde_json::Value, CapabilityError> {
-            Ok(
-                serde_json::json!({"team":"Fictional Panthers","team_id":"fixture-team","cutoff_ms":endora_application::Clock::now(&SystemClock).unix_millis(),"count":3,"source":"https://example.com/schedule","games":[
-                {"id":"one","opponent":"Bears","date":"2030-09-08T17:00:00Z"},
-                {"id":"two","opponent":"Wolves","date":"2030-09-15T17:00:00Z"},
-                {"id":"three","opponent":"Eagles","date":"2030-09-22T17:00:00Z"}]}),
-            )
-        }
-        fn summarize(&self, _: &serde_json::Value) -> String {
-            "1. Unverified summary\n2. Not dates\n3. Not opponents\nSource: invented".to_owned()
-        }
-    }
-    struct CallsSchedule;
-    impl Butler for CallsSchedule {
-        fn respond(
-            &self,
-            _: &[ChatMessage],
-            _: &[Preference],
-            _: &ButlerContext,
-        ) -> Result<ButlerReply, ProposalError> {
-            Ok(ButlerReply {
-                text: "Invented answer without supporting dates.".to_owned(),
-                ..Default::default()
-            })
-        }
-        fn take_turn(
-            &self,
-            history: &[TurnMessage],
-            p: &[Preference],
-            c: &ButlerContext,
-        ) -> Result<ButlerReply, ProposalError> {
-            if history
-                .iter()
-                .any(|turn| matches!(turn, TurnMessage::ToolResult { .. }))
-            {
-                return self.respond(&[], p, c);
-            }
-            Ok(ButlerReply {
-                tool_calls: vec![ToolCall {
-                    id: "fixture-call".to_owned(),
-                    capability: "sports_schedule".to_owned(),
-                    input_json: serde_json::json!({"team":"panthers","after":c.now.split_whitespace().nth(1).unwrap(),"count":3}).to_string(),
-                }],
-                ..Default::default()
-            })
-        }
-    }
-    let mut state = test_state();
-    state.capabilities = Arc::new(vec![Arc::new(FixtureSports)]);
-    state.butler = Arc::new(CallsSchedule);
-    let mut goal = Goal::new("What are the next three Panthers games?").unwrap();
-    // Existing prose is still unverified. A real read with the same answer
-    // must be allowed to establish completion despite the repetition guard.
-    goal.commit("unverified finding", "Next 3 Fictional Panthers games:\n1. 2030-09-08T17:00:00Z vs Bears\n2. 2030-09-15T17:00:00Z vs Wolves\n3. 2030-09-22T17:00:00Z vs Eagles\nSource: https://example.com/schedule");
-    let record =
-        GoalRecord::new("source-backed-goal", goal, Timestamp::from_unix_millis(1)).unwrap();
-    state.store.create_goal(&record).unwrap();
-    super::spawn_goal_worker(state.clone());
-    tokio::time::timeout(std::time::Duration::from_secs(2), async {
-        loop {
-            let saved = state.store.get_goal(record.request_key()).unwrap().unwrap();
-            if saved.goal().status() == GoalStatus::Complete {
-                assert_eq!(saved.goal().observations().len(), 1);
-                assert!(saved.goal().observations()[0].data.is_some());
-                let result = &saved.goal().evidence().last().unwrap().output;
-                assert!(
-                    result.contains("Bears")
-                        && result.contains("2030-09-08")
-                        && result.contains("https://example.com/schedule")
-                );
-                assert!(!result.contains("Invented") && !result.contains("Unverified"));
-                let restored =
-                    Goal::from_checkpoint(saved.goal().objective(), &saved.goal().checkpoint())
-                        .unwrap();
-                assert_eq!(restored.observations(), saved.goal().observations());
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-        }
-    })
-    .await
-    .expect("the actual worker and wrapper stack must retain and verify source data");
-}
-
-#[tokio::test]
-async fn goal_worker_recovers_a_failed_source_and_posts_the_verified_schedule() {
-    use endora_application::{
-        Butler, ButlerContext, ButlerReply, ChatMessage, GoalRepository, GoalStatus, Preference,
-        ProposalError, ToolCall, TurnMessage,
-    };
-    use endora_capabilities::{CapabilityError, CapabilityInfo, CapabilitySettings};
-    struct ReadFixture(&'static str);
-    impl Capability for ReadFixture {
-        fn info(&self) -> CapabilityInfo {
-            let mut info = endora_capabilities::default_capabilities()
-                .into_iter()
-                .find(|cap| cap.info().id == self.0)
-                .unwrap()
-                .info();
-            info.settings = &[]; // Synthetic provider, no account or actual internet call.
-            info
-        }
-        fn invoke(
-            &self,
-            _: &serde_json::Value,
-            _: &CapabilitySettings,
-        ) -> Result<serde_json::Value, CapabilityError> {
-            match self.0 {
-                "sports_schedule" => Err(CapabilityError::Unavailable(
-                    "HTTP 403 from first source".to_owned(),
-                )),
-                "web_search" => Ok(
-                    serde_json::json!({"results":[{"title":"Schedule","url":"https://example.com/schedule","snippet":"Search is not proof"}]}),
-                ),
-                _ => {
-                    let html = r#"<script type="application/ld+json">[{"@type":"SportsEvent","startDate":"2030-09-15T17:00:00Z","homeTeam":{"name":"Fictional Panthers"},"awayTeam":{"name":"Wolves"}},{"@type":"SportsEvent","startDate":"2030-09-08T17:00:00Z","homeTeam":{"name":"Fictional Panthers"},"awayTeam":{"name":"Bears"}}]</script>"#;
-                    Ok(
-                        serde_json::json!({"url":"https://example.com/schedule", "sports_events":endora_capabilities::application::schedule::json_ld_events(html).unwrap()}),
-                    )
-                }
-            }
-        }
-    }
-    struct RecoveringPlanner;
-    impl Butler for RecoveringPlanner {
-        fn respond(
-            &self,
-            _: &[ChatMessage],
-            _: &[Preference],
-            _: &ButlerContext,
-        ) -> Result<ButlerReply, ProposalError> {
-            Ok(ButlerReply {
-                text: "Do not trust this generated answer.".to_owned(),
-                ..Default::default()
-            })
-        }
-        fn take_turn(
-            &self,
-            history: &[TurnMessage],
-            p: &[Preference],
-            c: &ButlerContext,
-        ) -> Result<ButlerReply, ProposalError> {
-            let seen = history
-                .iter()
-                .filter(|turn| matches!(turn, TurnMessage::ToolResult { .. }))
-                .count();
-            let intake = c
-                .tools
-                .iter()
-                .any(|tool| tool.id == endora_application::goal_request::BEGIN_GOAL);
-            let (capability, input) = if intake {
-                (
-                    endora_application::goal_request::BEGIN_GOAL,
-                    serde_json::json!({"kind":"schedule","team":"Panthers","count":2}),
-                )
-            } else {
-                match seen {
-                    0 => (
-                        "sports_schedule",
-                        serde_json::json!({"team":"panthers","after":c.now.split_whitespace().nth(1).unwrap(),"count":2}),
-                    ),
-                    1 => (
-                        "web_search",
-                        serde_json::json!({"query":"Panthers schedule","count":2}),
-                    ),
-                    2 => (
-                        "web_fetch",
-                        serde_json::json!({"url":"https://example.com/schedule"}),
-                    ),
-                    _ => return self.respond(&[], p, c),
-                }
-            };
-            Ok(ButlerReply {
-                tool_calls: vec![ToolCall {
-                    id: format!("read-{seen}"),
-                    capability: capability.to_owned(),
-                    input_json: input.to_string(),
-                }],
-                ..Default::default()
-            })
-        }
-    }
-    let mut state = test_state();
-    state.capabilities = Arc::new(vec![
-        Arc::new(ReadFixture("sports_schedule")),
-        Arc::new(ReadFixture("web_search")),
-        Arc::new(ReadFixture("web_fetch")),
-    ]);
-    state.butler = Arc::new(RecoveringPlanner);
-    let response = app(state.clone()).oneshot(post("/v1/chat", r#"{"message":"Find two forthcoming Panthers fixtures","request_id":"source-recovery"}"#)).await.unwrap();
-    assert_eq!(response.status(), StatusCode::OK);
-    super::spawn_goal_worker(state.clone());
-    tokio::time::timeout(std::time::Duration::from_secs(8), async {
-        loop {
-            let record = state
-                .store
-                .get_goal("request-source-recovery")
-                .unwrap()
-                .unwrap();
-            if record.goal().status() == GoalStatus::Complete
-                && state.store.pending_goal_completions().unwrap().is_empty()
-            {
-                let receipts = record.goal().observations();
-                assert_eq!(receipts.len(), 3);
-                assert!(receipts[0].error.as_deref().unwrap().contains("403"));
-                let messages =
-                    endora_application::ChatRepository::list(state.chat.as_ref()).unwrap();
-                let delivered: Vec<_> = messages
-                    .iter()
-                    .filter(|m| m.text().contains("2030-09-08T17:00:00Z vs Bears"))
-                    .collect();
-                assert_eq!(
-                    delivered.len(),
-                    1,
-                    "the actual verified result must arrive in chat once"
-                );
-                assert!(delivered[0].text().contains("https://example.com/schedule"));
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-        }
-    })
-    .await
-    .expect("source failure must recover through search and fetched evidence");
-}
-
-#[tokio::test]
-async fn declared_chat_work_is_durable_and_request_retries_do_not_duplicate_it() {
-    use endora_application::{
-        Butler, ButlerContext, ButlerReply, ChatMessage, GoalRepository, Preference, ProposalError,
-        ToolCall, TurnMessage,
-    };
-    struct Planner;
-    impl Butler for Planner {
-        fn respond(
-            &self,
-            _: &[ChatMessage],
-            _: &[Preference],
-            _: &ButlerContext,
-        ) -> Result<ButlerReply, ProposalError> {
-            Ok(ButlerReply {
-                text: "Ready.".to_owned(),
-                ..Default::default()
-            })
-        }
-        fn take_turn(
-            &self,
-            _: &[TurnMessage],
-            _: &[Preference],
-            _: &ButlerContext,
-        ) -> Result<ButlerReply, ProposalError> {
-            Ok(ButlerReply {
-                tool_calls: vec![ToolCall {
-                    id: "plan".to_owned(),
-                    capability: endora_application::goal_request::BEGIN_GOAL.to_owned(),
-                    input_json: r#"{"kind":"schedule","team":"Panthers","count":4}"#.to_owned(),
-                }],
-                ..Default::default()
-            })
-        }
-    }
-    let mut state = test_state();
-    state.butler = Arc::new(Planner);
-    let router = app(state.clone());
-    let body = r#"{"message":"I'd like the forthcoming fixtures for Panthers, four please.","request_id":"goal-intake-test"}"#;
-    for _ in 0..2 {
-        let response = router
-            .clone()
-            .oneshot(post("/v1/chat", body))
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-    }
-    let goals = state.store.active_goals().unwrap();
-    assert_eq!(
-        goals.len(),
-        1,
-        "the ask, not a failed answer, creates one durable objective"
-    );
-    assert_eq!(goals[0].goal().criteria().unwrap().to_json()["count"], 4);
-    let conflict = router
-        .oneshot(post(
-            "/v1/chat",
-            r#"{"message":"A different task","request_id":"goal-intake-test"}"#,
-        ))
-        .await
-        .unwrap();
-    assert_eq!(conflict.status(), StatusCode::CONFLICT);
 }
 
 async fn json_body(res: axum::response::Response) -> serde_json::Value {
@@ -1187,7 +829,7 @@ async fn a_checking_token_reads_but_cannot_touch_anything() {
     };
 
     // Reads the suite depends on.
-    for path in ["/v1/understanding", "/v1/notions", "/v1/reliability"] {
+    for path in ["/v1/understanding", "/v1/reliability"] {
         let res = app.clone().oneshot(with(path, "GET")).await.unwrap();
         assert_eq!(res.status(), StatusCode::OK, "{path} should be readable");
     }
@@ -1345,45 +987,6 @@ async fn there_is_no_way_for_the_person_to_create_an_intention() {
 }
 
 #[tokio::test]
-async fn an_intention_is_visible_and_can_be_dropped_but_only_dropped() {
-    use endora_application::{BeliefId, Intention, IntentionId, IntentionRepository, Timestamp};
-    let state = test_state();
-    IntentionRepository::save(
-        state.understanding.as_ref(),
-        &Intention::form(
-            IntentionId::new(5),
-            "learn what helps them sleep",
-            BeliefId::new(7),
-            Timestamp::from_unix_millis(10),
-        )
-        .unwrap(),
-    )
-    .unwrap();
-    let app = app(state);
-
-    let listed = json_body(app.clone().oneshot(get("/v1/intentions")).await.unwrap()).await;
-    assert_eq!(listed.as_array().unwrap().len(), 1);
-    assert_eq!(listed[0]["statement"], "learn what helps them sleep");
-    assert_eq!(listed[0]["active"], true);
-    // Never null — an intention that can't be explained can't exist.
-    assert_eq!(listed[0]["motivating_belief"], "7");
-
-    let dropped = json_body(
-        app.clone()
-            .oneshot(post("/v1/intentions/5/drop", "{}"))
-            .await
-            .unwrap(),
-    )
-    .await;
-    assert_eq!(dropped["state"], "abandoned");
-    assert_eq!(dropped["active"], false);
-
-    // It stays visible as something Endora once pursued, but is no longer current.
-    let listed = json_body(app.oneshot(get("/v1/intentions")).await.unwrap()).await;
-    assert_eq!(listed[0]["active"], false);
-}
-
-#[tokio::test]
 async fn explicit_research_is_durable_idempotent_and_cancellable() {
     let state = test_state();
     let app = app(state);
@@ -1440,11 +1043,6 @@ async fn explicit_research_is_durable_idempotent_and_cancellable() {
     assert_eq!(occupied.status(), StatusCode::CONFLICT);
     assert_eq!(json_body(occupied).await["code"], "occupied_slot");
 
-    let legacy = json_body(app.clone().oneshot(get("/v1/intentions")).await.unwrap()).await;
-    assert!(
-        legacy.as_array().unwrap().is_empty(),
-        "user work stays out of belief intentions"
-    );
     let listed = json_body(app.clone().oneshot(get("/v1/research")).await.unwrap()).await;
     assert_eq!(listed["items"].as_array().unwrap().len(), 1);
 
@@ -1669,208 +1267,6 @@ async fn repairs_are_derived_from_what_was_observed_not_stored() {
         res.status() == StatusCode::METHOD_NOT_ALLOWED || res.status() == StatusCode::NOT_FOUND,
         "repairs became writable — that is a queue: {}",
         res.status()
-    );
-}
-
-#[tokio::test]
-async fn every_answer_the_card_offers_is_honoured_for_a_serviceless_trouble() {
-    // The offer-is-a-promise rule (patterns.md): the card renders BOTH buttons for
-    // every trouble, so both must succeed for every shape the writers can produce.
-    // The serviceless shape (the catch-all bucket) is the one that shipped broken;
-    // this walks the whole answer set against it so a third answer added to the
-    // card someday meets its matrix here.
-    use endora_capabilities::{StandingTrouble, StandingTroubleRepository};
-    for answer in ["fine", "gone"] {
-        let state = test_state();
-        StandingTroubleRepository::note_trouble(
-            state.config.as_ref(),
-            &StandingTrouble {
-                server: "skills".to_owned(),
-                thing: "light.kiosk_brightness".to_owned(),
-                trouble: "unavailable".to_owned(),
-                since_ms: 1_000,
-                accepted: false,
-            },
-        )
-        .unwrap();
-        let answered = json_body(
-            app(state.clone())
-                .oneshot(post(
-                    "/v1/standing-trouble/answer",
-                    &format!(
-                        r#"{{"server":"skills","thing":"light.kiosk_brightness","answer":"{answer}"}}"#
-                    ),
-                ))
-                .await
-                .unwrap(),
-        )
-        .await;
-        assert!(
-            answered["done"].is_string(),
-            "the card offered '{answer}' and the handler refused it: {answered:#}"
-        );
-        // Whichever button, the outcome the person asked for: never surfaced again.
-        let all = StandingTroubleRepository::troubles(state.config.as_ref()).unwrap();
-        let worth = endora_capabilities::worth_raising(&all, i64::MAX / 2);
-        assert!(
-            worth.is_empty(),
-            "'{answer}' did not stop the asking: {all:?}"
-        );
-    }
-}
-
-#[tokio::test]
-async fn its_gone_on_a_serviceless_trouble_accepts_instead_of_erroring() {
-    // Observed live: a deleted device's trouble lands under the catch-all bucket
-    // (things the runner sees but no native channel reported), and "It's gone" then
-    // answered "Endora has no direct reach into skills" — true, unactionable, and
-    // the card returned every pass because nothing was recorded. Gone means stop
-    // asking, and acceptance is how the record says that.
-    use endora_capabilities::{StandingTrouble, StandingTroubleRepository};
-    let state = test_state();
-    StandingTroubleRepository::note_trouble(
-        state.config.as_ref(),
-        &StandingTrouble {
-            server: "skills".to_owned(),
-            thing: "light.kiosk_brightness".to_owned(),
-            trouble: "unavailable".to_owned(),
-            since_ms: 1_000,
-            accepted: false,
-        },
-    )
-    .unwrap();
-    let app = app(state.clone());
-
-    let answered = json_body(
-        app.clone()
-            .oneshot(post(
-                "/v1/standing-trouble/answer",
-                r#"{"server":"skills","thing":"light.kiosk_brightness","answer":"gone"}"#,
-            ))
-            .await
-            .unwrap(),
-    )
-    .await;
-    assert!(
-        answered["done"]
-            .as_str()
-            .unwrap_or_default()
-            .contains("won't be asked"),
-        "the person got an error instead of an outcome: {answered:#}"
-    );
-
-    // The trouble is accepted — never surfaced again, and never re-noted as fresh
-    // (the watcher's upsert is ON CONFLICT DO NOTHING).
-    let all = StandingTroubleRepository::troubles(state.config.as_ref()).unwrap();
-    assert!(
-        all.iter()
-            .any(|t| t.thing == "light.kiosk_brightness" && t.accepted),
-        "gone did not stick: {all:?}"
-    );
-}
-
-#[tokio::test]
-async fn one_answer_settles_the_whole_device_the_card_stood_for() {
-    // A card that says "the phone stopped answering" must settle the phone,
-    // not one of its eleven sensors — otherwise answering it makes ten more
-    // cards appear, which is the loop that made this annoying in the first
-    // place. The route re-derives the group from the same function the
-    // raiser uses, so what was claimed and what is settled cannot drift.
-    use endora_capabilities::{StandingTrouble, StandingTroubleRepository};
-    let state = test_state();
-    let sensors = [
-        "sensor.bambam2_audio_output",
-        "sensor.bambam2_bssid",
-        "sensor.bambam2_sim_1",
-        "sensor.bambam2_storage",
-    ];
-    for thing in sensors {
-        StandingTroubleRepository::note_trouble(
-            state.config.as_ref(),
-            &StandingTrouble {
-                server: "home-assistant".to_owned(),
-                thing: thing.to_owned(),
-                trouble: "unavailable".to_owned(),
-                since_ms: 1_000,
-                accepted: false,
-            },
-        )
-        .unwrap();
-    }
-    // An unrelated light must survive — answering about the phone says
-    // nothing about the kitchen.
-    StandingTroubleRepository::note_trouble(
-        state.config.as_ref(),
-        &StandingTrouble {
-            server: "home-assistant".to_owned(),
-            thing: "light.kitchen_table".to_owned(),
-            trouble: "unavailable".to_owned(),
-            since_ms: 1_000,
-            accepted: false,
-        },
-    )
-    .unwrap();
-
-    app(state.clone())
-        .oneshot(post(
-            "/v1/standing-trouble/answer",
-            r#"{"server":"home-assistant","thing":"sensor.bambam2_audio_output","answer":"gone"}"#,
-        ))
-        .await
-        .unwrap();
-
-    let all = StandingTroubleRepository::troubles(state.config.as_ref()).unwrap();
-    for thing in sensors {
-        let t = all
-            .iter()
-            .find(|t| t.thing == thing)
-            .expect("still recorded");
-        assert!(t.accepted, "{thing} was left to come back as another card");
-    }
-    let light = all
-        .iter()
-        .find(|t| t.thing == "light.kitchen_table")
-        .expect("still recorded");
-    assert!(
-        !light.accepted,
-        "answering about the phone silently accepted an unrelated light"
-    );
-}
-
-#[tokio::test]
-async fn one_answer_settles_a_thing_every_watcher_recorded() {
-    // Observed live: two watchers see the same house, so a removed device held
-    // two rows — one per server. Answering the card accepted only the row it
-    // named; the twin was raised on the next pass, and the person met the same
-    // card again, apparently immortal. One answer is about the THING, and it
-    // settles every record of it.
-    use endora_capabilities::{StandingTrouble, StandingTroubleRepository};
-    let state = test_state();
-    for server in ["skills", "home-assistant"] {
-        StandingTroubleRepository::note_trouble(
-            state.config.as_ref(),
-            &StandingTrouble {
-                server: server.to_owned(),
-                thing: "sensor.kiosk_volume".to_owned(),
-                trouble: "unavailable".to_owned(),
-                since_ms: 1_000,
-                accepted: false,
-            },
-        )
-        .unwrap();
-    }
-    app(state.clone())
-        .oneshot(post(
-            "/v1/standing-trouble/answer",
-            r#"{"server":"skills","thing":"sensor.kiosk_volume","answer":"gone"}"#,
-        ))
-        .await
-        .unwrap();
-    let all = StandingTroubleRepository::troubles(state.config.as_ref()).unwrap();
-    let worth = endora_capabilities::worth_raising(&all, i64::MAX / 2);
-    assert!(
-        worth.is_empty(),
-        "the twin record kept the card alive: {all:?}"
     );
 }
 
@@ -2475,51 +1871,6 @@ async fn reconnecting_a_registered_server_reports_its_tool_count() {
 }
 
 #[tokio::test]
-async fn goal_routes_show_evidence_and_cancel_a_running_goal() {
-    use endora_application::{Goal, GoalRecord, GoalRepository, Timestamp};
-
-    let state = test_state();
-    let mut goal = Goal::new("what are the next three panthers games").unwrap();
-    goal.start("gathering", "sports_schedule");
-    let record =
-        GoalRecord::new("api-goal-route", goal, Timestamp::from_unix_millis(1_000)).unwrap();
-    state.store.create_goal(&record).unwrap();
-    let router = app(state);
-
-    let listed = json_body(router.clone().oneshot(get("/v1/goals")).await.unwrap()).await;
-    assert_eq!(listed["items"][0]["request_key"], "api-goal-route");
-
-    let fetched = json_body(
-        router
-            .clone()
-            .oneshot(get("/v1/goals/api-goal-route"))
-            .await
-            .unwrap(),
-    )
-    .await;
-    assert_eq!(fetched["status"], "running");
-    assert!(
-        fetched["outcome"].is_null(),
-        "work still in progress has no outcome yet: {fetched}"
-    );
-
-    let cancelled = json_body(
-        router
-            .oneshot(post("/v1/goals/api-goal-route/cancel", "{}"))
-            .await
-            .unwrap(),
-    )
-    .await;
-    assert_eq!(cancelled["status"], "cancelled");
-    let outcome = cancelled["outcome"].as_str().unwrap_or_default();
-    assert!(
-        outcome.starts_with("You cancelled")
-            && outcome.contains("what are the next three panthers games"),
-        "an ended goal carries the same wording the chat would use: {cancelled}"
-    );
-}
-
-#[tokio::test]
 async fn an_entry_that_only_holds_settings_is_marked_so_the_console_can_say_it_is_set_up() {
     // The seven handheld entries are never "configured" and their on/off does nothing, so
     // shown like a skill every one said "needs setup" forever.
@@ -2713,4 +2064,79 @@ async fn the_ai_screen_lists_every_model_and_mail_never_leaves_the_house() {
         health["stt"], true,
         "the chosen speech server is the one in use"
     );
+}
+
+#[tokio::test]
+async fn spotify_is_one_sign_in_any_device_can_start_and_its_callback_needs_the_waiting_state() {
+    let state = test_state();
+    let status = |body: &serde_json::Value| body["state"].as_str().unwrap_or("").to_owned();
+    let first = json_body(
+        app(state.clone())
+            .oneshot(get("/v1/connections/spotify"))
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status(&first), "not_set_up");
+    let no_id = app(state.clone())
+        .oneshot(post("/v1/connections/spotify/begin", r#"{"via":"paste"}"#))
+        .await
+        .unwrap();
+    assert_eq!(
+        no_id.status(),
+        StatusCode::BAD_REQUEST,
+        "a client id is needed"
+    );
+    // Started via Endora, from the address the person reached it at.
+    let begin = Request::builder()
+        .method("POST")
+        .uri("/v1/connections/spotify/begin")
+        .header("content-type", "application/json")
+        .header("host", "192.168.1.10:8787")
+        .header("authorization", format!("Bearer {TEST_TOKEN}"))
+        .body(Body::from(
+            r#"{"client_id":"exampleclientid","via":"endora"}"#,
+        ))
+        .unwrap();
+    let waiting = json_body(app(state.clone()).oneshot(begin).await.unwrap()).await;
+    assert_eq!(status(&waiting), "waiting");
+    assert_eq!(
+        waiting["redirect"],
+        "http://192.168.1.10:8787/connect/spotify/callback"
+    );
+    assert!(
+        waiting["sign_in_url"].as_str().unwrap().contains(
+            "redirect_uri=http%3A%2F%2F192.168.1.10%3A8787%2Fconnect%2Fspotify%2Fcallback"
+        )
+    );
+    // The callback needs no token, but a state that is not the waiting one finishes nothing.
+    let res = app(state.clone())
+        .oneshot(unsigned(
+            "/connect/spotify/callback?code=x&state=not-the-one",
+        ))
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let page = String::from_utf8(
+        axum::body::to_bytes(res.into_body(), 64 * 1024)
+            .await
+            .unwrap()
+            .to_vec(),
+    )
+    .unwrap();
+    assert!(page.contains("not connected"), "{page}");
+    let still = json_body(
+        app(state.clone())
+            .oneshot(get("/v1/connections/spotify"))
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status(&still), "waiting");
+    // Nothing to lend before it is connected.
+    let lend = app(state)
+        .oneshot(post("/v1/connections/spotify/token", "{}"))
+        .await
+        .unwrap();
+    assert_eq!(lend.status(), StatusCode::BAD_REQUEST);
 }

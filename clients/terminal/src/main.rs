@@ -237,7 +237,8 @@ fn enter_pressed() -> bool {
     false
 }
 
-async fn music_setup() -> Result<()> {
+/// `node`: the unlocked client; the sign-in is made on Endora through it.
+async fn music_setup(node: &Client) -> Result<()> {
     use endora_terminal::spotify as sp;
     // The sign-in QR codes need half-block characters that most console fonts lack, so a font with
     // them is used while they are on screen and the chosen size is restored afterwards.
@@ -252,11 +253,20 @@ async fn music_setup() -> Result<()> {
         let _ = endora_terminal::font::apply_font(endora_terminal::font::QR_FONT);
         RestoreTextSize
     };
-    // Already signed in: the speaker alone can be signed in (two steps), without redoing the rest.
+    // The sign-in is Endora's, for every device (plan phase 4); this device's speaker is its own.
     let speaker_ready = speaker_signed_in();
-    if sp::is_signed_in() {
+    let status = |value: serde_json::Value| -> Result<endora_protocol::ConnectionStatus> {
+        serde_json::from_value(value).map_err(|_| "Unexpected reply from Endora".into())
+    };
+    // A sign-in made here before Endora held one is handed to Endora by loading a session.
+    if sp::holds_own() {
+        let _ = sp::Spotify::load(Some(node)).await;
+    }
+    let now = status(node.get("/v1/connections/spotify").await?)?;
+    if now.state == "connected" {
         println!(
-            "\x1b[2J\x1b[HSpotify is already signed in on this device.\n\n  S  Sign in this device's speaker only (one QR code){}\n  A  Sign in again (adds the permission for Like)\n\n  Enter cancels\n",
+            "\x1b[2J\x1b[H{}. Every device plays with it: this one, the web console and chat.\n\n  S  Sign in this device's speaker only (one QR code){}\n  A  Connect again (replaces the sign-in on every device)\n\n  Enter cancels\n",
+            now.detail,
             if speaker_ready {
                 "; it is already signed in"
             } else {
@@ -274,21 +284,31 @@ async fn music_setup() -> Result<()> {
         }
     }
     let total = if speaker_ready { 1 } else { 2 };
-    let saved = sp::saved_client_id();
-    let typed = prompt(&match &saved {
-        Some(_) => "Spotify Client ID (blank keeps the saved one): ".to_owned(),
-        None => "Spotify Client ID: ".to_owned(),
+    // Endora keeps the client id it was given; one this device saved is offered when it has none.
+    let saved = sp::saved_client_id().filter(|_| !now.client_id_set);
+    let typed = prompt(if now.client_id_set || saved.is_some() {
+        "Spotify Client ID (blank keeps the saved one): "
+    } else {
+        "Spotify Client ID: "
     })?;
     let client_id = match (typed.trim(), saved) {
         ("", Some(id)) => id,
+        ("", None) if now.client_id_set => String::new(),
         ("", None) => return Err("A Client ID is needed".into()),
         (id, _) if id.len() == 32 && id.bytes().all(|b| b.is_ascii_hexdigit()) => id.to_owned(),
         _ => return Err("A Client ID is 32 letters and digits".into()),
     };
-    sp::save_client_id(&client_id)?;
-    let verifier = sp::new_verifier();
-    let state = uuid::Uuid::new_v4().simple().to_string();
-    let url = sp::auth_url(&client_id, &sp::pkce_challenge(&verifier), &state);
+    // Spotify sends the browser to a loopback address that does not load; it is pasted back.
+    let begun = status(
+        node.post(
+            "/v1/connections/spotify/begin",
+            &serde_json::json!({"client_id": client_id, "via": "paste"}),
+        )
+        .await?,
+    )?;
+    let url = begun
+        .sign_in_url
+        .ok_or("Endora did not start the sign-in")?;
     let pasted = qr_and_paste(
         &sp::step_heading(
             1,
@@ -298,17 +318,25 @@ async fn music_setup() -> Result<()> {
         &url,
     )
     .await?;
-    let code = sp::parse_callback(&pasted, &state)?;
-    sp::sign_in(&client_id, &code, &verifier).await?;
+    let done = status(
+        node.post(
+            "/v1/connections/spotify/finish",
+            &serde_json::json!({"returned": pasted.trim()}),
+        )
+        .await?,
+    )?;
     if !speaker_ready {
         println!(
-            "Signed in for control. Next: sign in this device's speaker so it can play by itself."
+            "{}. Next: sign in this device's speaker so it can play by itself.",
+            done.detail
         );
-        speaker_setup(2, 2).await.map_err(|e| {
-            format!("Spotify control is signed in, but the speaker sign-in failed: {e}")
-        })?;
+        speaker_setup(2, 2)
+            .await
+            .map_err(|e| format!("Spotify is connected, but the speaker sign-in failed: {e}"))?;
     }
-    println!("Done. The Music page (Esc, then M) can now play on this device without a phone.");
+    println!(
+        "Done. Every device plays with this sign-in: the Music page here (Esc, then M), the web console and chat."
+    );
     Ok(())
 }
 
@@ -757,7 +785,10 @@ async fn main() {
             }
         }
         ["doctor"] => doctor().await,
-        ["music", "setup"] => music_setup().await,
+        ["music", "setup"] => match unlock_client() {
+            Ok(node) => music_setup(&node).await,
+            Err(e) => Err(e),
+        },
         ["power", "report"] => endora_terminal::telemetry::History::standard().map(|h| {
             println!("{}", endora_terminal::telemetry::report(&h.load()));
         }),

@@ -4,6 +4,9 @@
 
 Accepted, 2026-10-12. Prepared with AI assistance (Codex).
 
+**Superseded 2026-10-16 by [0100](0100-the-clean-slate.md).** Durable goals, their worker and
+checkpoints are removed.
+
 ## Context
 
 The goal foundation gate reproduced stale evidence overwrites, recreation after

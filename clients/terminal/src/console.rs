@@ -135,10 +135,11 @@ enum MusicAction {
 }
 type Player = std::sync::Arc<tokio::sync::Mutex<Option<spotify::Spotify>>>;
 
-async fn music_work(player: Player, action: MusicAction) -> Music {
+/// `node`: the unlocked client, which Endora's Spotify sign-in is borrowed through.
+async fn music_work(player: Player, node: Option<Client>, action: MusicAction) -> Music {
     let mut guard = player.lock().await;
     if guard.is_none() {
-        match spotify::Spotify::load() {
+        match spotify::Spotify::load(node.as_ref()).await {
             Ok(session) => *guard = Some(session),
             Err(e) => {
                 return match action {
@@ -693,11 +694,12 @@ pub async fn run() -> Result<()> {
                                                 played: r.played().to_vec(),
                                                 base: radio_base.clone(),
                                             };
-                                            let (tx, player) = (tx.clone(), player.clone());
+                                            let (tx, player, node) =
+                                                (tx.clone(), player.clone(), client.clone());
                                             tasks.push(tokio::spawn(async move {
                                                 let _ = tx
                                                     .send(Update::Music(
-                                                        music_work(player, action).await,
+                                                        music_work(player, node, action).await,
                                                     ))
                                                     .await;
                                             }));
@@ -982,10 +984,12 @@ pub async fn run() -> Result<()> {
             && Instant::now() >= next_music
         {
             next_music = Instant::now() + Duration::from_secs(5);
-            let (tx, player) = (tx.clone(), player.clone());
+            let (tx, player, node) = (tx.clone(), player.clone(), client.clone());
             tasks.push(tokio::spawn(async move {
                 let _ = tx
-                    .send(Update::Music(music_work(player, MusicAction::Poll).await))
+                    .send(Update::Music(
+                        music_work(player, node, MusicAction::Poll).await,
+                    ))
                     .await;
             }));
         }
@@ -1772,6 +1776,8 @@ pub async fn run() -> Result<()> {
                 epoch += 1;
                 unlocked = false;
                 client = portable::locked(&settings).ok();
+                // The music session holds the unlocked client; it goes with it.
+                *player.lock().await = None;
                 reading = false;
                 busy = false;
                 confirm = None;
@@ -2017,10 +2023,10 @@ pub async fn run() -> Result<()> {
                         music_note = "Starting...".into();
                         MusicAction::Play(item)
                     };
-                    let (tx, player) = (tx.clone(), player.clone());
+                    let (tx, player, node) = (tx.clone(), player.clone(), client.clone());
                     tasks.push(tokio::spawn(async move {
                         let _ = tx
-                            .send(Update::Music(music_work(player, action).await))
+                            .send(Update::Music(music_work(player, node, action).await))
                             .await;
                     }));
                 } else {
@@ -2131,10 +2137,10 @@ pub async fn run() -> Result<()> {
                     music_prev = None;
                 }
                 if let Some(action) = action {
-                    let (tx, player) = (tx.clone(), player.clone());
+                    let (tx, player, node) = (tx.clone(), player.clone(), client.clone());
                     tasks.push(tokio::spawn(async move {
                         let _ = tx
-                            .send(Update::Music(music_work(player, action).await))
+                            .send(Update::Music(music_work(player, node, action).await))
                             .await;
                     }));
                 }
@@ -2151,11 +2157,16 @@ pub async fn run() -> Result<()> {
                     Ok(q) if !q.trim().is_empty() => {
                         music_prev = None;
                         music_note = "Searching...".into();
-                        let (tx, player, q) = (tx.clone(), player.clone(), q.trim().to_owned());
+                        let (tx, player, node, q) = (
+                            tx.clone(),
+                            player.clone(),
+                            client.clone(),
+                            q.trim().to_owned(),
+                        );
                         tasks.push(tokio::spawn(async move {
                             let _ = tx
                                 .send(Update::Music(
-                                    music_work(player, MusicAction::Search(q)).await,
+                                    music_work(player, node, MusicAction::Search(q)).await,
                                 ))
                                 .await;
                         }));
@@ -2403,7 +2414,10 @@ pub async fn run() -> Result<()> {
                 let result: Result<()> = match c {
                     'w' => super::wifi_picker(),
                     'h' => super::desktop(),
-                    'y' => super::music_setup().await,
+                    'y' => match client.as_ref() {
+                        Some(node) => super::music_setup(node).await,
+                        None => Err("Unlock first with U".into()),
+                    },
                     'o' => super::text_browser("portal", "http://neverssl.com/"),
                     'r' => {
                         let typed = super::prompt("Web address (blank returns): ")?;
@@ -2484,6 +2498,7 @@ pub async fn run() -> Result<()> {
                 if matches!(c, 's' | 'e' | 'f' | 't') {
                     unlocked = false;
                     client = portable::locked(&settings).ok();
+                    *player.lock().await = None;
                     chat.zeroize();
                     for d in data.iter_mut() {
                         *d = json!({});

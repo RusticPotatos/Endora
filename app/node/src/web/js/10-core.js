@@ -311,29 +311,20 @@ async function reload() {
   // The export snapshot, the derived activity feed, and the everyday settings.
   // Whether the node is mid-turn, asked every reload — the answer that outlives this tab.
   try { NODE_BUSY = !!(await api("GET", "/health")).busy; } catch (_) { NODE_BUSY = false; }
-  const [db, activity, checkin, caps, autonomy] = await Promise.all([
+  const [db, activity, caps, autonomy] = await Promise.all([
     api("GET", "/v1/export"),
     api("GET", "/v1/activity?limit=30"),
-    api("GET", "/v1/checkin"),
     api("GET", "/v1/capabilities"),
     api("GET", "/v1/autonomy"),
   ]);
   try { BRIEF_SCHED = await api("GET", "/v1/brief/schedule"); } catch (_) {}
-  try { NIGHT_SCHED = await api("GET", "/v1/nightly-loop/schedule"); } catch (_) {}
   try { DEEP_MODEL = await api("GET", "/v1/deep-model"); } catch (_) {}
   try { MODEL_CONFIG = await api("GET", "/v1/model-config"); } catch (_) {}
-  try { TUNE_SCHED = await api("GET", "/v1/model-tune/schedule"); } catch (_) {}
   try { MCP_SERVERS = await api("GET", "/v1/mcp/servers"); } catch (_) {}
   // What the next message would send. Only asked for on the chat, since it builds the same
   // context a turn does.
   if (NAV.v === "chat") { try { CTX = await api("GET", "/v1/chat/context"); } catch (_) { CTX = null; } }
-  // The mail digest: only on its own screen, so the rest of the console never carries it.
-  if (NAV.v === "mail") { try { MAIL = await api("GET", "/v1/mail"); } catch (_) { MAIL = null; } }
-  // What Endora runs: it asks the model server, so only on the screen that shows it.
-  if (NAV.v === "models") { try { AI = await api("GET", "/v1/ai"); } catch (_) { AI = null; } }
-  // What the deep model has cost, and what is left. The balance asks the provider, so it is
-  // fetched only on the screens that show it, never on a timer.
-  if ((NAV.v === "models" || NAV.v === "settings") && DEEP_MODEL.configured) { await loadDeepSpend(); }
+  await loadView(NAV.v, NAV.id);
   try { RECIPES = await api("GET", "/v1/recipes"); } catch (_) { RECIPES = []; }
   DB = db;
   // Attach each butler reply's persisted action trail (steps + sources) from the
@@ -342,19 +333,15 @@ async function reload() {
   // every message there has ever been so the browser can throw most of them away.
   await loadChatDay(CHAT_DAY);
   ACTIVITY = activity;
-  CHECKIN = checkin;
   CAPS = caps;
   AUTONOMY = autonomy;
   try { UNDERSTANDING = await api("GET", "/v1/understanding"); } catch (_) { UNDERSTANDING = []; }
   try { OUTCOMES = await api("GET", "/v1/outcomes"); } catch (_) { OUTCOMES = []; }
-  try { INTENTIONS = await api("GET", "/v1/intentions"); } catch (_) { INTENTIONS = []; }
   try { RESEARCH = await api("GET", "/v1/research"); } catch (_) { RESEARCH = { items: [] }; }
   try { RESEARCH_READY = await api("GET", "/v1/research/readiness"); } catch (_) {}
-  try { NOTIONS = await api("GET", "/v1/notions"); } catch (_) { NOTIONS = []; }
   try { CONNECTED = await api("GET", "/v1/connect/connected"); } catch (_) { CONNECTED = []; }
   try { SIGNIN = await api("GET", "/v1/session/setup"); } catch (_) { SIGNIN = null; }
   try { REPAIRS = await api("GET", "/v1/repairs"); } catch (_) { REPAIRS = []; }
-  try { TROUBLE = await api("GET", "/v1/standing-trouble"); } catch (_) { TROUBLE = []; }
   try { LANDING = await api("GET", "/v1/reliability"); } catch (_) { LANDING = null; }
   try { CONFIG_WRITES = await api("GET", "/v1/config-writes"); } catch (_) { CONFIG_WRITES = []; }
   render();
@@ -382,22 +369,50 @@ function subscribeToActivity() {
   } catch (_) { /* SSE unavailable: the UI still works, just not live. */ }
 }
 
-// While anything runs unattended — research or a goal — refresh every so often so its
+// While research runs unattended, refresh every so often so its
 // progress and its ending show up without the person having to reload.
 function pollActiveWork() {
   setInterval(() => {
     const researching = ((RESEARCH && RESEARCH.items) || []).some((item) =>
       !["delivered", "blocked", "budget_exhausted", "cancelled", "failed"].includes(item.status));
-    const goalRunning = ((DB && DB.goals) || []).some((g) =>
-      !["complete", "partial", "blocked", "failed", "cancelled"].includes(g.status));
-    const active = researching || goalRunning;
     const ae = document.activeElement;
-    if (!active || CHAT_STREAMING || (ae && /^(INPUT|TEXTAREA|SELECT)$/.test(ae.tagName))) return;
+    if (!researching || CHAT_STREAMING || (ae && /^(INPUT|TEXTAREA|SELECT)$/.test(ae.tagName))) return;
     reload().catch(() => {});
   }, 15000);
 }
 
-function go(v, id) { NAV = { v, id }; clearMsg(); closeMenu(); render(); }
+// What one screen shows that nothing else needs, fetched when it opens and on a reload while it
+// is showing. Opening Mail from the menu used to show "Loading…" until something else happened
+// to reload the console, because only `reload` fetched it.
+async function loadView(v, id) {
+  // The mail digest: only on its own screen, so the rest of the console never carries it.
+  if (v === "mail") { try { MAIL = await api("GET", "/v1/mail"); } catch (_) { MAIL = null; } }
+  // What Endora runs: it asks the model server, so only on the screen that shows it.
+  if (v === "models") { try { AI = await api("GET", "/v1/ai"); } catch (_) { AI = null; } }
+  // One sign-in for every device: shown wherever it was started.
+  if (v === "connections" || v === "spotify") {
+    try { SPOTIFY = await api("GET", "/v1/connections/spotify"); } catch (_) { SPOTIFY = null; }
+  }
+  // What the deep model has cost, and what is left. The balance asks the provider, so it is
+  // fetched only on the screens that show it, never on a timer.
+  if ((v === "models" || v === "settings") && DEEP_MODEL.configured) { await loadDeepSpend(); }
+  await loadLab(v, id);
+}
+
+// The screens `loadView` fetches for.
+const FETCHES_ITS_OWN = ["mail", "models", "settings", "connections", "spotify",
+  "lab", "containers", "logs", "jobs", "job", "media", "house", "music"];
+
+function go(v, id) {
+  // One container's logs must never show under another's name while the new ones load.
+  if (v === "logs") LAB.logs = null;
+  if (v === "job") LAB.job = null;
+  NAV = { v, id }; clearMsg(); closeMenu(); render();
+  if (!FETCHES_ITS_OWN.includes(v)) return;
+  // Drawn at once with what is known, then again with what the screen fetched — unless the
+  // person has moved on meanwhile.
+  loadView(v, id).then(() => { if (NAV.v === v && NAV.id === id) render(); }).catch(() => {});
+}
 
 // Observations reachable under a target (target → assumptions → experiments → obs).
 const val = (id) => document.getElementById(id).value.trim();

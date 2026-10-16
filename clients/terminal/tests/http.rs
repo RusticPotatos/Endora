@@ -135,6 +135,35 @@ async fn done_and_unknown_events_work_and_signin_returns_session() {
 }
 
 #[tokio::test]
+async fn a_connections_setup_says_what_went_wrong_and_other_routes_stay_private() {
+    let said = r#"{"error":"No sign-in is waiting; start it again","code":null}"#;
+    let (client, _, thread) = server("400 Bad Request", said, "");
+    assert_eq!(
+        client
+            .post("/v1/connections/spotify/finish", &serde_json::json!({}))
+            .await
+            .unwrap_err(),
+        "No sign-in is waiting; start it again"
+    );
+    thread.join().unwrap();
+    // The same words from any other route stay private.
+    let (client, _, thread) = server("400 Bad Request", said, "");
+    assert_eq!(
+        client.get("/v1/terminal/home").await.unwrap_err(),
+        "Node rejected request (400)"
+    );
+    thread.join().unwrap();
+    // And so does anything long, even from a connection.
+    let long = format!(r#"{{"error":"{}"}}"#, "x".repeat(200));
+    let (client, _, thread) = server("400 Bad Request", &long, "");
+    assert_eq!(
+        client.get("/v1/connections/spotify").await.unwrap_err(),
+        "Node rejected request (400)"
+    );
+    thread.join().unwrap();
+}
+
+#[tokio::test]
 async fn real_server_error_shape_is_understood() {
     for (status, body, expected) in [
         (

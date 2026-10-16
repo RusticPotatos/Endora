@@ -19,14 +19,13 @@ pub mod domain;
 pub mod infrastructure;
 
 pub use application::{
-    BeliefRepository, IntentionRepository, NotionRepository, OutcomeRepository,
-    PreferenceRepository, ResearchRepository, SpecimenRepository,
+    BeliefRepository, IntentionRepository, OutcomeRepository, PreferenceRepository,
+    ResearchRepository,
 };
 pub use domain::{
-    Belief, BeliefKind, BeliefStatus, Citation, Confidence, Intention, IntentionOrigin,
-    IntentionState, Notion, NotionStatus, Outcome, Preference, PreferenceKind,
-    REPLAYS_BEFORE_GIVING_UP, RESEARCH_MODEL_LIMIT, RESEARCH_READ_LIMIT, Reaction, Reliability,
-    Remedy, RepairProposal, ResearchAssignment, ResearchReport, ResearchStatus, Source, Specimen,
-    SpecimenState, make_way_for_a_new_one, repair_proposals,
+    Belief, BeliefKind, BeliefStatus, Confidence, Intention, IntentionOrigin, IntentionState,
+    Outcome, Preference, PreferenceKind, RESEARCH_MODEL_LIMIT, RESEARCH_READ_LIMIT, Reaction,
+    Reliability, Remedy, RepairProposal, ResearchAssignment, ResearchReport, ResearchStatus,
+    repair_proposals,
 };
 pub use infrastructure::{UnderstandingStore, migrate};

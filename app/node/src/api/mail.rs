@@ -55,7 +55,7 @@ pub(super) async fn mail_digest(
         .collect();
     Ok(Json(json!({
         "mounted": mounted,
-        "reading": state.own_work && state.mail_reader.is_some(),
+        "reading": state.mail_reader.is_some(),
         "indexed": indexed,
         "unread_recent": unread,
         "important": usecases::without_repeats(

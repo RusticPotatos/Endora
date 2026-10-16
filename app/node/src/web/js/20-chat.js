@@ -299,7 +299,6 @@ function viewChat() {
        </div>`
     : "";
   const research = viewResearch();
-  const ownWork = viewGoals();
   const emptyToday = `<div class="empty">${showing === today && days.length > 1
       ? "A new day. Yesterday's conversation is a tap back."
       : "Say anything — Endora is listening."}</div>`;
@@ -308,7 +307,6 @@ function viewChat() {
       <div class="chat-scroll" id="chat-scroll"><div class="chat-col">
         ${dayBar}
         ${research}
-        ${ownWork}
         <div id="chat-thread" class="chat-thread">${(msgs || (CHAT_STREAMING ? "" : emptyToday)) + (CHAT_STREAMING ? liveTurn : pending) + streamingActivity}</div>
         ${CHAT_STREAMING ? "" : viewNeedsYou()}
       </div></div>
@@ -473,37 +471,6 @@ function viewResearch() {
         ? "Endora will keep working after you close this page and save a bounded Markdown report citing pages it read. It can search only through an approved Brave Search connection; otherwise add starting URLs."
         : "Research needs the built-in web reader. Connect Brave Search for discovery, or add starting URLs after the reader is available."}</div></div>` : "";
   return `<div aria-label="Research assignments">${setup}${cards}</div>`;
-}
-
-// What Endora is doing on its own, and how finished work ended (ADR 0083). A goal that ran
-// out of road used to leave nothing anywhere in the console: stored, finished, invisible.
-// Running work says where it is and can be stopped; ended work keeps the same words the chat
-// used, so the two can never disagree about what happened. Only the five newest ended goals
-// show, which bounds the strip however long the node has been running.
-function viewGoals() {
-  const goals = (DB && DB.goals) || [];
-  if (!goals.length) return "";
-  const ended = ["complete", "partial", "blocked", "failed", "cancelled"];
-  const label = { complete: "done", partial: "partly done", blocked: "blocked",
-    failed: "could not do it", cancelled: "cancelled" };
-  const running = goals.filter((g) => !ended.includes(g.status));
-  const finished = goals.filter((g) => ended.includes(g.status))
-    .sort((a, b) => b.updated_ms - a.updated_ms).slice(0, 5);
-  const runningCards = running.map((g) => {
-    const found = (g.evidence || []).length;
-    const where = [g.phase, `${found} finding${found === 1 ? "" : "s"} so far`,
-      g.next_step ? `next: ${g.next_step}` : ""].filter(Boolean).join(" · ");
-    // The key goes through encodeURIComponent because the dispatcher splits `data-act` on ":",
-    // and a goal's key may contain one.
-    return `<div class="card" style="margin:8px 0;">
-      <div class="row" style="justify-content:space-between;gap:8px;"><b>${esc(g.objective)}</b><span class="sub">working</span></div>
-      <div class="sub" style="margin-top:6px;">${esc(where)}</div>
-      <div class="row" style="gap:8px;margin-top:8px;"><button class="ghost" data-act="goal:cancel:${encodeURIComponent(g.request_key)}">Stop</button></div></div>`;
-  }).join("");
-  const finishedCards = finished.map((g) => `<details class="card" style="margin:8px 0;">
-      <summary><b>${esc(g.objective)}</b> <span class="sub">${esc(label[g.status])}</span></summary>
-      <div class="bubble butler" style="margin-top:8px;">${rich(g.outcome || "")}</div></details>`).join("");
-  return `<div aria-label="Endora's own work">${runningCards}${finishedCards}</div>`;
 }
 
 // Provider presets for the butler models. Each fills the endpoint + example

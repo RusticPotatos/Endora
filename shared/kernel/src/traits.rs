@@ -13,6 +13,12 @@ use crate::ids::Timestamp;
 pub trait Clock {
     /// The current instant, as a [`Timestamp`].
     fn now(&self) -> Timestamp;
+
+    /// How far the person's local time is from UTC right now, in minutes (New York in
+    /// summer: -240). Zero when the clock does not know, which is what keeps saying UTC.
+    fn utc_offset_minutes(&self) -> i64 {
+        0
+    }
 }
 
 /// Supplies fresh, unique identifier values to use cases.

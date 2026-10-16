@@ -9,6 +9,26 @@ tagged release.
 
 ### Added
 
+- **Spotify, connected once in Endora** (Settings → Connections → Spotify). Endora holds the
+  sign-in and lends an hour's access token to whichever device asks; the refresh token never
+  leaves the node, so two devices cannot knock each other's sign-in out when Spotify rotates it.
+  A sign-in started on one device shows as waiting on the other and can be finished there: by
+  approving on the phone (Spotify sends you back to Endora, which finishes by itself) or by
+  pasting the address Spotify sends you to. A device's existing sign-in can be handed over.
+  The handheld's Music page now plays with it: it borrows the token through the unlocked
+  session, hands over a sign-in it made by itself and then deletes its copy, and its setup
+  starts and finishes the sign-in on Endora. Locking the handheld drops the borrowed session.
+- **Pi-hole and UniFi connections** (Settings → Connections → Home lab). They hold the
+  credentials for what Endora will read about your network. Each has a Test button that
+  signs in and signs out again. Pi-hole's app password is only ever used to read. UniFi
+  takes a View Only local admin, and its self-made certificate is not checked.
+- **The web console does what the handheld does.** Music (what is playing, play and pause,
+  skip, volume, choose the device, search, playlists, through the borrowed token), Smart home
+  (switch favorites, set scenes, choose favorites), Media (search and request, recent requests)
+  and Home lab (NAS figures, alerts, each service's state, container start/stop/restart and
+  logs, allowlisted jobs). Each acts through the node's one allowlisted action route and asks
+  before anything consequential.
+
 - **The handheld terminal is part of Endora** ([ADR 0099](docs/adr/0099-the-handheld-is-part-of-endora.md)).
   `clients/terminal`, the Rust TUI for a small Linux handheld, joins the workspace: one
   lockfile, one CI (its Python, privacy and rendering checks, and an ARM64 bundle artifact),
@@ -58,7 +78,61 @@ tagged release.
   "Handheld: containers", "Overview: Sonarr" and so on), and tool servers. **Permissions** holds
   how far Endora may act on its own.
 
+### Removed
+
+- **The clean slate** ([ADR 0100](docs/adr/0100-the-clean-slate.md)). What Endora did without
+  being asked had become noise, and it is gone, code and storage, so the always-working butler
+  can be built again on real signals:
+  - the daily check-in, and waking early on an unusual change;
+  - the nightly loop, notions ("still wondering"), and the replay of failed asks (specimens).
+    A turn that could not answer no longer says it kept the question "to retry overnight";
+  - intentions formed from beliefs, and their nudges;
+  - the own-work lane and its `ENDORA_OWN_WORK` switch (in the Makefile, Compose file and the
+    `endora` Ansible role too);
+  - durable goals started from chat: the goal worker, the goal strip and its Stop button.
+    Research you ask for stays, with its card and its report;
+  - the 4 am model tune's schedule. The comparison still runs when started by hand;
+  - Inbox. Messages Endora sends unasked stay in the chat, and Activity is the one record;
+  - About you as a list of beliefs by kind to confirm. It now says how much Endora has learned
+    and has a **Forget** button that deletes all of it; what you told it yourself stays.
+    Beliefs that were passing remarks (an intent, or "other") are no longer formed;
+  - device changes written to Activity by the heartbeat.
+
+  **Breaking:** the routes `/v1/checkin`, `/v1/nightly-loop/schedule`,
+  `/v1/model-tune/schedule`, `/v1/notions`, `/v1/intentions` and `/v1/goals` are gone, and the
+  export has no `goals` field. An existing database drops the removed tables when the node
+  starts; a table nothing reads is data nothing can export or delete.
+
 ### Fixed
+
+- **Endora no longer asks about devices that stopped answering** (the "Still yours?" card).
+  The owner did not want it. It is removed with what was under it: the card and its routes,
+  the morning brief's lines, the own-work lane's items, and the detection and its store. Work
+  Endora started about such a device before is withdrawn at the next check; an existing
+  database drops its old table when the node starts.
+
+- **Endora answered faster, and about the right day.** Measured on the house's A2000, with qwen2.5:7b:
+  - **The prompt was read from the clock onward on every message.** The date and time sat
+    second in the request, ahead of the instructions and the tool list. They now travel with
+    the latest message, so the model reuses the rest: the next message starts answering in
+    about 0.6 s instead of about 5.5 s.
+  - **Endora asked Ollama to unload its model after 30 minutes**, which overrode a server set
+    to keep it loaded, so the first message after a pause paid a 13-second reload. It now asks
+    to keep it loaded.
+  - **The clock it was told was UTC.** It is now local time with its offset, so a summer
+    evening is no longer "tomorrow".
+  - **"What day is today?" went to the deep model.** The small model filed it as needing
+    a lookup, though the date is in every request; date and time questions now stay local.
+  - **One-off events tied to a day became beliefs.** "An appointment tomorrow at 6:30" was
+    filed as something Endora understands about you, was still "tomorrow" the next day, and
+    was trusted over the calendar. Statements tied to today, tomorrow, tonight or yesterday
+    are no longer kept as understanding.
+
+- **Opening Mail, AI or Spotify from the menu could show "Loading…"** until something else
+  reloaded the console; a screen now fetches what it shows when it opens.
+
+- **The handheld's Containers page showed raw numbers** ("CPU %: 7.251164760358932"); it shows
+  the home screen's short figures.
 
 - **The handheld's Home catalog never loaded when Home Assistant's address was typed without
   `http://`.** The Home Assistant skill accepted `host:8123`; the console's own requests
