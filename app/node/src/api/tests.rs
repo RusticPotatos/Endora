@@ -91,7 +91,7 @@ async fn forgetting_what_it_learned_needs_confirming_and_keeps_what_they_said() 
     )
     .unwrap();
     PreferenceRepository::save(
-        state.understanding.as_ref(),
+        state.knowledge.as_ref(),
         &Preference::new(
             PreferenceId::new(2),
             "based in New York",
@@ -147,7 +147,7 @@ async fn forgetting_what_it_learned_needs_confirming_and_keeps_what_they_said() 
             .is_empty()
     );
     assert_eq!(
-        PreferenceRepository::list_all(state.understanding.as_ref())
+        PreferenceRepository::list_all(state.knowledge.as_ref())
             .unwrap()
             .len(),
         1,
@@ -258,6 +258,7 @@ fn test_state() -> AppState {
         Arc::new(RandomIdSource),
         Arc::new(SystemClock),
         Arc::new(endora_infrastructure::ScriptedButler),
+        Arc::new(endora_understanding::BrainFolder::temporary().unwrap()),
     );
     // Pinned rather than read back, so a test signs with something it chose. The
     // generated-on-first-run path is exercised by `the_node_makes_and_keeps_a_token`.

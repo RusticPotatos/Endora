@@ -20,6 +20,7 @@ fn a_real_model_delivers_a_saved_report_from_a_guarded_source() {
     let store = SqliteStore::open_in_memory().expect("production schema");
     let db = store.db();
     let understanding = endora_understanding::UnderstandingStore::new(db.clone());
+    let knowledge = endora_understanding::BrainFolder::temporary().expect("brain");
     let chat = endora_conversation::ChatStore::new(db.clone());
     let config = ConfigStore::new(db.clone());
     let audit = endora_platform::AuditStore::new(db);
@@ -40,7 +41,7 @@ fn a_real_model_delivers_a_saved_report_from_a_guarded_source() {
         .expect("commission");
     let context = usecases::butler_context(
         &understanding,
-        &understanding,
+        &knowledge,
         &understanding,
         &config,
         &chat,

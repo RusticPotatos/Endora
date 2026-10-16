@@ -126,6 +126,7 @@ pub(super) async fn what_the_butler_is_told(
     State(state): State<AppState>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let understanding = state.understanding.clone();
+    let knowledge = state.knowledge.clone();
     let config = state.config.clone();
     let chat = state.chat.clone();
     let clock = state.clock.clone();
@@ -140,7 +141,7 @@ pub(super) async fn what_the_butler_is_told(
         );
         usecases::butler_context(
             understanding.as_ref(),
-            understanding.as_ref(),
+            knowledge.as_ref(),
             understanding.as_ref(),
             config.as_ref(),
             chat.as_ref(),

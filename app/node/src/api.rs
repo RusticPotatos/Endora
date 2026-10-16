@@ -51,6 +51,9 @@ pub struct AppState {
     pub schedules: Arc<endora_scheduling::ScheduleStore>,
     /// The understanding context's belief + preference repositories.
     pub understanding: Arc<endora_understanding::UnderstandingStore>,
+    /// What Endora knows about the person, as markdown pages with their history: the
+    /// brain, memory and what they told it (ADR 0101).
+    pub knowledge: Arc<endora_understanding::BrainFolder>,
     /// The capabilities context's config store (settings/config/envelope/deep-model).
     pub config: Arc<endora_capabilities::ConfigStore>,
     /// The platform context's audit trail store.
@@ -148,6 +151,7 @@ impl AppState {
         ids: Arc<RandomIdSource>,
         clock: Arc<SystemClock>,
         butler: Arc<dyn Butler + Send + Sync>,
+        knowledge: Arc<endora_understanding::BrainFolder>,
     ) -> Self {
         // Both resolved before the struct takes ownership of the store and the clock.
         let started_ms = {
@@ -218,6 +222,7 @@ impl AppState {
             all.push(Arc::new(TheWholeBrief {
                 chat: chat.clone(),
                 understanding: understanding.clone(),
+                knowledge: knowledge.clone(),
                 config: config.clone(),
                 clock: clock.clone(),
                 base: base_caps,
@@ -242,6 +247,7 @@ impl AppState {
             chat,
             schedules,
             understanding,
+            knowledge,
             config,
             audit,
             events,

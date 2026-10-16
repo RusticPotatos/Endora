@@ -65,6 +65,7 @@ fn state_with_mail(name: &str, reply: &'static str) -> (AppState, Arc<Reader>, C
         Arc::new(RandomIdSource),
         Arc::new(SystemClock),
         Arc::new(ScriptedButler),
+        Arc::new(endora_understanding::BrainFolder::temporary().unwrap()),
     );
     let now = state.clock.now().unix_millis();
     for n in 0..3 {

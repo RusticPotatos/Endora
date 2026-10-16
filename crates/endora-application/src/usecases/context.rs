@@ -710,7 +710,14 @@ pub fn create_preference(
 ) -> Result<Preference, AppError> {
     let preference = Preference::new(PreferenceId::new(ids.new_id()), text, kind, clock.now())?;
     preferences.save(&preference)?;
-    Ok(preference)
+    // Handed back as the store keeps it: a store may name a line by its words (the brain
+    // does, ADR 0101), and the id the caller deletes it by must be that one.
+    let said = |p: &Preference| p.text().split_whitespace().eq(text.split_whitespace());
+    Ok(preferences
+        .list_all()?
+        .into_iter()
+        .find(said)
+        .unwrap_or(preference))
 }
 
 /// Lists the preferences the butler has learned, oldest first.

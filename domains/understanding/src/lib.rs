@@ -19,8 +19,8 @@ pub mod domain;
 pub mod infrastructure;
 
 pub use application::{
-    BeliefRepository, IntentionRepository, OutcomeRepository, PreferenceRepository,
-    ResearchRepository,
+    BeliefRepository, Brain, IntentionRepository, OutcomeRepository, PageChange, PageInfo,
+    PreferenceRepository, ResearchRepository,
 };
 pub use domain::{
     Belief, BeliefKind, BeliefStatus, Confidence, Intention, IntentionOrigin, IntentionState,
@@ -28,4 +28,4 @@ pub use domain::{
     Reliability, Remedy, RepairProposal, ResearchAssignment, ResearchReport, ResearchStatus,
     repair_proposals,
 };
-pub use infrastructure::{UnderstandingStore, migrate};
+pub use infrastructure::{BrainFolder, UnderstandingStore, migrate, move_told_into_the_brain};

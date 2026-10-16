@@ -91,6 +91,7 @@ impl endora_capabilities::Capability for WhatIHaveBeenDoing {
 pub(super) struct TheWholeBrief {
     pub(super) chat: Arc<endora_conversation::ChatStore>,
     pub(super) understanding: Arc<endora_understanding::UnderstandingStore>,
+    pub(super) knowledge: Arc<endora_understanding::BrainFolder>,
     pub(super) config: Arc<endora_capabilities::ConfigStore>,
     pub(super) clock: Arc<SystemClock>,
     /// The catalogue this skill gathers FROM — built without this skill in it, so
@@ -153,7 +154,7 @@ impl endora_capabilities::Capability for TheWholeBrief {
         );
         let context = usecases::butler_context(
             self.understanding.as_ref(),
-            self.understanding.as_ref(),
+            self.knowledge.as_ref(),
             self.understanding.as_ref(),
             self.config.as_ref(),
             self.chat.as_ref(),
@@ -343,6 +344,7 @@ pub fn spawn_heartbeat(state: AppState) {
             let chat = state.chat.clone();
             let schedules = state.schedules.clone();
             let understanding = state.understanding.clone();
+            let knowledge = state.knowledge.clone();
             let config = state.config.clone();
             let ids = state.ids.clone();
             let clock = state.clock.clone();
@@ -367,7 +369,7 @@ pub fn spawn_heartbeat(state: AppState) {
                 );
                 let context = usecases::butler_context(
                     understanding.as_ref(),
-                    understanding.as_ref(),
+                    knowledge.as_ref(),
                     understanding.as_ref(),
                     config.as_ref(),
                     chat.as_ref(),
@@ -464,6 +466,7 @@ pub fn spawn_research_worker(state: AppState) {
             let lease_until_ms = reserved_at.unix_millis() + endora_application::EXECUTION_LEASE_MS;
             let understanding = state.understanding.clone();
             let understanding_after = state.understanding.clone();
+            let knowledge = state.knowledge.clone();
             let delivery = state.store.clone();
             let chat = state.chat.clone();
             let config = state.config.clone();
@@ -482,7 +485,7 @@ pub fn spawn_research_worker(state: AppState) {
                 );
                 let context = usecases::butler_context(
                     understanding.as_ref(),
-                    understanding.as_ref(),
+                    knowledge.as_ref(),
                     understanding.as_ref(),
                     config.as_ref(),
                     chat.as_ref(),

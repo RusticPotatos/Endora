@@ -77,7 +77,7 @@ FROM debian:bookworm-slim
 # (or one already cached) connects immediately.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-        ca-certificates nodejs npm python3 \
+        ca-certificates git nodejs npm python3 \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /endora-node /usr/local/bin/endora-node
@@ -87,6 +87,9 @@ COPY scripts/homelab-docker-proxy.py /usr/local/lib/endora/homelab-docker-proxy.
 # local-first database on a volume so it survives container restarts.
 ENV ENDORA_ADDR=0.0.0.0:8787
 ENV ENDORA_DB=/data/endora.db
+# What Endora knows about the person, as markdown pages kept in git (ADR 0101): git is the
+# history, run with hooks and outside configuration off.
+ENV ENDORA_BRAIN=/brain
 # Build identifier (the deploy's git short SHA), surfaced in /health and the
 # console header so a refresh can tell one build from the next.
 ARG ENDORA_BUILD=dev

@@ -26,8 +26,6 @@ pub struct MemorySnapshot {
     pub audit: Vec<AuditRecord>,
     /// The whole conversation with the butler.
     pub messages: Vec<ChatMessage>,
-    /// The preferences the butler has learned.
-    pub preferences: Vec<Preference>,
     /// Endora's understanding of the person — the beliefs it holds.
     pub beliefs: Vec<Belief>,
     /// What happened after Endora acted — claim, observation and reaction (ADR 0053).

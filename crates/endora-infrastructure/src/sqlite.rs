@@ -11,7 +11,7 @@ use endora_persistence::Db;
 use endora_application::{
     AuditId, AuditRecord, Belief, BeliefId, BeliefKind, BeliefStatus, ChatMessage, Confidence,
     Intention, IntentionId, IntentionOrigin, IntentionState, MessageId, MessageRole, Outcome,
-    OutcomeId, Preference, PreferenceId, PreferenceKind, Reaction, ResearchAssignment, Timestamp,
+    OutcomeId, Reaction, ResearchAssignment, Timestamp,
 };
 use endora_application::{
     ExecutionLeaseRepository, MemorySnapshot, MemoryStore, RepositoryError, ResearchDelivery,
@@ -58,12 +58,6 @@ CREATE TABLE IF NOT EXISTS conversation_summary (
 
 CREATE INDEX IF NOT EXISTS idx_messages_at ON messages(at_ms);
 
-CREATE TABLE IF NOT EXISTS preferences (
-    id    TEXT PRIMARY KEY,
-    body  TEXT NOT NULL,
-    kind  TEXT NOT NULL,
-    at_ms INTEGER NOT NULL
-) STRICT;
 CREATE TABLE IF NOT EXISTS beliefs (
     id               TEXT PRIMARY KEY,
     statement        TEXT NOT NULL,
@@ -924,7 +918,6 @@ impl MemoryStore for SqliteStore {
         Ok(MemorySnapshot {
             audit: all_audit(&conn)?,
             messages: all_messages(&conn)?,
-            preferences: all_preferences(&conn)?,
             beliefs: all_beliefs(&conn)?,
             outcomes: all_outcomes(&conn)?,
             intentions: all_intentions(&conn)?,
@@ -947,7 +940,6 @@ impl MemoryStore for SqliteStore {
             "messages",
             "message_actions",
             "conversation_summary",
-            "preferences",
             "beliefs",
             "outcomes",
             "target_aliases",
@@ -1039,38 +1031,6 @@ impl ResearchDelivery for SqliteStore {
 
 // AuditLog and EventLog are implemented by the platform context's AuditStore and
 // EventStore over the shared Db now (ADR 0050); `all_audit` stays for MemoryStore.
-
-fn all_preferences(conn: &Connection) -> Result<Vec<Preference>, RepositoryError> {
-    let mut stmt = conn
-        .prepare("SELECT id, body, kind, at_ms FROM preferences ORDER BY at_ms, rowid")
-        .map_err(backend)?;
-    let rows = stmt
-        .query_map([], |r| {
-            Ok((
-                r.get::<_, String>(0)?,
-                r.get::<_, String>(1)?,
-                r.get::<_, String>(2)?,
-                r.get::<_, i64>(3)?,
-            ))
-        })
-        .map_err(backend)?;
-    let mut out = Vec::new();
-    for row in rows {
-        let (id, body, kind, at_ms) = row.map_err(backend)?;
-        let kind = PreferenceKind::from_name(&kind)
-            .ok_or_else(|| RepositoryError::Corrupt(format!("unknown preference kind {kind:?}")))?;
-        out.push(
-            Preference::new(
-                PreferenceId::new(parse_id(&id)?),
-                &body,
-                kind,
-                Timestamp::from_unix_millis(at_ms),
-            )
-            .map_err(corrupt)?,
-        );
-    }
-    Ok(out)
-}
 
 fn all_beliefs(conn: &Connection) -> Result<Vec<Belief>, RepositoryError> {
     let mut stmt = conn
