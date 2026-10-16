@@ -55,7 +55,12 @@ impl Caution {
 pub fn cautions(m: &Message, mailbox: &Mailbox) -> Vec<Caution> {
     let mut out = Vec::new();
     let a = m.auth;
-    if [a.spf, a.dkim, a.dmarc].contains(&Verdict::Fail) {
+    // DMARC passing is the verdict that matters: it says the domain in From sent this. SPF on
+    // its own fails for ordinary forwarded mail (seen on live mail), so it counts only when
+    // DMARC did not pass.
+    let failed = a.dmarc == Verdict::Fail
+        || (a.dmarc != Verdict::Pass && (a.dkim == Verdict::Fail || a.spf == Verdict::Fail));
+    if failed {
         out.push(Caution::SenderChecksFailed);
     } else if a.dkim != Verdict::Pass && a.dmarc != Verdict::Pass {
         out.push(Caution::SenderNotVouchedFor);

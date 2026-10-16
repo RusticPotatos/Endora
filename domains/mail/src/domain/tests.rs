@@ -454,6 +454,14 @@ fn a_failed_check_or_none_at_all_is_doubt() {
     );
     let unvouched = message("billing@example.net"); // no Authentication-Results at all
     assert!(cautions(&unvouched, &mailbox()).contains(&Caution::SenderNotVouchedFor));
+    let mut forwarded = vouched(message("billing@example.net"));
+    forwarded.auth.spf = Verdict::Fail;
+    assert!(
+        cautions(&forwarded, &mailbox())
+            .iter()
+            .all(|c| !c.serious()),
+        "SPF failing on forwarded mail that DMARC vouches for is not doubt"
+    );
     let mut spf_only = vouched(message("billing@example.net"));
     spf_only.auth.dkim = Verdict::Unknown;
     spf_only.auth.dmarc = Verdict::Unknown;
