@@ -662,8 +662,9 @@ function viewProactive() {
   return viewDisplay();
 }
 
-// What the butler has learned — visible, correctable, deletable memory.
-function viewPrefs() {
+// What the person has told Endora to remember — visible, correctable, deletable. A section of
+// About you, beside what Endora has learned on its own.
+function rememberedSection() {
   // Friendly labels — the internal kind names ("taste") mean nothing to a person.
   const KIND_LABEL = { taste: "preference", authority: "permission", context: "context" };
   const rows = (DB.preferences || []).map((p) => `
@@ -673,9 +674,8 @@ function viewPrefs() {
       <button class="ghost danger" data-act="delete:pref:${p.id}" title="forget this">${icon("purge",15)}</button>
     </div></div>`);
   return `
-    ${settingsCrumbs("prefs")}
-    <h2>What the butler knows about you</h2>
-    ${listOr(rows, "Nothing yet. The butler will propose things to remember as you talk — or add one below.")}
+    <h3 style="margin-top:16px;">What you've told it</h3>
+    ${listOr(rows, "Nothing yet. Endora will offer to remember things as you talk — or add one below.")}
     <div class="form">
       <input id="new-pref" placeholder="e.g. I prefer mornings…" />
       <button class="primary" data-act="create:pref">Remember</button>

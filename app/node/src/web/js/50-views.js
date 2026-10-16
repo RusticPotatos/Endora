@@ -14,7 +14,7 @@ function viewUnderstanding() {
           : `<button class="ghost" data-act="affirm:belief:${b.id}" title="that's right">That's right</button>
              <button class="ghost" data-act="correct:belief:${b.id}" title="not quite">Not quite</button>`}
       </div></div>`).join("");
-    return `<h3 style="margin-top:16px;">${BELIEF_KIND_LABEL[k] || k}</h3>${rows}`;
+    return `<div class="sub" style="margin:14px 0 6px;font-weight:600;">${BELIEF_KIND_LABEL[k] || k}</div>${rows}`;
   }).join("");
   // A gentle one-line setup for basic context (location) so skills like weather
   // and the guard dog have somewhere to start. Stored as a preference, which the
@@ -42,9 +42,11 @@ function viewUnderstanding() {
   const setup = locationSetup + addressSetup;
   return `
     ${settingsCrumbs("understanding")}
-    <h2>What Endora understands about you</h2>
+    <h2>About you</h2>
 
     ${setup}
+    ${rememberedSection()}
+    <h3 style="margin-top:22px;">What it has learned</h3>
     ${groups || `<div class="empty">Nothing yet. Talk with Endora and it will start to understand you — you'll see it here.</div>`}
     ${viewIntention()}
     ${viewNotions()}`;
@@ -95,45 +97,6 @@ function viewIntention() {
       </div>
       <button class="ghost" data-act="dropintention::${current.id}" title="stop working on this">Leave it</button>
     </div></div>`;
-}
-
-// Tooling Endora has noticed keeps not working (ADR 0054, 0040).
-//
-// Derived from what it observed, never stored — so there is no badge, no count to clear
-// and nothing to dismiss. It states the pattern and asks; it does not guess the answer,
-// because guessing would mean parsing one server's format, which is the per-integration
-// patching ADR 0054 exists to stop.
-//
-// Two findings, two different questions. A tool that works elsewhere but not on this
-// thing is probably being given the wrong name — so it asks for the name. A tool that
-// has never worked on anything is the wrong tool, and no name will fix it — so it offers
-// to stop offering it.
-function viewRepairs() {
-  if (!(REPAIRS || []).length) return "";
-  const rows = REPAIRS.map((r) => r.remedy === "stop_offering_it"
-    ? `
-    <div class="card"><div class="row">
-      <div class="grow">
-        <div class="title">${esc(r.capability)}</div>
-        <div class="sub">${r.attempts} attempts, none of them on anything, and it has never once worked. This looks like the wrong tool rather than the wrong name — turning it off makes the butler reach for one that works.</div>
-      </div>
-      <button class="ghost danger" data-act="skill:enable:${esc(r.capability)}:0" title="Stop offering this tool to the butler. You can turn it back on any time in Skills.">Stop offering it</button>
-    </div></div>`
-    : `
-    <div class="card"><div class="row">
-      <div class="grow">
-        <div class="title">${esc(r.capability)}</div>
-        <div class="sub">${r.attempts} attempts aimed at “${esc(r.target)}” didn't work. What is it actually called?</div>
-        <div class="form" style="margin-top:6px;">
-          <input id="alias-${esc(r.capability)}-${esc(r.target)}" placeholder="the real name, e.g. Kitchen Main" />
-          <button class="primary" data-act="alias:${esc(r.capability)}:${esc(r.target)}">Remember</button>
-        </div>
-      </div>
-    </div></div>`).join("");
-  return `
-    <h3 style="margin-top:22px;">Something Endora can't get working</h3>
-    <div class="note" style="margin-bottom:10px;">It checked before and after each time. Nothing moved — so either it's aiming at the wrong name, or reaching for the wrong tool.</div>
-    ${rows}`;
 }
 
 // How Endora's own actions have actually landed (ADR 0053).
@@ -356,35 +319,6 @@ function viewNeedsYou() {
         </div>
       </div>
     </div>`;
-}
-
-// Things in YOUR world that stopped answering — as opposed to Endora's own tooling
-// (ADR 0056).
-//
-// The same shape as a repair finding and deliberately so: a deterministic trigger, a
-// specific remedy, and answering is the dismissal. What is different is the subject. A
-// butler that reports "13 entities unavailable" has added an item to your day; one that
-// says "these have not answered since Tuesday — gone, or shall I hide them?" has removed
-// one. The difference is not the observation, it is having watched long enough to say
-// since when, and having somewhere for the answer to go.
-//
-// Nothing accumulates: the record exists only while the thing is still not answering, so
-// a device that comes back takes its own row with it.
-function viewStandingTrouble() {
-  if (!(TROUBLE || []).length) return "";
-  const rows = TROUBLE.map((t) => `
-    <div class="card"><div class="row">
-      <div class="grow">
-        <div class="title">${esc(t.thing)}</div>
-        <div class="sub">Hasn't answered ${t.days === 1 ? "since yesterday" : `for ${t.days} days`}, in ${esc(t.server)}. Still yours?</div>
-      </div>
-      <button class="ghost" data-act="trouble:gone:${esc(t.server)}:${esc(t.thing)}" title="Hide it in the service that owns it. Nothing is deleted, and you can put it back.">It's gone</button>
-      <button class="ghost" data-act="trouble:fine:${esc(t.server)}:${esc(t.thing)}" title="Leave it exactly as it is and stop mentioning it.">It's fine</button>
-    </div></div>`).join("");
-  return `
-    <h3 style="margin-top:22px;">Things that stopped answering</h3>
-    <div class="note" style="margin-bottom:10px;">Endora watches your services and keeps track of when something went quiet. Hiding is never deleting — it comes back from the change log below.</div>
-    ${rows}`;
 }
 
 // Changes Endora has made to your services' own settings (ADR 0054).

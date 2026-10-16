@@ -29,6 +29,10 @@ pub(super) fn capability_json(
     // copy here, and when settings gained an "optional" flag only one of the two learned
     // about it — so the console said "needs setup" for a skill policy considered ready.
     let settings_complete = endora_capabilities::settings_complete(info, settings);
+    // An entry that only holds settings (for the handheld, and the chat skills that borrow
+    // them) is never "configured" and its on/off does nothing; shown as on/off and "needs
+    // setup", every one of them said "needs setup" forever, set up or not.
+    let settings_only = endora_capabilities::infrastructure::terminal::settings_only(info);
     json!({
         "id": info.id,
         "name": info.name,
@@ -50,6 +54,8 @@ pub(super) fn capability_json(
         "enabled": enabled,
         "usable": info.configured && settings_complete && enabled,
         "needs": info.needs,
+        "settings_only": settings_only,
+        "settings_complete": settings_complete,
         // The one word the model of this is actually made of now (ADR 0062).
         "stance": stance.word(),
         "settings": settings_schema,

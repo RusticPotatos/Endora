@@ -9,15 +9,16 @@
 //
 // `short` is what the breadcrumb says when the full label is too long to sit in a trail. Two
 // renderings of one entry, side by side, so they cannot quietly disagree.
+//
+// What Endora has done is not here: it is a record, not a setting, and sits beside the Inbox
+// in the menu. What you told Endora and what it has learned are one screen, "About you":
+// they were two, side by side, and nothing said which was which.
 const UNDER_SETTINGS = [
-  { view: "display", icon: "prefs", label: "Preferences", note: "reading aloud, vibration, and when Endora reaches out" },
+  { view: "display", icon: "speakerOn", label: "Notifications & voice", short: "Notifications", note: "your daily brief, check-ins, reading aloud and vibration" },
   { view: "models", icon: "sparkle", label: "Models", note: "which model answers, and the bigger one behind it" },
-  { view: "skills", icon: "skills", label: "Skills", note: "what Endora can do, and the servers it connects to" },
-  { view: "recipes", icon: "skills", label: "Recipes", note: "capabilities you've taught Endora yourself — no code, just a web address and how to read it" },
-  { view: "understanding", icon: "sparkle", label: "What Endora understands about you", short: "Understanding", note: "beliefs, and what it's working on" },
-  { view: "signin", icon: "prefs", label: "Your sign-in", short: "Your sign-in", note: "password, authenticator, and tokens for scripts" },
-  { view: "prefs", icon: "prefs", label: "Things Endora remembers about you", short: "What it remembers" },
-  { view: "audit", icon: "audit", label: "What Endora has done", short: "What it has done", note: "what it tried, what changed, every decision" },
+  { view: "skills", icon: "skills", label: "Skills", note: "what Endora can do, what it connects to, and skills you teach it" },
+  { view: "understanding", icon: "person", label: "About you", note: "what you've told it, what it has learned, and what it's working on" },
+  { view: "signin", icon: "lock", label: "Your sign-in", note: "password, authenticator, and tokens for scripts" },
 ];
 
 // The trail for a screen under Settings. Anything not under Settings gets the short trail, so
@@ -75,7 +76,7 @@ function viewAudit() {
     <div class="card"><div class="sub mono">${new Date(a.at_ms).toLocaleString()}</div>
       <div>${esc(a.summary)}</div></div>`);
   return `
-    ${settingsCrumbs("audit")}
+    ${crumbs([{ label: "Home", act: "go:chat" }, { label: "Activity" }])}
     <h2>What Endora has done</h2>
     <div class="note">Its own account of its work — what it tried, whether it checked, and what it changed. Nothing here needs anything from you.</div>
     ${viewHowItLands()}

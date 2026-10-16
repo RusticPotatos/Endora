@@ -10,7 +10,8 @@ function render() {
       v === "audit" ? viewAudit()
     : v === "chat" ? viewChat()
     : v === "skills" ? viewSkills()
-    : v === "prefs" ? viewPrefs()
+    // Older links: what it remembers is now part of About you.
+    : v === "prefs" ? viewUnderstanding()
     : v === "settings" ? viewSettings()
     : v === "inbox" ? viewInbox()
     : v === "mail" ? viewMail()
@@ -881,7 +882,8 @@ function setupHeader(health) {
         unreadCount() ? `<span class="pill active">${unreadCount()}</span>` : "",
       ) +
       item("go:mail", "inbox", "Mail") +
-      item("go:settings", "prefs", "Settings") +
+      item("go:audit", "audit", "Activity") +
+      item("go:settings", "gear", "Settings") +
       `<div class="divider"></div>` +
       "";
   }

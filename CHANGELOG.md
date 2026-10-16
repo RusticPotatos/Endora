@@ -7,6 +7,18 @@ tagged release.
 
 ## [Unreleased]
 
+### Changed
+
+- **A shorter Settings menu.** Settings is five entries: Notifications & voice, Models, Skills,
+  About you, and Your sign-in. What Endora has done is **Activity** in the main menu, beside
+  the Inbox: it is a record, not a setting. What you told Endora and what it has learned are
+  one screen, **About you** (they were two, with nothing saying which was which). Recipes are
+  reached from the end of Skills. The seven entries that only hold settings for the handheld
+  ("Handheld: containers", "Overview: Sonarr" and the rest) say **Set up** once their settings
+  are filled, instead of "Needs setup" forever, and lose an on/off switch that did nothing.
+  "Uses freely" reads "Runs without asking" and "leaves device" reads "uses the internet". Two
+  screens nothing could reach any more are gone.
+
 ### Added
 
 - **Your time zone, by name** (`ENDORA_TIME_ZONE`, e.g. `America/New_York`). Daily patterns

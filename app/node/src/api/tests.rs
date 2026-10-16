@@ -2518,3 +2518,27 @@ async fn goal_routes_show_evidence_and_cancel_a_running_goal() {
         "an ended goal carries the same wording the chat would use: {cancelled}"
     );
 }
+
+#[tokio::test]
+async fn an_entry_that_only_holds_settings_is_marked_so_the_console_can_say_it_is_set_up() {
+    // The seven handheld entries are never "configured" and their on/off does nothing, so
+    // shown like a skill every one said "needs setup" forever.
+    let res = app(test_state())
+        .oneshot(get("/v1/capabilities"))
+        .await
+        .unwrap();
+    let all = json_body(res).await;
+    let find = |id: &str| {
+        all.as_array()
+            .unwrap()
+            .iter()
+            .find(|c| c["id"] == id)
+            .cloned()
+            .unwrap_or_else(|| panic!("{id} is listed"))
+    };
+    let portainer = find("terminal-portainer");
+    assert_eq!(portainer["settings_only"], true);
+    assert_eq!(portainer["settings_complete"], false, "nothing entered yet");
+    let weather = find("weather");
+    assert_eq!(weather["settings_only"], false);
+}

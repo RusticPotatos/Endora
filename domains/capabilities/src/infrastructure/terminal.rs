@@ -1116,6 +1116,17 @@ pub fn metric_queries(host: &str) -> Result<Vec<(&'static str, String)>, &'stati
     ])
 }
 
+/// What a [`HandheldSource`] says it needs: it only holds settings.
+const SETTINGS_ONLY_NEEDS: &str = "set up here; the handheld console uses it";
+
+/// Whether an entry only holds settings for the handheld (and the chat skills that borrow
+/// them) and is never something chat runs. Its on/off switch does nothing, and it is never
+/// `configured`, so the settings screen shows it as set up or not by its settings alone.
+#[must_use]
+pub fn settings_only(info: &super::CapabilityInfo) -> bool {
+    !info.configured && info.needs == SETTINGS_ONLY_NEEDS
+}
+
 /// A service only the handheld console reads. It exists so its address and key can be
 /// entered in the same settings screen as every other integration; it is never code the
 /// model can run, which `configured: false` and a failing `invoke` guarantee (ADR 0093).
@@ -1157,7 +1168,7 @@ impl super::Capability for HandheldSource {
             reaches_external: true,
             reversibility: super::Reversibility::Observe,
             configured: false,
-            needs: "set up here; the handheld console uses it",
+            needs: SETTINGS_ONLY_NEEDS,
             settings: self.settings,
             wants_place: false,
             borrows_from: None,

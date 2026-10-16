@@ -228,7 +228,13 @@ runInContext(
             category: "presence", enabled: true, configured: true, blocked: false,
             confirm: false, open_irreversible: false, reaches_external: true,
             reversibility: "observe", needs: "your Home Assistant URL",
-            settings: [{ key: "url", label: "Home Assistant URL", secret: false, set: true }] }];
+            settings: [{ key: "url", label: "Home Assistant URL", secret: false, set: true }] },
+          // An entry that only holds settings for the handheld: "Set up", and no on/off.
+          { id: "terminal-portainer", name: "Handheld: containers", description: "Portainer on the handheld",
+            category: "information", enabled: true, configured: false, settings_only: true,
+            settings_complete: true, blocked: false, confirm: false, open_irreversible: false,
+            reaches_external: true, reversibility: "observe", needs: "set up here",
+            settings: [{ key: "origin", label: "Portainer address", secret: false, set: true }] }];
   MCP_SERVERS = { servers: [{ name: "home-assistant", transport: "http",
                               url: "http://ha.local", command: "", args: [], enabled: true,
                               auth_set: false, env_keys: [], trust_all: true,
@@ -346,6 +352,32 @@ if (failures.length) {
   for (const f of failures) console.error("  " + f);
   process.exit(1);
 }
+// Settings holds settings. The record of what Endora did, the two halves of "about you", and
+// recipes were each their own entry once, and the list grew one row per feature.
+{
+  const settings = runInContext("viewSettings()", context);
+  for (const gone of ["go:audit", "go:prefs", "go:recipes"]) {
+    if (settings.includes(gone)) {
+      console.error(`settings: ${gone} is back in the Settings list`);
+      process.exit(1);
+    }
+  }
+  const skills = runInContext("viewSkills()", context);
+  const card = skills.slice(skills.indexOf("Handheld: containers"));
+  const portainer = card.slice(0, card.indexOf('<div class="card">', 1) > 0 ? card.indexOf('<div class="card">', 1) : undefined);
+  if (!portainer.includes("Set up") || portainer.includes("skill:enable:terminal-portainer")
+      || portainer.includes("Needs setup")) {
+    console.error("skills: an entry that only holds settings says it needs setup, or offers an on/off");
+    process.exit(1);
+  }
+  if (!skills.includes("skill:enable:home_assistant") || !skills.includes("go:recipes")) {
+    console.error("skills: a real skill lost its on/off, or recipes cannot be reached");
+    process.exit(1);
+  }
+  console.log("settings: 5 entries; settings-only skills say whether they are set up");
+}
+
+
 // Every screen under Settings must say so in its breadcrumb.
 //
 // They drifted: four said "Home > Skills" when they were two levels down, one had no trail at

@@ -8,9 +8,14 @@ function viewSkills() {
     // opens it, and even then confirmed on every use — never autonomous.
     const irreversible = c.reversibility === "irreversible";
     const opened = c.open_irreversible === true;
-    const status = c.usable
-      ? `<span class="pill concluded">On</span>`
-      : (!enabled ? `<span class="pill">Off</span>` : `<span class="pill">Needs setup</span>`);
+    // An entry that only holds settings (for the handheld, and chat skills that borrow them)
+    // is set up or not by its settings; it has no on/off and never runs on its own.
+    const holdsSettings = c.settings_only === true;
+    const status = holdsSettings
+      ? (c.settings_complete ? `<span class="pill concluded">Set up</span>` : `<span class="pill">Needs setup</span>`)
+      : c.usable
+        ? `<span class="pill concluded">On</span>`
+        : (!enabled ? `<span class="pill">Off</span>` : `<span class="pill">Needs setup</span>`);
     // A settings form for skills that need configuring (a model, a key, a URL).
     const settingsForm = (c.settings && c.settings.length) ? `
       <div style="margin-top:8px;border-top:1px solid var(--line);padding-top:8px;">
@@ -28,11 +33,11 @@ function viewSkills() {
       <div class="card">
         <div class="row">
           <div class="grow">
-            <div class="title">${esc(c.name)} ${status}${ext ? ` <span class="pill">leaves device</span>` : ""}${irreversible ? ` <span class="pill">can't be undone</span>` : ""}</div>
+            <div class="title">${esc(c.name)} ${status}${ext ? ` <span class="pill">uses the internet</span>` : ""}${irreversible ? ` <span class="pill">can't be undone</span>` : ""}</div>
             <div class="sub">${esc(c.description)}</div>
-            ${(enabled && !c.configured) ? `<div class="sub" style="margin-top:4px;">Needs: ${esc(c.needs)}</div>` : ""}
+            ${(enabled && !c.configured && !holdsSettings) ? `<div class="sub" style="margin-top:4px;">Needs: ${esc(c.needs)}</div>` : ""}
           </div>
-          <button class="ghost" data-act="skill:enable:${c.id}:${enabled ? "0" : "1"}">${enabled ? "Turn off" : "Turn on"}</button>
+          ${holdsSettings ? "" : `<button class="ghost" data-act="skill:enable:${c.id}:${enabled ? "0" : "1"}">${enabled ? "Turn off" : "Turn on"}</button>`}
         </div>
         ${irreversible ? `
         <div class="row" style="align-items:flex-start;gap:10px;margin-top:8px;border-top:1px solid var(--line);padding-top:8px;">
@@ -43,10 +48,10 @@ function viewSkills() {
               : "Spending, sending or deleting — blocked until you allow it, and it always asks first."}</div>
           </div>
           <button class="${opened ? "primary" : "ghost"}" data-act="skill:open:${c.id}:${opened ? "0" : "1"}">${opened ? "Block again" : "Allow (with confirmation)"}</button>
-        </div>` : (enabled ? `
+        </div>` : (enabled && !holdsSettings ? `
         <div class="row" style="gap:8px;margin-top:6px;">
           <button class="ghost" style="font-size:12px;padding:2px 8px;" data-act="skill:confirm:${c.id}:${c.confirm ? "0" : "1"}"
-            title="${c.confirm ? "Endora asks before every use. Click to let it decide." : "Endora may use this on its own. Click to be asked each time."}">${c.confirm ? "Asks first" : "Uses freely"}</button>
+            title="${c.confirm ? "Endora asks before every use. Click to let it decide." : "Endora may use this on its own. Click to be asked each time."}">${c.confirm ? "Asks first" : "Runs without asking"}</button>
         </div>` : "")}
         ${settingsForm}
       </div>`;
@@ -195,6 +200,14 @@ function viewSkills() {
     ${viewConnect()}
     <h3>Skills</h3>
     ${listOr((CAPS || []).map(card), "No skills registered.")}
+    <h3>Skills you teach it</h3>
+    <div class="card nav-list">
+      <button class="ghost" data-act="go:recipes">${icon("plus")}
+        <span class="grow" style="text-align:left;">Recipes<span class="sub" style="display:block;font-weight:400;">${(RECIPES || []).length
+          ? `${(RECIPES || []).length} taught so far`
+          : "read one web address and say one sentence about it — no code"}</span></span>
+        ${icon("chevron", 15)}</button>
+    </div>
     ${mcpSection}`;
 }
 
@@ -353,7 +366,12 @@ function viewRecipes() {
       </div>
     </details>`;
   return `
-    ${settingsCrumbs("recipes")}
+    ${crumbs([
+      { label: "Home", act: "go:chat" },
+      { label: "Settings", act: "go:settings" },
+      { label: "Skills", act: "go:skills" },
+      { label: "Recipes" },
+    ])}
     <h2>Recipes</h2>
     <div class="note">A recipe is a capability you teach Endora yourself — no code. It can only read one web address and say one sentence about it; it can't act on anything. A new one stays off until you turn it on.</div>
     ${listOr(recipes.map(recipeCard), "No recipes yet — teach it one below.")}
