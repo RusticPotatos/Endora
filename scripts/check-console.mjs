@@ -175,7 +175,9 @@ runInContext(
   MAIL = { mounted: true, reading: true, indexed: 412, unread_recent: 37,
     important: [{ from: "Example Dental", at_ms: 1, bucket: "money", sentence: "A bill <b>due</b>.",
                   why: ["asks for money"], amount: "180.00", dates: [{ date: "2026-10-30", what: "due" }],
-                  cautions: ["replies go to example.org"] }],
+                  cautions: ["replies go to example.org"], appointment: { day: "2026-10-02", title: "Dental checkup" } }],
+    coming_up: [{ date: "2026-10-24", what: "hike", from: "Jane Doe", because: "from someone you write to" }],
+    held_back: 2,
     buckets: [{ name: "money", title: "Money", count: 1, recent: [{ from: "Example Dental", at_ms: 1,
                 bucket: "money", sentence: "A bill.", why: [], amount: null, dates: [] }] },
               { name: "other", title: "Other", count: 0, recent: [] }] };

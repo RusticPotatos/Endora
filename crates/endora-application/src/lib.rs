@@ -69,7 +69,7 @@ pub use endora_understanding::{
     make_way_for_a_new_one,
 };
 pub use ports::{
-    Butler, ButlerContext, ButlerReply, CapabilityTool, Clock, ConversationSummary,
+    Butler, ButlerContext, ButlerReply, Calendar, CapabilityTool, Clock, ConversationSummary,
     ConversationSummaryStore, EXECUTION_LEASE_MS, ExecutionLeaseRepository, FormedBelief,
     GoalDelivery, GoalLease, GoalRepository, IdSource, MemorySnapshot, MemoryStore, ModelUsage,
     NeedKind, ProposalError, RepositoryError, ResearchDelivery, ToolCall, TurnMessage,

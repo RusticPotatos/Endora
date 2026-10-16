@@ -891,9 +891,17 @@ pub(super) async fn read_mail_once(state: &AppState) -> Option<endora_mail::Dige
         return None;
     };
     let clock = state.clock.clone();
+    let config = state.config.clone();
     let read = tokio::task::spawn_blocking(move || {
         let _turn = turn;
-        usecases::read_one(&copy, &store, reader.as_ref(), clock.as_ref())
+        let calendar = HouseCalendar(config);
+        usecases::read_one(
+            &copy,
+            &store,
+            reader.as_ref(),
+            Some(&calendar),
+            clock.as_ref(),
+        )
     })
     .await
     .ok()?;
@@ -907,6 +915,7 @@ pub(super) async fn read_mail_once(state: &AppState) -> Option<endora_mail::Dige
             return None;
         }
     };
+    ping_about_a_person(state, &digest);
     if !digest.reasons.is_empty() && now.unix_millis() - digest.at_ms <= RECENT_MS {
         let _ = endora_application::EventLog::record(
             state.events.as_ref(),
@@ -918,11 +927,75 @@ pub(super) async fn read_mail_once(state: &AppState) -> Option<endora_mail::Dige
     Some(digest)
 }
 
+/// Says in chat, without naming anyone, that someone the owner writes to has sent fresh mail
+/// that may need them: at most [`MOST_MAIL_PINGS_A_DAY`] a day, and only for mail from the last
+/// two hours, so reading a backlog never pings about last week.
+fn ping_about_a_person(state: &AppState, digest: &endora_mail::Digest) {
+    const FRESH_MS: i64 = 2 * 60 * 60 * 1000;
+    let now = state.clock.now().unix_millis();
+    let personal = digest.reasons.iter().any(|r| {
+        matches!(
+            r,
+            endora_mail::Reason::ReplyInYourThread | endora_mail::Reason::FromSomeoneYouWriteTo
+        )
+    });
+    if !personal || now - digest.at_ms > FRESH_MS {
+        return;
+    }
+    let day_start = now - now.rem_euclid(24 * 60 * 60 * 1000);
+    let today =
+        endora_conversation::ChatRepository::between(state.chat.as_ref(), day_start, i64::MAX)
+            .unwrap_or_default();
+    if today.iter().filter(|m| m.text() == MAIL_PING).count() >= MOST_MAIL_PINGS_A_DAY {
+        return;
+    }
+    if let Ok(message) = endora_application::ChatMessage::new(
+        endora_application::MessageId::new(state.ids.new_id()),
+        endora_application::MessageRole::Butler,
+        MAIL_PING,
+        state.clock.now(),
+    ) {
+        if endora_conversation::ChatRepository::append(state.chat.as_ref(), &message).is_ok() {
+            let _ = state.changes.send(());
+        }
+    }
+}
+
 /// The mail section for the morning brief, or nothing.
 pub(super) fn mail_brief_lines(state: &AppState) -> Vec<String> {
-    usecases::mail_for_the_brief(state.mail_store.as_ref(), state.clock.as_ref())
-        .unwrap_or_default()
+    let calendar = HouseCalendar(state.config.clone());
+    usecases::mail_for_the_brief(
+        state.mail_store.as_ref(),
+        Some(&calendar),
+        state.clock.as_ref(),
+    )
+    .unwrap_or_default()
 }
+
+/// The owner's calendar, through the house's own Home Assistant connection: whatever calendars
+/// it is connected to, read-only, with no credential of its own. Nothing when Home Assistant is
+/// not set up.
+pub(super) struct HouseCalendar(pub(super) Arc<endora_capabilities::ConfigStore>);
+
+impl endora_application::Calendar for HouseCalendar {
+    fn entries(&self, from_ms: i64, to_ms: i64) -> Result<Vec<(String, String)>, String> {
+        let settings = super::settings_map(self.0.as_ref());
+        let home = settings
+            .get("home_assistant")
+            .and_then(endora_capabilities::HomeAssistant::from_settings)
+            .ok_or_else(|| "Home Assistant is not set up".to_owned())?;
+        home.calendar_entries(from_ms, to_ms)
+    }
+}
+
+/// What chat says when someone the owner writes to has sent mail that may need them. On
+/// purpose it names nobody and quotes nothing: chat is history the paid model may later see,
+/// and mail stays in the house.
+pub(super) const MAIL_PING: &str =
+    "Someone you write to sent mail that may need you. It's on the Mail screen.";
+
+/// How many such pings in a day, at most.
+const MOST_MAIL_PINGS_A_DAY: usize = 2;
 
 /// Starts looking into things unasked, on the slow cadence ADR 0094 sets. Run only when the
 /// owner has turned it on (`ENDORA_OWN_WORK`); until then nothing creates this kind of work.

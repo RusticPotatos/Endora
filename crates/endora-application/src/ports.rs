@@ -530,6 +530,17 @@ pub trait UntrustedReader {
     fn read(&self, instructions: &str, data: &str) -> Result<String, ProposalError>;
 }
 
+/// The owner's calendar, read-only: what is on it between two moments, as `(YYYY-MM-DD,
+/// title)`. Used to give mail context (ADR 0097): which appointment a bill follows, and
+/// which dates mentioned in mail are already known.
+pub trait Calendar {
+    /// The entries between two moments.
+    ///
+    /// # Errors
+    /// A message if the calendar cannot be read.
+    fn entries(&self, from_ms: i64, to_ms: i64) -> Result<Vec<(String, String)>, String>;
+}
+
 /// The butler brain: given the conversation so far, produce a reply and any
 /// proposed actions.
 ///

@@ -573,3 +573,122 @@ fn only_dates_written_in_the_message_are_kept() {
         1
     );
 }
+
+// ---- the calendar ----
+
+fn entries(list: &[(&str, &str)]) -> Vec<(String, String)> {
+    list.iter()
+        .map(|(d, t)| ((*d).to_owned(), (*t).to_owned()))
+        .collect()
+}
+
+#[test]
+fn a_bill_is_matched_to_the_nearest_appointment_with_whoever_sent_it() {
+    let bill_day = days_of("2026-10-15").unwrap();
+    let cal = entries(&[
+        ("2026-07-01", "Dentist cleaning"), // too long ago
+        ("2026-09-20", "Example Dental"),   // a match, further away
+        ("2026-10-02", "Dental checkup"),   // the nearest match
+        ("2026-10-10", "Haircut"),          // no shared word
+    ]);
+    assert_eq!(
+        appointment_for(
+            "Example Dental Billing",
+            "billing@example.net",
+            bill_day,
+            &cal
+        ),
+        Some(("2026-10-02".to_owned(), "Dental checkup".to_owned()))
+    );
+    assert_eq!(
+        appointment_for(
+            "Example Dental Billing",
+            "billing@example.net",
+            bill_day,
+            &entries(&[("2026-10-10", "Haircut")])
+        ),
+        None
+    );
+}
+
+#[test]
+fn generic_words_in_a_sender_name_match_nothing() {
+    let bill_day = days_of("2026-10-15").unwrap();
+    let cal = entries(&[("2026-10-01", "Payment team review")]);
+    assert_eq!(
+        appointment_for("Billing Team", "noreply@example.net", bill_day, &cal),
+        None
+    );
+}
+
+fn mention(date: &str, what: &str, from: &str, key: &str, trusted: bool) -> Mention {
+    Mention {
+        date: date.into(),
+        what: what.into(),
+        from: from.into(),
+        key: key.into(),
+        trusted,
+    }
+}
+
+#[test]
+fn only_confirmed_future_dates_not_already_on_the_calendar_are_shown() {
+    let today = days_of("2026-10-15").unwrap();
+    let mentions = [
+        mention("2026-10-24", "hike", "Jane Doe", "a", true), // someone written to
+        mention("2026-11-02", "renewal due", "Example Insurance", "b", false), // said twice
+        mention("2026-11-02", "renewal due", "Example Insurance", "c", false),
+        mention("2026-11-05", "act now", "Stranger", "d", false), // held back
+        mention("2026-10-01", "old thing", "Jane Doe", "e", true), // past
+        mention(
+            "2026-10-30",
+            "dentist follow-up",
+            "Example Dental",
+            "f",
+            false,
+        ), // earlier entry
+        mention("2026-10-20", "Trash day", "City", "g", true),    // already on it
+        mention("2026-11-09", "one message twice", "Someone", "h", false),
+        mention("2026-11-09", "one message twice", "Someone", "h", false),
+    ];
+    let cal = entries(&[("2026-09-15", "Dentist visit"), ("2026-10-20", "Trash day")]);
+    let (shown, held) = coming_up(&mentions, &cal, today);
+    let got: Vec<(&str, &str)> = shown.iter().map(|u| (u.date.as_str(), u.because)).collect();
+    assert_eq!(
+        got,
+        [
+            ("2026-10-24", "from someone you write to"),
+            ("2026-10-30", "matches something already on your calendar"),
+            ("2026-11-02", "in more than one message"),
+        ]
+    );
+    assert_eq!(
+        held, 2,
+        "the stranger's date, and a date said twice in one message"
+    );
+}
+
+#[test]
+fn an_appointment_months_before_a_bill_is_not_the_one_it_is_for() {
+    let bill_day = days_of("2026-10-15").unwrap();
+    let only_long_ago = entries(&[("2026-07-01", "Dental cleaning")]);
+    assert_eq!(
+        appointment_for(
+            "Example Dental Billing",
+            "billing@example.net",
+            bill_day,
+            &only_long_ago
+        ),
+        None
+    );
+    let too_far_ahead = entries(&[("2026-11-20", "Dental cleaning")]);
+    assert_eq!(
+        appointment_for(
+            "Example Dental Billing",
+            "billing@example.net",
+            bill_day,
+            &too_far_ahead
+        ),
+        None
+    );
+}

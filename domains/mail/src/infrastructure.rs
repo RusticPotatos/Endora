@@ -385,6 +385,8 @@ pub struct Digest {
     /// Reasons it may not be what it says, as a person reads them; kept for the kinds of mail
     /// worth forging (money, security, orders, appointments, the app).
     pub cautions: Vec<String>,
+    /// For a bill: the calendar appointment it most likely follows, as `(day, title)`.
+    pub appointment: Option<(String, String)>,
 }
 
 /// The digest and the index of every message, in Endora's database.
@@ -524,6 +526,7 @@ impl MailStore {
             "needs_reply": d.flags.needs_reply,
             "dates": d.flags.dates.iter().map(|(date, what)| serde_json::json!({"date": date, "what": what})).collect::<Vec<_>>(),
             "cautions": d.cautions,
+            "appointment": d.appointment.as_ref().map(|(day, title)| serde_json::json!({"day": day, "title": title})),
         });
         let reasons: Vec<&str> = d.reasons.iter().map(|r| r.name()).collect();
         self.db
@@ -637,6 +640,10 @@ impl MailStore {
                             .collect()
                     })
                     .unwrap_or_default(),
+                appointment: f["appointment"]["day"]
+                    .as_str()
+                    .zip(f["appointment"]["title"].as_str())
+                    .map(|(d, t)| (d.to_owned(), t.to_owned())),
             });
         }
         Ok(out)

@@ -56,7 +56,7 @@ fn the_local_model_reads_mail_through_the_quarantined_reader() {
     let reader = LlmButler::new(url, model);
     usecases::index_new_mail(&copy, &store).unwrap();
     let mut read = Vec::new();
-    while let Some(d) = usecases::read_one(&copy, &store, &reader, &Now).unwrap() {
+    while let Some(d) = usecases::read_one(&copy, &store, &reader, None, &Now).unwrap() {
         eprintln!(
             "{:<10} bucket={:<13} ok={} why={:?} amount={:?} dates={:?}\n           sentence={:?}",
             d.key.trim_start_matches("personal/"),

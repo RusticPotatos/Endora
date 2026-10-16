@@ -236,6 +236,7 @@ fn unread_mail_comes_newest_first_and_leaves_once_read_or_passed_over() {
             },
             read_ok: true,
             cautions: vec!["the first message from this sender".into()],
+            appointment: Some(("2026-10-02".into(), "Dental checkup".into())),
         },
         2,
     )
@@ -253,4 +254,8 @@ fn unread_mail_comes_newest_first_and_leaves_once_read_or_passed_over() {
     assert_eq!(d.flags.dates, [("2026-10-20".to_owned(), "due".to_owned())]);
     assert!(d.read_ok);
     assert_eq!(d.cautions, ["the first message from this sender"]);
+    assert_eq!(
+        d.appointment,
+        Some(("2026-10-02".to_owned(), "Dental checkup".to_owned()))
+    );
 }

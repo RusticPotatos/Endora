@@ -580,6 +580,7 @@ function viewMail() {
       <div class="title" style="font-weight:400;">${esc(m.sentence || "(no summary)")}</div>
       ${showWhy && (m.why || []).length ? `<div class="sub">${esc(m.why.join(" · "))}</div>` : ""}
       ${(m.dates || []).length ? `<div class="sub">${m.dates.map((d) => `${esc(d.date)}: ${esc(d.what)}`).join(" · ")}</div>` : ""}
+      ${m.appointment ? `<div class="sub">Follows "${esc(m.appointment.title)}" on ${esc(m.appointment.day)}</div>` : ""}
       ${(m.cautions || []).length ? `<div class="sub" style="color:var(--warn, #b45309);">${esc(m.cautions.join(" · "))}</div>` : ""}
     </div>`;
   const status = MAIL.reading
@@ -595,6 +596,9 @@ function viewMail() {
     <div class="note" style="margin-bottom:10px;">${esc(status)} ${MAIL.indexed} messages indexed. The last two weeks are shown.</div>
     <h3>Worth a look</h3>
     ${listOr(important, "Nothing that needs you in the last two weeks.")}
+    <h3>Coming up</h3>
+    ${listOr((MAIL.coming_up || []).map((u) => `<div class="card"><div class="title" style="font-weight:400;">${esc(u.date)} · ${esc(u.what)}</div><div class="sub">${esc(u.from)} · ${esc(u.because)}</div></div>`), "No confirmed dates from your mail.")}
+    ${MAIL.held_back ? `<div class="note">${MAIL.held_back} date${MAIL.held_back === 1 ? "" : "s"} held back: mentioned once, by someone you don't write to.</div>` : ""}
     <h3>By bucket</h3>
     ${listOr(buckets, "Nothing read yet.")}`;
 }

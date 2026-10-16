@@ -11,8 +11,9 @@ pub mod domain;
 pub mod infrastructure;
 
 pub use domain::{
-    Attachment, Auth, Bucket, Caution, Flags, Headline, Link, Mailbox, Message, Reason, Verdict,
-    bucket, cautions, days_of, domain_of, for_the_reader, guarded_sentence, read_reply,
-    registered_domain, safe_sentence, why_important, without_links, written_dates,
+    Attachment, Auth, Bucket, Caution, Flags, Headline, Link, Mailbox, Mention, Message, Reason,
+    Upcoming, Verdict, appointment_for, bucket, cautions, coming_up, days_of, domain_of,
+    for_the_reader, guarded_sentence, read_reply, registered_domain, safe_sentence, why_important,
+    without_links, written_dates,
 };
 pub use infrastructure::{Digest, MailStore, MaildirCopy, migrate};

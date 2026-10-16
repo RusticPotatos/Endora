@@ -72,8 +72,19 @@ a person the owner writes to often.
 - **Dates are kept only if written.** The same run showed the model working out "Thursday"
   as the wrong day. A date is kept only if its day of the month appears in the message.
 - Shown: a trail line for recent mail that matters; a section appended to the morning brief;
-  a Mail screen in the console. Not yet built: the calendar check for bills, corroboration
-  across messages for dates, and the chat ping for a person the owner writes to often.
+  a Mail screen in the console.
+- **The calendar, through Home Assistant.** Read-only, through the house's existing connection
+  (no new credential). A bill gets the nearest calendar entry from 60 days before to 14 after
+  that shares a word with the sender ("Follows 'Dental checkup' on 2026-10-02"), or the note
+  that there is none. Matching is by shared words, named as crude: it can only add evidence.
+- **Coming up.** A date from mail is shown only when someone the owner writes to said it, two
+  or more messages say it, or an earlier calendar entry shares a word with it; one already on
+  the calendar that day is not repeated, and a message that may not be genuine contributes
+  nothing. The rest are counted as held back.
+- **The ping is nameless.** For fresh mail (under two hours old) from someone the owner writes
+  to, chat says "Someone you write to sent mail that may need you", at most twice a day. It
+  names nobody and quotes nothing, because chat is history the deep model may later see, and
+  the escalation door disguises only the person's own messages.
 
 ## Consequences
 

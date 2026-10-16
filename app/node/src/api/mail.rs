@@ -13,10 +13,14 @@ pub(super) async fn mail_digest(
     let store = state.mail_store.clone();
     let mounted = state.mail_copy.is_some();
     let now = state.clock.now().unix_millis();
-    let (digests, (indexed, unread)) = blocking(move || {
+    let config = state.config.clone();
+    let clock = state.clock.clone();
+    let (digests, (indexed, unread), (upcoming, held_back)) = blocking(move || {
+        let calendar = super::workers::HouseCalendar(config);
         Ok::<_, AppError>((
             store.digests_since(now - SHOWN_MS)?,
             store.progress(now - usecases::READ_BACK_MS)?,
+            usecases::dates_coming_up(&store, Some(&calendar), clock.as_ref())?,
         ))
     })
     .await?;
@@ -30,6 +34,7 @@ pub(super) async fn mail_digest(
             "amount": d.flags.amount.as_ref().filter(|_| d.flags.money_due),
             "dates": d.flags.dates.iter().map(|(date, what)| json!({"date": date, "what": what})).collect::<Vec<_>>(),
             "cautions": d.cautions,
+            "appointment": d.appointment.as_ref().map(|(day, title)| json!({"day": day, "title": title})),
         })
     };
     let buckets: Vec<serde_json::Value> = endora_mail::Bucket::ALL
@@ -52,5 +57,9 @@ pub(super) async fn mail_digest(
         "unread_recent": unread,
         "important": digests.iter().filter(|d| !d.reasons.is_empty()).map(item).collect::<Vec<_>>(),
         "buckets": buckets,
+        "coming_up": upcoming.iter().map(|u| json!({
+            "date": u.date, "what": u.what, "from": u.from, "because": u.because,
+        })).collect::<Vec<_>>(),
+        "held_back": held_back,
     })))
 }

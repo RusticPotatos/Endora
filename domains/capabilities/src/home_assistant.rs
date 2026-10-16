@@ -402,6 +402,27 @@ impl HomeAssistant {
         Ok(states_in_history(&body))
     }
 
+    /// Every entry on every calendar the house has, between two moments: its day and its
+    /// title, nothing else. Read-only, from Home Assistant's own calendar API, so whatever
+    /// calendars the house is connected to (Google, iCloud, local) are covered without Endora
+    /// holding another credential.
+    ///
+    /// # Errors
+    /// A human-readable message if Home Assistant cannot be reached.
+    pub fn calendar_entries(
+        &self,
+        from_ms: i64,
+        to_ms: i64,
+    ) -> Result<Vec<(String, String)>, String> {
+        let (start, end) = (format_utc(from_ms), format_utc(to_ms));
+        let mut out = Vec::new();
+        for id in calendar_ids_in(&self.get("/api/calendars")?) {
+            let body = self.get(&format!("/api/calendars/{id}?start={start}&end={end}"))?;
+            out.extend(calendar_entries_in(&body));
+        }
+        Ok(out)
+    }
+
     fn get(&self, path: &str) -> Result<String, String> {
         use std::io::Read;
         let mut resp = crate::infrastructure::agent()
@@ -1540,6 +1561,77 @@ impl crate::infrastructure::NativeChannel for HomeAssistant {
             self.restore_aliases(&restore)
                 .map(|()| format!("{} no longer answers to '{}'.", write.target, write.added)),
         )
+    }
+}
+
+/// The calendars in `GET /api/calendars`, by entity id. An id that is not plain is skipped, so
+/// nothing from the reply is ever put into a path unchecked.
+#[must_use]
+pub fn calendar_ids_in(body: &str) -> Vec<String> {
+    serde_json::from_str::<Value>(body)
+        .ok()
+        .and_then(|v| v.as_array().cloned())
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|c| c["entity_id"].as_str())
+        .filter(|id| {
+            id.starts_with("calendar.")
+                && id
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || "._".contains(c))
+        })
+        .map(str::to_owned)
+        .collect()
+}
+
+/// The entries in one calendar's reply, as `(YYYY-MM-DD, title)`. An all-day entry gives its
+/// date; a timed one, the date part of its start as the calendar wrote it.
+#[must_use]
+pub fn calendar_entries_in(body: &str) -> Vec<(String, String)> {
+    serde_json::from_str::<Value>(body)
+        .ok()
+        .and_then(|v| v.as_array().cloned())
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|e| {
+            let start = &e["start"];
+            let when = start["date"]
+                .as_str()
+                .or_else(|| start["dateTime"].as_str())?;
+            let day: String = when.chars().take(10).collect();
+            let title = e["summary"].as_str()?.trim();
+            (day.len() == 10 && !title.is_empty()).then(|| (day, title.chars().take(120).collect()))
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod calendar_tests {
+    use super::*;
+
+    #[test]
+    fn calendars_are_found_by_plain_ids_only() {
+        let body = r#"[{"entity_id":"calendar.family","name":"Family"},{"entity_id":"calendar.home"},
+            {"entity_id":"calendar.x/../../api/config"},{"entity_id":"light.kitchen"},{"name":"no id"}]"#;
+        assert_eq!(calendar_ids_in(body), ["calendar.family", "calendar.home"]);
+        assert!(calendar_ids_in("not json").is_empty());
+    }
+
+    #[test]
+    fn entries_give_their_day_and_title() {
+        let body = r#"[
+            {"summary":"Dentist","start":{"dateTime":"2026-10-02T09:00:00-04:00"},"end":{}},
+            {"summary":"Trash day","start":{"date":"2026-10-06"}},
+            {"summary":"","start":{"date":"2026-10-07"}},
+            {"summary":"No start"}
+        ]"#;
+        assert_eq!(
+            calendar_entries_in(body),
+            [
+                ("2026-10-02".to_owned(), "Dentist".to_owned()),
+                ("2026-10-06".to_owned(), "Trash day".to_owned())
+            ]
+        );
     }
 }
 

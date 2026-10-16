@@ -22,6 +22,10 @@ tagged release.
   security notice from a sender nothing vouches for is marked **may not be genuine** and
   described by code, never in its own words. Nothing is opened, no link is followed, and no
   mail text reaches the model that words the brief.
+  Bills are checked against your calendar through Home Assistant ("Follows 'Dental checkup'
+  on 2026-10-02", or that there is no such appointment); dates mentioned in mail are listed
+  under **Coming up** only when something confirms them; and when someone you write to sends
+  fresh mail, chat says so without naming them, at most twice a day.
 - **What you set up on the handheld can now be asked about in chat.** The handheld's Docker,
   Portainer, Sonarr, Radarr and NAS-metrics entries were settings-only, so a service you had
   already configured was invisible to the one place you would naturally ask about it. Five

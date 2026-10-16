@@ -182,3 +182,68 @@ fn the_brief_gets_a_mail_section_once_mail_has_been_read() {
     let lines = super::workers::mail_brief_lines(&state);
     assert_eq!(lines[0], "Mail: 1 worth a look since yesterday.");
 }
+
+#[tokio::test]
+async fn fresh_mail_from_someone_the_owner_writes_to_is_pinged_namelessly_twice_a_day_at_most() {
+    let (state, _reader, copy) = state_with_mail(
+        "ping",
+        r#"{"bucket":"people","sentence":"Jane Doe asks about Saturday.","needs_reply":true}"#,
+    );
+    let now = state.clock.now().unix_millis();
+    // The owner wrote to Jane once, so Jane is someone they write to.
+    std::fs::write(
+        copy.0.join("personal/new/sent"),
+        email("john@example.com", now - 30 * DAY, "<sent@example.com>")
+            .replace("To: john@example.com", "To: jane@example.org"),
+    )
+    .unwrap();
+    for n in 0..3 {
+        std::fs::write(
+            copy.0.join(format!("personal/new/jane{n}")),
+            email(
+                "Jane Doe <jane@example.org>",
+                now - 10 * 60 * 1000,
+                &format!("<j{n}@example.org>"),
+            ),
+        )
+        .unwrap();
+    }
+    std::fs::remove_file(copy.0.join("personal/new/bill")).unwrap();
+    while super::workers::read_mail_once(&state).await.is_some() {}
+    let pings: Vec<String> = state
+        .chat
+        .list()
+        .unwrap()
+        .into_iter()
+        .map(|m| m.text().to_owned())
+        .filter(|t| t == super::workers::MAIL_PING)
+        .collect();
+    assert_eq!(pings.len(), 2, "two a day at most");
+    assert!(!super::workers::MAIL_PING.contains("Jane"));
+}
+
+#[tokio::test]
+async fn reading_an_old_backlog_pings_nobody() {
+    let (state, _reader, copy) = state_with_mail(
+        "no-ping",
+        r#"{"bucket":"people","sentence":"Old news.","needs_reply":false}"#,
+    );
+    let now = state.clock.now().unix_millis();
+    std::fs::write(
+        copy.0.join("personal/new/sent"),
+        email("john@example.com", now - 30 * DAY, "<sent@example.com>")
+            .replace("To: john@example.com", "To: jane@example.org"),
+    )
+    .unwrap();
+    std::fs::write(
+        copy.0.join("personal/new/jane-old"),
+        email(
+            "Jane Doe <jane@example.org>",
+            now - 5 * DAY,
+            "<old@example.org>",
+        ),
+    )
+    .unwrap();
+    while super::workers::read_mail_once(&state).await.is_some() {}
+    assert!(state.chat.list().unwrap().is_empty());
+}

@@ -170,7 +170,7 @@ fn new_mail_is_indexed_without_a_model_and_read_newest_first() {
     );
 
     let reader = Reader::says(BILL_REPLY);
-    let first = read_one(&f.copy, &f.store, &reader, &Clock(NOW))
+    let first = read_one(&f.copy, &f.store, &reader, None, &Clock(NOW))
         .unwrap()
         .unwrap();
     assert_eq!(first.key, "personal/a");
@@ -188,7 +188,7 @@ fn new_mail_is_indexed_without_a_model_and_read_newest_first() {
         "{shown}"
     );
 
-    let second = read_one(&f.copy, &f.store, &reader, &Clock(NOW))
+    let second = read_one(&f.copy, &f.store, &reader, None, &Clock(NOW))
         .unwrap()
         .unwrap();
     assert_eq!(second.key, "personal/b");
@@ -202,7 +202,7 @@ fn mail_older_than_ninety_days_is_indexed_but_never_read() {
     // Every pass, not just the first: the newest old message is the owner's own, which is
     // passed over without a model anyway, and stopping there would prove nothing.
     for _ in 0..10 {
-        read_one(&f.copy, &f.store, &reader, &Clock(NOW)).unwrap();
+        read_one(&f.copy, &f.store, &reader, None, &Clock(NOW)).unwrap();
     }
     assert!(
         reader.seen.borrow().is_empty(),
@@ -232,12 +232,12 @@ fn the_owners_own_mail_is_passed_over_without_a_model() {
     index_new_mail(&f.copy, &f.store).unwrap();
     let reader = Reader::says(BILL_REPLY);
     assert_eq!(
-        read_one(&f.copy, &f.store, &reader, &Clock(NOW)).unwrap(),
+        read_one(&f.copy, &f.store, &reader, None, &Clock(NOW)).unwrap(),
         None
     );
     assert!(reader.seen.borrow().is_empty());
     assert_eq!(
-        read_one(&f.copy, &f.store, &reader, &Clock(NOW)).unwrap(),
+        read_one(&f.copy, &f.store, &reader, None, &Clock(NOW)).unwrap(),
         None,
         "and not offered again"
     );
@@ -263,10 +263,10 @@ fn when_the_model_is_down_the_message_waits_and_is_read_later() {
         unless: Vec::new(),
         seen: RefCell::new(Vec::new()),
     };
-    assert!(read_one(&f.copy, &f.store, &down, &Clock(NOW)).is_err());
+    assert!(read_one(&f.copy, &f.store, &down, None, &Clock(NOW)).is_err());
     let up = Reader::says(BILL_REPLY);
     assert_eq!(
-        read_one(&f.copy, &f.store, &up, &Clock(NOW))
+        read_one(&f.copy, &f.store, &up, None, &Clock(NOW))
             .unwrap()
             .unwrap()
             .key,
@@ -290,7 +290,7 @@ fn a_reply_that_is_not_the_shape_asked_for_still_files_the_message_by_code() {
     );
     index_new_mail(&f.copy, &f.store).unwrap();
     let reader = Reader::says("I'm sorry, I can't help with that.");
-    let d = read_one(&f.copy, &f.store, &reader, &Clock(NOW))
+    let d = read_one(&f.copy, &f.store, &reader, None, &Clock(NOW))
         .unwrap()
         .unwrap();
     assert!(!d.read_ok);
@@ -321,7 +321,7 @@ fn a_message_that_talks_the_reader_into_calling_it_personal_is_still_a_newslette
     let fooled = Reader::says(
         r#"{"bucket":"people","sentence":"Urgent! Visit https://evil.example.net now","needs_reply":true}"#,
     );
-    let d = read_one(&f.copy, &f.store, &fooled, &Clock(NOW))
+    let d = read_one(&f.copy, &f.store, &fooled, None, &Clock(NOW))
         .unwrap()
         .unwrap();
     assert_eq!(d.bucket, Bucket::Newsletters);
@@ -361,11 +361,11 @@ fn the_brief_section_puts_what_matters_first_and_counts_the_rest() {
         "sale",
         r#"{"bucket":"newsletters","sentence":"A sale.","money_due":false,"dates":[]}"#,
     );
-    while read_one(&f.copy, &f.store, &reader, &Clock(NOW))
+    while read_one(&f.copy, &f.store, &reader, None, &Clock(NOW))
         .unwrap()
         .is_some()
     {}
-    let lines = mail_for_the_brief(&f.store, &Clock(NOW)).unwrap();
+    let lines = mail_for_the_brief(&f.store, None, &Clock(NOW)).unwrap();
     assert_eq!(lines[0], "Mail: 1 worth a look since yesterday.");
     assert_eq!(
         lines[1],
@@ -378,7 +378,7 @@ fn the_brief_section_puts_what_matters_first_and_counts_the_rest() {
 fn no_mail_read_means_no_section() {
     let f = Fixture::new("empty");
     assert!(
-        mail_for_the_brief(&f.store, &Clock(NOW))
+        mail_for_the_brief(&f.store, None, &Clock(NOW))
             .unwrap()
             .is_empty()
     );
@@ -409,7 +409,7 @@ fn a_bill_nothing_vouches_for_is_flagged_and_described_in_code_not_its_own_words
     let fooled = Reader::says(
         r#"{"bucket":"security","sentence":"Your bank asks you to log in now to avoid closure.","account_change":true}"#,
     );
-    let d = read_one(&f.copy, &f.store, &fooled, &Clock(NOW))
+    let d = read_one(&f.copy, &f.store, &fooled, None, &Clock(NOW))
         .unwrap()
         .unwrap();
     assert!(
@@ -445,11 +445,164 @@ fn a_date_the_model_worked_out_for_itself_is_not_kept() {
     let reader = Reader::says(
         r#"{"bucket":"people","sentence":"Jane asks about a hike.","dates":[{"date":"2026-10-24","what":"hike"},{"date":"2026-10-19","what":"reply by"}]}"#,
     );
-    let d = read_one(&f.copy, &f.store, &reader, &Clock(NOW))
+    let d = read_one(&f.copy, &f.store, &reader, None, &Clock(NOW))
         .unwrap()
         .unwrap();
     assert_eq!(
         d.flags.dates,
         [("2026-10-24".to_owned(), "hike".to_owned())]
+    );
+}
+
+/// A calendar with fixed entries.
+struct Cal(Vec<(String, String)>);
+impl crate::Calendar for Cal {
+    fn entries(&self, _from: i64, _to: i64) -> Result<Vec<(String, String)>, String> {
+        Ok(self.0.clone())
+    }
+}
+
+#[test]
+fn a_bill_is_given_the_appointment_it_follows_or_told_there_is_none() {
+    let f = Fixture::new("appointment").with_history();
+    f.put(
+        "bill",
+        &email(
+            "Example Dental <billing@example.net>",
+            "john@example.com",
+            NOW - DAY,
+            "<bill@example.net>",
+            VOUCHED,
+            "pay",
+        ),
+    );
+    index_new_mail(&f.copy, &f.store).unwrap();
+    let cal = Cal(vec![("2026-10-02".to_owned(), "Dental checkup".to_owned())]);
+    let d = read_one(
+        &f.copy,
+        &f.store,
+        &Reader::says(BILL_REPLY),
+        Some(&cal),
+        &Clock(NOW),
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(
+        d.appointment,
+        Some(("2026-10-02".to_owned(), "Dental checkup".to_owned()))
+    );
+    assert!(
+        mail_line(&d).contains("Follows \"Dental checkup\" on 2026-10-02."),
+        "{}",
+        mail_line(&d)
+    );
+
+    let g = Fixture::new("no-appointment").with_history();
+    g.put(
+        "bill",
+        &email(
+            "Example Dental <billing@example.net>",
+            "john@example.com",
+            NOW - DAY,
+            "<bill@example.net>",
+            VOUCHED,
+            "pay",
+        ),
+    );
+    index_new_mail(&g.copy, &g.store).unwrap();
+    let empty = Cal(vec![("2026-10-02".to_owned(), "Haircut".to_owned())]);
+    let d = read_one(
+        &g.copy,
+        &g.store,
+        &Reader::says(BILL_REPLY),
+        Some(&empty),
+        &Clock(NOW),
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(d.appointment, None);
+    assert!(
+        d.cautions.iter().any(|c| c.contains("no appointment")),
+        "{:?}",
+        d.cautions
+    );
+}
+
+#[test]
+fn a_date_from_someone_the_owner_writes_to_is_coming_up_and_a_strangers_is_held_back() {
+    let f = Fixture::new("upcoming").with_history();
+    f.put(
+        "jane",
+        &email(
+            "Jane Doe <jane@example.org>",
+            "john@example.com",
+            NOW - DAY,
+            "<j@example.org>",
+            VOUCHED,
+            "Hike on October 24?",
+        ),
+    );
+    f.put(
+        "stranger",
+        &email(
+            "Deals <deals@example.net>",
+            "john@example.com",
+            NOW - DAY,
+            "<s@example.net>",
+            VOUCHED,
+            "Offer ends October 28!",
+        ),
+    );
+    index_new_mail(&f.copy, &f.store).unwrap();
+    let reader = Reader::says(r#"{"bucket":"people","sentence":"Jane asks about a hike.","needs_reply":true,"dates":[{"date":"2026-10-24","what":"hike"}]}"#)
+        .but("Offer", r#"{"bucket":"other","sentence":"An offer.","dates":[{"date":"2026-10-28","what":"offer ends"}]}"#);
+    while read_one(&f.copy, &f.store, &reader, None, &Clock(NOW))
+        .unwrap()
+        .is_some()
+    {}
+    let (upcoming, held) = dates_coming_up(&f.store, None, &Clock(NOW)).unwrap();
+    assert_eq!(upcoming.len(), 1, "{upcoming:?}");
+    assert_eq!(
+        (upcoming[0].date.as_str(), upcoming[0].because),
+        ("2026-10-24", "from someone you write to")
+    );
+    assert_eq!(held, 1);
+    let lines = mail_for_the_brief(&f.store, None, &Clock(NOW)).unwrap();
+    assert!(
+        lines
+            .iter()
+            .any(|l| l == "Coming up from your mail: 2026-10-24 hike (Jane Doe)."),
+        "{lines:?}"
+    );
+}
+
+#[test]
+fn a_date_from_a_message_that_may_not_be_genuine_is_never_confirmed() {
+    let f = Fixture::new("forged-date").with_history();
+    for n in 0..2 {
+        f.put(
+            &format!("p{n}"),
+            &email(
+                "Account Security <security@example.net>",
+                "john@example.com",
+                NOW - DAY,
+                &format!("<p{n}@example.net>"),
+                "",
+                "Verify by October 20.",
+            ),
+        );
+    }
+    index_new_mail(&f.copy, &f.store).unwrap();
+    let reader = Reader::says(
+        r#"{"bucket":"security","sentence":"x","account_change":true,"dates":[{"date":"2026-10-20","what":"verify"}]}"#,
+    );
+    while read_one(&f.copy, &f.store, &reader, None, &Clock(NOW))
+        .unwrap()
+        .is_some()
+    {}
+    let (upcoming, _) = dates_coming_up(&f.store, None, &Clock(NOW)).unwrap();
+    assert!(
+        upcoming.is_empty(),
+        "two forged messages confirmed each other: {upcoming:?}"
     );
 }

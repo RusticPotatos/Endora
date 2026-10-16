@@ -93,6 +93,7 @@ pub fn read_one(
     copy: &MaildirCopy,
     store: &MailStore,
     reader: &dyn crate::UntrustedReader,
+    calendar: Option<&dyn crate::Calendar>,
     clock: &impl Clock,
 ) -> Result<Option<Digest>, AppError> {
     let now = clock.now().unix_millis();
@@ -146,6 +147,29 @@ pub fn read_one(
         reasons.push(Reason::MayNotBeGenuine);
         sentence = Some(guarded_sentence(&message, &found));
     }
+    // A bill is checked against the calendar: the appointment it most likely follows is
+    // evidence it is real, and none nearby is worth knowing too. Only when the calendar can be
+    // read; an unreadable calendar says nothing either way.
+    let mut evidence: Vec<String> = found.iter().map(Caution::said).collect();
+    let mut appointment = None;
+    if sorted == Bucket::Money && flags.money_due {
+        let bill_day = message.at_ms.div_euclid(DAY_MS);
+        let window = (
+            (bill_day - endora_mail::domain::BILL_LOOKBACK_DAYS) * DAY_MS,
+            (bill_day + endora_mail::domain::BILL_LOOKAHEAD_DAYS + 1) * DAY_MS,
+        );
+        if let Some(entries) = calendar.and_then(|c| c.entries(window.0, window.1).ok()) {
+            appointment = endora_mail::appointment_for(
+                &message.from_name,
+                &message.from_address,
+                bill_day,
+                &entries,
+            );
+            if appointment.is_none() {
+                evidence.push("no appointment with them on your calendar around then".to_owned());
+            }
+        }
+    }
     let digest = Digest {
         key,
         at_ms: message.at_ms,
@@ -156,7 +180,8 @@ pub fn read_one(
         sentence,
         flags,
         read_ok,
-        cautions: found.iter().map(Caution::said).collect(),
+        cautions: evidence,
+        appointment,
     };
     store.save(&digest, now)?;
     Ok(Some(digest))
@@ -185,6 +210,11 @@ pub fn mail_line(d: &Digest) -> String {
         .sentence
         .clone()
         .unwrap_or_else(|| format!("(in {})", d.bucket.title().to_lowercase()));
+    let follows = d
+        .appointment
+        .as_ref()
+        .map(|(day, title)| format!(" Follows \"{title}\" on {day}."))
+        .unwrap_or_default();
     let amount = d
         .flags
         .amount
@@ -197,7 +227,52 @@ pub fn mail_line(d: &Digest) -> String {
     } else {
         ""
     };
-    format!("{careful}{}: {what}{amount} ({why})", sender(d))
+    format!("{careful}{}: {what}{amount}{follows} ({why})", sender(d))
+}
+
+/// The dates from the last 90 days of mail that something confirms, soonest first, and how
+/// many were held back (see [`endora_mail::coming_up`]). A message that may not be genuine
+/// contributes nothing: a forger's date is never confirmed by anything.
+///
+/// # Errors
+/// [`AppError::Repository`] if the digest cannot be read.
+pub fn dates_coming_up(
+    store: &MailStore,
+    calendar: Option<&dyn crate::Calendar>,
+    clock: &impl Clock,
+) -> Result<(Vec<endora_mail::Upcoming>, usize), AppError> {
+    let now = clock.now().unix_millis();
+    let trusting = [
+        Reason::FromSomeoneYouWriteTo,
+        Reason::ReplyInYourThread,
+        Reason::WaitingOnYou,
+    ];
+    let mentions: Vec<endora_mail::Mention> = store
+        .digests_since(now - READ_BACK_MS)?
+        .iter()
+        .filter(|d| !d.reasons.contains(&Reason::MayNotBeGenuine))
+        .flat_map(|d| {
+            let trusted = d.reasons.iter().any(|r| trusting.contains(r));
+            d.flags
+                .dates
+                .iter()
+                .map(move |(date, what)| endora_mail::Mention {
+                    date: date.clone(),
+                    what: what.clone(),
+                    from: sender(d),
+                    key: d.key.clone(),
+                    trusted,
+                })
+        })
+        .collect();
+    let entries = calendar
+        .and_then(|c| c.entries(now - READ_BACK_MS, now + 366 * DAY_MS).ok())
+        .unwrap_or_default();
+    Ok(endora_mail::coming_up(
+        &mentions,
+        &entries,
+        now.div_euclid(DAY_MS),
+    ))
 }
 
 /// The mail section of the morning brief: what matters from the last day, and how much else
@@ -206,7 +281,11 @@ pub fn mail_line(d: &Digest) -> String {
 ///
 /// # Errors
 /// [`AppError::Repository`] if the digest cannot be read.
-pub fn mail_for_the_brief(store: &MailStore, clock: &impl Clock) -> Result<Vec<String>, AppError> {
+pub fn mail_for_the_brief(
+    store: &MailStore,
+    calendar: Option<&dyn crate::Calendar>,
+    clock: &impl Clock,
+) -> Result<Vec<String>, AppError> {
     const MOST_LINES: usize = 6;
     let now = clock.now().unix_millis();
     let day = store.digests_since(now - DAY_MS)?;
@@ -241,6 +320,16 @@ pub fn mail_for_the_brief(store: &MailStore, clock: &impl Clock) -> Result<Vec<S
         .filter(|(_, n)| *n > 0)
         .collect();
     counts.sort_by_key(|(_, n)| std::cmp::Reverse(*n));
+    let (upcoming, _) = dates_coming_up(store, calendar, clock)?;
+    let soon: Vec<String> = upcoming
+        .iter()
+        .filter(|u| endora_mail::days_of(&u.date).is_some_and(|d| d <= now.div_euclid(DAY_MS) + 14))
+        .take(4)
+        .map(|u| format!("{} {} ({})", u.date, u.what, u.from))
+        .collect();
+    if !soon.is_empty() {
+        lines.push(format!("Coming up from your mail: {}.", soon.join("; ")));
+    }
     if !counts.is_empty() {
         lines.push(format!(
             "Also: {}.",

@@ -6,10 +6,15 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+pub mod calendar;
 mod caution;
 mod sorting;
 mod text;
 
+pub use calendar::{
+    BILL_LOOKAHEAD_DAYS, BILL_LOOKBACK_DAYS, Mention, Upcoming, appointment_for, coming_up,
+    sender_words,
+};
 pub use caution::{Caution, cautions, guarded_sentence, written_dates};
 pub use sorting::{Bucket, Flags, Reason, bucket, why_important};
 pub use sorting::{days_of, read_reply};
