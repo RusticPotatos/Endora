@@ -1,0 +1,716 @@
+<title>Endora HQ</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Silkscreen&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<style>
+/* Layout: a sunny open-plan startup floor on the left, the owner's board on the right; one deliberate bright world. */
+:root {
+  --bg: #f4f2ee;
+  --panel: #ffffff;
+  --panel-2: #f3f0ea;
+  --line: #ddd6ca;
+  --fg: #1f1d29;
+  --muted: #6b6577;
+  --amber: #e98a1b;
+  --neon: #e8378f;
+  --red: #d8434a;
+  --green: #22995f;
+  --blue: #3f74d6;
+  --violet: #8c5cd6;
+  --pixel: "Silkscreen", "Courier New", monospace;
+  --mono: "IBM Plex Mono", ui-monospace, Menlo, Consolas, monospace;
+  color-scheme: light;
+}
+* { box-sizing: border-box; }
+html, body { background: var(--bg); color: var(--fg); }
+body {
+  margin: 0; font-family: var(--mono); font-size: 13.5px; line-height: 1.5;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: 16px 32px;
+}
+.wrap { max-width: 1320px; margin: 0 auto; display: grid; gap: 14px; }
+header.bar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px; }
+h1 { font-family: var(--pixel); font-weight: 400; font-size: 22px; margin: 0; letter-spacing: .02em; }
+.demo { font-family: var(--pixel); font-size: 10px; color: #fff; background: var(--neon); padding: 3px 7px; border-radius: 3px; }
+.grow { flex: 1 1 auto; }
+.controls { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+button {
+  font-family: var(--pixel); font-size: 11px; color: var(--fg); background: var(--panel-2);
+  border: 1px solid var(--line); border-bottom-width: 3px; border-radius: 4px; padding: 6px 10px; cursor: pointer;
+}
+button:hover { border-color: var(--muted); }
+button:active { transform: translateY(1px); border-bottom-width: 2px; }
+button:focus-visible { outline: 2px solid var(--neon); outline-offset: 2px; }
+button[aria-pressed="true"] { background: var(--fg); color: #fff; border-color: var(--fg); }
+button.stop { background: #fff1f1; border-color: var(--red); color: var(--red); }
+button.stop[aria-pressed="true"] { background: var(--red); color: #fff; }
+button.ok { border-color: var(--green); color: var(--green); }
+button.no { border-color: var(--red); color: var(--red); }
+.main { display: grid; grid-template-columns: minmax(0, 1fr) 360px; gap: 14px; align-items: start; }
+@media (max-width: 1000px) { .main { grid-template-columns: minmax(0, 1fr); } }
+.stage { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 8px; min-width: 0; }
+canvas { display: block; width: 100%; height: auto; image-rendering: pixelated; image-rendering: crisp-edges; cursor: pointer; border-radius: 3px; }
+.stats { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.stat { background: var(--panel); border: 1px solid var(--line); border-radius: 4px; padding: 4px 9px; font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.stat b { color: var(--fg); font-weight: 600; }
+aside { display: grid; gap: 12px; min-width: 0; }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 12px 14px; min-width: 0; }
+.card h2 { font-family: var(--pixel); font-weight: 400; font-size: 12px; letter-spacing: .04em; margin: 0 0 8px; color: var(--muted); display: flex; justify-content: space-between; gap: 8px; }
+.card h2 .count { color: var(--neon); }
+.sel-title { font-weight: 600; font-size: 14px; margin-bottom: 4px; }
+.kv { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 2px 10px; font-size: 12.5px; }
+.kv dt { color: var(--muted); }
+.kv dd { margin: 0; overflow-wrap: anywhere; }
+.why { margin: 8px 0 0; padding: 0; list-style: none; font-size: 12.5px; }
+.why li { padding-left: 12px; border-left: 2px solid var(--line); margin-bottom: 3px; color: var(--muted); }
+.why li:first-child { color: var(--fg); border-left-color: var(--neon); }
+.needs { display: grid; gap: 8px; }
+.need { background: var(--panel-2); border-left: 3px solid var(--violet); border-radius: 0 4px 4px 0; padding: 8px 10px; }
+.need.budget { border-left-color: var(--amber); }
+.need p { margin: 0 0 6px; }
+.need .who { color: var(--muted); font-size: 12px; }
+.need .row { display: flex; flex-wrap: wrap; gap: 6px; }
+.empty { color: var(--muted); font-size: 12.5px; }
+.log { list-style: none; margin: 0; padding: 0; max-height: 260px; overflow-y: auto; font-size: 12px; display: grid; gap: 3px; }
+.log li { display: grid; grid-template-columns: 44px minmax(0, 1fr); gap: 8px; }
+.log time { color: var(--muted); font-variant-numeric: tabular-nums; }
+.log .k-wake { color: var(--blue); }
+.log .k-run { color: var(--fg); }
+.log .k-done { color: var(--green); }
+.log .k-warn { color: var(--amber); }
+.log .k-bad { color: var(--red); }
+.log .k-you { color: var(--violet); }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 12px; font-size: 11.5px; color: var(--muted); margin-top: 8px; }
+.legend span::before { content: ""; display: inline-block; width: 9px; height: 9px; margin-right: 5px; border-radius: 2px; background: var(--c); vertical-align: -1px; }
+.note { color: var(--muted); font-size: 12px; max-width: 80ch; }
+@media (prefers-reduced-motion: reduce) { button:active { transform: none; } }
+</style>
+
+<div class="wrap">
+  <header class="bar">
+    <h1>Endora HQ</h1>
+    <span class="demo">Demo · simulated engine</span>
+    <span class="grow"></span>
+    <div class="controls" role="group" aria-label="Speed">
+      <button id="sp0" data-speed="0" aria-pressed="false">Pause</button>
+      <button id="sp1" data-speed="1" aria-pressed="true">1×</button>
+      <button id="sp2" data-speed="2" aria-pressed="false">2×</button>
+      <button id="sp4" data-speed="4" aria-pressed="false">4×</button>
+    </div>
+    <div class="controls">
+      <button id="signal">Send a signal</button>
+      <button id="stop" class="stop" aria-pressed="false">Kill switch</button>
+    </div>
+  </header>
+
+  <div class="main">
+    <div class="stage">
+      <canvas id="office" width="448" height="256" aria-label="Pixel startup office: workers, the whiteboard, the server closet, the board room"></canvas>
+      <div class="stats" id="stats"></div>
+      <div class="legend">
+        <span style="--c:#fff2a8">To do</span>
+        <span style="--c:#ffb347">Doing</span>
+        <span style="--c:#7fb2ff">In review</span>
+        <span style="--c:#45c486">Done</span>
+        <span style="--c:#ef5a5f">Blocked</span>
+        <span style="--c:#b98cf0">Needs you</span>
+      </div>
+    </div>
+
+    <aside>
+      <section class="card" aria-live="polite">
+        <h2>Looking at</h2>
+        <div id="selected"><p class="empty">Tap a worker or a card on the board.</p></div>
+      </section>
+      <section class="card">
+        <h2>Needs you <span class="count" id="needcount">0</span></h2>
+        <div class="needs" id="needs"><p class="empty">Nothing waiting.</p></div>
+      </section>
+      <section class="card">
+        <h2>Activity</h2>
+        <ul class="log" id="log"></ul>
+      </section>
+    </aside>
+  </div>
+  <p class="note">Office art: <a href="https://github.com/pixel-agents-hq/pixel-agents">Pixel Agents</a> by Pablo De Lucca and contributors (MIT), characters based on <a href="https://jik-a-4.itch.io/metrocity-free-topdown-character-pack">MetroCity by JIK-A-4</a> (CC0); details in assets/CREDITS.txt. A prototype of the board view for Endora's agent company, staged as a startup: you are the board. The engine here is simulated in the page and follows the planned rules: one owner per task, claiming is atomic, wakes coalesce or wait, a tick every few seconds recovers stuck work, budgets are reserved before a run and enforced during it, finished work goes to a different worker for review, and anything that asks first lands on your desk. None of it is live data.</p>
+</div>
+
+<script>
+"use strict";
+// ---------- world ----------
+const T = 16, COLS = 28, ROWS = 16, W = COLS * T, H = ROWS * T;
+const cv = document.getElementById("office");
+const ctx = cv.getContext("2d");
+ctx.imageSmoothingEnabled = false;
+const C = {
+  wall: "#efece6", wallTop: "#e2ddd3", trim: "#c9c1b3", glass: "rgba(150,205,235,.22)", glassEdge: "#9cc7de",
+  board: "#fbfbf8", boardEdge: "#b9c2c9", rack: "#232833", neon: "#ff4fa3", lamp: "#ffb347", red: "#ef5a5f",
+  green: "#45c486", blue: "#7fb2ff", violet: "#b98cf0", sticky: "#fff2a8", text: "#1f1d29", shadow: "rgba(60,40,20,.18)",
+};
+const STATUS_COL = { todo: C.sticky, in_progress: C.lamp, in_review: C.blue, done: C.green, blocked: C.red, decision: C.violet };
+
+// Places. Positions are in tiles; a person stands on the tile whose top-left is (x, y).
+const P = {
+  board: { x: 8, y: 0, w: 12, h: 2 },
+  boardSpot: (i) => ({ x: 9 + (i % 10), y: 3 }),
+  owner: { x: 2, y: 3 },
+  lever: { x: 6.1, y: 2.3 },
+  engine: { x: 22, y: 2, w: 6, h: 3.6 },
+  rack: { x: 25, y: 2.2 }, clock: { x: 23, y: 0.2 }, jar: { x: 22.7, y: 2.6 },
+  door: { x: 25, y: 13 },
+  pong: { x: 2.5, y: 13.2 }, tap: { x: 13.5, y: 12.6 },
+  upperLane: 6, lowerLane: 11, aisles: [7.5, 13.5, 19.5],
+};
+const ROLES = {
+  lead: { name: "Ada", title: "Founder & CEO", sprite: 0, desk: { x: 3, y: 8 }, rest: { x: 1.2, y: 13 }, pose: "type" },
+  eng: { name: "Bo", title: "Founding Engineer", sprite: 4, desk: { x: 9, y: 8 }, rest: { x: 7, y: 13 }, pose: "type" },
+  res: { name: "Cy", title: "Research", sprite: 2, desk: { x: 15, y: 8 }, rest: { x: 9.2, y: 14 }, pose: "read" },
+  rev: { name: "Dee", title: "Staff Engineer, review", sprite: 1, desk: { x: 21, y: 8 }, rest: { x: 11.2, y: 14 }, pose: "read" },
+};
+
+// The licensed art (see assets/CREDITS.txt), loaded before the office opens.
+const ART = {
+  chars: [0, 1, 2, 3, 4, 5].map((i) => `assets/characters/char_${i}.png`),
+  floors: { plank: "assets/floors/floor_5.png", grid: "assets/floors/floor_3.png", plain: "assets/floors/floor_1.png", check: "assets/floors/floor_7.png" },
+  f: ["DESK_FRONT", "PC_FRONT_OFF", "PC_FRONT_ON_1", "PC_FRONT_ON_2", "PC_FRONT_ON_3", "WOODEN_CHAIR_BACK", "CUSHIONED_CHAIR_FRONT", "CUSHIONED_CHAIR_BACK",
+    "SOFA_FRONT", "PLANT", "PLANT_2", "LARGE_PLANT", "COFFEE", "BIN", "BOOKSHELF", "COFFEE_TABLE", "SMALL_TABLE_FRONT", "LARGE_PAINTING", "HANGING_PLANT", "CACTUS"],
+};
+const IMG = {};
+function loadArt() {
+  const jobs = [];
+  const one = (key, src) => jobs.push(new Promise((ok) => { const i = new Image(); i.onload = () => { IMG[key] = i; ok(); }; i.onerror = () => ok(); i.src = src; }));
+  ART.chars.forEach((s, i) => one("char" + i, s));
+  for (const [k, s] of Object.entries(ART.floors)) one("floor_" + k, s);
+  for (const f of ART.f) one(f, `assets/furniture/${f}.png`);
+  return Promise.all(jobs);
+}
+
+// ---------- engine state ----------
+const S = {
+  t: 0, speed: 1, stopped: false, tickN: 0, nextTick: 4, TICK: 5,
+  spentToday: 0, dailyBudget: 260, seq: 0, runSeq: 0,
+  goals: {
+    g1: { id: "g1", title: "Keep the home lab healthy", parent: null },
+    g2: { id: "g2", title: "Make Endora handle most things itself", parent: null },
+  },
+  tasks: [], workers: {}, runs: [], deferred: [], receipts: { queued: 0, coalesced: 0, deferred: 0, skipped: 0 },
+  needs: [], log: [], selected: null, envelopes: [], sparks: 0,
+};
+for (const [id, r] of Object.entries(ROLES)) {
+  S.workers[id] = {
+    id, ...r, x: r.rest.x * T, y: r.rest.y * T, path: [], state: "idle", bubble: "", bubbleT: 0,
+    run: null, budget: 70, spent: 0, paused: false, frame: 0, face: 1, queue: [],
+  };
+}
+
+function key() { return "EL-" + (++S.seq); }
+function clock() { const m = Math.floor(S.t / 60), s = Math.floor(S.t % 60); return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`; }
+function log(kind, text) { S.log.unshift({ at: clock(), kind, text }); S.log.length = Math.min(S.log.length, 80); dirtyUI = true; }
+
+function newTask(title, goal, opts = {}) {
+  const t = { id: key(), title, goal, parent: opts.parent || null, status: "todo", assignee: opts.assignee || null,
+    role: opts.role || null, checkoutRun: null, execRun: null, blockedBy: opts.blockedBy || [], depth: opts.depth || 0,
+    asks: opts.asks || null, steps: opts.steps || null, slot: S.tasks.length, reviewed: false, comments: [] };
+  S.tasks.push(t);
+  return t;
+}
+const task = (id) => S.tasks.find((t) => t.id === id);
+function why(t) { const out = []; let c = t; while (c) { out.push(c.title); c = c.parent ? task(c.parent) : null; } out.push("Goal: " + S.goals[t.goal].title); return out; }
+
+// wakeup: the one way anything starts. Gates, then coalesce, defer or queue.
+function wakeup(wid, reason, tid) {
+  const w = S.workers[wid], t = tid ? task(tid) : null;
+  sendEnvelope(wid);
+  if (S.stopped) { S.receipts.skipped++; log("warn", `Wake for ${w.name} skipped: everything is stopped`); return; }
+  if (w.paused) { S.receipts.skipped++; log("warn", `Wake for ${w.name} skipped: paused on budget`); return; }
+  if (t && t.execRun) {
+    const r = S.runs.find((x) => x.id === t.execRun);
+    if (r && r.worker === wid) { S.receipts.coalesced++; r.extra = (r.extra || 0) + 1; log("wake", `${reason} → folded into ${w.name}'s live run on ${t.id}`); return; }
+    S.receipts.deferred++; S.deferred.push({ wid, reason, tid }); log("wake", `${reason} for ${w.name} waits: ${t.id} is being worked`); return;
+  }
+  if (w.queue.some((q) => q.tid === tid) || (w.run && w.run.task === tid)) { S.receipts.coalesced++; log("wake", `${reason} for ${w.name} coalesced`); return; }
+  S.receipts.queued++;
+  w.queue.push({ reason, tid });
+  log("wake", `Woke ${w.name}: ${reason}${t ? " (" + t.id + ")" : ""}`);
+}
+
+// tick: timers, orphans, retries, queued runs, stranded work, resolved blockers.
+function tick() {
+  S.tickN++; S.sparks = 1;
+  if (S.stopped) return;
+  if (S.tickN % 9 === 0) wakeup("lead", "timer: look over the board", null);
+  for (const t of S.tasks) {
+    if (t.status === "blocked" && t.blockedBy.length && t.blockedBy.every((b) => task(b).status === "done") && !t.asks) {
+      t.status = "todo"; t.blockedBy = []; wakeup(t.assignee, "blockers resolved", t.id);
+    }
+    if (t.status === "in_progress" && !t.execRun && t.assignee && !S.workers[t.assignee].queue.length && !S.workers[t.assignee].run && !S.workers[t.assignee].paused) {
+      log("warn", `${t.id} was stranded; one continuation wake`); wakeup(t.assignee, "continuation", t.id);
+    }
+  }
+  for (const w of Object.values(S.workers)) {
+    if (w.run || !w.queue.length || w.paused) continue;
+    const next = w.queue.shift();
+    startRun(w, next);
+  }
+}
+
+function startRun(w, wake) {
+  const reserve = 6;
+  if (w.spent + reserve > w.budget || S.spentToday + reserve > S.dailyBudget) {
+    pauseForBudget(w, "not enough left to reserve a run"); return;
+  }
+  const t = wake.tid ? task(wake.tid) : pickWork(w);
+  const run = { id: "R" + (++S.runSeq), worker: w.id, task: t ? t.id : null, reason: wake.reason, status: "running", step: 0, steps: [], reserved: reserve, cost: 0 };
+  if (t) {
+    // checkout: compare-and-set
+    if (t.checkoutRun && t.checkoutRun !== run.id && t.assignee !== w.id) { log("bad", `${w.name}: checkout of ${t.id} refused (409), stops`); return; }
+    t.assignee = w.id; t.checkoutRun = run.id; t.execRun = run.id;
+    if (t.status === "todo") t.status = "in_progress";
+  }
+  run.steps = plan(w, t, wake.reason);
+  S.runs.push(run); w.run = run;
+  log("run", `${run.id} ${w.name} starts${t ? " on " + t.id : ""} (${wake.reason}), ${reserve}¢ reserved`);
+  walkTo(w, t ? P.boardSpot(t.slot) : deskSpot(w), () => { if (t) say(w, "checkout " + t.id); walkTo(w, deskSpot(w), () => { w.state = "working"; }); });
+}
+
+function pickWork(w) {
+  const mine = S.tasks.filter((t) => t.assignee === w.id && ["in_progress", "in_review", "todo"].includes(t.status));
+  const order = { in_progress: 0, in_review: 1, todo: 2 };
+  mine.sort((a, b) => order[a.status] - order[b.status]);
+  return mine[0] || null;
+}
+
+const STEPS = {
+  lead: ["reading the inbox", "tracing the goal", "breaking it down", "assigning work"],
+  eng: ["reading context", "writing a failing test", "making it pass", "commenting"],
+  res: ["searching", "reading sources", "writing notes"],
+  rev: ["reading the change", "running the gate", "deciding"],
+};
+function plan(w, t, reason) {
+  if (!t) return ["looking over the board", "nothing new"];
+  if (t.steps) return t.steps;
+  if (w.id === "lead" && reason === "children done") return ["checking the sub-tasks", "closing it"];
+  return STEPS[w.id];
+}
+
+let stepClock = 0;
+function advanceRuns(dt) {
+  stepClock += dt;
+  if (stepClock < 1.4) return;
+  stepClock = 0;
+  for (const w of Object.values(S.workers)) {
+    const r = w.run;
+    if (!r || w.state !== "working") continue;
+    const cost = 2 + Math.floor(Math.random() * 3);
+    // usage streams during the run; crossing the line stops it now, not later
+    if (w.spent + cost > w.budget || S.spentToday + cost > S.dailyBudget) { cancelRun(w, "budget crossed during the run"); pauseForBudget(w, "budget crossed during the run"); continue; }
+    w.spent += cost; S.spentToday += cost; r.cost += cost;
+    if (Math.random() < 0.012) { log("bad", `${r.id}: ${w.name}'s process was lost`); cancelRun(w, "process lost", true); continue; }
+    const label = r.steps[r.step];
+    say(w, label);
+    r.step++;
+    if (r.step >= r.steps.length) finishRun(w);
+  }
+}
+
+function finishRun(w) {
+  const r = w.run, t = r.task ? task(r.task) : null;
+  r.status = "succeeded";
+  let outcome = "nothing to do";
+  if (t) outcome = outcomeFor(w, t, r);
+  log("done", `${r.id} ${w.name} finished: ${outcome} · ${r.cost}¢`);
+  release(w, t);
+}
+
+function outcomeFor(w, t, r) {
+  if (w.id === "lead" && r.reason === "children done") { t.status = "done"; return `${t.id} closed, every sub-task done`; }
+  if (w.id === "lead" && !t.parent && !t.split) { t.split = true; delegate(t); t.status = "blocked"; return `${t.id} broken into sub-tasks`; }
+  if (w.id === "rev") {
+    const ok = Math.random() > 0.25 || t.reviewed;
+    t.reviewed = true;
+    if (ok) { t.status = "done"; checkParent(t); return `approved ${t.id}`; }
+    t.status = "in_progress"; t.assignee = t.doer; wakeup(t.doer, "changes requested", t.id); return `asked for changes on ${t.id}`;
+  }
+  if (t.asks && !t.decided) { t.status = "blocked"; raiseNeed({ kind: "decision", tid: t.id, wid: w.id, text: t.asks }); return `${t.id} asks you first`; }
+  if (w.id === "res") { t.status = "done"; checkParent(t); return `${t.id} done, notes left on the task`; }
+  // Done goes to someone else for review.
+  t.doer = w.id; t.status = "in_review"; t.assignee = "rev"; wakeup("rev", "review requested", t.id);
+  return `${t.id} sent for review`;
+}
+
+function release(w, t) {
+  const r = w.run;
+  if (t) { if (t.execRun === r.id) t.execRun = null; if (t.checkoutRun === r.id) t.checkoutRun = null; }
+  w.run = null; w.state = "walking";
+  walkTo(w, ROLES[w.id].rest, () => { w.state = "idle"; });
+  if (t) {
+    const i = S.deferred.findIndex((d) => d.tid === t.id);
+    if (i >= 0) { const d = S.deferred.splice(i, 1)[0]; log("wake", `Promoted ${S.workers[d.wid].name}'s waiting wake on ${t.id}`); wakeup(d.wid, d.reason, d.tid); }
+  }
+}
+
+function cancelRun(w, why, retry) {
+  const r = w.run; if (!r) return;
+  r.status = "cancelled";
+  const t = r.task ? task(r.task) : null;
+  log("bad", `${r.id} stopped: ${why}`);
+  release(w, t);
+  if (retry && !r.retried && t) { r.retried = true; wakeup(w.id, "retry after a lost process", t.id); }
+}
+
+function checkParent(t) {
+  if (!t.parent) return;
+  const p = task(t.parent), kids = S.tasks.filter((k) => k.parent === p.id);
+  if (kids.every((k) => k.status === "done")) wakeup("lead", "children done", p.id);
+}
+
+const SIGNALS = [
+  { title: "Nightly backup failed on the NAS", goal: "g1", plan: [
+      { role: "res", title: "Find why the backup job failed" },
+      { role: "eng", title: "Fix the backup job and add a check", after: 0 },
+      { role: "eng", title: "Restart the backup container", asks: "Restart the backup container now?" } ] },
+  { title: "TLS certificate expires in 9 days", goal: "g1", plan: [
+      { role: "eng", title: "Renew the certificate and test the console" } ] },
+  { title: "Pi-hole blocklists are 30 days old", goal: "g1", plan: [
+      { role: "res", title: "Compare blocklist sources" },
+      { role: "eng", title: "Update the lists and verify DNS", after: 0, asks: "Change the Pi-hole blocklists?" } ] },
+  { title: "Add tests for the wake queue", goal: "g2", plan: [
+      { role: "eng", title: "Write tests for coalescing and deferral" },
+      { role: "eng", title: "Test lock release under a crash" } ] },
+  { title: "Media request: a documentary series", goal: "g2", plan: [
+      { role: "res", title: "Find the series and check quality" },
+      { role: "eng", title: "Request it in Overseerr", after: 0, asks: "Request the series (uses disk space)?" } ] },
+];
+let signalIx = 0;
+function signal() {
+  const s = SIGNALS[signalIx++ % SIGNALS.length];
+  const t = newTask(s.title, s.goal, { assignee: "lead" });
+  t.plan = s.plan;
+  log("wake", `Signal arrived: ${s.title}`);
+  doorFlash = 1.2;
+  wakeup("lead", "assigned", t.id);
+}
+function delegate(p) {
+  const made = [];
+  p.plan.forEach((step, i) => {
+    const k = newTask(step.title, p.goal, { parent: p.id, assignee: step.role, depth: p.depth + 1, asks: step.asks || null,
+      blockedBy: step.after !== undefined ? [made[step.after].id] : [] });
+    if (k.blockedBy.length) k.status = "blocked";
+    made.push(k);
+  });
+  for (const k of made) if (k.status === "todo") wakeup(k.assignee, "assigned", k.id);
+}
+
+function raiseNeed(n) { n.id = "N" + (++S.seq); S.needs.push(n); const w = S.workers[n.wid]; log("you", `${w ? w.name : "Engine"} needs you: ${n.text}`); dirtyUI = true; }
+function pauseForBudget(w, why) {
+  if (w.paused) return;
+  w.paused = true; say(w, "out of budget");
+  raiseNeed({ kind: "budget", wid: w.id, text: `${w.name} is paused: ${why} (${w.spent}¢ of ${w.budget}¢).` });
+}
+function decide(id, yes) {
+  const i = S.needs.findIndex((n) => n.id === id); if (i < 0) return;
+  const n = S.needs.splice(i, 1)[0];
+  if (n.kind === "budget") {
+    const w = S.workers[n.wid];
+    if (yes) { w.budget += 50; w.paused = false; log("you", `You raised ${w.name}'s budget to ${w.budget}¢`); const t = pickWork(w); if (t) wakeup(w.id, "budget raised", t.id); }
+    else log("you", `${w.name} stays paused`);
+  } else {
+    const t = task(n.tid);
+    t.decided = true;
+    if (yes) { t.status = "todo"; log("you", `You approved: ${n.text}`); wakeup(t.assignee, "approved", t.id); }
+    else { t.status = "done"; t.title += " (declined)"; log("you", `You declined: ${n.text}`); checkParent(t); }
+  }
+  dirtyUI = true;
+}
+
+// ---------- movement ----------
+function deskSpot(w) { const d = ROLES[w.id].desk; return { x: d.x + 1.6, y: d.y - 0.5 }; }
+function walkTo(w, tile, then) {
+  const tx = tile.x * T, ty = tile.y * T, upper = (y) => y <= 8 * T, lane = (u) => (u ? P.upperLane : P.lowerLane) * T;
+  const su = upper(w.y), tu = upper(ty);
+  if (su === tu) w.path = [{ x: w.x, y: lane(su) }, { x: tx, y: lane(su) }, { x: tx, y: ty }];
+  else {
+    const ax = P.aisles.map((a) => a * T).sort((a, b) => Math.abs(a - w.x) - Math.abs(b - w.x))[0];
+    w.path = [{ x: w.x, y: lane(su) }, { x: ax, y: lane(su) }, { x: ax, y: lane(tu) }, { x: tx, y: lane(tu) }, { x: tx, y: ty }];
+  }
+  w.then = then; w.state = w.state === "working" ? "working" : "walking";
+}
+function moveWorkers(dt) {
+  for (const w of Object.values(S.workers)) {
+    if (w.bubbleT > 0) w.bubbleT -= dt;
+    if (!w.path.length) continue;
+    const p = w.path[0], dx = p.x - w.x, dy = p.y - w.y, d = Math.hypot(dx, dy), v = 46 * dt;
+    if (d <= v) { w.x = p.x; w.y = p.y; w.path.shift(); if (!w.path.length && w.then) { const f = w.then; w.then = null; f(); } }
+    else { w.x += (dx / d) * v; w.y += (dy / d) * v; if (Math.abs(dx) > 0.5) w.face = dx > 0 ? 1 : -1; }
+    w.frame += dt * 8;
+  }
+}
+function say(w, text) { w.bubble = text; w.bubbleT = 2.4; }
+function sendEnvelope(wid) { const w = S.workers[wid]; S.envelopes.push({ x: P.rack.x * T + 8, y: P.rack.y * T + 10, w, t: 0 }); }
+
+// ---------- drawing ----------
+const bg = document.createElement("canvas"); bg.width = W; bg.height = H;
+function tinted(img, color) {
+  const c = document.createElement("canvas"); c.width = img.width; c.height = img.height;
+  const g = c.getContext("2d"); g.drawImage(img, 0, 0);
+  g.globalCompositeOperation = "multiply"; g.fillStyle = color; g.fillRect(0, 0, c.width, c.height);
+  g.globalCompositeOperation = "destination-in"; g.drawImage(img, 0, 0);
+  return c;
+}
+function floorArea(g, key, color, x0, y0, x1, y1) {
+  const img = IMG["floor_" + key]; if (!img) return;
+  const t = tinted(img, color);
+  for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) g.drawImage(t, x * T, y * T);
+}
+function paintRoom() {
+  const g = bg.getContext("2d"); g.imageSmoothingEnabled = false;
+  g.fillStyle = "#d6b07a"; g.fillRect(0, 0, W, H);
+  floorArea(g, "plank", "#e2b57a", 0, 2, COLS, ROWS);
+  floorArea(g, "grid", "#d9e1ea", 0, 2, 7, 6);
+  floorArea(g, "plain", "#c3c8d0", 22, 2, COLS, 6);
+  floorArea(g, "grid", "#8fa6c7", 0, 12, 13, ROWS);
+  floorArea(g, "check", "#efe9de", 20, 12, COLS, ROWS);
+  // wall
+  g.fillStyle = C.wall; g.fillRect(0, 0, W, 2 * T); g.fillStyle = C.wallTop; g.fillRect(0, 0, W, 5); g.fillStyle = C.trim; g.fillRect(0, 2 * T - 3, W, 3);
+  // window onto the bay, with the bridge
+  const wx = 6, wy = 6; g.fillStyle = "#9fd3f0"; g.fillRect(wx, wy, 52, 20); g.fillStyle = "#cfeaf8"; g.fillRect(wx, wy, 52, 8);
+  g.fillStyle = "#4f7fa3"; g.fillRect(wx, wy + 15, 52, 5); g.fillStyle = "#c8452e"; g.fillRect(wx + 14, wy + 4, 2, 12); g.fillRect(wx + 34, wy + 4, 2, 12); g.fillRect(wx + 6, wy + 12, 40, 1);
+  for (let i = 0; i < 9; i++) { g.fillRect(wx + 15 + i * 2, wy + 5 + Math.round(Math.abs(i - 4) * 1.4), 1, 1); g.fillRect(wx + 35 - i * 2, wy + 5 + Math.round(Math.abs(i - 4) * 1.4), 1, 1); }
+  g.fillStyle = "#ffffff"; g.fillRect(wx + 25, wy, 2, 20); g.strokeStyle = C.trim; g.strokeRect(wx - 0.5, wy - 0.5, 53, 21);
+  // whiteboard wall (the task board)
+  g.fillStyle = C.boardEdge; g.fillRect(P.board.x * T - 2, 3, P.board.w * T + 4, 26); g.fillStyle = C.board; g.fillRect(P.board.x * T, 5, P.board.w * T, 22);
+  g.fillStyle = "#2a64c9"; g.fillRect((P.board.x + P.board.w) * T - 22, 23, 14, 2); g.fillStyle = "#d33"; g.fillRect((P.board.x + P.board.w) * T - 22, 20, 8, 1);
+  if (IMG.HANGING_PLANT) g.drawImage(IMG.HANGING_PLANT, 7 * T - 2, 1);
+  if (IMG.LARGE_PAINTING) g.drawImage(IMG.LARGE_PAINTING, 20.4 * T, 0);
+  // glass rooms: the board room and the server closet
+  g.fillStyle = C.glass; g.fillRect(0, 2 * T, 7 * T, 3.6 * T); g.fillStyle = C.glassEdge; g.fillRect(7 * T - 2, 2 * T, 2, 3.6 * T); g.fillRect(0, 5.6 * T - 2, 7 * T - 22, 2);
+  g.fillStyle = "rgba(60,70,90,.08)"; g.fillRect(P.engine.x * T, P.engine.y * T, P.engine.w * T, P.engine.h * T);
+  g.fillStyle = C.glassEdge; g.fillRect(P.engine.x * T, P.engine.y * T, 2, P.engine.h * T); g.fillRect(P.engine.x * T + 22, (P.engine.y + P.engine.h) * T - 2, P.engine.w * T - 22, 2);
+  // lounge: ping-pong, cold brew, snack wall
+  const px = P.pong.x * T, py = P.pong.y * T;
+  g.fillStyle = C.shadow; g.fillRect(px + 2, py + 13, 66, 4); g.fillStyle = "#1f7a4f"; g.fillRect(px, py, 66, 13); g.fillStyle = "#ffffff"; g.fillRect(px, py + 6, 66, 1); g.fillRect(px + 32, py - 3, 2, 16);
+  g.fillStyle = "#3b4048"; g.fillRect(px + 4, py + 13, 2, 4); g.fillRect(px + 60, py + 13, 2, 4);
+  g.fillStyle = "#cfd6dd"; g.fillRect(P.tap.x * T, P.tap.y * T - 6, 14, 20); g.fillStyle = "#3a2a1e"; g.fillRect(P.tap.x * T + 3, P.tap.y * T - 3, 8, 7); g.fillStyle = "#222"; g.fillRect(P.tap.x * T + 6, P.tap.y * T + 5, 2, 3);
+  g.fillStyle = "#b8a68a"; g.fillRect(15 * T, 12 * T, 4 * T, 3); g.fillRect(15 * T, 12.8 * T, 4 * T, 3);
+  const snacks = ["#ff4fa3", "#ffb347", "#45c486", "#7fb2ff", "#ef5a5f", "#fff2a8"]; for (let i = 0; i < 14; i++) { g.fillStyle = snacks[i % snacks.length]; g.fillRect(15 * T + 2 + i * 4.4, 12 * T - 5 + (i % 2) * 13, 3, 5); }
+  // lobby: reception and the door
+  g.fillStyle = "#ffffff"; g.fillRect(21 * T, 13 * T, 2.6 * T, 11); g.fillStyle = C.trim; g.fillRect(21 * T, 13 * T + 10, 2.6 * T, 2);
+  g.fillStyle = "#3d3a44"; g.fillRect(P.door.x * T, P.door.y * T, 2 * T, 3 * T); g.fillStyle = "#9fd3f0"; g.fillRect(P.door.x * T + 4, P.door.y * T + 4, 2 * T - 8, 3 * T - 4);
+  // labels
+  g.font = "8px Silkscreen, monospace"; g.fillStyle = "rgba(31,29,41,.6)";
+  g.fillText("BOARD ROOM", 4, 2 * T + 9); g.fillText("SERVERS", (P.engine.x + 3.4) * T, (P.engine.y + P.engine.h) * T - 4);
+  g.fillStyle = "rgba(255,255,255,.8)"; g.fillText("PING-PONG", 4, 12 * T + 8); g.fillStyle = "rgba(31,29,41,.6)"; g.fillText("COLD BREW", 12.4 * T, 12 * T - 2);
+  g.fillStyle = "rgba(31,29,41,.6)"; g.fillText("LOBBY", 20.4 * T, 12 * T + 9); g.fillText("ENDORA", 21.1 * T, 13 * T + 8);
+}
+
+// Furniture that people can stand behind, drawn in depth order with them.
+let FURN = [];
+function placeFurniture() {
+  const f = (key, x, y, extra = {}) => { const i = IMG[key]; if (i) FURN.push({ key, x, y, base: y + i.height + (extra.lift || 0), ...extra }); };
+  for (const r of Object.values(ROLES)) {
+    f("DESK_FRONT", r.desk.x * T, r.desk.y * T);
+    f("PC_FRONT_OFF", r.desk.x * T + 4, r.desk.y * T - 6, { lift: 0.5, pc: r });
+    f("BIN", (r.desk.x + 3) * T, (r.desk.y + 1) * T);
+  }
+  f("SMALL_TABLE_FRONT", P.owner.x * T, P.owner.y * T);
+  f("COFFEE", (P.owner.x + 1.3) * T, P.owner.y * T + 4, { lift: 40 });
+  f("CUSHIONED_CHAIR_BACK", (P.owner.x + 0.1) * T, (P.owner.y + 1.9) * T);
+  f("CUSHIONED_CHAIR_BACK", (P.owner.x + 1.1) * T, (P.owner.y + 1.9) * T);
+  f("SOFA_FRONT", 8.6 * T, 13.2 * T); f("SOFA_FRONT", 10.6 * T, 13.2 * T);
+  f("PLANT", 0.1 * T, 9.6 * T); f("PLANT_2", 26.7 * T, 6.6 * T); f("CACTUS", 21.1 * T, 6.4 * T);
+  f("LARGE_PLANT", 19.1 * T, 12.4 * T); f("BOOKSHELF", 22.2 * T, 15 * T);
+}
+
+function bothAtTable() { const a = S.workers.lead, b = S.workers.eng; return a.state === "idle" && b.state === "idle" && !a.path.length && !b.path.length && !a.paused && !b.paused; }
+function playingPong(w) { return (w.id === "lead" || w.id === "eng") && bothAtTable(); }
+
+function personFrame(w) {
+  const walking = w.path.length > 0;
+  if (walking) {
+    const p = w.path[0], dx = p.x - w.x, dy = p.y - w.y;
+    const dir = Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? "right" : "left") : dy > 0 ? "down" : "up";
+    return { dir, frame: [0, 1, 2, 1][Math.floor(w.frame) % 4] };
+  }
+  if (w.state === "working") return { dir: "down", frame: w.pose === "read" ? 5 + (Math.floor(S.t * 1.5) % 2) : 3 + (Math.floor(S.t * 6) % 2) };
+  if (playingPong(w)) return { dir: w.id === "lead" ? "right" : "left", frame: 3 + (Math.floor(S.t * 4) % 2) };
+  return { dir: "down", frame: w.paused ? 1 : 0 };
+}
+function drawPerson(w) {
+  const img = IMG["char" + w.sprite], x = Math.round(w.x), y = Math.round(w.y);
+  ctx.fillStyle = C.shadow; ctx.fillRect(x + 3, y + 13, 10, 3);
+  if (img) {
+    const { dir, frame } = personFrame(w), row = dir === "up" ? 1 : dir === "down" ? 0 : 2;
+    if (dir === "left") { ctx.save(); ctx.translate(x + 16, 0); ctx.scale(-1, 1); ctx.drawImage(img, frame * 16, row * 32, 16, 32, 0, y - 16, 16, 32); ctx.restore(); }
+    else ctx.drawImage(img, frame * 16, row * 32, 16, 32, x, y - 16, 16, 32);
+  }
+  if (w.paused) { ctx.fillStyle = C.lamp; ctx.fillRect(x + 13, y - 20, 6, 6); ctx.fillStyle = "#8a5a1c"; ctx.fillRect(x + 15, y - 19, 2, 4); }
+  if (S.selected && S.selected.type === "worker" && S.selected.id === w.id) { ctx.strokeStyle = C.neon; ctx.lineWidth = 1; ctx.strokeRect(x + 0.5, y - 16.5, 16, 33); }
+}
+function drawName(w) { ctx.font = "8px Silkscreen, monospace"; ctx.fillStyle = "rgba(31,29,41,.85)"; ctx.fillText(w.name, Math.round(w.x) + 1, Math.round(w.y) + 24); }
+const IDLE = { res: "zZ", rev: "heads down", lead: "", eng: "" };
+function drawBubble(w) {
+  const idle = w.state === "idle" && w.bubbleT <= 0;
+  const text = w.bubbleT > 0 ? w.bubble : w.paused ? "over budget" : playingPong(w) ? "" : (IDLE[w.id] || "zZ");
+  if (!text || (w.bubbleT <= 0 && w.state !== "idle")) return;
+  ctx.font = "8px Silkscreen, monospace";
+  const tw = Math.ceil(ctx.measureText(text).width) + 6, x = Math.round(Math.min(W - tw - 2, Math.max(2, w.x + 8 - tw / 2))), y = Math.round(w.y - 30);
+  ctx.fillStyle = idle ? "rgba(255,255,255,.75)" : "#ffffff"; ctx.fillRect(x, y, tw, 10);
+  ctx.fillStyle = idle ? "rgba(31,29,41,.25)" : "#1f1d29"; ctx.fillRect(x, y + 10, tw, 1); ctx.fillRect(Math.round(w.x + 7), y + 10, 2, 2);
+  ctx.fillStyle = idle ? "#6b6577" : "#1f1d29"; ctx.fillText(text, x + 3, y + 8);
+}
+function cardRect(t) {
+  const visible = S.tasks.filter((k) => k.status !== "done" || S.tasks.indexOf(k) >= S.tasks.length - 34).slice(-34);
+  const i = visible.indexOf(t); if (i < 0) return null;
+  const col = i % 17, row = Math.floor(i / 17);
+  return { x: P.board.x * T + 4 + col * 11, y: 7 + row * 10, w: 8, h: 8 };
+}
+function drawBoard() {
+  for (const t of S.tasks) {
+    const r = cardRect(t); if (!r) continue;
+    const st = t.status === "blocked" && t.asks && !t.decided && S.needs.some((n) => n.tid === t.id) ? "decision" : t.status;
+    ctx.fillStyle = "rgba(0,0,0,.12)"; ctx.fillRect(r.x + 1, r.y + 1, r.w, r.h);
+    ctx.fillStyle = STATUS_COL[st] || C.sticky; ctx.fillRect(r.x, r.y, r.w, r.h);
+    ctx.fillStyle = "rgba(0,0,0,.18)"; ctx.fillRect(r.x + 2, r.y + 3, r.w - 4, 1); ctx.fillRect(r.x + 2, r.y + 5, r.w - 5, 1);
+    if (t.execRun) { ctx.fillStyle = C.neon; ctx.fillRect(r.x + r.w - 2, r.y, 2, 2); }
+    if (S.selected && S.selected.type === "task" && S.selected.id === t.id) { ctx.strokeStyle = C.neon; ctx.strokeRect(r.x - 1.5, r.y - 1.5, r.w + 3, r.h + 3); }
+  }
+}
+let doorFlash = 0;
+function drawLive() {
+  // neon sign, with a flicker
+  const flick = Math.floor(S.t * 3) % 23 === 0;
+  ctx.font = "8px Silkscreen, monospace"; ctx.fillStyle = flick ? "rgba(255,79,163,.35)" : C.neon;
+  ctx.shadowColor = C.neon; ctx.shadowBlur = flick ? 0 : 6; ctx.fillText("SHIP IT", 66, 19); ctx.shadowBlur = 0;
+  // server rack lights blink on each tick
+  const rx = P.rack.x * T, ry = P.rack.y * T;
+  ctx.fillStyle = C.shadow; ctx.fillRect(rx + 2, ry + 38, 18, 4);
+  ctx.fillStyle = C.rack; ctx.fillRect(rx, ry, 18, 40); ctx.fillStyle = "#333b4a"; ctx.fillRect(rx + 2, ry + 2, 14, 36);
+  for (let i = 0; i < 7; i++) { const on = (S.tickN + i) % 3 === 0 || S.sparks > 0.5; ctx.fillStyle = S.stopped ? C.red : on ? C.green : "#24412f"; ctx.fillRect(rx + 4, ry + 5 + i * 5, 2, 2); ctx.fillStyle = S.stopped ? "#5a2224" : "#4a5a6a"; ctx.fillRect(rx + 8, ry + 5 + i * 5, 6, 2); }
+  // wall clock: the arc to the next engine tick
+  const cx = P.clock.x * T + 8, cy = 14; ctx.fillStyle = "#ffffff"; ctx.beginPath(); ctx.arc(cx, cy, 8, 0, Math.PI * 2); ctx.fill(); ctx.strokeStyle = C.trim; ctx.stroke();
+  ctx.fillStyle = S.stopped ? C.red : C.neon; ctx.beginPath(); ctx.moveTo(cx, cy);
+  ctx.arc(cx, cy, 7, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * (1 - Math.max(0, S.nextTick) / S.TICK)); ctx.fill();
+  // burn gauge: today's spend against the daily budget
+  const jx = P.jar.x * T, jy = P.jar.y * T, fill = Math.min(1, S.spentToday / S.dailyBudget), hgt = 30;
+  ctx.fillStyle = "#ffffff"; ctx.fillRect(jx, jy, 8, hgt); ctx.strokeStyle = C.trim; ctx.strokeRect(jx - 0.5, jy - 0.5, 9, hgt + 1);
+  ctx.fillStyle = fill > .85 ? C.red : fill > .6 ? C.lamp : C.green; ctx.fillRect(jx + 1, jy + hgt - Math.round(hgt * fill), 6, Math.round(hgt * fill));
+  ctx.font = "8px Silkscreen, monospace"; ctx.fillStyle = "rgba(31,29,41,.65)"; ctx.fillText("BURN", jx + 12, jy + hgt);
+  // kill switch on the board room glass
+  const lx = P.lever.x * T, ly = P.lever.y * T; ctx.fillStyle = "#3a3a46"; ctx.fillRect(lx + 2, ly + 14, 12, 4);
+  ctx.fillStyle = "#9aa"; const up = !S.stopped; ctx.fillRect(lx + 7, up ? ly + 4 : ly + 10, 2, up ? 10 : 6); ctx.fillStyle = C.red; ctx.fillRect(lx + 5, up ? ly + 1 : ly + 14, 6, 4);
+  if (doorFlash > 0) { ctx.fillStyle = `rgba(255,79,163,${Math.min(.35, doorFlash / 3)})`; ctx.fillRect(P.door.x * T - 4, P.door.y * T - 4, 2 * T + 8, 3 * T + 4); }
+  // ping-pong ball between the two idle founders
+  if (bothAtTable()) { const k = (Math.sin(S.t * 4) + 1) / 2, bx = P.pong.x * T + 6 + k * 56, by = P.pong.y * T + 2 - Math.abs(Math.sin(S.t * 8)) * 9; ctx.fillStyle = "#ffffff"; ctx.fillRect(Math.round(bx), Math.round(by), 2, 2); }
+}
+function drawOverlay() {
+  // decisions waiting on the board room table
+  S.needs.slice(0, 5).forEach((n, i) => { ctx.fillStyle = n.kind === "budget" ? C.lamp : C.violet; ctx.fillRect(P.owner.x * T + 3 + i * 6, P.owner.y * T + 6 + (i % 2) * 3, 5, 6); ctx.fillStyle = "rgba(0,0,0,.25)"; ctx.fillRect(P.owner.x * T + 4 + i * 6, P.owner.y * T + 8 + (i % 2) * 3, 3, 1); });
+  // wake envelopes from the server closet to the worker
+  for (const e of S.envelopes) { const tx = e.w.x + 6, ty = e.w.y - 22, k = Math.min(1, e.t / 0.9); const x = e.x + (tx - e.x) * k, y = e.y + (ty - e.y) * k - Math.sin(k * Math.PI) * 18; ctx.fillStyle = "#ffffff"; ctx.fillRect(Math.round(x), Math.round(y), 7, 5); ctx.fillStyle = C.neon; ctx.fillRect(Math.round(x) + 1, Math.round(y) + 1, 5, 1); }
+  if (S.stopped) { ctx.fillStyle = "rgba(239,90,95,.12)"; ctx.fillRect(0, 0, W, H); ctx.font = "8px Silkscreen, monospace"; ctx.fillStyle = C.red; ctx.fillText("KILL SWITCH PULLED", W / 2 - 44, 2 * T + 22); }
+}
+function draw() {
+  ctx.drawImage(bg, 0, 0);
+  drawBoard(); drawLive();
+  const items = FURN.map((f) => ({ base: f.base, f }));
+  for (const w of Object.values(S.workers)) items.push({ base: w.y + 16, w });
+  items.sort((a, b) => a.base - b.base);
+  for (const it of items) {
+    if (it.w) { drawPerson(it.w); continue; }
+    const f = it.f;
+    let key = f.key;
+    if (f.pc) { const w = S.workers[Object.keys(ROLES).find((id) => ROLES[id] === f.pc)]; key = w && w.run && w.state === "working" ? "PC_FRONT_ON_" + (1 + (Math.floor(S.t * 4) % 3)) : "PC_FRONT_OFF"; }
+    if (IMG[key]) ctx.drawImage(IMG[key], Math.round(f.x), Math.round(f.y));
+  }
+  const ws = Object.values(S.workers);
+  for (const w of ws) drawName(w);
+  drawOverlay();
+  for (const w of ws) drawBubble(w);
+}
+
+// ---------- side panel ----------
+let dirtyUI = true;
+const $ = (id) => document.getElementById(id);
+function esc(s) { return String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])); }
+function renderUI() {
+  const running = S.runs.filter((r) => r.status === "running").length, queued = Object.values(S.workers).reduce((n, w) => n + w.queue.length, 0);
+  $("stats").innerHTML = [
+    ["Tick", S.tickN], ["Running", running], ["Queued", queued], ["Waiting", S.deferred.length],
+    ["Coalesced", S.receipts.coalesced], ["Burn today", `${S.spentToday}¢ / ${S.dailyBudget}¢`], ["Open tasks", S.tasks.filter((t) => t.status !== "done").length],
+  ].map(([k, v]) => `<span class="stat">${k} <b>${v}</b></span>`).join("");
+  $("needcount").textContent = S.needs.length;
+  $("needs").innerHTML = S.needs.length ? S.needs.map((n) => `<div class="need ${n.kind}"><p>${esc(n.text)}</p><p class="who">${n.kind === "budget" ? "Budget" : "Asks first · " + esc(n.tid)}</p><div class="row">
+      <button class="ok" id="yes-${n.id}" data-need="${n.id}" data-yes="1">${n.kind === "budget" ? "Raise by 50¢" : "Approve"}</button>
+      <button class="no" id="no-${n.id}" data-need="${n.id}" data-yes="0">${n.kind === "budget" ? "Keep paused" : "Decline"}</button></div></div>`).join("") : `<p class="empty">Nothing waiting.</p>`;
+  $("log").innerHTML = S.log.slice(0, 60).map((l) => `<li><time>${l.at}</time><span class="k-${l.kind}">${esc(l.text)}</span></li>`).join("");
+  renderSelected();
+  dirtyUI = false;
+}
+function renderSelected() {
+  const s = S.selected, el = $("selected");
+  if (!s) { el.innerHTML = `<p class="empty">Tap a worker or a card on the board.</p>`; return; }
+  if (s.type === "worker") {
+    const w = S.workers[s.id], r = w.run, t = r && r.task ? task(r.task) : null;
+    el.innerHTML = `<div class="sel-title">${esc(w.name)} · ${esc(w.title)}</div><dl class="kv">
+      <dt>Doing</dt><dd>${w.paused ? "Paused on budget" : r ? esc(r.steps[Math.max(0, r.step - 1)] || "starting") : "Waiting for a wake"}</dd>
+      <dt>Run</dt><dd>${r ? esc(r.id) + " · " + esc(r.reason) + " · " + r.cost + "¢" : "none"}</dd>
+      <dt>Queue</dt><dd>${w.queue.length ? w.queue.map((q) => esc(q.reason)).join(", ") : "empty"}</dd>
+      <dt>Budget</dt><dd>${w.spent}¢ of ${w.budget}¢</dd></dl>${t ? `<ul class="why">${why(t).map((x) => `<li>${esc(x)}</li>`).join("")}</ul>` : ""}`;
+  } else {
+    const t = task(s.id); if (!t) return;
+    el.innerHTML = `<div class="sel-title">${esc(t.id)} · ${esc(t.title)}</div><dl class="kv">
+      <dt>Status</dt><dd>${esc(t.status.replace("_", " "))}${t.asks && !t.decided ? " · asks you first" : ""}</dd>
+      <dt>Owner</dt><dd>${t.assignee ? esc(S.workers[t.assignee].name) : "nobody"}</dd>
+      <dt>Lock</dt><dd>${t.execRun ? "held by " + esc(t.execRun) : "free"}</dd>
+      <dt>Blocked by</dt><dd>${t.blockedBy.length ? t.blockedBy.map(esc).join(", ") : "nothing"}</dd>
+      <dt>Depth</dt><dd>${t.depth}</dd></dl><ul class="why">${why(t).map((x) => `<li>${esc(x)}</li>`).join("")}</ul>`;
+  }
+}
+$("needs").addEventListener("click", (e) => { const b = e.target.closest("button[data-need]"); if (b) decide(b.dataset.need, b.dataset.yes === "1"); });
+document.querySelectorAll("button[data-speed]").forEach((b) => b.addEventListener("click", () => {
+  S.speed = Number(b.dataset.speed); document.querySelectorAll("button[data-speed]").forEach((x) => x.setAttribute("aria-pressed", String(x === b)));
+}));
+$("signal").addEventListener("click", () => signal());
+$("stop").addEventListener("click", () => {
+  S.stopped = !S.stopped; $("stop").setAttribute("aria-pressed", String(S.stopped)); $("stop").textContent = S.stopped ? "Resume" : "Kill switch";
+  if (S.stopped) { for (const w of Object.values(S.workers)) { if (w.run) cancelRun(w, "you pulled the kill switch"); w.queue = []; } log("you", "You pulled the kill switch: every run stopped, nothing new starts"); }
+  else { log("you", "You resumed the engine"); for (const w of Object.values(S.workers)) { const t = pickWork(w); if (t && t.status !== "blocked") wakeup(w.id, "resumed", t.id); } }
+});
+cv.addEventListener("click", (e) => {
+  const b = cv.getBoundingClientRect(), x = (e.clientX - b.left) * (W / b.width), y = (e.clientY - b.top) * (H / b.height);
+  for (const w of Object.values(S.workers)) if (x >= w.x && x <= w.x + 16 && y >= w.y - 16 && y <= w.y + 16) { S.selected = { type: "worker", id: w.id }; dirtyUI = true; return; }
+  for (const t of S.tasks) { const r = cardRect(t); if (r && x >= r.x - 1 && x <= r.x + r.w + 1 && y >= r.y - 1 && y <= r.y + r.h + 1) { S.selected = { type: "task", id: t.id }; dirtyUI = true; return; } }
+  if (x >= P.lever.x * T && x <= P.lever.x * T + 16 && y >= P.lever.y * T && y <= P.lever.y * T + 20) { $("stop").click(); return; }
+  S.selected = null; dirtyUI = true;
+});
+
+// ---------- loop ----------
+let last = performance.now(), uiClock = 0, signalClock = 10;
+function frame(now) {
+  const real = Math.min(0.1, (now - last) / 1000); last = now;
+  const dt = real * S.speed;
+  if (dt > 0) {
+    S.t += dt; S.nextTick -= dt; S.sparks = Math.max(0, S.sparks - dt * 2); doorFlash = Math.max(0, doorFlash - dt);
+    if (S.nextTick <= 0) { S.nextTick += S.TICK; tick(); dirtyUI = true; }
+    if (!S.stopped) advanceRuns(dt);
+    moveWorkers(dt);
+    S.envelopes.forEach((e) => (e.t += dt)); S.envelopes = S.envelopes.filter((e) => e.t < 0.9);
+    signalClock -= dt; if (signalClock <= 0 && !S.stopped) { signalClock = 26 + Math.random() * 10; if (S.tasks.filter((t) => t.status !== "done").length < 12) signal(); }
+    if (S.t > 200 && S.spentToday > S.dailyBudget * 0.7 && Math.random() < 0.002) { S.spentToday = 0; for (const w of Object.values(S.workers)) w.spent = 0; log("warn", "A new day: budgets reset"); }
+  }
+  draw();
+  uiClock += real; if (dirtyUI && uiClock > 0.25) { uiClock = 0; renderUI(); }
+  requestAnimationFrame(frame);
+}
+function start() {
+  paintRoom(); placeFurniture();
+  // A realistic opening: two signals already in, the engine mid-shift.
+  signal(); S.t = 2; signalIx = 1;
+  const old = newTask("Rotate the Endora backup key", "g1", { assignee: "eng" }); old.status = "done";
+  const r = newTask("Review last week's container restarts", "g1", { assignee: "res" }); wakeup("res", "assigned", r.id);
+  log("run", "Engine started: a tick every 5 s, four people on the team");
+  renderUI(); requestAnimationFrame(frame);
+}
+Promise.all([loadArt(), document.fonts && document.fonts.ready ? document.fonts.ready : Promise.resolve()]).then(start, start);
+</script>

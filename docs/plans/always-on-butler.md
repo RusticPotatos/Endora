@@ -128,14 +128,12 @@ Endora's agents may write and run code, but only through this gate:
   validation, with an automatic rollback.
 - Any new kind of access waits for the owner's approval on the pull request.
 
-**The company:** the engineering work runs on **Paperclip** (MIT) on the agent node: an org
-chart of agents (engineer, tester, reviewer, ops), each with a budget, with the owner as the
-board. The owner approves strategy, budgets, new access, and anything that tripped a halt.
-Endora's agenda loop files tasks into it. It starts with a trial run on one real task,
-judged against this section before anything depends on it; if it cannot hold to these
-rules, the fallback is a lean version built into Endora. Later, a read-only **pixel office**
-screen in the console, in AgentOffice's style, shows each agent at a desk with what it is
-working on. It is a view only and cannot act.
+**The team:** the engineering work is done by Endora HQ, a team of agents built into Endora
+([the design](endora-hq.md), [ADR 0102](../adr/0102-endora-hq.md)): a lead, a developer, a
+researcher and a reviewer, each with a budget, with the owner as the board. The owner
+approves goals, briefs, budgets, new access, and anything that tripped a halt. Endora's
+agenda loop proposes goals to it. A pixel office in the console shows each member at a desk
+with what they are working on; approvals go through Endora's own routes, never the view.
 
 Code lives in a private **Forgejo** server on the NAS. Agents work through pull requests,
 with a token scoped to their own repositories.
@@ -193,12 +191,8 @@ with a token scoped to their own repositories.
 5. **The agent node:** hardening the Pi, the agent user, the UniFi VLAN rules (written by
    Claude, entered by the owner), and Forgejo.
 6. **The pipeline:** dev → test → prod with the review gate; the test environment on the NAS.
-7. **A lean agent company built into Endora** (changed 2026-10-16, after reading Paperclip's
-   source), then the pixel office view. It borrows six of Paperclip's patterns: heartbeat
-   and wake triggers; budgets reserved before dispatch, with auto-pause; an independent
-   reviewer; "Allowed / Ask first / Off" per tool; propose-then-decide decisions for the
-   owner; and the LLM-wiki layout for the brain. Endora does not run Paperclip: it is unsafe
-   by default and its audit log can be deleted. A Paperclip trial, sandboxed on the NAS and
-   connected to nothing, is a separate piece of work in the ansible-nas fork.
+7. **Endora HQ**, a team of agents built into Endora, and its pixel office view
+   ([the design](endora-hq.md), [ADR 0102](../adr/0102-endora-hq.md)), in seven phases.
+   Phases 1 and 2 (the team core and the office) need nothing from steps 4 to 6.
 
 Each step is merged only with the owner's OK.
