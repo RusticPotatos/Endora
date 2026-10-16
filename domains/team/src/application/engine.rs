@@ -719,6 +719,16 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
 
     // ---- runs --------------------------------------------------------------------------------
 
+    /// Why a turn was started: the reason of the wake that queued it.
+    fn reason_for(&self, run: &Run) -> Done<&'static str> {
+        Ok(self
+            .store
+            .wakes()?
+            .iter()
+            .find(|w| w.id == run.wake)
+            .map_or("", |w| w.reason.name()))
+    }
+
     /// Ends a turn: settles its money, closes its wake, and lets the next held wake on its task
     /// go. A turn that moved its task forward earns the task a fresh recovery nudge.
     fn end(&self, mut run: Run, status: RunStatus, why: &str) -> Done<()> {
@@ -736,7 +746,8 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         self.emit(
             EventKind::RunEnded,
             json!({ "run": run.id.0, "member": run.member.0, "task": run.task.map(|t| t.0),
-                    "result": status.name(), "why": why, "moved_forward": run.moved_forward }),
+                    "result": status.name(), "why": why, "moved_forward": run.moved_forward,
+                    "spent": run.spent }),
         )?;
         if let Some(task) = run.task {
             if run.moved_forward {
@@ -1037,7 +1048,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             self.emit(
                 EventKind::RunStarted,
                 json!({ "run": run.id.0, "member": member.id.0, "task": run.task.map(|t| t.0),
-                        "reserved": amount }),
+                        "reserved": amount, "reason": self.reason_for(&run)? }),
             )?;
             started += 1;
         }
@@ -1169,9 +1180,28 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                     .collect::<Vec<_>>(),
             }));
         }
+        let (ticks, last_tick_at) = self.store.count_events(EventKind::Tick.name())?;
+        let (folded, _) = self.store.count_events(EventKind::WakeFolded.name())?;
+        let held = self
+            .store
+            .wakes()?
+            .iter()
+            .filter(|w| w.receipt == crate::domain::Receipt::Held)
+            .count();
+        let queued = runs
+            .iter()
+            .filter(|r| r.status == RunStatus::Queued)
+            .count();
+        let running = runs
+            .iter()
+            .filter(|r| r.status == RunStatus::Running)
+            .count();
         Ok(json!({
             "stopped": self.store.stopped()?,
             "last_event": self.store.last_event()?,
+            "counts": { "ticks": ticks, "running": running, "queued": queued, "held": held,
+                        "folded": folded, "open_tasks": tasks.iter().filter(|t| !t.status.finished()).count() },
+            "last_tick_at": last_tick_at,
             "pool": { "per_day": money::pool_a_day(pool), "committed": self.store.committed(None, day)? },
             "members": members,
             "goals": goals.iter().map(|g| json!({
@@ -1189,6 +1219,15 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 "text": d.text, "at": d.at,
             })).collect::<Vec<_>>(),
         }))
+    }
+
+    /// Keeps the newest `keep` events and deletes the rest. Returns how many went.
+    ///
+    /// # Errors
+    /// [`EngineError::Store`] if the store fails.
+    pub fn prune_events(&self, keep: i64) -> Done<usize> {
+        let _held = self.held();
+        Ok(self.store.prune_events(keep)?)
     }
 
     /// The events after `id`, for the stream.

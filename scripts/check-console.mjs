@@ -569,8 +569,9 @@ if (failures.length) {
 // presses, each offering only what that kind of item takes; nothing a task says becomes markup.
 {
   const fail = (what) => { console.error(what); process.exit(1); };
-  runInContext(`HQ.error = ""; HQ.tab = "desk"; HQ.selected = { type: "task", id: 7 };
-    HQ.snap = { demo: true, stopped: false, last_event: 40, pool: { per_day: 2333333, committed: 400000 },
+  runInContext(`HQ.error = ""; HQ.log = []; HQ.selected = { type: "task", id: 7 };
+    HQ.snap = { demo: true, stopped: false, last_event: 40, tick_seconds: 30, last_tick_at: 1,
+      counts: { ticks: 9, running: 1, queued: 2, held: 1, folded: 3, open_tasks: 4 }, pool: { per_day: 2333333, committed: 400000 },
       members: [{ id: 1, name: "Ada", role: "lead", look: 0, paused: false, slots: 2, per_day: 583333, committed: 0, running: [] },
                 { id: 2, name: "Bo", role: "developer", look: 4, paused: false, slots: 2, per_day: 933333, committed: 400000, running: [{ run: 3, task: 7 }] }],
       goals: [{ id: 1, title: "Keep the home lab healthy", status: "active" }],
@@ -580,11 +581,23 @@ if (failures.length) {
       desk: [{ id: 11, kind: "goal", text: "A goal: Tidy the lab" }, { id: 12, kind: "stuck", task: 7, text: "Stuck: x" },
              { id: 13, kind: "ready_to_merge", task: 7, text: "Ready to merge: y" },
              { id: 14, kind: "ready_to_read", task: 7, text: "Ready to read: z" }] };`, context);
+  // The activity log reads like the office's own: who, which task, why, and what it cost.
+  runInContext(`hqTell({ id: 41, at: 0, kind: "run.started", data: { run: 9, member: 2, task: 7, reason: "review_requested", reserved: 60000 } }, false);
+    hqTell({ id: 42, at: 0, kind: "run.ended", data: { run: 9, member: 2, task: 7, result: "succeeded", spent: 120000 } }, false);
+    hqTell({ id: 43, at: 0, kind: "wake.queued", data: { member: 1, task: 7, reason: "mentioned" } }, false);`, context);
   const office = runInContext("viewHQ()", context);
+  for (const line of ["R9 Bo starts on EL-7 (review requested), 6¢ reserved", "R9 Bo finished · 12¢", "Woke Ada: mentioned (EL-7)"]) {
+    if (!office.includes(line)) fail(`hq: the activity log does not say "${line}"`);
+  }
+  if (!office.includes('class="k-done"') || !office.includes('class="k-wake"')) fail("hq: the activity log is not coloured by kind");
+  for (const chip of ["Tick <b>9</b>", "Coalesced <b>3</b>", "Burn today <b>40¢ / 233¢</b>", "Open tasks <b>4</b>"]) {
+    if (!office.includes(chip)) fail(`hq: the office's numbers do not show ${chip}`);
+  }
+  if (!office.includes('data-act="hq:work"')) fail("hq: the team cannot be given work");
   if (!office.includes("Demo · scripted team")) fail("hq: demo mode is not labelled");
   if (!office.includes('id="hq-office"')) fail("hq: the office is not drawn");
   for (const act of ["hq:decide:11:approve", "hq:decide:11:decline", "hq:decide:12:retry", "hq:decide:12:drop",
-    "hq:decide:13:merged", "hq:decide:13:not_now", "hq:decide:14:read", "hq:stop"]) {
+    "hq:decide:13:merged", "hq:decide:13:not_now", "hq:decide:14:read", "hq:decide:14:not_now", "hq:stop"]) {
     if (!office.includes(`data-act="${act}"`)) fail(`hq: the desk does not offer ${act}`);
   }
   if (office.includes("hq:decide:11:retry")) fail("hq: a goal was offered a choice for stuck work");

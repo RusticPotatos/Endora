@@ -796,3 +796,30 @@ fn only_whole_work_reaches_the_desk_and_research_is_to_read() {
     assert!(desk[0].text.starts_with("Ready to read: "));
     hq.decide(desk[0].id, "read").unwrap();
 }
+
+#[test]
+fn the_snapshot_counts_what_the_office_shows_and_old_events_can_go() {
+    let clock = hands();
+    let hq = hq(&clock, 4);
+    let t = team(&hq);
+    let task = task_for(&hq, t.goal, Some(t.dev), "Add a list");
+    hq.tick().unwrap();
+    hq.wake(t.dev, Some(task), WakeReason::Mentioned).unwrap();
+    hq.wake(t.reviewer, Some(task), WakeReason::Mentioned)
+        .unwrap();
+    let snap = hq.snapshot().unwrap();
+    assert_eq!(snap["counts"]["ticks"], 1);
+    assert_eq!(snap["counts"]["running"], 1);
+    assert_eq!(snap["counts"]["folded"], 1);
+    assert_eq!(snap["counts"]["held"], 1);
+    assert_eq!(snap["counts"]["open_tasks"], 1);
+    assert_eq!(snap["last_tick_at"], NOON);
+    let before = hq.store().events_after(0).unwrap().len();
+    assert!(before > 3);
+    assert_eq!(hq.prune_events(3).unwrap(), before - 3);
+    assert_eq!(
+        hq.store().events_after(0).unwrap().len(),
+        3,
+        "the newest three stay"
+    );
+}
