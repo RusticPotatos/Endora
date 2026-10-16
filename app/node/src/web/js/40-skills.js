@@ -83,7 +83,7 @@ function skillCard(c) {
         <div class="row">
           <div class="grow">
             <div class="title">${esc(c.name)} ${status}${ext ? ` <span class="pill">uses the internet</span>` : ""}${irreversible ? ` <span class="pill">can't be undone</span>` : ""}</div>
-            <div class="sub">${esc(c.description)}</div>
+            <div class="sub">${esc(c.summary || c.description)}</div>
             ${(enabled && !c.configured && !holdsSettings && !lenderOf(c)) ? `<div class="sub" style="margin-top:4px;">Needs: ${esc(c.needs)}</div>` : ""}
           </div>
           ${holdsSettings ? "" : `<button class="ghost" data-act="skill:enable:${c.id}:${enabled ? "0" : "1"}">${enabled ? "Turn off" : "Turn on"}</button>`}
@@ -112,7 +112,7 @@ function viewSkills() {
     const [label, cls] = skillStatus(c);
     return `
       <button class="ghost" data-act="go:skill:${esc(c.id)}">
-        <span class="grow" style="text-align:left;">${esc(c.name)}<span class="sub one-line">${esc(c.description)}</span></span>
+        <span class="grow" style="text-align:left;">${esc(c.name)}<span class="sub one-line">${esc(c.summary || c.description)}</span></span>
         <span class="pill ${cls}">${esc(label)}</span>${icon("chevron", 15)}</button>`;
   };
   const groups = SKILL_GROUPS.map(([key, title]) => {
@@ -181,7 +181,7 @@ function viewConnections() {
     const [label, cls] = skillStatus(c);
     return `
       <button class="ghost" data-act="go:skill:${esc(c.id)}">
-        <span class="grow" style="text-align:left;">${esc(c.name)}<span class="sub one-line">${esc(c.description)}</span></span>
+        <span class="grow" style="text-align:left;">${esc(c.name)}<span class="sub one-line">${esc(c.summary || c.description)}</span></span>
         <span class="pill ${cls}">${esc(label)}</span>${icon("chevron", 15)}</button>`;
   };
   const haRow = ha ? `
@@ -221,11 +221,10 @@ function viewPermissions() {
     ${envelope}`;
 }
 
-// Tool servers (ADR 0054), on Connections.
-function mcpSection() {
-  // MCP servers (ADR 0054): external tool sources. Each tool is deny-by-default —
-  // visible but blocked until allowed, and even then confirmed every use.
-  const mcpServerCard = (s) => {
+// Tool servers (ADR 0054), on Connections: one row each, opening to its own screen.
+
+// One tool server in full: where it is, its tools and what each may do.
+function toolServerCard(s) {
     const addr = s.transport === "http" ? s.url : `${s.command} ${(s.args || []).join(" ")}`.trim();
     const health = s.tools_live > 0
       ? `<span class="pill concluded">${s.tools_live} tool${s.tools_live === 1 ? "" : "s"}</span>`
@@ -287,8 +286,11 @@ function mcpSection() {
                <div class="step-list">${(s.tools || []).map(toolRow).join("")}</div></details>`
           : ""}
       </div>`;
-  };
-  const servers = (MCP_SERVERS && MCP_SERVERS.servers) || [];
+}
+
+// Finding a server and adding one by hand, on Connections; on a server's own screen only the
+// form, which its Edit fills.
+function toolServerForms(withSearch = true) {
   // Browse/search the catalog: curated entries + (best effort) the community
   // registry. Picking one prefills the form below — everything stays editable, so a
   // stale launch command can be corrected before it's registered.
@@ -340,12 +342,43 @@ function mcpSection() {
       <div class="row" style="justify-content:flex-end;"><button class="primary" data-act="mcp:add">Save server</button></div>
     </div>
     </details>`;
+  return withSearch ? `${mcpBrowse}${mcpAddForm}` : mcpAddForm;
+}
+
+function mcpSection() {
+  const servers = (MCP_SERVERS && MCP_SERVERS.servers) || [];
+  const row = (s) => {
+    const allowed = (s.tools || []).filter((t) => t.opened).length;
+    const pill = s.tools_live > 0
+      ? `<span class="pill concluded">${s.tools_live} tool${s.tools_live === 1 ? "" : "s"} · ${allowed} allowed</span>`
+      : `<span class="pill">not connected</span>`;
+    return `
+      <button class="ghost" data-act="go:toolserver:${esc(s.name)}">
+        <span class="grow" style="text-align:left;">${esc(s.name)}<span class="sub one-line">${esc(s.transport === "http" ? s.url : s.command || "")}</span></span>
+        ${pill}${icon("chevron", 15)}</button>`;
+  };
   return `
     <h3>Tool servers <span class="sub" style="font-weight:400;">· MCP</span></h3>
     <div class="note">Tools from a tool server are off-limits by default: Endora can see them, but each stays blocked until you allow it. Whether an allowed tool then asks first depends on Permissions.</div>
-    ${servers.map(mcpServerCard).join("")}
-    ${mcpBrowse}
-    ${mcpAddForm}`;
+    ${servers.length ? `<div class="card nav-list">${servers.map(row).join("")}</div>` : ""}
+    <details class="adv"><summary>Add a tool server</summary>${toolServerForms()}</details>`;
+}
+
+// One tool server's own screen.
+function viewToolServer() {
+  const s = ((MCP_SERVERS && MCP_SERVERS.servers) || []).find((x) => x.name === NAV.id);
+  const trail = crumbs([
+    { label: "Home", act: "go:chat" },
+    { label: "Settings", act: "go:settings" },
+    { label: "Connections", act: "go:connections" },
+    { label: s ? s.name : "Tool server" },
+  ]);
+  if (!s) return `${trail}<div class="empty">That tool server isn't here any more.</div>`;
+  return `
+    ${trail}
+    <h2>${esc(s.name)}</h2>
+    ${toolServerCard(s)}
+    ${toolServerForms(false)}`;
 }
 
 // One recipe: what it does, what it needs, and — folded, since it's the

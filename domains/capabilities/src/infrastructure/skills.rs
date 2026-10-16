@@ -208,6 +208,10 @@ pub(super) fn search_request(url: &str, key: &str) -> Result<Value, CapabilityEr
 }
 
 impl Capability for WebSearchCapability {
+    fn for_people(&self) -> Option<&'static str> {
+        Some("Searches the internet for current sources, so answers can rest on something real.")
+    }
+
     fn info(&self) -> CapabilityInfo {
         CapabilityInfo {
             id: "web_search",
@@ -293,6 +297,10 @@ impl Capability for WebSearchCapability {
 pub(super) struct WebFetchCapability;
 
 impl Capability for WebFetchCapability {
+    fn for_people(&self) -> Option<&'static str> {
+        Some("Reads a web page you or a search pointed it to.")
+    }
+
     fn info(&self) -> CapabilityInfo {
         CapabilityInfo {
             id: "web_fetch",
@@ -1097,6 +1105,10 @@ pub fn describe_meeting(m: &PublicMeeting) -> String {
 pub(super) struct TicketedEventsCapability;
 
 impl Capability for TicketedEventsCapability {
+    fn for_people(&self) -> Option<&'static str> {
+        Some("Concerts, sport, shows and theatre near you, with dates and the cheapest ticket.")
+    }
+
     fn info(&self) -> CapabilityInfo {
         CapabilityInfo {
             id: "ticketed_events",
@@ -1455,6 +1467,10 @@ impl Capability for MailCapability {
 pub(super) struct CityMeetingsCapability;
 
 impl Capability for CityMeetingsCapability {
+    fn for_people(&self) -> Option<&'static str> {
+        Some("Your city's council, planning and zoning meetings, from its own agenda.")
+    }
+
     fn info(&self) -> CapabilityInfo {
         CapabilityInfo {
             id: "city_meetings",

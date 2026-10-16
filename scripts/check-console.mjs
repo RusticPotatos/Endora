@@ -373,7 +373,13 @@ if (failures.length) {
       process.exit(1);
     }
   }
-  for (const here of ["go:connections", "go:skills", "go:permissions"]) {
+  // Export and delete are on Your data, not loose at the foot of Settings.
+  const data = runInContext("viewData()", context);
+  if (settings.includes('data-act="purge"') || !data.includes('data-act="purge"') || !data.includes('data-act="export"')) {
+    console.error("data: export and delete are not on Your data");
+    process.exit(1);
+  }
+  for (const here of ["go:connections", "go:skills", "go:permissions", "go:data"]) {
     if (!settings.includes(here)) {
       console.error(`settings: ${here} is missing from the Settings list`);
       process.exit(1);
@@ -381,7 +387,13 @@ if (failures.length) {
   }
   // Skills is a list: no forms on it, no entries that only hold settings, and each row opens
   // its own screen.
+  // A line written for people is what the screen shows, not the model's instructions.
+  runInContext('CAPS.find((c) => c.id === "home_assistant").summary = "Reads your home, for people."', context);
   const skills = runInContext("viewSkills()", context);
+  if (!skills.includes("Reads your home, for people.") || skills.includes("reads your home<")) {
+    console.error("skills: the list shows the model's description rather than the line for people");
+    process.exit(1);
+  }
   if (skills.includes("skillcfg:") || skills.includes("go:skill:terminal-portainer")
       || !skills.includes("go:skill:home_assistant") || !skills.includes("go:recipes")
       || !skills.includes("go:connections")) {
@@ -417,12 +429,25 @@ if (failures.length) {
     console.error("connections: a home-lab service's own screen says it needs setup, offers an on/off, or does not lead back");
     process.exit(1);
   }
+  // Tool servers are rows too, each opening to its own screen with its tools and the form
+  // its Edit fills; the Home Assistant wizard is folded until wanted.
+  if (!connections.includes("go:toolserver:home-assistant") || connections.includes("mcp:trust:")
+      || connections.indexOf("<details") > connections.indexOf("connect:start")) {
+    console.error("connections: a tool server's card is open on the list, or the wizard is not folded");
+    process.exit(1);
+  }
+  const server = runInContext('NAV = { v: "toolserver", id: "home-assistant" }; viewToolServer()', context);
+  if (!server.includes("mcp:trust:home-assistant") || !server.includes("mcp-name")
+      || !server.includes("go:connections")) {
+    console.error("connections: a tool server's own screen lost its tools, its edit form, or the way back");
+    process.exit(1);
+  }
   if (!runInContext("viewPermissions()", context).includes("autonomy:external")) {
     console.error("permissions: the autonomy switches are not on Permissions");
     process.exit(1);
   }
   runInContext("NAV = globalThis.__nav", context);
-  console.log("settings: 7 entries; skills a list, each with its own screen; connections and permissions their own");
+  console.log("settings: 8 entries; skills a list, each with its own screen; connections and permissions their own");
 }
 
 

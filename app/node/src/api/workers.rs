@@ -20,6 +20,13 @@ pub(super) struct WhatIHaveBeenDoing {
 }
 
 impl endora_capabilities::Capability for WhatIHaveBeenDoing {
+    fn for_people(&self) -> Option<&'static str> {
+        Some(
+            "What Endora has done lately: messages it started, what it did and whether it \
+             worked, and settings it changed. Ask it what it did while you were out.",
+        )
+    }
+
     fn info(&self) -> endora_capabilities::CapabilityInfo {
         endora_capabilities::CapabilityInfo {
             id: "own_activity",
@@ -94,6 +101,13 @@ pub(super) struct TheWholeBrief {
 }
 
 impl endora_capabilities::Capability for TheWholeBrief {
+    fn for_people(&self) -> Option<&'static str> {
+        Some(
+            "Your brief in one go: the weather, the drive, headlines, today's calendar, local \
+             events, and anything in the house not answering. Ask for your brief.",
+        )
+    }
+
     fn info(&self) -> endora_capabilities::CapabilityInfo {
         endora_capabilities::CapabilityInfo {
             id: "brief",

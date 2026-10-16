@@ -464,7 +464,19 @@ function viewSettings() {
     <h2>Settings</h2>
     <div class="card nav-list">
       ${UNDER_SETTINGS.map((p) => nav(`go:${p.view}`, p.icon, p.label, p.note)).join("")}
-      ${nav("export", "export", "Export my data")}
+    </div>`;
+}
+
+// Taking a copy of what Endora knows, and deleting it: the person's rights over their memory,
+// on their own screen rather than a red button at the foot of Settings.
+function viewData() {
+  return `
+    ${settingsCrumbs("data")}
+    <h2>Your data</h2>
+    <div class="card nav-list">
+      <button class="ghost" data-act="export">${icon("export")}
+        <span class="grow" style="text-align:left;">Export my data<span class="sub" style="display:block;font-weight:400;">Endora's memory of you as a file: messages, beliefs, preferences, goals and its record of what it did. It is not a backup: settings and keys are not in it, and nothing can import it.</span></span>
+      </button>
     </div>
     <div class="card nav-list" style="margin-top:14px;">
       <button class="ghost danger" data-act="purge">${icon("purge")}

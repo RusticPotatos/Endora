@@ -13,6 +13,8 @@ function render() {
     : v === "skill" ? viewSkill()
     : v === "connections" ? viewConnections()
     : v === "permissions" ? viewPermissions()
+    : v === "toolserver" ? viewToolServer()
+    : v === "data" ? viewData()
     // Older links: what it remembers is now part of About you.
     : v === "prefs" ? viewUnderstanding()
     : v === "settings" ? viewSettings()
@@ -537,7 +539,12 @@ async function dispatch(act) {
     }
     if (verb === "mcp" && noun === "remove") {
       if (!confirm(`Remove the MCP server "${id}"? Its tools will be disconnected.`)) return;
-      try { await api("DELETE", "/v1/mcp/servers/" + encodeURIComponent(id)); flash("Server removed.", "ok"); }
+      try {
+        await api("DELETE", "/v1/mcp/servers/" + encodeURIComponent(id));
+        flash("Server removed.", "ok");
+        // Its own screen has nothing left to show.
+        if (NAV.v === "toolserver") NAV = { v: "connections" };
+      }
       catch (e) { flash("Couldn't remove: " + e.message, "err"); }
       return reload();
     }

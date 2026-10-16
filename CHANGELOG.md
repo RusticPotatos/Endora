@@ -9,6 +9,15 @@ tagged release.
 
 ### Changed
 
+- **Skills say what they do, for people.** A skill whose description is written for the model
+  ("Use this for any question about what YOU did", "Civic business ONLY", "fetch useful URLs
+  with web_fetch") shows a line for people on the settings screen instead (`for_people`, the
+  API's `summary`); what the model reads is unchanged.
+- **Connections is short too.** Tool servers are rows that open to their own screen (tools,
+  test, edit, remove); adding one is folded, and so is the Home Assistant "connect something"
+  wizard until it is wanted.
+- **Your data** is its own screen: export, with what it does and does not hold, and delete
+  everything. They were loose at the foot of Settings.
 - **Skills is a list, Connections and Permissions are their own.** Skills was one page about
   twelve phone screens long: the autonomy switches, a Home Assistant wizard, every skill with
   its setup form open, and tool servers. Now Skills lists what chat can do in four groups (Your

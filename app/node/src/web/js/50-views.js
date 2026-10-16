@@ -221,9 +221,11 @@ function viewConnect() {
   const alsoHtml = alsoThere.length
     ? `<div class="sub" style="margin-top:10px;">Also set up: ${alsoThere.map(esc).join(", ")}</div>`
     : "";
+  // Folded: most visits are to see what is connected, not to add something. A connection in
+  // progress (above) is shown open.
   return `
-    <div class="title" style="margin:14px 0 6px;">Connect something to your home</div>
-    <div class="note" style="margin-bottom:10px;">Endora sets it up in Home Assistant for you — you only sign in. Whatever you add here, it can use straight away.</div>
+    <details class="adv"><summary>Connect something new through Home Assistant</summary>
+    <div class="note" style="margin:8px 0 10px;">Endora sets it up in Home Assistant for you — you only sign in. Whatever you add here, it can use straight away.</div>
     <div class="card">
       ${buttons}
       <div class="form" style="margin-top:6px;">
@@ -231,7 +233,8 @@ function viewConnect() {
         <button class="ghost" data-act="connect:other">Start</button>
       </div>
       ${alsoHtml}
-    </div>`;
+    </div>
+    </details>`;
 }
 
 // The one thing Endora would like an answer about, shown where you already are.

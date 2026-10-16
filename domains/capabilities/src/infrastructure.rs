@@ -161,6 +161,14 @@ pub trait Capability: Send + Sync {
     /// Static description of this capability.
     fn info(&self) -> CapabilityInfo;
 
+    /// What this skill does, said to the person on the settings screen, where its
+    /// `description` is written for the model choosing among skills ("Use this for any
+    /// question about what YOU did", "Civic business ONLY"). `None`, the default, shows the
+    /// description as it is, which suits a skill whose description already reads for people.
+    fn for_people(&self) -> Option<&'static str> {
+        None
+    }
+
     /// Runs the capability with JSON `input` and its configured `settings`,
     /// returning a JSON result. Keyless skills ignore `settings`.
     ///

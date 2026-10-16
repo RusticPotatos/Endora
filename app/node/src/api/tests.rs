@@ -2577,3 +2577,55 @@ async fn a_skill_that_rides_a_connection_is_not_on_until_the_connection_is_set_u
     let after = json_body(app(state).oneshot(get("/v1/capabilities")).await.unwrap()).await;
     assert_eq!(usable(&after), true, "Docker is set up now");
 }
+
+#[tokio::test]
+async fn a_skill_whose_description_is_written_for_the_model_has_a_line_for_people() {
+    // The settings screen showed the model's instructions: "Use this for any question about
+    // what YOU did", "Civic business ONLY", "fetch useful URLs with web_fetch".
+    let mut state = test_state();
+    let mut caps: Vec<Arc<dyn Capability>> = state.capabilities.as_ref().clone();
+    caps.push(Arc::new(super::workers::WhatIHaveBeenDoing {
+        chat: state.chat.clone(),
+        understanding: state.understanding.clone(),
+        config: state.config.clone(),
+        clock: state.clock.clone(),
+    }));
+    state.capabilities = Arc::new(caps);
+    let all = json_body(app(state).oneshot(get("/v1/capabilities")).await.unwrap()).await;
+    for id in [
+        "own_activity",
+        "web_search",
+        "web_fetch",
+        "city_meetings",
+        "ticketed_events",
+    ] {
+        let c = all
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|c| c["id"] == id)
+            .unwrap_or_else(|| panic!("{id} is listed"));
+        let summary = c["summary"]
+            .as_str()
+            .unwrap_or_else(|| panic!("{id} has a summary"));
+        assert_ne!(summary, c["description"].as_str().unwrap(), "{id}");
+        for model_talk in [
+            "ONLY",
+            "YOU",
+            "Use this",
+            "Use it",
+            "web_fetch",
+            "The person",
+        ] {
+            assert!(!summary.contains(model_talk), "{id}: {summary}");
+        }
+    }
+    // A skill whose description already reads for people shows it as it is.
+    let weather = all
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["id"] == "weather")
+        .unwrap();
+    assert_eq!(weather["summary"], weather["description"]);
+}

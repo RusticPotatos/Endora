@@ -21,6 +21,7 @@ const UNDER_SETTINGS = [
   { view: "permissions", icon: "scale", label: "Permissions", note: "how far Endora may act on its own" },
   { view: "understanding", icon: "person", label: "About you", note: "what you've told it, what it has learned, and what it's working on" },
   { view: "signin", icon: "lock", label: "Your sign-in", note: "password, authenticator, and tokens for scripts" },
+  { view: "data", icon: "export", label: "Your data", note: "take a copy of what Endora knows, or delete it" },
 ];
 
 // The trail for a screen under Settings. Anything not under Settings gets the short trail, so

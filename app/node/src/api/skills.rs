@@ -84,7 +84,7 @@ pub(super) async fn list_capabilities(
         state
             .capabilities
             .iter()
-            .map(|c| c.info())
+            .map(|c| (c, c.info()))
             // Show a skill the person can do something about; hide one they cannot.
             //
             // A scaffold is declared with full metadata and no data source behind it —
@@ -96,15 +96,19 @@ pub(super) async fn list_capabilities(
             //
             // The rule is a property, not a list: give a scaffold settings, or
             // implement it, and it appears here with no further change.
-            .filter(|info| info.configured || !info.settings.is_empty())
-            .map(|info| {
+            .filter(|(_, info)| info.configured || !info.settings.is_empty())
+            .map(|(c, info)| {
                 let stance = stances
                     .get(info.id)
                     .copied()
                     .unwrap_or_else(|| endora_capabilities::default_stance(info.reversibility));
                 // A skill that rides a connection is judged by the connection's settings.
                 let own = settings.get(info.borrows_from.unwrap_or(info.id));
-                capability_json(&info, stance, own.unwrap_or(&empty))
+                let mut shown = capability_json(&info, stance, own.unwrap_or(&empty));
+                // What the settings screen says the skill does: a line for people where the
+                // description is written for the model.
+                shown["summary"] = json!(c.for_people().unwrap_or(info.description));
+                shown
             })
             .collect(),
     )
