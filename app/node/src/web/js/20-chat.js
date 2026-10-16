@@ -95,10 +95,8 @@ function viewAudit() {
 // ---- voice (browser Web Speech API; STT may use a cloud service) ---
 let SPEAK = localStorage.getItem("endora.speak") === "1";      // read replies aloud (default OFF)
 let DEEP_MODE = localStorage.getItem("endora.deepmode") === "1"; // route sends to the deep model (default OFF)
-let CONVO_REC = null;          // the active voice-activity recording, if listening
 const TTS = window.speechSynthesis;
 const STT = window.SpeechRecognition || window.webkitSpeechRecognition;
-let STT_AVAILABLE = false; // a Whisper STT server is configured (set from /health)
 // iOS Safari only lets speech start after a user gesture unlocks it; speaking a
 // silent utterance the moment the person taps "Speak" unlocks it for the later,
 // async replies. (This is best-effort — a fully reliable mobile voice is the

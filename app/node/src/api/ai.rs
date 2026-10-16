@@ -85,17 +85,6 @@ fn mail_reader_target(config: &endora_capabilities::ConfigStore) -> (String, Str
     )
 }
 
-/// The speech-to-text server: the one chosen on this screen, or the deployment's
-/// (`ENDORA_STT_URL`), or none (the browser's own recognition).
-pub(super) fn speech_url(config: &endora_capabilities::ConfigStore) -> Option<String> {
-    ai_setting(config, "speech_url").or_else(|| {
-        std::env::var("ENDORA_STT_URL")
-            .ok()
-            .map(|v| v.trim().to_owned())
-            .filter(|v| !v.is_empty())
-    })
-}
-
 /// The quarantined mail reader (ADR 0097), reading with whichever model is chosen for it on
 /// the AI screen, **always on the local endpoint**: even when the conversation runs on a cloud
 /// provider, mail stays in the house.
@@ -188,7 +177,6 @@ pub(super) async fn ai_overview(
             .and_then(|m| m.get("model"))
             .map(|v| v.trim().to_owned())
             .filter(|v| !v.is_empty());
-        let speech = speech_url(config.as_ref());
         let (reader_url, reader_model) = mail_reader_target(config.as_ref());
         let local = local_model_url();
         let loaded = loaded_models(&[chat_url.clone(), local.clone()]);
@@ -246,24 +234,19 @@ pub(super) async fn ai_overview(
             "sees": "Only the image you send it.",
             "change": "vision", "on": vision.is_some(),
         }));
+        // Dictation is the browser's own recognition; Endora runs nothing for it, and says so.
         roles.push(json!({
             "id": "speech", "name": "Hearing you",
-            "does": "Turns what you say into text when you hold the microphone.",
-            "model": "", "endpoint": speech.as_deref().map(shown).unwrap_or_default(),
-            "local": speech.as_deref().is_none_or(endora_infrastructure::is_private_endpoint),
+            "does": "Turns what you dictate into text in the message box.",
+            "model": "", "endpoint": "", "local": false,
             "runtime": serde_json::Value::Null,
-            "sees": if speech.is_some() {
-                "Your voice while you hold the microphone."
-            } else {
-                "Nothing: your browser's own speech recognition is used, which may send audio to its maker."
-            },
-            "change": "speech", "on": true,
+            "sees": "Nothing: your browser's own speech recognition is used, which may send audio to its maker.",
+            "change": serde_json::Value::Null, "on": true,
         }));
         Ok::<_, AppError>(json!({
             "roles": roles,
             "context_tokens": context_window_tokens(),
             "mail_reader_model": ai_setting(config.as_ref(), "mail_reader_model"),
-            "speech_url": ai_setting(config.as_ref(), "speech_url"),
         }))
     })
     .await?;
@@ -274,8 +257,6 @@ pub(super) async fn ai_overview(
 pub(super) struct AiRequest {
     /// The mail reader's model; blank goes back to the deployment's.
     mail_reader_model: Option<String>,
-    /// The speech-to-text server; blank goes back to the deployment's (or none).
-    speech_url: Option<String>,
 }
 
 /// Sets the choices only this screen holds. Each field present is saved; blank clears it.
@@ -288,18 +269,6 @@ pub(super) async fn set_ai(
             message: message.to_owned(),
         })
     };
-    if let Some(url) = req
-        .speech_url
-        .as_deref()
-        .map(str::trim)
-        .filter(|u| !u.is_empty())
-    {
-        if !(url.starts_with("http://") || url.starts_with("https://")) {
-            return Err(invalid(
-                "the speech-to-text address must start with http:// or https://",
-            ));
-        }
-    }
     if let Some(model) = req.mail_reader_model.as_deref().map(str::trim) {
         if model.chars().any(char::is_control) || model.len() > 200 {
             return Err(invalid("that is not a model name"));
@@ -308,10 +277,7 @@ pub(super) async fn set_ai(
     let config = state.config.clone();
     blocking(move || {
         use endora_capabilities::application::CapabilitySettingsRepository as _;
-        for (key, value) in [
-            ("mail_reader_model", req.mail_reader_model),
-            ("speech_url", req.speech_url),
-        ] {
+        for (key, value) in [("mail_reader_model", req.mail_reader_model)] {
             if let Some(value) = value {
                 config
                     .set_setting(SETTINGS_ID, key, value.trim())
