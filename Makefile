@@ -79,6 +79,15 @@ export ENDORA_UTC_OFFSET_MINUTES
 export ENDORA_MAIL_DIR
 
 COMPOSE = docker $(if $(DOCKER_CONTEXT),--context $(DOCKER_CONTEXT),) compose
+TARGET_DOCKER = docker $(if $(DOCKER_CONTEXT),--context $(DOCKER_CONTEXT),)
+
+# Where the image is BUILT, when that is not where it runs: a Docker context on this machine
+# (e.g. ENDORA_BUILD_CONTEXT = desktop-linux in local.mk on a laptop). The image is built
+# there for the target's architecture, cross-compiled rather than emulated, and copied to
+# the target, which then only starts it. Empty = build on the target, as before. A small
+# always-on box shares its memory with everything else in the house: a release build on one
+# ran a 16 GB NAS out of memory and swap, and Home Assistant stopped answering.
+ENDORA_BUILD_CONTEXT ?=
 
 .DEFAULT_GOAL := help
 
@@ -151,7 +160,20 @@ deploy: check-data-dir ## Build + start the node via Compose (DOCKER_CONTEXT=nas
 	# in local.mk). Keep the bearer-authenticated API on a trusted network.
 	# ENDORA_BUILD stamps the deploy's git short SHA into the image, so /health
 	# and the console header show which build is live.
+ifeq ($(ENDORA_BUILD_CONTEXT),)
 	ENDORA_BUILD="$$(git rev-parse --short HEAD 2>/dev/null || echo dev)" $(COMPOSE) up -d --build
+else
+	@set -e; \
+	build="$$(git rev-parse --short HEAD 2>/dev/null || echo dev)"; \
+	arch="$$($(TARGET_DOCKER) version --format '{{.Server.Arch}}')"; \
+	echo "building $$build for linux/$$arch on $(ENDORA_BUILD_CONTEXT)"; \
+	docker --context $(ENDORA_BUILD_CONTEXT) buildx build --platform "linux/$$arch" \
+		--build-arg ENDORA_BUILD="$$build" -t endora-node:for-target --load .; \
+	echo "copying the image to the target"; \
+	docker --context $(ENDORA_BUILD_CONTEXT) save endora-node:for-target | gzip -1 | $(TARGET_DOCKER) load; \
+	$(TARGET_DOCKER) tag endora-node:for-target endora-node:latest; \
+	ENDORA_BUILD="$$build" $(COMPOSE) up -d --no-build
+endif
 
 .PHONY: smoke
 smoke: ## Assert invariants against the DEPLOYED node (ENDORA_URL, or https://127.0.0.1:8787)

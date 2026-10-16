@@ -28,6 +28,22 @@ in the container) — your settings and credentials as well as its memory. How t
 up properly, and where to keep it so a backup tool can reach it, is
 [below](#backing-up-your-data). `endora export` is **not** that backup.
 
+### Building somewhere other than the box that runs it
+
+By default `make deploy` builds the image on the machine that runs it. On a small always-on
+box that machine is also running your house: a release build there once ran a 16 GB NAS out
+of memory and swap, and Home Assistant stopped answering. To build on your laptop instead,
+set a Docker context on the laptop in the git-ignored `local.mk`:
+
+```make
+DOCKER_CONTEXT = nas                    # where it runs
+ENDORA_BUILD_CONTEXT = desktop-linux    # where it is built
+```
+
+The image is then built on the laptop for the target's architecture (cross-compiled, not
+emulated: an arm64 Mac builds an x86_64 NAS image natively), copied over, and started without
+building. The Rust used is the one in the build image (the workspace MSRV), never a download.
+
 ### Backing up your data
 
 **What is in `/data`.** `endora.db` holds everything: your settings, API keys and MCP
