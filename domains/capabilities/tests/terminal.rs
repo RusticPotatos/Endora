@@ -886,8 +886,8 @@ fn the_agenda_watches_firing_alerts_and_failing_checks_through_fixed_queries_and
                 "GET /api/v1/alerts ",
                 json!({"status":"success","data":{"alerts":[
                     {"state":"firing","labels":{"alertname":"DiskFailingSmart","severity":"critical",
-                        "drive":"/dev/nvme0","serial_number":"FICTIONAL-SERIAL","instance":"192.168.1.10:9902"},
-                     "annotations":{"summary":"/dev/nvme0 is failing its SMART health check"}},
+                        "drive":"/dev/sda","serial_number":"FICTIONAL-SERIAL","instance":"192.168.1.10:9902"},
+                     "annotations":{"summary":"/dev/sda is failing its SMART health check"}},
                     {"state":"pending","labels":{"alertname":"LowMemory","severity":"warning"}}]}}),
             ),
             (
@@ -901,8 +901,8 @@ fn the_agenda_watches_firing_alerts_and_failing_checks_through_fixed_queries_and
     mock.join().unwrap();
     assert_eq!(
         watched,
-        json!({"alerts":[{"name":"DiskFailingSmart","severity":"critical","target":"/dev/nvme0",
-            "summary":"/dev/nvme0 is failing its SMART health check"}],"checks_failing":["Plex"]}),
+        json!({"alerts":[{"name":"DiskFailingSmart","severity":"critical","target":"/dev/sda",
+            "summary":"/dev/sda is failing its SMART health check"}],"checks_failing":["Plex"]}),
         "a pending alert is not firing, and no other label is kept"
     );
     assert!(!watched.to_string().contains("FICTIONAL-SERIAL"));

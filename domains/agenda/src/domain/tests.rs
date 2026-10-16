@@ -187,8 +187,8 @@ fn an_alerts_rule_decides_its_kind_and_the_containers_own_alerts_are_left_to_doc
         alert(
             "FilesystemFull",
             "critical",
-            "/mnt/media",
-            "/mnt/media is 97% full",
+            "/mnt/data",
+            "/mnt/data is 97% full",
         ),
         alert("FilesystemAlmostFull", "warning", "/", "/ is 91% full"),
         alert(
@@ -200,8 +200,8 @@ fn an_alerts_rule_decides_its_kind_and_the_containers_own_alerts_are_left_to_doc
         alert(
             "DiskFailingSmart",
             "critical",
-            "/dev/nvme0",
-            "/dev/nvme0 is failing its SMART health check",
+            "/dev/sda",
+            "/dev/sda is failing its SMART health check",
         ),
         alert("LowMemory", "warning", "", ""),
         alert("Exotic", "critical", "", "Something critical"),
@@ -224,8 +224,8 @@ fn an_alerts_rule_decides_its_kind_and_the_containers_own_alerts_are_left_to_doc
             Kind::AlertCritical
         ]
     );
-    assert_eq!(signals[0].sentence(), "/mnt/media is 97% full");
-    assert_eq!(signals[3].about, "DiskFailingSmart on /dev/nvme0");
+    assert_eq!(signals[0].sentence(), "/mnt/data is 97% full");
+    assert_eq!(signals[3].about, "DiskFailingSmart on /dev/sda");
     assert_eq!(signals[4].sentence(), "LowMemory", "no summary: its name");
     assert_eq!(
         Kind::DiskFull.default_response(),
