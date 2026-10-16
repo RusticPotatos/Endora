@@ -238,6 +238,25 @@ fn own_tones_password_goes_as_basic_admin() {
     assert_eq!(base64("admin:pwd"), "YWRtaW46cHdk");
 }
 
+#[test]
+fn the_senders_password_is_read_when_needed_so_it_may_come_later() {
+    let file = std::env::temp_dir().join(format!(
+        "endora-sound-sender-password-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_file(&file);
+    let sender = OwnTone::new("http://127.0.0.1:1", Some(file.clone()));
+    assert_eq!(
+        sender.signed(),
+        None,
+        "signed with a password that is not there yet"
+    );
+    std::fs::write(&file, "pw\n").unwrap();
+    assert_eq!(sender.signed().as_deref(), Some("Basic YWRtaW46cHc="));
+    assert_eq!(OwnTone::new("http://127.0.0.1:1", None).signed(), None);
+    let _ = std::fs::remove_file(&file);
+}
+
 #[cfg(unix)]
 #[test]
 fn a_sounding_group_is_written_to_its_pipe_and_a_quiet_one_closes_it() {

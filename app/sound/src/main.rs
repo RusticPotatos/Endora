@@ -93,9 +93,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // makes. SOUND_SENDER_PASSWORD_FILE holds their admin password, when they want one.
     let password = std::env::var("SOUND_SENDER_PASSWORD_FILE")
         .ok()
-        .and_then(|f| std::fs::read_to_string(f).ok())
-        .map(|p| p.trim().to_owned())
-        .filter(|p| !p.is_empty());
+        .filter(|f| !f.trim().is_empty())
+        .map(std::path::PathBuf::from);
     let apis: Vec<String> = std::env::var("SOUND_SENDERS")
         .unwrap_or_default()
         .split(',')

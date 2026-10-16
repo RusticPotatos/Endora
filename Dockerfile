@@ -68,6 +68,40 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     && cp "target/$triple/release/endora-hq" /endora-hq \
     && cp "target/$triple/release/endora-sound-hub" /endora-sound-hub
 
+# endora-sound's AirPlay senders (ADR 0104): stock OwnTone, built from its release, plus the
+# airptpd clock it ships the source of but no image builds, which four instances must share.
+# Built with `--target senders`; nothing of OwnTone's (GPL) is linked into anything of ours,
+# it runs beside the hub and is driven over its JSON API.
+FROM alpine:3.23 AS owntone-build
+ARG OWNTONE_VERSION=29.3
+RUN apk add -U -q --no-cache --no-progress \
+      alsa-lib-dev autoconf automake avahi-dev bison confuse-dev curl-dev ffmpeg-dev flex \
+      g++ gawk gcc gettext-dev git gnutls-dev gperf json-c-dev libevent-dev libgcrypt-dev \
+      libplist-dev libsodium-dev libtool libunistring-dev libwebsockets-dev libxml2-dev make \
+      protobuf-c-dev sqlite-dev
+WORKDIR /tmp/source
+RUN git clone --depth 1 -b "$OWNTONE_VERSION" https://github.com/owntone/owntone-server.git . \
+    && cp -r src/libairptp /tmp/airptp \
+    && autoreconf -fi -I /usr/share/gettext/m4 \
+    && ./configure --disable-install_systemd --disable-install_user --enable-silent-rules \
+         --prefix=/usr --sysconfdir=/etc/owntone --localstatedir=/var \
+    && make DESTDIR=/tmp/build install \
+    && cd /tmp/airptp \
+    && autoreconf -fi && ./configure --enable-daemon --prefix=/usr && make \
+    && install -D daemon/airptpd /tmp/build/usr/sbin/airptpd \
+    && rm -rf /tmp/build/var /tmp/build/etc
+
+FROM alpine:3.23 AS senders
+RUN apk add -U -q --no-cache --no-progress \
+      alsa-lib avahi confuse curl dbus ffmpeg gnutls json-c libevent libgcrypt libplist \
+      libsodium libunistring libuuid libwebsockets libxml2 protobuf-c sqlite sqlite-libs \
+    && rm -f /etc/avahi/services/* \
+    && adduser -S -H -D owntone
+COPY --from=owntone-build /tmp/build/ /
+COPY --chmod=755 scripts/sound-senders.sh /usr/local/bin/sound-senders
+VOLUME /data
+ENTRYPOINT ["/usr/local/bin/sound-senders"]
+
 # endora-sound (ADR 0104): the sound hub, in an image of its own, because it needs ffmpeg and
 # the node does not. Built with `--target sound`. It sits before the node's stage on purpose:
 # a plain build still makes the node, the last stage.

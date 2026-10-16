@@ -82,13 +82,14 @@ pub trait Instance: Send {
 pub struct OwnTone {
     api: String,
     agent: ureq::Agent,
-    password: Option<String>,
+    password: Option<PathBuf>,
 }
 
 impl OwnTone {
-    /// The instance at `api`, signing in with `password` when it has one.
+    /// The instance at `api`, signing in with the password in `password` when there is one.
+    /// The file is read each time: the senders may make it after the hub has started.
     #[must_use]
-    pub fn new(api: &str, password: Option<String>) -> Self {
+    pub fn new(api: &str, password: Option<PathBuf>) -> Self {
         Self {
             api: api.trim_end_matches('/').to_owned(),
             agent: ureq::Agent::config_builder()
@@ -103,9 +104,12 @@ impl OwnTone {
     fn signed(&self) -> Option<String> {
         // OwnTone's own scheme: Basic, user "admin". Only when the instance is not on a
         // trusted network for the hub.
-        self.password
-            .as_ref()
-            .map(|p| format!("Basic {}", base64(&format!("admin:{p}"))))
+        let password = std::fs::read_to_string(self.password.as_ref()?).ok()?;
+        let password = password.trim();
+        if password.is_empty() {
+            return None;
+        }
+        Some(format!("Basic {}", base64(&format!("admin:{password}"))))
     }
 
     fn check(
