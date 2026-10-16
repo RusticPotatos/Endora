@@ -278,8 +278,9 @@ One browser rule to know: **the microphone only works on a secure page** — HTT
   - **Quick local test:** in Chrome, `chrome://flags/#unsafely-treat-insecure-origin-as-secure`
     → add `http://<host>:8787` → relaunch. (Dev only; not a real fix.)
 
-  A fully **local** speech path (a Whisper model on your host, so audio never
-  leaves the machine) is the privacy-first end state and is the next voice step.
+  Endora runs no speech server of its own: dictation is the browser's recognition, and
+  the AI screen says so. (A server-side Whisper path once existed for push-to-talk; it
+  was removed with push-to-talk, as slower and less predictable than the browser.)
 
 Speech recognition also needs a supporting browser (Chrome/Edge) and, in some
 browsers, streams audio to a cloud service — so voice is opt-in, off by default.

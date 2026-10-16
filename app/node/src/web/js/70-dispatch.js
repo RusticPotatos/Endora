@@ -95,13 +95,12 @@ async function dispatch(act) {
       } catch (e) { flash("Spotify: " + e.message, "err"); }
       return render();
     }
-    // The AI screen's own choices: the mail reader's model and the speech server.
-    if (verb === "ai" && (noun === "mailreader" || noun === "speech")) {
-      const input = document.getElementById(noun === "mailreader" ? "ai-mail-reader" : "ai-speech");
-      const body = noun === "mailreader" ? { mail_reader_model: input ? input.value : "" } : { speech_url: input ? input.value : "" };
+    // The AI screen's own choice: the mail reader's model.
+    if (verb === "ai" && noun === "mailreader") {
+      const input = document.getElementById("ai-mail-reader");
       try {
-        AI = await api("POST", "/v1/ai", body);
-        flash(noun === "mailreader" ? "Mail will be read with that model, on your network." : "Saved the speech server.", "ok");
+        AI = await api("POST", "/v1/ai", { mail_reader_model: input ? input.value : "" });
+        flash("Mail will be read with that model, on your network.", "ok");
       } catch (e) { flash("Couldn't save: " + e.message, "err"); }
       return render();
     }
@@ -870,7 +869,6 @@ document.body.addEventListener("change", (ev) => {
 // beyond the butler chat lives in here, so the main surface stays clean.
 function setupHeader(health) {
   const service = (health && health.service) || "";
-  STT_AVAILABLE = !!(health && health.stt); // a Whisper server is configured
   const menuBtn = document.getElementById("menu-btn");
   if (menuBtn) menuBtn.innerHTML = icon("menu");
   const item = (act, name, label, extra = "", cls = "") =>

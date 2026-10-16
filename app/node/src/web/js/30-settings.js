@@ -561,10 +561,11 @@ function aiOverviewSection() {
         <input id="${id}" value="${esc(value || "")}" placeholder="${esc(placeholder)}" autocomplete="off" />
         <button class="ghost" data-act="${act}">Save</button>
       </div></details>`;
-    const change = r.change === "mail_reader"
-      ? field("ai-mail-reader", AI.mail_reader_model, `blank: the deployment's (${r.model})`, "ai:mailreader")
-      : r.change === "speech"
-        ? field("ai-speech", AI.speech_url, "http://… an OpenAI-compatible speech server; blank: the deployment's", "ai:speech")
+    // A role with nothing to change (dictation is the browser's) offers nothing.
+    const change = !r.change
+      ? ""
+      : r.change === "mail_reader"
+        ? field("ai-mail-reader", AI.mail_reader_model, `blank: the deployment's (${r.model})`, "ai:mailreader")
         : r.change === "vision"
           ? `<div class="sub" style="margin-top:6px;"><a data-act="go:skill:image_review">Choose it on the Image review skill</a></div>`
           : `<div class="sub" style="margin-top:6px;">Change it below.</div>`;
@@ -572,7 +573,7 @@ function aiOverviewSection() {
       <div class="card">
         <div class="title">${esc(r.name)} ${where}</div>
         <div class="sub">${esc(r.does)}</div>
-        <div class="sub" style="margin-top:4px;"><b>${esc(r.model || (r.id === "speech" ? (r.endpoint ? "speech server" : "your browser") : "not set"))}</b>${r.endpoint ? ` at ${esc(r.endpoint)}` : ""}</div>
+        <div class="sub" style="margin-top:4px;"><b>${esc(r.model || (r.id === "speech" ? "your browser" : "not set"))}</b>${r.endpoint ? ` at ${esc(r.endpoint)}` : ""}</div>
         ${runtime}${short}${cost}
         <div class="sub" style="margin-top:4px;">Sees: ${esc(r.sees)}</div>
         ${change}

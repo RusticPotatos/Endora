@@ -175,7 +175,7 @@ runInContext(
   // Mail screen renders. A sentence with markup in it, which must come out escaped.
   // Every model role, one on a cloud endpoint, and a server that gives less context than
   // Endora assumes, so every branch of the AI screen renders.
-  AI = { context_tokens: 16384, mail_reader_model: null, speech_url: null, roles: [
+  AI = { context_tokens: 16384, mail_reader_model: null, roles: [
     { id: "chat", name: "Conversation", does: "Answers you.", model: "qwen2.5:7b", endpoint: "ollama:11434",
       local: true, on: true, change: "models", sees: "Your messages.",
       runtime: { processor: "graphics card", memory_gb: 5.6, context: 4096, size: "7.6B, Q4_K_M" } },
@@ -186,8 +186,8 @@ runInContext(
       endpoint: "ollama:11434", local: true, on: true, change: "mail_reader", sees: "One email.", runtime: null },
     { id: "vision", name: "Looking at images", does: "Images.", model: "", endpoint: "ollama:11434",
       local: true, on: false, change: "vision", sees: "The image.", runtime: null },
-    { id: "speech", name: "Hearing you", does: "Speech.", model: "", endpoint: "", local: true, on: true,
-      change: "speech", sees: "Your voice.", runtime: null }] };
+    { id: "speech", name: "Hearing you", does: "Speech.", model: "", endpoint: "", local: false, on: true,
+      change: null, sees: "Nothing: your browser's own speech recognition is used.", runtime: null }] };
   // A Spotify sign-in started elsewhere, waiting to be finished here.
   SPOTIFY = { state: "waiting", detail: "Waiting for you to approve Endora on Spotify", client_id_set: true,
     sign_in_url: "https://accounts.spotify.com/authorize?client_id=example", redirect: "http://127.0.0.1:8888/callback",
@@ -487,15 +487,20 @@ if (failures.length) {
     console.error("connections: a tool server's own screen lost its tools, its edit form, or the way back");
     process.exit(1);
   }
-  // The AI screen names every role, where it runs and what it sees, offers the two choices it
-  // holds, and warns when the model server gives less context than Endora assumes.
+  // The AI screen names every role, where it runs and what it sees, offers the one choice it
+  // holds, and warns when the model server gives less context than Endora assumes. Dictation
+  // is the browser's, so it says so and offers nothing to change.
   const ai = runInContext("viewModels()", context);
-  for (const needed of ["Reading your mail", "Hearing you", "on your network", ">cloud<", "ai:mailreader",
-    "ai:speech", "go:skill:image_review", "long turns lose their beginning", "$0.42"]) {
+  for (const needed of ["Reading your mail", "Hearing you", "<b>your browser</b>", "on your network", ">cloud<",
+    "ai:mailreader", "go:skill:image_review", "long turns lose their beginning", "$0.42"]) {
     if (!ai.includes(needed)) {
       console.error(`ai: the AI screen is missing ${needed}`);
       process.exit(1);
     }
+  }
+  if ((ai.match(/Change it below/g) || []).length !== 2 || ai.includes("ai:speech")) {
+    console.error("ai: dictation offers a change it does not have");
+    process.exit(1);
   }
   // Spotify: whichever device started the sign-in, this one shows it and can finish it.
   const spotify = (state) => runInContext(`SPOTIFY = Object.assign({}, SPOTIFY, { state: "${state}" }); viewSpotify()`, context);
