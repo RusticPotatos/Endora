@@ -331,6 +331,10 @@ async function reload() {
   if (NAV.v === "mail") { try { MAIL = await api("GET", "/v1/mail"); } catch (_) { MAIL = null; } }
   // What Endora runs: it asks the model server, so only on the screen that shows it.
   if (NAV.v === "models") { try { AI = await api("GET", "/v1/ai"); } catch (_) { AI = null; } }
+  // One sign-in for every device: shown wherever it was started.
+  if (NAV.v === "connections" || NAV.v === "spotify") {
+    try { SPOTIFY = await api("GET", "/v1/connections/spotify"); } catch (_) { SPOTIFY = null; }
+  }
   // What the deep model has cost, and what is left. The balance asks the provider, so it is
   // fetched only on the screens that show it, never on a timer.
   if ((NAV.v === "models" || NAV.v === "settings") && DEEP_MODEL.configured) { await loadDeepSpend(); }

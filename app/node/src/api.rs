@@ -463,6 +463,21 @@ pub fn app(state: AppState) -> Router {
         .route("/v1/intentions/{id}/drop", post(drop_intention))
         .route("/v1/mail", get(mail::mail_digest))
         .route("/v1/ai", get(ai::ai_overview).post(ai::set_ai))
+        // Spotify, held here and lent to every device; its callback is outside /v1 because a
+        // browser redirect carries no token (the waiting sign-in's state authorizes it).
+        .route("/v1/connections/spotify", get(spotify::status))
+        .route("/v1/connections/spotify/begin", post(spotify::begin))
+        .route("/v1/connections/spotify/finish", post(spotify::finish))
+        .route("/v1/connections/spotify/token", post(spotify::token))
+        .route(
+            "/v1/connections/spotify/take-over",
+            post(spotify::take_over),
+        )
+        .route(
+            "/v1/connections/spotify/disconnect",
+            post(spotify::disconnect),
+        )
+        .route("/connect/spotify/callback", get(spotify::callback))
         .route("/v1/goals", get(list_goals))
         .route("/v1/goals/{request_key}", get(get_goal))
         .route("/v1/goals/{request_key}/cancel", post(cancel_goal))
@@ -755,6 +770,8 @@ use models::*;
 mod workers;
 // The AI screen: every model Endora uses, where it runs and what it sees.
 mod ai;
+// Spotify, held by the node and lent to every device.
+mod spotify;
 pub use ai::MailReader;
 // Endora's nightly copies of its own database.
 mod snapshots;

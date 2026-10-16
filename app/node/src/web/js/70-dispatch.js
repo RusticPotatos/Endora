@@ -15,6 +15,7 @@ function render() {
     : v === "permissions" ? viewPermissions()
     : v === "toolserver" ? viewToolServer()
     : v === "data" ? viewData()
+    : v === "spotify" ? viewSpotify()
     // Older links: what it remembers is now part of About you.
     : v === "prefs" ? viewUnderstanding()
     : v === "settings" ? viewSettings()
@@ -61,6 +62,27 @@ async function dispatch(act) {
   }
   try {
     if (verb === "reload") { location.reload(); return; }
+    // Spotify: one sign-in, held by the node, started or finished from any device.
+    if (verb === "spotify") {
+      try {
+        if (noun === "begin") {
+          const field = document.getElementById("spotify-client");
+          SPOTIFY = await api("POST", "/v1/connections/spotify/begin", { client_id: field ? field.value : "", via: id });
+          // Approving here: go straight to Spotify; it sends you back to Endora.
+          if (id === "endora" && SPOTIFY.sign_in_url) { location.href = SPOTIFY.sign_in_url; return; }
+        } else if (noun === "finish") {
+          const field = document.getElementById("spotify-returned");
+          SPOTIFY = await api("POST", "/v1/connections/spotify/finish", { returned: field ? field.value : "" });
+          flash(SPOTIFY.detail, "ok");
+        } else if (noun === "disconnect") {
+          if (!confirm("Disconnect Spotify from Endora? Every device loses it until you connect again.")) return;
+          SPOTIFY = await api("POST", "/v1/connections/spotify/disconnect", {});
+        } else {
+          SPOTIFY = await api("GET", "/v1/connections/spotify");
+        }
+      } catch (e) { flash("Spotify: " + e.message, "err"); }
+      return render();
+    }
     // The AI screen's own choices: the mail reader's model and the speech server.
     if (verb === "ai" && (noun === "mailreader" || noun === "speech")) {
       const input = document.getElementById(noun === "mailreader" ? "ai-mail-reader" : "ai-speech");

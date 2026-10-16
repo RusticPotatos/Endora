@@ -9,6 +9,13 @@ tagged release.
 
 ### Added
 
+- **Spotify, connected once in Endora** (Settings → Connections → Spotify). Endora holds the
+  sign-in and lends an hour's access token to whichever device asks; the refresh token never
+  leaves the node, so two devices cannot knock each other's sign-in out when Spotify rotates it.
+  A sign-in started on one device shows as waiting on the other and can be finished there: by
+  approving on the phone (Spotify sends you back to Endora, which finishes by itself) or by
+  pasting the address Spotify sends you to. A device's existing sign-in can be handed over.
+
 - **The handheld terminal is part of Endora** ([ADR 0099](docs/adr/0099-the-handheld-is-part-of-endora.md)).
   `clients/terminal`, the Rust TUI for a small Linux handheld, joins the workspace: one
   lockfile, one CI (its Python, privacy and rendering checks, and an ARM64 bundle artifact),

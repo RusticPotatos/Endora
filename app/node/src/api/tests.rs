@@ -2714,3 +2714,78 @@ async fn the_ai_screen_lists_every_model_and_mail_never_leaves_the_house() {
         "the chosen speech server is the one in use"
     );
 }
+
+#[tokio::test]
+async fn spotify_is_one_sign_in_any_device_can_start_and_its_callback_needs_the_waiting_state() {
+    let state = test_state();
+    let status = |body: &serde_json::Value| body["state"].as_str().unwrap_or("").to_owned();
+    let first = json_body(
+        app(state.clone())
+            .oneshot(get("/v1/connections/spotify"))
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status(&first), "not_set_up");
+    let no_id = app(state.clone())
+        .oneshot(post("/v1/connections/spotify/begin", r#"{"via":"paste"}"#))
+        .await
+        .unwrap();
+    assert_eq!(
+        no_id.status(),
+        StatusCode::BAD_REQUEST,
+        "a client id is needed"
+    );
+    // Started via Endora, from the address the person reached it at.
+    let begin = Request::builder()
+        .method("POST")
+        .uri("/v1/connections/spotify/begin")
+        .header("content-type", "application/json")
+        .header("host", "192.168.1.10:8787")
+        .header("authorization", format!("Bearer {TEST_TOKEN}"))
+        .body(Body::from(
+            r#"{"client_id":"exampleclientid","via":"endora"}"#,
+        ))
+        .unwrap();
+    let waiting = json_body(app(state.clone()).oneshot(begin).await.unwrap()).await;
+    assert_eq!(status(&waiting), "waiting");
+    assert_eq!(
+        waiting["redirect"],
+        "http://192.168.1.10:8787/connect/spotify/callback"
+    );
+    assert!(
+        waiting["sign_in_url"].as_str().unwrap().contains(
+            "redirect_uri=http%3A%2F%2F192.168.1.10%3A8787%2Fconnect%2Fspotify%2Fcallback"
+        )
+    );
+    // The callback needs no token, but a state that is not the waiting one finishes nothing.
+    let res = app(state.clone())
+        .oneshot(unsigned(
+            "/connect/spotify/callback?code=x&state=not-the-one",
+        ))
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let page = String::from_utf8(
+        axum::body::to_bytes(res.into_body(), 64 * 1024)
+            .await
+            .unwrap()
+            .to_vec(),
+    )
+    .unwrap();
+    assert!(page.contains("not connected"), "{page}");
+    let still = json_body(
+        app(state.clone())
+            .oneshot(get("/v1/connections/spotify"))
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status(&still), "waiting");
+    // Nothing to lend before it is connected.
+    let lend = app(state)
+        .oneshot(post("/v1/connections/spotify/token", "{}"))
+        .await
+        .unwrap();
+    assert_eq!(lend.status(), StatusCode::BAD_REQUEST);
+}

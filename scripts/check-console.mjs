@@ -187,6 +187,10 @@ runInContext(
       local: true, on: false, change: "vision", sees: "The image.", runtime: null },
     { id: "speech", name: "Hearing you", does: "Speech.", model: "", endpoint: "", local: true, on: true,
       change: "speech", sees: "Your voice.", runtime: null }] };
+  // A Spotify sign-in started elsewhere, waiting to be finished here.
+  SPOTIFY = { state: "waiting", detail: "Waiting for you to approve Endora on Spotify", client_id_set: true,
+    sign_in_url: "https://accounts.spotify.com/authorize?client_id=example", redirect: "http://127.0.0.1:8888/callback",
+    started_ms: 1, account: null };
   MAIL = { mounted: true, reading: true, indexed: 412, unread_recent: 37,
     important: [{ from: "Example Dental", at_ms: 1, bucket: "money", sentence: "A bill <b>due</b>.",
                   why: ["asks for money"], amount: "180.00", dates: [{ date: "2026-10-30", what: "due" }],
@@ -467,6 +471,20 @@ if (failures.length) {
       process.exit(1);
     }
   }
+  // Spotify: whichever device started the sign-in, this one shows it and can finish it.
+  const spotify = (state) => runInContext(`SPOTIFY = Object.assign({}, SPOTIFY, { state: "${state}" }); viewSpotify()`, context);
+  const waiting = spotify("waiting");
+  if (!waiting.includes("spotify:finish") || !waiting.includes("accounts.spotify.com/authorize")
+      || !waiting.includes("/connect/spotify/callback")) {
+    console.error("spotify: a waiting sign-in cannot be finished here, or the app's addresses are not shown");
+    process.exit(1);
+  }
+  if (!spotify("connected").includes("spotify:disconnect") || !spotify("not_set_up").includes("spotify:begin:endora")
+      || !runInContext("viewConnections()", context).includes("go:spotify")) {
+    console.error("spotify: connecting or disconnecting is missing, or Connections does not lead to it");
+    process.exit(1);
+  }
+  runInContext('SPOTIFY = Object.assign({}, SPOTIFY, { state: "waiting" })', context);
   if (!runInContext("viewPermissions()", context).includes("autonomy:external")) {
     console.error("permissions: the autonomy switches are not on Permissions");
     process.exit(1);

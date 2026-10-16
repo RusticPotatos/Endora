@@ -3,6 +3,7 @@
 let DB = null;                 // latest /v1/export snapshot — NULL until one lands
 let MAIL = null;               // the mail digest (/v1/mail), fetched only on the Mail screen
 let AI = null;                 // every model Endora uses (/v1/ai), fetched only on the AI screen
+let SPOTIFY = null;            // the Spotify sign-in, held by the node (/v1/connections/spotify)
 
 // The conversation, safely. `DB` is null before the first export and stays null when
 // the node is unreachable, so anything that runs on every render — the menu badge, in
