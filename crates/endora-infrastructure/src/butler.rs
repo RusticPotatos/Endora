@@ -1597,26 +1597,34 @@ fn system_prompt(preferences: &[Preference], context: &ButlerContext, offer_tool
             context.where_they_are
         ));
     }
-    if !preferences.is_empty() {
+    // One place for who they are (ADR 0101): memory, from the brain, holds what they told
+    // Endora and what it knows best. Without a brain (a caller that has none), what they
+    // told it is listed instead, so it is never sent twice.
+    if !context.memory.trim().is_empty() {
+        system.push_str(
+            "\nYour memory of this person, from your brain. What they told you there is theirs \
+             to change; honour it and do not re-ask:\n",
+        );
+        system.push_str(context.memory.trim());
+    } else if !preferences.is_empty() {
         system.push_str(
             "\nYou already know these preferences about the person; honour them and do not re-ask:",
         );
         for p in preferences {
             system.push_str(&format!("\n- ({}) {}", p.kind().name(), p.text()));
         }
-    }
-    // Ground the butler in what Endora has actually come to understand, so it
-    // speaks from that rather than starting cold.
-    if context.understanding.is_empty() {
-        system
-            .push_str("\nYou don't understand this person well yet — pay attention and start to.");
     } else {
+        system.push_str("\nYou don't know this person well yet — pay attention and start to.");
+    }
+    // The rest of the brain is a list, not its pages: the detail is one read away, and
+    // sending every page every turn would crowd out the turn and change with every note.
+    if !context.brain_index.is_empty() {
         system.push_str(
-            "\nWhat you already understand about this person (build on and refine this; only \
-             add NEW or changed understanding, don't repeat what's here):",
+            "\nYour brain also has these pages about them. When the conversation needs one's \
+             detail, read it with the read_page skill rather than guessing:",
         );
-        for u in &context.understanding {
-            system.push_str(&format!("\n- {u}"));
+        for line in &context.brain_index {
+            system.push_str(&format!("\n- {line}"));
         }
     }
     // What things are actually called here (ADR 0054). Endora asked after watching the
@@ -2572,6 +2580,35 @@ mod tests {
     }
 
     #[test]
+    fn memory_and_the_page_list_are_who_they_are_and_nothing_is_said_twice() {
+        use endora_application::{Preference, PreferenceId, PreferenceKind, Timestamp};
+        let told = [Preference::new(
+            PreferenceId::new(1),
+            "Based in: New York",
+            PreferenceKind::Context,
+            Timestamp::from_unix_millis(0),
+        )
+        .unwrap()];
+        let with_a_brain = ButlerContext {
+            memory: "## What you told me\n\n- Based in: New York\n\n## What I know best\n\n- Busy Monday to Friday".to_owned(),
+            brain_index: vec!["hobbies/watches — Watches: Collects dive watches".to_owned()],
+            ..Default::default()
+        };
+        let prompt = super::system_prompt(&told, &with_a_brain, true);
+        assert!(prompt.contains("- Busy Monday to Friday"), "{prompt}");
+        assert!(prompt.contains("- hobbies/watches — Watches: Collects dive watches"));
+        assert!(prompt.contains("read_page"));
+        assert_eq!(
+            prompt.matches("Based in: New York").count(),
+            1,
+            "what they told it is in memory, not listed again"
+        );
+        // Without a brain, what they told it is still there.
+        let prompt = super::system_prompt(&told, &ButlerContext::default(), true);
+        assert!(prompt.contains("(context) Based in: New York"), "{prompt}");
+    }
+
+    #[test]
     fn what_changes_every_message_travels_with_it_so_the_rest_is_reused() {
         // A local model server reuses the start of a request it has just seen. Measured on the
         // house's A2000: 0.05 s against 5 s to read the 7,000 tokens again. The clock and the
@@ -2583,7 +2620,7 @@ mod tests {
             present: vec![present.to_owned()],
             did_lately: vec!["Turned on the porch light".to_owned()],
             conversation_summary: Some("They asked about dinner.".to_owned()),
-            understanding: vec!["They like early mornings".to_owned()],
+            memory: "## What you told me\n\n- They like early mornings".to_owned(),
             tools: vec![CapabilityTool {
                 id: "home-assistant.HassTurnOn".to_owned(),
                 description: "Turns on a device".to_owned(),

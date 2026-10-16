@@ -140,7 +140,7 @@ pub(super) async fn what_the_butler_is_told(
             proven_now(understanding.as_ref()),
         );
         usecases::butler_context(
-            understanding.as_ref(),
+            knowledge.as_ref(),
             knowledge.as_ref(),
             understanding.as_ref(),
             config.as_ref(),
@@ -155,7 +155,8 @@ pub(super) async fn what_the_butler_is_told(
         "now": told.now,
         "right_now": told.present,
         "what_it_has_been_doing": told.did_lately,
-        "understands": told.understanding,
+        "memory": told.memory,
+        "brain_pages": told.brain_index,
         "names_it_knows": told.target_aliases,
         "how_its_actions_landed": told.track_record,
         "where_they_are": told.where_they_are,

@@ -81,7 +81,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let url = env::var("ENDORA_MODEL_URL")?;
     let butler = LlmButler::new(url, model.clone());
     let context: ButlerContext = usecases::butler_context(
-        &understanding,
+        &knowledge,
         &knowledge,
         &understanding,
         &config,

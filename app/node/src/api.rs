@@ -213,6 +213,10 @@ impl AppState {
                 config: config.clone(),
                 clock: clock.clone(),
             }) as Arc<dyn endora_capabilities::Capability>);
+            // The brain's pages, one at a time, when a turn needs the detail (ADR 0101).
+            all.push(Arc::new(ReadAPage {
+                knowledge: knowledge.clone(),
+            }) as Arc<dyn endora_capabilities::Capability>);
             all
         });
         // The brief skill gathers FROM `base_caps` — a list that does not contain it,

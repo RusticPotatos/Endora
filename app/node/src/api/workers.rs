@@ -78,6 +78,60 @@ impl endora_capabilities::Capability for WhatIHaveBeenDoing {
     }
 }
 
+/// One page of the brain, read whole (ADR 0101). Every turn carries memory and a line per
+/// page; this is how the butler gets a page's detail when the conversation needs it.
+pub(super) struct ReadAPage {
+    pub(super) knowledge: Arc<endora_understanding::BrainFolder>,
+}
+
+impl endora_capabilities::Capability for ReadAPage {
+    fn for_people(&self) -> Option<&'static str> {
+        Some(
+            "Reads one page of what Endora knows about you, when a conversation needs its \
+             detail. Pages are in About you.",
+        )
+    }
+
+    fn info(&self) -> endora_capabilities::CapabilityInfo {
+        endora_capabilities::CapabilityInfo {
+            id: "read_page",
+            name: "Read a page of your brain",
+            description: "Read one page of what you know about the person (your brain), by \
+                          its name from the list of pages, such as hobbies/watches. Use it \
+                          when the conversation needs a page's detail.",
+            category: "endora",
+            // Its own folder. Nothing leaves the house to answer this.
+            reaches_external: false,
+            reversibility: endora_application::Reversibility::Observe,
+            configured: true,
+            needs: "",
+            settings: &[],
+            wants_place: false,
+            borrows_from: None,
+            // The person's own pages, not a stranger's words.
+            third_party: false,
+            input_schema: Some(
+                r#"{"type":"object","properties":{"page":{"type":"string","description":"the page's name, such as hobbies/watches"}},"required":["page"]}"#,
+            ),
+        }
+    }
+
+    fn invoke(
+        &self,
+        input: &serde_json::Value,
+        _settings: &endora_capabilities::CapabilitySettings,
+    ) -> Result<serde_json::Value, endora_capabilities::CapabilityError> {
+        let name = input["page"].as_str().unwrap_or_default();
+        let text = usecases::read_page(self.knowledge.as_ref(), name)
+            .map_err(|e| endora_capabilities::CapabilityError::Unavailable(e.to_string()))?;
+        Ok(json!({ "page": name, "text": text }))
+    }
+
+    fn summarize(&self, output: &serde_json::Value) -> String {
+        output["text"].as_str().unwrap_or_default().to_owned()
+    }
+}
+
 /// The person's brief, as a skill the model can reach for (ADR 0074).
 ///
 /// Defined HERE because assembling it crosses contexts — capabilities, standing
@@ -153,7 +207,7 @@ impl endora_capabilities::Capability for TheWholeBrief {
             proven_now(self.understanding.as_ref()),
         );
         let context = usecases::butler_context(
-            self.understanding.as_ref(),
+            self.knowledge.as_ref(),
             self.knowledge.as_ref(),
             self.understanding.as_ref(),
             self.config.as_ref(),
@@ -368,7 +422,7 @@ pub fn spawn_heartbeat(state: AppState) {
                     proven_now(understanding.as_ref()),
                 );
                 let context = usecases::butler_context(
-                    understanding.as_ref(),
+                    knowledge.as_ref(),
                     knowledge.as_ref(),
                     understanding.as_ref(),
                     config.as_ref(),
@@ -484,7 +538,7 @@ pub fn spawn_research_worker(state: AppState) {
                     proven_now(understanding.as_ref()),
                 );
                 let context = usecases::butler_context(
-                    understanding.as_ref(),
+                    knowledge.as_ref(),
                     knowledge.as_ref(),
                     understanding.as_ref(),
                     config.as_ref(),

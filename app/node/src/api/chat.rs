@@ -22,7 +22,7 @@ pub(super) async fn chat_context(
             proven_now(understanding.as_ref()),
         );
         let mut context = usecases::butler_context(
-            understanding.as_ref(),
+            knowledge.as_ref(),
             knowledge.as_ref(),
             understanding.as_ref(),
             config.as_ref(),
@@ -133,7 +133,7 @@ pub(super) async fn send_chat(
         );
         // Ground the butler in the person's current life before it answers.
         let mut context = usecases::butler_context(
-            understanding.as_ref(),
+            knowledge.as_ref(),
             knowledge.as_ref(),
             understanding.as_ref(),
             config.as_ref(),
@@ -203,7 +203,7 @@ pub(super) async fn brief(
             proven_now(understanding.as_ref()),
         );
         let context = usecases::butler_context(
-            understanding.as_ref(),
+            knowledge.as_ref(),
             knowledge.as_ref(),
             understanding.as_ref(),
             config.as_ref(),
@@ -288,7 +288,7 @@ pub(super) async fn stream_chat(
             );
             let event = |v: serde_json::Value| Event::default().data(v.to_string());
             let context = match usecases::butler_context(
-                understanding.as_ref(),
+                knowledge.as_ref(),
                 knowledge.as_ref(),
                 understanding.as_ref(),
                 config.as_ref(),

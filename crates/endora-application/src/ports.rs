@@ -240,9 +240,13 @@ pub enum TurnMessage {
 /// than starting cold.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ButlerContext {
-    /// What Endora already understands about the person (its active beliefs), so
-    /// the butler builds on and refines them rather than re-forming duplicates.
-    pub understanding: Vec<String>,
+    /// What Endora remembers about the person: the brain's memory page, whole but for
+    /// its title, so what they told it and what it knows best are one block (ADR 0101).
+    /// Sent every turn, in the part of the prompt that changes rarely.
+    pub memory: String,
+    /// The brain's other pages, one line each (`hobbies/watches — Watches: …`), so the
+    /// butler knows what it can open with the read skill when the detail is needed.
+    pub brain_index: Vec<String>,
     /// The skills the butler can actually use right now (id + one-line what),
     /// so it reaches for a real capability instead of only talking about it.
     pub capabilities: Vec<String>,

@@ -17,7 +17,7 @@ use endora_capabilities::{CapabilityRunner, CapabilitySpec};
 use endora_conversation::ChatRepository;
 use endora_platform::{AuditLog, EventLog};
 use endora_understanding::{
-    BeliefRepository, IntentionRepository, OutcomeRepository, PreferenceRepository,
+    BeliefRepository, Brain, IntentionRepository, OutcomeRepository, PreferenceRepository,
 };
 
 use endora_scheduling::{BriefSchedule, BriefScheduleRepository};
@@ -164,6 +164,9 @@ pub use clock::*;
 
 mod context;
 pub use context::*;
+
+mod brain;
+pub use brain::*;
 
 #[cfg(test)]
 mod tests;

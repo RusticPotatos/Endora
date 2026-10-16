@@ -145,8 +145,14 @@ impl Deeper {
                 .iter()
                 .map(|l| disguise.hide(l))
                 .collect(),
-            understanding: context
-                .understanding
+            memory: context
+                .memory
+                .lines()
+                .map(|l| disguise.hide(l))
+                .collect::<Vec<_>>()
+                .join("\n"),
+            brain_index: context
+                .brain_index
                 .iter()
                 .map(|l| disguise.hide(l))
                 .collect(),

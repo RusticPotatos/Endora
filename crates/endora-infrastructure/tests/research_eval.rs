@@ -40,7 +40,7 @@ fn a_real_model_delivers_a_saved_report_from_a_guarded_source() {
         )
         .expect("commission");
     let context = usecases::butler_context(
-        &understanding,
+        &knowledge,
         &knowledge,
         &understanding,
         &config,

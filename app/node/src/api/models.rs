@@ -511,7 +511,7 @@ pub(super) async fn deep_ask(
             proven_now(understanding.as_ref()),
         );
         let mut context = usecases::butler_context(
-            understanding.as_ref(),
+            knowledge.as_ref(),
             knowledge.as_ref(),
             understanding.as_ref(),
             config.as_ref(),

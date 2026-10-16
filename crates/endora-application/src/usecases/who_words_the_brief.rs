@@ -11,14 +11,14 @@ impl Butler for Elsewhere {
         c: &ButlerContext,
     ) -> Result<ButlerReply, crate::ProposalError> {
         *self.0.lock().unwrap() = format!(
-            "{} || present={:?} understands={:?} names={:?}",
+            "{} || present={:?} memory={:?} names={:?}",
             history
                 .iter()
                 .map(ChatMessage::text)
                 .collect::<Vec<_>>()
                 .join(" "),
             c.present,
-            c.understanding,
+            c.memory,
             c.target_aliases
         );
         Ok(ButlerReply {
@@ -44,10 +44,10 @@ fn only_the_facts_leave_and_they_leave_disguised() {
             "{personal} left the house: {sent}"
         );
     }
-    // The context is bare on purpose: writing prose is no reason for beliefs, the
+    // The context is bare on purpose: writing prose is no reason for memory, the
     // names the person uses, or how skills have landed to travel.
     assert!(sent.contains("present=[]"), "{sent}");
-    assert!(sent.contains("understands=[]"), "{sent}");
+    assert!(sent.contains("memory=\"\""), "{sent}");
     assert!(sent.contains("names=[]"), "{sent}");
 
     // And what the person reads is their own words again.

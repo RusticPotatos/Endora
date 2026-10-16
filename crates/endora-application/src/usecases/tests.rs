@@ -1209,8 +1209,8 @@ impl Butler for ScriptedDeep {
     ) -> Result<ButlerReply, ProposalError> {
         // Everything that reaches the model, so a test can prove what did not.
         self.shown.lock().unwrap().push(format!(
-            "{conversation:?} | {preferences:?} | now={:?} understanding={:?} did={:?} place={:?}",
-            context.now, context.understanding, context.did_lately, context.where_they_are
+            "{conversation:?} | {preferences:?} | now={:?} memory={:?} did={:?} place={:?}",
+            context.now, context.memory, context.did_lately, context.where_they_are
         ));
         let round = self.round.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         Ok(
@@ -1360,7 +1360,7 @@ fn an_ask_deep_turn(
     let context = ButlerContext {
         tools,
         // The person's own life, which must never reach the deep model.
-        understanding: vec!["lives at 12 Example Street".to_owned()],
+        memory: "- lives at 12 Example Street".to_owned(),
         did_lately: vec!["11:00 — I wrote to you unprompted".to_owned()],
         where_they_are: "Example City".to_owned(),
         now: "Monday 12 October".to_owned(),
@@ -1442,7 +1442,7 @@ fn an_ordinary_chat_turn(
         .collect();
     let context = ButlerContext {
         tools,
-        understanding: vec!["lives at 12 Example Street".to_owned()],
+        memory: "- lives at 12 Example Street".to_owned(),
         where_they_are: "Example City".to_owned(),
         ..ButlerContext::default()
     };
