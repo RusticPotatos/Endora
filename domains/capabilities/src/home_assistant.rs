@@ -414,13 +414,11 @@ impl HomeAssistant {
         from_ms: i64,
         to_ms: i64,
     ) -> Result<Vec<(String, String)>, String> {
-        let (start, end) = (format_utc(from_ms), format_utc(to_ms));
-        let mut out = Vec::new();
-        for id in calendar_ids_in(&self.get("/api/calendars")?) {
-            let body = self.get(&format!("/api/calendars/{id}?start={start}&end={end}"))?;
-            out.extend(calendar_entries_in(&body));
-        }
-        Ok(out)
+        let ids = calendar_ids_in(&self.get("/api/calendars")?);
+        gather_calendars(&ids, &calendar_spans(from_ms, to_ms), |id, from, to| {
+            let (start, end) = (format_utc(from), format_utc(to));
+            self.get(&format!("/api/calendars/{id}?start={start}&end={end}"))
+        })
     }
 
     fn get(&self, path: &str) -> Result<String, String> {
@@ -1605,6 +1603,44 @@ pub fn calendar_entries_in(body: &str) -> Vec<(String, String)> {
         .collect()
 }
 
+/// The longest span asked of one calendar at once. A connected calendar can be slow to answer
+/// for a long span (live: ten seconds for fifteen months), close to the request timeout.
+const CALENDAR_SPAN_MS: i64 = 92 * 24 * 60 * 60 * 1000;
+
+/// Consecutive spans of at most [`CALENDAR_SPAN_MS`] that cover `from_ms..to_ms`.
+fn calendar_spans(from_ms: i64, to_ms: i64) -> Vec<(i64, i64)> {
+    let mut spans = Vec::new();
+    let mut start = from_ms;
+    while start < to_ms {
+        let end = (start + CALENDAR_SPAN_MS).min(to_ms);
+        spans.push((start, end));
+        start = end;
+    }
+    spans
+}
+
+/// Every calendar over every span, or an error if any of them cannot be read: a partial
+/// calendar would let mail say there is no appointment around a bill when the appointment is
+/// on the calendar that was not read. An entry that crosses two spans comes back from both and
+/// is kept once.
+fn gather_calendars(
+    ids: &[String],
+    spans: &[(i64, i64)],
+    mut read: impl FnMut(&str, i64, i64) -> Result<String, String>,
+) -> Result<Vec<(String, String)>, String> {
+    let mut out: Vec<(String, String)> = Vec::new();
+    for id in ids {
+        for (from, to) in spans {
+            for entry in calendar_entries_in(&read(id, *from, *to)?) {
+                if !out.contains(&entry) {
+                    out.push(entry);
+                }
+            }
+        }
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod calendar_tests {
     use super::*;
@@ -1618,6 +1654,56 @@ mod calendar_tests {
             ["calendar.example_one", "calendar.example_two"]
         );
         assert!(calendar_ids_in("not json").is_empty());
+    }
+
+    const DAY: i64 = 24 * 60 * 60 * 1000;
+
+    #[test]
+    fn a_long_span_is_read_in_pieces_of_three_months_that_cover_it_exactly() {
+        let spans = calendar_spans(0, 400 * DAY);
+        assert_eq!(spans.first().map(|s| s.0), Some(0));
+        assert_eq!(spans.last().map(|s| s.1), Some(400 * DAY));
+        assert!(spans.windows(2).all(|w| w[0].1 == w[1].0), "{spans:?}");
+        assert!(spans.iter().all(|(a, b)| b > a && b - a <= 92 * DAY));
+        assert_eq!(spans.len(), 5);
+        assert_eq!(calendar_spans(0, DAY), [(0, DAY)]);
+        assert!(calendar_spans(DAY, DAY).is_empty());
+    }
+
+    #[test]
+    fn every_calendar_is_read_over_every_piece_and_repeats_are_dropped() {
+        let ids = ["calendar.one".to_owned(), "calendar.two".to_owned()];
+        let spans = calendar_spans(0, 120 * DAY);
+        let mut asked = Vec::new();
+        let read = |id: &str, from: i64, to: i64| -> Result<String, String> {
+            asked.push((id.to_owned(), from, to));
+            // An entry that crosses the boundary comes back from both pieces.
+            Ok(r#"[{"summary":"Trip","start":{"date":"2026-10-06"}}]"#.to_owned())
+        };
+        assert_eq!(
+            gather_calendars(&ids, &spans, read).unwrap(),
+            [("2026-10-06".to_owned(), "Trip".to_owned())]
+        );
+        assert_eq!(asked.len(), 4, "{asked:?}");
+        let none = |_: &str, _: i64, _: i64| -> Result<String, String> { unreachable!() };
+        assert!(gather_calendars(&[], &spans, none).unwrap().is_empty());
+    }
+
+    #[test]
+    fn one_calendar_that_cannot_be_read_makes_the_whole_calendar_unreadable() {
+        // Not a partial answer: "no appointment around then" must not be said of a calendar
+        // that was only partly read.
+        let ids = ["calendar.one".to_owned(), "calendar.slow".to_owned()];
+        let read = |id: &str, _: i64, _: i64| -> Result<String, String> {
+            if id == "calendar.slow" {
+                return Err("timed out".to_owned());
+            }
+            Ok("[]".to_owned())
+        };
+        assert_eq!(
+            gather_calendars(&ids, &calendar_spans(0, DAY), read).unwrap_err(),
+            "timed out"
+        );
     }
 
     #[test]

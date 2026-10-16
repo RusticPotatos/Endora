@@ -77,6 +77,13 @@ a person the owner writes to often.
   (no new credential). A bill gets the nearest calendar entry from 60 days before to 14 after
   that shares a word with the sender ("Follows 'Dental checkup' on 2026-10-02"), or the note
   that there is none. Matching is by shared words, named as crude: it can only add evidence.
+  Live, one connected calendar took ten seconds to answer for fifteen months, near the
+  15-second request limit, so the whole read failed and no bill or date ever saw the
+  calendar. It is now read in pieces of three months, kept for an hour (an unreadable one is
+  not asked again for ten minutes), shared by the reader, the brief and the Mail screen, and
+  not asked at all when no mail mentions a date. If any one calendar cannot be read, none is
+  used: a partly read calendar would let a bill be told there is no appointment around it
+  when there is.
 - **Coming up.** A date from mail is shown only when someone the owner writes to said it, two
   or more messages say it, or an earlier calendar entry shares a word with it; one already on
   the calendar that day is not repeated, and a message that may not be genuine contributes

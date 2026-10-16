@@ -891,15 +891,14 @@ pub(super) async fn read_mail_once(state: &AppState) -> Option<endora_mail::Dige
         return None;
     };
     let clock = state.clock.clone();
-    let config = state.config.clone();
+    let calendar = state.calendar.clone();
     let read = tokio::task::spawn_blocking(move || {
         let _turn = turn;
-        let calendar = HouseCalendar(config);
         usecases::read_one(
             &copy,
             &store,
             reader.as_ref(),
-            Some(&calendar),
+            Some(calendar.as_ref()),
             clock.as_ref(),
         )
     })
@@ -963,10 +962,9 @@ fn ping_about_a_person(state: &AppState, digest: &endora_mail::Digest) {
 
 /// The mail section for the morning brief, or nothing.
 pub(super) fn mail_brief_lines(state: &AppState) -> Vec<String> {
-    let calendar = HouseCalendar(state.config.clone());
     usecases::mail_for_the_brief(
         state.mail_store.as_ref(),
-        Some(&calendar),
+        Some(state.calendar.as_ref()),
         state.clock.as_ref(),
     )
     .unwrap_or_default()
@@ -975,7 +973,7 @@ pub(super) fn mail_brief_lines(state: &AppState) -> Vec<String> {
 /// The owner's calendar, through the house's own Home Assistant connection: whatever calendars
 /// it is connected to, read-only, with no credential of its own. Nothing when Home Assistant is
 /// not set up.
-pub(super) struct HouseCalendar(pub(super) Arc<endora_capabilities::ConfigStore>);
+pub(crate) struct HouseCalendar(pub(crate) Arc<endora_capabilities::ConfigStore>);
 
 impl endora_application::Calendar for HouseCalendar {
     fn entries(&self, from_ms: i64, to_ms: i64) -> Result<Vec<(String, String)>, String> {

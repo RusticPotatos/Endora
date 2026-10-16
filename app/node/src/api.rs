@@ -115,7 +115,14 @@ pub struct AppState {
     pub mail_copy: Option<Arc<endora_mail::MaildirCopy>>,
     /// The quarantined reader: the local model, with no tools and none of the person's context.
     pub mail_reader: Option<Arc<dyn endora_application::UntrustedReader + Send + Sync>>,
+    /// The house's calendar, read at most once an hour and shared by the mail reader, the
+    /// brief and the mail screen (ADR 0097).
+    pub(crate) calendar: Arc<KeptHouseCalendar>,
 }
+
+/// The house's calendar as the mail sees it: Home Assistant's, kept for an hour.
+pub(crate) type KeptHouseCalendar =
+    endora_application::usecases::KeptCalendar<workers::HouseCalendar, SystemClock>;
 
 /// Persistent [`ConversationSummaryStore`](endora_application::ConversationSummaryStore):
 /// the single running summary, stored in SQLite via the conversation
@@ -169,6 +176,10 @@ impl AppState {
         let schedules = Arc::new(endora_scheduling::ScheduleStore::new(store.db()));
         let understanding = Arc::new(endora_understanding::UnderstandingStore::new(store.db()));
         let config = Arc::new(endora_capabilities::ConfigStore::new(store.db()));
+        let calendar = Arc::new(endora_application::usecases::KeptCalendar::new(
+            workers::HouseCalendar(config.clone()),
+            *clock,
+        ));
         let audit = Arc::new(endora_platform::AuditStore::new(store.db()));
         let events = Arc::new(endora_platform::EventStore::new(store.db()));
         // Best-effort like the enrolment secret: a node whose mail tables cannot be made still
@@ -254,6 +265,7 @@ impl AppState {
             mail_store,
             mail_copy: None,
             mail_reader: None,
+            calendar,
         }
     }
 

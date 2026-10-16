@@ -276,6 +276,9 @@ pub fn dates_coming_up(
                 })
         })
         .collect();
+    if mentions.is_empty() {
+        return Ok((Vec::new(), 0));
+    }
     let entries = calendar
         .and_then(|c| c.entries(now - READ_BACK_MS, now + 366 * DAY_MS).ok())
         .unwrap_or_default();
@@ -353,6 +356,9 @@ pub fn mail_for_the_brief(
     }
     Ok(lines)
 }
+
+mod kept;
+pub use kept::{CALENDAR_KEPT_FOR_MS, KeptCalendar};
 
 #[cfg(test)]
 mod tests;

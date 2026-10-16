@@ -1,4 +1,5 @@
 use super::*;
+use crate::Calendar as _;
 use std::cell::RefCell;
 
 const DAY: i64 = 24 * 60 * 60 * 1000;
@@ -659,4 +660,98 @@ fn when_the_readers_instructions_change_the_recent_mail_is_read_again_once() {
             .contains("one_time_code"),
         "the new instructions were the ones used"
     );
+}
+
+/// A calendar that counts how often it is read, and can be made to fail.
+struct Counted {
+    reads: std::cell::Cell<usize>,
+    spans: RefCell<Vec<(i64, i64)>>,
+    down: std::cell::Cell<bool>,
+}
+impl Counted {
+    fn new() -> Self {
+        Self {
+            reads: 0.into(),
+            spans: RefCell::new(Vec::new()),
+            down: false.into(),
+        }
+    }
+}
+impl crate::Calendar for Counted {
+    fn entries(&self, from: i64, to: i64) -> Result<Vec<(String, String)>, String> {
+        self.reads.set(self.reads.get() + 1);
+        self.spans.borrow_mut().push((from, to));
+        if self.down.get() {
+            return Err("unreachable".to_owned());
+        }
+        Ok(vec![
+            ("2026-08-01".to_owned(), "Long ago".to_owned()),
+            ("2026-10-10".to_owned(), "Dentist".to_owned()),
+            ("2026-10-24".to_owned(), "Hike".to_owned()),
+        ])
+    }
+}
+
+/// A clock the test moves.
+struct Moving(std::cell::Cell<i64>);
+impl crate::Clock for Moving {
+    fn now(&self) -> endora_kernel::ids::Timestamp {
+        endora_kernel::ids::Timestamp::from_unix_millis(self.0.get())
+    }
+}
+
+#[test]
+fn the_kept_calendar_is_read_once_an_hour_and_answers_each_span_from_what_it_holds() {
+    let kept = KeptCalendar::new(Counted::new(), Moving(NOW.into()));
+    let week = kept.entries(NOW - 7 * DAY, NOW).unwrap();
+    assert_eq!(week, [("2026-10-10".to_owned(), "Dentist".to_owned())]);
+    let ahead = kept.entries(NOW, NOW + 30 * DAY).unwrap();
+    assert_eq!(ahead, [("2026-10-24".to_owned(), "Hike".to_owned())]);
+    assert_eq!(kept.calendar().reads.get(), 1, "one read serves both");
+    // What it reads at once reaches back to the appointment behind the oldest bill it reads,
+    // and a year ahead.
+    let (from, to) = kept.calendar().spans.borrow()[0];
+    assert!(from <= NOW - READ_BACK_MS - 60 * DAY && to >= NOW + 366 * DAY);
+    kept.clock().0.set(NOW + 59 * 60 * 1000);
+    kept.entries(NOW - DAY, NOW).unwrap();
+    assert_eq!(kept.calendar().reads.get(), 1);
+    kept.clock().0.set(NOW + 61 * 60 * 1000);
+    kept.entries(NOW - DAY, NOW).unwrap();
+    assert_eq!(kept.calendar().reads.get(), 2, "read again after an hour");
+}
+
+#[test]
+fn a_span_outside_what_the_kept_calendar_holds_is_read_as_asked() {
+    let kept = KeptCalendar::new(Counted::new(), Moving(NOW.into()));
+    kept.entries(NOW - DAY, NOW).unwrap();
+    let far = kept.entries(NOW - 400 * DAY, NOW - 300 * DAY).unwrap();
+    assert_eq!(kept.calendar().reads.get(), 2);
+    assert_eq!(
+        kept.calendar().spans.borrow()[1],
+        (NOW - 400 * DAY, NOW - 300 * DAY)
+    );
+    assert!(far.is_empty(), "only what falls in the span: {far:?}");
+}
+
+#[test]
+fn an_unreadable_calendar_is_not_asked_again_for_ten_minutes() {
+    let calendar = Counted::new();
+    calendar.down.set(true);
+    let kept = KeptCalendar::new(calendar, Moving(NOW.into()));
+    assert!(kept.entries(NOW - DAY, NOW).is_err());
+    assert!(kept.entries(NOW - DAY, NOW).is_err());
+    assert_eq!(kept.calendar().reads.get(), 1);
+    kept.calendar().down.set(false);
+    kept.clock().0.set(NOW + 11 * 60 * 1000);
+    assert!(kept.entries(NOW - DAY, NOW).is_ok());
+    assert_eq!(kept.calendar().reads.get(), 2);
+}
+
+#[test]
+fn with_no_dates_in_the_mail_the_calendar_is_not_read() {
+    let f = Fixture::new("no-dates").with_history();
+    let calendar = Counted::new();
+    let (upcoming, held) = dates_coming_up(&f.store, Some(&calendar), &Clock(NOW)).unwrap();
+    assert!(upcoming.is_empty() && held == 0);
+    assert_eq!(calendar.reads.get(), 0);
 }

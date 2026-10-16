@@ -13,14 +13,13 @@ pub(super) async fn mail_digest(
     let store = state.mail_store.clone();
     let mounted = state.mail_copy.is_some();
     let now = state.clock.now().unix_millis();
-    let config = state.config.clone();
+    let calendar = state.calendar.clone();
     let clock = state.clock.clone();
     let (digests, (indexed, unread), (upcoming, held_back)) = blocking(move || {
-        let calendar = super::workers::HouseCalendar(config);
         Ok::<_, AppError>((
             store.digests_since(now - SHOWN_MS)?,
             store.progress(now - usecases::READ_BACK_MS)?,
-            usecases::dates_coming_up(&store, Some(&calendar), clock.as_ref())?,
+            usecases::dates_coming_up(&store, Some(calendar.as_ref()), clock.as_ref())?,
         ))
     })
     .await?;
