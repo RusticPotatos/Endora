@@ -565,7 +565,9 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     }
 
     /// A member approves work under review. It is done only when the gate passed and the
-    /// reviewer is not the one who did it; then it is on the owner's desk, ready to merge.
+    /// reviewer is not the one who did it. Then a whole piece of work (one that is not part of
+    /// another) is on the owner's desk: ready to merge, or ready to read when a researcher did
+    /// it. A part goes to whoever owns the whole, not to the owner's desk.
     ///
     /// # Errors
     /// [`EngineError::Refused`] if it is the reviewer's own work, the gate has not passed, or
@@ -583,22 +585,33 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         let gate = self.store.gate(task)?.unwrap_or(false);
         work::is_done(gate, current.owner, reviewer).map_err(EngineError::Refused)?;
         self.store.set_task_status(task, TaskStatus::Done)?;
-        let desk = self.store.add_desk(
-            "ready_to_merge",
-            Some(task),
-            None,
-            &format!("Ready to merge: {}", current.title),
-            self.clock.now(),
-        )?;
         self.emit(
             EventKind::TaskChanged,
             json!({ "task": task.0, "goal": current.goal.0, "owner": current.owner.map(|o| o.0),
                     "status": TaskStatus::Done.name(), "priority": current.priority.name() }),
         )?;
-        self.emit(
-            EventKind::DeskAdded,
-            json!({ "item": desk.0, "kind": "ready_to_merge", "task": task.0 }),
-        )?;
+        if current.parent.is_none() {
+            let researched = match current.owner {
+                Some(worker) => self.member(worker)?.role == Role::Researcher,
+                None => false,
+            };
+            let (kind, says) = if researched {
+                ("ready_to_read", "Ready to read")
+            } else {
+                ("ready_to_merge", "Ready to merge")
+            };
+            let desk = self.store.add_desk(
+                kind,
+                Some(task),
+                None,
+                &format!("{says}: {}", current.title),
+                self.clock.now(),
+            )?;
+            self.emit(
+                EventKind::DeskAdded,
+                json!({ "item": desk.0, "kind": kind, "task": task.0 }),
+            )?;
+        }
         self.after_finishing(&current)?;
         Ok(())
     }
@@ -706,6 +719,16 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
 
     // ---- runs --------------------------------------------------------------------------------
 
+    /// Why a turn was started: the reason of the wake that queued it.
+    fn reason_for(&self, run: &Run) -> Done<&'static str> {
+        Ok(self
+            .store
+            .wakes()?
+            .iter()
+            .find(|w| w.id == run.wake)
+            .map_or("", |w| w.reason.name()))
+    }
+
     /// Ends a turn: settles its money, closes its wake, and lets the next held wake on its task
     /// go. A turn that moved its task forward earns the task a fresh recovery nudge.
     fn end(&self, mut run: Run, status: RunStatus, why: &str) -> Done<()> {
@@ -723,7 +746,8 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         self.emit(
             EventKind::RunEnded,
             json!({ "run": run.id.0, "member": run.member.0, "task": run.task.map(|t| t.0),
-                    "result": status.name(), "why": why, "moved_forward": run.moved_forward }),
+                    "result": status.name(), "why": why, "moved_forward": run.moved_forward,
+                    "spent": run.spent }),
         )?;
         if let Some(task) = run.task {
             if run.moved_forward {
@@ -1024,7 +1048,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             self.emit(
                 EventKind::RunStarted,
                 json!({ "run": run.id.0, "member": member.id.0, "task": run.task.map(|t| t.0),
-                        "reserved": amount }),
+                        "reserved": amount, "reason": self.reason_for(&run)? }),
             )?;
             started += 1;
         }
@@ -1085,7 +1109,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 self.store.set_task_status(task.id, TaskStatus::Dropped)?;
                 self.after_finishing(&task)?;
             }
-            ("ready_to_merge", "merged" | "not_now") => {}
+            ("ready_to_merge", "merged" | "not_now") | ("ready_to_read", "read" | "not_now") => {}
             _ => return Err(EngineError::Unknown("decision for this item")),
         }
         self.store.set_desk_status(item, decision)?;
@@ -1156,9 +1180,28 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                     .collect::<Vec<_>>(),
             }));
         }
+        let (ticks, last_tick_at) = self.store.count_events(EventKind::Tick.name())?;
+        let (folded, _) = self.store.count_events(EventKind::WakeFolded.name())?;
+        let held = self
+            .store
+            .wakes()?
+            .iter()
+            .filter(|w| w.receipt == crate::domain::Receipt::Held)
+            .count();
+        let queued = runs
+            .iter()
+            .filter(|r| r.status == RunStatus::Queued)
+            .count();
+        let running = runs
+            .iter()
+            .filter(|r| r.status == RunStatus::Running)
+            .count();
         Ok(json!({
             "stopped": self.store.stopped()?,
             "last_event": self.store.last_event()?,
+            "counts": { "ticks": ticks, "running": running, "queued": queued, "held": held,
+                        "folded": folded, "open_tasks": tasks.iter().filter(|t| !t.status.finished()).count() },
+            "last_tick_at": last_tick_at,
             "pool": { "per_day": money::pool_a_day(pool), "committed": self.store.committed(None, day)? },
             "members": members,
             "goals": goals.iter().map(|g| json!({
@@ -1176,6 +1219,15 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 "text": d.text, "at": d.at,
             })).collect::<Vec<_>>(),
         }))
+    }
+
+    /// Keeps the newest `keep` events and deletes the rest. Returns how many went.
+    ///
+    /// # Errors
+    /// [`EngineError::Store`] if the store fails.
+    pub fn prune_events(&self, keep: i64) -> Done<usize> {
+        let _held = self.held();
+        Ok(self.store.prune_events(keep)?)
     }
 
     /// The events after `id`, for the stream.

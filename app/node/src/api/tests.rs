@@ -1553,26 +1553,6 @@ async fn editing_a_server_with_a_blank_token_keeps_the_saved_one() {
     assert_eq!(ha["auth_set"], true);
 }
 
-#[test]
-fn stt_hallucination_filter_drops_repeats_but_keeps_real_speech() {
-    use super::looks_like_stt_hallucination;
-    // The exact silence-hallucination signature: one token over and over.
-    let junk = "Torsdagsfotografi ".repeat(20);
-    assert!(looks_like_stt_hallucination(junk.trim()));
-    assert!(looks_like_stt_hallucination(
-        "thank you thank you thank you thank you thank you thank you"
-    ));
-    // Real sentences vary and must pass through untouched.
-    assert!(!looks_like_stt_hallucination(
-        "turn on the kitchen lights and check if the back door is locked"
-    ));
-    assert!(!looks_like_stt_hallucination(
-        "what's the weather like today"
-    ));
-    // Too short to judge — never dropped.
-    assert!(!looks_like_stt_hallucination("no no no"));
-}
-
 #[tokio::test]
 async fn a_new_recipe_is_authored_off_and_enabling_turns_it_on() {
     let router = app(test_state());
@@ -2046,13 +2026,9 @@ async fn the_ai_screen_lists_every_model_and_mail_never_leaves_the_house() {
     .await;
     assert_eq!(role(&reset, "mail_reader")["model"], deployment);
 
-    // A speech server must be an address; one that is shows by its host, never its path.
-    let bad = app(state.clone())
-        .oneshot(post("/v1/ai", r#"{"speech_url":"file:///etc/passwd"}"#))
-        .await
-        .unwrap();
-    assert_eq!(bad.status(), StatusCode::BAD_REQUEST);
-    let speech = json_body(
+    // Hearing you is the browser's own recognition. There is no speech server to choose, so an
+    // old client offering one changes nothing, and the screen still says where the audio goes.
+    let offered = json_body(
         app(state.clone())
             .oneshot(post(
                 "/v1/ai",
@@ -2062,12 +2038,16 @@ async fn the_ai_screen_lists_every_model_and_mail_never_leaves_the_house() {
             .unwrap(),
     )
     .await;
-    assert_eq!(role(&speech, "speech")["endpoint"], "192.168.1.10:8001");
-    let health = json_body(app(state).oneshot(unsigned("/health")).await.unwrap()).await;
-    assert_eq!(
-        health["stt"], true,
-        "the chosen speech server is the one in use"
+    let speech = role(&offered, "speech");
+    assert_eq!(speech["endpoint"], "");
+    assert!(speech["change"].is_null(), "nothing to change: {speech}");
+    assert!(
+        speech["sees"].as_str().unwrap().contains("browser"),
+        "{speech}"
     );
+    assert!(offered.get("speech_url").is_none());
+    let health = json_body(app(state).oneshot(unsigned("/health")).await.unwrap()).await;
+    assert!(health.get("stt").is_none(), "{health}");
 }
 
 #[tokio::test]

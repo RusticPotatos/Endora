@@ -157,6 +157,10 @@ pub fn spawn_snapshots(state: AppState, database: std::path::PathBuf) {
                 Ok(Ok(None)) => continue,
                 Ok(Ok(Some(bytes))) => {
                     failed_on = None;
+                    *state
+                        .nightly_failure
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
                     #[allow(clippy::cast_precision_loss)]
                     let megabytes = bytes as f64 / 1_000_000.0;
                     record_event(
@@ -173,6 +177,10 @@ pub fn spawn_snapshots(state: AppState, database: std::path::PathBuf) {
                 Ok(Err(error)) => error,
                 Err(error) => error.to_string(),
             };
+            *state
+                .nightly_failure
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(error.clone());
             let today = (now + offset * 60 * 1000).div_euclid(DAY_MS);
             if failed_on == Some(today) {
                 continue;

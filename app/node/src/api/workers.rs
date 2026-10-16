@@ -393,7 +393,7 @@ pub fn spawn_heartbeat(state: AppState) {
             let offset_now = state
                 .time_zone
                 .offset_minutes_at(state.clock.now().unix_millis());
-            let mail_lines = mail_brief_lines(&state);
+            let mail_lines = brief_lines(&state);
             let _turn = state.turn_lock.clone().lock_owned().await;
             let posted = tokio::task::spawn_blocking(move || {
                 // Unattended: nobody is here to confirm anything, so only the reversible
@@ -575,8 +575,8 @@ pub fn spawn_research_worker(state: AppState) {
 /// Reads the mail, one message at a time, in quiet time (ADR 0097). Indexes what has arrived
 /// (headers only, no model) on every tick; reads one message only when the person has been
 /// quiet and no turn is running, holding the turn lock for that one message so a chat turn
-/// waits a few seconds at most. Something that matters and is recent goes to the activity
-/// trail. Run only when the node has the mail and the lane is on.
+/// waits a few seconds at most. What a message means for the owner is the agenda loop's to say
+/// (ADR 0103). Run only when the node has the mail and the lane is on.
 pub fn spawn_mail_reader(state: AppState) {
     tokio::spawn(async move {
         let mut ticker = tokio::time::interval(std::time::Duration::from_secs(20));
@@ -647,7 +647,6 @@ pub(super) async fn fold_once(state: &AppState) -> Option<endora_application::Pa
 
 /// One tick of [`spawn_mail_reader`]. Returns what it read, if it read anything.
 pub(super) async fn read_mail_once(state: &AppState) -> Option<endora_mail::Digest> {
-    const RECENT_MS: i64 = 2 * 24 * 60 * 60 * 1000;
     let (Some(copy), Some(reader)) = (state.mail_copy.clone(), state.mail_reader.clone()) else {
         return None;
     };
@@ -686,50 +685,18 @@ pub(super) async fn read_mail_once(state: &AppState) -> Option<endora_mail::Dige
             return None;
         }
     };
-    ping_about_a_person(state, &digest);
-    if !digest.reasons.is_empty() && now.unix_millis() - digest.at_ms <= RECENT_MS {
-        let _ = endora_application::EventLog::record(
-            state.events.as_ref(),
-            now,
-            &format!("Mail worth a look: {}", usecases::mail_line(&digest)),
-        );
-        let _ = state.changes.send(());
-    }
+    // What it means for the owner is the agenda's to say (ADR 0103): an item, and its line in
+    // Activity, on the loop's next look.
+    let _ = state.changes.send(());
     Some(digest)
 }
 
-/// Says in chat, without naming anyone, that someone the owner writes to has sent fresh mail
-/// that may need them: at most [`MOST_MAIL_PINGS_A_DAY`] a day, and only for mail from the last
-/// two hours, so reading a backlog never pings about last week.
-fn ping_about_a_person(state: &AppState, digest: &endora_mail::Digest) {
-    const FRESH_MS: i64 = 2 * 60 * 60 * 1000;
-    let now = state.clock.now().unix_millis();
-    let personal = digest.reasons.iter().any(|r| {
-        matches!(
-            r,
-            endora_mail::Reason::ReplyInYourThread | endora_mail::Reason::FromSomeoneYouWriteTo
-        )
-    });
-    if !personal || now - digest.at_ms > FRESH_MS {
-        return;
-    }
-    let day_start = now - now.rem_euclid(24 * 60 * 60 * 1000);
-    let today =
-        endora_conversation::ChatRepository::between(state.chat.as_ref(), day_start, i64::MAX)
-            .unwrap_or_default();
-    if today.iter().filter(|m| m.text() == MAIL_PING).count() >= MOST_MAIL_PINGS_A_DAY {
-        return;
-    }
-    if let Ok(message) = endora_application::ChatMessage::new(
-        endora_application::MessageId::new(state.ids.new_id()),
-        endora_application::MessageRole::Butler,
-        MAIL_PING,
-        state.clock.now(),
-    ) {
-        if endora_conversation::ChatRepository::append(state.chat.as_ref(), &message).is_ok() {
-            let _ = state.changes.send(());
-        }
-    }
+/// What the brief adds after its wording: the mail section, then what the agenda is keeping an
+/// eye on (ADR 0103).
+pub(super) fn brief_lines(state: &AppState) -> Vec<String> {
+    let mut lines = mail_brief_lines(state);
+    lines.extend(super::agenda::brief_lines(state));
+    lines
 }
 
 /// The mail section for the morning brief, or nothing.
@@ -757,15 +724,6 @@ impl endora_application::Calendar for HouseCalendar {
         home.calendar_entries(from_ms, to_ms)
     }
 }
-
-/// What chat says when someone the owner writes to has sent mail that may need them. On
-/// purpose it names nobody and quotes nothing: chat is history the paid model may later see,
-/// and mail stays in the house.
-pub(super) const MAIL_PING: &str =
-    "Someone you write to sent mail that may need you. It's on the Mail screen.";
-
-/// How many such pings in a day, at most.
-const MOST_MAIL_PINGS_A_DAY: usize = 2;
 
 /// Whether the person has been quiet long enough for background work (reading mail) to
 /// take the model without competing with them.

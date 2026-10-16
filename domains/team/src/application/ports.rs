@@ -365,6 +365,17 @@ pub trait TeamStore {
     /// # Errors
     /// [`StoreError`] if the store fails.
     fn last_event(&self) -> Stored<i64>;
+    /// How many events of a kind there are, and when the latest was.
+    ///
+    /// # Errors
+    /// [`StoreError`] if the store fails.
+    fn count_events(&self, kind: &str) -> Stored<(i64, Option<Millis>)>;
+    /// Deletes all but the newest `keep` events: the feed is for display, and a reader that
+    /// fell that far behind starts again from a snapshot. Endora's audit log is the record.
+    ///
+    /// # Errors
+    /// [`StoreError`] if the store fails.
+    fn prune_events(&self, keep: i64) -> Stored<usize>;
     /// The events after `id`, oldest first.
     ///
     /// # Errors

@@ -42,6 +42,8 @@ pub struct State {
     pub token: Arc<String>,
     /// Whether the scripted demo team is on.
     pub demo: bool,
+    /// How often the engine ticks, for the office's clock.
+    pub tick_seconds: u64,
 }
 
 /// The demo's goal: set up the demo team the first time, and find its goal after.
@@ -143,6 +145,7 @@ async fn snapshot(Extract(state): Extract<State>) -> Result<Json<serde_json::Val
     let hq = state.hq.clone();
     let mut snap = blocking(move || hq.snapshot()).await?;
     snap["demo"] = json!(state.demo);
+    snap["tick_seconds"] = json!(state.tick_seconds);
     Ok(Json(snap))
 }
 
@@ -299,6 +302,7 @@ mod tests {
             hq,
             token: Arc::new(TOKEN.to_owned()),
             demo,
+            tick_seconds: 30,
         }
     }
 

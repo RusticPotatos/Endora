@@ -7,7 +7,7 @@ and numbered in sequence.
 
 ## What they add up to
 
-Forty-five records stand, every one accepted, and forty-nine earlier ones are archived into them
+Forty-six records stand, every one accepted, and forty-nine earlier ones are archived into them
 (the *Consolidates* column below). A handful of ideas sit underneath all of them. Read this before
 reading any individual record; each line is a rule the code actually follows, with the decision
 that established it.
@@ -93,6 +93,10 @@ that established it.
   a folder with its own history: memory read every turn, other pages one read away, every
   change a commit, and nothing the person wrote ever overwritten unseen. It learns only from
   the person's own words, and the folder is never trusted (no links followed, no hooks run).
+- **Signals become items; rules decide, and only restarts happen unasked**
+  ([0103](0103-the-agenda-loop.md)). One loop turns what Endora already reads into items at
+  four levels (handled, FYI, needs you, urgent). A persisting signal is one item, a failed
+  read closes nothing, mail can only tell, and Stop teaches a rule the owner can undo.
 - **Start fresh rather than keep what makes noise** ([0100](0100-the-clean-slate.md)). What
   Endora did unasked (check-ins, the nightly loop, notions, own work, goals) produced stale
   beliefs and repeated questions, so it went, code and storage. A table nothing reads is
@@ -213,6 +217,7 @@ of an existing record and take the next number.
 | [0100](0100-the-clean-slate.md) | The clean slate | — |
 | [0101](0101-the-brain.md) | The brain | — |
 | [0102](0102-endora-hq.md) | Endora HQ | — |
+| [0103](0103-the-agenda-loop.md) | The agenda loop | — |
 | [0104](0104-endora-sound.md) | Endora sound | — |
 
 The forty-eight decisions these consolidate are in [archive/](archive/) — kept in full,

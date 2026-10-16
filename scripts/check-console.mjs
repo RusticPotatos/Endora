@@ -175,7 +175,7 @@ runInContext(
   // Mail screen renders. A sentence with markup in it, which must come out escaped.
   // Every model role, one on a cloud endpoint, and a server that gives less context than
   // Endora assumes, so every branch of the AI screen renders.
-  AI = { context_tokens: 16384, mail_reader_model: null, speech_url: null, roles: [
+  AI = { context_tokens: 16384, mail_reader_model: null, roles: [
     { id: "chat", name: "Conversation", does: "Answers you.", model: "qwen2.5:7b", endpoint: "ollama:11434",
       local: true, on: true, change: "models", sees: "Your messages.",
       runtime: { processor: "graphics card", memory_gb: 5.6, context: 4096, size: "7.6B, Q4_K_M" } },
@@ -186,8 +186,8 @@ runInContext(
       endpoint: "ollama:11434", local: true, on: true, change: "mail_reader", sees: "One email.", runtime: null },
     { id: "vision", name: "Looking at images", does: "Images.", model: "", endpoint: "ollama:11434",
       local: true, on: false, change: "vision", sees: "The image.", runtime: null },
-    { id: "speech", name: "Hearing you", does: "Speech.", model: "", endpoint: "", local: true, on: true,
-      change: "speech", sees: "Your voice.", runtime: null }] };
+    { id: "speech", name: "Hearing you", does: "Speech.", model: "", endpoint: "", local: false, on: true,
+      change: null, sees: "Nothing: your browser's own speech recognition is used.", runtime: null }] };
   // A Spotify sign-in started elsewhere, waiting to be finished here.
   SPOTIFY = { state: "waiting", detail: "Waiting for you to approve Endora on Spotify", client_id_set: true,
     sign_in_url: "https://accounts.spotify.com/authorize?client_id=example", redirect: "http://127.0.0.1:8888/callback",
@@ -487,15 +487,20 @@ if (failures.length) {
     console.error("connections: a tool server's own screen lost its tools, its edit form, or the way back");
     process.exit(1);
   }
-  // The AI screen names every role, where it runs and what it sees, offers the two choices it
-  // holds, and warns when the model server gives less context than Endora assumes.
+  // The AI screen names every role, where it runs and what it sees, offers the one choice it
+  // holds, and warns when the model server gives less context than Endora assumes. Dictation
+  // is the browser's, so it says so and offers nothing to change.
   const ai = runInContext("viewModels()", context);
-  for (const needed of ["Reading your mail", "Hearing you", "on your network", ">cloud<", "ai:mailreader",
-    "ai:speech", "go:skill:image_review", "long turns lose their beginning", "$0.42"]) {
+  for (const needed of ["Reading your mail", "Hearing you", "<b>your browser</b>", "on your network", ">cloud<",
+    "ai:mailreader", "go:skill:image_review", "long turns lose their beginning", "$0.42"]) {
     if (!ai.includes(needed)) {
       console.error(`ai: the AI screen is missing ${needed}`);
       process.exit(1);
     }
+  }
+  if ((ai.match(/Change it below/g) || []).length !== 2 || ai.includes("ai:speech")) {
+    console.error("ai: dictation offers a change it does not have");
+    process.exit(1);
   }
   // Spotify: whichever device started the sign-in, this one shows it and can finish it.
   const spotify = (state) => runInContext(`SPOTIFY = Object.assign({}, SPOTIFY, { state: "${state}" }); viewSpotify()`, context);
@@ -569,8 +574,9 @@ if (failures.length) {
 // presses, each offering only what that kind of item takes; nothing a task says becomes markup.
 {
   const fail = (what) => { console.error(what); process.exit(1); };
-  runInContext(`HQ.error = ""; HQ.tab = "desk"; HQ.selected = { type: "task", id: 7 };
-    HQ.snap = { demo: true, stopped: false, last_event: 40, pool: { per_day: 2333333, committed: 400000 },
+  runInContext(`HQ.error = ""; HQ.log = []; HQ.selected = { type: "task", id: 7 };
+    HQ.snap = { demo: true, stopped: false, last_event: 40, tick_seconds: 30, last_tick_at: 1,
+      counts: { ticks: 9, running: 1, queued: 2, held: 1, folded: 3, open_tasks: 4 }, pool: { per_day: 2333333, committed: 400000 },
       members: [{ id: 1, name: "Ada", role: "lead", look: 0, paused: false, slots: 2, per_day: 583333, committed: 0, running: [] },
                 { id: 2, name: "Bo", role: "developer", look: 4, paused: false, slots: 2, per_day: 933333, committed: 400000, running: [{ run: 3, task: 7 }] }],
       goals: [{ id: 1, title: "Keep the home lab healthy", status: "active" }],
@@ -578,15 +584,32 @@ if (failures.length) {
                 gate: null, why: ["<b>Fix</b> it", "Goal: Keep the home lab healthy"], thread: [{ author: "Bo", text: "On it", at: 1 }] }],
       runs: [{ id: 3, member: 2, task: 7, status: "running" }],
       desk: [{ id: 11, kind: "goal", text: "A goal: Tidy the lab" }, { id: 12, kind: "stuck", task: 7, text: "Stuck: x" },
-             { id: 13, kind: "ready_to_merge", task: 7, text: "Ready to merge: y" }] };`, context);
+             { id: 13, kind: "ready_to_merge", task: 7, text: "Ready to merge: y" },
+             { id: 14, kind: "ready_to_read", task: 7, text: "Ready to read: z" }] };`, context);
+  // The activity log reads like the office's own: who, which task, why, and what it cost.
+  runInContext(`hqTell({ id: 41, at: 0, kind: "run.started", data: { run: 9, member: 2, task: 7, reason: "review_requested", reserved: 60000 } }, false);
+    hqTell({ id: 42, at: 0, kind: "run.ended", data: { run: 9, member: 2, task: 7, result: "succeeded", spent: 120000 } }, false);
+    hqTell({ id: 43, at: 0, kind: "wake.queued", data: { member: 1, task: 7, reason: "mentioned" } }, false);`, context);
   const office = runInContext("viewHQ()", context);
+  for (const line of ["R9 Bo starts on EL-7 (review requested), 6¢ reserved", "R9 Bo finished · 12¢", "Woke Ada: mentioned (EL-7)"]) {
+    if (!office.includes(line)) fail(`hq: the activity log does not say "${line}"`);
+  }
+  if (!office.includes('class="k-done"') || !office.includes('class="k-wake"')) fail("hq: the activity log is not coloured by kind");
+  for (const chip of ["Tick <b>9</b>", "Coalesced <b>3</b>", "Burn today <b>40¢ / 233¢</b>", "Open tasks <b>4</b>"]) {
+    if (!office.includes(chip)) fail(`hq: the office's numbers do not show ${chip}`);
+  }
+  if (!office.includes('data-act="hq:work"')) fail("hq: the team cannot be given work");
   if (!office.includes("Demo · scripted team")) fail("hq: demo mode is not labelled");
   if (!office.includes('id="hq-office"')) fail("hq: the office is not drawn");
   for (const act of ["hq:decide:11:approve", "hq:decide:11:decline", "hq:decide:12:retry", "hq:decide:12:drop",
-    "hq:decide:13:merged", "hq:decide:13:not_now", "hq:stop"]) {
+    "hq:decide:13:merged", "hq:decide:13:not_now", "hq:decide:14:read", "hq:decide:14:not_now", "hq:stop"]) {
     if (!office.includes(`data-act="${act}"`)) fail(`hq: the desk does not offer ${act}`);
   }
   if (office.includes("hq:decide:11:retry")) fail("hq: a goal was offered a choice for stuck work");
+  if (!office.includes("Demo: Ready to merge: y") || !office.includes("no pull request behind this")) {
+    fail("hq: a demo card does not say it is a demo");
+  }
+  if (!office.includes("nothing is spent")) fail("hq: the demo's spend line reads as real money");
   if (office.includes("<img src=x") || office.includes("<b>Fix</b>")) fail("hq: a task's text became markup");
   if (!office.includes("Goal: Keep the home lab healthy")) fail("hq: a task's chain of why is missing");
   runInContext("HQ.snap.stopped = true;", context);
@@ -595,6 +618,52 @@ if (failures.length) {
   if (!runInContext("viewHQ()", context).includes("not set up")) fail("hq: a node without HQ does not say so");
   runInContext('HQ.error = "";', context);
   console.log("hq: the office reads the snapshot, the desk offers only what each item takes, and text stays text");
+}
+
+// The agenda (ADR 0103): the Now line says it is working and opens Activity; only what needs the
+// owner is pinned, each with Done, Dismiss and Stop; what a mail says stays text.
+{
+  const fail = (what) => { console.error(what); process.exit(1); };
+  runInContext(`AGENDA = { now: { watching: 4, needs_you: 2, checked: [{ source: "endora", at: Date.now() }, { source: "docker", at: Date.now() - 120000 }, { source: "mail", at: Date.now() - 900000 }] },
+    items: [
+      { id: 5, kind: "mail_money_due", kind_said: "Mail with money due", level: "needs_you", level_said: "Needs you", from_mail: true,
+        sentence: "<img src=x onerror=alert(1)> wants $12", why: "", opened_at: Date.now(), stop_said: "Don't tell me about mail from billing@example.com" },
+      { id: 6, kind: "event", kind_said: "On the calendar", level: "fyi", level_said: "FYI", sentence: "Today: Dentist", why: "", opened_at: Date.now(), stop_said: "x" },
+      { id: 7, kind: "container_crashed", kind_said: "A container crashed", level: "handled", level_said: "Handled", sentence: "sonarr crashed (exit 1)", why: "Restarted it.", opened_at: Date.now(), stop_said: "x" },
+      { id: 8, kind: "drive_failing", kind_said: "A drive is failing", level: "needs_you", level_said: "Needs you", from_mail: false,
+        sentence: "/dev/sda is failing its SMART health check", why: "", opened_at: Date.now() - 3600000, stop_said: "Don't tell me about DiskFailingSmart on /dev/sda" }] };
+    NAV = { v: "chat" };`, context);
+  const chat = runInContext("viewChat()", context);
+  if (!chat.includes("Watching 4 things · checked the NAS 2 min ago")) fail("agenda: the Now line does not say what it is doing");
+  if (!chat.includes('class="now-line" data-act="go:audit"')) fail("agenda: the Now line does not open Activity");
+  if (!chat.includes('data-act="go:needs">2 need you ›')) fail("agenda: the Now line does not say how many need you, or open them");
+  // Above the chat, the most pressing one only: the house before the mail.
+  for (const act of ["agenda:done:8", "agenda:dismiss:8", "agenda:stop:8"]) {
+    if (!chat.includes(`data-act="${act}"`)) fail(`agenda: the pinned card does not offer ${act}`);
+  }
+  if (chat.includes("agenda:done:5")) fail("agenda: more than one card took the chat's screen");
+  if (chat.includes("agenda:done:6") || chat.includes("agenda:done:7")) fail("agenda: something that does not need the owner was pinned");
+  runInContext('NAV = { v: "needs" };', context);
+  const needs = runInContext("viewNeeds()", context);
+  for (const act of ["agenda:done:8", "agenda:done:5", "agenda:dismiss:6"]) {
+    if (!needs.includes(`data-act="${act}"`)) fail(`agenda: Needs you does not offer ${act}`);
+  }
+  if (needs.indexOf("agenda:done:8") > needs.indexOf("agenda:done:5")) fail("agenda: the mail came before the house");
+  if (needs.includes("agenda:done:7")) fail("agenda: something handled is listed as needing you");
+  if (needs.includes("<img src=x")) fail("agenda: an item's text became markup");
+  runInContext('NAV = { v: "chat" };', context);
+  runInContext(`AGENDA_RULES = { rules: [{ id: 2, said: "Leave the container ebooks alone", at: Date.now() }],
+    kinds: [{ kind: "container_crashed", said: "A container crashed", response: "handle", default: "handle",
+      allowed: [{ name: "handle", said: "Restart it" }, { name: "needs_you", said: "Needs you" }] }] };
+    NAV = { v: "watching" };`, context);
+  const watching = runInContext("viewWatching()", context);
+  for (const act of ["agenda:forget:2", "agenda:set:container_crashed:needs_you", "agenda:set:container_crashed:handle"]) {
+    if (!watching.includes(`data-act="${act}"`)) fail(`agenda: Settings does not offer ${act}`);
+  }
+  if (!watching.includes("Restart it (usual)")) fail("agenda: Settings does not say which is usual");
+  runInContext('AGENDA = null; AGENDA_RULES = null; NAV = { v: "chat" };', context);
+  if (runInContext("viewChat()", context).includes("now-line")) fail("agenda: a Now line was drawn with nothing to say");
+  console.log("agenda: the Now line opens Activity, only what needs you is pinned, and Settings can undo and re-level");
 }
 
 // Speakers (ADR 0104): every source offers its speakers to tap, never the device's own; a wire

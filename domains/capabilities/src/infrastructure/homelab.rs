@@ -31,6 +31,13 @@ fn text(value: &Value) -> String {
         .collect()
 }
 
+/// An exited container's exit code, from Docker's status text ("Exited (137) 2 hours ago").
+/// What tells a crash from a deliberate stop (ADR 0103).
+fn exit_code(status: &str) -> Option<i32> {
+    let rest = status.strip_prefix("Exited (")?;
+    rest.split(')').next()?.parse().ok()
+}
+
 /// Projects only display fields, retaining at most 100 items per source.
 ///
 /// # Errors
@@ -63,13 +70,35 @@ pub fn normalize(service: &str, value: &Value) -> Result<Value, &'static str> {
             } else {
                 0.0
             };
-            json!({"title":text(&item["title"]),"progress":progress,"status":text(&item["status"])})
+            let stuck = item["trackedDownloadStatus"] == "warning" || item["trackedDownloadStatus"] == "error";
+            json!({"title":text(&item["title"]),"progress":progress,"status":text(&item["status"]),"stuck":stuck})
         })
         .collect();
     let degraded = records
         .iter()
         .any(|r| r["trackedDownloadStatus"] == "warning" || r["trackedDownloadStatus"] == "error");
     Ok(json!({"state":if degraded {"degraded"} else {"healthy"},"total":total,"items":items}))
+}
+
+/// The observer's projection: [`normalize`], and for each container its id and how it exited,
+/// which the agenda loop's restart and its crashed-or-stopped rule need (ADR 0103). For the
+/// console and the agenda only; what a chat skill hands a model stays [`normalize`]'s.
+///
+/// # Errors
+/// Unexpected upstream response shape.
+pub fn normalize_observed(service: &str, value: &Value) -> Result<Value, &'static str> {
+    let mut out = normalize(service, value)?;
+    if service != "docker" {
+        return Ok(out);
+    }
+    let records = value.as_array().ok_or("protocol")?;
+    if let Some(items) = out["items"].as_array_mut() {
+        for (item, raw) in items.iter_mut().zip(records.iter().take(100)) {
+            item["id"] = text(&raw["Id"]).into();
+            item["exit"] = exit_code(raw["Status"].as_str().unwrap_or("")).into();
+        }
+    }
+    Ok(out)
 }
 
 /// Infrastructure reader using the existing private settings repository.
@@ -131,6 +160,6 @@ impl HomelabObserver for Reader {
             .limit(1024 * 1024)
             .read_json()
             .map_err(|_| "protocol")?;
-        normalize(service, &value)
+        normalize_observed(service, &value)
     }
 }

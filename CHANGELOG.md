@@ -91,9 +91,9 @@ tagged release.
   reader, vision and speech-to-text. Each says which model, where it runs (on your network or
   in the cloud), what the model server says about it now (graphics card or processor, memory,
   context, size) and what it sees. It warns when the model server gives less context than
-  Endora assumes, which silently cuts long turns short. The mail reader's model and the
-  speech-to-text server, until now set only in the deployment, are chosen there; the mail
-  reader always stays on the local endpoint, whatever the conversation uses.
+  Endora assumes, which silently cuts long turns short. The mail reader's model, until now
+  set only in the deployment, is chosen there; the mail reader always stays on the local
+  endpoint, whatever the conversation uses.
 
 - **Endora copies its own data every night** ([ADR 0098](docs/adr/0098-it-can-be-rebuilt.md)).
   At 01:30 by your clock it writes a consistent, integrity-checked copy of its database into
@@ -123,6 +123,11 @@ tagged release.
   how far Endora may act on its own.
 
 ### Removed
+
+- **The server-side speech-to-text path.** `POST /v1/transcribe`, its Whisper proxy and
+  silence filter, the AI screen's speech-server choice, `ENDORA_STT_URL` and the `stt` flag in
+  `/health` are gone. Nothing had called them since push-to-talk was removed; dictation is the
+  browser's own recognition, and the AI screen says where that audio may go.
 
 - **Beliefs** ([ADR 0101](docs/adr/0101-the-brain.md)), with their confidence, decay,
   affirming and correcting. **Breaking:** the `/v1/understanding` routes are gone, the export

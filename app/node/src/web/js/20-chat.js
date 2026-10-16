@@ -19,6 +19,7 @@ const UNDER_SETTINGS = [
   { view: "connections", icon: "gear", label: "Connections", note: "Home Assistant, your home lab's services, and tool servers" },
   { view: "skills", icon: "skills", label: "Skills", note: "what Endora can do in chat, and skills you teach it" },
   { view: "permissions", icon: "scale", label: "Permissions", note: "how far Endora may act on its own" },
+  { view: "watching", icon: "clock", label: "What Endora watches", short: "Watching", note: "what it does about each kind of thing, and what you told it to leave alone" },
   { view: "understanding", icon: "person", label: "About you", note: "what you've told it, and the pages of what it knows" },
   { view: "signin", icon: "lock", label: "Your sign-in", note: "password, authenticator, and tokens for scripts" },
   { view: "data", icon: "export", label: "Your data", note: "take a copy of what Endora knows, or delete it" },
@@ -94,10 +95,8 @@ function viewAudit() {
 // ---- voice (browser Web Speech API; STT may use a cloud service) ---
 let SPEAK = localStorage.getItem("endora.speak") === "1";      // read replies aloud (default OFF)
 let DEEP_MODE = localStorage.getItem("endora.deepmode") === "1"; // route sends to the deep model (default OFF)
-let CONVO_REC = null;          // the active voice-activity recording, if listening
 const TTS = window.speechSynthesis;
 const STT = window.SpeechRecognition || window.webkitSpeechRecognition;
-let STT_AVAILABLE = false; // a Whisper STT server is configured (set from /health)
 // iOS Safari only lets speech start after a user gesture unlocks it; speaking a
 // silent utterance the moment the person taps "Speak" unlocks it for the later,
 // async replies. (This is best-effort — a fully reliable mobile voice is the
@@ -304,6 +303,7 @@ function viewChat() {
       : "Say anything — Endora is listening."}</div>`;
   return `
     <div class="chat">
+      ${AGENDA && AGENDA.now ? `<div class="chat-top"><div class="chat-col">${viewNowLine()}${viewPinned()}</div></div>` : ""}
       <div class="chat-scroll" id="chat-scroll"><div class="chat-col">
         ${dayBar}
         ${research}

@@ -115,6 +115,10 @@ pub struct AppState {
     /// What Endora has made of the mail (ADR 0097): an index of every message and a digest of
     /// those it has read. Always present; empty until there is mail.
     pub mail_store: Arc<endora_mail::MailStore>,
+    /// The agenda loop's items, restarts and taught rules (ADR 0103).
+    pub agenda: Arc<endora_agenda::infrastructure::SqliteAgendaStore>,
+    /// Why the last nightly copy failed, until one succeeds: what the agenda tells.
+    pub nightly_failure: Arc<std::sync::Mutex<Option<String>>>,
     /// The read-only copy of the mail, when one is mounted.
     pub mail_copy: Option<Arc<endora_mail::MaildirCopy>>,
     /// The quarantined reader: the local model, with no tools and none of the person's context.
@@ -198,6 +202,11 @@ impl AppState {
         // runs, and simply has nothing to say about mail.
         let _ = endora_mail::migrate(&store.db());
         let mail_store = Arc::new(endora_mail::MailStore::new(store.db()));
+        // The same for the agenda: without its tables there is simply nothing on it.
+        let _ = endora_agenda::infrastructure::migrate(&store.db());
+        let agenda = Arc::new(endora_agenda::infrastructure::SqliteAgendaStore::new(
+            store.db(),
+        ));
         // Deployment policy: if a skills config file is set, apply its per-skill modes
         // at startup as the baseline (ADR 0051) — before MCP connects, so MCP-tool
         // modes are in place too.
@@ -282,6 +291,8 @@ impl AppState {
             hq: None,
             sound: None,
             mail_store,
+            agenda,
+            nightly_failure: Arc::new(std::sync::Mutex::new(None)),
             mail_copy: None,
             mail_reader: None,
             local_writer,
@@ -509,6 +520,11 @@ pub fn app(state: AppState) -> Router {
         .route("/v1/config-writes/{id}/undo", post(undo_config_write))
         .route("/v1/outcomes/{id}/reaction", post(react_to_outcome))
         .route("/v1/mail", get(mail::mail_digest))
+        .route("/v1/agenda", get(agenda::agenda))
+        .route("/v1/agenda/rules", get(agenda::rules))
+        .route("/v1/agenda/rules/{id}/forget", post(agenda::forget))
+        .route("/v1/agenda/kinds/{kind}", post(agenda::relevel))
+        .route("/v1/agenda/{id}/{how}", post(agenda::answer))
         .route("/v1/ai", get(ai::ai_overview).post(ai::set_ai))
         // Spotify, held here and lent to every device; its callback is outside /v1 because a
         // browser redirect carries no token (the waiting sign-in's state authorizes it).
@@ -584,7 +600,6 @@ pub fn app(state: AppState) -> Router {
         .route("/v1/models/discover", post(discover_models))
         .route("/v1/models/test", post(test_model_connection))
         .route("/v1/model-layer/run", post(run_model_layer_now))
-        .route("/v1/transcribe", post(transcribe))
         .route("/v1/deep-ask", post(deep_ask))
         .route(
             "/v1/preferences",
@@ -607,6 +622,10 @@ pub fn app(state: AppState) -> Router {
 }
 mod auth;
 mod homelab;
+/// The agenda loop, for the composition root to start.
+pub fn spawn_agenda(state: AppState) {
+    agenda::spawn(state);
+}
 mod terminal;
 use auth::*;
 pub(crate) use homelab::spawn as spawn_homelab;
@@ -792,6 +811,8 @@ use chat::*;
 mod brain;
 use brain::*;
 mod hq;
+// The agenda loop (ADR 0103): signals become items, and the owner's answers to them.
+mod agenda;
 use hq::*;
 mod hq_art;
 use hq_art::*;

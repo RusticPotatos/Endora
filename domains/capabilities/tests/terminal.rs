@@ -875,3 +875,36 @@ fn a_home_assistant_address_typed_without_http_still_reaches_the_catalog() {
     let view: endora_protocol::ConsoleView = fits(&result);
     assert_eq!(view.items[0].label, "Example lamp");
 }
+
+#[test]
+fn the_agenda_watches_firing_alerts_and_failing_checks_through_fixed_queries_and_nothing_else() {
+    use endora_capabilities::application::HomeConsole;
+    let (adapter, mock) = mock_adapter(
+        "metrics",
+        vec![
+            (
+                "GET /api/v1/alerts ",
+                json!({"status":"success","data":{"alerts":[
+                    {"state":"firing","labels":{"alertname":"DiskFailingSmart","severity":"critical",
+                        "drive":"/dev/sda","serial_number":"FICTIONAL-SERIAL","instance":"192.168.1.10:9902"},
+                     "annotations":{"summary":"/dev/sda is failing its SMART health check"}},
+                    {"state":"pending","labels":{"alertname":"LowMemory","severity":"warning"}}]}}),
+            ),
+            (
+                "GET /api/v1/query?query=gatus_results_endpoint_success",
+                json!({"status":"success","data":{"result":[
+                    {"metric":{"name":"Plex","instance":"192.168.1.10:9382"},"value":[1,"0"]}]}}),
+            ),
+        ],
+    );
+    let watched = adapter.read("watch", "").unwrap();
+    mock.join().unwrap();
+    assert_eq!(
+        watched,
+        json!({"alerts":[{"name":"DiskFailingSmart","severity":"critical","target":"/dev/sda",
+            "summary":"/dev/sda is failing its SMART health check"}],"checks_failing":["Plex"]}),
+        "a pending alert is not firing, and no other label is kept"
+    );
+    assert!(!watched.to_string().contains("FICTIONAL-SERIAL"));
+    assert!(!watched.to_string().contains("192.168"));
+}
