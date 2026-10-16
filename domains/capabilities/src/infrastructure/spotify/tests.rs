@@ -67,6 +67,22 @@ fn the_pkce_challenge_is_the_one_the_standard_gives() {
 }
 
 #[test]
+fn the_protocols_sample_sign_in_address_is_exactly_one_this_node_builds() {
+    // The handheld tests that the sample fits its screen as a QR code; that proves something only
+    // while the node's addresses are no longer than it.
+    let built = sign_in_url(
+        &"ab12".repeat(8),
+        &pkce_challenge("dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"),
+        &"cd34".repeat(8),
+        PASTE_REDIRECT,
+    );
+    assert_eq!(
+        endora_protocol::samples::connection_waiting().sign_in_url,
+        Some(built)
+    );
+}
+
+#[test]
 fn the_code_comes_from_the_pasted_address_and_only_for_this_sign_in() {
     assert_eq!(
         code_from(

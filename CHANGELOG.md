@@ -15,6 +15,15 @@ tagged release.
   A sign-in started on one device shows as waiting on the other and can be finished there: by
   approving on the phone (Spotify sends you back to Endora, which finishes by itself) or by
   pasting the address Spotify sends you to. A device's existing sign-in can be handed over.
+  The handheld's Music page now plays with it: it borrows the token through the unlocked
+  session, hands over a sign-in it made by itself and then deletes its copy, and its setup
+  starts and finishes the sign-in on Endora. Locking the handheld drops the borrowed session.
+- **The web console does what the handheld does.** Music (what is playing, play and pause,
+  skip, volume, choose the device, search, playlists, through the borrowed token), Smart home
+  (switch favorites, set scenes, choose favorites), Media (search and request, recent requests)
+  and Home lab (NAS figures, alerts, each service's state, container start/stop/restart and
+  logs, allowlisted jobs). Each acts through the node's one allowlisted action route and asks
+  before anything consequential.
 
 - **The handheld terminal is part of Endora** ([ADR 0099](docs/adr/0099-the-handheld-is-part-of-endora.md)).
   `clients/terminal`, the Rust TUI for a small Linux handheld, joins the workspace: one
@@ -66,6 +75,12 @@ tagged release.
   how far Endora may act on its own.
 
 ### Fixed
+
+- **Opening Mail, AI or Spotify from the menu could show "Loading…"** until something else
+  reloaded the console; a screen now fetches what it shows when it opens.
+
+- **The handheld's Containers page showed raw numbers** ("CPU %: 7.251164760358932"); it shows
+  the home screen's short figures.
 
 - **The handheld's Home catalog never loaded when Home Assistant's address was typed without
   `http://`.** The Home Assistant skill accepted `host:8123`; the console's own requests

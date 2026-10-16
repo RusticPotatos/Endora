@@ -1,18 +1,16 @@
-//! A small Spotify Web API client for the Music page: sign in once (PKCE, no secret), then
-//! control playback on this device and search or open playlists.
+//! A small Spotify Web API client for the Music page: control playback on this device and search
+//! or open playlists.
 //!
 //! Playback happens on the Pi itself through its Spotify Connect speaker; this module only tells
-//! Spotify what to play. The client id and tokens live in a private (0600) file on the device.
+//! Spotify what to play. The sign-in is Endora's, made once on any device (plan phase 4): this
+//! device borrows an access token from the node and asks again when it runs out, so the refresh
+//! token never lives here. A sign-in made here before Endora held one is handed to Endora the
+//! first time the node can be reached, then forgotten.
 use crate::{Result, storage::Paths};
-use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use sha2::{Digest, Sha256};
 use std::time::Duration;
 
-pub const REDIRECT: &str = "http://127.0.0.1:8888/callback";
-// Only what the Music page uses; a shorter request also makes a smaller QR code.
-const SCOPES: &str = "user-read-playback-state user-modify-playback-state playlist-read-private user-library-read user-read-recently-played user-top-read user-library-modify";
 /// What to do when Spotify cannot see this device's speaker: sign it in from the handheld.
 pub const SPEAKER_MISSING: &str =
     "The Speaker is not signed in yet: Settings > Accounts > Spotify sign-in, then S";
@@ -137,19 +135,6 @@ pub struct Item {
     pub track: bool,
 }
 
-/// A random code verifier: 64 letters and digits (the standard allows 43 to 128).
-pub fn new_verifier() -> String {
-    format!(
-        "{}{}",
-        uuid::Uuid::new_v4().simple(),
-        uuid::Uuid::new_v4().simple()
-    )
-}
-
-pub fn pkce_challenge(verifier: &str) -> String {
-    URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()))
-}
-
 fn encode(text: &str) -> String {
     text.bytes()
         .map(|b| match b {
@@ -159,47 +144,6 @@ fn encode(text: &str) -> String {
             _ => format!("%{b:02X}"),
         })
         .collect()
-}
-
-pub fn auth_url(client_id: &str, challenge: &str, state: &str) -> String {
-    format!(
-        "https://accounts.spotify.com/authorize?client_id={}&response_type=code&redirect_uri={}&scope={}&code_challenge_method=S256&code_challenge={}&state={}",
-        encode(client_id),
-        encode(REDIRECT),
-        encode(SCOPES),
-        challenge,
-        encode(state)
-    )
-}
-
-/// The authorization code from the address the browser ended on, which is pasted by hand.
-/// Tolerates quotes, spaces and a missing scheme; refuses a wrong `state` (it would mean the
-/// answer belongs to some other login) and any error Spotify reported.
-pub fn parse_callback(input: &str, state: &str) -> Result<String> {
-    let text = input.trim().trim_matches(['\'', '"', '<', '>']).trim();
-    if text.is_empty() {
-        return Err("Nothing pasted".into());
-    }
-    let with_scheme = if text.contains("://") {
-        text.to_owned()
-    } else {
-        format!("http://{text}")
-    };
-    let url = reqwest::Url::parse(&with_scheme).map_err(|_| "That is not a web address")?;
-    let get = |name: &str| {
-        url.query_pairs()
-            .find(|(k, _)| k == name)
-            .map(|(_, v)| v.into_owned())
-    };
-    if get("error").is_some() {
-        return Err("Spotify did not allow the login".into());
-    }
-    if get("state").as_deref() != Some(state) {
-        return Err("That address is from a different login; start again".into());
-    }
-    get("code")
-        .filter(|c| !c.is_empty())
-        .ok_or("The address has no login code; copy the whole address".into())
 }
 
 pub fn time_text(ms: u64) -> String {
@@ -504,9 +448,22 @@ struct Saved {
     tokens: Option<Tokens>,
 }
 
+/// What the Music page says when there is no sign-in to use.
+pub const NOT_CONNECTED: &str =
+    "Spotify is not connected: press Y here, or connect it in Endora's web console";
+
+/// Where a session's access token comes from.
+enum Source {
+    /// Lent by Endora, which keeps the sign-in.
+    Endora(crate::client::Client),
+    /// This device's own sign-in, from before Endora held one: used only while the node cannot
+    /// be reached to take it over.
+    Own { client_id: String, refresh: String },
+}
+
 /// A signed-in Spotify session.
 pub struct Spotify {
-    client_id: String,
+    source: Source,
     tokens: Tokens,
     http: reqwest::Client,
     /// The device picked with "Play on" (by name); none means this handheld.
@@ -535,13 +492,91 @@ fn write_saved(saved: &Saved) -> Result<()> {
     Paths::state()?.write("spotify", &bytes)
 }
 
-/// The saved client id, if any, so setup can offer to keep it.
+/// The client id this device saved when it signed in by itself, which setup offers to Endora.
 pub fn saved_client_id() -> Option<String> {
     Some(read_saved().client_id).filter(|c| !c.is_empty())
 }
 
-pub fn is_signed_in() -> bool {
+/// Whether Endora lent a token here last time it was asked. Kept in a file so the Music page
+/// can say whether it can play without asking the node on every frame.
+const LENT: &str = "spotify-lent";
+
+fn remember_lent(lent: bool) {
+    if let Ok(paths) = Paths::state() {
+        let _ = if lent {
+            paths.write(LENT, b"1")
+        } else {
+            paths.remove(LENT)
+        };
+    }
+}
+
+/// Whether this device still holds a sign-in of its own, from before Endora held one.
+pub fn holds_own() -> bool {
     read_saved().tokens.is_some()
+}
+
+/// Whether the Music page can play: Endora lent a token lately, or this device still holds its
+/// own sign-in.
+pub fn is_signed_in() -> bool {
+    read_saved().tokens.is_some() || Paths::state().and_then(|p| p.read(LENT)).is_ok()
+}
+
+/// What becomes of a sign-in this device holds, given where Endora's stands.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Handover {
+    /// Endora has none: it takes this one over, for every device.
+    TakeOver,
+    /// Endora has its own: this one is not needed, once Endora has lent a token.
+    Forget,
+    /// This device holds none.
+    Nothing,
+}
+
+pub fn handover(endora: &str, holds_own: bool) -> Handover {
+    match (holds_own, endora) {
+        (false, _) => Handover::Nothing,
+        (true, "connected") => Handover::Forget,
+        (true, _) => Handover::TakeOver,
+    }
+}
+
+/// A token Endora lent (`POST /v1/connections/spotify/token`), as this device keeps it: no
+/// refresh token, which stays on Endora.
+pub fn lent_tokens(value: &Value, now: u64) -> Result<Tokens> {
+    let lent: endora_protocol::LentToken =
+        serde_json::from_value(value.clone()).map_err(|_| "Unexpected reply from Endora")?;
+    if lent.access_token.is_empty() {
+        return Err("Endora lent no Spotify token".into());
+    }
+    Ok(Tokens {
+        access: lent.access_token,
+        refresh: String::new(),
+        expires_at: now + u64::try_from(lent.expires_in).unwrap_or(0),
+    })
+}
+
+async fn borrow(node: &crate::client::Client) -> Result<Tokens> {
+    let value = node
+        .post("/v1/connections/spotify/token", &json!({}))
+        .await?;
+    lent_tokens(&value, now_secs())
+}
+
+/// Gives this device's own sign-in to Endora when Endora has none.
+async fn hand_over(node: &crate::client::Client, saved: &Saved) -> Result<()> {
+    let Some(tokens) = &saved.tokens else {
+        return Ok(());
+    };
+    let status = node.get("/v1/connections/spotify").await?;
+    if handover(status["state"].as_str().unwrap_or(""), true) == Handover::TakeOver {
+        node.post(
+            "/v1/connections/spotify/take-over",
+            &json!({"client_id": saved.client_id, "refresh_token": tokens.refresh}),
+        )
+        .await?;
+    }
+    Ok(())
 }
 
 async fn token_request(http: &reqwest::Client, form: &[(&str, &str)]) -> Result<Value> {
@@ -552,7 +587,7 @@ async fn token_request(http: &reqwest::Client, form: &[(&str, &str)]) -> Result<
         .await
         .map_err(|_| "Cannot reach Spotify")?;
     if !response.status().is_success() {
-        return Err("Spotify refused the login; start setup again".into());
+        return Err("Spotify refused this device's old sign-in; press Y to connect again".into());
     }
     response
         .json()
@@ -574,67 +609,106 @@ fn tokens_from(value: &Value, old_refresh: &str) -> Result<Tokens> {
     })
 }
 
-/// Completes a sign-in: swaps the pasted code for tokens and saves them privately.
-pub async fn sign_in(client_id: &str, code: &str, verifier: &str) -> Result<()> {
-    let value = token_request(
-        &http()?,
-        &[
-            ("grant_type", "authorization_code"),
-            ("code", code),
-            ("redirect_uri", REDIRECT),
-            ("client_id", client_id),
-            ("code_verifier", verifier),
-        ],
-    )
-    .await?;
-    write_saved(&Saved {
-        client_id: client_id.to_owned(),
-        tokens: Some(tokens_from(&value, "")?),
-    })
-}
-
-pub fn save_client_id(client_id: &str) -> Result<()> {
-    let mut saved = read_saved();
-    saved.client_id = client_id.to_owned();
-    write_saved(&saved)
-}
-
 impl Spotify {
-    pub fn load() -> Result<Self> {
+    /// A session with Endora's sign-in when the node lends a token. A sign-in this device still
+    /// holds is handed over first, and forgotten once Endora has lent one; while the node cannot
+    /// be reached, it is used as before.
+    pub async fn load(node: Option<&crate::client::Client>) -> Result<Self> {
         let saved = read_saved();
+        let target = Paths::state()
+            .and_then(|p| p.read("spotify-device"))
+            .ok()
+            .map(|b| String::from_utf8_lossy(&b).trim().to_owned())
+            .filter(|n| !n.is_empty());
+        let mut why = NOT_CONNECTED.to_owned();
+        if let Some(node) = node {
+            // Its outcome shows in whether Endora then lends a token.
+            let _ = hand_over(node, &saved).await;
+            match borrow(node).await {
+                Ok(tokens) => {
+                    remember_lent(true);
+                    if saved.tokens.is_some() {
+                        write_saved(&Saved {
+                            client_id: saved.client_id,
+                            tokens: None,
+                        })?;
+                    }
+                    return Ok(Self {
+                        source: Source::Endora(node.clone()),
+                        tokens,
+                        http: http()?,
+                        target,
+                    });
+                }
+                Err(e) if e == "Spotify is not connected" => remember_lent(false),
+                Err(e) => why = e,
+            }
+        }
         match saved.tokens {
             Some(tokens) if !saved.client_id.is_empty() => Ok(Self {
-                client_id: saved.client_id,
+                source: Source::Own {
+                    client_id: saved.client_id,
+                    refresh: tokens.refresh.clone(),
+                },
                 tokens,
                 http: http()?,
-                target: crate::storage::Paths::state()
-                    .and_then(|p| p.read("spotify-device"))
-                    .ok()
-                    .map(|b| String::from_utf8_lossy(&b).trim().to_owned())
-                    .filter(|n| !n.is_empty()),
+                target,
             }),
-            _ => Err("Spotify is not set up; run: endora-terminal music setup".into()),
+            _ => Err(why),
         }
     }
 
-    async fn fresh(&mut self) -> Result<()> {
-        if !self.tokens.needs_refresh(now_secs()) {
+    /// A token with time left: borrowed again from Endora, or refreshed with this device's own
+    /// sign-in. `again` replaces one Spotify stopped accepting.
+    async fn fresh(&mut self, again: bool) -> Result<()> {
+        if !again && !self.tokens.needs_refresh(now_secs()) {
             return Ok(());
         }
+        let (client_id, refresh) = match &self.source {
+            Source::Endora(node) => {
+                self.tokens = borrow(node).await?;
+                return Ok(());
+            }
+            Source::Own { client_id, refresh } => (client_id.clone(), refresh.clone()),
+        };
         let value = token_request(
             &self.http,
             &[
                 ("grant_type", "refresh_token"),
-                ("refresh_token", &self.tokens.refresh),
-                ("client_id", &self.client_id),
+                ("refresh_token", &refresh),
+                ("client_id", &client_id),
             ],
         )
         .await?;
-        self.tokens = tokens_from(&value, &self.tokens.refresh)?;
+        self.tokens = tokens_from(&value, &refresh)?;
+        self.source = Source::Own {
+            client_id: client_id.clone(),
+            refresh: self.tokens.refresh.clone(),
+        };
         write_saved(&Saved {
-            client_id: self.client_id.clone(),
+            client_id,
             tokens: Some(self.tokens.clone()),
         })
+    }
+
+    async fn send(
+        &self,
+        method: reqwest::Method,
+        path: &str,
+        body: Option<&Value>,
+    ) -> Result<reqwest::Response> {
+        let mut request = self
+            .http
+            .request(method, format!("https://api.spotify.com/v1{path}"))
+            .bearer_auth(&self.tokens.access);
+        request = match body {
+            Some(b) => request.json(b),
+            None => request.header("Content-Length", "0"),
+        };
+        request
+            .send()
+            .await
+            .map_err(|_| "Cannot reach Spotify".into())
     }
 
     async fn call(
@@ -643,23 +717,20 @@ impl Spotify {
         path: &str,
         body: Option<Value>,
     ) -> Result<Value> {
-        self.fresh().await?;
+        self.fresh(false).await?;
         let read = method == reqwest::Method::GET;
-        let mut request = self
-            .http
-            .request(method, format!("https://api.spotify.com/v1{path}"))
-            .bearer_auth(&self.tokens.access);
-        request = match body {
-            Some(b) => request.json(&b),
-            None => request.header("Content-Length", "0"),
-        };
-        let response = request.send().await.map_err(|_| "Cannot reach Spotify")?;
+        let mut response = self.send(method.clone(), path, body.as_ref()).await?;
+        // A lent token Spotify stopped accepting (signed in again elsewhere): borrow another, once.
+        if response.status().as_u16() == 401 && matches!(self.source, Source::Endora(_)) {
+            self.fresh(true).await?;
+            response = self.send(method, path, body.as_ref()).await?;
+        }
         match response.status().as_u16() {
             // A read must answer JSON; a command (play, next, like...) only has to succeed.
             200 if read => reply_value(&response.text().await.unwrap_or_default()),
             200 => Ok(command_reply(&response.text().await.unwrap_or_default())),
             202 | 204 => Ok(Value::Null),
-            401 => Err("Spotify sign-in expired; run: endora-terminal music setup".into()),
+            401 => Err("Spotify sign-in expired; press Y to connect it again".into()),
             403 => Err("Spotify needs Premium for this".into()),
             404 => Err(SPEAKER_MISSING.to_owned()),
             429 => Err("Spotify is busy; try again in a moment".into()),

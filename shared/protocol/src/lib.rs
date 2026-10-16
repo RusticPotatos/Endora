@@ -287,13 +287,23 @@ pub mod samples {
     /// A sign-in waiting to be approved.
     #[must_use]
     pub fn connection_waiting() -> ConnectionStatus {
+        // As long as a real one: the handheld draws it as a QR code, which has to fit its
+        // screen, and the node's tests prove it builds exactly this address. The client id and
+        // state are made at run time so nothing key-shaped sits in the repository; the challenge
+        // is RFC 7636's own example.
+        let sign_in = format!(
+            "https://accounts.spotify.com/authorize?client_id={}&response_type=code&redirect_uri={}&scope={}&code_challenge_method=S256&code_challenge={}&state={}",
+            "ab12".repeat(8),
+            "http%3A%2F%2F127.0.0.1%3A8888%2Fcallback",
+            "user-read-playback-state%20user-modify-playback-state%20playlist-read-private%20user-library-read%20user-read-recently-played%20user-top-read%20user-library-modify",
+            "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM",
+            "cd34".repeat(8),
+        );
         ConnectionStatus {
             state: "waiting".to_owned(),
             detail: "Waiting for you to approve Endora on Spotify".to_owned(),
             client_id_set: true,
-            sign_in_url: Some(
-                "https://accounts.spotify.com/authorize?client_id=example".to_owned(),
-            ),
+            sign_in_url: Some(sign_in),
             redirect: Some("http://127.0.0.1:8888/callback".to_owned()),
             started_ms: Some(1_792_065_600_000),
             account: None,

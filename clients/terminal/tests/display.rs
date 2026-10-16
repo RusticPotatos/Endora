@@ -310,8 +310,8 @@ fn the_music_page_shows_what_is_playing_the_list_and_what_to_do_next() {
     assert!(music_view(None, "", &[], 0, true, "", false).contains("Nothing is playing"));
     let setup = music_view(None, "", &[], 0, false, "", false);
     assert!(
-        setup.contains("Press Y") && setup.contains("music setup"),
-        "sign in right here, or from a shell: {setup}"
+        setup.contains("Press Y") && setup.contains("web console"),
+        "connect right here, or in Endora's web console: {setup}"
     );
 }
 

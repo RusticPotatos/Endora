@@ -740,7 +740,6 @@ name = "endora-terminal"
 version = "0.13.2"
 dependencies = [
  "argon2",
- "base64 0.22.1",
  "chacha20poly1305",
  "crossterm",
  "endora-protocol",
@@ -751,7 +750,6 @@ dependencies = [
  "rustix",
  "serde",
  "serde_json",
- "sha2",
  "tokio",
  "toml",
  "unicode-width 0.2.0",

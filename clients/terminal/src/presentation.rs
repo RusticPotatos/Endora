@@ -287,7 +287,7 @@ pub fn music_view(
     radio: bool,
 ) -> String {
     if !signed_in {
-        return "Spotify is not set up yet.\nPress Y to sign in (you scan two QR codes),\nor run: endora-terminal music setup\n".into();
+        return "Spotify is not connected.\nPress Y to connect it here, or connect it in Endora's\nweb console: every device uses the one sign-in.\n".into();
     }
     let mut text = String::from("Now playing\n");
     match now {
