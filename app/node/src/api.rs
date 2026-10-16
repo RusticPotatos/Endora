@@ -15,7 +15,7 @@ use axum::http::{Method, StatusCode};
 use axum::middleware::{Next, from_fn_with_state};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{Html, IntoResponse, Response};
-use axum::routing::{get, post};
+use axum::routing::{delete, get, post, put};
 use endora_application::Clock;
 use endora_application::{
     ActivityItem, AppError, AutonomyEnvelope, AutonomyEnvelopeRepository, BriefSchedule, Butler,
@@ -109,6 +109,9 @@ pub struct AppState {
     /// Endora HQ, when this node has one (ADR 0102): the team service, which answers the node
     /// only. `None` until `ENDORA_HQ_URL` and `ENDORA_HQ_TOKEN` are set.
     pub hq: Option<Arc<endora_infrastructure::HqClient>>,
+    /// endora-sound, when this node has one (ADR 0104): the sound hub, and the listen
+    /// tickets handed out for it. `None` until `ENDORA_SOUND_URL` and a token are set.
+    pub sound: Option<Arc<SoundRemote>>,
     /// What Endora has made of the mail (ADR 0097): an index of every message and a digest of
     /// those it has read. Always present; empty until there is mail.
     pub mail_store: Arc<endora_mail::MailStore>,
@@ -277,6 +280,7 @@ impl AppState {
             started_ms,
             time_zone: endora_infrastructure::TimeZone::fixed(0),
             hq: None,
+            sound: None,
             mail_store,
             mail_copy: None,
             mail_reader: None,
@@ -308,6 +312,13 @@ impl AppState {
     #[must_use]
     pub fn with_hq(mut self, hq: endora_infrastructure::HqClient) -> Self {
         self.hq = Some(Arc::new(hq));
+        self
+    }
+
+    /// Connects the sound hub (ADR 0104).
+    #[must_use]
+    pub fn with_sound(mut self, sound: endora_infrastructure::SoundClient) -> Self {
+        self.sound = Some(Arc::new(SoundRemote::new(sound)));
         self
     }
 
@@ -420,6 +431,21 @@ pub fn app(state: AppState) -> Router {
         .route("/v1/hq/desk/{id}", post(hq_decide))
         .route("/v1/hq/stop", post(hq_stop))
         .route("/v1/hq/resume", post(hq_resume))
+        // endora-sound, through the node (ADR 0104): only these routes, never a path passed on.
+        .route("/v1/sound", get(sound_state))
+        .route("/v1/sound/sources", post(sound_add_source))
+        .route("/v1/sound/sources/{id}", delete(sound_remove_source))
+        .route("/v1/sound/sources/{id}/level", put(sound_set_all))
+        .route("/v1/sound/speakers", post(sound_add_speaker))
+        .route("/v1/sound/speakers/{id}", delete(sound_remove_speaker))
+        .route("/v1/sound/speakers/{id}/volume", put(sound_set_volume))
+        .route("/v1/sound/wires", put(sound_wire))
+        .route("/v1/sound/wires/{source}/{speaker}", delete(sound_unwire))
+        .route("/v1/sound/setups", post(sound_save_setup))
+        .route("/v1/sound/setups/{name}", delete(sound_remove_setup))
+        .route("/v1/sound/setups/{name}/apply", post(sound_apply_setup))
+        .route("/v1/sound/listen/{id}/ticket", post(sound_listen_ticket))
+        .route("/v1/sound/listen/{id}", get(sound_listen))
         // What Endora knows about the person, page by page (ADR 0101).
         .route("/v1/brain", get(brain_overview))
         .route("/v1/brain/forget", post(forget_what_it_learned))
@@ -769,6 +795,8 @@ mod hq;
 use hq::*;
 mod hq_art;
 use hq_art::*;
+mod sound;
+use sound::*;
 mod life;
 
 mod mail;

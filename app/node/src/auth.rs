@@ -47,6 +47,22 @@ pub enum Scope {
 /// rather than a second way in.
 const THE_ROUTE_A_BROWSER_CANNOT_SIGN: &str = "/v1/activity/stream";
 
+/// Where a browser listens to the sound hub's stream (ADR 0104).
+///
+/// An `<audio>` element cannot send a header either. Rather than put a token in its URL, the
+/// signed-in console asks for a single-use ticket and the stream route spends it: so the gate
+/// lets **only** `/v1/sound/listen/<speaker id>` through unsigned, and that route refuses
+/// anything without a good ticket.
+pub const LISTEN_PREFIX: &str = "/v1/sound/listen/";
+
+/// Whether `path` is the listen route: the prefix and a speaker id, nothing else.
+#[must_use]
+pub fn is_listen_route(path: &str) -> bool {
+    path.strip_prefix(LISTEN_PREFIX).is_some_and(|id| {
+        !id.is_empty() && id.len() <= 10 && id.bytes().all(|b| b.is_ascii_digit())
+    })
+}
+
 /// The one `/v1` route that must answer an unsigned request: signing in.
 ///
 /// Chicken and egg — a credential is what it exists to hand out. It is not therefore
@@ -90,7 +106,7 @@ pub fn may_pass(
     accepted: &[(String, Scope)],
     is_write: bool,
 ) -> bool {
-    if !path.starts_with("/v1") || path == WHERE_YOU_ASK_TO_BE_LET_IN {
+    if !path.starts_with("/v1") || path == WHERE_YOU_ASK_TO_BE_LET_IN || is_listen_route(path) {
         return true;
     }
     if accepted.is_empty() {
@@ -168,6 +184,26 @@ mod tests {
         // password", which they would learn from one attempt anyway.
         assert!(may_pass("/v1/session", None, None, &good(), false));
         assert!(may_pass("/v1/session", None, None, &nothing(), false));
+    }
+
+    #[test]
+    fn only_the_listen_route_itself_is_let_through_unsigned() {
+        // Its ticket is checked by the route; the gate opens for that exact shape and no other.
+        assert!(may_pass("/v1/sound/listen/7", None, None, &good(), false));
+        for path in [
+            "/v1/sound/listen/",
+            "/v1/sound/listen/7/ticket",
+            "/v1/sound/listen/7/../../export",
+            "/v1/sound/listen/x",
+            "/v1/sound/listen/12345678901",
+            "/v1/sound",
+            "/v1/sound/wires",
+        ] {
+            assert!(
+                !may_pass(path, None, None, &good(), false),
+                "{path} opened unsigned"
+            );
+        }
     }
 
     #[test]

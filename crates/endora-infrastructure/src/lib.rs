@@ -15,6 +15,7 @@ pub mod hq;
 pub mod ids;
 pub mod model_layer;
 pub mod model_watch;
+pub mod sound;
 pub mod sqlite;
 pub mod time_zone;
 
@@ -36,5 +37,6 @@ pub use endora_capabilities::{
 };
 pub use hq::{HqClient, HqError};
 pub use ids::RandomIdSource;
+pub use sound::{Method as SoundMethod, SoundClient, SoundError};
 pub use sqlite::SqliteStore;
 pub use time_zone::TimeZone;

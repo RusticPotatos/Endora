@@ -597,6 +597,37 @@ if (failures.length) {
   console.log("hq: the office reads the snapshot, the desk offers only what each item takes, and text stays text");
 }
 
+// Speakers (ADR 0104): every source offers its speakers to tap, never the device's own; a wire
+// has its slider; a speaker says when another device has it; setups play; text stays text.
+{
+  const fail = (what) => { console.error(what); process.exit(1); };
+  runInContext(`SOUND.error = ""; SOUND.ticket = null; SOUND.listening = false;
+    SOUND.state = { senders: 4, listening: [4],
+      sources: [{ id: 1, name: "<b>Classical</b>", kind: "radio", device: null, address: "https://radio.example.com/c" },
+                { id: 2, name: "Endora · iPhone", kind: "airplay", device: "iphone" }],
+      speakers: [{ id: 3, name: "Kitchen", kind: "airplay", device: null, volume: 40, borrowed: false },
+                 { id: 4, name: "iPhone", kind: "stream", device: "iphone", volume: 100, borrowed: false },
+                 { id: 5, name: "Office", kind: "airplay", device: null, volume: 70, borrowed: true }],
+      wires: [{ source: 1, speaker: 3, level: 60 }, { source: 1, speaker: 4, level: 10 }, { source: 2, speaker: 5, level: 90 }],
+      groups: [{ speakers: [3], mix: [{ source: 1, level: 60 }], needs_sender: true },
+               { speakers: [4], mix: [{ source: 1, level: 10 }], needs_sender: false }],
+      setups: [{ name: "Kitchen mornings", wires: [{ source: 1, speaker: 3, level: 60 }] }] };`, context);
+  const screen = runInContext("viewSound()", context);
+  for (const act of ['data-act="sound:wire:1-3"', 'data-act="sound:wire:1-5"', 'data-act="sound:wire:2-3"',
+    'data-change="sound:level:1-3"', 'data-change="sound:all:1"', 'data-change="sound:volume:3"',
+    'data-act="sound:play:0"', 'data-act="sound:forget:0"', 'data-act="sound:mine"']) {
+    if (!screen.includes(act)) fail(`speakers: the screen does not offer ${act}`);
+  }
+  if (screen.includes('data-act="sound:wire:2-4"')) fail("speakers: the phone was offered its own stream");
+  if (!screen.includes("in use by another device")) fail("speakers: a borrowed speaker does not say so");
+  if (screen.includes("<b>Classical</b>")) fail("speakers: a source's name became markup");
+  if (!/aria-pressed="true">Kitchen · 60/.test(screen)) fail("speakers: a wire does not show its level");
+  runInContext('SOUND.state = null; SOUND.error = "The sound hub is not set up on this node yet.";', context);
+  if (!runInContext("viewSound()", context).includes("not set up")) fail("speakers: a node without the hub does not say so");
+  runInContext('SOUND.error = "";', context);
+  console.log("speakers: every source offers its speakers but never its own device, wires carry their levels, and text stays text");
+}
+
 // Devices that stopped answering are never asked about: the owner turned it off for good
 // (2026-10-16), so nothing may bring the card or its actions back.
 if (/Still yours\?|data-act="trouble:|standing-trouble/.test(source)) {

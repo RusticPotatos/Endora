@@ -282,7 +282,8 @@ function musicDevice() {
 }
 
 function viewMusic() {
-  const head = `${labCrumbs({ label: "Music" })}<h2>Music</h2>`;
+  const head = `${labCrumbs({ label: "Music" })}<h2>Music</h2>
+    <div class="row" style="justify-content:flex-end;margin:-4px 0 8px;"><button class="ghost" data-act="go:speakers">Speakers: what plays where</button></div>`;
   if (!SPOTIFY) return `${head}<div class="note">Asking Endora…</div>`;
   if (SPOTIFY.state !== "connected") {
     return `${head}<div class="card"><div class="title">Spotify is not connected</div>
