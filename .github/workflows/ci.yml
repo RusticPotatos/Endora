@@ -52,6 +52,15 @@ jobs:
           python3 scripts/test-homelab-proxy.py
           python3 scripts/test-terminal-jobs.py
 
+      - name: Handheld terminal checks
+        working-directory: clients/terminal
+        run: |
+          python3 -m unittest discover -s tests -p 'test_*.py' -v
+          python3 scripts/check-private.py
+          cargo build --locked -p endora-terminal
+          python3 scripts/check-pty.py ../../target/debug/endora-terminal
+          python3 scripts/check-pty.py ../../target/debug/endora-terminal linux
+
       - name: Console screens render
         run: node scripts/check-console.mjs
 
@@ -60,3 +69,33 @@ jobs:
 
       - name: Whitespace / conflict-marker check
         run: git diff --check
+
+  # The handheld's release bundle: built for the device (ARM64, static musl), never on it.
+  terminal-arm64:
+    name: handheld terminal · ARM64 bundle
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: clients/terminal
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Toolchain with the device target
+        run: |
+          rustup toolchain install 1.87.0 --profile minimal --target aarch64-unknown-linux-musl
+          rustup default 1.87.0
+
+      - name: Cross-compiler
+        run: |
+          python3 -m pip install ziglang==0.13.0
+          cargo install cargo-zigbuild --version 0.20.1 --locked
+
+      - name: Build and package
+        run: |
+          sh scripts/build-arm64.sh
+          sh scripts/package.sh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: endora-terminal-arm64
+          path: clients/terminal/dist/

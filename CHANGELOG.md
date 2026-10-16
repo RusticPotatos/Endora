@@ -9,6 +9,11 @@ tagged release.
 
 ### Added
 
+- **The handheld terminal is part of Endora** ([ADR 0099](docs/adr/0099-the-handheld-is-part-of-endora.md)).
+  `clients/terminal`, the Rust TUI for a small Linux handheld, joins the workspace: one
+  lockfile, one CI (its Python, privacy and rendering checks, and an ARM64 bundle artifact),
+  Apache-2.0. It still talks to the node only over HTTP.
+
 - **An AI screen.** Settings → AI (it was Models) opens with what Endora runs: the conversation
   model (or the router and writer), the deep model with its calls and cost this month, the mail
   reader, vision and speech-to-text. Each says which model, where it runs (on your network or

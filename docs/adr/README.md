@@ -198,6 +198,7 @@ of an existing record and take the next number.
 | [0096](0096-patterns-it-notices.md) | Patterns it notices | — |
 | [0097](0097-it-reads-the-mail.md) | It reads the mail | — |
 | [0098](0098-it-can-be-rebuilt.md) | It can be rebuilt | — |
+| [0099](0099-the-handheld-is-part-of-endora.md) | The handheld is part of Endora | — |
 
 The forty-eight decisions these consolidate are in [archive/](archive/) — kept in full,
 because the reasoning that produced a rule is the reason it survives an argument later.

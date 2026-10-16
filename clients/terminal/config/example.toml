@@ -1,0 +1,4 @@
+# Fictional example only. Real configuration is outside the repository.
+url = "https://endora.example.com"
+allow_http = false
+# ca_file = "/path/to/trusted-node-cert.pem"

@@ -84,11 +84,15 @@ const HEX_IS_EXPECTED = new Set(["Cargo.lock"]);
 const PROMPT_FILES = ["crates/endora-infrastructure/src/butler.rs"];
 const CITY_SHAPED = /\b(New York|Boston|Chicago|Seattle|Springfield|London|Paris)\b/;
 
+// A systemd unit instance (`getty@tty1.service`) has a mailbox's shape and is not one: these
+// endings are unit types, not mail domains.
+const SYSTEMD_UNIT = /@[^@\s]*\.(service|socket|timer|target|mount|path|slice|scope|device)$/;
+
 const rules = [
   {
     what: "a real mailbox",
     find: /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g,
-    wrong: (hit) => !MAILBOX_IS_FICTIONAL.test(hit),
+    wrong: (hit) => !MAILBOX_IS_FICTIONAL.test(hit) && !SYSTEMD_UNIT.test(hit),
     say: "use an @example.com address",
   },
   {

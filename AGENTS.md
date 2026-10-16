@@ -24,7 +24,9 @@ edit this file, never a copy. For the full picture, read [README.md](README.md),
   domain-first modular monolith organized **by responsibility**, not by layer
   (ADR 0050). The workspace is `app/` (composition roots), `domains/` (one crate
   per bounded context: `platform`, `capabilities`, `understanding`,
-  `conversation`, `scheduling`), and `shared/` (`kernel`, `persistence`).
+  `conversation`, `scheduling`, `mail`), `shared/` (`kernel`, `persistence`), and
+  `clients/` (the handheld terminal, ADR 0099, which talks to the node only over HTTP and
+  has its own `AGENTS.md`).
 - **Each context owns its own `domain` / `application` / `infrastructure`**
   (and, over HTTP, its interface), with dependencies pointing inward. A context's
   `domain` module imports only `shared/kernel`; keep it pure (no HTTP, database,
@@ -88,6 +90,14 @@ cargo test --workspace --all-features
 node scripts/check-console.mjs
 node scripts/check-nothing-personal.mjs
 git diff --check
+```
+
+When the handheld terminal changed, also, from `clients/terminal`:
+
+```bash
+python3 -m unittest discover -s tests -p 'test_*.py'
+python3 scripts/check-private.py
+python3 scripts/check-pty.py ../../target/debug/endora-terminal
 ```
 
 - **Do not create pull requests unless explicitly requested.**
