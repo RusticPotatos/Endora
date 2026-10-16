@@ -1,6 +1,6 @@
 //! The kinds of signal, what each may become, and the levels it is told at.
 
-use super::{DAY_MS, MINUTE_MS};
+use super::{DAY_MS, HOUR_MS, MINUTE_MS};
 
 /// Where a signal came from. A source reports everything it sees in one observation, or
 /// nothing when it could not be read.
@@ -16,9 +16,24 @@ pub enum Source {
     Mail,
     /// The calendar, today and tomorrow.
     Calendar,
+    /// The house's monitoring: Prometheus's firing alerts and Gatus's failing checks.
+    Monitoring,
+    /// Endora itself: its nightly copy.
+    Endora,
 }
 
 impl Source {
+    /// Every source.
+    pub const ALL: [Self; 7] = [
+        Self::Docker,
+        Self::Sonarr,
+        Self::Radarr,
+        Self::Mail,
+        Self::Calendar,
+        Self::Monitoring,
+        Self::Endora,
+    ];
+
     /// Its stored name.
     #[must_use]
     pub const fn name(self) -> &'static str {
@@ -28,21 +43,15 @@ impl Source {
             Self::Radarr => "radarr",
             Self::Mail => "mail",
             Self::Calendar => "calendar",
+            Self::Monitoring => "monitoring",
+            Self::Endora => "endora",
         }
     }
 
     /// From its stored name.
     #[must_use]
     pub fn from_name(name: &str) -> Option<Self> {
-        [
-            Self::Docker,
-            Self::Sonarr,
-            Self::Radarr,
-            Self::Mail,
-            Self::Calendar,
-        ]
-        .into_iter()
-        .find(|s| s.name() == name)
+        Self::ALL.into_iter().find(|s| s.name() == name)
     }
 
     /// Whether what it reports is a state that clears (a container running again), so an item
@@ -66,9 +75,23 @@ pub enum Family {
     Mail,
     /// A calendar entry.
     Calendar,
+    /// One of the house's alerts or checks.
+    Alert,
+    /// Endora's nightly copy.
+    NightlyCopy,
 }
 
 impl Family {
+    /// Every family.
+    pub const ALL: [Self; 6] = [
+        Self::Container,
+        Self::Download,
+        Self::Mail,
+        Self::Calendar,
+        Self::Alert,
+        Self::NightlyCopy,
+    ];
+
     /// Its stored name.
     #[must_use]
     pub const fn name(self) -> &'static str {
@@ -77,15 +100,15 @@ impl Family {
             Self::Download => "download",
             Self::Mail => "mail",
             Self::Calendar => "calendar",
+            Self::Alert => "alert",
+            Self::NightlyCopy => "nightly_copy",
         }
     }
 
     /// From its stored name.
     #[must_use]
     pub fn from_name(name: &str) -> Option<Self> {
-        [Self::Container, Self::Download, Self::Mail, Self::Calendar]
-            .into_iter()
-            .find(|f| f.name() == name)
+        Self::ALL.into_iter().find(|f| f.name() == name)
     }
 
     /// The rule, as the owner reads it in Settings.
@@ -96,6 +119,8 @@ impl Family {
             Self::Download => format!("Don't tell me about the download {about}"),
             Self::Mail => format!("Don't tell me about mail from {about}"),
             Self::Calendar => format!("Don't tell me about \"{about}\" on the calendar"),
+            Self::Alert => format!("Don't tell me about {about}"),
+            Self::NightlyCopy => "Don't tell me about Endora's nightly copy".to_owned(),
         }
     }
 }
@@ -247,15 +272,39 @@ pub enum Kind {
     MailAboutYourApp,
     /// Something on the calendar today or tomorrow.
     Event,
+    /// A filesystem is full.
+    DiskFull,
+    /// A filesystem is almost full.
+    DiskAlmostFull,
+    /// A backup or a database dump has not succeeded lately.
+    BackupFailing,
+    /// A drive is failing its health check or losing sectors.
+    DriveFailing,
+    /// Any other critical alert.
+    AlertCritical,
+    /// Any other warning.
+    AlertWarning,
+    /// One of the house's uptime checks is failing.
+    CheckFailing,
+    /// Endora could not save its nightly copy.
+    NightlyCopyFailed,
 }
 
 impl Kind {
     /// Every kind, in the order Settings lists them.
-    pub const ALL: [Self; 13] = [
+    pub const ALL: [Self; 21] = [
         Self::ContainerCrashed,
         Self::ContainerUnhealthy,
         Self::ContainerLooping,
         Self::ContainerStopped,
+        Self::DiskFull,
+        Self::DiskAlmostFull,
+        Self::BackupFailing,
+        Self::DriveFailing,
+        Self::CheckFailing,
+        Self::AlertCritical,
+        Self::AlertWarning,
+        Self::NightlyCopyFailed,
         Self::DownloadStuck,
         Self::MailAccountSecurity,
         Self::MailMoneyDue,
@@ -284,6 +333,14 @@ impl Kind {
             Self::MailOrderProblem => "mail_order_problem",
             Self::MailAboutYourApp => "mail_about_your_app",
             Self::Event => "event",
+            Self::DiskFull => "disk_full",
+            Self::DiskAlmostFull => "disk_almost_full",
+            Self::BackupFailing => "backup_failing",
+            Self::DriveFailing => "drive_failing",
+            Self::AlertCritical => "alert_critical",
+            Self::AlertWarning => "alert_warning",
+            Self::CheckFailing => "check_failing",
+            Self::NightlyCopyFailed => "nightly_copy_failed",
         }
     }
 
@@ -310,6 +367,14 @@ impl Kind {
             Self::MailOrderProblem => "A delivery or order went wrong",
             Self::MailAboutYourApp => "Mail about your app",
             Self::Event => "On the calendar today or tomorrow",
+            Self::DiskFull => "A disk is full",
+            Self::DiskAlmostFull => "A disk is almost full",
+            Self::BackupFailing => "A backup hasn't succeeded lately",
+            Self::DriveFailing => "A drive is failing",
+            Self::AlertCritical => "Any other critical alert",
+            Self::AlertWarning => "Any other warning",
+            Self::CheckFailing => "An uptime check is failing",
+            Self::NightlyCopyFailed => "Endora's nightly copy failed",
         }
     }
 
@@ -330,6 +395,14 @@ impl Kind {
             | Self::MailOrderProblem
             | Self::MailAboutYourApp => Family::Mail,
             Self::Event => Family::Calendar,
+            Self::DiskFull
+            | Self::DiskAlmostFull
+            | Self::BackupFailing
+            | Self::DriveFailing
+            | Self::AlertCritical
+            | Self::AlertWarning
+            | Self::CheckFailing => Family::Alert,
+            Self::NightlyCopyFailed => Family::NightlyCopy,
         }
     }
 
@@ -338,25 +411,39 @@ impl Kind {
     pub const fn default_response(self) -> Response {
         match self {
             Self::ContainerCrashed | Self::ContainerUnhealthy => Response::Handle,
-            Self::ContainerLooping | Self::DownloadStuck => Response::LookInto,
+            Self::ContainerLooping | Self::DownloadStuck | Self::CheckFailing => Response::LookInto,
             Self::ContainerStopped => Response::Note,
-            Self::MailAccountSecurity => Response::Urgent,
-            Self::MailMoneyDue | Self::MailWaitingOnYou => Response::NeedsYou,
+            Self::MailAccountSecurity | Self::DiskFull => Response::Urgent,
+            Self::MailMoneyDue
+            | Self::MailWaitingOnYou
+            | Self::DiskAlmostFull
+            | Self::BackupFailing
+            | Self::DriveFailing
+            | Self::AlertCritical
+            | Self::NightlyCopyFailed => Response::NeedsYou,
             Self::MailFromAPerson
             | Self::MailAppointment
             | Self::MailOrderProblem
             | Self::MailAboutYourApp
-            | Self::Event => Response::Fyi,
+            | Self::Event
+            | Self::AlertWarning => Response::Fyi,
         }
     }
 
     /// Whether the owner may set it to this response. Only a container that crashed or went
-    /// unhealthy can be restarted; only what can clear can be watched.
+    /// unhealthy can be restarted; only what can clear on its own can be watched.
     #[must_use]
     pub const fn allows(self, response: Response) -> bool {
         match response {
             Response::Handle => matches!(self, Self::ContainerCrashed | Self::ContainerUnhealthy),
-            Response::LookInto => matches!(self, Self::ContainerLooping | Self::DownloadStuck),
+            Response::LookInto => matches!(
+                self,
+                Self::ContainerLooping
+                    | Self::DownloadStuck
+                    | Self::CheckFailing
+                    | Self::AlertCritical
+                    | Self::AlertWarning
+            ),
             Response::Note | Response::Fyi | Response::NeedsYou | Response::Urgent => true,
         }
     }
@@ -367,7 +454,19 @@ impl Kind {
     pub const fn watch(self) -> (i64, Level) {
         match self {
             Self::ContainerLooping => (30 * MINUTE_MS, Level::Urgent),
+            Self::CheckFailing => (15 * MINUTE_MS, Level::NeedsYou),
+            Self::AlertCritical | Self::AlertWarning => (HOUR_MS, Level::NeedsYou),
             _ => (DAY_MS, Level::NeedsYou),
+        }
+    }
+
+    /// For something told: whether it is told louder if it has not cleared after a while. A
+    /// backup still failing a day after it was told is failing two days running (Q4).
+    #[must_use]
+    pub const fn escalates(self) -> Option<(i64, Level)> {
+        match self {
+            Self::BackupFailing => Some((DAY_MS, Level::Urgent)),
+            _ => None,
         }
     }
 

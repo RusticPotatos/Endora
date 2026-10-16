@@ -4,8 +4,8 @@
 
 Accepted, 2026-10-16, by the owner through a design interview (questions Q1–Q9). Prepared
 with AI assistance (Claude). Step 3 of [the always-on butler plan](../plans/always-on-butler.md).
-The first slice is the containers, media downloads, mail and calendar; the home lab's alerts,
-backups, uptime, disk and Endora's own nightly copy follow as further sources of the same loop.
+Built: the containers, media downloads, mail and calendar, then the house's monitoring
+(Prometheus's alerts and Gatus's uptime checks) and Endora's own nightly copy.
 
 ## Context
 
@@ -22,12 +22,22 @@ One loop, in its own bounded context (`domains/agenda`), turns **signals** into 
 
 - **Signals come from what Endora already reads**, with no new credentials: the containers
   and the Sonarr and Radarr queues (the home-lab observer), the mail the reader has sorted,
-  and the calendar for today and tomorrow. Each source reports a full observation or nothing;
+  the calendar for today and tomorrow, Prometheus's firing alerts and Gatus's failing checks
+  (read every five minutes), and whether Endora's own nightly copy last failed. The house's
+  alert rules already decide what is wrong (a full disk, a stale backup, a failing drive);
+  the loop decides only how loudly to say it. Each source reports a full observation or nothing;
   a source that could not be read changes nothing, so a failed read never closes an item.
 - **Fixed rules decide**, per kind of signal: *handle*, *look into*, *note*, or *tell* at a
   level. The model does not decide, and in this slice it does not write the sentences either:
   they are fixed wording over checked facts. The owner can re-level any kind in Settings,
   within what that kind allows.
+- **What the monitoring says, and how loudly.** A full filesystem is urgent and an almost
+  full one needs you; a backup or database dump that has not succeeded lately needs you, and
+  is urgent if it still has not a day later (failing two days running); a failing drive and
+  any other critical alert need you; any other warning is FYI; a failing uptime check is
+  watched for fifteen minutes, then needs you. The alerts about containers are left to the
+  container source, so nothing is told twice. Only an alert's name, severity, what it is about
+  and its summary are kept; no other label (a drive's serial number, an address).
 - **Four levels.** *Handled* (and noted): a line in Activity. *FYI*: on the Now line and in
   the next morning brief. *Needs you*: a card pinned at the top of the chat until the owner
   taps Done or Dismiss. *Urgent*: the same, plus one push through Home Assistant's
@@ -67,8 +77,8 @@ One loop, in its own bounded context (`domains/agenda`), turns **signals** into 
   crashed-or-stopped rule need.
 - The loop keeps its items, restarts, taught rules, re-levels and pushes in its own tables in
   the node's database.
-- More sources (alerts, backups, uptime, disk, the nightly copy, then the network and the
-  owner's app repositories) are new signal kinds with their own rules, not a new mechanism.
+- More sources (the network, the owner's app repositories) are new signal kinds with their
+  own rules, not a new mechanism.
 - Model-written sentences, and a large model proposing, wait for a later slice (and step 4's
   API key); when they come, they word or propose, and the rules still decide.
 

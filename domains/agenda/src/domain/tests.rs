@@ -171,3 +171,89 @@ fn a_rule_covers_the_whole_family_about_the_same_thing() {
     assert!(!covered(Family::Container, "radarr", crashed));
     assert!(!covered(Family::Download, "Sonarr", crashed));
 }
+
+fn alert(name: &str, severity: &str, target: &str, summary: &str) -> Alert {
+    Alert {
+        name: name.into(),
+        severity: severity.into(),
+        target: target.into(),
+        summary: summary.into(),
+    }
+}
+
+#[test]
+fn an_alerts_rule_decides_its_kind_and_the_containers_own_alerts_are_left_to_docker() {
+    let signals = alert_signals(&[
+        alert(
+            "FilesystemFull",
+            "critical",
+            "/mnt/media",
+            "/mnt/media is 97% full",
+        ),
+        alert("FilesystemAlmostFull", "warning", "/", "/ is 91% full"),
+        alert(
+            "BackupStale",
+            "warning",
+            "system",
+            "Backup plan system last succeeded 3 days ago",
+        ),
+        alert(
+            "DiskFailingSmart",
+            "critical",
+            "/dev/nvme0",
+            "/dev/nvme0 is failing its SMART health check",
+        ),
+        alert("LowMemory", "warning", "", ""),
+        alert("Exotic", "critical", "", "Something critical"),
+        alert(
+            "ContainerUnhealthy",
+            "warning",
+            "sonarr",
+            "sonarr is failing its health check",
+        ),
+    ]);
+    let kinds: Vec<_> = signals.iter().map(|s| s.kind).collect();
+    assert_eq!(
+        kinds,
+        [
+            Kind::DiskFull,
+            Kind::DiskAlmostFull,
+            Kind::BackupFailing,
+            Kind::DriveFailing,
+            Kind::AlertWarning,
+            Kind::AlertCritical
+        ]
+    );
+    assert_eq!(signals[0].sentence(), "/mnt/media is 97% full");
+    assert_eq!(signals[3].about, "DiskFailingSmart on /dev/nvme0");
+    assert_eq!(signals[4].sentence(), "LowMemory", "no summary: its name");
+    assert_eq!(
+        Kind::DiskFull.default_response(),
+        Response::Urgent,
+        "low disk is urgent (Q4)"
+    );
+    assert_eq!(
+        Kind::BackupFailing.escalates(),
+        Some((DAY_MS, Level::Urgent)),
+        "two days running is urgent (Q4)"
+    );
+}
+
+#[test]
+fn a_failing_check_is_watched_and_the_nightly_copy_is_a_signal_only_while_it_fails() {
+    let checks = check_signals(&["Plex".to_owned()]);
+    assert_eq!(checks[0].sentence(), "The uptime check \"Plex\" is failing");
+    assert_eq!(Kind::CheckFailing.default_response(), Response::LookInto);
+    assert!(nightly_copy_signals(None).is_empty());
+    let failed = nightly_copy_signals(Some("disk full"));
+    assert_eq!(
+        failed[0].sentence(),
+        "Endora couldn't save its nightly copy: disk full"
+    );
+    for family in Family::ALL {
+        assert_eq!(Family::from_name(family.name()), Some(family));
+    }
+    for source in Source::ALL {
+        assert_eq!(Source::from_name(source.name()), Some(source));
+    }
+}

@@ -624,7 +624,7 @@ if (failures.length) {
 // owner is pinned, each with Done, Dismiss and Stop; what a mail says stays text.
 {
   const fail = (what) => { console.error(what); process.exit(1); };
-  runInContext(`AGENDA = { now: { watching: 3, needs_you: 1, checked: [{ source: "docker", at: Date.now() - 120000 }, { source: "mail", at: Date.now() - 900000 }] },
+  runInContext(`AGENDA = { now: { watching: 3, needs_you: 1, checked: [{ source: "endora", at: Date.now() }, { source: "docker", at: Date.now() - 120000 }, { source: "mail", at: Date.now() - 900000 }] },
     items: [
       { id: 5, kind: "mail_money_due", kind_said: "Mail with money due", level: "needs_you", level_said: "Needs you",
         sentence: "<img src=x onerror=alert(1)> wants $12", why: "", opened_at: Date.now(), stop_said: "Don't tell me about mail from billing@example.com" },

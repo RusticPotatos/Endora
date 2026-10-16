@@ -11,7 +11,8 @@ async function loadAgenda() {
 }
 
 // What each source is called on the Now line.
-const AGENDA_SOURCES = { docker: "the NAS", sonarr: "Sonarr", radarr: "Radarr", mail: "the mail", calendar: "the calendar" };
+const AGENDA_SOURCES = { docker: "the NAS", sonarr: "Sonarr", radarr: "Radarr", mail: "the mail",
+  calendar: "the calendar", monitoring: "the alerts", endora: "Endora's copy" };
 
 // "just now", "4 min ago", "2 h ago", "3 days ago".
 function agendaAgo(at) {
@@ -28,7 +29,12 @@ function agendaAgo(at) {
 function viewNowLine() {
   if (!AGENDA || !AGENDA.now) return "";
   const n = AGENDA.now;
-  const latest = (n.checked || []).slice().sort((a, b) => b.at - a.at)[0];
+  // The newest read, the NAS first among equals; Endora's own copy is checked every look, so
+  // it is never what the line names.
+  const order = ["docker", "monitoring", "mail", "calendar", "sonarr", "radarr"];
+  const rank = (s) => (order.includes(s) ? order.indexOf(s) : order.length);
+  const latest = (n.checked || []).filter((c) => c.source !== "endora")
+    .sort((a, b) => (b.at - a.at) || (rank(a.source) - rank(b.source)))[0];
   const parts = [`Watching ${n.watching} thing${n.watching === 1 ? "" : "s"}`];
   if (latest) parts.push(`checked ${AGENDA_SOURCES[latest.source] || esc(latest.source)} ${agendaAgo(latest.at)}`);
   if (n.needs_you) parts.push(`<b>${n.needs_you} need${n.needs_you === 1 ? "s" : ""} you</b>`);

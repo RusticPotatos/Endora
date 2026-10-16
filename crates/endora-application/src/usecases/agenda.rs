@@ -2,7 +2,8 @@
 //! mail, turned into the agenda's signals. Composed here because it reads two contexts.
 
 use endora_agenda::domain::{
-    Container, Kind, QueuedDownload, Signal, Source, container_signals, download_signals,
+    Alert, Container, Kind, QueuedDownload, Signal, Source, alert_signals, check_signals,
+    container_signals, download_signals,
 };
 use endora_mail::{Digest, Reason};
 use std::collections::BTreeSet;
@@ -59,6 +60,33 @@ pub fn homelab_signals(
         }
     }
     out
+}
+
+/// The monitoring's signals, from the console's "watch" read: the firing alerts and the
+/// failing uptime checks.
+#[must_use]
+pub fn monitoring_signals(watched: &serde_json::Value) -> Vec<Signal> {
+    let text = |v: &serde_json::Value| v.as_str().unwrap_or_default().to_owned();
+    let alerts: Vec<Alert> = watched["alerts"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|a| Alert {
+            name: text(&a["name"]),
+            severity: text(&a["severity"]),
+            target: text(&a["target"]),
+            summary: text(&a["summary"]),
+        })
+        .collect();
+    let checks: Vec<String> = watched["checks_failing"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(text)
+        .collect();
+    let mut signals = alert_signals(&alerts);
+    signals.extend(check_signals(&checks));
+    signals
 }
 
 /// The calendar's window for the agenda, in the owner's own time zone: from the start of
@@ -199,6 +227,17 @@ mod tests {
             "the 16th at 00:00 there, 04:00 UTC"
         );
         assert_eq!(to - from, 2 * 24 * 60 * 60 * 1000);
+    }
+
+    #[test]
+    fn the_watch_read_becomes_alert_and_check_signals() {
+        let watched = json!({"alerts": [{"name": "FilesystemFull", "severity": "critical",
+            "target": "/", "summary": "/ is 97% full"}], "checks_failing": ["Plex"]});
+        let kinds: Vec<_> = monitoring_signals(&watched)
+            .iter()
+            .map(|s| s.kind)
+            .collect();
+        assert_eq!(kinds, [Kind::DiskFull, Kind::CheckFailing]);
     }
 
     #[test]
