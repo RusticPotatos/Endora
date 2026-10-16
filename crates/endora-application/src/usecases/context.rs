@@ -355,7 +355,53 @@ pub fn how_each_capability_landed(
     tally
 }
 
-/// is grounded in that rather than starting cold each turn.
+/// The most of memory a turn carries. Memory is read every turn, so it is meant to be short;
+/// a page grown past this by hand is cut, with a note, rather than crowding out the turn.
+const MEMORY_IN_A_TURN: usize = 4_000;
+
+/// The most index lines a turn carries: past this, the oldest-named pages are left to the
+/// read skill's own listing.
+const INDEX_IN_A_TURN: usize = 60;
+
+/// Memory, whole but for its title, and one line per other page (ADR 0101). A brain that
+/// cannot be read gives an empty memory rather than failing the turn: answering without
+/// it is better than not answering.
+fn what_it_remembers(brain: &impl Brain) -> Result<(String, Vec<String>), AppError> {
+    let memory = brain
+        .read(&endora_understanding::PagePath::memory())
+        .unwrap_or_default()
+        .unwrap_or_default();
+    let mut memory: String = memory
+        .lines()
+        .skip_while(|line| !line.starts_with("# "))
+        .skip(1)
+        .collect::<Vec<_>>()
+        .join("\n")
+        .trim()
+        .to_owned();
+    if memory.chars().count() > MEMORY_IN_A_TURN {
+        memory = memory.chars().take(MEMORY_IN_A_TURN).collect();
+        memory.push_str("\n… (memory is longer than a turn carries; the rest is on the page)");
+    }
+    let index = brain
+        .pages()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|page| !page.path.is_memory())
+        .take(INDEX_IN_A_TURN)
+        .map(|page| {
+            if page.line.is_empty() {
+                return format!("{} — {}", page.path, page.title);
+            }
+            format!("{} — {}: {}", page.path, page.title, page.line)
+        })
+        .collect();
+    Ok((memory, index))
+}
+
+/// Everything a turn is grounded in besides the conversation: what Endora remembers about the
+/// person and the pages it can open, the skills it can reach, how its past actions landed, and
+/// the house as it is now, so the butler is grounded in that rather than starting cold each turn.
 ///
 /// # Errors
 /// [`AppError::Repository`] if the backend fails or stored data is corrupt.
@@ -365,7 +411,7 @@ pub fn how_each_capability_landed(
               orchestrator here names its stores"
 )]
 pub fn butler_context(
-    beliefs: &impl BeliefRepository,
+    brain: &impl Brain,
     // Where they are is a fact the turn is handed, not something to infer from prose it
     // reads beside its own past replies.
     preferences: &impl PreferenceRepository,
@@ -376,17 +422,7 @@ pub fn butler_context(
     transitions: &impl endora_capabilities::TransitionLog,
     clock: &impl Clock,
 ) -> Result<ButlerContext, AppError> {
-    let understanding = understanding(beliefs, clock)?
-        .into_iter()
-        .map(|b| {
-            format!(
-                "[{}] {} ({} confidence)",
-                b.kind().name(),
-                b.statement(),
-                b.confidence().name()
-            )
-        })
-        .collect();
+    let (memory, brain_index) = what_it_remembers(brain)?;
     // Ground the butler in the skills it can actually reach right now (configured
     // ones only), so it uses a real capability instead of only talking about it.
     let available: Vec<_> = capabilities
@@ -440,7 +476,8 @@ pub fn butler_context(
         })
         .collect();
     Ok(ButlerContext {
-        understanding,
+        memory,
+        brain_index,
         where_they_are: where_they_are(&preferences.list_all()?),
         deferred,
         capabilities: skills,
@@ -710,7 +747,14 @@ pub fn create_preference(
 ) -> Result<Preference, AppError> {
     let preference = Preference::new(PreferenceId::new(ids.new_id()), text, kind, clock.now())?;
     preferences.save(&preference)?;
-    Ok(preference)
+    // Handed back as the store keeps it: a store may name a line by its words (the brain
+    // does, ADR 0101), and the id the caller deletes it by must be that one.
+    let said = |p: &Preference| p.text().split_whitespace().eq(text.split_whitespace());
+    Ok(preferences
+        .list_all()?
+        .into_iter()
+        .find(said)
+        .unwrap_or(preference))
 }
 
 /// Lists the preferences the butler has learned, oldest first.

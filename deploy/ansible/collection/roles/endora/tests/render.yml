@@ -18,7 +18,7 @@
         state: directory
         mode: "0700"
 
-    - name: With mail, own work and a certificate address
+    - name: With mail, a data folder and the brain's folder
       ansible.builtin.template:
         src: ../templates/endora.env.j2
         dest: "{{ out }}/full.env"
@@ -36,6 +36,7 @@
         mode: "0600"
       vars:
         endora_time_zone: ""
+        endora_brain_dir: ""
 
     - name: Override with an address
       ansible.builtin.template:
@@ -67,6 +68,9 @@
           - "'ENDORA_MAIL_DIR=/srv/mail-mirror/maildir' in full"
           - "'ENDORA_TIME_ZONE=America/New_York' in full"
           - "'ENDORA_DATA_DIR=/data/endora' in full"
+          # The brain sits beside Endora's other folders unless told otherwise.
+          - "'ENDORA_BRAIN_DIR=/tmp/endora-render-test/endora/brain' in full"
+          - "bare | select('match', 'ENDORA_BRAIN_DIR') | list | length == 0"
           - "'ENDORA_MODEL_URL=http://host.docker.internal:11434/v1' in full"
           # Off by default: no mail, and the data volume rather than a folder.
           - "bare | select('match', 'ENDORA_OWN_WORK') | list | length == 0"

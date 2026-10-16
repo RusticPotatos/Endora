@@ -67,15 +67,8 @@ fn route(args: &[&str]) -> Option<Action> {
             json!({ "text": text }),
         )),
         ["preference", "delete", id] => Some(Action::Delete(format!("/v1/preferences/{id}"))),
-        ["understanding"] => Some(Action::Get("/v1/understanding".to_owned())),
-        ["understanding", "affirm", id] => Some(Action::Post(
-            format!("/v1/understanding/{id}/affirm"),
-            json!({}),
-        )),
-        ["understanding", "correct", id] => Some(Action::Post(
-            format!("/v1/understanding/{id}/correct"),
-            json!({}),
-        )),
+        ["brain"] => Some(Action::Get("/v1/brain".to_owned())),
+        ["brain", "page", path] => Some(Action::Get(format!("/v1/brain/pages/{path}"))),
         ["audit"] => Some(Action::Get("/v1/audit".to_owned())),
         ["audit", limit] => Some(Action::Get(format!("/v1/audit?limit={limit}"))),
         ["activity"] => Some(Action::Get("/v1/activity".to_owned())),
@@ -122,9 +115,8 @@ fn print_usage() {
            preference list                        what the butler has learned\n  \
            preference add <text>                  remember a preference\n  \
            preference delete <id>                 forget a preference\n  \
-           understanding                          what Endora believes about you, and why\n  \
-           understanding affirm <id>              confirm a belief (raises its confidence)\n  \
-           understanding correct <id>             mark a belief wrong (drops it)\n  \
+           brain                                  what Endora remembers, and its pages\n  \
+           brain page <path>                      one page, e.g. hobbies/watches\n  \
            audit [limit]                          show recent audit records\n  \
            activity [limit]                       show the recent activity feed\n  \
            export                                 export all your data as JSON\n  \
@@ -185,24 +177,11 @@ mod tests {
     }
 
     #[test]
-    fn routes_understanding() {
+    fn routes_the_brain() {
+        assert_eq!(route(&["brain"]), Some(Action::Get("/v1/brain".to_owned())));
         assert_eq!(
-            route(&["understanding"]),
-            Some(Action::Get("/v1/understanding".to_owned()))
-        );
-        assert_eq!(
-            route(&["understanding", "affirm", "7"]),
-            Some(Action::Post(
-                "/v1/understanding/7/affirm".to_owned(),
-                json!({})
-            ))
-        );
-        assert_eq!(
-            route(&["understanding", "correct", "7"]),
-            Some(Action::Post(
-                "/v1/understanding/7/correct".to_owned(),
-                json!({})
-            ))
+            route(&["brain", "page", "hobbies/watches"]),
+            Some(Action::Get("/v1/brain/pages/hobbies/watches".to_owned()))
         );
     }
 

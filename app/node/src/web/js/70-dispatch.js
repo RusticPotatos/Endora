@@ -32,6 +32,7 @@ function render() {
     : v === "models" ? viewModels()
     : v === "proactive" ? viewProactive()
     : v === "understanding" ? viewUnderstanding()
+    : v === "brainpage" ? viewBrainPage()
     : v === "signin" ? viewSignin()
     : v === "recipes" ? viewRecipes()
     : viewUnderstanding();
@@ -656,18 +657,23 @@ async function dispatch(act) {
       catch (e) { flash("Couldn't change that: " + e.message, "err"); }
       return reload();
     }
-    // Review Endora's understanding: affirm (raises confidence) or correct (drops
-    // it). Both give feedback — affirming an already-sure belief changes nothing
-    // visible, so without a note it feels like nothing happened.
-    if (verb === "affirm" && noun === "belief") {
-      try { await api("POST", `/v1/understanding/${id}/affirm`); flash("Thanks — I've got that right.", "ok"); }
-      catch (e) { flash("Couldn't note that: " + e.message, "err"); }
-      return reload();
+    // A page of the brain, as text: open it for editing, save it as yours, or delete it
+    // (its history keeps it). The page name is everything after the verb.
+    if (verb === "brainedit") { BRAIN_EDITING = noun === "on"; return render(); }
+    if (verb === "brainsave") {
+      const path = act.slice("brainsave:".length);
+      try {
+        await api("PUT", `/v1/brain/pages/${path}`, { text: document.getElementById("brain-text").value });
+        flash("Saved.", "ok");
+      } catch (e) { flash("Couldn't save: " + e.message, "err"); return; }
+      return go("brainpage", path);
     }
-    if (verb === "correct" && noun === "belief") {
-      try { await api("POST", `/v1/understanding/${id}/correct`); flash("Got it — I'll hold that more loosely.", "ok"); }
-      catch (e) { flash("Couldn't note that: " + e.message, "err"); }
-      return reload();
+    if (verb === "braindelete") {
+      const path = act.slice("braindelete:".length);
+      if (!confirm(`Delete the page ${path}? Its history keeps a copy until you forget everything.`)) return;
+      try { await api("DELETE", `/v1/brain/pages/${path}`); flash("Deleted.", "ok"); }
+      catch (e) { flash("Couldn't delete: " + e.message, "err"); return; }
+      return go("understanding");
     }
     if (verb === "play" && noun === "msg") {
       const m = messages().find((x) => String(x.id) === String(id));
@@ -758,13 +764,13 @@ async function dispatch(act) {
     // deliberately no way to create or edit one (ADR 0052).
     // Start fresh: forget everything Endora learned, keeping what they told it.
     if (verb === "forgetlearned") {
-      if (!confirm("Forget everything Endora has learned about you? What you told it yourself stays. This can't be undone.")) return;
+      if (!confirm("Forget every page Endora keeps about you, and their history? What you told it yourself stays. This can't be undone.")) return;
       try {
-        const done = await api("POST", "/v1/understanding/forget", { confirm: true });
+        const done = await api("POST", "/v1/brain/forget", { confirm: true });
         const meant = done.intentions ? `, and ${done.intentions} thing${done.intentions === 1 ? "" : "s"} it meant to do` : "";
-        flash(`Forgot ${done.forgot} thing${done.forgot === 1 ? "" : "s"} it had learned${meant}.`, "ok");
+        flash(`Forgot ${done.forgot} page${done.forgot === 1 ? "" : "s"}${meant}.`, "ok");
       } catch (e) { flash("Couldn't forget: " + e.message, "err"); }
-      return reload();
+      return go("understanding");
     }
     // How an action landed. Offered where the action appears; never asked for, and
     // the latest word wins (ADR 0053).

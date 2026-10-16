@@ -65,6 +65,7 @@ fn state_with_mail(name: &str, reply: &'static str) -> (AppState, Arc<Reader>, C
         Arc::new(RandomIdSource),
         Arc::new(SystemClock),
         Arc::new(ScriptedButler),
+        Arc::new(endora_understanding::BrainFolder::temporary().unwrap()),
     );
     let now = state.clock.now().unix_millis();
     for n in 0..3 {
@@ -284,4 +285,82 @@ fn endoras_own_messages_do_not_count_as_the_person_speaking() {
         now,
         Ok(vec![said(MessageRole::User)])
     ));
+}
+
+/// The brain's pages are folded in quiet time by the local model (ADR 0101), with a line in
+/// Activity, and never while the person is talking.
+#[tokio::test]
+async fn a_grown_page_is_folded_in_quiet_time_and_said_in_the_trail() {
+    struct Summarises;
+    impl endora_application::UntrustedReader for Summarises {
+        fn read(&self, _i: &str, _d: &str) -> Result<String, endora_application::ProposalError> {
+            Ok("You collect dive watches.".to_owned())
+        }
+    }
+    let (mut state, _reader, _copy) = state_with_mail("fold", BILL);
+    state.local_writer = Arc::new(Summarises);
+    let watches = endora_application::PagePath::parse("hobbies/watches").unwrap();
+    endora_application::Brain::change(
+        state.knowledge.as_ref(),
+        &watches,
+        "2026-10-16",
+        "noted from chat",
+        &mut |_| {
+            Some(
+                "# Watches\n\nOld.\n\n## Timeline\n\n- 2026-10-16: You collect dive watches\n"
+                    .to_owned(),
+            )
+        },
+    )
+    .unwrap();
+
+    // Someone is talking: nothing is folded.
+    state
+        .chat
+        .append(
+            &ChatMessage::new(
+                MessageId::new(state.ids.new_id()),
+                MessageRole::User,
+                "are you there?",
+                state.clock.now(),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    assert!(super::workers::fold_once(&state).await.is_none());
+
+    // Quiet: it is.
+    let (mut state, _reader, _copy) = state_with_mail("fold-quiet", BILL);
+    state.local_writer = Arc::new(Summarises);
+    endora_application::Brain::change(
+        state.knowledge.as_ref(),
+        &watches,
+        "2026-10-16",
+        "noted from chat",
+        &mut |_| {
+            Some(
+                "# Watches\n\nOld.\n\n## Timeline\n\n- 2026-10-16: You collect dive watches\n"
+                    .to_owned(),
+            )
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        super::workers::fold_once(&state).await,
+        Some(watches.clone())
+    );
+    let page = endora_application::Brain::read(state.knowledge.as_ref(), &watches)
+        .unwrap()
+        .unwrap();
+    assert!(
+        page.contains("You collect dive watches.\n\n## Timeline"),
+        "{page}"
+    );
+    assert!(
+        trail(&state)
+            .iter()
+            .any(|line| line.contains("Wrote the summary of hobbies/watches again")),
+        "{:?}",
+        trail(&state)
+    );
 }

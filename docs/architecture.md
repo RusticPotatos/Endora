@@ -57,7 +57,7 @@ domains/     one crate per bounded context, each layered internally:
              <context>/src/{domain, application, infrastructure[, interface]}
   platform         audit trail + the butler's event log
   capabilities     skills, the policy-gated runner, egress guard, autonomy envelope
-  understanding    beliefs, intentions, commissioned research + preferences
+  understanding    the brain (markdown pages + memory), intentions, research
   conversation     the chat model + repository
   scheduling       the daily brief's cadence
 shared/      kernel (ids, time, errors, AutonomyLevel, Reversibility),
@@ -177,7 +177,7 @@ app/
   node/                # Authoritative backend runtime (the brain) + web console
   cli/                 # Thin, replaceable client
 domains/
-  understanding/       # Beliefs, intentions, research work/reports + preferences
+  understanding/       # The brain (pages, memory, git), intentions, research, outcomes
   capabilities/        # Skills, policy-gated runner, egress guard, MCP host
   conversation/        # The chat and its running summary
   scheduling/          # Proactive cadences
@@ -193,4 +193,5 @@ crates/
 The **Identity & Values**, **Direction & Targets**, **Experiments & Learning** and
 **Reflection** contexts were deleted in
 [ADR 0052](adr/0052-what-it-knows-about-you.md); understanding is now the only model
-Endora keeps of a person. See [domain-map.md](domain-map.md).
+Endora keeps of a person; since [ADR 0101](adr/0101-the-brain.md) it is the brain, markdown
+pages with their own history, not beliefs in the database. See [domain-map.md](domain-map.md).

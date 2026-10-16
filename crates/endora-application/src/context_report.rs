@@ -141,10 +141,20 @@ pub fn context_report(
         .map(|p| format!("They are based in {p}"))
         .into_iter()
         .collect();
-    let prefs: Vec<String> = preferences
-        .iter()
-        .map(|p| format!("({}) {}", p.kind().name(), p.text()))
-        .collect();
+    // As the prompt sends it: memory when there is a brain, the told list only without one.
+    let memory: Vec<String> = if context.memory.trim().is_empty() {
+        preferences
+            .iter()
+            .map(|p| format!("({}) {}", p.kind().name(), p.text()))
+            .collect()
+    } else {
+        context
+            .memory
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .map(str::to_owned)
+            .collect()
+    };
     let recent: Vec<String> = history
         .iter()
         .map(|m| {
@@ -183,13 +193,19 @@ pub fn context_report(
             &[instructions.to_owned()],
         ),
         section("place", "Where you live", "", false, &place),
-        section("preferences", "Your preferences", "", false, &prefs),
         section(
-            "understanding",
-            "What Endora understands about you",
-            "Its beliefs about you; separate from the chat.",
+            "memory",
+            "What it remembers about you",
+            "Memory, from its brain: what you told it and what it knows best.",
             false,
-            &context.understanding,
+            &memory,
+        ),
+        section(
+            "brain",
+            "Pages it can open",
+            "The rest of its brain, one line a page; it reads a page when it needs the detail.",
+            false,
+            &context.brain_index,
         ),
         section(
             "aliases",
@@ -293,7 +309,7 @@ mod tests {
             now: "Friday 9:00".to_owned(),
             where_they_are: "New York".to_owned(),
             present: vec!["Jane Doe is home".to_owned()],
-            understanding: vec!["They like early mornings".to_owned()],
+            memory: "- They like early mornings".to_owned(),
             ..ButlerContext::default()
         };
         let report = context_report(
@@ -310,7 +326,7 @@ mod tests {
             [
                 "instructions",
                 "place",
-                "understanding",
+                "memory",
                 "now",
                 "summary",
                 "present"
@@ -372,7 +388,7 @@ mod tests {
         let context = ButlerContext {
             tools: vec![tool("a", "b", None)],
             capabilities: vec!["a — b".to_owned()],
-            understanding: vec!["likes tea".to_owned()],
+            memory: "- likes tea".to_owned(),
             ..ButlerContext::default()
         };
 
@@ -391,17 +407,13 @@ mod tests {
     fn a_long_line_is_clipped_but_still_counted_whole() {
         let long = "word ".repeat(200);
         let context = ButlerContext {
-            understanding: vec![long.clone()],
+            memory: long.clone(),
             ..ButlerContext::default()
         };
 
         let report = context_report(&context, &[], &[], None, "", 1000);
 
-        let s = report
-            .sections
-            .iter()
-            .find(|s| s.key == "understanding")
-            .unwrap();
+        let s = report.sections.iter().find(|s| s.key == "memory").unwrap();
         assert!(s.items[0].text.chars().count() <= MOST_LINE + 1);
         assert_eq!(s.tokens, estimate_tokens(&long));
     }

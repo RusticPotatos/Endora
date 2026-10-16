@@ -406,7 +406,8 @@ pub fn conduct_research(
         .retain(|line| allowed.iter().any(|id| line.contains(id)));
     ctx.tools.retain(|tool| allowed.contains(&tool.id));
     ctx.deferred.clear();
-    ctx.understanding.clear();
+    ctx.memory.clear();
+    ctx.brain_index.clear();
     ctx.present.clear();
     ctx.did_lately.clear();
     let mut steps = Vec::new();

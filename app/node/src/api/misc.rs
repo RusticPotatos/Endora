@@ -40,12 +40,12 @@ pub(super) async fn create_preference(
         })?,
         None => PreferenceKind::Taste,
     };
-    let understanding = state.understanding.clone();
+    let knowledge = state.knowledge.clone();
     let ids = state.ids.clone();
     let clock = state.clock.clone();
     let preference = blocking(move || {
         usecases::create_preference(
-            understanding.as_ref(),
+            knowledge.as_ref(),
             ids.as_ref(),
             clock.as_ref(),
             &req.text,
@@ -59,8 +59,8 @@ pub(super) async fn create_preference(
 pub(super) async fn list_preferences(
     State(state): State<AppState>,
 ) -> Result<Json<Vec<PreferenceResponse>>, ApiError> {
-    let understanding = state.understanding.clone();
-    let prefs = blocking(move || usecases::list_preferences(understanding.as_ref())).await?;
+    let knowledge = state.knowledge.clone();
+    let prefs = blocking(move || usecases::list_preferences(knowledge.as_ref())).await?;
     Ok(Json(prefs.iter().map(PreferenceResponse::from).collect()))
 }
 
@@ -73,8 +73,8 @@ pub(super) async fn delete_preference(
             entity: "preference",
         })
     })?;
-    let understanding = state.understanding.clone();
-    blocking(move || usecases::delete_preference(understanding.as_ref(), pref_id)).await?;
+    let knowledge = state.knowledge.clone();
+    blocking(move || usecases::delete_preference(knowledge.as_ref(), pref_id)).await?;
     Ok(Json(json!({ "deleted": true })))
 }
 
@@ -84,19 +84,21 @@ pub(super) struct ExportResponse {
     audit: Vec<AuditResponse>,
     messages: Vec<MessageResponse>,
     preferences: Vec<PreferenceResponse>,
-    beliefs: Vec<serde_json::Value>,
     outcomes: Vec<serde_json::Value>,
     intentions: Vec<serde_json::Value>,
     research: Vec<serde_json::Value>,
+    /// Every page of the brain, memory first, as `{path, text}` (ADR 0101).
+    pages: Vec<serde_json::Value>,
 }
 
-impl From<&MemorySnapshot> for ExportResponse {
-    fn from(s: &MemorySnapshot) -> Self {
+impl ExportResponse {
+    /// The database's snapshot, with what they told Endora and every page of the brain.
+    fn of(s: &MemorySnapshot, told: &[Preference], pages: Vec<serde_json::Value>) -> Self {
         Self {
             audit: s.audit.iter().map(AuditResponse::from).collect(),
             messages: s.messages.iter().map(MessageResponse::from).collect(),
-            preferences: s.preferences.iter().map(PreferenceResponse::from).collect(),
-            beliefs: s.beliefs.iter().map(stored_belief_json).collect(),
+            preferences: told.iter().map(PreferenceResponse::from).collect(),
+            pages,
             outcomes: s.outcomes.iter().map(outcome_json).collect(),
             intentions: s.intentions.iter().map(intention_json).collect(),
             research: s.research.iter().map(research_json).collect(),
@@ -108,8 +110,19 @@ pub(super) async fn export(
     State(state): State<AppState>,
 ) -> Result<Json<ExportResponse>, ApiError> {
     let store = state.store.clone();
-    let snapshot = blocking(move || usecases::export_memory(store.as_ref())).await?;
-    Ok(Json(ExportResponse::from(&snapshot)))
+    let knowledge = state.knowledge.clone();
+    let export = blocking(move || {
+        let snapshot = usecases::export_memory(store.as_ref())?;
+        let told = endora_application::PreferenceRepository::list_all(knowledge.as_ref())?;
+        let mut pages = Vec::new();
+        for page in endora_understanding::Brain::pages(knowledge.as_ref())? {
+            let text = endora_understanding::Brain::read(knowledge.as_ref(), &page.path)?;
+            pages.push(json!({ "path": page.path.as_str(), "text": text.unwrap_or_default() }));
+        }
+        Ok::<_, AppError>(ExportResponse::of(&snapshot, &told, pages))
+    })
+    .await?;
+    Ok(Json(export))
 }
 
 #[derive(Deserialize)]
@@ -128,7 +141,14 @@ pub(super) async fn purge(
         }));
     }
     let store = state.store.clone();
-    blocking(move || usecases::purge_memory(store.as_ref())).await?;
+    let knowledge = state.knowledge.clone();
+    blocking(move || {
+        usecases::purge_memory(store.as_ref())?;
+        // The brain is the person's data too: its pages and its history go (ADR 0101).
+        endora_understanding::Brain::forget_everything(knowledge.as_ref())?;
+        Ok(())
+    })
+    .await?;
     Ok(Json(json!({ "purged": true })))
 }
 

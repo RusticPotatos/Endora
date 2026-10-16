@@ -122,11 +122,31 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     // The clock lines the model reads are the person's local time, not UTC.
     SystemClock::use_time_zone(time_zone);
+    // What Endora knows about the person: markdown pages with their own history (ADR
+    // 0101). Beside the database unless placed elsewhere; the container puts it at /brain.
+    let brain_dir = std::env::var("ENDORA_BRAIN").unwrap_or_else(|_| {
+        std::path::Path::new(&db_path)
+            .parent()
+            .unwrap_or_else(|| std::path::Path::new(""))
+            .join("brain")
+            .to_string_lossy()
+            .into_owned()
+    });
+    let knowledge = Arc::new(endora_understanding::BrainFolder::open(
+        std::path::Path::new(&brain_dir),
+    )?);
+    // What they told Endora moves out of the database once, into memory.
+    let moved = endora_understanding::move_told_into_the_brain(&store.db(), &knowledge)?;
+    if moved > 0 {
+        println!("brain: moved {moved} thing(s) you told Endora into memory");
+    }
+    println!("brain: {brain_dir}");
     let state = AppState::new(
         store,
         Arc::new(RandomIdSource),
         Arc::new(SystemClock),
         butler,
+        knowledge,
     )
     .with_brain(brain)
     .with_time_zone(time_zone);
@@ -140,6 +160,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // A consistent copy of the database every night, for the house's backup to find.
     api::spawn_snapshots(state.clone(), std::path::PathBuf::from(&db_path));
     api::spawn_research_worker(state.clone());
+    // What it noted, organised: page summaries written again in quiet time (ADR 0101).
+    api::spawn_brain_folding(state.clone());
     api::spawn_homelab(state.clone());
     // The mail (ADR 0097): a read-only copy mounted at /mail, read by the local model only.
     // Nothing happens without the copy.

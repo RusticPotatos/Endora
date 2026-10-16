@@ -19,13 +19,13 @@ pub mod domain;
 pub mod infrastructure;
 
 pub use application::{
-    BeliefRepository, IntentionRepository, OutcomeRepository, PreferenceRepository,
+    Brain, IntentionRepository, OutcomeRepository, PageChange, PageInfo, PreferenceRepository,
     ResearchRepository,
 };
 pub use domain::{
-    Belief, BeliefKind, BeliefStatus, Confidence, Intention, IntentionOrigin, IntentionState,
-    Outcome, Preference, PreferenceKind, RESEARCH_MODEL_LIMIT, RESEARCH_READ_LIMIT, Reaction,
+    BeliefKind, BrainError, Confidence, Intention, IntentionOrigin, IntentionState, Outcome,
+    PagePath, Preference, PreferenceKind, RESEARCH_MODEL_LIMIT, RESEARCH_READ_LIMIT, Reaction,
     Reliability, Remedy, RepairProposal, ResearchAssignment, ResearchReport, ResearchStatus,
     repair_proposals,
 };
-pub use infrastructure::{UnderstandingStore, migrate};
+pub use infrastructure::{BrainFolder, UnderstandingStore, migrate, move_told_into_the_brain};

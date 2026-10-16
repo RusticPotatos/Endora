@@ -1,14 +1,21 @@
+// The bullet lines of one "## " section of a page, as the brain writes them.
+function mdSection(text, heading) {
+  const lines = String(text || "").split("\n");
+  const at = lines.findIndex((l) => l.trim() === `## ${heading}`);
+  if (at < 0) return [];
+  const out = [];
+  for (const line of lines.slice(at + 1)) {
+    if (line.startsWith("## ")) break;
+    const t = line.trim();
+    if (t.startsWith("- ")) out.push(t.slice(2).trim());
+  }
+  return out;
+}
+
+// About you is the brain (ADR 0101): what you told it, what it knows best, and the pages of
+// everything else, each one tap away. Nothing is confirmed card by card: a page is read, and
+// edited as text when it is wrong.
 function viewUnderstanding() {
-  // What it learned is no longer listed kind by kind with confidence and buttons (owner,
-  // 2026-10-16): it is being moved into pages it organises itself. Until then, how much there
-  // is, and a way to start fresh.
-  const learned = (UNDERSTANDING || []).length;
-  const forget = learned ? `
-    <div class="card"><div class="row" style="align-items:center;gap:10px;">
-      <div class="grow"><div class="title" style="font-weight:500;">It has learned ${learned} thing${learned === 1 ? "" : "s"} about you</div>
-        <div class="sub">Start fresh: forget all of it. What you told it yourself, above, stays.</div></div>
-      <button class="ghost danger" data-act="forgetlearned">Forget</button>
-    </div></div>` : "";
   const knowsLocation = true;
   const knowsAddress = (DB.preferences || []).some((p) => /^\s*address me as\b/i.test(p.text));
   const locationSetup = knowsLocation ? "" : `
@@ -27,14 +34,71 @@ function viewUnderstanding() {
         <button class="primary" data-act="setaddress">Save</button>
       </div>
     </div>`;
-  const setup = locationSetup + addressSetup;
+  const brain = BRAIN || { memory: "", pages: [] };
+  const knows = mdSection(brain.memory, "What I know best");
+  const knowsRows = knows.map((line) => `<div class="card"><div class="title" style="font-weight:400;">${esc(line)}</div></div>`);
+  const folders = {};
+  for (const page of brain.pages || []) {
+    const folder = page.path.includes("/") ? page.path.slice(0, page.path.lastIndexOf("/")) : "";
+    (folders[folder] = folders[folder] || []).push(page);
+  }
+  const pageList = Object.keys(folders).sort().map((folder) => `
+    ${folder ? `<div class="sub" style="margin:12px 0 4px;text-transform:capitalize;">${esc(folder.replace(/-/g, " "))}</div>` : ""}
+    ${folders[folder].map((p) => `
+      <div class="card" data-act="go:brainpage:${esc(p.path)}" style="cursor:pointer;"><div class="row">
+        <div class="grow"><div class="title">${esc(p.title)}</div>
+          ${p.line ? `<div class="sub">${esc(p.line)}</div>` : ""}</div>
+        ${icon("chevron", 14)}
+      </div></div>`).join("")}`).join("");
+  const anything = knows.length || (brain.pages || []).length;
+  const forget = anything ? `
+    <div class="card"><div class="row" style="align-items:center;gap:10px;">
+      <div class="grow"><div class="title" style="font-weight:500;">Start fresh</div>
+        <div class="sub">Forget every page and its history. What you told it yourself stays.</div></div>
+      <button class="ghost danger" data-act="forgetlearned">Forget</button>
+    </div></div>` : "";
   return `
     ${settingsCrumbs("understanding")}
     <h2>About you</h2>
 
-    ${setup}
+    ${locationSetup}${addressSetup}
     ${rememberedSection()}
+    <h3 style="margin-top:16px;">What it knows best</h3>
+    ${listOr(knowsRows, "Nothing yet. It keeps the few things that matter most here, from its pages.")}
+    <div class="row" style="margin-top:6px;"><button class="ghost" data-act="go:brainpage:memory">Open memory</button></div>
+    <h3 style="margin-top:16px;">Its pages</h3>
+    ${listOr(pageList, "No pages yet. As you talk, it notes what lasts onto pages it organises itself.")}
     ${forget}`;
+}
+
+// One page of the brain: read it, edit it as text, see what happened to it, or delete it.
+function viewBrainPage() {
+  const id = NAV.id || "";
+  const page = BRAIN_PAGE;
+  const back = crumbs([
+    { label: "Settings", act: "go:settings" },
+    { label: "About you", act: "go:understanding" },
+    { label: id },
+  ]);
+  if (!page) return `${back}<div class="empty">Loading…</div>`;
+  const history = (page.history || []).map((h) => `
+    <div class="row" style="gap:8px;"><span class="sub" style="min-width:92px;">${esc(String(h.at).slice(0, 10))}</span><span>${esc(h.why)}</span></div>`).join("");
+  const body = BRAIN_EDITING ? `
+    <textarea id="brain-text" rows="18" style="width:100%;font-family:var(--mono, monospace);">${esc(page.text)}</textarea>
+    <div class="row" style="gap:8px;margin-top:8px;">
+      <button class="primary" data-act="brainsave:${esc(id)}">Save</button>
+      <button class="ghost" data-act="brainedit:off">Cancel</button>
+    </div>` : `
+    <div class="card">${rich(page.text)}</div>
+    <div class="row" style="gap:8px;margin-top:8px;">
+      <button class="ghost" data-act="brainedit:on">Edit</button>
+      ${id === "memory" ? "" : `<button class="ghost danger" data-act="braindelete:${esc(id)}">Delete</button>`}
+    </div>`;
+  return `
+    ${back}
+    ${body}
+    <h3 style="margin-top:16px;">What happened to it</h3>
+    ${listOr(history, "No history yet.")}`;
 }
 
 // How Endora's own actions have actually landed (ADR 0053).

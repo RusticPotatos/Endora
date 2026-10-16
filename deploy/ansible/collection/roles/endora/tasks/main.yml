@@ -61,6 +61,14 @@
           here with Endora's `make deploy` (ENDORA_BUILD_CONTEXT in its local.mk), then run this
           role again. It is never built on the NAS.
 
+    # Only the node reads it, but it holds what Endora knows about you: not world-readable.
+    - name: Endora's brain folder
+      ansible.builtin.file:
+        path: "{{ endora_brain_dir }}"
+        state: directory
+        mode: "0700"
+      when: endora_brain_dir | length > 0
+
     - name: Endora settings
       ansible.builtin.template:
         src: endora.env.j2

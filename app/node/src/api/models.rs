@@ -465,6 +465,7 @@ pub(super) async fn deep_ask(
     let store = state.store.clone();
     let chat = state.chat.clone();
     let understanding = state.understanding.clone();
+    let knowledge = state.knowledge.clone();
     let config = state.config.clone();
     let events = state.events.clone();
     let audit = state.audit.clone();
@@ -510,8 +511,8 @@ pub(super) async fn deep_ask(
             proven_now(understanding.as_ref()),
         );
         let mut context = usecases::butler_context(
-            understanding.as_ref(),
-            understanding.as_ref(),
+            knowledge.as_ref(),
+            knowledge.as_ref(),
             understanding.as_ref(),
             config.as_ref(),
             chat.as_ref(),
@@ -522,8 +523,7 @@ pub(super) async fn deep_ask(
         context.context_from_ms = topic_start(config.as_ref());
         let (reply, activity) = usecases::send_to_butler_streaming_for_request(
             chat.as_ref(),
-            understanding.as_ref(),
-            understanding.as_ref(),
+            knowledge.as_ref(),
             understanding.as_ref(),
             &runner,
             &planned,

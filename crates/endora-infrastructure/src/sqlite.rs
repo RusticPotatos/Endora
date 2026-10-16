@@ -9,9 +9,9 @@
 use endora_persistence::Db;
 
 use endora_application::{
-    AuditId, AuditRecord, Belief, BeliefId, BeliefKind, BeliefStatus, ChatMessage, Confidence,
-    Intention, IntentionId, IntentionOrigin, IntentionState, MessageId, MessageRole, Outcome,
-    OutcomeId, Preference, PreferenceId, PreferenceKind, Reaction, ResearchAssignment, Timestamp,
+    AuditId, AuditRecord, BeliefId, ChatMessage, Intention, IntentionId, IntentionOrigin,
+    IntentionState, MessageId, MessageRole, Outcome, OutcomeId, Reaction, ResearchAssignment,
+    Timestamp,
 };
 use endora_application::{
     ExecutionLeaseRepository, MemorySnapshot, MemoryStore, RepositoryError, ResearchDelivery,
@@ -58,22 +58,6 @@ CREATE TABLE IF NOT EXISTS conversation_summary (
 
 CREATE INDEX IF NOT EXISTS idx_messages_at ON messages(at_ms);
 
-CREATE TABLE IF NOT EXISTS preferences (
-    id    TEXT PRIMARY KEY,
-    body  TEXT NOT NULL,
-    kind  TEXT NOT NULL,
-    at_ms INTEGER NOT NULL
-) STRICT;
-CREATE TABLE IF NOT EXISTS beliefs (
-    id               TEXT PRIMARY KEY,
-    statement        TEXT NOT NULL,
-    kind             TEXT NOT NULL,
-    confidence       TEXT NOT NULL,
-    evidence         TEXT NOT NULL,
-    created_ms       INTEGER NOT NULL,
-    last_affirmed_ms INTEGER NOT NULL,
-    status           TEXT NOT NULL
-) STRICT;
 CREATE TABLE IF NOT EXISTS intentions (
     id                 TEXT PRIMARY KEY,
     statement          TEXT NOT NULL,
@@ -924,8 +908,6 @@ impl MemoryStore for SqliteStore {
         Ok(MemorySnapshot {
             audit: all_audit(&conn)?,
             messages: all_messages(&conn)?,
-            preferences: all_preferences(&conn)?,
-            beliefs: all_beliefs(&conn)?,
             outcomes: all_outcomes(&conn)?,
             intentions: all_intentions(&conn)?,
             research,
@@ -947,8 +929,6 @@ impl MemoryStore for SqliteStore {
             "messages",
             "message_actions",
             "conversation_summary",
-            "preferences",
-            "beliefs",
             "outcomes",
             "target_aliases",
             "intention_research",
@@ -1039,77 +1019,6 @@ impl ResearchDelivery for SqliteStore {
 
 // AuditLog and EventLog are implemented by the platform context's AuditStore and
 // EventStore over the shared Db now (ADR 0050); `all_audit` stays for MemoryStore.
-
-fn all_preferences(conn: &Connection) -> Result<Vec<Preference>, RepositoryError> {
-    let mut stmt = conn
-        .prepare("SELECT id, body, kind, at_ms FROM preferences ORDER BY at_ms, rowid")
-        .map_err(backend)?;
-    let rows = stmt
-        .query_map([], |r| {
-            Ok((
-                r.get::<_, String>(0)?,
-                r.get::<_, String>(1)?,
-                r.get::<_, String>(2)?,
-                r.get::<_, i64>(3)?,
-            ))
-        })
-        .map_err(backend)?;
-    let mut out = Vec::new();
-    for row in rows {
-        let (id, body, kind, at_ms) = row.map_err(backend)?;
-        let kind = PreferenceKind::from_name(&kind)
-            .ok_or_else(|| RepositoryError::Corrupt(format!("unknown preference kind {kind:?}")))?;
-        out.push(
-            Preference::new(
-                PreferenceId::new(parse_id(&id)?),
-                &body,
-                kind,
-                Timestamp::from_unix_millis(at_ms),
-            )
-            .map_err(corrupt)?,
-        );
-    }
-    Ok(out)
-}
-
-fn all_beliefs(conn: &Connection) -> Result<Vec<Belief>, RepositoryError> {
-    let mut stmt = conn
-        .prepare(
-            "SELECT id, statement, kind, confidence, evidence, created_ms, last_affirmed_ms, status \
-             FROM beliefs ORDER BY last_affirmed_ms DESC, rowid DESC",
-        )
-        .map_err(backend)?;
-    let rows = stmt
-        .query_map([], |r| {
-            Ok((
-                r.get::<_, String>(0)?,
-                r.get::<_, String>(1)?,
-                r.get::<_, String>(2)?,
-                r.get::<_, String>(3)?,
-                r.get::<_, String>(4)?,
-                r.get::<_, i64>(5)?,
-                r.get::<_, i64>(6)?,
-                r.get::<_, String>(7)?,
-            ))
-        })
-        .map_err(backend)?;
-    let mut out = Vec::new();
-    for row in rows {
-        let (id, statement, kind, confidence, evidence, created_ms, affirmed_ms, status) =
-            row.map_err(backend)?;
-        out.push(Belief::from_parts(
-            BeliefId::new(parse_id(&id)?),
-            statement,
-            BeliefKind::from_name(&kind),
-            Confidence::from_name(&confidence),
-            evidence,
-            Timestamp::from_unix_millis(created_ms),
-            Timestamp::from_unix_millis(affirmed_ms),
-            BeliefStatus::from_name(&status),
-        ));
-    }
-    Ok(out)
-}
 
 /// Reads every intention for the memory export (ADR 0052) — what Endora has pursued.
 fn all_intentions(conn: &Connection) -> Result<Vec<Intention>, RepositoryError> {
@@ -1381,10 +1290,11 @@ fn drop_goal_tracker(conn: &Connection) -> Result<(), RepositoryError> {
 }
 
 /// Drops what the clean slate removed (owner, 2026-10-16): the check-in, the nightly loop
-/// and model-tune schedules, notions, standing trouble, the failed asks kept for the nightly loop to
-/// replay (specimens), and durable goals with their leases. For the same
-/// reason as [`drop_goal_tracker`]: a table nothing reads is data nothing can export or
-/// delete (constitution §6). A no-op on a fresh database.
+/// and model-tune schedules, notions, standing trouble, the failed asks kept for the
+/// nightly loop to replay (specimens), and durable goals with their leases; and beliefs,
+/// which the brain's pages replaced (ADR 0101). For the same reason as
+/// [`drop_goal_tracker`]: a table nothing reads is data nothing can export or delete
+/// (constitution §6). A no-op on a fresh database.
 fn drop_the_clean_slate(conn: &Connection) -> Result<(), RepositoryError> {
     conn.execute_batch(
         "DROP TABLE IF EXISTS checkin;
@@ -1394,6 +1304,7 @@ fn drop_the_clean_slate(conn: &Connection) -> Result<(), RepositoryError> {
          DROP TABLE IF EXISTS notions;
          DROP TABLE IF EXISTS standing_trouble;
          DROP TABLE IF EXISTS specimens;
+         DROP TABLE IF EXISTS beliefs;
          DROP INDEX IF EXISTS idx_execution_goals_active;
          DROP TABLE IF EXISTS execution_goals;",
     )
@@ -1760,27 +1671,25 @@ mod tests {
     #[test]
     fn a_large_u128_id_survives_storage() {
         use endora_application::{
-            Belief, BeliefId, BeliefKind, BeliefRepository, Confidence, Timestamp,
+            BeliefId, Intention, IntentionId, IntentionRepository, Timestamp,
         };
         let store = store();
         let understanding = endora_understanding::UnderstandingStore::new(store.db());
-        let repo: &dyn BeliefRepository = &understanding;
+        let repo: &dyn IntentionRepository = &understanding;
         let big = u128::MAX;
         repo.save(
-            &Belief::new(
+            &Intention::form(
+                IntentionId::new(big),
+                "run more often",
                 BeliefId::new(big),
-                "you like edge cases",
-                BeliefKind::Other,
-                Confidence::Low,
-                "this test",
                 Timestamp::from_unix_millis(1),
             )
             .unwrap(),
         )
         .unwrap();
         assert_eq!(
-            repo.get(BeliefId::new(big)).unwrap().unwrap().id(),
-            BeliefId::new(big)
+            repo.get(IntentionId::new(big)).unwrap().unwrap().id(),
+            IntentionId::new(big)
         );
     }
 }
@@ -2210,6 +2119,7 @@ mod the_schema_production_actually_runs {
              CREATE TABLE notion_citations (notion INTEGER);
              CREATE TABLE standing_trouble (entity TEXT PRIMARY KEY);
              CREATE TABLE specimens (id TEXT PRIMARY KEY, asked TEXT);
+             CREATE TABLE beliefs (id TEXT PRIMARY KEY, statement TEXT);
              CREATE TABLE execution_goals (request_key TEXT PRIMARY KEY, objective TEXT);
              INSERT INTO execution_goals VALUES ('ask-1', 'find John Doe a plumber');
              CREATE TABLE execution_leases (
@@ -2239,6 +2149,7 @@ mod the_schema_production_actually_runs {
             "notion_citations",
             "standing_trouble",
             "specimens",
+            "beliefs",
             "execution_goals",
         ] {
             assert!(!tables.iter().any(|t| t == gone), "{gone} is still there");

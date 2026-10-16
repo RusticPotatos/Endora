@@ -70,92 +70,6 @@ async fn handheld_actions_refuse_missing_confirmation_and_do_not_reserve_a_submi
 }
 
 #[tokio::test]
-async fn forgetting_what_it_learned_needs_confirming_and_keeps_what_they_said() {
-    use endora_application::{
-        Belief, BeliefId, BeliefKind, BeliefRepository, Confidence, Intention, IntentionId,
-        IntentionRepository, Preference, PreferenceId, PreferenceKind, PreferenceRepository,
-        Timestamp,
-    };
-    let state = test_state();
-    BeliefRepository::save(
-        state.understanding.as_ref(),
-        &Belief::new(
-            BeliefId::new(1),
-            "wants to know the score",
-            BeliefKind::Intent,
-            Confidence::High,
-            "asked",
-            Timestamp::from_unix_millis(1),
-        )
-        .unwrap(),
-    )
-    .unwrap();
-    PreferenceRepository::save(
-        state.understanding.as_ref(),
-        &Preference::new(
-            PreferenceId::new(2),
-            "based in New York",
-            PreferenceKind::Context,
-            Timestamp::from_unix_millis(1),
-        )
-        .unwrap(),
-    )
-    .unwrap();
-    IntentionRepository::save(
-        state.understanding.as_ref(),
-        &Intention::form(
-            IntentionId::new(3),
-            "run more often",
-            BeliefId::new(1),
-            Timestamp::from_unix_millis(1),
-        )
-        .unwrap(),
-    )
-    .unwrap();
-    let router = app(state.clone());
-    let unconfirmed = router
-        .clone()
-        .oneshot(post("/v1/understanding/forget", "{}"))
-        .await
-        .unwrap();
-    assert_eq!(unconfirmed.status(), StatusCode::BAD_REQUEST);
-    assert_eq!(
-        BeliefRepository::list(state.understanding.as_ref())
-            .unwrap()
-            .len(),
-        1
-    );
-
-    let done = router
-        .oneshot(post("/v1/understanding/forget", r#"{"confirm":true}"#))
-        .await
-        .unwrap();
-    assert_eq!(done.status(), StatusCode::OK);
-    let body = json_body(done).await;
-    assert_eq!(
-        (body["forgot"].clone(), body["intentions"].clone()),
-        (1.into(), 1.into())
-    );
-    assert!(
-        IntentionRepository::list(state.understanding.as_ref())
-            .unwrap()
-            .is_empty()
-    );
-    assert!(
-        BeliefRepository::list(state.understanding.as_ref())
-            .unwrap()
-            .is_empty()
-    );
-    assert_eq!(
-        PreferenceRepository::list_all(state.understanding.as_ref())
-            .unwrap()
-            .len(),
-        1,
-        "what they told it stays"
-    );
-}
-
-#[tokio::test]
 async fn homelab_is_authenticated_and_unconfigured_by_default() {
     let router = app(test_state());
     let unsigned = router
@@ -252,12 +166,95 @@ async fn homelab_worker_reads_the_production_settings_and_projects_upstream_data
     thread.join().unwrap();
 }
 
+#[tokio::test]
+async fn the_brain_is_read_edited_and_forgotten_but_what_they_said_stays() {
+    use endora_application::{Preference, PreferenceId, PreferenceKind, PreferenceRepository};
+    let state = test_state();
+    PreferenceRepository::save(
+        state.knowledge.as_ref(),
+        &Preference::new(
+            PreferenceId::new(2),
+            "Based in: New York",
+            PreferenceKind::Context,
+            endora_application::Timestamp::from_unix_millis(1),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let router = app(state.clone());
+    let put = |path: &str, body: &str| {
+        Request::builder()
+            .method("PUT")
+            .uri(path)
+            .header("content-type", "application/json")
+            .header("authorization", format!("Bearer {}", state.token))
+            .body(Body::from(body.to_owned()))
+            .unwrap()
+    };
+    let saved = router
+        .clone()
+        .oneshot(put(
+            "/v1/brain/pages/hobbies/watches",
+            r##"{"text":"# Watches\n\nCollects dive watches.\n"}"##,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(saved.status(), StatusCode::OK);
+    let overview = json_body(router.clone().oneshot(get("/v1/brain")).await.unwrap()).await;
+    assert!(
+        overview["memory"]
+            .as_str()
+            .unwrap()
+            .contains("Based in: New York")
+    );
+    assert_eq!(overview["pages"][0]["path"], "hobbies/watches");
+    assert_eq!(overview["pages"][0]["line"], "Collects dive watches.");
+    let page = json_body(
+        router
+            .clone()
+            .oneshot(get("/v1/brain/pages/hobbies/watches"))
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(page["history"][0]["why"], "edited by you");
+    let outside = router
+        .clone()
+        .oneshot(get("/v1/brain/pages/..%2F..%2Fetc%2Fpasswd"))
+        .await
+        .unwrap();
+    assert_eq!(outside.status(), StatusCode::BAD_REQUEST);
+
+    let unconfirmed = router
+        .clone()
+        .oneshot(post("/v1/brain/forget", "{}"))
+        .await
+        .unwrap();
+    assert_eq!(unconfirmed.status(), StatusCode::BAD_REQUEST);
+    let done = router
+        .clone()
+        .oneshot(post("/v1/brain/forget", r#"{"confirm":true}"#))
+        .await
+        .unwrap();
+    assert_eq!(json_body(done).await["forgot"], 1);
+    let overview = json_body(router.oneshot(get("/v1/brain")).await.unwrap()).await;
+    assert!(overview["pages"].as_array().unwrap().is_empty());
+    assert_eq!(
+        PreferenceRepository::list_all(state.knowledge.as_ref())
+            .unwrap()
+            .len(),
+        1,
+        "what they told it stays"
+    );
+}
+
 fn test_state() -> AppState {
     let mut state = AppState::new(
         Arc::new(SqliteStore::open_in_memory().unwrap()),
         Arc::new(RandomIdSource),
         Arc::new(SystemClock),
         Arc::new(endora_infrastructure::ScriptedButler),
+        Arc::new(endora_understanding::BrainFolder::temporary().unwrap()),
     );
     // Pinned rather than read back, so a test signs with something it chose. The
     // generated-on-first-run path is exercised by `the_node_makes_and_keeps_a_token`.
@@ -829,7 +826,7 @@ async fn a_checking_token_reads_but_cannot_touch_anything() {
     };
 
     // Reads the suite depends on.
-    for path in ["/v1/understanding", "/v1/reliability"] {
+    for path in ["/v1/brain", "/v1/reliability"] {
         let res = app.clone().oneshot(with(path, "GET")).await.unwrap();
         assert_eq!(res.status(), StatusCode::OK, "{path} should be readable");
     }
@@ -1508,7 +1505,14 @@ async fn export_then_purge_clears_all_data() {
     let empty = json_body(res).await;
     assert!(empty["preferences"].as_array().unwrap().is_empty());
     assert!(empty["messages"].as_array().unwrap().is_empty());
-    assert!(empty["beliefs"].as_array().unwrap().is_empty());
+    // The brain went too: only an empty memory is left, without what they told it.
+    let pages = empty["pages"].as_array().unwrap();
+    assert_eq!(pages.len(), 1, "{pages:?}");
+    assert_eq!(pages[0]["path"], "memory");
+    assert!(
+        !pages[0]["text"].as_str().unwrap().contains("- "),
+        "{pages:?}"
+    );
 }
 
 #[tokio::test]

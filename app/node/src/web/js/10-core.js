@@ -335,7 +335,6 @@ async function reload() {
   ACTIVITY = activity;
   CAPS = caps;
   AUTONOMY = autonomy;
-  try { UNDERSTANDING = await api("GET", "/v1/understanding"); } catch (_) { UNDERSTANDING = []; }
   try { OUTCOMES = await api("GET", "/v1/outcomes"); } catch (_) { OUTCOMES = []; }
   try { RESEARCH = await api("GET", "/v1/research"); } catch (_) { RESEARCH = { items: [] }; }
   try { RESEARCH_READY = await api("GET", "/v1/research/readiness"); } catch (_) {}
@@ -387,6 +386,14 @@ function pollActiveWork() {
 async function loadView(v, id) {
   // The mail digest: only on its own screen, so the rest of the console never carries it.
   if (v === "mail") { try { MAIL = await api("GET", "/v1/mail"); } catch (_) { MAIL = null; } }
+  // What Endora knows about you: the brain, on About you and on a page's own screen.
+  if (v === "understanding" || v === "prefs") {
+    try { BRAIN = await api("GET", "/v1/brain"); } catch (_) { BRAIN = null; }
+  }
+  if (v === "brainpage") {
+    BRAIN_EDITING = false;
+    try { BRAIN_PAGE = await api("GET", `/v1/brain/pages/${id}`); } catch (_) { BRAIN_PAGE = null; }
+  }
   // What Endora runs: it asks the model server, so only on the screen that shows it.
   if (v === "models") { try { AI = await api("GET", "/v1/ai"); } catch (_) { AI = null; } }
   // One sign-in for every device: shown wherever it was started.
@@ -401,12 +408,15 @@ async function loadView(v, id) {
 
 // The screens `loadView` fetches for.
 const FETCHES_ITS_OWN = ["mail", "models", "settings", "connections", "spotify",
+  "understanding", "prefs", "brainpage",
   "lab", "containers", "logs", "jobs", "job", "media", "house", "music"];
 
 function go(v, id) {
   // One container's logs must never show under another's name while the new ones load.
   if (v === "logs") LAB.logs = null;
   if (v === "job") LAB.job = null;
+  // A page must never show under another's name while the new one loads.
+  if (v === "brainpage") BRAIN_PAGE = null;
   NAV = { v, id }; clearMsg(); closeMenu(); render();
   if (!FETCHES_ITS_OWN.includes(v)) return;
   // Drawn at once with what is known, then again with what the screen fetched — unless the

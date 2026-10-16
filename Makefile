@@ -74,6 +74,11 @@ export ENDORA_DATA_DIR
 export ENDORA_TIME_ZONE
 export ENDORA_UTC_OFFSET_MINUTES
 
+# What Endora knows about you (ADR 0101): markdown pages with their own git history, at
+# /brain in the container. ENDORA_BRAIN_DIR = <docker home>/endora/brain in local.mk keeps them
+# in a host folder you can open; unset, a named volume.
+export ENDORA_BRAIN_DIR
+
 # The read-only mail copy on the NAS (ansible-nas `mail_mirror` role, ADR 0097), e.g.
 # ENDORA_MAIL_DIR = /srv/mail-mirror/maildir in local.mk. Read whenever the copy is there.
 export ENDORA_MAIL_DIR

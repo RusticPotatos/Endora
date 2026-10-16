@@ -12,7 +12,7 @@ use endora_conversation::{ChatMessage, MessageRole};
 use endora_kernel::ids::{MessageId, Timestamp};
 use endora_platform::AuditRecord;
 use endora_understanding::{
-    Belief, BeliefKind, Confidence, Intention, Outcome, Preference, ResearchAssignment,
+    BeliefKind, Confidence, Intention, Outcome, Preference, ResearchAssignment,
 };
 
 /// How long a worker reservation remains owned before restart recovery may reclaim it.
@@ -26,10 +26,6 @@ pub struct MemorySnapshot {
     pub audit: Vec<AuditRecord>,
     /// The whole conversation with the butler.
     pub messages: Vec<ChatMessage>,
-    /// The preferences the butler has learned.
-    pub preferences: Vec<Preference>,
-    /// Endora's understanding of the person — the beliefs it holds.
-    pub beliefs: Vec<Belief>,
     /// What happened after Endora acted — claim, observation and reaction (ADR 0053).
     pub outcomes: Vec<Outcome>,
     /// What Endora has pursued, is pursuing, and dropped (ADR 0052).
@@ -136,6 +132,9 @@ pub struct FormedBelief {
     pub confidence: Confidence,
     /// What in the conversation supports it.
     pub evidence: String,
+    /// Which page of the brain it belongs on, as the model named it (`hobbies/watches`).
+    /// Code decides whether that is a page it may write to (ADR 0101).
+    pub page: String,
 }
 
 /// What the butler says back: a reply, any actions it proposes, and any
@@ -242,9 +241,13 @@ pub enum TurnMessage {
 /// than starting cold.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ButlerContext {
-    /// What Endora already understands about the person (its active beliefs), so
-    /// the butler builds on and refines them rather than re-forming duplicates.
-    pub understanding: Vec<String>,
+    /// What Endora remembers about the person: the brain's memory page, whole but for
+    /// its title, so what they told it and what it knows best are one block (ADR 0101).
+    /// Sent every turn, in the part of the prompt that changes rarely.
+    pub memory: String,
+    /// The brain's other pages, one line each (`hobbies/watches — Watches: …`), so the
+    /// butler knows what it can open with the read skill when the detail is needed.
+    pub brain_index: Vec<String>,
     /// The skills the butler can actually use right now (id + one-line what),
     /// so it reaches for a real capability instead of only talking about it.
     pub capabilities: Vec<String>,

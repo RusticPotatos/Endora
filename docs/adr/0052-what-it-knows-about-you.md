@@ -11,6 +11,11 @@ beliefs, and beliefs of kind intent or "other" are no longer formed. About you n
 beliefs by kind for confirming; learned beliefs can be forgotten all at once, and what the
 person stated stays.
 
+**Amended again 2026-10-16** ([0101](0101-the-brain.md)): beliefs are gone. What Endora knows
+about the person is kept on the brain's markdown pages instead, and their confidence, decay,
+affirming and correcting go with them. The rules below for what is worth keeping still decide
+what a page takes; the reasoning about understanding as the only model of the person stands.
+
 ## Context
 
 Endora began with a **tree**: Value → North Star → Target → Experiment → Reflection, plus

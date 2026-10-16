@@ -7,6 +7,7 @@ pub(super) async fn chat_context(
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let chat = state.chat.clone();
     let understanding = state.understanding.clone();
+    let knowledge = state.knowledge.clone();
     let config = state.config.clone();
     let clock = state.clock.clone();
     let capabilities = state.capabilities.clone();
@@ -21,8 +22,8 @@ pub(super) async fn chat_context(
             proven_now(understanding.as_ref()),
         );
         let mut context = usecases::butler_context(
-            understanding.as_ref(),
-            understanding.as_ref(),
+            knowledge.as_ref(),
+            knowledge.as_ref(),
             understanding.as_ref(),
             config.as_ref(),
             chat.as_ref(),
@@ -36,7 +37,7 @@ pub(super) async fn chat_context(
         context.did_lately.clear();
         let (history, summary_text) =
             usecases::history_the_next_turn_would_send(chat.as_ref(), summary.get(), from)?;
-        let prefs = endora_application::PreferenceRepository::list_all(understanding.as_ref())
+        let prefs = endora_application::PreferenceRepository::list_all(knowledge.as_ref())
             .map_err(AppError::Repository)?;
         let report = endora_application::context_report::context_report(
             &context,
@@ -112,6 +113,7 @@ pub(super) async fn send_chat(
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let chat = state.chat.clone();
     let understanding = state.understanding.clone();
+    let knowledge = state.knowledge.clone();
     let config = state.config.clone();
     let events = state.events.clone();
     let audit = state.audit.clone();
@@ -131,8 +133,8 @@ pub(super) async fn send_chat(
         );
         // Ground the butler in the person's current life before it answers.
         let mut context = usecases::butler_context(
-            understanding.as_ref(),
-            understanding.as_ref(),
+            knowledge.as_ref(),
+            knowledge.as_ref(),
             understanding.as_ref(),
             config.as_ref(),
             chat.as_ref(),
@@ -143,8 +145,7 @@ pub(super) async fn send_chat(
         context.context_from_ms = topic_start(config.as_ref());
         let out = usecases::send_to_butler_streaming_for_request(
             chat.as_ref(),
-            understanding.as_ref(),
-            understanding.as_ref(),
+            knowledge.as_ref(),
             understanding.as_ref(),
             &runner,
             butler.as_ref(),
@@ -182,6 +183,7 @@ pub(super) async fn brief(
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let chat = state.chat.clone();
     let understanding = state.understanding.clone();
+    let knowledge = state.knowledge.clone();
     let config = state.config.clone();
     let events = state.events.clone();
     let ids = state.ids.clone();
@@ -200,8 +202,8 @@ pub(super) async fn brief(
             proven_now(understanding.as_ref()),
         );
         let context = usecases::butler_context(
-            understanding.as_ref(),
-            understanding.as_ref(),
+            knowledge.as_ref(),
+            knowledge.as_ref(),
             understanding.as_ref(),
             config.as_ref(),
             chat.as_ref(),
@@ -254,6 +256,7 @@ pub(super) async fn stream_chat(
 ) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
     let chat = state.chat.clone();
     let understanding = state.understanding.clone();
+    let knowledge = state.knowledge.clone();
     let config = state.config.clone();
     let events = state.events.clone();
     let audit = state.audit.clone();
@@ -284,8 +287,8 @@ pub(super) async fn stream_chat(
             );
             let event = |v: serde_json::Value| Event::default().data(v.to_string());
             let context = match usecases::butler_context(
-                understanding.as_ref(),
-                understanding.as_ref(),
+                knowledge.as_ref(),
+                knowledge.as_ref(),
                 understanding.as_ref(),
                 config.as_ref(),
                 chat.as_ref(),
@@ -374,8 +377,7 @@ pub(super) async fn stream_chat(
                 };
                 usecases::send_to_butler_streaming_for_request(
                     chat.as_ref(),
-                    understanding.as_ref(),
-                    understanding.as_ref(),
+                    knowledge.as_ref(),
                     understanding.as_ref(),
                     &runner,
                     butler.as_ref(),

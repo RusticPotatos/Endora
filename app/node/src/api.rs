@@ -24,8 +24,8 @@ use endora_application::{
     ModelSlot, RepositoryError, Sampling, usecases,
 };
 use endora_application::{
-    AuditRecord, Belief, BeliefId, ChatMessage, IdSource, IntentionRepository, Preference,
-    PreferenceId, PreferenceKind, ResearchAssignment, ResearchRepository, ResearchStatus,
+    AuditRecord, ChatMessage, IdSource, IntentionRepository, Preference, PreferenceId,
+    PreferenceKind, ResearchAssignment, ResearchRepository, ResearchStatus,
 };
 use endora_infrastructure::{
     Capability, CapabilityError, RandomIdSource, SqliteStore, SystemClock,
@@ -51,6 +51,9 @@ pub struct AppState {
     pub schedules: Arc<endora_scheduling::ScheduleStore>,
     /// The understanding context's belief + preference repositories.
     pub understanding: Arc<endora_understanding::UnderstandingStore>,
+    /// What Endora knows about the person, as markdown pages with their history: the
+    /// brain, memory and what they told it (ADR 0101).
+    pub knowledge: Arc<endora_understanding::BrainFolder>,
     /// The capabilities context's config store (settings/config/envelope/deep-model).
     pub config: Arc<endora_capabilities::ConfigStore>,
     /// The platform context's audit trail store.
@@ -110,6 +113,10 @@ pub struct AppState {
     pub mail_copy: Option<Arc<endora_mail::MaildirCopy>>,
     /// The quarantined reader: the local model, with no tools and none of the person's context.
     pub mail_reader: Option<Arc<dyn endora_application::UntrustedReader + Send + Sync>>,
+    /// The local model as a plain writer, for folding the brain's pages in quiet time
+    /// (ADR 0101): the model chosen on the AI screen, always on the local endpoint, because
+    /// the pages are private.
+    pub local_writer: Arc<dyn endora_application::UntrustedReader + Send + Sync>,
     /// The house's calendar, read at most once an hour and shared by the mail reader, the
     /// brief and the mail screen (ADR 0097).
     pub(crate) calendar: Arc<KeptHouseCalendar>,
@@ -148,6 +155,7 @@ impl AppState {
         ids: Arc<RandomIdSource>,
         clock: Arc<SystemClock>,
         butler: Arc<dyn Butler + Send + Sync>,
+        knowledge: Arc<endora_understanding::BrainFolder>,
     ) -> Self {
         // Both resolved before the struct takes ownership of the store and the clock.
         let started_ms = {
@@ -171,6 +179,9 @@ impl AppState {
         let schedules = Arc::new(endora_scheduling::ScheduleStore::new(store.db()));
         let understanding = Arc::new(endora_understanding::UnderstandingStore::new(store.db()));
         let config = Arc::new(endora_capabilities::ConfigStore::new(store.db()));
+        // The brain's pages are private: folded by the local model, never a cloud one.
+        let local_writer: Arc<dyn endora_application::UntrustedReader + Send + Sync> =
+            Arc::new(MailReader::new(config.clone()));
         let calendar = Arc::new(endora_application::usecases::KeptCalendar::new(
             workers::HouseCalendar(config.clone()),
             *clock,
@@ -209,6 +220,10 @@ impl AppState {
                 config: config.clone(),
                 clock: clock.clone(),
             }) as Arc<dyn endora_capabilities::Capability>);
+            // The brain's pages, one at a time, when a turn needs the detail (ADR 0101).
+            all.push(Arc::new(ReadAPage {
+                knowledge: knowledge.clone(),
+            }) as Arc<dyn endora_capabilities::Capability>);
             all
         });
         // The brief skill gathers FROM `base_caps` — a list that does not contain it,
@@ -218,6 +233,7 @@ impl AppState {
             all.push(Arc::new(TheWholeBrief {
                 chat: chat.clone(),
                 understanding: understanding.clone(),
+                knowledge: knowledge.clone(),
                 config: config.clone(),
                 clock: clock.clone(),
                 base: base_caps,
@@ -242,6 +258,7 @@ impl AppState {
             chat,
             schedules,
             understanding,
+            knowledge,
             config,
             audit,
             events,
@@ -259,6 +276,7 @@ impl AppState {
             mail_store,
             mail_copy: None,
             mail_reader: None,
+            local_writer,
             calendar,
         }
     }
@@ -382,10 +400,15 @@ pub fn app(state: AppState) -> Router {
         .route("/v1/chat/context", get(chat_context))
         .route("/v1/chat/context/reset", post(reset_chat_context))
         .route("/v1/chat/stream", post(stream_chat))
-        .route("/v1/understanding", get(list_understanding))
-        .route("/v1/understanding/forget", post(forget_what_it_learned))
-        .route("/v1/understanding/{id}/affirm", post(affirm_belief))
-        .route("/v1/understanding/{id}/correct", post(correct_belief))
+        // What Endora knows about the person, page by page (ADR 0101).
+        .route("/v1/brain", get(brain_overview))
+        .route("/v1/brain/forget", post(forget_what_it_learned))
+        .route(
+            "/v1/brain/pages/{*path}",
+            get(read_brain_page)
+                .put(write_brain_page)
+                .delete(delete_brain_page),
+        )
         .route("/v1/outcomes", get(list_outcomes))
         .route("/v1/repairs", get(list_repairs))
         .route(
@@ -720,6 +743,8 @@ fn context_window_tokens() -> usize {
 mod chat;
 use chat::*;
 
+mod brain;
+use brain::*;
 mod life;
 
 mod mail;

@@ -9,6 +9,24 @@ tagged release.
 
 ### Added
 
+- **The brain** ([ADR 0101](docs/adr/0101-the-brain.md)). What Endora knows about you is now a
+  folder of markdown pages with its own git history: `memory.md` (what you told it and what it
+  knows best, read on every turn), an index, a log, and pages it creates and organises itself,
+  each with a summary on top and a dated timeline below.
+  - After a conversation it notes what lasts onto the page it belongs on, from your own
+    messages only, and says so in Activity. In quiet time the local model writes a grown
+    page's summary again, and what it knows best.
+  - About you shows what you told it, what it knows best and its pages; a page opens, edits
+    as text, shows its history, and can be deleted. **Forget** removes every page and its
+    history and keeps what you told it.
+  - The model reads memory and the page list every turn, and opens a page with the new
+    `read_page` skill when it needs the detail.
+  - `ENDORA_BRAIN_DIR` in `local.mk` (or the role's `endora_brain_dir`, by default beside
+    Endora's other folders) puts it in a host folder you can open. The nightly backup writes it
+    as a git bundle. Edits made outside Endora are committed as yours first.
+  - New routes: `GET /v1/brain`, `GET`/`PUT`/`DELETE /v1/brain/pages/{path}`,
+    `POST /v1/brain/forget`. The CLI has `brain` and `brain page`.
+
 - **Spotify, connected once in Endora** (Settings → Connections → Spotify). Endora holds the
   sign-in and lends an hour's access token to whichever device asks; the refresh token never
   leaves the node, so two devices cannot knock each other's sign-in out when Spotify rotates it.
@@ -80,6 +98,12 @@ tagged release.
 
 ### Removed
 
+- **Beliefs** ([ADR 0101](docs/adr/0101-the-brain.md)), with their confidence, decay,
+  affirming and correcting. **Breaking:** the `/v1/understanding` routes are gone, the export
+  has `pages` and no `beliefs`, and the context diagnostics report `memory` and `brain_pages`
+  instead of `understands`. What you had told Endora moves from the database into memory on
+  the first start, and the `beliefs` and `preferences` tables are dropped. The preference
+  routes keep their shape.
 - **The clean slate** ([ADR 0100](docs/adr/0100-the-clean-slate.md)). What Endora did without
   being asked had become noise, and it is gone, code and storage, so the always-working butler
   can be built again on real signals:

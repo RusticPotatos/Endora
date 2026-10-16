@@ -78,6 +78,60 @@ impl endora_capabilities::Capability for WhatIHaveBeenDoing {
     }
 }
 
+/// One page of the brain, read whole (ADR 0101). Every turn carries memory and a line per
+/// page; this is how the butler gets a page's detail when the conversation needs it.
+pub(super) struct ReadAPage {
+    pub(super) knowledge: Arc<endora_understanding::BrainFolder>,
+}
+
+impl endora_capabilities::Capability for ReadAPage {
+    fn for_people(&self) -> Option<&'static str> {
+        Some(
+            "Reads one page of what Endora knows about you, when a conversation needs its \
+             detail. Pages are in About you.",
+        )
+    }
+
+    fn info(&self) -> endora_capabilities::CapabilityInfo {
+        endora_capabilities::CapabilityInfo {
+            id: "read_page",
+            name: "Read a page of your brain",
+            description: "Read one page of what you know about the person (your brain), by \
+                          its name from the list of pages, such as hobbies/watches. Use it \
+                          when the conversation needs a page's detail.",
+            category: "endora",
+            // Its own folder. Nothing leaves the house to answer this.
+            reaches_external: false,
+            reversibility: endora_application::Reversibility::Observe,
+            configured: true,
+            needs: "",
+            settings: &[],
+            wants_place: false,
+            borrows_from: None,
+            // The person's own pages, not a stranger's words.
+            third_party: false,
+            input_schema: Some(
+                r#"{"type":"object","properties":{"page":{"type":"string","description":"the page's name, such as hobbies/watches"}},"required":["page"]}"#,
+            ),
+        }
+    }
+
+    fn invoke(
+        &self,
+        input: &serde_json::Value,
+        _settings: &endora_capabilities::CapabilitySettings,
+    ) -> Result<serde_json::Value, endora_capabilities::CapabilityError> {
+        let name = input["page"].as_str().unwrap_or_default();
+        let text = usecases::read_page(self.knowledge.as_ref(), name)
+            .map_err(|e| endora_capabilities::CapabilityError::Unavailable(e.to_string()))?;
+        Ok(json!({ "page": name, "text": text }))
+    }
+
+    fn summarize(&self, output: &serde_json::Value) -> String {
+        output["text"].as_str().unwrap_or_default().to_owned()
+    }
+}
+
 /// The person's brief, as a skill the model can reach for (ADR 0074).
 ///
 /// Defined HERE because assembling it crosses contexts — capabilities, standing
@@ -91,6 +145,7 @@ impl endora_capabilities::Capability for WhatIHaveBeenDoing {
 pub(super) struct TheWholeBrief {
     pub(super) chat: Arc<endora_conversation::ChatStore>,
     pub(super) understanding: Arc<endora_understanding::UnderstandingStore>,
+    pub(super) knowledge: Arc<endora_understanding::BrainFolder>,
     pub(super) config: Arc<endora_capabilities::ConfigStore>,
     pub(super) clock: Arc<SystemClock>,
     /// The catalogue this skill gathers FROM — built without this skill in it, so
@@ -152,8 +207,8 @@ impl endora_capabilities::Capability for TheWholeBrief {
             proven_now(self.understanding.as_ref()),
         );
         let context = usecases::butler_context(
-            self.understanding.as_ref(),
-            self.understanding.as_ref(),
+            self.knowledge.as_ref(),
+            self.knowledge.as_ref(),
             self.understanding.as_ref(),
             self.config.as_ref(),
             self.chat.as_ref(),
@@ -284,26 +339,10 @@ pub(super) fn watch_the_world(state: &AppState) {
     }
 }
 
-/// Re-reads stored beliefs against the rules as they stand today (ADR 0052).
-///
-/// Runs on the heartbeat rather than on read, so the store converges once and the screen
-/// stays a plain rendering of what is held. Failures are logged and dropped: this is
-/// housekeeping, and a butler that cannot tidy is still a butler.
-pub(super) fn tidy_understanding(state: &AppState) {
-    let understanding = state.understanding.clone();
-    let clock = state.clock.clone();
-    match usecases::tidy_understanding(understanding.as_ref(), clock.as_ref()) {
-        Ok(0) => {}
-        Ok(n) => eprintln!("understanding: retired {n} belief(s) the rules no longer form"),
-        Err(e) => eprintln!("understanding: could not tidy: {e}"),
-    }
-}
-
-/// Spawns the butler's **heartbeat**: a background loop that periodically checks
-/// whether a proactive check-in is due (per the person's cadence) and, if so, has
-/// the butler post one. Only messages — nothing consequential — so it stays on the
-/// safe side of the autonomy model (ADR 0051/0019). The blocking store work runs
-/// on a worker thread; a posted check-in nudges the change stream.
+/// Spawns the butler's **heartbeat**: a background loop that keeps its connections and its
+/// watch on the house current and prepares the daily brief when it is due. Only messages,
+/// nothing consequential, so it stays on the safe side of the autonomy model (ADR 0051). The
+/// blocking store work runs on a worker thread.
 pub fn spawn_heartbeat(state: AppState) {
     tokio::spawn(async move {
         let mut ticker = tokio::time::interval(std::time::Duration::from_secs(30));
@@ -324,7 +363,6 @@ pub fn spawn_heartbeat(state: AppState) {
             if ticks.is_multiple_of(4) {
                 reconnect_empty_mcp_servers(&state);
                 withdraw_what_never_works(&state);
-                tidy_understanding(&state);
                 watch_the_world(&state);
             }
             // Explicit commissioned work has the next model slot. Sensing and
@@ -343,6 +381,7 @@ pub fn spawn_heartbeat(state: AppState) {
             let chat = state.chat.clone();
             let schedules = state.schedules.clone();
             let understanding = state.understanding.clone();
+            let knowledge = state.knowledge.clone();
             let config = state.config.clone();
             let ids = state.ids.clone();
             let clock = state.clock.clone();
@@ -366,8 +405,8 @@ pub fn spawn_heartbeat(state: AppState) {
                     proven_now(understanding.as_ref()),
                 );
                 let context = usecases::butler_context(
-                    understanding.as_ref(),
-                    understanding.as_ref(),
+                    knowledge.as_ref(),
+                    knowledge.as_ref(),
                     understanding.as_ref(),
                     config.as_ref(),
                     chat.as_ref(),
@@ -464,6 +503,7 @@ pub fn spawn_research_worker(state: AppState) {
             let lease_until_ms = reserved_at.unix_millis() + endora_application::EXECUTION_LEASE_MS;
             let understanding = state.understanding.clone();
             let understanding_after = state.understanding.clone();
+            let knowledge = state.knowledge.clone();
             let delivery = state.store.clone();
             let chat = state.chat.clone();
             let config = state.config.clone();
@@ -481,8 +521,8 @@ pub fn spawn_research_worker(state: AppState) {
                     proven_now(understanding.as_ref()),
                 );
                 let context = usecases::butler_context(
-                    understanding.as_ref(),
-                    understanding.as_ref(),
+                    knowledge.as_ref(),
+                    knowledge.as_ref(),
                     understanding.as_ref(),
                     config.as_ref(),
                     chat.as_ref(),
@@ -550,6 +590,59 @@ pub fn spawn_mail_reader(state: AppState) {
             }
         }
     });
+}
+
+/// Folds the brain's pages in quiet time (ADR 0101): every ten minutes, while the person is
+/// quiet and no turn is running, the local model writes one grown page's summary again and,
+/// after it, what Endora knows best. Each fold is a line in Activity.
+pub fn spawn_brain_folding(state: AppState) {
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(std::time::Duration::from_secs(10 * 60));
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            ticker.tick().await;
+            let _ = fold_once(&state).await;
+        }
+    });
+}
+
+/// One tick of [`spawn_brain_folding`]. Returns the page it folded, if any.
+pub(super) async fn fold_once(state: &AppState) -> Option<endora_application::PagePath> {
+    let now = state.clock.now();
+    if !quiet_enough(state, now) {
+        return None;
+    }
+    let Ok(turn) = state.turn_lock.clone().try_lock_owned() else {
+        return None;
+    };
+    let knowledge = state.knowledge.clone();
+    let writer = state.local_writer.clone();
+    let clock = state.clock.clone();
+    let folded = tokio::task::spawn_blocking(move || {
+        let _turn = turn;
+        usecases::fold_one_page(
+            knowledge.as_ref(),
+            writer.as_ref(),
+            &usecases::today(clock.as_ref()),
+        )
+    })
+    .await
+    .ok()?;
+    let page = match folded {
+        Ok(Some(page)) => page,
+        Ok(None) => return None,
+        Err(error) => {
+            eprintln!("brain: could not fold a page ({error})");
+            return None;
+        }
+    };
+    let _ = endora_application::EventLog::record(
+        state.events.as_ref(),
+        now,
+        &format!("Wrote the summary of {page} again, from what it has noted"),
+    );
+    let _ = state.changes.send(());
+    Some(page)
 }
 
 /// One tick of [`spawn_mail_reader`]. Returns what it read, if it read anything.

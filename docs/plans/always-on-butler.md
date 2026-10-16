@@ -4,7 +4,8 @@ Agreed with the owner in a design interview on 2026-10-16 (questions Q1–Q53). 
 plan for Endora to be always working on something for its owner: noticing, deciding, handling
 what it can, and telling them only at the right level. It replaces the background features
 that produced noise. Prepared with AI assistance (Claude). Step 1, the clean slate, is built
-([ADR 0100](../adr/0100-the-clean-slate.md)); the rest is not yet. Each part lands on its own
+([ADR 0100](../adr/0100-the-clean-slate.md)), and so is step 2, the brain
+([ADR 0101](../adr/0101-the-brain.md)); the rest is not yet. Each part lands on its own
 branch with the full gate, and the architecture changes get an ADR.
 
 ## 1. What goes, and why

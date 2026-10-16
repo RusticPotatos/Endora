@@ -64,6 +64,11 @@ services:
       # default /srv/mail-mirror/maildir). Unset, an empty volume is mounted and the node
       # has no mail. Read-only: nothing in the node can change the copy.
       - ${ENDORA_MAIL_DIR:-endora-no-mail}:/mail:ro
+      # What Endora knows about you: markdown pages with their own git history (ADR 0101).
+      # Set ENDORA_BRAIN_DIR in local.mk to a host folder (beside your other containers'
+      # data, e.g. <docker home>/endora/brain) to read or edit the pages yourself; unset, a
+      # named volume. The nightly backup copies it either way.
+      - ${ENDORA_BRAIN_DIR:-endora-brain}:/brain
       # Permission-controlled host agent; read-only mount does not grant write APIs.
       # The agent authenticates requests and executes only its private fixed catalog.
       - /run/endora-jobs:/run/endora-jobs:ro
@@ -155,6 +160,7 @@ services:
 
 volumes:
   endora-data:
+  endora-brain:
   # Empty on purpose: what /mail is when no mail copy is configured.
   endora-no-mail:
   endora-models:

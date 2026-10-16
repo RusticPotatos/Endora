@@ -6,14 +6,15 @@ use endora_kernel::ids::{BeliefId, IntentionId, OutcomeId, PreferenceId, Timesta
 use endora_persistence::{Db, backend, corrupt, id_text, parse_id};
 use rusqlite::{Connection, params};
 
+mod brain_folder;
+pub use brain_folder::BrainFolder;
+
 use crate::application::{
-    BeliefRepository, IntentionRepository, OutcomeRepository, PreferenceRepository,
-    ResearchRepository,
+    IntentionRepository, OutcomeRepository, PreferenceRepository, ResearchRepository,
 };
 use crate::domain::{
-    Belief, BeliefKind, BeliefStatus, Confidence, Intention, IntentionOrigin, IntentionState,
-    Outcome, Preference, PreferenceKind, Reaction, ResearchAssignment, ResearchReport,
-    ResearchStatus,
+    Intention, IntentionOrigin, IntentionState, Outcome, Preference, PreferenceKind, Reaction,
+    ResearchAssignment, ResearchReport, ResearchStatus,
 };
 
 /// Creates the understanding tables if absent (idempotent).
@@ -23,23 +24,7 @@ use crate::domain::{
 pub fn migrate(db: &Db) -> Result<(), RepositoryError> {
     db.lock()?
         .execute_batch(
-            "CREATE TABLE IF NOT EXISTS preferences (
-                id    TEXT PRIMARY KEY,
-                body  TEXT NOT NULL,
-                kind  TEXT NOT NULL,
-                at_ms INTEGER NOT NULL
-            ) STRICT;
-            CREATE TABLE IF NOT EXISTS beliefs (
-                id               TEXT PRIMARY KEY,
-                statement        TEXT NOT NULL,
-                kind             TEXT NOT NULL,
-                confidence       TEXT NOT NULL,
-                evidence         TEXT NOT NULL,
-                created_ms       INTEGER NOT NULL,
-                last_affirmed_ms INTEGER NOT NULL,
-                status           TEXT NOT NULL
-            ) STRICT;
-            CREATE TABLE IF NOT EXISTS intentions (
+            "CREATE TABLE IF NOT EXISTS intentions (
                 id                 TEXT PRIMARY KEY,
                 statement          TEXT NOT NULL,
                 motivating_belief  TEXT,
@@ -150,81 +135,6 @@ impl UnderstandingStore {
     #[must_use]
     pub fn new(db: Db) -> Self {
         Self { db }
-    }
-}
-
-impl PreferenceRepository for UnderstandingStore {
-    fn save(&self, preference: &Preference) -> Result<(), RepositoryError> {
-        self.db
-            .lock()?
-            .execute(
-                "INSERT OR REPLACE INTO preferences (id, body, kind, at_ms) VALUES (?1, ?2, ?3, ?4)",
-                params![
-                    id_text(preference.id().value()),
-                    preference.text(),
-                    preference.kind().name(),
-                    preference.at().unix_millis()
-                ],
-            )
-            .map_err(backend)?;
-        Ok(())
-    }
-
-    fn list_all(&self) -> Result<Vec<Preference>, RepositoryError> {
-        let conn = self.db.lock()?;
-        all_preferences(&conn)
-    }
-
-    fn delete(&self, id: PreferenceId) -> Result<(), RepositoryError> {
-        self.db
-            .lock()?
-            .execute(
-                "DELETE FROM preferences WHERE id = ?1",
-                params![id_text(id.value())],
-            )
-            .map_err(backend)?;
-        Ok(())
-    }
-}
-
-impl BeliefRepository for UnderstandingStore {
-    fn save(&self, belief: &Belief) -> Result<(), RepositoryError> {
-        self.db
-            .lock()?
-            .execute(
-                "INSERT OR REPLACE INTO beliefs \
-                 (id, statement, kind, confidence, evidence, created_ms, last_affirmed_ms, status) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-                params![
-                    id_text(belief.id().value()),
-                    belief.statement(),
-                    belief.kind().name(),
-                    belief.confidence().name(),
-                    belief.evidence(),
-                    belief.created_at().unix_millis(),
-                    belief.last_affirmed_at().unix_millis(),
-                    belief.status().name(),
-                ],
-            )
-            .map_err(backend)?;
-        Ok(())
-    }
-
-    fn get(&self, id: BeliefId) -> Result<Option<Belief>, RepositoryError> {
-        let conn = self.db.lock()?;
-        Ok(all_beliefs(&conn)?.into_iter().find(|b| b.id() == id))
-    }
-
-    fn list(&self) -> Result<Vec<Belief>, RepositoryError> {
-        let conn = self.db.lock()?;
-        all_beliefs(&conn)
-    }
-
-    fn forget_all(&self) -> Result<usize, RepositoryError> {
-        self.db
-            .lock()?
-            .execute("DELETE FROM beliefs", [])
-            .map_err(backend)
     }
 }
 
@@ -574,6 +484,38 @@ fn all_outcomes(conn: &Connection) -> Result<Vec<Outcome>, RepositoryError> {
     Ok(out)
 }
 
+/// Moves what the person told Endora from the old `preferences` table into memory's
+/// "What you told me", oldest first, then drops the table (ADR 0101): the database holds
+/// settings, the brain holds what Endora knows about them. Returns how many moved; a
+/// database without the table moves nothing. If the brain cannot take them the table
+/// stays, and the next start tries again; a line already there is not added twice.
+///
+/// # Errors
+/// [`RepositoryError`] if the table cannot be read or dropped, or the brain written.
+pub fn move_told_into_the_brain(db: &Db, brain: &BrainFolder) -> Result<usize, RepositoryError> {
+    let told = {
+        let conn = db.lock()?;
+        let exists: bool = conn
+            .query_row(
+                "SELECT EXISTS (SELECT 1 FROM sqlite_master WHERE type='table' AND name='preferences')",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(backend)?;
+        if !exists {
+            return Ok(0);
+        }
+        all_preferences(&conn)?
+    };
+    for preference in &told {
+        PreferenceRepository::save(brain, preference)?;
+    }
+    db.lock()?
+        .execute("DROP TABLE preferences", [])
+        .map_err(backend)?;
+    Ok(told.len())
+}
+
 fn all_preferences(conn: &Connection) -> Result<Vec<Preference>, RepositoryError> {
     let mut stmt = conn
         .prepare("SELECT id, body, kind, at_ms FROM preferences ORDER BY at_ms, rowid")
@@ -606,53 +548,12 @@ fn all_preferences(conn: &Connection) -> Result<Vec<Preference>, RepositoryError
     Ok(out)
 }
 
-fn all_beliefs(conn: &Connection) -> Result<Vec<Belief>, RepositoryError> {
-    let mut stmt = conn
-        .prepare(
-            "SELECT id, statement, kind, confidence, evidence, created_ms, last_affirmed_ms, status \
-             FROM beliefs ORDER BY last_affirmed_ms DESC, rowid DESC",
-        )
-        .map_err(backend)?;
-    let rows = stmt
-        .query_map([], |r| {
-            Ok((
-                r.get::<_, String>(0)?,
-                r.get::<_, String>(1)?,
-                r.get::<_, String>(2)?,
-                r.get::<_, String>(3)?,
-                r.get::<_, String>(4)?,
-                r.get::<_, i64>(5)?,
-                r.get::<_, i64>(6)?,
-                r.get::<_, String>(7)?,
-            ))
-        })
-        .map_err(backend)?;
-    let mut out = Vec::new();
-    for row in rows {
-        let (id, statement, kind, confidence, evidence, created_ms, affirmed_ms, status) =
-            row.map_err(backend)?;
-        out.push(Belief::from_parts(
-            BeliefId::new(parse_id(&id)?),
-            statement,
-            BeliefKind::from_name(&kind),
-            Confidence::from_name(&confidence),
-            evidence,
-            Timestamp::from_unix_millis(created_ms),
-            Timestamp::from_unix_millis(affirmed_ms),
-            BeliefStatus::from_name(&status),
-        ));
-    }
-    Ok(out)
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{UnderstandingStore, migrate};
-    use crate::application::{
-        BeliefRepository, IntentionRepository, OutcomeRepository, PreferenceRepository,
-    };
-    use crate::domain::{Intention, Outcome, Preference, PreferenceKind, Reaction};
-    use endora_kernel::ids::{BeliefId, IntentionId, OutcomeId, PreferenceId, Timestamp};
+    use super::{BrainFolder, UnderstandingStore, migrate, move_told_into_the_brain};
+    use crate::application::{IntentionRepository, OutcomeRepository, PreferenceRepository};
+    use crate::domain::{Intention, Outcome, Reaction};
+    use endora_kernel::ids::{BeliefId, IntentionId, OutcomeId, Timestamp};
     use endora_persistence::Db;
 
     fn legacy_intentions(db: &Db) {
@@ -744,66 +645,45 @@ mod tests {
     }
 
     #[test]
-    fn forgetting_what_it_learned_deletes_every_belief_and_keeps_what_they_said() {
-        use crate::domain::{Belief, BeliefKind, Confidence};
+    fn what_they_told_it_moves_into_the_brain_once_and_the_table_goes() {
         let db = Db::open_in_memory().unwrap();
         migrate(&db).unwrap();
-        let store = UnderstandingStore::new(db);
-        for (id, said) in [(1, "prefers Fahrenheit"), (2, "wants to know the score")] {
-            BeliefRepository::save(
-                &store,
-                &Belief::new(
-                    BeliefId::new(id),
-                    said,
-                    BeliefKind::Preference,
-                    Confidence::High,
-                    "said so",
-                    Timestamp::from_unix_millis(1),
-                )
-                .unwrap(),
+        db.lock()
+            .unwrap()
+            .execute_batch(
+                "CREATE TABLE preferences (id TEXT PRIMARY KEY, body TEXT NOT NULL,
+                     kind TEXT NOT NULL, at_ms INTEGER NOT NULL) STRICT;
+                 INSERT INTO preferences VALUES ('2', 'Short answers please', 'taste', 20);
+                 INSERT INTO preferences VALUES ('1', 'Based in: New York', 'context', 10);",
             )
             .unwrap();
-        }
-        PreferenceRepository::save(
-            &store,
-            &Preference::new(
-                PreferenceId::new(3),
-                "based in New York",
-                PreferenceKind::Context,
-                Timestamp::from_unix_millis(1),
+        let brain = BrainFolder::temporary().unwrap();
+        assert_eq!(move_told_into_the_brain(&db, &brain).unwrap(), 2);
+        let told: Vec<String> = PreferenceRepository::list_all(&brain)
+            .unwrap()
+            .iter()
+            .map(|p| p.text().to_owned())
+            .collect();
+        assert_eq!(
+            told,
+            ["Based in: New York", "Short answers please"],
+            "oldest first"
+        );
+        let gone: bool = db
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT NOT EXISTS (SELECT 1 FROM sqlite_master WHERE name='preferences')",
+                [],
+                |r| r.get(0),
             )
-            .unwrap(),
-        )
-        .unwrap();
-        assert_eq!(store.forget_all().unwrap(), 2);
-        assert!(BeliefRepository::list(&store).unwrap().is_empty());
-        assert_eq!(PreferenceRepository::list_all(&store).unwrap().len(), 1);
-    }
-
-    #[test]
-    fn preferences_round_trip_and_delete() {
-        let db = Db::open_in_memory().unwrap();
-        migrate(&db).unwrap();
-        let store = UnderstandingStore::new(db);
-        let p = Preference::new(
-            PreferenceId::new(1),
-            "prefers mornings",
-            PreferenceKind::Taste,
-            Timestamp::from_unix_millis(10),
-        )
-        .unwrap();
-        PreferenceRepository::save(&store, &p).unwrap();
-        assert_eq!(store.list_all().unwrap().len(), 1);
-        store.delete(PreferenceId::new(1)).unwrap();
-        assert!(store.list_all().unwrap().is_empty());
-    }
-
-    #[test]
-    fn beliefs_list_is_empty_initially() {
-        let db = Db::open_in_memory().unwrap();
-        migrate(&db).unwrap();
-        let store = UnderstandingStore::new(db);
-        assert!(BeliefRepository::list(&store).unwrap().is_empty());
+            .unwrap();
+        assert!(gone, "the table is dropped once it has moved");
+        assert_eq!(
+            move_told_into_the_brain(&db, &brain).unwrap(),
+            0,
+            "and only once"
+        );
     }
 
     #[test]

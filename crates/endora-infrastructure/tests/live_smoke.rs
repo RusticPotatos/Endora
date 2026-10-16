@@ -31,10 +31,11 @@
 //! cannot redirect the deep model, widen a capability, purge memory, or pull the whole
 //! conversation at once.
 //!
-//! It can still read beliefs and context. That is deliberate: three of the invariants below
-//! assert on real belief statements, and asserting about real data is why this tier exists.
+//! It can still read the brain and context. That is deliberate: an invariant below asserts
+//! on what the brain's pages really hold, and asserting about real data is why this tier
+//! exists.
 
-use endora_application::{reads_as_an_instruction, says_the_same_thing, statements_disagree};
+use endora_application::reads_as_an_instruction;
 use serde_json::Value;
 
 /// Where the node is, unless told otherwise.
@@ -44,7 +45,7 @@ const DEFAULT_URL: &str = "https://127.0.0.1:8787";
 /// and it is how the `config_writes` schema divergence showed up in production — twice,
 /// with a green test suite both times.
 const WHAT_THE_INTERFACE_LOADS: &[&str] = &[
-    "/v1/understanding",
+    "/v1/brain",
     "/v1/capabilities",
     "/v1/activity",
     "/v1/outcomes",
@@ -131,15 +132,28 @@ fn post(path: &str, body: &Value) -> (u16, String) {
     (status, text)
 }
 
-fn statements(beliefs: &Value) -> Vec<String> {
-    beliefs
-        .as_array()
-        .map(|all| {
-            all.iter()
-                .filter_map(|b| b["statement"].as_str().map(str::to_owned))
-                .collect()
-        })
-        .unwrap_or_default()
+/// Every fact the brain keeps: each page's timeline, without its dates (ADR 0101).
+fn facts() -> Vec<String> {
+    let overview = get("/v1/brain");
+    let mut facts = Vec::new();
+    for page in overview["pages"].as_array().unwrap_or(&Vec::new()) {
+        let path = page["path"].as_str().unwrap_or_default();
+        let text = get(&format!("/v1/brain/pages/{path}"));
+        let text = text["text"].as_str().unwrap_or_default();
+        let timeline = text
+            .lines()
+            .skip_while(|line| line.trim() != "## Timeline")
+            .skip(1)
+            .take_while(|line| !line.starts_with("## "));
+        for line in timeline {
+            let Some(entry) = line.trim().strip_prefix("- ") else {
+                continue;
+            };
+            let fact = entry.split_once(": ").map_or(entry, |(_, said)| said);
+            facts.push(fact.to_owned());
+        }
+    }
+    facts
 }
 
 #[test]
@@ -152,12 +166,11 @@ fn every_screen_the_interface_opens_still_answers() {
 
 #[test]
 #[ignore = "talks to a deployed node: run with `make smoke` after `make deploy`"]
-fn nothing_it_believes_is_a_spent_instruction() {
+fn nothing_it_keeps_is_a_spent_instruction() {
     // Live: "you want me to turn off the kitchen light — because turn off the kitchen light
-    // entity" sat on the understanding screen long after the rule rejecting that shape
-    // shipped, because the rule only ran at formation. Asserting it here catches both the
-    // rule regressing and the tidy pass failing to reach backwards.
-    let offenders: Vec<String> = statements(&get("/v1/understanding"))
+    // entity" was kept as understanding long after the rule rejecting that shape shipped.
+    // The rule still decides what a page may take; this asserts it on what the pages hold.
+    let offenders: Vec<String> = facts()
         .into_iter()
         .filter(|s| reads_as_an_instruction(s))
         .collect();
@@ -165,69 +178,6 @@ fn nothing_it_believes_is_a_spent_instruction() {
         offenders.is_empty(),
         "these are commands you gave, not facts about you: {offenders:#?}"
     );
-}
-
-#[test]
-#[ignore = "talks to a deployed node: run with `make smoke` after `make deploy`"]
-fn it_does_not_believe_the_same_thing_twice() {
-    // Live: three cards about Fahrenheit on one screen, each asking to be confirmed
-    // separately. Uses the production rule rather than a copy of it.
-    let held = statements(&get("/v1/understanding"));
-    let mut duplicates: Vec<(String, String)> = Vec::new();
-    for (i, a) in held.iter().enumerate() {
-        for b in held.iter().skip(i + 1) {
-            if says_the_same_thing(a, b) {
-                duplicates.push((a.clone(), b.clone()));
-            }
-        }
-    }
-    assert!(
-        duplicates.is_empty(),
-        "the same thought is held more than once: {duplicates:#?}"
-    );
-}
-
-#[test]
-#[ignore = "talks to a deployed node: run with `make smoke` after `make deploy`"]
-fn no_single_belief_contradicts_everything_else() {
-    // Live: one belief about thermometers was reported as contradicting all nine others,
-    // because disagreement was decided from negation alone. A genuine contradiction is
-    // between two beliefs; one statement at odds with the entire model is a broken rule.
-    let held = statements(&get("/v1/understanding"));
-    for a in &held {
-        let against: Vec<&String> = held
-            .iter()
-            .filter(|b| *b != a && statements_disagree(a, b))
-            .collect();
-        assert!(
-            against.len() <= 1,
-            "{a:?} is reported as contradicting {} other beliefs, which is a broken rule \
-             rather than {} real disagreements: {against:#?}",
-            against.len(),
-            against.len()
-        );
-    }
-}
-
-#[test]
-#[ignore = "talks to a deployed node: run with `make smoke` after `make deploy`"]
-fn a_settled_belief_is_never_also_a_question() {
-    // Internal consistency of what the screen is told: a card cannot be settled and still
-    // be low-confidence, and a card in a contradiction can never be settled.
-    for belief in get("/v1/understanding").as_array().unwrap_or(&Vec::new()) {
-        if belief["settled"].as_bool() != Some(true) {
-            continue;
-        }
-        assert_eq!(
-            belief["confidence"].as_str(),
-            Some("high"),
-            "settled but not confident: {belief}"
-        );
-        assert!(
-            belief["contradicts"].is_null(),
-            "settled while contradicting something: {belief}"
-        );
-    }
 }
 
 #[test]

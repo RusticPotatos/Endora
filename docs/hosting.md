@@ -158,6 +158,16 @@ The image binds `0.0.0.0` **inside** the container so the mapped port works; the
 `127.0.0.1:` in `-p` is what keeps it off your machine's other interfaces. Only
 change that once a private overlay or an authenticating proxy sits in front.
 
+### Where it keeps what it knows about you
+
+The brain (ADR 0101) is a folder of markdown pages with its own git history, at `/brain` in
+the container. Set **`ENDORA_BRAIN_DIR`** in `local.mk` to a host folder beside your other
+containers' data (for example `<docker home>/endora/brain`; the `endora` Ansible role does this
+by default) to open the pages from another machine; unset, it is a Docker named volume. Either
+way the node's nightly backup writes it as a `brain-daily-….bundle` beside the database
+copies, which `git clone` restores. Anything edited from outside is committed as yours before
+Endora's next change.
+
 ### Optional: the mail
 
 Set **`ENDORA_MAIL_DIR`** in `local.mk` to the read-only mail copy the ansible-nas

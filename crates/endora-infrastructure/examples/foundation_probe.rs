@@ -73,6 +73,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let store = SqliteStore::open_in_memory()?;
     let db = store.db();
     let understanding = endora_understanding::UnderstandingStore::new(db.clone());
+    let knowledge = endora_understanding::BrainFolder::temporary()?;
     let chat = endora_conversation::ChatStore::new(db.clone());
     let config = endora_capabilities::ConfigStore::new(db.clone());
     let audit = endora_platform::AuditStore::new(db);
@@ -80,8 +81,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let url = env::var("ENDORA_MODEL_URL")?;
     let butler = LlmButler::new(url, model.clone());
     let context: ButlerContext = usecases::butler_context(
-        &understanding,
-        &understanding,
+        &knowledge,
+        &knowledge,
         &understanding,
         &config,
         &chat,
@@ -94,8 +95,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut tokens = Vec::new();
     let (answer, _) = usecases::send_to_butler_streaming(
         &chat,
-        &understanding,
-        &understanding,
+        &knowledge,
         &understanding,
         &runner,
         &butler,
