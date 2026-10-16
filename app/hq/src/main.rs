@@ -17,6 +17,9 @@ pub type Hq = Engine<SqliteTeamStore, SimulatedRunner, api::SystemClock>;
 /// can never be set up with a guessable one.
 const SHORTEST_TOKEN: usize = 32;
 
+/// How many events the feed keeps.
+const KEEP_EVENTS: i64 = 20_000;
+
 /// The token the node signs with: `HQ_TOKEN` if set, else the one in `HQ_TOKEN_FILE`, made
 /// there (random, readable by its owner only) the first time. The node reads the same file
 /// through a volume only the two of them mount, so nobody has to keep a secret by hand.
@@ -96,15 +99,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // The tick: every `tick_every` seconds; a late one runs once.
     let ticking = hq.clone();
+    let mut ticks: u64 = 0;
     tokio::spawn(async move {
         let mut ticker = tokio::time::interval(std::time::Duration::from_secs(tick_every));
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             ticker.tick().await;
             let hq = ticking.clone();
+            ticks += 1;
+            let prune = ticks % 100 == 0;
             let _ = tokio::task::spawn_blocking(move || {
                 if let Err(e) = hq.tick() {
                     eprintln!("hq: the tick failed: {e}");
+                }
+                // The feed is for display: the newest 20,000 events are kept, and a reader
+                // further behind than that starts again from a snapshot.
+                if prune {
+                    if let Err(e) = hq.prune_events(KEEP_EVENTS) {
+                        eprintln!("hq: could not prune the event feed: {e}");
+                    }
                 }
                 if let Some(goal) = goal {
                     if let Err(e) = demo::act(&hq, goal) {
@@ -120,6 +133,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         hq,
         token: Arc::new(token.trim().to_owned()),
         demo: demo_mode,
+        tick_seconds: tick_every,
     });
     let listener = tokio::net::TcpListener::bind(&addr).await?;
     println!(

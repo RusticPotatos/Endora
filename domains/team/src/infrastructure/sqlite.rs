@@ -736,6 +736,25 @@ impl TeamStore for SqliteTeamStore {
             .map_err(backend)
     }
 
+    fn count_events(&self, kind: &str) -> Stored<(i64, Option<Millis>)> {
+        self.conn()?
+            .query_row(
+                "SELECT COUNT(*), MAX(at_ms) FROM events WHERE kind = ?1",
+                [kind],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .map_err(backend)
+    }
+
+    fn prune_events(&self, keep: i64) -> Stored<usize> {
+        self.conn()?
+            .execute(
+                "DELETE FROM events WHERE id <= (SELECT COALESCE(MAX(id), 0) FROM events) - ?1",
+                [keep],
+            )
+            .map_err(backend)
+    }
+
     fn events_after(&self, id: i64) -> Stored<Vec<Event>> {
         let conn = self.conn()?;
         let mut stmt = conn

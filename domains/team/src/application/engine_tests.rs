@@ -758,3 +758,68 @@ fn the_owner_decides_each_desk_item_once() {
         (t.dev, WakeReason::ProposalDecided)
     );
 }
+
+#[test]
+fn only_whole_work_reaches_the_desk_and_research_is_to_read() {
+    let clock = hands();
+    let hq = hq(&clock, 4);
+    let t = team(&hq);
+    let researcher = hq.hire("Marie", Role::Researcher, 15, 2, 2).unwrap();
+    let whole = task_for(&hq, t.goal, None, "Find out why a container restarts");
+    let part = hq
+        .add_task(
+            Author::Owner,
+            NewTask {
+                goal: t.goal,
+                parent: Some(whole),
+                title: "Read its logs".to_owned(),
+                description: String::new(),
+                assignee: None,
+                priority: Priority::Normal,
+                waits_on: Vec::new(),
+            },
+        )
+        .unwrap();
+    for (task, worker) in [(part, t.dev), (whole, researcher)] {
+        hq.claim(worker, task).unwrap();
+        hq.set_status(worker, task, TaskStatus::InReview, "ready")
+            .unwrap();
+        hq.record_gate(task, true, "").unwrap();
+        hq.approve(t.reviewer, task).unwrap();
+    }
+    let desk = hq.store().desk().unwrap();
+    assert_eq!(desk.len(), 1, "the part stayed with the team: {desk:?}");
+    assert_eq!(
+        (desk[0].kind.as_str(), desk[0].task),
+        ("ready_to_read", Some(whole))
+    );
+    assert!(desk[0].text.starts_with("Ready to read: "));
+    hq.decide(desk[0].id, "read").unwrap();
+}
+
+#[test]
+fn the_snapshot_counts_what_the_office_shows_and_old_events_can_go() {
+    let clock = hands();
+    let hq = hq(&clock, 4);
+    let t = team(&hq);
+    let task = task_for(&hq, t.goal, Some(t.dev), "Add a list");
+    hq.tick().unwrap();
+    hq.wake(t.dev, Some(task), WakeReason::Mentioned).unwrap();
+    hq.wake(t.reviewer, Some(task), WakeReason::Mentioned)
+        .unwrap();
+    let snap = hq.snapshot().unwrap();
+    assert_eq!(snap["counts"]["ticks"], 1);
+    assert_eq!(snap["counts"]["running"], 1);
+    assert_eq!(snap["counts"]["folded"], 1);
+    assert_eq!(snap["counts"]["held"], 1);
+    assert_eq!(snap["counts"]["open_tasks"], 1);
+    assert_eq!(snap["last_tick_at"], NOON);
+    let before = hq.store().events_after(0).unwrap().len();
+    assert!(before > 3);
+    assert_eq!(hq.prune_events(3).unwrap(), before - 3);
+    assert_eq!(
+        hq.store().events_after(0).unwrap().len(),
+        3,
+        "the newest three stay"
+    );
+}
