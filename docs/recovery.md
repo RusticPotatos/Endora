@@ -9,7 +9,7 @@ the steps assume a few things were put in place beforehand (below).
 | What | Where it lives | How it comes back |
 |---|---|---|
 | Endora's settings, keys and memory | `endora.db` in the node's data folder (a Docker volume by default) | Endora's own nightly copy, `backups/daily-*.db` beside it, restored from the house's backup |
-| The rebuild kit: your ansible-nas checkout, with the vault encrypted | its checkout folder on the NAS | the house's backup (its own plan) |
+| The rebuild kit: your ansible-nas checkout, with the vault encrypted | its checkout folder on the NAS | the house's backup, with the home folder |
 | The vault password | your password manager, and `vault_password.txt.enc` (encrypted under your recovery passphrase) in the backup | either one |
 | The house's backup repository password | your password manager | needed to read any backup |
 | The mail copy | the mail mirror's folder | re-copied from the mail provider by the `mail_mirror` role |
@@ -24,8 +24,8 @@ the steps assume a few things were put in place beforehand (below).
 2. **The house's backup covers the data folder**, after 01:30. If the node's data is in a
    Docker volume, the backup must include Docker's volumes folder; with `ENDORA_DATA_DIR`, that
    folder.
-3. **The ansible-nas checkout is backed up**, as its own plan, but **without**
-   `vault_password.txt`.
+3. **The ansible-nas checkout is backed up**, ideally **without** the plain
+   `vault_password.txt` (exclude it from the plan that covers the checkout).
 4. **The vault password is kept twice**, never only beside the vault:
    - in your password manager, and
    - encrypted under a recovery passphrase you choose and remember:
@@ -36,8 +36,8 @@ the steps assume a few things were put in place beforehand (below).
        ~/ansible-nas/vault_password.txt --output ~/ansible-nas-recovery/vault_password.txt.enc
      ```
 
-     Keep the copy outside the checkout so it can never be committed. Include
-     `~/ansible-nas-recovery` in the backup plan.
+     Keep the copy outside the checkout so it can never be committed, in a folder the backup
+     covers.
 5. **The backup repository's own password is in your password manager.**
 6. **An offsite copy** (a second backup repository off the machine). Without one, losing the
    machine loses its backups too.

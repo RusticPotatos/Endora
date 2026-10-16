@@ -47,9 +47,9 @@ personal-data review and the owner's OK. Prepared with AI assistance (Claude).
 ## Phases
 
 1. **Safety net.** Nightly and weekly consistent copies of the database with a check and a line
-   in Activity; the ansible-nas checkout into the house's backup without the vault password;
-   the vault password kept in a password manager and encrypted under a recovery passphrase;
-   [the runbook](../recovery.md).
+   in Activity; [the runbook](../recovery.md). (The ansible-nas checkout turned out to be in
+   the house's backup already, plain vault password included; keeping that password out of
+   the backup, and in a password manager and an encrypted copy, is left for later.)
 2. **AI screen.**
 3. **One repository.** Import the handheld; the shared protocol crate; the `endora.homelab`
    collection; fold in the house's uncommitted Endora work, reviewed piece by piece.

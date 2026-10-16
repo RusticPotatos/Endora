@@ -14,9 +14,10 @@ again? Looked at honestly, the answer was "partly". Everything Endora knows, eve
 key and its whole memory, is one SQLite file in a Docker volume. The house's backup (Backrest,
 restic) does copy that volume every night, but **as a live file**: Endora writes to it
 continuously, and a file copied mid-write can look whole and fail to open on the day it is
-needed. The ansible-nas checkout that rebuilds the house, with its encrypted vault, was not
-backed up at all, and the vault's password lived only beside it. The backups themselves sit on
-a second disk in the same machine.
+needed. The ansible-nas checkout that rebuilds the house is backed up with the home folder,
+but so is the vault's password, in plain text beside the vault; the backup repository is
+encrypted, with its own password kept on the same machine. The backups themselves sit on a
+second disk in the same machine.
 
 ## Decision
 
@@ -37,11 +38,13 @@ name are never touched. One line in Activity says it was saved and checked; a fa
 there once a day. The live database file is still in the backup, but there is now always a
 whole copy beside it.
 
-**The rebuild kit is backed up, its key is not stored with it.** The ansible-nas checkout
-(30 MB, with the vault encrypted) goes into Backrest as its own plan. The vault password does
-not: it is kept in the owner's password manager, and as a copy encrypted under a separate
-recovery passphrase the owner chooses and remembers, which is backed up. A backup holding its
-own key would protect nothing.
+**The rebuild kit is backed up; its key should not be stored with it.** The ansible-nas
+checkout (30 MB, with the vault encrypted) is already in the house's nightly backup. The vault
+password should be kept in the owner's password manager, and as a copy encrypted under a
+separate recovery passphrase the owner chooses and remembers, with the plain file excluded
+from the backup: a backup holding its own key protects only as well as the backup's own
+password. Excluding the plain file, and whether to rewrite the snapshots that already hold it,
+the owner has left for later (2026-10-16).
 
 **Recovery is proven, not hoped for.** A runbook ([docs/recovery.md](../recovery.md)) says how
 to rebuild from nothing, and a restore drill into a scratch node runs when declared
