@@ -16,6 +16,14 @@ function render() {
     : v === "toolserver" ? viewToolServer()
     : v === "data" ? viewData()
     : v === "spotify" ? viewSpotify()
+    : v === "lab" ? viewLab()
+    : v === "containers" ? viewContainers()
+    : v === "logs" ? viewLogs()
+    : v === "jobs" ? viewJobs()
+    : v === "job" ? viewJob()
+    : v === "media" ? viewMedia()
+    : v === "house" ? viewHouse()
+    : v === "music" ? viewMusic()
     // Older links: what it remembers is now part of About you.
     : v === "prefs" ? viewUnderstanding()
     : v === "settings" ? viewSettings()
@@ -62,6 +70,8 @@ async function dispatch(act) {
   }
   try {
     if (verb === "reload") { location.reload(); return; }
+    // The home lab, media, smart home and music.
+    if (await labDispatch(verb, noun, id, arg)) return;
     // Spotify: one sign-in, held by the node, started or finished from any device.
     if (verb === "spotify") {
       try {
@@ -924,6 +934,10 @@ function setupHeader(health) {
         unreadCount() ? `<span class="pill active">${unreadCount()}</span>` : "",
       ) +
       item("go:mail", "inbox", "Mail") +
+      item("go:music", "music", "Music") +
+      item("go:house", "house", "Smart home") +
+      item("go:media", "film", "Media") +
+      item("go:lab", "server", "Home lab") +
       item("go:audit", "audit", "Activity") +
       item("go:settings", "gear", "Settings") +
       `<div class="divider"></div>` +

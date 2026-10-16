@@ -4,6 +4,8 @@ let DB = null;                 // latest /v1/export snapshot — NULL until one 
 let MAIL = null;               // the mail digest (/v1/mail), fetched only on the Mail screen
 let AI = null;                 // every model Endora uses (/v1/ai), fetched only on the AI screen
 let SPOTIFY = null;            // the Spotify sign-in, held by the node (/v1/connections/spotify)
+let LAB = {};                  // the home lab, media and smart-home pages, by name (/v1/terminal/*)
+let MUSIC = { now: null, devices: [], found: [], lists: [], query: "", error: "" }; // what Spotify says
 
 // The conversation, safely. `DB` is null before the first export and stays null when
 // the node is unreachable, so anything that runs on every render — the menu badge, in
@@ -115,6 +117,11 @@ const ICONS = {
   check: '<path d="M5 13l4 4L19 7"/>',
   person: '<circle cx="12" cy="8.5" r="3.6"/><path d="M4.5 20a7.5 7.5 0 0 1 15 0"/>',
   lock: '<rect x="5" y="10.5" width="14" height="10" rx="2"/><path d="M8 10.5V7.5a4 4 0 0 1 8 0v3"/>',
+  music: '<path d="M9 18V5.5l11-2V16"/><circle cx="6.5" cy="18" r="2.5"/><circle cx="17.5" cy="16" r="2.5"/>',
+  house: '<path d="M3.5 11L12 4l8.5 7"/><path d="M6 9.5V20h12V9.5"/><path d="M10 20v-5h4v5"/>',
+  film: '<rect x="3.5" y="5" width="17" height="14" rx="2"/><path d="M3.5 9.5h17M3.5 14.5h17M8 5v14M16 5v14"/>',
+  server: '<rect x="4" y="4" width="16" height="7" rx="1.5"/><rect x="4" y="13" width="16" height="7" rx="1.5"/><path d="M7.5 7.5h.01M7.5 16.5h.01"/>',
+  box: '<path d="M12 3l8 4.5v9L12 21l-8-4.5v-9z"/><path d="M4 7.5l8 4.5 8-4.5M12 12v9"/>',
 };
 function icon(name, size = 17) {
   const p = ICONS[name];

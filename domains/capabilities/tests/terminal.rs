@@ -546,6 +546,22 @@ fn dashboard_mirrors_homepage_groups_with_container_state_and_pretty_stats() {
 }
 
 #[test]
+fn the_containers_page_shows_the_dashboards_short_figures_not_raw_numbers() {
+    use endora_capabilities::infrastructure::terminal::nas_figures;
+    // As Prometheus answers: unrounded, in bytes.
+    let metrics = json!({"items":[
+        {"label":"CPU %","detail":"7.251164760358932"},
+        {"label":"Memory %","detail":"53.98017708186086"},
+        {"label":"Storage free bytes","detail":"13759627984896"},
+        {"label":"Network receive bytes/s","detail":"919.7017543859648"}]});
+    assert_eq!(
+        nas_figures(&metrics),
+        ["CPU 7%", "Mem 54%", "Free 13.8 TB", "Net 920 B/s"]
+    );
+    assert!(nas_figures(&json!({"summary": "Metrics need private setup"})).is_empty());
+}
+
+#[test]
 fn homepage_widgets_become_short_number_summaries() {
     use endora_capabilities::infrastructure::terminal::{widget_endpoints, widget_summary};
     assert_eq!(widget_endpoints("overseerr"), ["request/count"]);

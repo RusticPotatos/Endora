@@ -191,6 +191,39 @@ runInContext(
   SPOTIFY = { state: "waiting", detail: "Waiting for you to approve Endora on Spotify", client_id_set: true,
     sign_in_url: "https://accounts.spotify.com/authorize?client_id=example", redirect: "http://127.0.0.1:8888/callback",
     started_ms: 1, account: null };
+  // The home lab, media and smart home as the node's typed endpoints give them.
+  LAB = {
+    dashboard: { stats: ["CPU 7%", "Free 13.8 TB"], alerts: ["DiskLow"], groups: [
+      { name: "Media", services: [
+        { name: "Overseerr", state: "running", id: "${"1".repeat(64)}", detail: "0 pending" },
+        { name: "<b>Plex</b>", state: "unhealthy" }] }] },
+    containers: { summary: "CPU 7% | Mem 54%", items: [
+      { id: "${"2".repeat(64)}", label: "endora-node", detail: "running Up 4 minutes", protected: true },
+      { id: "${"3".repeat(64)}", label: "sonarr", detail: "running Up 2 days", protected: false },
+      { id: "${"4".repeat(64)}", label: "radarr", detail: "exited Exited (0) 1 hour ago", protected: false }] },
+    logs: { summary: "line one\\n<script>no</script>", items: [] },
+    jobs: { summary: "Allowlisted Ansible jobs", items: [
+      { id: "check", label: "Check the NAS", detail: "complete", latest_id: "web-abc" },
+      { id: "apply", label: "Apply the NAS", detail: "not run", latest_id: null }] },
+    job: { summary: "PLAY RECAP ok=12", state: "complete", items: [] },
+    mediaQuery: "dune",
+    found: { summary: "", items: [
+      { id: "438631", label: "Dune (2021)", detail: "movie | Availability: not requested", media_type: "movie" },
+      { id: "90228", label: "Dune: Prophecy (2024)", detail: "tv | Availability: available", media_type: "tv" }] },
+    requests: { summary: "Recent media requests", items: [{ id: "1", label: "Fall (2022)", detail: "movie | completed", media_type: "movie" }] },
+    favorites: { summary: "Home favorites", items: [
+      { id: "light.kitchen", label: "Kitchen", detail: "on " },
+      { id: "scene.movie", label: "Movie night", detail: "scening " },
+      { id: "sensor.porch", label: "Porch", detail: "21 °C" }] },
+    catalogQuery: "",
+    catalog: { summary: "", items: [{ id: "light.kitchen", label: "Kitchen", detail: "on", favorite: true },
+      { id: "switch.fan", label: "Fan", detail: "off", favorite: false }] },
+  };
+  MUSIC = { now: { is_playing: true, device: { name: "Living room", volume_percent: 40 },
+      item: { name: "A <i>song</i>", artists: [{ name: "Jane Doe" }], album: { images: [{ url: "https://i.scdn.co/image/example" }] } } },
+    devices: [{ id: "abc123", name: "Living room", is_active: true }, { id: "def456", name: "Handheld", is_active: false }],
+    found: [{ uri: "spotify:track:abc", name: "Found", kind: "track", who: "Jane Doe" }],
+    lists: [{ uri: "spotify:playlist:def", name: "Mine", kind: "playlist", who: "John Doe" }], query: "x", error: "" };
   MAIL = { mounted: true, reading: true, indexed: 412, unread_recent: 37,
     important: [{ from: "Example Dental", at_ms: 1, bucket: "money", sentence: "A bill <b>due</b>.",
                   why: ["asks for money"], amount: "180.00", dates: [{ date: "2026-10-30", what: "due" }],
@@ -493,6 +526,63 @@ if (failures.length) {
   console.log("settings: 8 entries; skills a list, each with its own screen; connections and permissions their own");
 }
 
+// The handheld's features on the web (plan phase 4): the web console is the full set.
+{
+  const fail = (what) => { console.error(what); process.exit(1); };
+  const id = (digit) => digit.repeat(64);
+  const lab = runInContext("viewLab()", context);
+  if (!lab.includes("go:containers") || !lab.includes("go:jobs") || !lab.includes("CPU 7%")
+      || !lab.includes(`go:logs:${id("1")}`) || lab.includes("<b>Plex</b>")) {
+    fail("home lab: the figures, a service's logs or the way to containers and jobs is missing, or a name is not escaped");
+  }
+  const containers = runInContext("viewContainers()", context);
+  // Endora's own path is never offered a stop; a running container can stop, a stopped one start.
+  if (containers.includes(`stop:${id("2")}`) || containers.includes(`restart:${id("2")}`)
+      || !containers.includes(`lab:container:stop:${id("3")}`) || !containers.includes(`lab:container:start:${id("4")}`)) {
+    fail("containers: Endora's own path can be stopped, or a container cannot be stopped or started");
+  }
+  if (containers.indexOf("radarr") > containers.indexOf("sonarr")) fail("containers: a stopped one is not listed first");
+  if (runInContext("viewLogs()", context).includes("<script>")) fail("logs: a log line became markup");
+  const jobs = runInContext("viewJobs()", context);
+  if (!jobs.includes("lab:job:run:check") || !jobs.includes("go:job:web-abc") || jobs.includes("go:job:null")) {
+    fail("jobs: a job cannot be run, its last run opened, or one never run offers a run to open");
+  }
+  const media = runInContext("viewMedia()", context);
+  if (!media.includes("media:request:movie:438631") || media.includes("media:request:tv:90228") || !media.includes("Fall (2022)")) {
+    fail("media: only what is not requested yet may be requested, and recent requests show");
+  }
+  const house = runInContext("viewHouse()", context);
+  // Only what can be switched is offered a switch; a sensor is only read.
+  if (!house.includes("house:home:on:light.kitchen") || !house.includes("house:home:off:light.kitchen")
+      || !house.includes("house:home:scene:scene.movie") || house.includes(":sensor.porch")
+      || !house.includes("house:favorite:remove:light.kitchen") || !house.includes("house:favorite:add:switch.fan")) {
+    fail("smart home: a favorite's switch, a scene, or choosing favorites is wrong");
+  }
+  runInContext('SPOTIFY = Object.assign({}, SPOTIFY, { state: "connected" })', context);
+  const music = runInContext("viewMusic()", context);
+  if (!music.includes("music:toggle") || !music.includes("Pause") || !music.includes("music:device:def456")
+      || !music.includes("music:play:f0") || !music.includes("music:play:l0") || music.includes("<i>song</i>")) {
+    fail("music: playing, choosing a device or playing a find or a playlist is missing, or a title is not escaped");
+  }
+  runInContext('SPOTIFY = Object.assign({}, SPOTIFY, { state: "not_set_up" })', context);
+  if (!runInContext("viewMusic()", context).includes("go:spotify")) fail("music: not connected, it does not lead to connecting");
+  runInContext('SPOTIFY = Object.assign({}, SPOTIFY, { state: "waiting" })', context);
+  for (const view of ["music", "house", "media", "lab"]) {
+    if (!source.includes(`item("go:${view}"`)) fail(`menu: ${view} is not in the menu`);
+  }
+  // A screen that fetches its own data must be fetched when it is opened, or it shows
+  // "Loading…" until something else happens to reload the console — which Mail did.
+  const fetched = new Set();
+  for (const fn of ["loadView", "loadLab"]) {
+    const body = (source.match(new RegExp(`async function ${fn}\\([\\s\\S]*?\\n}\\n`)) || [""])[0];
+    for (const m of body.matchAll(/v === "([a-z]+)"/g)) fetched.add(m[1]);
+  }
+  const opened = runInContext("FETCHES_ITS_OWN", context);
+  const missing = [...fetched].filter((v) => !opened.includes(v));
+  if (fetched.size < 10 || missing.length) fail(`navigation: these screens fetch data that opening them does not: ${missing.join(", ")}`);
+  console.log(`home lab, media, smart home, music: render, act through the allowlist, and fetch when opened (${fetched.size} screens)`);
+}
+
 
 // Every screen under Settings must say so in its breadcrumb.
 //
@@ -531,8 +621,19 @@ if (missing.length) {
 // literal on a `fetch`) rather than trying to understand the file. A false positive here is
 // somebody writing headers a new way and being told to route them through `signed`, which is
 // the right answer anyway.
+// Another site's `/v1` (Spotify's) is not this node, and is the opposite case: see below.
 const unsigned = [...source.matchAll(/fetch\(\s*["'`]([^"'`]*\/v1[^"'`]*)[\s\S]{0,200}?headers:\s*\{/g)]
+  .map((m) => m[1])
+  .filter((url) => !/^https?:\/\//.test(url));
+// And this node's credential goes to this node only. Music calls Spotify from the browser with
+// a token the node lends; signing that request would hand Endora's own token to Spotify.
+const leaks = [...source.matchAll(/fetch\(\s*["'`](https?:\/\/[^"'`]*)[\s\S]{0,300}?\)\s*;/g)]
+  .filter((m) => /signed\(|token\(\)/.test(m[0]))
   .map((m) => m[1]);
+if (leaks.length) {
+  console.error(`requests: these send Endora's credential to another site: ${leaks.join(", ")}`);
+  process.exit(1);
+}
 if (unsigned.length) {
   console.error(
     `requests: these reach /v1 without going through signed(): ${unsigned.join(", ")}`

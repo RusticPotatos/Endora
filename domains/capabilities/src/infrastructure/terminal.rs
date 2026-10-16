@@ -121,6 +121,15 @@ fn pretty_metric(label: &str, detail: &str) -> String {
         _ => format!("Net {}/s", human_bytes(n)),
     }
 }
+/// The NAS figures, one short line each ("CPU 7%", "Free 13.8 TB"), wherever they are shown.
+pub fn nas_figures(metrics: &Value) -> Vec<String> {
+    metrics["items"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|i| pretty_metric(&safe(&i["label"]), &safe(&i["detail"])))
+        .collect()
+}
 fn human_bytes(mut n: f64) -> String {
     let units = ["B", "kB", "MB", "GB", "TB", "PB"];
     let mut unit = 0;
@@ -232,16 +241,7 @@ pub fn project_dashboard_with(
             json!({"name": safe(&group["name"]).chars().take(40).collect::<String>(), "services": services})
         })
         .collect();
-    let stats: Vec<_> = metrics
-        .map(|m| {
-            m["items"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .map(|i| pretty_metric(&safe(&i["label"]), &safe(&i["detail"])))
-                .collect()
-        })
-        .unwrap_or_default();
+    let stats = metrics.map(nas_figures).unwrap_or_default();
     let alerts: Vec<_> = alerts.iter().take(10).collect();
     json!({"stats": stats, "alerts": alerts, "groups": groups})
 }
@@ -937,16 +937,10 @@ impl HomeConsole for Adapter {
             "containers" => {
                 let result = self.containers()?;
                 let items:Vec<_>=result.as_array().into_iter().flatten().take(100).map(|item|json!({"id":safe(&item["Id"]),"label":safe(&item["Names"][0]).trim_start_matches('/'),"detail":format!("{} {}",safe(&item["State"]),safe(&item["Status"])),"protected":protected_container(item)})).collect();
-                let metrics = self
+                let summary = self
                     .metrics()
-                    .unwrap_or(json!({"summary":"Metrics need private setup","items":[]}));
-                let summary = metrics["items"]
-                    .as_array()
-                    .into_iter()
-                    .flatten()
-                    .map(|item| format!("{}: {}", safe(&item["label"]), safe(&item["detail"])))
-                    .collect::<Vec<_>>()
-                    .join(" | ");
+                    .map(|m| nas_figures(&m).join(" | "))
+                    .unwrap_or_default();
                 Ok(json!({"summary":summary,"items":items}))
             }
             "logs" => {
