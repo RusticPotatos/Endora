@@ -62,6 +62,8 @@ services:
     read_only: true
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
+    # A small service on a NAS whose memory is tight: a hard cap, not a hope.
+    mem_limit: 128m
   node:
     build:
       context: .
