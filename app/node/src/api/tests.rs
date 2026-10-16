@@ -2144,3 +2144,54 @@ async fn spotify_is_one_sign_in_any_device_can_start_and_its_callback_needs_the_
         .unwrap();
     assert_eq!(lend.status(), StatusCode::BAD_REQUEST);
 }
+
+/// Answers one request from the node as HQ would, and hands back what the node sent.
+fn one_hq_answer(body: &'static str) -> (String, std::thread::JoinHandle<String>) {
+    use std::io::{Read as _, Write as _};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let seen = std::thread::spawn(move || {
+        let (mut socket, _) = listener.accept().unwrap();
+        let mut buf = [0u8; 8192];
+        let n = socket.read(&mut buf).unwrap();
+        let reply = format!(
+            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        socket.write_all(reply.as_bytes()).unwrap();
+        String::from_utf8_lossy(&buf[..n]).into_owned()
+    });
+    (url, seen)
+}
+
+#[tokio::test]
+async fn hq_that_is_not_set_up_says_so() {
+    let res = app(test_state()).oneshot(get("/v1/hq")).await.unwrap();
+    assert_eq!(res.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(json_body(res).await["configured"], false);
+}
+
+#[tokio::test]
+async fn the_kill_switch_goes_to_hq_signed_and_into_endoras_own_record() {
+    let (url, seen) = one_hq_answer(r#"{"stopped":true}"#);
+    let token = "a-token-of-at-least-thirty-two-characters";
+    let state = test_state().with_hq(endora_infrastructure::HqClient::new(&url, token));
+    let res = app(state.clone())
+        .oneshot(post("/v1/hq/stop", r#"{"why":"trying it"}"#))
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let sent = seen.join().unwrap();
+    assert!(sent.starts_with("POST /v1/stop "), "{sent}");
+    assert!(
+        sent.to_lowercase()
+            .contains(&format!("authorization: bearer {token}"))
+    );
+    let trail = endora_application::AuditLog::recent(state.audit.as_ref(), 10).unwrap();
+    assert!(
+        trail
+            .iter()
+            .any(|r| r.summary() == "HQ: you pulled the kill switch"),
+        "{trail:?}"
+    );
+}

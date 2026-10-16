@@ -15,7 +15,8 @@ use crate::domain::{
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS members (
     id INTEGER PRIMARY KEY, name TEXT NOT NULL, role TEXT NOT NULL,
-    share_percent INTEGER NOT NULL, slots INTEGER NOT NULL, paused INTEGER NOT NULL DEFAULT 0
+    share_percent INTEGER NOT NULL, slots INTEGER NOT NULL, paused INTEGER NOT NULL DEFAULT 0,
+    look INTEGER NOT NULL DEFAULT 0
 ) STRICT;
 CREATE TABLE IF NOT EXISTS goals (
     id INTEGER PRIMARY KEY, title TEXT NOT NULL, reason TEXT NOT NULL, status TEXT NOT NULL,
@@ -68,7 +69,7 @@ CREATE TABLE IF NOT EXISTS events (
 ) STRICT;
 CREATE TABLE IF NOT EXISTS desk (
     id INTEGER PRIMARY KEY, kind TEXT NOT NULL, task INTEGER REFERENCES tasks(id),
-    text TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'waiting', at_ms INTEGER NOT NULL
+    goal INTEGER REFERENCES goals(id), text TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'waiting', at_ms INTEGER NOT NULL
 ) STRICT;
 CREATE TABLE IF NOT EXISTS timers (
     id INTEGER PRIMARY KEY, member INTEGER NOT NULL REFERENCES members(id),
@@ -209,11 +210,18 @@ const RUN_COLUMNS: &str = "id, member, task, wake, status, attempts, queued_at, 
     retry_at, ended_at, reserved, spent, told, end_reason, moved_forward";
 
 impl TeamStore for SqliteTeamStore {
-    fn add_member(&self, name: &str, role: Role, share_percent: u8, slots: u8) -> Stored<MemberId> {
+    fn add_member(
+        &self,
+        name: &str,
+        role: Role,
+        share_percent: u8,
+        slots: u8,
+        look: u8,
+    ) -> Stored<MemberId> {
         let conn = self.conn()?;
         conn.execute(
-            "INSERT INTO members (name, role, share_percent, slots) VALUES (?1, ?2, ?3, ?4)",
-            params![name, role.name(), share_percent, slots],
+            "INSERT INTO members (name, role, share_percent, slots, look) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![name, role.name(), share_percent, slots, look],
         )
         .map_err(backend)?;
         Ok(MemberId(conn.last_insert_rowid()))
@@ -222,7 +230,7 @@ impl TeamStore for SqliteTeamStore {
     fn members(&self) -> Stored<Vec<Member>> {
         let conn = self.conn()?;
         let mut stmt = conn
-            .prepare("SELECT id, name, role, share_percent, slots, paused FROM members ORDER BY id")
+            .prepare("SELECT id, name, role, share_percent, slots, paused, look FROM members ORDER BY id")
             .map_err(backend)?;
         let rows = stmt
             .query_map([], |r| {
@@ -234,6 +242,7 @@ impl TeamStore for SqliteTeamStore {
                     share_percent: u8::try_from(r.get::<_, i64>(3)?).unwrap_or(0),
                     slots: u8::try_from(r.get::<_, i64>(4)?).unwrap_or(1),
                     paused: r.get::<_, i64>(5)? != 0,
+                    look: u8::try_from(r.get::<_, i64>(6)?).unwrap_or(0),
                 })
             })
             .map_err(backend)?;
@@ -284,6 +293,26 @@ impl TeamStore for SqliteTeamStore {
             )
             .optional()
             .map_err(backend)
+    }
+
+    fn goals(&self) -> Stored<Vec<Goal>> {
+        let conn = self.conn()?;
+        let mut stmt = conn
+            .prepare("SELECT id, title, reason, status, parent FROM goals ORDER BY id")
+            .map_err(backend)?;
+        let rows = stmt
+            .query_map([], |r| {
+                let status: String = r.get(3)?;
+                Ok(Goal {
+                    id: GoalId(r.get(0)?),
+                    title: r.get(1)?,
+                    reason: r.get(2)?,
+                    status: GoalStatus::from_name(&status).unwrap_or(GoalStatus::Proposed),
+                    parent: r.get::<_, Option<i64>>(4)?.map(GoalId),
+                })
+            })
+            .map_err(backend)?;
+        rows.collect::<rusqlite::Result<_>>().map_err(backend)
     }
 
     fn set_goal_status(&self, id: GoalId, status: GoalStatus) -> Stored<()> {
@@ -701,6 +730,12 @@ impl TeamStore for SqliteTeamStore {
         Ok(conn.last_insert_rowid())
     }
 
+    fn last_event(&self) -> Stored<i64> {
+        self.conn()?
+            .query_row("SELECT COALESCE(MAX(id), 0) FROM events", [], |r| r.get(0))
+            .map_err(backend)
+    }
+
     fn events_after(&self, id: i64) -> Stored<Vec<Event>> {
         let conn = self.conn()?;
         let mut stmt = conn
@@ -720,20 +755,37 @@ impl TeamStore for SqliteTeamStore {
         rows.collect::<rusqlite::Result<_>>().map_err(backend)
     }
 
-    fn add_desk(&self, kind: &str, task: Option<TaskId>, text: &str, at: Millis) -> Stored<DeskId> {
+    fn add_desk(
+        &self,
+        kind: &str,
+        task: Option<TaskId>,
+        goal: Option<GoalId>,
+        text: &str,
+        at: Millis,
+    ) -> Stored<DeskId> {
         let conn = self.conn()?;
         conn.execute(
-            "INSERT INTO desk (kind, task, text, at_ms) VALUES (?1, ?2, ?3, ?4)",
-            params![kind, task.map(|t| t.0), text, at],
+            "INSERT INTO desk (kind, task, goal, text, at_ms) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![kind, task.map(|t| t.0), goal.map(|g| g.0), text, at],
         )
         .map_err(backend)?;
         Ok(DeskId(conn.last_insert_rowid()))
     }
 
+    fn set_desk_status(&self, id: DeskId, status: &str) -> Stored<()> {
+        self.conn()?
+            .execute(
+                "UPDATE desk SET status = ?2 WHERE id = ?1",
+                params![id.0, status],
+            )
+            .map_err(backend)?;
+        Ok(())
+    }
+
     fn desk(&self) -> Stored<Vec<DeskItem>> {
         let conn = self.conn()?;
         let mut stmt = conn
-            .prepare("SELECT id, kind, task, text, status, at_ms FROM desk ORDER BY id")
+            .prepare("SELECT id, kind, task, goal, text, status, at_ms FROM desk ORDER BY id")
             .map_err(backend)?;
         let rows = stmt
             .query_map([], |r| {
@@ -741,9 +793,10 @@ impl TeamStore for SqliteTeamStore {
                     id: DeskId(r.get(0)?),
                     kind: r.get(1)?,
                     task: r.get::<_, Option<i64>>(2)?.map(TaskId),
-                    text: r.get(3)?,
-                    status: r.get(4)?,
-                    at: r.get(5)?,
+                    goal: r.get::<_, Option<i64>>(3)?.map(GoalId),
+                    text: r.get(4)?,
+                    status: r.get(5)?,
+                    at: r.get(6)?,
                 })
             })
             .map_err(backend)?;
@@ -828,8 +881,10 @@ mod tests {
     #[test]
     fn a_task_is_claimed_by_exactly_one_member() {
         let store = SqliteTeamStore::in_memory().unwrap();
-        let a = store.add_member("Ada", Role::Developer, 40, 2).unwrap();
-        let b = store.add_member("Linus", Role::Developer, 40, 2).unwrap();
+        let a = store.add_member("Ada", Role::Developer, 40, 2, 0).unwrap();
+        let b = store
+            .add_member("Linus", Role::Developer, 40, 2, 0)
+            .unwrap();
         let goal = store
             .add_goal("Ship it", "", GoalStatus::Active, None)
             .unwrap();
@@ -859,7 +914,7 @@ mod tests {
     #[test]
     fn the_ledger_is_append_only() {
         let store = SqliteTeamStore::in_memory().unwrap();
-        let a = store.add_member("Ada", Role::Developer, 40, 2).unwrap();
+        let a = store.add_member("Ada", Role::Developer, 40, 2, 0).unwrap();
         let wake = store
             .add_wake(a, None, WakeReason::LeadReview, Receipt::Queued, None, 0)
             .unwrap();
@@ -873,7 +928,7 @@ mod tests {
     #[test]
     fn settling_charges_use_and_frees_the_reservation_on_the_day_it_was_made() {
         let store = SqliteTeamStore::in_memory().unwrap();
-        let a = store.add_member("Ada", Role::Developer, 40, 2).unwrap();
+        let a = store.add_member("Ada", Role::Developer, 40, 2, 0).unwrap();
         let wake = store
             .add_wake(a, None, WakeReason::LeadReview, Receipt::Queued, None, 0)
             .unwrap();

@@ -1,0 +1,27 @@
+[package]
+name = "endora-hq"
+description = "Endora HQ: the team service. Its own container and database; the Endora node is its only client."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "endora-hq"
+path = "src/main.rs"
+
+[dependencies]
+axum = "0.8.9"
+endora-team = { path = "../../domains/team" }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.150"
+tokio = { version = "1.53.0", features = ["rt-multi-thread", "macros", "net", "sync", "time"] }
+
+[dev-dependencies]
+http-body-util = "0.1.5"
+tower = { version = "0.5.3", features = ["util"] }
+
+[lints]
+workspace = true

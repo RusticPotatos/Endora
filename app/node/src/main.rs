@@ -150,6 +150,41 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     )
     .with_brain(brain)
     .with_time_zone(time_zone);
+    // Endora HQ (ADR 0102), when this node has one: signing with a token given here (32+
+    // characters, or HQ is left off rather than reachable with a guessable one), or with the one
+    // HQ made for itself in the volume the two share.
+    let state = match (
+        std::env::var("ENDORA_HQ_URL")
+            .ok()
+            .filter(|u| !u.trim().is_empty()),
+        std::env::var("ENDORA_HQ_TOKEN")
+            .ok()
+            .map(|t| t.trim().to_owned())
+            .filter(|t| !t.is_empty()),
+        std::env::var("ENDORA_HQ_TOKEN_FILE")
+            .ok()
+            .filter(|f| !f.trim().is_empty()),
+    ) {
+        (Some(url), Some(token), _) if token.len() >= 32 => {
+            println!("hq: the team service at {url}");
+            state.with_hq(endora_infrastructure::HqClient::new(&url, &token))
+        }
+        (Some(url), None, Some(file)) => {
+            println!("hq: the team service at {url}, signing with the token HQ keeps");
+            state.with_hq(endora_infrastructure::HqClient::with_token_file(
+                &url,
+                std::path::Path::new(&file),
+            ))
+        }
+        (Some(_), _, _) => {
+            eprintln!(
+                "hq: no usable token for HQ (ENDORA_HQ_TOKEN of 32+ characters, or \
+                 ENDORA_HQ_TOKEN_FILE); HQ is off"
+            );
+            state
+        }
+        _ => state,
+    };
 
     println!("{}", endora_application::platform_identity());
     println!("drafting model: {model} via {model_url}  (optional; 503 if unavailable)");

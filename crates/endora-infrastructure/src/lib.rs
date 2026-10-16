@@ -11,6 +11,7 @@
 pub mod butler;
 pub mod clock;
 pub mod eval;
+pub mod hq;
 pub mod ids;
 pub mod model_layer;
 pub mod model_watch;
@@ -33,6 +34,7 @@ pub use endora_capabilities::{
     Capability, CapabilityError, CapabilityInfo, CapabilitySettings, RegistryRunner, SettingSpec,
     default_capabilities, redact_pii_in_value, scan_outbound_secret,
 };
+pub use hq::{HqClient, HqError};
 pub use ids::RandomIdSource;
 pub use sqlite::SqliteStore;
 pub use time_zone::TimeZone;

@@ -79,6 +79,14 @@ export ENDORA_UTC_OFFSET_MINUTES
 # in a host folder you can open; unset, a named volume.
 export ENDORA_BRAIN_DIR
 
+# Endora HQ (ADR 0102), the team service: COMPOSE_PROFILES = hq and
+# ENDORA_HQ_URL = http://hq:8790 in local.mk run it beside the node, with the scripted demo team
+# unless ENDORA_HQ_DEMO = 0. It makes its own token for the node; nothing to keep by hand.
+export COMPOSE_PROFILES
+export ENDORA_HQ_URL
+export ENDORA_HQ_DEMO
+export ENDORA_HQ_TICK_SECONDS
+
 # The read-only mail copy on the NAS (ansible-nas `mail_mirror` role, ADR 0097), e.g.
 # ENDORA_MAIL_DIR = /srv/mail-mirror/maildir in local.mk. Read whenever the copy is there.
 export ENDORA_MAIL_DIR

@@ -63,8 +63,9 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
       unset "CARGO_TARGET_${env_triple}_LINKER" "CC_$(echo "$triple" | tr '-' '_')" "AR_$(echo "$triple" | tr '-' '_')"; \
     fi; \
     find . \( -name '*.rs' -o -name '*.toml' -o -name '*.lock' \) -exec touch {} + \
-    && cargo build --release -p endora-node --target "$triple" \
-    && cp "target/$triple/release/endora-node" /endora-node
+    && cargo build --release -p endora-node -p endora-hq --target "$triple" \
+    && cp "target/$triple/release/endora-node" /endora-node \
+    && cp "target/$triple/release/endora-hq" /endora-hq
 
 # --- runtime stage ---------------------------------------------------------
 FROM debian:bookworm-slim
@@ -81,6 +82,8 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /endora-node /usr/local/bin/endora-node
+# Endora HQ, the team service (ADR 0102): the same image, run as its own container.
+COPY --from=builder /endora-hq /usr/local/bin/endora-hq
 COPY scripts/homelab-docker-proxy.py /usr/local/lib/endora/homelab-docker-proxy.py
 
 # Listen on all interfaces (so the mapped port is reachable) and keep the

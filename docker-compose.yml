@@ -40,6 +40,30 @@ services:
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
     restart: unless-stopped
+  # Endora HQ (ADR 0102): the team service, in the same image as the node. Reachable only by
+  # the node, on this project's network: no port is published. Its database is its own; it
+  # holds no secret but the token it makes for the node, and nothing private. A scripted
+  # demo team (HQ_DEMO=1) works on the simulated runner until real workers exist.
+  hq:
+    profiles: [hq]
+    image: endora-node:latest
+    container_name: endora-hq
+    entrypoint: [endora-hq]
+    restart: unless-stopped
+    environment:
+      HQ_ADDR: 0.0.0.0:8790
+      HQ_DB: /data/hq.db
+      HQ_TOKEN_FILE: /token/token
+      HQ_DEMO: "${ENDORA_HQ_DEMO:-1}"
+      HQ_TICK_SECONDS: "${ENDORA_HQ_TICK_SECONDS:-30}"
+    volumes:
+      - ${ENDORA_HQ_DIR:-endora-hq-data}:/data
+      - endora-hq-token:/token
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    # A small service on a NAS whose memory is tight: a hard cap, not a hope.
+    mem_limit: 128m
   node:
     build:
       context: .
@@ -72,6 +96,9 @@ services:
       # Permission-controlled host agent; read-only mount does not grant write APIs.
       # The agent authenticates requests and executes only its private fixed catalog.
       - /run/endora-jobs:/run/endora-jobs:ro
+      # The token Endora HQ makes for itself, which the node signs with (ADR 0102).
+      # Read-only here; only HQ writes it.
+      - endora-hq-token:/hq-token:ro
     # The image already defaults ENDORA_ADDR=0.0.0.0:8787 and
     # ENDORA_DB=/data/endora.db. Point the butler/proposer at an Ollama running
     # on the host (host.docker.internal → the host gateway). Without a reachable
@@ -84,6 +111,10 @@ services:
       # editing the file. The default is an Ollama on the host, which is what a
       # bring-your-own setup looks like.
       ENDORA_MODEL_URL: "${ENDORA_MODEL_URL:-http://host.docker.internal:11434/v1}"
+      # Endora HQ (ADR 0102), when its `hq` profile runs: COMPOSE_PROFILES=hq and
+      # ENDORA_HQ_URL=http://hq:8790 in local.mk. Empty: no HQ.
+      ENDORA_HQ_URL: "${ENDORA_HQ_URL-}"
+      ENDORA_HQ_TOKEN_FILE: /hq-token/token
       # Optional speech-to-text server (OpenAI-compatible /v1/audio/transcriptions,
       # e.g. a local Whisper). When set, the console's push-to-talk records audio
       # and transcribes it here instead of using the browser's flaky Web Speech
@@ -161,6 +192,9 @@ services:
 volumes:
   endora-data:
   endora-brain:
+  endora-hq-data:
+  # Holds one file: the token HQ makes for itself and the node signs with.
+  endora-hq-token:
   # Empty on purpose: what /mail is when no mail copy is configured.
   endora-no-mail:
   endora-models:

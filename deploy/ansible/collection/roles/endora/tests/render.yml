@@ -28,6 +28,7 @@
         mail_mirror_root: /srv/mail-mirror
         endora_time_zone: America/New_York
         endora_data_dir: /data/endora
+        endora_hq: true
 
     - name: Nothing switched on
       ansible.builtin.template:
@@ -71,6 +72,10 @@
           # The brain sits beside Endora's other folders unless told otherwise.
           - "'ENDORA_BRAIN_DIR=/tmp/endora-render-test/endora/brain' in full"
           - "bare | select('match', 'ENDORA_BRAIN_DIR') | list | length == 0"
+          # HQ is off unless asked for.
+          - "'ENDORA_HQ_URL=http://hq:8790' in full"
+          - "'ENDORA_HQ_DEMO=1' in full"
+          - "bare | select('match', 'ENDORA_HQ') | list | length == 0"
           - "'ENDORA_MODEL_URL=http://host.docker.internal:11434/v1' in full"
           # Off by default: no mail, and the data volume rather than a folder.
           - "bare | select('match', 'ENDORA_OWN_WORK') | list | length == 0"

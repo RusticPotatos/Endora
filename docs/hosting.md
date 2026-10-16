@@ -168,6 +168,21 @@ way the node's nightly backup writes it as a `brain-daily-….bundle` beside the
 copies, which `git clone` restores. Anything edited from outside is committed as yours before
 Endora's next change.
 
+### Optional: Endora HQ, the team
+
+Endora HQ (ADR 0102) is the team service: a container beside the node, from the same image,
+reachable only by the node. Add to `local.mk`:
+
+```make
+COMPOSE_PROFILES = hq
+ENDORA_HQ_URL = http://hq:8790
+```
+
+and `make deploy`. It starts with a scripted demo team (`ENDORA_HQ_DEMO = 0` turns it off), keeps
+its own database in a named volume (`ENDORA_HQ_DIR` for a host folder), and makes its own token
+for the node in a volume only the two mount, so there is no secret to keep. The console's
+**HQ** screen shows the office; the `endora` Ansible role does the same with `endora_hq: true`.
+
 ### Optional: the mail
 
 Set **`ENDORA_MAIL_DIR`** in `local.mk` to the read-only mail copy the ansible-nas
