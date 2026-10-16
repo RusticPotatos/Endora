@@ -1,6 +1,6 @@
 [package]
 name = "endora-sound"
-description = "Sound context (ADR 0103): sources, speakers and the wires between them, the groups they make, and the mix"
+description = "Sound context (ADR 0104): sources, speakers and the wires between them, the groups they make, and the mix"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

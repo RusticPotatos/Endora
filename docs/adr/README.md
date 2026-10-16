@@ -213,7 +213,7 @@ of an existing record and take the next number.
 | [0100](0100-the-clean-slate.md) | The clean slate | — |
 | [0101](0101-the-brain.md) | The brain | — |
 | [0102](0102-endora-hq.md) | Endora HQ | — |
-| [0103](0103-endora-sound.md) | Endora sound | — |
+| [0104](0104-endora-sound.md) | Endora sound | — |
 
 The forty-eight decisions these consolidate are in [archive/](archive/) — kept in full,
 because the reasoning that produced a rule is the reason it survives an argument later.

@@ -4,7 +4,7 @@
 use core::fmt;
 use std::collections::{BTreeMap, BTreeSet};
 
-/// How many AirPlay senders the hub runs: four stock OwnTone instances (ADR 0103). Each
+/// How many AirPlay senders the hub runs: four stock OwnTone instances (ADR 0104). Each
 /// plays one group, so no more than this many groups can include an AirPlay speaker.
 pub const SENDERS: usize = 4;
 

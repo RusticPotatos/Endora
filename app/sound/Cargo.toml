@@ -1,6 +1,6 @@
 [package]
 name = "endora-sound-hub"
-description = "endora-sound (ADR 0103): the sound hub. Its own container and state; it works without Endora, and the Endora node is its remote."
+description = "endora-sound (ADR 0104): the sound hub. Its own container and state; it works without Endora, and the Endora node is its remote."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

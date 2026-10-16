@@ -1,4 +1,4 @@
-//! endora-sound (ADR 0103): the sound hub. It holds the patchbay (sources, speakers and the
+//! endora-sound (ADR 0104): the sound hub. It holds the patchbay (sources, speakers and the
 //! wires between them) in its own state file and answers only those holding its token: the
 //! Endora node, which is its remote. Nothing here plays sound yet; the mixer's engine comes
 //! next, and watches the patchbay's revision.
