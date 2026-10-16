@@ -1,0 +1,17 @@
+Art in this folder, and where it comes from
+
+Office furniture, floors and carpets: Pixel Agents
+  https://github.com/pixel-agents-hq/pixel-agents (commit afed339, 16 Oct 2026)
+  Copyright (c) 2026 Pablo De Lucca and contributors. MIT License, full text in
+  LICENSE-pixel-agents.txt, which must travel with any copy of these files.
+
+Characters (characters/char_0.png to char_5.png): Pixel Agents, based on
+  "MetroCity - Free Top Down Character Pack" by JIK-A-4,
+  https://jik-a-4.itch.io/metrocity-free-topdown-character-pack
+  The original pack is listed as Creative Commons Zero v1.0 Universal (CC0).
+
+Not included on purpose: the Pixel Agents pet sprites (they resemble other
+companies' mascots) and its bundled pixel font (no licence stated).
+
+Everything else on the page (the ping-pong table, server rack, neon sign, burn
+gauge, kill switch, windows, whiteboard and walls) is drawn by the page itself.

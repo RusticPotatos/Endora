@@ -1,0 +1,16 @@
+[package]
+name = "endora-team"
+description = "Team context (Endora HQ): goals, tasks, members, wakes, runs, the tick, the budget ledger and the event feed"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+rusqlite = { version = "0.40", features = ["bundled"] }
+serde_json = "1"
+
+[lints]
+workspace = true

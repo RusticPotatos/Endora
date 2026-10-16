@@ -53,6 +53,16 @@ kept on the person's local hour across clock changes. Off by default; the person
 whether it runs and when. The check-in, the nightly loop and the model-tuning sweep were
 removed in the clean slate (ADR 0100).
 
+## Team
+
+`domains/team` — **Endora HQ**'s team core (ADR 0102): goals and the tree of tasks under them,
+members and their roles, claiming (one atomic step, one owner), threads, wakes and their
+receipts (queued, folded, held, refused, started, finished), runs, the tick, the append-only
+budget ledger, the owner's desk, the kill switch and the event feed. It has its own SQLite
+store and depends on nothing else in the workspace: HQ is its own service, and talks to the
+Endora node only over its API. Done is never a member's word: the gate passes and a different
+member approves. A simulated runner (scripted turns, no model) drives its tests.
+
 ## Platform
 
 `domains/platform` — the **audit trail** (what was proposed, what policy decided,

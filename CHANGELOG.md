@@ -9,6 +9,18 @@ tagged release.
 
 ### Added
 
+- **Endora HQ's team core** ([ADR 0102](docs/adr/0102-endora-hq.md), phase 1 of
+  [its spec](docs/plans/endora-hq.md)): `domains/team`, with no models yet. A team works
+  towards goals through a tree of tasks; a task has one owner at a time, taken in one atomic
+  step; every turn starts with a wake that leaves a receipt (queued, folded into the member's
+  own turn, held behind another member's, refused and why, started, finished). The tick
+  starts queued turns within each member's slots, the runner's capacity and the day's budget,
+  retries a vanished turn twice a minute apart, stops one that runs too long, nudges stalled
+  work once and then puts it on the owner's desk. Money is an append-only ledger: reserved
+  before a turn, used during it, and a turn that crosses what it reserved is stopped then.
+  Done needs the gate and a review by a different member. The kill switch stops every turn
+  and turns every wake away until the owner resumes. A simulated runner drives the tests.
+
 - **The brain** ([ADR 0101](docs/adr/0101-the-brain.md)). What Endora knows about you is now a
   folder of markdown pages with its own git history: `memory.md` (what you told it and what it
   knows best, read on every turn), an index, a log, and pages it creates and organises itself,
