@@ -160,6 +160,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // A consistent copy of the database every night, for the house's backup to find.
     api::spawn_snapshots(state.clone(), std::path::PathBuf::from(&db_path));
     api::spawn_research_worker(state.clone());
+    // What it noted, organised: page summaries written again in quiet time (ADR 0101).
+    api::spawn_brain_folding(state.clone());
     api::spawn_homelab(state.clone());
     // The mail (ADR 0097): a read-only copy mounted at /mail, read by the local model only.
     // Nothing happens without the copy.

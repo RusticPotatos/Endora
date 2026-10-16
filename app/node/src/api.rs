@@ -113,6 +113,10 @@ pub struct AppState {
     pub mail_copy: Option<Arc<endora_mail::MaildirCopy>>,
     /// The quarantined reader: the local model, with no tools and none of the person's context.
     pub mail_reader: Option<Arc<dyn endora_application::UntrustedReader + Send + Sync>>,
+    /// The local model as a plain writer, for folding the brain's pages in quiet time
+    /// (ADR 0101): the model chosen on the AI screen, always on the local endpoint, because
+    /// the pages are private.
+    pub local_writer: Arc<dyn endora_application::UntrustedReader + Send + Sync>,
     /// The house's calendar, read at most once an hour and shared by the mail reader, the
     /// brief and the mail screen (ADR 0097).
     pub(crate) calendar: Arc<KeptHouseCalendar>,
@@ -175,6 +179,9 @@ impl AppState {
         let schedules = Arc::new(endora_scheduling::ScheduleStore::new(store.db()));
         let understanding = Arc::new(endora_understanding::UnderstandingStore::new(store.db()));
         let config = Arc::new(endora_capabilities::ConfigStore::new(store.db()));
+        // The brain's pages are private: folded by the local model, never a cloud one.
+        let local_writer: Arc<dyn endora_application::UntrustedReader + Send + Sync> =
+            Arc::new(MailReader::new(config.clone()));
         let calendar = Arc::new(endora_application::usecases::KeptCalendar::new(
             workers::HouseCalendar(config.clone()),
             *clock,
@@ -269,6 +276,7 @@ impl AppState {
             mail_store,
             mail_copy: None,
             mail_reader: None,
+            local_writer,
             calendar,
         }
     }

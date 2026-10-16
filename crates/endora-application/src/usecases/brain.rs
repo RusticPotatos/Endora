@@ -2,6 +2,7 @@
 //! learned onto the page it belongs on.
 
 use super::*;
+use crate::ports::UntrustedReader;
 use endora_understanding::PagePath;
 use endora_understanding::domain::brain;
 
@@ -166,6 +167,133 @@ pub fn forget_what_it_learned(brain: &impl Brain, when: &str) -> Result<usize, A
         )?;
     }
     Ok(pages)
+}
+
+/// Why a change was a note from chat: the one kind of change a fold follows.
+const NOTED: &str = "noted from chat";
+/// Why a change was the person's own edit in the console.
+const THEIRS: &str = "edited by you";
+/// The longest summary a fold may write. A summary is a few sentences; anything longer
+/// was not a summary.
+const LONGEST_SUMMARY: usize = 1_200;
+
+const FOLD_INSTRUCTIONS: &str = "Below is one page of notes about a person: a title, a \
+summary, and a dated timeline of facts. Write the summary again so it says what is true now, \
+in two to five plain sentences that address them as 'you'. A later line wins over an earlier \
+one. Use only what the page says; add nothing. Reply with the summary alone: no title, no \
+heading, no list, no preamble.";
+
+const KNOWS_INSTRUCTIONS: &str = "Below is a list of pages of notes about a person, one line \
+each. Pick the few things that matter most for helping them day to day and write each as one \
+short line that addresses them as 'you'. At most twelve lines. Use only what the list says. \
+Reply with the lines alone, one per line, no bullets, no numbering, no preamble.";
+
+/// Folds one page whose timeline has grown since its summary was written: the local model
+/// writes the summary again from the page, and nothing else on the page moves. A page whose
+/// latest change was the person's own is left alone. After a fold, memory's "What I know
+/// best" is written again from the page list, unless the person has made it theirs (their
+/// edit was memory's latest change and the section is not empty). Returns the page folded,
+/// if any; one page at a time, so a quiet hour is never one long hold on the model.
+///
+/// # Errors
+/// [`AppError::Repository`] if the brain cannot be read or written. A model that cannot be
+/// reached, or that answers with something that is not a summary, folds nothing.
+pub fn fold_one_page(
+    brain: &impl Brain,
+    reader: &dyn UntrustedReader,
+    today: &str,
+) -> Result<Option<PagePath>, AppError> {
+    let mut due = None;
+    for page in brain.pages()? {
+        if page.path.is_memory() {
+            continue;
+        }
+        let last = brain.history(&page.path)?;
+        if last.first().is_some_and(|change| change.why == NOTED) {
+            due = Some(page.path);
+            break;
+        }
+    }
+    let Some(path) = due else {
+        return Ok(None);
+    };
+    let Some(text) = brain.read(&path)? else {
+        return Ok(None);
+    };
+    let Ok(written) = reader.read(FOLD_INSTRUCTIONS, &text) else {
+        return Ok(None);
+    };
+    let Some(summary) = a_summary(&written) else {
+        return Ok(None);
+    };
+    brain.change(&path, today, "summary folded", &mut |text| {
+        text.map(|text| brain::with_summary(text, &path, &summary))
+    })?;
+    refresh_what_it_knows_best(brain, reader, today)?;
+    Ok(Some(path))
+}
+
+/// What the model wrote, if it is a summary: some words, not too many, and no structure that
+/// would rewrite the page around it.
+fn a_summary(written: &str) -> Option<String> {
+    let lines: Vec<&str> = written
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect();
+    if lines.is_empty() || lines.iter().any(|line| line.starts_with('#')) {
+        return None;
+    }
+    let summary = lines.join(" ");
+    (summary.chars().count() <= LONGEST_SUMMARY).then_some(summary)
+}
+
+fn refresh_what_it_knows_best(
+    brain: &impl Brain,
+    reader: &dyn UntrustedReader,
+    today: &str,
+) -> Result<(), AppError> {
+    let memory = PagePath::memory();
+    let text = brain.read(&memory)?.unwrap_or_else(brain::new_memory);
+    let theirs = brain
+        .history(&memory)?
+        .first()
+        .is_some_and(|change| change.why == THEIRS);
+    if theirs && !brain::section(&text, brain::KNOWS).is_empty() {
+        return Ok(());
+    }
+    let pages: Vec<String> = brain
+        .pages()?
+        .into_iter()
+        .filter(|page| !page.path.is_memory())
+        .map(|page| format!("{}: {}", page.title, page.line))
+        .collect();
+    if pages.is_empty() {
+        return Ok(());
+    }
+    let Ok(written) = reader.read(KNOWS_INSTRUCTIONS, &pages.join("\n")) else {
+        return Ok(());
+    };
+    let lines: Vec<String> = written
+        .lines()
+        .map(|line| line.trim().trim_start_matches(['-', '*', '•']).trim())
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .filter_map(|line| brain::one_fact(line).ok())
+        .take(brain::MOST_MEMORY_LINES)
+        .collect();
+    if lines.is_empty() {
+        return Ok(());
+    }
+    brain.change(
+        &memory,
+        today,
+        "what it knows best, refreshed",
+        &mut |text| {
+            let text = text.map_or_else(brain::new_memory, str::to_owned);
+            Some(brain::with_section(&text, brain::KNOWS, &lines))
+        },
+    )?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -333,6 +461,113 @@ mod tests {
         assert!(delete_page(&brain, "memory", "").is_err());
         assert!(delete_page(&brain, "routine", "2026-10-16").unwrap());
         assert!(edit_page(&brain, "../x", "y", "").is_err());
+    }
+
+    /// The local model, as far as folding needs it: a summary for a page, lines for memory.
+    struct Writes {
+        summary: &'static str,
+        knows: &'static str,
+        asked: std::cell::RefCell<Vec<String>>,
+    }
+    impl crate::UntrustedReader for Writes {
+        fn read(&self, instructions: &str, data: &str) -> Result<String, crate::ProposalError> {
+            self.asked.borrow_mut().push(data.to_owned());
+            if instructions == FOLD_INSTRUCTIONS {
+                return Ok(self.summary.to_owned());
+            }
+            Ok(self.knows.to_owned())
+        }
+    }
+
+    fn writes(summary: &'static str, knows: &'static str) -> Writes {
+        Writes {
+            summary,
+            knows,
+            asked: std::cell::RefCell::new(Vec::new()),
+        }
+    }
+
+    fn noted(brain: &BrainFolder, page: &str, fact: &str) {
+        let mut activity = Vec::new();
+        note_what_it_learned(
+            brain,
+            vec![proposed(fact, crate::BeliefKind::Pattern, page)],
+            "2026-10-16",
+            &mut activity,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn a_page_that_grew_is_folded_and_what_it_knows_best_follows() {
+        let brain = BrainFolder::temporary().unwrap();
+        noted(&brain, "hobbies/watches", "You collect dive watches");
+        noted(&brain, "hobbies/watches", "You want a GMT next");
+        let model = writes(
+            "You collect dive watches and want a GMT next.",
+            "- You collect dive watches\n- You are busy Monday to Friday",
+        );
+        let folded = fold_one_page(&brain, &model, "2026-10-17").unwrap();
+        assert_eq!(folded.unwrap().as_str(), "hobbies/watches");
+        let page = brain
+            .read(&PagePath::parse("hobbies/watches").unwrap())
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            brain::summary_of(&page),
+            "You collect dive watches and want a GMT next."
+        );
+        assert_eq!(
+            brain::timeline_of(&page).len(),
+            2,
+            "the timeline is untouched"
+        );
+        let memory = brain.read(&PagePath::memory()).unwrap().unwrap();
+        assert_eq!(
+            brain::section(&memory, brain::KNOWS),
+            ["You collect dive watches", "You are busy Monday to Friday"]
+        );
+        // Folded, it is not due again until something new is noted.
+        assert_eq!(fold_one_page(&brain, &model, "2026-10-17").unwrap(), None);
+    }
+
+    #[test]
+    fn a_page_they_edited_and_a_summary_that_is_not_one_are_left_alone() {
+        let brain = BrainFolder::temporary().unwrap();
+        noted(&brain, "routine", "You are up at six");
+        edit_page(&brain, "routine", "# Routine\n\nMine.\n", "2026-10-16").unwrap();
+        let model = writes("Something else.", "You are up at six");
+        assert_eq!(fold_one_page(&brain, &model, "2026-10-17").unwrap(), None);
+        assert!(
+            model.asked.borrow().is_empty(),
+            "the model was not even asked"
+        );
+
+        noted(&brain, "hobbies/tech", "You like small computers");
+        let model = writes("## A heading\nthat would rewrite the page", "x");
+        assert_eq!(fold_one_page(&brain, &model, "2026-10-17").unwrap(), None);
+        let page = brain
+            .read(&PagePath::parse("hobbies/tech").unwrap())
+            .unwrap()
+            .unwrap();
+        assert_eq!(brain::summary_of(&page), "You like small computers");
+    }
+
+    #[test]
+    fn what_it_knows_best_is_theirs_once_they_have_written_it() {
+        let brain = BrainFolder::temporary().unwrap();
+        let mut memory = brain.read(&PagePath::memory()).unwrap().unwrap();
+        memory = brain::with_section(&memory, brain::KNOWS, &["My own line".to_owned()]);
+        edit_page(&brain, "memory", &memory, "2026-10-16").unwrap();
+        noted(&brain, "routine", "You are up at six");
+        let model = writes("You are up at six.", "Something the model chose");
+        assert!(
+            fold_one_page(&brain, &model, "2026-10-17")
+                .unwrap()
+                .is_some()
+        );
+        let memory = brain.read(&PagePath::memory()).unwrap().unwrap();
+        assert_eq!(brain::section(&memory, brain::KNOWS), ["My own line"]);
     }
 
     #[test]

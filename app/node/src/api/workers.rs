@@ -592,6 +592,59 @@ pub fn spawn_mail_reader(state: AppState) {
     });
 }
 
+/// Folds the brain's pages in quiet time (ADR 0101): every ten minutes, while the person is
+/// quiet and no turn is running, the local model writes one grown page's summary again and,
+/// after it, what Endora knows best. Each fold is a line in Activity.
+pub fn spawn_brain_folding(state: AppState) {
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(std::time::Duration::from_secs(10 * 60));
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            ticker.tick().await;
+            let _ = fold_once(&state).await;
+        }
+    });
+}
+
+/// One tick of [`spawn_brain_folding`]. Returns the page it folded, if any.
+pub(super) async fn fold_once(state: &AppState) -> Option<endora_application::PagePath> {
+    let now = state.clock.now();
+    if !quiet_enough(state, now) {
+        return None;
+    }
+    let Ok(turn) = state.turn_lock.clone().try_lock_owned() else {
+        return None;
+    };
+    let knowledge = state.knowledge.clone();
+    let writer = state.local_writer.clone();
+    let clock = state.clock.clone();
+    let folded = tokio::task::spawn_blocking(move || {
+        let _turn = turn;
+        usecases::fold_one_page(
+            knowledge.as_ref(),
+            writer.as_ref(),
+            &usecases::today(clock.as_ref()),
+        )
+    })
+    .await
+    .ok()?;
+    let page = match folded {
+        Ok(Some(page)) => page,
+        Ok(None) => return None,
+        Err(error) => {
+            eprintln!("brain: could not fold a page ({error})");
+            return None;
+        }
+    };
+    let _ = endora_application::EventLog::record(
+        state.events.as_ref(),
+        now,
+        &format!("Wrote the summary of {page} again, from what it has noted"),
+    );
+    let _ = state.changes.send(());
+    Some(page)
+}
+
 /// One tick of [`spawn_mail_reader`]. Returns what it read, if it read anything.
 pub(super) async fn read_mail_once(state: &AppState) -> Option<endora_mail::Digest> {
     const RECENT_MS: i64 = 2 * 24 * 60 * 60 * 1000;
