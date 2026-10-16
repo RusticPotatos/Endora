@@ -190,7 +190,10 @@ impl LlmButler {
             || b.contains("127.0.0.1");
         if local {
             if let Some(obj) = body.as_object_mut() {
-                obj.insert("keep_alive".to_owned(), json!("30m"));
+                // Until Ollama needs the memory for another model: a request's own value
+                // replaces the server's, so anything shorter here would undo a server set to
+                // keep its models loaded.
+                obj.insert("keep_alive".to_owned(), json!(-1));
             }
         }
         body
@@ -2372,14 +2375,16 @@ mod tests {
     #[test]
     fn keep_alive_is_added_for_local_endpoints_only() {
         let body = || json!({ "model": "m", "messages": [] });
-        // A local Ollama endpoint keeps the model resident.
+        // A local Ollama endpoint keeps the model resident until Ollama needs the memory. A
+        // request's own value replaces the server's, so "30m" here undid the server's "keep it
+        // loaded" and the first message after half an hour paid a 13-second reload.
         let local = LlmButler::new(
             "http://host.docker.internal:11434/v1".to_owned(),
             "m".to_owned(),
         );
-        assert_eq!(local.with_keep_alive(body())["keep_alive"], "30m");
+        assert_eq!(local.with_keep_alive(body())["keep_alive"], -1);
         let local2 = LlmButler::new("http://127.0.0.1:11434/v1".to_owned(), "m".to_owned());
-        assert_eq!(local2.with_keep_alive(body())["keep_alive"], "30m");
+        assert_eq!(local2.with_keep_alive(body())["keep_alive"], -1);
         // A cloud endpoint is never sent the unknown field (it would 400).
         let cloud = LlmButler::new("https://api.openai.com/v1".to_owned(), "m".to_owned());
         assert!(cloud.with_keep_alive(body()).get("keep_alive").is_none());
