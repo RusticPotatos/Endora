@@ -166,6 +166,33 @@ pub(super) async fn correct_belief(
     Ok(Json(json!({ "corrected": true })))
 }
 
+#[derive(Deserialize)]
+pub(super) struct ForgetRequest {
+    #[serde(default)]
+    confirm: bool,
+}
+
+/// Deletes everything Endora learned about the person, keeping what they told it themselves
+/// (their preferences, where they are, how to address them). The owner's "start fresh",
+/// 2026-10-16. Needs `{"confirm": true}`, like the full purge.
+pub(super) async fn forget_what_it_learned(
+    State(state): State<AppState>,
+    Json(req): Json<ForgetRequest>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    if !req.confirm {
+        return Err(ApiError(AppError::BadRequest {
+            message: r#"send {"confirm": true} to delete everything Endora learned"#.to_owned(),
+        }));
+    }
+    let understanding = state.understanding.clone();
+    let forgot = blocking(move || {
+        endora_application::BeliefRepository::forget_all(understanding.as_ref())
+            .map_err(AppError::Repository)
+    })
+    .await?;
+    Ok(Json(json!({ "forgot": forgot })))
+}
+
 pub(super) fn intention_json(i: &endora_application::Intention) -> serde_json::Value {
     json!({
         "id": i.id().value().to_string(),

@@ -397,28 +397,11 @@ function modelsSection() {
       <div class="row" style="justify-content:flex-end;"><button class="primary" data-act="deepsave">Save deep</button></div>
     </div>
     </details>
-
-    <details class="adv" style="margin-top:14px;">
-      <summary>Auto-tune · experimental</summary>
-    <div class="note">Scores the models on your endpoint and adopts the best local one on its own. Takes a few minutes and uses the GPU — watch <a class="link" data-act="go:audit">what it has done</a> for the result.</div>
-    <div class="card model-card">
-      <label class="mix-toggle">
-        <input id="tune-nightly" type="checkbox" ${TUNE_SCHED.enabled ? "checked" : ""} />
-        <span>Run it <b>automatically overnight</b> and adopt the best local model on its own.</span>
-      </label>
-      <div class="field"><label>Hour to run (UTC)</label>
-        <select id="tune-hour">${Array.from({ length: 24 }, (_, h) => `<option value="${h}" ${h === (TUNE_SCHED.hour_utc ?? 4) ? "selected" : ""}>${String(h).padStart(2, "0")}:00 UTC</option>`).join("")}</select></div>
-      <div class="row" style="justify-content:space-between;align-items:center;">
-        <button class="ghost" data-act="modeltune">Run now</button>
-        <button class="primary" data-act="tunesave">Save schedule</button>
-      </div>
-    </div>
     </details>`;
 }
 
-// When Endora reaches out on its own — the daily brief, the overnight review, and
-// the check-in cadence. Local hours shown, saved as UTC. Lives in Settings so the
-// chat screen stays just the conversation.
+// When Endora reaches out on its own: the daily brief. Local hours shown, saved as UTC. (The
+// overnight review and the check-ins were removed on 2026-10-16.)
 function proactivitySection() {
   const tzOff = new Date().getTimezoneOffset() / 60;
   const hourSelect = (id, change, hourUtc, on) => {
@@ -429,7 +412,6 @@ function proactivitySection() {
     }).join("");
     return `<select id="${id}" data-change="${change}" style="width:auto;"><option value="off" ${!on ? "selected" : ""}>Off</option>${opts}</select>`;
   };
-  const cadence = CHECKIN.enabled ? String(CHECKIN.interval_ms) : "off";
   const row = (label, note, control) => `
     <div class="row" style="align-items:center; gap:10px; margin-bottom:12px;">
       <div class="grow"><div class="title" style="font-weight:500;">${label}</div><div class="sub">${note}</div></div>
@@ -439,8 +421,6 @@ function proactivitySection() {
     <h3>When Endora reaches out</h3>
     <div class="card">
       ${row("Daily brief", "weather · safety · news, once a day", hourSelect("brief-time", "briefsched", BRIEF_SCHED.hour_utc, BRIEF_SCHED.enabled))}
-      ${row("Nightly review", "reviews the day and reflects, overnight", hourSelect("night-time", "nightsched", NIGHT_SCHED.hour_utc, NIGHT_SCHED.enabled))}
-      ${row("Check-ins", "starts a conversation now and then", `<select id="checkin-cadence" data-change="checkin" style="width:auto;"><option value="off" ${cadence === "off" ? "selected" : ""}>Off</option><option value="120000" ${cadence === "120000" ? "selected" : ""}>Every 2 min</option><option value="3600000" ${cadence === "3600000" ? "selected" : ""}>Hourly</option><option value="86400000" ${cadence === "86400000" ? "selected" : ""}>Daily</option></select>`)}
       <div class="row" style="justify-content:flex-end;"><button class="ghost" data-act="brief">${icon("sparkle", 15)} Brief me now</button></div>
     </div>`;
 }
@@ -483,94 +463,6 @@ function viewData() {
         <span class="grow" style="text-align:left;">Delete everything<span class="sub" style="display:block;font-weight:400;">every message, belief and record — this cannot be undone</span></span>
       </button>
     </div>`;
-}
-
-// Things the butler said WITHOUT being asked — check-ins, the daily brief, the
-// overnight note — collected like voicemail: read them, or have them read to you.
-//
-// Derived, not stored: a butler message is unprompted when the message before it is
-// not the person's. A reply always follows something you said; a check-in does not.
-// So the inbox needs no new table and no flag anyone has to remember to set — the
-// same reason repair proposals are derived (ADR 0054).
-function unpromptedMessages() {
-  const list = messages();
-  const out = [];
-  for (let i = 0; i < list.length; i++) {
-    if (list[i].role !== "butler") continue;
-    const before = i > 0 ? list[i - 1] : null;
-    if (before && before.role === "user") continue; // a reply, not an approach
-    if (isDegraded(list[i].text)) continue; // a failure, not an approach
-    out.push(list[i]);
-  }
-  return out.reverse(); // newest first: the latest at the top, older below
-}
-
-// Whether a message is the butler reporting it could not reach its model.
-//
-// Those are real and belong in the conversation, but an inbox is what Endora chose to
-// say to you — and "I couldn't reach my language model" is the opposite: it is what
-// happened when it could not choose anything. Four of the twenty items in this inbox
-// were that sentence, which is how an inbox becomes something nobody opens.
-function isDegraded(text) {
-  return (text || "").startsWith("Sorry — I couldn't reach my language model");
-}
-
-// How much of the inbox has been seen. Kept on the device rather than the server: it
-// is a reading marker, not something Endora knows about the person, and it should not
-// end up in an export of their memory.
-function inboxSeenAt() {
-  return Number(localStorage.getItem("endora.inboxSeen") || 0);
-}
-
-function unreadCount() {
-  const seen = inboxSeenAt();
-  return unpromptedMessages().filter((m) => (m.at_ms || 0) > seen).length;
-}
-
-// Which day a message belongs to, in words — "Today", "Yesterday", or the date. An
-// inbox that fills up through the day reads better in days than in timestamps.
-function inboxDay(at) {
-  const when = new Date(at);
-  const midnight = (d) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
-  const days = Math.round((midnight(new Date()) - midnight(when)) / 86400000);
-  if (days === 0) return "Today";
-  if (days === 1) return "Yesterday";
-  return when.toLocaleDateString(undefined, { weekday: "long", month: "short", day: "numeric" });
-}
-
-function viewInbox() {
-  const msgs = unpromptedMessages();
-  const seen = inboxSeenAt();
-  let day = "";
-  const rows = msgs.map((m) => {
-    const unread = (m.at_ms || 0) > seen;
-    // A day heading whenever the day changes. The list is newest first, so these fall
-    // in order without sorting anything twice.
-    const today = inboxDay(m.at_ms);
-    const heading = today === day ? "" : `<h3 style="margin:18px 0 8px;">${esc(today)}</h3>`;
-    day = today;
-    const time = new Date(m.at_ms).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
-    return `${heading}
-    <div class="card"${unread ? ` style="border-color: color-mix(in srgb, var(--accent) 45%, var(--line));"` : ""}>
-      <div class="row" style="align-items:flex-start;gap:10px;">
-        <div class="grow">
-          <div class="sub">${esc(time)}${unread ? ` · <strong>new</strong>` : ""}</div>
-          <div class="title" style="font-weight:400;white-space:pre-wrap;">${esc(m.text)}</div>
-        </div>
-        <button class="ghost" data-act="play:msg:${m.id}" title="read this aloud">${icon("speakerOn", 15)}</button>
-      </div>
-    </div>`;
-  });
-  // Opening the inbox is what marks it read — nothing to click, and it cannot mark
-  // something read that arrived after this render.
-  if (msgs.length) {
-    localStorage.setItem("endora.inboxSeen", String(msgs[0].at_ms || Date.now()));
-  }
-  return `
-    ${crumbs([{ label: "Home", act: "go:chat" }, { label: "Inbox" }])}
-    <h2>Inbox</h2>
-    <div class="note" style="margin-bottom:10px;">What Endora sent you through the day, on its own — check-ins, your brief, and what it looked into overnight. Replies to things you asked stay in the conversation on Home.</div>
-    ${listOr(rows, "Nothing yet. When Endora has something worth saying unprompted, it lands here.")}`;
 }
 
 // What Endora made of the mail (ADR 0097): what is worth a look, then every bucket folded.

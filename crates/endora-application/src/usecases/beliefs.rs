@@ -36,6 +36,14 @@ pub(super) fn record_formed_beliefs(
         if pinned_to_a_day(&belief.statement) {
             continue;
         }
+        // Only durable kinds are understanding (owner, 2026-10-16). An "intent" was a one-off
+        // question filed as a goal of theirs, and "other" a passing remark or an event.
+        if matches!(
+            belief.kind,
+            crate::BeliefKind::Intent | crate::BeliefKind::Other
+        ) {
+            continue;
+        }
         if let Some(mut prior) = existing
             .iter()
             .find(|b| similar(b.statement(), &belief.statement))

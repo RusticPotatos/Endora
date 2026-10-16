@@ -160,7 +160,7 @@ pub(super) async fn ai_overview(
     let config = state.config.clone();
     let store = state.store.clone();
     let clock = state.clock.clone();
-    let mail_on = state.own_work && state.mail_reader.is_some();
+    let mail_on = state.mail_reader.is_some();
     let out = blocking(move || {
         use endora_application::Clock as _;
         let butler = ButlerModelConfigRepository::get(config.as_ref())

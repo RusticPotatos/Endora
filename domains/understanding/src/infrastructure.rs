@@ -388,6 +388,13 @@ impl BeliefRepository for UnderstandingStore {
         let conn = self.db.lock()?;
         all_beliefs(&conn)
     }
+
+    fn forget_all(&self) -> Result<usize, RepositoryError> {
+        self.db
+            .lock()?
+            .execute("DELETE FROM beliefs", [])
+            .map_err(backend)
+    }
 }
 
 impl NotionRepository for UnderstandingStore {
@@ -1027,6 +1034,43 @@ mod tests {
                 .unwrap()
         };
         assert!(!columns.iter().any(|name| name == "origin"));
+    }
+
+    #[test]
+    fn forgetting_what_it_learned_deletes_every_belief_and_keeps_what_they_said() {
+        use crate::domain::{Belief, BeliefKind, Confidence};
+        let db = Db::open_in_memory().unwrap();
+        migrate(&db).unwrap();
+        let store = UnderstandingStore::new(db);
+        for (id, said) in [(1, "prefers Fahrenheit"), (2, "wants to know the score")] {
+            BeliefRepository::save(
+                &store,
+                &Belief::new(
+                    BeliefId::new(id),
+                    said,
+                    BeliefKind::Preference,
+                    Confidence::High,
+                    "said so",
+                    Timestamp::from_unix_millis(1),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        }
+        PreferenceRepository::save(
+            &store,
+            &Preference::new(
+                PreferenceId::new(3),
+                "based in New York",
+                PreferenceKind::Context,
+                Timestamp::from_unix_millis(1),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(store.forget_all().unwrap(), 2);
+        assert!(BeliefRepository::list(&store).unwrap().is_empty());
+        assert_eq!(PreferenceRepository::list_all(&store).unwrap().len(), 1);
     }
 
     #[test]

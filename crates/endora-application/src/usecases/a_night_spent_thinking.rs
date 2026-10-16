@@ -41,6 +41,9 @@ impl BeliefRepository for Beliefs {
     fn list(&self) -> Result<Vec<Belief>, RepositoryError> {
         Ok(self.0.borrow().clone())
     }
+    fn forget_all(&self) -> Result<usize, RepositoryError> {
+        Ok(self.0.borrow_mut().drain(..).count())
+    }
 }
 
 fn gym_record() -> TheRecord {

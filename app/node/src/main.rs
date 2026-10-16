@@ -129,7 +129,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         butler,
     )
     .with_brain(brain)
-    .with_own_work(std::env::var("ENDORA_OWN_WORK").ok().as_deref() == Some("1"))
     .with_time_zone(time_zone);
 
     println!("{}", endora_application::platform_identity());
@@ -143,12 +142,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     api::spawn_research_worker(state.clone());
     api::spawn_goal_worker(state.clone());
     api::spawn_homelab(state.clone());
-    // Looking into things nobody asked about is off until the owner turns it on (ADR 0094).
-    // Everything that makes it safe is already in the goal worker; this only lets it begin.
     // The mail (ADR 0097): a read-only copy mounted at /mail, read by the local model only.
-    // Nothing happens without both the copy and the switch.
+    // Nothing happens without the copy.
     let state = match mail_copy("/mail") {
-        Some(copy) if state.own_work => {
+        Some(copy) => {
             println!("mail: reading the copy at /mail with the local model, in quiet time");
             // The model chosen on the AI screen, always on the local endpoint.
             let reader: Arc<dyn endora_application::UntrustedReader + Send + Sync> =
@@ -159,12 +156,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     if state.mail_copy.is_some() {
         api::spawn_mail_reader(state.clone());
-    }
-    if state.own_work {
-        println!(
-            "own work: on — it will ask failed questions again, and look into what it understands, when you have been quiet"
-        );
-        api::spawn_own_work(state.clone());
     }
 
     let app = api::app(state);

@@ -16,20 +16,16 @@ function messages() {
   return (DB && DB.messages) || [];
 }
 let ACTIVITY = [];             // latest /v1/activity feed (newest first)
-let CHECKIN = { enabled: false, interval_ms: 0 }; // proactive check-in cadence
 let CAPS = [];                 // the butler's capabilities/skills (modules)
 let MCP_SERVERS = { servers: [] }; // connected MCP servers + their tools (ADR 0054)
 let RECIPES = [];              // the person's own capabilities — five fields, no code (ADR 0071)
 let AUTONOMY = { auto_external: true, auto_consequential: false }; // the autonomy envelope (ADR 0051)
 let BRIEF_SCHED = { enabled: false, hour_utc: 12 }; // daily-brief schedule
-let NIGHT_SCHED = { enabled: false, hour_utc: 3 }; // nightly self-improvement loop (ADR 0051)
 let DEEP_MODEL = { configured: false, key_set: false, url: "", model: "" }; // optional bigger AI
 let MODEL_CONFIG = { configured: false, key_set: false, base_url: "", mixture: false,
   single: {}, router: {}, synth: {} }; // the butler's own models, editable at runtime (ADR 0055)
-let TUNE_SCHED = { enabled: false, hour_utc: 4 }; // nightly self-improving model tune (ADR 0055)
 let UNDERSTANDING = [];        // Endora's beliefs about the person (the home surface)
 let OUTCOMES = [];             // what Endora DID, and what it saw afterwards (ADR 0053)
-let INTENTIONS = [];           // what Endora is pursuing, and has pursued (ADR 0052)
 let RESEARCH = { items: [] };   // explicit durable research assignments (ADR 0077)
 let RESEARCH_READY = { ready: false, modes: [], search_tools: [] };
 let RESEARCH_MODE = localStorage.getItem("endora.researchmode") === "1";
@@ -37,7 +33,6 @@ let RESEARCH_PENDING = (() => {
   try { return JSON.parse(localStorage.getItem("endora.researchPending") || "null"); }
   catch (_) { return null; }
 })();
-let NOTIONS = [];              // what Endora is still thinking about (ADR 0057)
 let CONNECTED = [];            // integrations already set up behind the channel (ADR 0058)
 let NEEDS_TOKEN = false;       // this device cannot prove who it is to the node
 let SIGNIN = null;             // whether a password and authenticator are set up

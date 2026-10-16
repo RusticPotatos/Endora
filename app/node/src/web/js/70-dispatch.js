@@ -27,7 +27,6 @@ function render() {
     // Older links: what it remembers is now part of About you.
     : v === "prefs" ? viewUnderstanding()
     : v === "settings" ? viewSettings()
-    : v === "inbox" ? viewInbox()
     : v === "mail" ? viewMail()
     : v === "display" ? viewDisplay()
     : v === "models" ? viewModels()
@@ -620,20 +619,6 @@ async function dispatch(act) {
     // Discover the models an endpoint offers, into its picker.
     if (verb === "discover") { await discoverModels(noun); return; }
     if (verb === "testconn") { await testConnection(noun); return; }
-    // Kick off the self-improving model layer (background; results go to Activity).
-    if (verb === "modeltune") {
-      try { await api("POST", "/v1/model-layer/run", {}); flash("Evaluating your local models — watch Activity for scores and the result.", "ok"); }
-      catch (e) { flash("Couldn't start the tune: " + e.message, "err"); }
-      return;
-    }
-    // Save the nightly auto-tune schedule.
-    if (verb === "tunesave") {
-      const enabled = !!(document.getElementById("tune-nightly") || {}).checked;
-      const hour_utc = Number((document.getElementById("tune-hour") || {}).value || 4);
-      try { await api("POST", "/v1/model-tune/schedule", { enabled, hour_utc }); flash(enabled ? "Nightly auto-tune on." : "Nightly auto-tune off.", "ok"); }
-      catch (e) { flash("Couldn't save the schedule: " + e.message, "err"); }
-      return reload();
-    }
     // Save the butler models. A blank key keeps the stored one; blank sampling
     // fields mean "use the endpoint default". Applies on the next message.
     if (verb === "modelsave") {
@@ -783,9 +768,13 @@ async function dispatch(act) {
     // is deliberately no "remind me later" — that is how a queue starts.
     // Stop working on something. The person's ONLY verb over an intention — there is
     // deliberately no way to create or edit one (ADR 0052).
-    if (verb === "dropintention") {
-      try { await api("POST", `/v1/intentions/${id}/drop`); flash("Alright — I'll leave that.", "ok"); }
-      catch (e) { flash("Couldn't stop that: " + e.message, "err"); }
+    // Start fresh: forget everything Endora learned, keeping what they told it.
+    if (verb === "forgetlearned") {
+      if (!confirm("Forget everything Endora has learned about you? What you told it yourself stays. This can't be undone.")) return;
+      try {
+        const done = await api("POST", "/v1/understanding/forget", { confirm: true });
+        flash(`Forgot ${done.forgot} thing${done.forgot === 1 ? "" : "s"}.`, "ok");
+      } catch (e) { flash("Couldn't forget: " + e.message, "err"); }
       return reload();
     }
     // How an action landed. Offered where the action appears; never asked for, and
@@ -797,14 +786,6 @@ async function dispatch(act) {
       } catch (e) { flash("Couldn't note that: " + e.message, "err"); }
       return reload();
     }
-    // Set the proactive check-in cadence (noun is "off" or an interval in ms).
-    if (verb === "checkin") {
-      const enabled = noun !== "off";
-      const interval_ms = enabled ? Number(noun) : (CHECKIN.interval_ms || 86400000);
-      await api("POST", "/v1/checkin", { enabled, interval_ms });
-      flash(enabled ? "The butler will check in with you." : "Check-ins off.", "ok");
-      return reload();
-    }
     // Daily-brief schedule: `noun` is "off" or a LOCAL hour; convert to UTC.
     if (verb === "briefsched") {
       const enabled = noun !== "off";
@@ -812,15 +793,6 @@ async function dispatch(act) {
       const hour_utc = enabled ? ((Number(noun) + tzOff) % 24 + 24) % 24 : (BRIEF_SCHED.hour_utc || 12);
       await api("POST", "/v1/brief/schedule", { enabled, hour_utc });
       flash(enabled ? "The butler will bring you a daily brief." : "Daily brief off.", "ok");
-      return reload();
-    }
-    // Nightly self-improvement loop (ADR 0051): `noun` is "off" or a LOCAL hour.
-    if (verb === "nightsched") {
-      const enabled = noun !== "off";
-      const tzOff = new Date().getTimezoneOffset() / 60;
-      const hour_utc = enabled ? ((Number(noun) + tzOff) % 24 + 24) % 24 : (NIGHT_SCHED.hour_utc || 3);
-      await api("POST", "/v1/nightly-loop/schedule", { enabled, hour_utc });
-      flash(enabled ? "The butler will review the day and reflect overnight." : "Nightly review off.", "ok");
       return reload();
     }
     if (verb === "create" && noun === "pref") {
@@ -912,14 +884,6 @@ function setupHeader(health) {
     // (Skills, preferences, export) lives inside Settings.
     menu.innerHTML =
       item("go:chat", "chat", "Home") +
-      item(
-        "go:inbox",
-        "inbox",
-        "Inbox",
-        // A count only when there is something unread — a badge showing "0" is just
-        // furniture, and one that never clears is a nag.
-        unreadCount() ? `<span class="pill active">${unreadCount()}</span>` : "",
-      ) +
       item("go:mail", "inbox", "Mail") +
       item("go:music", "music", "Music") +
       item("go:house", "house", "Smart home") +

@@ -70,6 +70,71 @@ async fn handheld_actions_refuse_missing_confirmation_and_do_not_reserve_a_submi
 }
 
 #[tokio::test]
+async fn forgetting_what_it_learned_needs_confirming_and_keeps_what_they_said() {
+    use endora_application::{
+        Belief, BeliefId, BeliefKind, BeliefRepository, Confidence, Preference, PreferenceId,
+        PreferenceKind, PreferenceRepository, Timestamp,
+    };
+    let state = test_state();
+    BeliefRepository::save(
+        state.understanding.as_ref(),
+        &Belief::new(
+            BeliefId::new(1),
+            "wants to know the score",
+            BeliefKind::Intent,
+            Confidence::High,
+            "asked",
+            Timestamp::from_unix_millis(1),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    PreferenceRepository::save(
+        state.understanding.as_ref(),
+        &Preference::new(
+            PreferenceId::new(2),
+            "based in New York",
+            PreferenceKind::Context,
+            Timestamp::from_unix_millis(1),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let router = app(state.clone());
+    let unconfirmed = router
+        .clone()
+        .oneshot(post("/v1/understanding/forget", "{}"))
+        .await
+        .unwrap();
+    assert_eq!(unconfirmed.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(
+        BeliefRepository::list(state.understanding.as_ref())
+            .unwrap()
+            .len(),
+        1
+    );
+
+    let done = router
+        .oneshot(post("/v1/understanding/forget", r#"{"confirm":true}"#))
+        .await
+        .unwrap();
+    assert_eq!(done.status(), StatusCode::OK);
+    assert_eq!(json_body(done).await["forgot"], 1);
+    assert!(
+        BeliefRepository::list(state.understanding.as_ref())
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        PreferenceRepository::list_all(state.understanding.as_ref())
+            .unwrap()
+            .len(),
+        1,
+        "what they told it stays"
+    );
+}
+
+#[tokio::test]
 async fn homelab_is_authenticated_and_unconfigured_by_default() {
     let router = app(test_state());
     let unsigned = router

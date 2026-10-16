@@ -311,18 +311,15 @@ async function reload() {
   // The export snapshot, the derived activity feed, and the everyday settings.
   // Whether the node is mid-turn, asked every reload — the answer that outlives this tab.
   try { NODE_BUSY = !!(await api("GET", "/health")).busy; } catch (_) { NODE_BUSY = false; }
-  const [db, activity, checkin, caps, autonomy] = await Promise.all([
+  const [db, activity, caps, autonomy] = await Promise.all([
     api("GET", "/v1/export"),
     api("GET", "/v1/activity?limit=30"),
-    api("GET", "/v1/checkin"),
     api("GET", "/v1/capabilities"),
     api("GET", "/v1/autonomy"),
   ]);
   try { BRIEF_SCHED = await api("GET", "/v1/brief/schedule"); } catch (_) {}
-  try { NIGHT_SCHED = await api("GET", "/v1/nightly-loop/schedule"); } catch (_) {}
   try { DEEP_MODEL = await api("GET", "/v1/deep-model"); } catch (_) {}
   try { MODEL_CONFIG = await api("GET", "/v1/model-config"); } catch (_) {}
-  try { TUNE_SCHED = await api("GET", "/v1/model-tune/schedule"); } catch (_) {}
   try { MCP_SERVERS = await api("GET", "/v1/mcp/servers"); } catch (_) {}
   // What the next message would send. Only asked for on the chat, since it builds the same
   // context a turn does.
@@ -336,15 +333,12 @@ async function reload() {
   // every message there has ever been so the browser can throw most of them away.
   await loadChatDay(CHAT_DAY);
   ACTIVITY = activity;
-  CHECKIN = checkin;
   CAPS = caps;
   AUTONOMY = autonomy;
   try { UNDERSTANDING = await api("GET", "/v1/understanding"); } catch (_) { UNDERSTANDING = []; }
   try { OUTCOMES = await api("GET", "/v1/outcomes"); } catch (_) { OUTCOMES = []; }
-  try { INTENTIONS = await api("GET", "/v1/intentions"); } catch (_) { INTENTIONS = []; }
   try { RESEARCH = await api("GET", "/v1/research"); } catch (_) { RESEARCH = { items: [] }; }
   try { RESEARCH_READY = await api("GET", "/v1/research/readiness"); } catch (_) {}
-  try { NOTIONS = await api("GET", "/v1/notions"); } catch (_) { NOTIONS = []; }
   try { CONNECTED = await api("GET", "/v1/connect/connected"); } catch (_) { CONNECTED = []; }
   try { SIGNIN = await api("GET", "/v1/session/setup"); } catch (_) { SIGNIN = null; }
   try { REPAIRS = await api("GET", "/v1/repairs"); } catch (_) { REPAIRS = []; }

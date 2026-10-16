@@ -190,6 +190,13 @@ pub trait BeliefRepository {
     /// # Errors
     /// [`RepositoryError`] if the backend fails or stored data is corrupt.
     fn list(&self) -> Result<Vec<Belief>, RepositoryError>;
+
+    /// Deletes every belief, and says how many there were. The person's own preferences are a
+    /// different store and are not touched.
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if the backend fails.
+    fn forget_all(&self) -> Result<usize, RepositoryError>;
 }
 
 /// Persists and retrieves [`Preference`]s — durable things the person wants the

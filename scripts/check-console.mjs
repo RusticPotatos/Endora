@@ -153,7 +153,6 @@ runInContext(
                      settled: true, last_affirmed_ms: 1 }];
   OUTCOMES = [{ id: "42", capability: "home.HassTurnOff", claim: "done",
                 observation: "still on", observed: true, reaction: null, at_ms: 1 }];
-  INTENTIONS = [{ id: "1", summary: "find a running route", state: "active", steps_left: 3 }];
   RESEARCH = { items: ["queued", "running", "retry_wait", "delivered", "blocked",
     "budget_exhausted", "cancelled", "failed"].map((status, index) => ({
       id: String(100 + index), assignment: index === 0 ? "<img src=x onerror=alert(1)>" : "Compare backups",
@@ -259,12 +258,6 @@ runInContext(
   // other screens and would otherwise never be rendered by this check.
   JUST_ENROLLED = "otpauth://totp/Endora:you?secret=AAAA&issuer=Endora";
   JUST_ENROLLED_QR = "<svg xmlns='http://www.w3.org/2000/svg'><rect/></svg>";
-  NOTIONS = [{ id: "1", statement: "the Monday gym block gets cancelled",
-               because: ["message:12", "reading:calendar.rustic"],
-               settles_when: "whether next Monday's block survives",
-               status: "open", created_ms: 1, last_supported_ms: 2 },
-             { id: "2", statement: "a thought that came to nothing", because: ["message:3"],
-               settles_when: "", status: "died", created_ms: 1, last_supported_ms: 1 }];
   REPAIRS = [{ capability: "home.HassTurnOff", target: "kitchen", attempts: 3,
                remedy: "name_the_target" }];
   LANDING = { considered: 50, changed: 8, unchanged: 23, failed: 19, unchecked: 0,
@@ -531,6 +524,24 @@ if (failures.length) {
   const card = (css.match(/\n\s*\.card \{[^}]*\}/) || [""])[0];
   if (!/overflow-wrap:\s*anywhere/.test(card)) {
     console.error("styles: .card lost overflow-wrap, so long links run off the screen again");
+    process.exit(1);
+  }
+}
+
+// The clean slate (owner, 2026-10-16): no Inbox, no check-in or nightly review to switch on,
+// no beliefs listed kind by kind; About you offers to forget what it learned and keeps what
+// they told it.
+{
+  for (const gone of ["go:inbox", "nightsched", "data-change=\"checkin\"", "tunesave", "affirm:belief"]) {
+    if (source.includes(gone)) {
+      console.error(`clean slate: ${gone} is back`);
+      process.exit(1);
+    }
+  }
+  runInContext('UNDERSTANDING = [{ id: "1", statement: "prefers Fahrenheit", kind: "preference" }]', context);
+  const about = runInContext("viewUnderstanding()", context);
+  if (!about.includes("forgetlearned") || !about.includes("1 thing about you")) {
+    console.error("about you: the way to start fresh is missing");
     process.exit(1);
   }
 }

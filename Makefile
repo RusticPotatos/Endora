@@ -68,16 +68,14 @@ export COMPOSE_PROJECT_NAME
 ENDORA_DATA_DIR ?=
 export ENDORA_DATA_DIR
 
-# Endora looking into things on its own (ADR 0094-0096): set ENDORA_OWN_WORK = 1 in local.mk to
-# turn it on, and ENDORA_TIME_ZONE to your zone (e.g. America/New_York) so patterns by time of
-# day are in your hours and the brief keeps its hour when the clocks change.
-# ENDORA_UTC_OFFSET_MINUTES (e.g. -300) is a fixed fallback. Off / UTC when unset.
-export ENDORA_OWN_WORK
+# ENDORA_TIME_ZONE (e.g. America/New_York) in local.mk, so the model is told your local time and
+# the brief keeps its hour when the clocks change. ENDORA_UTC_OFFSET_MINUTES (e.g. -300) is a
+# fixed fallback. UTC when unset.
 export ENDORA_TIME_ZONE
 export ENDORA_UTC_OFFSET_MINUTES
 
 # The read-only mail copy on the NAS (ansible-nas `mail_mirror` role, ADR 0097), e.g.
-# ENDORA_MAIL_DIR = /srv/mail-mirror/maildir in local.mk. Read only with ENDORA_OWN_WORK = 1.
+# ENDORA_MAIL_DIR = /srv/mail-mirror/maildir in local.mk. Read whenever the copy is there.
 export ENDORA_MAIL_DIR
 
 COMPOSE = docker $(if $(DOCKER_CONTEXT),--context $(DOCKER_CONTEXT),) compose

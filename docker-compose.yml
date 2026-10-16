@@ -113,9 +113,6 @@ services:
       # ENDORA_TLS_SAN to this host's LAN IP/hostname for a cleaner cert — do that
       # in docker-compose.override.yml (kept local, so no private IP is in git).
       ENDORA_TLS: "1"
-      # Endora looking into things on its own, and noticing the house's daily patterns
-      # (ADR 0094-0096). Off unless ENDORA_OWN_WORK = 1 in local.mk.
-      ENDORA_OWN_WORK: "${ENDORA_OWN_WORK:-0}"
       # Your time zone, by name (e.g. America/New_York), so a pattern at 07:30 is your 07:30
       # and the brief stays at its hour when the clocks change. Without one, the fixed offset
       # below (minutes from UTC) is used, which is an hour out for half the year wherever the

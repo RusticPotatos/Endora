@@ -100,10 +100,6 @@ pub struct AppState {
     /// slow local model that catch-up degraded the first turns after every deploy — and
     /// the butler keeps the day's thread across restarts.
     pub summary: PersistentSummary,
-    /// Whether the node looks into things on its own (`ENDORA_OWN_WORK`, ADR 0094/0095).
-    /// Off unless the owner turned it on. When on, the nightly loop leaves the stumpers and
-    /// the long-running intention to that lane.
-    pub own_work: bool,
     /// The person's time zone (`ENDORA_TIME_ZONE`, or the fixed `ENDORA_UTC_OFFSET_MINUTES`),
     /// for patterns that depend on the time of day and for keeping daily hours on their clock.
     /// The node stores instants and does not otherwise know where the person is. UTC unless set.
@@ -260,7 +256,6 @@ impl AppState {
             summary,
             token,
             started_ms,
-            own_work: false,
             time_zone: endora_infrastructure::TimeZone::fixed(0),
             mail_store,
             mail_copy: None,
@@ -285,13 +280,6 @@ impl AppState {
     #[must_use]
     pub fn with_time_zone(mut self, time_zone: endora_infrastructure::TimeZone) -> Self {
         self.time_zone = time_zone;
-        self
-    }
-
-    /// Turns on the record lane: the node starts looking into things on its own.
-    #[must_use]
-    pub fn with_own_work(mut self, on: bool) -> Self {
-        self.own_work = on;
         self
     }
 
@@ -397,6 +385,7 @@ pub fn app(state: AppState) -> Router {
         .route("/v1/chat/stream", post(stream_chat))
         .route("/v1/checkin", get(get_checkin).post(set_checkin))
         .route("/v1/understanding", get(list_understanding))
+        .route("/v1/understanding/forget", post(forget_what_it_learned))
         .route("/v1/understanding/{id}/affirm", post(affirm_belief))
         .route("/v1/understanding/{id}/correct", post(correct_belief))
         .route("/v1/outcomes", get(list_outcomes))
@@ -783,7 +772,5 @@ use misc::*;
 mod goal_lanes;
 #[cfg(test)]
 mod mail_reading;
-#[cfg(test)]
-mod own_work;
 #[cfg(test)]
 mod tests;

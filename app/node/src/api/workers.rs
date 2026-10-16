@@ -229,8 +229,6 @@ pub(super) fn watch_the_world(state: &AppState) {
     // second pass never sees its entities at all.
     let mut the_house_reported: std::collections::HashSet<String> =
         std::collections::HashSet::new();
-    let events = state.events.clone();
-    let clock = state.clock.clone();
     let now_ms = state.clock.now().unix_millis();
     for (server, channel) in native_channels(config.as_ref()) {
         match channel.states() {
@@ -244,19 +242,9 @@ pub(super) fn watch_the_world(state: &AppState) {
                     &reading,
                     now_ms,
                 ) {
-                    Ok(moved) => {
-                        for change in moved {
-                            record_event(
-                                events.as_ref(),
-                                clock.as_ref(),
-                                &format!(
-                                    "{} went from {} to {}",
-                                    change.key, change.from, change.to
-                                ),
-                            );
-                            this_pass.push(change);
-                        }
-                    }
+                    // Kept for the chat's "what changed lately", not written to Activity:
+                    // Activity records what Endora did, and a sensor tick is not that.
+                    Ok(moved) => this_pass.extend(moved),
                     Err(e) => eprintln!("watching {server}: could not record what moved: {e}"),
                 }
             }
@@ -299,16 +287,7 @@ pub(super) fn watch_the_world(state: &AppState) {
         .collect();
     if !reading.is_empty() {
         match endora_capabilities::watch_for_change(config.as_ref(), "skills", &reading, now_ms) {
-            Ok(moved) => {
-                for change in moved {
-                    record_event(
-                        events.as_ref(),
-                        clock.as_ref(),
-                        &format!("{} went from {} to {}", change.key, change.from, change.to),
-                    );
-                    this_pass.push(change);
-                }
-            }
+            Ok(moved) => this_pass.extend(moved),
             Err(e) => eprintln!("watching skills: could not record what moved: {e}"),
         }
     }
@@ -464,15 +443,13 @@ pub fn spawn_heartbeat(state: AppState) {
             let schedules = state.schedules.clone();
             let understanding = state.understanding.clone();
             let config = state.config.clone();
-            let audit = state.audit.clone();
             let ids = state.ids.clone();
             let clock = state.clock.clone();
             let capabilities = state.capabilities.clone();
             let butler = state.butler.clone();
             let mcp = mcp_snapshot(&state);
-            // Take the turn lock so a proactive brief/check-in never interleaves
-            // with a chat reply; held across the blocking work below.
-            let own_work = state.own_work;
+            // Take the turn lock so the brief never interleaves with a chat reply; held
+            // across the blocking work below.
             let offset_now = state
                 .time_zone
                 .offset_minutes_at(state.clock.now().unix_millis());
@@ -497,25 +474,8 @@ pub fn spawn_heartbeat(state: AppState) {
                     config.as_ref(),
                     clock.as_ref(),
                 )?;
-                // The butler decides whether it has a reason to speak; the schedule
-                // only bounds how often it may (ADR 0056).
-                let posted = usecases::consider_reaching_out(
-                    chat.as_ref(),
-                    schedules.as_ref(),
-                    understanding.as_ref(),
-                    understanding.as_ref(),
-                    &runner,
-                    butler.as_ref(),
-                    audit.as_ref(),
-                    ids.as_ref(),
-                    clock.as_ref(),
-                    &context,
-                )?;
-                if let Some((_, activity)) = &posted {
-                    for item in activity {
-                        record_event(events.as_ref(), clock.as_ref(), item);
-                    }
-                }
+                // No check-in: Endora does not write to the person just to check in (owner,
+                // 2026-10-16). The agenda loop will speak when it has something to say.
                 // A clock change moves the brief and the nightly loop with it, before either
                 // is checked for being due.
                 if usecases::keep_hours_on_the_clock(
@@ -547,50 +507,8 @@ pub fn spawn_heartbeat(state: AppState) {
                     }
                     record_event(events.as_ref(), clock.as_ref(), "Prepared your daily brief");
                 }
-                // The nightly self-improvement loop (ADR 0051), if due: review the
-                // day and reflect, within the reversible band — never anything
-                // irreversible. Serialized under the turn lock like the brief.
-                // The fortnight's transitions — the sensing the thinking cites from.
-                let fortnight = endora_capabilities::TransitionLog::since(
-                    config.as_ref(),
-                    clock.now().unix_millis() - endora_capabilities::KEEP_TRANSITIONS_FOR_MS,
-                )
-                .unwrap_or_default();
-                let reflected = usecases::run_due_nightly_loop(
-                    chat.as_ref(),
-                    understanding.as_ref(),
-                    understanding.as_ref(),
-                    understanding.as_ref(),
-                    understanding.as_ref(),
-                    understanding.as_ref(),
-                    understanding.as_ref(),
-                    &fortnight,
-                    schedules.as_ref(),
-                    &runner,
-                    // Which things the services say are the person's own rather than the
-                    // household's, so a reading can be told apart from the house (ADR 0057).
-                    // Empty when nothing can say, which attributes nothing.
-                    &native_channels(config.as_ref())
-                        .iter()
-                        .flat_map(|(_, channel)| channel.belongs_to_the_person())
-                        .collect::<Vec<_>>(),
-                    butler.as_ref(),
-                    audit.as_ref(),
-                    ids.as_ref(),
-                    clock.as_ref(),
-                    &context,
-                    own_work,
-                )?;
-                if let Some((_, activity)) = &reflected {
-                    for item in activity {
-                        record_event(events.as_ref(), clock.as_ref(), item);
-                    }
-                    record_event(
-                        events.as_ref(),
-                        clock.as_ref(),
-                        "Ran the nightly self-improvement loop",
-                    );
-                }
+                // No nightly loop: what it produced (beliefs, notions, intentions) was noise
+                // (owner, 2026-10-16).
                 // Reach the person, if they nominated a way to be reached (ADR 0056).
                 //
                 // Every one of these is a message they did not ask for, which is exactly
@@ -601,53 +519,18 @@ pub fn spawn_heartbeat(state: AppState) {
                 // service wrote ("john is not home") to decide whether to interrupt, and
                 // a wrong guess either wakes someone or silently drops the alert they
                 // wanted. The schedule is the honest limit.
-                for message in [posted.as_ref(), briefed.as_ref()].into_iter().flatten() {
+                if let Some(message) = briefed.as_ref() {
                     reach_out(config.as_ref(), &message.0);
                 }
-                Ok::<_, AppError>(posted.is_some() || briefed.is_some() || reflected.is_some())
+                Ok::<_, AppError>(briefed.is_some())
             })
             .await;
             if let Ok(Ok(true)) = posted {
                 let _ = state.changes.send(());
             }
 
-            // Nightly self-improving model tune (ADR 0055), if scheduled + due.
-            // Marked fired first (so it can't double-run), then run DETACHED and
-            // without the turn lock — it's long and competes on the GPU, which is
-            // why the schedule points at an off-hour.
-            let due = {
-                let config = state.config.clone();
-                let clock = state.clock.clone();
-                tokio::task::spawn_blocking(move || {
-                    let now = clock.now().unix_millis();
-                    match ModelTuneScheduleRepository::get(config.as_ref()) {
-                        Ok(mut s) if s.is_due(now) => {
-                            s.last_ms = now;
-                            let _ = ModelTuneScheduleRepository::set(config.as_ref(), &s);
-                            true
-                        }
-                        _ => false,
-                    }
-                })
-                .await
-                .unwrap_or(false)
-            };
-            if due {
-                let config = state.config.clone();
-                let events = state.events.clone();
-                let clock = state.clock.clone();
-                let butler = state.butler.clone();
-                let model_url = tune_model_url();
-                tokio::task::spawn_blocking(move || {
-                    run_model_tune(
-                        butler.as_ref(),
-                        config.as_ref(),
-                        events.as_ref(),
-                        clock.as_ref(),
-                        &model_url,
-                    );
-                });
-            }
+            // The nightly model self-tune is off until a model comparison run on purpose
+            // replaces it (owner, 2026-10-16).
         }
     });
 }
@@ -750,114 +633,6 @@ pub fn spawn_research_worker(state: AppState) {
     });
 }
 
-/// Looks for something worth looking into and, if everything allows it, starts it. Returns
-/// whether it started something. A normal outcome is that it does not (ADR 0094).
-///
-/// Everything it needs is read from stored records, and the decision is the pure
-/// [`endora_application::own_work::next_work`]. The turn lock is only checked, not held: a
-/// chat turn in progress means "not now", and the next check is five minutes away.
-pub(super) fn start_own_work_once(state: &AppState) -> bool {
-    use endora_application::own_work::{Situation, next_work};
-    if state.turn_lock.try_lock().is_err() {
-        return false;
-    }
-    let now = state.clock.now();
-    // Sixty days is longer than any item's cooldown, so every attempt that still matters is
-    // inside it; an older one no longer counts against an item.
-    let since = endora_application::Timestamp::from_unix_millis(
-        now.unix_millis() - 60 * 24 * 60 * 60 * 1000,
-    );
-    let Ok(history) = state.store.own_goals_since(since) else {
-        return false;
-    };
-    let Ok(open) = state.store.active_goals() else {
-        return false;
-    };
-    // Unreadable means nothing to offer, not a reason to stop looking at the rest.
-    let specimens =
-        endora_understanding::SpecimenRepository::open_specimens(state.understanding.as_ref())
-            .unwrap_or_default();
-    let focus = usecases::belief_to_look_into(state.understanding.as_ref(), state.clock.as_ref())
-        .ok()
-        .flatten();
-    let situation = Situation {
-        specimens: &specimens,
-        focus: focus.as_ref(),
-        history: &history,
-        a_request_is_open: open
-            .iter()
-            .any(|goal| goal.origin() == endora_application::GoalOrigin::Person),
-        person_is_quiet: quiet_enough_for_own_work(state, now),
-        now,
-    };
-    let Some(item) = next_work(&situation) else {
-        return false;
-    };
-    let objective = item.objective.clone();
-    let Ok(record) = item.into_record(now) else {
-        return false;
-    };
-    // `false` means the same decision was already made; an error means the lane filled in
-    // the meantime. Either way, nothing new began.
-    if !state.store.create_goal(&record).unwrap_or(false) {
-        return false;
-    }
-    let _ = endora_application::EventLog::record(
-        state.events.as_ref(),
-        now,
-        &format!("Started looking into \"{objective}\" on my own"),
-    );
-    let _ = state.changes.send(());
-    true
-}
-
-/// Says what the house does at about the same time most days, when that has changed
-/// (ADR 0096). Returns whether it said anything.
-///
-/// Counting over the transition log, no model. The trail is where it is kept: the picture is
-/// compared with the last line of this kind there, and said again only if it differs and the
-/// last was at least six hours ago, so a pattern wavering at the edge of the bar does not
-/// fill the trail.
-pub(super) fn notice_rhythms_once(state: &AppState) -> bool {
-    const SAID_AT_MOST_EVERY_MS: i64 = 6 * 60 * 60 * 1000;
-    const HEADING: &str = "Regular patterns in the house";
-    const MOST_SAID: usize = 5;
-    let now = state.clock.now().unix_millis();
-    let Ok(transitions) = endora_capabilities::TransitionLog::since(
-        state.config.as_ref(),
-        now - endora_capabilities::KEEP_TRANSITIONS_FOR_MS,
-    ) else {
-        return false;
-    };
-    let zone = state.time_zone;
-    let rhythms =
-        endora_capabilities::find_rhythms(&transitions, |at_ms| zone.offset_minutes_at(at_ms));
-    if rhythms.is_empty() {
-        return false;
-    }
-    let said = format!(
-        "{HEADING}: {}",
-        rhythms
-            .iter()
-            .take(MOST_SAID)
-            .map(endora_capabilities::Rhythm::describe)
-            .collect::<Vec<_>>()
-            .join("; ")
-    );
-    let last = endora_application::EventLog::recent(state.events.as_ref(), 500)
-        .unwrap_or_default()
-        .into_iter()
-        .find(|event| event.summary.starts_with(HEADING));
-    if let Some(last) = last {
-        if last.summary == said || now - last.at.unix_millis() < SAID_AT_MOST_EVERY_MS {
-            return false;
-        }
-    }
-    let _ = endora_application::EventLog::record(state.events.as_ref(), state.clock.now(), &said);
-    let _ = state.changes.send(());
-    true
-}
-
 /// Reads the mail, one message at a time, in quiet time (ADR 0097). Indexes what has arrived
 /// (headers only, no model) on every tick; reads one message only when the person has been
 /// quiet and no turn is running, holding the turn lock for that one message so a chat turn
@@ -889,7 +664,7 @@ pub(super) async fn read_mail_once(state: &AppState) -> Option<endora_mail::Dige
     let _ = tokio::task::spawn_blocking(move || usecases::index_new_mail(&indexing.0, &indexing.1))
         .await;
     let now = state.clock.now();
-    if !quiet_enough_for_own_work(state, now) {
+    if !quiet_enough(state, now) {
         return None;
     }
     let Ok(turn) = state.turn_lock.clone().try_lock_owned() else {
@@ -1000,26 +775,9 @@ pub(super) const MAIL_PING: &str =
 /// How many such pings in a day, at most.
 const MOST_MAIL_PINGS_A_DAY: usize = 2;
 
-/// Starts looking into things unasked, on the slow cadence ADR 0094 sets. Run only when the
-/// owner has turned it on (`ENDORA_OWN_WORK`); until then nothing creates this kind of work.
-pub fn spawn_own_work(state: AppState) {
-    tokio::spawn(async move {
-        let period = std::time::Duration::from_millis(
-            endora_application::own_work::START_CHECK_EVERY_MS.unsigned_abs(),
-        );
-        let mut ticker = tokio::time::interval(period);
-        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-        loop {
-            ticker.tick().await;
-            start_own_work_once(&state);
-            notice_rhythms_once(&state);
-        }
-    });
-}
-
-/// Whether the person has been quiet long enough for a goal Endora started for itself to take
-/// a pass (ADR 0094).
-fn quiet_enough_for_own_work(state: &AppState, now: endora_application::Timestamp) -> bool {
+/// Whether the person has been quiet long enough for background work (reading mail, a goal's
+/// pass) to take the model without competing with them.
+fn quiet_enough(state: &AppState, now: endora_application::Timestamp) -> bool {
     // Upper bound open: a message dated after `now` is found too, and the rule refuses it.
     let from = now
         .unix_millis()
@@ -1120,7 +878,7 @@ pub fn spawn_goal_worker(state: AppState) {
             let mut quiet: Option<bool> = None;
             let Some(lease) = goals.into_iter().find_map(|goal| {
                 if goal.origin() == endora_application::GoalOrigin::Record
-                    && !*quiet.get_or_insert_with(|| quiet_enough_for_own_work(&state, now))
+                    && !*quiet.get_or_insert_with(|| quiet_enough(&state, now))
                 {
                     return None;
                 }

@@ -53,6 +53,9 @@ impl BeliefRepository for FakeStore {
     fn list(&self) -> Result<Vec<Belief>, RepositoryError> {
         Ok(self.beliefs.borrow().clone())
     }
+    fn forget_all(&self) -> Result<usize, RepositoryError> {
+        Ok(self.beliefs.borrow_mut().drain(..).count())
+    }
 }
 
 impl CheckinRepository for FakeStore {
@@ -415,6 +418,50 @@ mod instructions {
             assert!(!reads_as_an_instruction(belief), "should keep: {belief:?}");
         }
     }
+}
+
+/// Only durable things are kept as understanding (owner, 2026-10-16). Every junk belief in the
+/// live list was an "intent" (a one-off question: "you want to know the specific games …") or
+/// "other" (an event, a passing remark).
+#[test]
+fn a_one_off_question_or_a_passing_remark_is_not_kept_as_understanding() {
+    use crate::{BeliefKind, Confidence, FormedBelief};
+    let store = FakeStore::default();
+    let formed = |statement: &str, kind| FormedBelief {
+        statement: statement.to_owned(),
+        kind,
+        confidence: Confidence::High,
+        evidence: "said so".to_owned(),
+    };
+    let mut activity = Vec::new();
+    super::beliefs::record_formed_beliefs(
+        &store,
+        vec![
+            formed("you want to know when the next game is", BeliefKind::Intent),
+            formed("you like a friendly greeting", BeliefKind::Other),
+            formed(
+                "you prefer temperatures in Fahrenheit",
+                BeliefKind::Preference,
+            ),
+            formed("you run on Tuesdays and Thursdays", BeliefKind::Pattern),
+        ],
+        &SeqIds::default(),
+        &FixedClock(1_000),
+        &mut activity,
+    )
+    .unwrap();
+    let kept: Vec<String> = BeliefRepository::list(&store)
+        .unwrap()
+        .iter()
+        .map(|b| b.statement().to_owned())
+        .collect();
+    assert_eq!(
+        kept,
+        [
+            "you prefer temperatures in Fahrenheit",
+            "you run on Tuesdays and Thursdays"
+        ]
+    );
 }
 
 /// An event is not understanding. Live data had "you have an appointment with … tomorrow at
@@ -5495,7 +5542,7 @@ fn butler_forms_understanding_that_is_reviewable_and_correctable() {
                 text: "Travel seems to matter to you.".to_owned(),
                 beliefs: vec![crate::ports::FormedBelief {
                     statement: "wants energy to travel".to_owned(),
-                    kind: BeliefKind::Intent,
+                    kind: BeliefKind::Motivation,
                     confidence: Confidence::Low,
                     evidence: "mentioned wanting to travel".to_owned(),
                 }],
@@ -5565,7 +5612,7 @@ fn the_nightly_loop_reflects_and_leaves_an_overnight_note_when_due() {
                     .to_owned(),
                 beliefs: vec![crate::ports::FormedBelief {
                     statement: "wants more consistent sleep".to_owned(),
-                    kind: BeliefKind::Intent,
+                    kind: BeliefKind::Motivation,
                     confidence: Confidence::Low,
                     evidence: "mentioned being tired several times".to_owned(),
                 }],

@@ -26,7 +26,6 @@
       vars:
         mail_mirror_enabled: true
         mail_mirror_root: /srv/mail-mirror
-        endora_own_work: true
         endora_time_zone: America/New_York
         endora_data_dir: /data/endora
 
@@ -66,12 +65,11 @@
         that:
           - "full | select('match', 'ENDORA_BUILD') | list | length == 0"
           - "'ENDORA_MAIL_DIR=/srv/mail-mirror/maildir' in full"
-          - "'ENDORA_OWN_WORK=1' in full"
           - "'ENDORA_TIME_ZONE=America/New_York' in full"
           - "'ENDORA_DATA_DIR=/data/endora' in full"
           - "'ENDORA_MODEL_URL=http://host.docker.internal:11434/v1' in full"
-          # Off by default: no mail, no own work, and the data volume rather than a folder.
-          - "'ENDORA_OWN_WORK=0' in bare"
+          # Off by default: no mail, and the data volume rather than a folder.
+          - "bare | select('match', 'ENDORA_OWN_WORK') | list | length == 0"
           - "'ENDORA_TIME_ZONE=' in bare"
           - "bare | select('match', 'ENDORA_MAIL_DIR') | list | length == 0"
           - "bare | select('match', 'ENDORA_DATA_DIR') | list | length == 0"
