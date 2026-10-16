@@ -565,6 +565,38 @@ if (failures.length) {
   console.log("about you: the brain's pages open, edit as text, and memory stays");
 }
 
+// Endora HQ (ADR 0102): the office reads the snapshot; every decision is a button the owner
+// presses, each offering only what that kind of item takes; nothing a task says becomes markup.
+{
+  const fail = (what) => { console.error(what); process.exit(1); };
+  runInContext(`HQ.error = ""; HQ.tab = "desk"; HQ.selected = { type: "task", id: 7 };
+    HQ.snap = { demo: true, stopped: false, last_event: 40, pool: { per_day: 2333333, committed: 400000 },
+      members: [{ id: 1, name: "Ada", role: "lead", look: 0, paused: false, slots: 2, per_day: 583333, committed: 0, running: [] },
+                { id: 2, name: "Bo", role: "developer", look: 4, paused: false, slots: 2, per_day: 933333, committed: 400000, running: [{ run: 3, task: 7 }] }],
+      goals: [{ id: 1, title: "Keep the home lab healthy", status: "active" }],
+      tasks: [{ id: 7, goal: 1, parent: null, title: "<img src=x onerror=alert(1)>", status: "doing", owner: 2, priority: "normal",
+                gate: null, why: ["<b>Fix</b> it", "Goal: Keep the home lab healthy"], thread: [{ author: "Bo", text: "On it", at: 1 }] }],
+      runs: [{ id: 3, member: 2, task: 7, status: "running" }],
+      desk: [{ id: 11, kind: "goal", text: "A goal: Tidy the lab" }, { id: 12, kind: "stuck", task: 7, text: "Stuck: x" },
+             { id: 13, kind: "ready_to_merge", task: 7, text: "Ready to merge: y" }] };`, context);
+  const office = runInContext("viewHQ()", context);
+  if (!office.includes("Demo · scripted team")) fail("hq: demo mode is not labelled");
+  if (!office.includes('id="hq-office"')) fail("hq: the office is not drawn");
+  for (const act of ["hq:decide:11:approve", "hq:decide:11:decline", "hq:decide:12:retry", "hq:decide:12:drop",
+    "hq:decide:13:merged", "hq:decide:13:not_now", "hq:stop"]) {
+    if (!office.includes(`data-act="${act}"`)) fail(`hq: the desk does not offer ${act}`);
+  }
+  if (office.includes("hq:decide:11:retry")) fail("hq: a goal was offered a choice for stuck work");
+  if (office.includes("<img src=x") || office.includes("<b>Fix</b>")) fail("hq: a task's text became markup");
+  if (!office.includes("Goal: Keep the home lab healthy")) fail("hq: a task's chain of why is missing");
+  runInContext("HQ.snap.stopped = true;", context);
+  if (!runInContext("viewHQ()", context).includes('data-act="hq:resume"')) fail("hq: a stopped team cannot be resumed");
+  runInContext('HQ.snap = null; HQ.error = "HQ is not set up on this node yet."; HQ.selected = null;', context);
+  if (!runInContext("viewHQ()", context).includes("not set up")) fail("hq: a node without HQ does not say so");
+  runInContext('HQ.error = "";', context);
+  console.log("hq: the office reads the snapshot, the desk offers only what each item takes, and text stays text");
+}
+
 // Devices that stopped answering are never asked about: the owner turned it off for good
 // (2026-10-16), so nothing may bring the card or its actions back.
 if (/Still yours\?|data-act="trouble:|standing-trouble/.test(source)) {

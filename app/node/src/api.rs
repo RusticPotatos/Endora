@@ -411,7 +411,8 @@ pub fn app(state: AppState) -> Router {
         .route("/v1/chat/context", get(chat_context))
         .route("/v1/chat/context/reset", post(reset_chat_context))
         .route("/v1/chat/stream", post(stream_chat))
-        // Endora HQ, through the node (ADR 0102).
+        // Endora HQ, through the node (ADR 0102), and the office's art.
+        .route("/hq-art/{*file}", get(hq_art))
         .route("/v1/hq", get(hq_snapshot))
         .route("/v1/hq/events", get(hq_events))
         .route("/v1/hq/goals", post(hq_goal))
@@ -766,6 +767,8 @@ mod brain;
 use brain::*;
 mod hq;
 use hq::*;
+mod hq_art;
+use hq_art::*;
 mod life;
 
 mod mail;

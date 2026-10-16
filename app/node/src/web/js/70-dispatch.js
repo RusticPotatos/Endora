@@ -17,6 +17,7 @@ function render() {
     : v === "data" ? viewData()
     : v === "spotify" ? viewSpotify()
     : v === "lab" ? viewLab()
+    : v === "hq" ? viewHQ()
     : v === "containers" ? viewContainers()
     : v === "logs" ? viewLogs()
     : v === "jobs" ? viewJobs()
@@ -72,6 +73,7 @@ async function dispatch(act) {
     if (verb === "reload") { location.reload(); return; }
     // The home lab, media, smart home and music.
     if (await labDispatch(verb, noun, id, arg)) return;
+    if (await hqDispatch(verb, noun, id, arg)) return;
     // Spotify: one sign-in, held by the node, started or finished from any device.
     if (verb === "spotify") {
       try {
@@ -884,6 +886,7 @@ function setupHeader(health) {
       item("go:house", "house", "Smart home") +
       item("go:media", "film", "Media") +
       item("go:lab", "server", "Home lab") +
+      item("go:hq", "sparkle", "HQ") +
       item("go:audit", "audit", "Activity") +
       item("go:settings", "gear", "Settings") +
       `<div class="divider"></div>` +
