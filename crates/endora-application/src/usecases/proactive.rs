@@ -165,7 +165,7 @@ pub fn consider_reaching_out(
     let mut activity: Vec<String> = Vec::new();
     let actions = OutcomeSink::unmotivated(outcomes);
     let ask_ctx = ButlerContext {
-        now: format_datetime_utc(now.unix_millis()),
+        now: clock_line(clock),
         ..context.clone()
     };
     let ask = [ChatMessage::new(
@@ -1191,7 +1191,7 @@ pub fn daily_brief(
 ) -> Result<Option<(ChatMessage, Vec<String>)>, AppError> {
     let mut activity: Vec<String> = Vec::new();
     let brief_ctx = ButlerContext {
-        now: format_datetime_utc(clock.now().unix_millis()),
+        now: clock_line(clock),
         ..context.clone()
     };
     let Some(facts) = assembled_brief_facts(

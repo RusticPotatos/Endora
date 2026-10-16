@@ -430,7 +430,7 @@ pub fn ask_for_notions(
         return Vec::new();
     };
     let bare = ButlerContext {
-        now: format_datetime_utc(clock.now().unix_millis()),
+        now: clock_line(clock),
         ..ButlerContext::default()
     };
     let Ok(reply) = butler.respond(&[message], &[], &bare) else {
@@ -786,7 +786,7 @@ pub fn run_due_nightly_loop(
         now,
     )?);
     let review_ctx = ButlerContext {
-        now: format_datetime_utc(now.unix_millis()),
+        now: clock_line(clock),
         ..context.clone()
     };
     let reply = run_tool_turn(

@@ -198,7 +198,7 @@ impl Deeper {
             return None;
         }
         let bare = ButlerContext {
-            now: crate::usecases::format_datetime_utc(clock.now().unix_millis()),
+            now: crate::usecases::clock_line(clock),
             ..ButlerContext::default()
         };
         let ask = ChatMessage::new(

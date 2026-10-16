@@ -120,6 +120,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             std::process::exit(2);
         }
     };
+    // The clock lines the model reads are the person's local time, not UTC.
+    SystemClock::use_time_zone(time_zone);
     let state = AppState::new(
         store,
         Arc::new(RandomIdSource),

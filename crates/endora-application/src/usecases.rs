@@ -385,10 +385,38 @@ pub fn asks_about_the_world(text: &str) -> bool {
     .any(|w| has(w))
 }
 
+/// Whether a message only asks the date, the day or the time.
+fn asks_the_clock(text: &str) -> bool {
+    let lowered = text.to_lowercase().replace('\u{2019}', "'");
+    let asked = lowered.trim().trim_end_matches(['?', '.', '!']).trim();
+    [
+        "what day is it",
+        "what day is today",
+        "what is today",
+        "what's today",
+        "what's the date",
+        "what is the date",
+        "what's today's date",
+        "what is today's date",
+        "what date is it",
+        "what time is it",
+        "what's the time",
+        "what is the time",
+        "what's the date today",
+        "what is the date today",
+    ]
+    .contains(&asked)
+}
+
 /// Whether a question needs a look at the outside world (ADR 0089). The local model sorts it
 /// (`classify_need`: one cheap call, nothing leaves the device); only when it cannot say do the
 /// word lists decide.
 fn needs_a_lookup(butler: &dyn Butler, text: &str) -> bool {
+    // The date and time are in every request, so asking them is answered, not looked up,
+    // whatever the classifier makes of "today".
+    if asks_the_clock(text) {
+        return false;
+    }
     match butler.classify_need(text) {
         Some(crate::NeedKind::Lookup) => true,
         Some(_) => false,

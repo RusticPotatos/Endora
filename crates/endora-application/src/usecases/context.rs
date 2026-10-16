@@ -473,7 +473,7 @@ pub fn butler_context(
         // skill version of this was shipped first and a 7B model answered "did you do
         // anything while I was out?" by trying to turn a light on.
         did_lately: recently_did(chat, outcomes, aliases, aliases, clock)?,
-        now: format_datetime_utc(clock.now().unix_millis()),
+        now: clock_line(clock),
         conversation_summary: None,
         track_record: track_record(&recent),
         // Set by whoever holds the person's "new topic" choice; the context itself does not know it.

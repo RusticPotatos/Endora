@@ -417,6 +417,38 @@ mod instructions {
     }
 }
 
+/// An event is not understanding. Live data had "you have an appointment with … tomorrow at
+/// 6:30 PM" filed as a belief; the next day it was still "tomorrow", and the model trusted it
+/// over the calendar and said the appointment was a day later than it was.
+mod pinned_to_a_day {
+    use super::super::pinned_to_a_day;
+
+    #[test]
+    fn a_statement_tied_to_a_day_is_not_kept() {
+        for event in [
+            "you have an appointment with Jane Doe scheduled for tomorrow at 6:30 PM",
+            "you want to know if any movies were watched today",
+            "you are going out tonight",
+            "you were tired yesterday",
+            "You have a dentist visit Tomorrow.",
+        ] {
+            assert!(pinned_to_a_day(event), "should drop: {event:?}");
+        }
+    }
+
+    #[test]
+    fn habits_and_preferences_are_kept() {
+        for belief in [
+            "you usually walk the dog at 6:30 AM",
+            "you prefer temperatures in Fahrenheit",
+            "you find mornings hard",
+            "you like a summary of the day each evening",
+        ] {
+            assert!(!pinned_to_a_day(belief), "should keep: {belief:?}");
+        }
+    }
+}
+
 /// The most recent skill result in the conversation, for test butlers that have
 /// no native tool-calling. The default [`Butler::take_turn`] shim folds each tool
 /// result into the history as a `[skill result] …` turn (ADR 0053 — results ride
@@ -1727,6 +1759,21 @@ fn routed_turn(
     )
     .expect("the turn answers");
     (message.text().to_owned(), deep)
+}
+
+#[test]
+fn the_date_and_time_are_known_so_asking_them_never_goes_to_the_deep_model() {
+    // The live miss: the local model sorted "What day is today?" as a lookup, answered it
+    // without a skill (rightly: the date is in every request), and was sent to the deep model.
+    for question in [
+        "What day is today?",
+        "what's the date",
+        "What time is it?",
+        "what is today",
+    ] {
+        let (_, deep) = routed_turn(question, Some(crate::NeedKind::Lookup));
+        assert_eq!(deep.rounds(), 0, "{question}");
+    }
 }
 
 #[test]
@@ -4659,6 +4706,32 @@ fn the_ladder_leaves_a_good_local_answer_alone() {
 
     assert!(msg.text().contains("glad to help"));
     assert!(activity.iter().all(|a| !a.contains("deep model")));
+}
+
+#[test]
+fn the_clock_line_is_the_persons_local_time() {
+    // It was UTC, so on a summer evening in New York the model was told it was the next day,
+    // and called an appointment that evening "tomorrow".
+    use super::clock_line;
+    struct NewYorkSummer;
+    impl Clock for NewYorkSummer {
+        fn now(&self) -> Timestamp {
+            // Sat 2026-10-17 00:30 UTC: still Friday evening in New York.
+            Timestamp::from_unix_millis(1_792_197_000_000)
+        }
+        fn utc_offset_minutes(&self) -> i64 {
+            -240
+        }
+    }
+    assert_eq!(
+        clock_line(&NewYorkSummer),
+        "Friday, 2026-10-16 20:30 (UTC-04:00)"
+    );
+    // A clock that does not know the zone keeps saying UTC, as before.
+    assert_eq!(
+        clock_line(&FixedClock(1_700_000_000_000)),
+        "Tuesday, 2023-11-14 22:13 UTC"
+    );
 }
 
 #[test]
