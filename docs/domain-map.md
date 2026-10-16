@@ -3,7 +3,8 @@
 > What each bounded context owns. Rewritten 2026-07-25 after
 > [ADR 0052](adr/0052-what-it-knows-about-you.md), which deleted the Identity &
 > Values, Direction & Targets, Experiments & Learning, and Reflection contexts —
-> understanding is now the only model Endora keeps of a person.
+> understanding is now the only model Endora keeps of a person. Since ADR 0101 that model is
+> the brain: markdown pages, not beliefs in the database.
 
 Each context owns its own model and vocabulary, and is its own crate under
 `domains/`. Contexts collaborate through explicit application-layer boundaries,
@@ -12,18 +13,19 @@ never by reaching into one another's internals (see
 
 ## Understanding
 
-`domains/understanding` — the heart of the system. Owns Endora's **living model of
-the person**: beliefs about what they are reaching for, what they value, their
-patterns, motivations, frustrations, stressors, and relationships. Every belief
-carries **evidence, a confidence, timestamps**, and can be **affirmed, corrected, or
-expire** — nothing is held permanently, and nothing is hidden from the person
-(ADR 0052).
+`domains/understanding` — the heart of the system. Owns **the brain** (ADR 0101): what
+Endora knows about the person, as markdown pages in a folder with its own git history.
+`memory.md` holds what they told it (where they are based, how to address them, their
+preferences) and the little it knows best, and is read on every turn; every other page has a
+summary of what is true now and a dated timeline that is only added to. The page format, the
+rules for a page name, and the folder store (which never follows a link and runs git with
+everything planted in the folder turned off) are all here.
 
-Also owns **preferences**: things the person has stated outright, which the butler
-honours rather than re-asks.
+Endora notes what it learns onto the pages on its own: this is its model, not an action, so it
+is not gated by per-item confirmation. The person reads, edits, deletes or forgets any of it.
 
-Endora forms beliefs on its own — this is its internal model, not an action, so it is
-not gated by per-item confirmation. The person reviews and corrects.
+Also owns intentions (now only the record of research the person asked for), the research
+itself, and the outcomes of what Endora did (ADR 0053).
 
 ## Conversation
 
@@ -85,7 +87,7 @@ a bug.
                     │  the butler    │  the model — proposes only
                     │     turn       │
                     └───┬────────┬───┘
-        forms beliefs   │        │   asks to run a tool
+      notes on pages    │        │   asks to run a tool
                         ▼        ▼
               understanding    Policy (capabilities)
                         │        │  deny-by-default, reversibility bands

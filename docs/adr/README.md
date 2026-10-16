@@ -7,7 +7,7 @@ and numbered in sequence.
 
 ## What they add up to
 
-Forty-two records stand, every one accepted, and forty-nine earlier ones are archived into them
+Forty-three records stand, every one accepted, and forty-nine earlier ones are archived into them
 (the *Consolidates* column below). A handful of ideas sit underneath all of them. Read this before
 reading any individual record; each line is a rule the code actually follows, with the decision
 that established it.
@@ -89,6 +89,10 @@ that established it.
   observations, every way a goal ends is told to the person, and a goal can be stopped.
   Durable goals were removed in [0100](0100-the-clean-slate.md); the rule carries over to the
   agenda loop that replaces them.
+- **What it knows about you is pages you can open** ([0101](0101-the-brain.md)). Markdown in
+  a folder with its own history: memory read every turn, other pages one read away, every
+  change a commit, and nothing the person wrote ever overwritten unseen. It learns only from
+  the person's own words, and the folder is never trusted (no links followed, no hooks run).
 - **Start fresh rather than keep what makes noise** ([0100](0100-the-clean-slate.md)). What
   Endora did unasked (check-ins, the nightly loop, notions, own work, goals) produced stale
   beliefs and repeated questions, so it went, code and storage. A table nothing reads is
@@ -207,6 +211,7 @@ of an existing record and take the next number.
 | [0098](0098-it-can-be-rebuilt.md) | It can be rebuilt | — |
 | [0099](0099-the-handheld-is-part-of-endora.md) | The handheld is part of Endora | — |
 | [0100](0100-the-clean-slate.md) | The clean slate | — |
+| [0101](0101-the-brain.md) | The brain | — |
 
 The forty-eight decisions these consolidate are in [archive/](archive/) — kept in full,
 because the reasoning that produced a rule is the reason it survives an argument later.
