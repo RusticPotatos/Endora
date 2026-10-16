@@ -50,6 +50,7 @@ fn crashed(name: &str) -> Signal {
         detail: "exit 1".to_owned(),
         target: Some("f".repeat(64)),
         cautious: false,
+        at: None,
     }
 }
 
@@ -62,6 +63,7 @@ fn stuck(title: &str) -> Signal {
         detail: "Sonarr".to_owned(),
         target: None,
         cautious: false,
+        at: None,
     }
 }
 
@@ -69,11 +71,12 @@ fn mail(kind: Kind, key: &str, cautious: bool) -> Signal {
     Signal {
         kind,
         subject: key.to_owned(),
-        about: "billing@example.com".to_owned(),
+        about: format!("{key}@example.com"),
         name: "Example".to_owned(),
         detail: "A bill from Example. Amount: $12.".to_owned(),
         target: None,
         cautious,
+        at: Some(T0),
     }
 }
 
@@ -389,4 +392,51 @@ fn an_entry_moving_from_tomorrow_to_today_updates_its_one_item() {
     assert_eq!((change.opened, change.updated), (0, 1));
     let open = s.open_items().unwrap();
     assert_eq!(open[0].sentence, "Today: Dentist");
+}
+
+#[test]
+fn repeats_from_one_sender_fold_into_one_item_that_stays_answered() {
+    let (s, f) = (store(), Fakes::default());
+    let agenda = Agenda::new(&s, &f, &f, &f);
+    let mut first = mail(Kind::MailAccountSecurity, "n1", false);
+    first.about = "no-reply@example.com".to_owned();
+    let mut second = first.clone();
+    second.subject = "n2".to_owned();
+    second.detail = "A newer sign-in.".to_owned();
+    let change = agenda
+        .observe(Source::Mail, &[first.clone(), second.clone()], T0)
+        .unwrap();
+    assert_eq!((change.opened, change.updated), (1, 1));
+    let open = s.open_items().unwrap();
+    assert_eq!(open.len(), 1, "one card, not a stream");
+    assert_eq!(
+        (open[0].sentence.as_str(), open[0].why.as_str()),
+        ("A newer sign-in.", "More like this came in.")
+    );
+    assert_eq!(f.pushed.borrow().len(), 1, "one push for the lot");
+    agenda
+        .answer(open[0].id, Answer::Done, T0 + MINUTE_MS)
+        .unwrap();
+    agenda
+        .observe(Source::Mail, &[first, second], T0 + 2 * MINUTE_MS)
+        .unwrap();
+    assert!(s.open_items().unwrap().is_empty(), "neither comes back");
+}
+
+#[test]
+fn something_that_happened_hours_ago_is_pinned_but_never_pushed() {
+    let (s, f) = (store(), Fakes::default());
+    let agenda = Agenda::new(&s, &f, &f, &f);
+    let mut old = mail(Kind::MailAccountSecurity, "old", false);
+    old.at = Some(T0 - 7 * HOUR_MS);
+    let fresh = mail(Kind::MailAccountSecurity, "fresh", false);
+    agenda.observe(Source::Mail, &[old, fresh], T0).unwrap();
+    let levels: Vec<_> = s
+        .open_items()
+        .unwrap()
+        .iter()
+        .map(|i| (i.level, i.pushed))
+        .collect();
+    assert_eq!(levels, [(Level::Urgent, false), (Level::Urgent, true)]);
+    assert_eq!(f.pushed.borrow().len(), 1);
 }

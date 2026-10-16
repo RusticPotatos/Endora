@@ -36,6 +36,7 @@ pub fn container_signals(seen_running: &mut BTreeSet<String>, list: &[Container]
             detail,
             target: Some(c.id.clone()),
             cautious: false,
+            at: None,
         };
         match c.state.as_str() {
             "running" => {
@@ -92,6 +93,7 @@ pub fn download_signals(source: Source, queue: &[QueuedDownload]) -> Vec<Signal>
             detail: service.to_owned(),
             target: None,
             cautious: false,
+            at: None,
         })
         .collect()
 }
@@ -118,6 +120,7 @@ pub fn event_signals(entries: &[(String, String)], today: &str, tomorrow: &str) 
                 detail: when.to_owned(),
                 target: None,
                 cautious: false,
+                at: None,
             })
         })
         .collect()

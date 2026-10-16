@@ -2,8 +2,8 @@
 
 use super::ports::{Activity, AgendaError, AgendaStore, Done, Item, Pusher, Restarter, Rule};
 use crate::domain::{
-    self, DAY_MS, EVENT_FYI_LASTS_MS, HOUR_MS, Kind, Level, MINUTE_MS, MOST_PUSHES_A_DAY,
-    MOST_WATCHED, RESTART_TAKES_MS, Response, RestartVerdict, Signal, Source,
+    self, DAY_MS, EVENT_FYI_LASTS_MS, FRESH_FOR_A_PUSH_MS, HOUR_MS, Kind, Level, MINUTE_MS,
+    MOST_PUSHES_A_DAY, MOST_WATCHED, RESTART_TAKES_MS, Response, RestartVerdict, Signal, Source,
 };
 
 /// How long a closed item is kept.
@@ -73,7 +73,7 @@ impl<'a> Agenda<'a> {
             .iter()
             .filter(|s| !rules.iter().any(|r| domain::covered(r.family, &r.about, s)))
             .collect();
-        let open: Vec<Item> = self
+        let mut open: Vec<Item> = self
             .store
             .open_items()?
             .into_iter()
@@ -98,7 +98,19 @@ impl<'a> Agenda<'a> {
             if !source.reports_states() && self.store.ever_had(&key)? {
                 continue;
             }
-            self.open(source, signal, now)?;
+            // The same kind from the same sender, while one is open, is that item again: kept
+            // (so it never opens later) and folded in, not a second card.
+            if !source.reports_states() {
+                let twin = open
+                    .iter_mut()
+                    .find(|i| i.kind == signal.kind && i.about.eq_ignore_ascii_case(&signal.about));
+                if let Some(twin) = twin {
+                    self.fold(source, signal, twin, now)?;
+                    change.updated += 1;
+                    continue;
+                }
+            }
+            open.push(self.open(source, signal, now)?);
             change.opened += 1;
         }
         if source.reports_states() {
@@ -268,32 +280,26 @@ impl<'a> Agenda<'a> {
             .ok_or_else(|| AgendaError("no such open item".to_owned()))
     }
 
+    /// Folds a repeat into the open item it repeats: the item takes the newest words, and the
+    /// repeat is kept, closed, so it is never an item of its own.
+    fn fold(&self, source: Source, signal: &Signal, twin: &mut Item, now: i64) -> Done<()> {
+        let mut repeat = fresh_item(source, signal, twin.response, now);
+        close(&mut repeat, now, "folded");
+        self.store.add_item(&repeat)?;
+        twin.sentence = signal.sentence();
+        "More like this came in.".clone_into(&mut twin.why);
+        twin.updated_at = now;
+        self.store.save_item(twin)
+    }
+
     /// Opens an item for a new signal: the rules decide, and the decision is a line in Activity.
-    fn open(&self, source: Source, signal: &Signal, now: i64) -> Done<()> {
+    fn open(&self, source: Source, signal: &Signal, now: i64) -> Done<Item> {
         let mut response = self.response_for(signal.kind)?;
         // Mail that may not be what it says is never more than FYI.
         if signal.cautious && response.level() > Level::Fyi {
             response = Response::Fyi;
         }
-        let mut item = Item {
-            id: 0,
-            key: signal.key(),
-            source,
-            kind: signal.kind,
-            about: signal.about.clone(),
-            sentence: signal.sentence(),
-            why: String::new(),
-            level: response.level(),
-            response,
-            target: signal.target.clone(),
-            opened_at: now,
-            updated_at: now,
-            watch_until: None,
-            then: None,
-            pushed: false,
-            closed_at: None,
-            closed_how: None,
-        };
+        let mut item = fresh_item(source, signal, response, now);
         let label = match response {
             Response::Handle => self.handle(&mut item, signal, now)?,
             Response::LookInto => self.look_into(&mut item, now)?,
@@ -308,7 +314,12 @@ impl<'a> Agenda<'a> {
         self.activity
             .record(now, &format!("{label}: {}.{why}", item.sentence));
         item.id = self.store.add_item(&item)?;
-        self.push_if_urgent(&mut item, now)
+        // Something that happened hours ago is pinned, never pushed: a backlog read for the
+        // first time must not wake the owner's phone.
+        if signal.at.is_none_or(|at| now - at <= FRESH_FOR_A_PUSH_MS) {
+            self.push_if_urgent(&mut item, now)?;
+        }
+        Ok(item)
     }
 
     /// Restarts the container, if the caps allow; otherwise tells.
@@ -401,6 +412,29 @@ impl<'a> Agenda<'a> {
                 Ok(())
             }
         }
+    }
+}
+
+/// A new item for a signal, at the level its response starts at.
+fn fresh_item(source: Source, signal: &Signal, response: Response, now: i64) -> Item {
+    Item {
+        id: 0,
+        key: signal.key(),
+        source,
+        kind: signal.kind,
+        about: signal.about.clone(),
+        sentence: signal.sentence(),
+        why: String::new(),
+        level: response.level(),
+        response,
+        target: signal.target.clone(),
+        opened_at: now,
+        updated_at: now,
+        watch_until: None,
+        then: None,
+        pushed: false,
+        closed_at: None,
+        closed_how: None,
     }
 }
 

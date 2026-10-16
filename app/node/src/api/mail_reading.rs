@@ -227,12 +227,10 @@ async fn someone_waiting_on_a_reply_is_pinned_and_nothing_about_it_enters_chat()
     while super::workers::read_mail_once(&state).await.is_some() {}
     the_agenda_looks(&state).await;
     let items = open_items(&state);
-    assert_eq!(items.len(), 3, "one item a message");
-    assert!(
-        items
-            .iter()
-            .all(|i| i.kind == endora_agenda::domain::Kind::MailWaitingOnYou)
-    );
+    // Three messages from one person waiting on a reply: one card, not three.
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].kind, endora_agenda::domain::Kind::MailWaitingOnYou);
+    assert_eq!(items[0].why, "More like this came in.");
     // Chat is history a paid model may later see; mail stays in the house (ADR 0097).
     assert!(state.chat.list().unwrap().is_empty());
 }

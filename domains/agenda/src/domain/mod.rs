@@ -24,6 +24,8 @@ pub const MOST_PUSHES_A_DAY: usize = 5;
 /// How long after a restart it waits to see the container running before telling the owner
 /// the restart did not take.
 pub const RESTART_TAKES_MS: i64 = 5 * MINUTE_MS;
+/// How fresh something that happened must be to push.
+pub const FRESH_FOR_A_PUSH_MS: i64 = 6 * HOUR_MS;
 /// How long an FYI about something that happened (mail) stays before it closes itself.
 pub const EVENT_FYI_LASTS_MS: i64 = DAY_MS;
 
@@ -46,6 +48,9 @@ pub struct Signal {
     pub target: Option<String>,
     /// For mail: it may not be what it says, so it is never more than FYI.
     pub cautious: bool,
+    /// When it happened, for something that happened (mail): an urgent push is only for what
+    /// is fresh, so a backlog read for the first time never pushes.
+    pub at: Option<i64>,
 }
 
 impl Signal {

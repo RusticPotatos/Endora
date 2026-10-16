@@ -116,6 +116,7 @@ pub fn mail_signals(digests: &[Digest], now_ms: i64) -> Vec<Signal> {
                 detail: super::mail_line(d),
                 target: None,
                 cautious: has(Reason::MayNotBeGenuine),
+                at: Some(d.at_ms),
             })
         })
         .collect()
