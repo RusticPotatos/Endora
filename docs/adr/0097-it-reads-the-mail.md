@@ -104,6 +104,17 @@ a person the owner writes to often.
   had been doubted for one and a sender heard from many times for the other, and a short name
   now has to be within one letter to count as a lookalike. When the reader's instructions
   change, the last 90 days are read again under the new ones (`READER_VERSION`).
+- **Tuned again on the first full 90 days (reader version 3).** 34 were worth a look. Nine were
+  about the owner's app and were good news (builds that succeeded, approvals, several times
+  over) or an invitation to test someone else's app: app mail now counts only when the reader
+  says it needs the owner (a rejection, a failed build, a user writing in). Repeats are shown
+  once: the same reasons from the same sender within three days stand as the newest "and N more
+  like it" (a sign-in notice had come three times in a day), never folding a doubtful message
+  into genuine ones. A brand's own short domain is not a near miss of the hyphenated one its
+  mailings come from (`name` beside `e-name`): an impersonator adds to a name and cannot
+  register the shorter. An offer with a price is not a bill; asked as "an offer is not
+  `money_due`" the model still said it was, asked as "only a bill for something already owed;
+  false for an offer, even with a price" it did not.
 - **The ping is nameless.** For fresh mail (under two hours old) from someone the owner writes
   to, chat says "Someone you write to sent mail that may need you", at most twice a day. It
   names nobody and quotes nothing, because chat is history the deep model may later see, and

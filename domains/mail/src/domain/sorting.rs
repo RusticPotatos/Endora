@@ -100,6 +100,9 @@ pub struct Flags {
     pub one_time_code: bool,
     /// Something went wrong with an order or delivery.
     pub order_problem: bool,
+    /// About the owner's app, and it needs them: a rejection, a failed build or upload, a user
+    /// writing in, something to sign or fix. A build that succeeded or an approval does not.
+    pub app_needs_you: bool,
     /// It asks the owner something, or waits on them.
     pub needs_reply: bool,
     /// Dates it mentions, as `YYYY-MM-DD` and a few words on what happens then.
@@ -229,7 +232,9 @@ pub fn why_important(
     if bucket == Bucket::Orders && flags.order_problem {
         reasons.push(Reason::OrderProblem);
     }
-    if bucket == Bucket::YourApp && !m.mailing_list {
+    // A build that succeeded or an approval is good news, not something to look at: live, 9 of
+    // 34 "worth a look" were those, several times over.
+    if bucket == Bucket::YourApp && flags.app_needs_you && !m.mailing_list {
         reasons.push(Reason::YourApp);
     }
     reasons
@@ -299,6 +304,7 @@ pub fn read_reply(raw: &str, today_days: i64) -> Option<(Option<Bucket>, Option<
             account_change: yes("account_change"),
             one_time_code: yes("one_time_code"),
             order_problem: yes("order_problem"),
+            app_needs_you: yes("app_needs_you"),
             needs_reply: yes("needs_reply"),
             dates,
         },

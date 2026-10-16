@@ -929,3 +929,86 @@ fn a_bill_that_may_be_forged_is_never_routine_and_never_history_for_another() {
     let october = all.iter().find(|d| d.at_ms == NOW - DAY).unwrap();
     assert!(as_shown(october, &all).reasons.contains(&Reason::MoneyDue));
 }
+
+fn digest(key: &str, from: &str, at_ms: i64, reasons: &[Reason]) -> Digest {
+    Digest {
+        key: key.to_owned(),
+        at_ms,
+        from_address: from.to_owned(),
+        from_name: String::new(),
+        bucket: Bucket::Security,
+        reasons: reasons.to_vec(),
+        sentence: Some(format!("{key}.")),
+        flags: endora_mail::Flags::default(),
+        read_ok: true,
+        cautions: Vec::new(),
+        appointment: None,
+    }
+}
+
+#[test]
+fn the_same_thing_from_the_same_sender_within_a_few_days_is_shown_once() {
+    let sign_in = [Reason::AccountSecurity];
+    // Newest first, as the store gives them.
+    let all = [
+        digest(
+            "c",
+            &format!("no-reply@{}", "alerts.example.com"),
+            NOW,
+            &sign_in,
+        ),
+        digest("b", "info@example.com", NOW - DAY, &sign_in),
+        digest(
+            "forged",
+            "info@example.com",
+            NOW - DAY,
+            &[Reason::MayNotBeGenuine],
+        ),
+        digest("other", "hello@example.org", NOW - DAY, &sign_in),
+        digest("a", "info@example.com", NOW - 2 * DAY, &sign_in),
+        // Long before the newest of them: something new, not a repeat.
+        digest("old", "info@example.com", NOW - 6 * DAY, &sign_in),
+    ];
+    let folded = without_repeats(&all);
+    let shown: Vec<(&str, usize)> = folded
+        .iter()
+        .map(|(d, more)| (d.key.as_str(), *more))
+        .collect();
+    assert_eq!(
+        shown,
+        [("c", 2), ("forged", 0), ("other", 0), ("old", 0)],
+        "the newest stands for the rest; a doubtful one is never folded into genuine ones"
+    );
+}
+
+#[test]
+fn the_brief_counts_a_repeated_notice_once() {
+    let f = Fixture::new("brief-repeats").with_history();
+    for n in 0..3 {
+        f.put(
+            &format!("s{n}"),
+            &email(
+                "Example Music <no-reply@example.net>",
+                "john@example.com",
+                NOW - (n + 1) * 60 * 60 * 1000,
+                &format!("<s{n}@example.net>"),
+                VOUCHED,
+                "new sign-in",
+            ),
+        );
+    }
+    index_new_mail(&f.copy, &f.store).unwrap();
+    let reader = Reader::says(
+        r#"{"bucket":"security","sentence":"A new sign-in to your account.","account_change":true,"dates":[]}"#,
+    );
+    while read_one(&f.copy, &f.store, &reader, None, &Clock(NOW))
+        .unwrap()
+        .is_some()
+    {}
+    let lines = mail_for_the_brief(&f.store, None, &Clock(NOW)).unwrap();
+    assert_eq!(
+        lines[0], "Mail: 1 worth a look since yesterday.",
+        "{lines:?}"
+    );
+    assert!(lines[1].ends_with("(and 2 more like it)"), "{lines:?}");
+}

@@ -40,6 +40,22 @@ const MESSAGES: &[(&str, &str)] = &[
         "delivery",
         "Delivered-To: john@example.com\r\nAuthentication-Results: mx.example.com; spf=pass smtp.mailfrom=example.net; dkim=pass header.i=@example.net; dmarc=pass header.from=example.net\r\nFrom: Example Shipping <track@example.net>\r\nTo: john@example.com\r\nSubject: Delivery attempt failed\r\nDate: Wed, 14 Oct 2026 15:00:00 +0000\r\nMessage-ID: <ship@example.net>\r\n\r\nWe tried to deliver your package (order 4471) today but nobody was home. We will try again on October 16.\r\n",
     ),
+    (
+        "built",
+        "Delivered-To: john@example.com\r\nAuthentication-Results: mx.example.com; spf=pass smtp.mailfrom=example.net; dkim=pass header.i=@example.net; dmarc=pass header.from=example.net\r\nFrom: Xcode Cloud <no_reply@example.net>\r\nTo: john@example.com\r\nSubject: Build 61 of Example App succeeded\r\nDate: Wed, 14 Oct 2026 11:00:00 +0000\r\nMessage-ID: <built@example.net>\r\n\r\nBuild 61 of Example App for the main branch succeeded. All tests passed. No action is needed.\r\n",
+    ),
+    (
+        "rejected",
+        "Delivered-To: john@example.com\r\nAuthentication-Results: mx.example.com; spf=pass smtp.mailfrom=example.net; dkim=pass header.i=@example.net; dmarc=pass header.from=example.net\r\nFrom: App Store Connect <no_reply@example.net>\r\nTo: john@example.com\r\nSubject: Your submission was rejected\r\nDate: Wed, 14 Oct 2026 12:00:00 +0000\r\nMessage-ID: <rejected@example.net>\r\n\r\nWe reviewed Example App version 2.1 and found it does not comply with Guideline 2.1. Reply in App Store Connect with the information requested so we can continue the review.\r\n",
+    ),
+    (
+        "invite",
+        "Delivered-To: john@example.com\r\nAuthentication-Results: mx.example.com; spf=pass smtp.mailfrom=example.net; dkim=pass header.i=@example.net; dmarc=pass header.from=example.net\r\nFrom: Other Studio via TestFlight <no_reply@example.net>\r\nTo: john@example.com\r\nSubject: Other Studio's Photo App 3.2 is available to test\r\nDate: Wed, 14 Oct 2026 13:00:00 +0000\r\nMessage-ID: <invite@example.net>\r\n\r\nOther Studio has invited you to test Photo App. Version 3.2 is ready to install in TestFlight.\r\n",
+    ),
+    (
+        "offer",
+        "Delivered-To: john@example.com\r\nAuthentication-Results: mx.example.com; spf=pass smtp.mailfrom=example.net; dkim=pass header.i=@example.net; dmarc=pass header.from=example.net\r\nFrom: Example Streaming <offers@example.net>\r\nTo: john@example.com\r\nSubject: Add two more services for $9.99 a month\r\nDate: Wed, 14 Oct 2026 14:00:00 +0000\r\nMessage-ID: <offer@example.net>\r\n\r\nStart a bundle today: add two more services to your plan for only $9.99 a month. Activate now.\r\n",
+    ),
 ];
 
 #[test]
@@ -104,6 +120,24 @@ fn the_local_model_reads_mail_through_the_quarantined_reader() {
         "a code the owner asked for is not important: {:?}",
         by("code").reasons
     );
+    // Version 3: mail about the app counts only when it needs the owner, an invitation to test
+    // someone else's app is not about theirs, and an offer is not a bill.
+    assert!(
+        by("built").reasons.is_empty(),
+        "a build that succeeded: {:?}",
+        by("built").reasons
+    );
+    assert_eq!(
+        by("rejected").reasons,
+        [endora_mail::Reason::YourApp],
+        "a rejection needs the owner"
+    );
+    assert!(
+        by("invite").reasons.is_empty(),
+        "{:?}",
+        by("invite").reasons
+    );
+    assert!(!by("offer").flags.money_due, "an offer is not a bill");
     let bill = by("bill");
     assert!(
         !bill.reasons.contains(&endora_mail::Reason::MayNotBeGenuine),

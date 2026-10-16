@@ -528,6 +528,7 @@ impl MailStore {
             "account_change": d.flags.account_change,
             "one_time_code": d.flags.one_time_code,
             "order_problem": d.flags.order_problem,
+            "app_needs_you": d.flags.app_needs_you,
             "needs_reply": d.flags.needs_reply,
             "dates": d.flags.dates.iter().map(|(date, what)| serde_json::json!({"date": date, "what": what})).collect::<Vec<_>>(),
             "cautions": d.cautions,
@@ -675,6 +676,7 @@ impl MailStore {
                     account_change: f["account_change"].as_bool().unwrap_or(false),
                     one_time_code: f["one_time_code"].as_bool().unwrap_or(false),
                     order_problem: f["order_problem"].as_bool().unwrap_or(false),
+                    app_needs_you: f["app_needs_you"].as_bool().unwrap_or(false),
                     needs_reply: f["needs_reply"].as_bool().unwrap_or(false),
                     dates: f["dates"]
                         .as_array()

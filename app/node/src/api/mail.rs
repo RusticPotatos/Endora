@@ -58,7 +58,16 @@ pub(super) async fn mail_digest(
         "reading": state.own_work && state.mail_reader.is_some(),
         "indexed": indexed,
         "unread_recent": unread,
-        "important": digests.iter().filter(|d| !d.reasons.is_empty()).map(item).collect::<Vec<_>>(),
+        "important": usecases::without_repeats(
+            &digests.iter().filter(|d| !d.reasons.is_empty()).cloned().collect::<Vec<_>>(),
+        )
+        .iter()
+        .map(|(d, more)| {
+            let mut shown = item(d);
+            shown["more_like_it"] = json!(more);
+            shown
+        })
+        .collect::<Vec<_>>(),
         "buckets": buckets,
         "coming_up": upcoming.iter().map(|u| json!({
             "date": u.date, "what": u.what, "from": u.from, "because": u.because,

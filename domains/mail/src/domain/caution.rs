@@ -138,8 +138,18 @@ fn near_miss(registered: &str, mailbox: &Mailbox) -> Option<String> {
     known.into_iter().filter(|k| k != registered).find(|k| {
         let theirs = label(k);
         (registered.starts_with("xn--") && !theirs.is_empty())
-            || (theirs.len() >= 4 && mine != theirs && edits(&mine, &theirs) <= allowed(&theirs))
+            || (theirs.len() >= 4
+                && mine != theirs
+                && !hyphenated_from(&theirs, &mine)
+                && edits(&mine, &theirs) <= allowed(&theirs))
     })
+}
+
+/// Whether `longer` is `name` with a hyphenated part added (`e-name`, `name-mail`): a brand's
+/// own short name beside the one its mailings come from. An impersonator adds to a name to
+/// look like a brand; the shorter one is the brand's, so it is not a near miss of the longer.
+fn hyphenated_from(longer: &str, name: &str) -> bool {
+    longer.starts_with(&format!("{name}-")) || longer.ends_with(&format!("-{name}"))
 }
 
 /// How far off a name may be and still be a near miss: one letter for a short name, where two

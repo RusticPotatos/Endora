@@ -228,12 +228,7 @@ fn unread_mail_comes_newest_first_and_leaves_once_read_or_passed_over() {
             bucket: Bucket::Money,
             reasons: vec![Reason::MoneyDue],
             sentence: Some("A bill.".into()),
-            flags: Flags {
-                money_due: true,
-                amount: Some("180.00".into()),
-                dates: vec![("2026-10-20".into(), "due".into())],
-                ..Flags::default()
-            },
+            flags: every_flag(),
             read_ok: true,
             cautions: vec!["the first message from this sender".into()],
             appointment: Some(("2026-10-02".into(), "Dental checkup".into())),
@@ -250,12 +245,26 @@ fn unread_mail_comes_newest_first_and_leaves_once_read_or_passed_over() {
         (d.bucket, d.reasons.as_slice()),
         (Bucket::Money, &[Reason::MoneyDue][..])
     );
-    assert_eq!(d.flags.amount.as_deref(), Some("180.00"));
-    assert_eq!(d.flags.dates, [("2026-10-20".to_owned(), "due".to_owned())]);
+    // Every flag survives storage: one left out of either side is lost at the next read.
+    assert_eq!(d.flags, every_flag());
     assert!(d.read_ok);
     assert_eq!(d.cautions, ["the first message from this sender"]);
     assert_eq!(
         d.appointment,
         Some(("2026-10-02".to_owned(), "Dental checkup".to_owned()))
     );
+}
+
+/// Every flag set, so a flag storage forgets shows as a difference.
+fn every_flag() -> Flags {
+    Flags {
+        money_due: true,
+        amount: Some("180.00".into()),
+        account_change: true,
+        one_time_code: true,
+        order_problem: true,
+        app_needs_you: true,
+        needs_reply: true,
+        dates: vec![("2026-10-20".into(), "due".into())],
+    }
 }

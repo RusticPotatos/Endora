@@ -240,13 +240,35 @@ fn money_security_appointments_orders_and_the_app_matter_when_they_should() {
         why_important(&m, &mb, Bucket::Orders, &f, 0),
         [Reason::OrderProblem]
     );
+    f.app_needs_you = true;
     assert_eq!(
-        why_important(&m, &mb, Bucket::YourApp, &flags(), 0),
+        why_important(&m, &mb, Bucket::YourApp, &f, 0),
         [Reason::YourApp]
     );
     let mut list = m.clone();
     list.mailing_list = true;
-    assert!(why_important(&list, &mb, Bucket::YourApp, &flags(), 0).is_empty());
+    assert!(why_important(&list, &mb, Bucket::YourApp, &f, 0).is_empty());
+}
+
+#[test]
+fn mail_about_the_app_is_worth_a_look_only_when_it_needs_the_owner() {
+    // Live, 9 of 34 "worth a look" were builds that succeeded and approvals, several times
+    // over. A rejection, a failed build or a user writing in is what needs the owner.
+    let m = message("no_reply@example.com");
+    let mb = mailbox();
+    assert!(why_important(&m, &mb, Bucket::YourApp, &flags(), 0).is_empty());
+    let needs = Flags {
+        app_needs_you: true,
+        ..Flags::default()
+    };
+    assert_eq!(
+        why_important(&m, &mb, Bucket::YourApp, &needs, 0),
+        [Reason::YourApp]
+    );
+    let (.., f) = read_reply(r#"{"bucket":"your_app","app_needs_you":true}"#, TODAY).unwrap();
+    assert!(f.app_needs_you);
+    let (.., f) = read_reply(r#"{"bucket":"your_app"}"#, TODAY).unwrap();
+    assert!(!f.app_needs_you);
 }
 
 // ---- what is accepted from the reader ----
@@ -869,4 +891,50 @@ fn a_different_or_unknown_amount_is_history_but_not_routine_and_a_first_bill_has
     );
     assert!(bill_history(70 * D, Some("75.27"), &[]).is_none());
     assert!(bill_history(30 * D, Some("75.27"), &before).is_none());
+}
+
+#[test]
+fn a_brands_own_shorter_name_is_not_a_lookalike_of_its_hyphenated_one_but_a_cut_short_name_is() {
+    // Live: a bank's own domain was taken for a lookalike of the "e-" domain its newsletters
+    // come from. An impersonator adds to a name; they cannot register the shorter one.
+    let mut all: Vec<Headline> = (0..4)
+        .map(|n| {
+            headline(
+                &format!("news@{}", "e-banco.example"),
+                &[OWNER],
+                &format!("<e{n}>"),
+                &[],
+                Some(OWNER),
+            )
+        })
+        .collect();
+    all.extend((0..4).map(|n| {
+        headline(
+            &format!("news@{}", "store-1.example"),
+            &[OWNER],
+            &format!("<t{n}>"),
+            &[],
+            Some(OWNER),
+        )
+    }));
+    all.extend((0..4).map(|n| {
+        headline(
+            &format!("orders@{}", "shopper.example"),
+            &[OWNER],
+            &format!("<s{n}>"),
+            &[],
+            Some(OWNER),
+        )
+    }));
+    let mb = Mailbox::learn(&all);
+    let looks_like = |from: &str| {
+        cautions(&vouched(message(from)), &mb)
+            .iter()
+            .any(|c| matches!(c, Caution::LooksLike(_)))
+    };
+    assert!(!looks_like(&format!("alerts@{}", "banco.example")));
+    assert!(!looks_like(&format!("alerts@{}", "store.example")));
+    // Cut short, or one letter off: still a near miss.
+    assert!(looks_like(&format!("orders@{}", "shoppe.example")));
+    assert!(looks_like(&format!("news@{}", "e-banko.example")));
 }

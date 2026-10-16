@@ -14,7 +14,9 @@ pub const READ_BACK_MS: i64 = 90 * 24 * 60 * 60 * 1000;
 /// Which version of the reader's instructions the digest is made with. When the instructions
 /// change, the last [`READ_BACK_MS`] are read again under the new ones, so the digest never
 /// mixes two sets of rules. Version 2: one-time codes are told apart from account changes.
-pub const READER_VERSION: &str = "2";
+/// Version 3: whether mail about the app needs the owner; an invitation to test someone
+/// else's app is not about theirs; an offer is not a bill.
+pub const READER_VERSION: &str = "3";
 
 /// What a bill from a new biller says when the calendar has nothing around it.
 const NO_APPOINTMENT: &str = "no appointment with them on your calendar around then";
@@ -35,18 +37,25 @@ fn instructions(today: &str) -> String {
          payments, renewals, refunds), \"orders\" (orders, shipping, deliveries), \"security\" \
          (sign-ins, passwords, security codes, account changes), \"appointments\" (appointments, \
          bookings, reservations, invitations), \"your_app\" (about the owner's own iPhone app: \
-         App Store Connect, TestFlight, App Review, or a user writing about the app), \"updates\" \
-         (notifications that ask nothing of the owner), \"newsletters\" (newsletters, marketing, \
+         App Store Connect, TestFlight, App Review, Xcode Cloud, or a user writing about the app; \
+         NOT an invitation to test someone else's app), \"updates\" \
+         (notifications that ask nothing of the owner, including invitations to test other \
+         people's apps), \"newsletters\" (newsletters, marketing, \
          promotions), \"other\".\n\
          \"sentence\": one plain sentence, at most 25 words, saying what the email is and what, if \
          anything, it asks of the owner.\n\
-         \"money_due\": true only if it asks the owner to pay something.\n\
+         \"money_due\": true only for a bill, invoice, renewal or payment request for something \
+         the owner already has or already owes. False for an offer, advertisement or promotion, \
+         even one with a price.\n\
          \"amount\": the amount to pay as a number, or null.\n\
          \"account_change\": true only if it reports a new sign-in, a password change, or a change \
          to security settings.\n\
          \"one_time_code\": true if it only delivers a code or a link for a sign-in or \
          verification the owner would have just started.\n\
          \"order_problem\": true only if an order or delivery went wrong.\n\
+         \"app_needs_you\": for mail about the owner's app, true only if it needs them: a review \
+         rejected, a build or upload failed, a user wrote in, or something to sign or fix. False \
+         for a build that succeeded, an approval, and an invitation to test someone else's app.\n\
          \"needs_reply\": true only if a person asks the owner something or is waiting on them.\n\
          \"dates\": up to 3 specific dates it mentions for something that will happen or is due, \
          as {{\"date\": \"YYYY-MM-DD\", \"what\": \"a few words\"}}; [] if none."
@@ -289,6 +298,34 @@ pub fn as_shown(d: &Digest, all: &[Digest]) -> Digest {
     shown
 }
 
+/// How close together the same thing from the same sender is one thing.
+const REPEATS_WITHIN_MS: i64 = 3 * DAY_MS;
+
+/// `digests` (newest first) with repeats folded: the same reasons from the same sender within
+/// [`REPEATS_WITHIN_MS`] of the newest of them are shown once, as that newest, with how many
+/// more there were. Live, one service's sign-in notice came three times in a day, and four
+/// approvals of the same app in a week. A message that may not be genuine never stands in
+/// for genuine ones, or they for it: its reasons differ.
+#[must_use]
+pub fn without_repeats(digests: &[Digest]) -> Vec<(Digest, usize)> {
+    let sender =
+        |d: &Digest| endora_mail::registered_domain(&endora_mail::domain_of(&d.from_address));
+    let mut shown: Vec<(Digest, usize)> = Vec::new();
+    for d in digests {
+        let repeat = shown.iter_mut().find(|(first, _)| {
+            sender(first) == sender(d)
+                && first.reasons == d.reasons
+                && first.at_ms - d.at_ms <= REPEATS_WITHIN_MS
+        });
+        if let Some((_, more)) = repeat {
+            *more += 1;
+            continue;
+        }
+        shown.push((d.clone(), 0));
+    }
+    shown
+}
+
 /// One line for something that matters: who, what, and why.
 #[must_use]
 pub fn mail_line(d: &Digest) -> String {
@@ -392,7 +429,12 @@ pub fn mail_for_the_brief(
     if day.is_empty() {
         return Ok(Vec::new());
     }
-    let important: Vec<&Digest> = day.iter().filter(|d| !d.reasons.is_empty()).collect();
+    let important = without_repeats(
+        &day.iter()
+            .filter(|d| !d.reasons.is_empty())
+            .cloned()
+            .collect::<Vec<_>>(),
+    );
     let mut lines = vec![if important.is_empty() {
         "Mail: nothing that needs you since yesterday.".to_owned()
     } else {
@@ -402,7 +444,10 @@ pub fn mail_for_the_brief(
         important
             .iter()
             .take(MOST_LINES)
-            .map(|d| format!("- {}", mail_line(d))),
+            .map(|(d, more)| match more {
+                0 => format!("- {}", mail_line(d)),
+                n => format!("- {} (and {n} more like it)", mail_line(d)),
+            }),
     );
     if important.len() > MOST_LINES {
         lines.push(format!("- and {} more", important.len() - MOST_LINES));

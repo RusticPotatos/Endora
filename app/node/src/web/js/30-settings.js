@@ -578,7 +578,7 @@ function viewMail() {
     <div class="card">
       <div class="sub">${esc(when(m.at_ms))} · ${esc(m.from)}${m.amount ? ` · <strong>${esc(m.amount)}</strong>` : ""}</div>
       <div class="title" style="font-weight:400;">${esc(m.sentence || "(no summary)")}</div>
-      ${showWhy && (m.why || []).length ? `<div class="sub">${esc(m.why.join(" · "))}</div>` : ""}
+      ${showWhy && (m.why || []).length ? `<div class="sub">${esc(m.why.join(" · "))}${m.more_like_it ? ` · and ${m.more_like_it} more like it` : ""}</div>` : ""}
       ${(m.dates || []).length ? `<div class="sub">${m.dates.map((d) => `${esc(d.date)}: ${esc(d.what)}`).join(" · ")}</div>` : ""}
       ${m.appointment ? `<div class="sub">Follows "${esc(m.appointment.title)}" on ${esc(m.appointment.day)}</div>` : ""}
       ${(m.cautions || []).length ? `<div class="sub" style="color:var(--warn, #b45309);">${esc(m.cautions.join(" · "))}</div>` : ""}
