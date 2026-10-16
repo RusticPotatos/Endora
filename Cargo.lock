@@ -587,6 +587,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "endora-agenda"
+version = "0.12.0"
+dependencies = [
+ "endora-persistence",
+ "rusqlite",
+]
+
+[[package]]
 name = "endora-application"
 version = "0.12.0"
 dependencies = [
