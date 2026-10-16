@@ -63,9 +63,26 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
       unset "CARGO_TARGET_${env_triple}_LINKER" "CC_$(echo "$triple" | tr '-' '_')" "AR_$(echo "$triple" | tr '-' '_')"; \
     fi; \
     find . \( -name '*.rs' -o -name '*.toml' -o -name '*.lock' \) -exec touch {} + \
-    && cargo build --release -p endora-node -p endora-hq --target "$triple" \
+    && cargo build --release -p endora-node -p endora-hq -p endora-sound-hub --target "$triple" \
     && cp "target/$triple/release/endora-node" /endora-node \
-    && cp "target/$triple/release/endora-hq" /endora-hq
+    && cp "target/$triple/release/endora-hq" /endora-hq \
+    && cp "target/$triple/release/endora-sound-hub" /endora-sound-hub
+
+# endora-sound (ADR 0104): the sound hub, in an image of its own, because it needs ffmpeg and
+# the node does not. Built with `--target sound`. It sits before the node's stage on purpose:
+# a plain build still makes the node, the last stage.
+FROM debian:bookworm-slim AS sound
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=builder /endora-sound-hub /usr/local/bin/endora-sound-hub
+ENV SOUND_ADDR=0.0.0.0:8791
+ENV SOUND_STATE=/data/sound.json
+ENV SOUND_PIPES=/pipes
+ENV SOUND_TOKEN_FILE=/token/token
+VOLUME /data
+EXPOSE 8791
+ENTRYPOINT ["endora-sound-hub"]
 
 # --- runtime stage ---------------------------------------------------------
 FROM debian:bookworm-slim

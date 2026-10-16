@@ -189,6 +189,13 @@ else
 	echo "copying the image to the target"; \
 	docker --context $(ENDORA_BUILD_CONTEXT) save endora-node:for-target | gzip -1 | $(TARGET_DOCKER) load; \
 	$(TARGET_DOCKER) tag endora-node:for-target endora-node:latest; \
+	case ",$(COMPOSE_PROFILES)," in *,sound,*) \
+		echo "building the sound hub's image (ADR 0104)"; \
+		docker --context $(ENDORA_BUILD_CONTEXT) buildx build --platform "linux/$$arch" \
+			--target sound -t endora-sound:for-target --load .; \
+		docker --context $(ENDORA_BUILD_CONTEXT) save endora-sound:for-target | gzip -1 | $(TARGET_DOCKER) load; \
+		$(TARGET_DOCKER) tag endora-sound:for-target endora-sound:latest;; \
+	esac; \
 	ENDORA_BUILD="$$build" $(COMPOSE) up -d --no-build
 endif
 

@@ -64,6 +64,29 @@ services:
     security_opt: [no-new-privileges:true]
     # A small service on a NAS whose memory is tight: a hard cap, not a hope.
     mem_limit: 128m
+  # endora-sound (ADR 0104), when its `sound` profile runs: append `sound` to COMPOSE_PROFILES
+  # and set ENDORA_SOUND_URL=http://sound:8791 in local.mk. Its own image (ffmpeg is in it,
+  # not in the node's), no published port: the node is its remote, through the token the two
+  # share. Radio stations need the internet; nothing else does.
+  sound:
+    profiles: [sound]
+    build:
+      context: .
+      target: sound
+    image: endora-sound:latest
+    container_name: endora-sound
+    restart: unless-stopped
+    volumes:
+      - ${ENDORA_SOUND_DIR:-endora-sound-data}:/data
+      - endora-sound-token:/token
+    tmpfs:
+      - /pipes
+      - /tmp
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    # Decoding stations and encoding streams is ffmpeg's work; a hard cap on a tight NAS.
+    mem_limit: 256m
   node:
     build:
       context: .
@@ -99,6 +122,7 @@ services:
       # The token Endora HQ makes for itself, which the node signs with (ADR 0102).
       # Read-only here; only HQ writes it.
       - endora-hq-token:/hq-token:ro
+      - endora-sound-token:/sound-token:ro
     # The image already defaults ENDORA_ADDR=0.0.0.0:8787 and
     # ENDORA_DB=/data/endora.db. Point the butler/proposer at an Ollama running
     # on the host (host.docker.internal → the host gateway). Without a reachable
@@ -115,6 +139,9 @@ services:
       # ENDORA_HQ_URL=http://hq:8790 in local.mk. Empty: no HQ.
       ENDORA_HQ_URL: "${ENDORA_HQ_URL-}"
       ENDORA_HQ_TOKEN_FILE: /hq-token/token
+      # endora-sound (ADR 0104), when its `sound` profile runs. Empty: no sound hub.
+      ENDORA_SOUND_URL: "${ENDORA_SOUND_URL-}"
+      ENDORA_SOUND_TOKEN_FILE: /sound-token/token
       # A capable instruction model — strong at following directions and emitting
       # clean JSON, which the butler relies on (skill selection, no fabrication,
       # relaying results). Used for the drafting endpoint and as the single-model
@@ -189,6 +216,10 @@ volumes:
   endora-hq-data:
   # Holds one file: the token HQ makes for itself and the node signs with.
   endora-hq-token:
+  # What the sound hub keeps: its patchbay (sources, speakers, wires, setups).
+  endora-sound-data:
+  # Holds one file: the token the sound hub makes for itself and the node signs with.
+  endora-sound-token:
   # Empty on purpose: what /mail is when no mail copy is configured.
   endora-no-mail:
   endora-models:
