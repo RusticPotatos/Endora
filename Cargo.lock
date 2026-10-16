@@ -534,6 +534,7 @@ dependencies = [
  "qrcode",
  "rcgen",
  "rpassword",
+ "rusqlite",
  "rustls",
  "serde",
  "serde_json",

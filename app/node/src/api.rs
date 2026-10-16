@@ -752,6 +752,9 @@ mod models;
 use models::*;
 
 mod workers;
+// Endora's nightly copies of its own database.
+mod snapshots;
+pub use snapshots::spawn_snapshots;
 pub use workers::*;
 
 mod misc;

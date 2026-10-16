@@ -136,6 +136,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // The butler's heartbeat: proactive check-ins on the person's cadence (off
     // until they enable it). Runs for the life of the process.
     api::spawn_heartbeat(state.clone());
+    // A consistent copy of the database every night, for the house's backup to find.
+    api::spawn_snapshots(state.clone(), std::path::PathBuf::from(&db_path));
     api::spawn_research_worker(state.clone());
     api::spawn_goal_worker(state.clone());
     api::spawn_homelab(state.clone());

@@ -55,6 +55,13 @@ preferences, goals, audit — as your right to take it with you ([constitution](
 It contains none of your configuration, and nothing can import it, so a node rebuilt from an
 export has lost every setting and key.
 
+**The node makes its own every night.** At 01:30 by your clock (`ENDORA_TIME_ZONE`) it writes
+`backups/daily-YYYY-MM-DD.db` beside its database, and on Sundays `weekly-YYYY-MM-DD.db`,
+each a consistent, integrity-checked copy; it keeps the newest seven of each and leaves any
+other file in `backups/` alone. Activity says when a copy was saved, and says so once a day if
+one failed. Point your backup tool at the data folder and schedule it after 01:30. To rebuild
+from nothing, see [Rebuilding from nothing](recovery.md).
+
 **Take a snapshot, don't copy the file.** The node writes continuously, so copying
 `endora.db` while it runs can capture a write half-finished: a file that looks whole and
 will not open on the day you need it. Take the copy through SQLite instead:

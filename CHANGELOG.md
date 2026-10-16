@@ -7,6 +7,14 @@ tagged release.
 
 ## [Unreleased]
 
+### Added
+
+- **Endora copies its own data every night** ([ADR 0098](docs/adr/0098-it-can-be-rebuilt.md)).
+  At 01:30 by your clock it writes a consistent, integrity-checked copy of its database into
+  `backups/` beside it, daily and weekly, keeping seven of each, so the house's backup always
+  finds a whole copy rather than a live file. Activity says each night that it was saved, and
+  says so once a day if it failed. [Rebuilding from nothing](docs/recovery.md) is the runbook.
+
 ### Changed
 
 - **Skills say what they do, for people.** A skill whose description is written for the model

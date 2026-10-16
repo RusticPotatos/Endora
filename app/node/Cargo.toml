@@ -58,4 +58,6 @@ workspace = true
 
 [dev-dependencies]
 http-body-util = "0.1.5"
+# Reading a snapshot back in tests; the same build the persistence crate already uses.
+rusqlite = { version = "0.40", features = ["bundled"] }
 tower = { version = "0.5.3", features = ["util"] }
