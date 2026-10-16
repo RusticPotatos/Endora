@@ -741,7 +741,7 @@ fn a_short_name_one_letter_off_from_a_new_sender_is_a_lookalike_and_an_establish
     let mut all: Vec<Headline> = (0..5)
         .map(|n| {
             headline(
-                &format!("hi@{}", "july.example"),
+                &format!("hi@{}", "bolt.example"),
                 &[OWNER],
                 &format!("<j{n}>"),
                 &[],
@@ -751,7 +751,7 @@ fn a_short_name_one_letter_off_from_a_new_sender_is_a_lookalike_and_an_establish
         .collect();
     all.extend((0..4).map(|n| {
         headline(
-            &format!("hi@{}", "jury.example"),
+            &format!("hi@{}", "boat.example"),
             &[OWNER],
             &format!("<r{n}>"),
             &[],
@@ -768,20 +768,20 @@ fn a_short_name_one_letter_off_from_a_new_sender_is_a_lookalike_and_an_establish
         )
     }));
     let mb = Mailbox::learn(&all);
-    let established = vouched(message(&format!("hi@{}", "jury.example")));
+    let established = vouched(message(&format!("hi@{}", "boat.example")));
     assert!(
         !cautions(&established, &mb)
             .iter()
             .any(|c| matches!(c, Caution::LooksLike(_))),
         "a sender heard from four times is not a lookalike of anyone"
     );
-    let new_and_close = vouched(message(&format!("hi@{}", "jula.example")));
+    let new_and_close = vouched(message(&format!("hi@{}", "bolo.example")));
     assert!(
         cautions(&new_and_close, &mb)
             .iter()
             .any(|c| matches!(c, Caution::LooksLike(_)))
     );
-    let new_and_two_off = vouched(message(&format!("hi@{}", "jyla.example")));
+    let new_and_two_off = vouched(message(&format!("hi@{}", "bxla.example")));
     assert!(
         !cautions(&new_and_two_off, &mb)
             .iter()
