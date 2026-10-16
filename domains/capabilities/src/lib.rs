@@ -20,7 +20,6 @@ pub mod infrastructure;
 pub mod mcp_http;
 pub mod mcp_registry;
 pub mod mcp_stdio;
-pub mod rhythms;
 pub mod store;
 pub mod target_search;
 
@@ -46,7 +45,6 @@ pub use infrastructure::{
 };
 pub use mcp_http::HttpMcpClient;
 pub use mcp_stdio::StdioMcpClient;
-pub use rhythms::{Rhythm, find_rhythms};
 pub use store::{ConfigStore, migrate};
 pub use target_search::{
     Candidate, candidates, is_fragment_of, only_real_match, retarget, shortlist, target_fields,
