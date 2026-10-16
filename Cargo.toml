@@ -15,6 +15,7 @@ members = [
     "crates/endora-infrastructure",
     "app/node",
     "app/cli",
+    "app/hq",
     "clients/terminal",
 ]
 

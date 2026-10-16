@@ -637,6 +637,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "endora-hq"
+version = "0.12.0"
+dependencies = [
+ "axum",
+ "endora-team",
+ "http-body-util",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tower",
+]
+
+[[package]]
 name = "endora-infrastructure"
 version = "0.12.0"
 dependencies = [
