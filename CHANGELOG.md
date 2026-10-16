@@ -78,13 +78,38 @@ tagged release.
   "Handheld: containers", "Overview: Sonarr" and so on), and tool servers. **Permissions** holds
   how far Endora may act on its own.
 
+### Removed
+
+- **The clean slate** ([ADR 0100](docs/adr/0100-the-clean-slate.md)). What Endora did without
+  being asked had become noise, and it is gone, code and storage, so the always-working butler
+  can be built again on real signals:
+  - the daily check-in, and waking early on an unusual change;
+  - the nightly loop, notions ("still wondering"), and the replay of failed asks (specimens).
+    A turn that could not answer no longer says it kept the question "to retry overnight";
+  - intentions formed from beliefs, and their nudges;
+  - the own-work lane and its `ENDORA_OWN_WORK` switch (in the Makefile, Compose file and the
+    `endora` Ansible role too);
+  - durable goals started from chat: the goal worker, the goal strip and its Stop button.
+    Research you ask for stays, with its card and its report;
+  - the 4 am model tune's schedule. The comparison still runs when started by hand;
+  - Inbox. Messages Endora sends unasked stay in the chat, and Activity is the one record;
+  - About you as a list of beliefs by kind to confirm. It now says how much Endora has learned
+    and has a **Forget** button that deletes all of it; what you told it yourself stays.
+    Beliefs that were passing remarks (an intent, or "other") are no longer formed;
+  - device changes written to Activity by the heartbeat.
+
+  **Breaking:** the routes `/v1/checkin`, `/v1/nightly-loop/schedule`,
+  `/v1/model-tune/schedule`, `/v1/notions`, `/v1/intentions` and `/v1/goals` are gone, and the
+  export has no `goals` field. An existing database drops the removed tables when the node
+  starts; a table nothing reads is data nothing can export or delete.
+
 ### Fixed
 
 - **Endora no longer asks about devices that stopped answering** (the "Still yours?" card).
   The owner did not want it. It is removed with what was under it: the card and its routes,
   the morning brief's lines, the own-work lane's items, and the detection and its store. Work
   Endora started about such a device before is withdrawn at the next check; an existing
-  database keeps its old table, unread.
+  database drops its old table when the node starts.
 
 - **Endora answered faster, and about the right day.** Measured on the house's A2000, with qwen2.5:7b:
   - **The prompt was read from the clock onward on every message.** The date and time sat

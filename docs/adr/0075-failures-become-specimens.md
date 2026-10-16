@@ -5,6 +5,10 @@
 Accepted (2026-08-08). Extends the loop spine (ADR 0052/0053's "memory learns")
 to the butler's own failures; changes nothing about how a turn runs.
 
+**Superseded 2026-10-16 by [0100](0100-the-clean-slate.md).** Nothing replayed specimens once
+the nightly loop was gone, and the turn's "kept it to retry overnight" was no longer true.
+Filing, the store and the table are removed.
+
 ## Context
 
 A turn that ends at the honesty valve is a measurement thrown away. The person

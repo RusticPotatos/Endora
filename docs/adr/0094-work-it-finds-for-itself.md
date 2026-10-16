@@ -7,6 +7,10 @@ The owner answered the plan's five open questions on that date; each answer is r
 below. Later phases — more sources, mail, any unattended action — are **not** accepted
 here and need their own records. Prepared with AI assistance (Claude).
 
+**Superseded 2026-10-16 by [0100](0100-the-clean-slate.md).** The own-work lane, its
+`ENDORA_OWN_WORK` switch and the record lane's wrappers are removed. The quiet-time rule stays,
+pacing mail reading.
+
 **Amended 2026-10-16.** Standing trouble, the first source, is gone with the feature it came
 from (ADR 0056's amendment): the owner did not want Endora asking about devices that stopped
 answering. The lane now starts work only from asks that failed and from beliefs. A goal

@@ -8,6 +8,10 @@ The [implementation handoff](../plans/research-assistant-handoff.md) and
 accepted first release. The owner accepted this decision on 2026-09-06. This
 decision does not amend the constitution.
 
+**Amended 2026-10-16:** the 2026-10-12 amendment is withdrawn with durable goals
+([0100](0100-the-clean-slate.md)). Chat starts nothing on its own; research starts only when
+the person commissions it.
+
 Amended 2026-10-12: ordinary chat may now start an objective on its own, from the
 deterministic verdict that a turn could not answer. See the amendment in the
 Decision section; the clause it supersedes is struck there rather than deleted.

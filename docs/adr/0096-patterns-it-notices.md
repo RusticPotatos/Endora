@@ -7,6 +7,9 @@ triage and the terminal sandbox the owner asked about in the same message are **
 [the standing-jobs plan](../plans/standing-jobs.md) and not accepted here**: both need a
 decision that is the owner's to make. Prepared with AI assistance (Claude).
 
+**Superseded 2026-10-16 by [0100](0100-the-clean-slate.md).** The rhythm finder and its
+standing job are removed. The transition log stays.
+
 ## Context
 
 [0094](0094-work-it-finds-for-itself.md) and [0095](0095-more-sources-for-work-it-finds.md)

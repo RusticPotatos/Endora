@@ -9,6 +9,9 @@ derived work only, the source is the verifier, two lanes with the person's first
 before starting, quiet in chat, bounded per item, idle when there is nothing. Nothing here
 adds an unattended action. Prepared with AI assistance (Claude).
 
+**Superseded 2026-10-16 by [0100](0100-the-clean-slate.md)**, with
+[0094](0094-work-it-finds-for-itself.md).
+
 ## Context
 
 Phase 3 made one thing Endora can look into on its own: a device that has stood in

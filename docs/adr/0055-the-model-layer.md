@@ -4,6 +4,9 @@
 
 Accepted (2026-07-26). **Consolidates 0008, 0027 and 0030**, which are archived.
 
+**Amended 2026-10-16:** the 4 am tune's schedule is removed ([0100](0100-the-clean-slate.md)).
+The comparison runs only when started by hand.
+
 ## Context
 
 Endora is meant to outlive any particular model. It also runs on one person's hardware, where

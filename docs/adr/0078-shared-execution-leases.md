@@ -4,6 +4,9 @@
 
 Accepted and implemented (2026-09-06; prepared with AI assistance (Codex)).
 
+**Amended 2026-10-16:** durable goals are removed ([0100](0100-the-clean-slate.md)), so
+research is the only worker on the lease table; their leases are deleted on start.
+
 ## Context
 
 Goals and commissioned research have different domain records. Goals store a

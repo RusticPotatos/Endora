@@ -3,8 +3,9 @@
 Agreed with the owner in a design interview on 2026-10-16 (questions Q1–Q53). This is the
 plan for Endora to be always working on something for its owner: noticing, deciding, handling
 what it can, and telling them only at the right level. It replaces the background features
-that produced noise. Prepared with AI assistance (Claude). Nothing here is built yet; each
-part lands on its own branch with the full gate, and the architecture changes get an ADR.
+that produced noise. Prepared with AI assistance (Claude). Step 1, the clean slate, is built
+([ADR 0100](../adr/0100-the-clean-slate.md)); the rest is not yet. Each part lands on its own
+branch with the full gate, and the architecture changes get an ADR.
 
 ## 1. What goes, and why
 
@@ -192,6 +193,12 @@ with a token scoped to their own repositories.
 5. **The agent node:** hardening the Pi, the agent user, the UniFi VLAN rules (written by
    Claude, entered by the owner), and Forgejo.
 6. **The pipeline:** dev → test → prod with the review gate; the test environment on the NAS.
-7. **Paperclip trial run**, then the pixel office view.
+7. **A lean agent company built into Endora** (changed 2026-10-16, after reading Paperclip's
+   source), then the pixel office view. It borrows six of Paperclip's patterns: heartbeat
+   and wake triggers; budgets reserved before dispatch, with auto-pause; an independent
+   reviewer; "Allowed / Ask first / Off" per tool; propose-then-decide decisions for the
+   owner; and the LLM-wiki layout for the brain. Endora does not run Paperclip: it is unsafe
+   by default and its audit log can be deleted. A Paperclip trial, sandboxed on the NAS and
+   connected to nothing, is a separate piece of work in the ansible-nas fork.
 
 Each step is merged only with the owner's OK.

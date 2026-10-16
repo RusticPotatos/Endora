@@ -4,6 +4,9 @@
 
 Accepted, 2026-10-12. Prepared with AI assistance (Codex).
 
+**Superseded 2026-10-16 by [0100](0100-the-clean-slate.md).** Durable goals and the schedule
+verifier are removed. Completion from tool observations is a rule the agenda loop is to keep.
+
 ## Context
 
 The foundation counterexample completed a sports goal from invented numbered

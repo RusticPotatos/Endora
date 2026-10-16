@@ -6,6 +6,11 @@ Accepted (2026-07-26). **Consolidates 0006, 0011, 0013, 0014, 0015, 0016, 0020, 
 0033 and 0036**, which are archived. Includes one large reversal, kept because it is the
 most instructive thing in this repository.
 
+**Amended 2026-10-16** ([0100](0100-the-clean-slate.md)): intentions are no longer formed from
+beliefs, and beliefs of kind intent or "other" are no longer formed. About you no longer lists
+beliefs by kind for confirming; learned beliefs can be forgotten all at once, and what the
+person stated stays.
+
 ## Context
 
 Endora began with a **tree**: Value → North Star → Target → Experiment → Reflection, plus

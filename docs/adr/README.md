@@ -7,7 +7,7 @@ and numbered in sequence.
 
 ## What they add up to
 
-Forty-one records stand, every one accepted, and forty-nine earlier ones are archived into them
+Forty-two records stand, every one accepted, and forty-nine earlier ones are archived into them
 (the *Consolidates* column below). A handful of ideas sit underneath all of them. Read this before
 reading any individual record; each line is a rule the code actually follows, with the decision
 that established it.
@@ -63,8 +63,9 @@ that established it.
   Written after argument hygiene turned one aimed-at-nothing call into every light in the
   house.
 - **Resumable workers share one lease boundary** ([0078](0078-shared-execution-leases.md)).
-  Goals and research keep separate evidence records, but reservations, bounded
-  retries and crash recovery use the same durable ownership rule.
+  Research keeps its own evidence record, and reservations, bounded retries and crash
+  recovery follow one durable ownership rule. Durable goals, which shared it, were removed
+  ([0100](0100-the-clean-slate.md)).
 
 ### What we learned about asking a bigger model, and a smaller one
 
@@ -86,6 +87,12 @@ that established it.
   [0080](0080-completion-uses-tool-observations.md), [0082](0082-announce-every-way-a-goal-ends.md),
   [0083](0083-show-unattended-work-and-let-it-be-stopped.md)). Completion comes from tool
   observations, every way a goal ends is told to the person, and a goal can be stopped.
+  Durable goals were removed in [0100](0100-the-clean-slate.md); the rule carries over to the
+  agenda loop that replaces them.
+- **Start fresh rather than keep what makes noise** ([0100](0100-the-clean-slate.md)). What
+  Endora did unasked (check-ins, the nightly loop, notions, own work, goals) produced stale
+  beliefs and repeated questions, so it went, code and storage. A table nothing reads is
+  dropped, because data nothing can export or delete is outside the memory rights.
 
 ### What we learned about the person's side
 
@@ -199,6 +206,7 @@ of an existing record and take the next number.
 | [0097](0097-it-reads-the-mail.md) | It reads the mail | — |
 | [0098](0098-it-can-be-rebuilt.md) | It can be rebuilt | — |
 | [0099](0099-the-handheld-is-part-of-endora.md) | The handheld is part of Endora | — |
+| [0100](0100-the-clean-slate.md) | The clean slate | — |
 
 The forty-eight decisions these consolidate are in [archive/](archive/) — kept in full,
 because the reasoning that produced a rule is the reason it survives an argument later.
