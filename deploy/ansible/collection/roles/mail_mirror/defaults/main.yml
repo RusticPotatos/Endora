@@ -1,0 +1,46 @@
+---
+# A read-only copy of your mail, as a Maildir, for a local assistant to read.
+#
+# Gmail is read through the Gmail API with a `gmail.readonly` token (Google refuses anything
+# but reading), or over IMAP with an app password. iCloud, and Gmail over IMAP, are opened
+# read-only and fetched without marking anything as read. Nothing here can send, delete,
+# move or mark a message. See this role's README.md.
+mail_mirror_enabled: false
+
+# Kept OUTSIDE docker_home on purpose: the mail is already backed up by the provider, and a
+# second copy of it in every backup snapshot is only risk. Choose a path your backups skip.
+mail_mirror_root: /srv/mail-mirror
+
+# The accounts, from your vault. Never put real values in this file: the repository is public.
+# mail_mirror_accounts:
+#   - name: personal                 # a-z, 0-9, _ and -; becomes the folder name
+#     kind: gmail
+#     client_id: "{{ vault_mail_mirror_gmail_client_id }}"
+#     client_secret: "{{ vault_mail_mirror_gmail_client_secret }}"
+#     refresh_token: "{{ vault_mail_mirror_personal_refresh_token }}"
+#   - name: work                     # Gmail with an app password, read over IMAP
+#     kind: gmail_imap
+#     user: "{{ vault_mail_mirror_work_user }}"
+#     app_password: "{{ vault_mail_mirror_work_app_password }}"
+#   - name: icloud
+#     kind: icloud
+#     user: "{{ vault_mail_mirror_icloud_user }}"
+#     app_password: "{{ vault_mail_mirror_icloud_app_password }}"
+#     folders: ["INBOX", "Sent Messages"]   # optional; this is the default
+mail_mirror_accounts: []
+
+# How often it looks for new mail.
+mail_mirror_every_seconds: 300
+
+# Its own network, locked down by the docker_egress role: HTTPS and IMAPS out to the
+# internet, DNS, and nothing on your LAN, no other container and not the host. The subnet
+# must be inside Docker's 172.16.0.0/12 and not used by another network.
+mail_mirror_network_name: mail_mirror
+mail_mirror_network_bridge: br-mailmirror
+mail_mirror_network_subnet: 172.31.250.0/24
+
+mail_mirror_user: mail-mirror
+mail_mirror_container_name: mail-mirror
+mail_mirror_image_name: python
+mail_mirror_image_version: 3.12-alpine
+mail_mirror_memory: 256m

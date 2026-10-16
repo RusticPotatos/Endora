@@ -1,0 +1,12 @@
+#!/bin/sh
+# Applies (or, with "remove", removes) every Docker egress policy in /etc/docker-egress.d.
+# Run by docker-egress.service after Docker starts. Each policy is its own script, so one
+# role's rules never rewrite another's.
+set -eu
+DIR="${DOCKER_EGRESS_DIR:-/etc/docker-egress.d}"
+status=0
+for policy in "$DIR"/*.sh; do
+    [ -e "$policy" ] || continue
+    sh "$policy" "${1:-apply}" || status=1
+done
+exit "$status"

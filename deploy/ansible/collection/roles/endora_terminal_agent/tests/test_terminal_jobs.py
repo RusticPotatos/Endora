@@ -4,7 +4,7 @@ import pathlib
 import tempfile
 import unittest
 
-spec = importlib.util.spec_from_file_location('jobs', pathlib.Path(__file__).with_name('terminal-jobs.py'))
+spec = importlib.util.spec_from_file_location('jobs', pathlib.Path(__file__).resolve().parents[1] / 'files' / 'terminal-jobs.py')
 jobs = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(jobs)
 

@@ -1,0 +1,108 @@
+---
+- name: Start Endora
+  block:
+    - name: Endora directory
+      ansible.builtin.file:
+        path: "{{ endora_root }}"
+        state: directory
+        mode: "0750"
+
+    # force: false, so a checkout with local edits makes this fail rather than lose them.
+    - name: Endora source
+      ansible.builtin.git:
+        repo: "{{ endora_repo }}"
+        dest: "{{ endora_root }}/src"
+        version: "{{ endora_version }}"
+        force: false
+      register: endora_source
+
+    - name: Endora data folder
+      when: endora_data_dir | length > 0
+      block:
+        - name: Check the data folder is an absolute path
+          ansible.builtin.assert:
+            that:
+              - endora_data_dir is match('/')
+            fail_msg: "endora_data_dir must be an absolute path on this host; got '{{ endora_data_dir }}'"
+
+        - name: Look for a database in the data folder
+          ansible.builtin.stat:
+            path: "{{ endora_data_dir }}/endora.db"
+          register: endora_data_db
+
+        - name: Look for the data volume
+          community.docker.docker_volume_info:
+            name: "{{ endora_project_name }}_endora-data"
+          register: endora_data_volume
+
+        - name: Refuse to start a brand-new node beside the old one's data
+          ansible.builtin.assert:
+            that:
+              - (endora_data_db.stat.exists and endora_data_db.stat.size > 0) or not endora_data_volume.exists
+            fail_msg: >-
+              {{ endora_data_dir }} holds no database, but the volume
+              {{ endora_project_name }}_endora-data does: starting now would be a brand-new node
+              with no settings. Copy the volume there first (Endora's `make migrate-data`), or
+              leave endora_data_dir empty.
+
+    # Built elsewhere and copied here by Endora's `make deploy`: a build on the NAS can run
+    # it out of memory.
+    - name: Look for the Endora image
+      community.docker.docker_image_info:
+        name: endora-node:latest
+      register: endora_image
+
+    - name: Refuse to build Endora here
+      ansible.builtin.assert:
+        that:
+          - endora_image.images | length > 0
+        fail_msg: >-
+          There is no endora-node image on this host. Build it on another machine and copy it
+          here with Endora's `make deploy` (ENDORA_BUILD_CONTEXT in its local.mk), then run this
+          role again. It is never built on the NAS.
+
+    - name: Endora settings
+      ansible.builtin.template:
+        src: endora.env.j2
+        dest: "{{ endora_root }}/endora.env"
+        mode: "0640"
+
+    - name: Endora host settings
+      ansible.builtin.template:
+        src: docker-compose.override.yml.j2
+        dest: "{{ endora_root }}/docker-compose.override.yml"
+        mode: "0640"
+
+    # Never built and never pulled: the image `make deploy` copied here, or nothing.
+    - name: Endora
+      community.docker.docker_compose_v2:
+        project_src: "{{ endora_root }}/src"
+        project_name: "{{ endora_project_name }}"
+        files:
+          - "{{ endora_root }}/src/docker-compose.yml"
+          - "{{ endora_root }}/docker-compose.override.yml"
+        env_files:
+          - "{{ endora_root }}/endora.env"
+        profiles: "{{ ['homelab'] if endora_docker_observer | bool else [] }}"
+        build: never
+        pull: never
+        state: present
+  when: endora_enabled is true
+
+# Only a node this role started is stopped: with the role disabled, an Endora deployed some
+# other way (its own `make deploy`) is left running. The data volume is never removed.
+- name: Stop Endora
+  when: endora_enabled is false
+  block:
+    - name: Look for a checkout this role made
+      ansible.builtin.stat:
+        path: "{{ endora_root }}/src/docker-compose.yml"
+      register: endora_checkout
+
+    - name: Stop Endora
+      community.docker.docker_compose_v2:
+        project_src: "{{ endora_root }}/src"
+        project_name: "{{ endora_project_name }}"
+        state: absent
+        remove_volumes: false
+      when: endora_checkout.stat.exists

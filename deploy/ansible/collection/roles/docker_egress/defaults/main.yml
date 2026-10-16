@@ -1,0 +1,22 @@
+---
+# Egress rules for individual Docker networks: what a container on that network may reach.
+#
+# This role is used by other roles, not enabled on its own. A role that needs a locked-down
+# network includes it with `docker_egress_policy` set, and gets one policy file of its own
+# under docker_egress_directory. A systemd unit applies every policy there whenever Docker
+# starts, because Docker recreates its own chains and the rules have to be put back after.
+#
+# A policy:
+#   name:      a-z and 0-9, at most 12 characters; becomes the iptables chain names
+#   subnet:    the network's subnet, which must be inside 172.16.0.0/12 (Docker's range)
+#   bridge:    the network's bridge interface name, set when the network is created
+#   allow_dns: whether DNS (port 53) may leave, to the resolvers Docker is configured with
+#   allow_public_tcp_ports: TCP ports it may reach on the public internet, e.g. [443]
+#   allow_lan: LAN destinations it may reach, as [{dest: "<address>", port: <port>}]
+#   allow_host_tcp_ports: ports on the Docker host itself it may reach (default none)
+#
+# Everything private that is not listed (the LAN, other containers, the host, link-local
+# metadata addresses) is dropped, and so is everything public that is not listed.
+docker_egress_directory: /etc/docker-egress.d
+docker_egress_runner: /usr/local/sbin/docker-egress
+docker_egress_policy_state: present

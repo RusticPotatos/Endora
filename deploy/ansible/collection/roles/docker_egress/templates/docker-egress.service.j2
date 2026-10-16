@@ -1,0 +1,13 @@
+[Unit]
+Description=Egress rules for locked-down Docker networks
+After=docker.service ufw.service
+PartOf=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart={{ docker_egress_runner }}
+ExecStop={{ docker_egress_runner }} remove
+
+[Install]
+WantedBy=docker.service

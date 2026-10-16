@@ -1,0 +1,101 @@
+---
+# What the node is started with:
+#   ANSIBLE_ROLES_PATH=roles ansible-playbook roles/endora/tests/render.yml
+- name: Endora renders its settings
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    docker_home: /tmp/endora-render-test
+    out: /tmp/endora-render-test/out
+  # vars_files, not include_vars: included vars would outrank the per-task values below.
+  vars_files:
+    - ../defaults/main.yml
+  tasks:
+    - name: Output folder
+      ansible.builtin.file:
+        path: "{{ out }}"
+        state: directory
+        mode: "0700"
+
+    - name: With mail, own work and a certificate address
+      ansible.builtin.template:
+        src: ../templates/endora.env.j2
+        dest: "{{ out }}/full.env"
+        mode: "0600"
+      vars:
+        mail_mirror_enabled: true
+        mail_mirror_root: /srv/mail-mirror
+        endora_own_work: true
+        endora_time_zone: America/New_York
+        endora_data_dir: /data/endora
+
+    - name: Nothing switched on
+      ansible.builtin.template:
+        src: ../templates/endora.env.j2
+        dest: "{{ out }}/bare.env"
+        mode: "0600"
+      vars:
+        endora_time_zone: ""
+
+    - name: Override with an address
+      ansible.builtin.template:
+        src: ../templates/docker-compose.override.yml.j2
+        dest: "{{ out }}/san.yml"
+        mode: "0600"
+      vars:
+        endora_tls_san: 192.168.1.10
+
+    - name: Override without one
+      ansible.builtin.template:
+        src: ../templates/docker-compose.override.yml.j2
+        dest: "{{ out }}/nosan.yml"
+        mode: "0600"
+      vars:
+        endora_tls_san: ""
+
+    - name: Read them back
+      ansible.builtin.set_fact:
+        full: "{{ lookup('file', out ~ '/full.env').splitlines() }}"
+        bare: "{{ lookup('file', out ~ '/bare.env').splitlines() }}"
+        san: "{{ lookup('file', out ~ '/san.yml') | from_yaml }}"
+        nosan: "{{ lookup('file', out ~ '/nosan.yml') | from_yaml }}"
+
+    - name: Check them
+      ansible.builtin.assert:
+        that:
+          - "full | select('match', 'ENDORA_BUILD') | list | length == 0"
+          - "'ENDORA_MAIL_DIR=/srv/mail-mirror/maildir' in full"
+          - "'ENDORA_OWN_WORK=1' in full"
+          - "'ENDORA_TIME_ZONE=America/New_York' in full"
+          - "'ENDORA_DATA_DIR=/data/endora' in full"
+          - "'ENDORA_MODEL_URL=http://host.docker.internal:11434/v1' in full"
+          # Off by default: no mail, no own work, and the data volume rather than a folder.
+          - "'ENDORA_OWN_WORK=0' in bare"
+          - "'ENDORA_TIME_ZONE=' in bare"
+          - "bare | select('match', 'ENDORA_MAIL_DIR') | list | length == 0"
+          - "bare | select('match', 'ENDORA_DATA_DIR') | list | length == 0"
+          - "san.services.node.environment.ENDORA_TLS_SAN == '192.168.1.10'"
+          - "nosan.services == {}"
+
+    # The rule this role exists to keep: Endora is never built or pulled on the NAS.
+    - name: Every Compose call in the role neither builds nor pulls
+      ansible.builtin.assert:
+        that:
+          - compose | length == 2
+          - started | length == 1
+          - started | map(attribute='build') | list == ['never']
+          - started | map(attribute='pull') | list == ['never']
+      vars:
+        tasks: "{{ lookup('file', '../tasks/main.yml') | from_yaml }}"
+        # By key: a dotted module name would be read as nested attributes.
+        compose: >-
+          {{ tasks | map(attribute='block') | flatten | map('dict2items') | flatten
+             | selectattr('key', 'equalto', 'community.docker.docker_compose_v2')
+             | map(attribute='value') | list }}
+        started: "{{ compose | selectattr('state', 'equalto', 'present') | list }}"
+
+    - name: Clean up
+      ansible.builtin.file:
+        path: /tmp/endora-render-test
+        state: absent

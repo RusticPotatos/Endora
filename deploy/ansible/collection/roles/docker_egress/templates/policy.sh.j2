@@ -1,0 +1,59 @@
+#!/bin/sh
+# Egress policy "{{ docker_egress_policy.name }}" for the Docker network on
+# {{ docker_egress_policy.subnet }} ({{ docker_egress_policy.bridge }}). Managed by Ansible
+# (docker_egress role); edits here are overwritten.
+#
+#   sh this-file apply    puts the rules in place (the default), replacing earlier ones
+#   sh this-file remove   takes them out again
+set -eu
+IPT="${IPT:-iptables}"
+OUT="EG-{{ docker_egress_policy.name | upper }}"
+IN="EG-{{ docker_egress_policy.name | upper }}-IN"
+SUBNET="{{ docker_egress_policy.subnet }}"
+BRIDGE="{{ docker_egress_policy.bridge }}"
+PRIVATE="10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 169.254.0.0/16 100.64.0.0/10 127.0.0.0/8 224.0.0.0/4"
+
+unhook() {
+    while $IPT -D DOCKER-USER -s "$SUBNET" -j "$OUT" 2>/dev/null; do :; done
+    while $IPT -D INPUT -i "$BRIDGE" -j "$IN" 2>/dev/null; do :; done
+}
+
+if [ "${1:-apply}" = "remove" ]; then
+    unhook
+    for chain in "$OUT" "$IN"; do
+        $IPT -F "$chain" 2>/dev/null || true
+        $IPT -X "$chain" 2>/dev/null || true
+    done
+    exit 0
+fi
+
+# Leaving the network (to the LAN, other containers and the internet).
+$IPT -N "$OUT" 2>/dev/null || $IPT -F "$OUT"
+$IPT -A "$OUT" -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN
+{% for host in docker_egress_policy.allow_lan | default([]) %}
+$IPT -A "$OUT" -d {{ host.dest }} -p tcp --dport {{ host.port | int }} -j RETURN
+{% endfor %}
+for net in $PRIVATE; do
+    $IPT -A "$OUT" -d "$net" -j DROP
+done
+{% if docker_egress_policy.allow_dns | default(false) %}
+$IPT -A "$OUT" -p udp --dport 53 -j RETURN
+$IPT -A "$OUT" -p tcp --dport 53 -j RETURN
+{% endif %}
+{% for port in docker_egress_policy.allow_public_tcp_ports | default([]) %}
+$IPT -A "$OUT" -p tcp --dport {{ port | int }} -j RETURN
+{% endfor %}
+$IPT -A "$OUT" -j DROP
+
+# Reaching the Docker host itself, which is INPUT and not something DOCKER-USER sees.
+$IPT -N "$IN" 2>/dev/null || $IPT -F "$IN"
+$IPT -A "$IN" -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+{% for port in docker_egress_policy.allow_host_tcp_ports | default([]) %}
+$IPT -A "$IN" -p tcp --dport {{ port | int }} -j ACCEPT
+{% endfor %}
+$IPT -A "$IN" -j DROP
+
+# Hooked in first, and only once, however many times this runs.
+unhook
+$IPT -I DOCKER-USER 1 -s "$SUBNET" -j "$OUT"
+$IPT -I INPUT 1 -i "$BRIDGE" -j "$IN"

@@ -51,3 +51,9 @@ console could not (media requests, container controls, jobs, Spotify), and had n
   sides' tests. Writing it down found a mismatch at once: the terminal waited for a `progress`
   event the node never sends and ignored the `step` and `error` events it does; it now shows
   both.
+- **The collection is `deploy/ansible/collection` (`endora.homelab`).** It holds `endora`,
+  `mail_mirror`, `docker_egress` (from the owner's ansible-nas fork) and
+  `endora_terminal_agent`, which now ships the host job agent and its setup wizard itself
+  instead of copying them from a checkout path on the server. Roles refer to each other by
+  collection name. One script (`check.sh`) runs every role's tests, syntax and rendering checks,
+  and CI runs it. The fork pins a commit of it in `requirements.yml`.

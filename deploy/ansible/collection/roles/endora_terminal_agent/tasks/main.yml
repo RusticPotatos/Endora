@@ -1,7 +1,6 @@
-- name: Validate explicit private agent setup
+- name: Validate the agent's user
   ansible.builtin.assert:
     that:
-      - endora_terminal_agent_source | length > 0
       - endora_terminal_agent_user != 'root'
 
 - name: Prepare managed executable directory
@@ -13,16 +12,25 @@
     mode: '0755'
   become: true
 
-- name: Install job agent source
+# The agent and its setup wizard ship with this collection, versioned with Endora.
+- name: Install the job agent
   ansible.builtin.copy:
-    src: "{{ endora_terminal_agent_source }}"
+    src: terminal-jobs.py
     dest: /usr/local/libexec/endora-terminal-jobs.py
     owner: root
     group: root
     mode: '0755'
-    remote_src: true
   become: true
   notify: Restart Endora job agent
+
+- name: Install the job agent's setup wizard
+  ansible.builtin.copy:
+    src: terminal-jobs-setup.py
+    dest: /usr/local/libexec/endora-terminal-jobs-setup.py
+    owner: root
+    group: root
+    mode: '0755'
+  become: true
 
 - name: Install job agent supervisor
   ansible.builtin.template:

@@ -1,0 +1,129 @@
+---
+- name: Start Mail Mirror
+  block:
+    - name: Check there are accounts to mirror
+      ansible.builtin.assert:
+        that:
+          - mail_mirror_accounts | length > 0
+        fail_msg: "mail_mirror_accounts is empty: add your accounts to the vault (see the role's defaults)"
+
+    - name: Mail mirror group
+      ansible.builtin.group:
+        name: "{{ mail_mirror_user }}"
+        system: true
+
+    - name: Mail mirror user
+      ansible.builtin.user:
+        name: "{{ mail_mirror_user }}"
+        group: "{{ mail_mirror_user }}"
+        system: true
+        shell: /usr/sbin/nologin
+        create_home: false
+      register: mail_mirror_account
+
+    - name: Mail mirror directories
+      ansible.builtin.file:
+        path: "{{ item.path }}"
+        state: directory
+        owner: "{{ mail_mirror_user }}"
+        group: "{{ mail_mirror_user }}"
+        mode: "{{ item.mode }}"
+      loop:
+        - { path: "{{ mail_mirror_root }}", mode: "0750" }
+        - { path: "{{ mail_mirror_root }}/maildir", mode: "0750" }
+        - { path: "{{ mail_mirror_root }}/state", mode: "0700" }
+        - { path: "{{ mail_mirror_root }}/config", mode: "0700" }
+        - { path: "{{ mail_mirror_root }}/app", mode: "0750" }
+
+    - name: Mail mirror script
+      ansible.builtin.copy:
+        src: mail_mirror.py
+        dest: "{{ mail_mirror_root }}/app/mail_mirror.py"
+        owner: root
+        group: "{{ mail_mirror_user }}"
+        mode: "0444"
+      register: mail_mirror_script
+
+    - name: Mail mirror accounts
+      ansible.builtin.template:
+        src: accounts.json.j2
+        dest: "{{ mail_mirror_root }}/config/accounts.json"
+        owner: "{{ mail_mirror_user }}"
+        group: "{{ mail_mirror_user }}"
+        mode: "0400"
+      register: mail_mirror_config
+      no_log: true
+
+    - name: Mail mirror egress policy
+      ansible.builtin.import_role:
+        name: endora.homelab.docker_egress
+      vars:
+        docker_egress_policy:
+          name: mailmirror
+          bridge: "{{ mail_mirror_network_bridge }}"
+          subnet: "{{ mail_mirror_network_subnet }}"
+          allow_dns: true
+          allow_public_tcp_ports: [443, 993]
+
+    - name: Mail mirror network
+      community.docker.docker_network:
+        name: "{{ mail_mirror_network_name }}"
+        driver: bridge
+        driver_options:
+          com.docker.network.bridge.name: "{{ mail_mirror_network_bridge }}"
+        ipam_config:
+          - subnet: "{{ mail_mirror_network_subnet }}"
+
+    - name: Mail Mirror Docker Container
+      community.docker.docker_container:
+        name: "{{ mail_mirror_container_name }}"
+        image: "{{ mail_mirror_image_name }}:{{ mail_mirror_image_version }}"
+        pull: "{{ docker_container_pull | default(true) }}"
+        command: ["python", "-u", "/app/mail_mirror.py"]
+        user: "{{ mail_mirror_account.uid }}:{{ mail_mirror_account.group }}"
+        env:
+          MAIL_MIRROR_EVERY_SECONDS: "{{ mail_mirror_every_seconds | string }}"
+          PYTHONDONTWRITEBYTECODE: "1"
+        volumes:
+          - "{{ mail_mirror_root }}/app:/app:ro"
+          - "{{ mail_mirror_root }}/config:/config:ro"
+          - "{{ mail_mirror_root }}/maildir:/maildir:rw"
+          - "{{ mail_mirror_root }}/state:/state:rw"
+        networks:
+          - name: "{{ mail_mirror_network_name }}"
+        networks_cli_compatible: true
+        network_mode: "{{ mail_mirror_network_name }}"
+        read_only: true
+        tmpfs:
+          - /tmp:size=16m
+        cap_drop:
+          - ALL
+        security_opts:
+          - no-new-privileges:true
+        pids_limit: 64
+        memory: "{{ mail_mirror_memory }}"
+        restart_policy: unless-stopped
+        recreate: "{{ mail_mirror_script is changed or mail_mirror_config is changed }}"
+      register: docker_container_result
+      until: docker_container_result is succeeded
+      retries: "{{ docker_container_pull_retries }}"
+      delay: "{{ docker_container_pull_delay }}"
+  when: mail_mirror_enabled is true
+
+- name: Stop Mail Mirror
+  block:
+    - name: Stop Mail Mirror
+      community.docker.docker_container:
+        name: "{{ mail_mirror_container_name }}"
+        state: absent
+
+    - name: Remove the mail mirror egress policy
+      ansible.builtin.import_role:
+        name: endora.homelab.docker_egress
+      vars:
+        docker_egress_policy_state: absent
+        docker_egress_policy:
+          name: mailmirror
+          bridge: "{{ mail_mirror_network_bridge }}"
+          subnet: "{{ mail_mirror_network_subnet }}"
+  when: mail_mirror_enabled is false

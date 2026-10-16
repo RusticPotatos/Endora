@@ -13,6 +13,10 @@ tagged release.
   `clients/terminal`, the Rust TUI for a small Linux handheld, joins the workspace: one
   lockfile, one CI (its Python, privacy and rendering checks, and an ARM64 bundle artifact),
   Apache-2.0. It still talks to the node only over HTTP.
+- **Endora's Ansible roles ship with Endora** as the `endora.homelab` collection
+  (`deploy/ansible/collection`): the node, the mail mirror, locked-down container networks and
+  the host job agent, which now installs itself from the collection. An ansible-nas checkout pins
+  it; CI checks every role.
 - **A shared wire protocol** (`shared/protocol`). The handheld's pages, home screen, action
   outcomes and chat stream events are written down once; the node refuses to send a response
   that does not fit, and both sides' tests fail if either drifts. The handheld now shows what

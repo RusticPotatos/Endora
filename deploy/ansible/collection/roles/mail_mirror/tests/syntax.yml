@@ -1,0 +1,7 @@
+---
+# Syntax check: ANSIBLE_ROLES_PATH=roles ansible-playbook --syntax-check roles/mail_mirror/tests/syntax.yml
+- name: Mail mirror syntax
+  hosts: localhost
+  gather_facts: false
+  roles:
+    - role: mail_mirror

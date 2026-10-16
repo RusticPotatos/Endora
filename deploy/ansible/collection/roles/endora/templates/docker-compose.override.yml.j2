@@ -1,0 +1,10 @@
+# {{ ansible_managed }}
+# This host's settings that Endora's docker-compose.yml does not take from the environment.
+{% if endora_tls_san %}
+services:
+  node:
+    environment:
+      ENDORA_TLS_SAN: "{{ endora_tls_san }}"
+{% else %}
+services: {}
+{% endif %}

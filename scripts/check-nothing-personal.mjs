@@ -73,6 +73,18 @@ const ADDRESS_IS_AN_EXAMPLE = new Set([
   "192.168.1.10",
 ]);
 
+// An address that cannot be somebody's host: a network rather than a host (`10.0.0.0`), Docker's
+// own internal range, loopback, link-local, multicast, or the ranges reserved for documentation.
+// A firewall rule has to name the private ranges; that is not a leak. A real LAN host or a real
+// public address is still caught.
+function isNotAHost(address) {
+  const [a, b, c, d] = address.split(".").map(Number);
+  if (d === 0) return true;
+  if (a === 172 && b >= 16 && b <= 31) return true;
+  if (a === 127 || (a === 169 && b === 254) || (a >= 224 && a <= 239)) return true;
+  return (a === 192 && b === 0 && c === 2) || (a === 198 && b === 51 && c === 100) || (a === 203 && b === 0 && c === 113);
+}
+
 /** Checksums, not credentials. */
 const HEX_IS_EXPECTED = new Set(["Cargo.lock"]);
 
@@ -98,7 +110,7 @@ const rules = [
   {
     what: "a real network address",
     find: /\b(?:\d{1,3}\.){3}\d{1,3}\b/g,
-    wrong: (hit) => !ADDRESS_IS_AN_EXAMPLE.has(hit),
+    wrong: (hit) => !ADDRESS_IS_AN_EXAMPLE.has(hit) && !isNotAHost(hit),
     say: "use 192.168.1.10, or put the real one in local.mk",
   },
   {

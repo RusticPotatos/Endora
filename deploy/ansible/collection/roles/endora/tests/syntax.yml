@@ -1,0 +1,7 @@
+---
+# Syntax check: ANSIBLE_ROLES_PATH=roles ansible-playbook --syntax-check roles/endora/tests/syntax.yml
+- name: Endora syntax
+  hosts: localhost
+  gather_facts: false
+  roles:
+    - role: endora

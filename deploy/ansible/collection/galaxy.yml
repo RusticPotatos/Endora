@@ -1,0 +1,19 @@
+# Endora's Ansible roles, shipped and versioned with Endora (ADR 0099). An ansible-nas checkout
+# pins this collection in its requirements.yml and lists the roles it wants in its playbook.
+namespace: endora
+name: homelab
+version: 0.12.0
+readme: README.md
+authors:
+  - Endora contributors
+description: >-
+  Endora on a home server: the node, a read-only mail copy for it, locked-down container
+  networks, and the host job agent the handheld and Endora run allowlisted jobs through.
+license:
+  - Apache-2.0
+repository: https://github.com/RusticPotatos/Endora
+dependencies:
+  community.docker: ">=3.7.0"
+build_ignore:
+  - check.sh
+  - "roles/*/tests"

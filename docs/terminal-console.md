@@ -63,17 +63,17 @@ stack and observations are not automatically sent to AI context.
 
 ## Host job agent
 
-Run `python3 scripts/terminal-jobs-setup.py` as the existing non-root NAS
+The role `endora_terminal_agent` in the `endora.homelab` collection
+(`deploy/ansible/collection`) installs the agent and its setup wizard. Run
+`python3 /usr/local/libexec/endora-terminal-jobs-setup.py` as the existing non-root NAS
 administration user. Select the existing checkout, private inventory and service
 roles explicitly. The generated catalog lives under `~/.config/endora-jobs/`,
 mode 0700 with a mode 0600 config. It is not copied into Git. A key is generated
 locally; transfer it only through the node's masked setup prompt.
 
-The generic role in `deploy/ansible/roles/endora_terminal_agent` installs
-`scripts/terminal-jobs.py` from an explicitly selected server-side source path.
-Review and merge this role into the existing NAS playbook while preserving local
-edits. The role defaults to disabled; supply `endora_terminal_agent_source`,
-the existing non-root user and private config path. Enable it deliberately.
+The role ships the agent (`files/terminal-jobs.py`) with the collection, so the agent a NAS
+runs is the one this repository tested. It defaults to disabled; supply the existing non-root
+user and private config path, and enable it deliberately.
 The service owns `/run/endora-jobs/agent.sock` and `/var/lib/endora-jobs/`.
 The node's Compose mount shares only that runtime directory; the key and exact
 agent routes provide authorization in addition to filesystem permissions.
