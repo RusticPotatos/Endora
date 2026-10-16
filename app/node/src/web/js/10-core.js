@@ -407,7 +407,6 @@ async function loadView(v, id) {
   await loadLab(v, id);
   if (v === "hq") await loadHQ();
   if (v === "needs") await loadAgenda();
-  if (v === "needs") await loadAgenda();
   if (v === "watching") { try { AGENDA_RULES = await api("GET", "/v1/agenda/rules"); } catch (_) { AGENDA_RULES = null; } }
   if (v === "speakers") await loadSound();
 }
