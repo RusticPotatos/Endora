@@ -440,3 +440,27 @@ fn something_that_happened_hours_ago_is_pinned_but_never_pushed() {
     assert_eq!(levels, [(Level::Urgent, false), (Level::Urgent, true)]);
     assert_eq!(f.pushed.borrow().len(), 1);
 }
+
+#[test]
+fn a_backup_still_failing_a_day_after_it_was_told_is_urgent() {
+    let (s, f) = (store(), Fakes::default());
+    let agenda = Agenda::new(&s, &f, &f, &f);
+    let stale = crate::domain::alert_signals(&[crate::domain::Alert {
+        name: "BackupStale".into(),
+        severity: "warning".into(),
+        target: "system".into(),
+        summary: "Backup plan system last succeeded 2 days ago".into(),
+    }]);
+    agenda.observe(Source::Monitoring, &stale, T0).unwrap();
+    assert_eq!(s.open_items().unwrap()[0].level, Level::NeedsYou);
+    agenda
+        .observe(Source::Monitoring, &stale, T0 + DAY_MS)
+        .unwrap();
+    agenda.tick(T0 + DAY_MS).unwrap();
+    let item = &s.open_items().unwrap()[0];
+    assert_eq!(
+        (item.level, item.why.as_str()),
+        (Level::Urgent, "Still the case after 1 day.")
+    );
+    assert_eq!(f.pushed.borrow().len(), 1);
+}

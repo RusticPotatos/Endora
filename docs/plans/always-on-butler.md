@@ -6,8 +6,8 @@ what it can, and telling them only at the right level. It replaces the backgroun
 that produced noise. Prepared with AI assistance (Claude). Step 1, the clean slate, is built
 ([ADR 0100](../adr/0100-the-clean-slate.md)), and so is step 2, the brain
 ([ADR 0101](../adr/0101-the-brain.md)). Step 3, the agenda loop
-([ADR 0103](../adr/0103-the-agenda-loop.md)), is built for the containers, downloads, mail and
-calendar; the home lab's alerts, backups, uptime and disk are its next sources. Endora HQ
+([ADR 0103](../adr/0103-the-agenda-loop.md)), is built: the containers, downloads, mail, calendar,
+the house's alerts and uptime checks, and Endora's own nightly copy. Endora HQ
 ([ADR 0102](../adr/0102-endora-hq.md)) is through its phase 2; the rest is not yet. Each part lands on its own
 branch with the full gate, and the architecture changes get an ADR.
 

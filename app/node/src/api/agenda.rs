@@ -84,12 +84,17 @@ impl endora_agenda::application::Activity for Trail {
     }
 }
 
-/// The containers seen running since the loop started, and the last home-lab snapshot it read.
+/// The containers seen running since the loop started, the last home-lab snapshot it read, and
+/// how many looks it has had (the monitoring is read every fifth).
 #[derive(Default)]
 pub(super) struct Memory {
     seen_running: BTreeSet<String>,
     homelab_at: i64,
+    looks: u64,
 }
+
+/// The monitoring is read every this many looks: alerts move in minutes, not seconds.
+const MONITORING_EVERY: u64 = 5;
 
 /// Runs the loop for the life of the process.
 pub(super) fn spawn(state: AppState) {
@@ -129,7 +134,23 @@ pub(super) async fn once(state: &AppState, memory: &Arc<std::sync::Mutex<Memory>
                     &mut memory.seen_running,
                 ));
             }
+            memory.looks += 1;
+            // The first look reads it too, so a restart does not wait five minutes to see.
+            if memory.looks % MONITORING_EVERY == 1 {
+                if let Ok(watched) = state.console.read("watch", "") {
+                    observations.push((Source::Monitoring, usecases::monitoring_signals(&watched)));
+                }
+            }
         }
+        let nightly = state
+            .nightly_failure
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        observations.push((
+            Source::Endora,
+            endora_agenda::domain::nightly_copy_signals(nightly.as_deref()),
+        ));
         if state.mail_copy.is_some() {
             if let Ok(digests) = state
                 .mail_store

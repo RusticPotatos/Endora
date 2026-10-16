@@ -979,6 +979,19 @@ impl HomeConsole for Adapter {
                     &details,
                 ))
             }
+            // What the agenda loop watches (ADR 0103): the firing alerts and the failing uptime
+            // checks, both from Prometheus. Fixed queries; nothing the caller chooses.
+            "watch" => {
+                let alerts = self.call("metrics", "GET", "/api/v1/alerts", None)?;
+                let query = encode("gatus_results_endpoint_success == 0");
+                let down = self.call(
+                    "metrics",
+                    "GET",
+                    &format!("/api/v1/query?query={query}"),
+                    None,
+                )?;
+                Ok(project_watch(&alerts, &down))
+            }
             "jobs" => self.jobs("GET", "/jobs", None),
             "job" if identifier(query) => self.jobs("GET", &format!("/jobs/{query}"), None),
             _ => Err("unknown_view"),
@@ -1122,6 +1135,53 @@ const METRICS_SETTINGS: &[super::SettingSpec] = &[
 ];
 
 /// The four NAS figures, as PromQL over the Telegraf metrics the node's Prometheus scrapes.
+/// What the agenda loop needs from Prometheus's alerts and Gatus's results: each firing
+/// alert's name, severity, what it is about and its summary, and the names of the failing
+/// checks. Only those: no other label (a drive's serial number, an address) is kept.
+#[must_use]
+pub fn project_watch(alerts: &Value, down: &Value) -> Value {
+    const ABOUT: [&str; 7] = [
+        "drive",
+        "path",
+        "plan",
+        "db",
+        "container_name",
+        "name",
+        "job",
+    ];
+    let firing: Vec<Value> = alerts["data"]["alerts"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|a| a["state"] == "firing")
+        .take(100)
+        .map(|a| {
+            let labels = &a["labels"];
+            let target = ABOUT
+                .iter()
+                .map(|key| safe(&labels[*key]))
+                .find(|v| !v.is_empty())
+                .unwrap_or_default();
+            json!({
+                "name": safe(&labels["alertname"]),
+                "severity": safe(&labels["severity"]),
+                "target": target,
+                "summary": safe(&a["annotations"]["summary"]),
+            })
+        })
+        .filter(|a| a["name"] != "")
+        .collect();
+    let failing: Vec<String> = down["data"]["result"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|r| safe(&r["metric"]["name"]))
+        .filter(|n| !n.is_empty())
+        .take(100)
+        .collect();
+    json!({ "alerts": firing, "checks_failing": failing })
+}
+
 /// `host` is the Telegraf host label; it is quoted as JSON so it cannot leave its string.
 ///
 /// # Errors

@@ -304,7 +304,15 @@ impl<'a> Agenda<'a> {
             Response::Handle => self.handle(&mut item, signal, now)?,
             Response::LookInto => self.look_into(&mut item, now)?,
             Response::Note => "Noted",
-            Response::Fyi | Response::NeedsYou | Response::Urgent => item.level.said(),
+            Response::Fyi | Response::NeedsYou | Response::Urgent => {
+                // Some things are told louder if they have not cleared after a while.
+                if let Some((after, then)) = item.kind.escalates().filter(|(_, l)| *l > item.level)
+                {
+                    item.watch_until = Some(now + after);
+                    item.then = Some(then);
+                }
+                item.level.said()
+            }
         };
         let why = if item.why.is_empty() {
             String::new()

@@ -114,6 +114,8 @@ pub struct AppState {
     pub mail_store: Arc<endora_mail::MailStore>,
     /// The agenda loop's items, restarts and taught rules (ADR 0103).
     pub agenda: Arc<endora_agenda::infrastructure::SqliteAgendaStore>,
+    /// Why the last nightly copy failed, until one succeeds: what the agenda tells.
+    pub nightly_failure: Arc<std::sync::Mutex<Option<String>>>,
     /// The read-only copy of the mail, when one is mounted.
     pub mail_copy: Option<Arc<endora_mail::MaildirCopy>>,
     /// The quarantined reader: the local model, with no tools and none of the person's context.
@@ -286,6 +288,7 @@ impl AppState {
             hq: None,
             mail_store,
             agenda,
+            nightly_failure: Arc::new(std::sync::Mutex::new(None)),
             mail_copy: None,
             mail_reader: None,
             local_writer,

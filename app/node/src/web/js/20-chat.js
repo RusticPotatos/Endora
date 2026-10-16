@@ -303,7 +303,7 @@ function viewChat() {
       : "Say anything — Endora is listening."}</div>`;
   return `
     <div class="chat">
-      ${AGENDA ? `<div class="chat-top"><div class="chat-col">${viewNowLine()}${viewPinned()}</div></div>` : ""}
+      ${AGENDA && AGENDA.now ? `<div class="chat-top"><div class="chat-col">${viewNowLine()}${viewPinned()}</div></div>` : ""}
       <div class="chat-scroll" id="chat-scroll"><div class="chat-col">
         ${dayBar}
         ${research}

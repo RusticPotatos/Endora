@@ -125,3 +125,95 @@ pub fn event_signals(entries: &[(String, String)], today: &str, tomorrow: &str) 
         })
         .collect()
 }
+
+/// A firing alert, as Prometheus reports it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Alert {
+    /// The rule's name: `FilesystemFull`.
+    pub name: String,
+    /// `critical` or `warning`.
+    pub severity: String,
+    /// What it is about, from its labels: a drive, a path, a plan.
+    pub target: String,
+    /// Its summary, as the rule words it.
+    pub summary: String,
+}
+
+/// The alerts the containers already speak for: the Docker source tells those, once.
+const TOLD_BY_DOCKER: [&str; 2] = ["ContainerRestartLoop", "ContainerUnhealthy"];
+
+/// The firing alerts' signals. The rule's name decides the kind: a full disk, a backup that
+/// has not succeeded, a failing drive; anything else by its severity.
+#[must_use]
+pub fn alert_signals(alerts: &[Alert]) -> Vec<Signal> {
+    alerts
+        .iter()
+        .filter(|a| !TOLD_BY_DOCKER.contains(&a.name.as_str()))
+        .map(|a| {
+            let kind = match a.name.as_str() {
+                "FilesystemFull" => Kind::DiskFull,
+                "FilesystemAlmostFull" => Kind::DiskAlmostFull,
+                "BackupStale" | "BackupNeverSucceeded" | "DatabaseDumpStale" => Kind::BackupFailing,
+                "DiskFailingSmart" | "DiskBadSectors" => Kind::DriveFailing,
+                _ if a.severity == "critical" => Kind::AlertCritical,
+                _ => Kind::AlertWarning,
+            };
+            let about = if a.target.is_empty() {
+                a.name.clone()
+            } else {
+                format!("{} on {}", a.name, a.target)
+            };
+            let detail = if a.summary.trim().is_empty() {
+                about.clone()
+            } else {
+                a.summary.trim().to_owned()
+            };
+            Signal {
+                kind,
+                subject: about.clone(),
+                about,
+                name: a.name.clone(),
+                detail,
+                target: None,
+                cautious: false,
+                at: None,
+            }
+        })
+        .collect()
+}
+
+/// The failing uptime checks' signals, by the check's name.
+#[must_use]
+pub fn check_signals(failing: &[String]) -> Vec<Signal> {
+    failing
+        .iter()
+        .map(|name| Signal {
+            kind: Kind::CheckFailing,
+            subject: name.clone(),
+            about: format!("the uptime check {name}"),
+            name: name.clone(),
+            detail: String::new(),
+            target: None,
+            cautious: false,
+            at: None,
+        })
+        .collect()
+}
+
+/// Endora's nightly copy: a signal while its last attempt failed, none once one succeeds.
+#[must_use]
+pub fn nightly_copy_signals(last_failure: Option<&str>) -> Vec<Signal> {
+    last_failure
+        .map(|why| Signal {
+            kind: Kind::NightlyCopyFailed,
+            subject: "nightly".to_owned(),
+            about: "nightly".to_owned(),
+            name: "Endora".to_owned(),
+            detail: why.to_owned(),
+            target: None,
+            cautious: false,
+            at: None,
+        })
+        .into_iter()
+        .collect()
+}

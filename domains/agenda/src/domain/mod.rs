@@ -7,7 +7,10 @@ mod sources;
 
 pub use kinds::{Family, Kind, Level, Response, Source};
 pub use restarts::{RestartVerdict, may_restart};
-pub use sources::{Container, QueuedDownload, container_signals, download_signals, event_signals};
+pub use sources::{
+    Alert, Container, QueuedDownload, alert_signals, check_signals, container_signals,
+    download_signals, event_signals, nightly_copy_signals,
+};
 
 /// One minute, in milliseconds.
 pub const MINUTE_MS: i64 = 60 * 1000;
@@ -78,8 +81,16 @@ impl Signal {
             | Kind::MailFromAPerson
             | Kind::MailAppointment
             | Kind::MailOrderProblem
-            | Kind::MailAboutYourApp => detail.clone(),
+            | Kind::MailAboutYourApp
+            | Kind::DiskFull
+            | Kind::DiskAlmostFull
+            | Kind::BackupFailing
+            | Kind::DriveFailing
+            | Kind::AlertCritical
+            | Kind::AlertWarning => detail.clone(),
             Kind::Event => format!("{detail}: {name}"),
+            Kind::CheckFailing => format!("The uptime check \"{name}\" is failing"),
+            Kind::NightlyCopyFailed => format!("Endora couldn't save its nightly copy: {detail}"),
         }
     }
 }

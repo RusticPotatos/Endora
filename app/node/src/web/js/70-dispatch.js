@@ -19,6 +19,7 @@ function render() {
     : v === "lab" ? viewLab()
     : v === "hq" ? viewHQ()
     : v === "watching" ? viewWatching()
+    : v === "needs" ? viewNeeds()
     : v === "containers" ? viewContainers()
     : v === "logs" ? viewLogs()
     : v === "jobs" ? viewJobs()
