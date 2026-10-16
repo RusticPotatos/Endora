@@ -106,6 +106,9 @@ pub struct AppState {
     /// for patterns that depend on the time of day and for keeping daily hours on their clock.
     /// The node stores instants and does not otherwise know where the person is. UTC unless set.
     pub time_zone: endora_infrastructure::TimeZone,
+    /// Endora HQ, when this node has one (ADR 0102): the team service, which answers the node
+    /// only. `None` until `ENDORA_HQ_URL` and `ENDORA_HQ_TOKEN` are set.
+    pub hq: Option<Arc<endora_infrastructure::HqClient>>,
     /// What Endora has made of the mail (ADR 0097): an index of every message and a digest of
     /// those it has read. Always present; empty until there is mail.
     pub mail_store: Arc<endora_mail::MailStore>,
@@ -273,6 +276,7 @@ impl AppState {
             token,
             started_ms,
             time_zone: endora_infrastructure::TimeZone::fixed(0),
+            hq: None,
             mail_store,
             mail_copy: None,
             mail_reader: None,
@@ -297,6 +301,13 @@ impl AppState {
     #[must_use]
     pub fn with_time_zone(mut self, time_zone: endora_infrastructure::TimeZone) -> Self {
         self.time_zone = time_zone;
+        self
+    }
+
+    /// Connects Endora HQ (ADR 0102).
+    #[must_use]
+    pub fn with_hq(mut self, hq: endora_infrastructure::HqClient) -> Self {
+        self.hq = Some(Arc::new(hq));
         self
     }
 
@@ -400,6 +411,14 @@ pub fn app(state: AppState) -> Router {
         .route("/v1/chat/context", get(chat_context))
         .route("/v1/chat/context/reset", post(reset_chat_context))
         .route("/v1/chat/stream", post(stream_chat))
+        // Endora HQ, through the node (ADR 0102).
+        .route("/v1/hq", get(hq_snapshot))
+        .route("/v1/hq/events", get(hq_events))
+        .route("/v1/hq/goals", post(hq_goal))
+        .route("/v1/hq/tasks", post(hq_task))
+        .route("/v1/hq/desk/{id}", post(hq_decide))
+        .route("/v1/hq/stop", post(hq_stop))
+        .route("/v1/hq/resume", post(hq_resume))
         // What Endora knows about the person, page by page (ADR 0101).
         .route("/v1/brain", get(brain_overview))
         .route("/v1/brain/forget", post(forget_what_it_learned))
@@ -745,6 +764,8 @@ use chat::*;
 
 mod brain;
 use brain::*;
+mod hq;
+use hq::*;
 mod life;
 
 mod mail;

@@ -150,6 +150,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     )
     .with_brain(brain)
     .with_time_zone(time_zone);
+    // Endora HQ (ADR 0102), when this node has one. The token is shared with HQ alone; too
+    // short, and HQ is left off rather than reachable with a guessable one.
+    let state = match (
+        std::env::var("ENDORA_HQ_URL")
+            .ok()
+            .filter(|u| !u.trim().is_empty()),
+        std::env::var("ENDORA_HQ_TOKEN")
+            .ok()
+            .map(|t| t.trim().to_owned()),
+    ) {
+        (Some(url), Some(token)) if token.len() >= 32 => {
+            println!("hq: the team service at {url}");
+            state.with_hq(endora_infrastructure::HqClient::new(&url, &token))
+        }
+        (Some(_), _) => {
+            eprintln!("hq: ENDORA_HQ_TOKEN must be at least 32 characters; HQ is off");
+            state
+        }
+        _ => state,
+    };
 
     println!("{}", endora_application::platform_identity());
     println!("drafting model: {model} via {model_url}  (optional; 503 if unavailable)");
