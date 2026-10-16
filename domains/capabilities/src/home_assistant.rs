@@ -1611,9 +1611,12 @@ mod calendar_tests {
 
     #[test]
     fn calendars_are_found_by_plain_ids_only() {
-        let body = r#"[{"entity_id":"calendar.family","name":"Family"},{"entity_id":"calendar.home"},
+        let body = r#"[{"entity_id":"calendar.example_one","name":"Example one"},{"entity_id":"calendar.example_two"},
             {"entity_id":"calendar.x/../../api/config"},{"entity_id":"light.kitchen"},{"name":"no id"}]"#;
-        assert_eq!(calendar_ids_in(body), ["calendar.family", "calendar.home"]);
+        assert_eq!(
+            calendar_ids_in(body),
+            ["calendar.example_one", "calendar.example_two"]
+        );
         assert!(calendar_ids_in("not json").is_empty());
     }
 
@@ -2119,7 +2122,7 @@ mod what_is_on_today {
     fn an_engagement_is_read_from_the_facts_not_the_state() {
         // The live one. A calendar's state is `off` whether the evening is empty or not, so
         // a connected calendar told the butler nothing until this existed.
-        let tonight = calendar("Family", "Jane Doe & John Doe", "2026-07-31 18:30:00");
+        let tonight = calendar("Example one", "Jane Doe & John Doe", "2026-07-31 18:30:00");
         let said = describe_engagement(&tonight).expect("an engagement");
         assert!(said.contains("Jane Doe & John Doe"), "{said}");
         assert!(said.contains("18:30"), "{said}");
@@ -2135,7 +2138,7 @@ mod what_is_on_today {
 
     #[test]
     fn only_a_calendar_is_read_this_way() {
-        let mut lamp = calendar("Family", "something", "now");
+        let mut lamp = calendar("Example one", "something", "now");
         lamp.id = "light.kitchen".to_owned();
         assert_eq!(describe_engagement(&lamp), None);
     }
@@ -2277,7 +2280,7 @@ mod what_is_still_outstanding {
     #[test]
     fn one_thing_is_not_two_things() {
         assert_eq!(
-            describe_outstanding(&list("Family", "family", "1")),
+            describe_outstanding(&list("Example one", "family", "1")),
             Some("1 thing on your Family list".to_owned())
         );
     }
