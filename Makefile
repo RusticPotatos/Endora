@@ -82,8 +82,11 @@ export ENDORA_BRAIN_DIR
 # Endora HQ (ADR 0102), the team service: COMPOSE_PROFILES = hq and
 # ENDORA_HQ_URL = http://hq:8790 in local.mk run it beside the node, with the scripted demo team
 # unless ENDORA_HQ_DEMO = 0. It makes its own token for the node; nothing to keep by hand.
+# ENDORA_HQ_TICK_SECONDS sets how often its engine ticks (30 unless set).
 export COMPOSE_PROFILES
 export ENDORA_HQ_URL
+export ENDORA_HQ_DEMO
+export ENDORA_HQ_TICK_SECONDS
 export ENDORA_HQ_DEMO
 export ENDORA_HQ_TICK_SECONDS
 
