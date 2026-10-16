@@ -271,7 +271,8 @@ carries a brief never goes to DeepSeek.
 researcher; the local model for small jobs (summaries, naming, tidying), at no cost; Opus only
 when the owner approves it for a task.
 
-**The money** (Max 5x, $100 a month in API credits, which do not roll over):
+**The money**, by default (a monthly allowance of API credits that does not roll over; the
+amounts are settings the owner changes):
 
 | Share | Per month | Per day |
 | --- | --- | --- |
