@@ -47,6 +47,12 @@ tagged release.
 
 ### Fixed
 
+- **The model settings answered "internal error" on any node older than the preferred
+  endpoint.** Its two columns were added only by a migration that runs in tests, never in
+  production, so `GET /v1/model-config` (the Models screen's everyday card, and the new AI
+  screen) failed on every database created before it. Production now adds them, and a test
+  fails if a column is ever added only by the test migration again.
+
 - **A skill that rides a connection said "On" before the connection was set up.** The
   settings screen judged it by its own (empty) settings; chat, rightly, by the connection's.
   Both now use one rule (`settings_ready`), so mail shows as needing Home Assistant and the

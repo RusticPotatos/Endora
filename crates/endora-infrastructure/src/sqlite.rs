@@ -762,6 +762,21 @@ impl SqliteStore {
                 "escalate",
                 "INTEGER NOT NULL DEFAULT 0",
             )?;
+            // The preferred base rung (a bigger model on a sometimes-away machine). Added
+            // here, not only in the capabilities test migration: without it every database
+            // older than the feature failed to read its model config at all.
+            ensure_column(
+                &conn,
+                "butler_model_config",
+                "preferred_url",
+                "TEXT NOT NULL DEFAULT ''",
+            )?;
+            ensure_column(
+                &conn,
+                "butler_model_config",
+                "preferred_model",
+                "TEXT NOT NULL DEFAULT ''",
+            )?;
             ensure_column(&conn, "mcp_servers", "env", "TEXT NOT NULL DEFAULT ''")?;
             ensure_column(&conn, "mcp_servers", "auth", "TEXT NOT NULL DEFAULT ''")?;
             // Auto-allow a server's tools on connect (default on). Opened tools stay
@@ -2444,6 +2459,76 @@ mod the_schema_production_actually_runs {
     fn as_production_does() -> ConfigStore {
         let store = SqliteStore::open_in_memory().expect("open the production store");
         ConfigStore::new(store.db())
+    }
+
+    #[test]
+    fn a_database_from_before_the_preferred_endpoint_reads_its_model_config() {
+        // Live: GET /v1/model-config (and the AI screen) answered "internal error" on every
+        // node older than the preferred endpoint, because its two columns were added only in
+        // `endora_capabilities::migrate`, which production never runs.
+        use endora_application::ButlerModelConfigRepository;
+        let dir =
+            std::env::temp_dir().join(format!("endora-old-model-config-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("old.db");
+        {
+            let conn = rusqlite::Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE butler_model_config (
+                    id INTEGER PRIMARY KEY CHECK (id = 0), base_url TEXT NOT NULL,
+                    api_key TEXT NOT NULL, mixture INTEGER NOT NULL, single_model TEXT NOT NULL,
+                    single_temp REAL, single_top_p REAL, single_top_k INTEGER, single_repeat REAL,
+                    router_model TEXT NOT NULL, router_temp REAL, router_top_p REAL,
+                    router_top_k INTEGER, router_repeat REAL, synth_model TEXT NOT NULL,
+                    synth_temp REAL, synth_top_p REAL, synth_top_k INTEGER, synth_repeat REAL
+                ) STRICT;
+                INSERT INTO butler_model_config VALUES
+                    (0, 'http://localhost:11434/v1', '', 0, 'qwen2.5:7b',
+                     NULL, NULL, NULL, NULL, '', NULL, NULL, NULL, NULL, '', NULL, NULL, NULL, NULL);",
+            )
+            .unwrap();
+        }
+        let store = SqliteStore::open(path.to_str().unwrap()).expect("an older database opens");
+        let cfg = ConfigStore::new(store.db());
+        let read = ButlerModelConfigRepository::get(&cfg)
+            .expect("its model config reads")
+            .expect("and is there");
+        assert_eq!(read.single.model, "qwen2.5:7b");
+        assert!(read.preferred_url.is_empty());
+        drop(store);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn every_column_the_test_migration_adds_production_adds_too() {
+        // `endora_capabilities::migrate` runs in tests and nowhere else. A column added there
+        // alone exists in every test database and is missing from every real one older than
+        // it, which is how the model config broke. Each `ALTER TABLE … ADD COLUMN` there must
+        // have its `ensure_column` here.
+        let test_only = include_str!("../../../domains/capabilities/src/store.rs");
+        let production = include_str!("sqlite.rs")
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        let mut checked = 0;
+        for after in test_only.split("ALTER TABLE ").skip(1) {
+            let words: Vec<&str> = after.split_whitespace().take(4).collect();
+            let [table, "ADD", "COLUMN", column] = words.as_slice() else {
+                continue;
+            };
+            let added = format!("ensure_column( &conn, \"{table}\", \"{column}\",");
+            let added_short = format!("ensure_column(&conn, \"{table}\", \"{column}\",");
+            assert!(
+                production.contains(&added) || production.contains(&added_short),
+                "{table}.{column} is added only by the test migration"
+            );
+            checked += 1;
+        }
+        assert!(
+            checked >= 9,
+            "the scan found the test migration's columns ({checked})"
+        );
     }
 
     #[test]
