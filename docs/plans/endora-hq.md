@@ -2,7 +2,8 @@
 
 Agreed with the owner in a design interview on 2026-10-16 (questions Q1–Q34), recorded in
 [ADR 0102](../adr/0102-endora-hq.md). Prepared with AI assistance (Claude). This is step 7 of
-[the always-on butler plan](always-on-butler.md). Nothing here is built yet.
+[the always-on butler plan](always-on-butler.md). Phase 1 (section 15), the team core, is built
+in `domains/team`; the rest is not yet.
 
 This document is the specification to build from. It describes behaviour, rules and words,
 not code: implementation starts from here and nowhere else.

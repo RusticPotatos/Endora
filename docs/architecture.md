@@ -60,6 +60,7 @@ domains/     one crate per bounded context, each layered internally:
   understanding    the brain (markdown pages + memory), intentions, research
   conversation     the chat model + repository
   scheduling       the daily brief's cadence
+  team             Endora HQ's team core: goals, tasks, wakes, runs, the tick, the ledger
 shared/      kernel (ids, time, errors, AutonomyLevel, Reversibility),
              persistence (Db handle)
 ```
@@ -182,6 +183,7 @@ domains/
   conversation/        # The chat and its running summary
   scheduling/          # Proactive cadences
   platform/            # Audit trail + event log
+  team/                # Endora HQ: its own store and engine, no dependency on the node
 shared/
   kernel/              # Ids, time, errors, AutonomyLevel, Reversibility — pure
   persistence/         # The shared SQLite handle
