@@ -8,8 +8,9 @@ Accepted (2026-07-26). **Consolidates 0017, 0019, 0025 and 0031**, which are arc
 owner did not want the "Still yours?" card and asked for it gone. It is removed with
 everything under it: the chat card and its routes, the morning brief's lines, the own-work
 lane's items (ADR 0094), and the detection and its store. The console check fails if the
-card returns. A database made before keeps its `standing_trouble` table, untouched and
-unread. The rest of this record stands.
+card returns. A database made before drops its `standing_trouble` table when the node starts
+([ADR 0100](0100-the-clean-slate.md)): a table nothing reads is data nothing can export or
+delete. The rest of this record stands.
 
 [ADR 0077](0077-seeing-something-through.md) gives explicit commissioned research
 the next background model slot. While it remains active, heartbeat housekeeping and

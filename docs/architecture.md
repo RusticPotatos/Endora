@@ -59,20 +59,19 @@ domains/     one crate per bounded context, each layered internally:
   capabilities     skills, the policy-gated runner, egress guard, autonomy envelope
   understanding    beliefs, intentions, commissioned research + preferences
   conversation     the chat model + repository
-  scheduling       check-in, brief, and nightly-loop cadences
+  scheduling       the daily brief's cadence
 shared/      kernel (ids, time, errors, AutonomyLevel, Reversibility),
              persistence (Db handle)
 ```
 
 The thin **orchestration layer** (currently `endora-application`) holds the
 butler-turn contract and the use cases that compose several contexts (running a
-turn, preparing a brief, advancing commissioned research, running the nightly loop).
+turn, preparing a brief, advancing commissioned research).
 The node's research worker polls durable SQLite work, shares the foreground
 turn lock, and uses a runner narrowed to guarded web reads plus the exact approved
-search capability. The goal worker also shares that lock, claims work atomically,
-renews ownership during long passes, and fences checkpoints and dispatch with its
-current ownership token ([ADR 0079](adr/0079-goal-checkpoints-require-ownership.md)).
-Research still has its own lifecycle pending migration to the shared goal contract.
+search capability. Research is the only work that outlives a turn: the durable goals,
+their worker and the chat's intake tool were removed in the clean slate
+([ADR 0100](adr/0100-the-clean-slate.md)).
 
 Within `endora-application`, a few modules are the seams between a turn and the models it may
 use. `egress` is the only door to a bigger model (taint check, secret scan, disguise); `deep_turn`
@@ -81,14 +80,6 @@ makes that model plan which skills to call while the local model reads the resul
 sends and how full the model's window is ([ADR 0088](adr/0088-say-what-is-sent-to-the-model-and-let-a-topic-end.md)).
 `Butler::classify_need` lets the local model sort a message before the turn decides whether to
 look something up ([ADR 0089](adr/0089-a-model-sorts-the-message-not-a-word-list.md)).
-Goal checkpoints also distinguish actual tool observations from generated findings;
-supported schedule completion validates structured events and renders its answer
-from those fields ([ADR 0080](adr/0080-completion-uses-tool-observations.md)).
-Chat now declares durable work through one native intake tool, persisting explicit
-criteria with the original request. Built-in internet search supplies URLs for
-guarded fetch; supported JSON-LD calendars provide an alternate schedule source
-and completed goals deliver their verified answer in chat
-([ADR 0081](adr/0081-declare-work-and-search-for-sources.md)).
 Contexts do not reach into each
 other's internals; they collaborate through application-layer ports, and the
 dependency graph is acyclic.

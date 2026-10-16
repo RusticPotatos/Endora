@@ -530,7 +530,6 @@ pub(super) async fn deep_ask(
             &planned,
             audit.as_ref(),
             None,
-            Some(store.as_ref()),
             ids.as_ref(),
             clock.as_ref(),
             &context,

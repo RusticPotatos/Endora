@@ -764,22 +764,6 @@ pub(crate) fn run_tool_turn(
     for round in 0..=max_rounds {
         let reply =
             take_turn_retrying_empty(butler, &conversation, prefs, &context, on_token, activity)?;
-        if reply
-            .tool_calls
-            .iter()
-            .any(|call| call.capability == crate::goal_request::BEGIN_GOAL)
-            && context
-                .tools
-                .iter()
-                .any(|tool| tool.id == crate::goal_request::BEGIN_GOAL)
-        {
-            if reply.tool_calls.len() != 1 {
-                return Err(AppError::BadRequest {
-                    message: "Declare research separately from other actions.".to_owned(),
-                });
-            }
-            return Ok(reply);
-        }
         // No tool call → the final answer, grounded in the tool results so far — unless
         // the last thing that happened was a FAILED action and there is budget left.
         //
@@ -1185,47 +1169,6 @@ pub fn send_to_butler(
         butler,
         audit,
         None,
-        ids,
-        clock,
-        context,
-        text,
-        &mut |_| {},
-        &mut |_| {},
-        &mut Vec::new(),
-    )
-}
-
-/// Non-streaming turn variant that checkpoints deterministic goal execution.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "explicit dependencies, no hidden state"
-)]
-pub fn send_to_butler_with_goals(
-    chat: &impl ChatRepository,
-    preferences: &impl PreferenceRepository,
-    beliefs: &impl BeliefRepository,
-    outcomes: &impl OutcomeRepository,
-    specimens: &impl SpecimenRepository,
-    capabilities: &dyn CapabilityRunner,
-    butler: &dyn Butler,
-    audit: &dyn AuditLog,
-    goals: &dyn GoalRepository,
-    ids: &impl IdSource,
-    clock: &impl Clock,
-    context: &ButlerContext,
-    text: &str,
-) -> Result<(ChatMessage, Vec<String>), AppError> {
-    send_to_butler_streaming_with_goals(
-        chat,
-        preferences,
-        beliefs,
-        outcomes,
-        specimens,
-        capabilities,
-        butler,
-        audit,
-        None,
-        Some(goals),
         ids,
         clock,
         context,
@@ -1706,53 +1649,6 @@ pub fn send_to_butler_streaming(
     on_step: &mut dyn FnMut(ButlerStep),
     disclosures: &mut Vec<ActionDisclosure>,
 ) -> Result<(ChatMessage, Vec<String>), AppError> {
-    send_to_butler_streaming_with_goals(
-        chat,
-        preferences,
-        beliefs,
-        outcomes,
-        specimens,
-        capabilities,
-        butler,
-        audit,
-        summary,
-        None,
-        ids,
-        clock,
-        context,
-        text,
-        on_token,
-        on_step,
-        disclosures,
-    )
-}
-
-/// Streaming turn variant that can declare durable read-only work.
-/// The ordinary public function remains unchanged for clients that do not wire
-/// a goal repository.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "explicit dependencies, no hidden state"
-)]
-pub fn send_to_butler_streaming_with_goals(
-    chat: &impl ChatRepository,
-    preferences: &impl PreferenceRepository,
-    beliefs: &impl BeliefRepository,
-    outcomes: &impl OutcomeRepository,
-    specimens: &impl SpecimenRepository,
-    capabilities: &dyn CapabilityRunner,
-    butler: &dyn Butler,
-    audit: &dyn AuditLog,
-    summary: Option<&dyn ConversationSummaryStore>,
-    goals: Option<&dyn GoalRepository>,
-    ids: &impl IdSource,
-    clock: &impl Clock,
-    context: &ButlerContext,
-    text: &str,
-    on_token: &mut dyn FnMut(&str),
-    on_step: &mut dyn FnMut(ButlerStep),
-    disclosures: &mut Vec<ActionDisclosure>,
-) -> Result<(ChatMessage, Vec<String>), AppError> {
     send_to_butler_streaming_for_request(
         chat,
         preferences,
@@ -1763,7 +1659,6 @@ pub fn send_to_butler_streaming_with_goals(
         butler,
         audit,
         summary,
-        goals,
         ids,
         clock,
         context,
@@ -1787,7 +1682,6 @@ pub fn send_to_butler_streaming_for_request(
     butler: &dyn Butler,
     audit: &dyn AuditLog,
     summary: Option<&dyn ConversationSummaryStore>,
-    goals: Option<&dyn GoalRepository>,
     ids: &impl IdSource,
     clock: &impl Clock,
     context: &ButlerContext,
@@ -1797,7 +1691,9 @@ pub fn send_to_butler_streaming_for_request(
     on_step: &mut dyn FnMut(ButlerStep),
     disclosures: &mut Vec<ActionDisclosure>,
 ) -> Result<(ChatMessage, Vec<String>), AppError> {
-    let request_key = if let Some(id) = request_id {
+    // A client's request ID is still checked, so a malformed one is refused as it always was;
+    // nothing is keyed by it since durable goals were removed (owner, 2026-10-16).
+    if let Some(id) = request_id {
         if id.is_empty()
             || id.len() > 120
             || !id
@@ -1808,38 +1704,6 @@ pub fn send_to_butler_streaming_for_request(
                 message: "request_id must be 1–120 letters, digits, hyphens or underscores"
                     .to_owned(),
             });
-        }
-        format!("request-{id}")
-    } else {
-        goal_key_for(text)
-    };
-    if let Some(goals) = goals {
-        if let Some(existing) = goals.get_goal(&request_key)? {
-            if existing.goal().objective() != text.trim() {
-                return Err(AppError::Conflict {
-                    code: "request_key_reused",
-                    message: "This request ID belongs to different work.".to_owned(),
-                });
-            }
-            let answer = if existing.goal().status() == crate::GoalStatus::Complete {
-                existing
-                    .goal()
-                    .evidence()
-                    .last()
-                    .map(|e| e.output.clone())
-                    .unwrap_or_else(|| "This request is complete.".to_owned())
-            } else {
-                format!(
-                    "This request is {}: {}",
-                    existing.goal().status().name(),
-                    existing.goal().reason()
-                )
-            };
-            on_token(&answer);
-            return Ok((
-                post_butler_message(chat, ids, clock, &answer)?,
-                vec!["Reused the existing goal".to_owned()],
-            ));
         }
     }
     let user = ChatMessage::new(
@@ -1914,7 +1778,6 @@ pub fn send_to_butler_streaming_for_request(
         text,
         capabilities,
         butler,
-        goals,
         ids,
         clock,
         on_token,
@@ -1937,15 +1800,9 @@ pub fn send_to_butler_streaming_for_request(
         // rather than only displayed). A read that fails is not worth failing a turn for:
         // the worst case is the conversation it had before this change.
         let findings = |id: &str| chat.what_it_found(id).unwrap_or_default();
-        let intake = crate::goal_request::IntakeRunner(capabilities);
-        let intake_context = crate::goal_request::intake_context(context);
         run_tool_turn(
             butler,
-            if goals.is_some() {
-                &intake
-            } else {
-                capabilities
-            },
+            capabilities,
             audit,
             &actions,
             ids,
@@ -1953,11 +1810,7 @@ pub fn send_to_butler_streaming_for_request(
             &history,
             &findings,
             &prefs,
-            if goals.is_some() {
-                &intake_context
-            } else {
-                context
-            },
+            context,
             CHAT_TOOL_ROUNDS,
             on_step,
             &mut relay,
@@ -1965,76 +1818,6 @@ pub fn send_to_butler_streaming_for_request(
             disclosures,
         )?
     };
-    if let Some(call) = reply
-        .tool_calls
-        .iter()
-        .find(|call| call.capability == crate::goal_request::BEGIN_GOAL)
-    {
-        let goals = goals.ok_or_else(|| AppError::BadRequest {
-            message: "Durable goals are unavailable.".to_owned(),
-        })?;
-        let value: serde_json::Value =
-            serde_json::from_str(&call.input_json).map_err(|_| AppError::BadRequest {
-                message: "Invalid goal declaration.".to_owned(),
-            })?;
-        let criteria = crate::goal_request::GoalCriteria::from_json(&value).map_err(|message| {
-            AppError::BadRequest {
-                message: message.to_owned(),
-            }
-        })?;
-        if goals.active_goals()?.len() >= MOST_GOALS_AT_ONCE {
-            return Err(AppError::Conflict {
-                code: "goal_capacity",
-                message: "Three requests are already running; stop one or let it finish."
-                    .to_owned(),
-            });
-        }
-        let description = criteria.description();
-        let goal =
-            crate::Goal::for_request(text, criteria).map_err(|message| AppError::BadRequest {
-                message: message.to_owned(),
-            })?;
-        let record =
-            crate::GoalRecord::new(&request_key, goal, clock.now()).map_err(|message| {
-                AppError::BadRequest {
-                    message: message.to_owned(),
-                }
-            })?;
-        let created = goals.create_goal(&record).map_err(|error| match error {
-            crate::RepositoryError::Backend(ref reason)
-                if reason == crate::goal_request::GOAL_CAPACITY_REACHED =>
-            {
-                AppError::Conflict {
-                    code: "goal_capacity",
-                    message: "Three requests are already running; stop one or let it finish."
-                        .to_owned(),
-                }
-            }
-            other => other.into(),
-        })?;
-        if !created {
-            let answer =
-                "This request is already queued or finished. Its existing goal was preserved.";
-            on_token(answer);
-            return Ok((
-                post_butler_message(chat, ids, clock, answer)?,
-                vec!["Reused the existing goal".to_owned()],
-            ));
-        }
-        let answer = format!("I've started working on {description}. I'll post the result here.");
-        on_step(ButlerStep {
-            skill: "goal".to_owned(),
-            status: StepStatus::Done,
-            label: "Started durable work".to_owned(),
-            output: Some(description),
-        });
-        on_token(&answer);
-        return Ok((
-            post_butler_message(chat, ids, clock, &answer)?,
-            vec![format!("Started goal {request_key}")],
-        ));
-    }
-
     // A local answer that says nothing was found is checked once more, by the deep model
     // choosing the skills (ADR 0087). Only on a turn that did not act, only when the person
     // has turned automatic escalation on (`deeper` is `None` otherwise, ADR 0055), and the

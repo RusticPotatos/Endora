@@ -110,7 +110,6 @@ pub(super) async fn send_chat(
     State(state): State<AppState>,
     Json(req): Json<ChatRequest>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let store = state.store.clone();
     let chat = state.chat.clone();
     let understanding = state.understanding.clone();
     let config = state.config.clone();
@@ -152,7 +151,6 @@ pub(super) async fn send_chat(
             butler.as_ref(),
             audit.as_ref(),
             None,
-            Some(store.as_ref()),
             ids.as_ref(),
             clock.as_ref(),
             &context,
@@ -255,7 +253,6 @@ pub(super) async fn stream_chat(
     State(state): State<AppState>,
     Json(req): Json<ChatRequest>,
 ) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
-    let store = state.store.clone();
     let chat = state.chat.clone();
     let understanding = state.understanding.clone();
     let config = state.config.clone();
@@ -386,7 +383,6 @@ pub(super) async fn stream_chat(
                     butler.as_ref(),
                     audit.as_ref(),
                     Some(&summary as &dyn endora_application::ConversationSummaryStore),
-                    Some(store.as_ref()),
                     ids.as_ref(),
                     clock.as_ref(),
                     &context,

@@ -117,18 +117,6 @@ async function dispatch(act) {
       return reload();
     }
     if (verb === "research" && noun === "download") { await downloadResearch(id); return; }
-    if (verb === "goal" && noun === "cancel") {
-      // `id` is still URI-encoded: a goal's key can contain ":", which the split above would
-      // otherwise have cut in two.
-      try {
-        await api("POST", `/v1/goals/${id}/cancel`, {});
-        flash("Stopped.", "ok");
-      } catch (e) {
-        // Usually it finished while the button was on screen; the refresh shows how it ended.
-        flash(String(e.message || e), "warn");
-      }
-      return reload();
-    }
     // Ask the same thing again after a turn that never answered. It re-sends the person's
     // own last words rather than making them retype them, which is the whole difference
     // between a dead end and a hiccup.

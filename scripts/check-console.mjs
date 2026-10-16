@@ -529,10 +529,10 @@ if (failures.length) {
 }
 
 // The clean slate (owner, 2026-10-16): no Inbox, no check-in or nightly review to switch on,
-// no beliefs listed kind by kind; About you offers to forget what it learned and keeps what
+// no durable goals to watch or stop, no beliefs listed kind by kind; About you offers to forget what it learned and keeps what
 // they told it.
 {
-  for (const gone of ["go:inbox", "nightsched", "data-change=\"checkin\"", "tunesave", "affirm:belief"]) {
+  for (const gone of ["go:inbox", "nightsched", "data-change=\"checkin\"", "tunesave", "affirm:belief", "viewGoals", "/v1/goals"]) {
     if (source.includes(gone)) {
       console.error(`clean slate: ${gone} is back`);
       process.exit(1);
@@ -1004,74 +1004,6 @@ if (keys.length !== 3 || keys[0] !== keys[1] || keys[0] === keys[2]) {
     process.exit(1);
   }
   console.log("research: every lifecycle state renders safely with its valid controls");
-}
-
-// Work Endora does on its own is visible while it runs, can be stopped, and never just
-// vanishes when it ends (ADR 0083). A goal that settled as partial used to leave no trace
-// anywhere in the console: stored, finished, and invisible.
-{
-  const goal = (key, objective, status, extra = {}) => ({
-    request_key: key, objective, status, phase: "gathering", next_step: "", reason: "",
-    evidence: [], outcome: null, updated_ms: 1000, ...extra,
-  });
-  context.__goals = [
-    goal("chat:abc 1", "Find <b>three</b> games", "running", {
-      next_step: "web_fetch", evidence: [{ step: "read", output: "one" }] }),
-    goal("k-complete", "Check the bus", "complete", { outcome: "The 41 arrives at 14:05.", updated_ms: 6000 }),
-    goal("k-partial", "Compare backups", "partial", {
-      outcome: "Here is what I found on: Compare backups\n- Product A costs 10 dollars\nI couldn't confirm this fully answers your request.", updated_ms: 5000 }),
-    goal("k-blocked", "Read the manual", "blocked", { outcome: "I'm blocked on: Read the manual", updated_ms: 4000 }),
-    goal("k-failed", "Water the plants", "failed", { outcome: "I couldn't do: Water the plants", updated_ms: 3000 }),
-    goal("k-cancelled", "Plan the trip", "cancelled", { outcome: "You cancelled: Plan the trip", updated_ms: 2000 }),
-  ];
-  runInContext("globalThis.__savedDb = DB; DB = Object.assign({ messages: [] }, DB, { goals: __goals });", context);
-  const goals = runInContext("viewGoals()", context);
-  for (const label of ["working", "done", "partly done", "blocked", "could not do it", "cancelled"]) {
-    if (!goals.toLowerCase().includes(label)) {
-      console.error(`goals: ${label} has no visible state`);
-      process.exit(1);
-    }
-  }
-  if (!goals.includes("1 finding") || !goals.includes("gathering")) {
-    console.error("goals: running work does not say where it is or what it has found");
-    process.exit(1);
-  }
-  if (goals.includes("<b>three</b>") || !goals.includes("&lt;b&gt;three")) {
-    console.error("goals: an objective became markup");
-    process.exit(1);
-  }
-  for (const outcome of ["14:05", "Here is what I found", "couldn&#39;t confirm", "blocked on", "couldn&#39;t do", "You cancelled"]) {
-    if (!goals.includes(outcome) && !goals.includes(outcome.replace("'", "&#39;"))) {
-      console.error(`goals: an ended goal hid its outcome (${outcome})`);
-      process.exit(1);
-    }
-  }
-  const stops = goals.match(/data-act="goal:cancel:[^"]*"/g) || [];
-  if (stops.length !== 1 || !stops[0].includes("goal:cancel:chat%3Aabc%201")) {
-    console.error(`goals: only running work can be stopped, by its encoded key: ${stops.join(" ")}`);
-    process.exit(1);
-  }
-  if (!runInContext("viewChat()", context).includes("Endora's own work")) {
-    console.error("goals: the chat does not show the goals strip");
-    process.exit(1);
-  }
-
-  // Stopping one reaches the node with the key intact (a `:` would break the dispatcher).
-  context.__realReload = runInContext("reload", context);
-  runInContext("reload = async () => {}", context);
-  const before = sent.length;
-  await runInContext('dispatch("goal:cancel:chat%3Aabc%201")', context);
-  const stop = sent.slice(before).find((r) => String(r.path).includes("/cancel"));
-  if (!stop || stop.method !== "POST" || stop.path !== "/v1/goals/chat%3Aabc%201/cancel") {
-    console.error(`goals: Stop did not POST the goal's cancel route: ${JSON.stringify(stop)}`);
-    process.exit(1);
-  }
-  if (!stop.headers.authorization) {
-    console.error("goals: Stop went out without a credential");
-    process.exit(1);
-  }
-  runInContext("reload = __realReload; DB = __savedDb;", context);
-  console.log("goals: running work shows progress and can be stopped; ended work keeps its outcome");
 }
 
 // The recipe authoring loop shows what it actually fetched, and every field it

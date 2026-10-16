@@ -3,7 +3,7 @@
 //!
 //! Run it inside the container (`make backup` does) so it sees the same `ENDORA_DB` the
 //! node does. It exists because the settings, keys and sign-in secrets live in that one
-//! SQLite file, and `endora export` covers memory only (messages, beliefs, goals…) — not
+//! SQLite file, and `endora export` covers memory only (messages, beliefs, research…) — not
 //! the configuration — so it cannot stand in for a backup of the node.
 //!
 //! The copy goes through SQLite ([`endora_persistence::snapshot`]) rather than a file

@@ -88,7 +88,6 @@ pub(super) struct ExportResponse {
     outcomes: Vec<serde_json::Value>,
     intentions: Vec<serde_json::Value>,
     research: Vec<serde_json::Value>,
-    goals: Vec<serde_json::Value>,
 }
 
 impl From<&MemorySnapshot> for ExportResponse {
@@ -101,7 +100,6 @@ impl From<&MemorySnapshot> for ExportResponse {
             outcomes: s.outcomes.iter().map(outcome_json).collect(),
             intentions: s.intentions.iter().map(intention_json).collect(),
             research: s.research.iter().map(research_json).collect(),
-            goals: s.goals.iter().map(goal_json).collect(),
         }
     }
 }

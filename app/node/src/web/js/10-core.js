@@ -369,17 +369,14 @@ function subscribeToActivity() {
   } catch (_) { /* SSE unavailable: the UI still works, just not live. */ }
 }
 
-// While anything runs unattended — research or a goal — refresh every so often so its
+// While research runs unattended, refresh every so often so its
 // progress and its ending show up without the person having to reload.
 function pollActiveWork() {
   setInterval(() => {
     const researching = ((RESEARCH && RESEARCH.items) || []).some((item) =>
       !["delivered", "blocked", "budget_exhausted", "cancelled", "failed"].includes(item.status));
-    const goalRunning = ((DB && DB.goals) || []).some((g) =>
-      !["complete", "partial", "blocked", "failed", "cancelled"].includes(g.status));
-    const active = researching || goalRunning;
     const ae = document.activeElement;
-    if (!active || CHAT_STREAMING || (ae && /^(INPUT|TEXTAREA|SELECT)$/.test(ae.tagName))) return;
+    if (!researching || CHAT_STREAMING || (ae && /^(INPUT|TEXTAREA|SELECT)$/.test(ae.tagName))) return;
     reload().catch(() => {});
   }, 15000);
 }

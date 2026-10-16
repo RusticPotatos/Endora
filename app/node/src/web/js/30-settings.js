@@ -455,7 +455,7 @@ function viewData() {
     <h2>Your data</h2>
     <div class="card nav-list">
       <button class="ghost" data-act="export">${icon("export")}
-        <span class="grow" style="text-align:left;">Export my data<span class="sub" style="display:block;font-weight:400;">Endora's memory of you as a file: messages, beliefs, preferences, goals and its record of what it did. It is not a backup: settings and keys are not in it, and nothing can import it.</span></span>
+        <span class="grow" style="text-align:left;">Export my data<span class="sub" style="display:block;font-weight:400;">Endora's memory of you as a file: messages, beliefs, preferences, research and its record of what it did. It is not a backup: settings and keys are not in it, and nothing can import it.</span></span>
       </button>
     </div>
     <div class="card nav-list" style="margin-top:14px;">

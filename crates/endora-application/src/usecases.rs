@@ -26,8 +26,7 @@ use endora_scheduling::{BriefSchedule, BriefScheduleRepository};
 use crate::error::AppError;
 use crate::ports::{
     Butler, ButlerContext, ButlerReply, CapabilityTool, Clock, ConversationSummary,
-    ConversationSummaryStore, FormedBelief, GoalRepository, IdSource, MemorySnapshot, MemoryStore,
-    TurnMessage,
+    ConversationSummaryStore, FormedBelief, IdSource, MemorySnapshot, MemoryStore, TurnMessage,
 };
 
 /// Exports everything the user has stored (a memory right).

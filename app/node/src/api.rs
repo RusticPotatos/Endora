@@ -20,8 +20,8 @@ use endora_application::Clock;
 use endora_application::{
     ActivityItem, AppError, AutonomyEnvelope, AutonomyEnvelopeRepository, BriefSchedule, Butler,
     ButlerModelConfig, ButlerModelConfigRepository, CapabilityConfigRepository,
-    CapabilitySettingsRepository, DeepModelRepository, ExecutionLeaseRepository, GoalDelivery,
-    GoalRepository, MemorySnapshot, ModelSlot, RepositoryError, Sampling, usecases,
+    CapabilitySettingsRepository, DeepModelRepository, ExecutionLeaseRepository, MemorySnapshot,
+    ModelSlot, RepositoryError, Sampling, usecases,
 };
 use endora_application::{
     AuditRecord, Belief, BeliefId, ChatMessage, IdSource, IntentionRepository, Preference,
@@ -456,9 +456,6 @@ pub fn app(state: AppState) -> Router {
             post(spotify::disconnect),
         )
         .route("/connect/spotify/callback", get(spotify::callback))
-        .route("/v1/goals", get(list_goals))
-        .route("/v1/goals/{request_key}", get(get_goal))
-        .route("/v1/goals/{request_key}/cancel", post(cancel_goal))
         .route("/v1/research/readiness", get(research_readiness))
         .route("/v1/research", get(list_research).post(commission_research))
         .route("/v1/research/{id}", get(get_research))
@@ -751,8 +748,6 @@ pub use workers::*;
 mod misc;
 use misc::*;
 
-#[cfg(test)]
-mod goal_lanes;
 #[cfg(test)]
 mod mail_reading;
 #[cfg(test)]
