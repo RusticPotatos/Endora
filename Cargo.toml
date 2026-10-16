@@ -11,11 +11,13 @@ members = [
     "domains/scheduling",
     "domains/mail",
     "domains/team",
+    "domains/sound",
     "crates/endora-application",
     "crates/endora-infrastructure",
     "app/node",
     "app/cli",
     "app/hq",
+    "app/sound",
     "clients/terminal",
 ]
 

@@ -749,6 +749,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "endora-sound"
+version = "0.12.0"
+dependencies = [
+ "serde_json",
+]
+
+[[package]]
+name = "endora-sound-hub"
+version = "0.12.0"
+dependencies = [
+ "axum",
+ "endora-sound",
+ "http-body-util",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tower",
+]
+
+[[package]]
 name = "endora-team"
 version = "0.12.0"
 dependencies = [

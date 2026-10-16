@@ -1,0 +1,15 @@
+[package]
+name = "endora-sound"
+description = "Sound context (ADR 0103): sources, speakers and the wires between them, the groups they make, and the mix"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+serde_json = "1"
+
+[lints]
+workspace = true
