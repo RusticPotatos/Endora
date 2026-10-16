@@ -2541,4 +2541,39 @@ async fn an_entry_that_only_holds_settings_is_marked_so_the_console_can_say_it_i
     assert_eq!(portainer["settings_complete"], false, "nothing entered yet");
     let weather = find("weather");
     assert_eq!(weather["settings_only"], false);
+    // A skill that rides a connection names it, so the console can send the person there.
+    assert_eq!(find("containers")["borrows_from"], "homelab-docker");
+    assert!(weather["borrows_from"].is_null());
+}
+
+#[tokio::test]
+async fn a_skill_that_rides_a_connection_is_not_on_until_the_connection_is_set_up() {
+    // The console and chat must agree. Chat counted the containers skill ready only once
+    // Docker's address was entered; the skills list said "On" from the start.
+    let usable = |all: &serde_json::Value| {
+        all.as_array()
+            .unwrap()
+            .iter()
+            .find(|c| c["id"] == "containers")
+            .map(|c| c["usable"].clone())
+            .unwrap()
+    };
+    let state = test_state();
+    let before = json_body(
+        app(state.clone())
+            .oneshot(get("/v1/capabilities"))
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(usable(&before), false, "Docker is not set up yet");
+    endora_capabilities::application::CapabilitySettingsRepository::set_setting(
+        state.config.as_ref(),
+        "homelab-docker",
+        "origin",
+        "http://127.0.0.1:9876",
+    )
+    .unwrap();
+    let after = json_body(app(state).oneshot(get("/v1/capabilities")).await.unwrap()).await;
+    assert_eq!(usable(&after), true, "Docker is set up now");
 }

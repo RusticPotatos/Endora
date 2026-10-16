@@ -10,6 +10,9 @@ function render() {
       v === "audit" ? viewAudit()
     : v === "chat" ? viewChat()
     : v === "skills" ? viewSkills()
+    : v === "skill" ? viewSkill()
+    : v === "connections" ? viewConnections()
+    : v === "permissions" ? viewPermissions()
     // Older links: what it remembers is now part of About you.
     : v === "prefs" ? viewUnderstanding()
     : v === "settings" ? viewSettings()

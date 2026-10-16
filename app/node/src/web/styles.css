@@ -257,9 +257,15 @@
   /* A settings navigation list — full-width rows (icon · label · chevron). */
   .nav-list { display: flex; flex-direction: column; gap: 0; padding: 2px 0; }
   .nav-list > button { display: flex; align-items: center; gap: 11px; width: 100%; justify-content: flex-start; padding: 12px 6px; background: none; border: none; text-align: left; font-size: 15px; color: var(--fg); cursor: pointer; }
+  /* A group's name above its list, quieter than a section heading. */
+  .group-title { margin: 18px 2px 6px; font-size: 13px; font-weight: 600; color: var(--muted); }
   /* A row's subtitle wraps: buttons do not, and on a phone the line ran off the card. */
   .nav-list > button { white-space: normal; }
   .nav-list > button > .grow { min-width: 0; }
+  /* A status pill keeps its own width; only the label grows. */
+  .nav-list > button > .pill { flex: 0 0 auto; }
+  /* A list row's description is one line; the full text is on the item's own screen. */
+  .nav-list .one-line { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-weight: 400; }
   .nav-list > button > span { flex: 1; }
   .nav-list > button:not(:last-child) { border-bottom: 1px solid var(--line); }
   .nav-list > button:hover { background: rgba(127,127,127,.06); }

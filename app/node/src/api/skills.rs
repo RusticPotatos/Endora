@@ -29,6 +29,8 @@ pub(super) fn capability_json(
     // copy here, and when settings gained an "optional" flag only one of the two learned
     // about it — so the console said "needs setup" for a skill policy considered ready.
     let settings_complete = endora_capabilities::settings_complete(info, settings);
+    // The same readiness chat uses; for a borrower, `settings` are its connection's.
+    let settings_ready = endora_capabilities::settings_ready(info, settings);
     // An entry that only holds settings (for the handheld, and the chat skills that borrow
     // them) is never "configured" and its on/off does nothing; shown as on/off and "needs
     // setup", every one of them said "needs setup" forever, set up or not.
@@ -50,11 +52,14 @@ pub(super) fn capability_json(
         "confirm": confirm,
         // `configured` = code ready + settings filled; `enabled` = the person's on/off
         // switch; a skill is usable only when both hold (ADR 0054).
-        "configured": info.configured && settings_complete,
+        "configured": info.configured && settings_ready,
         "enabled": enabled,
-        "usable": info.configured && settings_complete && enabled,
+        "usable": info.configured && settings_ready && enabled,
         "needs": info.needs,
         "settings_only": settings_only,
+        // The connection whose settings this skill rides, if any, so the console can say
+        // "needs a connection" and point at it rather than a bare "needs setup".
+        "borrows_from": info.borrows_from,
         "settings_complete": settings_complete,
         // The one word the model of this is actually made of now (ADR 0062).
         "stance": stance.word(),
@@ -97,7 +102,9 @@ pub(super) async fn list_capabilities(
                     .get(info.id)
                     .copied()
                     .unwrap_or_else(|| endora_capabilities::default_stance(info.reversibility));
-                capability_json(&info, stance, settings.get(info.id).unwrap_or(&empty))
+                // A skill that rides a connection is judged by the connection's settings.
+                let own = settings.get(info.borrows_from.unwrap_or(info.id));
+                capability_json(&info, stance, own.unwrap_or(&empty))
             })
             .collect(),
     )

@@ -191,7 +191,7 @@ function viewConnect() {
            </select></div>`
       : "";
     return `
-      <h3 style="margin-top:22px;">Connecting ${esc(CONNECT.kind || "something")}</h3>
+      <div class="title" style="margin:14px 0 6px;">Connecting ${esc(CONNECT.kind || "something")}</div>
       <div class="card">
         <div class="note" style="margin-bottom:8px;">These are the questions <b>your own service</b> asked — Endora is passing them on. Anything you type here goes straight to it and is never written down here.</div>
         ${presets}
@@ -222,7 +222,7 @@ function viewConnect() {
     ? `<div class="sub" style="margin-top:10px;">Also set up: ${alsoThere.map(esc).join(", ")}</div>`
     : "";
   return `
-    <h3 style="margin-top:22px;">Connect something to your home</h3>
+    <div class="title" style="margin:14px 0 6px;">Connect something to your home</div>
     <div class="note" style="margin-bottom:10px;">Endora sets it up in Home Assistant for you — you only sign in. Whatever you add here, it can use straight away.</div>
     <div class="card">
       ${buttons}

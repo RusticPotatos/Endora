@@ -9,6 +9,25 @@ tagged release.
 
 ### Changed
 
+- **Skills is a list, Connections and Permissions are their own.** Skills was one page about
+  twelve phone screens long: the autonomy switches, a Home Assistant wizard, every skill with
+  its setup form open, and tool servers. Now Skills lists what chat can do in four groups (Your
+  home, Looking things up, Home lab, About Endora), each row with one status: On, Off, Needs
+  setup, or **Needs a connection**, and each opening to its own screen. **Connections** holds
+  where skills get their data: Home Assistant and its wizard, the home lab's services (named
+  for themselves: Portainer, Docker, Sonarr, Radarr, Prometheus, Homepage, Overseerr; they were
+  "Handheld: containers", "Overview: Sonarr" and so on), and tool servers. **Permissions** holds
+  how far Endora may act on its own.
+
+### Fixed
+
+- **A skill that rides a connection said "On" before the connection was set up.** The
+  settings screen judged it by its own (empty) settings; chat, rightly, by the connection's.
+  Both now use one rule (`settings_ready`), so mail shows as needing Home Assistant and the
+  home-lab skills as needing their service until each is set up.
+
+### Changed
+
 - **A shorter Settings menu.** Settings is five entries: Notifications & voice, Models, Skills,
   About you, and Your sign-in. What Endora has done is **Activity** in the main menu, beside
   the Inbox: it is a record, not a setting. What you told Endora and what it has learned are

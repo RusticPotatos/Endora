@@ -18,12 +18,12 @@ through existing private capability settings. Blank preserves settings; `-`
 disables an integration. No credentials are accepted in arguments or returned
 to the terminal. Home Assistant reuses the existing integration's URL and token.
 
-The Overseerr, Portainer and Prometheus settings can also be entered in the
-console's skills settings, under "Handheld: ..." entries, and the Overview page's
-Docker, Sonarr and Radarr sources under "Overview: ..." entries.
+The Homepage, Overseerr, Portainer and Prometheus settings, and the Overview page's Docker,
+Sonarr and Radarr sources, can also be entered in the console under Settings → Connections →
+Home lab, each named for its service.
 The handheld home screen mirrors Homepage (`GET /v1/terminal/dashboard`): its groups and
 service names, each with the live state of its container, NAS figures and firing
-alerts. Set the Homepage address under "Handheld: home screen". Only names and states
+alerts. Set the Homepage address under Connections → Home lab → Homepage. Only names and states
 are returned; Homepage links, icons and widget settings stay on the node.
 For a fixed list of Homepage widget types (Overseerr, Radarr, Sonarr, NZBGet, Prowlarr,
 Gatus, Prometheus, Backrest) the node also asks Homepage's own widget proxy for a few

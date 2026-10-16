@@ -85,6 +85,19 @@ impl RegistryRunner {
     }
 }
 
+/// Whether a capability's settings let it run: every required one filled, or, for one that
+/// rides another's connection (`borrows_from`), that connection's settings present. `settings`
+/// is what [`RegistryRunner`] resolves for it: the connection's, for a borrower. The one rule
+/// for chat and the settings screen, which once disagreed: the screen said a borrowing skill
+/// was on before its connection was set up.
+#[must_use]
+pub fn settings_ready(info: &CapabilityInfo, settings: &CapabilitySettings) -> bool {
+    match info.borrows_from {
+        Some(_) => !settings.is_empty(),
+        None => settings_complete(info, settings),
+    }
+}
+
 /// The band's default stance, where the person has said nothing (ADR 0062).
 ///
 /// A read reports the world and runs; something reversible asks; the un-undoable — and
@@ -190,12 +203,7 @@ impl CapabilityRunner for RegistryRunner {
                     // every required setting has a value (ADR 0054).
                     configured: info.configured
                         && self.is_enabled(&info)
-                        // A borrower is ready when the connection it rides is ready, which
-                        // is what `settings_for` already resolves.
-                        && (info.borrows_from.map_or_else(
-                            || settings_complete(&info, &self.settings_for(info.id)),
-                            |_| !self.settings_for(info.id).is_empty(),
-                        )),
+                        && settings_ready(&info, &self.settings_for(info.id)),
                     reversibility: info.reversibility,
                     autonomous: may_run_autonomously(
                         &info,

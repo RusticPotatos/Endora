@@ -230,11 +230,22 @@ runInContext(
             reversibility: "observe", needs: "your Home Assistant URL",
             settings: [{ key: "url", label: "Home Assistant URL", secret: false, set: true }] },
           // An entry that only holds settings for the handheld: "Set up", and no on/off.
-          { id: "terminal-portainer", name: "Handheld: containers", description: "Portainer on the handheld",
+          { id: "terminal-portainer", name: "Portainer", description: "Portainer on the handheld",
             category: "information", enabled: true, configured: false, settings_only: true,
             settings_complete: true, blocked: false, confirm: false, open_irreversible: false,
             reaches_external: true, reversibility: "observe", needs: "set up here",
-            settings: [{ key: "origin", label: "Portainer address", secret: false, set: true }] }];
+            settings: [{ key: "origin", label: "Portainer address", secret: false, set: true }] },
+          // One not set up yet, and a skill that rides it: "needs a connection", not "needs setup".
+          { id: "homelab-docker", name: "Docker", description: "Docker on the handheld",
+            category: "information", enabled: true, configured: false, settings_only: true,
+            settings_complete: false, blocked: false, confirm: false, open_irreversible: false,
+            reaches_external: true, reversibility: "observe", needs: "set up here",
+            settings: [{ key: "origin", label: "Docker observer address", secret: false, set: false }] },
+          { id: "containers", name: "What the containers are doing", description: "Which containers run. Read-only.",
+            category: "information", enabled: true, configured: false, usable: false,
+            borrows_from: "homelab-docker", blocked: false, confirm: false, open_irreversible: false,
+            reaches_external: true, reversibility: "observe", needs: "set up Docker under Settings → Connections",
+            settings: [] }];
   MCP_SERVERS = { servers: [{ name: "home-assistant", transport: "http",
                               url: "http://ha.local", command: "", args: [], enabled: true,
                               auth_set: false, env_keys: [], trust_all: true,
@@ -362,19 +373,56 @@ if (failures.length) {
       process.exit(1);
     }
   }
+  for (const here of ["go:connections", "go:skills", "go:permissions"]) {
+    if (!settings.includes(here)) {
+      console.error(`settings: ${here} is missing from the Settings list`);
+      process.exit(1);
+    }
+  }
+  // Skills is a list: no forms on it, no entries that only hold settings, and each row opens
+  // its own screen.
   const skills = runInContext("viewSkills()", context);
-  const card = skills.slice(skills.indexOf("Handheld: containers"));
-  const portainer = card.slice(0, card.indexOf('<div class="card">', 1) > 0 ? card.indexOf('<div class="card">', 1) : undefined);
-  if (!portainer.includes("Set up") || portainer.includes("skill:enable:terminal-portainer")
-      || portainer.includes("Needs setup")) {
-    console.error("skills: an entry that only holds settings says it needs setup, or offers an on/off");
+  if (skills.includes("skillcfg:") || skills.includes("go:skill:terminal-portainer")
+      || !skills.includes("go:skill:home_assistant") || !skills.includes("go:recipes")
+      || !skills.includes("go:connections")) {
+    console.error("skills: the list grew a form or a connection, or lost a way somewhere");
     process.exit(1);
   }
-  if (!skills.includes("skill:enable:home_assistant") || !skills.includes("go:recipes")) {
-    console.error("skills: a real skill lost its on/off, or recipes cannot be reached");
+  if (!skills.includes("Needs a connection")) {
+    console.error("skills: a skill whose connection is not set up says only that it needs setup");
     process.exit(1);
   }
-  console.log("settings: 5 entries; settings-only skills say whether they are set up");
+  runInContext("globalThis.__nav = NAV", context);
+  const one = runInContext('NAV = { v: "skill", id: "home_assistant" }; viewSkill()', context);
+  if (!one.includes("skillcfg:home_assistant") || !one.includes("skill:enable:home_assistant")) {
+    console.error("skill: a skill's own screen lost its settings or its switch");
+    process.exit(1);
+  }
+  const rider = runInContext('NAV = { v: "skill", id: "containers" }; viewSkill()', context);
+  if (!rider.includes("Uses your Docker connection") || !rider.includes("go:connections")) {
+    console.error("skill: a skill that rides a connection does not say which, or where");
+    process.exit(1);
+  }
+  // Connections list the home lab's services, set up or not; each opens to its own settings,
+  // with no switch that does nothing.
+  const connections = runInContext("viewConnections()", context);
+  if (!connections.includes("go:skill:terminal-portainer") || connections.includes("skillcfg:")
+      || !connections.includes("Set up") || !connections.includes("mcp:add")) {
+    console.error("connections: a home-lab service is missing, its form is open on the list, or tool servers are missing");
+    process.exit(1);
+  }
+  const lab = runInContext('NAV = { v: "skill", id: "terminal-portainer" }; viewSkill()', context);
+  if (!lab.includes("skillcfg:terminal-portainer") || lab.includes("skill:enable:terminal-portainer")
+      || lab.includes("Needs setup") || !lab.includes("go:connections")) {
+    console.error("connections: a home-lab service's own screen says it needs setup, offers an on/off, or does not lead back");
+    process.exit(1);
+  }
+  if (!runInContext("viewPermissions()", context).includes("autonomy:external")) {
+    console.error("permissions: the autonomy switches are not on Permissions");
+    process.exit(1);
+  }
+  runInContext("NAV = globalThis.__nav", context);
+  console.log("settings: 7 entries; skills a list, each with its own screen; connections and permissions their own");
 }
 
 

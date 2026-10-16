@@ -1,7 +1,56 @@
-// The butler's skills — the modules it can reach for. Ready ones work now;
-// others are declared and waiting on setup (a key, a model, a data source).
-function viewSkills() {
-  const card = (c) => {
+// The butler's skills: what chat can do. A short list in four groups, each skill opening to
+// its own screen. Where skills get their data (Home Assistant, the home lab, tool servers) is
+// under Connections, and how far Endora may act on its own is under Permissions: all three
+// were one page, about twelve phone screens long, with every setup form open on it.
+
+// The connection a skill rides, if it borrows one (`borrows_from`).
+function lenderOf(c) {
+  return c && c.borrows_from ? (CAPS || []).find((x) => x.id === c.borrows_from) || null : null;
+}
+
+// Whether a connection is ready: an entry that only holds settings is ready when they are
+// filled; Home Assistant when it is configured.
+function connectionReady(x) {
+  return x.settings_only ? x.settings_complete === true : x.configured === true;
+}
+
+// Where a skill stands, in one word, and the pill class that colours it.
+function skillStatus(c) {
+  if (c.settings_only) return c.settings_complete ? ["Set up", "concluded"] : ["Needs setup", ""];
+  if (c.usable) return ["On", "concluded"];
+  if (c.enabled === false) return ["Off", ""];
+  const lender = lenderOf(c);
+  if (lender && !connectionReady(lender)) return ["Needs a connection", ""];
+  return ["Needs setup", ""];
+}
+
+// The groups the Skills list is shown in, by what a skill is for rather than how it is built.
+const SKILL_GROUPS = [
+  ["home", "Your home"],
+  ["lookup", "Looking things up"],
+  ["homelab", "Home lab"],
+  ["endora", "About Endora"],
+];
+
+function skillGroup(c) {
+  const lender = lenderOf(c);
+  if (lender && lender.settings_only) return "homelab";
+  if (c.category === "endora") return "endora";
+  if (lender || ["presence", "travel", "safety"].includes(c.category)) return "home";
+  return "lookup";
+}
+
+// An on/off row: a label, a line under it, and the switch.
+function onOffRow(on, act, label, sub) {
+  return `
+    <div class="row" style="align-items:flex-start;gap:10px;margin-top:8px;">
+      <div class="grow"><div class="title" style="font-weight:500;">${label}</div><div class="sub">${sub}</div></div>
+      <button class="${on ? "primary" : "ghost"}" data-act="${act}:${on ? "0" : "1"}">${on ? "On" : "Off"}</button>
+    </div>`;
+}
+
+// One skill in full: what it does, its switch, whether it asks first, and its settings.
+function skillCard(c) {
     const ext = c.reaches_external;
     const enabled = c.enabled !== false;
     // The irreversible band (ADR 0051): blocked deny-by-default until the person
@@ -35,7 +84,7 @@ function viewSkills() {
           <div class="grow">
             <div class="title">${esc(c.name)} ${status}${ext ? ` <span class="pill">uses the internet</span>` : ""}${irreversible ? ` <span class="pill">can't be undone</span>` : ""}</div>
             <div class="sub">${esc(c.description)}</div>
-            ${(enabled && !c.configured && !holdsSettings) ? `<div class="sub" style="margin-top:4px;">Needs: ${esc(c.needs)}</div>` : ""}
+            ${(enabled && !c.configured && !holdsSettings && !lenderOf(c)) ? `<div class="sub" style="margin-top:4px;">Needs: ${esc(c.needs)}</div>` : ""}
           </div>
           ${holdsSettings ? "" : `<button class="ghost" data-act="skill:enable:${c.id}:${enabled ? "0" : "1"}">${enabled ? "Turn off" : "Turn on"}</button>`}
         </div>
@@ -55,20 +104,125 @@ function viewSkills() {
         </div>` : "")}
         ${settingsForm}
       </div>`;
+  }
+
+function viewSkills() {
+  const skills = (CAPS || []).filter((c) => !c.settings_only);
+  const row = (c) => {
+    const [label, cls] = skillStatus(c);
+    return `
+      <button class="ghost" data-act="go:skill:${esc(c.id)}">
+        <span class="grow" style="text-align:left;">${esc(c.name)}<span class="sub one-line">${esc(c.description)}</span></span>
+        <span class="pill ${cls}">${esc(label)}</span>${icon("chevron", 15)}</button>`;
   };
-  const env = AUTONOMY || {};
-  const toggle = (on, act, label, sub) => `
-    <div class="row" style="align-items:flex-start;gap:10px;margin-top:8px;">
-      <div class="grow"><div class="title" style="font-weight:500;">${label}</div><div class="sub">${sub}</div></div>
-      <button class="${on ? "primary" : "ghost"}" data-act="${act}:${on ? "0" : "1"}">${on ? "On" : "Off"}</button>
+  const groups = SKILL_GROUPS.map(([key, title]) => {
+    const mine = skills.filter((c) => skillGroup(c) === key);
+    return mine.length
+      ? `<div class="group-title">${esc(title)}</div><div class="card nav-list">${mine.map(row).join("")}</div>`
+      : "";
+  }).join("");
+  const connections = (CAPS || []).filter((c) => c.settings_only || c.id === "home_assistant");
+  const ready = connections.filter(connectionReady).length;
+  const recipes = (RECIPES || []).length;
+  const nav = (act, ic, label, note) => `
+    <button class="ghost" data-act="${act}">${icon(ic)}
+      <span class="grow" style="text-align:left;">${label}<span class="sub" style="display:block;font-weight:400;">${note}</span></span>
+      ${icon("chevron", 15)}</button>`;
+  return `
+    ${settingsCrumbs("skills")}
+    <h2>Skills</h2>
+    <div class="note">What Endora can do in chat. Tap one to turn it on or off, choose whether it asks first, or set it up.</div>
+    ${groups || `<div class="empty">No skills registered.</div>`}
+    <div class="group-title">Skills you teach it</div>
+    <div class="card nav-list">
+      ${nav("go:recipes", "plus", "Recipes", recipes ? `${recipes} taught so far` : "read one web address and say one sentence about it — no code")}
+    </div>
+    <div class="group-title">Also</div>
+    <div class="card nav-list">
+      ${nav("go:connections", "gear", "Connections", `where skills get their data — ${ready} of ${connections.length} set up`)}
+      ${nav("go:permissions", "scale", "Permissions", "how far Endora may act on its own")}
     </div>`;
+}
+
+// One skill's own screen, or one connection's: a home-lab service opens here too, under
+// Connections rather than Skills.
+function viewSkill() {
+  const c = (CAPS || []).find((x) => x.id === NAV.id);
+  const parent = c && c.settings_only
+    ? { label: "Connections", act: "go:connections" }
+    : { label: "Skills", act: "go:skills" };
+  const trail = crumbs([
+    { label: "Home", act: "go:chat" },
+    { label: "Settings", act: "go:settings" },
+    parent,
+    { label: c ? c.name : "Skill" },
+  ]);
+  if (!c) return `${trail}<div class="empty">That skill isn't here any more.</div>`;
+  const lender = lenderOf(c);
+  const uses = lender ? `
+    <div class="card nav-list" style="margin-top:14px;">
+      <button class="ghost" data-act="go:connections">${icon("gear")}
+        <span class="grow" style="text-align:left;">Uses your ${esc(lender.name)} connection<span class="sub" style="display:block;font-weight:400;">${connectionReady(lender) ? "set up" : "not set up yet — set it up under Connections"}</span></span>
+        ${icon("chevron", 15)}</button>
+    </div>` : "";
+  return `
+    ${trail}
+    <h2>${esc(c.name)}</h2>
+    ${skillCard(c)}
+    ${uses}`;
+}
+
+// Where skills get their data, each entered once: Home Assistant, the home lab's services,
+// and tool servers. A skill that uses one says so on its own screen.
+function viewConnections() {
+  const ha = (CAPS || []).find((c) => c.id === "home_assistant");
+  const lab = (CAPS || []).filter((c) => c.settings_only);
+  const labRow = (c) => {
+    const [label, cls] = skillStatus(c);
+    return `
+      <button class="ghost" data-act="go:skill:${esc(c.id)}">
+        <span class="grow" style="text-align:left;">${esc(c.name)}<span class="sub one-line">${esc(c.description)}</span></span>
+        <span class="pill ${cls}">${esc(label)}</span>${icon("chevron", 15)}</button>`;
+  };
+  const haRow = ha ? `
+    <div class="card nav-list">
+      <button class="ghost" data-act="go:skill:home_assistant">
+        <span class="grow" style="text-align:left;">Home Assistant<span class="sub" style="display:block;font-weight:400;">its address and token, what Endora may write back, and how it reaches you</span></span>
+        <span class="pill ${ha.configured ? "concluded" : ""}">${ha.configured ? "Connected" : "Not connected"}</span>${icon("chevron", 15)}</button>
+    </div>` : "";
+  return `
+    ${settingsCrumbs("connections")}
+    <h2>Connections</h2>
+    <div class="note">Where Endora's skills get their data. Each is entered once; the skills that use it work as soon as it is set up.</div>
+    <h3>Home Assistant</h3>
+    ${haRow}
+    ${viewConnect()}
+    <h3>Home lab</h3>
+    <div class="note">Services on your network. The handheld uses them, and chat reads from the ones its skills name.</div>
+    ${lab.length ? `<div class="card nav-list">${lab.map(labRow).join("")}</div>` : `<div class="empty">No home-lab services are offered by this node.</div>`}
+    ${mcpSection()}`;
+}
+
+// How far Endora may go on its own. Per-skill "asks first" stays on each skill's screen, and a
+// tool server's tools on Connections; this is the boundary around all of them.
+function viewPermissions() {
+  const env = AUTONOMY || {};
   const envelope = `
     <div class="card">
       <div class="title">How independently should Endora act?</div>
       <div class="sub" style="margin:4px 0 2px;">Endora acts on its own inside the boundary you set here, and asks you at its edges. You can widen or narrow it any time.</div>
-      ${toggle(env.auto_external !== false, "autonomy:external", "Use read-only skills on its own", "Check weather, news, safety alerts and web pages without asking. (Recommended)")}
-      ${toggle(env.auto_consequential === true, "autonomy:consequential", "Take consequential actions on its own", "Let it carry out actions that normally need your confirmation — spending, sending, or things that can't be undone. Off is safer; turn on only if you're sure.")}
+      ${onOffRow(env.auto_external !== false, "autonomy:external", "Use read-only skills on its own", "Check weather, news, safety alerts and web pages without asking. (Recommended)")}
+      ${onOffRow(env.auto_consequential === true, "autonomy:consequential", "Take consequential actions on its own", "Let it carry out actions that normally need your confirmation — spending, sending, or things that can't be undone. Off is safer; turn on only if you're sure.")}
     </div>`;
+  return `
+    ${settingsCrumbs("permissions")}
+    <h2>Permissions</h2>
+    <div class="note">How far Endora may go on its own. Each skill can also be set to ask first, on its own screen under Skills; a tool server's tools stay blocked until you allow each one, under Connections.</div>
+    ${envelope}`;
+}
+
+// Tool servers (ADR 0054), on Connections.
+function mcpSection() {
   // MCP servers (ADR 0054): external tool sources. Each tool is deny-by-default —
   // visible but blocked until allowed, and even then confirmed every use.
   const mcpServerCard = (s) => {
@@ -120,7 +274,7 @@ function viewSkills() {
             <button class="ghost danger" data-act="mcp:remove:${esc(s.name)}">Remove</button>
           </div>
         </div>
-        ${toggle(s.trust_all, `mcp:trust:${esc(s.name)}`, "Allow all its tools", "Opens every tool this server exposes, so you don't allow them one by one — and if you have widened autonomy, an opened tool can act without asking. Turning this off closes them all again; reopen the ones you want.")}
+        ${onOffRow(s.trust_all, `mcp:trust:${esc(s.name)}`, "Allow all its tools", "Opens every tool this server exposes, so you don't allow them one by one — and if you have widened autonomy, an opened tool can act without asking. Turning this off closes them all again; reopen the ones you want.")}
         ${readerRow(s)}
         ${(s.tools || []).length
           ? `<details class="steps" style="margin-top:6px;"><summary>${(s.tools || []).length} tool${(s.tools || []).length === 1 ? "" : "s"}</summary>
@@ -186,29 +340,12 @@ function viewSkills() {
       <div class="row" style="justify-content:flex-end;"><button class="primary" data-act="mcp:add">Save server</button></div>
     </div>
     </details>`;
-  const mcpSection = `
-    <h3>MCP servers <span class="sub" style="font-weight:400;">· connect external tools</span></h3>
-    <div class="note">Tools from an MCP server are off-limits by default: the butler can see them, but each stays blocked until you allow it. Whether an allowed tool then asks first depends on your autonomy setting above.</div>
+  return `
+    <h3>Tool servers <span class="sub" style="font-weight:400;">· MCP</span></h3>
+    <div class="note">Tools from a tool server are off-limits by default: Endora can see them, but each stays blocked until you allow it. Whether an allowed tool then asks first depends on Permissions.</div>
     ${servers.map(mcpServerCard).join("")}
     ${mcpBrowse}
     ${mcpAddForm}`;
-  return `
-    ${settingsCrumbs("skills")}
-    <h2>What Endora can do</h2>
-
-    ${envelope}
-    ${viewConnect()}
-    <h3>Skills</h3>
-    ${listOr((CAPS || []).map(card), "No skills registered.")}
-    <h3>Skills you teach it</h3>
-    <div class="card nav-list">
-      <button class="ghost" data-act="go:recipes">${icon("plus")}
-        <span class="grow" style="text-align:left;">Recipes<span class="sub" style="display:block;font-weight:400;">${(RECIPES || []).length
-          ? `${(RECIPES || []).length} taught so far`
-          : "read one web address and say one sentence about it — no code"}</span></span>
-        ${icon("chevron", 15)}</button>
-    </div>
-    ${mcpSection}`;
 }
 
 // One recipe: what it does, what it needs, and — folded, since it's the

@@ -1,7 +1,7 @@
 //! The handheld's configured services, readable from chat.
 //!
-//! ADR 0093 gave the handheld console its own entries in the skills list — "Overview:
-//! Docker", "Handheld: NAS metrics" — so an address and a key could be entered once, in the
+//! ADR 0093 gave the handheld console its own entries — "Docker", "Prometheus", now under
+//! Settings → Connections → Home lab — so an address and a key could be entered once, in the
 //! same place as every other integration. Those entries are settings-only on purpose: they are
 //! never `configured`, so the model is never offered them. That kept the console's privileged
 //! operations away from the model, and it also meant that a service the person had already set
@@ -81,7 +81,7 @@ pub fn chat_skills() -> Vec<Arc<dyn Capability>> {
                           unhealthy. Read-only: it cannot start, stop or restart anything, and \
                           it does not read logs.",
             lender: "homelab-docker",
-            needs: "set the address under Skills → Overview: Docker",
+            needs: "set up Docker under Settings → Connections",
             source: Source::Docker,
         },
         HomelabChatSkill {
@@ -91,7 +91,7 @@ pub fn chat_skills() -> Vec<Arc<dyn Capability>> {
                           sees them. Read-only: it cannot start, stop or restart anything, and \
                           it does not read logs.",
             lender: "terminal-portainer",
-            needs: "set Portainer up under Skills → Handheld: containers",
+            needs: "set up Portainer under Settings → Connections",
             source: Source::Portainer,
         },
         HomelabChatSkill {
@@ -100,7 +100,7 @@ pub fn chat_skills() -> Vec<Arc<dyn Capability>> {
             description: "Sonarr's download queue: what is downloading, how far along it is, \
                           and whether anything is stuck. Read-only.",
             lender: "homelab-sonarr",
-            needs: "set Sonarr up under Skills → Overview: Sonarr",
+            needs: "set up Sonarr under Settings → Connections",
             source: Source::Sonarr,
         },
         HomelabChatSkill {
@@ -109,7 +109,7 @@ pub fn chat_skills() -> Vec<Arc<dyn Capability>> {
             description: "Radarr's download queue: what is downloading, how far along it is, \
                           and whether anything is stuck. Read-only.",
             lender: "homelab-radarr",
-            needs: "set Radarr up under Skills → Overview: Radarr",
+            needs: "set up Radarr under Settings → Connections",
             source: Source::Radarr,
         },
         HomelabChatSkill {
@@ -118,7 +118,7 @@ pub fn chat_skills() -> Vec<Arc<dyn Capability>> {
             description: "Current figures for the NAS — load, memory, disk and the like — \
                           from Prometheus. Read-only.",
             lender: "terminal-metrics",
-            needs: "set Prometheus up under Skills → Handheld: NAS metrics",
+            needs: "set up Prometheus under Settings → Connections",
             source: Source::Nas,
         },
     ]

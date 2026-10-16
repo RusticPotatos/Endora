@@ -375,7 +375,7 @@ fn what_remains_handheld_only_still_says_so_and_what_is_now_in_chat_no_longer_do
     let description = |id: &str| skill(id).info().description.to_lowercase();
     for id in ["terminal-overseerr", "terminal-homepage"] {
         assert!(
-            description(id).contains("not available to chat"),
+            description(id).contains("not used by chat"),
             "{id} is still handheld-only and should say so"
         );
     }
@@ -387,8 +387,21 @@ fn what_remains_handheld_only_still_says_so_and_what_is_now_in_chat_no_longer_do
         "terminal-portainer",
     ] {
         assert!(
-            !description(id).contains("not available to chat"),
+            !description(id).contains("not used by chat"),
             "{id} is available to chat now; its entry must not claim otherwise"
         );
     }
+}
+
+#[test]
+fn a_borrower_is_not_ready_without_its_connections_settings() {
+    let info = skill("containers").info();
+    assert_eq!(info.borrows_from, Some("homelab-docker"));
+    assert!(!endora_capabilities::settings_ready(
+        &info,
+        &endora_capabilities::CapabilitySettings::new()
+    ));
+    let mut docker = endora_capabilities::CapabilitySettings::new();
+    docker.insert("origin".into(), "http://127.0.0.1:9876".into());
+    assert!(endora_capabilities::settings_ready(&info, &docker));
 }

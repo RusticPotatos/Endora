@@ -1138,17 +1138,18 @@ pub struct HandheldSource {
     settings: &'static [super::SettingSpec],
 }
 
-/// The handheld console's own integrations, listed beside the other skills.
+/// The handheld console's own integrations: the connections under Settings → Connections →
+/// Home lab, named for the service they hold the address and key of.
 #[must_use]
 pub fn handheld_sources() -> Vec<Arc<dyn super::Capability>> {
     [
-        ("terminal-homepage", "Handheld: home screen", "The handheld home screen mirrors your Homepage groups and services. Not available to chat.", "information", HOMEPAGE_SETTINGS),
-        ("terminal-overseerr", "Handheld: media requests", "Overseerr search and requests on the handheld console. Not available to chat.", "media", OVERSEERR_SETTINGS),
-        ("terminal-portainer", "Handheld: containers", "Portainer container list, logs and controls on the handheld console. Chat can read the container list through \"What the containers are doing (Portainer)\"; logs and controls stay on the handheld.", "information", PORTAINER_SETTINGS),
-        ("homelab-docker", "Overview: Docker", "Container summary on the handheld Overview page. Chat can read it through \"What the containers are doing\".", "information", DOCKER_SETTINGS),
-        ("homelab-sonarr", "Overview: Sonarr", "Sonarr download queue on the handheld Overview page. Chat can read it through \"What Sonarr is downloading\".", "media", ARR_SETTINGS),
-        ("homelab-radarr", "Overview: Radarr", "Radarr download queue on the handheld Overview page. Chat can read it through \"What Radarr is downloading\".", "media", ARR_SETTINGS),
-        ("terminal-metrics", "Handheld: NAS metrics", "Prometheus NAS statistics on the handheld console. Chat can read them through \"How the NAS is doing\".", "information", METRICS_SETTINGS),
+        ("terminal-homepage", "Homepage", "The handheld's home screen mirrors your Homepage groups and services. Not used by chat.", "information", HOMEPAGE_SETTINGS),
+        ("terminal-overseerr", "Overseerr", "Media search and requests on the handheld. Not used by chat.", "media", OVERSEERR_SETTINGS),
+        ("terminal-portainer", "Portainer", "Container list, logs and controls on the handheld. Chat reads the container list from it; logs and controls stay on the handheld.", "information", PORTAINER_SETTINGS),
+        ("homelab-docker", "Docker", "The container summary on the handheld's Overview page, and what chat reads about your containers.", "information", DOCKER_SETTINGS),
+        ("homelab-sonarr", "Sonarr", "The download queue on the handheld's Overview page, and what chat reads about it.", "media", ARR_SETTINGS),
+        ("homelab-radarr", "Radarr", "The download queue on the handheld's Overview page, and what chat reads about it.", "media", ARR_SETTINGS),
+        ("terminal-metrics", "Prometheus", "NAS figures (load, memory, disk) on the handheld, and what chat reads about the NAS.", "information", METRICS_SETTINGS),
     ]
     .into_iter()
     .map(|(id, name, description, category, settings)| {
