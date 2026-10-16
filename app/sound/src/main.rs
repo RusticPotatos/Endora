@@ -1,14 +1,16 @@
 //! endora-sound (ADR 0104): the sound hub. It holds the patchbay (sources, speakers and the
 //! wires between them) in its own state file and answers only those holding its token: the
-//! Endora node, which is its remote. Nothing here plays sound yet; the mixer's engine comes
-//! next, and watches the patchbay's revision.
+//! Endora node, which is its remote. Its player mixes every group in real time and streams
+//! to the phones listening; the AirPlay senders come next.
 
 use std::sync::Arc;
 
 mod api;
+mod listen;
+mod player;
 
 use endora_sound::application::hub::Hub;
-use endora_sound::infrastructure::FileStore;
+use endora_sound::infrastructure::{FileStore, Places};
 
 /// The shortest token the hub accepts. Anything shorter is refused at start, so a node and
 /// a hub can never be set up with a guessable one.
@@ -81,9 +83,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             std::process::exit(2);
         }
     };
+    let ffmpeg = std::env::var("SOUND_FFMPEG").unwrap_or_else(|_| "ffmpeg".to_owned());
+    let pipes = std::env::var("SOUND_PIPES").unwrap_or_else(|_| "pipes".to_owned());
+    let hub = Arc::new(hub);
+    let listeners = Arc::new(listen::Listeners::new(ffmpeg.clone().into()));
+    player::start(
+        hub.clone(),
+        listeners.clone(),
+        Places {
+            ffmpeg: ffmpeg.into(),
+            pipes: pipes.into(),
+        },
+        Box::new(player::NoSenders),
+    );
     let app = api::app(api::State {
-        hub: Arc::new(hub),
+        hub,
         token: Arc::new(token),
+        listeners,
     });
     let listener = tokio::net::TcpListener::bind(&addr).await?;
     println!("sound: listening on {addr}, keeping its state in {state}");

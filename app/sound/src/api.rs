@@ -21,6 +21,8 @@ use endora_sound::domain::{
 };
 use endora_sound::infrastructure::{FileStore, json as shape};
 
+use crate::listen::Listeners;
+
 /// What every handler shares.
 #[derive(Clone)]
 pub struct State {
@@ -28,6 +30,8 @@ pub struct State {
     pub hub: Arc<Hub<FileStore>>,
     /// The token the node signs with.
     pub token: Arc<String>,
+    /// The streams being listened to.
+    pub listeners: Arc<Listeners>,
 }
 
 /// The hub's routes.
@@ -45,6 +49,7 @@ pub fn app(state: State) -> Router {
         .route("/v1/setups", post(save_setup))
         .route("/v1/setups/{name}", delete(remove_setup))
         .route("/v1/setups/{name}/apply", post(apply_setup))
+        .route("/v1/listen/{speaker}", get(listen))
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             signed_by_the_node,
@@ -148,8 +153,50 @@ async fn the_state(Extract(state): Extract<State>) -> Json<Value> {
                 "needs_sender": g.needs_sender,
             }))
             .collect();
+        v["listening"] = json!(state.listeners.listening().iter().map(|s| s.0).collect::<Vec<_>>());
         v
     }))
+}
+
+/// A stream speaker's live stream, as MP3, for as long as the listener stays. The phone, the
+/// tablet and the handheld play this; the node passes it on to them.
+async fn listen(Extract(state): Extract<State>, Path(id): Path<u32>) -> Result<Response, Failed> {
+    let kind = state
+        .hub
+        .read(|bay| bay.speaker(SpeakerId(id)).map(|s| s.kind));
+    match kind {
+        None => return Err(not_there("speaker")),
+        Some(SpeakerKind::AirPlay) => {
+            return Err(Failed(
+                StatusCode::BAD_REQUEST,
+                "an AirPlay speaker is played by a sender, not listened to".to_owned(),
+            ));
+        }
+        Some(SpeakerKind::Stream) => {}
+    }
+    let receiver = state.listeners.listen(SpeakerId(id)).map_err(|e| {
+        Failed(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("the stream could not start: {e}"),
+        )
+    })?;
+    let body = futures_util::stream::unfold(receiver, |mut rx| async move {
+        loop {
+            match rx.recv().await {
+                Ok(chunk) => return Some((Ok::<_, std::convert::Infallible>(chunk), rx)),
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => return None,
+            }
+        }
+    });
+    Ok((
+        [
+            (axum::http::header::CONTENT_TYPE, "audio/mpeg"),
+            (axum::http::header::CACHE_CONTROL, "no-store"),
+        ],
+        axum::body::Body::from_stream(body),
+    )
+        .into_response())
 }
 
 #[derive(Deserialize)]
@@ -337,8 +384,12 @@ mod tests {
     const TOKEN: &str = "a-token-of-at-least-thirty-two-characters";
 
     fn state() -> (State, std::path::PathBuf) {
+        // Each test its own state file: tests run side by side, and the clock alone can give
+        // two of them the same name.
+        static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let dir = std::env::temp_dir().join(format!(
-            "endora-sound-api-{}-{:?}",
+            "endora-sound-api-{}-{n}-{:?}",
             std::process::id(),
             std::time::SystemTime::now()
         ));
@@ -349,6 +400,7 @@ mod tests {
             State {
                 hub: Arc::new(hub),
                 token: Arc::new(TOKEN.to_owned()),
+                listeners: Arc::new(Listeners::new("ffmpeg".into())),
             },
             path,
         )
@@ -627,5 +679,166 @@ mod tests {
                 .0,
             StatusCode::NOT_FOUND
         );
+    }
+
+    #[tokio::test]
+    async fn only_a_stream_speaker_can_be_listened_to() {
+        let (state, _) = state();
+        let app = app(state);
+        let (_, kitchen) = send(
+            &app,
+            "POST",
+            "/v1/speakers",
+            r#"{"name":"Kitchen","kind":"airplay"}"#,
+        )
+        .await;
+        let kitchen = &kitchen["id"];
+        assert_eq!(
+            send(&app, "GET", &format!("/v1/listen/{kitchen}"), "")
+                .await
+                .0,
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(
+            send(&app, "GET", "/v1/listen/99", "").await.0,
+            StatusCode::NOT_FOUND
+        );
+        let res = app
+            .clone()
+            .oneshot(call("GET", "/v1/listen/99", None, ""))
+            .await
+            .unwrap();
+        assert_eq!(
+            res.status(),
+            StatusCode::UNAUTHORIZED,
+            "a stream is signed like everything else"
+        );
+    }
+
+    /// A web server on this machine that answers every request with two seconds of a tone,
+    /// as a WAV file.
+    fn a_station() -> String {
+        use std::io::{Read as _, Write as _};
+        let rate = 44_100usize;
+        let mut data = Vec::new();
+        for i in 0..2 * rate {
+            let v =
+                ((i as f32 * 440.0 * std::f32::consts::TAU / rate as f32).sin() * 12_000.0) as i16;
+            data.extend_from_slice(&v.to_le_bytes());
+            data.extend_from_slice(&v.to_le_bytes());
+        }
+        let mut wav = b"RIFF".to_vec();
+        wav.extend_from_slice(&(36 + data.len() as u32).to_le_bytes());
+        wav.extend_from_slice(b"WAVEfmt ");
+        for (v, n) in [
+            (16u32, 4),
+            (1, 2),
+            (2, 2),
+            (44_100, 4),
+            (176_400, 4),
+            (4, 2),
+            (16, 2),
+        ] {
+            wav.extend_from_slice(&v.to_le_bytes()[..n]);
+        }
+        wav.extend_from_slice(b"data");
+        wav.extend_from_slice(&(data.len() as u32).to_le_bytes());
+        wav.extend_from_slice(&data);
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { continue };
+                let _ = stream.read(&mut [0u8; 2048]);
+                let head = format!(
+                    "HTTP/1.0 200 OK\r\nContent-Type: audio/wav\r\nContent-Length: {}\r\n\r\n",
+                    wav.len()
+                );
+                let _ = stream.write_all(head.as_bytes());
+                let _ = stream.write_all(&wav);
+            }
+        });
+        format!("http://127.0.0.1:{port}/classical.wav")
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_phone_listening_hears_its_groups_mix_as_mp3() {
+        let found = std::process::Command::new("ffmpeg")
+            .arg("-version")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+        if !found.is_ok_and(|s| s.success()) {
+            eprintln!(
+                "no ffmpeg here: the live stream test is skipped (it runs in the image and on the Mac)"
+            );
+            return;
+        }
+        let (state, path) = state();
+        crate::player::start(
+            state.hub.clone(),
+            state.listeners.clone(),
+            endora_sound::infrastructure::Places {
+                ffmpeg: "ffmpeg".into(),
+                pipes: path.parent().unwrap().to_owned(),
+            },
+            Box::new(crate::player::NoSenders),
+        );
+        let app = app(state);
+        let body = format!(
+            r#"{{"name":"Classical","kind":"radio","address":"{}"}}"#,
+            a_station()
+        );
+        let (_, radio) = send(&app, "POST", "/v1/sources", &body).await;
+        let (_, phone) = send(
+            &app,
+            "POST",
+            "/v1/speakers",
+            r#"{"name":"iPhone","kind":"stream","device":"iphone"}"#,
+        )
+        .await;
+        let (radio, phone) = (&radio["id"], &phone["id"]);
+        send(
+            &app,
+            "PUT",
+            "/v1/wires",
+            &format!(r#"{{"source":{radio},"speaker":{phone},"level":80}}"#),
+        )
+        .await;
+        let res = app
+            .clone()
+            .oneshot(call("GET", &format!("/v1/listen/{phone}"), Some(TOKEN), ""))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        assert_eq!(res.headers()["content-type"], "audio/mpeg");
+        let mut body = res.into_body().into_data_stream();
+        let mut heard: Vec<u8> = Vec::new();
+        let got = tokio::time::timeout(std::time::Duration::from_secs(20), async {
+            use futures_util::StreamExt as _;
+            while heard.len() < 16_384 {
+                match body.next().await {
+                    Some(Ok(chunk)) => heard.extend_from_slice(&chunk),
+                    _ => break,
+                }
+            }
+        })
+        .await;
+        assert!(
+            got.is_ok(),
+            "the stream gave only {} bytes in 20 s",
+            heard.len()
+        );
+        // MP3: an ID3 tag first, or straight into a frame (eleven set bits).
+        let frame = heard
+            .windows(2)
+            .any(|w| w[0] == 0xFF && w[1] & 0xE0 == 0xE0);
+        assert!(
+            heard.starts_with(b"ID3") || frame,
+            "not MP3: {:?}",
+            &heard[..8.min(heard.len())]
+        );
+        let (_, s) = send(&app, "GET", "/v1/state", "").await;
+        assert_eq!(s["listening"], json!([phone]));
     }
 }
