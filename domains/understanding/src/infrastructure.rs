@@ -433,6 +433,13 @@ impl IntentionRepository for UnderstandingStore {
         let conn = self.db.lock()?;
         all_intentions(&conn)
     }
+
+    fn forget_its_own(&self) -> Result<usize, RepositoryError> {
+        self.db
+            .lock()?
+            .execute("DELETE FROM intentions WHERE origin = 'belief'", [])
+            .map_err(backend)
+    }
 }
 
 fn all_intentions(conn: &Connection) -> Result<Vec<Intention>, RepositoryError> {
@@ -855,6 +862,40 @@ mod tests {
                 .unwrap()
         };
         assert!(!columns.iter().any(|name| name == "origin"));
+    }
+
+    #[test]
+    fn forgetting_its_own_intentions_keeps_the_research_they_asked_for() {
+        use endora_kernel::ids::MessageId;
+        let db = Db::open_in_memory().unwrap();
+        migrate(&db).unwrap();
+        let store = UnderstandingStore::new(db);
+        let at = Timestamp::from_unix_millis(1);
+        let mut own =
+            Intention::form(IntentionId::new(1), "run more often", BeliefId::new(9), at).unwrap();
+        // Two of the same, as the live list had: one active, one long since let go.
+        own.abandon();
+        IntentionRepository::save(&store, &own).unwrap();
+        IntentionRepository::save(
+            &store,
+            &Intention::form(IntentionId::new(2), "run more often", BeliefId::new(9), at).unwrap(),
+        )
+        .unwrap();
+        IntentionRepository::save(
+            &store,
+            &Intention::from_request(
+                IntentionId::new(3),
+                "compare two laptops",
+                MessageId::new(4),
+                at,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(store.forget_its_own().unwrap(), 2);
+        let left = IntentionRepository::list(&store).unwrap();
+        assert_eq!(left.len(), 1);
+        assert_eq!(left[0].statement(), "compare two laptops");
     }
 
     #[test]

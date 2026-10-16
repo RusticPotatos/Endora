@@ -322,15 +322,11 @@ pub(super) async fn test_model_connection(
     }))
 }
 
-/// Kicks off the self-improving model layer (ADR 0055) in the background:
-/// discover the models on the local endpoint, score each with the fitness
-/// function, and gate-adopt the best **local** one (auto-adopt local, propose
-/// cloud). Slow (it runs the eval per candidate), so it runs detached and records
-/// its progress + result to the activity log; the response returns immediately.
 /// Runs the model layer synchronously (discover local models → evaluate each →
 /// gated adoption), recording progress + the result to the activity log. Slow
-/// (it runs the eval per candidate). Shared by the manual `/v1/model-layer/run`
-/// and the scheduled nightly tune.
+/// (it runs the eval per candidate). Used by the manual `/v1/model-layer/run`; the
+/// nightly schedule is gone (owner, 2026-10-16), and the model comparison will run it
+/// on purpose.
 pub(super) fn run_model_tune(
     butler: &(dyn Butler + Send + Sync),
     config: &endora_capabilities::ConfigStore,
@@ -424,6 +420,11 @@ pub(super) fn tune_model_url() -> String {
     std::env::var("ENDORA_MODEL_URL").unwrap_or_else(|_| "http://localhost:11434/v1".to_owned())
 }
 
+/// Kicks off the self-improving model layer (ADR 0055) in the background:
+/// discover the models on the local endpoint, score each with the fitness
+/// function, and gate-adopt the best **local** one (auto-adopt local, propose
+/// cloud). Slow (it runs the eval per candidate), so it runs detached and records
+/// its progress + result to the activity log; the response returns immediately.
 pub(super) async fn run_model_layer_now(
     State(state): State<AppState>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
@@ -442,49 +443,6 @@ pub(super) async fn run_model_layer_now(
         );
     });
     Ok(Json(json!({ "started": true })))
-}
-
-/// The nightly model-tune schedule (ADR 0055) — off by default.
-pub(super) async fn get_tune_schedule(
-    State(state): State<AppState>,
-) -> Result<Json<serde_json::Value>, ApiError> {
-    let config = state.config.clone();
-    let s = blocking(move || {
-        ModelTuneScheduleRepository::get(config.as_ref()).map_err(AppError::Repository)
-    })
-    .await?;
-    Ok(Json(
-        json!({ "enabled": s.enabled, "hour_utc": s.hour_utc }),
-    ))
-}
-
-#[derive(Deserialize)]
-pub(super) struct TuneScheduleRequest {
-    enabled: bool,
-    hour_utc: u8,
-}
-
-pub(super) async fn set_tune_schedule(
-    State(state): State<AppState>,
-    Json(req): Json<TuneScheduleRequest>,
-) -> Result<Json<serde_json::Value>, ApiError> {
-    let config = state.config.clone();
-    blocking(move || {
-        let current =
-            ModelTuneScheduleRepository::get(config.as_ref()).map_err(AppError::Repository)?;
-        ModelTuneScheduleRepository::set(
-            config.as_ref(),
-            &endora_application::ModelTuneSchedule {
-                enabled: req.enabled,
-                hour_utc: req.hour_utc.min(23),
-                last_ms: current.last_ms, // keep last-run so toggling doesn't re-fire
-            },
-        )
-        .map_err(AppError::Repository)
-    })
-    .await?;
-    let _ = state.changes.send(());
-    Ok(Json(json!({ "ok": true })))
 }
 
 #[derive(Deserialize)]

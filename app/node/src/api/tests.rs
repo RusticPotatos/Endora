@@ -72,8 +72,9 @@ async fn handheld_actions_refuse_missing_confirmation_and_do_not_reserve_a_submi
 #[tokio::test]
 async fn forgetting_what_it_learned_needs_confirming_and_keeps_what_they_said() {
     use endora_application::{
-        Belief, BeliefId, BeliefKind, BeliefRepository, Confidence, Preference, PreferenceId,
-        PreferenceKind, PreferenceRepository, Timestamp,
+        Belief, BeliefId, BeliefKind, BeliefRepository, Confidence, Intention, IntentionId,
+        IntentionRepository, Preference, PreferenceId, PreferenceKind, PreferenceRepository,
+        Timestamp,
     };
     let state = test_state();
     BeliefRepository::save(
@@ -100,6 +101,17 @@ async fn forgetting_what_it_learned_needs_confirming_and_keeps_what_they_said() 
         .unwrap(),
     )
     .unwrap();
+    IntentionRepository::save(
+        state.understanding.as_ref(),
+        &Intention::form(
+            IntentionId::new(3),
+            "run more often",
+            BeliefId::new(1),
+            Timestamp::from_unix_millis(1),
+        )
+        .unwrap(),
+    )
+    .unwrap();
     let router = app(state.clone());
     let unconfirmed = router
         .clone()
@@ -119,7 +131,16 @@ async fn forgetting_what_it_learned_needs_confirming_and_keeps_what_they_said() 
         .await
         .unwrap();
     assert_eq!(done.status(), StatusCode::OK);
-    assert_eq!(json_body(done).await["forgot"], 1);
+    let body = json_body(done).await;
+    assert_eq!(
+        (body["forgot"].clone(), body["intentions"].clone()),
+        (1.into(), 1.into())
+    );
+    assert!(
+        IntentionRepository::list(state.understanding.as_ref())
+            .unwrap()
+            .is_empty()
+    );
     assert!(
         BeliefRepository::list(state.understanding.as_ref())
             .unwrap()
@@ -1410,45 +1431,6 @@ async fn there_is_no_way_for_the_person_to_create_an_intention() {
 }
 
 #[tokio::test]
-async fn an_intention_is_visible_and_can_be_dropped_but_only_dropped() {
-    use endora_application::{BeliefId, Intention, IntentionId, IntentionRepository, Timestamp};
-    let state = test_state();
-    IntentionRepository::save(
-        state.understanding.as_ref(),
-        &Intention::form(
-            IntentionId::new(5),
-            "learn what helps them sleep",
-            BeliefId::new(7),
-            Timestamp::from_unix_millis(10),
-        )
-        .unwrap(),
-    )
-    .unwrap();
-    let app = app(state);
-
-    let listed = json_body(app.clone().oneshot(get("/v1/intentions")).await.unwrap()).await;
-    assert_eq!(listed.as_array().unwrap().len(), 1);
-    assert_eq!(listed[0]["statement"], "learn what helps them sleep");
-    assert_eq!(listed[0]["active"], true);
-    // Never null — an intention that can't be explained can't exist.
-    assert_eq!(listed[0]["motivating_belief"], "7");
-
-    let dropped = json_body(
-        app.clone()
-            .oneshot(post("/v1/intentions/5/drop", "{}"))
-            .await
-            .unwrap(),
-    )
-    .await;
-    assert_eq!(dropped["state"], "abandoned");
-    assert_eq!(dropped["active"], false);
-
-    // It stays visible as something Endora once pursued, but is no longer current.
-    let listed = json_body(app.oneshot(get("/v1/intentions")).await.unwrap()).await;
-    assert_eq!(listed[0]["active"], false);
-}
-
-#[tokio::test]
 async fn explicit_research_is_durable_idempotent_and_cancellable() {
     let state = test_state();
     let app = app(state);
@@ -1505,11 +1487,6 @@ async fn explicit_research_is_durable_idempotent_and_cancellable() {
     assert_eq!(occupied.status(), StatusCode::CONFLICT);
     assert_eq!(json_body(occupied).await["code"], "occupied_slot");
 
-    let legacy = json_body(app.clone().oneshot(get("/v1/intentions")).await.unwrap()).await;
-    assert!(
-        legacy.as_array().unwrap().is_empty(),
-        "user work stays out of belief intentions"
-    );
     let listed = json_body(app.clone().oneshot(get("/v1/research")).await.unwrap()).await;
     assert_eq!(listed["items"].as_array().unwrap().len(), 1);
 

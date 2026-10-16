@@ -118,9 +118,10 @@ pub(super) struct ForgetRequest {
     confirm: bool,
 }
 
-/// Deletes everything Endora learned about the person, keeping what they told it themselves
-/// (their preferences, where they are, how to address them). The owner's "start fresh",
-/// 2026-10-16. Needs `{"confirm": true}`, like the full purge.
+/// Deletes everything Endora learned about the person, and every intention it formed from that,
+/// keeping what they told it themselves (their preferences, where they are, how to address them)
+/// and the research they asked for. The owner's "start fresh", 2026-10-16. Needs
+/// `{"confirm": true}`, like the full purge.
 pub(super) async fn forget_what_it_learned(
     State(state): State<AppState>,
     Json(req): Json<ForgetRequest>,
@@ -131,12 +132,16 @@ pub(super) async fn forget_what_it_learned(
         }));
     }
     let understanding = state.understanding.clone();
-    let forgot = blocking(move || {
-        endora_application::BeliefRepository::forget_all(understanding.as_ref())
-            .map_err(AppError::Repository)
+    let (forgot, intentions) = blocking(move || {
+        let beliefs = endora_application::BeliefRepository::forget_all(understanding.as_ref())
+            .map_err(AppError::Repository)?;
+        let intentions =
+            endora_application::IntentionRepository::forget_its_own(understanding.as_ref())
+                .map_err(AppError::Repository)?;
+        Ok::<_, AppError>((beliefs, intentions))
     })
     .await?;
-    Ok(Json(json!({ "forgot": forgot })))
+    Ok(Json(json!({ "forgot": forgot, "intentions": intentions })))
 }
 
 pub(super) fn intention_json(i: &endora_application::Intention) -> serde_json::Value {
@@ -236,40 +241,6 @@ pub(super) async fn cancel_goal(
         return Err(ApiError(AppError::NotFound { entity: "goal" }));
     };
     Ok(Json(goal_json(&goal)))
-}
-
-/// What Endora is pursuing, and what it has pursued before (ADR 0052).
-pub(super) async fn list_intentions(
-    State(state): State<AppState>,
-) -> Result<Json<Vec<serde_json::Value>>, ApiError> {
-    let understanding = state.understanding.clone();
-    let items = blocking(move || usecases::intentions(understanding.as_ref())).await?;
-    Ok(Json(
-        items
-            .iter()
-            .filter(|item| item.motivating_belief().is_some())
-            .map(intention_json)
-            .collect(),
-    ))
-}
-
-/// The person tells Endora to stop working on something — their whole authority over
-/// an intention, and the only verb they have (ADR 0052).
-pub(super) async fn drop_intention(
-    State(state): State<AppState>,
-    Path(id): Path<String>,
-) -> Result<Json<serde_json::Value>, ApiError> {
-    let iid = id
-        .parse::<u128>()
-        .map(endora_application::IntentionId::new)
-        .map_err(|_| {
-            ApiError(AppError::NotFound {
-                entity: "intention",
-            })
-        })?;
-    let understanding = state.understanding.clone();
-    let out = blocking(move || usecases::drop_intention(understanding.as_ref(), iid)).await?;
-    Ok(Json(intention_json(&out)))
 }
 
 #[derive(Deserialize)]

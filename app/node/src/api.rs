@@ -21,8 +21,7 @@ use endora_application::{
     ActivityItem, AppError, AutonomyEnvelope, AutonomyEnvelopeRepository, BriefSchedule, Butler,
     ButlerModelConfig, ButlerModelConfigRepository, CapabilityConfigRepository,
     CapabilitySettingsRepository, DeepModelRepository, ExecutionLeaseRepository, GoalDelivery,
-    GoalRepository, MemorySnapshot, ModelSlot, ModelTuneScheduleRepository, RepositoryError,
-    Sampling, usecases,
+    GoalRepository, MemorySnapshot, ModelSlot, RepositoryError, Sampling, usecases,
 };
 use endora_application::{
     AuditRecord, Belief, BeliefId, ChatMessage, IdSource, IntentionRepository, Preference,
@@ -440,12 +439,6 @@ pub fn app(state: AppState) -> Router {
         .route("/v1/config-writes", get(list_config_writes))
         .route("/v1/config-writes/{id}/undo", post(undo_config_write))
         .route("/v1/outcomes/{id}/reaction", post(react_to_outcome))
-        // Read and drop only. There is deliberately NO create or edit route: Endora
-        // forms its own intentions, and the person's whole side of the interface is
-        // "stop doing that" (ADR 0052).
-        .route("/v1/intentions", get(list_intentions))
-        // Readable, never actionable — no companion POST exists (ADR 0057).
-        .route("/v1/intentions/{id}/drop", post(drop_intention))
         .route("/v1/mail", get(mail::mail_digest))
         .route("/v1/ai", get(ai::ai_overview).post(ai::set_ai))
         // Spotify, held here and lent to every device; its callback is outside /v1 because a
@@ -525,10 +518,6 @@ pub fn app(state: AppState) -> Router {
         .route("/v1/models/discover", post(discover_models))
         .route("/v1/models/test", post(test_model_connection))
         .route("/v1/model-layer/run", post(run_model_layer_now))
-        .route(
-            "/v1/model-tune/schedule",
-            get(get_tune_schedule).post(set_tune_schedule),
-        )
         .route("/v1/transcribe", post(transcribe))
         .route("/v1/deep-ask", post(deep_ask))
         .route(

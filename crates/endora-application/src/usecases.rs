@@ -6,9 +6,7 @@
 //! and the use cases stay testable with fakes.
 
 use endora_conversation::{ChatMessage, MessageRole};
-use endora_kernel::ids::{
-    AuditId, BeliefId, IntentionId, MessageId, OutcomeId, PreferenceId, Timestamp,
-};
+use endora_kernel::ids::{AuditId, BeliefId, MessageId, OutcomeId, PreferenceId, Timestamp};
 use endora_kernel::{Decision, Reversibility};
 use endora_platform::AuditRecord;
 use endora_understanding::{

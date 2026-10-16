@@ -47,7 +47,6 @@ const WHAT_THE_INTERFACE_LOADS: &[&str] = &[
     "/v1/understanding",
     "/v1/capabilities",
     "/v1/activity",
-    "/v1/intentions",
     "/v1/outcomes",
     "/v1/repairs",
     "/v1/reliability",

@@ -48,6 +48,13 @@ pub trait IntentionRepository {
     /// # Errors
     /// [`RepositoryError`] if the backend fails or stored data is corrupt.
     fn list(&self) -> Result<Vec<Intention>, RepositoryError>;
+
+    /// Deletes every intention Endora formed from a belief, and says how many there were.
+    /// Research the person asked for is a different origin and is not touched.
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if the backend fails.
+    fn forget_its_own(&self) -> Result<usize, RepositoryError>;
 }
 
 /// Persists and retrieves [`Outcome`]s — what happened after Endora acted (ADR 0053).

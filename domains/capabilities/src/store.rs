@@ -8,9 +8,8 @@ use rusqlite::{OptionalExtension, params};
 use crate::application::{
     AutonomyEnvelope, AutonomyEnvelopeRepository, ButlerModelConfig, ButlerModelConfigRepository,
     CapabilityConfigRepository, CapabilitySettingsRepository, ConfigWrite, DeepModel,
-    DeepModelRepository, McpServer, McpServerRegistry, McpTransport, ModelSlot, ModelTuneSchedule,
-    ModelTuneScheduleRepository, Recipe, RecipeRepository, Sampling, Stance, TargetAlias,
-    TargetAliasRepository,
+    DeepModelRepository, McpServer, McpServerRegistry, McpTransport, ModelSlot, Recipe,
+    RecipeRepository, Sampling, Stance, TargetAlias, TargetAliasRepository,
 };
 use crate::domain::{RecipeInput, RecipeInputKind, Transition, Watched};
 
@@ -72,12 +71,6 @@ pub fn migrate(db: &Db) -> Result<(), RepositoryError> {
                 synth_top_p   REAL,
                 synth_top_k   INTEGER,
                 synth_repeat  REAL
-            ) STRICT;
-            CREATE TABLE IF NOT EXISTS model_tune_schedule (
-                id       INTEGER PRIMARY KEY CHECK (id = 0),
-                enabled  INTEGER NOT NULL,
-                hour_utc INTEGER NOT NULL,
-                last_ms  INTEGER NOT NULL
             ) STRICT;
             CREATE TABLE IF NOT EXISTS target_aliases (
                 server TEXT NOT NULL,
@@ -334,39 +327,6 @@ impl ButlerModelConfigRepository for ConfigStore {
                     c.preferred_url,
                     c.preferred_model,
                 ],
-            )
-            .map_err(backend)?;
-        Ok(())
-    }
-}
-
-impl ModelTuneScheduleRepository for ConfigStore {
-    fn get(&self) -> Result<ModelTuneSchedule, RepositoryError> {
-        self.db
-            .lock()?
-            .query_row(
-                "SELECT enabled, hour_utc, last_ms FROM model_tune_schedule WHERE id = 0",
-                [],
-                |r| {
-                    Ok(ModelTuneSchedule {
-                        enabled: r.get::<_, i64>(0)? != 0,
-                        hour_utc: r.get::<_, i64>(1)? as u8,
-                        last_ms: r.get(2)?,
-                    })
-                },
-            )
-            .optional()
-            .map_err(backend)
-            .map(|opt| opt.unwrap_or_else(ModelTuneSchedule::disabled_default))
-    }
-
-    fn set(&self, s: &ModelTuneSchedule) -> Result<(), RepositoryError> {
-        self.db
-            .lock()?
-            .execute(
-                "INSERT OR REPLACE INTO model_tune_schedule (id, enabled, hour_utc, last_ms) \
-                 VALUES (0, ?1, ?2, ?3)",
-                params![i64::from(s.enabled), i64::from(s.hour_utc), s.last_ms],
             )
             .map_err(backend)?;
         Ok(())

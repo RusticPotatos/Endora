@@ -773,7 +773,8 @@ async function dispatch(act) {
       if (!confirm("Forget everything Endora has learned about you? What you told it yourself stays. This can't be undone.")) return;
       try {
         const done = await api("POST", "/v1/understanding/forget", { confirm: true });
-        flash(`Forgot ${done.forgot} thing${done.forgot === 1 ? "" : "s"}.`, "ok");
+        const meant = done.intentions ? `, and ${done.intentions} thing${done.intentions === 1 ? "" : "s"} it meant to do` : "";
+        flash(`Forgot ${done.forgot} thing${done.forgot === 1 ? "" : "s"} it had learned${meant}.`, "ok");
       } catch (e) { flash("Couldn't forget: " + e.message, "err"); }
       return reload();
     }

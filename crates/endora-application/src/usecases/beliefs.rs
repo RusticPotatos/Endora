@@ -667,26 +667,6 @@ pub fn repairs(
     ))
 }
 
-/// The person tells Endora to stop working on something (ADR 0052).
-///
-/// Their whole authority over an intention, and deliberately the only verb they have:
-/// Endora forms its own, from what it understands, and there is no path by which the
-/// person can create or edit one.
-///
-/// # Errors
-/// [`AppError::NotFound`] if there is no such intention, or [`AppError::Repository`].
-pub fn drop_intention(
-    intentions: &impl IntentionRepository,
-    id: IntentionId,
-) -> Result<Intention, AppError> {
-    let mut intention = intentions.get(id)?.ok_or(AppError::NotFound {
-        entity: "intention",
-    })?;
-    intention.abandon();
-    intentions.save(&intention)?;
-    Ok(intention)
-}
-
 /// The outcomes of what Endora has done, most recent first (ADR 0053) — the memory
 /// right to *see* what it did, alongside the beliefs it holds.
 ///
