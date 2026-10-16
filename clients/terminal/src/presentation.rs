@@ -400,3 +400,81 @@ pub fn bluetooth_view(
     }
     text
 }
+
+/// Applies one chat stream event to the chat text, returning a new status line if it changes
+/// the status. Read as the protocol's event (ADR 0099): the node sends `step` while it works
+/// and `error` when the exchange fails, which this client once ignored while waiting for a
+/// `progress` event the node never sends.
+pub fn on_stream(
+    event: &endora_protocol::StreamEvent,
+    chat: &mut String,
+    stream_seen: &mut bool,
+) -> Option<String> {
+    use endora_protocol::StreamEvent;
+    match event {
+        StreamEvent::Token { text } => {
+            chat.push_str(&crate::protocol::clean(text));
+            *stream_seen = true;
+            None
+        }
+        StreamEvent::Done { reply, actions } => {
+            if !*stream_seen {
+                chat.push_str(&crate::protocol::clean(&reply.text));
+            }
+            chat.push_str(&self::actions(actions));
+            None
+        }
+        StreamEvent::Step { label, .. } => Some(if label.is_empty() {
+            "Endora is working".to_owned()
+        } else {
+            format!("Endora is working: {}", crate::protocol::clean(label))
+        }),
+        StreamEvent::Error { message } => Some(format!(
+            "Endora could not answer: {}",
+            crate::protocol::clean(message)
+        )),
+        StreamEvent::Unknown => None,
+    }
+}
+
+/// One line of a field, cleaned of terminal controls and bounded.
+pub fn line(v: &Value) -> String {
+    crate::protocol::clean(v.as_str().unwrap_or(""))
+        .chars()
+        .take(240)
+        .collect()
+}
+/// A page's items.
+pub fn items(v: &Value) -> &[Value] {
+    v["items"].as_array().map(Vec::as_slice).unwrap_or(&[])
+}
+/// A page as text: its summary, then one row per item, the selected one marked.
+pub fn display(v: &Value, selected: usize) -> String {
+    let mut text = crate::protocol::clean(v["summary"].as_str().unwrap_or(""))
+        .chars()
+        .take(32 * 1024)
+        .collect::<String>();
+    text.push('\n');
+    for (index, item) in items(v).iter().enumerate() {
+        text.push_str(&format!(
+            "{} {}{}  {}\n",
+            if index == selected { ">" } else { " " },
+            if item["favorite"] == true { "* " } else { "" },
+            line(&item["label"]),
+            line(&item["detail"])
+        ));
+    }
+    if let Some(services) = v["services"].as_array() {
+        for service in services {
+            text.push_str(&format!(
+                "{}: {}{}\n",
+                line(&service["name"]),
+                line(&service["state"]),
+                service["total"]
+                    .as_u64()
+                    .map_or(String::new(), |n| format!(" ({n})"))
+            ));
+        }
+    }
+    text
+}

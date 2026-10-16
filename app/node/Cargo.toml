@@ -25,6 +25,7 @@ endora-mail = { path = "../../domains/mail" }
 # The shared SQLite handle, for `endora-node backup` (a consistent snapshot of the live
 # database). An in-repo crate the contexts already share, not a new external dependency.
 endora-persistence = { path = "../../shared/persistence" }
+endora-protocol = { path = "../../shared/protocol" }
 # Already in the tree transitively (via axum/tokio); declared directly to adapt
 # a broadcast channel into the SSE response stream. Enabling the stream helpers
 # pulls one additional crate from the same futures project (futures-macro).

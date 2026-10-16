@@ -13,6 +13,10 @@ tagged release.
   `clients/terminal`, the Rust TUI for a small Linux handheld, joins the workspace: one
   lockfile, one CI (its Python, privacy and rendering checks, and an ARM64 bundle artifact),
   Apache-2.0. It still talks to the node only over HTTP.
+- **A shared wire protocol** (`shared/protocol`). The handheld's pages, home screen, action
+  outcomes and chat stream events are written down once; the node refuses to send a response
+  that does not fit, and both sides' tests fail if either drifts. The handheld now shows what
+  Endora is doing while it works, and why a reply failed, which it used to drop.
 
 - **An AI screen.** Settings → AI (it was Models) opens with what Endora runs: the conversation
   model (or the router and writer), the deep model with its calls and cost this month, the mail

@@ -3,6 +3,7 @@ resolver = "3"
 members = [
     "shared/kernel",
     "shared/persistence",
+    "shared/protocol",
     "domains/platform",
     "domains/capabilities",
     "domains/understanding",

@@ -63,3 +63,64 @@ fn private_files_and_symlinks() {
     assert!(paths.write("token", b"secret").is_err());
     std::fs::remove_dir_all(root).unwrap();
 }
+
+// The node's wire types (ADR 0099). Each sample is what the node sends; rendering it must show
+// what it carries, so a field renamed on one side fails here as well as in the node's own tests.
+
+#[test]
+fn every_chat_stream_event_the_node_sends_shows() {
+    use endora_terminal::presentation::on_stream;
+    let mut chat = String::new();
+    let mut seen = false;
+    let mut statuses = Vec::new();
+    for event in endora_protocol::samples::stream() {
+        if let Some(status) = on_stream(&event, &mut chat, &mut seen) {
+            statuses.push(status);
+        }
+    }
+    assert!(
+        statuses.iter().any(|s| s.contains("Checking the weather")),
+        "a step says what Endora is doing: {statuses:?}"
+    );
+    assert!(
+        statuses
+            .iter()
+            .any(|s| s.contains("The model did not answer")),
+        "an error is shown, not swallowed: {statuses:?}"
+    );
+    assert_eq!(
+        chat.matches("It is sunny.").count(),
+        1,
+        "the streamed text is shown once, not again when the reply completes: {chat:?}"
+    );
+}
+
+#[test]
+fn every_handheld_page_shows_what_the_node_sends() {
+    use endora_terminal::presentation::display;
+    for (page, expected) in [
+        (endora_protocol::samples::home(), ["Example lamp", "21.5"]),
+        (
+            endora_protocol::samples::media(),
+            ["Example Film (2024)", "Availability"],
+        ),
+        (
+            endora_protocol::samples::jobs(),
+            ["Check example", "succeeded"],
+        ),
+    ] {
+        let text = display(&serde_json::to_value(&page).unwrap(), 0);
+        for shown in expected {
+            assert!(text.contains(shown), "{shown} is missing from {text}");
+        }
+    }
+}
+
+#[test]
+fn the_home_screen_shows_the_nodes_services() {
+    let dashboard = serde_json::to_value(endora_protocol::samples::dashboard()).unwrap();
+    let (text, _) = endora_terminal::presentation::home(&dashboard, "12:00", 0, 80);
+    assert!(text.contains("Example Server"), "{text}");
+    let services = endora_terminal::presentation::dash_services(&dashboard);
+    assert!(services.iter().any(|s| s["name"] == "Example Server"));
+}

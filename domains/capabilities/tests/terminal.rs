@@ -3,6 +3,13 @@ use endora_capabilities::infrastructure::terminal::{Journal, project_home, prote
 use endora_persistence::Db;
 use serde_json::json;
 
+/// What the handheld reads must fit the protocol (ADR 0099): the node refuses a response that
+/// does not, so a builder that drifts from it fails here first.
+fn fits<T: serde::de::DeserializeOwned>(value: &serde_json::Value) -> T {
+    serde_json::from_value(value.clone())
+        .unwrap_or_else(|e| panic!("does not fit the protocol: {e}: {value}"))
+}
+
 #[test]
 fn mutation_ids_survive_errors_and_conflicting_reuse_is_refused() {
     let db = Db::open_in_memory().unwrap();
@@ -55,6 +62,7 @@ fn empty_favorites_offer_catalog_selection_without_observing_the_whole_home() {
         db,
     );
     let result = adapter.read("home", "").unwrap();
+    let _: endora_protocol::ConsoleView = fits(&result);
     assert!(result["summary"].as_str().unwrap().contains("catalog"));
     assert!(result["items"].as_array().unwrap().is_empty());
 }
@@ -223,6 +231,7 @@ fn home_action_uses_fixed_route_reads_back_and_does_not_replay() {
     let request = json!({"kind":"home","action":"on","target":"light.example","confirmed":true,"request_id":"fixed-home-operation"});
     let first = adapter.act(&request).unwrap();
     mock.join().unwrap();
+    let _: endora_protocol::Operation = fits(&first);
     assert_eq!(first["observed"]["verified"], true);
     assert!(!first.to_string().contains("private-upstream-payload"));
     assert!(!first.to_string().contains("fictional-adapter-secret"));
@@ -241,6 +250,7 @@ fn media_request_uses_privately_chosen_user_and_retains_pending_approval() {
     );
     let result=adapter.act(&json!({"kind":"media","action":"movie","target":"123","confirmed":true,"request_id":"fixed-media-operation"})).unwrap();
     mock.join().unwrap();
+    let _: endora_protocol::Operation = fits(&result);
     assert_eq!(result["summary"], "Media request: pending approval");
     assert!(!result.to_string().contains("private-upstream-payload"));
 }
@@ -411,6 +421,7 @@ fn media_requests_show_titles_and_years_not_database_numbers() {
     );
     let result = adapter.read("requests", "").unwrap();
     mock.join().unwrap();
+    let _: endora_protocol::ConsoleView = fits(&result);
     let labels: Vec<_> = result["items"]
         .as_array()
         .unwrap()
@@ -433,6 +444,8 @@ fn media_search_labels_show_the_year_not_the_full_date() {
     );
     let result = adapter.read("media", "example").unwrap();
     mock.join().unwrap();
+    let view: endora_protocol::ConsoleView = fits(&result);
+    assert_eq!(view.items[0].media_type.as_deref(), Some("movie"));
     assert_eq!(result["items"][0]["label"], "Example Film (1999)");
     assert_eq!(
         result["items"][0]["detail"],
@@ -613,4 +626,30 @@ fn dashboard_services_carry_a_detail_only_when_one_was_read() {
     let out = project_dashboard_with(&homepage, None, None, &[], &details);
     assert_eq!(out["groups"][0]["services"][0]["detail"], "2 pending");
     assert!(out["groups"][0]["services"][1].get("detail").is_none());
+}
+
+#[test]
+fn the_home_screen_and_favorites_fit_the_protocol() {
+    // Homepage's groups with a running container and a firing alert, and two favorites.
+    let homepage = json!([{"name": "Media", "services": [{"name": "Example Server", "server": "local", "container": "example"}]}]);
+    let containers = json!([{"Names": ["/example"], "State": "running", "Status": "Up 2 hours", "Id": "0123456789abcdef"}]);
+    let dashboard = endora_capabilities::infrastructure::terminal::project_dashboard(
+        &homepage,
+        Some(&containers),
+        None,
+        &["Example alert".to_owned()],
+    );
+    let typed: endora_protocol::Dashboard = fits(&dashboard);
+    assert!(typed.groups.iter().any(|g| g.name == "Media"));
+    let states = json!([
+        {"entity_id": "light.example", "state": "on", "attributes": {"friendly_name": "Example lamp"}},
+        {"entity_id": "sensor.example", "state": "21", "attributes": {"friendly_name": "Example", "unit_of_measurement": "°C"}}
+    ]);
+    let home = project_home(
+        &states,
+        &["light.example".to_owned(), "sensor.example".to_owned()],
+    );
+    let typed: endora_protocol::ConsoleView = fits(&home);
+    assert_eq!(typed.items.len(), 2);
+    assert_eq!(typed.items[0].id.as_deref(), Some("light.example"));
 }

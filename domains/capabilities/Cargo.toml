@@ -18,3 +18,8 @@ tungstenite = { version = "0.30.0", default-features = false, features = ["hands
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+# The handheld's wire types, to prove the console's responses fit them (ADR 0099).
+endora-protocol = { path = "../../shared/protocol" }
+serde = { version = "1", features = ["derive"] }

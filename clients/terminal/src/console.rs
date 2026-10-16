@@ -6,6 +6,7 @@ use crossterm::{
     execute,
     terminal::{self, EnterAlternateScreen, LeaveAlternateScreen},
 };
+use endora_terminal::presentation::{display, items, line};
 use endora_terminal::{
     Result, bluetooth,
     client::Client,
@@ -409,41 +410,6 @@ fn local_time() -> String {
         .and_then(|o| String::from_utf8(o.stdout).ok())
         .map_or("--:--".into(), |t| t.trim().to_owned());
     *cache = Some((Instant::now(), text.clone()));
-    text
-}
-fn line(v: &Value) -> String {
-    clean(v.as_str().unwrap_or("")).chars().take(240).collect()
-}
-fn items(v: &Value) -> &[Value] {
-    v["items"].as_array().map(Vec::as_slice).unwrap_or(&[])
-}
-fn display(v: &Value, selected: usize) -> String {
-    let mut text = clean(v["summary"].as_str().unwrap_or(""))
-        .chars()
-        .take(32 * 1024)
-        .collect::<String>();
-    text.push('\n');
-    for (index, item) in items(v).iter().enumerate() {
-        text.push_str(&format!(
-            "{} {}{}  {}\n",
-            if index == selected { ">" } else { " " },
-            if item["favorite"] == true { "* " } else { "" },
-            line(&item["label"]),
-            line(&item["detail"])
-        ));
-    }
-    if let Some(services) = v["services"].as_array() {
-        for service in services {
-            text.push_str(&format!(
-                "{}: {}{}\n",
-                line(&service["name"]),
-                line(&service["state"]),
-                service["total"]
-                    .as_u64()
-                    .map_or(String::new(), |n| format!(" ({n})"))
-            ));
-        }
-    }
     text
 }
 fn history(v: &Value) -> String {
@@ -938,22 +904,18 @@ pub async fn run() -> Result<()> {
                         next_read = Instant::now();
                     }
                 }
-                Update::Token(g, v) if g == epoch => match v["type"].as_str() {
-                    Some("token") => {
-                        chat.push_str(&clean(v["text"].as_str().unwrap_or("")));
-                        stream_seen = true;
-                        bounded(&mut chat);
+                Update::Token(g, v) if g == epoch => {
+                    let event =
+                        serde_json::from_value(v).unwrap_or(endora_protocol::StreamEvent::Unknown);
+                    if let Some(now) = endora_terminal::presentation::on_stream(
+                        &event,
+                        &mut chat,
+                        &mut stream_seen,
+                    ) {
+                        status = now;
                     }
-                    Some("done") => {
-                        if !stream_seen {
-                            chat.push_str(&clean(v["reply"]["text"].as_str().unwrap_or("")));
-                        }
-                        chat.push_str(&endora_terminal::presentation::actions(&v["actions"]));
-                        bounded(&mut chat);
-                    }
-                    Some("progress") => status = "Endora is working".into(),
-                    _ => {}
-                },
+                    bounded(&mut chat);
+                }
                 Update::Done(g, result) if g == epoch => {
                     busy = false;
                     status = result.err().unwrap_or("Reply complete".into());

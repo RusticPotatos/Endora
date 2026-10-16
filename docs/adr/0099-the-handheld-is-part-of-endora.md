@@ -43,3 +43,11 @@ console could not (media requests, container controls, jobs, Spotify), and had n
 - The terminal's build output stays in `clients/terminal/target` for packaging.
 - Endora's personal-data check now covers the terminal's files, and learned that a systemd unit
   instance (`getty@tty1.service`) is not a mailbox.
+- **The protocol crate is `shared/protocol` (`endora-protocol`).** It holds the handheld's page
+  (`ConsoleView`), home screen (`Dashboard`), action outcome (`Operation`) and chat stream event
+  (`StreamEvent`), and one sample of each. The node passes each response through its type and
+  refuses one that does not fit; the console's tests prove its builders fit; the terminal reads
+  stream events as the type and its tests render every sample. Renaming a field fails both
+  sides' tests. Writing it down found a mismatch at once: the terminal waited for a `progress`
+  event the node never sends and ignored the `step` and `error` events it does; it now shows
+  both.
