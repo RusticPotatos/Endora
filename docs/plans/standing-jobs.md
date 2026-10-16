@@ -125,7 +125,7 @@ run anything else.
    it cannot install packages or fetch anything, by design).
 4. **Network:** does "home network" mean the devices Home Assistant already sees, or router
    traffic and bandwidth? The second needs a source that is not yet connected.
-5. **Hours:** set `ENDORA_UTC_OFFSET_MINUTES` so patterns are in the owner's time.
+5. **Hours:** set `ENDORA_TIME_ZONE` so patterns are in the owner's time, across clock changes.
 
 ## What can be built before any of those
 

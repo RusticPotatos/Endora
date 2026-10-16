@@ -480,6 +480,9 @@ pub fn spawn_heartbeat(state: AppState) {
             // Take the turn lock so a proactive brief/check-in never interleaves
             // with a chat reply; held across the blocking work below.
             let own_work = state.own_work;
+            let offset_now = state
+                .time_zone
+                .offset_minutes_at(state.clock.now().unix_millis());
             let mail_lines = mail_brief_lines(&state);
             let _turn = state.turn_lock.clone().lock_owned().await;
             let posted = tokio::task::spawn_blocking(move || {
@@ -519,6 +522,20 @@ pub fn spawn_heartbeat(state: AppState) {
                     for item in activity {
                         record_event(events.as_ref(), clock.as_ref(), item);
                     }
+                }
+                // A clock change moves the brief and the nightly loop with it, before either
+                // is checked for being due.
+                if usecases::keep_hours_on_the_clock(
+                    schedules.as_ref(),
+                    schedules.as_ref(),
+                    config.as_ref(),
+                    offset_now,
+                )? {
+                    record_event(
+                        events.as_ref(),
+                        clock.as_ref(),
+                        "The clocks changed: kept the brief and the nightly loop at the same hour",
+                    );
                 }
                 // A daily brief, if one is due (reversible skills only).
                 let briefed = usecases::run_due_brief(
@@ -826,7 +843,9 @@ pub(super) fn notice_rhythms_once(state: &AppState) -> bool {
     ) else {
         return false;
     };
-    let rhythms = endora_capabilities::find_rhythms(&transitions, state.utc_offset_minutes);
+    let zone = state.time_zone;
+    let rhythms =
+        endora_capabilities::find_rhythms(&transitions, |at_ms| zone.offset_minutes_at(at_ms));
     if rhythms.is_empty() {
         return false;
     }

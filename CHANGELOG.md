@@ -9,6 +9,11 @@ tagged release.
 
 ### Added
 
+- **Your time zone, by name** (`ENDORA_TIME_ZONE`, e.g. `America/New_York`). Daily patterns
+  are found on your clock either side of a clock change, and the daily brief and nightly loop,
+  stored as UTC hours, are moved when the clocks change so they keep their local hour. The fixed
+  `ENDORA_UTC_OFFSET_MINUTES` remains as a fallback.
+
 - **Endora reads your mail, and tells you what matters** ([ADR 0097](docs/adr/0097-it-reads-the-mail.md)).
   With `ENDORA_OWN_WORK=1` and `ENDORA_MAIL_DIR` pointing at the read-only copy the ansible-nas
   `mail_mirror` role keeps, it reads one message at a time in quiet time, newest first, back
@@ -82,7 +87,7 @@ tagged release.
   activity trail when something happens at about the same time on most days: "the front
   door goes on around 07:30, on 11 of the last 14 days". It is arithmetic with no model,
   it says only what it counted, and it speaks again only when the picture changes (and not
-  more than every six hours). Set `ENDORA_UTC_OFFSET_MINUTES` for your hours. This is the
+  more than every six hours). Set `ENDORA_TIME_ZONE` for your hours. This is the
   first standing job: a review that keeps running, not a goal that ends. Reading the mail
   into buckets and a safe terminal sandbox are proposed in
   [the standing-jobs plan](docs/plans/standing-jobs.md) and wait on your decisions.

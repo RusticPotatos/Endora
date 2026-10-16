@@ -41,8 +41,11 @@ Rules that keep it honest, each a unit test:
   at every hour.
 - A day the log has nothing for does not count against a routine.
 - Nights are counted, not calendar dates, so a routine across midnight is one routine.
-- The days are the person's: `ENDORA_UTC_OFFSET_MINUTES`, because the node stores instants
-  and does not know where the person is. Unset, it is UTC, and the times it says are UTC.
+- The days are the person's: `ENDORA_TIME_ZONE` (a zone name, whose offset follows its
+  clock changes, so a routine at 07:30 stays one routine across them), or the fixed
+  `ENDORA_UTC_OFFSET_MINUTES`, because the node stores instants and does not know where the
+  person is. Unset, it is UTC, and the times it says are UTC. (As built first, only the fixed
+  offset existed: an hour out from the first clock change on.)
 - Only the strongest dozen are kept, strongest first.
 
 **It says something when the picture changes, at most every six hours.** The line goes to

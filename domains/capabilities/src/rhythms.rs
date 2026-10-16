@@ -73,12 +73,16 @@ impl Rhythm {
 
 /// The routines in `transitions`, strongest first.
 ///
-/// `utc_offset_minutes` is the person's distance from UTC (negative to the west): a pattern
-/// at 07:30 is only a pattern at 07:30 if the days are theirs. The server stores instants and
-/// does not know where the person is.
+/// `offset_minutes_at` gives the person's distance from UTC at a moment (negative to the
+/// west): a pattern at 07:30 is only a pattern at 07:30 if the days are theirs, including
+/// either side of a clock change. The server stores instants and does not know where the
+/// person is.
 #[must_use]
-pub fn find_rhythms(transitions: &[Transition], utc_offset_minutes: i64) -> Vec<Rhythm> {
-    let local = |at_ms: i64| at_ms + utc_offset_minutes * MINUTE_MS;
+pub fn find_rhythms(
+    transitions: &[Transition],
+    offset_minutes_at: impl Fn(i64) -> i64,
+) -> Vec<Rhythm> {
+    let local = |at_ms: i64| at_ms + offset_minutes_at(at_ms) * MINUTE_MS;
     let day_of = |at_ms: i64| local(at_ms).div_euclid(DAY_MS);
 
     // The days the log has anything on, whichever thing it was. A day the log was off is not

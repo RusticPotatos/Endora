@@ -15,6 +15,7 @@ pub mod ids;
 pub mod model_layer;
 pub mod model_watch;
 pub mod sqlite;
+pub mod time_zone;
 
 pub use butler::{
     ConfigurableButler, LlmButler, MixtureButler, ScriptedButler, ask_deep_model,
@@ -34,3 +35,4 @@ pub use endora_capabilities::{
 };
 pub use ids::RandomIdSource;
 pub use sqlite::SqliteStore;
+pub use time_zone::TimeZone;

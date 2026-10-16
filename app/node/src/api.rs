@@ -104,10 +104,10 @@ pub struct AppState {
     /// Off unless the owner turned it on. When on, the nightly loop leaves the stumpers and
     /// the long-running intention to that lane.
     pub own_work: bool,
-    /// The person's distance from UTC in minutes (`ENDORA_UTC_OFFSET_MINUTES`), for patterns
-    /// that depend on the time of day. The node stores instants and does not otherwise know
-    /// where the person is. Zero unless set.
-    pub utc_offset_minutes: i64,
+    /// The person's time zone (`ENDORA_TIME_ZONE`, or the fixed `ENDORA_UTC_OFFSET_MINUTES`),
+    /// for patterns that depend on the time of day and for keeping daily hours on their clock.
+    /// The node stores instants and does not otherwise know where the person is. UTC unless set.
+    pub time_zone: endora_infrastructure::TimeZone,
     /// What Endora has made of the mail (ADR 0097): an index of every message and a digest of
     /// those it has read. Always present; empty until there is mail.
     pub mail_store: Arc<endora_mail::MailStore>,
@@ -261,7 +261,7 @@ impl AppState {
             token,
             started_ms,
             own_work: false,
-            utc_offset_minutes: 0,
+            time_zone: endora_infrastructure::TimeZone::fixed(0),
             mail_store,
             mail_copy: None,
             mail_reader: None,
@@ -281,10 +281,10 @@ impl AppState {
         self
     }
 
-    /// Sets the person's distance from UTC, in minutes (negative to the west).
+    /// Sets the person's time zone.
     #[must_use]
-    pub fn with_utc_offset_minutes(mut self, minutes: i64) -> Self {
-        self.utc_offset_minutes = minutes;
+    pub fn with_time_zone(mut self, time_zone: endora_infrastructure::TimeZone) -> Self {
+        self.time_zone = time_zone;
         self
     }
 

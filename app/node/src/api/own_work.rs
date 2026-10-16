@@ -588,7 +588,7 @@ fn a_changed_picture_is_said_once_enough_time_has_passed() {
 #[test]
 fn the_persons_own_hours_are_used() {
     // 07:30 UTC is 02:30 five hours west of it.
-    let state = state().with_utc_offset_minutes(-300);
+    let state = state().with_time_zone(endora_infrastructure::TimeZone::fixed(-300));
     a_house_with_a_routine(&state);
     assert!(super::notice_rhythms_once(&state));
     assert!(

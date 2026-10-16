@@ -180,8 +180,13 @@ shows what matters in the trail, your brief and the console's **Mail** screen (A
 With the switch on it also reads the house's own log of what changed, and writes a line to
 the activity trail when something happens at about the same time on most days ("the front
 door goes on around 07:30, on 11 of the last 14 days"). That needs no model and sends
-nothing anywhere. Set **`ENDORA_UTC_OFFSET_MINUTES`** (for example `-300` for US Eastern
-standard time, `60` for central Europe in winter) so the times are yours; unset, they are UTC.
+nothing anywhere. Set **`ENDORA_TIME_ZONE`** to your zone by name (for example
+`America/New_York` or `Europe/Berlin`) so the times are yours, either side of a clock change.
+The same setting keeps the daily brief and the nightly loop at their local hour when the clocks
+change; they are stored as UTC hours, which would otherwise arrive an hour early or late for
+half the year. A name the node does not know stops it at start rather than becoming UTC.
+`ENDORA_UTC_OFFSET_MINUTES` (for example `-300`) is a fixed fallback; with neither, times are
+UTC.
 See [ADR 0094](adr/0094-work-it-finds-for-itself.md),
 [ADR 0095](adr/0095-more-sources-for-work-it-finds.md) and
 [ADR 0096](adr/0096-patterns-it-notices.md).

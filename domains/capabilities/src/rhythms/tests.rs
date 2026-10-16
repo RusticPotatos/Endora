@@ -32,7 +32,7 @@ fn a_fortnight(door: impl Fn(i64) -> Option<i64>) -> Vec<Transition> {
 #[test]
 fn something_that_happens_at_the_same_time_every_day_is_a_routine() {
     let log = a_fortnight(|day| Some(at(day, 7, 30 + day % 5)));
-    let door = find_rhythms(&log, 0)
+    let door = find_rhythms(&log, |_| 0)
         .into_iter()
         .find(|r| r.key.ends_with("front_door"))
         .expect("a door that opens every morning");
@@ -50,7 +50,7 @@ fn something_that_happens_at_the_same_time_every_day_is_a_routine() {
 fn something_with_no_usual_time_is_not() {
     let log = a_fortnight(|day| Some(at(day, (day * 5) % 24, 0)));
     assert!(
-        find_rhythms(&log, 0)
+        find_rhythms(&log, |_| 0)
             .iter()
             .all(|r| !r.key.ends_with("front_door"))
     );
@@ -60,7 +60,7 @@ fn something_with_no_usual_time_is_not() {
 fn a_weekday_routine_clears_the_bar() {
     // Five days in seven is 71% of the log's days.
     let log = a_fortnight(|day| (day % 7 < 5).then(|| at(day, 8, 10)));
-    let door = find_rhythms(&log, 0)
+    let door = find_rhythms(&log, |_| 0)
         .into_iter()
         .find(|r| r.key.ends_with("front_door"))
         .expect("weekdays only");
@@ -71,7 +71,7 @@ fn a_weekday_routine_clears_the_bar() {
 fn a_thing_that_happened_a_few_times_is_a_coincidence_not_a_routine() {
     let log = a_fortnight(|day| (day < 4).then(|| at(day, 7, 30)));
     assert!(
-        find_rhythms(&log, 0)
+        find_rhythms(&log, |_| 0)
             .iter()
             .all(|r| !r.key.ends_with("front_door"))
     );
@@ -87,7 +87,7 @@ fn too_little_log_says_nothing_at_all() {
             ]
         })
         .collect();
-    assert!(find_rhythms(&log, 0).is_empty());
+    assert!(find_rhythms(&log, |_| 0).is_empty());
 }
 
 #[test]
@@ -100,7 +100,7 @@ fn a_thing_that_flaps_all_day_has_no_time_of_day() {
         }
     }
     assert!(
-        find_rhythms(&log, 0)
+        find_rhythms(&log, |_| 0)
             .iter()
             .all(|r| !r.key.ends_with("motion"))
     );
@@ -128,7 +128,7 @@ fn the_sky_and_the_clock_are_not_the_houses_routine() {
             at(day, 0, 1),
         ));
     }
-    let found = find_rhythms(&log, 0);
+    let found = find_rhythms(&log, |_| 0);
     assert!(
         found.iter().any(|r| r.key.ends_with("front_door")),
         "{found:?}"
@@ -149,7 +149,7 @@ fn readings_and_trouble_are_not_routines() {
         log.push(moved("home::sensor.garage", "unavailable", at(day, 6, 0)));
         log.push(moved("home::sensor.hub", "unknown", at(day, 6, 0)));
     }
-    let found = find_rhythms(&log, 0);
+    let found = find_rhythms(&log, |_| 0);
     assert!(
         found.iter().all(|r| r.key.ends_with("heartbeat")),
         "{found:?}"
@@ -161,13 +161,27 @@ fn the_days_are_the_persons_not_greenwichs() {
     // 12:30 UTC is 07:30 five hours west of it.
     let log = a_fortnight(|day| Some(at(day, 12, 30)));
     let door = |offset| {
-        find_rhythms(&log, offset)
+        find_rhythms(&log, |_| offset)
             .into_iter()
             .find(|r| r.key.ends_with("front_door"))
             .map(|r| r.minute)
     };
     assert_eq!(door(-300), Some(7 * 60 + 30));
     assert_eq!(door(0), Some(12 * 60 + 30));
+}
+
+#[test]
+fn a_routine_is_kept_on_the_clock_across_a_clock_change() {
+    // 07:30 every day by the person's clock, which goes back an hour after day 6: 11:30 UTC
+    // while they are four hours west of it, 12:30 UTC once they are five.
+    let change = 7 * DAY;
+    let offset = |at_ms: i64| if at_ms < change { -240 } else { -300 };
+    let log = a_fortnight(|day| Some(at(day, 11, 30) + if day >= 7 { 60 * MINUTE } else { 0 }));
+    let door = find_rhythms(&log, offset)
+        .into_iter()
+        .find(|r| r.key.ends_with("front_door"))
+        .expect("one routine, not two half ones");
+    assert_eq!((door.minute, door.days_seen), (7 * 60 + 30, 14));
 }
 
 #[test]
@@ -180,7 +194,7 @@ fn a_routine_that_straddles_midnight_is_one_routine() {
             at(day + 1, 0, 10)
         })
     });
-    let door = find_rhythms(&log, 0)
+    let door = find_rhythms(&log, |_| 0)
         .into_iter()
         .find(|r| r.key.ends_with("front_door"))
         .expect("one routine across midnight");
@@ -206,7 +220,7 @@ fn only_the_first_time_each_day_counts() {
             ));
         }
     }
-    let door = find_rhythms(&busier, 0)
+    let door = find_rhythms(&busier, |_| 0)
         .into_iter()
         .find(|r| r.key.ends_with("front_door"))
         .unwrap();
@@ -224,7 +238,7 @@ fn a_day_the_log_has_nothing_for_does_not_count_against_a_routine() {
             at(day, 7, 30),
         ));
     }
-    let door = find_rhythms(&log, 0).into_iter().next().unwrap();
+    let door = find_rhythms(&log, |_| 0).into_iter().next().unwrap();
     assert_eq!((door.days_seen, door.days_observed), (10, 10));
 }
 
@@ -236,7 +250,7 @@ fn the_strongest_comes_first_and_only_a_dozen_are_kept() {
             log.push(moved(&format!("home::light.l{n}"), "on", at(day, 18, 0)));
         }
     }
-    let found = find_rhythms(&log, 0);
+    let found = find_rhythms(&log, |_| 0);
     assert_eq!(found.len(), MOST_RHYTHMS);
     assert!(found.windows(2).all(|pair| {
         let share = |r: &Rhythm| r.days_seen as f64 / r.days_observed as f64;
@@ -264,7 +278,7 @@ fn five_times_in_a_fortnight_at_the_same_hour_is_still_not_most_days() {
     // Five days clears the minimum, and 36% of the log does not clear the bar.
     let log = a_fortnight(|day| (day < 5).then(|| at(day, 7, 30)));
     assert!(
-        find_rhythms(&log, 0)
+        find_rhythms(&log, |_| 0)
             .iter()
             .all(|r| !r.key.ends_with("front_door"))
     );
@@ -288,7 +302,7 @@ fn most_of_a_short_log_is_still_not_enough_days() {
         })
         .collect();
     assert!(
-        find_rhythms(&log, 0)
+        find_rhythms(&log, |_| 0)
             .iter()
             .all(|r| !r.key.ends_with("front_door"))
     );
@@ -300,7 +314,7 @@ fn a_routine_on_every_day_comes_before_one_on_most() {
     for day in (0..14).filter(|d| d % 3 != 0) {
         log.push(moved("home::light.porch", "on", at(day, 19, 0)));
     }
-    let found = find_rhythms(&log, 0);
+    let found = find_rhythms(&log, |_| 0);
     let door = found
         .iter()
         .position(|r| r.key.ends_with("front_door"))
@@ -324,7 +338,7 @@ fn a_state_that_is_a_date_or_a_time_is_a_clock_whatever_it_is_called() {
             at(day, 7, 12),
         ));
     }
-    let found = find_rhythms(&log, 0);
+    let found = find_rhythms(&log, |_| 0);
     assert!(
         found.iter().all(|r| r.key.ends_with("heartbeat")),
         "{found:?}"
