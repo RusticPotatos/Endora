@@ -84,6 +84,15 @@ a person the owner writes to often.
   not asked at all when no mail mentions a date. If any one calendar cannot be read, none is
   used: a partly read calendar would let a bill be told there is no appointment around it
   when there is.
+- **Earlier bills from the same sender.** A bill from a biller seen before (same registered
+  domain, nothing doubtful about either) says so: how many times, the last date and amount,
+  and whether this one is the same. It needs no appointment to place it, so it is not checked
+  against the calendar; the appointment check is for a first bill from someone, which is the
+  surprise worth framing. A bill for the same amount as the last is routine: it stays in Money
+  but is not worth a look. Live, every bill had carried "no appointment around then", including
+  a monthly water bill and streaming renewals. Mail is read newest first, so a bill can be read
+  before the ones it follows; the screen and the brief compare each bill with the others when
+  they show it, so the order of reading does not change the answer.
 - **Coming up.** A date from mail is shown only when someone the owner writes to said it, two
   or more messages say it, or an earlier calendar entry shares a word with it; one already on
   the calendar that day is not repeated, and a message that may not be genuine contributes

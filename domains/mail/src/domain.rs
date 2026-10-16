@@ -6,11 +6,13 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+mod bills;
 pub mod calendar;
 mod caution;
 mod sorting;
 mod text;
 
+pub use bills::{BillHistory, EarlierBill, bill_history};
 pub use calendar::{
     BILL_LOOKAHEAD_DAYS, BILL_LOOKBACK_DAYS, Mention, Upcoming, appointment_for, coming_up,
     sender_words,

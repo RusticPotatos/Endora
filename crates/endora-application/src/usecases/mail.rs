@@ -16,6 +16,9 @@ pub const READ_BACK_MS: i64 = 90 * 24 * 60 * 60 * 1000;
 /// mixes two sets of rules. Version 2: one-time codes are told apart from account changes.
 pub const READER_VERSION: &str = "2";
 
+/// What a bill from a new biller says when the calendar has nothing around it.
+const NO_APPOINTMENT: &str = "no appointment with them on your calendar around then";
+
 /// Most messages indexed in one pass, so a first look at a large copy is spread out.
 pub const MOST_INDEXED_PER_PASS: usize = 2000;
 
@@ -163,7 +166,27 @@ pub fn read_one(
     // read; an unreadable calendar says nothing either way.
     let mut evidence: Vec<String> = found.iter().map(Caution::said).collect();
     let mut appointment = None;
-    if sorted == Bucket::Money && flags.money_due {
+    // A biller from before needs no appointment to place it, and a bill for what they asked
+    // last time is routine: still a bill, not worth a look. Never for one that may be forged.
+    let history = if sorted == Bucket::Money
+        && flags.money_due
+        && !reasons.contains(&Reason::MayNotBeGenuine)
+    {
+        endora_mail::bill_history(
+            message.at_ms,
+            flags.amount.as_deref(),
+            &earlier_bills(
+                &message.from_address,
+                &store.digests_since(message.at_ms - READ_BACK_MS)?,
+            ),
+        )
+    } else {
+        None
+    };
+    if history.as_ref().is_some_and(|h| h.same_amount) {
+        reasons.retain(|r| *r != Reason::MoneyDue);
+    }
+    if sorted == Bucket::Money && flags.money_due && history.is_none() {
         let bill_day = message.at_ms.div_euclid(DAY_MS);
         let window = (
             (bill_day - endora_mail::domain::BILL_LOOKBACK_DAYS) * DAY_MS,
@@ -177,7 +200,7 @@ pub fn read_one(
                 &entries,
             );
             if appointment.is_none() {
-                evidence.push("no appointment with them on your calendar around then".to_owned());
+                evidence.push(NO_APPOINTMENT.to_owned());
             }
         }
     }
@@ -206,6 +229,64 @@ pub fn sender(d: &Digest) -> String {
     } else {
         d.from_name.clone()
     }
+}
+
+/// The bills the same sender sent, among `all`, leaving out any that may have been forged.
+fn earlier_bills(from_address: &str, all: &[Digest]) -> Vec<endora_mail::EarlierBill> {
+    let theirs = endora_mail::registered_domain(&endora_mail::domain_of(from_address));
+    all.iter()
+        .filter(|d| d.bucket == Bucket::Money && d.flags.money_due)
+        .filter(|d| !d.reasons.contains(&Reason::MayNotBeGenuine))
+        .filter(|d| {
+            endora_mail::registered_domain(&endora_mail::domain_of(&d.from_address)) == theirs
+        })
+        .map(|d| endora_mail::EarlierBill {
+            at_ms: d.at_ms,
+            amount: d.flags.amount.clone(),
+        })
+        .collect()
+}
+
+/// A digest as it is shown, among `all` the others: a bill is told against the sender's
+/// earlier bills. Mail is read newest first, so a bill can be read before the ones it follows;
+/// showing it this way gives the same answer whichever was read first.
+#[must_use]
+pub fn as_shown(d: &Digest, all: &[Digest]) -> Digest {
+    if d.bucket != Bucket::Money
+        || !d.flags.money_due
+        || d.reasons.contains(&Reason::MayNotBeGenuine)
+    {
+        return d.clone();
+    }
+    let Some(history) = endora_mail::bill_history(
+        d.at_ms,
+        d.flags.amount.as_deref(),
+        &earlier_bills(&d.from_address, all),
+    ) else {
+        return d.clone();
+    };
+    let mut shown = d.clone();
+    if history.same_amount {
+        shown.reasons.retain(|r| *r != Reason::MoneyDue);
+    }
+    shown.cautions.retain(|c| c != NO_APPOINTMENT);
+    let times = match history.times {
+        1 => "once".to_owned(),
+        n => format!("{n} times"),
+    };
+    let day = ymd(history.last_at_ms);
+    shown.cautions.push(match &history.last_amount {
+        Some(amount) => format!(
+            "billed by them {times} before; the last, on {day}, was {amount}{}",
+            if history.same_amount {
+                ", the same"
+            } else {
+                ""
+            }
+        ),
+        None => format!("billed by them {times} before; the last on {day}"),
+    });
+    shown
 }
 
 /// One line for something that matters: who, what, and why.
@@ -302,7 +383,12 @@ pub fn mail_for_the_brief(
 ) -> Result<Vec<String>, AppError> {
     const MOST_LINES: usize = 6;
     let now = clock.now().unix_millis();
-    let day = store.digests_since(now - DAY_MS)?;
+    let all = store.digests_since(now - READ_BACK_MS)?;
+    let day: Vec<Digest> = all
+        .iter()
+        .filter(|d| d.at_ms >= now - DAY_MS)
+        .map(|d| as_shown(d, &all))
+        .collect();
     if day.is_empty() {
         return Ok(Vec::new());
     }

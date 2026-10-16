@@ -815,3 +815,58 @@ fn a_one_time_code_is_not_important_and_an_unexpected_sign_in_is() {
     .unwrap();
     assert!(f.one_time_code);
 }
+
+const D: i64 = 24 * 60 * 60 * 1000;
+
+fn earlier(at_ms: i64, amount: Option<&str>) -> EarlierBill {
+    EarlierBill {
+        at_ms,
+        amount: amount.map(str::to_owned),
+    }
+}
+
+#[test]
+fn a_bill_for_the_same_amount_as_the_last_one_from_them_is_routine() {
+    let before = [
+        earlier(10 * D, Some("70.00")),
+        earlier(40 * D, Some("75.27")),
+        // Later than the bill itself: not history.
+        earlier(80 * D, Some("75.27")),
+    ];
+    let h = bill_history(70 * D, Some("75.27"), &before).unwrap();
+    assert_eq!(
+        (
+            h.times,
+            h.last_at_ms,
+            h.last_amount.as_deref(),
+            h.same_amount
+        ),
+        (2, 40 * D, Some("75.27"), true)
+    );
+    // Written differently, the same money.
+    assert!(
+        bill_history(70 * D, Some("75.270"), &before)
+            .unwrap()
+            .same_amount
+    );
+    assert!(
+        bill_history(50 * D, Some("20"), &[earlier(D, Some("20.00"))])
+            .unwrap()
+            .same_amount
+    );
+}
+
+#[test]
+fn a_different_or_unknown_amount_is_history_but_not_routine_and_a_first_bill_has_none() {
+    let before = [earlier(40 * D, Some("75.27"))];
+    let more = bill_history(70 * D, Some("90.00"), &before).unwrap();
+    assert!(!more.same_amount && more.times == 1);
+    assert!(!bill_history(70 * D, None, &before).unwrap().same_amount);
+    assert!(
+        !bill_history(70 * D, Some("75.27"), &[earlier(40 * D, None)])
+            .unwrap()
+            .same_amount
+    );
+    assert!(bill_history(70 * D, Some("75.27"), &[]).is_none());
+    assert!(bill_history(30 * D, Some("75.27"), &before).is_none());
+}

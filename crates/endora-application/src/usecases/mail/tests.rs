@@ -755,3 +755,177 @@ fn with_no_dates_in_the_mail_the_calendar_is_not_read() {
     assert!(upcoming.is_empty() && held == 0);
     assert_eq!(calendar.reads.get(), 0);
 }
+
+const OTHER_REPLY: &str = r#"{"bucket":"other","sentence":"Something else.","dates":[]}"#;
+
+fn dental_bill(f: &Fixture, name: &str, at_ms: i64) {
+    f.put(
+        name,
+        &email(
+            "Example Dental <billing@example.net>",
+            "john@example.com",
+            at_ms,
+            &format!("<{name}@example.net>"),
+            VOUCHED,
+            "pay",
+        ),
+    );
+}
+
+#[test]
+fn a_bill_like_the_last_one_from_them_is_routine_and_not_checked_against_the_calendar() {
+    let f = Fixture::new("routine-bill").with_history();
+    dental_bill(&f, "september", NOW - 30 * DAY);
+    index_new_mail(&f.copy, &f.store).unwrap();
+    let reader = Reader::says(OTHER_REPLY).but("pay", BILL_REPLY);
+    while read_one(&f.copy, &f.store, &reader, None, &Clock(NOW))
+        .unwrap()
+        .is_some()
+    {}
+    dental_bill(&f, "october", NOW - DAY);
+    index_new_mail(&f.copy, &f.store).unwrap();
+    let calendar = Counted::new();
+    let d = read_one(&f.copy, &f.store, &reader, Some(&calendar), &Clock(NOW))
+        .unwrap()
+        .unwrap();
+    assert_eq!(d.bucket, Bucket::Money, "still a bill");
+    assert!(!d.reasons.contains(&Reason::MoneyDue), "{:?}", d.reasons);
+    assert_eq!(
+        calendar.reads.get(),
+        0,
+        "a biller from before needs no appointment"
+    );
+    // The first bill from them is worth a look.
+    let first = f.store.digests_since(NOW - 40 * DAY).unwrap();
+    let september = first.iter().find(|x| x.at_ms == NOW - 30 * DAY).unwrap();
+    assert!(september.reasons.contains(&Reason::MoneyDue));
+}
+
+#[test]
+fn read_newest_first_a_bill_is_still_shown_against_the_bills_before_it() {
+    let f = Fixture::new("backlog-bill").with_history();
+    dental_bill(&f, "september", NOW - 30 * DAY);
+    dental_bill(&f, "october", NOW - DAY);
+    index_new_mail(&f.copy, &f.store).unwrap();
+    let reader = Reader::says(OTHER_REPLY).but("pay", BILL_REPLY);
+    let haircut = Cal(vec![("2026-10-02".to_owned(), "Haircut".to_owned())]);
+    while read_one(&f.copy, &f.store, &reader, Some(&haircut), &Clock(NOW))
+        .unwrap()
+        .is_some()
+    {}
+    let all = f.store.digests_since(NOW - READ_BACK_MS).unwrap();
+    let october = all.iter().find(|x| x.at_ms == NOW - DAY).unwrap();
+    // Read before September was, so it was stored as a first bill.
+    assert!(october.reasons.contains(&Reason::MoneyDue));
+    let shown = as_shown(october, &all);
+    assert!(
+        !shown.reasons.contains(&Reason::MoneyDue),
+        "{:?}",
+        shown.reasons
+    );
+    assert!(
+        !shown.cautions.iter().any(|c| c.contains("no appointment")),
+        "{:?}",
+        shown.cautions
+    );
+    assert!(
+        shown
+            .cautions
+            .iter()
+            .any(|c| c
+                == "billed by them once before; the last, on 2026-09-15, was 180.00, the same"),
+        "{:?}",
+        shown.cautions
+    );
+    // The first one is shown as it was stored.
+    let september = all.iter().find(|x| x.at_ms == NOW - 30 * DAY).unwrap();
+    assert_eq!(&as_shown(september, &all), september);
+    // And the brief agrees with the screen.
+    let lines = mail_for_the_brief(&f.store, None, &Clock(NOW)).unwrap();
+    assert_eq!(
+        lines.first().map(String::as_str),
+        Some("Mail: nothing that needs you since yesterday."),
+        "{lines:?}"
+    );
+}
+
+#[test]
+fn a_bill_for_more_than_last_time_is_still_worth_a_look_and_says_so() {
+    let f = Fixture::new("dearer-bill").with_history();
+    dental_bill(&f, "september", NOW - 30 * DAY);
+    index_new_mail(&f.copy, &f.store).unwrap();
+    let cheaper =
+        r#"{"bucket":"money","sentence":"A dental bill.","money_due":true,"amount":90,"dates":[]}"#;
+    let reader = Reader::says(OTHER_REPLY).but("pay", cheaper);
+    while read_one(&f.copy, &f.store, &reader, None, &Clock(NOW))
+        .unwrap()
+        .is_some()
+    {}
+    dental_bill(&f, "october", NOW - DAY);
+    index_new_mail(&f.copy, &f.store).unwrap();
+    let reader = Reader::says(OTHER_REPLY).but("pay", BILL_REPLY);
+    let d = read_one(&f.copy, &f.store, &reader, None, &Clock(NOW))
+        .unwrap()
+        .unwrap();
+    assert!(d.reasons.contains(&Reason::MoneyDue));
+    let all = f.store.digests_since(NOW - READ_BACK_MS).unwrap();
+    let shown = as_shown(&d, &all);
+    assert!(shown.reasons.contains(&Reason::MoneyDue));
+    assert!(
+        shown
+            .cautions
+            .iter()
+            .any(|c| c == "billed by them once before; the last, on 2026-09-15, was 90.00"),
+        "{:?}",
+        shown.cautions
+    );
+}
+
+#[test]
+fn a_bill_that_may_be_forged_is_never_routine_and_never_history_for_another() {
+    const FAILED: &str = "Authentication-Results: mx.example.com; spf=fail smtp.mailfrom=example.net; dkim=fail header.i=@example.net; dmarc=fail header.from=example.net\r\n";
+    let forged = |f: &Fixture, name: &str, at_ms: i64| {
+        f.put(
+            name,
+            &email(
+                "Example Dental <billing@example.net>",
+                "john@example.com",
+                at_ms,
+                &format!("<{name}@example.net>"),
+                FAILED,
+                "pay",
+            ),
+        );
+    };
+    let reader = Reader::says(OTHER_REPLY).but("pay", BILL_REPLY);
+    let read_all = |f: &Fixture| {
+        while read_one(&f.copy, &f.store, &reader, None, &Clock(NOW))
+            .unwrap()
+            .is_some()
+        {}
+    };
+
+    // A real bill, then a forgery of it for the same amount.
+    let f = Fixture::new("forged-after").with_history();
+    dental_bill(&f, "september", NOW - 30 * DAY);
+    index_new_mail(&f.copy, &f.store).unwrap();
+    read_all(&f);
+    forged(&f, "october", NOW - DAY);
+    index_new_mail(&f.copy, &f.store).unwrap();
+    read_all(&f);
+    let all = f.store.digests_since(NOW - READ_BACK_MS).unwrap();
+    let october = all.iter().find(|d| d.at_ms == NOW - DAY).unwrap();
+    assert!(october.reasons.contains(&Reason::MayNotBeGenuine));
+    assert!(october.reasons.contains(&Reason::MoneyDue));
+    assert_eq!(&as_shown(october, &all), october);
+
+    // A forgery first does not make the real bill after it routine.
+    let g = Fixture::new("forged-before").with_history();
+    forged(&g, "september", NOW - 30 * DAY);
+    dental_bill(&g, "october", NOW - DAY);
+    index_new_mail(&g.copy, &g.store).unwrap();
+    read_all(&g);
+    let all = g.store.digests_since(NOW - READ_BACK_MS).unwrap();
+    let october = all.iter().find(|d| d.at_ms == NOW - DAY).unwrap();
+    assert!(as_shown(october, &all).reasons.contains(&Reason::MoneyDue));
+}
