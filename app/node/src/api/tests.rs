@@ -1252,7 +1252,7 @@ async fn a_checking_token_reads_but_cannot_touch_anything() {
     };
 
     // Reads the suite depends on.
-    for path in ["/v1/understanding", "/v1/notions", "/v1/reliability"] {
+    for path in ["/v1/understanding", "/v1/reliability"] {
         let res = app.clone().oneshot(with(path, "GET")).await.unwrap();
         assert_eq!(res.status(), StatusCode::OK, "{path} should be readable");
     }

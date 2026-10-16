@@ -19,7 +19,6 @@ pub mod error;
 pub mod goal;
 pub mod goal_execution;
 pub mod goal_request;
-pub mod own_work;
 pub mod ports;
 pub mod pseudonyms;
 pub mod record_lane;
@@ -60,11 +59,10 @@ pub use endora_scheduling::{BriefSchedule, BriefScheduleRepository};
 // Belief/preference repositories live in the understanding context (ADR 0050);
 // re-exported so their `endora_application::…` paths are unchanged.
 pub use endora_understanding::{
-    Belief, BeliefKind, BeliefRepository, BeliefStatus, Citation, Confidence, Intention,
-    IntentionOrigin, IntentionRepository, IntentionState, Notion, NotionRepository, NotionStatus,
-    Outcome, OutcomeRepository, Preference, PreferenceKind, PreferenceRepository, Reaction,
-    RepairProposal, ResearchAssignment, ResearchReport, ResearchRepository, ResearchStatus, Source,
-    make_way_for_a_new_one,
+    Belief, BeliefKind, BeliefRepository, BeliefStatus, Confidence, Intention, IntentionOrigin,
+    IntentionRepository, IntentionState, Outcome, OutcomeRepository, Preference, PreferenceKind,
+    PreferenceRepository, Reaction, RepairProposal, ResearchAssignment, ResearchReport,
+    ResearchRepository, ResearchStatus,
 };
 pub use ports::{
     Butler, ButlerContext, ButlerReply, Calendar, CapabilityTool, Clock, ConversationSummary,

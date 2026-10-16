@@ -631,38 +631,6 @@ pub(super) async fn set_brief_schedule(
     Ok(Json(brief_schedule_json(&s)))
 }
 
-pub(super) fn nightly_loop_schedule_json(
-    s: &endora_scheduling::NightlyLoopSchedule,
-) -> serde_json::Value {
-    json!({ "enabled": s.enabled, "hour_utc": s.hour_utc })
-}
-
-/// The nightly self-improvement loop schedule (ADR 0051) — when the butler reviews
-/// the day and reflects, overnight, within the reversible band.
-pub(super) async fn get_nightly_loop_schedule(
-    State(state): State<AppState>,
-) -> Result<Json<serde_json::Value>, ApiError> {
-    let schedules = state.schedules.clone();
-    let s = blocking(move || usecases::nightly_loop_schedule(schedules.as_ref())).await?;
-    Ok(Json(nightly_loop_schedule_json(&s)))
-}
-
-/// Sets the nightly-loop schedule. `hour_utc` is the UTC hour (the console converts
-/// the person's local hour). The loop only ever reflects/drafts — never anything
-/// irreversible.
-pub(super) async fn set_nightly_loop_schedule(
-    State(state): State<AppState>,
-    Json(req): Json<BriefScheduleRequest>,
-) -> Result<Json<serde_json::Value>, ApiError> {
-    let schedules = state.schedules.clone();
-    let s = blocking(move || {
-        usecases::set_nightly_loop_schedule(schedules.as_ref(), req.enabled, req.hour_utc)
-    })
-    .await?;
-    let _ = state.changes.send(());
-    Ok(Json(nightly_loop_schedule_json(&s)))
-}
-
 // ---- what the deep model costs (ADR 0091) ----------------------------------
 
 /// Midnight UTC on the first of the month containing `now_ms`.

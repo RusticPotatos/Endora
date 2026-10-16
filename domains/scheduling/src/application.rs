@@ -2,22 +2,7 @@
 
 use endora_kernel::RepositoryError;
 
-use crate::domain::{BriefSchedule, NightlyLoopSchedule};
-
-/// Persists the single [`NightlyLoopSchedule`] (ADR 0051).
-pub trait NightlyLoopScheduleRepository {
-    /// Returns the stored schedule, or `None` if never set.
-    ///
-    /// # Errors
-    /// [`RepositoryError`] if the backend fails.
-    fn get(&self) -> Result<Option<NightlyLoopSchedule>, RepositoryError>;
-
-    /// Stores the schedule (replacing any previous one).
-    ///
-    /// # Errors
-    /// [`RepositoryError`] if the backend fails.
-    fn set(&self, schedule: &NightlyLoopSchedule) -> Result<(), RepositoryError>;
-}
+use crate::domain::BriefSchedule;
 
 /// Persists the single [`BriefSchedule`].
 pub trait BriefScheduleRepository {

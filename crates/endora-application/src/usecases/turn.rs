@@ -651,8 +651,6 @@ pub(super) fn repeats_its_last_answer(reply: &ButlerReply, conversation: &[TurnM
 /// tool round (retrying only on failure), so this only bounds a pathological loop —
 /// kept low to stay fast on a slow local model.
 pub(super) const CHAT_TOOL_ROUNDS: usize = 3;
-/// Tool rounds allowed in the **nightly loop** — it researches one focus, unhurried.
-pub(super) const NIGHTLY_TOOL_ROUNDS: usize = 4;
 
 /// Where a turn's actions are recorded, and what motivated them (ADR 0053).
 ///
@@ -671,17 +669,6 @@ impl<'a> OutcomeSink<'a> {
         Self {
             outcomes,
             motivated_by: None,
-        }
-    }
-
-    /// A sink for a turn Endora took because of something it believes.
-    pub(crate) const fn motivated_by(
-        outcomes: &'a dyn OutcomeRepository,
-        belief: Option<BeliefId>,
-    ) -> Self {
-        Self {
-            outcomes,
-            motivated_by: belief,
         }
     }
 

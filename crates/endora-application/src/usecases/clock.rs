@@ -1,5 +1,5 @@
-//! Keeping the person's daily hours on their clock (the brief and the nightly loop are stored
-//! as UTC hours, which drift by an hour at every clock change).
+//! Keeping the daily brief on the person's clock (it is stored as a UTC hour, which drifts by an
+//! hour at every clock change).
 
 use super::*;
 use endora_capabilities::CapabilitySettingsRepository;
@@ -7,16 +7,14 @@ use endora_capabilities::CapabilitySettingsRepository;
 /// Where the offset the hours were last set under is kept, as one stored setting.
 const SETTING: (&str, &str) = ("clock", "hours_set_under_minutes");
 
-/// Moves the brief's and the nightly loop's UTC hours when the person's distance from UTC is
-/// no longer the one they were set under, so each stays at the same local hour. The first
-/// time, it only records the current offset: the hours were set under it. Returns whether
-/// anything moved.
+/// Moves the brief's UTC hour when the person's distance from UTC is no longer the one it was
+/// set under, so it stays at the same local hour. The first time, it only records the current
+/// offset: the hour was set under it. Returns whether anything moved.
 ///
 /// # Errors
 /// [`AppError::Repository`] if a schedule or the setting cannot be read or written.
 pub fn keep_hours_on_the_clock(
     briefs: &dyn BriefScheduleRepository,
-    nights: &dyn NightlyLoopScheduleRepository,
     settings: &dyn CapabilitySettingsRepository,
     offset_now_minutes: i64,
 ) -> Result<bool, AppError> {
@@ -37,11 +35,6 @@ pub fn keep_hours_on_the_clock(
         brief.hour_utc =
             endora_scheduling::same_local_hour(brief.hour_utc, set_under, offset_now_minutes);
         briefs.set(&brief)?;
-    }
-    if let Some(mut night) = nights.get()? {
-        night.hour_utc =
-            endora_scheduling::same_local_hour(night.hour_utc, set_under, offset_now_minutes);
-        nights.set(&night)?;
     }
     record()?;
     Ok(true)

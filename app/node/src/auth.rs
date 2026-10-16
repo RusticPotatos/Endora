@@ -383,7 +383,6 @@ mod what_a_checking_credential_may_do {
         for path in [
             "/v1/understanding",
             "/v1/context",
-            "/v1/notions",
             "/v1/reliability",
             "/v1/chat",
             "/v1/audit",

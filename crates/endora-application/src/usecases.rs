@@ -7,26 +7,23 @@
 
 use endora_conversation::{ChatMessage, MessageRole};
 use endora_kernel::ids::{
-    AuditId, BeliefId, IntentionId, MessageId, NotionId, OutcomeId, PreferenceId, Timestamp,
+    AuditId, BeliefId, IntentionId, MessageId, OutcomeId, PreferenceId, Timestamp,
 };
 use endora_kernel::{Decision, Reversibility};
 use endora_platform::AuditRecord;
 use endora_understanding::{
-    Belief, BeliefKind, Citation, Confidence, Intention, Notion, Outcome, Preference,
-    PreferenceKind, Reaction, RepairProposal, Source, make_way_for_a_new_one,
+    Belief, Intention, Outcome, Preference, PreferenceKind, Reaction, RepairProposal,
 };
 
 use endora_capabilities::{CapabilityRunner, CapabilitySpec};
 use endora_conversation::ChatRepository;
 use endora_platform::{AuditLog, EventLog};
 use endora_understanding::{
-    BeliefRepository, IntentionRepository, NotionRepository, OutcomeRepository,
-    PreferenceRepository, SpecimenRepository,
+    BeliefRepository, IntentionRepository, OutcomeRepository, PreferenceRepository,
+    SpecimenRepository,
 };
 
-use endora_scheduling::{
-    BriefSchedule, BriefScheduleRepository, NightlyLoopSchedule, NightlyLoopScheduleRepository,
-};
+use endora_scheduling::{BriefSchedule, BriefScheduleRepository};
 
 use crate::error::AppError;
 use crate::ports::{
@@ -162,9 +159,6 @@ pub use beliefs::*;
 
 mod proactive;
 pub use proactive::*;
-
-mod notions;
-pub use notions::*;
 
 mod mail;
 pub use mail::*;
@@ -572,15 +566,6 @@ mod its_own_behaviour_is_not_evidence_about_you;
 mod who_words_the_brief;
 
 #[cfg(test)]
-mod telling_the_person_from_the_household;
-
-#[cfg(test)]
-mod what_the_record_will_bear;
-
-#[cfg(test)]
-mod a_night_spent_thinking;
-
-#[cfg(test)]
 mod one_fact_source_reaches_everything;
 
 #[cfg(test)]
@@ -594,9 +579,6 @@ mod where_they_are_is_a_fact;
 
 #[cfg(test)]
 mod escalation_is_a_habit;
-
-#[cfg(test)]
-mod the_thinking_reaches_the_sensing;
 
 #[cfg(test)]
 mod it_keeps_its_own_score;

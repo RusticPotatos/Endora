@@ -445,7 +445,6 @@ pub fn app(state: AppState) -> Router {
         // "stop doing that" (ADR 0052).
         .route("/v1/intentions", get(list_intentions))
         // Readable, never actionable — no companion POST exists (ADR 0057).
-        .route("/v1/notions", get(list_notions))
         .route("/v1/intentions/{id}/drop", post(drop_intention))
         .route("/v1/mail", get(mail::mail_digest))
         .route("/v1/ai", get(ai::ai_overview).post(ai::set_ai))
@@ -514,10 +513,6 @@ pub fn app(state: AppState) -> Router {
         .route(
             "/v1/brief/schedule",
             get(get_brief_schedule).post(set_brief_schedule),
-        )
-        .route(
-            "/v1/nightly-loop/schedule",
-            get(get_nightly_loop_schedule).post(set_nightly_loop_schedule),
         )
         .route("/v1/deep-model", get(get_deep_model).post(set_deep_model))
         .route("/v1/deep-model/usage", get(deep_usage))
