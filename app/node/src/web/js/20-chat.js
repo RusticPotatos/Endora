@@ -15,7 +15,7 @@
 // they were two, side by side, and nothing said which was which.
 const UNDER_SETTINGS = [
   { view: "display", icon: "speakerOn", label: "Notifications & voice", short: "Notifications", note: "your daily brief, check-ins, reading aloud and vibration" },
-  { view: "models", icon: "sparkle", label: "Models", note: "which model answers, and the bigger one behind it" },
+  { view: "models", icon: "sparkle", label: "AI", note: "every model Endora uses, where it runs, and what it sees" },
   { view: "connections", icon: "gear", label: "Connections", note: "Home Assistant, your home lab's services, and tool servers" },
   { view: "skills", icon: "skills", label: "Skills", note: "what Endora can do in chat, and skills you teach it" },
   { view: "permissions", icon: "scale", label: "Permissions", note: "how far Endora may act on its own" },

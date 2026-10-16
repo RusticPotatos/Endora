@@ -2629,3 +2629,88 @@ async fn a_skill_whose_description_is_written_for_the_model_has_a_line_for_peopl
         .unwrap();
     assert_eq!(weather["summary"], weather["description"]);
 }
+
+#[tokio::test]
+async fn the_ai_screen_lists_every_model_and_mail_never_leaves_the_house() {
+    let state = test_state();
+    let role = |all: &serde_json::Value, id: &str| {
+        all["roles"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["id"] == id)
+            .cloned()
+            .unwrap_or_else(|| panic!("{id} is listed"))
+    };
+    let before = json_body(app(state.clone()).oneshot(get("/v1/ai")).await.unwrap()).await;
+    for id in ["chat", "deep", "mail_reader", "vision", "speech"] {
+        let r = role(&before, id);
+        assert!(
+            r["sees"].as_str().is_some_and(|s| !s.is_empty()),
+            "{id} says what it sees"
+        );
+    }
+    assert!(before["context_tokens"].as_u64().is_some());
+    let deployment = role(&before, "mail_reader")["model"].clone();
+
+    // A model chosen for the mail reader is the one it reads with; blank goes back.
+    let chosen = json_body(
+        app(state.clone())
+            .oneshot(post(
+                "/v1/ai",
+                r#"{"mail_reader_model":"example-reader:3b"}"#,
+            ))
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(role(&chosen, "mail_reader")["model"], "example-reader:3b");
+
+    // The conversation moves to a cloud provider; the mail reader does not follow it.
+    let res = app(state.clone())
+        .oneshot(post(
+            "/v1/model-config",
+            r#"{"base_url":"https://api.example.com/v1","single":{"model":"cloud-model"}}"#,
+        ))
+        .await
+        .unwrap();
+    assert!(res.status().is_success(), "{}", res.status());
+    let after = json_body(app(state.clone()).oneshot(get("/v1/ai")).await.unwrap()).await;
+    assert_eq!(role(&after, "chat")["local"], false);
+    assert_eq!(role(&after, "chat")["endpoint"], "api.example.com");
+    let reader = role(&after, "mail_reader");
+    assert_eq!(reader["local"], true, "mail stays on the local endpoint");
+    assert_ne!(reader["endpoint"], "api.example.com");
+
+    let reset = json_body(
+        app(state.clone())
+            .oneshot(post("/v1/ai", r#"{"mail_reader_model":""}"#))
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(role(&reset, "mail_reader")["model"], deployment);
+
+    // A speech server must be an address; one that is shows by its host, never its path.
+    let bad = app(state.clone())
+        .oneshot(post("/v1/ai", r#"{"speech_url":"file:///etc/passwd"}"#))
+        .await
+        .unwrap();
+    assert_eq!(bad.status(), StatusCode::BAD_REQUEST);
+    let speech = json_body(
+        app(state.clone())
+            .oneshot(post(
+                "/v1/ai",
+                r#"{"speech_url":"http://192.168.1.10:8001/v1"}"#,
+            ))
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(role(&speech, "speech")["endpoint"], "192.168.1.10:8001");
+    let health = json_body(app(state).oneshot(unsigned("/health")).await.unwrap()).await;
+    assert_eq!(
+        health["stt"], true,
+        "the chosen speech server is the one in use"
+    );
+}

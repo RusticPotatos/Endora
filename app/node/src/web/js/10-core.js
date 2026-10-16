@@ -329,6 +329,8 @@ async function reload() {
   if (NAV.v === "chat") { try { CTX = await api("GET", "/v1/chat/context"); } catch (_) { CTX = null; } }
   // The mail digest: only on its own screen, so the rest of the console never carries it.
   if (NAV.v === "mail") { try { MAIL = await api("GET", "/v1/mail"); } catch (_) { MAIL = null; } }
+  // What Endora runs: it asks the model server, so only on the screen that shows it.
+  if (NAV.v === "models") { try { AI = await api("GET", "/v1/ai"); } catch (_) { AI = null; } }
   // What the deep model has cost, and what is left. The balance asks the provider, so it is
   // fetched only on the screens that show it, never on a timer.
   if ((NAV.v === "models" || NAV.v === "settings") && DEEP_MODEL.configured) { await loadDeepSpend(); }

@@ -9,6 +9,15 @@ tagged release.
 
 ### Added
 
+- **An AI screen.** Settings → AI (it was Models) opens with what Endora runs: the conversation
+  model (or the router and writer), the deep model with its calls and cost this month, the mail
+  reader, vision and speech-to-text. Each says which model, where it runs (on your network or
+  in the cloud), what the model server says about it now (graphics card or processor, memory,
+  context, size) and what it sees. It warns when the model server gives less context than
+  Endora assumes, which silently cuts long turns short. The mail reader's model and the
+  speech-to-text server, until now set only in the deployment, are chosen there; the mail
+  reader always stays on the local endpoint, whatever the conversation uses.
+
 - **Endora copies its own data every night** ([ADR 0098](docs/adr/0098-it-can-be-rebuilt.md)).
   At 01:30 by your clock it writes a consistent, integrity-checked copy of its database into
   `backups/` beside it, daily and weekly, keeping seven of each, so the house's backup always

@@ -71,9 +71,7 @@ pub(super) async fn console_js() -> impl axum::response::IntoResponse {
 }
 
 pub(super) async fn health(State(state): State<AppState>) -> Json<serde_json::Value> {
-    let stt = std::env::var("ENDORA_STT_URL")
-        .ok()
-        .is_some_and(|s| !s.trim().is_empty());
+    let stt = super::ai::speech_url(state.config.as_ref()).is_some();
     // Whether a turn is being taken right now.
     //
     // The console decides whether to show a thinking bubble, and it could only ever ask
@@ -126,12 +124,11 @@ pub(super) fn looks_like_stt_hallucination(text: &str) -> bool {
 /// speech-to-text server (`ENDORA_STT_URL`, OpenAI-compatible). The node proxies
 /// it so the STT host is never exposed to the page; 503 when none is configured.
 pub(super) async fn transcribe(
+    State(state): State<AppState>,
     body: axum::body::Bytes,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let Some(url) = std::env::var("ENDORA_STT_URL")
-        .ok()
-        .filter(|s| !s.trim().is_empty())
-    else {
+    // The server chosen on the AI screen, or the deployment's.
+    let Some(url) = super::ai::speech_url(state.config.as_ref()) else {
         return Err(ApiError(AppError::Model {
             message: "no speech-to-text server configured".to_owned(),
         }));

@@ -172,6 +172,21 @@ runInContext(
   // branches of the enable toggle, which an empty list would never reach.
   // Mail read, with something worth a look and a bucket with items, so every branch of the
   // Mail screen renders. A sentence with markup in it, which must come out escaped.
+  // Every model role, one on a cloud endpoint, and a server that gives less context than
+  // Endora assumes, so every branch of the AI screen renders.
+  AI = { context_tokens: 16384, mail_reader_model: null, speech_url: null, roles: [
+    { id: "chat", name: "Conversation", does: "Answers you.", model: "qwen2.5:7b", endpoint: "ollama:11434",
+      local: true, on: true, change: "models", sees: "Your messages.",
+      runtime: { processor: "graphics card", memory_gb: 5.6, context: 4096, size: "7.6B, Q4_K_M" } },
+    { id: "deep", name: "Deep model", does: "Hard questions.", model: "big-model", endpoint: "api.example.com",
+      local: false, on: true, change: "deep", sees: "What you send it.", runtime: null,
+      calls_this_month: 3, cost_usd_this_month: 0.42 },
+    { id: "mail_reader", name: "Reading your mail", does: "One email at a time.", model: "qwen2.5:7b",
+      endpoint: "ollama:11434", local: true, on: true, change: "mail_reader", sees: "One email.", runtime: null },
+    { id: "vision", name: "Looking at images", does: "Images.", model: "", endpoint: "ollama:11434",
+      local: true, on: false, change: "vision", sees: "The image.", runtime: null },
+    { id: "speech", name: "Hearing you", does: "Speech.", model: "", endpoint: "", local: true, on: true,
+      change: "speech", sees: "Your voice.", runtime: null }] };
   MAIL = { mounted: true, reading: true, indexed: 412, unread_recent: 37,
     important: [{ from: "Example Dental", at_ms: 1, bucket: "money", sentence: "A bill <b>due</b>.",
                   why: ["asks for money"], amount: "180.00", dates: [{ date: "2026-10-30", what: "due" }],
@@ -441,6 +456,16 @@ if (failures.length) {
       || !server.includes("go:connections")) {
     console.error("connections: a tool server's own screen lost its tools, its edit form, or the way back");
     process.exit(1);
+  }
+  // The AI screen names every role, where it runs and what it sees, offers the two choices it
+  // holds, and warns when the model server gives less context than Endora assumes.
+  const ai = runInContext("viewModels()", context);
+  for (const needed of ["Reading your mail", "Hearing you", "on your network", ">cloud<", "ai:mailreader",
+    "ai:speech", "go:skill:image_review", "long turns lose their beginning", "$0.42"]) {
+    if (!ai.includes(needed)) {
+      console.error(`ai: the AI screen is missing ${needed}`);
+      process.exit(1);
+    }
   }
   if (!runInContext("viewPermissions()", context).includes("autonomy:external")) {
     console.error("permissions: the autonomy switches are not on Permissions");

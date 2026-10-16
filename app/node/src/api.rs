@@ -462,6 +462,7 @@ pub fn app(state: AppState) -> Router {
         .route("/v1/notions", get(list_notions))
         .route("/v1/intentions/{id}/drop", post(drop_intention))
         .route("/v1/mail", get(mail::mail_digest))
+        .route("/v1/ai", get(ai::ai_overview).post(ai::set_ai))
         .route("/v1/goals", get(list_goals))
         .route("/v1/goals/{request_key}", get(get_goal))
         .route("/v1/goals/{request_key}/cancel", post(cancel_goal))
@@ -752,6 +753,9 @@ mod models;
 use models::*;
 
 mod workers;
+// The AI screen: every model Endora uses, where it runs and what it sees.
+mod ai;
+pub use ai::MailReader;
 // Endora's nightly copies of its own database.
 mod snapshots;
 pub use snapshots::spawn_snapshots;

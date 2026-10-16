@@ -61,6 +61,16 @@ async function dispatch(act) {
   }
   try {
     if (verb === "reload") { location.reload(); return; }
+    // The AI screen's own choices: the mail reader's model and the speech server.
+    if (verb === "ai" && (noun === "mailreader" || noun === "speech")) {
+      const input = document.getElementById(noun === "mailreader" ? "ai-mail-reader" : "ai-speech");
+      const body = noun === "mailreader" ? { mail_reader_model: input ? input.value : "" } : { speech_url: input ? input.value : "" };
+      try {
+        AI = await api("POST", "/v1/ai", body);
+        flash(noun === "mailreader" ? "Mail will be read with that model, on your network." : "Saved the speech server.", "ok");
+      } catch (e) { flash("Couldn't save: " + e.message, "err"); }
+      return render();
+    }
     if (verb === "go") {
       if (noun === "home") return go("home");
       if (noun === "audit") return go("audit");

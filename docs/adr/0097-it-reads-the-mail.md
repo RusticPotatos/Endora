@@ -60,7 +60,9 @@ a person the owner writes to often.
 - A `mail` context (`domains/mail`) holds the facts, the sorting rules and the digest; the
   orchestration layer reads one message at a time (`usecases::read_one`) through an
   `UntrustedReader` port, implemented on the local model client in JSON mode, built in the
-  composition from the local endpoint and never from the configurable or deep chain.
+  composition from the local endpoint and never from the configurable or deep chain. Since the
+  AI screen (2026-10-16) its *model* can be chosen there; its endpoint cannot, and a test moves
+  the conversation to a cloud provider and checks the reader stays on the local one.
 - **Forgery is checked before a sentence is believed.** Measured on the NAS's own model with
   synthetic mail: a phishing message that instructed the reader was kept out of *People* by
   code, but was filed as important account security with the attacker's own words as its

@@ -318,7 +318,7 @@ function modelsSection() {
     ? `${esc(mc.default_router || "")} + ${esc(mc.default_synth || "")}`
     : esc(mc.default_model || "");
   return `
-    <h3>Models</h3>
+    <h3>Change the models</h3>
     <div class="note">A local <b>everyday</b> model, and an optional <b>deep</b> one for hard questions. Any OpenAI-compatible endpoint.</div>
 
     <div class="card model-card">
@@ -636,8 +636,59 @@ function viewDisplay() {
 function viewModels() {
   return `
     ${settingsCrumbs("models")}
+    <h2>AI</h2>
+    ${aiOverviewSection()}
     ${modelsSection()}
     ${worthKnowingSection()}`;
+}
+
+// Every model Endora uses, one card each: what it does, which model, where it runs, what the
+// model server says about it now, and what it sees. The mail reader's model and the speech
+// server are chosen here; the conversation and deep models below; vision on its skill.
+function aiOverviewSection() {
+  if (!AI) return `<h3>What Endora runs</h3><div class="note">Asking the model server…</div>`;
+  const ctx = AI.context_tokens || 0;
+  const card = (r) => {
+    const where = r.on === false
+      ? `<span class="pill">off</span>`
+      : r.local ? `<span class="pill concluded">on your network</span>` : `<span class="pill">cloud</span>`;
+    const rt = r.runtime;
+    const runtime = rt ? `<div class="sub">Running now on the ${esc(rt.processor)} · ${esc(String(rt.memory_gb))} GB${rt.context ? ` · ${Number(rt.context).toLocaleString()}-token context` : ""}${rt.size ? ` · ${esc(rt.size)}` : ""}</div>` : "";
+    // Endora trims what it sends to the window it believes the model has; a server giving less
+    // cuts the start of long turns off without saying so.
+    const short = rt && rt.context && ctx && rt.context < ctx
+      ? `<div class="sub" style="color:var(--warn, #b45309);">The model server gives ${Number(rt.context).toLocaleString()} tokens, but Endora assumes ${Number(ctx).toLocaleString()}: long turns lose their beginning. Raise the server's context length, or set ENDORA_CONTEXT_TOKENS to match.</div>`
+      : "";
+    const cost = r.id === "deep" && r.on
+      ? `<div class="sub">${r.calls_this_month || 0} call${r.calls_this_month === 1 ? "" : "s"} this month${r.cost_usd_this_month != null ? ` · $${Number(r.cost_usd_this_month).toFixed(2)}` : ""}</div>`
+      : "";
+    // Folded: most visits are to see what runs, not to change it.
+    const field = (id, value, placeholder, act) => `
+      <details class="adv" style="margin-top:6px;"><summary>Change</summary>
+      <div class="form" style="margin-top:8px;">
+        <input id="${id}" value="${esc(value || "")}" placeholder="${esc(placeholder)}" autocomplete="off" />
+        <button class="ghost" data-act="${act}">Save</button>
+      </div></details>`;
+    const change = r.change === "mail_reader"
+      ? field("ai-mail-reader", AI.mail_reader_model, `blank: the deployment's (${r.model})`, "ai:mailreader")
+      : r.change === "speech"
+        ? field("ai-speech", AI.speech_url, "http://… an OpenAI-compatible speech server; blank: the deployment's", "ai:speech")
+        : r.change === "vision"
+          ? `<div class="sub" style="margin-top:6px;"><a data-act="go:skill:image_review">Choose it on the Image review skill</a></div>`
+          : `<div class="sub" style="margin-top:6px;">Change it below.</div>`;
+    return `
+      <div class="card">
+        <div class="title">${esc(r.name)} ${where}</div>
+        <div class="sub">${esc(r.does)}</div>
+        <div class="sub" style="margin-top:4px;"><b>${esc(r.model || (r.id === "speech" ? (r.endpoint ? "speech server" : "your browser") : "not set"))}</b>${r.endpoint ? ` at ${esc(r.endpoint)}` : ""}</div>
+        ${runtime}${short}${cost}
+        <div class="sub" style="margin-top:4px;">Sees: ${esc(r.sees)}</div>
+        ${change}
+      </div>`;
+  };
+  return `
+    <h3>What Endora runs</h3>
+    ${listOr((AI.roles || []).map(card), "Nothing to show.")}`;
 }
 
 // Models the hub has that would fit this machine (ADR 0055).

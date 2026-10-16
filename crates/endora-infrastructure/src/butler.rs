@@ -948,6 +948,18 @@ fn endpoint_answers(base_url: &str) -> bool {
         .is_ok_and(|r| r.status().is_success())
 }
 
+/// What a local Ollama says it has loaded (`GET {origin}/api/ps`), or `None` if it does not
+/// answer within a few seconds or is not Ollama. Read-only; for the AI screen.
+#[must_use]
+pub fn ollama_loaded(origin: &str) -> Option<serde_json::Value> {
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .timeout_global(Some(std::time::Duration::from_secs(3)))
+        .build()
+        .into();
+    let mut resp = agent.get(&format!("{origin}/api/ps")).call().ok()?;
+    resp.body_mut().read_json::<serde_json::Value>().ok()
+}
+
 /// Whether a URL points at the person's own network — loopback, RFC 1918 private
 /// ranges, or a `.local`/`.lan`/bare hostname. The **base** rungs must live here: base
 /// turns carry the raw conversation, and only the deep rung has the pseudonym door

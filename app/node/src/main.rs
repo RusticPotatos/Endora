@@ -148,9 +148,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let state = match mail_copy("/mail") {
         Some(copy) if state.own_work => {
             println!("mail: reading the copy at /mail with the local model, in quiet time");
-            let reader: Arc<dyn endora_application::UntrustedReader + Send + Sync> = Arc::new(
-                endora_infrastructure::LlmButler::new(model_url.clone(), model.clone()),
-            );
+            // The model chosen on the AI screen, always on the local endpoint.
+            let reader: Arc<dyn endora_application::UntrustedReader + Send + Sync> =
+                Arc::new(api::MailReader::new(state.config.clone()));
             state.with_mail(copy, reader)
         }
         _ => state,

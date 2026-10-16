@@ -695,7 +695,7 @@ pub(super) struct DeepPrices {
 }
 
 impl DeepPrices {
-    fn read(config: &endora_capabilities::ConfigStore) -> Self {
+    pub(super) fn read(config: &endora_capabilities::ConfigStore) -> Self {
         let settings = settings_map(config);
         let get = |key: &str| {
             settings
