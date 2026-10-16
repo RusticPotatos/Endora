@@ -8,6 +8,7 @@ use std::sync::Arc;
 mod api;
 mod listen;
 mod player;
+mod senders;
 
 use endora_sound::application::hub::Hub;
 use endora_sound::infrastructure::{FileStore, Places};
@@ -87,6 +88,66 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let pipes = std::env::var("SOUND_PIPES").unwrap_or_else(|_| "pipes".to_owned());
     let hub = Arc::new(hub);
     let listeners = Arc::new(listen::Listeners::new(ffmpeg.clone().into()));
+    // The AirPlay senders, when there are any: SOUND_SENDERS lists their OwnTone APIs, in
+    // order; each plays the pipe `sender-<n>/group.pcm` in the pipes folder, which the hub
+    // makes. SOUND_SENDER_PASSWORD_FILE holds their admin password, when they want one.
+    let password = std::env::var("SOUND_SENDER_PASSWORD_FILE")
+        .ok()
+        .and_then(|f| std::fs::read_to_string(f).ok())
+        .map(|p| p.trim().to_owned())
+        .filter(|p| !p.is_empty());
+    let apis: Vec<String> = std::env::var("SOUND_SENDERS")
+        .unwrap_or_default()
+        .split(',')
+        .map(|a| a.trim().to_owned())
+        .filter(|a| !a.is_empty())
+        .take(endora_sound::domain::patchbay::SENDERS)
+        .collect();
+    let mut found_from = None;
+    let senders: Box<dyn player::Senders> = if apis.is_empty() {
+        println!("sound: no AirPlay senders (SOUND_SENDERS is empty); streams only");
+        Box::new(player::NoSenders)
+    } else {
+        if apis.len() < endora_sound::domain::patchbay::SENDERS {
+            eprintln!(
+                "sound: {} senders given, but the patchbay allows {} AirPlay groups; the rest will not play",
+                apis.len(),
+                endora_sound::domain::patchbay::SENDERS
+            );
+        }
+        let places: Vec<senders::SenderPlace> = apis
+            .iter()
+            .enumerate()
+            .map(|(i, api)| senders::SenderPlace {
+                api: api.clone(),
+                pipe: std::path::Path::new(&pipes)
+                    .join(format!("sender-{}", i + 1))
+                    .join("group.pcm"),
+            })
+            .collect();
+        for place in &places {
+            if let Err(e) = senders::make_pipe(&place.pipe) {
+                eprintln!("sound: cannot make {}: {e}", place.pipe.display());
+            }
+        }
+        let instances: Vec<Box<dyn senders::Instance>> = places
+            .iter()
+            .map(|p| {
+                Box::new(senders::OwnTone::new(&p.api, password.clone()))
+                    as Box<dyn senders::Instance>
+            })
+            .collect();
+        found_from = Some(Arc::new(senders::OwnTone::new(
+            &places[0].api,
+            password.clone(),
+        )));
+        println!("sound: {} AirPlay senders", places.len());
+        Box::new(senders::OwnToneSenders::start(
+            hub.clone(),
+            &places,
+            instances,
+        ))
+    };
     player::start(
         hub.clone(),
         listeners.clone(),
@@ -94,12 +155,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             ffmpeg: ffmpeg.into(),
             pipes: pipes.into(),
         },
-        Box::new(player::NoSenders),
+        senders,
     );
     let app = api::app(api::State {
         hub,
         token: Arc::new(token),
         listeners,
+        found_from,
     });
     let listener = tokio::net::TcpListener::bind(&addr).await?;
     println!("sound: listening on {addr}, keeping its state in {state}");

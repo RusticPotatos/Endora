@@ -32,6 +32,8 @@ pub struct State {
     pub token: Arc<String>,
     /// The streams being listened to.
     pub listeners: Arc<Listeners>,
+    /// A sender to ask which AirPlay speakers are on the network, when there are senders.
+    pub found_from: Option<Arc<crate::senders::OwnTone>>,
 }
 
 /// The hub's routes.
@@ -50,6 +52,8 @@ pub fn app(state: State) -> Router {
         .route("/v1/setups/{name}", delete(remove_setup))
         .route("/v1/setups/{name}/apply", post(apply_setup))
         .route("/v1/listen/{speaker}", get(listen))
+        .route("/v1/found", get(found))
+        .route("/v1/speakers/{id}/free", post(free))
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             signed_by_the_node,
@@ -156,6 +160,37 @@ async fn the_state(Extract(state): Extract<State>) -> Json<Value> {
         v["listening"] = json!(state.listeners.listening().iter().map(|s| s.0).collect::<Vec<_>>());
         v
     }))
+}
+
+/// The AirPlay speakers the senders can see on the network, for the owner to add by name.
+async fn found(Extract(state): Extract<State>) -> Result<Json<Value>, Failed> {
+    let Some(sender) = state.found_from.clone() else {
+        return Err(Failed(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "no AirPlay senders are set up".to_owned(),
+        ));
+    };
+    let names = tokio::task::spawn_blocking(move || crate::senders::found(sender.as_ref()))
+        .await
+        .map_err(|_| {
+            Failed(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "a worker thread failed".to_owned(),
+            )
+        })?
+        .map_err(|e| {
+            Failed(
+                StatusCode::BAD_GATEWAY,
+                format!("the sender did not answer: {e}"),
+            )
+        })?;
+    Ok(Json(json!({ "speakers": names })))
+}
+
+/// The owner says a borrowed speaker is free again: it goes back to its wires.
+async fn free(Extract(state): Extract<State>, Path(id): Path<u32>) -> Result<StatusCode, Failed> {
+    change(&state, move |bay| bay.set_borrowed(SpeakerId(id), false)).await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 /// A stream speaker's live stream, as MP3, for as long as the listener stays. The phone, the
@@ -401,6 +436,7 @@ mod tests {
                 hub: Arc::new(hub),
                 token: Arc::new(TOKEN.to_owned()),
                 listeners: Arc::new(Listeners::new("ffmpeg".into())),
+                found_from: None,
             },
             path,
         )
@@ -840,5 +876,41 @@ mod tests {
         );
         let (_, s) = send(&app, "GET", "/v1/state", "").await;
         assert_eq!(s["listening"], json!([phone]));
+    }
+
+    #[tokio::test]
+    async fn a_borrowed_speaker_is_taken_back_when_the_owner_says_it_is_free() {
+        let (state, _) = state();
+        let hub = state.hub.clone();
+        let app = app(state);
+        let (_, kitchen) = send(
+            &app,
+            "POST",
+            "/v1/speakers",
+            r#"{"name":"Kitchen","kind":"airplay"}"#,
+        )
+        .await;
+        let id = kitchen["id"].as_u64().unwrap() as u32;
+        hub.change(|bay| bay.set_borrowed(SpeakerId(id), true))
+            .unwrap();
+        assert_eq!(
+            send(&app, "POST", &format!("/v1/speakers/{id}/free"), "")
+                .await
+                .0,
+            StatusCode::NO_CONTENT
+        );
+        assert!(!hub.read(|bay| bay.speaker(SpeakerId(id)).unwrap().borrowed));
+        assert_eq!(
+            send(&app, "POST", "/v1/speakers/99/free", "").await.0,
+            StatusCode::NOT_FOUND
+        );
+    }
+
+    #[tokio::test]
+    async fn with_no_senders_there_is_nothing_found_and_it_says_why() {
+        let (state, _) = state();
+        let (status, said) = send(&app(state), "GET", "/v1/found", "").await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(said["error"], "no AirPlay senders are set up");
     }
 }

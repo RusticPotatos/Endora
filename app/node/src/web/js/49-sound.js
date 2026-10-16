@@ -10,6 +10,7 @@
 const SOUND = {
   state: null,        // what the hub says: sources, speakers, wires, groups, setups, listening
   error: "",
+  found: [],          // AirPlay speakers the senders can see, by name
   ticket: null,       // { url, at } a fresh ticket for this device's stream, ready for a tap
   listening: false,   // whether this device is playing its stream
 };
@@ -60,6 +61,8 @@ async function loadSound() {
     SOUND.error = /not set up/i.test(e.message) ? "The sound hub is not set up on this node yet." : "The sound hub did not answer: " + e.message;
     return;
   }
+  // What the senders can see, to add by name; nothing when there are no senders yet.
+  try { SOUND.found = ((await api("GET", "/v1/sound/found")) || {}).speakers || []; } catch (_) { SOUND.found = []; }
   // A ticket ready before the tap: Safari only starts sound straight from the tap itself.
   if (!SOUND.ticket || Date.now() - SOUND.ticket.at > 45000) await soundTicket();
 }
@@ -149,7 +152,10 @@ function viewSound() {
       sp.kind === "stream" ? (listening.has(sp.id) ? "listening" : "not listening") : null,
       !g ? "plays nothing" : mates.length ? `in sync with ${mates.join(", ")}` : null,
     ].filter(Boolean).join(" · ");
-    return `<div class="card"><div class="title">${esc(sp.name)}</div><div class="sub">${esc(said)}</div>
+    const back = sp.borrowed
+      ? `<div class="row" style="justify-content:flex-end;margin-top:6px;"><button class="ghost" data-act="sound:free:${sp.id}">Take it back</button></div>`
+      : "";
+    return `<div class="card"><div class="title">${esc(sp.name)}</div><div class="sub">${esc(said)}</div>${back}
       <div class="row" style="gap:8px;align-items:center;margin-top:6px;"><span class="sub" style="min-width:84px;">Volume</span>
         ${range(`sound:volume:${sp.id}`, sp.volume, `${sp.name} volume`)}<span class="sub" style="min-width:28px;text-align:right;">${sp.volume}</span></div></div>`;
   }).join("");
@@ -160,6 +166,10 @@ function viewSound() {
       <button class="primary" data-act="sound:play:${i}">Play</button>
       <button class="ghost" data-act="sound:forget:${i}">Forget</button></div>`).join("");
 
+  // AirPlay speakers the senders can see that are not speakers here yet.
+  const have = new Set(speakers.map((x) => x.name));
+  const foundRows = (SOUND.found || []).map((name, i) => have.has(name) ? "" :
+    `<div class="row" style="gap:8px;padding:4px 0;"><span class="grow">${esc(name)}</span><button class="ghost" data-act="sound:addfound:${i}">Add</button></div>`).join("");
   const manage = [
     ...(s.sources || []).map((x) => `<div class="row" style="gap:8px;padding:4px 0;"><span class="grow">${esc(x.name)} <span class="sub">${esc(SOUND_KIND[x.kind] || x.kind)}</span></span><button class="ghost" data-act="sound:removesource:${x.id}">Remove</button></div>`),
     ...speakers.map((x) => `<div class="row" style="gap:8px;padding:4px 0;"><span class="grow">${esc(x.name)} <span class="sub">${esc(SOUND_KIND[x.kind] || x.kind)}</span></span><button class="ghost" data-act="sound:removespeaker:${x.id}">Remove</button></div>`),
@@ -180,6 +190,7 @@ function viewSound() {
       <div class="form"><input id="sound-radio-name" placeholder="Name, e.g. Classical" maxlength="40" autocomplete="off" />
         <input id="sound-radio-address" placeholder="https://… the station's stream" autocomplete="off" />
         <button class="ghost" data-act="sound:addradio">Add</button></div>
+      ${foundRows ? `<div class="sub" style="margin-top:8px;">Found on the network</div>${foundRows}` : ""}
       <div class="sub" style="margin-top:8px;">An AirPlay speaker, by the name it shows</div>
       <div class="form"><input id="sound-airplay-name" placeholder="e.g. Kitchen" maxlength="40" autocomplete="off" />
         <button class="ghost" data-act="sound:addairplay">Add</button></div>
@@ -236,6 +247,11 @@ async function soundDispatch(verb, noun, id, arg) {
       const name = val("sound-radio-name"), address = val("sound-radio-address");
       if (!name || !address) { flash("A station needs a name and its address.", "warn"); return true; }
       await api("POST", "/v1/sound/sources", { name, kind: "radio", address });
+    } else if (noun === "addfound") {
+      const name = (SOUND.found || [])[Number(id)]; if (!name) return true;
+      await api("POST", "/v1/sound/speakers", { name, kind: "airplay" });
+    } else if (noun === "free") {
+      await api("POST", `/v1/sound/speakers/${Number(id)}/free`, {});
     } else if (noun === "addairplay") {
       const name = val("sound-airplay-name"); if (!name) return true;
       await api("POST", "/v1/sound/speakers", { name, kind: "airplay" });

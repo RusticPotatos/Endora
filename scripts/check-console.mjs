@@ -670,7 +670,7 @@ if (failures.length) {
 // has its slider; a speaker says when another device has it; setups play; text stays text.
 {
   const fail = (what) => { console.error(what); process.exit(1); };
-  runInContext(`SOUND.error = ""; SOUND.ticket = null; SOUND.listening = false;
+  runInContext(`SOUND.error = ""; SOUND.ticket = null; SOUND.listening = false; SOUND.found = ["Kitchen", "Living room"];
     SOUND.state = { senders: 4, listening: [4],
       sources: [{ id: 1, name: "<b>Classical</b>", kind: "radio", device: null, address: "https://radio.example.com/c" },
                 { id: 2, name: "Endora · iPhone", kind: "airplay", device: "iphone" }],
@@ -684,10 +684,13 @@ if (failures.length) {
   const screen = runInContext("viewSound()", context);
   for (const act of ['data-act="sound:wire:1-3"', 'data-act="sound:wire:1-5"', 'data-act="sound:wire:2-3"',
     'data-change="sound:level:1-3"', 'data-change="sound:all:1"', 'data-change="sound:volume:3"',
-    'data-act="sound:play:0"', 'data-act="sound:forget:0"', 'data-act="sound:mine"']) {
+    'data-act="sound:play:0"', 'data-act="sound:forget:0"', 'data-act="sound:mine"',
+    'data-act="sound:free:5"', 'data-act="sound:addfound:1"']) {
     if (!screen.includes(act)) fail(`speakers: the screen does not offer ${act}`);
   }
   if (screen.includes('data-act="sound:wire:2-4"')) fail("speakers: the phone was offered its own stream");
+  if (screen.includes('data-act="sound:addfound:0"')) fail("speakers: a speaker already added was offered again");
+  if (screen.includes('data-act="sound:free:3"')) fail("speakers: a speaker nobody borrowed offered to be taken back");
   if (!screen.includes("in use by another device")) fail("speakers: a borrowed speaker does not say so");
   if (screen.includes("<b>Classical</b>")) fail("speakers: a source's name became markup");
   if (!/aria-pressed="true">Kitchen · 60/.test(screen)) fail("speakers: a wire does not show its level");

@@ -450,6 +450,8 @@ pub fn app(state: AppState) -> Router {
         .route("/v1/sound/speakers", post(sound_add_speaker))
         .route("/v1/sound/speakers/{id}", delete(sound_remove_speaker))
         .route("/v1/sound/speakers/{id}/volume", put(sound_set_volume))
+        .route("/v1/sound/speakers/{id}/free", post(sound_free))
+        .route("/v1/sound/found", get(sound_found))
         .route("/v1/sound/wires", put(sound_wire))
         .route("/v1/sound/wires/{source}/{speaker}", delete(sound_unwire))
         .route("/v1/sound/setups", post(sound_save_setup))

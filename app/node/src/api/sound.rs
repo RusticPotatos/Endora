@@ -213,6 +213,18 @@ pub(super) async fn sound_set_volume(
     .await
 }
 
+/// The AirPlay speakers the hub's senders can see, to add by name.
+pub(super) async fn sound_found(State(state): State<AppState>) -> Answer {
+    ask(&state, SoundMethod::Get, "/v1/found".to_owned(), None).await
+}
+
+/// A borrowed speaker is free again: the owner takes it back.
+pub(super) async fn sound_free(State(state): State<AppState>, Path(id): Path<u32>) -> Answer {
+    let answer = ask(&state, SoundMethod::Post, format!("/v1/speakers/{id}/free"), None).await?;
+    record(&state, &format!("you took speaker {id} back"));
+    Ok(answer)
+}
+
 pub(super) async fn sound_wire(
     State(state): State<AppState>,
     Json(body): Json<serde_json::Value>,

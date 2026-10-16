@@ -777,6 +777,7 @@ dependencies = [
  "serde_json",
  "tokio",
  "tower",
+ "ureq",
 ]
 
 [[package]]
