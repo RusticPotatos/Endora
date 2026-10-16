@@ -1,6 +1,6 @@
 [package]
 name = "endora-terminal"
-version = "0.13.2"
+version = "0.14.0"
 edition = "2024"
 rust-version = "1.87"
 description = "A thin Endora terminal client for Linux appliances"
