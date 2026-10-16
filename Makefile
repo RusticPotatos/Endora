@@ -79,7 +79,8 @@ export ENDORA_UTC_OFFSET_MINUTES
 # in a host folder you can open; unset, a named volume.
 export ENDORA_BRAIN_DIR
 
-# Endora HQ (ADR 0102), the team service: COMPOSE_PROFILES = hq and
+# Endora HQ (ADR 0102), the team service: hq in COMPOSE_PROFILES (a comma-separated list, so
+# keep homelab beside it if the Docker observer runs: COMPOSE_PROFILES = homelab,hq) and
 # ENDORA_HQ_URL = http://hq:8790 in local.mk run it beside the node, with the scripted demo team
 # unless ENDORA_HQ_DEMO = 0. It makes its own token for the node; nothing to keep by hand.
 # ENDORA_HQ_TICK_SECONDS sets how often its engine ticks (30 unless set).

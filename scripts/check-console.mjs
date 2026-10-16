@@ -620,6 +620,39 @@ if (failures.length) {
   console.log("hq: the office reads the snapshot, the desk offers only what each item takes, and text stays text");
 }
 
+// The agenda (ADR 0103): the Now line says it is working and opens Activity; only what needs the
+// owner is pinned, each with Done, Dismiss and Stop; what a mail says stays text.
+{
+  const fail = (what) => { console.error(what); process.exit(1); };
+  runInContext(`AGENDA = { now: { watching: 3, needs_you: 1, checked: [{ source: "docker", at: Date.now() - 120000 }, { source: "mail", at: Date.now() - 900000 }] },
+    items: [
+      { id: 5, kind: "mail_money_due", kind_said: "Mail with money due", level: "needs_you", level_said: "Needs you",
+        sentence: "<img src=x onerror=alert(1)> wants $12", why: "", opened_at: Date.now(), stop_said: "Don't tell me about mail from billing@example.com" },
+      { id: 6, kind: "event", kind_said: "On the calendar", level: "fyi", level_said: "FYI", sentence: "Today: Dentist", why: "", opened_at: Date.now(), stop_said: "x" },
+      { id: 7, kind: "container_crashed", kind_said: "A container crashed", level: "handled", level_said: "Handled", sentence: "sonarr crashed (exit 1)", why: "Restarted it.", opened_at: Date.now(), stop_said: "x" }] };
+    NAV = { v: "chat" };`, context);
+  const chat = runInContext("viewChat()", context);
+  if (!chat.includes("Watching 3 things · checked the NAS 2 min ago · <b>1 needs you</b>")) fail("agenda: the Now line does not say what it is doing");
+  if (!chat.includes('class="now-line" data-act="go:audit"')) fail("agenda: the Now line does not open Activity");
+  for (const act of ["agenda:done:5", "agenda:dismiss:5", "agenda:stop:5"]) {
+    if (!chat.includes(`data-act="${act}"`)) fail(`agenda: a pinned card does not offer ${act}`);
+  }
+  if (chat.includes("agenda:done:6") || chat.includes("agenda:done:7")) fail("agenda: something that does not need the owner was pinned");
+  if (chat.includes("<img src=x")) fail("agenda: an item's text became markup");
+  runInContext(`AGENDA_RULES = { rules: [{ id: 2, said: "Leave the container ebooks alone", at: Date.now() }],
+    kinds: [{ kind: "container_crashed", said: "A container crashed", response: "handle", default: "handle",
+      allowed: [{ name: "handle", said: "Restart it" }, { name: "needs_you", said: "Needs you" }] }] };
+    NAV = { v: "watching" };`, context);
+  const watching = runInContext("viewWatching()", context);
+  for (const act of ["agenda:forget:2", "agenda:set:container_crashed:needs_you", "agenda:set:container_crashed:handle"]) {
+    if (!watching.includes(`data-act="${act}"`)) fail(`agenda: Settings does not offer ${act}`);
+  }
+  if (!watching.includes("Restart it (usual)")) fail("agenda: Settings does not say which is usual");
+  runInContext('AGENDA = null; AGENDA_RULES = null; NAV = { v: "chat" };', context);
+  if (runInContext("viewChat()", context).includes("now-line")) fail("agenda: a Now line was drawn with nothing to say");
+  console.log("agenda: the Now line opens Activity, only what needs you is pinned, and Settings can undo and re-level");
+}
+
 // Devices that stopped answering are never asked about: the owner turned it off for good
 // (2026-10-16), so nothing may bring the card or its actions back.
 if (/Still yours\?|data-act="trouble:|standing-trouble/.test(source)) {

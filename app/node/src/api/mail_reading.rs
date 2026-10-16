@@ -106,18 +106,32 @@ fn trail(state: &AppState) -> Vec<String> {
         .collect()
 }
 
+/// The agenda loop's next look (ADR 0103).
+async fn the_agenda_looks(state: &AppState) {
+    let memory = Arc::new(Mutex::new(super::agenda::Memory::default()));
+    super::agenda::once(state, &memory).await;
+}
+
+fn open_items(state: &AppState) -> Vec<endora_agenda::application::Item> {
+    endora_agenda::application::AgendaStore::open_items(state.agenda.as_ref()).unwrap()
+}
+
 #[tokio::test]
-async fn new_mail_that_matters_is_read_in_quiet_time_and_said_in_the_trail() {
+async fn new_mail_that_matters_is_read_in_quiet_time_and_becomes_an_item() {
     let (state, reader, _copy) = state_with_mail("reads", BILL);
     let read = super::workers::read_mail_once(&state)
         .await
         .expect("one message read");
     assert_eq!(read.bucket, endora_mail::Bucket::Money);
     assert_eq!(*reader.calls.lock().unwrap(), 1);
+    the_agenda_looks(&state).await;
+    let items = open_items(&state);
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].level, endora_agenda::domain::Level::NeedsYou);
     assert!(
         trail(&state)
             .iter()
-            .any(|l| l.starts_with("Mail worth a look: Example Dental: A dental bill")),
+            .any(|l| l.starts_with("Needs you: Example Dental: A dental bill")),
         "{:?}",
         trail(&state)
     );
@@ -185,7 +199,7 @@ fn the_brief_gets_a_mail_section_once_mail_has_been_read() {
 }
 
 #[tokio::test]
-async fn fresh_mail_from_someone_the_owner_writes_to_is_pinged_namelessly_twice_a_day_at_most() {
+async fn someone_waiting_on_a_reply_is_pinned_and_nothing_about_it_enters_chat() {
     let (state, _reader, copy) = state_with_mail(
         "ping",
         r#"{"bucket":"people","sentence":"Jane Doe asks about Saturday.","needs_reply":true}"#,
@@ -211,20 +225,18 @@ async fn fresh_mail_from_someone_the_owner_writes_to_is_pinged_namelessly_twice_
     }
     std::fs::remove_file(copy.0.join("personal/new/bill")).unwrap();
     while super::workers::read_mail_once(&state).await.is_some() {}
-    let pings: Vec<String> = state
-        .chat
-        .list()
-        .unwrap()
-        .into_iter()
-        .map(|m| m.text().to_owned())
-        .filter(|t| t == super::workers::MAIL_PING)
-        .collect();
-    assert_eq!(pings.len(), 2, "two a day at most");
-    assert!(!super::workers::MAIL_PING.contains("Jane"));
+    the_agenda_looks(&state).await;
+    let items = open_items(&state);
+    // Three messages from one person waiting on a reply: one card, not three.
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].kind, endora_agenda::domain::Kind::MailWaitingOnYou);
+    assert_eq!(items[0].why, "More like this came in.");
+    // Chat is history a paid model may later see; mail stays in the house (ADR 0097).
+    assert!(state.chat.list().unwrap().is_empty());
 }
 
 #[tokio::test]
-async fn reading_an_old_backlog_pings_nobody() {
+async fn reading_an_old_backlog_puts_nothing_on_the_agenda() {
     let (state, _reader, copy) = state_with_mail(
         "no-ping",
         r#"{"bucket":"people","sentence":"Old news.","needs_reply":false}"#,
@@ -246,6 +258,8 @@ async fn reading_an_old_backlog_pings_nobody() {
     )
     .unwrap();
     while super::workers::read_mail_once(&state).await.is_some() {}
+    the_agenda_looks(&state).await;
+    assert!(open_items(&state).is_empty());
     assert!(state.chat.list().unwrap().is_empty());
 }
 

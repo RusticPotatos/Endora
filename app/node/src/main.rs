@@ -213,6 +213,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if state.mail_copy.is_some() {
         api::spawn_mail_reader(state.clone());
     }
+    // The agenda loop (ADR 0103): what the readers saw becomes items, every minute.
+    api::spawn_agenda(state.clone());
 
     let app = api::app(state);
 

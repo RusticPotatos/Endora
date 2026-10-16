@@ -18,6 +18,7 @@ function render() {
     : v === "spotify" ? viewSpotify()
     : v === "lab" ? viewLab()
     : v === "hq" ? viewHQ()
+    : v === "watching" ? viewWatching()
     : v === "containers" ? viewContainers()
     : v === "logs" ? viewLogs()
     : v === "jobs" ? viewJobs()
@@ -74,6 +75,8 @@ async function dispatch(act) {
     // The home lab, media, smart home and music.
     if (await labDispatch(verb, noun, id, arg)) return;
     if (await hqDispatch(verb, noun, id, arg)) return;
+    // The agenda's pinned cards and what Endora watches (ADR 0103).
+    if (await agendaDispatch(verb, noun, id, arg)) return;
     // Spotify: one sign-in, held by the node, started or finished from any device.
     if (verb === "spotify") {
       try {
