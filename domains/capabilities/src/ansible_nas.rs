@@ -7,8 +7,9 @@
 //! listing is walked only inside the allowed folders.
 //!
 //! The fork is named by the node's environment (`ENDORA_ANSIBLE_NAS_REPO`, `owner/name`, and
-//! `ENDORA_ANSIBLE_NAS_REF`, `master` unless set); unset, the docs are not configured and
-//! every container's manager is unknown. What is read is kept for a day.
+//! `ENDORA_ANSIBLE_NAS_REF`, a branch; unset, the fork's own default branch, asked of GitHub
+//! once per process and `main` when GitHub does not say, ADR 0115); with no repo, the docs are
+//! not configured and every container's manager is unknown. What is read is kept for a day.
 
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -35,24 +36,28 @@ pub const ONLY_THE_DOCS: &str = "only the lab's ansible-nas docs can be read: a 
     docs/…/*.md, website/docs/…/*.md or roles/<name>/README.md, or the folder roles, docs or \
     website/docs (or a folder in those two) to list it";
 
+/// The branch a fork is read at when GitHub does not say which is its default.
+pub const FALLBACK_BRANCH: &str = "main";
+
 /// The fork, as the environment names it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Fork {
     repo: String,
-    reference: String,
+    /// The branch the owner named, or `None` for the fork's own default branch.
+    reference: Option<String>,
 }
 
 impl Fork {
-    /// The fork named `repo` (`owner/name`) at `reference` (`master` when empty). `None` when
-    /// no repo is given, or it is not a GitHub `owner/name`, or the reference is not a plain
-    /// branch or tag name. The fork's GitHub address (`https://github.com/owner/name`) names it
-    /// too.
+    /// The fork named `repo` (`owner/name`) at `reference` (empty: its default branch, which
+    /// GitHub is asked for). `None` when no repo is given, or it is not a GitHub `owner/name`,
+    /// or the reference is not a plain branch or tag name. The fork's GitHub address
+    /// (`https://github.com/owner/name`) names it too.
     #[must_use]
     pub fn of(repo: &str, reference: &str) -> Option<Self> {
         let repo = on_github(repo.trim())?;
         let reference = match reference.trim() {
-            "" => "master",
-            given => given,
+            "" => None,
+            given => Some(given),
         };
         let plain = |s: &str| {
             !s.is_empty()
@@ -65,18 +70,39 @@ impl Fork {
         if !plain(owner) || !plain(name) {
             return None;
         }
-        if reference.len() > 100
-            || reference.contains("..")
-            || reference.starts_with('/')
-            || reference.ends_with('/')
-            || !reference.split('/').all(plain)
-        {
-            return None;
+        if let Some(reference) = reference {
+            if !plain_branch(reference) {
+                return None;
+            }
         }
         Some(Self {
             repo: repo.to_owned(),
-            reference: reference.to_owned(),
+            reference: reference.map(str::to_owned),
         })
+    }
+
+    /// `owner/name`.
+    #[must_use]
+    pub fn repo(&self) -> &str {
+        &self.repo
+    }
+
+    /// The branch the owner named, if they did.
+    #[must_use]
+    pub fn named_branch(&self) -> Option<&str> {
+        self.reference.as_deref()
+    }
+
+    /// Where git clones the fork from, unauthenticated: `https://github.com/owner/name.git`.
+    #[must_use]
+    pub fn https_url(&self) -> String {
+        format!("https://github.com/{}.git", self.repo)
+    }
+
+    /// Where git pushes to the fork with a deploy key: `git@github.com:owner/name.git`.
+    #[must_use]
+    pub fn ssh_url(&self) -> String {
+        format!("git@github.com:{}.git", self.repo)
     }
 
     /// From the node's environment: `ENDORA_ANSIBLE_NAS_REPO` and `ENDORA_ANSIBLE_NAS_REF`.
@@ -112,6 +138,25 @@ fn on_github(repo: &str) -> Option<&str> {
     };
     let path = path.strip_suffix('/').unwrap_or(path);
     Some(path.strip_suffix(".git").unwrap_or(path))
+}
+
+/// Whether `name` is a plain branch or tag name: segments of letters, digits, `-`, `_` and
+/// `.`, none starting with a dot, no `..`, at most 100 characters.
+#[must_use]
+pub fn plain_branch(name: &str) -> bool {
+    let plain = |s: &str| {
+        !s.is_empty()
+            && !s.starts_with('.')
+            && s.bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))
+    };
+    !name.is_empty()
+        && name.len() <= 100
+        && !name.contains("..")
+        && !name.starts_with('/')
+        && !name.ends_with('/')
+        && !name.ends_with(".lock")
+        && name.split('/').all(plain)
 }
 
 /// What a path asks for, once it has passed the allowlist.
@@ -229,6 +274,8 @@ pub struct Docs {
     raw: String,
     listing: Mutex<Option<(i64, Result<Listing, &'static str>)>>,
     read: Mutex<HashMap<String, (i64, Option<String>)>>,
+    /// The fork's default branch, once GitHub has said it (or failed to, when it was asked).
+    default_branch: Mutex<Option<(i64, Option<String>)>>,
 }
 
 impl Docs {
@@ -242,6 +289,7 @@ impl Docs {
             raw: "https://raw.githubusercontent.com".to_owned(),
             listing: Mutex::new(None),
             read: Mutex::new(HashMap::new()),
+            default_branch: Mutex::new(None),
         }
     }
 
@@ -270,9 +318,57 @@ impl Docs {
         self.listing(now).ok().map(|l| l.roles)
     }
 
+    /// The fork, as configured.
+    #[must_use]
+    pub fn fork(&self) -> Option<&Fork> {
+        self.fork.as_ref()
+    }
+
+    /// The branch the fork is read at (ADR 0115): the one the owner named, else the fork's own
+    /// default branch as GitHub says it (`GET /repos/{owner}/{name}`, `default_branch`), asked
+    /// once per process and kept; when GitHub does not answer, [`FALLBACK_BRANCH`], and GitHub
+    /// is asked again ten minutes on. `None` when no fork is configured.
+    pub fn branch(&self, now: i64) -> Option<String> {
+        let fork = self.fork.as_ref()?;
+        if let Some(named) = &fork.reference {
+            return Some(named.clone());
+        }
+        let mut kept = self
+            .default_branch
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        match kept.as_ref() {
+            Some((_, Some(branch))) => return Some(branch.clone()),
+            Some((at, None)) if now - at < FAILED_FOR_MS => {
+                return Some(FALLBACK_BRANCH.to_owned());
+            }
+            _ => {}
+        }
+        let found = self.ask_default_branch(fork);
+        *kept = Some((now, found.clone()));
+        Some(found.unwrap_or_else(|| FALLBACK_BRANCH.to_owned()))
+    }
+
+    /// GitHub's word on the fork's default branch, when it gives a plain one.
+    fn ask_default_branch(&self, fork: &Fork) -> Option<String> {
+        let url = format!("{}/repos/{}", self.api, fork.repo);
+        let (status, body) = self.fetch.get(&url).ok()?;
+        if status != 200 {
+            return None;
+        }
+        let answer: Value = serde_json::from_str(&body).ok()?;
+        let branch = answer["default_branch"].as_str()?.trim();
+        plain_branch(branch).then(|| branch.to_owned())
+    }
+
     /// One folder of the fork, as the contents API lists it: `None` when it is not there.
-    fn folder(&self, fork: &Fork, folder: &str) -> Result<Option<Vec<Value>>, &'static str> {
-        let reference = fork.reference.replace('/', "%2F");
+    fn folder(
+        &self,
+        fork: &Fork,
+        branch: &str,
+        folder: &str,
+    ) -> Result<Option<Vec<Value>>, &'static str> {
+        let reference = branch.replace('/', "%2F");
         let url = format!(
             "{}/repos/{}/contents/{folder}?ref={reference}",
             self.api, fork.repo
@@ -292,7 +388,7 @@ impl Docs {
         let Some(fork) = &self.fork else {
             return Err("unconfigured");
         };
-        let mut kept = self
+        let kept = self
             .listing
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -306,14 +402,19 @@ impl Docs {
                 return listing.clone();
             }
         }
-        let listing = self.list(fork);
-        *kept = Some((now, listing.clone()));
+        drop(kept);
+        let branch = self.branch(now).ok_or("unconfigured")?;
+        let listing = self.list(fork, &branch);
+        *self
+            .listing
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some((now, listing.clone()));
         listing
     }
 
-    fn list(&self, fork: &Fork) -> Result<Listing, &'static str> {
+    fn list(&self, fork: &Fork, branch: &str) -> Result<Listing, &'static str> {
         let roles: Vec<String> = self
-            .folder(fork, "roles")?
+            .folder(fork, branch, "roles")?
             .ok_or("no roles")?
             .iter()
             .filter(|e| e["type"] == "dir")
@@ -334,7 +435,7 @@ impl Docs {
             if walked > MOST_FOLDERS {
                 break;
             }
-            let Some(entries) = self.folder(fork, &folder)? else {
+            let Some(entries) = self.folder(fork, branch, &folder)? else {
                 continue;
             };
             for entry in &entries {
@@ -375,6 +476,9 @@ impl Docs {
     }
 
     fn file(&self, fork: &Fork, listing: &Listing, file: &str, now: i64) -> Result<String, String> {
+        let branch = self
+            .branch(now)
+            .unwrap_or_else(|| FALLBACK_BRANCH.to_owned());
         let known = match file.strip_prefix("roles/") {
             Some(rest) => listing
                 .roles
@@ -394,7 +498,7 @@ impl Docs {
         let text = match read.get(file) {
             Some((at, text)) if now - at < KEEP_FOR_MS => text.clone(),
             _ => {
-                let url = format!("{}/{}/{}/{file}", self.raw, fork.repo, fork.reference);
+                let url = format!("{}/{}/{branch}/{file}", self.raw, fork.repo);
                 let text = match self.fetch.get(&url) {
                     Ok((200, body)) => Some(body),
                     Ok((404, _)) => None,
@@ -498,7 +602,7 @@ mod tests {
     }
 
     const API: &str = "https://api.github.com/repos/owner/ansible-nas/contents";
-    const RAW: &str = "https://raw.githubusercontent.com/owner/ansible-nas/master";
+    const RAW: &str = "https://raw.githubusercontent.com/owner/ansible-nas/main";
 
     fn entry(path: &str, kind: &str) -> Value {
         serde_json::json!({ "name": path.rsplit('/').next().unwrap(), "path": path, "type": kind })
@@ -507,8 +611,16 @@ mod tests {
     fn hub() -> Hub {
         let listed = |entries: Vec<Value>| (200, Value::Array(entries).to_string());
         let mut answers = HashMap::new();
+        // The fork's default branch is main, not master: GitHub says so.
         answers.insert(
-            format!("{API}/roles?ref=master"),
+            "https://api.github.com/repos/owner/ansible-nas".to_owned(),
+            (
+                200,
+                r#"{"default_branch":"main","private":false}"#.to_owned(),
+            ),
+        );
+        answers.insert(
+            format!("{API}/roles?ref=main"),
             listed(vec![
                 entry("roles/deluge", "dir"),
                 entry("roles/gluetun", "dir"),
@@ -518,7 +630,7 @@ mod tests {
             ]),
         );
         answers.insert(
-            format!("{API}/website/docs?ref=master"),
+            format!("{API}/website/docs?ref=main"),
             listed(vec![
                 entry("website/docs/applications", "dir"),
                 entry("website/docs/index.md", "file"),
@@ -529,14 +641,14 @@ mod tests {
             ]),
         );
         answers.insert(
-            format!("{API}/website/docs/applications?ref=master"),
+            format!("{API}/website/docs/applications?ref=main"),
             listed(vec![entry(
                 "website/docs/applications/download-tools",
                 "dir",
             )]),
         );
         answers.insert(
-            format!("{API}/website/docs/applications/download-tools?ref=master"),
+            format!("{API}/website/docs/applications/download-tools?ref=main"),
             listed(vec![
                 entry("website/docs/applications/download-tools/deluge.md", "file"),
                 entry(
@@ -625,6 +737,25 @@ mod tests {
         assert_eq!(unset.roles(NOON), None);
         assert!(hub.asked.lock().unwrap().is_empty(), "nothing fetched");
         assert_eq!(Fork::of("", "master"), None);
+        assert_eq!(
+            Fork::of("owner/ansible-nas", "").unwrap().named_branch(),
+            None,
+            "unset: the fork's own default"
+        );
+        assert_eq!(
+            Fork::of("owner/ansible-nas", "develop")
+                .unwrap()
+                .named_branch(),
+            Some("develop")
+        );
+        assert_eq!(
+            Fork::of("owner/ansible-nas", "").unwrap().https_url(),
+            "https://github.com/owner/ansible-nas.git"
+        );
+        assert_eq!(
+            Fork::of("owner/ansible-nas", "").unwrap().ssh_url(),
+            "git@github.com:owner/ansible-nas.git"
+        );
         assert_eq!(Fork::of("owner", ""), None, "owner/name");
         assert_eq!(Fork::of("owner/ansible-nas/../x", ""), None);
         assert_eq!(Fork::of("owner/ansible-nas", "../main"), None);
@@ -711,8 +842,11 @@ mod tests {
         for url in &asked {
             let path = url
                 .strip_prefix(&format!("{API}/"))
-                .map(|p| p.trim_end_matches("?ref=master"))
+                .map(|p| p.trim_end_matches("?ref=main"))
                 .or_else(|| url.strip_prefix(&format!("{RAW}/")))
+                .or_else(|| {
+                    (url == "https://api.github.com/repos/owner/ansible-nas").then_some("roles")
+                })
                 .unwrap_or_else(|| panic!("{url} is neither the API nor raw"));
             assert!(
                 path == "roles"
@@ -745,6 +879,76 @@ mod tests {
             hub.asked.lock().unwrap().len() > before,
             "a day on, it is read again"
         );
+    }
+
+    #[test]
+    fn the_forks_default_branch_is_asked_of_github_once_and_main_when_it_does_not_say() {
+        let hub = hub();
+        let docs = docs(&hub);
+        assert_eq!(docs.branch(NOON), Some("main".to_owned()));
+        assert_eq!(docs.branch(NOON + 1), Some("main".to_owned()));
+        docs.read("roles", NOON + 2).unwrap();
+        let asked = hub.asked.lock().unwrap().clone();
+        assert_eq!(
+            asked
+                .iter()
+                .filter(|u| *u == "https://api.github.com/repos/owner/ansible-nas")
+                .count(),
+            1,
+            "asked once per process: {asked:?}"
+        );
+        assert!(
+            asked
+                .iter()
+                .any(|u| u.ends_with("/contents/roles?ref=main")),
+            "the docs are read at that branch: {asked:?}"
+        );
+        // The owner named a branch: GitHub is not asked.
+        let named = Docs::new(
+            Fork::of("owner/ansible-nas", "develop"),
+            Box::new(hub.clone()),
+        );
+        assert_eq!(named.branch(NOON), Some("develop".to_owned()));
+        // GitHub does not say (a 404, an odd answer): main, and asked again later.
+        let silent = Hub::default();
+        let docs = Docs::new(Fork::of("owner/ansible-nas", ""), Box::new(silent.clone()));
+        assert_eq!(docs.branch(NOON), Some("main".to_owned()));
+        assert_eq!(docs.branch(NOON + 1), Some("main".to_owned()));
+        assert_eq!(
+            silent.asked.lock().unwrap().len(),
+            1,
+            "not asked again at once"
+        );
+        assert_eq!(docs.branch(NOON + FAILED_FOR_MS).as_deref(), Some("main"));
+        assert_eq!(
+            silent.asked.lock().unwrap().len(),
+            2,
+            "asked again ten minutes on"
+        );
+        let mut odd = HashMap::new();
+        odd.insert(
+            "https://api.github.com/repos/owner/ansible-nas".to_owned(),
+            (200, r#"{"default_branch":"../etc"}"#.to_owned()),
+        );
+        let odd = Docs::new(
+            Fork::of("owner/ansible-nas", ""),
+            Box::new(Hub {
+                answers: Arc::new(odd),
+                asked: Arc::default(),
+            }),
+        );
+        assert_eq!(
+            odd.branch(NOON).as_deref(),
+            Some("main"),
+            "not a plain name"
+        );
+        assert_eq!(Docs::new(None, Box::new(hub)).branch(NOON), None);
+        assert!(plain_branch("main") && plain_branch("feature/x-1.2"));
+        for bad in [
+            "", "../x", "/main", "main/", ".hidden", "a..b", "x.lock", "a b",
+        ] {
+            assert!(!plain_branch(bad), "{bad}");
+        }
     }
 
     #[test]
@@ -784,13 +988,13 @@ mod tests {
         });
         let got = Web
             .get(&format!(
-                "http://127.0.0.1:{port}/repos/owner/ansible-nas/contents/roles?ref=master"
+                "http://127.0.0.1:{port}/repos/owner/ansible-nas/contents/roles?ref=main"
             ))
             .unwrap();
         assert_eq!(got, (200, "[]".to_owned()));
         let head = server.join().unwrap();
         assert!(
-            head[0].starts_with("GET /repos/owner/ansible-nas/contents/roles?ref=master "),
+            head[0].starts_with("GET /repos/owner/ansible-nas/contents/roles?ref=main "),
             "{head:?}"
         );
         assert!(head.iter().any(|h| {

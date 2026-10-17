@@ -53,9 +53,13 @@ const tracked = execFileSync(
   .split("\n")
   .filter(Boolean);
 
-/** Mailboxes that are obviously nobody's: documentation domains and forge no-reply. */
+/**
+ * Mailboxes that are obviously nobody's: documentation domains, the reserved `.invalid`
+ * domain (RFC 2606; HQ's commits are authored there, ADR 0115), forge no-reply, and git's
+ * own SSH user at GitHub (`git@github.com:owner/name.git` is an address, not a mailbox).
+ */
 const MAILBOX_IS_FICTIONAL =
-  /@(example\.(com|org|net)|b\.com?|x\.org)$|^noreply@|\.noreply\.github\.com$/i;
+  /@(example\.(com|org|net)|b\.com?|x\.org)$|\.invalid$|^noreply@|\.noreply\.github\.com$|^git@github\.com$/i;
 
 /**
  * Addresses that teach something and belong to no one: loopback, "any", the public

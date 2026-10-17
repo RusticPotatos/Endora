@@ -104,8 +104,8 @@ export ENDORA_SOUND_URL
 export ENDORA_SOUND_DIR
 
 # The lab's ansible-nas (ADR 0112), which the team's homelab_map and ansible_nas_doc read: in
-# local.mk, ENDORA_ANSIBLE_NAS_REPO = owner/ansible-nas (your public fork on GitHub, or its address) and, if not
-# master, ENDORA_ANSIBLE_NAS_REF = <branch>. Only its role names and docs are read. Containers
+# local.mk, ENDORA_ANSIBLE_NAS_REPO = owner/ansible-nas (your public fork on GitHub, or its address) and, to read
+# another branch than the fork's default, ENDORA_ANSIBLE_NAS_REF = <branch>. Only its role names and docs are read. Containers
 # you have retired but kept: ENDORA_LAB_RETIRED = name=note;name=note, shown on the team's map.
 export ENDORA_ANSIBLE_NAS_REPO
 export ENDORA_ANSIBLE_NAS_REF
