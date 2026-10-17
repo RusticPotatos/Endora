@@ -1038,6 +1038,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 member: member.id,
                 task: run.task,
                 told: run.told.clone(),
+                token: self.store.issue_token(run.id)?,
             };
             if let Err(why) = self.runner.start(&context) {
                 self.fail(run, &format!("could not start: {}", why.0))?;
@@ -1053,6 +1054,53 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             started += 1;
         }
         Ok(started)
+    }
+
+    // ---- the team protocol (spec section 6) ------------------------------------------------
+
+    /// The turn a token was issued for, while it runs: its run and its member. A token for a
+    /// turn that has ended opens nothing.
+    ///
+    /// # Errors
+    /// A store failure.
+    pub fn turn_of(&self, token: &str) -> Done<Option<(Run, Member)>> {
+        let Some(id) = self.store.run_of_token(token)? else {
+            return Ok(None);
+        };
+        let Some(run) = self
+            .store
+            .run(id)?
+            .filter(|r| r.status == RunStatus::Running)
+        else {
+            return Ok(None);
+        };
+        let member = self.member(run.member)?;
+        Ok(Some((run, member)))
+    }
+
+    /// A member asks the owner something about its task: a question on the desk. Seeing it
+    /// wakes the member again.
+    ///
+    /// # Errors
+    /// [`EngineError::Unknown`] for a turn with no task; a store failure.
+    pub fn ask_owner(&self, run: RunId, text: &str) -> Done<crate::domain::DeskId> {
+        let _held = self.held();
+        let run = self.store.run(run)?.ok_or(EngineError::Unknown("run"))?;
+        let task = run.task.ok_or(EngineError::Unknown("task for this turn"))?;
+        let member = self.member(run.member)?;
+        let text: String = text.trim().chars().take(600).collect();
+        let desk = self.store.add_desk(
+            "question",
+            Some(task),
+            None,
+            &format!("{} asks: {text}", member.name),
+            self.clock.now(),
+        )?;
+        self.emit(
+            EventKind::DeskAdded,
+            json!({ "item": desk.0, "kind": "question", "task": task.0 }),
+        )?;
+        Ok(desk)
     }
 
     // ---- the owner's desk ---------------------------------------------------------------
@@ -1109,7 +1157,16 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 self.store.set_task_status(task.id, TaskStatus::Dropped)?;
                 self.after_finishing(&task)?;
             }
-            ("ready_to_merge", "merged" | "not_now") | ("ready_to_read", "read" | "not_now") => {}
+            ("question", "seen") => {
+                // The member who asked carries on, reading the thread for any answer.
+                let task = self.task(found.task.ok_or(EngineError::Unknown("task"))?)?;
+                if let Some(member) = task.owner.or(task.assignee) {
+                    self.wake_held_lock(member, Some(task.id), WakeReason::ProposalDecided)?;
+                }
+            }
+            ("ready_to_merge", "merged" | "not_now")
+            | ("ready_to_read", "read" | "not_now")
+            | ("question", "dismiss") => {}
             _ => return Err(EngineError::Unknown("decision for this item")),
         }
         self.store.set_desk_status(item, decision)?;

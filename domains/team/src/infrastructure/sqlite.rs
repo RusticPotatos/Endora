@@ -52,6 +52,10 @@ CREATE TABLE IF NOT EXISTS runs (
     told TEXT NOT NULL DEFAULT '', end_reason TEXT NOT NULL DEFAULT '',
     moved_forward INTEGER NOT NULL DEFAULT 0
 ) STRICT;
+-- A turn's token for the team protocol: its worker's only credential, valid while it runs.
+CREATE TABLE IF NOT EXISTS run_tokens (
+    run INTEGER PRIMARY KEY REFERENCES runs(id), token TEXT NOT NULL UNIQUE
+) STRICT;
 -- Append-only: a reservation before a turn starts, use while it runs, the charge and the
 -- release when it ends. Rows are never changed or removed.
 CREATE TABLE IF NOT EXISTS ledger (
@@ -611,6 +615,30 @@ impl TeamStore for SqliteTeamStore {
             .map_err(backend)?;
         let rows = stmt.query_map([], run_from).map_err(backend)?;
         rows.collect::<rusqlite::Result<_>>().map_err(backend)
+    }
+
+    fn issue_token(&self, run: RunId) -> Stored<String> {
+        // SQLite's own randomness: 32 bytes, as hex.
+        self.conn()?
+            .query_row(
+                "INSERT INTO run_tokens (run, token) VALUES (?1, lower(hex(randomblob(32))))
+                 ON CONFLICT (run) DO UPDATE SET token = lower(hex(randomblob(32)))
+                 RETURNING token",
+                [run.0],
+                |r| r.get(0),
+            )
+            .map_err(backend)
+    }
+
+    fn run_of_token(&self, token: &str) -> Stored<Option<RunId>> {
+        self.conn()?
+            .query_row(
+                "SELECT run FROM run_tokens WHERE token = ?1",
+                [token],
+                |r| r.get(0).map(RunId),
+            )
+            .optional()
+            .map_err(backend)
     }
 
     fn save_run(&self, run: &Run) -> Stored<()> {

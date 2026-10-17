@@ -319,6 +319,19 @@ pub trait TeamStore {
     /// [`StoreError`] if the store fails.
     fn save_run(&self, run: &Run) -> Stored<()>;
 
+    /// Issues a fresh token for a turn, replacing any it had: what its worker presents to the
+    /// team protocol, good for this run only (spec section 3, invariant 3).
+    ///
+    /// # Errors
+    /// [`StoreError`] if the store fails.
+    fn issue_token(&self, run: RunId) -> Stored<String>;
+
+    /// The run a token was issued for, if any.
+    ///
+    /// # Errors
+    /// [`StoreError`] if the store fails.
+    fn run_of_token(&self, token: &str) -> Stored<Option<RunId>>;
+
     /// Reserves `amount` for a turn of `member` on `day`, before it starts.
     ///
     /// # Errors
@@ -452,6 +465,8 @@ pub struct RunContext {
     /// What the member is told: its role, the task and its chain of why, what is new, the
     /// tasks it waits on.
     pub told: String,
+    /// The run's own token for the team protocol, which ends with the run.
+    pub token: String,
 }
 
 /// Why a turn could not be started.
