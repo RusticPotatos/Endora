@@ -220,8 +220,16 @@ with `retry_waiting` between attempts. Each run records:
 
 - the wake that started it and a snapshot of what the member was told;
 - the steps it took and what each cost;
-- the session it can resume next time, kept per member and task;
-- why it ended, and a separate verdict on whether it moved the work forward.
+- why it ended, and a separate verdict on whether it moved the work forward. Progress is
+  evidence, not words: a status change, a sub-task, a post the model chose to make, a claim
+  that took the task. Re-claiming a task the member already has, and the worker's own last
+  word for the model, are not progress, so the empty-turn back-off holds a turn that did
+  nothing (fixed 2026-10-17).
+
+A turn does not resume a model session: each starts fresh, and continuity comes from the
+briefing ("what is new since your last turn"), the thread, the goal's notes and lessons, and
+the CEO's house log. Per-task session resume is not built; it is reconsidered if turns need
+it.
 
 A member is told, at the start of a run: its role, the task and its chain of why, what is new
 in the thread since its last turn, the tasks it waits on, the brief if one is released, and
@@ -489,7 +497,7 @@ authenticated routes.
 ## 14. Storage
 
 HQ's own SQLite database holds: teams, members, goals, tasks, task waits, thread posts,
-wakes (as receipts), runs and their steps, sessions per member and task, the budget ledger,
+wakes (as receipts), runs and their steps, the budget ledger,
 desk items, briefs (the released text and where it came from), runners, settings, and the
 event log the stream is served from. Endora's audit log, secrets and brain stay in the node.
 

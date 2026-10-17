@@ -603,13 +603,26 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         Ok(id)
     }
 
+    /// Whether every task in `waits` is done. A dropped one is not: the work waited for never
+    /// happened, so whoever waits must decide what now (see [`Self::dropped_wait`]).
     fn waits_over(&self, waits: &[TaskId]) -> Done<bool> {
         for wait in waits {
-            if !self.task(*wait)?.status.finished() {
+            if self.task(*wait)?.status != TaskStatus::Done {
                 return Ok(false);
             }
         }
         Ok(true)
+    }
+
+    /// The first task in `waits` that was dropped, if any: a wait that will never finish.
+    fn dropped_wait(&self, waits: &[TaskId]) -> Done<Option<Task>> {
+        for wait in waits {
+            let task = self.task(*wait)?;
+            if task.status == TaskStatus::Dropped {
+                return Ok(Some(task));
+            }
+        }
+        Ok(None)
     }
 
     // ---- wakes ---------------------------------------------------------------------------
@@ -933,6 +946,20 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// # Errors
     /// [`Refusal::TurnOver`], [`Refusal::OutOfReach`], or a task that does not exist.
     pub fn post_in(&self, run: RunId, task: TaskId, text: &str) -> Done<()> {
+        self.post_in_counting(run, task, text, true)
+    }
+
+    /// A turn's last word, which the worker posts for the model when it stops: in the thread
+    /// like any post, but not progress. It is what the model said, not something it did, and
+    /// counting it would make every turn look like one that moved its task forward.
+    ///
+    /// # Errors
+    /// As [`Self::post_in`].
+    pub fn last_word_in(&self, run: RunId, task: TaskId, text: &str) -> Done<()> {
+        self.post_in_counting(run, task, text, false)
+    }
+
+    fn post_in_counting(&self, run: RunId, task: TaskId, text: &str, progress: bool) -> Done<()> {
         let _held = self.held();
         let run = self.running(run)?;
         self.reach(&run, task, true)?;
@@ -942,7 +969,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         } else {
             self.askers_of(&member, task)?
         };
-        self.post_held_lock(Author::Member(member.id), task, text)?;
+        self.post_held_lock_counting(Author::Member(member.id), task, text, progress)?;
         let members = self.store.members()?;
         let named = mentions(text, &members);
         for asker in askers {
@@ -999,7 +1026,12 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         if current.status == TaskStatus::Todo {
             self.store.set_task_status(task, TaskStatus::Doing)?;
         }
-        self.mark_progress(member, task)?;
+        // Taking a task is progress; claiming one the member already has is not. The worker
+        // claims before every turn, and a turn that did nothing else must count as empty, or
+        // the empty-turn back-off never holds a real turn back.
+        if current.owner != Some(member) || current.status == TaskStatus::Todo {
+            self.mark_progress(member, task)?;
+        }
         self.emit(
             EventKind::TaskClaimed,
             json!({ "task": task.0, "member": member.0 }),
@@ -1081,6 +1113,16 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     }
 
     fn post_held_lock(&self, by: Author, task: TaskId, text: &str) -> Done<()> {
+        self.post_held_lock_counting(by, task, text, true)
+    }
+
+    fn post_held_lock_counting(
+        &self,
+        by: Author,
+        task: TaskId,
+        text: &str,
+        progress: bool,
+    ) -> Done<()> {
         self.task(task)?;
         let author = self.author_name(by)?;
         self.store.post(task, &author, text, self.clock.now())?;
@@ -1089,7 +1131,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             EventKind::ThreadPosted,
             json!({ "task": task.0, "author": author, "preview": preview }),
         )?;
-        if let Author::Member(member) = by {
+        if let (Author::Member(member), true) = (by, progress) {
             self.mark_progress(member, task)?;
         }
         let members = self.store.members()?;
@@ -2746,9 +2788,14 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 task.status,
                 TaskStatus::Todo | TaskStatus::Blocked | TaskStatus::InReview
             ) || live.contains(&Some(task.id))
-                || !self.waits_over(&task.waits_on)?
                 || !self.store.held_wakes(task.id)?.is_empty()
             {
+                continue;
+            }
+            // Still waiting on work that will happen: not stranded. Waiting on work that was
+            // dropped: stranded, and its member is told why.
+            let dropped = self.dropped_wait(&task.waits_on)?;
+            if dropped.is_none() && !self.waits_over(&task.waits_on)? {
                 continue;
             }
             let Some(member) = task.owner.or(task.assignee) else {
@@ -2782,6 +2829,17 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             if !task.nudged {
                 self.store.set_nudged(task.id, true)?;
                 nudged += 1;
+                if let Some(gone) = &dropped {
+                    self.post_held_lock(
+                        Author::Endora,
+                        task.id,
+                        &format!(
+                            "#{} ({}), which this waited on, was dropped: decide whether this \
+                             still needs doing, and say so here, or ask.",
+                            gone.id, gone.title
+                        ),
+                    )?;
+                }
                 if task.status == TaskStatus::InReview {
                     self.review_asked(task)?;
                     continue;

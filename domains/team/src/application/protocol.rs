@@ -229,6 +229,13 @@ pub fn call<S: TeamStore, W: WorkerAdapter, C: Clock>(
                     "a post is at most {LONGEST_POST} characters: say it shorter, or in parts"
                 ));
             }
+            // The worker's own last word for the model is marked so: posted, not progress.
+            if args["last_word"].as_bool() == Some(true) {
+                engine
+                    .last_word_in(run.id, task, text)
+                    .map_err(|e| said(&e))?;
+                return Ok("Posted.".to_owned());
+            }
             engine.post_in(run.id, task, text).map_err(|e| said(&e))?;
             Ok("Posted.".to_owned())
         }
