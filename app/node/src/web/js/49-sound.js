@@ -26,6 +26,11 @@ function soundAudio() {
   // A stream that drops comes back on its own, with a new ticket, while this device listens.
   a.addEventListener("error", () => { if (SOUND.listening) setTimeout(soundReconnect, 1500); });
   a.addEventListener("ended", () => { if (SOUND.listening) setTimeout(soundReconnect, 1500); });
+  a.addEventListener("stalled", () => {
+    if (!SOUND.listening) return;
+    const at = a.currentTime;
+    setTimeout(() => { if (SOUND.listening && a.currentTime === at) soundReconnect(); }, 8000);
+  });
   document.body.appendChild(a);
   return a;
 }
@@ -62,6 +67,7 @@ function soundStartHere(speaker) {
   const a = soundAudio();
   a.src = SOUND.ticket.url; SOUND.ticket = null;
   SOUND.listening = true;
+  soundRemember(true); soundBanner("");
   a.play().catch(() => { SOUND.listening = false; });
   return true;
 }
@@ -256,11 +262,14 @@ async function soundDispatch(verb, noun, id, arg) {
     if (!SOUND.ticket) { flash("Couldn't start listening.", "err"); return true; }
     a.src = SOUND.ticket.url; SOUND.ticket = null;
     SOUND.listening = true;
+    soundRemember(true); soundBanner("");
     try { await a.play(); } catch (e) { SOUND.listening = false; flash("Couldn't play: " + e.message, "err"); }
     render(); await soundTicket(); return true;
   }
+  if (noun === "forgetlisten") { soundRemember(false); soundBanner(""); return true; }
   if (noun === "stop") {
     SOUND.listening = false;
+    soundRemember(false);
     const a = soundAudio(); a.pause(); a.removeAttribute("src"); a.load();
     render(); return true;
   }
@@ -336,3 +345,69 @@ document.body.addEventListener("input", (ev) => {
   const n = r.nextElementSibling;
   if (n && n.classList.contains("level-n")) n.textContent = r.value;
 });
+
+// ---- keeping up: a new version, a stream gone quiet, and a reload while listening ----------
+// Every half minute: has a new build been deployed? Has this device's stream stopped moving?
+// A stream that has is joined again with a fresh ticket. A new build reloads the page, unless
+// that would cut off what is playing or what is being typed: then it asks. And a page reloaded
+// while it was listening offers to listen again at once: an iPhone starts sound only from a
+// tap, so it cannot simply carry on by itself.
+
+function soundRemember(on) { try { localStorage.setItem("endora.soundListening", on ? "1" : "0"); } catch (_) {} }
+function soundWasListening() { try { return localStorage.getItem("endora.soundListening") === "1"; } catch (_) { return false; } }
+
+// One line pinned above everything, outside the screen, so a re-render never takes it away.
+function soundBanner(html) {
+  let b = document.getElementById("sound-banner");
+  if (!html) { if (b) b.remove(); return; }
+  if (!b) {
+    b = document.createElement("div");
+    b.id = "sound-banner";
+    b.className = "card";
+    b.style.cssText = "position:fixed;left:12px;right:12px;bottom:12px;z-index:50;display:flex;gap:10px;align-items:center;";
+    document.body.appendChild(b);
+  }
+  b.innerHTML = html;
+}
+
+const SOUND_KEEP = { last: -1, still: 0 };
+
+async function soundKeepUp() {
+  // A new build: the page loaded one, the node now serves another.
+  try {
+    const h = await (await fetch("/health")).json();
+    const pill = document.querySelector('[title^="build "]');
+    const loaded = pill ? pill.getAttribute("title").slice(6) : "";
+    if (h && h.build && h.build !== "dev" && loaded && loaded !== "dev" && h.build !== loaded) {
+      const typing = typeof hqTyping === "function" && hqTyping();
+      if (!SOUND.listening && !typing) { location.reload(); return; }
+      soundBanner(`<div class="grow">A new version of Endora is ready.</div><button class="primary" data-act="reload">Update</button>`);
+    }
+  } catch (_) { /* the node is restarting: try again next time */ }
+  // A stream that stopped moving while this device listens: join it again.
+  if (SOUND.listening) {
+    const a = soundAudio();
+    const now = a.currentTime;
+    SOUND_KEEP.still = now === SOUND_KEEP.last ? SOUND_KEEP.still + 1 : 0;
+    SOUND_KEEP.last = now;
+    if (SOUND_KEEP.still >= 1) { SOUND_KEEP.still = 0; soundReconnect(); }
+  }
+}
+
+// Reloaded while listening: a ticket ready, and one tap to listen again.
+async function soundOfferResume() {
+  if (!soundWasListening() || SOUND.listening) return;
+  try { SOUND.state = SOUND.state || await api("GET", "/v1/sound"); } catch (_) { return; }
+  if (!soundMine()) return;
+  await soundTicket();
+  if (SOUND.ticket) soundBanner(`<div class="grow">You were listening on this ${esc(soundMine().name)}.</div><button class="primary" data-act="sound:listen">Listen again</button><button class="ghost" data-act="sound:forgetlisten">No</button>`);
+}
+
+if (typeof window !== "undefined" && typeof setInterval === "function" && !window.__soundKeepUp) {
+  window.__soundKeepUp = true;
+  // In a browser these are numbers; under Node (the console check) they are timers, unref'd so
+  // they never keep a finished check running.
+  const every = setInterval(soundKeepUp, 30000);
+  const once = setTimeout(soundOfferResume, 2500);
+  for (const t of [every, once]) if (t && typeof t.unref === "function") t.unref();
+}

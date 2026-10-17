@@ -251,7 +251,12 @@ async function spotify(method, path, body, retried) {
   }
   if (res.status === 404) throw new Error("No device is playing. Pick one under Play on");
   if (res.status === 429) throw new Error("Spotify is busy; try again in a moment");
-  if (!res.ok) throw new Error("Spotify could not do that");
+  if (!res.ok) {
+    // What Spotify said, and to which call, so a refusal can be told apart from a fault.
+    let said = "";
+    try { said = String(((await res.json()) || {}).error.message || ""); } catch (_) {}
+    throw new Error(`Spotify could not do that (${res.status}${said ? ": " + said : ""}, ${path.split("?")[0]})`);
+  }
   // A player command can answer 200 with a body that is not JSON; it still worked, so that
   // is nothing to read rather than an error shown as a JSON parser's complaint.
   const text = await res.text();
