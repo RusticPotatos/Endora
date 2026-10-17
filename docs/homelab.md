@@ -51,8 +51,12 @@ access, preferably through a host service supervisor:
 python3 scripts/homelab-docker-proxy.py
 ```
 
-It binds only loopback on port 9876 and accepts exactly `GET /version` and
-`GET /containers/json?all=true`. Other routes and write methods are refused.
+It binds only loopback on port 9876 and accepts exactly `GET /version`,
+`GET /containers/json?all=true`, and `GET /containers/<name>/json` for a name
+matching `[A-Za-z0-9][A-Za-z0-9_.-]{0,127}` (the team's lab map, ADR 0112: only
+the id, name, image, state, restart policy, network mode and the compose
+service, project and `depends_on` labels are passed on; never the environment,
+mounts or binds). Other routes, queries and write methods are refused.
 Configure Docker's dashboard origin as `http://127.0.0.1:9876` when the node
 runs on that host. For a remote host, forward that loopback endpoint through a
 private SSH tunnel. Do not publish the proxy or raw daemon port to the internet.

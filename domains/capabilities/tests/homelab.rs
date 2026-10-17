@@ -79,3 +79,17 @@ fn the_observer_sees_a_containers_id_and_how_it_exited_and_a_download_whether_it
     assert_eq!(queue["items"][0]["stuck"], true);
     assert_eq!(queue["items"][1]["stuck"], false);
 }
+
+#[test]
+fn only_a_name_docker_could_give_is_inspected() {
+    use endora_capabilities::infrastructure::homelab::a_container_name;
+    for name in ["gluetun", "endora-node", "project_runner_1", "a.b"] {
+        assert!(a_container_name(name), "{name}");
+    }
+    for name in [
+        "", "../json", "x/json", "-x", ".x", "x?size=1", "x y", "x%2f",
+    ] {
+        assert!(!a_container_name(name), "{name}");
+    }
+    assert!(!a_container_name(&"x".repeat(129)));
+}

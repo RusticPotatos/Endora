@@ -289,6 +289,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             Err(e) => eprintln!("hq: could not seat the CEO: {e}"),
         }
+        // How this lab is built, in the house log, once and only when it is empty (ADR 0112).
+        match hq.seed_house_log() {
+            Ok(true) => println!("hq: put how this lab is built in the house log"),
+            Ok(false) => {}
+            Err(e) => eprintln!("hq: could not seed the house log: {e}"),
+        }
     }
 
     // The tick: every `tick_every` seconds; a late one runs once.

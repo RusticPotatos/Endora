@@ -68,6 +68,8 @@ fn first_line(text: &str) -> String {
 const HOUSE_LOG: &str = "house_log";
 /// Set once HQ has seated its CEO, so it is never seated again.
 const CEO_SEATED: &str = "ceo_seated";
+/// Set once Endora has seeded the house log, so it is never seeded again (ADR 0112).
+const HOUSE_LOG_SEEDED: &str = "house_log_seeded";
 
 /// Endora's public records and plans, as `(path, text)`, for the CEO's `read_doc`.
 pub type Library = &'static [(&'static str, &'static str)];
@@ -441,6 +443,30 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             about.extend(said.clone());
         }
         self.emit(EventKind::HouseNoted, about)
+    }
+
+    /// Endora seeds the house log with how this lab is built ([`house::lab_built`]), once, and
+    /// only when it is empty: what the CEO or the owner wrote is never overwritten, and a log
+    /// the owner cleared later stays clear. Said in the feed as Endora's. Returns whether it
+    /// was seeded now.
+    ///
+    /// # Errors
+    /// A store failure.
+    pub fn seed_house_log(&self) -> Done<bool> {
+        let _held = self.held();
+        if self.store.setting(HOUSE_LOG_SEEDED)?.is_some() {
+            return Ok(false);
+        }
+        self.store.set_setting(HOUSE_LOG_SEEDED, "1")?;
+        if !self.house_log()?.trim().is_empty() {
+            return Ok(false);
+        }
+        self.keep_house_log(
+            &house::lab_built(),
+            "Endora",
+            json!({ "entry": endora_kernel::lab::LAB_BUILT_TITLE, "seeded": true }),
+        )?;
+        Ok(true)
     }
 
     /// The owner rewrites the house log on HQ's screen; empty clears it.

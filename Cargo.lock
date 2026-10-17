@@ -791,6 +791,7 @@ dependencies = [
 name = "endora-team"
 version = "0.12.0"
 dependencies = [
+ "endora-kernel",
  "rusqlite",
  "serde_json",
 ]
@@ -830,6 +831,7 @@ dependencies = [
 name = "endora-worker"
 version = "0.12.0"
 dependencies = [
+ "endora-kernel",
  "endora-team",
  "serde_json",
  "ureq",

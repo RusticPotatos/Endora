@@ -27,6 +27,12 @@ Amended 2026-10-17 by [0110](0110-the-teams-rings.md): the contracts are the tea
 the house from the Pi's sandbox too, reached through the team gateway; no key and no direct
 route to a home service enters a sandbox.
 
+Amended 2026-10-17 by [0112](0112-the-team-knows-how-the-lab-is-built.md): two more reads,
+offered to every role on any brain (Internal: names and wiring): `homelab_map`, how the lab is
+built (who manages each container, what depends on what), through one more fixed read-only
+route on the Docker observer; and `ansible_nas_doc`, the lab's ansible-nas docs by an
+allowlist.
+
 ## Context
 
 The owner gave the team the goal "Keep the home lab healthy", and the team could not see the

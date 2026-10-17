@@ -676,6 +676,19 @@ checked with HQ as the relays are:
   (restarting, out of memory, crash-looping); once a container an hour and three an hour in
   all, kept in the node's database; the state read back; a notice to the owner through
   `POST /v1/team/notice` on HQ.
+- `homelab_map` (read, Internal, [ADR 0112](../adr/0112-the-team-knows-how-the-lab-is-built.md)):
+  how the lab is built, from Docker through the observer's list and its one inspection route
+  (`/containers/<name>/json`): each container's image, state, restart policy, who manages it
+  (`ansible-nas role <name>`, `Endora`, `unknown`), what it depends on and what depends on it,
+  and the owner's note from `ENDORA_LAB_RETIRED`; wiring lines such as "gluetun → deluge,
+  nzbget, prowlarr (run in its network)". No environment, mounts, binds or other labels. Kept
+  a minute.
+- `ansible_nas_doc` (read, Internal, ADR 0112): `{ "path" }`, a doc (`docs/**/*.md`,
+  `website/docs/**/*.md`, `roles/<name>/README.md`) or a folder to list (`roles`, `docs`,
+  `website/docs` and folders in them); anything else, `..` included, refused. From the fork in
+  `ENDORA_ANSIBLE_NAS_REPO` at `ENDORA_ANSIBLE_NAS_REF` on GitHub, kept a day; unset, "not
+  configured". HQ seeds the house log once, when it is empty, with how the lab is built, and
+  the worker's instructions carry the same paragraph.
 - Every call, done or refused, is in the node's audit log with the member and the run. The
   owner switches `restart_container`, or every contract, off on the HQ screen
   (`/v1/hq/contracts`).

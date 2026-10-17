@@ -116,8 +116,10 @@ impl Reader {
     }
 }
 
-impl HomelabObserver for Reader {
-    fn observe(&self, service: &str) -> Result<Value, &'static str> {
+impl Reader {
+    /// One fixed GET of a configured service: its origin and key from the settings, a short
+    /// timeout, no redirects and no proxy, a bounded body.
+    fn get(&self, service: &str, path: &str) -> Result<Value, &'static str> {
         let id = format!("homelab-{service}");
         let settings = self.settings.all_settings().map_err(|_| "configuration")?;
         let setting = |key: &str| {
@@ -132,11 +134,6 @@ impl HomelabObserver for Reader {
             return Err("unconfigured");
         }
         validate_origin(origin)?;
-        let path = match service {
-            "docker" => "/containers/json?all=true",
-            "sonarr" | "radarr" => "/api/v3/queue?page=1&pageSize=100",
-            _ => return Err("configuration"),
-        };
         let agent: ureq::Agent = ureq::Agent::config_builder()
             .timeout_global(Some(Duration::from_secs(5)))
             .max_redirects(0)
@@ -157,12 +154,41 @@ impl HomelabObserver for Reader {
             401 | 403 => return Err("authentication"),
             _ => return Err("upstream"),
         }
-        let value: Value = response
+        response
             .body_mut()
             .with_config()
             .limit(1024 * 1024)
             .read_json()
-            .map_err(|_| "protocol")?;
+            .map_err(|_| "protocol")
+    }
+}
+
+/// Whether a container's name is one Docker could have given it, and so one the inspection
+/// route may carry: a letter or digit, then letters, digits, `_`, `.` or `-`.
+#[must_use]
+pub fn a_container_name(name: &str) -> bool {
+    let mut bytes = name.bytes();
+    name.len() <= 128
+        && bytes.next().is_some_and(|b| b.is_ascii_alphanumeric())
+        && bytes.all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'.' | b'-'))
+}
+
+impl HomelabObserver for Reader {
+    fn observe(&self, service: &str) -> Result<Value, &'static str> {
+        let path = match service {
+            "docker" => "/containers/json?all=true",
+            "sonarr" | "radarr" => "/api/v3/queue?page=1&pageSize=100",
+            _ => return Err("configuration"),
+        };
+        let value = self.get(service, path)?;
         normalize_observed(service, &value)
+    }
+
+    fn inspect(&self, name: &str) -> Result<Value, &'static str> {
+        if !a_container_name(name) {
+            return Err("configuration");
+        }
+        let value = self.get("docker", &format!("/containers/{name}/json"))?;
+        Ok(crate::lab_map::project(&value))
     }
 }

@@ -7,7 +7,8 @@
 //! a component has) and [`Reversibility`] with its [`Decision`] (how undoable an
 //! action is, and what policy does with it — ADR 0051). These are the vocabulary
 //! that two contexts — direction's policy and capabilities' envelope — genuinely
-//! share.
+//! share. And one text two contexts must say alike: how the home lab is built ([`lab`]),
+//! which HQ's house log and the team's worker both carry (ADR 0112).
 //!
 //! The kernel depends on nothing. It is `shared/`, not a bounded context: it
 //! holds no use cases and no policy, only the vocabulary contexts speak in
@@ -18,6 +19,7 @@
 pub mod autonomy;
 pub mod error;
 pub mod ids;
+pub mod lab;
 pub mod reversibility;
 pub mod tier;
 pub mod traits;

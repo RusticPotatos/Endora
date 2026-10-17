@@ -250,6 +250,16 @@ services:
       # ENDORA_HQ_URL=http://hq:8790 in local.mk. Empty: no HQ.
       ENDORA_HQ_URL: "${ENDORA_HQ_URL-}"
       ENDORA_HQ_TOKEN_FILE: /hq-token/token
+      # The lab's ansible-nas (ADR 0112): the owner's public fork on GitHub, as owner/name, and
+      # its branch (master unless set), in local.mk. The node reads only its role names and its
+      # docs (docs/, website/docs/, role READMEs) for the team's homelab_map and
+      # ansible_nas_doc, never an inventory or group_vars. Empty: not configured, and who
+      # manages a container is unknown.
+      ENDORA_ANSIBLE_NAS_REPO: "${ENDORA_ANSIBLE_NAS_REPO-}"
+      ENDORA_ANSIBLE_NAS_REF: "${ENDORA_ANSIBLE_NAS_REF:-master}"
+      # Containers the owner has retired but kept, with a note the team's map shows beside
+      # each: name=note pairs, ";" between them (e.g. owntone=retired, kept for its settings).
+      ENDORA_LAB_RETIRED: "${ENDORA_LAB_RETIRED-}"
       # endora-sound (ADR 0104), when its `sound` profile runs. Empty: no sound hub.
       ENDORA_SOUND_URL: "${ENDORA_SOUND_URL-}"
       ENDORA_SOUND_TOKEN_FILE: /sound-token/token

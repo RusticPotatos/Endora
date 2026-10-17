@@ -5,6 +5,21 @@
 
 use super::work::{Millis, Refusal};
 
+/// The house log's first entry, which Endora seeds once when the log is empty (ADR 0112):
+/// how this lab is built, a line a sentence.
+#[must_use]
+pub fn lab_built() -> String {
+    let lines: Vec<String> = endora_kernel::lab::LAB_BUILT
+        .iter()
+        .map(|said| format!("- {said}"))
+        .collect();
+    format!(
+        "{}:\n{}",
+        endora_kernel::lab::LAB_BUILT_TITLE,
+        lines.join("\n")
+    )
+}
+
 /// The most characters the house log may run to.
 pub const HOUSE_LOG_MOST: usize = 6_000;
 /// The most characters one entry may run to.

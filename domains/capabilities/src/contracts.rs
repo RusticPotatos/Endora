@@ -93,6 +93,11 @@ pub const HOMELAB_STATUS: &str = "homelab_status";
 pub const CONTAINER_LOGS: &str = "container_logs";
 /// The contract that restarts a container.
 pub const RESTART_CONTAINER: &str = "restart_container";
+/// The contract that reads how the home lab is built: who manages each container and what
+/// depends on what (ADR 0112).
+pub const HOMELAB_MAP: &str = "homelab_map";
+/// The contract that reads the lab's ansible-nas docs (ADR 0112).
+pub const ANSIBLE_NAS_DOC: &str = "ansible_nas_doc";
 
 /// Every contract Endora offers the team, in the order a turn is offered them.
 #[must_use]
@@ -122,6 +127,22 @@ pub fn all() -> Vec<Contract> {
                 "container": container,
                 "why": { "type": "string", "description": "Why it needs a restart, in a sentence the owner reads." },
             }, "required": ["container", "why"] }),
+        },
+        Contract {
+            name: HOMELAB_MAP,
+            description: "Read how the home lab is built, from Docker: for each container its image, state, restart policy, who manages it (an ansible-nas role, Endora, or unknown), what it depends on and what depends on it, e.g. \"gluetun → deluge, nzbget, prowlarr (run in its network)\": those stop when gluetun restarts and come back on their own. Names and wiring only. Read it before treating a stop as a fault. Free.",
+            kind: Kind::Read,
+            tier: "internal",
+            input: json!({ "type": "object", "properties": {} }),
+        },
+        Contract {
+            name: ANSIBLE_NAS_DOC,
+            description: "Read the lab's ansible-nas docs, which say how each app is set up: a file (roles/<name>/README.md, docs/…/*.md or website/docs/…/*.md, e.g. website/docs/applications/download-tools/gluetun.md), or a folder to list (roles lists every role; docs, website/docs or a folder in them). Nothing else of ansible-nas can be read. Free.",
+            kind: Kind::Read,
+            tier: "internal",
+            input: json!({ "type": "object", "properties": {
+                "path": { "type": "string", "description": "A doc's path, or a folder to list, e.g. roles or roles/deluge/README.md." },
+            } }),
         },
     ]
 }
@@ -335,17 +356,52 @@ mod tests {
     const NOON: i64 = 1_792_166_400_000;
 
     #[test]
-    fn three_contracts_each_a_tool_with_a_schema() {
+    fn five_contracts_each_a_tool_with_a_schema() {
         let tools: Vec<Value> = all().iter().map(Contract::as_tool).collect();
         let names: Vec<&str> = tools.iter().filter_map(|t| t["name"].as_str()).collect();
-        assert_eq!(names, [HOMELAB_STATUS, CONTAINER_LOGS, RESTART_CONTAINER]);
+        assert_eq!(
+            names,
+            [
+                HOMELAB_STATUS,
+                CONTAINER_LOGS,
+                RESTART_CONTAINER,
+                HOMELAB_MAP,
+                ANSIBLE_NAS_DOC
+            ]
+        );
         for tool in &tools {
             assert_eq!(tool["inputSchema"]["type"], "object", "{tool}");
             assert!(!tool["description"].as_str().unwrap().is_empty());
         }
         let kinds: Vec<Kind> = all().iter().map(|c| c.kind).collect();
-        assert_eq!(kinds, [Kind::Read, Kind::Read, Kind::AutomaticAct]);
+        assert_eq!(
+            kinds,
+            [
+                Kind::Read,
+                Kind::Read,
+                Kind::AutomaticAct,
+                Kind::Read,
+                Kind::Read
+            ]
+        );
         assert_eq!(all()[1].tier, "confidential", "logs are");
+    }
+
+    #[test]
+    fn every_role_on_any_brain_is_offered_the_map_and_the_docs() {
+        let all = all();
+        for contract in &all[3..] {
+            assert_eq!(contract.tier, "internal", "names and wiring only");
+            for role in ["ceo", "lead", "developer", "reviewer", "researcher"] {
+                for cloud in [false, true] {
+                    assert!(
+                        contract.offered_to(role, cloud),
+                        "{} to a {role}",
+                        contract.name
+                    );
+                }
+            }
+        }
     }
 
     #[test]

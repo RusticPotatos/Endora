@@ -233,6 +233,17 @@ pub trait HomelabObserver: Send + Sync {
     /// # Errors
     /// A connection, authentication, configuration or protocol category.
     fn observe(&self, service: &str) -> Result<serde_json::Value, &'static str>;
+
+    /// One container's inspection, by its name, cut down to the home lab's map
+    /// ([`crate::lab_map::project`]): names and wiring, never its environment, mounts or
+    /// binds (ADR 0112). Not offered by an observer that cannot inspect.
+    ///
+    /// # Errors
+    /// The same safe categories; `unconfigured` when this observer does not inspect.
+    fn inspect(&self, name: &str) -> Result<serde_json::Value, &'static str> {
+        let _ = name;
+        Err("unconfigured")
+    }
 }
 
 /// Observes sources independently; one unavailable source never hides the other two.

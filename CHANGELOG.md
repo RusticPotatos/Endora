@@ -9,6 +9,16 @@ tagged release.
 
 ### Added
 
+- **The team knows how the lab is built** ([ADR 0112](docs/adr/0112-the-team-knows-how-the-lab-is-built.md)).
+  A new read contract, `homelab_map`, says for every container its image, state, restart
+  policy, who manages it (an ansible-nas role, Endora, or unknown), what it depends on and what
+  depends on it ("gluetun → deluge, nzbget, prowlarr (run in its network)"), from Docker's own
+  metadata, names and wiring only; the Docker observer gains one fixed read-only route for it
+  (`/containers/<name>/json`, a strict name, a handful of fields passed on). A second,
+  `ansible_nas_doc`, reads the lab's ansible-nas docs from the owner's public fork on GitHub
+  (`ENDORA_ANSIBLE_NAS_REPO`, `ENDORA_ANSIBLE_NAS_REF`), only `docs/`, `website/docs/` and role
+  READMEs, by an allowlist. Both go to every role on any brain. HQ seeds the CEO's house log
+  once, when it is empty, with how the lab is built, and the worker's instructions say it too.
 - **Cheaper cloud turns** ([ADR 0109's cost notes](docs/adr/0109-a-brain-per-member.md#cost-notes)).
   Each of the worker's rounds on Claude asks for Anthropic's automatic prompt cache, so a round
   reads the round before's prompt at the cache price and writes only what is new; the prefix is
