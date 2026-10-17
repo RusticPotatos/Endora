@@ -1,0 +1,8 @@
+{{ {
+  'log-driver': 'local',
+  'log-opts': {
+    'max-size': endora_dev_node_docker_log_max_size | string,
+    'max-file': endora_dev_node_docker_log_max_file | string,
+  },
+  'live-restore': true,
+} | to_nice_json }}

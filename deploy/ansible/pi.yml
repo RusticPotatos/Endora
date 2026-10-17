@@ -1,0 +1,16 @@
+---
+# Endora's dev node, the Raspberry Pi that runs the team's runner and sandboxes (ADR 0110).
+# Prepares the host; `make deploy-pi` then copies the image and starts the runner.
+#
+# From deploy/ansible, with your own inventory (copy inventory.pi.example to the git-ignored
+# inventory.pi.local and fill it in):
+#
+#   ansible-playbook -i inventory.pi.local pi.yml --check --diff --ask-become-pass
+#   ansible-playbook -i inventory.pi.local pi.yml --diff --ask-become-pass
+#
+# The collection is found beside this playbook (collections/ links to ./collection).
+- name: Endora dev node
+  hosts: endora_dev
+  become: true
+  roles:
+    - role: endora.homelab.endora_dev_node

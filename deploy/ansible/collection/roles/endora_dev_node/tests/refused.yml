@@ -1,0 +1,25 @@
+---
+# One setting validate.yml must refuse (render.yml loops over them as `case`). A setting a case
+# leaves out is empty, and its policy is the locked one unless it gives another.
+- name: "Refused: {{ case.why }}"
+  block:
+    - name: "Check: {{ case.why }}"
+      ansible.builtin.include_tasks: ../tasks/validate.yml
+      vars:
+        endora_nas_addr: "{{ case.with.endora_nas_addr | default('') }}"
+        endora_dev_node_lan_cidr: "{{ case.with.endora_dev_node_lan_cidr | default('') }}"
+        endora_dev_node_sandbox_policy: "{{ case.with.policy | default(locked) }}"
+
+    - name: "It passed, and must not have: {{ case.why }}"
+      ansible.builtin.set_fact:
+        endora_dev_node_let_through: "{{ case.why }}"
+
+    - name: "Stop: {{ case.why }}"
+      ansible.builtin.fail:
+        msg: "validate.yml let through {{ case.why }}"
+  rescue:
+    - name: "It was refused by the checks: {{ case.why }}"
+      ansible.builtin.assert:
+        that:
+          - endora_dev_node_let_through is not defined
+        fail_msg: "validate.yml let through {{ case.why }}"

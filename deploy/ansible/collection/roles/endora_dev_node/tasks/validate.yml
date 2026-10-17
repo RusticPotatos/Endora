@@ -1,0 +1,38 @@
+---
+# What has to be true before anything on the host changes. Pure checks, nothing touched, so
+# tests/render.yml runs them on the controller with good and bad settings.
+- name: Check the NAS address is set
+  ansible.builtin.assert:
+    that:
+      - endora_nas_addr is defined
+      - endora_nas_addr is string
+      - endora_nas_addr is match('^(25[0-5]|2[0-4][0-9]|1?[0-9]?[0-9])(\.(25[0-5]|2[0-4][0-9]|1?[0-9]?[0-9])){3}$')
+    fail_msg: >-
+      endora_nas_addr is not set, or is not an IPv4 address. Set it in your local inventory (see
+      deploy/ansible/inventory.pi.example) to the NAS that runs endora-node, e.g. 192.168.1.10:
+      the sandbox network may reach that address's port 8788 (the team gateway) and nothing else.
+
+- name: Check the LAN that SSH comes from is set
+  ansible.builtin.assert:
+    that:
+      - endora_dev_node_lan_cidr is string
+      - endora_dev_node_lan_cidr is match('^[0-9]{1,3}(\.[0-9]{1,3}){3}/([0-9]|[12][0-9]|3[0-2])$')
+      - endora_dev_node_ssh_extra_cidrs is sequence
+      - endora_dev_node_ssh_extra_cidrs is not string
+      - endora_dev_node_ssh_port | int > 0
+    fail_msg: >-
+      endora_dev_node_lan_cidr must be your LAN as an IPv4 CIDR, e.g. 192.168.1.0/24. The firewall
+      lets SSH in from there and nowhere else, so the role will not turn it on without it.
+  when: endora_dev_node_firewall | bool
+
+- name: Check the sandbox policy is the locked one
+  ansible.builtin.assert:
+    that:
+      - not (endora_dev_node_sandbox_policy.allow_dns | default(false))
+      - endora_dev_node_sandbox_policy.allow_public_tcp_ports | default([]) | length == 0
+      - endora_dev_node_sandbox_policy.allow_host_tcp_ports | default([]) | length == 0
+      - endora_dev_node_sandbox_policy.allow_lan | map(attribute='dest') | unique | list == [endora_nas_addr]
+      - endora_dev_node_sandbox_policy.allow_lan | map(attribute='port') | map('int') | list == [8788]
+    fail_msg: >-
+      The sandbox network may reach only the NAS's team gateway (8788): no DNS, no
+      public ports, no ports on this host, and no LAN address but endora_nas_addr.

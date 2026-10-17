@@ -118,6 +118,25 @@ TARGET_DOCKER = docker $(if $(DOCKER_CONTEXT),--context $(DOCKER_CONTEXT),)
 # ran a 16 GB NAS out of memory and swap, and Home Assistant stopped answering.
 ENDORA_BUILD_CONTEXT ?=
 
+# Endora's dev node (ADR 0110): a Raspberry Pi that runs the team's runner and each turn's
+# sandbox container. In local.mk:
+#
+#     ENDORA_PI_SSH = endora-dev.local           the Pi as an SSH destination, signed in as its
+#                                                `endora` user (User endora for that Host in
+#                                                ~/.ssh/config, or the user and an @ before it)
+#     ENDORA_NAS_ADDR = 192.168.1.10             the LAN address of the NAS running endora-node
+#
+# Prepare the Pi once with deploy/ansible/pi.yml (its inventory is the git-ignored
+# deploy/ansible/inventory.pi.local), copy the runner's token across once with
+# `make pi-runner-token`, then `make deploy-pi`. The image is built HERE for linux/arm64, on
+# ENDORA_PI_BUILD_CONTEXT (ENDORA_BUILD_CONTEXT if set, else desktop-linux: Docker Desktop on a
+# Mac), and never on the Pi or the NAS.
+ENDORA_PI_SSH ?=
+ENDORA_NAS_ADDR ?=
+ENDORA_PI_BUILD_CONTEXT ?= $(or $(ENDORA_BUILD_CONTEXT),desktop-linux)
+# Where the runner's token lives on the Pi (the endora_dev_node role makes the folder).
+ENDORA_PI_TOKEN_DIR ?= /etc/endora/runner-token
+
 .DEFAULT_GOAL := help
 
 ## ----------------------------------------------------------------------------
@@ -217,6 +236,46 @@ else
 	esac; \
 	ENDORA_BUILD="$$build" $(COMPOSE) up -d --no-build
 endif
+
+.PHONY: check-pi
+check-pi:
+	@test -n "$(ENDORA_PI_SSH)" || { echo "Set ENDORA_PI_SSH (the Pi as an SSH destination, e.g. endora-dev.local, as user endora) in local.mk"; exit 1; }
+	@case "$(ENDORA_NAS_ADDR)" in "" | *[!0-9.]*) \
+		echo "Set ENDORA_NAS_ADDR to the NAS's IPv4 address (e.g. 192.168.1.10) in local.mk"; exit 1;; esac
+
+.PHONY: deploy-pi
+deploy-pi: check-pi ## Build the node and workbench images for the Pi here (arm64), copy them over SSH, start the runner
+	# Mirrors `make deploy` with ENDORA_BUILD_CONTEXT: cross-compiled on this machine, copied
+	# with docker save | ssh docker load, so the Pi only starts it. scripts/pi-runner.sh then
+	# runs on the Pi and (re)starts endora-runner against the NAS's team gateway.
+	@set -e; \
+	build="$$(git rev-parse --short HEAD 2>/dev/null || echo dev)"; \
+	echo "building $$build for linux/arm64 on $(ENDORA_PI_BUILD_CONTEXT)"; \
+	docker --context $(ENDORA_PI_BUILD_CONTEXT) buildx build --platform linux/arm64 \
+		--build-arg ENDORA_BUILD="$$build" -t endora-node:for-pi --load .; \
+	echo "copying the image to $(ENDORA_PI_SSH)"; \
+	docker --context $(ENDORA_PI_BUILD_CONTEXT) save endora-node:for-pi | gzip -1 | ssh $(ENDORA_PI_SSH) docker load; \
+	ssh $(ENDORA_PI_SSH) docker tag endora-node:for-pi endora-node:latest; \
+	echo "building the workbench, where the Pi's runner starts each turn"; \
+	docker --context $(ENDORA_PI_BUILD_CONTEXT) buildx build --platform linux/arm64 \
+		--build-arg ENDORA_BUILD="$$build" --target workbench -t endora-workbench:for-pi --load .; \
+	docker --context $(ENDORA_PI_BUILD_CONTEXT) save endora-workbench:for-pi | gzip -1 | ssh $(ENDORA_PI_SSH) docker load; \
+	ssh $(ENDORA_PI_SSH) docker tag endora-workbench:for-pi endora-workbench:latest; \
+	echo "starting the runner"; \
+	ssh $(ENDORA_PI_SSH) sh -s -- "$(ENDORA_NAS_ADDR)" "$(ENDORA_PI_TOKEN_DIR)" < scripts/pi-runner.sh
+
+.PHONY: pi-runner-token
+pi-runner-token: check-pi ## Once: copy the runner's token from HQ (where DOCKER_CONTEXT deploys) to the Pi
+	# Read from HQ's runner-token volume with the node's own image (nothing pulled) and piped
+	# straight into a file on the Pi over SSH: it is never written on this machine. Again only
+	# if that volume is ever recreated.
+	@$(TARGET_DOCKER) volume inspect $(COMPOSE_PROJECT_NAME)_endora-hq-runner-token >/dev/null \
+		|| { echo "No HQ runner-token volume where DOCKER_CONTEXT points; is HQ running there?"; exit 1; }
+	@$(TARGET_DOCKER) run --rm --network none --entrypoint cat \
+		-v $(COMPOSE_PROJECT_NAME)_endora-hq-runner-token:/runner-token:ro \
+		endora-node:latest /runner-token/token \
+	| ssh $(ENDORA_PI_SSH) 'umask 077 && t="$(ENDORA_PI_TOKEN_DIR)/token" && cat > "$$t.new" && test -s "$$t.new" && mv "$$t.new" "$$t"'
+	@echo "The runner's token is in $(ENDORA_PI_TOKEN_DIR) on the Pi; make deploy-pi (re)starts the runner."
 
 .PHONY: smoke
 smoke: ## Assert invariants against the DEPLOYED node (ENDORA_URL, or https://127.0.0.1:8787)

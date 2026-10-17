@@ -1,0 +1,8 @@
+---
+# Syntax check: ansible-playbook --syntax-check roles/endora_dev_node/tests/syntax.yml (check.sh
+# makes the collection visible, which the role's import of docker_egress needs).
+- name: Endora dev node syntax
+  hosts: localhost
+  gather_facts: false
+  roles:
+    - role: endora_dev_node

@@ -1,0 +1,146 @@
+---
+# What the dev node is set up with, and what it refuses, on the controller alone:
+#   ANSIBLE_ROLES_PATH=roles ansible-playbook roles/endora_dev_node/tests/render.yml
+- name: Endora dev node renders its settings and checks them
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    out: /tmp/endora-dev-node-render-test
+    locked:
+      name: sandbox
+      bridge: br-sandbox
+      subnet: 172.31.250.0/24
+      allow_dns: false
+      allow_public_tcp_ports: []
+      allow_lan: [{dest: 192.168.1.10, port: 8788}]
+  # vars_files, not include_vars: included vars would outrank the per-task values below.
+  vars_files:
+    - ../defaults/main.yml
+  tasks:
+    - name: Output folder
+      ansible.builtin.file:
+        path: "{{ out }}"
+        state: directory
+        mode: "0700"
+
+    - name: Docker's settings
+      ansible.builtin.template:
+        src: ../templates/daemon.json.j2
+        dest: "{{ out }}/daemon.json"
+        mode: "0600"
+
+    - name: The journal's settings
+      ansible.builtin.template:
+        src: ../templates/journald.conf.j2
+        dest: "{{ out }}/journald.conf"
+        mode: "0600"
+
+    - name: Read them back
+      ansible.builtin.set_fact:
+        daemon: "{{ lookup('file', out ~ '/daemon.json') | from_json }}"
+        journald: "{{ lookup('file', out ~ '/journald.conf').splitlines() }}"
+
+    - name: Check them
+      ansible.builtin.assert:
+        that:
+          - "daemon['log-driver'] == 'local'"
+          - "daemon['log-opts'] == {'max-size': '5m', 'max-file': '2'}"
+          - "daemon['live-restore'] is true"
+          # Docker's API on the local socket only: no `hosts`, no TCP.
+          - "'hosts' not in daemon"
+          - "'tls' not in daemon"
+          - "'Storage=volatile' in journald"
+          - "'RuntimeMaxUse=64M' in journald"
+
+    - name: Good settings pass, with the role's own sandbox policy
+      ansible.builtin.include_tasks: ../tasks/validate.yml
+      vars:
+        endora_nas_addr: 192.168.1.10
+        endora_dev_node_lan_cidr: 192.168.1.0/24
+
+    - name: No NAS address at all is refused
+      block:
+        - name: Check without one
+          ansible.builtin.include_tasks: ../tasks/validate.yml
+          vars:
+            endora_dev_node_lan_cidr: 192.168.1.0/24
+            endora_dev_node_sandbox_policy: "{{ locked }}"
+
+        - name: It passed, and must not have
+          ansible.builtin.set_fact:
+            endora_dev_node_let_through: no NAS address at all
+
+        - name: Stop
+          ansible.builtin.fail:
+            msg: validate.yml let through a missing endora_nas_addr
+      rescue:
+        - name: It was refused by the checks
+          ansible.builtin.assert:
+            that:
+              - endora_dev_node_let_through is not defined
+
+    - name: Settings the role refuses
+      ansible.builtin.include_tasks: refused.yml
+      loop:
+        - why: an empty NAS address
+          with: {endora_dev_node_lan_cidr: 192.168.1.0/24}
+        - why: a NAS name, not an address
+          with: {endora_nas_addr: nas.example.com, endora_dev_node_lan_cidr: 192.168.1.0/24}
+        - why: no LAN for SSH
+          with: {endora_nas_addr: 192.168.1.10}
+        - why: a LAN that is not a CIDR
+          with: {endora_nas_addr: 192.168.1.10, endora_dev_node_lan_cidr: 192.168.1.10}
+        - why: DNS let out of the sandbox
+          with:
+            endora_nas_addr: 192.168.1.10
+            endora_dev_node_lan_cidr: 192.168.1.0/24
+            policy:
+              {name: sandbox, bridge: br-sandbox, subnet: 172.31.250.0/24, allow_dns: true,
+               allow_lan: [{dest: 192.168.1.10, port: 8788}]}
+        - why: another LAN host for the sandbox
+          with:
+            endora_nas_addr: 192.168.1.10
+            endora_dev_node_lan_cidr: 192.168.1.0/24
+            policy:
+              {name: sandbox, bridge: br-sandbox, subnet: 172.31.250.0/24,
+               allow_lan: [{dest: 192.168.1.10, port: 8788}, {dest: 10.0.0.5, port: 8788}]}
+        - why: the tabled egress proxy's port
+          with:
+            endora_nas_addr: 192.168.1.10
+            endora_dev_node_lan_cidr: 192.168.1.0/24
+            policy:
+              {name: sandbox, bridge: br-sandbox, subnet: 172.31.250.0/24,
+               allow_lan: [{dest: 192.168.1.10, port: 8788}, {dest: 192.168.1.10, port: 3128}]}
+        - why: another NAS port for the sandbox
+          with:
+            endora_nas_addr: 192.168.1.10
+            endora_dev_node_lan_cidr: 192.168.1.0/24
+            policy:
+              {name: sandbox, bridge: br-sandbox, subnet: 172.31.250.0/24,
+               allow_lan: [{dest: 192.168.1.10, port: 8788}, {dest: 192.168.1.10, port: 8787}]}
+      loop_control:
+        loop_var: case
+        label: "{{ case.why }}"
+
+    # The order is the safety: a step moved above another is a lock-out or an open window.
+    - name: Every step comes in its safe order
+      ansible.builtin.assert:
+        that:
+          - main.index('Check the settings') < main.index('The host firewall') < main.index('Docker CE')
+          - firewall.index('Refuse to lock this connection out')
+            < firewall.index('Let SSH in from the LAN, before anything is denied')
+            < firewall.index('Deny everything else coming in')
+            < firewall.index('Turn the firewall on')
+          - firewall.index('Keep the ruleset from before the first run, for rollback')
+            < firewall.index('Turn the firewall on')
+          - sandbox.index('Sandbox egress policy') < sandbox.index('Sandbox network')
+      vars:
+        main: "{{ (lookup('file', '../tasks/main.yml') | from_yaml)[0].block | map(attribute='name') | list }}"
+        firewall: "{{ lookup('file', '../tasks/firewall.yml') | from_yaml | map(attribute='name') | list }}"
+        sandbox: "{{ (lookup('file', '../tasks/sandbox.yml') | from_yaml)[1].block | map(attribute='name') | list }}"
+
+    - name: Clean up
+      ansible.builtin.file:
+        path: "{{ out }}"
+        state: absent
