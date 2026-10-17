@@ -282,7 +282,9 @@ async function loadMusic() {
     const track = now && now.item && now.item.type === "track" ? now.item.id : null;
     MUSIC.liked = null;
     if (track) {
-      try { MUSIC.liked = !!((await spotify("GET", `/me/tracks/contains?ids=${encodeURIComponent(track)}`)) || [])[0]; } catch (_) {}
+      // Not known (an older sign-in, or Spotify said no): the heart shows empty, and a tap says why.
+      try { MUSIC.liked = !!((await spotify("GET", `/me/tracks/contains?ids=${encodeURIComponent(track)}`)) || [])[0]; }
+      catch (e) { MUSIC.liked = false; MUSIC.likeError = e.message; }
     }
     MUSIC.devices = ((devices && devices.devices) || []).filter((d) => d.id);
     if (!MUSIC.lists.length) MUSIC.lists = musicItems(((await spotify("GET", "/me/playlists?limit=30")) || {}).items, "playlist");
@@ -324,7 +326,7 @@ function viewMusic() {
         <button class="ghost" data-act="music:prev" aria-label="Previous">⏮</button>
         <button class="primary" data-act="music:toggle">${playing ? "Pause" : "Play"}</button>
         <button class="ghost" data-act="music:next" aria-label="Next">⏭</button>
-        ${MUSIC.liked === null || MUSIC.liked === undefined ? "" : `<button class="ghost" data-act="music:like" aria-pressed="${MUSIC.liked ? "true" : "false"}" aria-label="${MUSIC.liked ? "In Liked Songs: tap to take it out" : "Add to Liked Songs"}">${MUSIC.liked ? "♥" : "♡"}</button>`}
+        ${!(item && item.type === "track") ? "" : `<button class="ghost" data-act="music:like" aria-pressed="${MUSIC.liked ? "true" : "false"}" aria-label="${MUSIC.liked ? "In Liked Songs: tap to take it out" : "Add to Liked Songs"}">${MUSIC.liked ? "♥" : "♡"}</button>`}
         ${volume === null || volume === undefined ? "" : `<button class="ghost" data-act="music:volume:-10">−</button><span class="sub">${esc(volume)}%</span><button class="ghost" data-act="music:volume:10">+</button>`}
       </div></div>`
     : `<div class="card"><div class="sub">Nothing is playing.</div></div>`;
