@@ -534,6 +534,12 @@ authenticated routes.
 - Each member picks a look from the characters when hired; a team's name hangs on its wall.
 - A **simulated runner** (scripted members, no model, no cost) drives the engine's tests and a
   labelled demo mode, so the view is built and tested before real workers exist.
+- **The owner's scenarios** ([docs/testing.md](../testing.md), from 2026-10-17): the decisions
+  in the ADRs, and the ones a live incident forced, written in the owner's words as `.feature`
+  files under `domains/team/features/` (and the bridge's under `domains/capabilities/features/`)
+  and run against the real engine through its public use cases and the protocol's tools. They
+  are the tests meant to survive a refactor and fail on a change of mind; the unit tests that
+  pin how the code is written are to be pruned as the scenarios cover them.
 - The art is from [Pixel Agents](https://github.com/pixel-agents-hq/pixel-agents) (MIT) and
   [MetroCity by JIK-A-4](https://jik-a-4.itch.io/metrocity-free-topdown-character-pack) (CC0).
   Its licence and credits travel with every copy of the files. Its pet sprites and its
