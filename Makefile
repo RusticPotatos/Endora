@@ -83,7 +83,10 @@ export ENDORA_BRAIN_DIR
 # keep homelab beside it if the Docker observer runs: COMPOSE_PROFILES = homelab,hq) and
 # ENDORA_HQ_URL = http://hq:8790 in local.mk run it beside the node, with the scripted demo team
 # unless ENDORA_HQ_DEMO = 0. It makes its own token for the node; nothing to keep by hand.
-# ENDORA_HQ_TICK_SECONDS sets how often its engine ticks (30 unless set).
+# ENDORA_HQ_TICK_SECONDS sets how often its engine ticks (30 unless set). Real workers: workers
+# in COMPOSE_PROFILES as well (COMPOSE_PROFILES = hq,workers) runs the runner, which holds
+# Docker's socket and starts each turn in a fenced container; HQ hands it turns only with
+# ENDORA_HQ_DEMO = 0.
 export COMPOSE_PROFILES
 export ENDORA_HQ_URL
 export ENDORA_HQ_DEMO

@@ -18,6 +18,7 @@ members = [
     "app/cli",
     "app/hq",
     "app/worker",
+    "app/runner",
     "clients/terminal",
 ]
 
