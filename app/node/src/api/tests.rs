@@ -834,7 +834,7 @@ async fn a_checking_token_reads_but_cannot_touch_anything() {
     // turn to somebody else's server.
     for (path, method) in [
         ("/v1/export", "GET"),
-        ("/v1/deep-model", "POST"),
+        ("/v1/model-lists/providers", "POST"),
         ("/v1/memory/purge", "POST"),
         ("/v1/session/checks", "POST"),
     ] {
@@ -2002,10 +2002,22 @@ async fn the_ai_screen_lists_every_model_and_mail_never_leaves_the_house() {
     assert_eq!(role(&chosen, "mail_reader")["model"], "example-reader:3b");
 
     // The conversation moves to a cloud provider; the mail reader does not follow it.
+    let provider = json_body(
+        app(state.clone())
+            .oneshot(post(
+                "/v1/model-lists/providers",
+                r#"{"url":"https://api.example.com/v1","api_key":"fictional"}"#,
+            ))
+            .await
+            .unwrap(),
+    )
+    .await["id"]
+        .as_i64()
+        .unwrap();
     let res = app(state.clone())
         .oneshot(post(
-            "/v1/model-config",
-            r#"{"base_url":"https://api.example.com/v1","single":{"model":"cloud-model"}}"#,
+            "/v1/model-lists/entries",
+            &format!(r#"{{"job":"everyday","provider":{provider},"model":"cloud-model"}}"#),
         ))
         .await
         .unwrap();

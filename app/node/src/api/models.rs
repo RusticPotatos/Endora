@@ -4,16 +4,37 @@ pub(super) fn brief_schedule_json(s: &BriefSchedule) -> serde_json::Value {
     json!({ "enabled": s.enabled, "hour_utc": s.hour_utc })
 }
 
-/// The deep-model config (a bigger AI for hard questions). The key is NEVER
-/// returned — only whether one is set.
+/// The deep model as the chat and its spend need it: the deep list's first entry (ADR 0105),
+/// or the single deep model on a node with no lists, and whether Endora may use it on its own.
+/// The key is NEVER returned — only whether one is set.
 pub(super) async fn get_deep_model(
     State(state): State<AppState>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let config = state.config.clone();
-    let cfg =
-        blocking(move || DeepModelRepository::get(config.as_ref()).map_err(AppError::Repository))
-            .await?
+    let cfg = blocking(move || {
+        use endora_capabilities::model_lists::{Job, ModelListRepository as _, targets};
+        let single = DeepModelRepository::get(config.as_ref())
+            .map_err(AppError::Repository)?
             .unwrap_or_default();
+        let providers = config.providers().map_err(AppError::Repository)?;
+        if providers.is_empty() {
+            return Ok::<_, AppError>(single);
+        }
+        let deep = config.entries(Job::Deep).map_err(AppError::Repository)?;
+        Ok(targets(&providers, &deep).into_iter().next().map_or_else(
+            || endora_application::DeepModel {
+                escalate: single.escalate,
+                ..endora_application::DeepModel::default()
+            },
+            |t| endora_application::DeepModel {
+                url: t.url,
+                model: t.model,
+                api_key: t.api_key,
+                escalate: single.escalate,
+            },
+        ))
+    })
+    .await?;
     Ok(Json(json!({
         "url": cfg.url,
         "model": cfg.model,
@@ -21,305 +42,6 @@ pub(super) async fn get_deep_model(
         "key_set": !cfg.api_key.is_empty(),
         "escalate": cfg.escalate,
     })))
-}
-
-#[derive(Deserialize)]
-pub(super) struct DeepModelRequest {
-    url: String,
-    model: String,
-    #[serde(default)]
-    api_key: Option<String>,
-    /// Whether Endora may fall back to it on its own. Absent means "leave as it is", so a
-    /// client that only edits the URL cannot silently turn phoning-out on or off.
-    #[serde(default)]
-    escalate: Option<bool>,
-}
-
-/// Configures the deep model. A blank/omitted `api_key` keeps any existing key, so
-/// the secret is never round-tripped through the client.
-pub(super) async fn set_deep_model(
-    State(state): State<AppState>,
-    Json(req): Json<DeepModelRequest>,
-) -> Result<Json<serde_json::Value>, ApiError> {
-    let config = state.config.clone();
-    let events = state.events.clone();
-    let clock = state.clock.clone();
-    blocking(move || {
-        let existing = DeepModelRepository::get(config.as_ref())
-            .map_err(AppError::Repository)?
-            .unwrap_or_default();
-        let api_key = match req.api_key {
-            Some(k) if !k.trim().is_empty() => k.trim().to_owned(),
-            _ => existing.api_key, // keep the stored key when none is supplied
-        };
-        DeepModelRepository::set(
-            config.as_ref(),
-            &endora_application::DeepModel {
-                url: req.url.trim().to_owned(),
-                model: req.model.trim().to_owned(),
-                api_key,
-                escalate: req.escalate.unwrap_or(existing.escalate),
-            },
-        )
-        .map_err(AppError::Repository)?;
-        record_event(events.as_ref(), clock.as_ref(), "Configured the deep model");
-        Ok::<_, AppError>(())
-    })
-    .await?;
-    let _ = state.changes.send(());
-    Ok(Json(json!({ "ok": true })))
-}
-
-/// Renders one model slot for the console (sampling params flattened; `null`
-/// means "use the endpoint default").
-pub(super) fn slot_json(slot: &ModelSlot) -> serde_json::Value {
-    json!({
-        "model": slot.model,
-        "temperature": slot.sampling.temperature,
-        "top_p": slot.sampling.top_p,
-        "top_k": slot.sampling.top_k,
-        "repeat_penalty": slot.sampling.repeat_penalty,
-    })
-}
-
-/// The butler model configuration (ADR 0055), editable from the console. The API
-/// key is NEVER returned — only whether one is set.
-pub(super) async fn get_model_config(
-    State(state): State<AppState>,
-) -> Result<Json<serde_json::Value>, ApiError> {
-    let config = state.config.clone();
-    let cfg = blocking(move || {
-        ButlerModelConfigRepository::get(config.as_ref()).map_err(AppError::Repository)
-    })
-    .await?
-    .unwrap_or_default();
-    let configured = !cfg.base_url.is_empty()
-        && if cfg.mixture {
-            !cfg.router.model.is_empty() && !cfg.synth.model.is_empty()
-        } else {
-            !cfg.single.model.is_empty()
-        };
-    // The effective deployment default (the env brain the butler falls back to when
-    // nothing is saved). Surfaced so the Everyday card can name the model actually
-    // running instead of a bare "using deployment default" — same values main.rs uses.
-    let default_base_url = std::env::var("ENDORA_MODEL_URL")
-        .unwrap_or_else(|_| "http://localhost:11434/v1".to_owned());
-    let default_model = std::env::var("ENDORA_MODEL").unwrap_or_else(|_| "qwen2.5:7b".to_owned());
-    let default_router = std::env::var("ENDORA_ROUTER_MODEL").unwrap_or_default();
-    let default_synth = std::env::var("ENDORA_SYNTH_MODEL").unwrap_or_default();
-    let default_mixture = !default_router.is_empty() && !default_synth.is_empty();
-    Ok(Json(json!({
-        "base_url": cfg.base_url,
-        "preferred_url": cfg.preferred_url,
-        "preferred_model": cfg.preferred_model,
-        "mixture": cfg.mixture,
-        "key_set": !cfg.api_key.is_empty(),
-        "configured": configured,
-        "single": slot_json(&cfg.single),
-        "router": slot_json(&cfg.router),
-        "synth": slot_json(&cfg.synth),
-        "default_base_url": default_base_url,
-        "default_model": default_model,
-        "default_mixture": default_mixture,
-        "default_router": default_router,
-        "default_synth": default_synth,
-    })))
-}
-
-#[derive(Deserialize, Default)]
-pub(super) struct SlotRequest {
-    #[serde(default)]
-    model: String,
-    #[serde(default)]
-    temperature: Option<f64>,
-    #[serde(default)]
-    top_p: Option<f64>,
-    #[serde(default)]
-    top_k: Option<u32>,
-    #[serde(default)]
-    repeat_penalty: Option<f64>,
-}
-
-impl SlotRequest {
-    fn into_slot(self) -> ModelSlot {
-        ModelSlot {
-            model: self.model.trim().to_owned(),
-            sampling: Sampling {
-                temperature: self.temperature,
-                top_p: self.top_p,
-                top_k: self.top_k,
-                repeat_penalty: self.repeat_penalty,
-            },
-        }
-    }
-}
-
-#[derive(Deserialize)]
-pub(super) struct ModelConfigRequest {
-    #[serde(default)]
-    base_url: String,
-    #[serde(default)]
-    mixture: bool,
-    #[serde(default)]
-    api_key: Option<String>,
-    #[serde(default)]
-    single: SlotRequest,
-    #[serde(default)]
-    router: SlotRequest,
-    #[serde(default)]
-    synth: SlotRequest,
-    #[serde(default)]
-    preferred_url: String,
-    #[serde(default)]
-    preferred_model: String,
-}
-
-/// Saves the butler model configuration. A blank/omitted `api_key` keeps any
-/// existing key, so the secret is never round-tripped through the client. The
-/// change takes effect on the next turn — the [`ConfigurableButler`] rereads it.
-pub(super) async fn set_model_config(
-    State(state): State<AppState>,
-    Json(req): Json<ModelConfigRequest>,
-) -> Result<Json<serde_json::Value>, ApiError> {
-    let config = state.config.clone();
-    let events = state.events.clone();
-    let clock = state.clock.clone();
-    blocking(move || {
-        let existing = ButlerModelConfigRepository::get(config.as_ref())
-            .map_err(AppError::Repository)?
-            .unwrap_or_default();
-        let api_key = match req.api_key {
-            Some(k) if !k.trim().is_empty() => k.trim().to_owned(),
-            _ => existing.api_key, // keep the stored key when none is supplied
-        };
-        // The preferred rung stays on the person's own network, structurally. Base turns
-        // carry the raw conversation — the pseudonym door guards only the deep rung
-        // (ADR 0069) — so a public address here would move everything off the device on
-        // whichever days that endpoint answered. Cloud models belong behind the door.
-        let preferred_url = req.preferred_url.trim().to_owned();
-        if !preferred_url.is_empty() && !endora_infrastructure::is_private_endpoint(&preferred_url)
-        {
-            return Err(AppError::BadRequest {
-                message: "the preferred endpoint must be on your own network (a private or \
-                          local address) — cloud models go under the deep model instead"
-                    .to_owned(),
-            });
-        }
-        ButlerModelConfigRepository::set(
-            config.as_ref(),
-            &ButlerModelConfig {
-                base_url: req.base_url.trim().to_owned(),
-                api_key,
-                mixture: req.mixture,
-                single: req.single.into_slot(),
-                router: req.router.into_slot(),
-                synth: req.synth.into_slot(),
-                preferred_url,
-                preferred_model: req.preferred_model.trim().to_owned(),
-            },
-        )
-        .map_err(AppError::Repository)?;
-        record_event(events.as_ref(), clock.as_ref(), "Updated the butler models");
-        Ok::<_, AppError>(())
-    })
-    .await?;
-    let _ = state.changes.send(());
-    Ok(Json(json!({ "ok": true })))
-}
-
-#[derive(Deserialize)]
-pub(super) struct DiscoverModelsRequest {
-    #[serde(default)]
-    base_url: String,
-    /// The key to use — falls back to the stored key for `role` when blank, so the
-    /// person can discover with the already-saved key without re-entering it.
-    #[serde(default)]
-    api_key: Option<String>,
-    /// Which stored key to fall back to: `deep` or `everyday` (default).
-    #[serde(default)]
-    role: Option<String>,
-}
-
-/// Lists the models an OpenAI-compatible endpoint offers, so the console can
-/// populate a picker after the person enters the endpoint + key. Uses the key in
-/// the request, or the stored key for the role when the field is left blank.
-pub(super) async fn discover_models(
-    State(state): State<AppState>,
-    Json(req): Json<DiscoverModelsRequest>,
-) -> Result<Json<serde_json::Value>, ApiError> {
-    let config = state.config.clone();
-    let base = req.base_url.trim().to_owned();
-    let models = blocking(move || {
-        if base.is_empty() {
-            return Err(AppError::Model {
-                message: "enter the endpoint first".to_owned(),
-            });
-        }
-        let key = match req.api_key {
-            Some(k) if !k.trim().is_empty() => k.trim().to_owned(),
-            _ if req.role.as_deref() == Some("deep") => DeepModelRepository::get(config.as_ref())
-                .map_err(AppError::Repository)?
-                .map(|m| m.api_key)
-                .unwrap_or_default(),
-            _ => ButlerModelConfigRepository::get(config.as_ref())
-                .map_err(AppError::Repository)?
-                .map(|c| c.api_key)
-                .unwrap_or_default(),
-        };
-        endora_infrastructure::list_models(&base, &key).map_err(|e| AppError::Model { message: e })
-    })
-    .await?;
-    Ok(Json(json!({ "models": models })))
-}
-
-#[derive(Deserialize)]
-pub(super) struct TestConnectionRequest {
-    #[serde(default)]
-    base_url: String,
-    /// The key to test — falls back to the stored key for `role` when blank, so the
-    /// person can test the already-saved key without re-entering it.
-    #[serde(default)]
-    api_key: Option<String>,
-    /// The model to exercise (a minimal completion). Blank ⇒ reachability check only.
-    #[serde(default)]
-    model: String,
-    /// Which stored key to fall back to: `deep` or `everyday` (default).
-    #[serde(default)]
-    role: Option<String>,
-}
-
-/// Tests that a model endpoint + API key actually work, for the settings "Test
-/// connection" button. Sends a minimal completion with the given (or stored) key —
-/// a real auth check, not just a `/models` listing — and returns `{ok, detail}`
-/// with a human-readable result either way. Never persists anything.
-pub(super) async fn test_model_connection(
-    State(state): State<AppState>,
-    Json(req): Json<TestConnectionRequest>,
-) -> Result<Json<serde_json::Value>, ApiError> {
-    let config = state.config.clone();
-    let base = req.base_url.trim().to_owned();
-    let model = req.model.trim().to_owned();
-    let result = blocking(move || {
-        let key = match req.api_key {
-            Some(k) if !k.trim().is_empty() => k.trim().to_owned(),
-            _ if req.role.as_deref() == Some("deep") => DeepModelRepository::get(config.as_ref())
-                .map_err(AppError::Repository)?
-                .map(|m| m.api_key)
-                .unwrap_or_default(),
-            _ => ButlerModelConfigRepository::get(config.as_ref())
-                .map_err(AppError::Repository)?
-                .map(|c| c.api_key)
-                .unwrap_or_default(),
-        };
-        Ok::<_, AppError>(endora_infrastructure::test_connection(&base, &key, &model))
-    })
-    .await?;
-    // A failed test is a normal, expected outcome (bad key, wrong model) — report it
-    // as data with `ok: false`, not an HTTP error.
-    Ok(Json(match result {
-        Ok(detail) => json!({ "ok": true, "detail": detail }),
-        Err(detail) => json!({ "ok": false, "detail": detail }),
-    }))
 }
 
 /// Runs the model layer synchronously (discover local models → evaluate each →

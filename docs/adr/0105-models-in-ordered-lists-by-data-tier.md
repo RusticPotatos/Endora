@@ -2,7 +2,10 @@
 
 ## Status
 
-Proposed, 2026-10-16, from an owner design interview (Q1–Q6, Q3a–Q3e). Prepared with AI
+Accepted, 2026-10-16, from an owner design interview (Q1–Q6, Q3a–Q3e). Phase 1 is built:
+providers, the ordered lists and their walking, with every everyday cloud entry through the
+door. Phase 2 (the tiers: every context section labelled, the tier check in the door, the 🔒
+on the composer) and Sign in with ChatGPT as a provider are not yet. Prepared with AI
 assistance (Claude). Step 4 of [the always-on butler plan](../plans/always-on-butler.md). It
 replaces the everyday model's three mechanisms (the preferred rung of
 [0072](0072-the-base-has-rungs-too.md), the base config and its router-and-writer mixture of

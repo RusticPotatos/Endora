@@ -563,14 +563,10 @@ pub fn app(state: AppState) -> Router {
             "/v1/brief/schedule",
             get(get_brief_schedule).post(set_brief_schedule),
         )
-        .route("/v1/deep-model", get(get_deep_model).post(set_deep_model))
+        .route("/v1/deep-model", get(get_deep_model))
         .route("/v1/deep-model/usage", get(deep_usage))
         .route("/v1/deep-model/balance", get(deep_balance))
         .route("/v1/deep-model/prices", post(set_deep_prices))
-        .route(
-            "/v1/model-config",
-            get(get_model_config).post(set_model_config),
-        )
         .route("/v1/model-lists", get(model_lists::lists))
         .route("/v1/model-lists/providers", post(model_lists::add_provider))
         .route(
@@ -591,8 +587,6 @@ pub fn app(state: AppState) -> Router {
             post(model_lists::entry_action),
         )
         .route("/v1/model-lists/escalate", post(model_lists::set_escalate))
-        .route("/v1/models/discover", post(discover_models))
-        .route("/v1/models/test", post(test_model_connection))
         .route("/v1/model-layer/run", post(run_model_layer_now))
         .route("/v1/deep-ask", post(deep_ask))
         .route(

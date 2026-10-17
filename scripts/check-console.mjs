@@ -1027,6 +1027,33 @@ if (keys.length !== 3 || keys[0] !== keys[1] || keys[0] === keys[2]) {
   console.log("deep spend: balance, low warning, usage and prices render, and nothing without a deep model");
 }
 
+// Models in ordered lists (ADR 0105): each list in order with its moves, a cloud entry said to
+// see your messages disguised, providers that say whether a key is set and never show one, the
+// deep list's own switch, and Anthropic directly on offer.
+{
+  const fail = (what) => { console.error(what); process.exit(1); };
+  runInContext(`MODEL_LISTS = {
+    providers: [{ id: 1, name: "Anthropic", url: "https://api.anthropic.com/v1", key_set: true, local: false },
+                { id: 2, name: "Ollama", url: "http://localhost:11434/v1", key_set: false, local: true }],
+    everyday: [{ id: 10, provider: 1, provider_name: "Anthropic", model: "<b>claude</b>", enabled: true, local: false },
+               { id: 11, provider: 2, provider_name: "Ollama", model: "qwen2.5:7b", enabled: false, local: true }],
+    deep: [], escalate: true, serving: { model: "qwen2.5:7b", local: true } };
+    PROVIDER_EDITING = null;`, context);
+  const ai = runInContext("modelsSection()", context);
+  for (const act of ["mlist:down:10", "mlist:on:11", "mlist:test:10", "mlist:remove:11", "mlist:add:everyday", "mlist:add:deep",
+    "mlist:discover:deep", "mlist:escalate:0", "mlist:provideredit:1", "mlist:providerremove:2", "mlist:providersave"]) {
+    if (!ai.includes(`data-act="${act}"`)) fail(`models: the AI screen does not offer ${act}`);
+  }
+  if (!/data-act="mlist:up:10"[^>]*disabled/.test(ai)) fail("models: the first entry can still move up");
+  if (!ai.includes("cloud, sees your messages disguised") || !ai.includes("switched off")) fail("models: an entry does not say where it runs or that it is off");
+  if (!ai.includes("key set") || !ai.includes("no key")) fail("models: a provider does not say whether a key is set");
+  if (ai.includes("<b>claude</b>")) fail("models: a model name became markup");
+  if (!ai.includes("answering now: <b>qwen2.5:7b</b>")) fail("models: what answers now is not said");
+  if (!runInContext("presetOptions('')", context).includes("Anthropic (direct, your API key)")) fail("models: Anthropic directly is not offered");
+  runInContext("MODEL_LISTS = null;", context);
+  console.log("models: lists in order with their moves, cloud entries said to be disguised, and no key ever shown");
+}
+
 // Butler prose renders lightly, and nothing it carries can become markup.
 //
 // The brief's news section hands the chat 200-character URLs; rendered raw they

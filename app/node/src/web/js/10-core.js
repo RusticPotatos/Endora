@@ -319,7 +319,6 @@ async function reload() {
   ]);
   try { BRIEF_SCHED = await api("GET", "/v1/brief/schedule"); } catch (_) {}
   try { DEEP_MODEL = await api("GET", "/v1/deep-model"); } catch (_) {}
-  try { MODEL_CONFIG = await api("GET", "/v1/model-config"); } catch (_) {}
   try { MCP_SERVERS = await api("GET", "/v1/mcp/servers"); } catch (_) {}
   // What the next message would send. Only asked for on the chat, since it builds the same
   // context a turn does.
@@ -397,6 +396,7 @@ async function loadView(v, id) {
   }
   // What Endora runs: it asks the model server, so only on the screen that shows it.
   if (v === "models") { try { AI = await api("GET", "/v1/ai"); } catch (_) { AI = null; } }
+  if (v === "models") { try { MODEL_LISTS = await api("GET", "/v1/model-lists"); } catch (_) { MODEL_LISTS = null; } }
   // One sign-in for every device: shown wherever it was started.
   if (v === "connections" || v === "spotify") {
     try { SPOTIFY = await api("GET", "/v1/connections/spotify"); } catch (_) { SPOTIFY = null; }
