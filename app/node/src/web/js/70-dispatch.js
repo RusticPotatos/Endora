@@ -6,6 +6,12 @@ function render() {
   // The chat fills the window with its own scrolling thread and a docked composer; every
   // other screen is an ordinary scrolling page.
   document.body.classList.toggle("on-chat", v === "chat");
+  // A redraw of the same screen (a live update, a decision) keeps where the person was: the
+  // page's scroll, and each box marked data-keep-scroll. Restored before the browser paints,
+  // so nothing visibly jumps.
+  const kept = v === LAST_VIEW && v !== "chat"
+    ? { y: window.scrollY, boxes: [...document.querySelectorAll("[data-keep-scroll]")].map((el) => [el.dataset.keepScroll, el.scrollTop]) }
+    : null;
   app.innerHTML =
       v === "audit" ? viewAudit()
     : v === "chat" ? viewChat()
@@ -40,6 +46,13 @@ function render() {
     : v === "signin" ? viewSignin()
     : v === "recipes" ? viewRecipes()
     : viewUnderstanding();
+  if (kept) {
+    for (const [name, top] of kept.boxes) {
+      const box = document.querySelector(`[data-keep-scroll="${name}"]`);
+      if (box) box.scrollTop = top;
+    }
+    window.scrollTo(0, kept.y);
+  }
   // On the chat, jump to the newest message (kept clear of the sticky composer).
   if (v === "chat") {
     const thread = document.getElementById("chat-thread");
