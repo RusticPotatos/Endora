@@ -72,6 +72,9 @@ pub fn app(state: State) -> Router {
         .route("/v1/desk/{id}", post(decide))
         .route("/v1/stop", post(stop))
         .route("/v1/resume", post(resume))
+        // The node's model relay: whose a turn's token is, and what each call cost.
+        .route("/v1/team/turn", post(crate::team::turn))
+        .route("/v1/team/usage", post(crate::team::usage))
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             signed_by_the_node,
@@ -541,5 +544,46 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(after.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn the_relay_learns_whose_a_token_is_and_reports_what_each_call_cost() {
+        let st = state(true);
+        st.hq.tick().unwrap();
+        let turn = st.hq.runner().started()[0].clone();
+        let app = app(st.clone());
+        let ask = |token: Option<&str>, body: String| call("POST", "/v1/team/turn", token, &body);
+        let body = json!({ "token": turn.token }).to_string();
+        let res = app
+            .clone()
+            .oneshot(ask(Some(&turn.token), body.clone()))
+            .await
+            .unwrap();
+        assert_eq!(
+            res.status(),
+            StatusCode::UNAUTHORIZED,
+            "only the node asks, not the worker"
+        );
+        let found = json_of(app.clone().oneshot(ask(Some(TOKEN), body)).await.unwrap()).await;
+        assert_eq!(found["run"], turn.run.0);
+        let left = found["left"].as_i64().unwrap();
+        assert!(left > 0, "{found}");
+        let spend = |micros: i64| {
+            call(
+                "POST",
+                "/v1/team/usage",
+                Some(TOKEN),
+                &json!({ "run": turn.run.0, "micros": micros }).to_string(),
+            )
+        };
+        let ok = json_of(app.clone().oneshot(spend(10)).await.unwrap()).await;
+        assert_eq!(ok["may_go_on"], true);
+        let over = json_of(app.clone().oneshot(spend(left)).await.unwrap()).await;
+        assert_eq!(over["may_go_on"], false, "past its budget, the turn stops");
+        let gone = app
+            .oneshot(ask(Some(TOKEN), json!({ "token": turn.token }).to_string()))
+            .await
+            .unwrap();
+        assert_eq!(gone.status(), StatusCode::NOT_FOUND);
     }
 }

@@ -95,3 +95,58 @@ pub async fn mcp(
         Ok(Ok(Outcome::Result(result))) => reply(&id, result),
     }
 }
+
+#[derive(serde::Deserialize)]
+pub(crate) struct TokenAsked {
+    token: String,
+}
+
+/// For the node's model relay: whose turn a token is, while it runs, and what it may still
+/// spend. Signed by the node; nothing else may ask.
+pub(crate) async fn turn(Extract(state): Extract<State>, Json(req): Json<TokenAsked>) -> Response {
+    let hq = state.hq.clone();
+    let found = tokio::task::spawn_blocking(move || hq.turn_of(&req.token)).await;
+    match found {
+        Ok(Ok(Some((run, member)))) => Json(json!({
+            "run": run.id.0,
+            "member": member.name,
+            "role": member.role.name(),
+            "left": (run.reserved - run.spent).max(0),
+        }))
+        .into_response(),
+        Ok(Ok(None)) => (
+            StatusCode::NOT_FOUND,
+            Json(json!({ "error": "no running turn has that token" })),
+        )
+            .into_response(),
+        _ => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    }
+}
+
+#[derive(serde::Deserialize)]
+pub(crate) struct UsageReported {
+    run: i64,
+    micros: i64,
+}
+
+/// For the node's model relay: what one model call of a turn cost. Crossing the turn's
+/// budget stops it there.
+pub(crate) async fn usage(
+    Extract(state): Extract<State>,
+    Json(req): Json<UsageReported>,
+) -> Response {
+    let hq = state.hq.clone();
+    let reported = tokio::task::spawn_blocking(move || {
+        hq.report_usage(endora_team::domain::RunId(req.run), req.micros.max(0))
+    })
+    .await;
+    match reported {
+        Ok(Ok(may_go_on)) => Json(json!({ "may_go_on": may_go_on })).into_response(),
+        Ok(Err(e)) => (
+            StatusCode::NOT_FOUND,
+            Json(json!({ "error": e.to_string() })),
+        )
+            .into_response(),
+        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    }
+}
