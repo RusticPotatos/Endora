@@ -54,11 +54,12 @@ production here, not to fill in a pyramid.
 | **unit** | pure logic, one thing at a time | `#[cfg(test)]` beside the code | ~10s |
 | **composition** | the stack **production builds**, not test doubles | same, but composing real runners and the real schema | ~0s |
 | **golden** | real captured data from a live system | `tests/` + `fixtures/` | ~0s |
+| **scenario** | behaviour the owner decided, in the owner's words, through public use cases | `features/*.feature` + `tests/scenarios.rs` ([docs/testing.md](docs/testing.md)) | ~1s |
 | **console render** | every screen of the web console, in Node | `scripts/check-console.mjs` | ~0s |
 | **live smoke** | invariants on the **deployed** node | `tests/live_smoke.rs`, `#[ignore]`d | ~2s |
 | **eval battery** | model quality against the real turn machinery | `tests/*_eval.rs`, `#[ignore]`d | minutes |
 
-The first three run in `make ci`. The last two need something CI does not have — a deployed
+The first four run in `make ci`. The last two need something CI does not have — a deployed
 node, or a live model — so both are `#[ignore]`d and run deliberately.
 
 **Composition tests exist because two bugs got through with a green suite**, both times

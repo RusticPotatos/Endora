@@ -9,6 +9,13 @@ tagged release.
 
 ### Added
 
+- **The owner's scenarios** ([docs/testing.md](docs/testing.md)). Behaviour the owner decided,
+  written in the owner's words as `.feature` files and run against the real engine and the
+  bridge through their public use cases, with cucumber-rs (a dev-dependency). The pilot has 14:
+  one task a problem, coming back is news, the owner's devices are never the team's, a member is
+  told its tools are its own, only the CEO reaches the board, a project's cap is the owner's,
+  local members work for free, and more from ADRs 0107, 0108, 0111, 0112 and 0113. They run with
+  `cargo test --workspace`, so the gate runs them.
 - **Projects, budgets and reports_to** ([ADR 0113](docs/adr/0113-projects-budgets-and-reports-to.md)).
   A project serves one goal and has a lead (a lead or the CEO) and, if the owner gives it one, a
   monthly cap; a task may be in a project of its goal, its sub-tasks stay in it, and a routine's
