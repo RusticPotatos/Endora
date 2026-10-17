@@ -2470,8 +2470,30 @@ mod tests {
         let port = listener.local_addr().unwrap().port();
         std::thread::spawn(move || {
             if let Ok((mut conn, _)) = listener.accept() {
+                // The whole request before answering: a turn's body can arrive in pieces,
+                // and closing on the client mid-send fails its write, flakily.
+                let mut got = Vec::new();
                 let mut buf = [0u8; 65536];
-                let _ = conn.read(&mut buf);
+                loop {
+                    let Ok(n) = conn.read(&mut buf) else { break };
+                    if n == 0 {
+                        break;
+                    }
+                    got.extend_from_slice(&buf[..n]);
+                    let text = String::from_utf8_lossy(&got);
+                    let Some(end) = text.find("\r\n\r\n") else {
+                        continue;
+                    };
+                    let length = text[..end]
+                        .lines()
+                        .filter_map(|l| l.split_once(':'))
+                        .find(|(k, _)| k.trim().eq_ignore_ascii_case("content-length"))
+                        .and_then(|(_, v)| v.trim().parse::<usize>().ok())
+                        .unwrap_or(0);
+                    if got.len() >= end + 4 + length {
+                        break;
+                    }
+                }
                 let body = r#"{"choices":[{"message":{"role":"assistant","content":"Hello."},"finish_reason":"stop"}]}"#;
                 let _ = write!(
                     conn,
