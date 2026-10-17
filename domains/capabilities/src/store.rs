@@ -51,6 +51,24 @@ pub fn migrate(db: &Db) -> Result<(), RepositoryError> {
                 api_key  TEXT NOT NULL,
                 escalate INTEGER NOT NULL DEFAULT 0
             ) STRICT;
+            CREATE TABLE IF NOT EXISTS model_providers (
+                id      INTEGER PRIMARY KEY AUTOINCREMENT,
+                name    TEXT NOT NULL,
+                url     TEXT NOT NULL,
+                api_key TEXT NOT NULL
+            ) STRICT;
+            CREATE TABLE IF NOT EXISTS model_entries (
+                id       INTEGER PRIMARY KEY AUTOINCREMENT,
+                job      TEXT NOT NULL,
+                provider INTEGER NOT NULL,
+                model    TEXT NOT NULL,
+                enabled  INTEGER NOT NULL DEFAULT 1,
+                position INTEGER NOT NULL
+            ) STRICT;
+            CREATE TABLE IF NOT EXISTS model_lists_meta (
+                key   TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            ) STRICT;
             CREATE TABLE IF NOT EXISTS butler_model_config (
                 id            INTEGER PRIMARY KEY CHECK (id = 0),
                 base_url      TEXT NOT NULL,
@@ -1388,5 +1406,213 @@ mod recipe_tests {
         let saved = store.recipes().unwrap();
         let ids: Vec<&str> = saved.iter().map(|r| r.id.as_str()).collect();
         assert_eq!(ids, vec!["air_quality", "zzz_last"]);
+    }
+}
+
+impl crate::model_lists::ModelListRepository for ConfigStore {
+    fn providers(&self) -> Result<Vec<crate::model_lists::Provider>, RepositoryError> {
+        let conn = self.db.lock()?;
+        let mut stmt = conn
+            .prepare("SELECT id, name, url, api_key FROM model_providers ORDER BY id")
+            .map_err(backend)?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok(crate::model_lists::Provider {
+                    id: r.get(0)?,
+                    name: r.get(1)?,
+                    url: r.get(2)?,
+                    api_key: r.get(3)?,
+                })
+            })
+            .map_err(backend)?;
+        rows.collect::<Result<_, _>>().map_err(backend)
+    }
+
+    fn add_provider(&self, name: &str, url: &str, api_key: &str) -> Result<i64, RepositoryError> {
+        let conn = self.db.lock()?;
+        conn.execute(
+            "INSERT INTO model_providers (name, url, api_key) VALUES (?1, ?2, ?3)",
+            params![name, url, api_key],
+        )
+        .map_err(backend)?;
+        Ok(conn.last_insert_rowid())
+    }
+
+    fn update_provider(
+        &self,
+        id: i64,
+        name: &str,
+        url: &str,
+        api_key: Option<&str>,
+    ) -> Result<(), RepositoryError> {
+        let conn = self.db.lock()?;
+        match api_key {
+            Some(key) => conn.execute(
+                "UPDATE model_providers SET name = ?2, url = ?3, api_key = ?4 WHERE id = ?1",
+                params![id, name, url, key],
+            ),
+            None => conn.execute(
+                "UPDATE model_providers SET name = ?2, url = ?3 WHERE id = ?1",
+                params![id, name, url],
+            ),
+        }
+        .map_err(backend)?;
+        Ok(())
+    }
+
+    fn remove_provider(&self, id: i64) -> Result<(), RepositoryError> {
+        let conn = self.db.lock()?;
+        conn.execute("DELETE FROM model_entries WHERE provider = ?1", [id])
+            .map_err(backend)?;
+        conn.execute("DELETE FROM model_providers WHERE id = ?1", [id])
+            .map_err(backend)?;
+        Ok(())
+    }
+
+    fn entries(
+        &self,
+        job: crate::model_lists::Job,
+    ) -> Result<Vec<crate::model_lists::Entry>, RepositoryError> {
+        let conn = self.db.lock()?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, provider, model, enabled FROM model_entries \
+                 WHERE job = ?1 ORDER BY position, id",
+            )
+            .map_err(backend)?;
+        let rows = stmt
+            .query_map([job.name()], |r| {
+                Ok(crate::model_lists::Entry {
+                    id: r.get(0)?,
+                    job,
+                    provider: r.get(1)?,
+                    model: r.get(2)?,
+                    enabled: r.get::<_, i64>(3)? != 0,
+                })
+            })
+            .map_err(backend)?;
+        rows.collect::<Result<_, _>>().map_err(backend)
+    }
+
+    fn add_entry(
+        &self,
+        job: crate::model_lists::Job,
+        provider: i64,
+        model: &str,
+    ) -> Result<i64, RepositoryError> {
+        let conn = self.db.lock()?;
+        let next: i64 = conn
+            .query_row(
+                "SELECT COALESCE(MAX(position), -1) + 1 FROM model_entries WHERE job = ?1",
+                [job.name()],
+                |r| r.get(0),
+            )
+            .map_err(backend)?;
+        conn.execute(
+            "INSERT INTO model_entries (job, provider, model, enabled, position) \
+             VALUES (?1, ?2, ?3, 1, ?4)",
+            params![job.name(), provider, model, next],
+        )
+        .map_err(backend)?;
+        Ok(conn.last_insert_rowid())
+    }
+
+    fn enable_entry(&self, id: i64, enabled: bool) -> Result<(), RepositoryError> {
+        self.db
+            .lock()?
+            .execute(
+                "UPDATE model_entries SET enabled = ?2 WHERE id = ?1",
+                params![id, enabled],
+            )
+            .map_err(backend)?;
+        Ok(())
+    }
+
+    fn move_entry(&self, id: i64, up: bool) -> Result<(), RepositoryError> {
+        let job: Option<String> = self
+            .db
+            .lock()?
+            .query_row("SELECT job FROM model_entries WHERE id = ?1", [id], |r| {
+                r.get(0)
+            })
+            .optional()
+            .map_err(backend)?;
+        let Some(job) = job.as_deref().and_then(crate::model_lists::Job::from_name) else {
+            return Ok(());
+        };
+        // Renumber the list in its current order with this entry moved, so positions stay a
+        // simple 0..n whatever came before.
+        let mut order: Vec<i64> = self.entries(job)?.iter().map(|e| e.id).collect();
+        let Some(at) = order.iter().position(|e| *e == id) else {
+            return Ok(());
+        };
+        let to = if up {
+            at.checked_sub(1)
+        } else {
+            Some(at + 1).filter(|t| *t < order.len())
+        };
+        let Some(to) = to else {
+            return Ok(());
+        };
+        order.swap(at, to);
+        let mut conn = self.db.lock()?;
+        let tx = conn.transaction().map_err(backend)?;
+        for (position, entry) in order.iter().enumerate() {
+            tx.execute(
+                "UPDATE model_entries SET position = ?2 WHERE id = ?1",
+                params![entry, i64::try_from(position).unwrap_or(i64::MAX)],
+            )
+            .map_err(backend)?;
+        }
+        tx.commit().map_err(backend)?;
+        Ok(())
+    }
+
+    fn remove_entry(&self, id: i64) -> Result<(), RepositoryError> {
+        self.db
+            .lock()?
+            .execute("DELETE FROM model_entries WHERE id = ?1", [id])
+            .map_err(backend)?;
+        Ok(())
+    }
+
+    fn move_over_once(
+        &self,
+        everyday: Option<&crate::application::ButlerModelConfig>,
+        deep: Option<&crate::application::DeepModel>,
+    ) -> Result<bool, RepositoryError> {
+        let done: Option<String> = self
+            .db
+            .lock()?
+            .query_row(
+                "SELECT value FROM model_lists_meta WHERE key = 'moved_over'",
+                [],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(backend)?;
+        if done.is_some() {
+            return Ok(false);
+        }
+        let mut known: Vec<(String, String, i64)> = Vec::new();
+        for (job, url, key, model) in crate::model_lists::moved_over(everyday, deep) {
+            let provider = match known.iter().find(|(u, k, _)| *u == url && *k == key) {
+                Some((_, _, id)) => *id,
+                None => {
+                    let id = self.add_provider(&crate::model_lists::name_for(&url), &url, &key)?;
+                    known.push((url, key, id));
+                    id
+                }
+            };
+            self.add_entry(job, provider, &model)?;
+        }
+        self.db
+            .lock()?
+            .execute(
+                "INSERT INTO model_lists_meta (key, value) VALUES ('moved_over', 'yes')",
+                [],
+            )
+            .map_err(backend)?;
+        Ok(true)
     }
 }
