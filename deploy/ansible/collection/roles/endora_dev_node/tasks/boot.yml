@@ -1,0 +1,27 @@
+---
+# Raspberry Pi OS boots with the memory cgroup controller off, and Docker then drops every
+# container's memory limit ("Your kernel does not support memory limit capabilities"): a
+# sandbox's gigabyte cap would be ignored and one runaway turn could fill the Pi. Turning it
+# on is two words on the kernel's command line, which is one line; it takes effect at the next
+# boot, and the old line is kept beside it (backup) for rollback.
+- name: The kernel's command line
+  ansible.builtin.stat:
+    path: "{{ endora_dev_node_cmdline }}"
+  register: endora_dev_node_cmdline_file
+
+- name: Memory limits for containers from the next boot
+  ansible.builtin.replace:
+    path: "{{ endora_dev_node_cmdline }}"
+    # The one line, unless it already has the memory controller on.
+    regexp: '^(?!.*\bcgroup_memory=1\b)(.*\S)[ \t]*$'
+    replace: '\1 cgroup_enable=memory cgroup_memory=1'
+    backup: true
+  register: endora_dev_node_cmdline_memory
+  when: endora_dev_node_cmdline_file.stat.exists
+
+- name: A reboot turns on containers' memory limits
+  ansible.builtin.debug:
+    msg: >-
+      {{ endora_dev_node_cmdline }} now turns on the memory cgroup; until the next reboot
+      (sudo reboot) Docker ignores containers' memory limits.
+  when: endora_dev_node_cmdline_memory is changed

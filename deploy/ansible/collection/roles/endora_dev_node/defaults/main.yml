@@ -47,6 +47,10 @@ endora_dev_node_journald_max_use: 64M
 endora_dev_node_tmp_tmpfs: true
 endora_dev_node_tmp_size: 512M
 
+# The kernel's command line, where Raspberry Pi OS's memory cgroup is turned on (needed for
+# containers' memory limits; takes effect at the next boot).
+endora_dev_node_cmdline: /boot/firmware/cmdline.txt
+
 # The host firewall (ufw): incoming denied except SSH from the LAN; the ruleset from before the
 # first run is kept here for rollback (see README.md).
 endora_dev_node_firewall: true

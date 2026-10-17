@@ -49,6 +49,7 @@ What it does, in this order:
 | `endora_dev_node_tmp_tmpfs` | `true` | `/tmp` in memory when it is not already |
 | `endora_dev_node_tmp_size` | `512M` | Its size |
 | `endora_dev_node_firewall` | `true` | Set up ufw as above |
+| `endora_dev_node_cmdline` | `/boot/firmware/cmdline.txt` | The kernel command line, where the memory cgroup is turned on (Raspberry Pi OS ships it off, and Docker then ignores containers' memory limits); takes effect at the next reboot, the old line kept as a backup beside it |
 | `endora_dev_node_firewall_before` | `/etc/endora/firewall.before` | The ruleset from before the first run |
 | `endora_dev_node_runner_token_dir` | `/etc/endora/runner-token` | Where `make pi-runner-token` puts the runner's token |
 | `endora_dev_node_sandbox_network` | `endora_sandbox` | The sandbox network's name |

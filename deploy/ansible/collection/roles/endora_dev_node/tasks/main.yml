@@ -20,6 +20,9 @@
       ansible.builtin.import_tasks: firewall.yml
       when: endora_dev_node_firewall | bool
 
+    - name: Memory limits for containers (from the next boot)
+      ansible.builtin.import_tasks: boot.yml
+
     - name: Docker CE
       ansible.builtin.import_tasks: docker.yml
 
