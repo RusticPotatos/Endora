@@ -12,9 +12,22 @@ refuses, as a stranger's words carry theirs (0064), derived from what the turn h
 than stored beside it. A 🔒 message is kept with the mark, and so is Endora's reply to it; a
 Restricted skill's result is marked as it enters the turn, by one table of skill tiers in the
 capabilities context (a skill not listed is Restricted); an owner's message shaped like an
-account number is refused by shape. Confidential context, skill results and earlier replies
-leave disguised. A private message is never noted into the brain or folded into the running
-summary, so it cannot ride out later through either. Prepared with AI
+account number is refused by shape (an ISO date before a time is not one). Confidential
+context, skill results and earlier replies leave disguised: every field of the context is
+named at the door, so the running summary, the names things go by, the track record, the
+preferences and the skill inputs a model chose are disguised too, and what comes back
+(beliefs included) is restored. Where they are based never leaves, and is disguised where it
+appears in words. A private message is never noted into the brain or folded into the running
+summary, so it cannot ride out later through either.
+
+The marks outlive the turn. A skill's result is stored with its mark, and an earlier reply is
+given back with the marks of everything it found, so the door refuses a later turn that
+carries them, and a stranger's words carried that way also stop the turn acting on its own.
+The door looks for the private mark anywhere in a message. A reply to a 🔒 message, or to a
+turn that read a Restricted result, is stored with the mark. A 🔒 standing answer (the brief,
+"are any lights on?") is kept marked, and a private brief posts its facts as themselves rather
+than being worded by the deep model; the brief's wording refuses marked or account-shaped facts
+in any case. Prepared with AI
 assistance (Claude). Step 4 of [the always-on butler plan](../plans/always-on-butler.md). It
 replaces the everyday model's three mechanisms (the preferred rung of
 [0072](0072-the-base-has-rungs-too.md), the base config and its router-and-writer mixture of
@@ -48,8 +61,21 @@ a local one would.
 
 - Endora walks the list in order. An entry that fails (unreachable, an error, out of credit) is
   skipped for that request and for the next five minutes, so a sleeping machine costs one
-  timeout, not one per message.
+  timeout, not one per message. An entry's client reports a failure as one, rather than
+  apologising, so the walk can ask the next; the environment's model, last in Everyday, still
+  apologises when nothing answers, so the conversation never breaks. An entry is cooled by its
+  endpoint, model and key, so a second key for the same model is still tried. A machine on the
+  house's network that refuses the keyless probe for want of a key is awake.
 - A reply that has begun to stream is never finished by another model.
+- An answer from an everyday cloud entry is the everyday answer, not an escalation: only the
+  deep list, asked because the everyday answer failed a check, is disclosed as one.
+- A provider's key belongs to its endpoint: a provider moved to another endpoint without a new
+  key loses the old one. "Forget everything" forgets the old settings too, so nothing moves
+  over again. When the lists cannot be read, the environment's model answers, never the old
+  settings.
+- "On the house's network" is decided from the URL's host, after any user-info: loopback,
+  link-local, RFC 1918 and IPv6 unique-local addresses, `.local`, `.lan` and single-label names.
+  Every other entry is a cloud entry, reached only through the door.
 
 **Data has a tier; a model has a clearance; code compares them.**
 
@@ -57,8 +83,8 @@ a local one would.
 | --- | --- | --- | --- |
 | Public | web results, news, weather | yes | yes, as is |
 | Internal | container and service status, Endora's own settings | yes | yes, as is |
-| Confidential | the owner's chat messages (by default), calendar, brain pages and memory, people's names, where they are | yes | only disguised |
-| Restricted | what the owner marks 🔒, account numbers, health and money details | yes | never |
+| Confidential | the owner's chat messages (by default), calendar, brain pages and memory, people's names | yes | only disguised |
+| Restricted | what the owner marks 🔒, account numbers, health and money details, where they are and where they have been | yes | never |
 
 - **Tier comes from the source, set by code, never by a model's judgement.** A request's tier
   is the highest tier of anything in it.

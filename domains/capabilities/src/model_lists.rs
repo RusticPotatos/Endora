@@ -231,7 +231,9 @@ pub trait ModelListRepository {
     /// [`RepositoryError`] if the backend fails.
     fn add_provider(&self, name: &str, url: &str, api_key: &str) -> Result<i64, RepositoryError>;
 
-    /// Changes a provider; its key only when one is given.
+    /// Changes a provider; its key only when one is given. A provider moved to another
+    /// endpoint with no new key loses the one it had, so a key is never sent where it was
+    /// not given.
     ///
     /// # Errors
     /// [`RepositoryError`] if the backend fails.
@@ -447,6 +449,20 @@ mod tests {
             "k",
             "a key is kept unless a new one is given"
         );
+        s.update_provider(claude, "Claude", "https://api.anthropic.com/v1/", None)
+            .unwrap();
+        assert_eq!(s.providers().unwrap()[0].api_key, "k", "the same endpoint");
+        // A key belongs to the endpoint it was given for: moved elsewhere, it is not sent.
+        s.update_provider(claude, "Claude", "https://collector.example.com/v1", None)
+            .unwrap();
+        assert_eq!(
+            s.providers().unwrap()[0].api_key,
+            "",
+            "the key stayed behind when the endpoint changed"
+        );
+        s.update_provider(claude, "Claude", "https://api.anthropic.com/v1", Some("k2"))
+            .unwrap();
+        assert_eq!(s.providers().unwrap()[0].api_key, "k2");
         s.remove_provider(claude).unwrap();
         assert!(s.entries(Job::Deep).unwrap().is_empty());
         assert_eq!(s.entries(Job::Everyday).unwrap().len(), 1);

@@ -873,6 +873,50 @@ if (keys.length !== 3 || keys[0] !== keys[1] || keys[0] === keys[2]) {
   process.exit(1);
 }
 
+// Private on: what is typed goes to the chat as a private message, never to the deep model and
+// never to research, whatever else is switched on.
+{
+  const fail = (what) => { console.error(what); process.exit(1); };
+  const typed = { ...element(), value: "about my results" };
+  const realGet = context.document.getElementById;
+  context.document.getElementById = (id) => (id === "chat-input" ? typed : element());
+  const before = sent.length;
+  runInContext("PRIVATE_MODE = true; DEEP_MODE = true; RESEARCH_MODE = true; DEEP_MODEL = { configured: true };", context);
+  await runInContext("startResearch()", context);
+  typed.value = "about my results";
+  await runInContext("sendChat()", context);
+  context.document.getElementById = realGet;
+  runInContext("PRIVATE_MODE = false; DEEP_MODE = false; RESEARCH_MODE = false; DEEP_MODEL = { configured: false };", context);
+  const after = sent.slice(before);
+  if (after.some((r) => /\/v1\/(research|deep-ask)/.test(String(r.path)))) fail("requests: a private message went to research or the deep model");
+  const asked = after.filter((r) => String(r.path).includes("/v1/chat/stream"));
+  if (asked.length !== 1 || !JSON.parse(asked[0].body).private) fail("requests: a private message was not sent as one");
+  console.log("requests: a private message goes to the chat as one, never to research or the deep model");
+}
+
+// Discover keeps what it found for its list, so the buttons survive the re-render that follows.
+{
+  const realFetch = context.fetch;
+  context.fetch = (path, opts = {}) => {
+    sent.push({ path, headers: opts.headers || {}, method: opts.method || "GET", body: opts.body });
+    return Promise.resolve({ ok: true, status: 200, json: async () => ({ models: ["qwen2.5:14b"] }) });
+  };
+  const chosen = { ...element(), value: "2" };
+  const realGet = context.document.getElementById;
+  context.document.getElementById = (id) => (id === "ml-everyday-provider" ? chosen : element());
+  runInContext("FOUND_MODELS = {};", context);
+  await runInContext('dispatch("mlist:discover:everyday")', context);
+  context.document.getElementById = realGet;
+  context.fetch = realFetch;
+  const kept = runInContext("JSON.stringify(FOUND_MODELS.everyday)", context);
+  if (kept !== JSON.stringify({ provider: 2, models: ["qwen2.5:14b"] })) {
+    console.error(`models: Discover did not keep what it found for its list: ${kept}`);
+    process.exit(1);
+  }
+  runInContext("FOUND_MODELS = {};", context);
+  console.log("models: Discover keeps what it found, by list and provider");
+}
+
 // Choosing a server from the catalogue has to show you the form it filled in.
 //
 // Both halves were right on their own. The add form was folded into a `<details>`, because
@@ -1042,10 +1086,17 @@ if (keys.length !== 3 || keys[0] !== keys[1] || keys[0] === keys[2]) {
   const chat = runInContext("viewChat()", context);
   if (chat.includes("[private]")) fail("private: the mark reached the screen");
   if ((chat.match(/class="private-lock"/g) || []).length < 2) fail("private: a private message or its reply shows no lock");
-  if (!chat.includes('data-act="toggle:private"')) fail("private: Private mode does not say so in the composer");
+  // The chips, not the "+" menu, which always offers the switch.
+  if (!runInContext("composerChipsHtml()", context).includes('data-act="toggle:private"')) fail("private: Private mode does not say so in the composer");
   if (chat.includes('data-act="toggle:deep" title="Your messages go to the bigger model')) fail("private: the deep model is offered for a private message");
-  runInContext('PRIVATE_MODE = false; DEEP_MODE = false; DEEP_MODEL = { configured: false }; CHAT_MSGS = [];', context);
-  console.log("private: a private message shows a lock without its mark, and never goes to the deep model");
+  // Research goes out to web search, so with Private on the send button sends a private message.
+  runInContext("RESEARCH_MODE = true;", context);
+  const both = runInContext("viewChat()", context);
+  if (/id="send-btn" data-act="research:start"/.test(both)) fail("private: with Private on, send still commissions research");
+  if (both.includes('data-act="toggle:research" title="Commissioning')) fail("private: research is offered for a private message");
+  runInContext('PRIVATE_MODE = false; DEEP_MODE = false; RESEARCH_MODE = false; DEEP_MODEL = { configured: false }; CHAT_MSGS = [];', context);
+  if (runInContext("composerChipsHtml()", context).includes('data-act="toggle:private"')) fail("private: the composer says Private when it is off");
+  console.log("private: a private message shows a lock without its mark, and never goes to the deep model or to research");
 }
 
 // Models in ordered lists (ADR 0105): each list in order with its moves, a cloud entry said to
@@ -1054,7 +1105,7 @@ if (keys.length !== 3 || keys[0] !== keys[1] || keys[0] === keys[2]) {
 {
   const fail = (what) => { console.error(what); process.exit(1); };
   runInContext(`MODEL_LISTS = {
-    providers: [{ id: 1, name: "Anthropic", url: "https://api.anthropic.com/v1", key_set: true, local: false },
+    providers: [{ id: 1, name: "Anthropic", url: "https://api.anthropic.com/v1", key_set: true, local: false, api_key: "sk-ant-fictional" },
                 { id: 2, name: "Ollama", url: "http://localhost:11434/v1", key_set: false, local: true }],
     everyday: [{ id: 10, provider: 1, provider_name: "Anthropic", model: "<b>claude</b>", enabled: true, local: false },
                { id: 11, provider: 2, provider_name: "Ollama", model: "qwen2.5:7b", enabled: false, local: true }],
@@ -1069,10 +1120,27 @@ if (keys.length !== 3 || keys[0] !== keys[1] || keys[0] === keys[2]) {
   if (!ai.includes("cloud, sees your messages disguised") || !ai.includes("switched off")) fail("models: an entry does not say where it runs or that it is off");
   if (!ai.includes("key set") || !ai.includes("no key")) fail("models: a provider does not say whether a key is set");
   if (ai.includes("<b>claude</b>")) fail("models: a model name became markup");
+  if (ai.includes("sk-ant-fictional")) fail("models: a key reached the screen");
   if (!ai.includes("answering now: <b>qwen2.5:7b</b>")) fail("models: what answers now is not said");
   if (!runInContext("presetOptions('')", context).includes("Anthropic (direct, your API key)")) fail("models: Anthropic directly is not offered");
-  runInContext("MODEL_LISTS = null;", context);
-  console.log("models: lists in order with their moves, cloud entries said to be disguised, and no key ever shown");
+  // Discover shows what it found as buttons to tap (a datalist is all but invisible on a phone),
+  // kept across a re-render, under the provider it came from. A model name holds ':', so it
+  // rides in a data attribute, never in data-act.
+  runInContext(`FOUND_MODELS = { deep: { provider: 2, models: ["qwen2.5:14b", "<b>x</b>"] } };`, context);
+  const found = runInContext("modelsSection()", context);
+  if (!found.includes("Tap a model to use it") || !found.includes('data-model="qwen2.5:14b"')) fail("models: what Discover found is not offered to tap");
+  if (found.includes("<b>x</b>")) fail("models: a found model name became markup");
+  if (/data-act="[^"]*qwen2\.5:14b/.test(found)) fail("models: a model name went into data-act, which splits on ':'");
+  if (!/id="ml-deep-provider"[^>]*>[\s\S]*?<option value="2" selected>/.test(found)) fail("models: the list forgot which provider it discovered");
+  if ((found.match(/Discover models/g) || []).length !== 2) fail("models: each list does not offer Discover models");
+  // A provider being changed shows which, with what it holds; one that is gone is not changed.
+  runInContext("FOUND_MODELS = {}; PROVIDER_EDITING = 1;", context);
+  const editing = runInContext("modelsSection()", context);
+  if (!/id="pv-name"[^>]*value="Anthropic"/.test(editing) || !/id="pv-url"[^>]*value="https:\/\/api.anthropic.com\/v1"/.test(editing)) fail("models: the provider form opens blank when changing one");
+  runInContext("PROVIDER_EDITING = 99;", context);
+  if (!runInContext("modelsSection()", context).includes("Add a provider")) fail("models: a removed provider is still being changed");
+  runInContext("MODEL_LISTS = null; PROVIDER_EDITING = null;", context);
+  console.log("models: lists in order with their moves, cloud entries said to be disguised, Discover's finds to tap, and no key ever shown");
 }
 
 // Butler prose renders lightly, and nothing it carries can become markup.

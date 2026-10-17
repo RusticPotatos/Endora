@@ -125,6 +125,16 @@ pub(super) async fn update_provider(
         }
     );
     blocking(move || {
+        // One removed meanwhile is not saved over in silence: the key typed for it would be
+        // dropped while the console said "saved".
+        if !config
+            .providers()
+            .map_err(AppError::Repository)?
+            .iter()
+            .any(|p| p.id == id)
+        {
+            return Err(AppError::NotFound { entity: "provider" });
+        }
         config
             .update_provider(id, &name, &url, key.as_deref())
             .map_err(AppError::Repository)

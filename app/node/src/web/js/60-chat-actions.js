@@ -197,8 +197,8 @@ function sourcesHtml(urls) {
 function updateComposerButton() {
   const btn = document.getElementById("send-btn");
   if (!btn) return;
-  btn.dataset.act = CHAT_STREAMING ? "chat:stop" : "chat:send";
-  const label = CHAT_STREAMING ? "Stop" : "Send";
+  btn.dataset.act = CHAT_STREAMING ? "chat:stop" : researching() ? "research:start" : "chat:send";
+  const label = CHAT_STREAMING ? "Stop" : researching() ? "Start research" : "Send";
   btn.title = label;
   btn.setAttribute("aria-label", label);
   btn.innerHTML = icon(CHAT_STREAMING ? "stop" : "up", 18);
@@ -272,6 +272,12 @@ function sendChat() {
 }
 
 async function startResearch() {
+  // Research goes out to web search and the models: never with Private on (ADR 0105), even
+  // from a button drawn before Private was switched on.
+  if (PRIVATE_MODE) {
+    flash("Private is on, and research goes out to web search. Turn Private off to commission it.", "err");
+    return;
+  }
   const input = document.getElementById("chat-input");
   const assignment = input ? input.value.trim() : "";
   if (!assignment) return;
@@ -319,7 +325,7 @@ async function drainChat() {
   // Remember the in-flight turn in module state so a re-render (e.g. toggling
   // Speak) can rebuild the just-sent message and the reply growing in, instead of
   // wiping them (they aren't in the persisted DB.messages until the turn ends).
-  CHAT_INFLIGHT = msg;
+  CHAT_INFLIGHT = isPrivate ? { message: msg, private: true } : msg;
   LIVE_REPLY = "";
   // A live action trail sits just above the reply bubble; it fills in as the
   // butler routes to skills, and collapses to a summary when the turn ends.
@@ -406,7 +412,8 @@ async function drainChat() {
           LAST_ACTIVITY_MSG = ev.reply && ev.reply.id;
           renderSteps(stepsWrap, STEP_LIST, false); // collapse to a summary
           renderSources(live, STEP_LIST); // real source links beneath the reply
-          speak(ev.reply && ev.reply.text);
+          // Read as it is shown: a private reply without its mark.
+          speak(ev.reply && shownText(ev.reply.text).text);
           finished = true;
         } else if (ev.type === "error") {
           throw new Error(ev.message || "the butler couldn't reply");

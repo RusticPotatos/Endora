@@ -273,7 +273,7 @@ function viewChat() {
   let liveTurn = "";
   if (CHAT_STREAMING) {
     const users = [CHAT_INFLIGHT, ...CHAT_QUEUE].filter(Boolean).map((t) =>
-      `<div class="row msg-row mine"><div class="bubble me">${esc(typeof t === "string" ? t : t.message)}</div></div>`).join("");
+      `<div class="row msg-row mine"><div class="bubble me">${typeof t === "object" && t.private ? `<span class="private-lock">${icon("lock", 12)}</span>` : ""}${esc(typeof t === "string" ? t : t.message)}</div></div>`).join("");
     const replyInner = LIVE_REPLY ? rich(LIVE_REPLY) : `<span class="dots"><i></i><i></i><i></i></span>`;
     liveTurn = users +
       `<div class="row msg-row" id="chat-live"><div class="bubble butler">${replyInner}</div></div>`;
@@ -324,8 +324,8 @@ function viewChat() {
       <div class="composer-dock"><div class="chat-col">
         <div class="composer">
           <div class="composer-chips" id="composer-chips">${composerChipsHtml()}</div>
-          <textarea id="chat-input" rows="1" placeholder="${RESEARCH_MODE ? "What should Endora research?" : "Talk to your butler…"}"></textarea>
-          ${RESEARCH_MODE ? `<textarea id="research-urls" rows="2" placeholder="Optional starting URLs, one per line"></textarea>` : ""}
+          <textarea id="chat-input" rows="1" placeholder="${researching() ? "What should Endora research?" : "Talk to your butler…"}"></textarea>
+          ${researching() ? `<textarea id="research-urls" rows="2" placeholder="Optional starting URLs, one per line"></textarea>` : ""}
           <div class="composer-bar">
             <div class="tools">
               <button class="icon-btn" data-act="toggle:tools" title="More" aria-label="More options" aria-haspopup="menu">${icon("plus", 18)}</button>
@@ -333,13 +333,19 @@ function viewChat() {
             </div>
             <div class="composer-right">
               <button class="ctx-ring" id="ctx-ring" data-act="ctx:toggle" title="${esc(ctxRingTitle())}" aria-label="What is sent to the model">${ctxRingSvg()}</button>
-              <button class="send-round" id="send-btn" data-act="${CHAT_STREAMING ? "chat:stop" : RESEARCH_MODE ? "research:start" : "chat:send"}" title="${CHAT_STREAMING ? "Stop" : RESEARCH_MODE ? "Start research" : "Send"}" aria-label="${CHAT_STREAMING ? "Stop" : RESEARCH_MODE ? "Start research" : "Send"}">${icon(CHAT_STREAMING ? "stop" : "up", 18)}</button>
+              <button class="send-round" id="send-btn" data-act="${CHAT_STREAMING ? "chat:stop" : researching() ? "research:start" : "chat:send"}" title="${CHAT_STREAMING ? "Stop" : researching() ? "Start research" : "Send"}" aria-label="${CHAT_STREAMING ? "Stop" : researching() ? "Start research" : "Send"}">${icon(CHAT_STREAMING ? "stop" : "up", 18)}</button>
             </div>
           </div>
           <div class="ctx-panel" id="ctx-panel" ${CTX_OPEN ? "" : "hidden"}>${ctxPanelHtml()}</div>
         </div>
       </div></div>
     </div>`;
+}
+
+// Whether send commissions research. Research goes out to web search and the models, so a
+// private message never does (ADR 0105): with Private on, send sends a private message.
+function researching() {
+  return RESEARCH_MODE && !PRIVATE_MODE;
 }
 
 // What is switched on, shown inside the composer where it applies, each one a tap away
@@ -350,7 +356,7 @@ function composerChipsHtml() {
   return [
     PRIVATE_MODE ? chip("toggle:private", "lock", "Private", "Answered on your network only, never sent out, never remembered — tap to turn off") : "",
     DEEP_MODEL.configured && DEEP_MODE && !PRIVATE_MODE ? chip("toggle:deep", "sparkle", "Deep", "Your messages go to the bigger model — tap to turn off") : "",
-    RESEARCH_MODE ? chip("toggle:research", "note", "Research", "Commissioning durable research — tap to turn off") : "",
+    researching() ? chip("toggle:research", "note", "Research", "Commissioning durable research — tap to turn off") : "",
     SPEAK ? chip("toggle:speak", "speakerOn", "Speaking", "Replies are read aloud — tap to turn off") : "",
   ].join("");
 }
