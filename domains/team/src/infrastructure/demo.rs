@@ -4,7 +4,7 @@
 //! the team protocol; nothing here bypasses a rule. No model, no cost.
 
 use crate::application::engine::{Author, Done, Engine};
-use crate::application::ports::{Clock, NewTask, TeamStore};
+use crate::application::ports::{Clock, NewTask, TeamStore, WorkerAdapter};
 use crate::domain::{GoalId, Member, Priority, Role, RunStatus, Task, TaskStatus};
 use crate::infrastructure::SimulatedRunner;
 
@@ -22,7 +22,7 @@ const WORK: &[&str] = &[
 ///
 /// # Errors
 /// What the engine refuses, or a store failure.
-pub fn seed<S: TeamStore, C: Clock>(hq: &Engine<S, SimulatedRunner, C>) -> Done<GoalId> {
+pub fn seed<S: TeamStore, W: WorkerAdapter, C: Clock>(hq: &Engine<S, W, C>) -> Done<GoalId> {
     hq.hire("Ada", Role::Lead, 25, 2, 0)?;
     hq.hire("Bo", Role::Developer, 40, 2, 4)?;
     hq.hire("Cy", Role::Researcher, 15, 2, 2)?;
@@ -41,8 +41,8 @@ pub fn seed<S: TeamStore, C: Clock>(hq: &Engine<S, SimulatedRunner, C>) -> Done<
     Ok(goal)
 }
 
-fn next_piece_of_work<S: TeamStore, C: Clock>(
-    hq: &Engine<S, SimulatedRunner, C>,
+fn next_piece_of_work<S: TeamStore, W: WorkerAdapter, C: Clock>(
+    hq: &Engine<S, W, C>,
     goal: GoalId,
     done_so_far: usize,
 ) -> Done<()> {
@@ -62,8 +62,8 @@ fn next_piece_of_work<S: TeamStore, C: Clock>(
     Ok(())
 }
 
-fn role<S: TeamStore, C: Clock>(
-    hq: &Engine<S, SimulatedRunner, C>,
+fn role<S: TeamStore, W: WorkerAdapter, C: Clock>(
+    hq: &Engine<S, W, C>,
     role: Role,
 ) -> Done<Option<Member>> {
     Ok(hq.store().members()?.into_iter().find(|m| m.role == role))
@@ -71,12 +71,13 @@ fn role<S: TeamStore, C: Clock>(
 
 /// Lets each scripted member take the turn it is running, then ends it; when the team has
 /// nothing left to do, the owner hands it the next piece of work. Returns how many turns were
-/// taken. Call it after each tick.
+/// taken. Call it after each tick, with the simulated runner `hq` takes its turns on.
 ///
 /// # Errors
 /// What the engine refuses, or a store failure.
-pub fn act<S: TeamStore, C: Clock>(
-    hq: &Engine<S, SimulatedRunner, C>,
+pub fn act<S: TeamStore, W: WorkerAdapter, C: Clock>(
+    hq: &Engine<S, W, C>,
+    scripted: &SimulatedRunner,
     goal: GoalId,
 ) -> Done<usize> {
     let members = hq.store().members()?;
@@ -94,7 +95,7 @@ pub fn act<S: TeamStore, C: Clock>(
                 take_a_turn(hq, member, &task, &members)?;
             }
         }
-        hq.runner().finish(run.id, true);
+        scripted.finish(run.id, true);
         taken += 1;
     }
     let tasks = hq.store().tasks()?;
@@ -105,8 +106,8 @@ pub fn act<S: TeamStore, C: Clock>(
     Ok(taken)
 }
 
-fn take_a_turn<S: TeamStore, C: Clock>(
-    hq: &Engine<S, SimulatedRunner, C>,
+fn take_a_turn<S: TeamStore, W: WorkerAdapter, C: Clock>(
+    hq: &Engine<S, W, C>,
     member: &Member,
     task: &Task,
     members: &[Member],
@@ -149,8 +150,8 @@ fn take_a_turn<S: TeamStore, C: Clock>(
 
 /// The lead splits a piece of work between the developer and the researcher, waits for them,
 /// and sends the whole for review when both are done.
-fn lead_turn<S: TeamStore, C: Clock>(
-    hq: &Engine<S, SimulatedRunner, C>,
+fn lead_turn<S: TeamStore, W: WorkerAdapter, C: Clock>(
+    hq: &Engine<S, W, C>,
     lead: &Member,
     task: &Task,
     members: &[Member],
@@ -234,7 +235,7 @@ mod tests {
         let goal = seed(&hq).unwrap();
         for _ in 0..30 {
             hq.tick().unwrap();
-            act(&hq, goal).unwrap();
+            act(&hq, hq.runner(), goal).unwrap();
         }
         let desk = hq.store().desk().unwrap();
         let merged: Vec<_> = desk.iter().filter(|d| d.kind == "ready_to_merge").collect();
