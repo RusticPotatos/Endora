@@ -134,9 +134,17 @@ function readerRow(s) {
 // what it learned. Rendered per message from the stored record, so it is still there when
 // you come back to the chat (ADR 0056). It used to be drawn from a live stream event held
 // in memory, which meant the note existed only while you stayed on the screen.
+// What a reply's activity line shows in the chat. A fact Endora noted about the owner
+// ("Noted in tech: You value reliability…") is left out: it read as running commentary on
+// the person, line after line, and lives on in About you, where it can be seen and changed.
+function shownActivity(activity) {
+  return (Array.isArray(activity) ? activity : []).filter((line) => !/^Noted in /.test(String(line)));
+}
+
 function activityHtml(activity) {
-  if (!SHOW_ACTIVITY || !Array.isArray(activity) || !activity.length) return "";
-  return `<div class="activity">${icon("sparkle", 13)} ${activity.map(esc).join(" · ")}</div>`;
+  const shown = shownActivity(activity);
+  if (!SHOW_ACTIVITY || !shown.length) return "";
+  return `<div class="activity">${icon("sparkle", 13)} ${shown.map(esc).join(" · ")}</div>`;
 }
 
 // `latest` adds the one question worth asking: did that help?

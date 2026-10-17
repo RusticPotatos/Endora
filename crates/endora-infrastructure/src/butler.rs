@@ -2146,6 +2146,14 @@ fn parse_butler_json(content: &str) -> ButlerReply {
 /// policy layer still decides whether the named skill may actually run.
 fn parse_capability_use(value: &Value) -> Option<endora_application::CapabilityUse> {
     let skill = non_empty(value["skill"].as_str()?)?;
+    // A model that was offered the tools natively may name one here by its API name, the
+    // dot made `__` (see `tool_api_name`). Only the first `__` was the dot between a tool
+    // server and its tool: a tool's own name may hold `__` (Home Assistant's do).
+    let skill = if skill.contains('.') {
+        skill
+    } else {
+        skill.replacen("__", ".", 1)
+    };
     // The input may be an object, or absent — default to an empty object.
     let input = value.get("input").cloned().unwrap_or_else(|| json!({}));
     Some(endora_application::CapabilityUse {
@@ -2217,6 +2225,35 @@ fn strip_code_fence(s: &str) -> &str {
 
 #[cfg(test)]
 mod tests {
+    /// Scenario (found live, 2026-10-17): the owner asked for drive suggestions; the model
+    /// named the search tool in its reply's `use` by the name the tool-calling API gives it
+    /// (`brave-search__brave_web_search`, the dot made `__`), not Endora's own id. The skill
+    /// matched nothing and was dropped without a word, so "let me look that up" led nowhere.
+    ///
+    /// Given a model that names a tool by its API name in its reply's `use`,
+    /// when the reply is read,
+    /// then the use is Endora's own id, and the skill runs.
+    #[test]
+    fn a_tool_named_by_its_api_name_in_the_reply_is_still_the_skill_it_names() {
+        let reply = parse_butler_json(
+            r#"{"reply":"Let me look.","use":{"skill":"brave-search__brave_web_search","input":{"query":"ssd"}}}"#,
+        );
+        let used = reply.capability_use.expect("the use is read");
+        assert_eq!(used.capability, "brave-search.brave_web_search");
+        // A tool whose own name holds `__`: only the first was the server's dot.
+        let reply = parse_butler_json(
+            r#"{"reply":"Checking.","use":{"skill":"home-assistant__homeassistant__GetLiveContext","input":{}}}"#,
+        );
+        assert_eq!(
+            reply.capability_use.unwrap().capability,
+            "home-assistant.homeassistant__GetLiveContext"
+        );
+        // An ordinary built-in id, with single underscores, is left as it is.
+        let reply =
+            parse_butler_json(r#"{"reply":"Looking.","use":{"skill":"web_search","input":{}}}"#);
+        assert_eq!(reply.capability_use.unwrap().capability, "web_search");
+    }
+
     #[test]
     fn usage_is_read_in_either_providers_shape_and_absent_when_not_reported() {
         let deepseek = serde_json::json!({"usage": {

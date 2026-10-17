@@ -281,8 +281,8 @@ function viewChat() {
   // The in-flight turn only. Every finished turn renders its own note from the stored
   // record above, which is what makes it survive coming back to the chat; this is for the
   // moment between the stream ending and the reply appearing in the persisted history.
-  const streamingActivity = SHOW_ACTIVITY && CHAT_STREAMING && LAST_ACTIVITY.length
-    ? `<div class="activity">${icon("sparkle", 13)} ${LAST_ACTIVITY.map(esc).join(" · ")}</div>`
+  const streamingActivity = SHOW_ACTIVITY && CHAT_STREAMING && shownActivity(LAST_ACTIVITY).length
+    ? `<div class="activity">${icon("sparkle", 13)} ${shownActivity(LAST_ACTIVITY).map(esc).join(" · ")}</div>`
     : "";
   const speakBtn = TTS
     ? `<button class="ghost" data-act="toggle:speak" title="read replies aloud">${icon(SPEAK ? "speakerOn" : "speakerOff")}<span>${SPEAK ? "Speaking" : "Speak"}</span></button>`

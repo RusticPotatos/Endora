@@ -1556,4 +1556,16 @@ if (keys.length !== 3 || keys[0] !== keys[1] || keys[0] === keys[2]) {
 
 console.log(`breadcrumbs: ${settingsViews.length} screens under Settings all say so`);
 
+// A fact Endora noted about the owner stays out of the chat's activity line (it lives in About
+// you); what Endora did still shows.
+{
+  const line = runInContext(`SHOW_ACTIVITY = true;
+    activityHtml(["Noted in tech: You value reliability", "Searched the web"])`, context);
+  if (line.includes("Noted in")) { console.error("chat: a noted fact is shown in the activity line"); process.exit(1); }
+  if (!line.includes("Searched the web")) { console.error("chat: the activity line lost what Endora did"); process.exit(1); }
+  if (runInContext(`activityHtml(["Noted in tech: You value reliability"])`, context) !== "") {
+    console.error("chat: an activity line of noted facts alone still shows"); process.exit(1);
+  }
+}
+
 console.log(`console check: ${named.length} screens render`);
