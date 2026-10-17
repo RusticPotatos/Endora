@@ -581,6 +581,8 @@ if (failures.length) {
                   brain: "claude-sonnet-5-5", brains: [{ name: "local", label: "Local" }, { name: "claude-sonnet-5-5", label: "Claude Sonnet" }, { name: "claude-haiku-5-5", label: "Claude Haiku" }] },
                 { id: 2, name: "Bo", role: "developer", look: 4, paused: false, slots: 2, per_day: 933333, committed: 400000, spent: 0, held: 400000, running: [{ run: 3, task: 7 }],
                   brain: "local", brains: [{ name: "local", label: "Local" }, { name: "claude-haiku-5-5", label: "<b>Haiku</b>" }] },
+                { id: 3, name: "Cy", role: "researcher", look: 1, paused: false, slots: 1, per_day: 0, committed: 0, spent: 0, held: 0, running: [], brain: "local", brains: [] },
+                { id: 4, name: "<i>Dee</i>", role: "reviewer", look: 2, paused: false, slots: 1, per_day: 0, committed: 0, spent: 0, held: 0, running: [], brain: "local", brains: [] },
                 { id: 5, name: "Mara", role: "ceo", look: 3, paused: false, slots: 1, per_day: 1361110, committed: 0, spent: 0, held: 0, running: [],
                   brain: "claude-opus-5-5", brains: [{ name: "local", label: "Local" }, { name: "claude-opus-5-5", label: "Claude Opus" }, { name: "claude-sonnet-5-5", label: "Claude Sonnet" }] }],
       house_log: "- 17 Oct: The NAS has 16 GB.</textarea><img src=h onerror=alert(5)>",
@@ -700,6 +702,65 @@ if (failures.length) {
   if (office.includes("<b>Haiku</b>")) fail("hq: a brain's label became markup");
   // A dropped goal's notes leave the board, finished ones too: the retired demo's hundreds of
   // done tasks must not bury the owner's own.
+  if (office.includes("<i>Dee</i>") || !office.includes("&lt;i&gt;Dee&lt;/i&gt;")) fail("hq: a member's name became markup");
+  // The office itself (the pixel canvas): a desk for each of five members, the CEO's office and
+  // the meeting room where people walk, and the whole room drawn, through an explicit 2D context
+  // that keeps what was written on it. No art is loaded here, so this draws the room's own shapes.
+  {
+    const seats = runInContext("hqSeats(HQ.snap.members)", context);
+    const desks = Object.values(seats).map((s) => `${s.desk.x},${s.desk.y}`);
+    if (desks.length !== 5 || new Set(desks).size !== 5) fail(`hq: five members do not have five desks: ${desks}`);
+    if (seats[5].desk.room !== "ceo") fail("hq: the CEO's desk is not in the CEO's office");
+    const inside = runInContext(`(() => {
+      const In = (r, s) => s.x >= r.x && s.x < r.x + r.w && s.y >= r.y && s.y < r.y + r.h;
+      const M = HQ_ROOMS.meeting, O = HQ_ROOMS.ceo;
+      return [!!M && !!O, In(M, HQ_MEETING.head), HQ_MEETING.chairs.every((c) => In(M, c)), In(M, M.in), !In(M, M.out),
+        In(O, HQ_CEO_DESK), In(O, HQ_CEO_REST), In(O, O.in), !In(O, O.out)];
+    })()`, context);
+    if (inside.some((ok) => !ok)) fail(`hq: the meeting room or the CEO's office is not where its seats and door are: ${inside}`);
+    const written = [];
+    const ctx = {
+      fillRect() {}, strokeRect() {}, drawImage() {}, beginPath() {}, arc() {}, moveTo() {}, fill() {}, stroke() {},
+      save() {}, restore() {}, translate() {}, scale() {},
+      fillText(text) { written.push(String(text)); },
+      measureText: (text) => ({ width: String(text).length * 6 }),
+    };
+    const canvas = () => ({ ...element(), width: 0, height: 0, getContext: () => ctx });
+    const { getElementById, createElement } = stubs.document;
+    stubs.document.getElementById = (id) => (id === "hq-office" ? canvas() : getElementById(id));
+    stubs.document.createElement = (tag) => (tag === "canvas" ? canvas() : createElement(tag));
+    const saved = runInContext("JSON.stringify(HQ.snap)", context);
+    try {
+      runInContext(`HQ.people = {}; HQ_BG = hqPaintRoom(); HQ_FURN = hqFurniture(); hqPlacePeople(); hqDraw();`, context);
+      for (const label of ["BOARD ROOM", "CEO", "MEETING", "SERVERS"]) {
+        if (!written.includes(label)) fail(`hq: the office does not say ${label}`);
+      }
+      if (!written.includes("<I>DEE</I>")) fail("hq: a member's name is not written on the canvas");
+      // The CEO's daily review: the CEO at the head of the meeting table, the lead on a chair.
+      const review = runInContext(`HQ.snap.routines.push({ id: 9, title: "Daily review", assignee: 5 });
+        HQ.snap.tasks.push({ id: 8, goal: 1, title: "Daily review", status: "doing", routine: 9, thread: [] });
+        HQ.snap.members.find((m) => m.id === 5).running = [{ run: 20, task: 8 }];
+        hqPlacePeople(); hqDraw();
+        [HQ.people[5].at === HQ_MEETING.head, HQ.people[1].at === HQ_MEETING.chairs[0], HQ.people[2].at.desk === true]`, context);
+      if (review.some((ok) => !ok)) fail(`hq: the daily review does not take the CEO and the lead to the meeting room: ${review}`);
+      // A question for the CEO: the one who asked goes to the CEO's open door; a decision for
+      // the board: the CEO takes it to the board room's door and says so there.
+      const errands = runInContext(`HQ.snap.members.find((m) => m.id === 5).running = []; hqPlacePeople();
+        hqTell({ id: 60, at: 0, kind: "thread.posted", data: { task: 7, author: "Ada", preview: "@Mara <b>which</b>?" } }, true);
+        hqTell({ id: 61, at: 0, kind: "wake.queued", data: { member: 5, task: 7, reason: "question_asked" } }, true);
+        hqTell({ id: 62, at: 0, kind: "desk.added", data: { item: 30, kind: "decision", task: 7 } }, true);
+        const ada = HQ.people[1], mara = HQ.people[5];
+        const there = ada.at.x === HQ_ROOMS.ceo.out.x && ada.at.y === HQ_ROOMS.ceo.out.y && ada.path.length > 0;
+        const board = mara.at.x === HQ_P.boardDoor.x && mara.at.y === HQ_P.boardDoor.y && mara.path.length > 0;
+        hqTell({ id: 63, at: 0, kind: "run.ended", data: { run: 21, member: 5, task: 7, result: "succeeded" } }, true);
+        [there, board, !ada.errand, ada.at === ada.seat.rest]`, context);
+      if (errands.some((ok) => !ok)) fail(`hq: a question or a decision does not send its member to the right door and back: ${errands}`);
+    } finally {
+      stubs.document.getElementById = getElementById;
+      stubs.document.createElement = createElement;
+      runInContext(`HQ_BG = null; HQ_FURN = []; HQ.people = {}; HQ.snap = JSON.parse(${JSON.stringify(saved)});`, context);
+    }
+  }
   const cards = runInContext(`HQ.snap.goals.push({ id: 2, title: "The demo's goal", status: "dropped" });
     for (let i = 0; i < 40; i++) HQ.snap.tasks.unshift({ id: 100 + i, goal: 2, title: "demo", status: "done" });
     hqCards().map((c) => c.t.id)`, context);
@@ -710,6 +771,7 @@ if (failures.length) {
   if (!runInContext("viewHQ()", context).includes("not set up")) fail("hq: a node without HQ does not say so");
   runInContext('HQ.error = "";', context);
   console.log("hq: the office reads the snapshot, the desk offers only what each item takes, and text stays text");
+  console.log("hq: the office draws five desks, the CEO's office and the meeting room, and walks people to them");
 }
 
 // The agenda (ADR 0103): the Now line says it is working and opens Activity; only what needs the
