@@ -343,3 +343,197 @@ fn a_private_standing_answer_is_never_worded_outside_and_is_kept_private() {
         );
     }
 }
+
+/// Echoes what it was told, and records what learning was shown.
+#[derive(Default)]
+struct Echoes {
+    learned_from: std::cell::RefCell<Vec<String>>,
+}
+impl crate::ports::Butler for Echoes {
+    fn respond(
+        &self,
+        history: &[endora_conversation::ChatMessage],
+        _p: &[endora_understanding::Preference],
+        _c: &ButlerContext,
+    ) -> Result<ButlerReply, crate::ports::ProposalError> {
+        self.learned_from
+            .borrow_mut()
+            .extend(history.iter().map(|m| m.text().to_owned()));
+        Ok(ButlerReply::default())
+    }
+    fn take_turn(
+        &self,
+        conversation: &[TurnMessage],
+        _p: &[endora_understanding::Preference],
+        _c: &ButlerContext,
+    ) -> Result<ButlerReply, crate::ports::ProposalError> {
+        let last = match conversation.last() {
+            Some(TurnMessage::User(t)) => t.clone(),
+            _ => String::new(),
+        };
+        Ok(ButlerReply {
+            text: format!("You said {last}."),
+            ..ButlerReply::default()
+        })
+    }
+}
+
+#[test]
+fn what_endora_writes_with_an_account_number_in_it_is_kept_private() {
+    let chat = Remembers::default();
+    let butler = Echoes::default();
+    let (reply, _) = super::send_to_butler(
+        &chat,
+        &super::tests::FakeStore::default(),
+        &super::tests::FakeOutcomes::default(),
+        &TheHouse,
+        &butler,
+        &super::tests::FakeAudit::default(),
+        &super::tests::SeqIds::default(),
+        &super::tests::FixedClock(0),
+        &ButlerContext::default(),
+        "my card is 4111 1111 1111 1111",
+    )
+    .expect("answered at home");
+    assert!(
+        reply.text().starts_with(RESTRICTED_MARK),
+        "{}",
+        reply.text()
+    );
+    assert!(
+        butler.learned_from.borrow().is_empty(),
+        "learning read an account number: {:?}",
+        butler.learned_from.borrow()
+    );
+    let posted = super::post_butler_message(
+        &chat,
+        &super::tests::SeqIds::default(),
+        &super::tests::FixedClock(0),
+        "Your account 12345678901 is overdrawn.",
+    )
+    .unwrap();
+    assert!(
+        posted.text().starts_with(RESTRICTED_MARK),
+        "{}",
+        posted.text()
+    );
+    let plain = super::post_butler_message(
+        &chat,
+        &super::tests::SeqIds::default(),
+        &super::tests::FixedClock(0),
+        "Good morning.",
+    )
+    .unwrap();
+    assert_eq!(plain.text(), "Good morning.");
+}
+
+#[test]
+fn a_running_summary_with_an_account_number_in_it_is_kept_private() {
+    struct Holds(std::cell::RefCell<Option<crate::ports::ConversationSummary>>);
+    impl crate::ports::ConversationSummaryStore for Holds {
+        fn get(&self) -> Option<crate::ports::ConversationSummary> {
+            self.0.borrow().clone()
+        }
+        fn set(&self, summary: crate::ports::ConversationSummary) {
+            *self.0.borrow_mut() = Some(summary);
+        }
+    }
+    struct Summarises;
+    impl crate::ports::Butler for Summarises {
+        fn respond(
+            &self,
+            _h: &[endora_conversation::ChatMessage],
+            _p: &[endora_understanding::Preference],
+            _c: &ButlerContext,
+        ) -> Result<ButlerReply, crate::ports::ProposalError> {
+            Ok(ButlerReply::default())
+        }
+        fn summarize(&self, _prior: &str, _t: &str) -> Result<String, crate::ports::ProposalError> {
+            Ok("They gave account 12345678901.".to_owned())
+        }
+    }
+    let full: Vec<endora_conversation::ChatMessage> = (0..30)
+        .map(|i| {
+            endora_conversation::ChatMessage::new(
+                endora_kernel::ids::MessageId::new(i + 1),
+                endora_conversation::MessageRole::User,
+                &format!("message {i}"),
+                endora_kernel::ids::Timestamp::from_unix_millis(i64::try_from(i).unwrap()),
+            )
+            .unwrap()
+        })
+        .collect();
+    let store = Holds(std::cell::RefCell::new(None));
+    let (_, summary) = super::compact_history(&Summarises, &store, &full, 12);
+    let summary = summary.expect("a summary");
+    assert!(summary.starts_with(RESTRICTED_MARK), "{summary}");
+}
+
+/// The brief, as the node offers it: other people's words among the house's own.
+struct TheBrief;
+impl CapabilityRunner for TheBrief {
+    fn available(&self) -> Vec<CapabilitySpec> {
+        vec![CapabilitySpec {
+            id: "brief".to_owned(),
+            wants_place: false,
+            third_party: true,
+            description: "assemble the brief".to_owned(),
+            configured: true,
+            autonomous: true,
+            input_schema: None,
+            reversibility: Reversibility::Observe,
+        }]
+    }
+    fn run(&self, _id: &str, _input: &str) -> Result<String, String> {
+        Ok("- From a shop: your parcel is delayed".to_owned())
+    }
+}
+
+#[test]
+fn a_standing_answer_is_marked_for_what_is_in_it() {
+    // The brief is Confidential, so its reply is not private; what it carries from outside
+    // keeps the stranger's mark, so the next turn stays home.
+    let chat = Remembers::default();
+    let mut found = Vec::new();
+    let (reply, _) = super::send_to_butler_streaming(
+        &chat,
+        &super::tests::FakeStore::default(),
+        &super::tests::FakeOutcomes::default(),
+        &TheBrief,
+        &Echoes::default(),
+        &super::tests::FakeAudit::default(),
+        None,
+        &super::tests::SeqIds::default(),
+        &super::tests::FixedClock(0),
+        &ButlerContext::default(),
+        "brief me",
+        &mut |_| {},
+        &mut |step| found.extend(step.output),
+        &mut Vec::new(),
+    )
+    .expect("the brief answers");
+    assert!(
+        !reply.text().starts_with(RESTRICTED_MARK),
+        "{}",
+        reply.text()
+    );
+    assert!(
+        found
+            .iter()
+            .any(|f| f.starts_with(crate::egress::STRANGER_MARK)),
+        "{found:?}"
+    );
+    assert_eq!(
+        super::marked_result(
+            "location",
+            false,
+            super::StepStatus::Done,
+            "home".to_owned()
+        ),
+        format!("{RESTRICTED_MARK}home")
+    );
+    assert_eq!(
+        super::marked_result("brief", false, super::StepStatus::Done, "a".to_owned()),
+        "a"
+    );
+}

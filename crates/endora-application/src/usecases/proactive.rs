@@ -173,7 +173,8 @@ pub fn assembled_brief_facts(
 /// in here the day a second question earned the mechanism its name. Every entry
 /// falls through to the ordinary turn when it cannot assemble its answer: broken
 /// routing degrades to a conversation, never to silence. `private` is a 🔒 ask: its answer
-/// is never worded outside the house (ADR 0105).
+/// is never worded outside the house (ADR 0105). `place` is where they are based, which never
+/// leaves when the brief is worded.
 #[expect(
     clippy::too_many_arguments,
     reason = "explicit dependencies, no hidden state"
@@ -181,6 +182,7 @@ pub fn assembled_brief_facts(
 pub(super) fn standing_answer(
     text: &str,
     private: bool,
+    place: &str,
     capabilities: &dyn CapabilityRunner,
     butler: &dyn Butler,
     ids: &impl IdSource,
@@ -192,6 +194,7 @@ pub(super) fn standing_answer(
     if asked_for_their_brief(text) {
         if let Some(answer) = brief_on_request(
             private,
+            place,
             capabilities,
             butler,
             ids,
@@ -246,6 +249,7 @@ pub(super) fn asked_for_their_brief(text: &str) -> bool {
 )]
 pub(super) fn brief_on_request(
     private: bool,
+    place: &str,
     capabilities: &dyn CapabilityRunner,
     butler: &dyn Butler,
     ids: &impl IdSource,
@@ -255,13 +259,10 @@ pub(super) fn brief_on_request(
     activity: &mut Vec<String>,
 ) -> Option<String> {
     const THE_BRIEF: &str = "brief";
-    if !capabilities
+    let spec = capabilities
         .available()
-        .iter()
-        .any(|s| s.id == THE_BRIEF && s.configured)
-    {
-        return None;
-    }
+        .into_iter()
+        .find(|s| s.id == THE_BRIEF && s.configured)?;
     let step = |status: StepStatus, output: Option<String>| ButlerStep {
         skill: THE_BRIEF.to_owned(),
         status,
@@ -271,14 +272,24 @@ pub(super) fn brief_on_request(
     on_step(step(StepStatus::Running, None));
     match capabilities.run(THE_BRIEF, "{}") {
         Ok(facts) if !facts.trim().is_empty() => {
-            on_step(step(StepStatus::Done, Some(facts.clone())));
+            // Kept with the mark its source calls for, as a turn's skill result is: the brief
+            // is Confidential, and what it carries from outside is a stranger's.
+            on_step(step(
+                StepStatus::Done,
+                Some(super::marked_result(
+                    THE_BRIEF,
+                    spec.third_party,
+                    StepStatus::Done,
+                    facts.clone(),
+                )),
+            ));
             activity.push("Assembled your brief".to_owned());
             // Asked privately, the facts post as themselves: wording them would send them to
             // the deep model, and a private turn never leaves the house (ADR 0105).
             let text = if private {
                 facts.trim().to_owned()
             } else {
-                worded_brief(butler, facts.trim(), ids, clock)
+                worded_brief(butler, facts.trim(), place, ids, clock)
             };
             // Streamed as one chunk: the tail of the turn treats a reply with text
             // as already-delivered, and this one never went through the model.
@@ -485,12 +496,13 @@ pub(super) fn kind_status_answer(kind: &str, states: &[(String, String)]) -> Opt
 pub(super) fn worded_brief(
     butler: &dyn Butler,
     facts: &str,
+    place: &str,
     ids: &impl IdSource,
     clock: &impl Clock,
 ) -> String {
     match butler
         .deeper()
-        .and_then(|deeper| word_the_brief(&deeper, facts, ids, clock))
+        .and_then(|deeper| word_the_brief(&deeper, facts, place, ids, clock))
     {
         // Cut off at the token ceiling. What arrived is real but partial, and the
         // facts it never reached are not facts it *left out* — so asking what it
@@ -567,7 +579,7 @@ pub fn daily_brief(
     // verbatim. Appending everything printed the brief twice on its first live run;
     // appending nothing would trust the model, which is what the appending exists to
     // avoid.
-    let mut text = worded_brief(butler, &facts, ids, clock);
+    let mut text = worded_brief(butler, &facts, &context.where_they_are, ids, clock);
     if !appended.is_empty() {
         text.push_str("\n\n");
         text.push_str(&appended.join("\n"));
@@ -587,10 +599,11 @@ pub fn post_butler_message(
     clock: &impl Clock,
     text: &str,
 ) -> Result<ChatMessage, AppError> {
+    // What Endora writes with an account number in it is kept private (ADR 0105).
     let message = ChatMessage::new(
         MessageId::new(ids.new_id()),
         MessageRole::Butler,
-        text,
+        &crate::egress::kept_as_written(text),
         clock.now(),
     )?;
     chat.append(&message)?;

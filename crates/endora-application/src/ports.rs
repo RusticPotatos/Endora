@@ -190,6 +190,20 @@ pub struct ButlerReply {
     /// concluding the model chose to omit it is how a cut brief ends up with the
     /// raw material it was meant to be wording appended underneath it.
     pub truncated: bool,
+    /// Which model wrote this, and whether it runs on the house's network: so a disclosure
+    /// can say where the words were read (ADR 0105). `None` when no model did, or the
+    /// client does not say.
+    pub answered_by: Option<AnsweredBy>,
+}
+
+/// The model that wrote a reply, and where it runs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AnsweredBy {
+    /// The model's name, as the provider knows it.
+    pub model: String,
+    /// It runs on the house's network; otherwise it is a cloud model, reached only through
+    /// the door, so what it read was disguised.
+    pub on_the_network: bool,
 }
 
 /// One tool call the model made through the endpoint's native tool-calling API — the

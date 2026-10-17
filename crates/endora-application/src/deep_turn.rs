@@ -50,7 +50,7 @@ enum Mode {
 
 /// What the person is told about where their words went (ADR 0055: disclosed every time).
 enum Disclosure {
-    /// The deep model chose skills; what they returned was read here.
+    /// The deep model chose skills; what they returned was read by the everyday model.
     ChoseSkills,
     /// The deep model answered without using any skill.
     AnsweredItself,
@@ -59,11 +59,21 @@ enum Disclosure {
 }
 
 impl Disclosure {
-    fn line(&self) -> String {
+    /// The line, naming the model that read the results and where (ADR 0105): the everyday
+    /// list may have a cloud model first, which reads them disguised.
+    fn line(&self, read_by: Option<&crate::AnsweredBy>) -> String {
         match self {
-            Self::ChoseSkills => "[deep] The deep model chose which skills to use. What they \
-                                  returned was read on this device and was not sent to it."
-                .to_owned(),
+            Self::ChoseSkills => {
+                let reader = match read_by {
+                    Some(r) if r.on_the_network => format!("{} on your network", r.model),
+                    Some(r) => format!("{}, disguised", r.model),
+                    None => "your everyday model".to_owned(),
+                };
+                format!(
+                    "[deep] The deep model chose which skills to use. What they returned was \
+                     not sent to it: it was read by {reader}."
+                )
+            }
             Self::AnsweredItself => "[deep] Answered by the deep model without using any skill \
                                      — this question left the box."
                 .to_owned(),
@@ -125,7 +135,8 @@ impl<'a> PlannedByTheDeepModel<'a> {
             return reply;
         }
         if let Some(what) = self.disclosure.borrow().as_ref() {
-            reply.text = format!("{}\n\n{}", reply.text.trim_end(), what.line());
+            let line = what.line(reply.answered_by.as_ref());
+            reply.text = format!("{}\n\n{}", reply.text.trim_end(), line);
         }
         reply
     }
@@ -378,6 +389,68 @@ mod tests {
             "{shown}"
         );
         assert!(shown.contains("mail did not run"), "{shown}");
+    }
+
+    /// Reads with no skills, and says which model it is.
+    struct Reads(Option<crate::AnsweredBy>);
+    impl Butler for Reads {
+        fn respond(
+            &self,
+            _h: &[ChatMessage],
+            _p: &[Preference],
+            _c: &ButlerContext,
+        ) -> Result<ButlerReply, ProposalError> {
+            Ok(ButlerReply {
+                text: "Two concerts.".to_owned(),
+                answered_by: self.0.clone(),
+                ..ButlerReply::default()
+            })
+        }
+    }
+
+    #[test]
+    fn the_note_says_which_model_read_the_results_and_where() {
+        struct Plans;
+        impl Butler for Plans {
+            fn respond(
+                &self,
+                _h: &[ChatMessage],
+                _p: &[Preference],
+                _c: &ButlerContext,
+            ) -> Result<ButlerReply, ProposalError> {
+                Ok(ButlerReply::default())
+            }
+        }
+        let deeper = Deeper::new(std::sync::Arc::new(Plans));
+        let note = |reader: &Reads| {
+            let planned = PlannedByTheDeepModel::new(&deeper, reader);
+            planned.disclose(Disclosure::ChoseSkills);
+            planned
+                .read(
+                    &[TurnMessage::User("what is on?".to_owned())],
+                    &[],
+                    &ButlerContext::default(),
+                )
+                .unwrap()
+                .text
+        };
+        let at_home = note(&Reads(Some(crate::AnsweredBy {
+            model: "qwen2.5:7b".to_owned(),
+            on_the_network: true,
+        })));
+        assert!(
+            at_home.contains("read by qwen2.5:7b on your network"),
+            "{at_home}"
+        );
+        let outside = note(&Reads(Some(crate::AnsweredBy {
+            model: "claude-sonnet-5-5".to_owned(),
+            on_the_network: false,
+        })));
+        assert!(
+            outside.contains("read by claude-sonnet-5-5, disguised"),
+            "{outside}"
+        );
+        assert!(!outside.contains("on this device"), "{outside}");
     }
 
     #[test]

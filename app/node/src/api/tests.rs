@@ -2308,3 +2308,62 @@ async fn providers_go_in_once_lists_sort_and_no_key_ever_comes_back_out() {
         .unwrap();
     assert_eq!(gone.status(), StatusCode::NOT_FOUND);
 }
+
+#[tokio::test]
+async fn the_old_model_settings_are_never_read_once_the_lists_decide() {
+    // ADR 0105: the lists are the only source. The old rows are imported once and purged with
+    // everything else, but never read as a fallback: a provider the owner removed must not
+    // come back as the deep model, its key used for a balance call, or a line on the AI screen.
+    use endora_capabilities::{ButlerModelConfigRepository, DeepModelRepository};
+    let state = test_state();
+    DeepModelRepository::set(
+        state.config.as_ref(),
+        &endora_application::DeepModel {
+            url: "https://api.deepseek.com/v1".to_owned(),
+            model: "deepseek-chat".to_owned(),
+            api_key: "sk-fictional-old".to_owned(),
+            escalate: true,
+        },
+    )
+    .unwrap();
+    ButlerModelConfigRepository::set(
+        state.config.as_ref(),
+        &endora_capabilities::ButlerModelConfig {
+            base_url: "https://old.example.com/v1".to_owned(),
+            api_key: "sk-fictional-older".to_owned(),
+            single: endora_capabilities::ModelSlot {
+                model: "old-model".to_owned(),
+                sampling: endora_capabilities::Sampling::default(),
+            },
+            ..endora_capabilities::ButlerModelConfig::default()
+        },
+    )
+    .unwrap();
+    let deep = json_body(
+        app(state.clone())
+            .oneshot(get("/v1/deep-model"))
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(deep["configured"], false, "{deep}");
+    assert_eq!(
+        deep["escalate"], true,
+        "the switch is the list's, and stays"
+    );
+    let balance = json_body(
+        app(state.clone())
+            .oneshot(get("/v1/deep-model/balance"))
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(balance["supported"], false, "{balance}");
+    let ai = json_body(app(state).oneshot(get("/v1/ai")).await.unwrap()).await;
+    let shown = ai.to_string();
+    assert!(!shown.contains("deepseek-chat"), "{shown}");
+    assert!(
+        !shown.contains("old-model") && !shown.contains("old.example.com"),
+        "{shown}"
+    );
+}
