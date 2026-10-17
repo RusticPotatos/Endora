@@ -489,7 +489,8 @@ function viewHQ() {
       <p class="hq-who">${esc(String(d.kind).replace(/_/g, " "))}${d.task ? ` · ${hqKey(d.task)}` : ""}${demoNote}</p>
       <div class="hq-row">${choices.map(([v, l, cls]) => `<button class="hq-btn ${cls}" data-act="hq:decide:${d.id}:${v}">${l}</button>`).join("")}</div></div>`;
   }).join("");
-  const log = HQ.log.slice(0, 60).map((l) => `<li><time>${esc(l.at)}</time><span class="k-${l.kind}">${esc(l.text)}</span></li>`).join("");
+  // The latest twenty, newest first: enough to follow the team, short enough to read.
+  const log = HQ.log.slice(0, 20).map((l) => `<li><time>${esc(l.at)}</time><span class="k-${l.kind}">${esc(l.text)}</span></li>`).join("");
   const team = (s.members || []).map((m) => {
     const on = (m.running || []).map((r) => r.task ? hqKey(r.task) : "a look round").join(", ");
     return `<li><button class="hq-link" data-act="hq:pick:member:${m.id}">${esc(m.name)}</button>
