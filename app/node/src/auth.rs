@@ -50,7 +50,8 @@ const THE_ROUTE_A_BROWSER_CANNOT_SIGN: &str = "/v1/activity/stream";
 /// Where a browser listens to the sound hub's stream (ADR 0104).
 ///
 /// An `<audio>` element cannot send a header either. Rather than put a token in its URL, the
-/// signed-in console asks for a single-use ticket and the stream route spends it: so the gate
+/// signed-in console asks for a short-lived ticket for one speaker, and the stream route checks
+/// it: so the gate
 /// lets **only** `/v1/sound/listen/<speaker id>` through unsigned, and that route refuses
 /// anything without a good ticket.
 pub const LISTEN_PREFIX: &str = "/v1/sound/listen/";

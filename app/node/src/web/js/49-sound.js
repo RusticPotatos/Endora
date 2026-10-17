@@ -4,8 +4,8 @@
 // that speaker's mix. Speakers with the same wires play as one group, in sync. This device
 // can be a speaker too: it listens to the hub's stream.
 //
-// The console talks to the node only. Listening uses a ticket the node hands out, good once
-// for a minute, because an <audio> element cannot sign its request.
+// The console talks to the node only. Listening uses a ticket the node hands out, good for a
+// minute for this speaker, because an <audio> element cannot sign its request.
 
 const SOUND = {
   state: null,        // what the hub says: sources, speakers, wires, groups, setups, listening

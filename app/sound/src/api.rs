@@ -228,6 +228,7 @@ async fn listen(Extract(state): Extract<State>, Path(id): Path<u32>) -> Result<R
         [
             (axum::http::header::CONTENT_TYPE, "audio/mpeg"),
             (axum::http::header::CACHE_CONTROL, "no-store"),
+            (axum::http::header::ACCEPT_RANGES, "none"),
         ],
         axum::body::Body::from_stream(body),
     )

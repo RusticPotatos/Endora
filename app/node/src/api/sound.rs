@@ -5,7 +5,9 @@
 //!
 //! Listening is the one thing a browser cannot sign: an `<audio>` element sends no header. So
 //! the signed-in console asks for a ticket, and the audio element plays the stream with it. A
-//! ticket is good once, for one speaker, for a minute. A long-lived token never goes in a URL.
+//! ticket is good for one speaker, for a minute, however many requests the browser makes for
+//! the stream in that time (Safari asks twice: a probe, then the stream). A long-lived token
+//! never goes in a URL.
 
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -47,16 +49,22 @@ impl SoundRemote {
         ticket
     }
 
-    /// Spends a ticket: true once, for the speaker it was made for, within its life.
-    fn spend(&self, ticket: &str, speaker: u32) -> bool {
+    /// Whether a ticket lets this request listen: for the speaker it was made for, within its
+    /// life. Not spent by using it, because a browser asks for one stream more than once;
+    /// tried for another speaker, it is void.
+    fn admits(&self, ticket: &str, speaker: u32) -> bool {
         let mut tickets = self
             .tickets
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        match tickets.remove(ticket) {
-            Some((for_speaker, at)) => for_speaker == speaker && at.elapsed() < TICKET_LIFE,
-            None => false,
+        let Some(&(for_speaker, at)) = tickets.get(ticket) else {
+            return false;
+        };
+        if for_speaker != speaker || at.elapsed() >= TICKET_LIFE {
+            tickets.remove(ticket);
+            return false;
         }
+        true
     }
 }
 
@@ -333,7 +341,7 @@ pub(super) async fn sound_listen(
     Query(q): Query<ListenQuery>,
 ) -> Result<axum::response::Response, (StatusCode, Json<serde_json::Value>)> {
     let sound = remote(&state)?;
-    if !sound.spend(&q.ticket, id) {
+    if !sound.admits(&q.ticket, id) {
         return Err((
             StatusCode::UNAUTHORIZED,
             Json(json!({ "error": "that listen ticket is not good" })),
@@ -371,6 +379,8 @@ pub(super) async fn sound_listen(
         [
             (axum::http::header::CONTENT_TYPE, "audio/mpeg"),
             (axum::http::header::CACHE_CONTROL, "no-store"),
+            // A live stream has no ranges: said plainly, so a browser does not probe for them.
+            (axum::http::header::ACCEPT_RANGES, "none"),
         ],
         axum::body::Body::from_stream(body),
     )
@@ -535,7 +545,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn listening_takes_a_ticket_good_once_and_never_the_owners_token() {
+    async fn listening_takes_a_ticket_for_its_speaker_for_a_minute_and_never_the_owners_token() {
         let (url, requests) = a_hub("200 OK", "audio/mpeg", b"ID3\x04\x00mp3 frames");
         let state = with_hub(&url);
         // No ticket, a made-up one, and the owner's own token in its place: all refused.
@@ -575,7 +585,7 @@ mod tests {
                 .status(),
             StatusCode::UNAUTHORIZED
         );
-        // That one was spent by trying; a fresh one plays.
+        // That one is void now it was tried elsewhere; a fresh one plays.
         let ticket = json_body(
             app(state.clone())
                 .oneshot(post("/v1/sound/listen/2/ticket", "{}"))
@@ -587,18 +597,19 @@ mod tests {
         let res = app(state.clone()).oneshot(unsigned(&listen)).await.unwrap();
         assert_eq!(res.status(), StatusCode::OK);
         assert_eq!(res.headers()["content-type"], "audio/mpeg");
+        assert_eq!(res.headers()["accept-ranges"], "none");
         let bytes = res.into_body().collect().await.unwrap().to_bytes();
         assert!(bytes.starts_with(b"ID3"), "{bytes:?}");
         let request = requests.recv().unwrap();
         assert!(request.starts_with("GET /v1/listen/2 "), "{request}");
-        // Spent.
+        // Asked for again, as Safari does after its probe: still good.
         assert_eq!(
             app(state)
                 .oneshot(unsigned(&listen))
                 .await
                 .unwrap()
                 .status(),
-            StatusCode::UNAUTHORIZED
+            StatusCode::OK
         );
     }
 
@@ -611,15 +622,32 @@ mod tests {
     }
 
     #[test]
-    fn a_ticket_is_good_once_for_its_speaker_only() {
+    fn a_ticket_is_good_for_its_speaker_only_and_void_once_tried_elsewhere() {
         let remote = SoundRemote::new(SoundClient::new("http://127.0.0.1:1", "t"));
         let ticket = remote.ticket(2, 0xabc);
-        assert!(!remote.spend(&ticket, 3), "good for another speaker");
+        assert!(!remote.admits(&ticket, 3), "good for another speaker");
+        assert!(
+            !remote.admits(&ticket, 2),
+            "still good after it was tried elsewhere"
+        );
         let ticket = remote.ticket(2, 0xabd);
-        assert!(remote.spend(&ticket, 2));
-        assert!(!remote.spend(&ticket, 2), "good twice");
-        assert!(!remote.spend("", 2));
-        assert!(!remote.spend("made-up", 2));
+        assert!(remote.admits(&ticket, 2));
+        assert!(
+            remote.admits(&ticket, 2),
+            "not good twice: Safari's probe would use it up"
+        );
+        assert!(!remote.admits("", 2));
+        assert!(!remote.admits("made-up", 2));
+    }
+
+    #[test]
+    fn a_ticket_runs_out() {
+        let remote = SoundRemote::new(SoundClient::new("http://127.0.0.1:1", "t"));
+        let ticket = remote.ticket(2, 0xabe);
+        // Made a minute and a second ago.
+        remote.tickets.lock().unwrap().get_mut(&ticket).unwrap().1 -=
+            TICKET_LIFE + Duration::from_secs(1);
+        assert!(!remote.admits(&ticket, 2));
     }
 
     #[test]
