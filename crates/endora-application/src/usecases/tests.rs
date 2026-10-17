@@ -26,7 +26,7 @@ impl CapabilityRunner for NoCapabilities {
 }
 
 #[derive(Default)]
-struct FakeStore {
+pub(super) struct FakeStore {
     messages: RefCell<Vec<ChatMessage>>,
     preferences: RefCell<Vec<Preference>>,
     /// The brain's pages, by name: enough to see what a turn noted.

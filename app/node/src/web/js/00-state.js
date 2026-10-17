@@ -24,6 +24,7 @@ let BRIEF_SCHED = { enabled: false, hour_utc: 12 }; // daily-brief schedule
 let DEEP_MODEL = { configured: false, key_set: false, url: "", model: "" }; // optional bigger AI
 let MODEL_LISTS = null;        // providers and the ordered everyday and deep lists (ADR 0105)
 let PROVIDER_EDITING = null;   // the provider whose form is open for changing, if any
+let FOUND_MODELS = {};         // what Discover found, by list: { provider, models }, kept across re-renders
 let BRAIN = null;              // What Endora knows about you: memory and its pages (ADR 0101)
 let BRAIN_PAGE = null;         // The page open on its own screen, with its history
 let BRAIN_EDITING = false;     // Whether that page is open as text to edit

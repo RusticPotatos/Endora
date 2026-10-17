@@ -1094,12 +1094,6 @@ pub(crate) fn run_tool_turn(
                 ));
                 (StepStatus::Blocked, content)
             };
-            on_step(ButlerStep {
-                skill: id.clone(),
-                status,
-                label: progress_label(&id),
-                output: Some(content.clone()),
-            });
             // From here on, this turn may not act on its own — and the result carries the
             // mark, so the escalation decision downstream can see it too.
             // A call that FAILED returned no stranger's words, so there is nothing to be
@@ -1114,13 +1108,21 @@ pub(crate) fn run_tool_turn(
             let content = if third_party && status != StepStatus::Failed {
                 format!("{STRANGER_MARK}{content}")
             } else if !third_party
-                && status != StepStatus::Failed
+                && status == StepStatus::Done
                 && endora_capabilities::tiers::tier_of(&id) == endora_kernel::Tier::Restricted
             {
                 format!("{}{content}", crate::egress::RESTRICTED_MARK)
             } else {
                 content
             };
+            // Kept with its mark: what a reply found is given back to the butler on later
+            // turns, and the mark is what keeps it home then too (ADR 0105).
+            on_step(ButlerStep {
+                skill: id.clone(),
+                status,
+                label: progress_label(&id),
+                output: Some(content.clone()),
+            });
             // Remember what it answered, so calling it again this turn gets this back
             // rather than a scolding the model might repeat to the person.
             seen.insert(already, content.clone());
@@ -1782,6 +1784,29 @@ pub fn send_to_butler_streaming_for_request(
     // They asked, so nothing on file motivated it (ADR 0053).
     let actions = OutcomeSink::unmotivated(outcomes);
 
+    // A private message keeps its turn private (ADR 0105), and so does a turn that read a
+    // Restricted skill's result: the reply may say it again, so it is kept with the mark, out
+    // of the running summary and the brain, and refused by the door on later turns.
+    let asked_privately = text.starts_with(crate::egress::RESTRICTED_MARK);
+    let mut read_private = false;
+    let on_step = &mut |step: ButlerStep| {
+        if step
+            .output
+            .as_deref()
+            .is_some_and(|o| o.starts_with(crate::egress::RESTRICTED_MARK))
+        {
+            read_private = true;
+        }
+        on_step(step);
+    };
+    let kept = |reply: &str, read_private: bool| {
+        if asked_privately || read_private {
+            format!("{}{reply}", crate::egress::RESTRICTED_MARK)
+        } else {
+            reply.to_owned()
+        }
+    };
+
     // STANDING QUESTIONS ROUTE DETERMINISTICALLY (ADR 0074/0076). A known ask for
     // a known feature is policy's to route, not the model's to guess — measured
     // live twice: the first brief ask after its skill shipped went to house gossip,
@@ -1790,6 +1815,7 @@ pub fn send_to_butler_streaming_for_request(
     // turn when nothing matches or the answer cannot be assembled.
     if let Some(reply_text) = standing_answer(
         text,
+        asked_privately,
         capabilities,
         butler,
         ids,
@@ -1798,7 +1824,7 @@ pub fn send_to_butler_streaming_for_request(
         on_step,
         &mut activity,
     ) {
-        let message = post_butler_message(chat, ids, clock, &reply_text)?;
+        let message = post_butler_message(chat, ids, clock, &kept(&reply_text, false))?;
         return Ok((message, activity));
     }
 
@@ -1981,13 +2007,7 @@ pub fn send_to_butler_streaming_for_request(
     } else {
         on_token(&reply_text);
     }
-    // A reply to a private message may say it again, so it is kept private too (ADR 0105).
-    let private = text.starts_with(crate::egress::RESTRICTED_MARK);
-    let stored_reply = if private {
-        format!("{}{reply_text}", crate::egress::RESTRICTED_MARK)
-    } else {
-        reply_text.clone()
-    };
+    let stored_reply = kept(&reply_text, read_private);
     let butler_msg = ChatMessage::new(
         MessageId::new(ids.new_id()),
         MessageRole::Butler,

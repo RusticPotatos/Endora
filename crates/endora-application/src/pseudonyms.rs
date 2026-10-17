@@ -88,20 +88,40 @@ impl Pseudonyms {
     /// break the JSON it is put into. Input that does not parse is restored as plain text.
     #[must_use]
     pub fn restore_in_json(&self, input_json: &str) -> String {
-        fn walk(table: &Pseudonyms, value: &mut serde_json::Value) {
+        self.in_json(input_json, Self::restore)
+    }
+
+    /// A skill's JSON input as it may leave: real values swapped for placeholders, string by
+    /// string, so a value written with escapes in the JSON is found too. Input that does not
+    /// parse is hidden as plain text.
+    #[must_use]
+    pub fn hide_in_json(&self, input_json: &str) -> String {
+        self.in_json(input_json, Self::hide)
+    }
+
+    fn in_json(&self, input_json: &str, swap: fn(&Self, &str) -> String) -> String {
+        fn walk(
+            table: &Pseudonyms,
+            swap: fn(&Pseudonyms, &str) -> String,
+            value: &mut serde_json::Value,
+        ) {
             match value {
-                serde_json::Value::String(text) => *text = table.restore(text),
-                serde_json::Value::Array(items) => items.iter_mut().for_each(|i| walk(table, i)),
-                serde_json::Value::Object(map) => map.values_mut().for_each(|v| walk(table, v)),
+                serde_json::Value::String(text) => *text = swap(table, text),
+                serde_json::Value::Array(items) => {
+                    items.iter_mut().for_each(|i| walk(table, swap, i));
+                }
+                serde_json::Value::Object(map) => {
+                    map.values_mut().for_each(|v| walk(table, swap, v));
+                }
                 _ => {}
             }
         }
         match serde_json::from_str::<serde_json::Value>(input_json) {
             Ok(mut value) => {
-                walk(self, &mut value);
+                walk(self, swap, &mut value);
                 value.to_string()
             }
-            Err(_) => self.restore(input_json),
+            Err(_) => swap(self, input_json),
         }
     }
 

@@ -354,13 +354,14 @@ function subscribeToActivity() {
     // A background "changed" event refreshes the snapshot — but a full re-render
     // must never yank unsaved work out from under the person:
     //  - not while a reply is streaming (it would wipe the live bubble),
-    //  - not while they're on Settings (unsaved form input — an endpoint, a typed
-    //    API key, a picked preset — would be reset to stored values),
+    //  - not while they're on Settings or the AI screen (unsaved form input — an
+    //    endpoint, a typed API key, a picked preset, a provider chosen for a list —
+    //    would be reset to stored values),
     //  - not while they're typing in any field.
     // Their own saves call reload() explicitly, so the view still updates on action.
     es.addEventListener("changed", () => {
       if (CHAT_STREAMING) return;
-      if (NAV.v === "settings") return;
+      if (NAV.v === "settings" || NAV.v === "models") return;
       const ae = document.activeElement;
       if (ae && /^(INPUT|TEXTAREA|SELECT)$/.test(ae.tagName)) return;
       reload().catch(() => {});

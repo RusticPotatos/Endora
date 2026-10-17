@@ -132,8 +132,10 @@ async function dispatch(act) {
       const list = (DB.messages || []).slice().reverse();
       const mine = list.find((m) => m.role === "user");
       if (!mine || !mine.text) return;
-      CHAT_QUEUE.push(LAST_CHAT_REQUEST && LAST_CHAT_REQUEST.message === mine.text
-        ? LAST_CHAT_REQUEST : mine.text);
+      // Asked as it was asked: a private message again as a private one, without its mark.
+      const said = shownText(mine.text);
+      CHAT_QUEUE.push(LAST_CHAT_REQUEST && LAST_CHAT_REQUEST.message === said.text
+        ? LAST_CHAT_REQUEST : said.private ? { message: said.text, private: true } : said.text);
       updateComposerButton();
       return drainChat();
     }
@@ -167,7 +169,9 @@ async function dispatch(act) {
     if (verb === "toggle" && noun === "private") {
       PRIVATE_MODE = !PRIVATE_MODE;
       localStorage.setItem("endora.privatemode", PRIVATE_MODE ? "1" : "0");
-      refreshComposerModes();
+      // With Research on, Private changes what send does, so the whole composer is redrawn.
+      if (RESEARCH_MODE) render();
+      else refreshComposerModes();
       flash(PRIVATE_MODE
         ? "Private on: answered on your network only, never sent out, and not remembered."
         : "Private off.", "ok");
@@ -647,25 +651,22 @@ async function dispatch(act) {
           return refresh();
         }
         if (noun === "discover") {
-          const provider = val(`ml-${id}-provider`);
+          const provider = Number(val(`ml-${id}-provider`));
           const r = await api("POST", `/v1/model-lists/providers/${provider}/discover`, {});
-          const list = document.getElementById(`ml-${id}-models`);
-          if (list) list.innerHTML = (r.models || []).map((m) => `<option value="${esc(m)}"></option>`).join("");
-          flash((r.models || []).length ? `Found ${r.models.length} models: start typing in the model box.` : "No models returned.", (r.models || []).length ? "ok" : "err");
+          const models = r.models || [];
+          // Kept by list, with the provider they came from, so a re-render keeps them and the
+          // list stays on that provider.
+          FOUND_MODELS[id] = { provider, models };
+          render();
+          flash(models.length ? `Found ${models.length} models: tap one below the list to use it.` : "No models returned.", models.length ? "ok" : "err");
           return;
         }
         if (noun === "escalate") {
           await api("POST", "/v1/model-lists/escalate", { on: id === "1" });
           return refresh();
         }
-        if (noun === "provideredit") {
-          PROVIDER_EDITING = Number(id);
-          render();
-          const p = ((MODEL_LISTS && MODEL_LISTS.providers) || []).find((x) => x.id === PROVIDER_EDITING);
-          const set = (el, v) => { const f = document.getElementById(el); if (f) f.value = v || ""; };
-          if (p) { set("pv-name", p.name); set("pv-url", p.url); }
-          return;
-        }
+        // The form draws the provider's name and endpoint itself, so a re-render keeps them.
+        if (noun === "provideredit") { PROVIDER_EDITING = Number(id); return render(); }
         if (noun === "providercancel") { PROVIDER_EDITING = null; return render(); }
         if (noun === "providersave") {
           const body = { name: val("pv-name"), url: val("pv-url") };
@@ -680,6 +681,8 @@ async function dispatch(act) {
         if (noun === "providerremove") {
           if (!confirm("Remove this provider? Its models leave both lists, and its key is forgotten.")) return;
           await api("POST", `/v1/model-lists/providers/${id}/remove`, {});
+          if (PROVIDER_EDITING === Number(id)) PROVIDER_EDITING = null;
+          for (const job of Object.keys(FOUND_MODELS)) if (FOUND_MODELS[job].provider === Number(id)) delete FOUND_MODELS[job];
           return refresh();
         }
       } catch (e) { flash("Couldn't do that: " + e.message, "err"); }

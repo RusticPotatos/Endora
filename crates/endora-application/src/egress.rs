@@ -43,15 +43,19 @@ pub const RESTRICTED_MARK: &str = "[private] ";
 /// result), or an owner's message carrying what looks like an account number. Code decides,
 /// never a model. A skill's result is judged by the skill's tier, not by its digits: the
 /// house's own reads are full of long numbers (bytes, timestamps, ids).
+///
+/// The mark counts wherever it is: an earlier reply carries the marks of what it found in the
+/// middle of its text, after the reply itself.
 #[must_use]
 pub fn holds_restricted(conversation: &[TurnMessage]) -> bool {
     conversation.iter().any(|m| match m {
         TurnMessage::User(text) => {
-            text.starts_with(RESTRICTED_MARK) || looks_like_an_account_number(text)
+            text.contains(RESTRICTED_MARK) || looks_like_an_account_number(text)
         }
-        TurnMessage::ToolResult { content, .. } => content.starts_with(RESTRICTED_MARK),
-        // Endora's reply to a private message is kept marked too.
-        TurnMessage::Assistant { text, .. } => text.starts_with(RESTRICTED_MARK),
+        TurnMessage::ToolResult { content, .. } => content.contains(RESTRICTED_MARK),
+        // Endora's reply to a private message, or to a turn that read something Restricted,
+        // is kept marked too, and so is what it found.
+        TurnMessage::Assistant { text, .. } => text.contains(RESTRICTED_MARK),
     })
 }
 
@@ -60,7 +64,7 @@ pub fn holds_restricted(conversation: &[TurnMessage]) -> bool {
 /// digits, then ten or more letters and digits). Phone numbers match too; they stay home.
 #[must_use]
 pub fn looks_like_an_account_number(text: &str) -> bool {
-    let chars: Vec<char> = text.chars().collect();
+    let chars = without_dates(text);
     let mut digits = 0usize;
     let mut i = 0;
     while i < chars.len() {
@@ -70,7 +74,7 @@ pub fn looks_like_an_account_number(text: &str) -> bool {
             if digits >= 9 {
                 return true;
             }
-        } else if (c == ' ' || c == '-')
+        } else if matches!(c, ' ' | '-' | '\u{a0}' | '\u{2009}' | '\u{202f}')
             && digits > 0
             && chars.get(i + 1).is_some_and(char::is_ascii_digit)
         {
@@ -92,6 +96,37 @@ pub fn looks_like_an_account_number(text: &str) -> bool {
     })
 }
 
+/// The text with each ISO date (`2026-10-16`) blanked out, so a date followed by a time is
+/// not read as one long number.
+fn without_dates(text: &str) -> Vec<char> {
+    let mut chars: Vec<char> = text.chars().collect();
+    let digit = |chars: &[char], i: usize| chars.get(i).is_some_and(char::is_ascii_digit);
+    let number = |chars: &[char], from: usize, len: usize| -> Option<u32> {
+        let run = chars.get(from..from + len)?;
+        if !run.iter().all(char::is_ascii_digit) {
+            return None;
+        }
+        run.iter().collect::<String>().parse().ok()
+    };
+    let mut i = 0;
+    while i + 10 <= chars.len() {
+        let is_date = (i == 0 || !digit(&chars, i - 1))
+            && !digit(&chars, i + 10)
+            && chars[i + 4] == '-'
+            && chars[i + 7] == '-'
+            && number(&chars, i, 4).is_some()
+            && number(&chars, i + 5, 2).is_some_and(|m| (1..=12).contains(&m))
+            && number(&chars, i + 8, 2).is_some_and(|d| (1..=31).contains(&d));
+        if is_date {
+            chars[i..i + 10].fill('_');
+            i += 10;
+        } else {
+            i += 1;
+        }
+    }
+    chars
+}
+
 /// Proof that no stranger has spoken in a conversation (ADR 0070).
 ///
 /// **Derived from the marks, never stored** — the same rule the record's grants follow
@@ -109,9 +144,15 @@ pub struct NoStrangerSpoke(());
 impl NoStrangerSpoke {
     /// The one constructor: reads the conversation and answers for it as it stands now.
     #[must_use]
+    ///
+    /// A stranger has spoken when a tool result carries the mark, or an earlier reply does:
+    /// what a reply found is carried into later turns with its marks, and words read then are
+    /// as much read now.
     pub fn given(conversation: &[TurnMessage]) -> Option<Self> {
-        let a_stranger_spoke = conversation.iter().any(|m| {
-            matches!(m, TurnMessage::ToolResult { content, .. } if content.starts_with(STRANGER_MARK))
+        let a_stranger_spoke = conversation.iter().any(|m| match m {
+            TurnMessage::ToolResult { content, .. } => content.starts_with(STRANGER_MARK),
+            TurnMessage::Assistant { text, .. } => text.contains(STRANGER_MARK),
+            TurnMessage::User(_) => false,
         });
         (!a_stranger_spoke).then_some(Self(()))
     }
@@ -190,9 +231,17 @@ impl Deeper {
             // what the house's skills returned, not only the owner's words.
             .map(|m| match m {
                 TurnMessage::User(text) => TurnMessage::User(disguise.hide(text)),
+                // What it asked a skill for carries the real values the door restored for the
+                // skill, so they are hidden again before the call is shown back to the model.
                 TurnMessage::Assistant { text, tool_calls } => TurnMessage::Assistant {
                     text: disguise.hide(text),
-                    tool_calls: tool_calls.clone(),
+                    tool_calls: tool_calls
+                        .iter()
+                        .map(|call| crate::ToolCall {
+                            input_json: disguise.hide_in_json(&call.input_json),
+                            ..call.clone()
+                        })
+                        .collect(),
                 },
                 TurnMessage::ToolResult { call_id, content } => TurnMessage::ToolResult {
                     call_id: call_id.clone(),
@@ -212,29 +261,57 @@ impl Deeper {
         if leaves {
             return Err(DoorRefusal::LooksLikeASecret);
         }
+        let hide_all = |lines: &[String]| lines.iter().map(|l| disguise.hide(l)).collect();
+        // Every field named, so a field added later is a compile error here rather than a
+        // value that slips out as itself.
+        let ButlerContext {
+            memory,
+            brain_index,
+            capabilities,
+            tools,
+            deferred,
+            now,
+            where_they_are: _,
+            conversation_summary,
+            target_aliases,
+            present,
+            did_lately,
+            track_record,
+            context_from_ms,
+        } = context;
         let hidden_ctx = ButlerContext {
-            present: context.present.iter().map(|l| disguise.hide(l)).collect(),
-            did_lately: context
-                .did_lately
-                .iter()
-                .map(|l| disguise.hide(l))
-                .collect(),
-            memory: context
-                .memory
+            memory: memory
                 .lines()
                 .map(|l| disguise.hide(l))
                 .collect::<Vec<_>>()
                 .join("\n"),
-            brain_index: context
-                .brain_index
-                .iter()
-                .map(|l| disguise.hide(l))
-                .collect(),
-            ..context.clone()
+            brain_index: hide_all(brain_index),
+            // The skills on offer and the time are the house's, not the person's.
+            capabilities: capabilities.clone(),
+            tools: tools.clone(),
+            deferred: deferred.clone(),
+            now: now.clone(),
+            // Where they are is never sent out: the skills that need a place fill it in
+            // themselves when they run, here.
+            where_they_are: String::new(),
+            conversation_summary: conversation_summary.as_deref().map(|s| disguise.hide(s)),
+            target_aliases: hide_all(target_aliases),
+            present: hide_all(present),
+            did_lately: hide_all(did_lately),
+            track_record: hide_all(track_record),
+            context_from_ms: *context_from_ms,
         };
+        // What they told Endora, disguised; where they are based, not at all.
+        let hidden_prefs: Vec<crate::Preference> = prefs
+            .iter()
+            .filter(|p| crate::usecases::where_they_are(std::slice::from_ref(*p)).is_empty())
+            .filter_map(|p| {
+                crate::Preference::new(p.id(), &disguise.hide(p.text()), p.kind(), p.at()).ok()
+            })
+            .collect();
         let better = self
             .0
-            .take_turn(&hidden, prefs, &hidden_ctx)
+            .take_turn(&hidden, &hidden_prefs, &hidden_ctx)
             .map_err(|e| DoorRefusal::TheModelFailed(e.to_string()))?;
         // What it chose to call carries the placeholders it was shown, too; a skill is run
         // for the person, so it is asked about what they asked about.
@@ -246,18 +323,29 @@ impl Deeper {
                 ..call.clone()
             })
             .collect();
+        // What it came to believe is noted into the brain here, so it is put back as well.
+        let beliefs = better
+            .beliefs
+            .iter()
+            .map(|b| crate::FormedBelief {
+                statement: disguise.restore(&b.statement),
+                evidence: disguise.restore(&b.evidence),
+                ..b.clone()
+            })
+            .collect();
         Ok(ButlerReply {
             escalated: true,
             text: disguise.restore(&better.text),
             tool_calls,
+            beliefs,
             ..better
         })
     }
 
     /// Words prose from facts Endora assembled itself (the brief, ADR 0055). Only the
     /// facts leave, disguised; the instruction travels verbatim because it is Endora's
-    /// own sentence, not the person's. `None` when a fact is secret-shaped or the model
-    /// gives nothing.
+    /// own sentence, not the person's. `None` when a fact is secret-shaped, Restricted (marked
+    /// private, or shaped like an account number), a stranger's, or the model gives nothing.
     #[must_use]
     pub fn word(
         &self,
@@ -266,6 +354,13 @@ impl Deeper {
         ids: &impl IdSource,
         clock: &impl Clock,
     ) -> Option<Worded> {
+        // Restricted facts are never worded outside (ADR 0105): they post as themselves.
+        if facts.contains(RESTRICTED_MARK)
+            || facts.contains(STRANGER_MARK)
+            || looks_like_an_account_number(facts)
+        {
+            return None;
+        }
         let disguise = personal_values_in(&ButlerContext {
             present: facts
                 .lines()
@@ -352,6 +447,13 @@ impl TheirOwnQuestion {
 pub(crate) fn personal_values_in(context: &ButlerContext) -> Pseudonyms {
     use std::collections::BTreeMap;
     let mut kinds: BTreeMap<&str, Vec<String>> = BTreeMap::new();
+    // "New York" and, from "Springfield, IL", each part long enough to stand alone.
+    let place = context.where_they_are.trim();
+    if !place.is_empty() {
+        let places = kinds.entry("place").or_default();
+        places.push(place.to_owned());
+        places.extend(place.split(',').map(|part| part.trim().to_owned()));
+    }
     for line in &context.present {
         // "john is not home" — the name is what precedes the verb.
         if let Some(name) = line.split(" is ").next().filter(|n| !n.contains(':')) {
@@ -421,14 +523,21 @@ mod tests {
     }
 
     #[test]
-    fn the_proof_is_about_tool_results_not_prose_that_mentions_the_mark() {
-        // A person (or a seeded finding inside an assistant message) *talking about* the
-        // mark is not a stranger speaking. The mark taints only where a tool wrote it —
-        // on the result it rode in on.
+    fn the_proof_is_about_what_was_read_not_what_the_person_says() {
+        // A person *talking about* the mark is not a stranger speaking. The mark taints where
+        // a tool wrote it, and where an earlier reply carries what it found.
         let talking_about_it = vec![TurnMessage::User(format!(
             "why do some results start with {STRANGER_MARK}?"
         ))];
         assert!(NoStrangerSpoke::given(&talking_about_it).is_some());
+        let carried = vec![
+            TurnMessage::Assistant {
+                text: format!("Your parcel is late.\n({STRANGER_MARK}what I found then: …)"),
+                tool_calls: vec![],
+            },
+            TurnMessage::User("thanks".to_owned()),
+        ];
+        assert!(NoStrangerSpoke::given(&carried).is_none());
     }
 
     #[test]
@@ -678,11 +787,136 @@ mod tests {
         for text in [
             "the bill is $2034.96",
             "on 2026-10-16 at 18:30",
+            "meet on 2026-10-16 18:30",
+            "on the Family calendar: dinner at 2026-07-31 18:30:00",
             "flight UA 1234 to New York",
             "postcode 10001",
             "room 1205, floor 12",
         ] {
             assert!(!looks_like_an_account_number(text), "{text}");
+        }
+        // A card number pasted with the spaces a web page uses is still one.
+        assert!(looks_like_an_account_number(
+            "4111\u{a0}1111\u{a0}1111\u{a0}1111"
+        ));
+        assert!(looks_like_an_account_number("4111\u{2009}1111\u{2009}1111"));
+    }
+
+    /// What a model behind the door was given: the conversation, the preferences and the
+    /// context, written out whole.
+    struct Witness(std::sync::Mutex<String>);
+    impl Butler for Witness {
+        fn respond(
+            &self,
+            _h: &[endora_conversation::ChatMessage],
+            _p: &[crate::Preference],
+            _c: &ButlerContext,
+        ) -> Result<ButlerReply, ProposalError> {
+            Ok(ButlerReply::default())
+        }
+        fn take_turn(
+            &self,
+            conversation: &[TurnMessage],
+            prefs: &[crate::Preference],
+            context: &ButlerContext,
+        ) -> Result<ButlerReply, ProposalError> {
+            let prefs: Vec<&str> = prefs.iter().map(crate::Preference::text).collect();
+            *self.0.lock().unwrap() = format!("{conversation:?}\n{prefs:?}\n{context:?}");
+            Ok(ButlerReply {
+                text: "Noted, <person 1>.".to_owned(),
+                beliefs: vec![crate::FormedBelief {
+                    statement: "They worry about <person 1>".to_owned(),
+                    kind: crate::BeliefKind::Value,
+                    confidence: crate::Confidence::Low,
+                    evidence: "<person 1> came up".to_owned(),
+                    page: "people".to_owned(),
+                }],
+                ..ButlerReply::default()
+            })
+        }
+    }
+
+    #[test]
+    fn nothing_the_house_knows_about_them_leaves_as_itself() {
+        use endora_kernel::ids::{PreferenceId, Timestamp};
+        let pref = |id, text: &str| {
+            crate::Preference::new(
+                PreferenceId::new(id),
+                text,
+                crate::PreferenceKind::Taste,
+                Timestamp::from_unix_millis(0),
+            )
+            .unwrap()
+        };
+        let witness = std::sync::Arc::new(Witness(std::sync::Mutex::new(String::new())));
+        let door = Deeper::new(witness.clone());
+        let context = ButlerContext {
+            present: vec!["John Doe is not home".to_owned()],
+            where_they_are: "New York".to_owned(),
+            conversation_summary: Some(
+                "They asked whether John Doe was home, and about a dentist in New York.".to_owned(),
+            ),
+            target_aliases: vec![
+                r#"on home-assistant, "johns lamp" means "John Doe Lamp""#.to_owned(),
+            ],
+            track_record: vec!["lights: John Doe said it worked".to_owned()],
+            ..ButlerContext::default()
+        };
+        let reply = door
+            .continue_turn(
+                &[
+                    TurnMessage::User("is anyone in New York home?".to_owned()),
+                    TurnMessage::Assistant {
+                        text: String::new(),
+                        tool_calls: vec![crate::ToolCall {
+                            id: "c1".to_owned(),
+                            capability: "remind".to_owned(),
+                            input_json: r#"{"text":"call John Doe"}"#.to_owned(),
+                        }],
+                    },
+                    TurnMessage::ToolResult {
+                        call_id: "c1".to_owned(),
+                        content: "reminder set".to_owned(),
+                    },
+                ],
+                &[
+                    pref(1, "Based in: New York"),
+                    pref(2, "John Doe cooks on Fridays"),
+                ],
+                &context,
+            )
+            .expect("a clean turn goes through");
+        let left = witness.0.lock().unwrap().clone();
+        for real in ["John Doe", "New York"] {
+            assert!(!left.contains(real), "{real} left the house: {left}");
+        }
+        assert!(left.contains("cooks on Fridays"), "{left}");
+        // What came back reads as the person's own again, beliefs included.
+        assert_eq!(reply.text, "Noted, John Doe.");
+        assert_eq!(reply.beliefs[0].statement, "They worry about John Doe");
+        assert_eq!(reply.beliefs[0].evidence, "John Doe came up");
+    }
+
+    #[test]
+    fn a_private_fact_is_never_worded_outside() {
+        struct Clock;
+        impl endora_kernel::Clock for Clock {
+            fn now(&self) -> endora_kernel::ids::Timestamp {
+                endora_kernel::ids::Timestamp::from_unix_millis(0)
+            }
+        }
+        struct Ids;
+        impl IdSource for Ids {
+            fn new_id(&self) -> u128 {
+                1
+            }
+        }
+        let door = Deeper::new(std::sync::Arc::new(MustNotBeReached));
+        for facts in [
+            format!("- {RESTRICTED_MARK}home, office, home"),
+            "- a reminder about card 4111 1111 1111 1111".to_owned(),
+        ] {
+            assert!(door.word("Word this:", &facts, &Ids, &Clock).is_none());
         }
     }
 

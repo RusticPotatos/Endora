@@ -109,6 +109,9 @@ pub struct LlmButler {
     sampling: Sampling,
     /// Where to note what each call used, and under which name (a paid model's calls only).
     usage: Option<(String, Arc<dyn endora_application::UsageLog>)>,
+    /// Report a failure as an error rather than apologising (ADR 0105): a list entry's client,
+    /// so the walker can ask the next entry. The list's last resort still apologises.
+    reports_failures: bool,
 }
 
 /// How long to wait for the whole model round-trip before giving up and using
@@ -145,6 +148,27 @@ impl LlmButler {
             api_key,
             sampling,
             usage: None,
+            reports_failures: false,
+        }
+    }
+
+    /// Reports a failure as an error instead of the degraded reply, so a list can pass the
+    /// turn to its next entry (ADR 0105). Nothing has been shown when it does.
+    #[must_use]
+    pub fn reporting_failures(mut self) -> Self {
+        self.reports_failures = true;
+        self
+    }
+
+    /// The degraded reply, or the failure itself when this client reports failures.
+    fn or_degraded(
+        &self,
+        result: Result<ButlerReply, ProposalError>,
+    ) -> Result<ButlerReply, ProposalError> {
+        match result {
+            Err(e) if self.reports_failures => Err(e),
+            Err(_) => Ok(degraded_reply()),
+            ok => ok,
         }
     }
 
@@ -491,8 +515,7 @@ impl Butler for LlmButler {
         // Never fail the conversation, but never mutate state on a failure either:
         // if the model is unreachable or unusable, answer with a plain degraded reply
         // that carries no proposals — so a hiccup can't file a request as a goal.
-        self.try_model(history, preferences, context)
-            .or_else(|_| Ok(degraded_reply()))
+        self.or_degraded(self.try_model(history, preferences, context))
     }
 
     fn respond_streaming(
@@ -504,12 +527,15 @@ impl Butler for LlmButler {
     ) -> Result<ButlerReply, ProposalError> {
         // Stream from the model; if it is unreachable or unusable, emit a plain
         // degraded reply (no proposals) in one chunk so the turn never mutates state.
-        self.try_model_streaming(history, preferences, context, on_token)
-            .or_else(|_| {
+        match self.try_model_streaming(history, preferences, context, on_token) {
+            Err(e) if self.reports_failures => Err(e),
+            Err(_) => {
                 let reply = degraded_reply();
                 on_token(&reply.text);
                 Ok(reply)
-            })
+            }
+            ok => ok,
+        }
     }
 
     fn take_turn_streaming(
@@ -545,8 +571,7 @@ impl Butler for LlmButler {
             preferences,
             context,
         );
-        self.post_and_parse(&body, context)
-            .or_else(|_| Ok(degraded_reply()))
+        self.or_degraded(self.post_and_parse(&body, context))
     }
 
     fn summarize(&self, prior: &str, transcript: &str) -> Result<String, ProposalError> {
@@ -845,12 +870,14 @@ impl ConfigurableButler {
 
     /// A client for one entry, noting its use under `label`.
     fn client_for(&self, t: &Target, label: &'static str) -> Arc<dyn Butler + Send + Sync> {
+        // A list entry says when it failed, so the walker asks the next one (ADR 0105).
         let mut llm = LlmButler::with_config(
             t.url.clone(),
             t.model.clone(),
             t.api_key.clone(),
             t.sampling.clone(),
-        );
+        )
+        .reporting_failures();
         if let Some(log) = &self.usage {
             llm = llm.with_usage_log(label, Arc::clone(log));
         }
@@ -876,7 +903,7 @@ impl ConfigurableButler {
                 let local = is_private_endpoint(&t.url);
                 let client = self.client_for(t, if local { "everyday" } else { "cloud-everyday" });
                 Step {
-                    key: format!("{}|{}", t.url, t.model),
+                    key: cooling_key(t),
                     url: t.url.clone(),
                     model: t.model.clone(),
                     local,
@@ -939,7 +966,7 @@ impl ConfigurableButler {
         let steps = targets
             .iter()
             .map(|t| Step {
-                key: format!("{}|{}", t.url, t.model),
+                key: cooling_key(t),
                 url: t.url.clone(),
                 model: t.model.clone(),
                 local: is_private_endpoint(&t.url),
@@ -1012,10 +1039,10 @@ impl ConfigurableButler {
     /// "which brain answered that?" is a fact on a screen rather than a guess.
     #[must_use]
     pub fn serving(&self) -> (String, String) {
-        if let Some(targets) = self.list_targets(Job::Everyday) {
+        if self.lists.is_some() {
             return self
-                .everyday_list(targets)
-                .first_ready()
+                .list_targets(Job::Everyday)
+                .and_then(|targets| self.everyday_list(targets).first_ready())
                 .filter(|(url, _)| !url.is_empty())
                 .unwrap_or_default();
         }
@@ -1044,8 +1071,14 @@ impl ConfigurableButler {
     /// fallback. Falling is silent and per-turn — the next turn re-asks, so the bigger
     /// machine waking up is noticed within one health window.
     fn current(&self) -> Arc<dyn Butler + Send + Sync> {
-        if let Some(targets) = self.list_targets(Job::Everyday) {
-            return self.everyday_list(targets);
+        // With lists, the old settings are read only to move them over (ADR 0105). They may
+        // name a cloud model, reached with no door, so lists that cannot be read fall to the
+        // environment's model rather than to them.
+        if self.lists.is_some() {
+            return match self.list_targets(Job::Everyday) {
+                Some(targets) => self.everyday_list(targets),
+                None => Arc::clone(&self.fallback),
+            };
         }
         let Ok(Some(config)) = self.repo.get() else {
             return Arc::clone(&self.fallback);
@@ -1084,19 +1117,33 @@ impl ConfigurableButler {
     }
 }
 
+/// What an entry is known by while it cools off: its endpoint, its model and which key it
+/// uses, so a second provider with another key for the same model is still tried when the
+/// first runs out of credit. The key itself is not kept, only a fingerprint of it.
+fn cooling_key(t: &Target) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut fingerprint = std::collections::hash_map::DefaultHasher::new();
+    t.api_key.hash(&mut fingerprint);
+    format!("{}|{}|{:x}", t.url, t.model, fingerprint.finish())
+}
+
 /// Whether an OpenAI-compatible endpoint answers: `GET {base}/models` within a short
 /// timeout. Fail-fast on purpose — this runs at most once per health window, and a
 /// sleeping machine should cost a moment, not a turn.
+///
+/// A machine that refuses the probe for want of a key is awake: the probe carries none, and
+/// the turn that follows does.
 fn endpoint_answers(base_url: &str) -> bool {
     let url = format!("{}/models", base_url.trim_end_matches('/'));
     let agent: ureq::Agent = ureq::Agent::config_builder()
         .timeout_global(Some(std::time::Duration::from_millis(1_500)))
         .build()
         .into();
-    agent
-        .get(&url)
-        .call()
-        .is_ok_and(|r| r.status().is_success())
+    match agent.get(&url).call() {
+        Ok(r) => r.status().is_success(),
+        Err(ureq::Error::StatusCode(401 | 403)) => true,
+        Err(_) => false,
+    }
 }
 
 /// What a local Ollama says it has loaded (`GET {origin}/api/ps`), or `None` if it does not
@@ -1111,23 +1158,53 @@ pub fn ollama_loaded(origin: &str) -> Option<serde_json::Value> {
     resp.body_mut().read_json::<serde_json::Value>().ok()
 }
 
-/// Whether a URL points at the person's own network — loopback, RFC 1918 private
-/// ranges, or a `.local`/`.lan`/bare hostname. The **base** rungs must live here: base
-/// turns carry the raw conversation, and only the deep rung has the pseudonym door
-/// (ADR 0069) between it and somebody else's computer.
+/// Whether a URL points at the person's own network — loopback, link-local, RFC 1918 and
+/// IPv6 unique-local addresses, or a `.local`/`.lan`/bare hostname. An entry here is reached
+/// directly with the raw conversation; any other goes through the door (ADR 0069, 0105), so
+/// a mistake here is a cloud model reached with no disguise. The host is what follows any
+/// user-info (`user:key@`), and an address in brackets is judged as an address.
 #[must_use]
 pub fn is_private_endpoint(url: &str) -> bool {
-    let host = url
-        .trim()
-        .strip_prefix("https://")
-        .or_else(|| url.trim().strip_prefix("http://"))
-        .unwrap_or(url.trim());
-    let host = host
-        .split(['/', ':'])
-        .next()
-        .unwrap_or_default()
-        .to_lowercase();
+    let url = url.trim();
+    let rest = url.split_once("://").map_or(url, |(_, rest)| rest);
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
+    let host_and_port = authority
+        .rsplit_once('@')
+        .map_or(authority, |(_, host)| host);
+    let host = if let Some(bracketed) = host_and_port.strip_prefix('[') {
+        let Some((address, _)) = bracketed.split_once(']') else {
+            return false;
+        };
+        address
+    } else if host_and_port.matches(':').count() > 1 {
+        // An IPv6 address without its brackets: the whole of it, never its first group.
+        host_and_port
+    } else {
+        host_and_port.split(':').next().unwrap_or_default()
+    };
+    let host = host.to_lowercase();
     if host.is_empty() {
+        return false;
+    }
+    if let Ok(ip) = host.parse::<std::net::IpAddr>() {
+        let v4_local =
+            |v4: std::net::Ipv4Addr| v4.is_loopback() || v4.is_private() || v4.is_link_local();
+        return match ip {
+            std::net::IpAddr::V4(v4) => v4_local(v4),
+            std::net::IpAddr::V6(v6) => {
+                if let Some(v4) = v6.to_ipv4_mapped() {
+                    return v4_local(v4);
+                }
+                let first = v6.segments()[0];
+                v6.is_loopback()
+                    // fe80::/10, link-local
+                    || first & 0xffc0 == 0xfe80
+                    // fc00::/7, unique local
+                    || first & 0xfe00 == 0xfc00
+            }
+        };
+    }
+    if host.contains(':') {
         return false;
     }
     if host == "localhost" || host.ends_with(".local") || host.ends_with(".lan") {
@@ -1135,16 +1212,7 @@ pub fn is_private_endpoint(url: &str) -> bool {
     }
     // A bare single-label hostname ("nas", "host.docker.internal" is multi-label but
     // known-local) resolves on the person's own network or not at all.
-    if host == "host.docker.internal" || !host.contains('.') {
-        return true;
-    }
-    if let Ok(ip) = host.parse::<std::net::IpAddr>() {
-        return match ip {
-            std::net::IpAddr::V4(v4) => v4.is_loopback() || v4.is_private() || v4.is_link_local(),
-            std::net::IpAddr::V6(v6) => v6.is_loopback(),
-        };
-    }
-    false
+    host == "host.docker.internal" || !host.contains('.')
 }
 
 /// Builds one [`LlmButler`] slot from a config's shared endpoint + key and the
@@ -2339,6 +2407,12 @@ mod tests {
             "http://nas:11434/v1",
             "http://host.docker.internal:11434/v1",
             "http://mymac.local:11434/v1",
+            "http://172.16.0.5:8080/v1",
+            "http://[::1]:11434/v1",
+            "http://[fe80::1]:11434/v1",
+            "http://[fd12:3456::1]:8080/v1",
+            "http://[::ffff:192.168.1.10]:11434/v1",
+            "http://user:secret@nas:11434/v1",
         ] {
             assert!(super::is_private_endpoint(private), "{private}");
         }
@@ -2347,9 +2421,145 @@ mod tests {
             "https://api.deepseek.com/v1",
             "http://8.8.8.8:11434/v1",
             "",
+            // Who is asking is not where it goes: the host follows the '@'.
+            "https://user:token@example.com/v1",
+            "https://user@203.0.113.7/v1",
+            // An address written as IPv6 is judged as an address, not as a bare name.
+            "https://[2606:4700::1111]/v1",
+            "https://[2001:db8::1]:8443/v1",
+            "https://[::ffff:8.8.8.8]/v1",
         ] {
             assert!(!super::is_private_endpoint(public), "{public}");
         }
+    }
+
+    /// Answers one request with `status`, on a port of its own.
+    fn answers_once_with(status: &'static str) -> String {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            if let Ok((mut conn, _)) = listener.accept() {
+                let mut buf = [0u8; 1024];
+                let _ = conn.read(&mut buf);
+                let _ = write!(
+                    conn,
+                    "HTTP/1.1 {status}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                );
+            }
+        });
+        format!("http://127.0.0.1:{port}/v1")
+    }
+
+    #[test]
+    fn a_machine_that_asks_for_its_key_is_awake() {
+        // The probe carries no key, and a LAN server started with one answers 401: it is
+        // awake, and the turn that follows carries the key.
+        assert!(super::endpoint_answers(&answers_once_with(
+            "401 Unauthorized"
+        )));
+        assert!(super::endpoint_answers(&answers_once_with("200 OK")));
+        assert!(!super::endpoint_answers(&answers_once_with(
+            "500 Internal Server Error"
+        )));
+        assert!(!super::endpoint_answers("http://127.0.0.1:9/v1"));
+    }
+
+    #[test]
+    fn two_keys_for_one_endpoint_and_model_cool_off_apart() {
+        let target = |key: &str| endora_capabilities::model_lists::Target {
+            entry: 1,
+            provider: "Anthropic".to_owned(),
+            url: "https://api.anthropic.com/v1".to_owned(),
+            model: "claude-sonnet-5-5".to_owned(),
+            api_key: key.to_owned(),
+            sampling: Sampling::default(),
+        };
+        let (personal, backup) = (
+            super::cooling_key(&target("sk-personal-0001")),
+            super::cooling_key(&target("sk-backup-0002")),
+        );
+        assert_ne!(
+            personal, backup,
+            "the backup key is tried when one runs out"
+        );
+        assert_eq!(personal, super::cooling_key(&target("sk-personal-0001")));
+        assert!(
+            !personal.contains("sk-personal"),
+            "the key is not kept in the name"
+        );
+    }
+
+    #[test]
+    fn when_the_lists_cannot_be_read_the_old_settings_do_not_answer() {
+        // The old settings are read only to move them over (ADR 0105). They may name a cloud
+        // model, reached with no door, so an unreadable list falls to the environment's model.
+        use endora_application::RepositoryError;
+        use endora_capabilities::model_lists::{Entry, Job, ModelListRepository, Provider};
+        struct Unreadable;
+        fn down<T>() -> Result<T, RepositoryError> {
+            Err(RepositoryError::Backend("disk I/O error".to_owned()))
+        }
+        impl ModelListRepository for Unreadable {
+            fn providers(&self) -> Result<Vec<Provider>, RepositoryError> {
+                down()
+            }
+            fn add_provider(&self, _: &str, _: &str, _: &str) -> Result<i64, RepositoryError> {
+                down()
+            }
+            fn update_provider(
+                &self,
+                _: i64,
+                _: &str,
+                _: &str,
+                _: Option<&str>,
+            ) -> Result<(), RepositoryError> {
+                down()
+            }
+            fn remove_provider(&self, _: i64) -> Result<(), RepositoryError> {
+                down()
+            }
+            fn entries(&self, _: Job) -> Result<Vec<Entry>, RepositoryError> {
+                down()
+            }
+            fn add_entry(&self, _: Job, _: i64, _: &str) -> Result<i64, RepositoryError> {
+                down()
+            }
+            fn set_sampling(&self, _: i64, _: &Sampling) -> Result<(), RepositoryError> {
+                down()
+            }
+            fn enable_entry(&self, _: i64, _: bool) -> Result<(), RepositoryError> {
+                down()
+            }
+            fn move_entry(&self, _: i64, _: bool) -> Result<(), RepositoryError> {
+                down()
+            }
+            fn remove_entry(&self, _: i64) -> Result<(), RepositoryError> {
+                down()
+            }
+            fn move_over_once(
+                &self,
+                _: Option<&endora_application::ButlerModelConfig>,
+                _: Option<&endora_application::DeepModel>,
+            ) -> Result<bool, RepositoryError> {
+                down()
+            }
+        }
+        let butler = super::ConfigurableButler::new(
+            std::sync::Arc::new(StoredConfig(config_with_preferred(""))),
+            std::sync::Arc::new(ScriptedButler),
+        )
+        .with_lists(std::sync::Arc::new(Unreadable))
+        .with_probe(|_| true);
+        assert_eq!(butler.serving(), (String::new(), String::new()));
+        let reply = butler
+            .take_turn(
+                &[endora_application::TurnMessage::User("hello".to_owned())],
+                &[],
+                &ButlerContext::default(),
+            )
+            .unwrap();
+        assert!(!reply.degraded, "the environment's model answered");
     }
 
     #[test]
