@@ -1084,8 +1084,15 @@ fn a_cloud_brain_speaks_anthropics_messages_api_through_the_same_loop() {
     fields.sort();
     assert_eq!(
         fields,
-        ["max_tokens", "messages", "model", "system", "tools"],
-        "only what the relay meters"
+        [
+            "cache_control",
+            "max_tokens",
+            "messages",
+            "model",
+            "system",
+            "tools"
+        ],
+        "only what the relay meters, and no effort when HQ names none"
     );
     assert_eq!(body["model"], "claude-sonnet-5-5");
     assert_eq!(body["max_tokens"], 4096);
@@ -1104,7 +1111,7 @@ fn a_cloud_brain_speaks_anthropics_messages_api_through_the_same_loop() {
             .contains("your task was claimed for you")
     );
     assert_eq!(
-        body["tools"][1],
+        body["tools"][0],
         json!({ "name": "claim", "description": "Take a task as yours.",
                 "input_schema": tools()[1]["inputSchema"] }),
         "an MCP tool, as an Anthropic tool"
@@ -1178,6 +1185,90 @@ fn a_cloud_brain_speaks_anthropics_messages_api_through_the_same_loop() {
     for sent in &to_relay {
         assert!(!sent.body.to_string().contains(TOKEN), "never in a body");
     }
+}
+
+#[test]
+fn a_cloud_turns_rounds_share_one_prefix_each_asking_to_cache_it_at_hqs_effort() {
+    let (hq_url, _) = hq(None);
+    let (node_url, _) = node(contracts_that_say_what_they_are(), None);
+    let (relay_url, to_relay) = model(vec![
+        (
+            200,
+            claude("Looking.", &[("toolu_1", "homelab_status", json!({}))]),
+        ),
+        (
+            200,
+            claude(
+                "",
+                &[(
+                    "toolu_2",
+                    "container_logs",
+                    json!({ "container": "sonarr" }),
+                )],
+            ),
+        ),
+        (200, claude("All is well.", &[])),
+    ]);
+    let mut env = on_claude(&hq_url, &relay_url, &node_url);
+    env.push(("ENDORA_EFFORT", "medium".to_owned()));
+    let out = worker(&env);
+    assert_eq!(out.status.code(), Some(0), "{}", said(&out));
+
+    let bodies: Vec<Value> = to_relay
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|s| s.body.clone())
+        .collect();
+    assert_eq!(bodies.len(), 3);
+    for body in &bodies {
+        assert_eq!(
+            body["cache_control"],
+            json!({ "type": "ephemeral" }),
+            "every round asks to cache its whole prompt"
+        );
+        assert_eq!(body["output_config"], json!({ "effort": "medium" }));
+    }
+    for pair in bodies.windows(2) {
+        let (before, after) = (&pair[0], &pair[1]);
+        for fixed in ["model", "system", "tools", "output_config", "cache_control"] {
+            assert_eq!(before[fixed], after[fixed], "{fixed} never changes");
+        }
+        let before = before["messages"].as_array().unwrap();
+        let after = after["messages"].as_array().unwrap();
+        assert_eq!(after.len(), before.len() + 2, "its answer and the results");
+        assert_eq!(
+            serde_json::to_string(&after[..before.len()]).unwrap(),
+            serde_json::to_string(&before[..]).unwrap(),
+            "each round goes on from the one before, unchanged"
+        );
+    }
+    let names: Vec<&str> = bodies[0]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|t| t["name"].as_str())
+        .collect();
+    let mut sorted = names.clone();
+    sorted.sort_unstable();
+    assert_eq!(
+        names, sorted,
+        "the tools in one order, whatever order they came in"
+    );
+}
+
+#[test]
+fn the_local_relay_is_sent_no_effort_and_no_cache_mark() {
+    let (hq_url, _) = hq(None);
+    let (model_url, to_model) = model(vec![(200, says("Done."))]);
+    let mut env = usual(&hq_url, &model_url);
+    env.push(("ENDORA_EFFORT", "high".to_owned()));
+    let out = worker(&env);
+    assert_eq!(out.status.code(), Some(0), "{}", said(&out));
+    let body = to_model.lock().unwrap()[0].body.clone();
+    let mut fields: Vec<&String> = body.as_object().unwrap().keys().collect();
+    fields.sort();
+    assert_eq!(fields, ["messages", "model", "tools"]);
 }
 
 #[test]

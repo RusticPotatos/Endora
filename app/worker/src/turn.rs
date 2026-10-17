@@ -80,7 +80,13 @@ pub struct Setup {
     /// Where the workbench's shell runs, when the worker is in the workbench; `None` anywhere
     /// else, where it has no shell.
     pub workbench: Option<std::path::PathBuf>,
+    /// How hard Claude tries this turn, as HQ decided it (one of [`EFFORTS`]); `None` leaves
+    /// it to the model. The local relay is never told.
+    pub effort: Option<String>,
 }
+
+/// The efforts Claude may be asked for, least first.
+pub const EFFORTS: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
 
 /// How a turn was taken.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -185,6 +191,7 @@ fn turn(setup: &Setup) -> Result<Taken, Stopped> {
         shell.is_some(),
     );
     let mut talk = Talk::new(setup.api, told, briefing, &offered);
+    talk.effort.clone_from(&setup.effort);
     // One loop whichever API the relay speaks: the rounds limit, the repeat guard, the line
     // saying what the turn did, and the ends of a turn are the same for every brain.
     for _ in 0..setup.most_rounds {
@@ -332,9 +339,10 @@ fn functions(tools: &[Value]) -> Vec<Value> {
 
 /// The team's tools, as MCP lists them, offered to Claude as Anthropic's tools: a name, a
 /// description and an input schema, and nothing else (no `type`, which would make one a tool
-/// run on Anthropic's side, and the relay refuse the call).
+/// run on Anthropic's side, and the relay refuse the call). They go by name, so the prompt
+/// they start is the same whatever order HQ and the node listed them in, and its cache holds.
 fn anthropic_tools(tools: &[Value]) -> Vec<Value> {
-    tools
+    let mut offered: Vec<Value> = tools
         .iter()
         .map(|tool| {
             json!({
@@ -343,7 +351,9 @@ fn anthropic_tools(tools: &[Value]) -> Vec<Value> {
                 "input_schema": schema_of(tool),
             })
         })
-        .collect()
+        .collect();
+    offered.sort_by(|a, b| a["name"].as_str().cmp(&b["name"].as_str()));
+    offered
 }
 
 /// One tool call the model asked for, whichever API it came by.
@@ -383,6 +393,8 @@ struct Talk {
     system: String,
     messages: Vec<Value>,
     tools: Vec<Value>,
+    /// How hard Claude tries, when HQ said.
+    effort: Option<String>,
 }
 
 impl Talk {
@@ -395,27 +407,35 @@ impl Talk {
                 messages: vec![json!({ "role": "system", "content": system }), briefing],
                 system: String::new(),
                 tools: functions(offered),
+                effort: None,
             },
             Api::Anthropic => Self {
                 api,
                 system,
                 messages: vec![briefing],
                 tools: anthropic_tools(offered),
+                effort: None,
             },
         }
     }
 
-    /// The body of one round's call for `model`.
+    /// The body of one round's call for `model`. Claude's asks Anthropic to cache the whole
+    /// prompt (the mark at the top puts the cache's breakpoint on its last block), so each
+    /// round reads what the round before wrote: the tools, the instructions, the briefing and
+    /// every round so far, which never change once sent. Only what is new is written.
     fn body(&self, model: &str) -> Value {
-        match self.api {
-            Api::OpenAi => {
-                json!({ "model": model, "messages": self.messages, "tools": self.tools })
-            }
-            Api::Anthropic => json!({
-                "model": model, "max_tokens": MOST_A_REPLY, "system": self.system,
-                "messages": self.messages, "tools": self.tools,
-            }),
+        if self.api == Api::OpenAi {
+            return json!({ "model": model, "messages": self.messages, "tools": self.tools });
         }
+        let mut body = json!({
+            "model": model, "max_tokens": MOST_A_REPLY, "system": self.system,
+            "messages": self.messages, "tools": self.tools,
+            "cache_control": { "type": "ephemeral" },
+        });
+        if let Some(effort) = &self.effort {
+            body["output_config"] = json!({ "effort": effort });
+        }
+        body
     }
 
     /// The model's answer, kept as it said it.

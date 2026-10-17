@@ -2,8 +2,9 @@
 //! container the runner starts for it, then exits. It is given its turn's token and where HQ
 //! and the node's model relay are, and nothing else: no key, no mount, no other address. The
 //! node's contracts (ADR 0106) are beside its model relay, on the same listener. A member who
-//! thinks with Claude (ADR 0109) is given the Anthropic relay and the model's name, and the
-//! worker speaks Anthropic's Messages API to it; otherwise OpenAI's, to the local relay.
+//! thinks with Claude (ADR 0109) is given the Anthropic relay, the model's name and, when HQ
+//! chose one, the turn's effort (`ENDORA_EFFORT`), and the worker speaks Anthropic's Messages
+//! API to it, asking it to cache each round's prompt; otherwise OpenAI's, to the local relay.
 //!
 //! In the workbench (ring 1, `ENDORA_WORKBENCH=1`), the disposable sandbox whose only way out
 //! is Endora's egress proxy, the model is also given a shell, run right there in `/work`.
@@ -15,7 +16,7 @@
 mod shell;
 mod turn;
 
-use turn::{Api, Setup, Stopped, Taken};
+use turn::{Api, EFFORTS, Setup, Stopped, Taken};
 
 /// HQ's team protocol, on the compose network.
 const HQ_MCP: &str = "http://hq:8790/v1/team/mcp";
@@ -70,6 +71,17 @@ fn setup(env: impl Fn(&str) -> Option<String>) -> Result<Setup, String> {
     } else {
         Api::OpenAi
     };
+    // How hard Claude tries, as HQ decided for this turn: one of the five, or the model's own.
+    let effort = match given("ENDORA_EFFORT") {
+        None => None,
+        Some(e) if EFFORTS.contains(&e.as_str()) => Some(e),
+        Some(e) => {
+            return Err(format!(
+                "ENDORA_EFFORT must be one of {}, not {e}",
+                EFFORTS.join(", ")
+            ));
+        }
+    };
     // The workbench (ring 1) says so: only there is the model given a shell.
     let workbench = (given("ENDORA_WORKBENCH").as_deref() == Some("1")).then(|| {
         given("ENDORA_WORKBENCH_DIR")
@@ -85,6 +97,7 @@ fn setup(env: impl Fn(&str) -> Option<String>) -> Result<Setup, String> {
         api,
         most_rounds,
         workbench,
+        effort,
     })
 }
 
@@ -215,6 +228,28 @@ mod tests {
         assert_eq!(setup.model, "claude-haiku-5-5");
         assert_eq!(setup.api, Api::Anthropic, "Claude speaks Anthropic's API");
         assert_eq!(setup.most_rounds, 4);
+    }
+
+    #[test]
+    fn the_effort_is_one_of_five_or_left_to_the_model() {
+        let at = |effort: &str| {
+            setup(env(&[
+                ("ENDORA_RUN_TOKEN", "a-turns-token"),
+                ("ENDORA_EFFORT", effort),
+            ]))
+            .map(|s| s.effort)
+        };
+        assert_eq!(
+            setup(env(&[("ENDORA_RUN_TOKEN", "t")])).unwrap().effort,
+            None
+        );
+        assert_eq!(at(""), Ok(None));
+        for effort in EFFORTS {
+            assert_eq!(at(effort), Ok(Some(effort.to_owned())));
+        }
+        for odd in ["extreme", "HIGH", "low\nENDORA_MODEL=x"] {
+            assert!(at(odd).is_err(), "{odd}");
+        }
     }
 
     #[test]
