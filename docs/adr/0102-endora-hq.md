@@ -6,7 +6,9 @@ Accepted, 2026-10-16, by the owner through a design interview (questions Q1–Q3
 with AI assistance (Claude). Step 7 of [the always-on butler plan](../plans/always-on-butler.md);
 the specification is [Endora HQ: the design](../plans/endora-hq.md). Phases 1 and 2 are built:
 the team core in `domains/team`, and the HQ service (`app/hq`) with the office in the console,
-on the simulated runner. The rest is not yet.
+on the simulated runner. Phase 4 has begun: the team protocol is served over MCP at
+`/v1/team/mcp`, opened only by a turn's own token, which HQ issues when the turn starts and
+which opens nothing once it ends. The rest is not yet.
 
 ## Context
 
