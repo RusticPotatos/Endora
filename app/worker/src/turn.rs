@@ -46,6 +46,9 @@ pub enum Taken {
     Answered,
     /// The rounds ran out with the model still calling tools.
     OutOfRounds,
+    /// The model asked the owner, which ends the turn: HQ wakes the member again when the
+    /// owner has seen it.
+    AskedTheOwner,
 }
 
 /// Why a turn stopped short. The reason never carries the token.
@@ -96,7 +99,10 @@ fn turn(setup: &Setup) -> Result<Taken, Stopped> {
         messages
             .push(json!({ "role": "assistant", "content": said["content"], "tool_calls": calls }));
         for call in &calls {
-            let content = run(&mut hq, call)?;
+            let (content, asked) = run(&mut hq, call)?;
+            if asked {
+                return Ok(Taken::AskedTheOwner);
+            }
             messages
                 .push(json!({ "role": "tool", "tool_call_id": call["id"], "content": content }));
         }
@@ -121,8 +127,8 @@ fn instructions(posted: bool) -> String {
          - Move the task on with set_status, and say why. Never try to set it to done: only \
          the gate does that.\n\
          - Create a sub-task only for a member below you, and only when the work needs one.\n\
-         - Ask the owner with ask_owner only when you truly need them. Then stop: you are \
-         woken when they have answered.\n\
+         - Ask the owner with ask_owner only when you truly need them. Asking ends your \
+         turn: you are woken when they have answered.\n\
          - Keep it short, and never say you did what you did not do.\n\
          - When your part is done, stop calling tools and reply in one or two sentences.",
     );
@@ -181,20 +187,21 @@ fn arguments(given: &Value) -> Result<Value, String> {
     Ok(parsed)
 }
 
-/// Runs one tool call the model asked for, and gives what the model reads back. A refusal,
-/// HQ's or the worker's own (arguments it cannot read), is said as one, so that the model can
-/// do something about it.
-fn run(hq: &mut Hq<'_>, call: &Value) -> Result<String, Stopped> {
+/// Runs one tool call the model asked for, and gives what the model reads back, and whether
+/// it put a question on the owner's desk (which ends the turn). A refusal, HQ's or the
+/// worker's own (arguments it cannot read), is said as one, so that the model can do
+/// something about it.
+fn run(hq: &mut Hq<'_>, call: &Value) -> Result<(String, bool), Stopped> {
     let tool = call["function"]["name"].as_str().unwrap_or("");
     let args = match arguments(&call["function"]["arguments"]) {
         Ok(args) => args,
-        Err(why) => return Ok(format!("Refused: {why}")),
+        Err(why) => return Ok((format!("Refused: {why}"), false)),
     };
     let (said, refused) = hq.call(tool, &args)?;
     if refused {
-        return Ok(format!("Refused: {said}"));
+        return Ok((format!("Refused: {said}"), false));
     }
-    Ok(said)
+    Ok((said, tool == "ask_owner"))
 }
 
 /// Posts the model's last word in the task's thread. With no task, or no words, there is

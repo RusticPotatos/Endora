@@ -437,13 +437,111 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         Ok(())
     }
 
+    // ---- what a turn may touch --------------------------------------------------------------
+
+    /// A turn, while it still runs.
+    fn running(&self, run: RunId) -> Done<Run> {
+        let run = self.store.run(run)?.ok_or(EngineError::Unknown("run"))?;
+        if run.status != RunStatus::Running {
+            return Err(EngineError::Refused(Refusal::TurnOver));
+        }
+        Ok(run)
+    }
+
+    /// Whether a turn may act on `task`: its own task and the sub-tasks under it, at any
+    /// depth. Writing reaches further: the task its own hangs from, and any task whose thread
+    /// names the member (`@name`, as a wake reads it). The lead may act on any task in a goal
+    /// it leads; a team has one lead, which leads every goal.
+    ///
+    /// # Errors
+    /// [`EngineError::Refused`] with [`Refusal::OutOfReach`] when it may not.
+    fn reach(&self, run: &Run, task: TaskId, writing: bool) -> Done<()> {
+        let target = self.task(task)?;
+        let member = self.member(run.member)?;
+        if member.role == Role::Lead {
+            return Ok(());
+        }
+        if let Some(own) = run.task {
+            let mut at = Some(target.id);
+            while let Some(id) = at {
+                if id == own {
+                    return Ok(());
+                }
+                at = self.task(id)?.parent;
+            }
+            if writing && self.task(own)?.parent == Some(target.id) {
+                return Ok(());
+            }
+        }
+        if writing {
+            let members = self.store.members()?;
+            let named = self.store.thread(task)?.iter().any(|p| {
+                p.author != member.name
+                    && mentions(&p.text, &members)
+                        .iter()
+                        .any(|m| m.id == member.id)
+            });
+            if named {
+                return Ok(());
+            }
+        }
+        Err(EngineError::Refused(Refusal::OutOfReach))
+    }
+
+    /// A turn takes a task, within its reach (see [`Self::claim`] for the rules).
+    ///
+    /// # Errors
+    /// [`Refusal::TurnOver`] for a turn that has ended, [`Refusal::OutOfReach`] for a task
+    /// outside it, and what [`Self::claim`] refuses.
+    pub fn claim_in(&self, run: RunId, task: TaskId) -> Done<()> {
+        let _held = self.held();
+        let run = self.running(run)?;
+        self.reach(&run, task, false)?;
+        self.claim_held_lock(run.member, task)
+    }
+
+    /// A turn moves a task on, within its reach (see [`Self::set_status`] for the rules).
+    ///
+    /// # Errors
+    /// [`Refusal::TurnOver`], [`Refusal::OutOfReach`], and what [`Self::set_status`] refuses.
+    pub fn set_status_in(
+        &self,
+        run: RunId,
+        task: TaskId,
+        to: TaskStatus,
+        reason: &str,
+    ) -> Done<()> {
+        let _held = self.held();
+        let run = self.running(run)?;
+        self.reach(&run, task, false)?;
+        self.set_status_held_lock(run.member, task, to, reason)
+    }
+
+    /// A turn writes in a task's thread, within its reach for writing.
+    ///
+    /// # Errors
+    /// [`Refusal::TurnOver`], [`Refusal::OutOfReach`], or a task that does not exist.
+    pub fn post_in(&self, run: RunId, task: TaskId, text: &str) -> Done<()> {
+        let _held = self.held();
+        let run = self.running(run)?;
+        self.reach(&run, task, true)?;
+        self.post_held_lock(Author::Member(run.member), task, text)
+    }
+
+    /// Takes a task for `member`, outside any turn: the rules of claiming on their own, for
+    /// the tests. A turn claims through [`Self::claim_in`].
+    #[cfg(test)]
+    pub(crate) fn claim(&self, member: MemberId, task: TaskId) -> Done<()> {
+        let _held = self.held();
+        self.claim_held_lock(member, task)
+    }
+
     /// Takes a task for `member`: one atomic step that succeeds for exactly one member.
     ///
     /// # Errors
     /// [`EngineError::Refused`] with [`Refusal::TakenBy`] if another member has it, or
     /// [`Refusal::Finished`] if it is over.
-    pub fn claim(&self, member: MemberId, task: TaskId) -> Done<()> {
-        let _held = self.held();
+    fn claim_held_lock(&self, member: MemberId, task: TaskId) -> Done<()> {
         let current = self.task(task)?;
         if current.status.finished() {
             return Err(EngineError::Refused(Refusal::Finished));
@@ -462,13 +560,25 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         Ok(())
     }
 
-    /// Writes to a task's thread. Anyone named in it is woken.
+    /// Writes to a task's thread, as the owner or Endora. Anyone named in it is woken. A
+    /// member writes only in its turn, through [`Self::post_in`].
     ///
     /// # Errors
-    /// [`EngineError::Unknown`] for a task that does not exist.
+    /// [`EngineError::Unknown`] for a task that does not exist; [`Refusal::OutOfReach`] for a
+    /// member.
     pub fn post(&self, by: Author, task: TaskId, text: &str) -> Done<()> {
         let _held = self.held();
+        if let Author::Member(_) = by {
+            return Err(EngineError::Refused(Refusal::OutOfReach));
+        }
         self.post_held_lock(by, task, text)
+    }
+
+    /// Writes as `member`, outside any turn: the thread's rules on their own, for the tests.
+    #[cfg(test)]
+    pub(crate) fn post_as(&self, member: MemberId, task: TaskId, text: &str) -> Done<()> {
+        let _held = self.held();
+        self.post_held_lock(Author::Member(member), task, text)
     }
 
     fn author_name(&self, by: Author) -> Done<String> {
@@ -501,12 +611,10 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         Ok(())
     }
 
-    /// Moves a member's task on, with a reason. Handing it back (`todo`) lets it go and wakes
-    /// the lead; `done` and `dropped` are never a member's to set.
-    ///
-    /// # Errors
-    /// [`EngineError::Refused`] if the task is not the member's or the step is not allowed.
-    pub fn set_status(
+    /// Moves a task on for `member`, outside any turn: the rules on their own, for the tests.
+    /// A turn moves its work through [`Self::set_status_in`].
+    #[cfg(test)]
+    pub(crate) fn set_status(
         &self,
         member: MemberId,
         task: TaskId,
@@ -514,6 +622,21 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         reason: &str,
     ) -> Done<()> {
         let _held = self.held();
+        self.set_status_held_lock(member, task, to, reason)
+    }
+
+    /// Moves a member's task on, with a reason. Handing it back (`todo`) lets it go and wakes
+    /// the lead; `done` and `dropped` are never a member's to set.
+    ///
+    /// # Errors
+    /// [`EngineError::Refused`] if the task is not the member's or the step is not allowed.
+    fn set_status_held_lock(
+        &self,
+        member: MemberId,
+        task: TaskId,
+        to: TaskStatus,
+        reason: &str,
+    ) -> Done<()> {
         let current = self.task(task)?;
         if current.owner != Some(member) {
             return Err(EngineError::Refused(Refusal::NotYours));
@@ -1109,16 +1232,18 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         Ok(Some((run, member)))
     }
 
-    /// A member asks the owner something about its task: a question on the desk. Seeing it
-    /// wakes that member again. One question a member about a task waits at a time, so a turn
+    /// A member asks the owner something about its task: a question on the desk, and the end
+    /// of its turn, which can do nothing useful until the owner has seen it. Seeing it wakes
+    /// that member again. One question a member about a task waits at a time, so a turn
     /// cannot fill the owner's desk.
     ///
     /// # Errors
     /// [`EngineError::Unknown`] for a turn with no task; [`EngineError::Refused`] with
-    /// [`Refusal::AlreadyAsked`] while its last question waits; a store failure.
+    /// [`Refusal::TurnOver`] for a turn that has ended, or [`Refusal::AlreadyAsked`] while its
+    /// last question waits; a store failure.
     pub fn ask_owner(&self, run: RunId, text: &str) -> Done<crate::domain::DeskId> {
         let _held = self.held();
-        let run = self.store.run(run)?.ok_or(EngineError::Unknown("run"))?;
+        let run = self.running(run)?;
         let task = run.task.ok_or(EngineError::Unknown("task for this turn"))?;
         let member = self.member(run.member)?;
         let waiting = self.store.desk()?.into_iter().any(|d| {
@@ -1143,6 +1268,11 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             EventKind::DeskAdded,
             json!({ "item": desk.0, "kind": "question", "task": task.0 }),
         )?;
+        // The worker ends its turn on reading that it has; its container is let go too, so a
+        // worker that does not cannot linger.
+        let id = run.id;
+        self.end(run, RunStatus::Succeeded, "asked the owner")?;
+        self.runner.stop(id, self.settings.grace);
         Ok(desk)
     }
 

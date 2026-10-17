@@ -5,7 +5,7 @@
 
 use crate::application::engine::{Author, Done, Engine};
 use crate::application::ports::{Clock, NewTask, TeamStore, WorkerAdapter};
-use crate::domain::{GoalId, Member, Priority, Role, RunStatus, Task, TaskStatus};
+use crate::domain::{GoalId, Member, Priority, Role, RunId, RunStatus, Task, TaskStatus};
 use crate::infrastructure::SimulatedRunner;
 
 /// What the demo team works on, in turn.
@@ -92,7 +92,7 @@ pub fn act<S: TeamStore, W: WorkerAdapter, C: Clock>(
         if let Some(task) = run.task {
             let task = hq.store().task(task)?;
             if let Some(task) = task {
-                take_a_turn(hq, member, &task, &members)?;
+                take_a_turn(hq, run.id, member, &task, &members)?;
             }
         }
         scripted.finish(run.id, true);
@@ -108,30 +108,30 @@ pub fn act<S: TeamStore, W: WorkerAdapter, C: Clock>(
 
 fn take_a_turn<S: TeamStore, W: WorkerAdapter, C: Clock>(
     hq: &Engine<S, W, C>,
+    run: RunId,
     member: &Member,
     task: &Task,
     members: &[Member],
 ) -> Done<()> {
-    let me = Author::Member(member.id);
     let reviewer = members.iter().find(|m| m.role == Role::Reviewer);
     match member.role {
-        Role::Lead => lead_turn(hq, member, task, members),
+        Role::Lead => lead_turn(hq, run, member, task, members),
         Role::Developer | Role::Researcher => {
             if task.status != TaskStatus::Todo && task.status != TaskStatus::Doing {
                 return Ok(());
             }
-            hq.claim(member.id, task.id)?;
+            hq.claim_in(run, task.id)?;
             let doing = if member.role == Role::Developer {
                 "Made the change and ran the tests."
             } else {
                 "Read up on it and wrote down what I found."
             };
-            hq.post(me, task.id, doing)?;
-            hq.set_status(member.id, task.id, TaskStatus::InReview, "ready for a look")?;
+            hq.post_in(run, task.id, doing)?;
+            hq.set_status_in(run, task.id, TaskStatus::InReview, "ready for a look")?;
             hq.record_gate(task.id, true, "")?;
             if let Some(reviewer) = reviewer {
-                hq.post(
-                    me,
+                hq.post_in(
+                    run,
                     task.id,
                     &format!("@{} could you review this?", reviewer.name),
                 )?;
@@ -143,7 +143,7 @@ fn take_a_turn<S: TeamStore, W: WorkerAdapter, C: Clock>(
                 return Ok(());
             }
             hq.approve(member.id, task.id)?;
-            hq.post(me, task.id, "Checked it. Approved.")
+            hq.post_in(run, task.id, "Checked it. Approved.")
         }
     }
 }
@@ -152,6 +152,7 @@ fn take_a_turn<S: TeamStore, W: WorkerAdapter, C: Clock>(
 /// and sends the whole for review when both are done.
 fn lead_turn<S: TeamStore, W: WorkerAdapter, C: Clock>(
     hq: &Engine<S, W, C>,
+    run: RunId,
     lead: &Member,
     task: &Task,
     members: &[Member],
@@ -167,7 +168,7 @@ fn lead_turn<S: TeamStore, W: WorkerAdapter, C: Clock>(
         if task.status != TaskStatus::Todo {
             return Ok(());
         }
-        hq.claim(lead.id, task.id)?;
+        hq.claim_in(run, task.id)?;
         for (role, prefix) in [(Role::Developer, "Do"), (Role::Researcher, "Look into")] {
             let Some(to) = members.iter().find(|m| m.role == role) else {
                 continue;
@@ -185,9 +186,9 @@ fn lead_turn<S: TeamStore, W: WorkerAdapter, C: Clock>(
                 },
             )?;
         }
-        hq.post(me, task.id, "Split this between Bo and Cy.")?;
-        return hq.set_status(
-            lead.id,
+        hq.post_in(run, task.id, "Split this between Bo and Cy.")?;
+        return hq.set_status_in(
+            run,
             task.id,
             TaskStatus::Blocked,
             "waiting on the sub-tasks",
@@ -196,12 +197,12 @@ fn lead_turn<S: TeamStore, W: WorkerAdapter, C: Clock>(
     if task.status != TaskStatus::Blocked || subtasks.iter().any(|t| !t.status.finished()) {
         return Ok(());
     }
-    hq.set_status(lead.id, task.id, TaskStatus::Doing, "both parts are done")?;
-    hq.set_status(lead.id, task.id, TaskStatus::InReview, "ready for a look")?;
+    hq.set_status_in(run, task.id, TaskStatus::Doing, "both parts are done")?;
+    hq.set_status_in(run, task.id, TaskStatus::InReview, "ready for a look")?;
     hq.record_gate(task.id, true, "")?;
     if let Some(reviewer) = members.iter().find(|m| m.role == Role::Reviewer) {
-        hq.post(
-            me,
+        hq.post_in(
+            run,
             task.id,
             &format!("@{} the whole of it, please.", reviewer.name),
         )?;

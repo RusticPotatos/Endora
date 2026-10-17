@@ -311,6 +311,10 @@ pub enum Refusal {
     HandBack,
     /// The member's last question about the task still waits on the owner's desk.
     AlreadyAsked,
+    /// The task is not one this turn may touch.
+    OutOfReach,
+    /// The turn has ended.
+    TurnOver,
 }
 
 impl fmt::Display for Refusal {
@@ -334,6 +338,12 @@ impl fmt::Display for Refusal {
             Self::HandBack => {
                 f.write_str("a member does not drop work; hand it back to your lead with a reason")
             }
+            Self::OutOfReach => f.write_str(
+                "that task is not part of this turn: you act on your own task and its sub-tasks, \
+                 and write there, on the task above yours, or where you were named; ask in your \
+                 own task's thread instead",
+            ),
+            Self::TurnOver => f.write_str("this turn has ended: stop now"),
             Self::AlreadyAsked => f.write_str(
                 "your last question about this task is still waiting on the owner's desk; end your turn",
             ),

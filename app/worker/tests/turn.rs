@@ -145,6 +145,10 @@ fn hq(stopped: Option<&'static str>) -> (String, Seen) {
                     "my_turn" => (BRIEFING, false),
                     "claim" => ("Task 7 is yours.", false),
                     "post" => ("Posted.", false),
+                    "ask_owner" => (
+                        "It is on the owner's desk, and this turn has ended: stop now.",
+                        false,
+                    ),
                     _ => ("`status` must be todo, doing, in_review or blocked", true),
                 };
                 json!({ "content": [{ "type": "text", "text": text }], "isError": refused })
@@ -374,6 +378,33 @@ fn a_401_from_hq_mid_turn_ends_it_at_once() {
     assert_eq!(
         methods(&to_hq).last().map(String::as_str),
         Some("tools/call claim")
+    );
+}
+
+#[test]
+fn asking_the_owner_ends_the_turn_there_and_exits_0() {
+    let (hq_url, to_hq) = hq(None);
+    let (model_url, to_model) = model(vec![
+        (
+            200,
+            calls(&[
+                ("call_1", "ask_owner", r#"{"text": "Steel or titanium?"}"#),
+                ("call_2", "claim", r#"{"task": 7}"#),
+            ]),
+        ),
+        (200, says("Done.")),
+    ]);
+    let out = worker(&usual(&hq_url, &model_url));
+    assert_eq!(out.status.code(), Some(0), "a turn taken: {}", said(&out));
+    assert_eq!(
+        to_model.lock().unwrap().len(),
+        1,
+        "the model is not asked again"
+    );
+    assert_eq!(
+        methods(&to_hq).last().map(String::as_str),
+        Some("tools/call ask_owner"),
+        "nothing after the question, not even a last word"
     );
 }
 

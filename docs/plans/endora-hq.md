@@ -214,9 +214,16 @@ container:
 | `post` | Writes to the task's thread, at most 4,000 characters a post |
 | `set_status` | Moves the task on, with a reason; `done` is refused (only the gate sets it) |
 | `create_task` | Creates a sub-task for another member, with what it waits on |
-| `ask_owner` | Puts a question or a proposal on the owner's desk and ends the turn; one waits at a time per member and task. The owner can answer on the card, into the task's thread, and seeing it wakes the member who asked |
+| `ask_owner` | Puts a question or a proposal on the owner's desk and ends the turn: HQ ends the run there and refuses any further call from it, and the worker exits 0. One waits at a time per member and task. The owner can answer on the card, into the task's thread, and seeing it wakes the member who asked |
 | `run_gate` | Runs the tests and build on a runner and returns the result |
 | `request_action` | Asks for a privileged action (open a pull request, for example); the gateway decides |
+
+**What a turn may touch** (engine rules, whatever the way in): `claim` and `set_status`
+act only on the turn's own task and its sub-tasks, at any depth; `post` reaches those, the
+task the turn's own hangs from, and any task whose thread names the member (`@name`, as a
+wake reads it). The lead may claim, move and post on any task in a goal it leads (a team
+has one lead, which leads every goal). Anything else is refused with a reason the worker can
+act on, and only the gate sets `done`, for everyone.
 
 Model use is not a tool: the node's model relay charges HQ for every call a turn makes, as it
 makes it, so a worker never reports its own (it would pay twice). The worker's own
@@ -425,7 +432,8 @@ team pool stays $70 a month. The pieces and their contracts:
    initialises MCP, lists the tools, calls `my_turn`, then loops: the model answers or calls
    tools, each tool call goes to `tools/call`, until the model stops calling tools or the
    rounds run out. A last answer with no tool call is posted to its task's thread. An
-   answer of 401 or 402 from HQ or the relay means the turn is over: it exits at once. Exit
+   answer of 401 or 402 from HQ or the relay means the turn is over: it exits at once. A
+   question put on the owner's desk (`ask_owner`) ends the turn too: it stops there. Exit
    0 is a turn taken; anything else failed. Its instructions are written for Endora.
 4. **The runner adapter** in HQ (`RemoteRunner`), used when the demo is off. It keeps, in
    memory, the turns waiting to start, the ones running, how each ended, and stops asked

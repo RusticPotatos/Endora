@@ -305,26 +305,21 @@ fn the_owner_answers_a_question_in_its_thread_and_then_the_member_is_woken() {
     );
 }
 
+/// The member's newest turn, after a tick starts it.
+fn next_turn(hq: &Hq<'_>, member: MemberId) -> RunContext {
+    hq.tick().unwrap();
+    hq.runner()
+        .started()
+        .into_iter()
+        .rfind(|c| c.member == member)
+        .expect("a turn for the member")
+}
+
 #[test]
 fn a_member_asks_one_question_at_a_time_and_writes_within_reason() {
     let clock = Hands(AtomicI64::new(1_792_166_400_000));
     let (hq, s, context) = started(&clock);
     let (run, me) = turn(&hq, &context.token);
-    let ask = |text: &str| call(&hq, &run, &me, "ask_owner", &json!({ "text": text }));
-    ask("Steel or titanium first?").unwrap();
-    let again = ask("And the straps?").unwrap_err();
-    assert!(again.contains("waiting"), "{again}");
-    let waiting = hq
-        .store()
-        .desk()
-        .unwrap()
-        .into_iter()
-        .filter(|d| d.kind == "question" && d.status == "waiting")
-        .count();
-    assert_eq!(waiting, 1, "one question at a time on the owner's desk");
-    hq.decide(question(&hq).id, "dismiss").unwrap();
-    ask("And the straps?").unwrap();
-
     let long = "x".repeat(5_000);
     let refused = call(
         &hq,
@@ -335,6 +330,202 @@ fn a_member_asks_one_question_at_a_time_and_writes_within_reason() {
     )
     .unwrap_err();
     assert!(refused.contains("4000"), "{refused}");
+    call(
+        &hq,
+        &run,
+        &me,
+        "ask_owner",
+        &json!({ "text": "Steel or titanium first?" }),
+    )
+    .unwrap();
+
+    // The owner writes to Linus without answering: he is woken, and asks again.
+    hq.post(Author::Owner, s.task, "@Linus one moment.")
+        .unwrap();
+    let again = next_turn(&hq, s.dev);
+    let (run, me) = turn(&hq, &again.token);
+    let ask = |text: &str| call(&hq, &run, &me, "ask_owner", &json!({ "text": text }));
+    let refused = ask("And the straps?").unwrap_err();
+    assert!(refused.contains("waiting"), "{refused}");
+    let waiting = hq
+        .store()
+        .desk()
+        .unwrap()
+        .into_iter()
+        .filter(|d| d.kind == "question" && d.status == "waiting")
+        .count();
+    assert_eq!(waiting, 1, "one question at a time on the owner's desk");
+    hq.decide(question(&hq).id, "dismiss").unwrap();
+    ask("And the straps?").unwrap();
+}
+
+#[test]
+fn asking_the_owner_ends_the_turn_and_its_token_does_nothing_more() {
+    let clock = Hands(AtomicI64::new(1_792_166_400_000));
+    let (hq, s, context) = started(&clock);
+    let (run, me) = turn(&hq, &context.token);
+    call(&hq, &run, &me, "claim", &json!({ "task": s.task.0 })).unwrap();
+    let said = call(
+        &hq,
+        &run,
+        &me,
+        "ask_owner",
+        &json!({ "text": "Steel first?" }),
+    )
+    .unwrap();
+    assert!(said.contains("ended"), "{said}");
+    let ended = hq.store().run(run.id).unwrap().unwrap();
+    assert_eq!(
+        (ended.status, ended.end_reason.as_str()),
+        (crate::domain::RunStatus::Succeeded, "asked the owner")
+    );
+    assert!(hq.turn_of(&context.token).unwrap().is_none());
+    assert_eq!(hq.runner().stopped(), [run.id], "its container is let go");
+    // A call already on its way, with the turn as it was, is refused too.
+    let late = call(
+        &hq,
+        &run,
+        &me,
+        "post",
+        &json!({ "task": s.task.0, "text": "One more thing." }),
+    )
+    .unwrap_err();
+    assert!(late.contains("ended"), "{late}");
+    // Seeing it wakes the member, as before.
+    hq.decide(question(&hq).id, "seen").unwrap();
+    let woke = hq.store().wakes().unwrap().into_iter().next_back().unwrap();
+    assert_eq!((woke.member, woke.task), (s.dev, Some(s.task)));
+}
+
+/// A goal's tasks as a tree, with Linus's turn on `own`: `parent` above it, `child` and
+/// `grandchild` below, and `other` beside, in the same goal.
+struct Tree {
+    lead: MemberId,
+    dev: MemberId,
+    parent: TaskId,
+    own: TaskId,
+    child: TaskId,
+    grandchild: TaskId,
+    other: TaskId,
+}
+
+fn tree(hq: &Hq<'_>) -> Tree {
+    let lead = hq.hire("Ada", Role::Lead, 25, 2, 0).unwrap();
+    let dev = hq.hire("Linus", Role::Developer, 40, 2, 4).unwrap();
+    hq.hire("Grace", Role::Reviewer, 20, 2, 1).unwrap();
+    let goal = hq
+        .set_goal("Ship the watch tracker", "you asked for it", Author::Owner)
+        .unwrap();
+    let add = |parent: Option<TaskId>, title: &str, assignee: Option<MemberId>| {
+        hq.add_task(
+            Author::Owner,
+            NewTask {
+                goal,
+                parent,
+                title: title.to_owned(),
+                description: String::new(),
+                assignee,
+                priority: Priority::Normal,
+                waits_on: Vec::new(),
+            },
+        )
+        .unwrap()
+    };
+    let parent = add(None, "Plan the tracker", Some(lead));
+    let own = add(Some(parent), "Add a list of watches", Some(dev));
+    let child = add(Some(own), "Sort the list", None);
+    let grandchild = add(Some(child), "Sort by brand", None);
+    let other = add(None, "Write the help page", None);
+    Tree {
+        lead,
+        dev,
+        parent,
+        own,
+        child,
+        grandchild,
+        other,
+    }
+}
+
+#[test]
+fn a_turn_acts_on_its_own_task_and_below_and_writes_above_or_where_it_was_named() {
+    let clock = Hands(AtomicI64::new(1_792_166_400_000));
+    let hq = Engine::new(
+        SqliteTeamStore::in_memory().unwrap(),
+        SimulatedRunner::new(4),
+        &clock,
+        Settings::default(),
+    );
+    let t = tree(&hq);
+    let mine = next_turn(&hq, t.dev);
+    let (run, me) = turn(&hq, &mine.token);
+    assert_eq!(run.task, Some(t.own));
+    let use_tool = |tool: &str, args: serde_json::Value| call(&hq, &run, &me, tool, &args);
+    let status = |task: TaskId, to: &str| {
+        use_tool(
+            "set_status",
+            json!({ "task": task.0, "status": to, "reason": "on it" }),
+        )
+    };
+    let post = |task: TaskId| use_tool("post", json!({ "task": task.0, "text": "A note." }));
+
+    use_tool("claim", json!({ "task": t.own.0 })).unwrap();
+    use_tool("claim", json!({ "task": t.grandchild.0 })).expect("a sub-task, two down");
+    status(t.grandchild, "in_review").unwrap();
+    assert!(
+        status(t.own, "done").unwrap_err().contains("gate"),
+        "only the gate sets done, still"
+    );
+    post(t.child).unwrap();
+    post(t.parent).expect("the task above, to report back");
+
+    for refused in [
+        use_tool("claim", json!({ "task": t.other.0 })),
+        use_tool("claim", json!({ "task": t.parent.0 })),
+        status(t.parent, "blocked"),
+        post(t.other),
+    ] {
+        let why = refused.unwrap_err();
+        assert!(why.contains("not part of this turn"), "{why}");
+    }
+    assert_eq!(hq.store().task(t.other).unwrap().unwrap().owner, None);
+
+    // Named in its thread, Linus may write there, and still not take it.
+    hq.post(Author::Owner, t.other, "@Linus could you help here?")
+        .unwrap();
+    post(t.other).unwrap();
+    assert!(use_tool("claim", json!({ "task": t.other.0 })).is_err());
+}
+
+#[test]
+fn the_lead_acts_on_any_task_in_its_goal_but_never_sets_done() {
+    let clock = Hands(AtomicI64::new(1_792_166_400_000));
+    let hq = Engine::new(
+        SqliteTeamStore::in_memory().unwrap(),
+        SimulatedRunner::new(4),
+        &clock,
+        Settings::default(),
+    );
+    let t = tree(&hq);
+    let lead = next_turn(&hq, t.lead);
+    let (run, me) = turn(&hq, &lead.token);
+    let use_tool = |tool: &str, args: serde_json::Value| call(&hq, &run, &me, tool, &args);
+    use_tool("claim", json!({ "task": t.other.0 })).unwrap();
+    use_tool(
+        "set_status",
+        json!({ "task": t.other.0, "status": "blocked", "reason": "waiting on the owner" }),
+    )
+    .unwrap();
+    use_tool(
+        "post",
+        json!({ "task": t.grandchild.0, "text": "Brand first." }),
+    )
+    .unwrap();
+    let done = use_tool(
+        "set_status",
+        json!({ "task": t.other.0, "status": "done", "reason": "finished" }),
+    );
+    assert!(done.unwrap_err().contains("gate"));
 }
 
 #[test]

@@ -297,12 +297,8 @@ fn naming_a_member_in_a_thread_wakes_them_but_not_the_writer() {
     let hq = hq(&clock, 4);
     let t = team(&hq);
     let task = task_for(&hq, t.goal, None, "Pick a database");
-    hq.post(
-        Author::Member(t.dev),
-        task,
-        "@Grace can you check this? @Linus noted",
-    )
-    .unwrap();
+    hq.post_as(t.dev, task, "@Grace can you check this? @Linus noted")
+        .unwrap();
     let woken: Vec<MemberId> = hq.wakes().unwrap().iter().map(|w| w.member).collect();
     assert_eq!(woken, [t.reviewer]);
 }
@@ -385,7 +381,7 @@ fn a_turn_that_moves_the_task_earns_it_a_fresh_nudge() {
     hq.tick().unwrap(); // and starts on the next
     let run = hq.store().runs().unwrap()[0].id;
     assert_eq!(status_of(&hq, run.0), RunStatus::Running);
-    hq.post(Author::Member(t.dev), task, "Compared three; SQLite fits.")
+    hq.post_as(t.dev, task, "Compared three; SQLite fits.")
         .unwrap();
     hq.runner().finish(run, true);
     let report = hq.tick().unwrap();

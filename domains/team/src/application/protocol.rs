@@ -8,7 +8,7 @@ use serde_json::{Value, json};
 
 use super::engine::{Author, Engine, EngineError};
 use super::ports::{Clock, NewTask, Run, TeamStore, WorkerAdapter};
-use crate::domain::{Member, Priority, TaskId, TaskStatus};
+use crate::domain::{Member, Priority, Refusal, RunStatus, TaskId, TaskStatus};
 
 /// The tools, as MCP lists them: name, what it does, and its input.
 #[must_use]
@@ -30,13 +30,13 @@ pub fn tools() -> Value {
         ),
         tool(
             "claim",
-            "Take a task as yours. Refused if another member has it.",
+            "Take a task as yours: your turn's task or one under it. Refused if another member has it.",
             json!({ "task": task }),
             &["task"]
         ),
         tool(
             "post",
-            "Write in a task's thread: what you did, found or need. Mention a member by name to wake them.",
+            "Write in a task's thread (yours, one under it, the one above it, or one where you were named): what you did, found or need. Mention a member by name to wake them.",
             json!({ "task": task, "text": { "type": "string" } }),
             &["task", "text"]
         ),
@@ -54,7 +54,7 @@ pub fn tools() -> Value {
         ),
         tool(
             "ask_owner",
-            "Put a question or a proposal on the owner's desk, about your task. Then end your turn: you are woken when they have seen it.",
+            "Put a question or a proposal on the owner's desk, about your task. Asking ends your turn: you are woken when they have seen it.",
             json!({ "text": { "type": "string" } }),
             &["text"]
         ),
@@ -107,6 +107,11 @@ pub fn call<S: TeamStore, W: WorkerAdapter, C: Clock>(
     tool: &str,
     args: &Value,
 ) -> Result<String, String> {
+    // A call that set out while the turn ran, and arrived after it ended, does nothing.
+    let still = engine.store().run(run.id).map_err(|e| e.to_string())?;
+    if still.is_none_or(|r| r.status != RunStatus::Running) {
+        return Err(Refusal::TurnOver.to_string());
+    }
     match tool {
         "my_turn" => {
             let mut out = run.told.clone();
@@ -123,7 +128,7 @@ pub fn call<S: TeamStore, W: WorkerAdapter, C: Clock>(
         }
         "claim" => {
             let task = task_arg(args)?;
-            engine.claim(member.id, task).map_err(|e| said(&e))?;
+            engine.claim_in(run.id, task).map_err(|e| said(&e))?;
             Ok(format!("Task {} is yours.", task.0))
         }
         "post" => {
@@ -134,9 +139,7 @@ pub fn call<S: TeamStore, W: WorkerAdapter, C: Clock>(
                     "a post is at most {LONGEST_POST} characters: say it shorter, or in parts"
                 ));
             }
-            engine
-                .post(Author::Member(member.id), task, text)
-                .map_err(|e| said(&e))?;
+            engine.post_in(run.id, task, text).map_err(|e| said(&e))?;
             Ok("Posted.".to_owned())
         }
         "set_status" => {
@@ -147,7 +150,7 @@ pub fn call<S: TeamStore, W: WorkerAdapter, C: Clock>(
                 .ok_or_else(|| "`status` must be todo, doing, in_review or blocked".to_owned())?;
             let reason = text_arg(args, "reason")?;
             engine
-                .set_status(member.id, task, to, reason)
+                .set_status_in(run.id, task, to, reason)
                 .map_err(|e| said(&e))?;
             Ok(format!("Task {} is {}.", task.0, to.name()))
         }
@@ -201,7 +204,7 @@ pub fn call<S: TeamStore, W: WorkerAdapter, C: Clock>(
         "ask_owner" => {
             let text = text_arg(args, "text")?;
             engine.ask_owner(run.id, text).map_err(|e| said(&e))?;
-            Ok("It is on the owner's desk. End your turn now; you are woken when they have seen it.".to_owned())
+            Ok("It is on the owner's desk, and this turn has ended: stop now. You are woken when they have seen it.".to_owned())
         }
         // The node's model relay charges every call a turn makes, as it makes it; a worker that
         // reported its own use too would pay twice. Kept as a word, not a tool, for a worker

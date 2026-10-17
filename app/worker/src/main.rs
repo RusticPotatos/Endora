@@ -61,6 +61,10 @@ fn main() {
     };
     let code = match turn::take(&setup) {
         Ok(Taken::Answered) => TAKEN,
+        Ok(Taken::AskedTheOwner) => {
+            eprintln!("worker: asked the owner, which ends the turn");
+            TAKEN
+        }
         Ok(Taken::OutOfRounds) => {
             eprintln!(
                 "worker: the {} rounds ran out before the model finished",
