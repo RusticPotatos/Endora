@@ -375,6 +375,14 @@ pub enum Refusal {
     NotADecision,
     /// A name another member already has, or none.
     NotAName,
+    /// An open task under the same goal is already about these containers: one task a
+    /// problem, and what is new about it is added there.
+    Covered {
+        /// The task that covers it.
+        task: TaskId,
+        /// The containers both are about.
+        names: Vec<String>,
+    },
 }
 
 impl fmt::Display for Refusal {
@@ -443,6 +451,12 @@ impl fmt::Display for Refusal {
             ),
             Self::AlreadyAsked => f.write_str(
                 "your last question or approval about this task is still waiting for an answer; end your turn",
+            ),
+            Self::Covered { task, names } => write!(
+                f,
+                "#{task} already covers this ({}): add to it with post in #{task}, rather than a \
+                 second task",
+                names.join(", ")
             ),
         }
     }

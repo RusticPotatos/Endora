@@ -607,6 +607,9 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         if let Some(to) = task.assignee {
             self.member(to)?;
         }
+        if let Author::Member(from) = by {
+            self.not_covered(from, &task)?;
+        }
         let depth = match (parent_depth, by) {
             (Some(depth), _) => depth.saturating_add(1),
             (None, Author::Member(_)) => 1,
@@ -626,6 +629,53 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             }
         }
         Ok(id)
+    }
+
+    /// Refuses a member's new task when an open task under the same goal is already about the
+    /// same home-lab containers ([`review::about`], against the names the node last said): one
+    /// task a problem. Live, the lead handed the developer the same three exited containers
+    /// twice, and each task drew its own turns. The member's own task above the new one, and
+    /// everything above that, is the work being split, not a second task: so a member on its
+    /// own sub-task of the alarm's task may split it further, while a sub-task made on
+    /// another member's task about the same containers is the duplicate it looks like.
+    /// Nothing is judged before the node has said what the home lab has.
+    fn not_covered(&self, from: MemberId, task: &NewTask) -> Done<()> {
+        let Some(lab) = self.lab_names() else {
+            return Ok(());
+        };
+        let about = review::about(&task.title, &task.description, &lab);
+        if about.is_empty() {
+            return Ok(());
+        }
+        let mut own = Vec::new();
+        let mut mine = false;
+        let mut up = task.parent;
+        while let Some(id) = up {
+            let above = self.task(id)?;
+            mine = mine || above.owner == Some(from) || above.assignee == Some(from);
+            if mine {
+                own.push(id);
+            }
+            up = above.parent;
+        }
+        for open in self.store.tasks()? {
+            if open.goal != task.goal || open.status.finished() || own.contains(&open.id) {
+                continue;
+            }
+            let theirs = review::about(&open.title, &open.description, &lab);
+            let names: Vec<String> = about
+                .iter()
+                .filter(|n| theirs.contains(n))
+                .cloned()
+                .collect();
+            if !names.is_empty() {
+                return Err(EngineError::Refused(Refusal::Covered {
+                    task: open.id,
+                    names,
+                }));
+            }
+        }
+        Ok(())
     }
 
     /// Whether every task in `waits` is done. A dropped one is not: the work waited for never
