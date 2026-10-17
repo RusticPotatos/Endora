@@ -34,6 +34,63 @@ use endora_kernel::ids::MessageId;
 /// mark ultimately protects: a turn carrying it may not leave the device.
 pub const STRANGER_MARK: &str = "[from outside] ";
 
+/// How Restricted words are marked when they enter a turn (ADR 0105): a message the owner
+/// marked 🔒, or what a Restricted skill returned. A turn carrying it may not leave the device
+/// in any form, disguised or not; a local model reads it as it is.
+pub const RESTRICTED_MARK: &str = "[private] ";
+
+/// Whether any of a turn's words are Restricted: marked so (a 🔒 message, a Restricted skill's
+/// result), or an owner's message carrying what looks like an account number. Code decides,
+/// never a model. A skill's result is judged by the skill's tier, not by its digits: the
+/// house's own reads are full of long numbers (bytes, timestamps, ids).
+#[must_use]
+pub fn holds_restricted(conversation: &[TurnMessage]) -> bool {
+    conversation.iter().any(|m| match m {
+        TurnMessage::User(text) => {
+            text.starts_with(RESTRICTED_MARK) || looks_like_an_account_number(text)
+        }
+        TurnMessage::ToolResult { content, .. } => content.starts_with(RESTRICTED_MARK),
+        TurnMessage::Assistant { .. } => false,
+    })
+}
+
+/// Whether a text carries what looks like an account or card number: nine or more digits in
+/// one run, allowing single spaces or dashes between groups, or an IBAN (two letters, two
+/// digits, then ten or more letters and digits). Phone numbers match too; they stay home.
+#[must_use]
+pub fn looks_like_an_account_number(text: &str) -> bool {
+    let chars: Vec<char> = text.chars().collect();
+    let mut digits = 0usize;
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        if c.is_ascii_digit() {
+            digits += 1;
+            if digits >= 9 {
+                return true;
+            }
+        } else if (c == ' ' || c == '-')
+            && digits > 0
+            && chars.get(i + 1).is_some_and(char::is_ascii_digit)
+        {
+            // A single separator inside a number: keep counting.
+        } else {
+            digits = 0;
+        }
+        i += 1;
+    }
+    text.split(|c: char| !c.is_ascii_alphanumeric()).any(|w| {
+        let w: Vec<char> = w.chars().collect();
+        w.len() >= 14
+            && w[..2].iter().all(char::is_ascii_uppercase)
+            && w[2..4].iter().all(char::is_ascii_digit)
+            && w[4..]
+                .iter()
+                .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit())
+            && w[4..].iter().any(char::is_ascii_digit)
+    })
+}
+
 /// Proof that no stranger has spoken in a conversation (ADR 0070).
 ///
 /// **Derived from the marks, never stored** — the same rule the record's grants follow
@@ -76,6 +133,9 @@ pub enum DoorRefusal {
     LooksLikeASecret,
     /// The door opened and the deep model itself failed — unreachable, refused, empty.
     TheModelFailed(String),
+    /// The turn holds Restricted words (ADR 0105): marked 🔒, a Restricted skill's result, or
+    /// an account number. They never leave the house, disguised or not.
+    Restricted,
 }
 
 /// The deep model, behind the door.
@@ -114,6 +174,10 @@ impl Deeper {
         if NoStrangerSpoke::given(conversation).is_none() {
             return Err(DoorRefusal::AStrangerSpoke);
         }
+        // Restricted words never leave, disguised or not (ADR 0105).
+        if holds_restricted(conversation) {
+            return Err(DoorRefusal::Restricted);
+        }
         // Nothing personal leaves under its own name (ADR 0051). Endora holds the values —
         // the person's name, their city, the title of tonight's appointment — so it
         // substitutes rather than trying to *detect* PII, which is what you do when you
@@ -121,9 +185,18 @@ impl Deeper {
         let disguise = personal_values_in(context);
         let hidden: Vec<TurnMessage> = conversation
             .iter()
+            // Everything Confidential leaves disguised (ADR 0105): what Endora said back and
+            // what the house's skills returned, not only the owner's words.
             .map(|m| match m {
                 TurnMessage::User(text) => TurnMessage::User(disguise.hide(text)),
-                other => other.clone(),
+                TurnMessage::Assistant { text, tool_calls } => TurnMessage::Assistant {
+                    text: disguise.hide(text),
+                    tool_calls: tool_calls.clone(),
+                },
+                TurnMessage::ToolResult { call_id, content } => TurnMessage::ToolResult {
+                    call_id: call_id.clone(),
+                    content: disguise.hide(content),
+                },
             })
             .collect();
         // The scan runs *after* the disguise, on what would actually leave: a value the
@@ -553,6 +626,138 @@ mod tests {
             reply.text.contains("john"),
             "the reply came back undisguised to the person: {}",
             reply.text
+        );
+    }
+
+    #[test]
+    fn something_private_never_leaves_marked_or_shaped_like_an_account() {
+        let door = Deeper::new(std::sync::Arc::new(MustNotBeReached));
+        let refused = |conversation: Vec<TurnMessage>| {
+            matches!(
+                door.continue_turn(&conversation, &[], &ButlerContext::default()),
+                Err(DoorRefusal::Restricted)
+            )
+        };
+        assert!(refused(vec![TurnMessage::User(format!(
+            "{RESTRICTED_MARK}my test results came back"
+        ))]));
+        assert!(refused(vec![
+            TurnMessage::User("where have I been today?".to_owned()),
+            TurnMessage::ToolResult {
+                call_id: "1".to_owned(),
+                content: format!("{RESTRICTED_MARK}home, office, home")
+            },
+        ]));
+        assert!(refused(vec![TurnMessage::User(
+            "pay 1234 5678 9012 3456 please".to_owned()
+        )]));
+        assert!(refused(vec![TurnMessage::User(
+            "the IBAN is GB82WEST12345698765432".to_owned()
+        )]));
+        assert!(
+            refused(vec![TurnMessage::User("call 555-123-4567 back".to_owned())]),
+            "a phone number stays home too"
+        );
+    }
+
+    #[test]
+    fn amounts_dates_and_times_are_not_account_numbers() {
+        for text in [
+            "the bill is $2034.96",
+            "on 2026-10-16 at 18:30",
+            "flight UA 1234 to New York",
+            "postcode 10001",
+            "room 1205, floor 12",
+        ] {
+            assert!(!looks_like_an_account_number(text), "{text}");
+        }
+    }
+
+    #[test]
+    fn what_the_house_returned_leaves_disguised_too() {
+        struct SaysWhatItSaw;
+        impl Butler for SaysWhatItSaw {
+            fn respond(
+                &self,
+                _h: &[endora_conversation::ChatMessage],
+                _p: &[crate::Preference],
+                _c: &ButlerContext,
+            ) -> Result<ButlerReply, ProposalError> {
+                Ok(ButlerReply::default())
+            }
+            fn take_turn(
+                &self,
+                conversation: &[TurnMessage],
+                _p: &[crate::Preference],
+                _x: &ButlerContext,
+            ) -> Result<ButlerReply, ProposalError> {
+                let seen: Vec<String> = conversation
+                    .iter()
+                    .map(|m| match m {
+                        TurnMessage::User(t) | TurnMessage::ToolResult { content: t, .. } => {
+                            t.clone()
+                        }
+                        TurnMessage::Assistant { text, .. } => text.clone(),
+                    })
+                    .collect();
+                Ok(ButlerReply {
+                    text: seen.join(" | "),
+                    ..ButlerReply::default()
+                })
+            }
+        }
+        // What leaves is recorded by a second model that never restores.
+        struct Records(std::sync::Mutex<String>);
+        impl Butler for Records {
+            fn respond(
+                &self,
+                _h: &[endora_conversation::ChatMessage],
+                _p: &[crate::Preference],
+                _c: &ButlerContext,
+            ) -> Result<ButlerReply, ProposalError> {
+                Ok(ButlerReply::default())
+            }
+            fn take_turn(
+                &self,
+                conversation: &[TurnMessage],
+                p: &[crate::Preference],
+                x: &ButlerContext,
+            ) -> Result<ButlerReply, ProposalError> {
+                let r = SaysWhatItSaw.take_turn(conversation, p, x)?;
+                *self.0.lock().unwrap() = r.text.clone();
+                Ok(r)
+            }
+        }
+        let recorder = std::sync::Arc::new(Records(std::sync::Mutex::new(String::new())));
+        let door = Deeper::new(recorder.clone());
+        let context = ButlerContext {
+            present: vec!["john is not home".to_owned()],
+            ..ButlerContext::default()
+        };
+        door.continue_turn(
+            &[
+                TurnMessage::User("is anyone home?".to_owned()),
+                TurnMessage::Assistant {
+                    text: String::new(),
+                    tool_calls: vec![],
+                },
+                TurnMessage::ToolResult {
+                    call_id: "1".to_owned(),
+                    content: "john left at 8".to_owned(),
+                },
+                TurnMessage::Assistant {
+                    text: "john left at 8.".to_owned(),
+                    tool_calls: vec![],
+                },
+            ],
+            &[],
+            &context,
+        )
+        .expect("a clean turn escalates");
+        let left = recorder.0.lock().unwrap().clone();
+        assert!(
+            !left.contains("john"),
+            "a name left in a skill's result or an earlier reply: {left}"
         );
     }
 }

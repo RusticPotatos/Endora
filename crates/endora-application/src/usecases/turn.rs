@@ -460,6 +460,13 @@ pub(super) fn take_turn_retrying_empty(
                         .to_owned(),
                 );
             }
+            Err(crate::egress::DoorRefusal::Restricted) => {
+                notes.push(
+                    "Couldn't ask the deep model: this conversation holds something private, \
+                     and that never leaves the box"
+                        .to_owned(),
+                );
+            }
             Err(crate::egress::DoorRefusal::TheModelFailed(why)) => {
                 // The short truth for the person; the full error for the operator.
                 eprintln!("the deep model failed: {why}");
@@ -1101,12 +1108,19 @@ pub(crate) fn run_tool_turn(
             // failed, the turn was marked as having heard from outside, escalation was
             // refused, and the local model told the person there was no new mail. The rule
             // silenced the mechanism meant to notice it was lying.
-            let content =
-                if spec.as_ref().is_some_and(|s| s.third_party) && status != StepStatus::Failed {
-                    format!("{STRANGER_MARK}{content}")
-                } else {
-                    content
-                };
+            // What a Restricted skill returned (a movement history) is marked too, and may not
+            // leave the house in any form (ADR 0105); the skill's tier says so, by its name.
+            let third_party = spec.as_ref().is_some_and(|s| s.third_party);
+            let content = if third_party && status != StepStatus::Failed {
+                format!("{STRANGER_MARK}{content}")
+            } else if !third_party
+                && status != StepStatus::Failed
+                && endora_capabilities::tiers::tier_of(&id) == endora_kernel::Tier::Restricted
+            {
+                format!("{}{content}", crate::egress::RESTRICTED_MARK)
+            } else {
+                content
+            };
             // Remember what it answered, so calling it again this turn gets this back
             // rather than a scolding the model might repeat to the person.
             seen.insert(already, content.clone());

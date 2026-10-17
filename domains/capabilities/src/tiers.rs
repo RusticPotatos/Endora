@@ -9,19 +9,29 @@ use endora_kernel::Tier;
 #[must_use]
 pub fn known_tier(id: &str) -> Option<Tier> {
     Some(match id {
-        // What anyone may know, about where the owner lives.
-        "weather" | "traffic" | "flights" | "safety_alerts" | "incident_scanner" => Tier::Public,
+        // What anyone may know, about where the owner lives, and what the world's sources say
+        // (these are marked as from outside as well, so nothing they say leaves).
+        "weather" | "traffic" | "flights" | "safety_alerts" | "incident_scanner" | "web_search"
+        | "web_fetch" | "knowledge" | "news" | "sports_schedule" | "city_meetings"
+        | "ticketed_events" => Tier::Public,
         // The house's workings.
-        "terminal-homepage" | "terminal-portainer" | "terminal-metrics" | "homelab-docker" => {
-            Tier::Internal
-        }
+        "terminal-homepage"
+        | "terminal-portainer"
+        | "terminal-metrics"
+        | "homelab-docker"
+        | "containers"
+        | "portainer_containers"
+        | "nas_status" => Tier::Internal,
         // The owner's life: what they watch, who is home, what the network sees them do, what
         // Endora knows and did, the image they sent.
         "terminal-overseerr" | "homelab-sonarr" | "homelab-radarr" | "network-pihole"
         | "network-unifi" | "home_assistant" | "image_review" | "own_activity" | "read_page"
-        | "mail" => Tier::Confidential,
+        | "mail" | "sonarr_queue" | "radarr_queue" => Tier::Confidential,
         // A movement history: no disguise hides a trail of places.
         "location" => Tier::Restricted,
+        // A tool of a tool server the house has paired (`home.HassTurnOn`): only those reach a
+        // turn without the outsider's mark, and they are the house speaking about itself.
+        _ if id.contains('.') => Tier::Confidential,
         _ => return None,
     })
 }
@@ -55,5 +65,6 @@ mod tests {
         );
         assert_eq!(tier_of("location"), Tier::Restricted);
         assert_eq!(tier_of("homelab-docker"), Tier::Internal);
+        assert_eq!(tier_of("home.HassTurnOn"), Tier::Confidential);
     }
 }
