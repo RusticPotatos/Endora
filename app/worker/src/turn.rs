@@ -267,6 +267,9 @@ fn instructions(posted: bool, contracts: bool, lessons: bool, shell: bool) -> St
              odd lines in a log are evidence to explain, not problems in themselves. Normal \
              operation (e.g. an RSS sync that finds releases and grabs none) is not a problem.",
         );
+        // How the lab is built (ADR 0112): one text, shared with HQ's house log.
+        told.push_str("\n\n");
+        told.push_str(&endora_kernel::lab::lab_built_paragraph());
     }
     if shell {
         told.push_str(
@@ -1298,7 +1301,9 @@ mod tests {
         // owner's, one rule a line.
         let told = instructions(false, true, false, false);
         let parts: Vec<&str> = told.split("\n\n").collect();
-        assert_eq!(parts.len(), 4, "{told}");
+        assert_eq!(parts.len(), 5, "{told}");
+        // And how the lab is built (ADR 0112), the house log's text, as a paragraph.
+        assert_eq!(parts[3], endora_kernel::lab::lab_built_paragraph());
         let rules: Vec<&str> = parts[2].lines().collect();
         assert_eq!(rules.len(), 8, "{told}");
         assert!(
@@ -1324,9 +1329,9 @@ mod tests {
         // The lead and the reviewer keep the team's lessons: a paragraph of its own.
         let told = instructions(true, true, true, false);
         let parts: Vec<&str> = told.split("\n\n").collect();
-        assert_eq!(parts.len(), 5, "{told}");
+        assert_eq!(parts.len(), 6, "{told}");
         assert_eq!(
-            parts[3],
+            parts[4],
             "When the owner corrects you, or you learn something about this house that the team \
              will need again, note it with note_lesson so nobody asks twice."
         );
@@ -1337,7 +1342,7 @@ mod tests {
     fn in_the_workbench_the_instructions_give_the_shell_a_paragraph() {
         let told = instructions(true, true, true, true);
         let parts: Vec<&str> = told.split("\n\n").collect();
-        assert_eq!(parts.len(), 6, "{told}");
+        assert_eq!(parts.len(), 7, "{told}");
         assert!(!told.contains("You cannot run commands"), "{told}");
         assert!(
             parts[1].contains(
@@ -1346,7 +1351,7 @@ mod tests {
             "{told}"
         );
         assert_eq!(
-            parts[3],
+            parts[4],
             "You have a real shell in a disposable sandbox: run commands, git and python there \
              with the shell tool, and say why. The sandbox is offline: neither the internet nor \
              the house's services are reachable from the shell, so use the house through the \

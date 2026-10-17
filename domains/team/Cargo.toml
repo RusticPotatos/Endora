@@ -9,6 +9,9 @@ repository.workspace = true
 authors.workspace = true
 
 [dependencies]
+# How the home lab is built (ADR 0112): the one text the house log is seeded with and the
+# worker's instructions carry. The shared kernel, which depends on nothing.
+endora-kernel = { path = "../../shared/kernel" }
 rusqlite = { version = "0.40", features = ["bundled"] }
 serde_json = "1"
 
