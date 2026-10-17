@@ -237,6 +237,51 @@ pub(super) async fn hq_set_brain(
 }
 
 #[derive(Deserialize)]
+pub(super) struct HqName {
+    name: String,
+}
+
+/// The owner renames a member (the CEO HQ seated as Mara, say). HQ keeps names apart; the node
+/// records the name HQ kept.
+pub(super) async fn hq_rename(
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+    Json(req): Json<HqName>,
+) -> Answer {
+    let answer = ask(
+        &state,
+        format!("/v1/members/{id}/name"),
+        Some(json!({ "name": req.name })),
+    )
+    .await?;
+    let name = answer.0["name"].as_str().unwrap_or("").to_owned();
+    record(&state, &format!("you renamed member {id} to {name}"));
+    Ok(answer)
+}
+
+#[derive(Deserialize)]
+pub(super) struct HqHouseLog {
+    #[serde(default)]
+    log: String,
+}
+
+/// The owner rewrites the house log, which the CEO keeps and the CEO and the lead read every
+/// turn (ADR 0111).
+pub(super) async fn hq_house_log(
+    State(state): State<AppState>,
+    Json(req): Json<HqHouseLog>,
+) -> Answer {
+    let answer = ask(
+        &state,
+        "/v1/house".to_owned(),
+        Some(json!({ "log": req.log })),
+    )
+    .await?;
+    record(&state, "you rewrote the house log");
+    Ok(answer)
+}
+
+#[derive(Deserialize)]
 pub(super) struct HqWhy {
     #[serde(default)]
     why: String,
@@ -359,6 +404,69 @@ mod tests {
         for line in [
             "HQ: you replied on task 7",
             "HQ: you wrote the team's notes for goal 1",
+        ] {
+            assert!(audit.iter().any(|a| a == line), "{line}: {audit:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn the_owner_renames_a_member_and_rewrites_the_house_log_through_the_node() {
+        let (url, seen) = fake(Arc::new(|path, _| {
+            if path.ends_with("/name") {
+                return (
+                    200,
+                    "application/json",
+                    json!({ "member": 5, "name": "Jane Doe" }).to_string(),
+                );
+            }
+            (200, "application/json", json!({ "kept": true }).to_string())
+        }));
+        let state = node(&url, "http://127.0.0.1:9");
+        let renamed = hq_rename(
+            State(state.clone()),
+            Path(5),
+            Json(HqName {
+                name: "Jane Doe".to_owned(),
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(renamed.0["name"], "Jane Doe");
+        let _ = hq_house_log(
+            State(state.clone()),
+            Json(HqHouseLog {
+                log: "- 17 Oct: the NAS has 16 GB.".to_owned(),
+            }),
+        )
+        .await
+        .unwrap();
+        let sent: Vec<(String, serde_json::Value)> = seen
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(p, _, b)| (p.clone(), serde_json::from_str(b).unwrap()))
+            .collect();
+        assert_eq!(
+            sent,
+            [
+                (
+                    "/v1/members/5/name".to_owned(),
+                    json!({ "name": "Jane Doe" })
+                ),
+                (
+                    "/v1/house".to_owned(),
+                    json!({ "log": "- 17 Oct: the NAS has 16 GB." })
+                ),
+            ]
+        );
+        let audit: Vec<String> = endora_application::AuditLog::recent(state.audit.as_ref(), 10)
+            .unwrap()
+            .iter()
+            .map(|r| r.summary().to_owned())
+            .collect();
+        for line in [
+            "HQ: you renamed member 5 to Jane Doe",
+            "HQ: you rewrote the house log",
         ] {
             assert!(audit.iter().any(|a| a == line), "{line}: {audit:?}");
         }

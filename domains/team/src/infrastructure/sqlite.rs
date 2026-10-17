@@ -327,6 +327,16 @@ impl TeamStore for SqliteTeamStore {
         Ok(())
     }
 
+    fn rename_member(&self, member: MemberId, name: &str) -> Stored<()> {
+        self.conn()?
+            .execute(
+                "UPDATE members SET name = ?2 WHERE id = ?1",
+                params![member.0, name],
+            )
+            .map_err(backend)?;
+        Ok(())
+    }
+
     fn add_goal(
         &self,
         title: &str,
@@ -970,11 +980,24 @@ impl TeamStore for SqliteTeamStore {
     }
 
     fn set_stopped(&self, stopped: bool) -> Stored<()> {
+        self.set_setting("stopped", if stopped { "1" } else { "0" })
+    }
+
+    fn setting(&self, key: &str) -> Stored<Option<String>> {
+        self.conn()?
+            .query_row("SELECT value FROM settings WHERE key = ?1", [key], |r| {
+                r.get(0)
+            })
+            .optional()
+            .map_err(backend)
+    }
+
+    fn set_setting(&self, key: &str, value: &str) -> Stored<()> {
         self.conn()?
             .execute(
-                "INSERT INTO settings (key, value) VALUES ('stopped', ?1)
+                "INSERT INTO settings (key, value) VALUES (?1, ?2)
                  ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-                [if stopped { "1" } else { "0" }],
+                [key, value],
             )
             .map_err(backend)?;
         Ok(())

@@ -18,8 +18,8 @@ use super::*;
 use axum::body::{Body, Bytes};
 use axum::http::HeaderMap;
 use endora_infrastructure::relay::{
-    Call, StreamedUsage, Used, affordable_output, betas_passed, cost, counted, may_use, price_of,
-    send, send_local, unmetered,
+    Call, StreamedUsage, Used, affordable_output, betas_passed, cost, counted, may_use,
+    most_a_turn, price_of, send, send_local, unmetered,
 };
 
 /// The most of a whole reply the relay holds at once.
@@ -301,6 +301,8 @@ pub(super) async fn messages(
     if let Err(why) = may_use(&turn.role, &model) {
         return refuse(StatusCode::FORBIDDEN, "permission_error", &why);
     }
+    // Never more than the role's turn may spend (ADR 0111), whatever HQ says is left.
+    let left = turn.left.min(most_a_turn(&turn.role));
     let spent = || {
         refuse(
             StatusCode::PAYMENT_REQUIRED,
@@ -308,7 +310,7 @@ pub(super) async fn messages(
             "this turn's budget is spent",
         )
     };
-    if affordable_output(cheapest, turn.left) == 0 {
+    if affordable_output(cheapest, left) == 0 {
         return spent();
     }
     let Some(key) = anthropic_key(state.config.as_ref()) else {
@@ -345,7 +347,7 @@ pub(super) async fn messages(
             ..Used::default()
         },
     );
-    let affordable = affordable_output(price, turn.left - input);
+    let affordable = affordable_output(price, left - input);
     if affordable == 0 {
         return spent();
     }
@@ -1120,7 +1122,51 @@ pub(super) mod tests {
     }
 
     #[tokio::test]
-    async fn opus_waits_for_the_owner_and_a_researcher_thinks_with_haiku() {
+    async fn the_ceo_thinks_with_opus_a_dollar_a_turn_and_everyone_else_forty_cents() {
+        let (upstream, to_anthropic) = anthropic();
+        let call = |model: &str| {
+            ask(
+                "good",
+                json!({ "model": model, "max_tokens": 200_000, "messages": [] }),
+            )
+        };
+        // HQ says two dollars are left: the CEO's call is held to one, the lead's to forty
+        // cents, each less its prompt (1k tokens in).
+        let (ceo, to_hq) = hq_thinking(2_000_000, "ceo", true);
+        let res = super::super::team_relay(node(&ceo, &upstream))
+            .oneshot(call("claude-opus-5-5"))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        assert_eq!(
+            messages_sent(&to_anthropic)[0]["max_tokens"],
+            49_800,
+            "$1 less 1k in at $4, at $20 a million out"
+        );
+        assert_eq!(
+            charged(&to_hq),
+            vec![6_000],
+            "1k in at $4 and 100 out at $20 a million"
+        );
+        let (lead, _) = hq_thinking(2_000_000, "lead", true);
+        let app = super::super::team_relay(node(&lead, &upstream));
+        let res = app.clone().oneshot(call("claude-opus-5-5")).await.unwrap();
+        assert_eq!(
+            res.status(),
+            StatusCode::FORBIDDEN,
+            "Opus is the CEO's alone"
+        );
+        let res = app.oneshot(call("claude-sonnet-5-5")).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        assert_eq!(
+            messages_sent(&to_anthropic)[1]["max_tokens"],
+            39_800,
+            "40¢ less 1k in at $2, at $10 a million out"
+        );
+    }
+
+    #[tokio::test]
+    async fn opus_is_the_ceos_alone_and_a_researcher_thinks_with_haiku() {
         let (upstream, to_anthropic) = anthropic();
         let call = |model: &str| {
             ask(

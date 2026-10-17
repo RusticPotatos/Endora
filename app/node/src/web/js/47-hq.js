@@ -119,6 +119,10 @@ function hqDollars(micros) { return "$" + ((micros || 0) / 1e6).toFixed(2); }
 // What was really spent apart from what is only held for turns: a free local turn holds money
 // while it runs and spends none.
 function hqMoney(m, perDay) { return `${hqDollars(m.spent)} spent · ${hqDollars(m.held)} held ${perDay}`; }
+// A member on the house's model costs nothing and takes no share of the pool (ADR 0111).
+function hqMemberMoney(m) { return m.brain === "local" ? "the house's model: costs nothing" : hqMoney(m, `of ${hqDollars(m.per_day)} a day`); }
+// A role as the owner reads it.
+function hqRole(role) { return role === "ceo" ? "CEO" : String(role || ""); }
 
 // One event, in words for the activity log, and on screen if it is live.
 function hqTell(e, live) {
@@ -154,6 +158,10 @@ function hqTell(e, live) {
     "checkback.set": ["run", `${name} will check back on ${key} in ${d.minutes} min`],
     "lesson.noted": ["you", `${name} noted a lesson: ${d.lesson || ""}`],
     "member.brain": ["you", `${d.name || name} now thinks with ${d.brain === "local" ? "the house's model" : d.brain}`],
+    // The CEO and the chain of command (ADR 0111).
+    "member.hired": ["you", `${d.name} joined the team as ${hqRole(d.role)}`],
+    "member.renamed": ["you", `${d.was} is now ${d.name}`],
+    "house.noted": ["you", d.entry ? `${d.by} noted in the house log: ${d.entry}` : `The house log was rewritten by ${d.by === "owner" ? "you" : d.by}`],
     "checkback.fired": ["wake", `${name} checks back on ${key}`],
     "checkback.dropped": ["run", `Check-back on ${key} dropped: it is over`],
   }[e.kind];
@@ -507,14 +515,19 @@ function viewHQ() {
       notice: [["seen", "Seen", "ok"], ["dismiss", "Dismiss", "no"]],
       // An action a member proposed through Endora's bridge (ADR 0108): approving runs exactly
       // what the card shows, once; declining runs nothing.
-      approval: [["approve", "Approve", "ok"], ["decline", "Decline", "no"]] }[d.kind] || [];
+      approval: [["approve", "Approve", "ok"], ["decline", "Decline", "no"]],
+      // The CEO's decision for the board (ADR 0111): approve, decline, or answer in words; what
+      // the owner writes goes in the task's thread, and the CEO is woken to act on it.
+      decision: [["approve", "Approve", "ok"], ["decline", "Decline", "no"], ["answer", "Answer", ""]] }[d.kind] || [];
     // In the demo nothing behind a card is real: say so on the card, not only in the header.
     const demoNote = s.demo ? (d.kind === "ready_to_merge" ? " · demo: there is no pull request behind this"
       : d.kind === "ready_to_read" ? " · demo: there is no write-up behind this" : " · demo") : "";
-    return `<div class="hq-need ${esc(d.kind)}"><p>${s.demo ? "Demo: " : ""}${esc(d.text)}</p>
+    const shown = d.kind === "decision" && d.decision ? "The CEO asks the board to decide:" : d.text;
+    return `<div class="hq-need ${esc(d.kind)}"><p>${s.demo ? "Demo: " : ""}${esc(shown)}</p>
       <p class="hq-who">${esc(String(d.kind).replace(/_/g, " "))}${d.task ? ` · ${hqKey(d.task)}` : ""}${demoNote}</p>
       ${d.kind === "approval" ? hqApproval(d.approval) : ""}
-      ${d.kind === "question" ? `<textarea id="hq-answer-${d.id}" rows="2" placeholder="Your answer, for the task's thread (optional)" aria-label="Your answer"></textarea>` : ""}
+      ${d.kind === "decision" ? hqDecision(d.decision) : ""}
+      ${d.kind === "question" || d.kind === "decision" ? `<textarea id="hq-answer-${d.id}" rows="2" placeholder="Your answer, for the task's thread (optional)" aria-label="Your answer"></textarea>` : ""}
       <div class="hq-row">${choices.map(([v, l, cls]) => `<button class="hq-btn ${cls}" data-act="hq:decide:${d.id}:${v}">${l}</button>`).join("")}</div></div>`;
   }).join("");
   // The latest twenty, newest first: enough to follow the team, short enough to read.
@@ -522,8 +535,8 @@ function viewHQ() {
   const team = (s.members || []).map((m) => {
     const on = (m.running || []).map((r) => r.task ? hqKey(r.task) : "a look round").join(", ");
     return `<li><button class="hq-link" data-act="hq:pick:member:${m.id}">${esc(m.name)}</button>
-      <span>${esc(m.role)}${m.paused ? " · paused" : ""} · ${on ? "on " + esc(on) : "between turns"} · ${hqMoney(m, `of ${hqDollars(m.per_day)} a day`)}</span>
-      ${hqBrains(m)}</li>`;
+      <span>${esc(hqRole(m.role))}${m.paused ? " · paused" : ""} · ${on ? "on " + esc(on) : "between turns"} · ${hqMemberMoney(m)}</span>
+      ${hqBrains(m)}<div class="hq-row"><button class="hq-btn" data-act="hq:rename:${m.id}">Rename</button></div></li>`;
   }).join("");
   return `<div class="hq">
     <div class="hq-bar">
@@ -549,6 +562,7 @@ function viewHQ() {
           <div class="hq-needs">${desk || `<p class="hq-empty">Nothing waiting.</p>`}</div></section>
         <section class="hq-card"><h2>Activity</h2><ul class="hq-log" data-keep-scroll="hq-log">${log || `<li class="hq-empty">Nothing yet.</li>`}</ul></section>
         <section class="hq-card"><h2>Team</h2><ul class="hq-team">${team}</ul></section>
+        ${hqHouse(s)}
         <details class="hq-card"><summary>Set the team a goal</summary>
           <div class="hq-row" style="margin-top:8px;"><input id="hq-goal" placeholder="e.g. Keep the home lab healthy" /><button class="hq-btn ok" data-act="hq:goal">Set it</button></div></details>
         ${hqNotes(s)}
@@ -568,6 +582,25 @@ function hqBrains(m) {
   const btn = (b) => `<button class="hq-btn${b.name === m.brain ? " ok" : ""}" aria-pressed="${b.name === m.brain ? "true" : "false"}"
     data-act="hq:brain:${m.id}:${esc(b.name)}">${esc(b.label)}</button>`;
   return `<div class="hq-row" role="group" aria-label="What ${esc(m.name)} thinks with">Brain: ${brains.map(btn).join("")}</div>`;
+}
+
+// The CEO's decision for the board (ADR 0111), in its three parts: every word is the CEO's,
+// so all of it is escaped.
+function hqDecision(c) {
+  if (!c) return "";
+  return `<dl class="hq-kv"><dt>Decision</dt><dd>${esc(c.decision)}</dd>
+    <dt>Recommendation</dt><dd>${esc(c.recommendation)}</dd><dt>Why</dt><dd>${esc(c.why)}</dd></dl>`;
+}
+
+// The house log (ADR 0111): the CEO's own document of the house, which it and the lead read
+// every turn. The owner reads it here and may rewrite it.
+function hqHouse(s) {
+  const log = s.house_log || "";
+  return `<section class="hq-card"><h2>House log</h2>
+    <p class="hq-note">Kept by the CEO; the CEO and the lead read it every turn.</p>
+    <textarea id="hq-house" rows="6" maxlength="6000" aria-label="The house log"
+      placeholder="Nothing yet: the CEO adds what it learns about the house">${esc(log)}</textarea>
+    <div class="hq-row"><button class="hq-btn ok" data-act="hq:house:save">Save the house log</button></div></section>`;
 }
 
 // What an approval will run, from what the node stored: the tool, its arguments one a line,
@@ -631,11 +664,11 @@ function hqSelected() {
   if (sel.type === "member") {
     const m = hqMember(sel.id); if (!m) return "";
     const run = (m.running || [])[0], t = run && run.task ? hqTask(run.task) : null;
-    return `<div class="hq-sel">${esc(m.name)} · ${esc(m.role)}</div><dl class="hq-kv">
+    return `<div class="hq-sel">${esc(m.name)} · ${esc(hqRole(m.role))}</div><dl class="hq-kv">
       <dt>Doing</dt><dd>${m.paused ? "Paused" : t ? esc((HQ.people[m.id] || {}).doing || "starting") : "Waiting for a wake"}</dd>
       <dt>Run</dt><dd>${run ? "R" + run.run + (t ? " · " + hqKey(t.id) : "") : "none"}</dd>
       <dt>Brain</dt><dd>${esc(((m.brains || []).find((b) => b.name === m.brain) || { label: m.brain || "Local" }).label)}</dd>
-      <dt>Budget</dt><dd>${hqMoney(m, `of ${hqDollars(m.per_day)} today`)} · ${m.slots} at once</dd></dl>${t ? why(t) : ""}`;
+      <dt>Budget</dt><dd>${hqMemberMoney(m)} · ${m.slots} at once</dd></dl>${t ? why(t) : ""}`;
   }
   const t = hqTask(sel.id); if (!t) return "";
   const runner = ((HQ.snap && HQ.snap.runs) || []).find((r) => r.task === t.id && r.status === "running");
@@ -655,8 +688,13 @@ async function hqDispatch(verb, noun, id, arg) {
   if (!(verb === "hq")) return false;
   if (noun === "pick") { HQ.selected = { type: id, id: Number(arg) }; render(); return true; }
   if (noun === "decide") {
-    // A question's answer, if the owner wrote one, goes in the task's thread before the member wakes.
-    const box = document.getElementById(`hq-answer-${id}`), answer = arg === "seen" && box ? box.value.trim() : "";
+    // A question's answer, if the owner wrote one, goes in the task's thread before the member
+    // wakes; so do the board's words on the CEO's decision.
+    const box = document.getElementById(`hq-answer-${id}`);
+    const item = ((HQ.snap && HQ.snap.desk) || []).find((d) => d.id === Number(id));
+    const takesWords = arg === "seen" || (item && item.kind === "decision");
+    const answer = takesWords && box ? box.value.trim() : "";
+    if (arg === "answer" && !answer) { flash("Write your answer first.", "warn"); return true; }
     try { await api("POST", `/v1/hq/desk/${id}`, { decision: arg, answer }); flash(answer ? "Answered." : "Decided.", "ok"); }
     catch (e) { flash("Couldn't decide: " + e.message, "err"); }
     await loadHQ(); render(); return true;
@@ -676,6 +714,22 @@ async function hqDispatch(verb, noun, id, arg) {
     if (arg !== "local" && !confirm(`${m.name} will think with ${b.label}: each turn is paid from the team's pool, and what ${m.name} reads goes to Anthropic (Confidential results stay home, but for what you allowed the lead). Go ahead?`)) return true;
     try { await api("POST", `/v1/hq/members/${id}/brain`, { brain: arg }); flash(`${m.name} thinks with ${b.label}.`, "ok"); }
     catch (e) { flash("Couldn't change it: " + e.message, "err"); }
+    await loadHQ(); render(); return true;
+  }
+  // The owner renames a member: HQ keeps names apart, as members are named in threads.
+  if (noun === "rename") {
+    const m = hqMember(Number(id)); if (!m) return true;
+    const name = (prompt(`A new name for ${m.name}:`, m.name) || "").trim();
+    if (!name || name === m.name) return true;
+    try { await api("POST", `/v1/hq/members/${id}/name`, { name }); flash(`${m.name} is now ${name}.`, "ok"); }
+    catch (e) { flash("Couldn't rename: " + e.message, "err"); }
+    await loadHQ(); render(); return true;
+  }
+  // The owner rewrites the CEO's house log; empty clears it.
+  if (noun === "house") {
+    const box = document.getElementById("hq-house"), log = box ? box.value.trim() : "";
+    try { await api("POST", "/v1/hq/house", { log }); flash("House log saved.", "ok"); }
+    catch (e) { flash("Couldn't save it: " + e.message, "err"); }
     await loadHQ(); render(); return true;
   }
   // A goal's notes for the team; empty clears them.

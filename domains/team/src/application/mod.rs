@@ -27,3 +27,6 @@ mod stranded_tests;
 
 #[cfg(test)]
 mod review_tests;
+
+#[cfg(test)]
+mod ceo_tests;

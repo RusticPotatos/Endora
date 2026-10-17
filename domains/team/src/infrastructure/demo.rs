@@ -186,6 +186,8 @@ fn take_a_turn<S: TeamStore, W: WorkerAdapter, C: Clock>(
 ) -> Done<()> {
     let reviewer = members.iter().find(|m| m.role == Role::Reviewer);
     match member.role {
+        // The demo team has no CEO; one added to it takes no scripted step.
+        Role::Ceo => Ok(()),
         Role::Lead => lead_turn(hq, run, member, task, members),
         Role::Developer | Role::Researcher => {
             if task.status != TaskStatus::Todo && task.status != TaskStatus::Doing {

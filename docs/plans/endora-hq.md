@@ -9,7 +9,8 @@ contracts on the home lab ([ADR 0106](../adr/0106-team-contracts.md)); routines,
 and check-backs ([ADR 0107](../adr/0107-routines-alarms-and-check-backs.md)); and the bridge,
 approvals, the owner's replies and a goal's notes ([ADR 0108](../adr/0108-the-bridge.md)); and
 the team's rings ([ADR 0110](../adr/0110-the-teams-rings.md)): the Pi as a runner of offline
-workbenches, reaching HQ through the node's team gateway. Phase 3's pairing is deferred, and so
+workbenches, reaching HQ through the node's team gateway; and the CEO and the chain of command
+([ADR 0111](../adr/0111-the-ceo-and-the-chain-of-command.md)): the owner is the board. Phase 3's pairing is deferred, and so
 is the egress proxy. Phases 5 to 7 are not yet.
 
 This document is the specification to build from. It describes behaviour, rules and words,
@@ -29,7 +30,8 @@ with the engine, and the owner's desk where everything that needs them lands.
   repositories), and research.
 - **What the team knows** about the owner arrives only as **briefs** that Endora prepares
   from its brain and the owner releases (section 8).
-- **The team** starts as one: a lead, a developer, a researcher and a reviewer. It can propose
+- **The team** starts as one: a lead, a developer, a researcher and a reviewer, with a **CEO**
+  above the lead (ADR 0111) that runs the team for the owner, who is the board. It can propose
   more members (a manager or product owner, say) and a name for itself. The owner decides.
 
 ## 2. Words
@@ -37,6 +39,9 @@ with the engine, and the owner's desk where everything that needs them lands.
 | Word | Meaning |
 | --- | --- |
 | Owner | The person Endora works for. In HQ they are also the board: the last word on everything. |
+| CEO | The member above the lead (ADR 0111): answers the lead's questions, reviews the house daily, keeps the house log, and puts to the board only what the owner alone decides, as a decision with its recommendation. |
+| Chain of command | Where a member's question goes: the developer's, researcher's and reviewer's to the lead, the lead's to the CEO, the CEO's to the board. |
+| House log | The CEO's own document of the house, per team, which the CEO and the lead read every turn and the owner edits. |
 | Desk | The owner's queue in HQ: everything waiting for them to approve, adjust or decline. |
 | Team | A group of members with a goal, a budget and a name. One to start. |
 | Member | One worker on a team, with a role, a model, a look and a daily budget. |
@@ -168,7 +173,27 @@ reviewer, the first member with the reviewer's role:
   routine takes the home lab's alarms, or a question naming containers), from anyone but the
   reviewer, does not reach the desk: the task moves to `in_review`, the question is posted in
   its thread as "Draft for the owner: …", the member's turn ends, and the reviewer is woken
-  the same way. The reviewer's own `ask_owner` goes to the desk.
+  the same way. The reviewer's own `ask_owner` goes to the desk. **With a CEO at work this is
+  the CEO's path alone** (below): everyone else's question goes up the chain.
+
+**The chain of command** (owner's decisions of 2026-10-17, [ADR 0111](../adr/0111-the-ceo-and-the-chain-of-command.md)).
+While the team has a CEO at work (not paused):
+
+- `ask_owner` from the developer, the researcher or the reviewer goes to the lead (the CEO when
+  no lead is at work); the lead's goes to the CEO. It is posted in the task's thread as
+  "Question for <name>: …", the asker's turn ends, and the one above is woken with
+  `question_asked` ("<asker> asks you: …" in its briefing). Its first post after the question
+  that is not itself a question up the chain or a draft wakes the asker with
+  `question_answered`. One question a member about a task waits for its answer at a time.
+- Only the CEO's `ask_owner` reaches the board's desk, as a **decision**
+  (`{ "decision", "recommendation", "why" }`), through the reviewer first as a draft ("Mara, the
+  CEO, wrote this decision for the board"); the reviewer's `ask_owner` then passes it on as the
+  CEO's, or `review` sends it back. The board approves, declines or answers on the card; its
+  word goes in the thread and wakes the CEO (`proposal_decided`).
+- The CEO wakes only for escalations and its own work: a mention, an alarm, a look round and a
+  review request are refused as `not_for_the_ceo`. Its routine "Daily review" comes every 24
+  hours.
+- With no CEO at work, everything above this paragraph holds as it did.
 - **The reviewer's briefing** says which it is. For work: check every claim in the thread
   against the tools; approve only what holds; send back with exactly what does not. For a
   draft: check every claim; if everything holds, ask the owner with the draft, corrected if
@@ -273,11 +298,14 @@ container:
 | `post` | Writes to the task's thread, at most 4,000 characters a post |
 | `set_status` | Moves the task on, with a reason; `done` is refused (only the gate sets it), except a routine's check, which its member closes once taken |
 | `create_task` | Creates a sub-task for another member, with what it waits on |
-| `ask_owner` | Puts a question or a proposal on the owner's desk and ends the turn: HQ ends the run there and refuses any further call from it, and the worker exits 0. One waits at a time per member and task. The owner can answer on the card, into the task's thread, and seeing it wakes the member who asked |
+| `ask_owner` | Asks a question or puts a proposal and ends the turn: HQ ends the run there and refuses any further call from it, and the worker exits 0. With a CEO at work it goes up the chain, in the task's thread (section 5); the CEO's is `{ "decision", "recommendation", "why" }`, a decision for the board's desk after the reviewer. With no CEO it goes on the owner's desk. One waits at a time per member and task. The owner can answer on the card, into the task's thread, and seeing it wakes the member who asked |
 | `check_back` | Wakes the member on its task again after 5–720 minutes, once, if it is still open: after a fix, to confirm it held |
 | `run_gate` | Runs the tests and build on a runner and returns the result |
 | `request_action` | Asks for a privileged action (open a pull request, for example); the gateway decides |
 | `note_lesson` | The lead's and the reviewer's: `{ "lesson" }`, at most 300 characters, appended as "- <lesson> (Ada, 17 Oct)" to the task's goal's notes for the team (which every briefing carries). A lesson that would overflow the notes' 2,000 characters is refused: "the notes are full; ask the owner to tidy them". Each is a `lesson.noted` event and a notice on the owner's desk ("Ada noted: …"), so the owner sees and can edit it |
+| `note_house` | The CEO's only: `{ "entry" }`, at most 500 characters, appended to the house log as "- 17 Oct: …"; refused when the log would pass 6,000 characters ("rewrite it shorter with rewrite_house"). A `house.noted` event |
+| `rewrite_house` | The CEO's only: `{ "log" }`, the whole house log, at most 6,000 characters |
+| `read_doc` | The CEO's only: `{ "path", "part"? }`, one of Endora's public records or plans (`docs/adr/*.md`, `docs/plans/*.md`, embedded in HQ at build time), 20,000 characters a part; a folder alone lists them; any other path is refused |
 | `review` | The reviewer's only: its verdict on work in review, `approve` or `send_back`, with notes. `send_back` posts the notes, sets the task to `doing` and wakes its owner. `approve` closes work that needs no gate (a routine's task, or work under a goal the home lab's routine serves) as `done`; work that needs the gate stays in review until the gate passes, and the reviewer is told so |
 
 **What a turn may touch** (engine rules, whatever the way in): `claim` and `set_status`
@@ -338,21 +366,21 @@ The team works better knowing the owner, and must never see their private life.
 
 ## 9. Models and money
 
-**Order of providers** for each member: Claude (the Max credits), then Codex on Sign in with
-ChatGPT once the day's credits are spent, then DeepSeek on its capped balance. Work that
-carries a brief never goes to DeepSeek.
+**Providers:** Claude only, through the node's relay, or the house's own model (the owner's
+decision of 2026-10-17, ADR 0111). No other provider is added.
 
-**Models by role:** Sonnet or Haiku for the developer, the reviewer and the lead; Haiku only
-for the researcher; the local model for small jobs (summaries, naming, tidying), at no cost.
-Opus is refused until the owner can approve it for a task (later).
+**Models by role** (ADR 0111): Opus or Sonnet for the CEO; Sonnet or Haiku for the lead, the
+developer and the reviewer; Haiku only for the researcher; the local model for any of them, at
+no cost. Opus is the CEO's alone. The owner's choice: the CEO on Opus (as HQ seats it), the lead
+on Sonnet, the developer and the reviewer local, the researcher on Haiku.
 
 **A brain per member** (owner's decision of 2026-10-17, [ADR 0109](../adr/0109-a-brain-per-member.md)):
 each member has a `brain`, `local` by default or a Claude model its role may use by the rule
 above (HQ refuses anything else). The owner sets it on the member's card on the HQ screen
-("Brain: Local / Claude Sonnet / Claude Haiku", only what the role allows), through the node
+("Brain: Local / Claude Opus / Claude Sonnet / Claude Haiku", only what the role allows), through the node
 (`POST /v1/hq/members/{id}/brain` → HQ's `POST /v1/members/{id}/brain`, recorded in the audit
-log). The lead may think with Claude Sonnet, metered against the pool and $0.40 a turn; the other
-members stay on the local model (qwen3:8b, thinking).
+log). The CEO's turns may spend $1.00 each, everyone else's $0.40; HQ reserves at most that and
+the relay holds each call to it.
 
 **The money**, by default (a monthly allowance of API credits that does not roll over; making
 the pool and the shares settings the owner changes on screen is later: today they are the
@@ -362,12 +390,16 @@ defaults below):
 | --- | --- | --- |
 | Endora itself (its own big-model decisions) | $30 | about $1.00 |
 | The team pool | $70 | about $2.30 |
-| Developer (40% of the pool) | | $0.93 |
-| Lead (25%) | | $0.58 |
-| Reviewer (20%) | | $0.47 |
-| Researcher (15%) | | $0.35 |
 
-- Each run may spend at most **$0.40**. Unused daily budget does not carry over.
+**The pool is shared only among the members with a paid brain** (ADR 0111), by their roles'
+weights: CEO 35, lead 25, developer 40, reviewer 20, researcher 15. A member's day is its
+weight over the paid members' weights together; a member on the house's model costs nothing,
+reserves nothing and is never turned away for money. With the CEO and the lead the only paid
+members, the CEO has $1.36 a day and the lead $0.97; with all five paid (weights 135), the
+developer would have $0.69.
+
+- Each run may spend at most **$0.40**, the CEO's **$1.00**. Unused daily budget does not carry
+  over.
 - **The ledger** is append-only: a reservation is made before a run starts, use is reported
   while it runs, and the charge and release are written when it ends. Crossing a limit
   during a run stops the run then, not afterwards. A charge that arrives after its run has
@@ -390,8 +422,10 @@ badge show how many are waiting:
 - finished work, ready to merge;
 - new runners.
 
-Later a **CEO** member may take most of these, with the owner as the board. Six things never
-leave the owner's desk:
+The **CEO** (ADR 0111) takes most of these, with the owner as the board: members' questions go
+up the chain to it, and only its decisions, with a recommendation, reach the desk (money
+beyond the pool, new goals and priorities, hiring or letting go a member, what only the owner
+can know). Six things never leave the owner's desk:
 
 1. changes to Endora's policy, permissions, tripwires or allowlists;
 2. raising the pool, or any spend beyond the credits;
@@ -707,6 +741,33 @@ for working things out: scripts, parsing what the tools returned, trying command
   house's services and the internet are not reachable from it, and the house is used through
   the team's tools (the bridge and the contracts); `/work` is gone when the turn ends, so
   durable findings go in the task's thread (or with `note_lesson`, for a member who has it).
+
+### The CEO (owner's decisions of 2026-10-17, [ADR 0111](../adr/0111-the-ceo-and-the-chain-of-command.md))
+
+- **The role**: `ceo`, ranked above the lead, which leads every goal as the lead does (it may
+  act on any task); work is handed only down, so nobody hands the CEO work. Its tools: `my_turn`,
+  `claim`, `post`, `set_status`, `create_task`, `check_back`, `ask_owner` (a decision),
+  `note_house`, `rewrite_house` and `read_doc`; not the gate or `request_action`.
+- **Seated once**: HQ started with the demo off and no CEO seats "Mara" (share 35, Claude Opus,
+  `member.hired` in the feed), remembered in HQ's settings so it is never seated again; and,
+  once there is an active goal (the home lab's if any), the routine "Daily review" for the CEO
+  every 24 hours, once. The home lab's routine is still made when the only routine is the CEO's.
+- **Its briefing** starts with the house log, its team (role and brain each), the goals with
+  their notes and lessons, the open tasks (status, owner), the home lab's alarms of the last 7
+  days (from HQ's own `routine.fired` and `routine.posted` events), what reached the board's
+  desk in the last 7 days and how the board decided, and the board's items. The lead's
+  briefing starts with the house log, read-only, and every member's says whom its questions go
+  to.
+- **On the node**: the bridge's profile for `ceo` is read only and `may_see` gives it nothing
+  Confidential on a cloud model; the contracts offer it `homelab_status` and no act. The relay
+  lets `ceo` call Opus or Sonnet, Opus no other role, and holds each call to the role's turn
+  ($1.00 for the CEO, $0.40 otherwise) whatever HQ says is left.
+- **On the screen**: the CEO in the Team card with its Brain choice (Local, Claude Opus, Claude
+  Sonnet), a Rename button for every member (`POST /v1/hq/members/{id}/name` → HQ's
+  `POST /v1/members/{id}/name`), the House log card (`POST /v1/hq/house` → HQ's
+  `POST /v1/house`), and decision cards with the decision, the recommendation and why, Approve,
+  Decline and an answer box (`answer` with words alone). A local member's card says it costs
+  nothing.
 
 ## 16. Later, and not at all
 

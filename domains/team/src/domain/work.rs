@@ -52,6 +52,9 @@ id!(
 /// member hands work only to members below it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Role {
+    /// Runs the team for the owner, who is the board (ADR 0111): decides what the lead asks,
+    /// reviews the house once a day, and puts to the board only what the owner alone decides.
+    Ceo,
     /// Looks over the team's work and hands it out.
     Lead,
     /// Writes and changes code.
@@ -67,6 +70,7 @@ impl Role {
     #[must_use]
     pub const fn name(self) -> &'static str {
         match self {
+            Self::Ceo => "ceo",
             Self::Lead => "lead",
             Self::Developer => "developer",
             Self::Researcher => "researcher",
@@ -78,6 +82,7 @@ impl Role {
     #[must_use]
     pub fn from_name(name: &str) -> Option<Self> {
         match name {
+            "ceo" => Some(Self::Ceo),
             "lead" => Some(Self::Lead),
             "developer" => Some(Self::Developer),
             "researcher" => Some(Self::Researcher),
@@ -90,9 +95,31 @@ impl Role {
     #[must_use]
     pub const fn rank(self) -> u8 {
         match self {
-            Self::Lead => 0,
-            Self::Developer | Self::Researcher | Self::Reviewer => 1,
+            Self::Ceo => 0,
+            Self::Lead => 1,
+            Self::Developer | Self::Researcher | Self::Reviewer => 2,
         }
+    }
+
+    /// The role's weight in the team's pool (ADR 0111): what a member in it is hired with as
+    /// its share. The day's pool is split among the members with a paid brain by these
+    /// weights; a member on the house's model costs nothing and takes no share.
+    #[must_use]
+    pub const fn share(self) -> u8 {
+        match self {
+            Self::Ceo => 35,
+            Self::Lead => 25,
+            Self::Developer => 40,
+            Self::Reviewer => 20,
+            Self::Researcher => 15,
+        }
+    }
+
+    /// Whether a member in this role may act on any task of the team: the CEO and the lead,
+    /// who lead every goal.
+    #[must_use]
+    pub const fn leads(self) -> bool {
+        matches!(self, Self::Ceo | Self::Lead)
     }
 }
 
@@ -338,6 +365,16 @@ pub enum Refusal {
     NotALessonKeeper,
     /// A goal's notes have no room for one more lesson.
     NotesFull,
+    /// Only the CEO does that (ADR 0111).
+    OnlyTheCeo,
+    /// The house log has no room for one more line.
+    HouseLogFull,
+    /// Not one of Endora's public records and plans.
+    NotADoc,
+    /// A decision for the board says what is to be decided, what the CEO recommends, and why.
+    NotADecision,
+    /// A name another member already has, or none.
+    NotAName,
 }
 
 impl fmt::Display for Refusal {
@@ -382,7 +419,7 @@ impl fmt::Display for Refusal {
                     .collect();
                 write!(
                     f,
-                    "a {} thinks with {} only, not {asked:?}; Opus waits until the owner can approve it for a task",
+                    "a {} thinks with {} only, not {asked:?}; Opus is the CEO's alone",
                     role.name(),
                     may.join(", ")
                 )
@@ -391,8 +428,21 @@ impl fmt::Display for Refusal {
                 f.write_str("only the lead and the reviewer note the team's lessons")
             }
             Self::NotesFull => f.write_str("the notes are full; ask the owner to tidy them"),
+            Self::OnlyTheCeo => f.write_str("only the CEO does that"),
+            Self::HouseLogFull => f.write_str(
+                "the house log is full: rewrite it shorter with rewrite_house, keeping what still matters",
+            ),
+            Self::NotADoc => f.write_str(
+                "read_doc reads Endora's public records and plans only: a path like docs/adr/0111-the-ceo-and-the-chain-of-command.md or docs/plans/endora-hq.md",
+            ),
+            Self::NotAName => f.write_str(
+                "a member's name is one to 40 characters, and no other member's",
+            ),
+            Self::NotADecision => f.write_str(
+                "a decision for the board gives `decision` (what is to be decided), `recommendation` (what you recommend) and `why`, each in a sentence or two",
+            ),
             Self::AlreadyAsked => f.write_str(
-                "your last question or approval about this task is still waiting on the owner's desk; end your turn",
+                "your last question or approval about this task is still waiting for an answer; end your turn",
             ),
         }
     }
@@ -558,6 +608,10 @@ mod tests {
 
     #[test]
     fn work_is_handed_down_and_never_up_or_across() {
+        assert!(may_delegate(Role::Ceo, Role::Lead).is_ok());
+        assert!(may_delegate(Role::Ceo, Role::Developer).is_ok());
+        assert_eq!(may_delegate(Role::Lead, Role::Ceo), Err(Refusal::NotBelow));
+        assert_eq!(may_delegate(Role::Ceo, Role::Ceo), Err(Refusal::NotBelow));
         assert!(may_delegate(Role::Lead, Role::Developer).is_ok());
         assert!(may_delegate(Role::Lead, Role::Reviewer).is_ok());
         assert_eq!(
@@ -569,6 +623,22 @@ mod tests {
             Err(Refusal::NotBelow)
         );
         assert_eq!(may_delegate(Role::Lead, Role::Lead), Err(Refusal::NotBelow));
+    }
+
+    #[test]
+    fn the_roles_weights_in_the_pool_are_the_owners() {
+        let weights: Vec<u8> = [
+            Role::Ceo,
+            Role::Lead,
+            Role::Developer,
+            Role::Reviewer,
+            Role::Researcher,
+        ]
+        .map(Role::share)
+        .to_vec();
+        assert_eq!(weights, [35, 25, 40, 20, 15]);
+        assert!(Role::Ceo.leads() && Role::Lead.leads());
+        assert!(!Role::Developer.leads() && !Role::Reviewer.leads());
     }
 
     #[test]
@@ -608,6 +678,7 @@ mod tests {
             assert_eq!(TaskStatus::from_name(status.name()), Some(status));
         }
         for role in [
+            Role::Ceo,
             Role::Lead,
             Role::Developer,
             Role::Researcher,

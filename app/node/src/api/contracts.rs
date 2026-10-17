@@ -65,9 +65,9 @@ fn offered(switches: Switches) -> Vec<Contract> {
 
 /// Whether a turn may be given what a contract returns: a Confidential one (a container's
 /// log) only to a turn on the house's model, or to the lead's on Claude, as the owner decided
-/// (ADR 0109).
+/// (ADR 0109); and an act never to the CEO, which takes no step on the house (ADR 0111).
 fn may_see(contract: &Contract, turn: &Turn) -> bool {
-    contract.may_be_seen_by(&turn.role, turn.cloud)
+    contract.offered_to(&turn.role, turn.cloud)
 }
 
 /// The switches as the HQ screen shows them.
@@ -194,7 +194,12 @@ pub(super) async fn call(
         );
     };
     if !may_see(&contract, &turn) {
-        let why = super::bridge::confidential(&name);
+        let why = if contract.may_be_seen_by(&turn.role, turn.cloud) {
+            "the CEO takes no step on the house itself: hand it to the lead with create_task"
+                .to_owned()
+        } else {
+            super::bridge::confidential(&name)
+        };
         refused_for(&why);
         return refuse(StatusCode::FORBIDDEN, "", &why);
     }
@@ -859,6 +864,48 @@ mod tests {
             .iter()
             .filter_map(|t| t["name"].as_str().map(str::to_owned))
             .collect()
+    }
+
+    #[tokio::test]
+    async fn the_cloud_ceo_reads_the_home_labs_state_and_neither_its_logs_nor_its_restarts() {
+        let state = on_claude("ceo");
+        let offered = listed(&state).await;
+        assert!(
+            offered.contains(&"homelab_status".to_owned()),
+            "{offered:?}"
+        );
+        for refused in [
+            "container_logs",
+            "restart_container",
+            "sonarr_queue",
+            "radarr_queue",
+        ] {
+            assert!(
+                !offered.contains(&refused.to_owned()),
+                "{refused}: {offered:?}"
+            );
+        }
+        let (status, said) =
+            use_contract(&state, "container_logs", json!({ "container": "sonarr" })).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{said}");
+        assert!(
+            said["error"].as_str().unwrap().contains("Confidential"),
+            "{said}"
+        );
+        let (status, said) = use_contract(
+            &state,
+            "restart_container",
+            json!({ "container": "sonarr", "why": "it is unhealthy" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{said}");
+        assert!(
+            said["error"]
+                .as_str()
+                .unwrap()
+                .contains("hand it to the lead"),
+            "{said}"
+        );
     }
 
     #[tokio::test]

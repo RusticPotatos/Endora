@@ -21,7 +21,7 @@ const MONTHS: [&str; 12] = [
 ];
 
 /// The day of the month and the month's short name of `day` (days since the Unix epoch).
-fn day_and_month(day: i64) -> (u32, &'static str) {
+pub(crate) fn day_and_month(day: i64) -> (u32, &'static str) {
     // Howard Hinnant's civil-from-days, for the proleptic Gregorian calendar.
     let z = day + 719_468;
     let era = z.div_euclid(146_097);

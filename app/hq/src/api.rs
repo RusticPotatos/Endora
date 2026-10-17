@@ -71,6 +71,9 @@ pub fn app(state: State) -> Router {
         .route("/v1/goals/{id}/note", post(goal_note))
         // What a member thinks with (ADR 0109): the owner's, through the node.
         .route("/v1/members/{id}/brain", post(set_brain))
+        // The owner renames a member, and reads and edits the CEO's house log (ADR 0111).
+        .route("/v1/members/{id}/name", post(rename))
+        .route("/v1/house", post(house_log))
         .route("/v1/stop", post(stop))
         .route("/v1/resume", post(resume))
         // Routines (ADR 0107): the owner's, through the node; and Endora's alarms.
@@ -272,7 +275,8 @@ async fn add_task(
 #[derive(Deserialize)]
 struct Decision {
     decision: String,
-    /// For a question seen: the owner's answer, written in its task's thread first.
+    /// For a question seen, or the CEO's decision: the owner's words, written in its task's
+    /// thread first.
     #[serde(default)]
     answer: String,
 }
@@ -283,14 +287,40 @@ async fn decide(
     Json(req): Json<Decision>,
 ) -> Result<Json<serde_json::Value>, Failed> {
     let hq = state.hq.clone();
-    blocking(move || {
-        if req.decision == "seen" && !req.answer.trim().is_empty() {
-            return hq.answer(DeskId(id), &req.answer);
-        }
-        hq.decide(DeskId(id), &req.decision)
-    })
-    .await?;
+    blocking(move || hq.decide_saying(DeskId(id), &req.decision, &req.answer)).await?;
     Ok(Json(json!({ "decided": true })))
+}
+
+#[derive(Deserialize)]
+struct NameAsked {
+    name: String,
+}
+
+/// The owner renames a member.
+async fn rename(
+    Extract(state): Extract<State>,
+    Path(id): Path<i64>,
+    Json(req): Json<NameAsked>,
+) -> Result<Json<serde_json::Value>, Failed> {
+    let hq = state.hq.clone();
+    let name = blocking(move || hq.rename(MemberId(id), &req.name)).await?;
+    Ok(Json(json!({ "member": id, "name": name })))
+}
+
+#[derive(Deserialize)]
+struct HouseLog {
+    #[serde(default)]
+    log: String,
+}
+
+/// The owner rewrites the house log, which the CEO keeps; empty clears it.
+async fn house_log(
+    Extract(state): Extract<State>,
+    Json(req): Json<HouseLog>,
+) -> Result<Json<serde_json::Value>, Failed> {
+    let hq = state.hq.clone();
+    blocking(move || hq.set_house_log(&req.log)).await?;
+    Ok(Json(json!({ "kept": true })))
 }
 
 #[derive(Deserialize)]
@@ -909,6 +939,10 @@ mod tests {
     #[tokio::test]
     async fn the_relay_learns_whose_a_token_is_and_reports_what_each_call_cost() {
         let st = state(true);
+        // Ada, the demo's lead, thinks with Claude: her turns are paid from the pool. (One on
+        // the house's model reserves nothing, ADR 0111.)
+        let ada = st.hq.store().members().unwrap()[0].id;
+        st.hq.set_brain(ada, "claude-sonnet-5-5").unwrap();
         st.hq.tick().unwrap();
         let turn = scripted(&st).started()[0].clone();
         let app = app(st.clone());
@@ -926,10 +960,10 @@ mod tests {
         );
         let found = json_of(app.clone().oneshot(ask(Some(TOKEN), body)).await.unwrap()).await;
         assert_eq!(found["run"], turn.run.0);
-        assert_eq!(found["cloud"], false, "a local member's turn stays home");
-        assert_eq!(found["brain"], "local");
+        assert_eq!(found["cloud"], true);
+        assert_eq!(found["brain"], "claude-sonnet-5-5");
         let left = found["left"].as_i64().unwrap();
-        assert!(left > 0, "{found}");
+        assert_eq!(left, 400_000, "{found}");
         let spend = |micros: i64| {
             call(
                 "POST",
@@ -1610,6 +1644,82 @@ mod tests {
         st.hq.switch_routine(made, false).unwrap();
         assert_eq!(crate::seed_routine(&st.hq).unwrap(), None, "once");
         assert_eq!(st.hq.store().routines().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn with_the_demo_off_the_ceo_is_seated_once_and_its_daily_review_made_once() {
+        let st = state(false);
+        let lead = st.hq.hire("John Doe", Role::Lead, 25, 2, 0).unwrap();
+        let (seated, routine) = crate::seed_ceo(&st.hq).unwrap();
+        let ceo = seated.expect("seated");
+        assert_eq!(routine, None, "no goal yet");
+        let goal = st
+            .hq
+            .set_goal("Keep the home lab healthy", "", Author::Owner)
+            .unwrap();
+        // The home lab's routine is still made, though the CEO's comes first here.
+        let (again, made) = crate::seed_ceo(&st.hq).unwrap();
+        assert_eq!(again, None, "seated once");
+        let made = made.expect("its daily review");
+        assert!(crate::seed_routine(&st.hq).unwrap().is_some());
+        let routines = st.hq.store().routines().unwrap();
+        let review = routines.iter().find(|r| r.id == made).unwrap();
+        assert_eq!(review.title, "Daily review");
+        assert_eq!((review.goal, review.assignee), (goal, ceo));
+        assert_eq!(review.every_ms, 24 * 3_600_000);
+        assert!(!review.on_lab_trouble);
+        assert!(routines.iter().any(|r| r.assignee == lead));
+        assert_eq!(crate::seed_ceo(&st.hq).unwrap(), (None, None), "once");
+        let members = st.hq.store().members().unwrap();
+        let mara = members.iter().find(|m| m.id == ceo).unwrap();
+        assert_eq!(
+            (mara.name.as_str(), mara.role, mara.brain.name()),
+            ("Mara", Role::Ceo, "claude-opus-5-5")
+        );
+    }
+
+    #[tokio::test]
+    async fn the_owner_renames_a_member_and_edits_the_house_log_through_the_node() {
+        let st = state(false);
+        let lead = st.hq.hire("John Doe", Role::Lead, 25, 2, 0).unwrap();
+        let app = app(st.clone());
+        let res = app
+            .clone()
+            .oneshot(call(
+                "POST",
+                &format!("/v1/members/{}/name", lead.0),
+                Some(TOKEN),
+                r#"{"name":"Jane Doe"}"#,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        assert_eq!(json_of(res).await["name"], "Jane Doe");
+        let res = app
+            .clone()
+            .oneshot(call(
+                "POST",
+                "/v1/house",
+                Some(TOKEN),
+                r#"{"log":"- 17 Oct: the NAS has 16 GB."}"#,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let snap = json_of(
+            app.clone()
+                .oneshot(call("GET", "/v1/snapshot", Some(TOKEN), ""))
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(snap["house_log"], "- 17 Oct: the NAS has 16 GB.");
+        assert_eq!(snap["members"][0]["name"], "Jane Doe");
+        let unsigned = app
+            .oneshot(call("POST", "/v1/house", None, r#"{"log":""}"#))
+            .await
+            .unwrap();
+        assert_eq!(unsigned.status(), StatusCode::UNAUTHORIZED);
     }
 
     #[tokio::test]

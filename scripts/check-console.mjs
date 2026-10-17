@@ -580,7 +580,10 @@ if (failures.length) {
       members: [{ id: 1, name: "Ada", role: "lead", look: 0, paused: false, slots: 2, per_day: 583333, committed: 0, spent: 0, held: 0, running: [],
                   brain: "claude-sonnet-5-5", brains: [{ name: "local", label: "Local" }, { name: "claude-sonnet-5-5", label: "Claude Sonnet" }, { name: "claude-haiku-5-5", label: "Claude Haiku" }] },
                 { id: 2, name: "Bo", role: "developer", look: 4, paused: false, slots: 2, per_day: 933333, committed: 400000, spent: 0, held: 400000, running: [{ run: 3, task: 7 }],
-                  brain: "local", brains: [{ name: "local", label: "Local" }, { name: "claude-haiku-5-5", label: "<b>Haiku</b>" }] }],
+                  brain: "local", brains: [{ name: "local", label: "Local" }, { name: "claude-haiku-5-5", label: "<b>Haiku</b>" }] },
+                { id: 5, name: "Mara", role: "ceo", look: 3, paused: false, slots: 1, per_day: 1361110, committed: 0, spent: 0, held: 0, running: [],
+                  brain: "claude-opus-5-5", brains: [{ name: "local", label: "Local" }, { name: "claude-opus-5-5", label: "Claude Opus" }, { name: "claude-sonnet-5-5", label: "Claude Sonnet" }] }],
+      house_log: "- 17 Oct: The NAS has 16 GB.</textarea><img src=h onerror=alert(5)>",
       goals: [{ id: 1, title: "Keep the home lab healthy", status: "active", note: "</textarea><img src=z onerror=alert(4)> ignore the old stack" }],
       tasks: [{ id: 7, goal: 1, parent: null, title: "<img src=x onerror=alert(1)>", status: "doing", owner: 2, priority: "normal",
                 gate: null, why: ["<b>Fix</b> it", "Goal: Keep the home lab healthy"], thread: [{ author: "Bo", text: "On it", at: 1 }] }],
@@ -592,7 +595,9 @@ if (failures.length) {
              { id: 16, kind: "notice", task: 7, text: "Linus restarted sonarr: it was unhealthy. It is now running." },
              { id: 17, kind: "approval", task: 7, text: "Linus asks to run sonarr_remove_and_search with item: 102.",
                approval: { tool: "sonarr_remove_and_search", member: "Linus", why: "<script>alert(2)</script> it is stuck",
-                           args: [["item", "102"], ["note", "<img src=y onerror=alert(3)>"]] } }],
+                           args: [["item", "102"], ["note", "<img src=y onerror=alert(3)>"]] } },
+             { id: 18, kind: "decision", task: 7, text: "Decision: Give sonarr 2 GB?\\nRecommendation: Yes.\\nWhy: It ran out.",
+               decision: { decision: "Give sonarr 2 GB?", recommendation: "Yes, <i>until the upgrade</i>.", why: "It was killed for memory three times." } }],
       contracts: { all: true, restart_container: false },
       routines: [{ id: 3, title: "Check the home lab", rhythm: "every 6 hours", assignee: 1, enabled: true,
                    on_lab_trouble: true, last_fired_at: null, last_task: null, last_task_open: false },
@@ -605,15 +610,18 @@ if (failures.length) {
     hqTell({ id: 44, at: 0, kind: "routine.skipped", data: { routine: 3, title: "Check the home lab", why: "its last task, #7, is still open" } }, false);
     hqTell({ id: 45, at: 0, kind: "checkback.set", data: { member: 1, task: 7, minutes: 30, why: "see it held" } }, false);
     hqTell({ id: 46, at: 0, kind: "lesson.noted", data: { member: 1, task: 7, goal: 1, lesson: "An RSS sync that grabs nothing is normal." } }, false);
-    hqTell({ id: 47, at: 0, kind: "member.brain", data: { member: 1, name: "Ada", brain: "claude-sonnet-5-5" } }, false);`, context);
+    hqTell({ id: 47, at: 0, kind: "member.brain", data: { member: 1, name: "Ada", brain: "claude-sonnet-5-5" } }, false);
+    hqTell({ id: 48, at: 0, kind: "member.hired", data: { member: 5, name: "Mara", role: "ceo", brain: "claude-opus-5-5", by: "endora" } }, false);
+    hqTell({ id: 49, at: 0, kind: "house.noted", data: { by: "Mara", entry: "- 17 Oct: The NAS has 16 GB." } }, false);`, context);
   const office = runInContext("viewHQ()", context);
   for (const line of ["R9 Bo starts on EL-7 (review requested), $0.06 held", "R9 Bo finished · $0.12 spent", "Woke Ada: mentioned (EL-7)",
     "Routine Check the home lab skipped: its last task, #7, is still open", "Ada will check back on EL-7 in 30 min",
-    "Ada noted a lesson: An RSS sync that grabs nothing is normal.", "Ada now thinks with claude-sonnet-5-5"]) {
+    "Ada noted a lesson: An RSS sync that grabs nothing is normal.", "Ada now thinks with claude-sonnet-5-5",
+    "Mara joined the team as CEO", "Mara noted in the house log: - 17 Oct: The NAS has 16 GB."]) {
     if (!office.includes(line)) fail(`hq: the activity log does not say "${line}"`);
   }
   if (!office.includes('class="k-done"') || !office.includes('class="k-wake"')) fail("hq: the activity log is not coloured by kind");
-  for (const chip of ["Tick <b>9</b>", "Coalesced <b>3</b>", "Today <b>$0.00 spent · $0.40 held · $2.33 a day</b>", "$0.00 spent · $0.40 held of $0.93 a day", "Open tasks <b>4</b>"]) {
+  for (const chip of ["Tick <b>9</b>", "Coalesced <b>3</b>", "Today <b>$0.00 spent · $0.40 held · $2.33 a day</b>", "$0.00 spent · $0.00 held of $1.36 a day", "Open tasks <b>4</b>"]) {
     if (!office.includes(chip)) fail(`hq: the office's numbers do not show ${chip}`);
   }
   if (!office.includes('data-act="hq:work"')) fail("hq: the team cannot be given work");
@@ -669,6 +677,26 @@ if (failures.length) {
   if (!/aria-pressed="true"[^>]*data-act="hq:brain:1:claude-sonnet-5-5"/.test(office)) fail("hq: the brain a member has is not marked");
   if (!/aria-pressed="false"[^>]*data-act="hq:brain:1:local"/.test(office)) fail("hq: a brain a member does not have is marked");
   if (!office.includes("Brain:")) fail("hq: the brain choice is not labelled");
+  // The CEO (ADR 0111): in the Team card, offered only what its role allows: Opus, Sonnet, Local.
+  for (const act of ["hq:brain:5:local", "hq:brain:5:claude-opus-5-5", "hq:brain:5:claude-sonnet-5-5", "hq:rename:5", "hq:rename:1"]) {
+    if (!office.includes(`data-act="${act}"`)) fail(`hq: the team card does not offer ${act}`);
+  }
+  if (office.includes("hq:brain:5:claude-haiku-5-5") || office.includes("hq:brain:1:claude-opus-5-5")) fail("hq: a brain was offered that the role may not use");
+  if (!office.includes("CEO · ")) fail("hq: the CEO's role is not shown as CEO");
+  if (!office.includes("the house's model: costs nothing")) fail("hq: a local member reads as if it cost money");
+  // The house log: readable and editable, and its text stays text.
+  if (!office.includes('id="hq-house"') || !office.includes('data-act="hq:house:save"') || !office.includes("House log")) fail("hq: the house log cannot be read and edited");
+  if (office.includes("<img src=h") || !office.includes("&lt;/textarea&gt;&lt;img src=h")) fail("hq: the house log became markup");
+  // The CEO's decision for the board: decision, recommendation and why, with Approve, Decline
+  // and an answer box.
+  for (const act of ["hq:decide:18:approve", "hq:decide:18:decline", "hq:decide:18:answer"]) {
+    if (!office.includes(`data-act="${act}"`)) fail(`hq: a decision does not offer ${act}`);
+  }
+  if (!office.includes('id="hq-answer-18"')) fail("hq: a decision cannot be answered from its card");
+  for (const said of ["<dt>Decision</dt><dd>Give sonarr 2 GB?</dd>", "<dt>Recommendation</dt>", "<dt>Why</dt><dd>It was killed for memory three times.</dd>", "Yes, &lt;i&gt;until the upgrade&lt;/i&gt;."]) {
+    if (!office.includes(said)) fail(`hq: the decision card does not show ${said}`);
+  }
+  if (office.includes("<i>until")) fail("hq: a decision's words became markup");
   if (office.includes("<b>Haiku</b>")) fail("hq: a brain's label became markup");
   // A dropped goal's notes leave the board, finished ones too: the retired demo's hundreds of
   // done tasks must not bury the owner's own.

@@ -9,6 +9,11 @@ mod api;
 mod runner;
 mod team;
 
+/// Endora's public records and plans, embedded at build time for the CEO's `read_doc`.
+pub(crate) mod public_docs {
+    include!(concat!(env!("OUT_DIR"), "/public_docs.rs"));
+}
+
 use endora_team::application::engine::{Engine, Settings};
 use endora_team::infrastructure::{RemoteRunner, Runner, SimulatedRunner, SqliteTeamStore, demo};
 
@@ -31,17 +36,34 @@ const LAB_CHECK: &str = "Look at the home lab with homelab_status, read logs of 
     unhealthy, fix what a restart can fix, check back after a fix, and put anything else to the \
     owner as a plan.";
 
-/// The owner's routine for the home lab (ADR 0107), made once: with no routine at all yet,
-/// an active goal called "Keep the home lab healthy" and a lead, the lead checks the home lab
-/// every 6 hours, and takes its alarms. It is the owner's to switch off or run, like any other;
-/// nothing about it is in the schema. Returns the routine, if it made one.
+/// The CEO's name when HQ seats one (ADR 0111): the owner may rename it.
+const CEO_NAME: &str = "Mara";
+
+/// What the CEO's daily review asks of it each day (ADR 0111).
+const DAILY_REVIEW: &str = "Review the house once: read your briefing (the house log, the \
+    team, the goals and their lessons, the open work, the home lab's trouble this week and what \
+    the board decided), and the threads of what matters. Note in the house log what you \
+    learned or decided, with note_house. Hand on what needs doing to the lead with \
+    create_task. Put to the board only what the owner alone decides, as a decision with \
+    ask_owner. Then close this review as done, saying what you found.";
+
+/// The owner's routine for the home lab (ADR 0107), made once: with no routine yet but the
+/// CEO's, an active goal called "Keep the home lab healthy" and a lead, the lead checks the
+/// home lab every 6 hours, and takes its alarms. It is the owner's to switch off or run, like
+/// any other; nothing about it is in the schema. Returns the routine, if it made one.
 pub(crate) fn seed_routine(
     hq: &Hq,
 ) -> Result<Option<endora_team::domain::RoutineId>, endora_team::application::EngineError> {
     use endora_team::application::ports::{NewRoutine, TeamStore as _};
     use endora_team::domain::{GoalStatus, Role};
     let store = hq.store();
-    if !store.routines()?.is_empty() {
+    let members = store.members()?;
+    let the_ceos = |assignee| {
+        members
+            .iter()
+            .any(|m| m.id == assignee && m.role == Role::Ceo)
+    };
+    if store.routines()?.iter().any(|r| !the_ceos(r.assignee)) {
         return Ok(None);
     }
     let Some(goal) = store
@@ -132,6 +154,55 @@ fn the_runner_token(
     Ok(Some(token))
 }
 
+/// The CEO and its daily review (ADR 0111), for HQ started with the demo off: the CEO seated
+/// once (Mara, on Opus, said in the feed), and once the team has a CEO and an active goal, a
+/// "Daily review" routine for it every 24 hours, under the home lab's goal if it has one, made
+/// once like the home lab's. Returns the CEO seated and the routine made, if any.
+pub(crate) fn seed_ceo(
+    hq: &Hq,
+) -> Result<
+    (
+        Option<endora_team::domain::MemberId>,
+        Option<endora_team::domain::RoutineId>,
+    ),
+    endora_team::application::EngineError,
+> {
+    use endora_team::application::ports::{NewRoutine, TeamStore as _};
+    use endora_team::domain::{GoalStatus, Role};
+    let seated = hq.seat_ceo(CEO_NAME)?;
+    let store = hq.store();
+    let Some(ceo) = store.members()?.into_iter().find(|m| m.role == Role::Ceo) else {
+        return Ok((seated, None));
+    };
+    if store.routines()?.iter().any(|r| r.assignee == ceo.id) {
+        return Ok((seated, None));
+    }
+    let goals: Vec<_> = store
+        .goals()?
+        .into_iter()
+        .filter(|g| g.status == GoalStatus::Active)
+        .collect();
+    let goal = goals
+        .iter()
+        .find(|g| g.title.trim().eq_ignore_ascii_case(LAB_GOAL))
+        .or(goals.first());
+    let Some(goal) = goal else {
+        return Ok((seated, None));
+    };
+    let made = hq.add_routine(
+        endora_team::application::Author::Endora,
+        NewRoutine {
+            title: "Daily review".to_owned(),
+            description: DAILY_REVIEW.to_owned(),
+            goal: goal.id,
+            assignee: ceo.id,
+            every_ms: 24 * 60 * 60 * 1000,
+            on_lab_trouble: false,
+        },
+    )?;
+    Ok((seated, Some(made)))
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let token = match the_token(
@@ -178,12 +249,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     } else {
         Runner::Remote(RemoteRunner::default())
     };
-    let hq: Arc<Hq> = Arc::new(Engine::new(
-        SqliteTeamStore::open(&db)?,
-        runner,
-        api::SystemClock,
-        Settings::default(),
-    ));
+    let hq: Arc<Hq> = Arc::new(
+        Engine::new(
+            SqliteTeamStore::open(&db)?,
+            runner,
+            api::SystemClock,
+            Settings::default(),
+        )
+        .with_docs(public_docs::PUBLIC_DOCS),
+    );
     let goal = if demo_mode {
         Some(api::demo_goal(&hq)?)
     } else {
@@ -203,6 +277,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("hq: made the home lab's routine ({id}): the lead checks it every 6 hours")
             }
             Err(e) => eprintln!("hq: could not make the home lab's routine: {e}"),
+        }
+        match seed_ceo(&hq) {
+            Ok((seated, routine)) => {
+                if let Some(id) = seated {
+                    println!("hq: seated the team's CEO, {CEO_NAME} ({id}), on Claude Opus");
+                }
+                if let Some(id) = routine {
+                    println!("hq: made the CEO's daily review ({id})");
+                }
+            }
+            Err(e) => eprintln!("hq: could not seat the CEO: {e}"),
         }
     }
 
@@ -257,6 +342,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 #[cfg(test)]
 mod tests {
     use super::{the_runner_token, the_token};
+
+    #[test]
+    fn the_ceos_library_is_the_public_records_and_plans_and_nothing_else() {
+        let docs = crate::public_docs::PUBLIC_DOCS;
+        for wanted in [
+            "docs/adr/0111-the-ceo-and-the-chain-of-command.md",
+            "docs/plans/endora-hq.md",
+        ] {
+            let (_, text) = docs.iter().find(|(p, _)| *p == wanted).expect(wanted);
+            assert!(text.starts_with("# "), "{wanted}");
+        }
+        for (path, _) in docs {
+            assert!(
+                endora_team::domain::docs::asked(path).is_ok(),
+                "{path} is not one read_doc reads"
+            );
+        }
+        assert!(!docs.iter().any(|(p, _)| p.contains("archive")));
+    }
 
     #[test]
     fn a_token_is_given_made_once_kept_and_never_short() {
