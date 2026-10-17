@@ -2,7 +2,7 @@
 //! deep) a sorted list of a provider and a model. The first entry that works, and is cleared
 //! for the request, answers; the walking is infrastructure's, the shape is here.
 
-use crate::application::{ButlerModelConfig, DeepModel};
+use crate::application::{ButlerModelConfig, DeepModel, Sampling};
 use endora_kernel::RepositoryError;
 
 /// An endpoint and its key, entered once.
@@ -48,7 +48,7 @@ impl Job {
 }
 
 /// One place in a list: a provider and a model.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Entry {
     /// Its id.
     pub id: i64,
@@ -60,10 +60,12 @@ pub struct Entry {
     pub model: String,
     /// Switched off: kept, but skipped.
     pub enabled: bool,
+    /// How it samples; unset is the endpoint's own default.
+    pub sampling: Sampling,
 }
 
 /// What one enabled entry resolves to: where to send, what to ask for, with which key.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Target {
     /// The entry.
     pub entry: i64,
@@ -75,6 +77,8 @@ pub struct Target {
     pub model: String,
     /// The key.
     pub api_key: String,
+    /// How it samples.
+    pub sampling: Sampling,
 }
 
 /// A list's enabled entries, in order, resolved against their providers. An entry whose
@@ -92,6 +96,7 @@ pub fn targets(providers: &[Provider], entries: &[Entry]) -> Vec<Target> {
                 url: p.url.trim().trim_end_matches('/').to_owned(),
                 model: e.model.trim().to_owned(),
                 api_key: p.api_key.clone(),
+                sampling: e.sampling.clone(),
             })
         })
         .collect()
@@ -128,40 +133,88 @@ pub fn name_for(url: &str) -> String {
 /// stored model (the writer of a mixture, which is what spoke); the deep model is deep's one
 /// entry. Nothing is added for a slot that was not set.
 #[must_use]
-pub fn moved_over(
-    everyday: Option<&ButlerModelConfig>,
-    deep: Option<&DeepModel>,
-) -> Vec<(Job, String, String, String)> {
-    let mut out: Vec<(Job, String, String, String)> = Vec::new();
-    let mut add = |job: Job, url: &str, key: &str, model: &str| {
+pub fn moved_over(everyday: Option<&ButlerModelConfig>, deep: Option<&DeepModel>) -> Vec<Moved> {
+    let mut out: Vec<Moved> = Vec::new();
+    let mut add = |job: Job, url: &str, key: &str, model: &str, sampling: &Sampling| {
         if url.trim().is_empty() || model.trim().is_empty() {
             return;
         }
-        out.push((
+        out.push(Moved {
             job,
-            url.trim().to_owned(),
-            key.to_owned(),
-            model.trim().to_owned(),
-        ));
+            url: url.trim().to_owned(),
+            api_key: key.to_owned(),
+            model: model.trim().to_owned(),
+            sampling: sampling.clone(),
+        });
     };
     if let Some(c) = everyday {
+        let slot = if c.mixture && !c.synth.model.trim().is_empty() {
+            &c.synth
+        } else {
+            &c.single
+        };
         add(
             Job::Everyday,
             &c.preferred_url,
             &c.api_key,
             &c.preferred_model,
+            &slot.sampling,
         );
-        let model = if c.mixture && !c.synth.model.trim().is_empty() {
-            &c.synth.model
-        } else {
-            &c.single.model
-        };
-        add(Job::Everyday, &c.base_url, &c.api_key, model);
+        add(
+            Job::Everyday,
+            &c.base_url,
+            &c.api_key,
+            &slot.model,
+            &slot.sampling,
+        );
     }
     if let Some(d) = deep {
-        add(Job::Deep, &d.url, &d.api_key, &d.model);
+        add(
+            Job::Deep,
+            &d.url,
+            &d.api_key,
+            &d.model,
+            &Sampling::default(),
+        );
     }
     out
+}
+
+/// One entry moved over from the old settings.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Moved {
+    /// Which list.
+    pub job: Job,
+    /// The endpoint.
+    pub url: String,
+    /// Its key.
+    pub api_key: String,
+    /// The model.
+    pub model: String,
+    /// How it sampled.
+    pub sampling: Sampling,
+}
+
+/// Sampling, as kept: a small JSON object of what is set.
+#[must_use]
+pub fn sampling_to_text(s: &Sampling) -> String {
+    serde_json::json!({
+        "temperature": s.temperature, "top_p": s.top_p, "top_k": s.top_k,
+        "repeat_penalty": s.repeat_penalty,
+    })
+    .to_string()
+}
+
+/// Sampling, read back; anything unreadable is the endpoint's default.
+#[must_use]
+pub fn sampling_from_text(text: &str) -> Sampling {
+    let v: serde_json::Value = serde_json::from_str(text).unwrap_or_default();
+    Sampling {
+        temperature: v["temperature"].as_f64(),
+        top_p: v["top_p"].as_f64(),
+        top_k: v["top_k"].as_u64().and_then(|k| u32::try_from(k).ok()),
+        repeat_penalty: v["repeat_penalty"].as_f64(),
+    }
 }
 
 /// Where the providers and the lists are kept.
@@ -207,6 +260,12 @@ pub trait ModelListRepository {
     /// # Errors
     /// [`RepositoryError`] if the backend fails.
     fn add_entry(&self, job: Job, provider: i64, model: &str) -> Result<i64, RepositoryError>;
+
+    /// Sets how an entry samples.
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if the backend fails.
+    fn set_sampling(&self, id: i64, sampling: &Sampling) -> Result<(), RepositoryError>;
 
     /// Switches an entry on or off.
     ///
@@ -269,7 +328,7 @@ mod tests {
             escalate: true,
         };
         let moved = moved_over(Some(&everyday), Some(&deep));
-        let shape: Vec<_> = moved.iter().map(|(j, _, _, m)| (*j, m.as_str())).collect();
+        let shape: Vec<_> = moved.iter().map(|m| (m.job, m.model.as_str())).collect();
         assert_eq!(
             shape,
             [
@@ -278,8 +337,8 @@ mod tests {
                 (Job::Deep, "deepseek-chat")
             ]
         );
-        assert_eq!(name_for(&moved[2].1), "DeepSeek");
-        assert_eq!(name_for(&moved[1].1), "Ollama on the NAS");
+        assert_eq!(name_for(&moved[2].url), "DeepSeek");
+        assert_eq!(name_for(&moved[1].url), "Ollama on the NAS");
         assert_eq!(
             name_for("http://192.168.1.10:11434/v1"),
             "192.168.1.10:11434"
@@ -301,7 +360,14 @@ mod tests {
             base_url: local.into(),
             api_key: String::new(),
             mixture: false,
-            single: slot("qwen2.5:7b"),
+            single: ModelSlot {
+                model: "qwen2.5:7b".into(),
+                sampling: Sampling {
+                    temperature: Some(0.5),
+                    top_k: Some(20),
+                    ..Sampling::default()
+                },
+            },
             router: slot(""),
             synth: slot(""),
             preferred_url: local.into(),
@@ -333,6 +399,13 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["qwen2.5:14b", "qwen2.5:7b"]
         );
+        assert_eq!(
+            everyday[1].sampling.temperature,
+            Some(0.5),
+            "the tuned settings come too"
+        );
+        assert_eq!(everyday[1].sampling.top_k, Some(20));
+        assert_eq!(everyday[1].sampling.top_p, None);
         // Emptied by the owner, it is not filled again.
         for e in &everyday {
             s.remove_entry(e.id).unwrap();
@@ -401,6 +474,7 @@ mod tests {
             provider,
             model: model.into(),
             enabled,
+            sampling: Sampling::default(),
         };
         let list = [
             entry(10, 1, "claude-sonnet-5-5", true),

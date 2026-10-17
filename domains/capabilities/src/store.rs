@@ -63,7 +63,8 @@ pub fn migrate(db: &Db) -> Result<(), RepositoryError> {
                 provider INTEGER NOT NULL,
                 model    TEXT NOT NULL,
                 enabled  INTEGER NOT NULL DEFAULT 1,
-                position INTEGER NOT NULL
+                position INTEGER NOT NULL,
+                sampling TEXT NOT NULL DEFAULT '{}'
             ) STRICT;
             CREATE TABLE IF NOT EXISTS model_lists_meta (
                 key   TEXT PRIMARY KEY,
@@ -1476,7 +1477,7 @@ impl crate::model_lists::ModelListRepository for ConfigStore {
         let conn = self.db.lock()?;
         let mut stmt = conn
             .prepare(
-                "SELECT id, provider, model, enabled FROM model_entries \
+                "SELECT id, provider, model, enabled, sampling FROM model_entries \
                  WHERE job = ?1 ORDER BY position, id",
             )
             .map_err(backend)?;
@@ -1488,6 +1489,7 @@ impl crate::model_lists::ModelListRepository for ConfigStore {
                     provider: r.get(1)?,
                     model: r.get(2)?,
                     enabled: r.get::<_, i64>(3)? != 0,
+                    sampling: crate::model_lists::sampling_from_text(&r.get::<_, String>(4)?),
                 })
             })
             .map_err(backend)?;
@@ -1515,6 +1517,21 @@ impl crate::model_lists::ModelListRepository for ConfigStore {
         )
         .map_err(backend)?;
         Ok(conn.last_insert_rowid())
+    }
+
+    fn set_sampling(
+        &self,
+        id: i64,
+        sampling: &crate::application::Sampling,
+    ) -> Result<(), RepositoryError> {
+        self.db
+            .lock()?
+            .execute(
+                "UPDATE model_entries SET sampling = ?2 WHERE id = ?1",
+                params![id, crate::model_lists::sampling_to_text(sampling)],
+            )
+            .map_err(backend)?;
+        Ok(())
     }
 
     fn enable_entry(&self, id: i64, enabled: bool) -> Result<(), RepositoryError> {
@@ -1595,16 +1612,21 @@ impl crate::model_lists::ModelListRepository for ConfigStore {
             return Ok(false);
         }
         let mut known: Vec<(String, String, i64)> = Vec::new();
-        for (job, url, key, model) in crate::model_lists::moved_over(everyday, deep) {
-            let provider = match known.iter().find(|(u, k, _)| *u == url && *k == key) {
+        for m in crate::model_lists::moved_over(everyday, deep) {
+            let provider = match known
+                .iter()
+                .find(|(u, k, _)| *u == m.url && *k == m.api_key)
+            {
                 Some((_, _, id)) => *id,
                 None => {
-                    let id = self.add_provider(&crate::model_lists::name_for(&url), &url, &key)?;
-                    known.push((url, key, id));
+                    let name = crate::model_lists::name_for(&m.url);
+                    let id = self.add_provider(&name, &m.url, &m.api_key)?;
+                    known.push((m.url.clone(), m.api_key.clone(), id));
                     id
                 }
             };
-            self.add_entry(job, provider, &model)?;
+            let entry = self.add_entry(m.job, provider, &m.model)?;
+            self.set_sampling(entry, &m.sampling)?;
         }
         self.db
             .lock()?

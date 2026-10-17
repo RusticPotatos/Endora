@@ -134,7 +134,8 @@ CREATE TABLE IF NOT EXISTS model_entries (
     provider INTEGER NOT NULL,
     model    TEXT NOT NULL,
     enabled  INTEGER NOT NULL DEFAULT 1,
-    position INTEGER NOT NULL
+    position INTEGER NOT NULL,
+    sampling TEXT NOT NULL DEFAULT '{}'
 ) STRICT;
 CREATE TABLE IF NOT EXISTS model_lists_meta (
     key   TEXT PRIMARY KEY,
