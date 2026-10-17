@@ -571,6 +571,26 @@ pub fn app(state: AppState) -> Router {
             "/v1/model-config",
             get(get_model_config).post(set_model_config),
         )
+        .route("/v1/model-lists", get(model_lists::lists))
+        .route("/v1/model-lists/providers", post(model_lists::add_provider))
+        .route(
+            "/v1/model-lists/providers/{id}",
+            post(model_lists::update_provider),
+        )
+        .route(
+            "/v1/model-lists/providers/{id}/remove",
+            post(model_lists::remove_provider),
+        )
+        .route(
+            "/v1/model-lists/providers/{id}/discover",
+            post(model_lists::discover),
+        )
+        .route("/v1/model-lists/entries", post(model_lists::add_entry))
+        .route(
+            "/v1/model-lists/entries/{id}/{action}",
+            post(model_lists::entry_action),
+        )
+        .route("/v1/model-lists/escalate", post(model_lists::set_escalate))
         .route("/v1/models/discover", post(discover_models))
         .route("/v1/models/test", post(test_model_connection))
         .route("/v1/model-layer/run", post(run_model_layer_now))
@@ -785,6 +805,8 @@ use chat::*;
 mod brain;
 use brain::*;
 mod hq;
+// The providers and ordered model lists on the AI screen (ADR 0105).
+mod model_lists;
 // The agenda loop (ADR 0103): signals become items, and the owner's answers to them.
 mod agenda;
 use hq::*;

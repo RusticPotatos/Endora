@@ -2175,3 +2175,108 @@ async fn the_kill_switch_goes_to_hq_signed_and_into_endoras_own_record() {
         "{trail:?}"
     );
 }
+
+#[tokio::test]
+async fn providers_go_in_once_lists_sort_and_no_key_ever_comes_back_out() {
+    let state = test_state();
+    let added = json_body(
+        app(state.clone())
+            .oneshot(post(
+                "/v1/model-lists/providers",
+                r#"{"name":"Anthropic","url":"https://api.anthropic.com/v1/","api_key":"sk-ant-fictional"}"#,
+            ))
+            .await
+            .unwrap(),
+    )
+    .await;
+    let claude = added["id"].as_i64().unwrap();
+    let local = json_body(
+        app(state.clone())
+            .oneshot(post(
+                "/v1/model-lists/providers",
+                r#"{"url":"http://localhost:11434/v1"}"#,
+            ))
+            .await
+            .unwrap(),
+    )
+    .await["id"]
+        .as_i64()
+        .unwrap();
+    let add = |provider: i64, model: &str| {
+        post(
+            "/v1/model-lists/entries",
+            &format!(r#"{{"job":"everyday","provider":{provider},"model":"{model}"}}"#),
+        )
+    };
+    app(state.clone())
+        .oneshot(add(local, "qwen2.5:7b"))
+        .await
+        .unwrap();
+    let second = json_body(
+        app(state.clone())
+            .oneshot(add(claude, "claude-sonnet-5-5"))
+            .await
+            .unwrap(),
+    )
+    .await;
+    let id = second["id"].as_i64().unwrap();
+    let moved = app(state.clone())
+        .oneshot(post(&format!("/v1/model-lists/entries/{id}/up"), "{}"))
+        .await
+        .unwrap();
+    assert_eq!(moved.status(), StatusCode::OK);
+    app(state.clone())
+        .oneshot(post("/v1/model-lists/escalate", r#"{"on":true}"#))
+        .await
+        .unwrap();
+
+    let shown = json_body(
+        app(state.clone())
+            .oneshot(get("/v1/model-lists"))
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(
+        shown["everyday"][0]["model"], "claude-sonnet-5-5",
+        "moved to the top"
+    );
+    assert_eq!(shown["everyday"][0]["local"], false);
+    assert_eq!(shown["everyday"][1]["local"], true);
+    assert_eq!(
+        shown["providers"][0]["url"], "https://api.anthropic.com/v1",
+        "kept without the trailing slash"
+    );
+    assert_eq!(shown["providers"][0]["key_set"], true);
+    assert_eq!(shown["providers"][1]["key_set"], false);
+    assert_eq!(shown["escalate"], true);
+    assert!(
+        !shown.to_string().contains("sk-ant"),
+        "no key is ever shown: {shown}"
+    );
+
+    let bad = app(state.clone())
+        .oneshot(post(
+            "/v1/model-lists/providers",
+            r#"{"url":"api.example.com"}"#,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(bad.status(), StatusCode::BAD_REQUEST);
+    let nowhere = app(state.clone()).oneshot(add(999, "x")).await.unwrap();
+    assert_eq!(nowhere.status(), StatusCode::NOT_FOUND);
+
+    app(state.clone())
+        .oneshot(post(
+            &format!("/v1/model-lists/providers/{claude}/remove"),
+            "{}",
+        ))
+        .await
+        .unwrap();
+    let shown = json_body(app(state).oneshot(get("/v1/model-lists")).await.unwrap()).await;
+    assert_eq!(
+        shown["everyday"].as_array().unwrap().len(),
+        1,
+        "its places went with it"
+    );
+}
