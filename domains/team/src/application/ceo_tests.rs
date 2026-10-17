@@ -794,3 +794,136 @@ fn the_ceo_weighs_a_question_at_high_effort_its_review_at_medium_and_the_lead_at
     let review = turn(&hq, t.ceo);
     assert_eq!(review.effort, Some(Effort::Medium), "its daily review");
 }
+
+#[test]
+fn after_its_first_turn_the_ceo_is_told_only_what_changed_and_the_whole_on_its_review() {
+    let clock = Hands(AtomicI64::new(OCT_17));
+    let hq = engine(&clock);
+    let t = team(&hq, false);
+    hq.set_goal_note(
+        t.goal,
+        "- An RSS sync that grabs nothing is normal. (Ada, 16 Oct)",
+    )
+    .unwrap();
+    // A house with work on: twenty open tasks and a few notices on the board's desk.
+    for n in 1..=20 {
+        task_for(
+            &hq,
+            t.goal,
+            t.dev,
+            &format!("Look into container number {n}"),
+        );
+    }
+    for n in 1..=5 {
+        hq.notice(
+            None,
+            &format!("Ada restarted container number {n}: it was unhealthy."),
+        )
+        .unwrap();
+    }
+    let task = task_for(&hq, t.goal, t.lead, "Plan the week");
+    let lead = turn(&hq, t.lead);
+    use_tool(&hq, &lead, "ask_owner", &json!({ "text": "Which first?" })).unwrap();
+
+    // Its first turn: everything, as there is no last turn to go from.
+    let first = turn(&hq, t.ceo);
+    for said in ["Open tasks:", "Its notes and lessons:", "Home-lab trouble"] {
+        assert!(first.told.contains(said), "{said}\n---\n{}", first.told);
+    }
+    use_tool(
+        &hq,
+        &first,
+        "check_back",
+        &json!({ "minutes": 30, "why": "see the plan moved" }),
+    )
+    .unwrap();
+    hq.runner().finish(first.run, true);
+    hq.tick().unwrap();
+
+    // Woken again with nothing new: the house, the team, the board's rules, and no list.
+    clock.0.fetch_add(31 * 60_000, Ordering::SeqCst);
+    let quiet = turn(&hq, t.ceo);
+    assert_ne!(quiet.run, first.run);
+    for said in [
+        "The house log, yours to keep",
+        "Your team: Ada (lead, Claude Sonnet), Linus (developer, Local).",
+        "- #1 Keep the home lab healthy (active)",
+        "money beyond the team's pool",
+        "Nothing changed since your last turn",
+        "You said you would check back: see the plan moved",
+    ] {
+        assert!(quiet.told.contains(said), "{said}\n---\n{}", quiet.told);
+    }
+    for gone in [
+        "Open tasks:",
+        "Its notes and lessons:",
+        "Home-lab trouble",
+        "The board's desk in the last 7 days",
+    ] {
+        assert!(!quiet.told.contains(gone), "{gone}\n---\n{}", quiet.told);
+    }
+    assert!(
+        quiet.told.len() * 2 < first.told.len(),
+        "under half as long: {} against {}",
+        quiet.told.len(),
+        first.told.len()
+    );
+    // The house and the team open every briefing, in one order.
+    let house = quiet.told.find("The house log").unwrap();
+    let team = quiet.told.find("Your team:").unwrap();
+    let news = quiet.told.find("Nothing changed").unwrap();
+    assert!(house < team && team < news, "{}", quiet.told);
+
+    // Something moves: it is named, and nothing else is.
+    use_tool(
+        &hq,
+        &quiet,
+        "check_back",
+        &json!({ "minutes": 30, "why": "look again" }),
+    )
+    .unwrap();
+    hq.runner().finish(quiet.run, true);
+    hq.tick().unwrap();
+    clock.0.fetch_add(60_000, Ordering::SeqCst);
+    let backups = task_for(&hq, t.goal, t.dev, "Check the backups");
+    hq.drop_task(backups).unwrap();
+    clock.0.fetch_add(30 * 60_000, Ordering::SeqCst);
+    let moved = turn(&hq, t.ceo);
+    assert_ne!(moved.run, quiet.run);
+    for said in [
+        "What changed since your last turn:",
+        &format!("#{} Check the backups: created, for Linus", backups.0),
+        &format!("#{} Check the backups: now dropped", backups.0),
+    ] {
+        assert!(moved.told.contains(said), "{said}\n---\n{}", moved.told);
+    }
+    assert!(!moved.told.contains("Open tasks:"), "{}", moved.told);
+    hq.runner().finish(moved.run, true);
+    hq.tick().unwrap();
+
+    // Its daily review sees the whole again.
+    let routine = hq
+        .add_routine(
+            Author::Endora,
+            NewRoutine {
+                title: "Daily review".to_owned(),
+                description: "Review the house.".to_owned(),
+                goal: t.goal,
+                assignee: t.ceo,
+                every_ms: 24 * HOUR_MS,
+                on_lab_trouble: false,
+            },
+        )
+        .unwrap();
+    hq.fire_routine(routine).unwrap();
+    let review = turn(&hq, t.ceo);
+    assert_ne!(review.run, moved.run);
+    for said in [
+        "Open tasks:",
+        &format!("#{} Plan the week", task.0),
+        "Its notes and lessons:",
+        "Home-lab trouble",
+    ] {
+        assert!(review.told.contains(said), "{said}\n---\n{}", review.told);
+    }
+}

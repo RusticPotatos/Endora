@@ -40,6 +40,30 @@ pub const APPROVALS_LAST_MS: Millis = 24 * 60 * 60 * 1000;
 /// How far back the CEO's briefing looks for the home lab's trouble and the board's desk.
 pub const CEO_LOOKS_BACK_MS: Millis = 7 * 24 * 60 * 60 * 1000;
 
+/// The most lines of what changed the CEO is told on a turn that is not its daily review: the
+/// newest, and how many earlier ones there were.
+pub const CEO_NEWS_MOST: usize = 20;
+
+/// An alarm the event carries, as the CEO reads it: Endora's, fired into a routine, or passed
+/// into the open task of one.
+fn alarm_in(event: &crate::domain::Event) -> Option<&str> {
+    match event.kind.as_str() {
+        "routine.fired" if event.data["firing"] == "alarm" => event.data["why"].as_str(),
+        "routine.posted" => event.data["said"].as_str(),
+        _ => None,
+    }
+}
+
+/// A desk item's first line, cut to 160 characters.
+fn first_line(text: &str) -> String {
+    text.lines()
+        .next()
+        .unwrap_or("")
+        .chars()
+        .take(160)
+        .collect()
+}
+
 /// Where HQ keeps the house log (ADR 0111).
 const HOUSE_LOG: &str = "house_log";
 /// Set once HQ has seated its CEO, so it is never seated again.
@@ -1633,7 +1657,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             }
         );
         if member.role == Role::Ceo {
-            told.push_str(&self.ceo_context(member)?);
+            told.push_str(&self.ceo_context(member, run)?);
         }
         let log = self.house_log()?;
         if member.role == Role::Lead && !log.trim().is_empty() {
@@ -1794,11 +1818,15 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         Ok(told)
     }
 
-    /// What the CEO is told first, every turn (ADR 0111): the house log, its team, the goals
-    /// with their notes and lessons, the open work, the home lab's trouble and what reached
-    /// the board's desk in the last week, and what only the board decides. Nothing of the
+    /// What the CEO is told first (ADR 0111). It opens with what changes rarely, always in one
+    /// order: the house log, its team, the goals, and what only the board decides. Then, on
+    /// its first turn and its daily review, the whole picture: the goals' notes and lessons,
+    /// the open work, the home lab's trouble and what reached the board's desk in the last
+    /// week. On any other turn, only what changed since its last turn began (see
+    /// [`Self::ceo_news`]): what it read before is in the house log it keeps and the threads,
+    /// and every turn's briefing is paid for again at each of its rounds. Nothing of the
     /// owner's brain, mail or chat: the CEO thinks on a cloud model.
-    fn ceo_context(&self, ceo: &Member) -> Done<String> {
+    fn ceo_context(&self, ceo: &Member, run: &Run) -> Done<String> {
         let mut told = String::new();
         let log = self.house_log()?;
         told.push_str(
@@ -1837,6 +1865,24 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 team.join(", ")
             }
         ));
+        told.push_str(chain::BOARD_ITEMS);
+        told.push_str(
+            "\nYou wake only for a question up the chain, the board's word, and your daily \
+             review. Members' findings are in their tasks' threads: read those, never the house's \
+             logs yourself. Endora's public records and plans are yours to read with read_doc.\n",
+        );
+        let last = self
+            .store
+            .runs()?
+            .iter()
+            .filter(|r| r.member == ceo.id && r.id != run.id)
+            .filter_map(|r| r.started_at)
+            .max();
+        let review = match run.task {
+            Some(task) => self.routine_of(task)?.is_some(),
+            None => false,
+        };
+        let whole = review || last.is_none();
         told.push_str("Goals:\n");
         let goals = self.store.goals()?;
         let open_goals: Vec<_> = goals
@@ -1854,12 +1900,31 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 goal.status.name()
             ));
             let notes = self.store.goal_note(goal.id)?;
-            if !notes.trim().is_empty() {
+            if whole && !notes.trim().is_empty() {
                 told.push_str("  Its notes and lessons:\n");
                 for line in notes.lines().filter(|l| !l.trim().is_empty()) {
                     told.push_str(&format!("  {}\n", line.trim()));
                 }
             }
+        }
+        let day = |at: Millis| {
+            let (d, m) = lessons::day_and_month(money::day_of(at, self.settings.offset_minutes));
+            format!("{d} {m}")
+        };
+        if let (false, Some(last)) = (whole, last) {
+            let news = self.ceo_news(last, &name_of, &day)?;
+            if news.is_empty() {
+                told.push_str(
+                    "Nothing changed since your last turn: no task made or moved, no alarm, no \
+                     word from the board, no lesson. Your daily review shows the whole.\n",
+                );
+                return Ok(told);
+            }
+            told.push_str("What changed since your last turn:\n");
+            for line in news {
+                told.push_str(&format!("{line}\n"));
+            }
+            return Ok(told);
         }
         let open: Vec<Task> = self
             .store
@@ -1884,23 +1949,12 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             told.push_str(&format!("- and {} more\n", open.len() - 30));
         }
         let since = self.clock.now() - CEO_LOOKS_BACK_MS;
-        let day = |at: Millis| {
-            let (d, m) = lessons::day_and_month(money::day_of(at, self.settings.offset_minutes));
-            format!("{d} {m}")
-        };
         let alarms: Vec<String> = self
             .store
             .events_after(0)?
             .into_iter()
             .filter(|e| e.at >= since)
-            .filter_map(|e| {
-                let said = match e.kind.as_str() {
-                    "routine.fired" if e.data["firing"] == "alarm" => e.data["why"].as_str(),
-                    "routine.posted" => e.data["said"].as_str(),
-                    _ => None,
-                }?;
-                Some(format!("- {}: {said}", day(e.at)))
-            })
+            .filter_map(|e| Some(format!("- {}: {}", day(e.at), alarm_in(&e)?)))
             .collect();
         if alarms.is_empty() {
             told.push_str("Home-lab trouble in the last 7 days: no alarms.\n");
@@ -1918,40 +1972,95 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             .collect();
         if desk.is_empty() {
             told.push_str("The board's desk in the last 7 days: nothing.\n");
-        } else {
-            told.push_str("The board's desk in the last 7 days, and how the board decided:\n");
-            for item in desk.iter().rev().take(15).rev() {
-                let first: String = item
-                    .text
-                    .lines()
-                    .next()
-                    .unwrap_or("")
-                    .chars()
-                    .take(160)
-                    .collect();
-                let from = item
-                    .member
-                    .map(|m| format!(" from {}", name_of(Some(m))))
-                    .unwrap_or_default();
-                let how = if item.status == "waiting" {
-                    "waiting for the board".to_owned()
-                } else {
-                    format!("the board: {}", item.status.replace('_', " "))
-                };
-                told.push_str(&format!(
-                    "- {}, {}{from}: {first} ({how})\n",
-                    day(item.at),
-                    item.kind.replace('_', " ")
-                ));
-            }
+            return Ok(told);
         }
-        told.push_str(chain::BOARD_ITEMS);
-        told.push_str(
-            "\nYou wake only for a question up the chain, the board's word, and your daily \
-             review. Members' findings are in their tasks' threads: read those, never the house's \
-             logs yourself. Endora's public records and plans are yours to read with read_doc.\n",
-        );
+        told.push_str("The board's desk in the last 7 days, and how the board decided:\n");
+        for item in desk.iter().rev().take(15).rev() {
+            let from = item
+                .member
+                .map(|m| format!(" from {}", name_of(Some(m))))
+                .unwrap_or_default();
+            let how = if item.status == "waiting" {
+                "waiting for the board".to_owned()
+            } else {
+                format!("the board: {}", item.status.replace('_', " "))
+            };
+            told.push_str(&format!(
+                "- {}, {}{from}: {} ({how})\n",
+                day(item.at),
+                item.kind.replace('_', " "),
+                first_line(&item.text)
+            ));
+        }
         Ok(told)
+    }
+
+    /// What changed since `since` (the start of the CEO's last turn), oldest first, the
+    /// newest [`CEO_NEWS_MOST`] of it: tasks made and moved, Endora's alarms, the board's
+    /// word, and lessons noted. Empty when nothing did.
+    fn ceo_news(
+        &self,
+        since: Millis,
+        name_of: &dyn Fn(Option<MemberId>) -> String,
+        day: &dyn Fn(Millis) -> String,
+    ) -> Done<Vec<String>> {
+        let tasks = self.store.tasks()?;
+        let desk = self.store.desk()?;
+        let title = |id: &serde_json::Value| {
+            let id = id.as_i64().unwrap_or(0);
+            let named = tasks.iter().find(|t| t.id.0 == id);
+            format!("#{id} {}", named.map_or("", |t| t.title.as_str()))
+        };
+        let news: Vec<String> = self
+            .store
+            .events_after(0)?
+            .into_iter()
+            .filter(|e| e.at > since)
+            .filter_map(|e| {
+                let said = match e.kind.as_str() {
+                    "task.created" => {
+                        let id = e.data["task"].as_i64().unwrap_or(0);
+                        let to = tasks
+                            .iter()
+                            .find(|t| t.id.0 == id)
+                            .and_then(|t| t.owner.or(t.assignee));
+                        format!("{}: created, for {}", title(&e.data["task"]), name_of(to))
+                    }
+                    "task.changed" => format!(
+                        "{}: now {}",
+                        title(&e.data["task"]),
+                        e.data["status"].as_str().unwrap_or("?").replace('_', " ")
+                    ),
+                    "desk.decided" => {
+                        let item = e.data["item"].as_i64().unwrap_or(0);
+                        let text = desk
+                            .iter()
+                            .find(|d| d.id.0 == item)
+                            .map_or(String::new(), |d| first_line(&d.text));
+                        format!(
+                            "the board, on a {}: {} ({})",
+                            e.data["kind"].as_str().unwrap_or("?").replace('_', " "),
+                            text,
+                            e.data["decision"].as_str().unwrap_or("?").replace('_', " ")
+                        )
+                    }
+                    "lesson.noted" => format!(
+                        "a lesson for goal #{}: {}",
+                        e.data["goal"],
+                        e.data["lesson"].as_str().unwrap_or("")
+                    ),
+                    _ => alarm_in(&e)?.to_owned(),
+                };
+                Some(format!("- {}: {said}", day(e.at)))
+            })
+            .collect();
+        let earlier = news.len().saturating_sub(CEO_NEWS_MOST);
+        let mut kept: Vec<String> = Vec::new();
+        if earlier > 0 {
+            kept.push(format!("- and {earlier} earlier"));
+        }
+        kept.extend(news.into_iter().skip(earlier));
+        Ok(kept)
     }
 
     // ---- the tick ----------------------------------------------------------------------------
