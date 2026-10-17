@@ -324,11 +324,12 @@ async function musicDiscover() {
   if (!top.length) throw new Error("Play some music first: Discover starts from the artists you play");
   const saved = new Set((((await spotify("GET", "/me/albums?limit=50")) || {}).items || []).map((x) => x.album && x.album.uri));
   let albums = [];
+  let firstError = "";
   for (const artist of musicShuffle(top).slice(0, 6)) {
     try {
       const got = (((await spotify("GET", `/artists/${encodeURIComponent(spotifyId(artist.uri))}/albums?include_groups=album,single&limit=20`)) || {}).items || []);
       albums.push(...got.filter((a) => a.uri && !saved.has(a.uri)).slice(0, 3));
-    } catch (_) { /* one artist's lookup failing leaves the rest */ }
+    } catch (e) { firstError = firstError || e.message; /* one artist's failing leaves the rest */ }
   }
   albums = musicShuffle([...new Map(albums.map((a) => [a.uri, a])).values()]).slice(0, 8);
   const seen = new Set(played);
@@ -338,8 +339,10 @@ async function musicDiscover() {
       const tracks = musicShuffle((((await spotify("GET", `/albums/${encodeURIComponent(spotifyId(album.uri))}/tracks?limit=50`)) || {}).items || [])
         .filter((t) => t.uri && !seen.has(t.uri)));
       for (const t of tracks.slice(0, 2)) { seen.add(t.uri); batch.push(t.uri); }
-    } catch (_) {}
+    } catch (e) { firstError = firstError || e.message; }
   }
+  // Nothing found and Spotify said no somewhere: say what it said, not a guess.
+  if (!batch.length && firstError) throw new Error("Discover: " + firstError);
   if (!batch.length) throw new Error("No new songs found; play some more music first");
   const order = musicShuffle(batch).slice(0, 20);
   const device = musicDevice();
