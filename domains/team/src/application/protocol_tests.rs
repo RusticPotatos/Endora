@@ -44,6 +44,7 @@ fn started(clock: &Hands) -> (Hq<'_>, Setup, RunContext) {
             Author::Owner,
             NewTask {
                 goal,
+                project: None,
                 parent: None,
                 title: "Add a list of watches".to_owned(),
                 description: String::new(),
@@ -439,6 +440,7 @@ fn tree(hq: &Hq<'_>) -> Tree {
             Author::Owner,
             NewTask {
                 goal,
+                project: None,
                 parent,
                 title: title.to_owned(),
                 description: String::new(),
@@ -614,6 +616,7 @@ fn the_lead_notes_a_lesson_in_the_goals_notes_and_the_owner_is_told() {
         Author::Owner,
         NewTask {
             goal: s.goal,
+            project: None,
             parent: None,
             title: "Check the home lab".to_owned(),
             description: String::new(),
@@ -698,6 +701,7 @@ fn the_leads_briefing_names_the_team_and_says_to_hand_work_on() {
         Author::Owner,
         NewTask {
             goal: s.goal,
+            project: None,
             parent: None,
             title: "Check the home lab".to_owned(),
             description: String::new(),

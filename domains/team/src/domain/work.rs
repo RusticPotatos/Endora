@@ -47,6 +47,10 @@ id!(
     /// Work that comes round again (ADR 0107).
     RoutineId
 );
+id!(
+    /// A project: a piece of a goal with its own lead and budget (ADR 0113).
+    ProjectId
+);
 
 /// What a member does on the team. The rank decides who may hand work to whom: by default a
 /// member hands work only to members below it.
@@ -142,6 +146,9 @@ pub struct Member {
     pub paused: bool,
     /// What it thinks with, as the owner set it (ADR 0109).
     pub brain: super::brain::Brain,
+    /// The member it reports to (ADR 0113); `None` for the CEO, who reports to the board,
+    /// and for a member hired before anyone was there to report to.
+    pub reports_to: Option<MemberId>,
 }
 
 /// Where a goal is.
@@ -294,6 +301,8 @@ pub struct Task {
     pub id: TaskId,
     /// The goal it is for.
     pub goal: GoalId,
+    /// The project of that goal it is part of, if any (ADR 0113).
+    pub project: Option<ProjectId>,
     /// The task it is part of, if it is a sub-task.
     pub parent: Option<TaskId>,
     /// What it is.
@@ -383,6 +392,38 @@ pub enum Refusal {
         /// The containers both are about.
         names: Vec<String>,
     },
+    /// A project's lead is a lead or the CEO (ADR 0113).
+    NotAProjectLead,
+    /// Only a lead or the CEO proposes a project.
+    OnlyLeadsPropose,
+    /// The project serves another goal than the task's or the routine's.
+    OtherGoal,
+    /// The project takes no work: it is proposed, done or dropped.
+    ProjectClosed,
+    /// The projects' caps together would pass the pool's month; this much is left.
+    CapsOverPool {
+        /// What is left of the pool's month for this cap.
+        room: super::money::Micros,
+    },
+    /// A raised cap is more than what the project spent this month.
+    CapNotAboveSpend {
+        /// What it spent this month.
+        spent: super::money::Micros,
+    },
+    /// A proposal names at least one task or event from HQ's record.
+    NoEvidence,
+    /// Evidence that is not in HQ's record.
+    NoSuchEvidence(String),
+    /// A member reports to another member, never to itself, and never in a circle; the CEO
+    /// reports to the board.
+    NotAManager,
+    /// That is not a step a project takes from where it is.
+    NotAProjectStep {
+        /// Where it is.
+        from: &'static str,
+        /// What was asked.
+        asked: String,
+    },
 }
 
 impl fmt::Display for Refusal {
@@ -457,6 +498,37 @@ impl fmt::Display for Refusal {
                 "#{task} already covers this ({}): add to it with post in #{task}, rather than a \
                  second task",
                 names.join(", ")
+            ),
+            Self::NotAProjectLead => f.write_str("a project's lead is a lead or the CEO"),
+            Self::OnlyLeadsPropose => f.write_str("only a lead or the CEO proposes a project"),
+            Self::OtherGoal => f.write_str(
+                "that project serves another goal: a task's or a routine's project serves its goal",
+            ),
+            Self::ProjectClosed => {
+                f.write_str("that project takes no work: it is proposed, done or dropped")
+            }
+            Self::CapsOverPool { room } => write!(
+                f,
+                "the projects' caps together may not pass the pool's month: at most {} is left \
+                 for this one",
+                super::projects::dollars(*room)
+            ),
+            Self::CapNotAboveSpend { spent } => write!(
+                f,
+                "a raised cap is more than this month's spend, {}",
+                super::projects::dollars(*spent)
+            ),
+            Self::NoEvidence => f.write_str(
+                "a proposal names its evidence: at least one task number (`tasks`) or alarm \
+                 event (`events`) from HQ's own record",
+            ),
+            Self::NoSuchEvidence(what) => write!(f, "{what} is not in HQ's record"),
+            Self::NotAProjectStep { from, asked } => {
+                write!(f, "a project that is {from} does not {asked}")
+            }
+            Self::NotAManager => f.write_str(
+                "a member reports to another member, never itself and never in a circle; the \
+                 CEO reports to the board",
             ),
         }
     }
@@ -569,6 +641,7 @@ mod tests {
             look: 0,
             paused: false,
             brain: crate::domain::brain::Brain::Local,
+            reports_to: None,
         }
     }
 

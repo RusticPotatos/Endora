@@ -360,6 +360,7 @@ mod tests {
             Author::Owner,
             NewTask {
                 goal,
+                project: None,
                 parent: None,
                 title: "Sort the cables".to_owned(),
                 description: String::new(),

@@ -18,7 +18,9 @@ use serde_json::json;
 
 use endora_team::application::engine::{Author, EngineError, Fired};
 use endora_team::application::ports::{Clock, NewRoutine, NewTask};
-use endora_team::domain::{DeskId, GoalId, MemberId, Priority, Refusal, RoutineId, TaskId};
+use endora_team::domain::{
+    DeskId, GoalId, MemberId, Priority, ProjectId, Refusal, RoutineId, TaskId,
+};
 use endora_team::infrastructure::demo;
 
 use crate::Hq;
@@ -74,6 +76,11 @@ pub fn app(state: State) -> Router {
         // The owner renames a member, and reads and edits the CEO's house log (ADR 0111).
         .route("/v1/members/{id}/name", post(rename))
         .route("/v1/house", post(house_log))
+        // Projects and whom members report to (ADR 0113): the owner's, through the node.
+        .route("/v1/members/{id}/reports_to", post(reports_to))
+        .route("/v1/projects", post(add_project))
+        .route("/v1/projects/{id}", post(change_project))
+        .route("/v1/projects/{id}/cap", post(project_cap))
         .route("/v1/stop", post(stop))
         .route("/v1/resume", post(resume))
         // Routines (ADR 0107): the owner's, through the node; and Endora's alarms.
@@ -240,6 +247,9 @@ struct TaskRequest {
     assignee: Option<i64>,
     #[serde(default)]
     priority: Option<String>,
+    /// The project of the goal it goes in, if any (ADR 0113).
+    #[serde(default)]
+    project: Option<i64>,
 }
 
 /// The owner hands the team a piece of work.
@@ -260,6 +270,7 @@ async fn add_task(
             Author::Owner,
             NewTask {
                 goal: GoalId(req.goal),
+                project: req.project.map(ProjectId),
                 parent: None,
                 title: req.title.trim().to_owned(),
                 description: req.description,
@@ -420,6 +431,8 @@ struct RoutineRequest {
     every_ms: i64,
     #[serde(default)]
     on_lab_trouble: bool,
+    #[serde(default)]
+    project: Option<i64>,
 }
 
 /// The owner makes a routine: work that comes round again, as a task for one member.
@@ -435,6 +448,7 @@ async fn add_routine(
                 title: req.title,
                 description: req.description.trim().to_owned(),
                 goal: GoalId(req.goal),
+                project: req.project.map(ProjectId),
                 assignee: MemberId(req.assignee),
                 every_ms: req.every_ms,
                 on_lab_trouble: req.on_lab_trouble,
@@ -443,6 +457,101 @@ async fn add_routine(
     })
     .await?;
     Ok(Json(json!({ "routine": id.0 })))
+}
+
+#[derive(Deserialize)]
+struct ReportsTo {
+    to: i64,
+}
+
+/// The owner sets whom a member reports to.
+async fn reports_to(
+    Extract(state): Extract<State>,
+    Path(id): Path<i64>,
+    Json(req): Json<ReportsTo>,
+) -> Result<Json<serde_json::Value>, Failed> {
+    let hq = state.hq.clone();
+    blocking(move || hq.set_reports_to(MemberId(id), MemberId(req.to))).await?;
+    Ok(Json(json!({ "member": id, "reports_to": req.to })))
+}
+
+/// A monthly cap as the screen sends it: dollars, as a number or as text; nothing for none.
+fn cap_of(cap: Option<&serde_json::Value>) -> Result<Option<i64>, Failed> {
+    let said = match cap {
+        None | Some(serde_json::Value::Null) => return Ok(None),
+        Some(serde_json::Value::String(s)) if s.trim().is_empty() => return Ok(None),
+        Some(serde_json::Value::Number(n)) => n.to_string(),
+        Some(serde_json::Value::String(s)) => s.clone(),
+        Some(_) => String::new(),
+    };
+    endora_team::domain::projects::read_dollars(&said)
+        .map(Some)
+        .ok_or(Failed(EngineError::Unknown("cap, in dollars")))
+}
+
+#[derive(Deserialize)]
+struct ProjectRequest {
+    goal: i64,
+    title: String,
+    #[serde(default)]
+    reason: String,
+    lead: i64,
+    #[serde(default)]
+    cap: Option<serde_json::Value>,
+}
+
+/// The owner makes a project, active at once.
+async fn add_project(
+    Extract(state): Extract<State>,
+    Json(req): Json<ProjectRequest>,
+) -> Result<Json<serde_json::Value>, Failed> {
+    let cap = cap_of(req.cap.as_ref())?;
+    let hq = state.hq.clone();
+    let id = blocking(move || {
+        hq.add_project(
+            GoalId(req.goal),
+            &req.title,
+            &req.reason,
+            MemberId(req.lead),
+            cap,
+        )
+    })
+    .await?;
+    Ok(Json(json!({ "project": id.0 })))
+}
+
+#[derive(Deserialize)]
+struct ProjectAction {
+    action: String,
+}
+
+/// The owner pauses, resumes, drops, reopens or finishes a project.
+async fn change_project(
+    Extract(state): Extract<State>,
+    Path(id): Path<i64>,
+    Json(req): Json<ProjectAction>,
+) -> Result<Json<serde_json::Value>, Failed> {
+    let hq = state.hq.clone();
+    let now = blocking(move || hq.change_project(ProjectId(id), &req.action)).await?;
+    Ok(Json(json!({ "project": id, "status": now.name() })))
+}
+
+#[derive(Deserialize)]
+struct ProjectCap {
+    #[serde(default)]
+    cap: Option<serde_json::Value>,
+}
+
+/// The owner sets, raises or takes away a project's cap.
+async fn project_cap(
+    Extract(state): Extract<State>,
+    Path(id): Path<i64>,
+    Json(req): Json<ProjectCap>,
+) -> Result<Json<serde_json::Value>, Failed> {
+    let cap = cap_of(req.cap.as_ref())?;
+    let hq = state.hq.clone();
+    blocking(move || hq.set_project_cap(ProjectId(id), cap)).await?;
+    Ok(Json(json!({ "project": id, "cap": cap })))
 }
 
 #[derive(Deserialize)]
@@ -611,6 +720,7 @@ mod tests {
                 Author::Owner,
                 NewTask {
                     goal,
+                    project: None,
                     parent: None,
                     title: "Sort the cables".to_owned(),
                     description: String::new(),
@@ -903,9 +1013,10 @@ mod tests {
             .iter()
             .filter_map(|t| t["name"].as_str())
             .collect();
-        // The demo's first turn is its lead's, who keeps the team's lessons too.
-        assert_eq!(names.len(), 10);
-        assert!(names.contains(&"note_lesson"));
+        // The demo's first turn is its lead's, who keeps the team's lessons and proposes
+        // projects too.
+        assert_eq!(names.len(), 11);
+        assert!(names.contains(&"note_lesson") && names.contains(&"propose_project"));
         assert!(
             !names.contains(&"report_usage"),
             "the relay charges for model use, not the worker"
@@ -1403,6 +1514,7 @@ mod tests {
                 Author::Owner,
                 NewTask {
                     goal,
+                    project: None,
                     parent: None,
                     title: "Look round".to_owned(),
                     description: String::new(),
@@ -1740,17 +1852,18 @@ mod tests {
     fn with_the_demo_off_the_ceo_is_seated_once_and_its_daily_review_made_once() {
         let st = state(false);
         let lead = st.hq.hire("John Doe", Role::Lead, 25, 2, 0).unwrap();
-        let (seated, routine) = crate::seed_ceo(&st.hq).unwrap();
+        let (seated, routine, planning) = crate::seed_ceo(&st.hq).unwrap();
         let ceo = seated.expect("seated");
-        assert_eq!(routine, None, "no goal yet");
+        assert_eq!((routine, planning), (None, None), "no goal yet");
         let goal = st
             .hq
             .set_goal("Keep the home lab healthy", "", Author::Owner)
             .unwrap();
         // The home lab's routine is still made, though the CEO's comes first here.
-        let (again, made) = crate::seed_ceo(&st.hq).unwrap();
+        let (again, made, planning) = crate::seed_ceo(&st.hq).unwrap();
         assert_eq!(again, None, "seated once");
         let made = made.expect("its daily review");
+        let planning = planning.expect("its weekly planning");
         assert!(crate::seed_routine(&st.hq).unwrap().is_some());
         let routines = st.hq.store().routines().unwrap();
         let review = routines.iter().find(|r| r.id == made).unwrap();
@@ -1759,7 +1872,12 @@ mod tests {
         assert_eq!(review.every_ms, 24 * 3_600_000);
         assert!(!review.on_lab_trouble);
         assert!(routines.iter().any(|r| r.assignee == lead));
-        assert_eq!(crate::seed_ceo(&st.hq).unwrap(), (None, None), "once");
+        let plan = routines.iter().find(|r| r.id == planning).unwrap();
+        assert_eq!(
+            (plan.title.as_str(), plan.assignee, plan.every_ms),
+            ("Planning", ceo, 7 * 24 * 3_600_000)
+        );
+        assert_eq!(crate::seed_ceo(&st.hq).unwrap(), (None, None, None), "once");
         let members = st.hq.store().members().unwrap();
         let mara = members.iter().find(|m| m.id == ceo).unwrap();
         assert_eq!(
@@ -1810,6 +1928,109 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(unsigned.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn the_owner_makes_caps_and_pauses_a_project_and_sets_whom_a_member_reports_to() {
+        let st = state(false);
+        let lead = st.hq.hire("John Doe", Role::Lead, 25, 2, 0).unwrap();
+        let other = st.hq.hire("Jane Doe", Role::Lead, 25, 2, 0).unwrap();
+        let dev = st
+            .hq
+            .hire("Richard Roe", Role::Developer, 40, 2, 0)
+            .unwrap();
+        let goal = st
+            .hq
+            .set_goal("Keep the home lab healthy", "", Author::Owner)
+            .unwrap();
+        let app = app(st.clone());
+        let post = |uri: String, body: String| {
+            let app = app.clone();
+            async move {
+                let res = app
+                    .oneshot(call("POST", &uri, Some(TOKEN), &body))
+                    .await
+                    .unwrap();
+                (res.status(), json_of(res).await)
+            }
+        };
+        let (status, made) = post(
+            "/v1/projects".to_owned(),
+            json!({ "goal": goal.0, "title": "Upkeep", "lead": lead.0, "cap": 10 }).to_string(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{made}");
+        let id = made["project"].as_i64().unwrap();
+        let (status, refused) = post(
+            "/v1/projects".to_owned(),
+            json!({ "goal": goal.0, "title": "Media", "lead": lead.0, "cap": "61" }).to_string(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(
+            refused["error"]
+                .as_str()
+                .unwrap()
+                .contains("at most $60.00"),
+            "{refused}"
+        );
+        let (status, _) = post(
+            format!("/v1/projects/{id}/cap"),
+            json!({ "cap": "12.50" }).to_string(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let (status, paused) = post(
+            format!("/v1/projects/{id}"),
+            json!({ "action": "pause" }).to_string(),
+        )
+        .await;
+        assert_eq!(
+            (status, paused["status"].clone()),
+            (StatusCode::OK, json!("paused"))
+        );
+        let (status, _) = post(
+            "/v1/tasks".to_owned(),
+            json!({ "goal": goal.0, "title": "Fix sonarr", "project": id }).to_string(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let (status, _) = post(
+            format!("/v1/members/{}/reports_to", dev.0),
+            json!({ "to": other.0 }).to_string(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let (status, _) = post(
+            format!("/v1/members/{}/reports_to", dev.0),
+            json!({ "to": dev.0 }).to_string(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "never itself");
+        let snap = json_of(
+            app.clone()
+                .oneshot(call("GET", "/v1/snapshot", Some(TOKEN), ""))
+                .await
+                .unwrap(),
+        )
+        .await;
+        let project = &snap["projects"][0];
+        assert_eq!(
+            (
+                project["title"].clone(),
+                project["status"].clone(),
+                project["pause"].clone(),
+                project["cap"].clone()
+            ),
+            (
+                json!("Upkeep"),
+                json!("paused"),
+                json!("owner"),
+                json!(12_500_000)
+            )
+        );
+        assert_eq!(snap["tasks"][0]["project"], id);
+        assert_eq!(snap["members"][2]["reports_to"], other.0);
     }
 
     #[tokio::test]

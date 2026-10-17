@@ -82,6 +82,7 @@ pub(crate) fn seed_routine(
             title: "Check the home lab".to_owned(),
             description: LAB_CHECK.to_owned(),
             goal: goal.id,
+            project: None,
             assignee: lead.id,
             every_ms: 6 * 60 * 60 * 1000,
             on_lab_trouble: true,
@@ -154,29 +155,26 @@ fn the_runner_token(
     Ok(Some(token))
 }
 
-/// The CEO and its daily review (ADR 0111), for HQ started with the demo off: the CEO seated
-/// once (Mara, on Opus, said in the feed), and once the team has a CEO and an active goal, a
-/// "Daily review" routine for it every 24 hours, under the home lab's goal if it has one, made
-/// once like the home lab's. Returns the CEO seated and the routine made, if any.
-pub(crate) fn seed_ceo(
-    hq: &Hq,
-) -> Result<
-    (
-        Option<endora_team::domain::MemberId>,
-        Option<endora_team::domain::RoutineId>,
-    ),
-    endora_team::application::EngineError,
-> {
+/// What [`seed_ceo`] made: the CEO seated, its daily review, and its weekly planning.
+pub(crate) type SeededCeo = (
+    Option<endora_team::domain::MemberId>,
+    Option<endora_team::domain::RoutineId>,
+    Option<endora_team::domain::RoutineId>,
+);
+
+/// The CEO, its daily review (ADR 0111) and its weekly planning (ADR 0113), for HQ started with
+/// the demo off: the CEO seated once (Mara, on Opus, said in the feed), and once the team has a
+/// CEO and an active goal, a "Daily review" routine for it every 24 hours and a "Planning"
+/// routine every 7 days, under the home lab's goal if it has one, each made once. Returns what
+/// it made.
+pub(crate) fn seed_ceo(hq: &Hq) -> Result<SeededCeo, endora_team::application::EngineError> {
     use endora_team::application::ports::{NewRoutine, TeamStore as _};
     use endora_team::domain::{GoalStatus, Role};
     let seated = hq.seat_ceo(CEO_NAME)?;
     let store = hq.store();
     let Some(ceo) = store.members()?.into_iter().find(|m| m.role == Role::Ceo) else {
-        return Ok((seated, None));
+        return Ok((seated, None, None));
     };
-    if store.routines()?.iter().any(|r| r.assignee == ceo.id) {
-        return Ok((seated, None));
-    }
     let goals: Vec<_> = store
         .goals()?
         .into_iter()
@@ -187,20 +185,30 @@ pub(crate) fn seed_ceo(
         .find(|g| g.title.trim().eq_ignore_ascii_case(LAB_GOAL))
         .or(goals.first());
     let Some(goal) = goal else {
-        return Ok((seated, None));
+        return Ok((seated, None, None));
     };
-    let made = hq.add_routine(
-        endora_team::application::Author::Endora,
-        NewRoutine {
-            title: "Daily review".to_owned(),
-            description: DAILY_REVIEW.to_owned(),
-            goal: goal.id,
-            assignee: ceo.id,
-            every_ms: 24 * 60 * 60 * 1000,
-            on_lab_trouble: false,
-        },
-    )?;
-    Ok((seated, Some(made)))
+    let reviewed = store
+        .routines()?
+        .iter()
+        .any(|r| r.assignee == ceo.id && r.title != "Planning");
+    let review = if reviewed {
+        None
+    } else {
+        Some(hq.add_routine(
+            endora_team::application::Author::Endora,
+            NewRoutine {
+                title: "Daily review".to_owned(),
+                description: DAILY_REVIEW.to_owned(),
+                goal: goal.id,
+                project: None,
+                assignee: ceo.id,
+                every_ms: 24 * 60 * 60 * 1000,
+                on_lab_trouble: false,
+            },
+        )?)
+    };
+    let planning = hq.seed_planning(goal.id)?;
+    Ok((seated, review, planning))
 }
 
 #[tokio::main]
@@ -279,15 +287,32 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             Err(e) => eprintln!("hq: could not make the home lab's routine: {e}"),
         }
         match seed_ceo(&hq) {
-            Ok((seated, routine)) => {
+            Ok((seated, routine, planning)) => {
                 if let Some(id) = seated {
                     println!("hq: seated the team's CEO, {CEO_NAME} ({id}), on Claude Opus");
                 }
                 if let Some(id) = routine {
                     println!("hq: made the CEO's daily review ({id})");
                 }
+                if let Some(id) = planning {
+                    println!("hq: made the CEO's weekly planning ({id})");
+                }
             }
             Err(e) => eprintln!("hq: could not seat the CEO: {e}"),
+        }
+        // Whom each member reports to, and the home lab's work as a project, for a store made
+        // before either (ADR 0113): once, and nothing after.
+        match hq.backfill_reports_to() {
+            Ok(0) => {}
+            Ok(n) => println!("hq: set whom {n} members report to"),
+            Err(e) => eprintln!("hq: could not set whom members report to: {e}"),
+        }
+        match hq.migrate_projects() {
+            Ok(None) => {}
+            Ok(Some(id)) => {
+                println!("hq: put the home lab's routines and open work in project {id}")
+            }
+            Err(e) => eprintln!("hq: could not make the home lab's project: {e}"),
         }
         // How this lab is built, in the house log, once and only when it is empty (ADR 0112).
         match hq.seed_house_log() {

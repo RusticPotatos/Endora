@@ -44,6 +44,7 @@ fn stranded(clock: &Hands) -> (Hq<'_>, MemberId, TaskId) {
             Author::Owner,
             NewTask {
                 goal,
+                project: None,
                 parent: None,
                 title: "Clear the stuck downloads".to_owned(),
                 description: String::new(),
@@ -211,6 +212,7 @@ fn a_dropped_wait_releases_nothing_and_its_member_is_told() {
             Author::Owner,
             NewTask {
                 goal,
+                project: None,
                 parent: None,
                 title: "Restore from the backup".to_owned(),
                 description: String::new(),

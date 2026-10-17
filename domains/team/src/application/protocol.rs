@@ -6,9 +6,29 @@
 
 use serde_json::{Value, json};
 
-use super::engine::{Author, Engine, EngineError};
+use super::engine::{Author, Engine, EngineError, Proposal};
 use super::ports::{Clock, NewTask, Run, TeamStore, WorkerAdapter};
-use crate::domain::{Member, Priority, Refusal, Role, RunStatus, TaskId, TaskStatus};
+use crate::domain::{
+    GoalId, Member, Micros, Priority, ProjectId, Refusal, Role, RunStatus, TaskId, TaskStatus,
+};
+
+/// The tool a lead and the CEO propose a project with (ADR 0113).
+fn propose_project_tool() -> Value {
+    let ids = |what: &str| json!({ "type": "array", "items": { "type": "integer" }, "description": what });
+    json!({
+        "name": "propose_project",
+        "description": "Propose a project: a piece of one goal with its own lead, for work that keeps coming back. Cite its evidence from HQ's record: task numbers and alarm event ids (at least one, each checked). A lead's proposal waits for the CEO; the CEO's starts at once. A monthly cap, if you ask one, is the owner's to grant.",
+        "inputSchema": { "type": "object", "properties": {
+            "goal": { "type": "integer", "description": "the goal it serves (default: your task's)" },
+            "title": { "type": "string" },
+            "reason": { "type": "string", "description": "why, from what the team found" },
+            "lead": { "type": "string", "description": "the member who leads it, a lead or the CEO (default: you)" },
+            "cap": { "type": "number", "description": "a monthly cap in dollars, if one is wanted" },
+            "tasks": ids("task numbers it rests on"),
+            "events": ids("alarm event ids it rests on"),
+        }, "required": ["title", "reason"] },
+    })
+}
 
 /// The tools a member of `role` is offered, as MCP lists them: name, what it does, and its
 /// input. Only the reviewer is offered `review`. The CEO (ADR 0111) is offered the team's
@@ -93,6 +113,11 @@ pub fn tools(role: Role) -> Value {
             ));
         }
     }
+    if role == Role::Lead {
+        if let Some(list) = all.as_array_mut() {
+            list.push(propose_project_tool());
+        }
+    }
     if crate::domain::lessons::keeps_lessons(role) {
         if let Some(list) = all.as_array_mut() {
             list.push(tool(
@@ -154,6 +179,29 @@ fn ceos_tools() -> Value {
         json!({ "log": { "type": "string", "maxLength": crate::domain::house::HOUSE_LOG_MOST } }),
         &["log"],
     ));
+    list.push(propose_project_tool());
+    list.push(tool(
+        "decide_project",
+        "Decide a project a lead proposed: accept it (it starts, and its lead is handed its first task) or send it back, saying why; your why is posted to whoever proposed it. A cap it asks, or one you give, goes to the owner with your why as the recommendation.",
+        json!({
+            "project": { "type": "integer", "description": "the project's number" },
+            "verdict": { "type": "string", "enum": ["accept", "send_back"] },
+            "why": { "type": "string" },
+            "cap": { "type": "number", "description": "a monthly cap in dollars to recommend to the owner" },
+        }),
+        &["project", "verdict", "why"],
+    ));
+    list.push(tool(
+        "propose_goal",
+        "Propose a new goal to the owner, who is the board: what, why, and the evidence from HQ's record it rests on (task numbers, alarm event ids). It waits on the board's desk.",
+        json!({
+            "title": { "type": "string" },
+            "reason": { "type": "string" },
+            "tasks": { "type": "array", "items": { "type": "integer" } },
+            "events": { "type": "array", "items": { "type": "integer" } },
+        }),
+        &["title", "reason"],
+    ));
     list.push(tool(
         "read_doc",
         "Read one of Endora's public decision records or plans: a path in docs/adr or docs/plans (that folder alone lists them), 20,000 characters a part.",
@@ -175,6 +223,40 @@ fn task_arg(args: &Value) -> Result<TaskId, String> {
         .as_i64()
         .map(TaskId)
         .ok_or_else(|| "which task? Give its number as `task`".to_owned())
+}
+
+/// The integers in an array argument, if any.
+fn numbers(args: &Value, key: &str) -> Vec<i64> {
+    args[key]
+        .as_array()
+        .map(|a| a.iter().filter_map(Value::as_i64).collect())
+        .unwrap_or_default()
+}
+
+/// A monthly cap in dollars, if one was given.
+fn cap_arg(args: &Value) -> Result<Option<Micros>, String> {
+    let said = match &args["cap"] {
+        Value::Null => return Ok(None),
+        Value::Number(n) => n.to_string(),
+        Value::String(s) => s.clone(),
+        _ => String::new(),
+    };
+    crate::domain::projects::read_dollars(&said)
+        .map(Some)
+        .ok_or_else(|| "`cap` is a monthly amount in dollars, like 10 or 12.50".to_owned())
+}
+
+fn member_named<S: TeamStore, W: WorkerAdapter, C: Clock>(
+    engine: &Engine<S, W, C>,
+    name: &str,
+) -> Result<Member, String> {
+    engine
+        .store()
+        .members()
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .find(|m| m.name.eq_ignore_ascii_case(name.trim()))
+        .ok_or_else(|| format!("no member called {name}"))
 }
 
 fn text_arg<'a>(args: &'a Value, key: &str) -> Result<&'a str, String> {
@@ -290,6 +372,7 @@ pub fn call<S: TeamStore, W: WorkerAdapter, C: Clock>(
                     Author::Member(member.id),
                     NewTask {
                         goal,
+                        project: None,
                         parent: Some(parent),
                         title: text_arg(args, "title")?.to_owned(),
                         description: text_arg(args, "description")?.to_owned(),
@@ -312,6 +395,85 @@ pub fn call<S: TeamStore, W: WorkerAdapter, C: Clock>(
                 super::engine::Asked::Review(_) => Ok("It is with the reviewer, who checks it before it reaches the board, and this turn has ended: stop now. You are woken if it is sent back, or when the board decides.".to_owned()),
                 _ => Ok("It is on the board's desk, and this turn has ended: stop now. You are woken when the board decides.".to_owned()),
             }
+        }
+        "propose_project" => {
+            let goal = match args["goal"].as_i64() {
+                Some(goal) => GoalId(goal),
+                None => {
+                    let task = run.task.ok_or_else(|| {
+                        "which goal? Give its number as `goal`: this turn has no task".to_owned()
+                    })?;
+                    engine
+                        .store()
+                        .task(task)
+                        .map_err(|e| e.to_string())?
+                        .ok_or_else(|| "your task is gone".to_owned())?
+                        .goal
+                }
+            };
+            let lead = match args["lead"].as_str().filter(|l| !l.trim().is_empty()) {
+                Some(name) => member_named(engine, name)?.id,
+                None => member.id,
+            };
+            let proposal = Proposal {
+                goal,
+                title: text_arg(args, "title")?.to_owned(),
+                reason: text_arg(args, "reason")?.to_owned(),
+                lead,
+                cap: cap_arg(args)?,
+                tasks: numbers(args, "tasks").into_iter().map(TaskId).collect(),
+                events: numbers(args, "events"),
+            };
+            let id = engine
+                .propose_project(run.id, &proposal)
+                .map_err(|e| said(&e))?;
+            if member.role == Role::Ceo {
+                return Ok(format!(
+                    "Project {} is started, and its lead handed its first task.{}",
+                    id.0,
+                    if proposal.cap.is_some() {
+                        " The cap is on the owner's desk with your reason."
+                    } else {
+                        ""
+                    }
+                ));
+            }
+            Ok(format!(
+                "Project {} is proposed: it waits for the CEO, whose word comes back in this thread.",
+                id.0
+            ))
+        }
+        "decide_project" => {
+            let project = args["project"]
+                .as_i64()
+                .map(ProjectId)
+                .ok_or_else(|| "which project? Give its number as `project`".to_owned())?;
+            let accept = match args["verdict"].as_str() {
+                Some("accept") => true,
+                Some("send_back") => false,
+                _ => return Err("`verdict` must be accept or send_back".to_owned()),
+            };
+            let why = text_arg(args, "why")?;
+            let now = engine
+                .decide_project(run.id, project, accept, why, cap_arg(args)?)
+                .map_err(|e| said(&e))?;
+            Ok(format!("Project {} is {}.", project.0, now.name()))
+        }
+        "propose_goal" => {
+            let tasks: Vec<TaskId> = numbers(args, "tasks").into_iter().map(TaskId).collect();
+            let goal = engine
+                .propose_goal(
+                    run.id,
+                    text_arg(args, "title")?,
+                    text_arg(args, "reason")?,
+                    &tasks,
+                    &numbers(args, "events"),
+                )
+                .map_err(|e| said(&e))?;
+            Ok(format!(
+                "Goal {} is proposed: it waits on the board's desk.",
+                goal.0
+            ))
         }
         "note_house" => {
             let entry = text_arg(args, "entry")?;

@@ -115,6 +115,7 @@ fn next_piece_of_work<S: TeamStore, W: WorkerAdapter, C: Clock>(
         Author::Owner,
         NewTask {
             goal,
+            project: None,
             parent: None,
             title: WORK[done_so_far % WORK.len()].to_owned(),
             description: "Demo work: the team is scripted, and nothing real is touched.".to_owned(),
@@ -250,6 +251,7 @@ fn lead_turn<S: TeamStore, W: WorkerAdapter, C: Clock>(
                 me,
                 NewTask {
                     goal: task.goal,
+                    project: None,
                     parent: Some(task.id),
                     title: format!("{prefix}: {}", task.title.to_lowercase()),
                     description: String::new(),

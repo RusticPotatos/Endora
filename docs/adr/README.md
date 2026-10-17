@@ -130,6 +130,12 @@ that established it.
   reviewer, reaches the board's desk. The CEO thinks with Opus at up to $1 a turn, wakes only
   for escalations and a daily review, keeps the house log, reads Endora's public records, and is
   given nothing Confidential. The pool is shared among the paid members alone.
+- **Work worth its own effort is a project, with a lead and a cap; proposals carry evidence**
+  ([0113](0113-projects-budgets-and-reports-to.md)). A project serves one goal; the owner may
+  cap its month, and at its cap its Claude turns wait until the month turns or the owner raises
+  it. Leads and the CEO propose with task numbers and event ids HQ checks; the CEO decides, the
+  board may overrule, and caps are the owner's. Each member reports to someone the owner may
+  change, and the CEO plans once a week from patterns.
 - **Start fresh rather than keep what makes noise** ([0100](0100-the-clean-slate.md)). What
   Endora did unasked (check-ins, the nightly loop, notions, own work, goals) produced stale
   beliefs and repeated questions, so it went, code and storage. A table nothing reads is
@@ -262,6 +268,7 @@ of an existing record and take the next number.
 | [0110](0110-the-teams-rings.md) | The team's rings: a sandbox on the Pi, the team gateway, the egress proxy, and undo | — |
 | [0111](0111-the-ceo-and-the-chain-of-command.md) | The CEO and the chain of command | — |
 | [0112](0112-the-team-knows-how-the-lab-is-built.md) | The team knows how the lab is built | — |
+| [0113](0113-projects-budgets-and-reports-to.md) | Projects, budgets and reports_to | — |
 
 The forty-nine decisions these consolidate are in [archive/](archive/) — kept in full,
 because the reasoning that produced a rule is the reason it survives an argument later.

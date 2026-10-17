@@ -78,6 +78,7 @@ fn task_for(hq: &Hq<'_>, goal: GoalId, to: Option<MemberId>, title: &str) -> Tas
         Author::Owner,
         NewTask {
             goal,
+            project: None,
             parent: None,
             title: title.to_owned(),
             description: String::new(),
@@ -289,6 +290,7 @@ fn a_member_hands_work_only_down_and_the_task_counts_the_hands() {
     let parent = task_for(&hq, t.goal, Some(t.lead), "Plan the tracker");
     let new = |assignee| NewTask {
         goal: t.goal,
+        project: None,
         parent: Some(parent),
         title: "Build the list".to_owned(),
         description: String::new(),
@@ -670,6 +672,7 @@ fn urgent_work_starts_before_older_normal_work() {
             Author::Owner,
             NewTask {
                 goal: t.goal,
+                project: None,
                 parent: None,
                 title: "The site is down".to_owned(),
                 description: String::new(),
@@ -725,6 +728,7 @@ fn a_task_that_waits_is_woken_once_when_what_it_waits_on_finishes() {
             Author::Owner,
             NewTask {
                 goal: t.goal,
+                project: None,
                 parent: None,
                 title: "Write the migrations".to_owned(),
                 description: String::new(),
@@ -758,6 +762,7 @@ fn when_the_last_sub_task_finishes_the_parents_owner_is_woken() {
             Author::Member(t.lead),
             NewTask {
                 goal: t.goal,
+                project: None,
                 parent: Some(parent),
                 title: title.to_owned(),
                 description: String::new(),
@@ -848,6 +853,7 @@ fn the_snapshot_holds_what_is_on_screen_and_where_the_stream_resumes() {
             Author::Member(t.lead),
             NewTask {
                 goal: t.goal,
+                project: None,
                 parent: Some(parent),
                 title: "Build the list".to_owned(),
                 description: String::new(),
@@ -961,6 +967,7 @@ fn only_whole_work_reaches_the_desk_and_research_is_to_read() {
             Author::Owner,
             NewTask {
                 goal: t.goal,
+                project: None,
                 parent: Some(whole),
                 title: "Read its logs".to_owned(),
                 description: String::new(),
@@ -1131,6 +1138,7 @@ fn hand_on(
         Author::Member(by),
         NewTask {
             goal,
+            project: None,
             parent: Some(parent),
             title: title.to_owned(),
             description: said.to_owned(),
@@ -1204,6 +1212,7 @@ fn one_open_task_a_problem_a_second_is_refused_naming_the_first() {
             Author::Endora,
             NewTask {
                 goal: t.goal,
+                project: None,
                 parent: None,
                 title: "Check the home lab again".to_owned(),
                 description: "Why now: Endora raised an alarm: nzbget became exited at 13:42."
@@ -1220,6 +1229,7 @@ fn one_open_task_a_problem_a_second_is_refused_naming_the_first() {
         Author::Member(t.dev),
         NewTask {
             goal: t.goal,
+            project: None,
             parent: Some(part),
             title: "Read nzbget's log first".to_owned(),
             description: String::new(),
@@ -1236,6 +1246,7 @@ fn one_open_task_a_problem_a_second_is_refused_naming_the_first() {
         Author::Member(t.dev),
         NewTask {
             goal: t.goal,
+            project: None,
             parent: Some(mine),
             title: "Read owntone's log".to_owned(),
             description: String::new(),

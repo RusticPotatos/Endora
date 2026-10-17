@@ -110,6 +110,11 @@ The six invariants of the always-on plan, as they apply here:
 **A goal** has a title, a reason, a status (proposed, active, done, dropped) and optionally a
 parent goal. A goal Endora proposes is `proposed` until the owner approves it.
 
+**A project** (2026-10-17, [ADR 0113](../adr/0113-projects-budgets-and-reports-to.md)) is a
+piece of one goal with its own lead (a lead or the CEO), a status (proposed, active, paused,
+done, dropped) and, if the owner gives it one, a monthly cap. A task may be in a project of its
+own goal; its sub-tasks stay in it; a routine may name one.
+
 **A task** belongs to a goal (directly, or through its parent task) and has:
 
 - a title and a description;
@@ -422,6 +427,11 @@ developer would have $0.69.
   day the run was booked; no one report counts for more than a run may spend.
 - When the credits are gone, the team stops. It never moves to paid billing. Raising any
   limit is the owner's decision.
+- **A project's cap** ([ADR 0113](../adr/0113-projects-budgets-and-reports-to.md)) is a third
+  limit, by the calendar month in UTC: a cloud turn on a capped project reserves no more than
+  is left of it, and the caps together stay within the pool's month. At 80% the owner hears
+  once a month; at 100% the project's Claude turns wait (local members go on) until the month
+  turns or the owner raises the cap.
 
 **Spending less a turn** (2026-10-17, [ADR 0109](../adr/0109-a-brain-per-member.md#cost-notes)).
 A cloud turn resends its whole conversation every round, so most of what it cost was the same
@@ -837,10 +847,52 @@ for working things out: scripts, parsing what the tools returned, trying command
   Decline and an answer box (`answer` with words alone). A local member's card says it costs
   nothing.
 
+### Projects, budgets and reports_to (owner's decisions of 2026-10-17, [ADR 0113](../adr/0113-projects-budgets-and-reports-to.md))
+
+- **The store**: a `projects` table (goal, title, reason, lead, status, pause, cap, asked cap,
+  who made it, proposer, the task it was proposed in, evidence, when made and changed), and an
+  empty `project` column on `tasks`, `routines`, `desk` and `ledger`, and `reports_to` on
+  `members`, each added to the live store by an `ALTER TABLE` guarded by `pragma_table_info`.
+  The ledger's reservation takes its project from the turn's task, and a turn's later rows from
+  its reservation; old rows stay empty, and the append-only triggers stay.
+- **On start** (demo off): whom each member reports to, filled in for members without one; and
+  once, with no project yet and a routine taking the home lab's alarms, the active project
+  "Home lab upkeep" under its goal (lead: the earliest lead at work, or the CEO; no cap), with
+  that goal's routines (but the CEO's) and open tasks in it. Then the CEO's weekly "Planning"
+  routine, once, under the same goal as its daily review.
+- **The engine**: `affordable()` takes the least of the member's day, the pool's day, the
+  role's turn cap and the project's month (`cap − committed`, nothing within five cents of it,
+  nothing while paused for its budget). `report_usage` watches the project's month after each
+  charge: at 80% one notice a month on the desk and a `project.budget` event; at the cap the
+  project pauses for its budget and the desk offers `raise` (an amount) or `wait`. The tick
+  lifts a budget pause once the month turns. An owner's pause refuses every wake on the
+  project's work (`project_paused`) and starts none of its queued turns. A task handed back
+  wakes its project's lead. `Engine::above` walks `reports_to`, past paused managers.
+- **The team protocol**: `propose_project` for the lead and the CEO, `decide_project` and
+  `propose_goal` for the CEO. Evidence is task numbers and event ids, each looked up.
+- **The briefings**: the lead's lists its projects with this month's money; the CEO's says
+  which projects are at 80% or past it, and its daily review how many proposals wait; its
+  planning shows each goal's projects, the last 30 days' tasks by the containers they named,
+  the alarms that came back with their event ids, the proposals waiting and the goals with no
+  project, and nothing else.
+- **HQ's routes** (signed by the node, which records each in its audit log): `POST
+  /v1/projects` (`goal`, `title`, `reason`, `lead`, `cap` in dollars), `POST /v1/projects/{id}`
+  (`action`: pause, resume, drop, reopen, done), `POST /v1/projects/{id}/cap` (`cap`, or none),
+  `POST /v1/members/{id}/reports_to` (`to`); `POST /v1/tasks` and `POST /v1/routines` take an
+  optional `project`. The desk's `project_cap` takes `approve` (with an amount, or as asked) or
+  `decline`, and `project_budget` takes `raise` (with the amount) or `wait`. The snapshot carries
+  `projects` (with this month's `spent`, `committed` and `level`), and `project` on tasks,
+  routines and desk items, and `reports_to` on members.
+- **On the screen**: the Projects card by goal with its bar, its forms and buttons; cap and
+  budget items on the desk with an amount box; "Reports to" on each member's card, and "Reports
+  to the board: you." on the CEO's.
+
 ## 16. Later, and not at all
 
-- **Later:** skills and adapter plugins, including adapters to other systems; more teams; a
-  CEO member; virtual-machine test environments; the office on the handheld.
+- **Later:** skills and adapter plugins, including adapters to other systems; more teams;
+  hiring that acts (a proposal to hire carried out once the board says yes); turn verdicts that
+  weigh evidence; moving a task between projects; the pool and the shares as settings on
+  screen; virtual-machine test environments; the office on the handheld.
 - **Not at all:** members holding any credential; anything merged or deployed without the
   owner; paid billing beyond the credits without the owner; the team reading the brain,
   mail or chat.

@@ -2,7 +2,7 @@
 //! that keeps an empty task from waking its member over and over. Goals are passive; work
 //! always arrives as a task; a member never goes looking for work.
 
-use super::work::{GoalId, MemberId, Millis, Refusal, RoutineId, TaskId};
+use super::work::{GoalId, MemberId, Millis, ProjectId, Refusal, RoutineId, TaskId};
 
 /// A minute.
 pub const MINUTE_MS: Millis = 60_000;
@@ -29,6 +29,8 @@ pub struct Routine {
     pub description: String,
     /// The goal its tasks serve.
     pub goal: GoalId,
+    /// The project of that goal its tasks go in, if any (ADR 0113).
+    pub project: Option<ProjectId>,
     /// The member its tasks are handed to.
     pub assignee: MemberId,
     /// How often it fires.

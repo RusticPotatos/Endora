@@ -577,7 +577,7 @@ if (failures.length) {
   runInContext(`HQ.error = ""; HQ.log = []; HQ.selected = { type: "task", id: 7 };
     HQ.snap = { demo: true, stopped: false, last_event: 40, tick_seconds: 30, last_tick_at: 1,
       counts: { ticks: 9, running: 1, queued: 2, held: 1, folded: 3, open_tasks: 4 }, pool: { per_day: 2333333, committed: 400000, spent: 0, held: 400000 },
-      members: [{ id: 1, name: "Ada", role: "lead", look: 0, paused: false, slots: 2, per_day: 583333, committed: 0, spent: 0, held: 0, running: [],
+      members: [{ id: 1, name: "Ada", role: "lead", look: 0, paused: false, slots: 2, per_day: 583333, committed: 0, spent: 0, held: 0, running: [], reports_to: 5,
                   brain: "claude-sonnet-5-5", brains: [{ name: "local", label: "Local" }, { name: "claude-sonnet-5-5", label: "Claude Sonnet" }, { name: "claude-haiku-5-5", label: "Claude Haiku" }] },
                 { id: 2, name: "Bo", role: "developer", look: 4, paused: false, slots: 2, per_day: 933333, committed: 400000, spent: 0, held: 400000, running: [{ run: 3, task: 7 }],
                   brain: "local", brains: [{ name: "local", label: "Local" }, { name: "claude-haiku-5-5", label: "<b>Haiku</b>" }] },
@@ -599,10 +599,15 @@ if (failures.length) {
                approval: { tool: "sonarr_remove_and_search", member: "Linus", why: "<script>alert(2)</script> it is stuck",
                            args: [["item", "102"], ["note", "<img src=y onerror=alert(3)>"]] } },
              { id: 18, kind: "decision", task: 7, text: "Decision: Give sonarr 2 GB?\\nRecommendation: Yes.\\nWhy: It ran out.",
-               decision: { decision: "Give sonarr 2 GB?", recommendation: "Yes, <i>until the upgrade</i>.", why: "It was killed for memory three times." } }],
+               decision: { decision: "Give sonarr 2 GB?", recommendation: "Yes, <i>until the upgrade</i>.", why: "It was killed for memory three times." } },
+             { id: 19, kind: "project_cap", project: 2, goal: 1, text: "A cap for project #2 Backups: $5.00 a month.\\nThe CEO recommends: <u>they fail</u>" },
+             { id: 20, kind: "project_budget", project: 1, goal: 1, text: "Project #1 Upkeep spent its $0.50 cap for the month ($0.46): its Claude turns wait" }],
+      projects: [{ id: 1, goal: 1, title: "Upkeep", reason: "", lead: 1, status: "paused", pause: "budget", cap: 500000, spent: 460000, level: "spent", created_by: "endora", evidence: [], open_tasks: 1 },
+                 { id: 2, goal: 1, title: "<s>Backups</s>", reason: "<img src=p onerror=alert(6)>", lead: 1, status: "active", pause: null, cap: 1000000, asked_cap: 5000000, spent: 850000, level: "warned", created_by: "Ada", evidence: ["task 7", "event 40"], open_tasks: 0 },
+                 { id: 3, goal: 1, title: "Media", reason: "", lead: 5, status: "proposed", pause: null, cap: null, spent: 0, level: null, created_by: "Ada", evidence: ["task 7"], open_tasks: 0 }],
       contracts: { all: true, restart_container: false },
       routines: [{ id: 3, title: "Check the home lab", rhythm: "every 6 hours", assignee: 1, enabled: true,
-                   on_lab_trouble: true, last_fired_at: null, last_task: null, last_task_open: false },
+                   on_lab_trouble: true, last_fired_at: null, last_task: null, last_task_open: false, project: 1 },
                  { id: 4, title: "<b>Tidy</b>", rhythm: "every day", assignee: 2, enabled: false,
                    on_lab_trouble: false, last_fired_at: 1, last_task: 7, last_task_open: true }] };`, context);
   // The activity log reads like the office's own: who, which task, why, and what it cost.
@@ -615,7 +620,9 @@ if (failures.length) {
     hqTell({ id: 46, at: 0, kind: "lesson.noted", data: { member: 1, task: 7, goal: 1, lesson: "An RSS sync that grabs nothing is normal." } }, false);
     hqTell({ id: 47, at: 0, kind: "member.brain", data: { member: 1, name: "Ada", brain: "claude-sonnet-5-5" } }, false);
     hqTell({ id: 48, at: 0, kind: "member.hired", data: { member: 5, name: "Mara", role: "ceo", brain: "claude-opus-5-5", by: "endora" } }, false);
-    hqTell({ id: 49, at: 0, kind: "house.noted", data: { by: "Mara", entry: "- 17 Oct: The NAS has 16 GB." } }, false);`, context);
+    hqTell({ id: 49, at: 0, kind: "house.noted", data: { by: "Mara", entry: "- 17 Oct: The NAS has 16 GB." } }, false);
+    hqTell({ id: 50, at: 0, kind: "project.budget", data: { project: 1, title: "Upkeep", level: "spent", said: "spent its $0.50 cap for the month ($0.46): its Claude turns wait" } }, false);
+    hqTell({ id: 51, at: 0, kind: "member.reports_to", data: { member: 2, name: "Bo", reports_to: 1, manager: "Ada" } }, false);`, context);
   const office = runInContext("viewHQ()", context);
   for (const line of ["R9 Bo starts on EL-7 (review requested), $0.06 held", "R9 Bo finished · $0.12 spent", "R8 Bo finished · $0.03 spent · cached: 87% of input", "Woke Ada: mentioned (EL-7)",
     "Routine Check the home lab skipped: its last task, #7, is still open", "Ada will check back on EL-7 in 30 min",
@@ -701,6 +708,25 @@ if (failures.length) {
     if (!office.includes(said)) fail(`hq: the decision card does not show ${said}`);
   }
   if (office.includes("<i>until")) fail("hq: a decision's words became markup");
+  // Projects (ADR 0113): grouped by goal, each with its lead, status and money against its cap
+  // (amber from 80%, red once spent); the owner's buttons offer only what each status takes;
+  // whatever a member wrote stays text.
+  for (const act of ["hq:project:1:resume", "hq:project:1:cap", "hq:project:1:drop", "hq:project:2:work", "hq:project:2:pause",
+    "hq:project:2:cap", "hq:project:2:drop", "hq:project:3:reopen", "hq:project:3:drop", "hq:project:new:add",
+    "hq:decide:19:approve", "hq:decide:19:decline", "hq:decide:20:raise", "hq:decide:20:wait", "hq:reports:1:set", "hq:reports:2:set"]) {
+    if (!office.includes(`data-act="${act}"`)) fail(`hq: the projects card or the desk does not offer ${act}`);
+  }
+  for (const wrong of ["hq:project:1:pause", "hq:project:2:resume", "hq:project:3:work", "hq:project:2:reopen", "hq:reports:5:set", "hq:decide:19:seen", "hq:decide:20:approve"]) {
+    if (office.includes(`data-act="${wrong}"`)) fail(`hq: something offers ${wrong}, which its item does not take`);
+  }
+  for (const said of ["<h2>Projects</h2>", 'class="hq-gauge spent"', 'class="hq-gauge warned"', "$0.46 of $0.50 this month", "$0.00 this month · no cap",
+    "paused: it spent its cap", "proposed by Ada, waits for the CEO", "asks $5.00 a month", "Evidence: task 7, event 40", 'id="hq-answer-19"', 'id="hq-answer-20"',
+    'id="hq-project-title"', 'id="hq-project-cap"', 'id="hq-project-lead"', 'id="hq-reports-1"', "Reports to the board: you.", "in Upkeep",
+    '<option value="5" selected>Mara (CEO)</option>', "Project Upkeep spent its $0.50 cap", "Bo now reports to Ada", "project Upkeep"]) {
+    if (!office.includes(said)) fail(`hq: the projects card does not show ${said}`);
+  }
+  if (office.includes("<s>Backups") || office.includes("<img src=p") || office.includes("<u>they")) fail("hq: a project's words became markup");
+  if (!office.includes("&lt;s&gt;Backups&lt;/s&gt;")) fail("hq: a project's title is not shown as text");
   if (office.includes("<b>Haiku</b>")) fail("hq: a brain's label became markup");
   // A dropped goal's notes leave the board, finished ones too: the retired demo's hundreds of
   // done tasks must not bury the owner's own.

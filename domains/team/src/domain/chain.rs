@@ -4,8 +4,11 @@
 //! the CEO. Whoever is asked answers in the task's thread, which wakes the one who asked. Only
 //! the CEO puts anything to the board, and then as a decision with its recommendation. With no
 //! CEO at work, the team works as it did before there was one.
+//!
+//! Who asks whom is each member's `reports_to` (ADR 0113): set at hire by its role, and the
+//! owner's to change. A question skips a manager who is paused, one step up at a time.
 
-use super::work::{Refusal, Role};
+use super::work::{Member, MemberId, Refusal, Role};
 
 /// The start of a question asked up the chain, in the task's thread: `Question for Ada: …`.
 pub const QUESTION_FOR: &str = "Question for ";
@@ -26,21 +29,84 @@ pub fn question(to: &str, text: &str) -> String {
     format!("{QUESTION_FOR}{to}: {}", text.trim())
 }
 
-/// Who a member in `role` asks, up the chain: the lead for the developer, the researcher and
-/// the reviewer (the CEO when there is no lead at work), and the CEO for the lead. `None` for
-/// the CEO, whose questions go to the board, and for everyone while there is no CEO at work:
-/// then the team works as it did before (to the reviewer first, then the owner's desk).
+/// Who a member in `role` reports to when it joins (`members` being the team before it):
+/// the lead to the CEO; the developer, the researcher and the reviewer to the lead, or the
+/// CEO when there is no lead; the CEO to nobody, which is the board. Each the earliest hired.
 #[must_use]
-pub const fn above(role: Role, a_lead_at_work: bool, a_ceo_at_work: bool) -> Option<Role> {
-    if !a_ceo_at_work {
-        return None;
-    }
+pub fn manager_at_hire(role: Role, members: &[Member]) -> Option<MemberId> {
+    let first = |role: Role| {
+        members
+            .iter()
+            .filter(|m| m.role == role)
+            .map(|m| m.id)
+            .min()
+    };
     match role {
         Role::Ceo => None,
-        Role::Lead => Some(Role::Ceo),
-        Role::Developer | Role::Researcher | Role::Reviewer if a_lead_at_work => Some(Role::Lead),
-        Role::Developer | Role::Researcher | Role::Reviewer => Some(Role::Ceo),
+        Role::Lead => first(Role::Ceo),
+        Role::Developer | Role::Researcher | Role::Reviewer => {
+            first(Role::Lead).or_else(|| first(Role::Ceo))
+        }
     }
+}
+
+/// Who `member` reports to: its `reports_to`, or, for a member hired before anyone was there to
+/// report to, whom it would report to if it joined now. Never anyone for the CEO.
+#[must_use]
+pub fn manager(member: &Member, members: &[Member]) -> Option<MemberId> {
+    if member.role == Role::Ceo {
+        return None;
+    }
+    let others: Vec<Member> = members
+        .iter()
+        .filter(|m| m.id != member.id)
+        .cloned()
+        .collect();
+    member
+        .reports_to
+        .filter(|to| *to != member.id)
+        .or_else(|| manager_at_hire(member.role, &others))
+}
+
+/// Who `member`'s question goes to, up its chain: its manager, or, while that one is paused,
+/// the next one up, and so on. `None` when the chain ends without anyone at work.
+#[must_use]
+pub fn escalation(member: &Member, members: &[Member]) -> Option<MemberId> {
+    let mut seen = vec![member.id];
+    let mut at = member;
+    while let Some(up) = manager(at, members) {
+        if seen.contains(&up) {
+            return None;
+        }
+        seen.push(up);
+        let found = members.iter().find(|m| m.id == up)?;
+        if !found.paused {
+            return Some(up);
+        }
+        at = found;
+    }
+    None
+}
+
+/// Whether `member` may report to `to`: another member, never one that reports, however far
+/// up, to `member` itself; and never the CEO, who reports to the board.
+///
+/// # Errors
+/// [`Refusal::NotAManager`] otherwise.
+pub fn may_report(member: &Member, to: MemberId, members: &[Member]) -> Result<(), Refusal> {
+    if member.role == Role::Ceo || to == member.id {
+        return Err(Refusal::NotAManager);
+    }
+    let mut seen = Vec::new();
+    let mut at = members.iter().find(|m| m.id == to);
+    while let Some(up) = at {
+        if up.id == member.id || seen.contains(&up.id) {
+            return Err(Refusal::NotAManager);
+        }
+        seen.push(up.id);
+        at = manager(up, members).and_then(|id| members.iter().find(|m| m.id == id));
+    }
+    Ok(())
 }
 
 /// The questions in a thread (each post its author's name and its text, oldest first) asked of
@@ -151,20 +217,97 @@ impl Decision {
 mod tests {
     use super::*;
 
+    fn member(id: i64, role: Role, reports_to: Option<i64>) -> Member {
+        Member {
+            id: MemberId(id),
+            name: format!("m{id}"),
+            role,
+            share_percent: role.share(),
+            slots: 1,
+            look: 0,
+            paused: false,
+            brain: crate::domain::Brain::Local,
+            reports_to: reports_to.map(MemberId),
+        }
+    }
+
     #[test]
-    fn a_question_goes_up_the_chain_only_while_there_is_a_ceo() {
+    fn a_member_reports_at_hire_to_the_lead_the_lead_to_the_ceo_and_the_ceo_to_the_board() {
+        let team = [member(1, Role::Ceo, None), member(2, Role::Lead, None)];
+        assert_eq!(manager_at_hire(Role::Ceo, &team), None);
+        assert_eq!(manager_at_hire(Role::Lead, &team), Some(MemberId(1)));
         for role in [Role::Developer, Role::Researcher, Role::Reviewer] {
-            assert_eq!(above(role, true, true), Some(Role::Lead), "{role:?}");
+            assert_eq!(manager_at_hire(role, &team), Some(MemberId(2)), "{role:?}");
             assert_eq!(
-                above(role, false, true),
-                Some(Role::Ceo),
+                manager_at_hire(role, &team[..1]),
+                Some(MemberId(1)),
                 "{role:?} with no lead"
             );
-            assert_eq!(above(role, true, false), None, "{role:?} with no CEO");
         }
-        assert_eq!(above(Role::Lead, true, true), Some(Role::Ceo));
-        assert_eq!(above(Role::Lead, true, false), None);
-        assert_eq!(above(Role::Ceo, true, true), None, "the CEO asks the board");
+        assert_eq!(manager_at_hire(Role::Lead, &[]), None);
+        // A member hired before there was anyone reports where it would report now.
+        let backfilled = [
+            team[0].clone(),
+            team[1].clone(),
+            member(3, Role::Developer, None),
+        ];
+        assert_eq!(manager(&backfilled[2], &backfilled), Some(MemberId(2)));
+        assert_eq!(manager(&backfilled[1], &backfilled), Some(MemberId(1)));
+        assert_eq!(manager(&backfilled[0], &backfilled), None);
+    }
+
+    #[test]
+    fn a_question_skips_a_paused_manager_one_step_up() {
+        let mut team = vec![
+            member(1, Role::Ceo, None),
+            member(2, Role::Lead, Some(1)),
+            member(3, Role::Developer, Some(2)),
+        ];
+        assert_eq!(escalation(&team[2], &team), Some(MemberId(2)));
+        team[1].paused = true;
+        assert_eq!(
+            escalation(&team[2], &team),
+            Some(MemberId(1)),
+            "past the lead"
+        );
+        team[0].paused = true;
+        assert_eq!(escalation(&team[2], &team), None, "nobody at work above");
+        assert_eq!(escalation(&team[0], &team), None, "the CEO asks the board");
+    }
+
+    #[test]
+    fn a_member_never_reports_to_itself_or_in_a_circle_and_the_ceo_only_to_the_board() {
+        let team = [
+            member(1, Role::Ceo, None),
+            member(2, Role::Lead, Some(1)),
+            member(3, Role::Lead, Some(2)),
+            member(4, Role::Developer, Some(3)),
+        ];
+        assert!(may_report(&team[3], MemberId(2), &team).is_ok());
+        assert_eq!(
+            may_report(&team[3], MemberId(4), &team),
+            Err(Refusal::NotAManager),
+            "itself"
+        );
+        assert_eq!(
+            may_report(&team[1], MemberId(4), &team),
+            Err(Refusal::NotAManager),
+            "4 reports to 3, who reports to 2"
+        );
+        assert_eq!(
+            may_report(&team[0], MemberId(2), &team),
+            Err(Refusal::NotAManager),
+            "the CEO reports to the board"
+        );
+        // A circle already in the store ends the walk rather than looping.
+        let circle = [
+            member(5, Role::Lead, Some(6)),
+            member(6, Role::Lead, Some(5)),
+        ];
+        assert_eq!(escalation(&circle[0], &circle), Some(MemberId(6)));
+        let mut paused = circle.clone();
+        paused[1].paused = true;
+        assert_eq!(escalation(&paused[0], &paused), None);
     }
 
     #[test]
