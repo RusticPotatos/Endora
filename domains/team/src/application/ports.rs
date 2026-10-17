@@ -191,6 +191,11 @@ pub trait TeamStore {
     /// # Errors
     /// [`StoreError`] if the store fails.
     fn set_brain(&self, member: MemberId, brain: crate::domain::Brain) -> Stored<()>;
+    /// Renames a member.
+    ///
+    /// # Errors
+    /// [`StoreError`] if the store fails.
+    fn rename_member(&self, member: MemberId, name: &str) -> Stored<()>;
 
     /// Adds a goal.
     ///
@@ -469,6 +474,16 @@ pub trait TeamStore {
     /// # Errors
     /// [`StoreError`] if the store fails.
     fn set_stopped(&self, stopped: bool) -> Stored<()>;
+    /// One of HQ's own settings, by its key: the house log, and what was done once.
+    ///
+    /// # Errors
+    /// [`StoreError`] if the store fails.
+    fn setting(&self, key: &str) -> Stored<Option<String>>;
+    /// Sets one of HQ's own settings.
+    ///
+    /// # Errors
+    /// [`StoreError`] if the store fails.
+    fn set_setting(&self, key: &str, value: &str) -> Stored<()>;
 
     /// Adds a timer.
     ///

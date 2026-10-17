@@ -1,8 +1,8 @@
-//! What a member thinks with (the owner's decision of 2026-10-17, ADR 0109): the house's own
-//! model, or Claude through the node's relay, set by the owner per member. Which Claude a role
-//! may think with is the plan's models by role (section 9), the same rule the relay enforces
-//! on every call: Sonnet or Haiku for the lead, the developer and the reviewer; Haiku only for
-//! the researcher; Opus for nobody until the owner can approve it for a task.
+//! What a member thinks with (the owner's decisions of 2026-10-17, ADR 0109 and 0111): the
+//! house's own model, or Claude through the node's relay, set by the owner per member. Which
+//! Claude a role may think with is the plan's models by role (section 9), the same rule the
+//! relay enforces on every call: Opus or Sonnet for the CEO; Sonnet or Haiku for the lead, the
+//! developer and the reviewer; Haiku only for the researcher. Opus is the CEO's alone.
 
 use super::work::{Refusal, Role};
 
@@ -17,10 +17,12 @@ pub enum Brain {
     Sonnet,
     /// Claude Haiku, through the same relay.
     Haiku,
+    /// Claude Opus, through the same relay: the CEO's only (ADR 0111).
+    Opus,
 }
 
 /// Every brain, in the order the owner is offered them.
-const ALL: [Brain; 3] = [Brain::Local, Brain::Sonnet, Brain::Haiku];
+const ALL: [Brain; 4] = [Brain::Local, Brain::Opus, Brain::Sonnet, Brain::Haiku];
 
 impl Brain {
     /// Its stable name, for storage, the snapshot and the runner: `local`, or the model id the
@@ -31,6 +33,7 @@ impl Brain {
             Self::Local => "local",
             Self::Sonnet => "claude-sonnet-5-5",
             Self::Haiku => "claude-haiku-5-5",
+            Self::Opus => "claude-opus-5-5",
         }
     }
 
@@ -41,6 +44,7 @@ impl Brain {
             Self::Local => "Local",
             Self::Sonnet => "Claude Sonnet",
             Self::Haiku => "Claude Haiku",
+            Self::Opus => "Claude Opus",
         }
     }
 
@@ -61,8 +65,10 @@ impl Brain {
     #[must_use]
     pub const fn allowed_for(self, role: Role) -> bool {
         match self {
-            Self::Local | Self::Haiku => true,
+            Self::Local => true,
+            Self::Opus => matches!(role, Role::Ceo),
             Self::Sonnet => !matches!(role, Role::Researcher),
+            Self::Haiku => !matches!(role, Role::Ceo),
         }
     }
 
@@ -75,7 +81,8 @@ impl Brain {
     /// The brain the owner asked for by `name`, for a member in `role`.
     ///
     /// # Errors
-    /// [`Refusal::NotABrain`] for a name that is not one, Opus, or one the role may not use.
+    /// [`Refusal::NotABrain`] for a name that is not one, or one the role may not use (Opus
+    /// for any role but the CEO).
     pub fn for_role(role: Role, name: &str) -> Result<Self, Refusal> {
         let refused = || Refusal::NotABrain {
             role,
@@ -97,7 +104,7 @@ mod tests {
     fn a_member_thinks_locally_unless_the_owner_says_otherwise() {
         assert_eq!(Brain::default(), Brain::Local);
         assert!(!Brain::Local.cloud());
-        assert!(Brain::Sonnet.cloud() && Brain::Haiku.cloud());
+        assert!(Brain::Sonnet.cloud() && Brain::Haiku.cloud() && Brain::Opus.cloud());
         for brain in ALL {
             assert_eq!(Brain::from_name(brain.name()), Some(brain));
         }
@@ -123,9 +130,24 @@ mod tests {
             Brain::for_role(Role::Researcher, "claude-haiku-5-5"),
             Ok(Brain::Haiku)
         );
+        // The owner's decision of 2026-10-17 (ADR 0111): the CEO thinks with Opus, Sonnet or
+        // the house's model, and Opus is nobody else's.
+        assert_eq!(
+            Brain::choices(Role::Ceo),
+            [Brain::Local, Brain::Opus, Brain::Sonnet]
+        );
+        assert_eq!(
+            Brain::for_role(Role::Ceo, "claude-opus-5-5"),
+            Ok(Brain::Opus)
+        );
         for (role, asked) in [
             (Role::Researcher, "claude-sonnet-5-5"),
             (Role::Lead, "claude-opus-5-5"),
+            (Role::Developer, "claude-opus-5-5"),
+            (Role::Reviewer, "claude-opus-5-5"),
+            (Role::Researcher, "claude-opus-5-5"),
+            (Role::Ceo, "claude-haiku-5-5"),
+            (Role::Ceo, "deepseek-chat"),
             (Role::Lead, "gpt-5"),
             (Role::Lead, ""),
             (Role::Developer, "claude-sonnet-5-5-20261001"),
@@ -139,6 +161,6 @@ mod tests {
         let said = Brain::for_role(Role::Lead, "claude-opus-5-5")
             .unwrap_err()
             .to_string();
-        assert!(said.contains("Opus"), "{said}");
+        assert!(said.contains("Opus is the CEO's alone"), "{said}");
     }
 }

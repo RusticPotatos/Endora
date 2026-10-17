@@ -11,6 +11,16 @@ worker speaking Anthropic's Messages API, the node's cloud check point fed by HQ
 contracts and the bridge applying the rule below, and the Anthropic relay refusing a turn on
 the house's model. Lessons kept by the team and the harm rule were built with it.
 
+Amended 2026-10-17 by [0111](0111-the-ceo-and-the-chain-of-command.md), the owner's decisions:
+a **CEO** member above the lead, which may think with **Claude Opus** (Opus is the CEO's alone),
+Sonnet or the house's model, and whose turns may spend **$1.00** (everyone else's $0.40). The
+brains by role are now: CEO Opus, Sonnet or Local; lead, developer and reviewer Sonnet, Haiku or
+Local; researcher Haiku or Local; Claude only, with no other provider. **The pool is shared only
+among the members with a paid brain**, by their roles' weights (CEO 35, lead 25, developer 40,
+reviewer 20, researcher 15): a member on the house's model costs nothing, reserves nothing and is
+never turned away for money. The CEO on Claude is a cloud member that is not the lead: it is
+given nothing Confidential, and reads its members' findings in their threads.
+
 ## Context
 
 Every member thought with the house's model (qwen3:8b, thinking). The lead coordinates the

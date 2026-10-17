@@ -1,8 +1,12 @@
 //! Money: the team pool, each member's share of it per day, and what one turn may spend.
 //!
+//! The day's pool is shared only among the members with a paid brain, by their roles'
+//! weights (ADR 0111): a member on the house's model costs nothing, takes no share, and is
+//! never turned away for money.
+//!
 //! Amounts are millionths of a dollar, so a model's per-token price adds up without rounding.
 
-use super::work::Millis;
+use super::work::{Millis, Role};
 
 /// Millionths of a dollar.
 pub type Micros = i64;
@@ -15,6 +19,8 @@ pub const POOL_PER_MONTH: Micros = 70 * DOLLAR;
 pub const DAYS_A_MONTH: i64 = 30;
 /// The most one turn may spend: $0.40.
 pub const MOST_A_TURN: Micros = 400_000;
+/// The most one of the CEO's turns may spend: $1.00 (ADR 0111).
+pub const CEO_MOST_A_TURN: Micros = DOLLAR;
 /// Less than this left for today, and a member cannot start a turn.
 pub const LEAST_A_TURN: Micros = 10_000;
 
@@ -26,10 +32,23 @@ pub const fn pool_a_day(pool_per_month: Micros) -> Micros {
     pool_per_month / DAYS_A_MONTH
 }
 
-/// A member's budget for one day: its share of the day's pool.
+/// A paid member's budget for one day: its weight's part of the day's pool, shared among the
+/// paid members' weights (`paid`, its own among them). Nothing when there is no weight.
 #[must_use]
-pub const fn member_a_day(pool_per_month: Micros, share_percent: u8) -> Micros {
-    pool_a_day(pool_per_month) * share_percent as Micros / 100
+pub const fn member_a_day(pool_per_month: Micros, weight: u8, paid: i64) -> Micros {
+    if paid <= 0 {
+        return 0;
+    }
+    pool_a_day(pool_per_month) * weight as Micros / paid
+}
+
+/// The most one turn of a member in `role` may spend.
+#[must_use]
+pub const fn most_a_turn(role: Role) -> Micros {
+    match role {
+        Role::Ceo => CEO_MOST_A_TURN,
+        _ => MOST_A_TURN,
+    }
 }
 
 /// The day a moment falls on, as days since the epoch, by the owner's clock.
@@ -38,11 +57,12 @@ pub const fn day_of(at: Millis, offset_minutes: i64) -> i64 {
     (at + offset_minutes * 60_000).div_euclid(DAY_MS)
 }
 
-/// What one turn can have reserved, before it starts: the per-turn cap, or what is left of
-/// the member's day or the pool's day if that is less. `None` when less than a turn is left.
+/// What one turn can have reserved, before it starts: the per-turn cap (`most`, the role's),
+/// or what is left of the member's day or the pool's day if that is less. `None` when less
+/// than a turn is left.
 #[must_use]
-pub fn reservation(member_left: Micros, pool_left: Micros) -> Option<Micros> {
-    let amount = MOST_A_TURN.min(member_left).min(pool_left);
+pub fn reservation(member_left: Micros, pool_left: Micros, most: Micros) -> Option<Micros> {
+    let amount = most.min(member_left).min(pool_left);
     (amount >= LEAST_A_TURN).then_some(amount)
 }
 
@@ -57,29 +77,53 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_pool_is_split_by_share_per_day() {
+    fn the_pool_is_split_per_day_among_the_paid_by_their_weights() {
         assert_eq!(pool_a_day(POOL_PER_MONTH), 2_333_333);
+        // Every member paid: the weights add up to a hundred, as the plan's shares do.
         assert_eq!(
-            member_a_day(POOL_PER_MONTH, 40),
+            member_a_day(POOL_PER_MONTH, 40, 100),
             933_333,
             "the developer's $0.93"
         );
         assert_eq!(
-            member_a_day(POOL_PER_MONTH, 15),
+            member_a_day(POOL_PER_MONTH, 15, 100),
             349_999,
             "the researcher's $0.35"
+        );
+        // Only the CEO and the lead paid: they split the day by 35 to 25.
+        let (ceo, lead) = (
+            member_a_day(POOL_PER_MONTH, Role::Ceo.share(), 60),
+            member_a_day(POOL_PER_MONTH, Role::Lead.share(), 60),
+        );
+        assert_eq!((ceo, lead), (1_361_110, 972_222), "$1.36 and $0.97");
+        assert!(ceo + lead <= pool_a_day(POOL_PER_MONTH));
+        assert_eq!(
+            member_a_day(POOL_PER_MONTH, 25, 0),
+            0,
+            "no weight, no share"
         );
     }
 
     #[test]
-    fn a_turn_reserves_at_most_forty_cents_and_never_more_than_is_left() {
-        assert_eq!(reservation(933_333, 2_333_333), Some(MOST_A_TURN));
-        assert_eq!(reservation(120_000, 2_333_333), Some(120_000));
-        assert_eq!(reservation(933_333, 50_000), Some(50_000));
+    fn a_turn_reserves_at_most_its_roles_cap_and_never_more_than_is_left() {
+        let most = most_a_turn(Role::Lead);
+        assert_eq!(most, MOST_A_TURN);
+        assert_eq!(reservation(933_333, 2_333_333, most), Some(MOST_A_TURN));
+        assert_eq!(reservation(120_000, 2_333_333, most), Some(120_000));
+        assert_eq!(reservation(933_333, 50_000, most), Some(50_000));
         assert_eq!(
-            reservation(9_999, 2_333_333),
+            reservation(9_999, 2_333_333, most),
             None,
             "less than a turn is left"
+        );
+        // The CEO's turns may spend a dollar each (ADR 0111); nobody else's more than 40 cents.
+        assert_eq!(most_a_turn(Role::Ceo), DOLLAR);
+        for role in [Role::Developer, Role::Reviewer, Role::Researcher] {
+            assert_eq!(most_a_turn(role), MOST_A_TURN);
+        }
+        assert_eq!(
+            reservation(1_361_110, 2_333_333, most_a_turn(Role::Ceo)),
+            Some(DOLLAR)
         );
     }
 

@@ -124,6 +124,12 @@ that established it.
   the node's team gateway, which passes it to HQ with its own token. No keys in the sandbox;
   scanners catch accidents, narrow exits and keeping data away catch intent. The egress proxy
   (an allowlist the owner grows from the desk) is designed and deferred.
+- **The owner is the board; the CEO runs the team** ([0111](0111-the-ceo-and-the-chain-of-command.md)).
+  A member's question goes up the chain (to the lead, the lead's to the CEO) and is answered in
+  the task's thread; only the CEO's decision, with its recommendation and checked by the
+  reviewer, reaches the board's desk. The CEO thinks with Opus at up to $1 a turn, wakes only
+  for escalations and a daily review, keeps the house log, reads Endora's public records, and is
+  given nothing Confidential. The pool is shared among the paid members alone.
 - **Start fresh rather than keep what makes noise** ([0100](0100-the-clean-slate.md)). What
   Endora did unasked (check-ins, the nightly loop, notions, own work, goals) produced stale
   beliefs and repeated questions, so it went, code and storage. A table nothing reads is
@@ -254,6 +260,7 @@ of an existing record and take the next number.
 | [0108](0108-the-bridge.md) | The bridge: Endora's capabilities as the team's tools | — |
 | [0109](0109-a-brain-per-member.md) | A brain per member, and what a cloud turn may read | — |
 | [0110](0110-the-teams-rings.md) | The team's rings: a sandbox on the Pi, the team gateway, the egress proxy, and undo | — |
+| [0111](0111-the-ceo-and-the-chain-of-command.md) | The CEO and the chain of command | — |
 
 The forty-nine decisions these consolidate are in [archive/](archive/) — kept in full,
 because the reasoning that produced a rule is the reason it survives an argument later.

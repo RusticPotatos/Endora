@@ -11,9 +11,14 @@ use super::ports::{Clock, NewTask, Run, TeamStore, WorkerAdapter};
 use crate::domain::{Member, Priority, Refusal, Role, RunStatus, TaskId, TaskStatus};
 
 /// The tools a member of `role` is offered, as MCP lists them: name, what it does, and its
-/// input. Only the reviewer is offered `review`.
+/// input. Only the reviewer is offered `review`. The CEO (ADR 0111) is offered the team's
+/// tools but the gate and privileged actions, puts decisions to the board with `ask_owner`,
+/// and keeps the house log and reads Endora's public records.
 #[must_use]
 pub fn tools(role: Role) -> Value {
+    if role == Role::Ceo {
+        return ceos_tools();
+    }
     let tool = |name: &str, description: &str, properties: Value, required: &[&str]| {
         json!({
             "name": name,
@@ -55,7 +60,7 @@ pub fn tools(role: Role) -> Value {
         ),
         tool(
             "ask_owner",
-            "Put a question or a proposal on the owner's desk, about your task. Asking ends your turn: you are woken when they have seen it.",
+            "Ask a question or put a proposal about your task up the chain: to the lead, or the lead's to the CEO, in the task's thread (to the owner's desk only when the team has no CEO). Asking ends your turn: you are woken when they answer.",
             json!({ "text": { "type": "string" } }),
             &["text"]
         ),
@@ -99,6 +104,63 @@ pub fn tools(role: Role) -> Value {
         }
     }
     all
+}
+
+/// The CEO's tools (ADR 0111).
+fn ceos_tools() -> Value {
+    let all = tools(Role::Lead);
+    let keep = [
+        "my_turn",
+        "claim",
+        "post",
+        "set_status",
+        "create_task",
+        "check_back",
+    ];
+    let mut list: Vec<Value> = all
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|t| keep.iter().any(|k| t["name"] == *k))
+        .cloned()
+        .collect();
+    let tool = |name: &str, description: &str, properties: Value, required: &[&str]| {
+        json!({
+            "name": name,
+            "description": description,
+            "inputSchema": { "type": "object", "properties": properties, "required": required },
+        })
+    };
+    let part = |what: &str| json!({ "type": "string", "maxLength": crate::domain::chain::DECISION_PART_MOST, "description": what });
+    list.push(tool(
+        "ask_owner",
+        "Put a decision to the owner, who is the board: only what they alone decide (money beyond the pool, new goals and priorities, hiring or letting go a member, what only they can know). The reviewer checks it first. Asking ends your turn: you are woken when the board decides.",
+        json!({
+            "decision": part("what the board is to decide, as a question"),
+            "recommendation": part("what you recommend, and the options"),
+            "why": part("why, from what the team found"),
+        }),
+        &["decision", "recommendation", "why"],
+    ));
+    list.push(tool(
+        "note_house",
+        "Add one dated line to the house log, yours to keep, which you and the lead read every turn: what you learned about the house or decided, at most 500 characters.",
+        json!({ "entry": { "type": "string", "maxLength": crate::domain::house::HOUSE_ENTRY_MOST } }),
+        &["entry"],
+    ));
+    list.push(tool(
+        "rewrite_house",
+        "Rewrite the house log whole, compactly, keeping what still matters: at most 6,000 characters. Use it when note_house says the log is full.",
+        json!({ "log": { "type": "string", "maxLength": crate::domain::house::HOUSE_LOG_MOST } }),
+        &["log"],
+    ));
+    list.push(tool(
+        "read_doc",
+        "Read one of Endora's public decision records or plans: a path in docs/adr or docs/plans (that folder alone lists them), 20,000 characters a part.",
+        json!({ "path": { "type": "string", "description": "e.g. docs/plans/endora-hq.md, or docs/adr to list the records" }, "part": { "type": "integer", "minimum": 1 } }),
+        &["path"],
+    ));
+    Value::Array(list)
 }
 
 /// The most a member writes in one post: a thread is read by every turn after it.
@@ -232,9 +294,49 @@ pub fn call<S: TeamStore, W: WorkerAdapter, C: Clock>(
                 .map_err(|e| said(&e))?;
             Ok(format!("Created task {}.", id.0))
         }
+        "ask_owner" if member.role == Role::Ceo => {
+            let decision = crate::domain::chain::Decision::new(
+                args["decision"].as_str().unwrap_or(""),
+                args["recommendation"].as_str().unwrap_or(""),
+                args["why"].as_str().unwrap_or(""),
+            )
+            .map_err(|e| e.to_string())?;
+            match engine.ask_board(run.id, &decision).map_err(|e| said(&e))? {
+                super::engine::Asked::Review(_) => Ok("It is with the reviewer, who checks it before it reaches the board, and this turn has ended: stop now. You are woken if it is sent back, or when the board decides.".to_owned()),
+                _ => Ok("It is on the board's desk, and this turn has ended: stop now. You are woken when the board decides.".to_owned()),
+            }
+        }
+        "note_house" => {
+            let entry = text_arg(args, "entry")?;
+            let line = engine.note_house(run.id, entry).map_err(|e| said(&e))?;
+            Ok(format!("Noted in the house log: {line}"))
+        }
+        "rewrite_house" => {
+            let log = args["log"].as_str().unwrap_or("");
+            let kept = engine.rewrite_house(run.id, log).map_err(|e| said(&e))?;
+            Ok(format!("The house log is rewritten: {kept} characters."))
+        }
+        "read_doc" => {
+            let path = text_arg(args, "path")?;
+            let part = args["part"]
+                .as_u64()
+                .and_then(|p| usize::try_from(p).ok())
+                .unwrap_or(1);
+            engine.read_doc(run.id, path, part).map_err(|e| said(&e))
+        }
         "ask_owner" => {
             let text = text_arg(args, "text")?;
             match engine.ask_owner(run.id, text).map_err(|e| said(&e))? {
+                super::engine::Asked::Up(to) => {
+                    let to = engine
+                        .store()
+                        .members()
+                        .map_err(|e| e.to_string())?
+                        .into_iter()
+                        .find(|m| m.id == to)
+                        .map_or_else(|| "the one above you".to_owned(), |m| m.name);
+                    Ok(format!("It is with {to}, in the task's thread, and this turn has ended: stop now. You are woken when they answer."))
+                }
                 super::engine::Asked::Desk(_) => Ok("It is on the owner's desk, and this turn has ended: stop now. You are woken when they have seen it.".to_owned()),
                 super::engine::Asked::Review(_) => Ok("It is with the reviewer, who checks it before it reaches the owner's desk, and this turn has ended: stop now. You are woken if it is sent back, or when the owner has seen it.".to_owned()),
             }

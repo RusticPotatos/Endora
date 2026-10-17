@@ -11,6 +11,7 @@ use super::ports::{
     Clock, DeskItem, NewRoutine, NewTask, Run, RunContext, StoreError, TeamStore, Wake,
     WorkerAdapter,
 };
+use crate::domain::chain::{self, Decision};
 use crate::domain::lessons;
 use crate::domain::money::{self, Micros};
 use crate::domain::review;
@@ -23,6 +24,7 @@ use crate::domain::{
     Millis, Priority, Receipt, Refusal, Role, Routine, RoutineId, RunId, RunStatus, Task, TaskId,
     TaskStatus, WakeDecision, WakeReason, WakeSituation,
 };
+use crate::domain::{docs, house};
 
 /// How long open, assigned work may sit with nothing queued, running or held for it before its
 /// member is woken once, and again before it goes on the owner's desk as stuck.
@@ -33,6 +35,17 @@ pub const GOAL_NOTE_MOST: usize = 2_000;
 
 /// How long an approval waits for the owner before it goes unrun (ADR 0108): a day.
 pub const APPROVALS_LAST_MS: Millis = 24 * 60 * 60 * 1000;
+
+/// How far back the CEO's briefing looks for the home lab's trouble and the board's desk.
+pub const CEO_LOOKS_BACK_MS: Millis = 7 * 24 * 60 * 60 * 1000;
+
+/// Where HQ keeps the house log (ADR 0111).
+const HOUSE_LOG: &str = "house_log";
+/// Set once HQ has seated its CEO, so it is never seated again.
+const CEO_SEATED: &str = "ceo_seated";
+
+/// Endora's public records and plans, as `(path, text)`, for the CEO's `read_doc`.
+pub type Library = &'static [(&'static str, &'static str)];
 
 /// How the engine is set up.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -152,6 +165,8 @@ pub enum Asked {
     Desk(crate::domain::DeskId),
     /// To this reviewer first, as a draft in the task's thread.
     Review(MemberId),
+    /// Up the chain of command, to this member, in the task's thread (ADR 0111).
+    Up(MemberId),
 }
 
 /// The engine.
@@ -164,6 +179,8 @@ pub struct Engine<S, W, C> {
     /// The containers in Endora's home lab, as the node last said: what a question to the
     /// owner is checked against. `None` until the node has said.
     lab: Mutex<Option<Vec<String>>>,
+    /// Endora's public records and plans, which the CEO may read.
+    docs: Library,
 }
 
 impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
@@ -176,7 +193,15 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             settings,
             lock: Mutex::new(()),
             lab: Mutex::new(None),
+            docs: &[],
         }
+    }
+
+    /// The engine with Endora's public records and plans, for the CEO's `read_doc`.
+    #[must_use]
+    pub fn with_docs(mut self, docs: Library) -> Self {
+        self.docs = docs;
+        self
     }
 
     /// The containers Endora's home lab has now, as the node says them: what each question to
@@ -235,14 +260,43 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         self.store.task(id)?.ok_or(EngineError::Unknown("task"))
     }
 
-    /// What a member could have reserved for a turn now, if anything.
+    /// The weights of the members with a paid brain, together: what the day's pool is shared
+    /// among (ADR 0111).
+    fn paid_weights(&self) -> Done<i64> {
+        Ok(self
+            .store
+            .members()?
+            .iter()
+            .filter(|m| m.brain.cloud())
+            .map(|m| i64::from(m.share_percent))
+            .sum())
+    }
+
+    /// A member's budget for one day: its weight's part of the pool among the paid, and
+    /// nothing for a member on the house's model, which costs nothing.
+    fn per_day(&self, member: &Member, paid: i64) -> Micros {
+        if !member.brain.cloud() {
+            return 0;
+        }
+        money::member_a_day(self.settings.pool_per_month, member.share_percent, paid)
+    }
+
+    /// What a member could have reserved for a turn now, if anything. A member on the house's
+    /// model reserves nothing and is never turned away for money (ADR 0111).
     fn affordable(&self, member: &Member) -> Done<Option<Micros>> {
+        if !member.brain.cloud() {
+            return Ok(Some(0));
+        }
         let day = self.today();
-        let member_left = money::member_a_day(self.settings.pool_per_month, member.share_percent)
+        let member_left = self.per_day(member, self.paid_weights()?)
             - self.store.committed(Some(member.id), day)?;
         let pool_left =
             money::pool_a_day(self.settings.pool_per_month) - self.store.committed(None, day)?;
-        Ok(money::reservation(member_left, pool_left))
+        Ok(money::reservation(
+            member_left,
+            pool_left,
+            money::most_a_turn(member.role),
+        ))
     }
 
     // ---- the team and the work ---------------------------------------------------------
@@ -292,6 +346,173 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             json!({ "member": member.0, "name": found.name, "brain": brain.name() }),
         )?;
         Ok(brain)
+    }
+
+    /// The owner renames a member: one to 40 characters on one line, and no other member's
+    /// name, since members are named in threads by it. Returns the name as kept.
+    ///
+    /// # Errors
+    /// [`EngineError::Unknown`] for a member that does not exist; [`Refusal::NotAName`] for
+    /// an empty name, one too long, or another member's; a store failure.
+    pub fn rename(&self, member: MemberId, name: &str) -> Done<String> {
+        let _held = self.held();
+        let found = self.member(member)?;
+        let name = one_line(name, 41);
+        let taken = self
+            .store
+            .members()?
+            .iter()
+            .any(|m| m.id != member && m.name.eq_ignore_ascii_case(&name));
+        if name.is_empty() || name.chars().count() > 40 || taken {
+            return Err(EngineError::Refused(Refusal::NotAName));
+        }
+        self.store.rename_member(member, &name)?;
+        self.emit(
+            EventKind::MemberRenamed,
+            json!({ "member": member.0, "was": found.name, "name": name }),
+        )?;
+        Ok(name)
+    }
+
+    /// Seats the team's CEO (ADR 0111), once: a member named `name` in the CEO's role, with
+    /// its weight in the pool and Claude Opus to think with, said in the feed. Nothing when the
+    /// team has a CEO, or HQ has seated one before (the owner may have let it go since).
+    ///
+    /// # Errors
+    /// A store failure.
+    pub fn seat_ceo(&self, name: &str) -> Done<Option<MemberId>> {
+        let _held = self.held();
+        let has_one = self.store.members()?.iter().any(|m| m.role == Role::Ceo);
+        if has_one || self.store.setting(CEO_SEATED)?.is_some() {
+            return Ok(None);
+        }
+        let id = self
+            .store
+            .add_member(name, Role::Ceo, Role::Ceo.share(), 1, 3)?;
+        self.store.set_brain(id, Brain::Opus)?;
+        self.store.set_setting(CEO_SEATED, "1")?;
+        self.emit(
+            EventKind::MemberHired,
+            json!({ "member": id.0, "name": name, "role": Role::Ceo.name(),
+                    "brain": Brain::Opus.name(), "by": "endora" }),
+        )?;
+        Ok(Some(id))
+    }
+
+    // ---- the house log (ADR 0111) ---------------------------------------------------------
+
+    /// The house log: empty when nothing is in it.
+    ///
+    /// # Errors
+    /// A store failure.
+    pub fn house_log(&self) -> Done<String> {
+        Ok(self.store.setting(HOUSE_LOG)?.unwrap_or_default())
+    }
+
+    fn keep_house_log(&self, log: &str, by: &str, said: serde_json::Value) -> Done<()> {
+        self.store.set_setting(HOUSE_LOG, log)?;
+        let mut about = json!({ "by": by, "length": log.chars().count() });
+        if let (Some(about), Some(said)) = (about.as_object_mut(), said.as_object()) {
+            about.extend(said.clone());
+        }
+        self.emit(EventKind::HouseNoted, about)
+    }
+
+    /// The owner rewrites the house log on HQ's screen; empty clears it.
+    ///
+    /// # Errors
+    /// [`Refusal::TooLong`] past [`house::HOUSE_LOG_MOST`]; a store failure.
+    pub fn set_house_log(&self, log: &str) -> Done<()> {
+        let _held = self.held();
+        let log = house::rewritten(log).map_err(EngineError::Refused)?;
+        self.keep_house_log(&log, "owner", json!({ "rewritten": true }))
+    }
+
+    /// A turn of the CEO's adds a dated line to the house log. Returns the line.
+    ///
+    /// # Errors
+    /// [`Refusal::TurnOver`]; [`Refusal::OnlyTheCeo`] for anyone else; [`EngineError::Unknown`]
+    /// for no entry; [`Refusal::TooLong`] past [`house::HOUSE_ENTRY_MOST`];
+    /// [`Refusal::HouseLogFull`] when it has no room.
+    pub fn note_house(&self, run: RunId, entry: &str) -> Done<String> {
+        let _held = self.held();
+        let (run, ceo) = self.the_ceos_turn(run)?;
+        if entry.trim().is_empty() {
+            return Err(EngineError::Unknown("entry for the house log"));
+        }
+        let line = house::line(entry, self.clock.now(), self.settings.offset_minutes)
+            .map_err(EngineError::Refused)?;
+        let log = house::appended(&self.house_log()?, &line).map_err(EngineError::Refused)?;
+        self.keep_house_log(&log, &ceo.name, json!({ "entry": line }))?;
+        if let Some(task) = run.task {
+            self.mark_progress(ceo.id, task)?;
+        }
+        Ok(line)
+    }
+
+    /// A turn of the CEO's rewrites the house log whole, compactly.
+    ///
+    /// # Errors
+    /// [`Refusal::TurnOver`]; [`Refusal::OnlyTheCeo`]; [`Refusal::TooLong`] past
+    /// [`house::HOUSE_LOG_MOST`].
+    pub fn rewrite_house(&self, run: RunId, log: &str) -> Done<usize> {
+        let _held = self.held();
+        let (run, ceo) = self.the_ceos_turn(run)?;
+        let log = house::rewritten(log).map_err(EngineError::Refused)?;
+        self.keep_house_log(&log, &ceo.name, json!({ "rewritten": true }))?;
+        if let Some(task) = run.task {
+            self.mark_progress(ceo.id, task)?;
+        }
+        Ok(log.chars().count())
+    }
+
+    /// A running turn of the CEO's, and the CEO.
+    fn the_ceos_turn(&self, run: RunId) -> Done<(Run, Member)> {
+        let run = self.running(run)?;
+        let member = self.member(run.member)?;
+        if member.role != Role::Ceo {
+            return Err(EngineError::Refused(Refusal::OnlyTheCeo));
+        }
+        Ok((run, member))
+    }
+
+    /// A turn of the CEO's reads one of Endora's public records or plans, a part at a time
+    /// ([`docs::DOC_PART`] characters), or the list of a folder's. They are public already;
+    /// nothing else is read.
+    ///
+    /// # Errors
+    /// [`Refusal::TurnOver`]; [`Refusal::OnlyTheCeo`]; [`Refusal::NotADoc`] for any other
+    /// path; [`EngineError::Unknown`] for a document there is not.
+    pub fn read_doc(&self, run: RunId, path: &str, part: usize) -> Done<String> {
+        self.the_ceos_turn(run)?;
+        match docs::asked(path).map_err(EngineError::Refused)? {
+            docs::Asked::Folder(folder) => {
+                let names: Vec<&str> = self
+                    .docs
+                    .iter()
+                    .map(|(p, _)| *p)
+                    .filter(|p| p.rsplit_once('/').is_some_and(|(f, _)| f == folder))
+                    .collect();
+                Ok(format!("In {folder}:\n{}", names.join("\n")))
+            }
+            docs::Asked::Doc(path) => {
+                let (_, text) =
+                    self.docs
+                        .iter()
+                        .find(|(p, _)| *p == path)
+                        .ok_or(EngineError::Unknown(
+                            "document: read_doc docs/adr or docs/plans to list them",
+                        ))?;
+                let part = part.max(1);
+                let (said, parts) = docs::part(text, part);
+                let next = if part < parts {
+                    format!(" Read on with part {}.", part + 1)
+                } else {
+                    String::new()
+                };
+                Ok(format!("{path}, part {part} of {parts}.{next}\n\n{said}"))
+            }
+        }
     }
 
     /// Sets a goal. The owner's is active at once; one Endora proposes waits on the desk.
@@ -459,6 +680,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         };
         Ok(WakeSituation {
             waits_for_review,
+            not_for_the_ceo: member.role == Role::Ceo && !reason.reaches_the_ceo(),
             stopped: self.store.stopped()?,
             paused: member.paused,
             can_afford_a_turn: self.affordable(member)?.is_some(),
@@ -637,15 +859,15 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
 
     /// Whether a turn may act on `task`: its own task and the sub-tasks under it, at any
     /// depth. Writing reaches further: the task its own hangs from, and any task whose thread
-    /// names the member (`@name`, as a wake reads it). The lead may act on any task in a goal
-    /// it leads; a team has one lead, which leads every goal.
+    /// names the member (`@name`, as a wake reads it). The lead and the CEO may act on any task
+    /// in a goal they lead; a team has one of each, which lead every goal.
     ///
     /// # Errors
     /// [`EngineError::Refused`] with [`Refusal::OutOfReach`] when it may not.
     fn reach(&self, run: &Run, task: TaskId, writing: bool) -> Done<()> {
         let target = self.task(task)?;
         let member = self.member(run.member)?;
-        if member.role == Role::Lead {
+        if member.role.leads() {
             return Ok(());
         }
         if let Some(own) = run.task {
@@ -704,7 +926,9 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         self.set_status_held_lock(run.member, task, to, reason)
     }
 
-    /// A turn writes in a task's thread, within its reach for writing.
+    /// A turn writes in a task's thread, within its reach for writing. A post that answers a
+    /// question asked of the member up the chain wakes whoever asked it, as the owner's reply
+    /// does (ADR 0111).
     ///
     /// # Errors
     /// [`Refusal::TurnOver`], [`Refusal::OutOfReach`], or a task that does not exist.
@@ -712,7 +936,43 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         let _held = self.held();
         let run = self.running(run)?;
         self.reach(&run, task, true)?;
-        self.post_held_lock(Author::Member(run.member), task, text)
+        let member = self.member(run.member)?;
+        let askers = if text.trim_start().starts_with(chain::QUESTION_FOR) {
+            Vec::new()
+        } else {
+            self.askers_of(&member, task)?
+        };
+        self.post_held_lock(Author::Member(member.id), task, text)?;
+        let members = self.store.members()?;
+        let named = mentions(text, &members);
+        for asker in askers {
+            if asker.id == member.id || named.iter().any(|m| m.id == asker.id) {
+                continue;
+            }
+            self.wake_held_lock(asker.id, Some(task), WakeReason::QuestionAnswered)?;
+        }
+        Ok(())
+    }
+
+    /// The members whose questions up the chain to `member`, in `task`'s thread, it has not
+    /// answered yet.
+    fn askers_of(&self, member: &Member, task: TaskId) -> Done<Vec<Member>> {
+        let thread = self.store.thread(task)?;
+        let posts: Vec<(&str, &str)> = thread
+            .iter()
+            .map(|p| (p.author.as_str(), p.text.as_str()))
+            .collect();
+        let members = self.store.members()?;
+        let mut askers: Vec<Member> = Vec::new();
+        for (name, _) in chain::unanswered(&posts, &member.name) {
+            let Some(asker) = members.iter().find(|m| m.name == name) else {
+                continue;
+            };
+            if !askers.iter().any(|a| a.id == asker.id) {
+                askers.push(asker.clone());
+            }
+        }
+        Ok(askers)
     }
 
     /// Takes a task for `member`, outside any turn: the rules of claiming on their own, for
@@ -1176,8 +1436,9 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// [`EngineError::Unknown`] for a run that does not exist.
     pub fn report_usage(&self, run: RunId, amount: Micros) -> Done<bool> {
         let _held = self.held();
-        let amount = amount.clamp(0, money::MOST_A_TURN);
         let mut current = self.store.run(run)?.ok_or(EngineError::Unknown("run"))?;
+        let most = money::most_a_turn(self.member(current.member)?.role);
+        let amount = amount.clamp(0, most);
         if current.status != RunStatus::Running {
             self.charge_late(current, amount)?;
             return Ok(false);
@@ -1349,8 +1610,34 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         let mut told = format!(
             "You are {}, the team's {}.\n",
             member.name,
-            member.role.name()
+            if member.role == Role::Ceo {
+                "CEO"
+            } else {
+                member.role.name()
+            }
         );
+        if member.role == Role::Ceo {
+            told.push_str(&self.ceo_context(member)?);
+        }
+        let log = self.house_log()?;
+        if member.role == Role::Lead && !log.trim().is_empty() {
+            told.push_str(&format!(
+                "The house log, kept by the CEO (read it; it is not yours to change):\n{}\n",
+                log.trim()
+            ));
+        }
+        if let Some(above) = self.above(member)? {
+            told.push_str(&format!(
+                "Your questions (ask_owner) go to {}, the {}, in the task's thread, and they \
+                 answer there: the owner's desk is the CEO's to use.\n",
+                above.name,
+                if above.role == Role::Ceo {
+                    "CEO"
+                } else {
+                    above.role.name()
+                }
+            ));
+        }
         let Some(task) = run.task else {
             told.push_str("This turn is about no task: look over the team's work.\n");
             return Ok(told);
@@ -1420,10 +1707,40 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 told.push_str(&format!("- {line}\n"));
             }
         }
+        if self.reason_for(run)? == WakeReason::QuestionAsked.name() {
+            let thread = self.store.thread(task.id)?;
+            let posts: Vec<(&str, &str)> = thread
+                .iter()
+                .map(|p| (p.author.as_str(), p.text.as_str()))
+                .collect();
+            for (asker, question) in chain::unanswered(&posts, &member.name) {
+                told.push_str(&format!("{asker} asks you: {question}\n"));
+            }
+            told.push_str(if member.role == Role::Ceo {
+                "Answer in the thread with post: whoever asked is woken when you do. Decide it \
+                 yourself, or hand the work on with create_task; only what the board alone \
+                 decides goes to them, as a decision with ask_owner.\n"
+            } else {
+                "Answer in the thread with post: whoever asked is woken when you do. Decide it, \
+                 hand the work on with create_task, or, if it is beyond you, ask up the chain \
+                 with ask_owner.\n"
+            });
+        }
         if self.reason_for(run)? == WakeReason::ReviewRequested.name() {
             // The newest of a draft for the owner and a move to review says which this is.
+            let members = self.store.members()?;
             let asked = self.store.thread(task.id)?.into_iter().rev().find_map(|p| {
                 if let Some(draft) = p.text.strip_prefix(review::DRAFT) {
+                    let the_ceos = members
+                        .iter()
+                        .any(|m| m.role == Role::Ceo && m.name == p.author);
+                    if the_ceos {
+                        return Some(format!(
+                            "{}, the CEO, wrote this decision for the board:\n{draft}\n{}",
+                            p.author,
+                            review::REVIEW_BOARD_DRAFT
+                        ));
+                    }
                     return Some(format!(
                         "{} wrote this draft for the owner: {draft}\n{}",
                         p.author,
@@ -1442,6 +1759,13 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 told.push_str(&format!("{asked}\n"));
             }
         }
+        if member.role == Role::Ceo {
+            told.push_str(
+                "Your tools: my_turn, claim, post, set_status, create_task, ask_owner (a \
+                 decision for the board), check_back, note_house, rewrite_house, read_doc.\n",
+            );
+            return Ok(told);
+        }
         told.push_str(
             "Your tools: my_turn, claim, post, set_status, create_task, ask_owner, check_back, \
              run_gate, request_action",
@@ -1451,6 +1775,166 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         } else {
             ".\n"
         });
+        Ok(told)
+    }
+
+    /// What the CEO is told first, every turn (ADR 0111): the house log, its team, the goals
+    /// with their notes and lessons, the open work, the home lab's trouble and what reached
+    /// the board's desk in the last week, and what only the board decides. Nothing of the
+    /// owner's brain, mail or chat: the CEO thinks on a cloud model.
+    fn ceo_context(&self, ceo: &Member) -> Done<String> {
+        let mut told = String::new();
+        let log = self.house_log()?;
+        told.push_str(
+            "The house log, yours to keep (note_house adds a dated line, rewrite_house rewrites \
+             it whole when it fills; the owner reads and edits it):\n",
+        );
+        told.push_str(if log.trim().is_empty() {
+            "(empty)"
+        } else {
+            log.trim()
+        });
+        told.push('\n');
+        let members = self.store.members()?;
+        let name_of = |id: Option<MemberId>| {
+            id.and_then(|id| members.iter().find(|m| m.id == id))
+                .map_or_else(|| "nobody".to_owned(), |m| m.name.clone())
+        };
+        let team: Vec<String> = members
+            .iter()
+            .filter(|m| m.id != ceo.id)
+            .map(|m| {
+                format!(
+                    "{} ({}, {}{})",
+                    m.name,
+                    m.role.name(),
+                    m.brain.label(),
+                    if m.paused { ", paused" } else { "" }
+                )
+            })
+            .collect();
+        told.push_str(&format!(
+            "Your team: {}. The lead runs the work; you decide what it brings you.\n",
+            if team.is_empty() {
+                "nobody yet".to_owned()
+            } else {
+                team.join(", ")
+            }
+        ));
+        told.push_str("Goals:\n");
+        let goals = self.store.goals()?;
+        let open_goals: Vec<_> = goals
+            .iter()
+            .filter(|g| matches!(g.status, GoalStatus::Active | GoalStatus::Proposed))
+            .collect();
+        if open_goals.is_empty() {
+            told.push_str("- none\n");
+        }
+        for goal in open_goals {
+            told.push_str(&format!(
+                "- #{} {} ({})\n",
+                goal.id,
+                goal.title,
+                goal.status.name()
+            ));
+            let notes = self.store.goal_note(goal.id)?;
+            if !notes.trim().is_empty() {
+                told.push_str("  Its notes and lessons:\n");
+                for line in notes.lines().filter(|l| !l.trim().is_empty()) {
+                    told.push_str(&format!("  {}\n", line.trim()));
+                }
+            }
+        }
+        let open: Vec<Task> = self
+            .store
+            .tasks()?
+            .into_iter()
+            .filter(|t| !t.status.finished())
+            .collect();
+        told.push_str("Open tasks:\n");
+        if open.is_empty() {
+            told.push_str("- none\n");
+        }
+        for task in open.iter().take(30) {
+            told.push_str(&format!(
+                "- #{} {} ({}, {})\n",
+                task.id,
+                task.title,
+                task.status.name(),
+                name_of(task.owner.or(task.assignee))
+            ));
+        }
+        if open.len() > 30 {
+            told.push_str(&format!("- and {} more\n", open.len() - 30));
+        }
+        let since = self.clock.now() - CEO_LOOKS_BACK_MS;
+        let day = |at: Millis| {
+            let (d, m) = lessons::day_and_month(money::day_of(at, self.settings.offset_minutes));
+            format!("{d} {m}")
+        };
+        let alarms: Vec<String> = self
+            .store
+            .events_after(0)?
+            .into_iter()
+            .filter(|e| e.at >= since)
+            .filter_map(|e| {
+                let said = match e.kind.as_str() {
+                    "routine.fired" if e.data["firing"] == "alarm" => e.data["why"].as_str(),
+                    "routine.posted" => e.data["said"].as_str(),
+                    _ => None,
+                }?;
+                Some(format!("- {}: {said}", day(e.at)))
+            })
+            .collect();
+        if alarms.is_empty() {
+            told.push_str("Home-lab trouble in the last 7 days: no alarms.\n");
+        } else {
+            told.push_str("Home-lab trouble in the last 7 days (Endora's alarms):\n");
+            for alarm in alarms.iter().rev().take(20).rev() {
+                told.push_str(&format!("{alarm}\n"));
+            }
+        }
+        let desk: Vec<DeskItem> = self
+            .store
+            .desk()?
+            .into_iter()
+            .filter(|d| d.at >= since)
+            .collect();
+        if desk.is_empty() {
+            told.push_str("The board's desk in the last 7 days: nothing.\n");
+        } else {
+            told.push_str("The board's desk in the last 7 days, and how the board decided:\n");
+            for item in desk.iter().rev().take(15).rev() {
+                let first: String = item
+                    .text
+                    .lines()
+                    .next()
+                    .unwrap_or("")
+                    .chars()
+                    .take(160)
+                    .collect();
+                let from = item
+                    .member
+                    .map(|m| format!(" from {}", name_of(Some(m))))
+                    .unwrap_or_default();
+                let how = if item.status == "waiting" {
+                    "waiting for the board".to_owned()
+                } else {
+                    format!("the board: {}", item.status.replace('_', " "))
+                };
+                told.push_str(&format!(
+                    "- {}, {}{from}: {first} ({how})\n",
+                    day(item.at),
+                    item.kind.replace('_', " ")
+                ));
+            }
+        }
+        told.push_str(chain::BOARD_ITEMS);
+        told.push_str(
+            "\nYou wake only for a question up the chain, the board's word, and your daily \
+             review. Members' findings are in their tasks' threads: read those, never the house's \
+             logs yourself. Endora's public records and plans are yours to read with read_doc.\n",
+        );
         Ok(told)
     }
 
@@ -1753,6 +2237,12 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// that member again. One question a member about a task waits at a time, so a turn
     /// cannot fill the owner's desk.
     ///
+    /// While the team has a CEO at work, nobody's question but the CEO's reaches the desk
+    /// (ADR 0111): it goes up the chain instead (see [`chain::above`]), posted in the task's
+    /// thread for the one above, who is woken to answer there. The CEO's is a decision for the
+    /// board ([`Self::ask_board`]); the reviewer's, about the CEO's decision it checked, passes
+    /// that decision on to the board's desk.
+    ///
     /// A question about the home lab, from anyone but the reviewer, goes to the reviewer
     /// first (see [`review::goes_to_review`]): the task moves to `in_review` with the draft in
     /// its thread, and the reviewer is woken to check it. Whatever reaches the desk lists the
@@ -1773,12 +2263,182 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 .ok_or(EngineError::Unknown("task for this turn"))?,
         )?;
         let member = self.member(turn.member)?;
+        // The CEO's word to the board is a decision, with its recommendation (ADR 0111).
+        if member.role == Role::Ceo {
+            let decision =
+                Decision::read(&text).ok_or(EngineError::Refused(Refusal::NotADecision))?;
+            return self.to_the_board(turn, &task, &member, &decision);
+        }
+        // The reviewer passing on the CEO's decision, checked: it reaches the board as the
+        // CEO's, as the reviewer wrote it, or as the CEO did if the reviewer's lost its shape.
+        if member.role == Role::Reviewer {
+            if let Some((ceo, drafted)) = self.ceos_draft(&task)? {
+                let decision = Decision::read(&text).unwrap_or(drafted);
+                return self
+                    .board_desk(turn, &task, &ceo, &decision, Some(&member))
+                    .map(Asked::Desk);
+            }
+        }
+        // Up the chain, while the team has a CEO at work; otherwise as before there was one.
+        if let Some(above) = self.above(&member)? {
+            return self.up_the_chain(turn, &task, &member, &above, &text);
+        }
         if let Some(reviewer) = self.reviewer_for(&member, &task, &text, lab.as_deref())? {
             return self.to_review(turn, &task, &member, reviewer, &text);
         }
         let checked = review::checked(&text, lab.as_deref());
         self.ask_held_lock(run, "question", &|name| format!("{name} asks: {checked}"))
             .map(Asked::Desk)
+    }
+
+    /// The CEO puts a decision to the board, about its turn's task (ADR 0111): checked by the
+    /// reviewer first, as every draft for the owner is, then on the board's desk with its
+    /// recommendation. Its turn ends either way.
+    ///
+    /// # Errors
+    /// [`Refusal::OnlyTheCeo`] for any other member, and what [`Self::ask_owner`] refuses.
+    pub fn ask_board(&self, run: RunId, decision: &Decision) -> Done<Asked> {
+        let _held = self.held();
+        let (turn, ceo) = self.the_ceos_turn(run)?;
+        let task = self.task(
+            turn.task
+                .ok_or(EngineError::Unknown("task for this turn"))?,
+        )?;
+        self.to_the_board(turn, &task, &ceo, decision)
+    }
+
+    fn to_the_board(
+        &self,
+        run: Run,
+        task: &Task,
+        ceo: &Member,
+        decision: &Decision,
+    ) -> Done<Asked> {
+        let reviewer = self
+            .reviewer()?
+            .filter(|r| !r.paused && r.id != ceo.id && !task.status.finished());
+        if let Some(reviewer) = reviewer {
+            return self.to_review(run, task, ceo, reviewer.id, &decision.text());
+        }
+        self.board_desk(run, task, ceo, decision, None)
+            .map(Asked::Desk)
+    }
+
+    /// The CEO's decision on the board's desk, from the CEO (so the board's word wakes it),
+    /// saying who checked it; and the end of the turn that put it there.
+    fn board_desk(
+        &self,
+        run: Run,
+        task: &Task,
+        ceo: &Member,
+        decision: &Decision,
+        checked_by: Option<&Member>,
+    ) -> Done<crate::domain::DeskId> {
+        if self.waiting_question(ceo.id, task.id)? {
+            return Err(EngineError::Refused(Refusal::AlreadyAsked));
+        }
+        let mut text = decision.text();
+        if let Some(reviewer) = checked_by {
+            text.push_str(&format!("\nChecked by {}, the reviewer.", reviewer.name));
+        }
+        let desk = self.store.add_desk(
+            "decision",
+            Some(task.id),
+            None,
+            Some(ceo.id),
+            &text,
+            self.clock.now(),
+        )?;
+        self.emit(
+            EventKind::DeskAdded,
+            json!({ "item": desk.0, "kind": "decision", "task": task.id.0 }),
+        )?;
+        let id = run.id;
+        self.end(run, RunStatus::Succeeded, "put a decision to the board")?;
+        self.runner.stop(id, self.settings.grace);
+        Ok(desk)
+    }
+
+    /// The CEO's decision waiting in a task's review, if that is what the reviewer has before
+    /// it: the newest of a draft for the owner and a move to review is a draft of the CEO's.
+    fn ceos_draft(&self, task: &Task) -> Done<Option<(Member, Decision)>> {
+        if task.status != TaskStatus::InReview {
+            return Ok(None);
+        }
+        let newest = self
+            .store
+            .thread(task.id)?
+            .into_iter()
+            .rev()
+            .find(|p| p.text.starts_with(review::DRAFT) || p.text.contains(" → in_review"));
+        let Some(draft) = newest.filter(|p| p.text.starts_with(review::DRAFT)) else {
+            return Ok(None);
+        };
+        let ceo = self
+            .store
+            .members()?
+            .into_iter()
+            .find(|m| m.role == Role::Ceo && m.name == draft.author);
+        Ok(ceo.and_then(|ceo| Decision::read(&draft.text).map(|d| (ceo, d))))
+    }
+
+    /// Who `member` asks up the chain of command, if anyone: the lead or the CEO at work (not
+    /// paused), by [`chain::above`]. Nobody while the team has no CEO at work.
+    fn above(&self, member: &Member) -> Done<Option<Member>> {
+        let members = self.store.members()?;
+        let at_work = |role: Role| {
+            members
+                .iter()
+                .filter(|m| m.role == role && !m.paused && m.id != member.id)
+                .min_by_key(|m| m.id)
+                .cloned()
+        };
+        let (lead, ceo) = (at_work(Role::Lead), at_work(Role::Ceo));
+        Ok(
+            match chain::above(member.role, lead.is_some(), ceo.is_some()) {
+                Some(Role::Lead) => lead,
+                Some(Role::Ceo) => ceo,
+                _ => None,
+            },
+        )
+    }
+
+    /// A member's question, up the chain: posted in the task's thread for the one above, the
+    /// asker's turn ended, and the one above woken to answer there. One question a member
+    /// about a task waits for its answer at a time.
+    fn up_the_chain(
+        &self,
+        run: Run,
+        task: &Task,
+        member: &Member,
+        above: &Member,
+        text: &str,
+    ) -> Done<Asked> {
+        let thread = self.store.thread(task.id)?;
+        let posts: Vec<(&str, &str)> = thread
+            .iter()
+            .map(|p| (p.author.as_str(), p.text.as_str()))
+            .collect();
+        let waiting = chain::unanswered(&posts, &above.name)
+            .iter()
+            .any(|(asker, _)| *asker == member.name);
+        if waiting {
+            return Err(EngineError::Refused(Refusal::AlreadyAsked));
+        }
+        self.post_held_lock(
+            Author::Member(member.id),
+            task.id,
+            &chain::question(&above.name, text),
+        )?;
+        let id = run.id;
+        self.end(
+            run,
+            RunStatus::Succeeded,
+            &format!("asked {}, the {}", above.name, above.role.name()),
+        )?;
+        self.wake_held_lock(above.id, Some(task.id), WakeReason::QuestionAsked)?;
+        self.runner.stop(id, self.settings.grace);
+        Ok(Asked::Up(above.id))
     }
 
     /// The reviewer a member's question goes to before the owner's desk, if it goes to one:
@@ -1847,7 +2507,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// Whether a question or an approval from `member` about `task` still waits on the desk.
     fn waiting_question(&self, member: MemberId, task: TaskId) -> Done<bool> {
         Ok(self.store.desk()?.into_iter().any(|d| {
-            matches!(d.kind.as_str(), "question" | "approval")
+            matches!(d.kind.as_str(), "question" | "approval" | "decision")
                 && d.status == "waiting"
                 && d.member == Some(member)
                 && d.task == Some(task)
@@ -1935,6 +2595,58 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         let task = found.task.ok_or(EngineError::Unknown("task"))?;
         self.post_held_lock(Author::Owner, task, text)?;
         self.decide_held_lock(&found, "seen")
+    }
+
+    /// The owner decides an item on their desk, with words for the thread if they wrote any:
+    /// a question answered and seen, or the board's word on the CEO's decision (approve,
+    /// decline, or `answer` with words alone). Everything else as [`Self::decide`].
+    ///
+    /// # Errors
+    /// As [`Self::decide`] and [`Self::answer`].
+    pub fn decide_saying(
+        &self,
+        item: crate::domain::DeskId,
+        decision: &str,
+        words: &str,
+    ) -> Done<()> {
+        let _held = self.held();
+        let found = self.waiting_on_desk(item)?;
+        let words: String = words.trim().chars().take(4000).collect();
+        if found.kind == "decision" {
+            return self.board_decides(&found, decision, &words);
+        }
+        if decision == "seen" && !words.is_empty() && found.kind == "question" {
+            let task = found.task.ok_or(EngineError::Unknown("task"))?;
+            self.post_held_lock(Author::Owner, task, &words)?;
+        }
+        self.decide_held_lock(&found, decision)
+    }
+
+    /// The board's word on the CEO's decision (ADR 0111): in the task's thread as the owner's,
+    /// with what they wrote, and the CEO woken to act on it.
+    fn board_decides(&self, found: &DeskItem, verdict: &str, words: &str) -> Done<()> {
+        let said = match verdict {
+            "approve" => "The board approves",
+            "decline" => "The board declines",
+            "answer" if !words.is_empty() => "The board answers",
+            _ => return Err(EngineError::Unknown("decision for this item")),
+        };
+        let task = found.task.ok_or(EngineError::Unknown("task"))?;
+        let decision = Decision::read(&found.text).map_or_else(String::new, |d| d.decision);
+        let mut text = format!("{said}: {decision}");
+        if !words.is_empty() {
+            text.push_str(&format!("\n{words}"));
+        }
+        self.post_held_lock(Author::Owner, task, &text)?;
+        self.store.set_desk_status(found.id, verdict)?;
+        self.emit(
+            EventKind::DeskDecided,
+            json!({ "item": found.id.0, "kind": found.kind, "decision": verdict }),
+        )?;
+        if let Some(ceo) = found.member {
+            self.wake_held_lock(ceo, Some(task), WakeReason::ProposalDecided)?;
+        }
+        Ok(())
     }
 
     /// A desk item still waiting for the owner.
@@ -2547,6 +3259,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             notes.insert(g.id.0, self.store.goal_note(g.id)?);
         }
         let mut members = Vec::new();
+        let paid = self.paid_weights()?;
         for m in self.store.members()? {
             let committed = self.store.committed(Some(m.id), day)?;
             let spent = self.store.spent(Some(m.id), day)?;
@@ -2558,7 +3271,8 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 "brains": Brain::choices(m.role).into_iter()
                     .map(|b| json!({ "name": b.name(), "label": b.label() }))
                     .collect::<Vec<_>>(),
-                "per_day": money::member_a_day(pool, m.share_percent),
+                // A member on the house's model costs nothing; the paid share the pool.
+                "per_day": self.per_day(&m, paid),
                 "committed": committed, "spent": spent, "held": (committed - spent).max(0),
                 "running": runs.iter().filter(|r| r.member == m.id && r.status == RunStatus::Running)
                     .map(|r| json!({ "run": r.id.0, "task": r.task.map(|t| t.0) }))
@@ -2645,10 +3359,19 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                     .and_then(|id| tasks.iter().find(|t| t.id == id))
                     .is_some_and(|t| !t.status.finished()),
             })).collect::<Vec<_>>(),
-            "desk": self.store.desk()?.iter().filter(|d| d.status == "waiting").map(|d| json!({
-                "id": d.id.0, "kind": d.kind, "task": d.task.map(|t| t.0), "goal": d.goal.map(|g| g.0),
-                "text": d.text, "at": d.at,
-            })).collect::<Vec<_>>(),
+            "desk": self.store.desk()?.iter().filter(|d| d.status == "waiting").map(|d| {
+                let mut item = json!({
+                    "id": d.id.0, "kind": d.kind, "task": d.task.map(|t| t.0),
+                    "goal": d.goal.map(|g| g.0), "text": d.text, "at": d.at,
+                });
+                // The CEO's decision for the board, in its three parts (ADR 0111).
+                if let Some(decided) = (d.kind == "decision").then(|| Decision::read(&d.text)).flatten() {
+                    item["decision"] = json!({ "decision": decided.decision,
+                        "recommendation": decided.recommendation, "why": decided.why });
+                }
+                item
+            }).collect::<Vec<_>>(),
+            "house_log": self.store.setting(HOUSE_LOG)?.unwrap_or_default(),
         }))
     }
 

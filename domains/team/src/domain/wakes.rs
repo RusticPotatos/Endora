@@ -34,6 +34,11 @@ pub enum WakeReason {
     ReviewRequested,
     /// The reviewer sent the member's draft back: something in it did not hold.
     SentBack,
+    /// A member below asked this one a question about its task, up the chain of command
+    /// (ADR 0111): it is in the task's thread, "Question for <name>: …".
+    QuestionAsked,
+    /// The one this member asked up the chain answered in the task's thread.
+    QuestionAnswered,
 }
 
 impl WakeReason {
@@ -55,6 +60,8 @@ impl WakeReason {
             Self::AssignmentRecovery => "assignment_recovery",
             Self::ReviewRequested => "review_requested",
             Self::SentBack => "sent_back",
+            Self::QuestionAsked => "question_asked",
+            Self::QuestionAnswered => "question_answered",
         }
     }
 
@@ -84,7 +91,22 @@ impl WakeReason {
     pub const fn reaches_work_in_review(self) -> bool {
         matches!(
             self,
-            Self::OwnerReplied | Self::ProposalDecided | Self::SentBack
+            Self::OwnerReplied
+                | Self::ProposalDecided
+                | Self::SentBack
+                | Self::QuestionAsked
+                | Self::QuestionAnswered
+        )
+    }
+
+    /// Whether the wake reaches the CEO (ADR 0111), who wakes only for escalations, the
+    /// board's word, its own work (its daily review, what it handed on) and the continuations
+    /// of its own turns: never to be named in a thread, for an alarm, or for a look round.
+    #[must_use]
+    pub const fn reaches_the_ceo(self) -> bool {
+        !matches!(
+            self,
+            Self::Mentioned | Self::LeadReview | Self::Alarm | Self::ReviewRequested
         )
     }
 
@@ -106,6 +128,8 @@ impl WakeReason {
             Self::AssignmentRecovery,
             Self::ReviewRequested,
             Self::SentBack,
+            Self::QuestionAsked,
+            Self::QuestionAnswered,
         ]
         .into_iter()
         .find(|r| r.name() == name)
@@ -129,6 +153,9 @@ pub enum Refused {
     /// The task waits for its reviewer: its owner takes no turn on it until the reviewer sends
     /// it back or the owner speaks.
     InReview,
+    /// The CEO is not woken for that: only for escalations, the board's word and its own work
+    /// (ADR 0111).
+    NotForTheCeo,
 }
 
 impl Refused {
@@ -142,6 +169,7 @@ impl Refused {
             Self::Duplicate => "duplicate",
             Self::NothingToDo => "nothing_to_do",
             Self::InReview => "in_review",
+            Self::NotForTheCeo => "not_for_the_ceo",
         }
     }
 
@@ -155,6 +183,7 @@ impl Refused {
             Self::Duplicate,
             Self::NothingToDo,
             Self::InReview,
+            Self::NotForTheCeo,
         ]
         .into_iter()
         .find(|r| r.name() == name)
@@ -221,6 +250,9 @@ pub struct WakeSituation {
     /// Whether the wake is for the owner of a task waiting for its reviewer, and is not one
     /// that [reaches work in review](WakeReason::reaches_work_in_review).
     pub waits_for_review: bool,
+    /// Whether the wake is for the CEO, and is not one that
+    /// [reaches the CEO](WakeReason::reaches_the_ceo).
+    pub not_for_the_ceo: bool,
 }
 
 /// What to do with a wake.
@@ -246,6 +278,9 @@ pub fn decide(member: MemberId, situation: &WakeSituation) -> WakeDecision {
     }
     if situation.paused {
         return WakeDecision::Refuse(Refused::Paused);
+    }
+    if situation.not_for_the_ceo {
+        return WakeDecision::Refuse(Refused::NotForTheCeo);
     }
     if situation.nothing_to_do {
         return WakeDecision::Refuse(Refused::NothingToDo);
@@ -281,6 +316,7 @@ mod tests {
             already_held: false,
             nothing_to_do: false,
             waits_for_review: false,
+            not_for_the_ceo: false,
         }
     }
 
@@ -392,6 +428,46 @@ mod tests {
         assert_eq!(
             WakeReason::from_name("sent_back"),
             Some(WakeReason::SentBack)
+        );
+    }
+
+    #[test]
+    fn the_ceo_wakes_for_escalations_and_its_own_work_and_never_for_routine_noise() {
+        let noise = WakeSituation {
+            not_for_the_ceo: true,
+            ..quiet()
+        };
+        assert_eq!(
+            decide(ME, &noise),
+            WakeDecision::Refuse(Refused::NotForTheCeo)
+        );
+        for reaches in [
+            WakeReason::QuestionAsked,
+            WakeReason::QuestionAnswered,
+            WakeReason::ProposalDecided,
+            WakeReason::OwnerReplied,
+            WakeReason::Assigned,
+            WakeReason::SentBack,
+            WakeReason::SubtasksFinished,
+            WakeReason::CheckBack,
+        ] {
+            assert!(reaches.reaches_the_ceo(), "{reaches:?}");
+        }
+        for not in [
+            WakeReason::Mentioned,
+            WakeReason::LeadReview,
+            WakeReason::Alarm,
+            WakeReason::ReviewRequested,
+        ] {
+            assert!(!not.reaches_the_ceo(), "{not:?}");
+        }
+        for asked in [WakeReason::QuestionAsked, WakeReason::QuestionAnswered] {
+            assert!(asked.brings_news() && asked.reaches_work_in_review());
+            assert_eq!(WakeReason::from_name(asked.name()), Some(asked));
+        }
+        assert_eq!(
+            Refused::from_name("not_for_the_ceo"),
+            Some(Refused::NotForTheCeo)
         );
     }
 

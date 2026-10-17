@@ -67,6 +67,12 @@ pub enum EventKind {
     LessonNoted,
     /// The owner set what a member thinks with.
     BrainSet,
+    /// A member joined the team.
+    MemberHired,
+    /// The owner renamed a member.
+    MemberRenamed,
+    /// The house log was added to or rewritten (ADR 0111).
+    HouseNoted,
 }
 
 impl EventKind {
@@ -106,6 +112,9 @@ impl EventKind {
             Self::CheckBackDropped => "checkback.dropped",
             Self::LessonNoted => "lesson.noted",
             Self::BrainSet => "member.brain",
+            Self::MemberHired => "member.hired",
+            Self::MemberRenamed => "member.renamed",
+            Self::HouseNoted => "house.noted",
         }
     }
 }

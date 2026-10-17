@@ -235,8 +235,8 @@ fn instructions(posted: bool, contracts: bool, lessons: bool, shell: bool) -> St
          from there.\n\
          3. End the turn with exactly one of these: move the task on with set_status and say \
          why; create sub-tasks for members below you when the work needs them; or put a \
-         concrete plan or question to the owner with ask_owner (asking ends your turn, and you \
-         are woken when they answer).",
+         concrete plan or question with ask_owner, which goes to whoever your briefing says \
+         is above you (asking ends your turn, and you are woken when they answer).",
     );
     if contracts {
         told.push_str(

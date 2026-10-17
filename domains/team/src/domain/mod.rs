@@ -1,7 +1,10 @@
 //! The team's domain: the work, wakes, runs, money and the event feed, as pure rules.
 
 pub mod brain;
+pub mod chain;
+pub mod docs;
 pub mod events;
+pub mod house;
 pub mod lessons;
 pub mod money;
 pub mod review;

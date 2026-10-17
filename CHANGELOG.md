@@ -9,6 +9,24 @@ tagged release.
 
 ### Added
 
+- **The CEO and the chain of command** ([ADR 0111](docs/adr/0111-the-ceo-and-the-chain-of-command.md),
+  owner's decisions of 2026-10-17). The owner is the board. A new top member, the **CEO**, sits
+  above the lead: HQ seats one once on an existing team ("Mara", on Claude Opus, renameable) with
+  a "Daily review" routine every 24 hours. While a CEO is at work, a member's `ask_owner` goes up
+  the chain in the task's thread ("Question for Ada: …"): the developer's, researcher's and
+  reviewer's to the lead, the lead's to the CEO; the answer in the thread wakes the asker. Only
+  the CEO's `ask_owner` reaches the board's desk, as a decision (`decision`, `recommendation`,
+  `why`), checked by the reviewer first; the card offers Approve, Decline and an answer. The CEO
+  wakes only for escalations and its own work, keeps a **house log** (`note_house`,
+  `rewrite_house`; read by the CEO and the lead every turn, edited by the owner on a new House
+  log card), reads Endora's public records and plans (`read_doc`, embedded in HQ at build time),
+  and is briefed on its team, goals and lessons, open work, the week's alarms and the board's
+  desk. With no CEO, the team works as before.
+- **Brains and money by role**: Opus is the CEO's alone (HQ and the relay refuse it to anyone
+  else); the CEO's turn may spend $1.00, everyone else's $0.40. The day's pool is shared only
+  among members with a paid brain, by their roles' weights (CEO 35, lead 25, developer 40,
+  reviewer 20, researcher 15); a member on the house's model costs nothing and is never turned
+  away for money. The cloud CEO is given nothing Confidential and no act on the house.
 - **HQ's team works as a team.** The lead's briefing names the team (each member's role and
   brain) and says to plan and hand work on: fixes to the developer, look-ups to the researcher,
   the reviewer checking. A cloud turn refused a Confidential step is told to hand it to a member

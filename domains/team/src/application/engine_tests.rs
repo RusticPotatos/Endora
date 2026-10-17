@@ -60,6 +60,19 @@ fn team(hq: &Hq<'_>) -> Team {
     }
 }
 
+/// Every member thinks with Claude, so every turn is paid from the pool: a member on the
+/// house's model costs nothing and is never turned away for money (ADR 0111).
+fn all_paid(hq: &Hq<'_>) {
+    for m in hq.store().members().unwrap() {
+        let brain = if m.role == Role::Researcher {
+            "claude-haiku-5-5"
+        } else {
+            "claude-sonnet-5-5"
+        };
+        hq.set_brain(m.id, brain).unwrap();
+    }
+}
+
 fn task_for(hq: &Hq<'_>, goal: GoalId, to: Option<MemberId>, title: &str) -> TaskId {
     hq.add_task(
         Author::Owner,
@@ -395,6 +408,7 @@ fn a_turn_reserves_before_it_starts_and_is_stopped_the_moment_it_crosses() {
     let clock = hands();
     let hq = hq(&clock, 4);
     let t = team(&hq);
+    all_paid(&hq);
     task_for(&hq, t.goal, Some(t.dev), "Add a list");
     hq.tick().unwrap();
     let run = hq.store().runs().unwrap()[0].clone();
@@ -417,6 +431,7 @@ fn the_snapshot_tells_money_spent_from_money_held() {
     let clock = hands();
     let hq = hq(&clock, 4);
     let t = team(&hq);
+    all_paid(&hq);
     task_for(&hq, t.goal, Some(t.dev), "Add a list");
     hq.tick().unwrap();
     let run = hq.store().runs().unwrap()[0].clone();
@@ -451,6 +466,7 @@ fn a_report_too_large_to_add_up_is_held_to_a_turn_and_hq_keeps_going() {
     let clock = hands();
     let hq = hq(&clock, 4);
     let t = team(&hq);
+    all_paid(&hq);
     task_for(&hq, t.goal, Some(t.dev), "Add a list");
     hq.tick().unwrap();
     let run = hq.store().runs().unwrap()[0].clone();
@@ -491,6 +507,7 @@ fn a_charge_that_lands_after_the_turn_ended_is_still_counted() {
     let clock = hands();
     let hq = hq(&clock, 4);
     let t = team(&hq);
+    all_paid(&hq);
     task_for(&hq, t.goal, Some(t.dev), "Add a list");
     hq.tick().unwrap();
     let run = hq.store().runs().unwrap()[0].clone();
@@ -536,6 +553,7 @@ fn a_member_whose_day_is_spent_is_turned_away() {
     let t = team(&hq);
     // The researcher's day is about $0.35: one turn reserves it all.
     let researcher = hq.hire("Marie", Role::Researcher, 15, 4, 0).unwrap();
+    all_paid(&hq);
     let first = task_for(&hq, t.goal, Some(researcher), "Read up on straps");
     hq.tick().unwrap();
     assert_eq!(hq.store().runs().unwrap()[0].task, Some(first));
@@ -787,7 +805,10 @@ fn the_snapshot_holds_what_is_on_screen_and_where_the_stream_resumes() {
     let snap = hq.snapshot().unwrap();
     assert_eq!(snap["stopped"], false);
     assert_eq!(snap["members"].as_array().unwrap().len(), 3);
-    assert_eq!(snap["members"][1]["per_day"], 933_333);
+    assert_eq!(
+        snap["members"][1]["per_day"], 0,
+        "a member on the house's model costs nothing"
+    );
     let row = snap["tasks"]
         .as_array()
         .unwrap()

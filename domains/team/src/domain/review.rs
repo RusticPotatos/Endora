@@ -21,6 +21,9 @@ const TOOL_NAMES: &[&str] = &[
     "restart_container",
     "review",
     "note_lesson",
+    "note_house",
+    "rewrite_house",
+    "read_doc",
 ];
 
 /// What the reviewer is told when work is put before it.
@@ -36,6 +39,14 @@ pub const REVIEW_DRAFT: &str = "Check every claim in the draft against your tool
     hold (review, verdict send_back). Send back any problem that no tool shows causing harm. \
     Send back, never forward, a draft that asks the owner for something the team's own tools \
     could find (what is stuck, why, what a log says): the team finds it, the owner decides.";
+
+/// What the reviewer is told when the CEO's decision for the board is put before it (ADR 0111).
+pub const REVIEW_BOARD_DRAFT: &str = "Check every claim in the draft against your tools and \
+    the thread. If everything holds, call ask_owner with the draft, keeping its Decision:, \
+    Recommendation: and Why: lines, corrected if needed: it then reaches the board as the \
+    CEO's. If not, send it back to the CEO with exactly what does not hold (review, verdict \
+    send_back). Send back, never forward, a decision the team could make itself or a question \
+    its own tools could answer: the board decides only what the owner alone can.";
 
 /// Whether work needs the gate (tests, lint and build on a runner) before a review can close
 /// it: everything but a routine's task and work under a goal the home lab's routine serves,
