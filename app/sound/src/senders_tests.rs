@@ -339,3 +339,63 @@ fn a_sounding_group_is_written_to_its_pipe_and_a_quiet_one_closes_it() {
     let got = reader.join().unwrap();
     assert_eq!(got, vec![1, 0, 254, 255, 3, 0, 252, 255]);
 }
+
+#[cfg(unix)]
+#[test]
+fn a_sender_left_with_nothing_to_play_has_its_pipe_closed() {
+    use std::io::Read as _;
+    for released in [
+        Change::Released { sender: 0 },
+        Change::Sender {
+            sender: 0,
+            speakers: vec![],
+        },
+    ] {
+        let s = setup();
+        let dir = std::env::temp_dir().join(
+            format!(
+                "endora-sound-sender-released-{}-{released:?}",
+                std::process::id()
+            )
+            .replace([' ', '{', '}', ':', ',', '[', ']'], "_"),
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let pipe = dir.join("group.pcm");
+        assert!(
+            std::process::Command::new("mkfifo")
+                .arg(&pipe)
+                .status()
+                .unwrap()
+                .success()
+        );
+        let reading = pipe.clone();
+        let reader = std::thread::spawn(move || {
+            let mut got = Vec::new();
+            std::fs::File::open(reading)
+                .unwrap()
+                .read_to_end(&mut got)
+                .unwrap();
+            got
+        });
+        let mut senders = OwnToneSenders::start(
+            s.control.hub.clone(),
+            &[SenderPlace {
+                api: "http://127.0.0.1:1".to_owned(),
+                pipe,
+            }],
+            vec![Box::new(s.fake.clone())],
+        );
+        senders.play(0, &[5, 5], true);
+        std::thread::sleep(Duration::from_millis(200));
+        // Its one speaker borrowed: the plan releases the sender while its group still sounds.
+        senders.apply(&[released.clone()]);
+        let got = reader.join().unwrap();
+        assert_eq!(
+            got,
+            vec![5, 0, 5, 0],
+            "{released:?}: the pipe was left open"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}

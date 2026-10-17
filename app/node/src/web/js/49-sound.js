@@ -124,7 +124,8 @@ function viewSound() {
       const own = src.device && sp.device && src.device === sp.device;
       if (own) return "";
       const w = soundWire(src.id, sp.id);
-      return `<button class="pill pick${w ? " active" : ""}" data-act="sound:wire:${src.id}-${sp.id}" aria-pressed="${w ? "true" : "false"}">${esc(sp.name)}${w ? ` · ${w.level}` : ""}</button>`;
+      // A borrowed speaker keeps its wires but plays none of them: said where it is tapped.
+      return `<button class="pill pick${w ? " active" : ""}" data-act="sound:wire:${src.id}-${sp.id}" aria-pressed="${w ? "true" : "false"}">${esc(sp.name)}${w ? ` · ${w.level}` : ""}${sp.borrowed ? " · in use" : ""}</button>`;
     }).join("");
     const wires = speakers.map((sp) => {
       const w = soundWire(src.id, sp.id);
@@ -157,10 +158,7 @@ function viewSound() {
       sp.kind === "stream" ? (listening.has(sp.id) ? "listening" : "not listening") : null,
       !g ? "plays nothing" : mates.length ? `in sync with ${mates.join(", ")}` : null,
     ].filter(Boolean).join(" · ");
-    const back = sp.borrowed
-      ? `<div class="row" style="justify-content:flex-end;margin-top:6px;"><button class="ghost" data-act="sound:free:${sp.id}">Take it back</button></div>`
-      : "";
-    return `<div class="card"><div class="title">${esc(sp.name)}</div><div class="sub">${esc(said)}</div>${back}
+    return `<div class="card"><div class="title">${esc(sp.name)}</div><div class="sub">${esc(said)}</div>
       <div class="row" style="gap:8px;align-items:center;margin-top:6px;"><span class="sub" style="min-width:84px;">Volume</span>
         ${range(`sound:volume:${sp.id}`, sp.volume, `${sp.name} volume`)}<span class="sub" style="min-width:28px;text-align:right;">${sp.volume}</span></div></div>`;
   }).join("");
@@ -171,6 +169,11 @@ function viewSound() {
       <button class="primary" data-act="sound:play:${i}">Play</button>
       <button class="ghost" data-act="sound:forget:${i}">Forget</button></div>`).join("");
 
+  // Speakers another device is playing to: first, each with the way to take it back.
+  const borrowedRows = speakers.filter((sp) => sp.borrowed).map((sp) =>
+    `<div class="row" style="gap:8px;align-items:center;padding:4px 0;"><div class="grow"><b>${esc(sp.name)}</b>
+      <div class="sub">In use by another device. Its wires wait; take it back when you want them again.</div></div>
+      <button class="primary" data-act="sound:free:${sp.id}">Take it back</button></div>`).join("");
   // Adding a station: in the empty "what plays where" card while there is nothing, else under
   // "Add or remove". Never both, so its fields stay one of each.
   const radioForm = `<div class="sub" style="margin-top:8px;">A radio station</div>
@@ -189,6 +192,7 @@ function viewSound() {
   return `${head}
     ${here}
     <h3>What plays where</h3>
+    ${borrowedRows ? `<div class="card">${borrowedRows}</div>` : ""}
     ${sources || `<div class="card"><div class="title">Add something to play</div>
       <div class="sub">A radio station is the simplest start; your devices and Spotify come later.</div>${radioForm}</div>`}
     <h3>Speakers</h3>

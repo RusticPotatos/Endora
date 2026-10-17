@@ -270,6 +270,19 @@ impl OwnToneSenders {
 
 impl Senders for OwnToneSenders {
     fn apply(&mut self, changes: &[Change]) {
+        // A sender left with nothing to play has its pipe closed, so its instance stops; the
+        // next sound starts it fresh. Left open and quiet, OwnTone pauses and stays paused:
+        // the second live test found a sender stuck so after its one speaker was borrowed.
+        for change in changes {
+            let quiet = match change {
+                Change::Released { sender } => Some(*sender),
+                Change::Sender { sender, speakers } if speakers.is_empty() => Some(*sender),
+                Change::Sender { .. } => None,
+            };
+            if let Some(pipe) = quiet.and_then(|s| self.pipes.get_mut(s)) {
+                pipe.writer = None;
+            }
+        }
         let _ = self.told.send(Told::Apply(changes.to_vec()));
     }
 

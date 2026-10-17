@@ -691,6 +691,9 @@ if (failures.length) {
   if (screen.includes('data-act="sound:wire:2-4"')) fail("speakers: the phone was offered its own stream");
   if (screen.includes('data-act="sound:addfound:0"')) fail("speakers: a speaker already added was offered again");
   if (screen.includes('data-act="sound:free:3"')) fail("speakers: a speaker nobody borrowed offered to be taken back");
+  // A borrowed speaker says so where it is tapped, and the way back is above the sources.
+  if (!/Office · 90 · in use/.test(screen)) fail("speakers: a borrowed speaker's wire does not say it is in use");
+  if (screen.indexOf('data-act="sound:free:5"') > screen.indexOf('data-act="sound:wire:1-3"')) fail("speakers: taking a speaker back is below the sources");
   if (!screen.includes("in use by another device")) fail("speakers: a borrowed speaker does not say so");
   if (screen.includes("<b>Classical</b>")) fail("speakers: a source's name became markup");
   if (!/aria-pressed="true">Kitchen · 60/.test(screen)) fail("speakers: a wire does not show its level");
