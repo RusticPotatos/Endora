@@ -694,6 +694,18 @@ if (failures.length) {
   if (!screen.includes("in use by another device")) fail("speakers: a borrowed speaker does not say so");
   if (screen.includes("<b>Classical</b>")) fail("speakers: a source's name became markup");
   if (!/aria-pressed="true">Kitchen · 60/.test(screen)) fail("speakers: a wire does not show its level");
+  if ((screen.match(/id="sound-radio-name"/g) || []).length !== 1) fail("speakers: the station form shows twice, or not at all");
+  // With nothing to play, adding a station is in front, not folded away; and a device that
+  // listens to nothing wired says so.
+  runInContext(`SOUND.listening = true; var keepGet = localStorage.getItem;
+    localStorage.getItem = (k) => (k === "endora.soundSpeaker" ? "4" : keepGet(k));
+    SOUND.state = Object.assign({}, SOUND.state, { sources: [], wires: [], groups: [] });`, context);
+  const empty = runInContext("viewSound()", context);
+  if (!empty.includes("Add something to play") || (empty.match(/id="sound-radio-name"/g) || []).length !== 1) {
+    fail("speakers: with no sources, adding a station is not in front");
+  }
+  if (!empty.includes("nothing is wired to this iPhone yet")) fail("speakers: a device listening to nothing does not say why it is silent");
+  runInContext("SOUND.listening = false; localStorage.getItem = keepGet;", context);
   runInContext('SOUND.state = null; SOUND.error = "The sound hub is not set up on this node yet.";', context);
   if (!runInContext("viewSound()", context).includes("not set up")) fail("speakers: a node without the hub does not say so");
   runInContext('SOUND.error = "";', context);

@@ -99,10 +99,15 @@ function viewSound() {
     `<input type="range" min="0" max="100" step="5" value="${Number(value) || 0}" data-change="${act}" aria-label="${esc(label)}" style="flex:1;min-width:90px;" />`;
 
   // This device, as a speaker.
+  // Listening with nothing wired is silence; it says so, and where to wire something.
+  const wiredHere = mine && (s.wires || []).some((w) => w.speaker === mine.id);
+  const hearing = !SOUND.listening ? "Not listening · a stream, a few seconds behind the speakers"
+    : wiredHere ? "Listening to its wires · a stream, a few seconds behind the speakers"
+    : `Listening, but nothing is wired to this ${mine ? mine.name : "device"} yet: tap ${mine ? mine.name : "it"} under a source below`;
   const here = mine
     ? `<div class="card"><div class="row" style="align-items:center;gap:10px;">
         <div class="grow"><div class="title">This ${esc(mine.name)}</div>
-          <div class="sub">${SOUND.listening ? "Listening to its wires" : "Not listening"} · a stream, a few seconds behind the speakers</div></div>
+          <div class="sub">${esc(hearing)}</div></div>
         ${SOUND.listening
           ? `<button class="ghost" data-act="sound:stop">Stop</button>`
           : `<button class="primary" data-act="sound:listen">Listen here</button>`}
@@ -166,6 +171,12 @@ function viewSound() {
       <button class="primary" data-act="sound:play:${i}">Play</button>
       <button class="ghost" data-act="sound:forget:${i}">Forget</button></div>`).join("");
 
+  // Adding a station: in the empty "what plays where" card while there is nothing, else under
+  // "Add or remove". Never both, so its fields stay one of each.
+  const radioForm = `<div class="sub" style="margin-top:8px;">A radio station</div>
+      <div class="form"><input id="sound-radio-name" placeholder="Name, e.g. Classical" maxlength="40" autocomplete="off" />
+        <input id="sound-radio-address" placeholder="https://… the station's stream" autocomplete="off" />
+        <button class="primary" data-act="sound:addradio">Add</button></div>`;
   // AirPlay speakers the senders can see that are not speakers here yet.
   const have = new Set(speakers.map((x) => x.name));
   const foundRows = (SOUND.found || []).map((name, i) => have.has(name) ? "" :
@@ -178,7 +189,8 @@ function viewSound() {
   return `${head}
     ${here}
     <h3>What plays where</h3>
-    ${sources || `<div class="card"><div class="sub">No sources yet. Add a radio station below.</div></div>`}
+    ${sources || `<div class="card"><div class="title">Add something to play</div>
+      <div class="sub">A radio station is the simplest start; your devices and Spotify come later.</div>${radioForm}</div>`}
     <h3>Speakers</h3>
     ${speakerRows || `<div class="card"><div class="sub">No speakers yet.</div></div>`}
     <h3>Setups</h3>
@@ -186,10 +198,7 @@ function viewSound() {
       <div class="form" style="margin-top:8px;"><input id="sound-setup" placeholder="Name these wires, e.g. Kitchen mornings" maxlength="40" autocomplete="off" />
         <button class="ghost" data-act="sound:save">Save</button></div></div>
     <details class="card" style="margin-top:12px;"><summary class="title">Add or remove</summary>
-      <div class="sub" style="margin-top:8px;">A radio station</div>
-      <div class="form"><input id="sound-radio-name" placeholder="Name, e.g. Classical" maxlength="40" autocomplete="off" />
-        <input id="sound-radio-address" placeholder="https://… the station's stream" autocomplete="off" />
-        <button class="ghost" data-act="sound:addradio">Add</button></div>
+      ${sources ? radioForm : ""}
       ${foundRows ? `<div class="sub" style="margin-top:8px;">Found on the network</div>${foundRows}` : ""}
       <div class="sub" style="margin-top:8px;">An AirPlay speaker, by the name it shows</div>
       <div class="form"><input id="sound-airplay-name" placeholder="e.g. Kitchen" maxlength="40" autocomplete="off" />

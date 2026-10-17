@@ -88,9 +88,9 @@ only if its AirPlay code itself must change.
   path runs about 4 s late. That's fine for music and voice.
 - **Phone, tablet and handheld** play an HTTP MP3 live stream that endora-sound serves. These
   appear by name while they listen, like Spotify Connect's device list. They are not in sync
-  with the AirPlay speakers or with each other. *Unverified:* the stream's actual delay, and
-  whether a home-screen web app keeps playing when the phone locks. A native app comes in
-  only if that fails.
+  with the AirPlay speakers or with each other. *Verified 2026-10-17:* an iPhone listening in
+  Endora's web app keeps playing with the screen locked, so no native app is needed.
+  *Unverified:* the stream's actual delay.
 - **The Mac** plays as an AirPlay speaker, through macOS's AirPlay Receiver, so it stays in
   sync with the HomePods. It needs "Anyone on the same network", because OwnTone cannot sign
   in to an Apple Account. *Unverified:* OwnTone issue #1385 reports an "Allow?" prompt on
