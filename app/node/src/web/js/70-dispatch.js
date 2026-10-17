@@ -645,7 +645,7 @@ async function dispatch(act) {
       const val = (el) => ((document.getElementById(el) || {}).value || "").trim();
       const refresh = async () => { try { MODEL_LISTS = await api("GET", "/v1/model-lists"); } catch (_) {} render(); };
       try {
-        if (["up", "down", "on", "off", "remove"].includes(noun)) {
+        if (["up", "down", "on", "off", "think", "quiet", "remove"].includes(noun)) {
           if (noun === "remove" && !confirm("Remove this model from the list?")) return;
           await api("POST", `/v1/model-lists/entries/${id}/${noun}`, {});
           return refresh();

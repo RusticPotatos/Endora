@@ -560,6 +560,10 @@ fn local_target(state: &AppState) -> Local {
 /// house's own model, whole (never streamed). It is asked with the model the owner's list
 /// names, whatever the worker named. Local costs nothing, so HQ is charged nothing; the use is
 /// noted in Endora's own log as `team-local`.
+///
+/// The team's turns always think (ADR 0105): a member's round is worth the wait, whatever the
+/// entry's switch says for the butler, so a worker's `"reasoning_effort": "none"` is taken off
+/// and never added.
 pub(super) async fn chat_completions(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -600,6 +604,13 @@ pub(super) async fn chat_completions(
     let done = tokio::task::spawn_blocking(move || {
         let local = local_target(&state);
         call.insert("model".to_owned(), json!(local.model));
+        if call
+            .get("reasoning_effort")
+            .and_then(serde_json::Value::as_str)
+            == Some("none")
+        {
+            call.remove("reasoning_effort");
+        }
         let sent = serde_json::Value::Object(call).to_string().into_bytes();
         let (status, bytes) = send_local(&local.url, &local.key, &sent)?;
         if status < 300 {
@@ -1277,6 +1288,32 @@ pub(super) mod tests {
             (used.calls, used.prompt_tokens, used.completion_tokens),
             (1, 120, 30)
         );
+    }
+
+    #[tokio::test]
+    async fn a_team_turn_always_thinks_whatever_the_worker_or_the_entry_says() {
+        let (hq_url, _) = hq(0);
+        let (installed, _) = local_model();
+        let (local, to_local) = local_model();
+        let state = local_node(&hq_url, &installed, &[(&local, "qwen3:8b", "", true)]);
+        let mut quiet = a_call("local");
+        quiet["reasoning_effort"] = json!("none");
+        for call in [a_call("local"), quiet] {
+            let res = super::super::team_relay(state.clone())
+                .oneshot(ask_local("good", call))
+                .await
+                .unwrap();
+            assert_eq!(res.status(), StatusCode::OK);
+        }
+        let sent = to_local.lock().unwrap().clone();
+        assert_eq!(sent.len(), 2);
+        for (_, _, body) in &sent {
+            let v: serde_json::Value = serde_json::from_str(body).unwrap();
+            assert!(
+                v.get("reasoning_effort").is_none(),
+                "never told not to think: {v}"
+            );
+        }
     }
 
     #[tokio::test]

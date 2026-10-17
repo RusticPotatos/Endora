@@ -112,6 +112,10 @@ pub struct LlmButler {
     /// Report a failure as an error rather than apologising (ADR 0105): a list entry's client,
     /// so the walker can ask the next entry. The list's last resort still apologises.
     reports_failures: bool,
+    /// Ask the model not to think before answering (`"reasoning_effort": "none"`): a list
+    /// entry on the house's network that is not let think (ADR 0105). Never set for a cloud
+    /// entry, whose API may reject the field.
+    no_thinking: bool,
 }
 
 /// How long to wait for the whole model round-trip before giving up and using
@@ -149,7 +153,18 @@ impl LlmButler {
             sampling,
             usage: None,
             reports_failures: false,
+            no_thinking: false,
         }
+    }
+
+    /// Asks the model not to think before answering, on every call (ADR 0105). Measured with
+    /// a local qwen3 through Ollama's OpenAI-compatible endpoint, `"reasoning_effort":
+    /// "none"` is what stops it (`"think": false` and a `/no_think` suffix do not there), and
+    /// a tool call then takes about a second rather than ten.
+    #[must_use]
+    pub fn without_thinking(mut self) -> Self {
+        self.no_thinking = true;
+        self
     }
 
     /// Reports a failure as an error instead of the degraded reply, so a list can pass the
@@ -235,6 +250,18 @@ impl LlmButler {
         body
     }
 
+    /// What the endpoint is sent: the body with the local model kept resident, and told not to
+    /// think when this client was built [`without_thinking`](Self::without_thinking).
+    fn for_the_endpoint(&self, body: Value) -> Value {
+        let mut body = self.with_keep_alive(body);
+        if self.no_thinking {
+            if let Some(obj) = body.as_object_mut() {
+                obj.insert("reasoning_effort".to_owned(), json!("none"));
+            }
+        }
+        body
+    }
+
     /// POSTs a chat-completions `body` and parses the reply (native tool call or
     /// envelope). Shared by the two-pass `try_model` and the single-conversation
     /// `take_turn`.
@@ -248,7 +275,7 @@ impl LlmButler {
         if !self.api_key.is_empty() {
             req = req.header("Authorization", &format!("Bearer {}", self.api_key));
         }
-        let body = self.with_keep_alive(body.clone());
+        let body = self.for_the_endpoint(body.clone());
         let mut response = req
             .send_json(&body)
             .map_err(|e| ProposalError::Unavailable(e.to_string()))?;
@@ -304,7 +331,7 @@ impl LlmButler {
         if let Some(obj) = body.as_object_mut() {
             obj.remove("response_format");
         }
-        let body = self.with_keep_alive(body);
+        let body = self.for_the_endpoint(body);
         let url = format!("{}/chat/completions", self.base_url);
         let mut req = self.agent.post(&url);
         if !self.api_key.is_empty() {
@@ -411,7 +438,7 @@ impl LlmButler {
         if let Some(obj) = body.as_object_mut() {
             obj.remove("response_format");
         }
-        let body = self.with_keep_alive(body);
+        let body = self.for_the_endpoint(body);
         let url = format!("{}/chat/completions", self.base_url);
         let mut req = self.agent.post(&url);
         if !self.api_key.is_empty() {
@@ -647,7 +674,7 @@ impl LlmButler {
         if json_object {
             body["response_format"] = json!({ "type": "json_object" });
         }
-        self.with_keep_alive(body)
+        self.for_the_endpoint(body)
     }
 }
 
@@ -800,6 +827,13 @@ impl Butler for MixtureButler {
     }
 }
 
+/// Whether a list entry's model is asked not to think (ADR 0105): one on the house's network
+/// that the owner has not let think. A cloud entry is never sent the field, whatever its
+/// switch says, because its API may refuse a request that carries it.
+fn quiet_thinking(t: &Target) -> bool {
+    is_private_endpoint(&t.url) && !t.thinks
+}
+
 /// An endpoint and the model served from it — one rung of the base ladder (ADR 0072).
 type Rung = (String, String);
 
@@ -890,6 +924,9 @@ impl ConfigurableButler {
             t.sampling.clone(),
         )
         .reporting_failures();
+        if quiet_thinking(t) {
+            llm = llm.without_thinking();
+        }
         if let Some(log) = &self.usage {
             llm = llm.with_usage_log(label, Arc::clone(log));
         }
@@ -2463,15 +2500,16 @@ mod tests {
         format!("http://127.0.0.1:{port}/v1")
     }
 
-    #[test]
-    fn a_reply_says_which_model_wrote_it_and_where_it_runs() {
+    /// A model that answers one request "Hello.", on a port of its own, and hands back the
+    /// body it was sent. It reads the whole request before answering: a turn's body can arrive
+    /// in pieces, and closing on the client mid-send fails its write, flakily.
+    fn model_that_says_hello() -> (String, std::sync::mpsc::Receiver<serde_json::Value>) {
         use std::io::{Read, Write};
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
+        let (sent, got_it) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
             if let Ok((mut conn, _)) = listener.accept() {
-                // The whole request before answering: a turn's body can arrive in pieces,
-                // and closing on the client mid-send fails its write, flakily.
                 let mut got = Vec::new();
                 let mut buf = [0u8; 65536];
                 loop {
@@ -2494,6 +2532,9 @@ mod tests {
                         break;
                     }
                 }
+                let text = String::from_utf8_lossy(&got).into_owned();
+                let body = text.split_once("\r\n\r\n").map_or("", |(_, b)| b);
+                let _ = sent.send(serde_json::from_str(body).unwrap_or_default());
                 let body = r#"{"choices":[{"message":{"role":"assistant","content":"Hello."},"finish_reason":"stop"}]}"#;
                 let _ = write!(
                     conn,
@@ -2502,8 +2543,14 @@ mod tests {
                 );
             }
         });
+        (format!("http://127.0.0.1:{port}/v1"), got_it)
+    }
+
+    #[test]
+    fn a_reply_says_which_model_wrote_it_and_where_it_runs() {
+        let (url, _) = model_that_says_hello();
         let butler = LlmButler::with_config(
-            format!("http://127.0.0.1:{port}/v1"),
+            url,
             "qwen2.5:7b".to_owned(),
             String::new(),
             Sampling::default(),
@@ -2523,6 +2570,52 @@ mod tests {
                 on_the_network: true,
             })
         );
+    }
+
+    #[test]
+    fn a_local_entry_is_told_not_to_think_unless_it_may_and_a_cloud_one_never_is() {
+        // ADR 0105: qwen3 through Ollama's OpenAI endpoint thinks for ten seconds unless the
+        // request says `"reasoning_effort": "none"`; the entry's switch lets it think.
+        let target = |url: &str, thinks: bool| endora_capabilities::model_lists::Target {
+            entry: 1,
+            provider: "Ollama".to_owned(),
+            url: url.to_owned(),
+            model: "qwen3:8b".to_owned(),
+            api_key: String::new(),
+            sampling: Sampling::default(),
+            thinks,
+        };
+        let butler = super::ConfigurableButler::new(
+            std::sync::Arc::new(StoredConfig(config_with_preferred(""))),
+            std::sync::Arc::new(ScriptedButler),
+        );
+        let turn = [endora_application::TurnMessage::User("hi".to_owned())];
+        for (thinks, expected) in [(false, Some("none")), (true, None)] {
+            let (url, sent) = model_that_says_hello();
+            let reply = butler
+                .client_for(&target(&url, thinks), "everyday")
+                .take_turn(&turn, &[], &ButlerContext::default())
+                .unwrap();
+            assert_eq!(reply.text, "Hello.");
+            let body = sent.recv().unwrap();
+            assert_eq!(
+                body.get("reasoning_effort").and_then(|v| v.as_str()),
+                expected,
+                "thinks: {thinks}: {body}"
+            );
+        }
+        assert!(super::quiet_thinking(&target(
+            "http://192.168.1.10:11434/v1",
+            false
+        )));
+        assert!(
+            !super::quiet_thinking(&target("https://api.example.com/v1", false)),
+            "a cloud API may refuse the field: it is never sent"
+        );
+        assert!(!super::quiet_thinking(&target(
+            "http://192.168.1.10:11434/v1",
+            true
+        )));
     }
 
     #[test]
@@ -2548,6 +2641,7 @@ mod tests {
             model: "claude-sonnet-5-5".to_owned(),
             api_key: key.to_owned(),
             sampling: Sampling::default(),
+            thinks: false,
         };
         let (personal, backup) = (
             super::cooling_key(&target("sk-personal-0001")),
@@ -2603,6 +2697,9 @@ mod tests {
                 down()
             }
             fn enable_entry(&self, _: i64, _: bool) -> Result<(), RepositoryError> {
+                down()
+            }
+            fn set_thinks(&self, _: i64, _: bool) -> Result<(), RepositoryError> {
                 down()
             }
             fn move_entry(&self, _: i64, _: bool) -> Result<(), RepositoryError> {

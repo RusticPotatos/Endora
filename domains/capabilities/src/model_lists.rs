@@ -62,6 +62,10 @@ pub struct Entry {
     pub enabled: bool,
     /// How it samples; unset is the endpoint's own default.
     pub sampling: Sampling,
+    /// Whether a model on the house's network thinks before it answers. Off by default: a
+    /// local reasoning model asked not to think answers a tool call in about a second rather
+    /// than ten. A cloud entry is never told either way.
+    pub thinks: bool,
 }
 
 /// What one enabled entry resolves to: where to send, what to ask for, with which key.
@@ -79,6 +83,8 @@ pub struct Target {
     pub api_key: String,
     /// How it samples.
     pub sampling: Sampling,
+    /// Whether it thinks before answering (see [`Entry::thinks`]).
+    pub thinks: bool,
 }
 
 /// A list's enabled entries, in order, resolved against their providers. An entry whose
@@ -97,6 +103,7 @@ pub fn targets(providers: &[Provider], entries: &[Entry]) -> Vec<Target> {
                 model: e.model.trim().to_owned(),
                 api_key: p.api_key.clone(),
                 sampling: e.sampling.clone(),
+                thinks: e.thinks,
             })
         })
         .collect()
@@ -275,6 +282,12 @@ pub trait ModelListRepository {
     /// [`RepositoryError`] if the backend fails.
     fn enable_entry(&self, id: i64, enabled: bool) -> Result<(), RepositoryError>;
 
+    /// Lets an entry think before it answers, or not.
+    ///
+    /// # Errors
+    /// [`RepositoryError`] if the backend fails.
+    fn set_thinks(&self, id: i64, thinks: bool) -> Result<(), RepositoryError>;
+
     /// Moves an entry one place up (towards first) or down.
     ///
     /// # Errors
@@ -442,6 +455,23 @@ mod tests {
         s.enable_entry(a, false).unwrap();
         let resolved = targets(&s.providers().unwrap(), &s.entries(Job::Everyday).unwrap());
         assert_eq!(resolved.len(), 1);
+        assert!(
+            !resolved[0].thinks,
+            "an entry does not think unless told to"
+        );
+        s.set_thinks(b, true).unwrap();
+        let resolved = targets(&s.providers().unwrap(), &s.entries(Job::Everyday).unwrap());
+        assert!(
+            resolved[0].thinks,
+            "the switch is kept and carried to the target"
+        );
+        assert!(
+            s.entries(Job::Everyday)
+                .unwrap()
+                .iter()
+                .any(|e| e.id == a && !e.thinks),
+            "only the entry switched"
+        );
         s.update_provider(claude, "Claude", "https://api.anthropic.com/v1", None)
             .unwrap();
         assert_eq!(
@@ -491,6 +521,7 @@ mod tests {
             model: model.into(),
             enabled,
             sampling: Sampling::default(),
+            thinks: false,
         };
         let list = [
             entry(10, 1, "claude-sonnet-5-5", true),

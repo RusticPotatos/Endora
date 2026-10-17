@@ -95,6 +95,17 @@ a local one would.
   link-local, RFC 1918 and IPv6 unique-local addresses, `.local`, `.lan` and single-label names.
   Every other entry is a cloud entry, reached only through the door.
 
+**An entry thinks only when the owner lets it** (amended 2026-10-17). Each entry has a
+**Thinks** switch beside its On/Off, off by default. A local reasoning model asked for a tool
+call or a short reply thinks first unless told not to: measured with `qwen3:8b` through
+Ollama's OpenAI-compatible endpoint, a request took about 10 seconds thinking and 0.4 to 1.0
+seconds with `"reasoning_effort": "none"` in its body (`"think": false` and a `/no_think`
+suffix did not stop it there). So the butler sends `"reasoning_effort": "none"` to an entry on
+the house's network whose switch is off, and nothing when it is on. A cloud entry is never sent
+the field, whatever its switch, because its API may refuse it. The team's turns, through the
+node's local relay, always think: the relay never adds the field and takes it off when a
+worker sends it, because a member's round is worth the wait.
+
 **Data has a tier; a model has a clearance; code compares them.**
 
 | Tier | Examples | Local model | Cloud model |

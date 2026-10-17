@@ -9,6 +9,12 @@ tagged release.
 
 ### Added
 
+- **A Thinks switch on each model-list entry** ([ADR 0105](docs/adr/0105-models-in-ordered-lists-by-data-tier.md)).
+  Off by default: the butler sends `"reasoning_effort": "none"` to a local entry that may not
+  think, which takes a local `qwen3:8b` from about 10 seconds to under one for a tool call.
+  On, nothing is sent; a cloud entry never gets the field. The team's local relay always lets
+  the model think, and takes the field off a worker's call.
+
 - **Stranded assigned work is recovered**: an open task with a member and nothing queued,
   running or held for it for ten minutes gets one `assignment_recovery` wake for that member;
   still stranded ten minutes later, it is on the owner's desk as stuck, once, and never handed

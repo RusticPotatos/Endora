@@ -32,6 +32,7 @@ pub(super) async fn lists(State(state): State<AppState>) -> Answer {
                         "provider_name": p.map(|p| p.name.clone()).unwrap_or_default(),
                         "model": e.model,
                         "enabled": e.enabled,
+                        "thinks": e.thinks,
                         "local": p.is_some_and(|p| endora_infrastructure::is_private_endpoint(&p.url)),
                     })
                 })
@@ -250,6 +251,22 @@ pub(super) async fn entry_action(
                     .enable_entry(id, action == "on")
                     .map_err(AppError::Repository)?;
                 format!("Switched {} {action} in the {list} list", found.model)
+            }
+            "think" | "quiet" => {
+                config
+                    .set_thinks(id, action == "think")
+                    .map_err(AppError::Repository)?;
+                if action == "think" {
+                    format!(
+                        "Let {} think before answering, in the {list} list",
+                        found.model
+                    )
+                } else {
+                    format!(
+                        "Stopped {} thinking before answering, in the {list} list",
+                        found.model
+                    )
+                }
             }
             "remove" => {
                 config.remove_entry(id).map_err(AppError::Repository)?;

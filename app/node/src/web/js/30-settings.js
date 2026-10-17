@@ -176,6 +176,8 @@ function presetOptions(selected) {
 // Models in ordered lists (ADR 0105): providers entered once, then for each job a list the
 // first working, cleared entry of answers. Sorted with ↑ ↓; an entry can be switched off
 // without losing it. A key goes in once and never comes back: the screen only knows it is set.
+// "Thinks" lets a model on the house's network think before it answers: slower, off by default;
+// a cloud entry is never told either way.
 function modelListRows(job) {
   const rows = ((MODEL_LISTS && MODEL_LISTS[job]) || []).map((e, i, all) => `
     <li class="mlist-row${e.enabled ? "" : " off"}">
@@ -188,6 +190,7 @@ function modelListRows(job) {
         <button class="ghost small" data-act="mlist:up:${e.id}" aria-label="Move up" ${i === 0 ? "disabled" : ""}>↑</button>
         <button class="ghost small" data-act="mlist:down:${e.id}" aria-label="Move down" ${i === all.length - 1 ? "disabled" : ""}>↓</button>
         <button class="ghost small" data-act="mlist:${e.enabled ? "off" : "on"}:${e.id}">${e.enabled ? "Off" : "On"}</button>
+        <button class="ghost small" data-act="mlist:${e.thinks ? "quiet" : "think"}:${e.id}" aria-pressed="${e.thinks ? "true" : "false"}" title="${e.local ? "Let it think before answering: better on hard questions, about ten times slower" : "A cloud model is never told whether to think"}">Thinks: ${e.thinks ? "on" : "off"}</button>
         <button class="ghost small" data-act="mlist:test:${e.id}">Test</button>
         <button class="ghost small danger" data-act="mlist:remove:${e.id}" aria-label="Remove">×</button>
       </div>

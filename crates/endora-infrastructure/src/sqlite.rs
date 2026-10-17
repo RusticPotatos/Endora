@@ -135,7 +135,8 @@ CREATE TABLE IF NOT EXISTS model_entries (
     model    TEXT NOT NULL,
     enabled  INTEGER NOT NULL DEFAULT 1,
     position INTEGER NOT NULL,
-    sampling TEXT NOT NULL DEFAULT '{}'
+    sampling TEXT NOT NULL DEFAULT '{}',
+    thinks   INTEGER NOT NULL DEFAULT 0
 ) STRICT;
 CREATE TABLE IF NOT EXISTS model_lists_meta (
     key   TEXT PRIMARY KEY,
@@ -747,6 +748,14 @@ impl SqliteStore {
             // Whether an action actually moved the world (ADR 0054). Existing rows read
             // back NULL — nothing to compare — which is the honest default.
             ensure_column(&conn, "outcomes", "changed", "INTEGER")?;
+            // Whether a model-list entry thinks before answering (ADR 0105). An entry made
+            // before reads back as not thinking, the quick default for a local model.
+            ensure_column(
+                &conn,
+                "model_entries",
+                "thinks",
+                "INTEGER NOT NULL DEFAULT 0",
+            )?;
             // Sign-in with a password and an authenticator code. `node_auth` shipped hours
             // earlier holding only a token, and `CREATE TABLE IF NOT EXISTS` does nothing to a
             // table that already exists — the trap this repository has already fallen into

@@ -64,7 +64,8 @@ pub fn migrate(db: &Db) -> Result<(), RepositoryError> {
                 model    TEXT NOT NULL,
                 enabled  INTEGER NOT NULL DEFAULT 1,
                 position INTEGER NOT NULL,
-                sampling TEXT NOT NULL DEFAULT '{}'
+                sampling TEXT NOT NULL DEFAULT '{}',
+                thinks   INTEGER NOT NULL DEFAULT 0
             ) STRICT;
             CREATE TABLE IF NOT EXISTS model_lists_meta (
                 key   TEXT PRIMARY KEY,
@@ -207,6 +208,12 @@ pub fn migrate(db: &Db) -> Result<(), RepositoryError> {
     // is the same honest default a server Endora knows nothing about already gets.
     let _ = db.lock()?.execute(
         "ALTER TABLE mcp_servers ADD COLUMN reader_tool TEXT NOT NULL DEFAULT ''",
+        [],
+    );
+    // Whether a list entry thinks before answering (ADR 0105). Existing entries read back as
+    // not thinking, which is what a local reasoning model wants for a quick tool call.
+    let _ = db.lock()?.execute(
+        "ALTER TABLE model_entries ADD COLUMN thinks INTEGER NOT NULL DEFAULT 0",
         [],
     );
     Ok(())
@@ -1480,7 +1487,7 @@ impl crate::model_lists::ModelListRepository for ConfigStore {
         let conn = self.db.lock()?;
         let mut stmt = conn
             .prepare(
-                "SELECT id, provider, model, enabled, sampling FROM model_entries \
+                "SELECT id, provider, model, enabled, sampling, thinks FROM model_entries \
                  WHERE job = ?1 ORDER BY position, id",
             )
             .map_err(backend)?;
@@ -1493,6 +1500,7 @@ impl crate::model_lists::ModelListRepository for ConfigStore {
                     model: r.get(2)?,
                     enabled: r.get::<_, i64>(3)? != 0,
                     sampling: crate::model_lists::sampling_from_text(&r.get::<_, String>(4)?),
+                    thinks: r.get::<_, i64>(5)? != 0,
                 })
             })
             .map_err(backend)?;
@@ -1543,6 +1551,17 @@ impl crate::model_lists::ModelListRepository for ConfigStore {
             .execute(
                 "UPDATE model_entries SET enabled = ?2 WHERE id = ?1",
                 params![id, enabled],
+            )
+            .map_err(backend)?;
+        Ok(())
+    }
+
+    fn set_thinks(&self, id: i64, thinks: bool) -> Result<(), RepositoryError> {
+        self.db
+            .lock()?
+            .execute(
+                "UPDATE model_entries SET thinks = ?2 WHERE id = ?1",
+                params![id, thinks],
             )
             .map_err(backend)?;
         Ok(())

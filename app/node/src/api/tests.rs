@@ -2256,6 +2256,42 @@ async fn providers_go_in_once_lists_sort_and_no_key_ever_comes_back_out() {
     assert_eq!(shown["everyday"][0]["local"], false);
     assert_eq!(shown["everyday"][1]["local"], true);
     assert_eq!(
+        shown["everyday"][1]["thinks"], false,
+        "an entry does not think unless the owner lets it"
+    );
+    let local_entry = shown["everyday"][1]["id"].as_i64().unwrap();
+    let thinks = app(state.clone())
+        .oneshot(post(
+            &format!("/v1/model-lists/entries/{local_entry}/think"),
+            "{}",
+        ))
+        .await
+        .unwrap();
+    assert_eq!(thinks.status(), StatusCode::OK);
+    let shown_now = json_body(
+        app(state.clone())
+            .oneshot(get("/v1/model-lists"))
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(shown_now["everyday"][1]["thinks"], true);
+    app(state.clone())
+        .oneshot(post(
+            &format!("/v1/model-lists/entries/{local_entry}/quiet"),
+            "{}",
+        ))
+        .await
+        .unwrap();
+    let shown_now = json_body(
+        app(state.clone())
+            .oneshot(get("/v1/model-lists"))
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(shown_now["everyday"][1]["thinks"], false);
+    assert_eq!(
         shown["providers"][0]["url"], "https://api.anthropic.com/v1",
         "kept without the trailing slash"
     );

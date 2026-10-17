@@ -1242,16 +1242,20 @@ if (keys.length !== 3 || keys[0] !== keys[1] || keys[0] === keys[2]) {
   runInContext(`MODEL_LISTS = {
     providers: [{ id: 1, name: "Anthropic", url: "https://api.anthropic.com/v1", key_set: true, local: false, api_key: "sk-ant-fictional" },
                 { id: 2, name: "Ollama", url: "http://localhost:11434/v1", key_set: false, local: true }],
-    everyday: [{ id: 10, provider: 1, provider_name: "Anthropic", model: "<b>claude</b>", enabled: true, local: false },
-               { id: 11, provider: 2, provider_name: "Ollama", model: "qwen2.5:7b", enabled: false, local: true }],
+    everyday: [{ id: 10, provider: 1, provider_name: "Anthropic", model: "<b>claude</b>", enabled: true, local: false, thinks: true },
+               { id: 11, provider: 2, provider_name: "Ollama", model: "qwen2.5:7b", enabled: false, local: true, thinks: false }],
     deep: [], escalate: true, serving: { model: "qwen2.5:7b", local: true } };
     PROVIDER_EDITING = null;`, context);
   const ai = runInContext("modelsSection()", context);
-  for (const act of ["mlist:down:10", "mlist:on:11", "mlist:test:10", "mlist:remove:11", "mlist:add:everyday", "mlist:add:deep",
+  for (const act of ["mlist:down:10", "mlist:on:11", "mlist:quiet:10", "mlist:think:11", "mlist:test:10", "mlist:remove:11", "mlist:add:everyday", "mlist:add:deep",
     "mlist:discover:deep", "mlist:escalate:0", "mlist:provideredit:1", "mlist:providerremove:2", "mlist:providersave"]) {
     if (!ai.includes(`data-act="${act}"`)) fail(`models: the AI screen does not offer ${act}`);
   }
   if (!/data-act="mlist:up:10"[^>]*disabled/.test(ai)) fail("models: the first entry can still move up");
+  // ADR 0105: each entry says whether it thinks, and the switch is a dispatched action.
+  if (!/data-act="mlist:think:11"[^>]*aria-pressed="false"[^>]*>Thinks: off</.test(ai)) fail("models: an entry does not say it does not think");
+  if (!/data-act="mlist:quiet:10"[^>]*aria-pressed="true"[^>]*>Thinks: on</.test(ai)) fail("models: an entry does not say it thinks");
+  if (!runInContext("dispatch.toString()", context).includes('"think", "quiet"')) fail("models: the Thinks switch is not sent to the node");
   if (!ai.includes("cloud, sees your messages disguised") || !ai.includes("switched off")) fail("models: an entry does not say where it runs or that it is off");
   if (!ai.includes("key set") || !ai.includes("no key")) fail("models: a provider does not say whether a key is set");
   if (ai.includes("<b>claude</b>")) fail("models: a model name became markup");
