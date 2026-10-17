@@ -91,6 +91,10 @@ CREATE TABLE IF NOT EXISTS routines (
     on_lab_trouble INTEGER NOT NULL DEFAULT 0, last_fired_at INTEGER,
     last_task INTEGER REFERENCES tasks(id)
 ) STRICT;
+-- What the owner wants every member working towards a goal to know (ADR 0108).
+CREATE TABLE IF NOT EXISTS goal_notes (
+    goal INTEGER PRIMARY KEY REFERENCES goals(id), note TEXT NOT NULL
+) STRICT;
 -- A member's word that it will come back to a task: one wake, later (ADR 0107).
 CREATE TABLE IF NOT EXISTS check_backs (
     id INTEGER PRIMARY KEY, member INTEGER NOT NULL REFERENCES members(id),
@@ -357,6 +361,33 @@ impl TeamStore for SqliteTeamStore {
                 params![id.0, status.name()],
             )
             .map_err(backend)?;
+        Ok(())
+    }
+
+    fn goal_note(&self, id: GoalId) -> Stored<String> {
+        Ok(self
+            .conn()?
+            .query_row("SELECT note FROM goal_notes WHERE goal = ?1", [id.0], |r| {
+                r.get(0)
+            })
+            .optional()
+            .map_err(backend)?
+            .unwrap_or_default())
+    }
+
+    fn set_goal_note(&self, id: GoalId, note: &str) -> Stored<()> {
+        let conn = self.conn()?;
+        if note.is_empty() {
+            conn.execute("DELETE FROM goal_notes WHERE goal = ?1", [id.0])
+                .map_err(backend)?;
+            return Ok(());
+        }
+        conn.execute(
+            "INSERT INTO goal_notes (goal, note) VALUES (?1, ?2)
+             ON CONFLICT (goal) DO UPDATE SET note = excluded.note",
+            params![id.0, note],
+        )
+        .map_err(backend)?;
         Ok(())
     }
 

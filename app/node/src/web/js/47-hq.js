@@ -548,6 +548,7 @@ function viewHQ() {
         <section class="hq-card"><h2>Team</h2><ul class="hq-team">${team}</ul></section>
         <details class="hq-card"><summary>Set the team a goal</summary>
           <div class="hq-row" style="margin-top:8px;"><input id="hq-goal" placeholder="e.g. Keep the home lab healthy" /><button class="hq-btn ok" data-act="hq:goal">Set it</button></div></details>
+        ${hqNotes(s)}
         ${hqRoutines(s)}
         ${hqContracts(s.contracts)}
       </aside>
@@ -576,6 +577,18 @@ function hqContracts(c) {
       You are told of every restart. Endora's other skills are the team's too, as each skill's own setting says:
       on runs (three an hour, and you are told), ask puts it on your desk for approval, off is never offered.</p>
     <div class="hq-row">${btn("all", c.all, "Contracts")}${c.all ? btn("restart_container", c.restart_container, "Restarts") : ""}</div></details>`;
+}
+
+// Each active goal's notes from the owner: standing facts every member working towards it reads
+// near the top of each briefing. Escaped like everything a person typed.
+function hqNotes(s) {
+  const goals = (s.goals || []).filter((g) => g.status === "active");
+  if (!goals.length) return "";
+  const rows = goals.map((g) => `<li><b>${esc(g.title)}</b>
+      <textarea id="hq-note-${g.id}" rows="3" maxlength="2000" aria-label="Notes for the team on ${esc(g.title)}"
+        placeholder="What every member working on this should know">${esc(g.note || "")}</textarea>
+      <div class="hq-row"><button class="hq-btn ok" data-act="hq:note:${g.id}:save">Save notes</button></div></li>`).join("");
+  return `<details class="hq-card"><summary>Notes for the team</summary><ul class="hq-team">${rows}</ul></details>`;
 }
 
 // Routines (ADR 0107): work that comes round again, each a task for one member. Each shows
@@ -618,7 +631,9 @@ function hqSelected() {
     <dt>Owner</dt><dd>${t.owner ? esc(hqName(t.owner)) : "nobody"}</dd>
     <dt>Lock</dt><dd>${runner ? "held by R" + runner.id : "free"}</dd>
     <dt>Blocked by</dt><dd>${(t.waits_on || []).length ? t.waits_on.map(hqKey).join(", ") : "nothing"}</dd>
-    <dt>Depth</dt><dd>${t.depth || 0}</dd></dl>${why(t)}${thread ? `<ul class="hq-thread">${thread}</ul>` : ""}`;
+    <dt>Depth</dt><dd>${t.depth || 0}</dd></dl>${why(t)}${thread ? `<ul class="hq-thread">${thread}</ul>` : ""}
+    <textarea id="hq-reply-${t.id}" rows="2" placeholder="Reply in the thread: whoever has it reads it now" aria-label="Your reply"></textarea>
+    <div class="hq-row"><button class="hq-btn ok" data-act="hq:reply:${t.id}:send">Send</button></div>`;
 }
 
 // The verbs this screen uses. Returns true when it handled one.
@@ -630,6 +645,20 @@ async function hqDispatch(verb, noun, id, arg) {
     const box = document.getElementById(`hq-answer-${id}`), answer = arg === "seen" && box ? box.value.trim() : "";
     try { await api("POST", `/v1/hq/desk/${id}`, { decision: arg, answer }); flash(answer ? "Answered." : "Decided.", "ok"); }
     catch (e) { flash("Couldn't decide: " + e.message, "err"); }
+    await loadHQ(); render(); return true;
+  }
+  // The owner's reply on a task: whoever has it is woken to read it.
+  if (noun === "reply") {
+    const text = val(`hq-reply-${id}`); if (!text) return true;
+    try { await api("POST", `/v1/hq/tasks/${id}/post`, { text }); flash("Sent.", "ok"); }
+    catch (e) { flash("Couldn't send: " + e.message, "err"); }
+    await loadHQ(); render(); return true;
+  }
+  // A goal's notes for the team; empty clears them.
+  if (noun === "note") {
+    const box = document.getElementById(`hq-note-${id}`), note = box ? box.value.trim() : "";
+    try { await api("POST", `/v1/hq/goals/${id}/note`, { note }); flash("Notes saved.", "ok"); }
+    catch (e) { flash("Couldn't save them: " + e.message, "err"); }
     await loadHQ(); render(); return true;
   }
   if (noun === "stop") {

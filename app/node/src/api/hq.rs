@@ -167,6 +167,49 @@ pub(super) async fn hq_decide(
 }
 
 #[derive(Deserialize)]
+pub(super) struct HqReply {
+    text: String,
+}
+
+/// The owner replies on a task: HQ writes it in the thread and wakes whoever has the task.
+pub(super) async fn hq_reply(
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+    Json(req): Json<HqReply>,
+) -> Answer {
+    let answer = ask(
+        &state,
+        format!("/v1/tasks/{id}/post"),
+        Some(json!({ "text": req.text })),
+    )
+    .await?;
+    record(&state, &format!("you replied on task {id}"));
+    Ok(answer)
+}
+
+#[derive(Deserialize)]
+pub(super) struct HqNote {
+    #[serde(default)]
+    note: String,
+}
+
+/// The owner writes a goal's notes for the team, which every briefing under it carries.
+pub(super) async fn hq_goal_note(
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+    Json(req): Json<HqNote>,
+) -> Answer {
+    let answer = ask(
+        &state,
+        format!("/v1/goals/{id}/note"),
+        Some(json!({ "note": req.note })),
+    )
+    .await?;
+    record(&state, &format!("you wrote the team's notes for goal {id}"));
+    Ok(answer)
+}
+
+#[derive(Deserialize)]
 pub(super) struct HqWhy {
     #[serde(default)]
     why: String,
@@ -237,6 +280,62 @@ pub(super) async fn hq_fire_routine(State(state): State<AppState>, Path(id): Pat
 mod tests {
     use super::super::relay::tests::{fake, node};
     use super::*;
+
+    #[tokio::test]
+    async fn the_owners_reply_and_a_goals_notes_pass_through_signed_and_are_recorded() {
+        let (url, seen) = fake(Arc::new(|_, _| {
+            (200, "application/json", json!({ "ok": true }).to_string())
+        }));
+        let state = node(&url, "http://127.0.0.1:9");
+        let _ = hq_reply(
+            State(state.clone()),
+            Path(7),
+            Json(HqReply {
+                text: "Leave the old player alone.".to_owned(),
+            }),
+        )
+        .await
+        .unwrap();
+        let _ = hq_goal_note(
+            State(state.clone()),
+            Path(1),
+            Json(HqNote {
+                note: "The SSD is the owner's.".to_owned(),
+            }),
+        )
+        .await
+        .unwrap();
+        let sent: Vec<(String, serde_json::Value)> = seen
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(p, _, b)| (p.clone(), serde_json::from_str(b).unwrap()))
+            .collect();
+        assert_eq!(
+            sent,
+            [
+                (
+                    "/v1/tasks/7/post".to_owned(),
+                    json!({ "text": "Leave the old player alone." })
+                ),
+                (
+                    "/v1/goals/1/note".to_owned(),
+                    json!({ "note": "The SSD is the owner's." })
+                ),
+            ]
+        );
+        let audit: Vec<String> = endora_application::AuditLog::recent(state.audit.as_ref(), 10)
+            .unwrap()
+            .iter()
+            .map(|r| r.summary().to_owned())
+            .collect();
+        for line in [
+            "HQ: you replied on task 7",
+            "HQ: you wrote the team's notes for goal 1",
+        ] {
+            assert!(audit.iter().any(|a| a == line), "{line}: {audit:?}");
+        }
+    }
 
     #[tokio::test]
     async fn the_owners_routines_pass_through_signed_and_are_recorded() {

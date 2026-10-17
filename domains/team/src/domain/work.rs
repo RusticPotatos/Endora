@@ -323,6 +323,8 @@ pub enum Refusal {
     Rhythm,
     /// A routine's check is closed only by its member, once it is being worked.
     NotACheck,
+    /// Longer than it may be, in characters.
+    TooLong(usize),
 }
 
 impl fmt::Display for Refusal {
@@ -359,6 +361,7 @@ impl fmt::Display for Refusal {
                 "only a routine's check is closed by its member, once it is being worked: \
                  claim it first",
             ),
+            Self::TooLong(most) => write!(f, "that is longer than {most} characters"),
             Self::AlreadyAsked => f.write_str(
                 "your last question or approval about this task is still waiting on the owner's desk; end your turn",
             ),

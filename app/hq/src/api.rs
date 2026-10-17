@@ -18,7 +18,7 @@ use serde_json::json;
 
 use endora_team::application::engine::{Author, EngineError, Fired};
 use endora_team::application::ports::{Clock, NewRoutine, NewTask};
-use endora_team::domain::{DeskId, GoalId, MemberId, Priority, Refusal, RoutineId};
+use endora_team::domain::{DeskId, GoalId, MemberId, Priority, Refusal, RoutineId, TaskId};
 use endora_team::infrastructure::demo;
 
 use crate::Hq;
@@ -66,6 +66,9 @@ pub fn app(state: State) -> Router {
         .route("/v1/goals", post(set_goal))
         .route("/v1/tasks", post(add_task))
         .route("/v1/desk/{id}", post(decide))
+        // The owner's reply on a task, and a goal's notes for the team.
+        .route("/v1/tasks/{id}/post", post(reply))
+        .route("/v1/goals/{id}/note", post(goal_note))
         .route("/v1/stop", post(stop))
         .route("/v1/resume", post(resume))
         // Routines (ADR 0107): the owner's, through the node; and Endora's alarms.
@@ -283,6 +286,55 @@ async fn decide(
     })
     .await?;
     Ok(Json(json!({ "decided": true })))
+}
+
+#[derive(Deserialize)]
+struct Reply {
+    text: String,
+}
+
+/// The most of an owner's reply, as of any post in a thread.
+const LONGEST_REPLY: usize = 4_000;
+
+/// The owner writes in a task's thread: whoever has the task is woken to read it at once.
+async fn reply(
+    Extract(state): Extract<State>,
+    Path(id): Path<i64>,
+    Json(req): Json<Reply>,
+) -> Response {
+    let text = req.text.trim().to_owned();
+    if text.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "a reply says something" })),
+        )
+            .into_response();
+    }
+    if text.chars().count() > LONGEST_REPLY {
+        return Failed(EngineError::Refused(Refusal::TooLong(LONGEST_REPLY))).into_response();
+    }
+    let hq = state.hq.clone();
+    match blocking(move || hq.post(Author::Owner, TaskId(id), &text)).await {
+        Ok(()) => Json(json!({ "posted": true })).into_response(),
+        Err(failed) => failed.into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct Note {
+    #[serde(default)]
+    note: String,
+}
+
+/// The owner writes a goal's notes, which every briefing under it carries; empty clears them.
+async fn goal_note(
+    Extract(state): Extract<State>,
+    Path(id): Path<i64>,
+    Json(req): Json<Note>,
+) -> Result<Json<serde_json::Value>, Failed> {
+    let hq = state.hq.clone();
+    blocking(move || hq.set_goal_note(GoalId(id), &req.note)).await?;
+    Ok(Json(json!({ "noted": true })))
 }
 
 #[derive(Deserialize)]
@@ -953,6 +1005,82 @@ mod tests {
         assert_eq!(told.status(), StatusCode::OK);
         let twice = app.oneshot(outcome("Done.")).await.unwrap();
         assert_eq!(twice.status(), StatusCode::CONFLICT);
+    }
+
+    #[tokio::test]
+    async fn the_owner_replies_on_a_task_and_writes_a_goals_notes() {
+        let st = state(false);
+        let app = app(st.clone());
+        let goal = json_of(
+            app.clone()
+                .oneshot(call(
+                    "POST",
+                    "/v1/goals",
+                    Some(TOKEN),
+                    r#"{"title":"Keep the home lab healthy"}"#,
+                ))
+                .await
+                .unwrap(),
+        )
+        .await["goal"]
+            .as_i64()
+            .unwrap();
+        let task = json_of(
+            app.clone()
+                .oneshot(call(
+                    "POST",
+                    "/v1/tasks",
+                    Some(TOKEN),
+                    &json!({ "goal": goal, "title": "Look at the music stack" }).to_string(),
+                ))
+                .await
+                .unwrap(),
+        )
+        .await["task"]
+            .as_i64()
+            .unwrap();
+        let reply = |text: &str| {
+            call(
+                "POST",
+                &format!("/v1/tasks/{task}/post"),
+                Some(TOKEN),
+                &json!({ "text": text }).to_string(),
+            )
+        };
+        let res = app.clone().oneshot(reply("Leave it.")).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        for bad in ["  ", &"x".repeat(4_001)] {
+            let res = app.clone().oneshot(reply(bad)).await.unwrap();
+            assert_eq!(res.status(), StatusCode::BAD_REQUEST, "{}", bad.len());
+        }
+        let note = |text: &str| {
+            call(
+                "POST",
+                &format!("/v1/goals/{goal}/note"),
+                Some(TOKEN),
+                &json!({ "note": text }).to_string(),
+            )
+        };
+        let res = app
+            .clone()
+            .oneshot(note("The SSD is the owner's."))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let res = app.clone().oneshot(note(&"x".repeat(2_001))).await.unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+        let snap = json_of(
+            app.clone()
+                .oneshot(call("GET", "/v1/snapshot", Some(TOKEN), ""))
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(snap["goals"][0]["note"], "The SSD is the owner's.");
+        let thread = &snap["tasks"][0]["thread"];
+        assert_eq!(thread[0]["author"], "owner", "{snap}");
+        let res = app.oneshot(note("x")).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
     }
 
     /// The runner's three routes, each with a body it might send.

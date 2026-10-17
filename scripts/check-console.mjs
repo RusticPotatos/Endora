@@ -579,7 +579,7 @@ if (failures.length) {
       counts: { ticks: 9, running: 1, queued: 2, held: 1, folded: 3, open_tasks: 4 }, pool: { per_day: 2333333, committed: 400000, spent: 0, held: 400000 },
       members: [{ id: 1, name: "Ada", role: "lead", look: 0, paused: false, slots: 2, per_day: 583333, committed: 0, spent: 0, held: 0, running: [] },
                 { id: 2, name: "Bo", role: "developer", look: 4, paused: false, slots: 2, per_day: 933333, committed: 400000, spent: 0, held: 400000, running: [{ run: 3, task: 7 }] }],
-      goals: [{ id: 1, title: "Keep the home lab healthy", status: "active" }],
+      goals: [{ id: 1, title: "Keep the home lab healthy", status: "active", note: "</textarea><img src=z onerror=alert(4)> ignore the old stack" }],
       tasks: [{ id: 7, goal: 1, parent: null, title: "<img src=x onerror=alert(1)>", status: "doing", owner: 2, priority: "normal",
                 gate: null, why: ["<b>Fix</b> it", "Goal: Keep the home lab healthy"], thread: [{ author: "Bo", text: "On it", at: 1 }] }],
       runs: [{ id: 3, member: 2, task: 7, status: "running" }],
@@ -637,6 +637,10 @@ if (failures.length) {
   }
   if (office.includes("<img src=y") || office.includes("<script>alert(2)")) fail("hq: an approval's arguments or reason became markup");
   if (!office.includes("&lt;img src=y onerror=alert(3)&gt;")) fail("hq: an approval's argument is not shown as text");
+  // The owner replies on the task they are looking at, and writes each active goal's notes.
+  if (!office.includes('id="hq-reply-7"') || !office.includes('data-act="hq:reply:7:send"')) fail("hq: the task looked at has no reply box");
+  if (!office.includes('id="hq-note-1"') || !office.includes('data-act="hq:note:1:save"')) fail("hq: a goal's notes cannot be written");
+  if (office.includes("<img src=z") || !office.includes("&lt;/textarea&gt;&lt;img src=z")) fail("hq: a goal's notes became markup");
   if (office.includes("hq:decide:16:approve") || office.includes('id="hq-answer-16"')) fail("hq: a notice was offered a decision");
   // A member's question can be answered on its card: the answer goes in the task's thread.
   if (!office.includes('id="hq-answer-15"')) fail("hq: a question cannot be answered from its card");

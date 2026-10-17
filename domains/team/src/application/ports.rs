@@ -213,6 +213,16 @@ pub trait TeamStore {
     /// # Errors
     /// [`StoreError`] if the store fails.
     fn set_goal_status(&self, id: GoalId, status: GoalStatus) -> Stored<()>;
+    /// A goal's notes from the owner: empty when there are none.
+    ///
+    /// # Errors
+    /// [`StoreError`] if the store fails.
+    fn goal_note(&self, id: GoalId) -> Stored<String>;
+    /// Sets a goal's notes from the owner; empty clears them.
+    ///
+    /// # Errors
+    /// [`StoreError`] if the store fails.
+    fn set_goal_note(&self, id: GoalId, note: &str) -> Stored<()>;
 
     /// Adds a task, at `depth` hands from its goal.
     ///

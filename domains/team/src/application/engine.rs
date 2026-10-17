@@ -22,6 +22,9 @@ use crate::domain::{
     TaskStatus, WakeDecision, WakeReason, WakeSituation,
 };
 
+/// The most characters a goal's notes from the owner may run to.
+pub const GOAL_NOTE_MOST: usize = 2_000;
+
 /// How long an approval waits for the owner before it goes unrun (ADR 0108): a day.
 pub const APPROVALS_LAST_MS: Millis = 24 * 60 * 60 * 1000;
 
@@ -690,7 +693,51 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         if let Author::Member(_) = by {
             return Err(EngineError::Refused(Refusal::OutOfReach));
         }
-        self.post_held_lock(by, task, text)
+        if by != Author::Owner {
+            return self.post_held_lock(by, task, text);
+        }
+        // The owner's reply on an open task wakes whoever has it at once, named or not: it is
+        // new, so the back-off never holds it.
+        let found = self.task(task)?;
+        if found.status.finished() {
+            return Err(EngineError::Refused(Refusal::Finished));
+        }
+        self.post_held_lock(by, task, text)?;
+        let Some(member) = found.owner.or(found.assignee) else {
+            return Ok(());
+        };
+        let members = self.store.members()?;
+        if mentions(text, &members).iter().any(|m| m.id == member) {
+            return Ok(());
+        }
+        self.wake_held_lock(member, Some(task), WakeReason::OwnerReplied)?;
+        Ok(())
+    }
+
+    /// The owner's notes for every member working towards a goal, at most
+    /// [`GOAL_NOTE_MOST`] characters; empty clears them. Each briefing for a task under the
+    /// goal carries them near its top.
+    ///
+    /// # Errors
+    /// [`EngineError::Unknown`] for a goal that does not exist; [`Refusal::TooLong`] for notes
+    /// past the most; a store failure.
+    pub fn set_goal_note(&self, goal: GoalId, note: &str) -> Done<()> {
+        let _held = self.held();
+        self.store.goal(goal)?.ok_or(EngineError::Unknown("goal"))?;
+        let note = note.trim();
+        if note.chars().count() > GOAL_NOTE_MOST {
+            return Err(EngineError::Refused(Refusal::TooLong(GOAL_NOTE_MOST)));
+        }
+        self.store.set_goal_note(goal, note)?;
+        Ok(())
+    }
+
+    /// A goal's notes from the owner: empty when there are none.
+    ///
+    /// # Errors
+    /// A store failure.
+    pub fn goal_note(&self, goal: GoalId) -> Done<String> {
+        Ok(self.store.goal_note(goal)?)
     }
 
     /// Writes as `member`, outside any turn: the thread's rules on their own, for the tests.
@@ -1084,6 +1131,10 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             task.priority.name(),
             task.description
         ));
+        let note = self.store.goal_note(task.goal)?;
+        if !note.is_empty() {
+            told.push_str(&format!("Notes from the owner for this goal: {note}\n"));
+        }
         let mut why = vec![task.title.clone()];
         let mut parent = task.parent;
         while let Some(id) = parent {
@@ -1998,6 +2049,10 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             .collect();
         let tasks = self.store.tasks()?;
         let goals = self.store.goals()?;
+        let mut notes = std::collections::HashMap::new();
+        for g in &goals {
+            notes.insert(g.id.0, self.store.goal_note(g.id)?);
+        }
         let mut members = Vec::new();
         for m in self.store.members()? {
             let committed = self.store.committed(Some(m.id), day)?;
@@ -2074,7 +2129,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             "members": members,
             "goals": goals.iter().map(|g| json!({
                 "id": g.id.0, "title": g.title, "reason": g.reason, "status": g.status.name(),
-                "parent": g.parent.map(|p| p.0),
+                "parent": g.parent.map(|p| p.0), "note": notes.get(&g.id.0).cloned().unwrap_or_default(),
             })).collect::<Vec<_>>(),
             "tasks": task_rows,
             "runs": runs.iter().map(|r| json!({

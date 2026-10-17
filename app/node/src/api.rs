@@ -459,6 +459,9 @@ pub fn app(state: AppState) -> Router {
         .route("/v1/hq/goals", post(hq_goal))
         .route("/v1/hq/tasks", post(hq_task))
         .route("/v1/hq/desk/{id}", post(hq_decide))
+        // The owner's reply on a task, and a goal's notes for the team.
+        .route("/v1/hq/tasks/{id}/post", post(hq_reply))
+        .route("/v1/hq/goals/{id}/note", post(hq_goal_note))
         .route("/v1/hq/stop", post(hq_stop))
         .route("/v1/hq/resume", post(hq_resume))
         // The owner's routines (ADR 0107).

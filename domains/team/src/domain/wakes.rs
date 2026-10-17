@@ -26,6 +26,8 @@ pub enum WakeReason {
     /// Endora raised an alarm about the home lab, passed into the open task of the routine
     /// that takes it (ADR 0107).
     Alarm,
+    /// The owner wrote in the task's thread: whoever has the task reads it at once.
+    OwnerReplied,
 }
 
 impl WakeReason {
@@ -43,6 +45,7 @@ impl WakeReason {
             Self::Recovery => "recovery",
             Self::CheckBack => "check_back",
             Self::Alarm => "alarm",
+            Self::OwnerReplied => "owner_replied",
         }
     }
 
@@ -76,6 +79,7 @@ impl WakeReason {
             Self::Recovery,
             Self::CheckBack,
             Self::Alarm,
+            Self::OwnerReplied,
         ]
         .into_iter()
         .find(|r| r.name() == name)
