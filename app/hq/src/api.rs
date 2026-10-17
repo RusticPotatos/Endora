@@ -76,6 +76,9 @@ pub fn app(state: State) -> Router {
         .route("/v1/routines/{id}", post(switch_routine))
         .route("/v1/routines/{id}/fire", post(fire_routine))
         .route("/v1/alarms", post(alarm))
+        // The home lab's containers, as the node sees them: what a question to the owner is
+        // checked against before it reaches the desk.
+        .route("/v1/lab/names", post(lab_names))
         // The node's model relay: whose a turn's token is, and what each call cost.
         .route("/v1/team/turn", post(crate::team::turn))
         .route("/v1/team/usage", post(crate::team::usage))
@@ -458,6 +461,29 @@ async fn alarm(
     Ok(Json(said))
 }
 
+#[derive(Deserialize)]
+struct LabNames {
+    names: Vec<String>,
+}
+
+/// The node says which containers the home lab has now. Kept in memory: the node says them
+/// again every ten minutes, so a restarted HQ learns them soon.
+async fn lab_names(
+    Extract(state): Extract<State>,
+    Json(req): Json<LabNames>,
+) -> Json<serde_json::Value> {
+    let names: Vec<String> = req
+        .names
+        .into_iter()
+        .map(|n| n.trim().chars().take(128).collect::<String>())
+        .filter(|n| !n.is_empty())
+        .take(1000)
+        .collect();
+    let count = names.len();
+    state.hq.set_lab_names(names);
+    Json(json!({ "ok": true, "names": count }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -671,7 +697,11 @@ mod tests {
     async fn the_owner_answers_a_question_from_the_desk_into_its_thread() {
         let st = state(false);
         let (run, task) = a_turn_starts(&st);
-        let asked = st.hq.ask_owner(run, "Which cables first?").unwrap();
+        let endora_team::application::Asked::Desk(asked) =
+            st.hq.ask_owner(run, "Which cables first?").unwrap()
+        else {
+            panic!("no reviewer: straight to the desk");
+        };
         let app = app(st.clone());
         let decide = |body: &str| call("POST", &format!("/v1/desk/{}", asked.0), Some(TOKEN), body);
         let res = app
@@ -1378,6 +1408,44 @@ mod tests {
         assert!(
             task.description
                 .contains("sonarr became unhealthy at 14:02")
+        );
+    }
+
+    #[tokio::test]
+    async fn the_node_tells_the_labs_names_and_a_question_is_checked_against_them() {
+        let st = state(false);
+        let app = app(st.clone());
+        let names = |token: Option<&str>| {
+            call(
+                "POST",
+                "/v1/lab/names",
+                token,
+                &json!({ "names": ["sonarr", "radarr"] }).to_string(),
+            )
+        };
+        let res = app.clone().oneshot(names(None)).await.unwrap();
+        assert_eq!(res.status(), StatusCode::UNAUTHORIZED, "only the node");
+        let res = app.oneshot(names(Some(TOKEN))).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let (run, _) = a_turn_starts(&st);
+        let endora_team::application::Asked::Desk(asked) =
+            st.hq.ask_owner(run, "Restart `Crappy_Cray`?").unwrap()
+        else {
+            panic!("no reviewer: straight to the desk");
+        };
+        let item = st
+            .hq
+            .store()
+            .desk()
+            .unwrap()
+            .into_iter()
+            .find(|d| d.id == asked)
+            .unwrap();
+        assert!(
+            item.text
+                .ends_with("\nNot found in Endora's home lab: Crappy_Cray"),
+            "{}",
+            item.text
         );
     }
 

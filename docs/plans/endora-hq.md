@@ -151,8 +151,34 @@ and brings a waiting turn forward.
 Every wake leaves a receipt, whatever happens to it: **queued**, **folded** into a turn the
 member is already taking on the same task, **held** because another member is working that
 task (and released, oldest first, when that turn ends), **refused** (and why: the kill
-switch, a paused member, an exhausted budget, a duplicate, nothing to do), **started**, or
-**finished**.
+switch, a paused member, an exhausted budget, a duplicate, nothing to do, in review),
+**started**, or **finished**.
+
+**The reviewer** (built 2026-10-17). One path takes work and questions past the team's
+reviewer, the first member with the reviewer's role:
+
+- **Work moved to `in_review`** by a member other than the reviewer wakes the reviewer with
+  `review_requested` on that task. With no reviewer (or the reviewer's own work) it is on the
+  owner's desk as **ready to read**, with its thread. While a task waits in review its owner
+  takes no turn on it (the wake is refused as **in review**), except for the owner's reply,
+  the answer to a question, and the reviewer sending it back (`sent_back`).
+- **A question to the owner about the home lab** (`ask_owner` on a task under a goal whose
+  routine takes the home lab's alarms, or a question naming containers), from anyone but the
+  reviewer, does not reach the desk: the task moves to `in_review`, the question is posted in
+  its thread as "Draft for the owner: …", the member's turn ends, and the reviewer is woken
+  the same way. The reviewer's own `ask_owner` goes to the desk.
+- **The reviewer's briefing** says which it is. For work: check every claim in the thread
+  against the tools; approve only what holds; send back with exactly what does not. For a
+  draft: check every claim; if everything holds, ask the owner with the draft, corrected if
+  needed; if not, send it back.
+- **Its verdict** is the `review` tool (below). The reviewer never gives one on its own work.
+- **Before any question reaches the desk**, from anyone, its container-like names (in
+  backticks, or shaped like the names Docker makes up, `word_word`) are compared with the
+  home lab's containers, which the node tells HQ (`POST /v1/lab/names`, signed, when they
+  change and every ten minutes). A name the lab does not have is listed on the card, "Not
+  found in Endora's home lab: …", never quietly removed. Live, a lead on a small model put an
+  invented container and an invented ping test on the desk; this is why that is now read
+  first, and flagged.
 
 ### Runs
 
@@ -243,6 +269,7 @@ container:
 | `check_back` | Wakes the member on its task again after 5–720 minutes, once, if it is still open: after a fix, to confirm it held |
 | `run_gate` | Runs the tests and build on a runner and returns the result |
 | `request_action` | Asks for a privileged action (open a pull request, for example); the gateway decides |
+| `review` | The reviewer's only: its verdict on work in review, `approve` or `send_back`, with notes. `send_back` posts the notes, sets the task to `doing` and wakes its owner. `approve` closes work that needs no gate (a routine's task, or work under a goal the home lab's routine serves) as `done`; work that needs the gate stays in review until the gate passes, and the reviewer is told so |
 
 **What a turn may touch** (engine rules, whatever the way in): `claim` and `set_status`
 act only on the turn's own task and its sub-tasks, at any depth; `post` reaches those, the

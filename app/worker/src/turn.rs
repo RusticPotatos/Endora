@@ -197,7 +197,9 @@ fn instructions(posted: bool, contracts: bool) -> String {
              owner's approval goes on their desk and ends your turn, and you are woken when they \
              decide.\n\
              - Anything else on the home lab is the owner's to decide: ask with ask_owner, and \
-             never try to work around a refusal.",
+             never try to work around a refusal.\n\
+             - A question about the home lab goes to the team's reviewer first, who checks every \
+             claim and container name against these tools: say only what you saw.",
         );
     }
     told.push_str(
@@ -917,7 +919,8 @@ mod tests {
         let parts: Vec<&str> = told.split("\n\n").collect();
         assert_eq!(parts.len(), 4, "{told}");
         let rules: Vec<&str> = parts[2].lines().collect();
-        assert_eq!(rules.len(), 6, "{told}");
+        assert_eq!(rules.len(), 7, "{told}");
+        assert!(told.contains("goes to the team's reviewer first"), "{told}");
         assert!(told.contains("owner's approval"), "{told}");
         assert!(rules[1..].iter().all(|r| r.starts_with("- ")));
         assert!(told.contains("restart_container"));

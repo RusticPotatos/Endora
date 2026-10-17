@@ -86,6 +86,17 @@ anything unhealthy, fix what a restart can fix, check back after a fix, and put 
 to the owner as a plan. It first fires 6 hours later; the owner can run it at once. The owner
 adds, switches and runs routines from the HQ screen.
 
+**The reviewer between the home lab and the desk** (added 2026-10-17). Live, `in_review` was a
+dead end: nothing woke a reviewer, no worker could approve or send back, and approval needed a
+gate that does not exist yet. Now work moved to review, and a member's question about the home
+lab (under this routine's goal, or naming containers), wake the team's reviewer
+(`review_requested`) instead of reaching the desk; the reviewer's `review` tool approves or
+sends back (`sent_back` wakes the owner of the work), and the owner of work in review takes no
+turn on it meanwhile, except for the owner's word or a send-back. The home lab's work changes
+no code, so it needs no gate: an approval closes it. Every question that does reach the desk
+lists the names in it the home lab does not have, against the containers the node tells HQ.
+The details are in the plan, §5 and §6.
+
 ## Guards
 
 Firing goes through the engine's rules, and a firing they refuse hands out nothing (so no task

@@ -8,11 +8,12 @@ use serde_json::{Value, json};
 
 use super::engine::{Author, Engine, EngineError};
 use super::ports::{Clock, NewTask, Run, TeamStore, WorkerAdapter};
-use crate::domain::{Member, Priority, Refusal, RunStatus, TaskId, TaskStatus};
+use crate::domain::{Member, Priority, Refusal, Role, RunStatus, TaskId, TaskStatus};
 
-/// The tools, as MCP lists them: name, what it does, and its input.
+/// The tools a member of `role` is offered, as MCP lists them: name, what it does, and its
+/// input. Only the reviewer is offered `review`.
 #[must_use]
-pub fn tools() -> Value {
+pub fn tools(role: Role) -> Value {
     let tool = |name: &str, description: &str, properties: Value, required: &[&str]| {
         json!({
             "name": name,
@@ -21,7 +22,7 @@ pub fn tools() -> Value {
         })
     };
     let task = json!({ "type": "integer", "description": "the task's number" });
-    json!([
+    let mut all = json!([
         tool(
             "my_turn",
             "What this turn is for: your role, the task and why it exists, what is new, and its thread. Call it first.",
@@ -76,7 +77,18 @@ pub fn tools() -> Value {
             json!({ "action": { "type": "string" }, "detail": { "type": "string" } }),
             &["action", "detail"]
         ),
-    ])
+    ]);
+    if role == Role::Reviewer {
+        if let Some(list) = all.as_array_mut() {
+            list.push(tool(
+                "review",
+                "Your verdict on work in review, after checking every claim in its thread against your tools: approve what holds (it is done, unless it needs the gate), or send it back to its owner with exactly what does not hold. Never your own work.",
+                json!({ "task": task, "verdict": { "type": "string", "enum": ["approve", "send_back"] }, "notes": { "type": "string", "description": "what you checked, or what does not hold" } }),
+                &["task", "verdict", "notes"],
+            ));
+        }
+    }
+    all
 }
 
 /// The most a member writes in one post: a thread is read by every turn after it.
@@ -212,8 +224,34 @@ pub fn call<S: TeamStore, W: WorkerAdapter, C: Clock>(
         }
         "ask_owner" => {
             let text = text_arg(args, "text")?;
-            engine.ask_owner(run.id, text).map_err(|e| said(&e))?;
-            Ok("It is on the owner's desk, and this turn has ended: stop now. You are woken when they have seen it.".to_owned())
+            match engine.ask_owner(run.id, text).map_err(|e| said(&e))? {
+                super::engine::Asked::Desk(_) => Ok("It is on the owner's desk, and this turn has ended: stop now. You are woken when they have seen it.".to_owned()),
+                super::engine::Asked::Review(_) => Ok("It is with the reviewer, who checks it before it reaches the owner's desk, and this turn has ended: stop now. You are woken if it is sent back, or when the owner has seen it.".to_owned()),
+            }
+        }
+        "review" => {
+            let task = task_arg(args)?;
+            let approve = match args["verdict"].as_str() {
+                Some("approve") => true,
+                Some("send_back") => false,
+                _ => return Err("`verdict` must be approve or send_back".to_owned()),
+            };
+            let notes = text_arg(args, "notes")?;
+            if notes.chars().count() > LONGEST_POST {
+                return Err(format!("notes are at most {LONGEST_POST} characters"));
+            }
+            match engine.review_in(run.id, task, approve, notes) {
+                Ok(()) if approve => Ok(format!("Task {} is approved.", task.0)),
+                Ok(()) => Ok(format!(
+                    "Task {} is sent back to its owner, who is woken to put it right.",
+                    task.0
+                )),
+                Err(super::engine::EngineError::Refused(Refusal::GateNotPassed)) => Err(
+                    "this work needs the gate (tests, lint and build), which has not passed: it stays in review. Say so in its thread; the owner decides"
+                        .to_owned(),
+                ),
+                Err(e) => Err(said(&e)),
+            }
         }
         "check_back" => {
             let minutes = args["minutes"]

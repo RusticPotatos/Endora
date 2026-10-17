@@ -56,7 +56,7 @@ fn answer(
             })
         }
         "ping" => json!({}),
-        "tools/list" => json!({ "tools": protocol::tools() }),
+        "tools/list" => json!({ "tools": protocol::tools(member.role) }),
         "tools/call" => {
             let name = params["name"].as_str().unwrap_or("");
             let args = params

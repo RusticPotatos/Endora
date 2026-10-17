@@ -12,6 +12,7 @@ use super::ports::{
     WorkerAdapter,
 };
 use crate::domain::money::{self, Micros};
+use crate::domain::review;
 use crate::domain::routines::{self, FireStep, MINUTE_MS};
 use crate::domain::runs::{self, LONGEST_TURN_MS};
 use crate::domain::wakes::{self, LiveTurn};
@@ -143,6 +144,15 @@ fn one_line(text: &str, most: usize) -> String {
         .collect()
 }
 
+/// Where a member's question went.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Asked {
+    /// On the owner's desk, as this item.
+    Desk(crate::domain::DeskId),
+    /// To this reviewer first, as a draft in the task's thread.
+    Review(MemberId),
+}
+
 /// The engine.
 pub struct Engine<S, W, C> {
     store: S,
@@ -150,6 +160,9 @@ pub struct Engine<S, W, C> {
     clock: C,
     settings: Settings,
     lock: Mutex<()>,
+    /// The containers in Endora's home lab, as the node last said: what a question to the
+    /// owner is checked against. `None` until the node has said.
+    lab: Mutex<Option<Vec<String>>>,
 }
 
 impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
@@ -161,7 +174,25 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             clock,
             settings,
             lock: Mutex::new(()),
+            lab: Mutex::new(None),
         }
+    }
+
+    /// The containers Endora's home lab has now, as the node says them: what each question to
+    /// the owner is checked against before it reaches the desk.
+    pub fn set_lab_names(&self, names: Vec<String>) {
+        *self
+            .lab
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(names);
+    }
+
+    /// The containers the node last said the home lab has, if it has said.
+    fn lab_names(&self) -> Option<Vec<String>> {
+        self.lab
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 
     /// The store, for reading.
@@ -397,7 +428,16 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 .any(|w| w.member == member.id),
             None => false,
         };
+        let waits_for_review = match task {
+            Some(task) if !reason.reaches_work_in_review() => {
+                let task = self.task(task)?;
+                task.status == TaskStatus::InReview
+                    && task.owner.or(task.assignee) == Some(member.id)
+            }
+            _ => false,
+        };
         Ok(WakeSituation {
+            waits_for_review,
             stopped: self.store.stopped()?,
             paused: member.paused,
             can_afford_a_turn: self.affordable(member)?.is_some(),
@@ -851,7 +891,147 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         if check {
             self.after_finishing(&current)?;
         }
+        if to == TaskStatus::InReview {
+            self.review_asked(&current)?;
+        }
         Ok(())
+    }
+
+    /// The team's reviewer: the first member with the reviewer's role, if there is one.
+    fn reviewer(&self) -> Done<Option<Member>> {
+        Ok(self
+            .store
+            .members()?
+            .into_iter()
+            .filter(|m| m.role == Role::Reviewer)
+            .min_by_key(|m| m.id))
+    }
+
+    /// Work was moved to review by its owner: the reviewer is woken to look at it. With no
+    /// reviewer, or the reviewer's own work, it is on the owner's desk to read, with its
+    /// thread, as it stands.
+    fn review_asked(&self, task: &Task) -> Done<()> {
+        let reviewer = self
+            .reviewer()?
+            .filter(|r| Some(r.id) != task.owner.or(task.assignee));
+        if let Some(reviewer) = reviewer {
+            self.wake_held_lock(reviewer.id, Some(task.id), WakeReason::ReviewRequested)?;
+            return Ok(());
+        }
+        let thread: Vec<String> = self
+            .store
+            .thread(task.id)?
+            .iter()
+            .rev()
+            .take(12)
+            .rev()
+            .map(|p| format!("- {}: {}", p.author, p.text))
+            .collect();
+        let desk = self.store.add_desk(
+            "ready_to_read",
+            Some(task.id),
+            None,
+            None,
+            &format!(
+                "Ready to read: {} (nobody on the team reviews)\n{}",
+                task.title,
+                thread.join("\n")
+            ),
+            self.clock.now(),
+        )?;
+        self.emit(
+            EventKind::DeskAdded,
+            json!({ "item": desk.0, "kind": "ready_to_read", "task": task.id.0 }),
+        )?;
+        Ok(())
+    }
+
+    /// The reviewer's verdict on work in review, in its turn: `approve` closes work that needs
+    /// no gate as done (work that needs the gate waits for it, as [`Self::approve`] says), and
+    /// `send_back` returns it to its owner as `doing`, waking them. The notes go in the thread
+    /// either way. Only the reviewer gives a verdict, and never on its own work.
+    ///
+    /// # Errors
+    /// [`Refusal::TurnOver`], [`Refusal::OutOfReach`]; [`Refusal::NotYours`] for a member who
+    /// is not a reviewer; [`Refusal::NotAStep`] for a task not in review; [`Refusal::OwnWork`];
+    /// [`Refusal::GateNotPassed`] for work that needs the gate.
+    pub fn review_in(&self, run: RunId, task: TaskId, approve: bool, notes: &str) -> Done<()> {
+        let _held = self.held();
+        let run = self.running(run)?;
+        self.reach(&run, task, true)?;
+        let reviewer = self.member(run.member)?;
+        if reviewer.role != Role::Reviewer {
+            return Err(EngineError::Refused(Refusal::NotYours));
+        }
+        let current = self.task(task)?;
+        let to = if approve {
+            TaskStatus::Done
+        } else {
+            TaskStatus::Doing
+        };
+        if current.status != TaskStatus::InReview {
+            return Err(EngineError::Refused(Refusal::NotAStep {
+                from: current.status,
+                to,
+            }));
+        }
+        let worker = current.owner.or(current.assignee);
+        if worker == Some(reviewer.id) {
+            return Err(EngineError::Refused(Refusal::OwnWork));
+        }
+        if !approve {
+            self.store.set_task_status(task, TaskStatus::Doing)?;
+            self.post_held_lock(
+                Author::Member(reviewer.id),
+                task,
+                &format!("Sent back: {notes}"),
+            )?;
+            self.emit_status(&current, TaskStatus::Doing)?;
+            if let Some(owner) = worker {
+                self.wake_held_lock(owner, Some(task), WakeReason::SentBack)?;
+            }
+            return Ok(());
+        }
+        let the_home_labs = self.the_home_labs(&current)?;
+        let gated = review::needs_gate(self.routine_of(task)?.is_some(), the_home_labs);
+        if gated {
+            // Gated work keeps the gate's rule: done only once the gate has passed.
+            self.approve_held_lock(reviewer.id, task)?;
+            self.post_held_lock(
+                Author::Member(reviewer.id),
+                task,
+                &format!("Approved: {notes}"),
+            )?;
+            return Ok(());
+        }
+        review::may_approve(false, false, worker, reviewer.id).map_err(EngineError::Refused)?;
+        self.store.set_task_status(task, TaskStatus::Done)?;
+        self.post_held_lock(
+            Author::Member(reviewer.id),
+            task,
+            &format!("Approved: {notes}"),
+        )?;
+        self.emit_status(&current, TaskStatus::Done)?;
+        self.after_finishing(&current)
+    }
+
+    /// Says a task moved to `to`, in the feed.
+    fn emit_status(&self, current: &Task, to: TaskStatus) -> Done<()> {
+        self.emit(
+            EventKind::TaskChanged,
+            json!({ "task": current.id.0, "goal": current.goal.0,
+                    "owner": current.owner.map(|o| o.0), "status": to.name(),
+                    "priority": current.priority.name() }),
+        )
+    }
+
+    /// Whether a task is the home lab's: under a goal whose routine takes its alarms.
+    fn the_home_labs(&self, task: &Task) -> Done<bool> {
+        Ok(self
+            .store
+            .routines()?
+            .iter()
+            .any(|r| r.goal == task.goal && r.on_lab_trouble))
     }
 
     /// The gate's word on a task: tests, lint and build on a runner.
@@ -879,6 +1059,10 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// the task is not under review.
     pub fn approve(&self, reviewer: MemberId, task: TaskId) -> Done<()> {
         let _held = self.held();
+        self.approve_held_lock(reviewer, task)
+    }
+
+    fn approve_held_lock(&self, reviewer: MemberId, task: TaskId) -> Done<()> {
         self.member(reviewer)?;
         let current = self.task(task)?;
         if current.status != TaskStatus::InReview {
@@ -1188,10 +1372,37 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 told.push_str(&format!("- {line}\n"));
             }
         }
+        if self.reason_for(run)? == WakeReason::ReviewRequested.name() {
+            // The newest of a draft for the owner and a move to review says which this is.
+            let asked = self.store.thread(task.id)?.into_iter().rev().find_map(|p| {
+                if let Some(draft) = p.text.strip_prefix(review::DRAFT) {
+                    return Some(format!(
+                        "{} wrote this draft for the owner: {draft}\n{}",
+                        p.author,
+                        review::REVIEW_DRAFT
+                    ));
+                }
+                p.text.contains(" → in_review").then(|| {
+                    format!(
+                        "{} asks for your review.\n{}",
+                        p.author,
+                        review::REVIEW_WORK
+                    )
+                })
+            });
+            if let Some(asked) = asked {
+                told.push_str(&format!("{asked}\n"));
+            }
+        }
         told.push_str(
             "Your tools: my_turn, claim, post, set_status, create_task, ask_owner, check_back, \
-             run_gate, request_action.\n",
+             run_gate, request_action",
         );
+        told.push_str(if member.role == Role::Reviewer {
+            ", review.\n"
+        } else {
+            ".\n"
+        });
         Ok(told)
     }
 
@@ -1494,15 +1705,105 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// that member again. One question a member about a task waits at a time, so a turn
     /// cannot fill the owner's desk.
     ///
+    /// A question about the home lab, from anyone but the reviewer, goes to the reviewer
+    /// first (see [`review::goes_to_review`]): the task moves to `in_review` with the draft in
+    /// its thread, and the reviewer is woken to check it. Whatever reaches the desk lists the
+    /// container-like names the home lab does not have (see [`review::checked`]).
+    ///
     /// # Errors
     /// [`EngineError::Unknown`] for a turn with no task; [`EngineError::Refused`] with
     /// [`Refusal::TurnOver`] for a turn that has ended, or [`Refusal::AlreadyAsked`] while its
     /// last question waits; a store failure.
-    pub fn ask_owner(&self, run: RunId, text: &str) -> Done<crate::domain::DeskId> {
+    pub fn ask_owner(&self, run: RunId, text: &str) -> Done<Asked> {
         let _held = self.held();
         // Room for the question and the worker's line saying what the turn actually did.
         let text: String = text.trim().chars().take(1200).collect();
-        self.ask_held_lock(run, "question", &|name| format!("{name} asks: {text}"))
+        let lab = self.lab_names();
+        let turn = self.running(run)?;
+        let task = self.task(
+            turn.task
+                .ok_or(EngineError::Unknown("task for this turn"))?,
+        )?;
+        let member = self.member(turn.member)?;
+        if let Some(reviewer) = self.reviewer_for(&member, &task, &text, lab.as_deref())? {
+            return self.to_review(turn, &task, &member, reviewer, &text);
+        }
+        let checked = review::checked(&text, lab.as_deref());
+        self.ask_held_lock(run, "question", &|name| format!("{name} asks: {checked}"))
+            .map(Asked::Desk)
+    }
+
+    /// The reviewer a member's question goes to before the owner's desk, if it goes to one:
+    /// the first member with the reviewer's role, for an open task of the home lab's or a
+    /// question that speaks of containers, from anyone but that reviewer.
+    fn reviewer_for(
+        &self,
+        member: &Member,
+        task: &Task,
+        text: &str,
+        lab: Option<&[String]>,
+    ) -> Done<Option<MemberId>> {
+        if task.status.finished() {
+            return Ok(None);
+        }
+        let reviewer = self.reviewer()?;
+        let the_home_labs = self.the_home_labs(task)?;
+        let speaks = review::names_containers(text, lab.unwrap_or_default());
+        let goes = review::goes_to_review(
+            member.role == Role::Reviewer,
+            reviewer.is_some(),
+            the_home_labs,
+            speaks,
+        );
+        Ok(reviewer.filter(|_| goes).map(|r| r.id))
+    }
+
+    /// A member's question, as a draft for the reviewer: the task moves to `in_review`, the
+    /// draft goes in its thread, the member's turn ends, and the reviewer is woken to check it.
+    fn to_review(
+        &self,
+        run: Run,
+        task: &Task,
+        member: &Member,
+        reviewer: MemberId,
+        text: &str,
+    ) -> Done<Asked> {
+        if self.waiting_question(member.id, task.id)? {
+            return Err(EngineError::Refused(Refusal::AlreadyAsked));
+        }
+        // The draft is the asker's work: a task nobody had taken becomes theirs, so the
+        // reviewer, starting its turn on it, cannot take it and then review its own.
+        if task.owner.is_none() {
+            self.store.claim(task.id, member.id)?;
+        }
+        if task.status != TaskStatus::InReview {
+            self.store.set_task_status(task.id, TaskStatus::InReview)?;
+            self.emit_status(task, TaskStatus::InReview)?;
+        }
+        self.post_held_lock(
+            Author::Member(member.id),
+            task.id,
+            &format!("{}{text}", review::DRAFT),
+        )?;
+        let id = run.id;
+        self.end(
+            run,
+            RunStatus::Succeeded,
+            "sent a draft for the owner to review",
+        )?;
+        self.wake_held_lock(reviewer, Some(task.id), WakeReason::ReviewRequested)?;
+        self.runner.stop(id, self.settings.grace);
+        Ok(Asked::Review(reviewer))
+    }
+
+    /// Whether a question or an approval from `member` about `task` still waits on the desk.
+    fn waiting_question(&self, member: MemberId, task: TaskId) -> Done<bool> {
+        Ok(self.store.desk()?.into_iter().any(|d| {
+            matches!(d.kind.as_str(), "question" | "approval")
+                && d.status == "waiting"
+                && d.member == Some(member)
+                && d.task == Some(task)
+        }))
     }
 
     /// The node asks the owner's approval for an action a member proposed through Endora's
@@ -1531,13 +1832,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         let run = self.running(run)?;
         let task = run.task.ok_or(EngineError::Unknown("task for this turn"))?;
         let member = self.member(run.member)?;
-        let waiting = self.store.desk()?.into_iter().any(|d| {
-            matches!(d.kind.as_str(), "question" | "approval")
-                && d.status == "waiting"
-                && d.member == Some(member.id)
-                && d.task == Some(task)
-        });
-        if waiting {
+        if self.waiting_question(member.id, task)? {
             return Err(EngineError::Refused(Refusal::AlreadyAsked));
         }
         let desk = self.store.add_desk(

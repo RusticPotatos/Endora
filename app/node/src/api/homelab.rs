@@ -92,11 +92,69 @@ pub(super) fn raise_alarms(
     told
 }
 
+/// How often the node says the home lab's containers to HQ when they have not changed: HQ
+/// keeps them in memory, so one restarted learns them again within this.
+const NAMES_AGAIN_AFTER_MS: i64 = 10 * 60_000;
+
+/// The names of the containers in a snapshot of the home lab, sorted, each once.
+fn container_names(snapshot: &serde_json::Value) -> Vec<String> {
+    let mut names: Vec<String> = snapshot["services"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|s| s["name"] == "docker")
+        .flat_map(|s| s["items"].as_array().into_iter().flatten())
+        .filter_map(|i| i["name"].as_str())
+        .map(|n| n.trim_start_matches('/').to_owned())
+        .filter(|n| !n.is_empty())
+        .collect();
+    names.sort();
+    names.dedup();
+    names
+}
+
+/// Tells HQ which containers the home lab has (`POST /v1/lab/names`, signed with HQ's token),
+/// so a question to the owner can be checked against them before it reaches the desk: when
+/// they change, and every [`NAMES_AGAIN_AFTER_MS`]. Nothing when HQ is not set up, or when the
+/// snapshot names no container (an observer that could not look says nothing is there).
+/// `last` is what HQ was told, and when. Returns whether HQ was told now.
+pub(super) fn tell_lab_names(
+    state: &AppState,
+    last: &mut Option<(Vec<String>, i64)>,
+    snapshot: &serde_json::Value,
+    now: i64,
+) -> bool {
+    let Some(hq) = state.hq.as_ref() else {
+        return false;
+    };
+    let names = container_names(snapshot);
+    if names.is_empty() {
+        return false;
+    }
+    if let Some((told, at)) = last.as_ref() {
+        if *told == names && now - at < NAMES_AGAIN_AFTER_MS {
+            return false;
+        }
+    }
+    match hq.post("/v1/lab/names", &json!({ "names": names })) {
+        Ok(_) => {
+            *last = Some((names, now));
+            true
+        }
+        Err(e) => {
+            eprintln!("homelab: HQ was not told the containers' names: {e}");
+            false
+        }
+    }
+}
+
 pub(crate) fn spawn(state: AppState) {
     // What Endora has seen of the home lab, for its alarms: in memory, begun again on restart.
     let watch = Arc::new(std::sync::Mutex::new(
         endora_capabilities::lab_alarms::LabWatch::new(),
     ));
+    // The containers' names as HQ was last told them, and when.
+    let told = Arc::new(std::sync::Mutex::new(None::<(Vec<String>, i64)>));
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -115,13 +173,17 @@ pub(crate) fn spawn(state: AppState) {
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner) = snapshot.clone();
                 if state.hq.is_some() {
-                    let (state, watch) = (state.clone(), watch.clone());
+                    let (state, watch, told) = (state.clone(), watch.clone(), told.clone());
                     let offset = state.clock.utc_offset_minutes();
                     let _ = tokio::task::spawn_blocking(move || {
                         let mut watch = watch
                             .lock()
                             .unwrap_or_else(std::sync::PoisonError::into_inner);
                         raise_alarms(&state, &mut watch, &snapshot, now, offset);
+                        let mut told = told
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
+                        tell_lab_names(&state, &mut told, &snapshot, now);
                     })
                     .await;
                 }
@@ -198,6 +260,62 @@ mod tests {
                 .iter()
                 .any(|a| a == "HQ: Endora raised an alarm: sonarr became unhealthy at 14:02"),
             "{audit:?}"
+        );
+    }
+
+    #[test]
+    fn hq_is_told_the_containers_names_when_they_change_and_now_and_then() {
+        let (url, seen) = fake(Arc::new(|_, _| {
+            (200, "application/json", r#"{"ok":true}"#.to_owned())
+        }));
+        let state = node(&url, "http://127.0.0.1:9");
+        let mut told = None;
+        let noon = 1_792_152_000_000;
+        assert!(tell_lab_names(&state, &mut told, &lab("healthy"), noon));
+        assert!(
+            !tell_lab_names(&state, &mut told, &lab("unhealthy"), noon + 30_000),
+            "the same names: not again yet"
+        );
+        assert!(tell_lab_names(
+            &state,
+            &mut told,
+            &lab("healthy"),
+            noon + NAMES_AGAIN_AFTER_MS
+        ));
+        let fewer = json!({ "services": [{ "name": "docker", "state": "healthy", "items": [
+            { "name": "/sonarr", "state": "running" }] }] });
+        assert!(tell_lab_names(
+            &state,
+            &mut told,
+            &fewer,
+            noon + NAMES_AGAIN_AFTER_MS + 1
+        ));
+        let blind = json!({ "services": [{ "name": "docker", "state": "unavailable" }] });
+        assert!(
+            !tell_lab_names(&state, &mut told, &blind, noon + 2 * NAMES_AGAIN_AFTER_MS),
+            "an observer that saw nothing says nothing"
+        );
+        let sent = seen.lock().unwrap().clone();
+        let bodies: Vec<serde_json::Value> = sent
+            .iter()
+            .map(|(path, _, body)| {
+                assert_eq!(path, "/v1/lab/names");
+                serde_json::from_str(body).unwrap()
+            })
+            .collect();
+        assert_eq!(
+            bodies,
+            [
+                json!({ "names": ["endora-hq", "sonarr"] }),
+                json!({ "names": ["endora-hq", "sonarr"] }),
+                json!({ "names": ["sonarr"] }),
+            ]
+        );
+        assert!(
+            sent[0]
+                .1
+                .iter()
+                .any(|(k, v)| k == "authorization" && v.starts_with("Bearer "))
         );
     }
 

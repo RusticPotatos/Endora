@@ -2,6 +2,7 @@
 
 pub mod events;
 pub mod money;
+pub mod review;
 pub mod routines;
 pub mod runs;
 pub mod wakes;

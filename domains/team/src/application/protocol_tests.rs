@@ -160,13 +160,25 @@ fn the_tools_act_as_the_turns_member_under_the_engines_rules() {
             .contains("not available yet")
     );
     assert!(use_tool("format_the_disk", json!({})).is_err());
-    let names: Vec<String> = tools()
+    let names: Vec<String> = tools(Role::Developer)
         .as_array()
         .unwrap()
         .iter()
         .map(|t| t["name"].as_str().unwrap().to_owned())
         .collect();
     assert_eq!(names.len(), 9);
+    assert!(
+        !names.contains(&"review".to_owned()),
+        "only the reviewer gives a verdict"
+    );
+    let reviewers: Vec<String> = tools(Role::Reviewer)
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["name"].as_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(reviewers.len(), 10);
+    assert!(reviewers.contains(&"review".to_owned()));
     assert!(names.contains(&"check_back".to_owned()));
     assert!(
         !names.contains(&"report_usage".to_owned()),
@@ -575,7 +587,7 @@ fn a_turn_asks_to_check_back_on_its_own_task_and_is_told_when() {
         use_tool("check_back", json!({ "minutes": 10 })).is_err(),
         "why"
     );
-    let tool = tools()
+    let tool = tools(Role::Lead)
         .as_array()
         .unwrap()
         .iter()

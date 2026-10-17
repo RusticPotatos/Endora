@@ -30,6 +30,10 @@ pub enum WakeReason {
     OwnerReplied,
     /// Work handed to the member that nothing would ever bring it back to, nudged once.
     AssignmentRecovery,
+    /// A member's draft for the owner waits for the reviewer to check it.
+    ReviewRequested,
+    /// The reviewer sent the member's draft back: something in it did not hold.
+    SentBack,
 }
 
 impl WakeReason {
@@ -49,6 +53,8 @@ impl WakeReason {
             Self::Alarm => "alarm",
             Self::OwnerReplied => "owner_replied",
             Self::AssignmentRecovery => "assignment_recovery",
+            Self::ReviewRequested => "review_requested",
+            Self::SentBack => "sent_back",
         }
     }
 
@@ -71,6 +77,17 @@ impl WakeReason {
         matches!(self, Self::LeadReview | Self::CheckBack | Self::Alarm)
     }
 
+    /// Whether the wake reaches the owner of a task waiting for its reviewer: only the owner's
+    /// own word (a reply, or the answer to a question) and the reviewer sending it back do.
+    /// Anything else would be a turn on work that is not the owner's to touch until reviewed.
+    #[must_use]
+    pub const fn reaches_work_in_review(self) -> bool {
+        matches!(
+            self,
+            Self::OwnerReplied | Self::ProposalDecided | Self::SentBack
+        )
+    }
+
     /// The reason with this [`name`](Self::name), if there is one.
     #[must_use]
     pub fn from_name(name: &str) -> Option<Self> {
@@ -87,6 +104,8 @@ impl WakeReason {
             Self::Alarm,
             Self::OwnerReplied,
             Self::AssignmentRecovery,
+            Self::ReviewRequested,
+            Self::SentBack,
         ]
         .into_iter()
         .find(|r| r.name() == name)
@@ -107,6 +126,9 @@ pub enum Refused {
     /// A wake on a clock, about no task, for a member with no open task: no turn is started
     /// to look for work (ADR 0107).
     NothingToDo,
+    /// The task waits for its reviewer: its owner takes no turn on it until the reviewer sends
+    /// it back or the owner speaks.
+    InReview,
 }
 
 impl Refused {
@@ -119,6 +141,7 @@ impl Refused {
             Self::OutOfBudget => "out_of_budget",
             Self::Duplicate => "duplicate",
             Self::NothingToDo => "nothing_to_do",
+            Self::InReview => "in_review",
         }
     }
 
@@ -131,6 +154,7 @@ impl Refused {
             Self::OutOfBudget,
             Self::Duplicate,
             Self::NothingToDo,
+            Self::InReview,
         ]
         .into_iter()
         .find(|r| r.name() == name)
@@ -194,6 +218,9 @@ pub struct WakeSituation {
     pub already_held: bool,
     /// Whether the wake is on a clock, about no task, for a member with no open task.
     pub nothing_to_do: bool,
+    /// Whether the wake is for the owner of a task waiting for its reviewer, and is not one
+    /// that [reaches work in review](WakeReason::reaches_work_in_review).
+    pub waits_for_review: bool,
 }
 
 /// What to do with a wake.
@@ -223,6 +250,9 @@ pub fn decide(member: MemberId, situation: &WakeSituation) -> WakeDecision {
     if situation.nothing_to_do {
         return WakeDecision::Refuse(Refused::NothingToDo);
     }
+    if situation.waits_for_review {
+        return WakeDecision::Refuse(Refused::InReview);
+    }
     if let Some(own) = situation.live.iter().find(|turn| turn.member == member) {
         return WakeDecision::Fold(own.run);
     }
@@ -250,6 +280,7 @@ mod tests {
             live: Vec::new(),
             already_held: false,
             nothing_to_do: false,
+            waits_for_review: false,
         }
     }
 
@@ -324,6 +355,44 @@ mod tests {
             ..broke
         };
         assert_eq!(decide(ME, &folding), WakeDecision::Fold(RunId(7)));
+    }
+
+    #[test]
+    fn work_in_review_gets_no_turn_for_its_owner_unless_the_owner_or_the_reviewer_says() {
+        let waiting = WakeSituation {
+            waits_for_review: true,
+            ..quiet()
+        };
+        assert_eq!(
+            decide(ME, &waiting),
+            WakeDecision::Refuse(Refused::InReview)
+        );
+        for reaches in [
+            WakeReason::OwnerReplied,
+            WakeReason::ProposalDecided,
+            WakeReason::SentBack,
+        ] {
+            assert!(reaches.reaches_work_in_review(), "{reaches:?}");
+        }
+        for not in [
+            WakeReason::Mentioned,
+            WakeReason::Recovery,
+            WakeReason::AssignmentRecovery,
+            WakeReason::CheckBack,
+            WakeReason::Alarm,
+            WakeReason::ReviewRequested,
+        ] {
+            assert!(!not.reaches_work_in_review(), "{not:?}");
+        }
+        assert_eq!(Refused::from_name("in_review"), Some(Refused::InReview));
+        assert_eq!(
+            WakeReason::from_name("review_requested"),
+            Some(WakeReason::ReviewRequested)
+        );
+        assert_eq!(
+            WakeReason::from_name("sent_back"),
+            Some(WakeReason::SentBack)
+        );
     }
 
     #[test]

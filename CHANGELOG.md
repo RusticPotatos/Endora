@@ -9,6 +9,18 @@ tagged release.
 
 ### Added
 
+- **The reviewer before done and before the owner's desk** ([ADR 0107](docs/adr/0107-routines-alarms-and-check-backs.md),
+  plan §5 and §6). Work moved to `in_review` wakes the team's reviewer (`review_requested`);
+  with no reviewer it is on the desk as ready to read, with its thread; its owner takes no turn
+  on it meanwhile, except for the owner's word or a send-back. The reviewer's new `review`
+  tool approves (closing work that needs no gate: a routine's task, or the home lab's work)
+  or sends back (to `doing`, waking its owner), never its own. A question about the home lab
+  from anyone but the reviewer becomes a "Draft for the owner" in the thread for the reviewer
+  to check first. Every question reaching the desk lists the names in it the home lab does
+  not have ("Not found in Endora's home lab: …"), against the containers the node now tells
+  HQ (`POST /v1/lab/names`, signed). The worker's instructions say a home-lab question is
+  checked first.
+
 - **A turn's claims sit beside what it did** ([ADR 0106](docs/adr/0106-team-contracts.md)):
   the worker writes the calls its turn actually made, and how each came back, under its last
   word in the thread ("This turn did: …", "This turn did nothing but read: …", "This turn made
