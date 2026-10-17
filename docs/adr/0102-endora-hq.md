@@ -16,6 +16,13 @@ not priced there is not relayed, and a turn past its budget is stopped. The owne
 share their default Anthropic project, whose cap is the outer limit, with Endora enforcing the
 team's pool itself. The rest (runners and the worker itself) is not yet.
 
+Amended 2026-10-17 by [0106](0106-team-contracts.md): a turn reaches the home lab only through
+**contracts** the node serves on its team listener beside the relays (`/team-relay/contracts`),
+opened by the same token: reads are free, a safe fix (a container restart) runs on its own
+within limits and lands on the owner's desk as a notice, and nothing else is offered. HQ started
+with the demo off puts the demo's goals and their open tasks away (dropped, with a notice), so
+none of it becomes a real turn.
+
 ## Context
 
 The always-on plan wants Endora to do real technical work for its owner (changes to their

@@ -7,7 +7,7 @@ and numbered in sequence.
 
 ## What they add up to
 
-Forty-seven records stand, every one accepted, and forty-nine earlier ones are archived into them
+Forty-eight records stand, every one accepted, and forty-nine earlier ones are archived into them
 (the *Consolidates* column below). A handful of ideas sit underneath all of them. Read this before
 reading any individual record; each line is a rule the code actually follows, with the decision
 that established it.
@@ -101,6 +101,10 @@ that established it.
   ([0105](0105-models-in-ordered-lists-by-data-tier.md)). Providers are entered once; everyday
   and deep are sorted lists, the first working, cleared entry answering. A cloud model sees
   Confidential only disguised and Restricted never; every cloud entry goes through the one door.
+- **The team gets contracts, never keys** ([0106](0106-team-contracts.md)). HQ's workers reach
+  the home lab only through narrow abilities the node serves and decides: reads are free, a
+  safe fix runs on its own within limits kept in the node's database and is told to the
+  owner, and anything riskier asks. No key and no raw access enter a worker's container.
 - **Start fresh rather than keep what makes noise** ([0100](0100-the-clean-slate.md)). What
   Endora did unasked (check-ins, the nightly loop, notions, own work, goals) produced stale
   beliefs and repeated questions, so it went, code and storage. A table nothing reads is
@@ -224,6 +228,7 @@ of an existing record and take the next number.
 | [0103](0103-the-agenda-loop.md) | The agenda loop | — |
 | [0104](0104-endora-sound.md) | Endora sound | — |
 | [0105](0105-models-in-ordered-lists-by-data-tier.md) | Models in ordered lists, cleared by data tier | — |
+| [0106](0106-team-contracts.md) | Team contracts: what Endora offers HQ's workers | — |
 
 The forty-eight decisions these consolidate are in [archive/](archive/) — kept in full,
 because the reasoning that produced a rule is the reason it survives an argument later.

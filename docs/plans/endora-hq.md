@@ -409,7 +409,8 @@ team pool stays $70 a month. The pieces and their contracts:
    token (`Authorization: Bearer <token>`).
 2. **The model relays** in the node, outside `/v1`, opened by the same token. The workers
    reach them on a plain-HTTP listener of their own (`ENDORA_TEAM_ADDR`, `0.0.0.0:8788` in
-   compose, not published), which serves the relays and nothing else: the node's main port
+   compose, not published), which serves the relays and the team's contracts (below) and
+   nothing else: the node's main port
    is HTTPS with a self-signed certificate a worker cannot trust.
    - `POST /team-relay/v1/messages`: Anthropic, with the owner's key, capped and charged
      (built). It passes on only what it can meter: the plain message fields, the worker's
@@ -428,13 +429,20 @@ team pool stays $70 a month. The pieces and their contracts:
      at no cost.
 3. **The worker**, `endora-worker` (crate `app/worker`, in the same image). It reads
    `ENDORA_RUN_TOKEN`, `ENDORA_HQ_MCP` (`http://hq:8790/v1/team/mcp`), `ENDORA_MODEL_URL`
-   (`http://node:8788/team-relay/local/v1`) and `ENDORA_MOST_ROUNDS` (default 12). It
-   initialises MCP, lists the tools, calls `my_turn`, then loops: the model answers or calls
-   tools, each tool call goes to `tools/call`, until the model stops calling tools or the
-   rounds run out. A last answer with no tool call is posted to its task's thread. An
+   (`http://node:8788/team-relay/local/v1`) and `ENDORA_MOST_ROUNDS` (default 12), and
+   `ENDORA_CONTRACTS` (default: `/team-relay/contracts` beside the model relay). It
+   initialises MCP, lists the team's tools and the node's contracts (a node that offers none
+   leaves the team's tools), calls `my_turn`, then loops: the model answers or calls tools,
+   each tool call goes where its tool came from (`tools/call` on HQ, or the contract on the
+   node, whose refusal is a tool error), until the model stops calling tools or the rounds
+   run out. The same call (tool and arguments) asked again straight after is answered from
+   what the turn has, unsent; asked again later and saying nothing new, it is answered the
+   same way. A last answer with no tool call is posted to its task's thread. An
    answer of 401 or 402 from HQ or the relay means the turn is over: it exits at once. A
    question put on the owner's desk (`ask_owner`) ends the turn too: it stops there. Exit
-   0 is a turn taken; anything else failed. Its instructions are written for Endora.
+   0 is a turn taken; anything else failed. Its instructions are written for Endora, and
+   with contracts offered say what they may do on the home lab and that anything else is
+   the owner's.
 4. **The runner adapter** in HQ (`RemoteRunner`), used when the demo is off. It keeps, in
    memory, the turns waiting to start, the ones running, how each ended, and stops asked
    for. The runner speaks to HQ with its own token (`HQ_RUNNER_TOKEN_FILE`, made like
@@ -456,6 +464,30 @@ team pool stays $70 a month. The pieces and their contracts:
    nothing else (no internet, no LAN, no NAS host). The
    runner, which holds Docker's socket, is its own compose profile, off until the owner
    turns it on.
+
+### Contracts (owner's decision of 2026-10-17, [ADR 0106](../adr/0106-team-contracts.md))
+
+No keys and no raw access: the team reaches the home lab only through **contracts**, narrow
+abilities the node declares and decides. Reads are free; a safe fix runs on its own within
+limits and is told to the owner as a **notice** on the desk (seen or dismissed); anything
+riskier will ask first (none yet). On the team listener, opened by the turn's token and
+checked with HQ as the relays are:
+
+- `GET /team-relay/contracts`: the contracts as MCP tools; `POST /team-relay/contracts/{name}`:
+  one call, arguments as the JSON body, answered `{ "text" }` or `{ "error" }` with a status.
+- `homelab_status` (read, Internal): the observer's snapshot, compact, marked stale.
+- `container_logs` (read, Confidential, local turns only): the newest 100 lines, at most
+  16 KB, scrubbed of secrets; never Endora's own containers; a plain refusal without Portainer.
+- `restart_container` (automatic act): never Endora's own, never what a restart will not fix
+  (restarting, out of memory, crash-looping); once a container an hour and three an hour in
+  all, kept in the node's database; the state read back; a notice to the owner through
+  `POST /v1/team/notice` on HQ.
+- Every call, done or refused, is in the node's audit log with the member and the run. The
+  owner switches `restart_container`, or every contract, off on the HQ screen
+  (`/v1/hq/contracts`).
+- HQ started with the demo off puts the demo's goals and their open tasks away (dropped, their
+  queued turns ended, a notice on the desk), so none of it becomes a real turn. The owner sets
+  a real goal and hands the lead its first task from the HQ screen.
 
 ## 16. Later, and not at all
 
