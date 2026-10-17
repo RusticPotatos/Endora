@@ -739,6 +739,11 @@ if (failures.length) {
   if (!runInContext("viewMusic()", context).includes('data-act="music:discover"')) fail("music: there is no Discover");
   runInContext("MUSIC.liked = true;", context);
   if (!runInContext("viewMusic()", context).includes('aria-pressed="true" aria-label="In Liked Songs')) fail("music: a liked song does not show it");
+  // Through Endora: each speaker's volume, not the receiver's.
+  runInContext(`MUSIC.now = { is_playing: true, device: { name: "Endora", volume_percent: 100 }, item: { id: "t1", type: "track", name: "A song", artists: [], album: { images: [] } } };
+    SOUND.state = Object.assign({}, SOUND.state, { speakers: [{ id: 3, name: "Office HomePod", kind: "airplay", volume: 40 }, { id: 4, name: "iPhone", kind: "stream", volume: 100 }] });`, context);
+  const viaEndora = runInContext("viewMusic()", context);
+  if (!viaEndora.includes('data-change="sound:volume:4"') || viaEndora.includes("music:volume:10")) fail("music: through Endora, the volume is not the speakers'");
   runInContext("MUSIC.now = null; MUSIC.liked = null;", context);
   if (!/pill pick active" data-act="music:endora:4"/.test(music)) fail("music: the speaker Spotify plays on is not shown as playing");
   if (!/data-act="music:endora:4">iPhone · not listening/.test(music)) fail("music: a phone that is not listening does not say so");

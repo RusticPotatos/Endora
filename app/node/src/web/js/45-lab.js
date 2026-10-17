@@ -366,6 +366,17 @@ function viewMusic() {
   const art = item && item.album && (item.album.images || []).slice(-2)[0];
   const artUrl = art && /^https:\/\//.test(art.url) ? art.url : "";
   const playing = !!(n && n.is_playing);
+  // Playing through Endora: what matters is how loud each speaker it plays on is, so those
+  // speakers' volumes are here, not the Endora receiver's own.
+  const onEndora = !!(n && n.device && n.device.name === ENDORA_SPOTIFY);
+  const spotifyHere = SOUND.state && (SOUND.state.sources || []).find((x) => x.kind === "spotify");
+  const playingOn = onEndora && spotifyHere
+    ? (SOUND.state.speakers || []).filter((sp) => (SOUND.state.wires || []).some((w) => w.source === spotifyHere.id && w.speaker === sp.id))
+    : [];
+  const volumes = playingOn.map((sp) => `<div class="row" style="gap:8px;align-items:center;margin-top:6px;">
+      <span class="sub" style="min-width:84px;">${esc(sp.name)}</span>
+      <input type="range" class="level" min="0" max="100" step="5" value="${Number(sp.volume) || 0}" data-change="sound:volume:${sp.id}" aria-label="${esc(sp.name)} volume" style="--v:${(Number(sp.volume) || 0) / 100};" />
+      <span class="sub level-n">${Number(sp.volume) || 0}</span></div>`).join("");
   const volume = n && n.device ? n.device.volume_percent : null;
   const nowCard = item
     ? `<div class="card"><div class="row" style="gap:12px;align-items:center;">
@@ -379,8 +390,8 @@ function viewMusic() {
         <button class="ghost" data-act="music:next" aria-label="Next">⏭</button>
         <button class="ghost" data-act="music:nope" aria-label="Not this: skip it, and leave this artist out of Discover">👎</button>
         ${!(item && item.type === "track") ? "" : `<button class="ghost" data-act="music:like" aria-pressed="${MUSIC.liked ? "true" : "false"}" aria-label="${MUSIC.liked ? "In Liked Songs: tap to take it out" : "Add to Liked Songs"}">${MUSIC.liked ? "♥" : "♡"}</button>`}
-        ${volume === null || volume === undefined ? "" : `<button class="ghost" data-act="music:volume:-10">−</button><span class="sub">${esc(volume)}%</span><button class="ghost" data-act="music:volume:10">+</button>`}
-      </div></div>`
+        ${onEndora ? "" : volume === null || volume === undefined ? "" : `<button class="ghost" data-act="music:volume:-10">−</button><span class="sub">${esc(volume)}%</span><button class="ghost" data-act="music:volume:10">+</button>`}
+      </div>${volumes}</div>`
     : `<div class="card"><div class="sub">Nothing is playing.</div></div>`;
   // Spotify's own devices, and every speaker in the sound hub through its "Endora" receiver;
   // not the receiver itself, whose speakers are listed instead.

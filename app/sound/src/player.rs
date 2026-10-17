@@ -54,6 +54,8 @@ pub fn start(
         let pipes = places.pipes.clone();
         let mut feeds = FeedSet::new(places);
         let mut revision = None;
+        let mut stream_volume: std::collections::BTreeMap<SpeakerId, endora_sound::domain::Level> =
+            std::collections::BTreeMap::new();
         let began = Instant::now();
         let mut done: u64 = 0;
         let mut tidied = Instant::now();
@@ -101,6 +103,15 @@ pub fn start(
                 if let Err(e) = crate::senders::write_receivers(&pipes, &receivers) {
                     eprintln!("sound: cannot write the AirPlay receivers' list: {e}");
                 }
+                // A stream speaker's volume is the hub's to apply (a phone's browser ignores a
+                // page's volume); an AirPlay speaker's is the senders' to set on the speaker.
+                stream_volume = hub.read(|bay| {
+                    bay.speakers()
+                        .into_iter()
+                        .filter(|s| s.kind == endora_sound::domain::SpeakerKind::Stream)
+                        .map(|s| (s.id, s.volume))
+                        .collect()
+                });
                 revision = Some(now);
             }
             let due_total = (began.elapsed().as_secs_f64() * f64::from(RATE)) as u64;
@@ -128,7 +139,12 @@ pub fn start(
                     senders.play(sender, &p.samples, p.sounding);
                 }
                 for speaker in &p.speakers {
-                    listeners.feed(*speaker, &p.samples);
+                    match stream_volume.get(speaker) {
+                        Some(v) if *v != endora_sound::domain::Level::FULL => {
+                            listeners.feed(*speaker, &at_volume(&p.samples, *v));
+                        }
+                        _ => listeners.feed(*speaker, &p.samples),
+                    }
                     fed.push(*speaker);
                 }
             }
@@ -146,4 +162,25 @@ pub fn start(
             }
         }
     })
+}
+
+/// A block at a speaker's volume: as a wire's level is, linear, so 50 is half.
+fn at_volume(samples: &[i16], volume: endora_sound::domain::Level) -> Vec<i16> {
+    let gain = endora_sound::domain::mix::gain(volume);
+    samples
+        .iter()
+        .map(|s| (f32::from(*s) * gain).round() as i16)
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use endora_sound::domain::Level;
+
+    #[test]
+    fn a_stream_speakers_volume_scales_what_it_hears() {
+        let half = super::at_volume(&[10_000, -10_000, 1], Level::new(50).unwrap());
+        assert_eq!(half, vec![5_000, -5_000, 1]);
+        assert_eq!(super::at_volume(&[10_000], Level::SILENT), vec![0]);
+    }
 }

@@ -323,6 +323,8 @@ async function soundDispatch(verb, noun, id, arg) {
       else await api("DELETE", `/v1/sound/speakers/${Number(id)}`);
     }
   } catch (e) { flash(e.message, "err"); }
+  // Music shows speakers' volumes too: it reloads its own way.
+  if (NAV.v === "music") { await loadMusic(); render(); return true; }
   await loadSound(); render(); return true;
 }
 
