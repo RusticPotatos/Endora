@@ -13,15 +13,15 @@ pub(super) async fn get_deep_model(
     let config = state.config.clone();
     let cfg = blocking(move || {
         use endora_capabilities::model_lists::{Job, ModelListRepository as _, targets};
+        // The deep list is the only source (ADR 0105). The old single deep model is read for
+        // its switch alone: its endpoint and key were moved into the lists once, and a
+        // provider removed since must not come back here.
         let single = DeepModelRepository::get(config.as_ref())
             .map_err(AppError::Repository)?
             .unwrap_or_default();
         let providers = config.providers().map_err(AppError::Repository)?;
-        if providers.is_empty() {
-            return Ok::<_, AppError>(single);
-        }
         let deep = config.entries(Job::Deep).map_err(AppError::Repository)?;
-        Ok(targets(&providers, &deep).into_iter().next().map_or_else(
+        Ok::<_, AppError>(targets(&providers, &deep).into_iter().next().map_or_else(
             || endora_application::DeepModel {
                 escalate: single.escalate,
                 ..endora_application::DeepModel::default()
@@ -468,8 +468,8 @@ pub(super) async fn deep_balance(
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let config = state.config.clone();
     let out = blocking(move || {
-        // The deep list's DeepSeek provider, the one with a balance to read (ADR 0105); a
-        // node with no lists reads the single deep model.
+        // The deep list's DeepSeek provider, the one with a balance to read (ADR 0105). The
+        // lists are the only source: the old single deep model's key is never used here.
         let host_of = |url: &str| {
             url.split("://")
                 .nth(1)
@@ -484,9 +484,7 @@ pub(super) async fn deep_balance(
         let providers =
             endora_capabilities::model_lists::ModelListRepository::providers(config.as_ref())
                 .map_err(AppError::Repository)?;
-        let cfg = if providers.is_empty() {
-            DeepModelRepository::get(config.as_ref()).map_err(AppError::Repository)?
-        } else {
+        let cfg = {
             let deep = endora_capabilities::model_lists::ModelListRepository::entries(
                 config.as_ref(),
                 endora_capabilities::model_lists::Job::Deep,

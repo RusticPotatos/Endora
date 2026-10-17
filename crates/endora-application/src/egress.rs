@@ -59,6 +59,17 @@ pub fn holds_restricted(conversation: &[TurnMessage]) -> bool {
     })
 }
 
+/// What Endora writes, as it is kept: marked private when it carries what looks like an
+/// account number (ADR 0105), so the turns that later read it stay in the house, and left as
+/// it is otherwise. Text already marked is not marked twice.
+#[must_use]
+pub fn kept_as_written(text: &str) -> String {
+    if text.starts_with(RESTRICTED_MARK) || !looks_like_an_account_number(text) {
+        return text.to_owned();
+    }
+    format!("{RESTRICTED_MARK}{text}")
+}
+
 /// Whether a text carries what looks like an account or card number: nine or more digits in
 /// one run, allowing single spaces or dashes between groups, or an IBAN (two letters, two
 /// digits, then ten or more letters and digits). Phone numbers match too; they stay home.
@@ -216,8 +227,13 @@ impl Deeper {
         if NoStrangerSpoke::given(conversation).is_none() {
             return Err(DoorRefusal::AStrangerSpoke);
         }
-        // Restricted words never leave, disguised or not (ADR 0105).
-        if holds_restricted(conversation) {
+        // Restricted words never leave, disguised or not (ADR 0105), nor does a running
+        // summary that holds them.
+        let summary_is_private = context
+            .conversation_summary
+            .as_deref()
+            .is_some_and(|s| s.contains(RESTRICTED_MARK));
+        if holds_restricted(conversation) || summary_is_private {
             return Err(DoorRefusal::Restricted);
         }
         // Nothing personal leaves under its own name (ADR 0051). Endora holds the values —
@@ -346,11 +362,13 @@ impl Deeper {
     /// facts leave, disguised; the instruction travels verbatim because it is Endora's
     /// own sentence, not the person's. `None` when a fact is secret-shaped, Restricted (marked
     /// private, or shaped like an account number), a stranger's, or the model gives nothing.
+    /// `place` is where they are based: it never leaves, and is put back in what comes back.
     #[must_use]
     pub fn word(
         &self,
         instruction: &str,
         facts: &str,
+        place: &str,
         ids: &impl IdSource,
         clock: &impl Clock,
     ) -> Option<Worded> {
@@ -366,6 +384,7 @@ impl Deeper {
                 .lines()
                 .map(|l| l.trim_start_matches("- ").to_owned())
                 .collect(),
+            where_they_are: place.to_owned(),
             ..ButlerContext::default()
         });
         let hidden = disguise.hide(facts);
@@ -898,6 +917,64 @@ mod tests {
     }
 
     #[test]
+    fn a_running_summary_that_holds_something_restricted_keeps_the_turn_home() {
+        let door = Deeper::new(std::sync::Arc::new(MustNotBeReached));
+        let context = ButlerContext {
+            conversation_summary: Some(format!("{RESTRICTED_MARK}They read out a card number.")),
+            ..ButlerContext::default()
+        };
+        assert!(matches!(
+            door.continue_turn(&[TurnMessage::User("and now?".to_owned())], &[], &context),
+            Err(DoorRefusal::Restricted)
+        ));
+    }
+
+    #[test]
+    fn where_they_are_never_leaves_in_a_worded_brief() {
+        struct Records(std::sync::Mutex<String>);
+        impl Butler for Records {
+            fn respond(
+                &self,
+                history: &[endora_conversation::ChatMessage],
+                _p: &[crate::Preference],
+                _c: &ButlerContext,
+            ) -> Result<ButlerReply, ProposalError> {
+                *self.0.lock().unwrap() = history.iter().map(|m| m.text().to_owned()).collect();
+                Ok(ButlerReply {
+                    text: "Warm in <place 1> today.".to_owned(),
+                    ..ButlerReply::default()
+                })
+            }
+        }
+        struct Clock;
+        impl endora_kernel::Clock for Clock {
+            fn now(&self) -> endora_kernel::ids::Timestamp {
+                endora_kernel::ids::Timestamp::from_unix_millis(0)
+            }
+        }
+        struct Ids;
+        impl IdSource for Ids {
+            fn new_id(&self) -> u128 {
+                1
+            }
+        }
+        let recorder = std::sync::Arc::new(Records(std::sync::Mutex::new(String::new())));
+        let door = Deeper::new(recorder.clone());
+        let worded = door
+            .word(
+                "Word this:",
+                "- Weather in New York: 77F",
+                "New York",
+                &Ids,
+                &Clock,
+            )
+            .expect("worded");
+        let left = recorder.0.lock().unwrap().clone();
+        assert!(!left.contains("New York"), "the place left: {left}");
+        assert_eq!(worded.text, "Warm in New York today.");
+    }
+
+    #[test]
     fn a_private_fact_is_never_worded_outside() {
         struct Clock;
         impl endora_kernel::Clock for Clock {
@@ -916,7 +993,7 @@ mod tests {
             format!("- {RESTRICTED_MARK}home, office, home"),
             "- a reminder about card 4111 1111 1111 1111".to_owned(),
         ] {
-            assert!(door.word("Word this:", &facts, &Ids, &Clock).is_none());
+            assert!(door.word("Word this:", &facts, "", &Ids, &Clock).is_none());
         }
     }
 

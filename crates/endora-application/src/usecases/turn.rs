@@ -722,6 +722,28 @@ impl<'a> OutcomeSink<'a> {
     }
 }
 
+/// A skill's result with the mark its source calls for (ADR 0064, 0105): a stranger's words
+/// with theirs, unless the call failed and returned none; what a Restricted skill returned
+/// with the private mark; anything else as it is. Shared by the turn and the standing
+/// answers, so both mark alike.
+pub(super) fn marked_result(
+    id: &str,
+    third_party: bool,
+    status: StepStatus,
+    content: String,
+) -> String {
+    if third_party && status != StepStatus::Failed {
+        return format!("{STRANGER_MARK}{content}");
+    }
+    if !third_party
+        && status == StepStatus::Done
+        && endora_capabilities::tiers::tier_of(id) == endora_kernel::Tier::Restricted
+    {
+        return format!("{}{content}", crate::egress::RESTRICTED_MARK);
+    }
+    content
+}
+
 #[expect(
     clippy::too_many_arguments,
     reason = "explicit dependencies, no hidden state"
@@ -1105,16 +1127,7 @@ pub(crate) fn run_tool_turn(
             // What a Restricted skill returned (a movement history) is marked too, and may not
             // leave the house in any form (ADR 0105); the skill's tier says so, by its name.
             let third_party = spec.as_ref().is_some_and(|s| s.third_party);
-            let content = if third_party && status != StepStatus::Failed {
-                format!("{STRANGER_MARK}{content}")
-            } else if !third_party
-                && status == StepStatus::Done
-                && endora_capabilities::tiers::tier_of(&id) == endora_kernel::Tier::Restricted
-            {
-                format!("{}{content}", crate::egress::RESTRICTED_MARK)
-            } else {
-                content
-            };
+            let content = marked_result(&id, third_party, status, content);
             // Kept with its mark: what a reply found is given back to the butler on later
             // turns, and the mark is what keeps it home then too (ADR 0105).
             on_step(ButlerStep {
@@ -1594,20 +1607,31 @@ pub(super) fn compact_history(
         // itself time out on a slow model.
         let end = current.covered + SUMMARY_BATCH;
         // A private message, or a reply to one, is left out of the running summary, which
-        // rides in later turns (ADR 0105); the summary simply does not know it.
+        // rides in later turns (ADR 0105); the summary simply does not know it. So is an
+        // owner's message shaped like an account number.
         let shareable: Vec<ChatMessage> = full[current.covered..end]
             .iter()
             .filter(|m| !m.text().starts_with(crate::egress::RESTRICTED_MARK))
+            .filter(|m| !crate::egress::looks_like_an_account_number(m.text()))
             .cloned()
             .collect();
         let chunk = render_transcript(&shareable);
-        if let Ok(s) = butler.summarize(&current.text, &chunk) {
+        // A summary once marked private stays so: what made it private is still folded in.
+        let was_private = current.text.starts_with(crate::egress::RESTRICTED_MARK);
+        let prior = current
+            .text
+            .strip_prefix(crate::egress::RESTRICTED_MARK)
+            .unwrap_or(&current.text)
+            .to_owned();
+        if let Ok(s) = butler.summarize(&prior, &chunk) {
             let s = s.trim();
             if !s.is_empty() {
-                current = ConversationSummary {
-                    text: s.to_owned(),
-                    covered: end,
+                let text = if was_private {
+                    format!("{}{s}", crate::egress::RESTRICTED_MARK)
+                } else {
+                    crate::egress::kept_as_written(s)
                 };
+                current = ConversationSummary { text, covered: end };
                 summary.set(current.clone());
             }
         }
@@ -1787,23 +1811,24 @@ pub fn send_to_butler_streaming_for_request(
     // A private message keeps its turn private (ADR 0105), and so does a turn that read a
     // Restricted skill's result: the reply may say it again, so it is kept with the mark, out
     // of the running summary and the brain, and refused by the door on later turns.
+    // A reply carrying what looks like an account number is kept private as well.
     let asked_privately = text.starts_with(crate::egress::RESTRICTED_MARK);
-    let mut read_private = false;
+    let read_private = std::cell::Cell::new(false);
     let on_step = &mut |step: ButlerStep| {
         if step
             .output
             .as_deref()
             .is_some_and(|o| o.starts_with(crate::egress::RESTRICTED_MARK))
         {
-            read_private = true;
+            read_private.set(true);
         }
         on_step(step);
     };
-    let kept = |reply: &str, read_private: bool| {
-        if asked_privately || read_private {
+    let kept = |reply: &str| {
+        if asked_privately || read_private.get() {
             format!("{}{reply}", crate::egress::RESTRICTED_MARK)
         } else {
-            reply.to_owned()
+            crate::egress::kept_as_written(reply)
         }
     };
 
@@ -1816,6 +1841,7 @@ pub fn send_to_butler_streaming_for_request(
     if let Some(reply_text) = standing_answer(
         text,
         asked_privately,
+        &context.where_they_are,
         capabilities,
         butler,
         ids,
@@ -1824,7 +1850,7 @@ pub fn send_to_butler_streaming_for_request(
         on_step,
         &mut activity,
     ) {
-        let message = post_butler_message(chat, ids, clock, &kept(&reply_text, false))?;
+        let message = post_butler_message(chat, ids, clock, &kept(&reply_text))?;
         return Ok((message, activity));
     }
 
@@ -2007,7 +2033,7 @@ pub fn send_to_butler_streaming_for_request(
     } else {
         on_token(&reply_text);
     }
-    let stored_reply = kept(&reply_text, read_private);
+    let stored_reply = kept(&reply_text);
     let butler_msg = ChatMessage::new(
         MessageId::new(ids.new_id()),
         MessageRole::Butler,
@@ -2037,6 +2063,7 @@ pub fn send_to_butler_streaming_for_request(
             .iter()
             .filter(|m| m.role() == MessageRole::User)
             .filter(|m| !m.text().starts_with(crate::egress::RESTRICTED_MARK))
+            .filter(|m| !crate::egress::looks_like_an_account_number(m.text()))
             .cloned()
             .collect();
         let formed = if theirs.is_empty() {

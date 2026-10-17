@@ -604,6 +604,7 @@ pub(super) fn not_yet_said(written: &str, facts: &str) -> Vec<String> {
 pub(super) fn word_the_brief(
     deeper: &crate::egress::Deeper,
     facts: &str,
+    place: &str,
     ids: &impl IdSource,
     clock: &impl Clock,
 ) -> Option<crate::egress::Worded> {
@@ -614,6 +615,7 @@ pub(super) fn word_the_brief(
          short and warm, do not invent anything, and leave any placeholder in angle \
          brackets exactly as it is:",
         facts,
+        place,
         ids,
         clock,
     )

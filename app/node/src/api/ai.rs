@@ -152,9 +152,8 @@ pub(super) async fn ai_overview(
     let mail_on = state.mail_reader.is_some();
     let out = blocking(move || {
         use endora_application::Clock as _;
-        let butler = ButlerModelConfigRepository::get(config.as_ref())
-            .map_err(AppError::Repository)?
-            .unwrap_or_default();
+        // The lists are the only source (ADR 0105): the old settings were moved into them
+        // once, and only the deep list's switch is still kept with the old deep model.
         let deep = DeepModelRepository::get(config.as_ref())
             .map_err(AppError::Repository)?
             .unwrap_or_default();
@@ -174,23 +173,23 @@ pub(super) async fn ai_overview(
                 api_key: String::new(),
                 escalate: deep.escalate,
             },
-            None => deep,
+            None => endora_application::DeepModel {
+                escalate: deep.escalate,
+                ..endora_application::DeepModel::default()
+            },
         };
         let env_router = std::env::var("ENDORA_ROUTER_MODEL").unwrap_or_default();
         let env_synth = std::env::var("ENDORA_SYNTH_MODEL").unwrap_or_default();
+        // With nothing in Everyday, the model Endora was installed with answers.
         let (chat_url, chat_models) = if let Some(t) = everyday_first {
             (t.url, vec![t.model])
-        } else if butler.base_url.is_empty() {
+        } else {
             let models = if env_router.is_empty() || env_synth.is_empty() {
                 vec![deployment_model()]
             } else {
                 vec![env_router, env_synth]
             };
             (local_model_url(), models)
-        } else if butler.mixture {
-            (butler.base_url.clone(), vec![butler.router.model.clone(), butler.synth.model.clone()])
-        } else {
-            (butler.base_url.clone(), vec![butler.single.model.clone()])
         };
         let vision = settings_map(config.as_ref())
             .get("image_review")
