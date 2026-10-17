@@ -65,6 +65,7 @@ fn check_the_lab(hq: &Hq<'_>, t: &Team, on_lab_trouble: bool) -> RoutineId {
             title: "Check the home lab".to_owned(),
             description: "Look at the home lab with homelab_status.".to_owned(),
             goal: t.goal,
+            project: None,
             assignee: t.lead,
             every_ms: 6 * HOUR_MS,
             on_lab_trouble,
@@ -214,6 +215,7 @@ fn only_a_routines_check_is_closed_by_its_member_and_only_once_taken() {
             Author::Owner,
             NewTask {
                 goal: t.goal,
+                project: None,
                 parent: None,
                 title: "Add a dashboard".to_owned(),
                 description: String::new(),
@@ -331,7 +333,7 @@ fn coming_back_up_is_said_in_the_alarms_open_task_and_wakes_its_owner() {
     assert!(
         told.contains(
             "Your tools at HQ: my_turn, claim, post, set_status, create_task, ask_owner, \
-             check_back, run_gate, request_action. Endora's own tools on the home lab \
+             check_back, run_gate, request_action, propose_project. Endora's own tools on the home lab \
              (homelab_status and the like) come beside them: what your tool list offers, you \
              have.\n"
         ),
@@ -395,6 +397,7 @@ fn a_routine_keeps_a_sensible_rhythm_and_a_real_goal_and_member() {
         title: "Check".to_owned(),
         description: String::new(),
         goal,
+        project: None,
         assignee,
         every_ms,
         on_lab_trouble: false,
@@ -531,6 +534,7 @@ fn a_timer_with_nothing_to_do_starts_no_turn() {
         Author::Owner,
         NewTask {
             goal: t.goal,
+            project: None,
             parent: None,
             title: "Plan the week".to_owned(),
             description: String::new(),
@@ -569,6 +573,7 @@ fn a_task_that_moves_nothing_twice_backs_off_its_stale_wakes_but_never_news() {
             Author::Owner,
             NewTask {
                 goal: t.goal,
+                project: None,
                 parent: None,
                 title: "Look at the backups".to_owned(),
                 description: String::new(),
@@ -650,6 +655,7 @@ fn turns_that_only_reclaim_and_leave_a_last_word_move_nothing() {
             Author::Owner,
             NewTask {
                 goal: t.goal,
+                project: None,
                 parent: None,
                 title: "Look at the backups".to_owned(),
                 description: String::new(),

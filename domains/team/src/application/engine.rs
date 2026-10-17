@@ -22,10 +22,16 @@ use crate::domain::wakes::{self, LiveTurn};
 use crate::domain::work::{self, mentions};
 use crate::domain::{
     Brain, CheckBackStatus, EventKind, Firing, GoalId, GoalStatus, Liveness, Member, MemberId,
-    Millis, Priority, Receipt, Refusal, Role, Routine, RoutineId, RunId, RunStatus, Task, TaskId,
-    TaskStatus, WakeDecision, WakeReason, WakeSituation,
+    Millis, Priority, ProjectId, Receipt, Refusal, Role, Routine, RoutineId, RunId, RunStatus,
+    Task, TaskId, TaskStatus, WakeDecision, WakeReason, WakeSituation,
 };
 use crate::domain::{docs, house};
+
+mod planning;
+mod projects;
+
+pub use planning::PLANNING;
+pub use projects::{LAB_UPKEEP, Proposal};
 
 /// How long open, assigned work may sit with nothing queued, running or held for it before its
 /// member is woken once, and again before it goes on the owner's desk as stuck.
@@ -308,9 +314,11 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         money::member_a_day(self.settings.pool_per_month, member.share_percent, paid)
     }
 
-    /// What a member could have reserved for a turn now, if anything. A member on the house's
-    /// model reserves nothing and is never turned away for money (ADR 0111).
-    fn affordable(&self, member: &Member) -> Done<Option<Micros>> {
+    /// What a member could have reserved for a turn now, on work in `project` if any, if
+    /// anything. A member on the house's model reserves nothing and is never turned away for
+    /// money (ADR 0111). A project with a cap holds a turn of a paid member to what is left of
+    /// it this month, and to nothing while it is paused for its budget (ADR 0113).
+    fn affordable(&self, member: &Member, project: Option<ProjectId>) -> Done<Option<Micros>> {
         if !member.brain.cloud() {
             return Ok(Some(0));
         }
@@ -319,11 +327,11 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             - self.store.committed(Some(member.id), day)?;
         let pool_left =
             money::pool_a_day(self.settings.pool_per_month) - self.store.committed(None, day)?;
-        Ok(money::reservation(
-            member_left,
-            pool_left,
-            money::most_a_turn(member.role),
-        ))
+        let mut most = money::most_a_turn(member.role);
+        if let Some(left) = self.project_left(project)? {
+            most = most.min(left);
+        }
+        Ok(money::reservation(member_left, pool_left, most))
     }
 
     // ---- the team and the work ---------------------------------------------------------
@@ -341,9 +349,12 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         look: u8,
     ) -> Done<MemberId> {
         let _held = self.held();
-        Ok(self
+        let manager = chain::manager_at_hire(role, &self.store.members()?);
+        let id = self
             .store
-            .add_member(name, role, share_percent, slots, look)?)
+            .add_member(name, role, share_percent, slots, look)?;
+        self.store.set_reports_to(id, manager)?;
+        Ok(id)
     }
 
     /// Pauses or resumes a member: a paused member's wakes are turned away.
@@ -572,35 +583,39 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// [`EngineError::Store`] if the store fails.
     pub fn set_goal(&self, title: &str, reason: &str, by: Author) -> Done<GoalId> {
         let _held = self.held();
-        let proposed = by != Author::Owner;
-        let status = if proposed {
-            GoalStatus::Proposed
-        } else {
-            GoalStatus::Active
-        };
-        let goal = self.store.add_goal(title, reason, status, None)?;
-        if proposed {
-            let desk = self.store.add_desk(
-                "goal",
-                None,
-                Some(goal),
-                None,
-                &format!("A goal: {title}"),
-                self.clock.now(),
-            )?;
-            self.emit(
-                EventKind::GoalProposed,
-                json!({ "goal": goal.0, "title": title }),
-            )?;
-            self.emit(
-                EventKind::DeskAdded,
-                json!({ "item": desk.0, "kind": "goal" }),
-            )?;
-            return Ok(goal);
+        if by != Author::Owner {
+            return self.propose_goal_held_lock(title, reason, None, &format!("A goal: {title}"));
         }
+        let status = GoalStatus::Active;
+        let goal = self.store.add_goal(title, reason, status, None)?;
         self.emit(
             EventKind::GoalChanged,
             json!({ "goal": goal.0, "title": title, "status": status.name() }),
+        )?;
+        Ok(goal)
+    }
+
+    /// A proposed goal, waiting on the owner's desk as `text`, from `from` if a member.
+    fn propose_goal_held_lock(
+        &self,
+        title: &str,
+        reason: &str,
+        from: Option<MemberId>,
+        text: &str,
+    ) -> Done<GoalId> {
+        let goal = self
+            .store
+            .add_goal(title, reason, GoalStatus::Proposed, None)?;
+        let desk = self
+            .store
+            .add_desk("goal", None, Some(goal), from, text, self.clock.now())?;
+        self.emit(
+            EventKind::GoalProposed,
+            json!({ "goal": goal.0, "title": title }),
+        )?;
+        self.emit(
+            EventKind::DeskAdded,
+            json!({ "item": desk.0, "kind": "goal" }),
         )?;
         Ok(goal)
     }
@@ -620,10 +635,20 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         self.store
             .goal(task.goal)?
             .ok_or(EngineError::Unknown("goal"))?;
-        let parent_depth = match task.parent {
-            Some(parent) => Some(self.task(parent)?.depth),
-            None => None,
+        let (parent_depth, project) = match task.parent {
+            // A sub-task goes in its parent's project, whatever it was asked to go in.
+            Some(parent) => {
+                let parent = self.task(parent)?;
+                (Some(parent.depth), parent.project)
+            }
+            None => (None, task.project),
         };
+        if let Some(project) = project {
+            let found = self.project(project)?;
+            crate::domain::projects::may_hold(found.goal, found.status, task.goal)
+                .map_err(EngineError::Refused)?;
+        }
+        let task = NewTask { project, ..task };
         if let (Author::Member(from), Some(to)) = (by, task.assignee) {
             if from != to {
                 let (from, to) = (self.member(from)?, self.member(to)?);
@@ -646,6 +671,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             EventKind::TaskCreated,
             json!({
                 "task": id.0, "goal": task.goal.0, "parent": task.parent.map(|p| p.0),
+                "project": task.project.map(|p| p.0),
                 "owner": null, "status": TaskStatus::Todo.name(), "priority": task.priority.name(),
             }),
         )?;
@@ -792,12 +818,14 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             }
             _ => false,
         };
+        let project = self.project_of(task)?;
         Ok(WakeSituation {
             waits_for_review,
             not_for_the_ceo: member.role == Role::Ceo && !reason.reaches_the_ceo(),
+            project_paused: self.held_by_owner(project)?,
             stopped: self.store.stopped()?,
             paused: member.paused,
-            can_afford_a_turn: self.affordable(member)?.is_some(),
+            can_afford_a_turn: self.affordable(member, project)?.is_some(),
             live: self.live_turns(member.id, task)?,
             already_held,
             nothing_to_do,
@@ -1296,15 +1324,8 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 EventKind::TaskReleased,
                 json!({ "task": task.0, "member": member.0 }),
             )?;
-            for lead in self
-                .store
-                .members()?
-                .iter()
-                .filter(|m| m.role == Role::Lead)
-            {
-                if lead.id != member {
-                    self.wake_held_lock(lead.id, Some(task), WakeReason::Assigned)?;
-                }
+            for lead in self.leads_to_wake(&current, member)? {
+                self.wake_held_lock(lead, Some(task), WakeReason::Assigned)?;
             }
         }
         self.emit(
@@ -1608,6 +1629,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             EventKind::BudgetChanged,
             json!({ "member": current.member.0, "run": run.0, "spent": current.spent }),
         )?;
+        self.watch_budget(self.project_of(current.task)?)?;
         if !money::crossed(current.spent, current.reserved) {
             return Ok(true);
         }
@@ -1637,7 +1659,8 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         self.emit(
             EventKind::BudgetChanged,
             json!({ "member": run.member.0, "run": run.id.0, "spent": run.spent, "late": true }),
-        )
+        )?;
+        self.watch_budget(self.project_of(run.task)?)
     }
 
     // ---- the kill switch -----------------------------------------------------------------
@@ -1813,6 +1836,9 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 }
             ));
         }
+        if member.role == Role::Lead {
+            told.push_str(&self.projects_led(member)?);
+        }
         let Some(task) = run.task else {
             told.push_str("This turn is about no task: look over the team's work.\n");
             return Ok(told);
@@ -1950,10 +1976,10 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             "Your tools at HQ: my_turn, claim, post, set_status, create_task, ask_owner, \
              check_back, run_gate, request_action",
         );
-        told.push_str(if member.role == Role::Reviewer {
-            ", review. "
-        } else {
-            ". "
+        told.push_str(match member.role {
+            Role::Reviewer => ", review. ",
+            Role::Lead => ", propose_project. ",
+            _ => ". ",
         });
         told.push_str(beside);
         Ok(told)
@@ -2023,7 +2049,16 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             Some(task) => self.routine_of(task)?.is_some(),
             None => false,
         };
+        let planning = match run.task {
+            Some(task) => self.is_planning(task)?,
+            None => false,
+        };
         let whole = review || last.is_none();
+        told.push_str(&self.projects_past_warning()?);
+        if planning {
+            told.push_str(&self.planning_picture()?);
+            return Ok(told);
+        }
         told.push_str("Goals:\n");
         let goals = self.store.goals()?;
         let open_goals: Vec<_> = goals
@@ -2052,6 +2087,13 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             let (d, m) = lessons::day_and_month(money::day_of(at, self.settings.offset_minutes));
             format!("{d} {m}")
         };
+        let waiting = self.proposals_waiting()?;
+        if waiting > 0 {
+            told.push_str(&format!(
+                "Project proposals waiting for your decision: {waiting} (decide_project; your \
+                 weekly planning lists them).\n"
+            ));
+        }
         if let (false, Some(last)) = (whole, last) {
             let news = self.ceo_news(last, &name_of, &day)?;
             if news.is_empty() {
@@ -2190,6 +2232,18 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                         e.data["goal"],
                         e.data["lesson"].as_str().unwrap_or("")
                     ),
+                    "project.budget" => format!(
+                        "project #{} {}: {}",
+                        e.data["project"],
+                        e.data["title"].as_str().unwrap_or(""),
+                        e.data["said"].as_str().unwrap_or("")
+                    ),
+                    "project.changed" => format!(
+                        "project #{} {}: {}",
+                        e.data["project"],
+                        e.data["title"].as_str().unwrap_or(""),
+                        e.data["status"].as_str().unwrap_or("?")
+                    ),
                     _ => alarm_in(&e)?.to_owned(),
                 };
                 Some(format!("- {}: {said}", day(e.at)))
@@ -2307,6 +2361,9 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 }
             }
         }
+
+        // A project paused for its budget goes on once the month turns (ADR 0113).
+        self.lift_budget_pauses()?;
 
         // 3. Retries whose time has come are queued again.
         for mut run in self.store.runs()? {
@@ -2442,7 +2499,11 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             if busy >= usize::from(member.slots) || member.paused {
                 continue;
             }
-            let Some(amount) = self.affordable(&member)? else {
+            let project = self.project_of(run.task)?;
+            if self.held_by_owner(project)? {
+                continue;
+            }
+            let Some(amount) = self.affordable(&member, project)? else {
                 continue;
             };
             run.told = self.briefing(&member, &run)?;
@@ -2505,7 +2566,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// cannot fill the owner's desk.
     ///
     /// While the team has a CEO at work, nobody's question but the CEO's reaches the desk
-    /// (ADR 0111): it goes up the chain instead (see [`chain::above`]), posted in the task's
+    /// (ADR 0111): it goes up the chain instead (see [`chain::escalation`]), posted in the task's
     /// thread for the one above, who is woken to answer there. The CEO's is a decision for the
     /// board ([`Self::ask_board`]); the reviewer's, about the CEO's decision it checked, passes
     /// that decision on to the board's desk.
@@ -2649,25 +2710,23 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         Ok(ceo.and_then(|ceo| Decision::read(&draft.text).map(|d| (ceo, d))))
     }
 
-    /// Who `member` asks up the chain of command, if anyone: the lead or the CEO at work (not
-    /// paused), by [`chain::above`]. Nobody while the team has no CEO at work.
+    /// Who `member` asks up the chain of command, if anyone: whom it reports to, or the next
+    /// one up while that one is paused (ADR 0113, [`chain::escalation`]); the CEO at work when
+    /// the chain ends before it. Nobody for the CEO, who asks the board, and nobody while the
+    /// team has no CEO at work: then the team works as it did before there was one.
     fn above(&self, member: &Member) -> Done<Option<Member>> {
         let members = self.store.members()?;
-        let at_work = |role: Role| {
-            members
-                .iter()
-                .filter(|m| m.role == role && !m.paused && m.id != member.id)
-                .min_by_key(|m| m.id)
-                .cloned()
-        };
-        let (lead, ceo) = (at_work(Role::Lead), at_work(Role::Ceo));
-        Ok(
-            match chain::above(member.role, lead.is_some(), ceo.is_some()) {
-                Some(Role::Lead) => lead,
-                Some(Role::Ceo) => ceo,
-                _ => None,
-            },
-        )
+        let ceo = members
+            .iter()
+            .filter(|m| m.role == Role::Ceo && !m.paused && m.id != member.id)
+            .min_by_key(|m| m.id)
+            .cloned();
+        if member.role == Role::Ceo || ceo.is_none() {
+            return Ok(None);
+        }
+        let up = chain::escalation(member, &members)
+            .and_then(|id| members.iter().find(|m| m.id == id).cloned());
+        Ok(up.or(ceo))
     }
 
     /// A member's question, up the chain: posted in the task's thread for the one above, the
@@ -2843,6 +2902,9 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     pub fn decide(&self, item: crate::domain::DeskId, decision: &str) -> Done<()> {
         let _held = self.held();
         let found = self.waiting_on_desk(item)?;
+        if matches!(found.kind.as_str(), "project_cap" | "project_budget") {
+            return self.owner_decides_cap(&found, decision, "");
+        }
         self.decide_held_lock(&found, decision)
     }
 
@@ -2881,6 +2943,9 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         let words: String = words.trim().chars().take(4000).collect();
         if found.kind == "decision" {
             return self.board_decides(&found, decision, &words);
+        }
+        if matches!(found.kind.as_str(), "project_cap" | "project_budget") {
+            return self.owner_decides_cap(&found, decision, &words);
         }
         if decision == "seen" && !words.is_empty() && found.kind == "question" {
             let task = found.task.ok_or(EngineError::Unknown("task"))?;
@@ -3185,49 +3250,14 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             EventKind::GoalChanged,
             json!({ "goal": goal.0, "title": found.title, "status": GoalStatus::Dropped.name() }),
         )?;
+        self.drop_projects_of(goal)?;
         let open: Vec<Task> = self
             .store
             .tasks()?
             .into_iter()
             .filter(|t| t.goal == goal && !t.status.finished())
             .collect();
-        for task in &open {
-            self.store.set_task_status(task.id, TaskStatus::Dropped)?;
-            self.emit(
-                EventKind::TaskChanged,
-                json!({ "task": task.id.0, "goal": goal.0, "owner": task.owner.map(|o| o.0),
-                        "status": TaskStatus::Dropped.name(), "priority": task.priority.name() }),
-            )?;
-        }
-        let ids: Vec<TaskId> = open.iter().map(|t| t.id).collect();
-        for run in self.store.runs()? {
-            if !run.status.live() || !run.task.is_some_and(|t| ids.contains(&t)) {
-                continue;
-            }
-            if run.status == RunStatus::Running {
-                self.runner.stop(run.id, self.settings.grace);
-            }
-            self.end(run, RunStatus::Stopped, why)?;
-        }
-        for item in self.store.desk()? {
-            let about = item.goal == Some(goal) || item.task.is_some_and(|t| ids.contains(&t));
-            if item.status != "waiting" || !about {
-                continue;
-            }
-            // Put away with the word the owner would have used to let it go.
-            let decision = match item.kind.as_str() {
-                "goal" => "decline",
-                "stuck" => "drop",
-                "ready_to_merge" | "ready_to_read" => "not_now",
-                "approval" => "decline",
-                _ => "dismiss",
-            };
-            self.store.set_desk_status(item.id, decision)?;
-            self.emit(
-                EventKind::DeskDecided,
-                json!({ "item": item.id.0, "kind": item.kind, "decision": decision }),
-            )?;
-        }
+        self.put_away(&open, &|item| item.goal == Some(goal), why)?;
         Ok(open.len())
     }
 
@@ -3267,6 +3297,11 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             .goal(routine.goal)?
             .ok_or(EngineError::Unknown("goal"))?;
         self.member(routine.assignee)?;
+        if let Some(project) = routine.project {
+            let found = self.project(project)?;
+            crate::domain::projects::may_hold(found.goal, found.status, routine.goal)
+                .map_err(EngineError::Refused)?;
+        }
         let routine = NewRoutine { title, ..routine };
         let next = routines::next_due(self.clock.now(), routine.every_ms);
         let id = self.store.add_routine(&routine, next)?;
@@ -3428,6 +3463,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             Author::Endora,
             NewTask {
                 goal: routine.goal,
+                project: routine.project,
                 parent: None,
                 title: routine.title.clone(),
                 description,
@@ -3463,8 +3499,14 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         if member.paused {
             return Ok(Some(format!("{} is paused", member.name)));
         }
-        if self.affordable(&member)?.is_none() {
-            return Ok(Some(format!("{}'s budget for today is spent", member.name)));
+        if self.held_by_owner(routine.project)? {
+            return Ok(Some("its project is paused".to_owned()));
+        }
+        if self.affordable(&member, routine.project)?.is_none() {
+            return Ok(Some(format!(
+                "{}'s budget for today, or its project's for the month, is spent",
+                member.name
+            )));
         }
         Ok(None)
     }
@@ -3584,12 +3626,15 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         }
         let mut members = Vec::new();
         let paid = self.paid_weights()?;
-        for m in self.store.members()? {
+        let all_members = self.store.members()?;
+        for m in all_members.clone() {
             let committed = self.store.committed(Some(m.id), day)?;
             let spent = self.store.spent(Some(m.id), day)?;
             members.push(json!({
                 "id": m.id.0, "name": m.name, "role": m.role.name(), "look": m.look,
                 "paused": m.paused, "slots": m.slots,
+                // Whom it reports to (ADR 0113): null for the CEO, who reports to the board.
+                "reports_to": chain::manager(&m, &all_members).map(|r| r.0),
                 // What it thinks with, and what the owner may choose for its role (ADR 0109).
                 "brain": m.brain.name(),
                 "brains": Brain::choices(m.role).into_iter()
@@ -3622,7 +3667,8 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         let mut task_rows = Vec::new();
         for t in &tasks {
             task_rows.push(json!({
-                "id": t.id.0, "goal": t.goal.0, "parent": t.parent.map(|p| p.0), "title": t.title,
+                "id": t.id.0, "goal": t.goal.0, "project": t.project.map(|p| p.0),
+                "parent": t.parent.map(|p| p.0), "title": t.title,
                 "description": t.description, "owner": t.owner.map(|o| o.0),
                 "assignee": t.assignee.map(|a| a.0), "status": t.status.name(),
                 "priority": t.priority.name(), "depth": t.depth,
@@ -3675,6 +3721,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             })).collect::<Vec<_>>(),
             "routines": routine_list.iter().map(|r| json!({
                 "id": r.id.0, "title": r.title, "description": r.description, "goal": r.goal.0,
+                "project": r.project.map(|p| p.0),
                 "assignee": r.assignee.0, "every_ms": r.every_ms,
                 "rhythm": routines::rhythm(r.every_ms), "next_due_at": r.next_due_at,
                 "enabled": r.enabled, "on_lab_trouble": r.on_lab_trouble,
@@ -3686,7 +3733,8 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             "desk": self.store.desk()?.iter().filter(|d| d.status == "waiting").map(|d| {
                 let mut item = json!({
                     "id": d.id.0, "kind": d.kind, "task": d.task.map(|t| t.0),
-                    "goal": d.goal.map(|g| g.0), "text": d.text, "at": d.at,
+                    "goal": d.goal.map(|g| g.0), "project": d.project.map(|p| p.0),
+                    "text": d.text, "at": d.at,
                 });
                 // The CEO's decision for the board, in its three parts (ADR 0111).
                 if let Some(decided) = (d.kind == "decision").then(|| Decision::read(&d.text)).flatten() {
@@ -3696,6 +3744,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 item
             }).collect::<Vec<_>>(),
             "house_log": self.store.setting(HOUSE_LOG)?.unwrap_or_default(),
+            "projects": self.projects_shown(&tasks)?,
         }))
     }
 

@@ -73,6 +73,12 @@ pub enum EventKind {
     MemberRenamed,
     /// The house log was added to or rewritten (ADR 0111).
     HouseNoted,
+    /// A project was proposed, decided, capped, paused, resumed or put away (ADR 0113).
+    ProjectChanged,
+    /// A project reached 80% of its cap, or spent it (ADR 0113).
+    ProjectBudget,
+    /// The owner changed whom a member reports to (ADR 0113).
+    ReportsTo,
 }
 
 impl EventKind {
@@ -115,6 +121,9 @@ impl EventKind {
             Self::MemberHired => "member.hired",
             Self::MemberRenamed => "member.renamed",
             Self::HouseNoted => "house.noted",
+            Self::ProjectChanged => "project.changed",
+            Self::ProjectBudget => "project.budget",
+            Self::ReportsTo => "member.reports_to",
         }
     }
 }

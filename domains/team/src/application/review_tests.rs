@@ -50,6 +50,7 @@ fn team(clock: &Hands, with_reviewer: bool, lab: bool) -> (Hq<'_>, Team, RunCont
                 title: "Check the home lab".to_owned(),
                 description: "Look at the home lab with homelab_status.".to_owned(),
                 goal,
+                project: None,
                 assignee: lead,
                 every_ms: 6 * HOUR_MS,
                 on_lab_trouble: true,
@@ -62,6 +63,7 @@ fn team(clock: &Hands, with_reviewer: bool, lab: bool) -> (Hq<'_>, Team, RunCont
             Author::Owner,
             NewTask {
                 goal,
+                project: None,
                 parent: None,
                 title: "Look into the media apps".to_owned(),
                 description: String::new(),
@@ -477,6 +479,7 @@ fn only_the_reviewer_gives_a_verdict_and_never_on_its_own_work() {
             Author::Owner,
             NewTask {
                 goal: hq.store().task(t.task).unwrap().unwrap().goal,
+                project: None,
                 parent: None,
                 title: "Read the logs".to_owned(),
                 description: String::new(),

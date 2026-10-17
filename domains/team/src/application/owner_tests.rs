@@ -46,6 +46,7 @@ fn office(clock: &Hands) -> (Hq<'_>, MemberId, GoalId, TaskId) {
             Author::Owner,
             NewTask {
                 goal,
+                project: None,
                 parent: None,
                 title: "Look at the music stack".to_owned(),
                 description: String::new(),

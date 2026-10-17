@@ -156,6 +156,9 @@ pub enum Refused {
     /// The CEO is not woken for that: only for escalations, the board's word and its own work
     /// (ADR 0111).
     NotForTheCeo,
+    /// The task's project is paused by the owner (ADR 0113): nobody takes a turn on it until
+    /// the owner resumes it.
+    ProjectPaused,
 }
 
 impl Refused {
@@ -170,6 +173,7 @@ impl Refused {
             Self::NothingToDo => "nothing_to_do",
             Self::InReview => "in_review",
             Self::NotForTheCeo => "not_for_the_ceo",
+            Self::ProjectPaused => "project_paused",
         }
     }
 
@@ -184,6 +188,7 @@ impl Refused {
             Self::NothingToDo,
             Self::InReview,
             Self::NotForTheCeo,
+            Self::ProjectPaused,
         ]
         .into_iter()
         .find(|r| r.name() == name)
@@ -253,6 +258,8 @@ pub struct WakeSituation {
     /// Whether the wake is for the CEO, and is not one that
     /// [reaches the CEO](WakeReason::reaches_the_ceo).
     pub not_for_the_ceo: bool,
+    /// Whether the wake's task is in a project the owner paused (ADR 0113).
+    pub project_paused: bool,
 }
 
 /// What to do with a wake.
@@ -288,6 +295,9 @@ pub fn decide(member: MemberId, situation: &WakeSituation) -> WakeDecision {
     if situation.waits_for_review {
         return WakeDecision::Refuse(Refused::InReview);
     }
+    if situation.project_paused {
+        return WakeDecision::Refuse(Refused::ProjectPaused);
+    }
     if let Some(own) = situation.live.iter().find(|turn| turn.member == member) {
         return WakeDecision::Fold(own.run);
     }
@@ -317,6 +327,7 @@ mod tests {
             nothing_to_do: false,
             waits_for_review: false,
             not_for_the_ceo: false,
+            project_paused: false,
         }
     }
 
@@ -468,6 +479,22 @@ mod tests {
         assert_eq!(
             Refused::from_name("not_for_the_ceo"),
             Some(Refused::NotForTheCeo)
+        );
+    }
+
+    #[test]
+    fn a_project_the_owner_paused_takes_no_turn() {
+        let held = WakeSituation {
+            project_paused: true,
+            ..quiet()
+        };
+        assert_eq!(
+            decide(ME, &held),
+            WakeDecision::Refuse(Refused::ProjectPaused)
+        );
+        assert_eq!(
+            Refused::from_name("project_paused"),
+            Some(Refused::ProjectPaused)
         );
     }
 

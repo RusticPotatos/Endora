@@ -348,6 +348,97 @@ pub(super) async fn hq_fire_routine(State(state): State<AppState>, Path(id): Pat
     Ok(answer)
 }
 
+/// The owner makes a project (ADR 0113): HQ checks it and its cap.
+pub(super) async fn hq_add_project(
+    State(state): State<AppState>,
+    Json(req): Json<serde_json::Value>,
+) -> Answer {
+    let title = req["title"].as_str().unwrap_or_default().trim().to_owned();
+    let answer = ask(&state, "/v1/projects".to_owned(), Some(req)).await?;
+    record(&state, &format!("you made a project: {title}"));
+    Ok(answer)
+}
+
+#[derive(Deserialize)]
+pub(super) struct HqProjectAction {
+    action: String,
+}
+
+/// The owner pauses, resumes, drops, reopens or finishes a project.
+pub(super) async fn hq_change_project(
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+    Json(req): Json<HqProjectAction>,
+) -> Answer {
+    let answer = ask(
+        &state,
+        format!("/v1/projects/{id}"),
+        Some(json!({ "action": req.action })),
+    )
+    .await?;
+    // HQ answers with one of its own statuses, never what was asked.
+    let now = answer.0["status"].as_str().unwrap_or("").to_owned();
+    record(&state, &format!("you set project {id} {now}"));
+    Ok(answer)
+}
+
+#[derive(Deserialize)]
+pub(super) struct HqCap {
+    #[serde(default)]
+    cap: Option<serde_json::Value>,
+}
+
+/// The owner sets, raises or takes away a project's monthly cap.
+pub(super) async fn hq_project_cap(
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+    Json(req): Json<HqCap>,
+) -> Answer {
+    let answer = ask(
+        &state,
+        format!("/v1/projects/{id}/cap"),
+        Some(json!({ "cap": req.cap })),
+    )
+    .await?;
+    let cap = answer.0["cap"].as_i64();
+    record(
+        &state,
+        &match cap {
+            Some(micros) => format!(
+                "you capped project {id} at ${}.{:02} a month",
+                micros / 1_000_000,
+                (micros % 1_000_000) / 10_000
+            ),
+            None => format!("you took project {id}'s cap away"),
+        },
+    );
+    Ok(answer)
+}
+
+#[derive(Deserialize)]
+pub(super) struct HqReportsTo {
+    to: i64,
+}
+
+/// The owner sets whom a member reports to; HQ refuses itself and circles.
+pub(super) async fn hq_reports_to(
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+    Json(req): Json<HqReportsTo>,
+) -> Answer {
+    let answer = ask(
+        &state,
+        format!("/v1/members/{id}/reports_to"),
+        Some(json!({ "to": req.to })),
+    )
+    .await?;
+    record(
+        &state,
+        &format!("you set member {id} to report to member {}", req.to),
+    );
+    Ok(answer)
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::relay::tests::{fake, node};
@@ -598,6 +689,80 @@ mod tests {
             "HQ: you made a routine: Check the home lab",
             "HQ: you switched routine 2 off",
             "HQ: you ran routine 2 now",
+        ] {
+            assert!(audit.iter().any(|a| a == line), "{line}: {audit:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn the_owners_projects_and_reports_pass_through_signed_and_are_recorded() {
+        let (url, seen) = fake(Arc::new(|path, _| {
+            let body = if path.ends_with("/cap") {
+                json!({ "project": 3, "cap": 12_500_000 })
+            } else if path.ends_with("/reports_to") {
+                json!({ "member": 5, "reports_to": 2 })
+            } else if path == "/v1/projects" {
+                json!({ "project": 3 })
+            } else {
+                json!({ "project": 3, "status": "paused" })
+            };
+            (200, "application/json", body.to_string())
+        }));
+        let state = node(&url, "http://127.0.0.1:9");
+        let made = json!({ "goal": 1, "title": "Upkeep", "lead": 2, "cap": 10 });
+        let answer = hq_add_project(State(state.clone()), Json(made.clone()))
+            .await
+            .unwrap();
+        assert_eq!(answer.0["project"], 3);
+        let answer = hq_change_project(
+            State(state.clone()),
+            Path(3),
+            Json(HqProjectAction {
+                action: "pause".to_owned(),
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(answer.0["status"], "paused");
+        let answer = hq_project_cap(
+            State(state.clone()),
+            Path(3),
+            Json(HqCap {
+                cap: Some(json!("12.50")),
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(answer.0["cap"], 12_500_000);
+        let answer = hq_reports_to(State(state.clone()), Path(5), Json(HqReportsTo { to: 2 }))
+            .await
+            .unwrap();
+        assert_eq!(answer.0["reports_to"], 2);
+        let sent: Vec<(String, serde_json::Value)> = seen
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(p, _, b)| (p.clone(), serde_json::from_str(b).unwrap()))
+            .collect();
+        assert_eq!(
+            sent,
+            [
+                ("/v1/projects".to_owned(), made),
+                ("/v1/projects/3".to_owned(), json!({ "action": "pause" })),
+                ("/v1/projects/3/cap".to_owned(), json!({ "cap": "12.50" })),
+                ("/v1/members/5/reports_to".to_owned(), json!({ "to": 2 })),
+            ]
+        );
+        let audit: Vec<String> = endora_application::AuditLog::recent(state.audit.as_ref(), 10)
+            .unwrap()
+            .iter()
+            .map(|r| r.summary().to_owned())
+            .collect();
+        for line in [
+            "HQ: you made a project: Upkeep",
+            "HQ: you set project 3 paused",
+            "HQ: you capped project 3 at $12.50 a month",
+            "HQ: you set member 5 to report to member 2",
         ] {
             assert!(audit.iter().any(|a| a == line), "{line}: {audit:?}");
         }

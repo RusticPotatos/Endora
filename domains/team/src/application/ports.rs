@@ -3,11 +3,12 @@
 use core::fmt;
 use std::time::Duration;
 
-use crate::domain::{CheckBack, CheckBackStatus, Goal, Liveness, Routine, RoutineId};
+use crate::domain::{CheckBack, CheckBackStatus, Goal, Liveness, Project, Routine, RoutineId};
 use crate::domain::{
     Event, GoalId, GoalStatus, Member, MemberId, Micros, Millis, Priority, Receipt, Role, RunId,
     RunStatus, Task, TaskId, TaskStatus, WakeId, WakeReason,
 };
+use crate::domain::{Evidence, ProjectId, ProjectStatus};
 
 /// A store that failed.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -29,6 +30,8 @@ pub type Stored<T> = Result<T, StoreError>;
 pub struct NewTask {
     /// The goal it is for.
     pub goal: GoalId,
+    /// The project of that goal it goes in, if any; a sub-task goes in its parent's.
+    pub project: Option<ProjectId>,
     /// The task it is part of, if any.
     pub parent: Option<TaskId>,
     /// What it is.
@@ -52,12 +55,41 @@ pub struct NewRoutine {
     pub description: String,
     /// The goal its tasks serve.
     pub goal: GoalId,
+    /// The project of that goal its tasks go in, if any.
+    pub project: Option<ProjectId>,
     /// The member its tasks are handed to.
     pub assignee: MemberId,
     /// How often it fires.
     pub every_ms: Millis,
     /// Whether it takes the home lab's alarms.
     pub on_lab_trouble: bool,
+}
+
+/// A project to create (ADR 0113).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewProject {
+    /// The goal it serves.
+    pub goal: GoalId,
+    /// What it is.
+    pub title: String,
+    /// Why it is worth doing.
+    pub reason: String,
+    /// Who leads it.
+    pub lead: MemberId,
+    /// Where it starts.
+    pub status: ProjectStatus,
+    /// Its cap, if the owner set one.
+    pub cap: Option<Micros>,
+    /// A cap asked for, waiting on the owner's desk.
+    pub asked_cap: Option<Micros>,
+    /// Who made it.
+    pub created_by: String,
+    /// The member who proposed it, if any.
+    pub proposer: Option<MemberId>,
+    /// The task the proposal was made in, if any.
+    pub proposed_in: Option<TaskId>,
+    /// What the proposal pointed at.
+    pub evidence: Vec<Evidence>,
 }
 
 /// One post in a task's thread.
@@ -142,6 +174,8 @@ pub struct DeskItem {
     pub task: Option<TaskId>,
     /// The goal it is about, if any.
     pub goal: Option<GoalId>,
+    /// The project it is about, if any (ADR 0113).
+    pub project: Option<ProjectId>,
     /// The member it is from, if any: who asked, for a question.
     pub member: Option<MemberId>,
     /// What the owner is shown.
@@ -202,6 +236,11 @@ pub trait TeamStore {
     /// # Errors
     /// [`StoreError`] if the store fails.
     fn rename_member(&self, member: MemberId, name: &str) -> Stored<()>;
+    /// Sets whom a member reports to (ADR 0113).
+    ///
+    /// # Errors
+    /// [`StoreError`] if the store fails.
+    fn set_reports_to(&self, member: MemberId, to: Option<MemberId>) -> Stored<()>;
 
     /// Adds a goal.
     ///
@@ -271,6 +310,11 @@ pub trait TeamStore {
     /// # Errors
     /// [`StoreError`] if the store fails.
     fn set_task_status(&self, task: TaskId, status: TaskStatus) -> Stored<()>;
+    /// Puts a task in a project, or in none.
+    ///
+    /// # Errors
+    /// [`StoreError`] if the store fails.
+    fn set_task_project(&self, task: TaskId, project: Option<ProjectId>) -> Stored<()>;
     /// Records whether a task has had its one recovery nudge.
     ///
     /// # Errors
@@ -425,6 +469,39 @@ pub trait TeamStore {
     /// # Errors
     /// [`StoreError`] if the store fails.
     fn spent(&self, member: Option<MemberId>, day: i64) -> Stored<Micros>;
+    /// What turns on a project's tasks committed from `from` until `until` (charged, plus
+    /// reserved and not yet released), by the moments the ledger's rows were written. A
+    /// ledger row is a project's when its turn's task was in the project as it was written.
+    ///
+    /// # Errors
+    /// [`StoreError`] if the store fails.
+    fn project_committed(&self, project: ProjectId, from: Millis, until: Millis) -> Stored<Micros>;
+    /// What turns on a project's tasks really spent from `from` until `until`.
+    ///
+    /// # Errors
+    /// [`StoreError`] if the store fails.
+    fn project_spent(&self, project: ProjectId, from: Millis, until: Millis) -> Stored<Micros>;
+
+    /// Adds a project.
+    ///
+    /// # Errors
+    /// [`StoreError`] if the store fails.
+    fn add_project(&self, project: &NewProject, at: Millis) -> Stored<ProjectId>;
+    /// Every project, oldest first.
+    ///
+    /// # Errors
+    /// [`StoreError`] if the store fails.
+    fn projects(&self) -> Stored<Vec<Project>>;
+    /// Saves a project's changes: its lead, status, pause, cap and asked cap, and when.
+    ///
+    /// # Errors
+    /// [`StoreError`] if the store fails.
+    fn save_project(&self, project: &Project) -> Stored<()>;
+    /// Says what a desk item is about, when that is a project.
+    ///
+    /// # Errors
+    /// [`StoreError`] if the store fails.
+    fn set_desk_project(&self, id: crate::domain::DeskId, project: ProjectId) -> Stored<()>;
 
     /// Appends an event to the feed and returns its id.
     ///
@@ -447,6 +524,11 @@ pub trait TeamStore {
     /// # Errors
     /// [`StoreError`] if the store fails.
     fn prune_events(&self, keep: i64) -> Stored<usize>;
+    /// Whether the feed still has the event with this id.
+    ///
+    /// # Errors
+    /// [`StoreError`] if the store fails.
+    fn has_event(&self, id: i64) -> Stored<bool>;
     /// The events after `id`, oldest first.
     ///
     /// # Errors
@@ -530,8 +612,8 @@ pub trait TeamStore {
     /// # Errors
     /// [`StoreError`] if the store fails.
     fn routines(&self) -> Stored<Vec<Routine>>;
-    /// Saves a routine's changes: on or off, when it is next due, when it last fired, and
-    /// its last task.
+    /// Saves a routine's changes: on or off, when it is next due, when it last fired, its
+    /// last task, and its project.
     ///
     /// # Errors
     /// [`StoreError`] if the store fails.

@@ -1239,6 +1239,7 @@ mod tests {
                 Author::Owner,
                 NewTask {
                     goal,
+                    project: None,
                     parent: None,
                     title: title.to_owned(),
                     description: "Your task: not this (#99, todo, normal)".to_owned(),

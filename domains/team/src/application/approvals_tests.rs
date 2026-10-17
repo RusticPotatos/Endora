@@ -48,6 +48,7 @@ fn started(clock: &Hands) -> (Hq<'_>, MemberId, TaskId, RunContext) {
             Author::Owner,
             NewTask {
                 goal,
+                project: None,
                 parent: None,
                 title: "Clear the stuck downloads".to_owned(),
                 description: String::new(),

@@ -4,8 +4,8 @@ pub mod engine;
 pub mod ports;
 pub mod protocol;
 
-pub use engine::{Asked, Author, Engine, EngineError, Fired, Settings, TickReport};
-pub use ports::{Clock, NewRoutine, NewTask, RunContext, TeamStore, WorkerAdapter};
+pub use engine::{Asked, Author, Engine, EngineError, Fired, Proposal, Settings, TickReport};
+pub use ports::{Clock, NewProject, NewRoutine, NewTask, RunContext, TeamStore, WorkerAdapter};
 
 #[cfg(test)]
 mod engine_tests;
@@ -30,3 +30,6 @@ mod review_tests;
 
 #[cfg(test)]
 mod ceo_tests;
+
+#[cfg(test)]
+mod projects_tests;
