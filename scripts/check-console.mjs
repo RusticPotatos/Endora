@@ -612,6 +612,22 @@ if (failures.length) {
                  { id: 2, goal: 1, title: "<s>Backups</s>", reason: "<img src=p onerror=alert(6)>", lead: 1, status: "active", pause: null, cap: 1000000, asked_cap: 5000000, spent: 850000, level: "warned", created_by: "Ada", evidence: ["task 7", "event 40"], open_tasks: 0 },
                  { id: 3, goal: 1, title: "Media", reason: "", lead: 5, status: "proposed", pause: null, cap: null, spent: 0, level: null, created_by: "Ada", evidence: ["task 7"], open_tasks: 0 }],
       contracts: { all: true, restart_container: false },
+      // How the team is doing, as the engine's scorecard serves it: every number computed there.
+      scorecard: {
+        today: { from: 0, until: 86400000, since: 43200000,
+          turns: { total: 4, nothing: 1, nothing_share: 25, unlabelled: 1, members: [{ member: 2, turns: 3, nothing: 1, unlabelled: 0, spent: 120000 }, { member: 4, turns: 1, nothing: 0, unlabelled: 1, spent: 0 }] },
+          review: { submissions: 2, sent_back: 1, sent_back_share: 50 },
+          finished: { done: 2, done_spent: 840000, per_done: 420000, dropped: 1, dropped_spent: 300000 },
+          alarms: { count: 3, tasks: 2, closed_median_ms: 840000, open: 1 },
+          desk: { approvals: 2, questions: 1, stuck: 1, notices: 1, other: 0, waiting: 2 },
+          cache: { input: 4000, read: 3000, share: 75 } },
+        week: { from: -518400000, until: 86400000, since: null,
+          turns: { total: 0, nothing: 0, nothing_share: null, unlabelled: 0, members: [] },
+          review: { submissions: 0, sent_back: 0, sent_back_share: null },
+          finished: { done: 0, done_spent: 0, per_done: null, dropped: 0, dropped_spent: 0 },
+          alarms: { count: 0, tasks: 0, closed_median_ms: null, open: 0 },
+          desk: { approvals: 0, questions: 0, stuck: 0, notices: 0, other: 0, waiting: 0 },
+          cache: { input: 0, read: 0, share: null } } },
       routines: [{ id: 3, title: "Check the home lab", rhythm: "every 6 hours", assignee: 1, enabled: true,
                    on_lab_trouble: true, last_fired_at: null, last_task: null, last_task_open: false, project: 1 },
                  { id: 4, title: "<b>Tidy</b>", rhythm: "every day", assignee: 2, enabled: false,
@@ -645,6 +661,18 @@ if (failures.length) {
     if (!office.includes(chip)) fail(`hq: the office's numbers do not show ${chip}`);
   }
   if (!office.includes('data-act="hq:work"')) fail("hq: the team cannot be given work");
+  // How the team is doing: each number as the engine computed it, the empty week said plainly,
+  // the record's start told, and a member's name never markup.
+  for (const said of ["<h2>How the team is doing</h2>", "<th>Today</th><th>7 days</th>",
+    "4 · 1 showed nothing (25%) · 1 unlabelled", "1 of 2 submitted (50%)", "$0.42 each · 2 done", "$0.30 on 1 dropped",
+    "3 · 2 tasks · closed in 14 min · 1 open", "5 · 2 approvals, 1 questions, 1 stuck, 1 notices · 2 waiting", "75% of paid input read from cache",
+    "0 · 0 showed nothing", "0 of 0 submitted", "none done", "none dropped", "no paid input",
+    "Bo: 3 turns · 1 showed nothing · $0.12", "&lt;i&gt;Dee&lt;/i&gt;: 1 turns · 0 showed nothing · 1 unlabelled · $0.00",
+    "the record for today starts", "older turns and events are no longer kept"]) {
+    if (!office.includes(said)) fail(`hq: the scorecard does not say ${said}`);
+  }
+  if (office.includes("<i>Dee</i>: 1 turns")) fail("hq: a member's name became markup on the scorecard");
+  if (office.includes("the record for the 7 days starts")) fail("hq: a week the record covers is said to start late");
   if (!office.includes("Demo · scripted team")) fail("hq: demo mode is not labelled");
   if (!office.includes('id="hq-office"')) fail("hq: the office is not drawn");
   // A live update redraws the screen; the activity log keeps its scroll through it.

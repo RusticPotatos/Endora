@@ -11,6 +11,7 @@ use super::ports::{
     Clock, DeskItem, NewRoutine, NewTask, Run, RunContext, StoreError, TeamStore, Wake,
     WorkerAdapter,
 };
+use super::scorecard;
 use crate::domain::chain::{self, Decision};
 use crate::domain::effort::{self, Effort};
 use crate::domain::lessons;
@@ -3858,13 +3859,10 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         let _held = self.held();
         let day = self.today();
         let pool = self.settings.pool_per_month;
-        let runs: Vec<Run> = self
-            .store
-            .runs()?
-            .into_iter()
-            .filter(|r| r.status.live())
-            .collect();
+        let every_run = self.store.runs()?;
         let tasks = self.store.tasks()?;
+        let scorecard = self.scorecard(&every_run, &tasks, day)?;
+        let runs: Vec<Run> = every_run.into_iter().filter(|r| r.status.live()).collect();
         let goals = self.store.goals()?;
         let mut notes = std::collections::HashMap::new();
         for g in &goals {
@@ -4000,6 +3998,28 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             "projects": self.projects_shown(&tasks)?,
             // The turns that ended last, with their labels (ADR 0114).
             "recent_runs": self.recent_runs(30)?,
+            // How the team is doing: today and the last seven days, from the record alone.
+            "scorecard": scorecard,
+        }))
+    }
+
+    /// The scorecard ("How the team is doing"), for today and the last seven days by the
+    /// owner's day boundaries, over every run, task, desk item and event the store keeps. The
+    /// feed is pruned by the node, so each window says where the record starts when that is
+    /// later than the window does.
+    fn scorecard(&self, runs: &[Run], tasks: &[Task], day: i64) -> Done<serde_json::Value> {
+        let desk = self.store.desk()?;
+        let events = self.store.events_after(0)?;
+        let record = scorecard::Record {
+            runs,
+            tasks,
+            desk: &desk,
+            events: &events,
+        };
+        let offset = self.settings.offset_minutes;
+        Ok(json!({
+            "today": scorecard::score(&record, &scorecard::Window::day(day, offset)).json(),
+            "week": scorecard::score(&record, &scorecard::Window::days_ending(day, 7, offset)).json(),
         }))
     }
 

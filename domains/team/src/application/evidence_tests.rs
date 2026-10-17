@@ -847,3 +847,48 @@ fn the_chain_of_command_closes_a_subordinates_check_on_evidence_and_hands_on_its
         "her own task is nobody's below her"
     );
 }
+
+/// The snapshot carries the scorecard ("How the team is doing"): today and the last seven
+/// days, from HQ's own record, the screen only rendering it.
+#[test]
+fn the_snapshot_scores_how_the_team_is_doing() {
+    let clock = Hands(AtomicI64::new(OCT_17));
+    let hq = engine(&clock);
+    let t = team(&hq, false, false);
+    let task = owners_task(&hq, &t, t.dev, "Look at sonarr");
+    let linus = turn(&hq, t.dev);
+    use_tool(&hq, &linus, "claim", &json!({ "task": task.0 })).unwrap();
+    end(&hq, &clock, &linus);
+    hq.post(Author::Owner, task, "Next.").unwrap();
+    let linus = turn(&hq, t.dev);
+    use_tool(
+        &hq,
+        &linus,
+        "post",
+        &json!({ "task": task.0, "text": "Hm." }),
+    )
+    .unwrap();
+    hq.report_usage(linus.run, 30_000).unwrap();
+    end(&hq, &clock, &linus);
+
+    let snap = hq.snapshot().unwrap();
+    let today = &snap["scorecard"]["today"];
+    assert_eq!(today["turns"]["total"], json!(2));
+    assert_eq!(today["turns"]["nothing"], json!(1), "the talk-only turn");
+    assert_eq!(today["turns"]["nothing_share"], json!(50));
+    assert_eq!(today["turns"]["unlabelled"], json!(0));
+    assert_eq!(today["turns"]["members"][0]["member"], json!(t.dev.0));
+    assert_eq!(today["turns"]["members"][0]["spent"], json!(30_000));
+    assert_eq!(today["review"]["submissions"], json!(0));
+    assert_eq!(today["finished"]["done"], json!(0));
+    // HQ was started at noon: the day began before its record did, and the card says so.
+    assert_eq!(today["since"], json!(OCT_17));
+    let week = &snap["scorecard"]["week"];
+    assert_eq!(week["turns"]["total"], json!(2));
+    assert_eq!(week["until"], today["until"]);
+    assert!(week["from"].as_i64().unwrap() < today["from"].as_i64().unwrap());
+    assert!(
+        week["since"].is_i64(),
+        "the record is younger than the week"
+    );
+}
