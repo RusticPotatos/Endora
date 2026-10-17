@@ -18,8 +18,8 @@ use super::*;
 use axum::body::{Body, Bytes};
 use axum::http::HeaderMap;
 use endora_infrastructure::relay::{
-    Call, StreamedUsage, Used, affordable_output, betas_passed, cost, counted, may_use,
-    most_a_turn, price_of, send, send_local, unmetered,
+    Call, StreamedUsage, Used, affordable_output, asks_to_cache, betas_passed, cost, counted,
+    may_use, most_a_turn, price_of, prompt_cost, send, send_local, unmetered,
 };
 
 /// The most of a whole reply the relay holds at once.
@@ -93,18 +93,97 @@ pub(super) struct Turn {
 /// A turn's calls to Anthropic, one at a time, by token. HQ knows only what has been
 /// charged, so two calls side by side would each be capped by the whole of what is left; one
 /// at a time, each is capped by what the one before left.
+///
+/// Beside that, what each turn's last call left in Anthropic's prompt cache, so the next
+/// call's prompt is reckoned at the cache's price for the part it repeats.
 #[derive(Default)]
-pub(crate) struct TurnCalls(
-    std::sync::Mutex<std::collections::HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
-);
+pub(crate) struct TurnCalls {
+    held: std::sync::Mutex<std::collections::HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+    cached: std::sync::Mutex<std::collections::HashMap<String, Cached>>,
+}
+
+/// How long after a call the relay trusts that what it cached is still there: inside the
+/// cache's five minutes, with a minute to spare.
+const CACHE_TRUSTED: std::time::Duration = std::time::Duration::from_secs(4 * 60);
+
+/// What a turn's last call left in the cache: its prompt's fixed part (the model and all
+/// that comes before the messages, or changes how they are read), its messages, and how many
+/// tokens its reply said the cache holds (read or written), and when.
+struct Cached {
+    head: serde_json::Value,
+    messages: Vec<serde_json::Value>,
+    tokens: u64,
+    at: std::time::Instant,
+}
+
+/// A call's fixed part, which must be the same for its cache to be read.
+fn head_of(call: &serde_json::Value) -> serde_json::Value {
+    let mut head = serde_json::Map::new();
+    for field in [
+        "model",
+        "system",
+        "tools",
+        "tool_choice",
+        "thinking",
+        "output_config",
+    ] {
+        if let Some(v) = call.get(field) {
+            head.insert(field.to_owned(), v.clone());
+        }
+    }
+    serde_json::Value::Object(head)
+}
 
 impl TurnCalls {
+    /// Notes what `call`, of the turn `token` opens, left in the cache, by its reply's usage.
+    /// A call that cached nothing leaves nothing to count on.
+    fn remember(&self, token: &str, call: &serde_json::Value, used: Used) {
+        let mut cached = self
+            .cached
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        cached.retain(|_, c| c.at.elapsed() < CACHE_TRUSTED);
+        let tokens = used.cache_read + used.cache_write;
+        if tokens == 0 {
+            cached.remove(token);
+            return;
+        }
+        cached.insert(
+            token.to_owned(),
+            Cached {
+                head: head_of(call),
+                messages: call["messages"].as_array().cloned().unwrap_or_default(),
+                tokens,
+                at: std::time::Instant::now(),
+            },
+        );
+    }
+
+    /// How many of `call`'s prompt tokens the turn's last call left in the cache: all it
+    /// cached, when `call` repeats its fixed part and goes on from its messages within
+    /// [`CACHE_TRUSTED`]; none otherwise.
+    fn cached_for(&self, token: &str, call: &serde_json::Value) -> u64 {
+        let cached = self
+            .cached
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(last) = cached.get(token) else {
+            return 0;
+        };
+        let messages = call["messages"].as_array().map_or(&[][..], Vec::as_slice);
+        let goes_on = messages.starts_with(&last.messages) && head_of(call) == last.head;
+        if !goes_on || last.at.elapsed() >= CACHE_TRUSTED {
+            return 0;
+        }
+        last.tokens
+    }
+
     /// Waits until the turn `token` opens has no call in flight, and holds it while the
     /// guard lives: until the call has been charged.
     async fn one_at_a_time(&self, token: &str) -> tokio::sync::OwnedMutexGuard<()> {
         let turn = {
             let mut turns = self
-                .0
+                .held
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             // A turn no call holds or waits for is forgotten.
@@ -273,7 +352,7 @@ pub(super) async fn messages(
     let token = token_of(&headers);
     // Held until this call is charged, so the turn's next call sees what this one cost.
     let one_at_a_time = state.relay_calls.one_at_a_time(&token).await;
-    let turn = match turn_of(hq.clone(), token, refuse).await {
+    let turn = match turn_of(hq.clone(), token.clone(), refuse).await {
         Ok(turn) => turn,
         Err(refused) => return refused,
     };
@@ -340,13 +419,15 @@ pub(super) async fn messages(
     let Some(price) = price_of(&model, prompt) else {
         return spent();
     };
-    let input = cost(
-        price,
-        Used {
-            input: prompt,
-            ..Used::default()
-        },
-    );
+    // A call that asks to cache reads what the turn's last call cached at the cache's price,
+    // and writes the rest at the cache's (dearer) one. One that does not reads no cache.
+    let caching = asks_to_cache(&call);
+    let cached = if caching {
+        state.relay_calls.cached_for(&token, &call)
+    } else {
+        0
+    };
+    let input = prompt_cost(price, prompt, cached, caching);
     let affordable = affordable_output(price, left - input);
     if affordable == 0 {
         return spent();
@@ -379,13 +460,9 @@ pub(super) async fn messages(
             .map_err(|e| e.to_string())?;
             if reply.status < 300 {
                 if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&bytes) {
-                    charge(
-                        &hq,
-                        &state2,
-                        turn.run,
-                        &model,
-                        Used::from_usage(&v["usage"]),
-                    );
+                    let used = Used::from_usage(&v["usage"]);
+                    charge(&hq, &state2, turn.run, &model, used);
+                    state2.relay_calls.remember(&token, &call, used);
                 }
             }
             Ok::<_, String>((reply.status, bytes))
@@ -451,6 +528,7 @@ pub(super) async fn messages(
                 used.output = used.output.max(cap);
             }
             charge(&hq, &state2, turn.run, &model, used);
+            state2.relay_calls.remember(&token, &call, used);
         }
     });
     let status = match head_rx.await {
@@ -1254,6 +1332,116 @@ pub(super) mod tests {
             to_anthropic.lock().unwrap().is_empty(),
             "nothing was sent on"
         );
+    }
+
+    /// Anthropic counting every prompt as `prompt` tokens, whose every reply says it wrote
+    /// `written` of them to the cache and read the rest from it, with 100 out.
+    fn anthropic_caching(prompt: u64, written: u64) -> (String, Seen) {
+        fake(Arc::new(move |path, _body| {
+            if path == "/v1/messages/count_tokens" {
+                return (
+                    200,
+                    "application/json",
+                    json!({ "input_tokens": prompt }).to_string(),
+                );
+            }
+            (
+                200,
+                "application/json",
+                json!({ "type": "message", "content": [{ "type": "text", "text": "Hello." }],
+                        "usage": { "input_tokens": 0, "cache_creation_input_tokens": written,
+                                   "cache_read_input_tokens": prompt - written,
+                                   "output_tokens": 100 } })
+                .to_string(),
+            )
+        }))
+    }
+
+    #[tokio::test]
+    async fn a_cached_call_passes_with_its_effort_and_is_charged_at_the_cache_prices() {
+        let (hq_url, to_hq) = hq_thinking(1_000_000, "ceo", true);
+        let (upstream, to_anthropic) = anthropic_caching(20_000, 2_000);
+        let app = super::super::team_relay(node(&hq_url, &upstream));
+        let call = json!({ "model": "claude-opus-5-5", "max_tokens": 4096,
+            "cache_control": { "type": "ephemeral" }, "output_config": { "effort": "high" },
+            "system": "You are one member of a small team.",
+            "messages": [{ "role": "user", "content": "You are Mara, the team's CEO." }] });
+        let res = app
+            .clone()
+            .oneshot(ask("good", call.clone()))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        assert_eq!(messages_sent(&to_anthropic), [call], "passed on as sent");
+        let counted: serde_json::Value =
+            serde_json::from_str(&to_anthropic.lock().unwrap()[0].2).unwrap();
+        assert!(
+            counted.get("cache_control").is_none() && counted.get("output_config").is_none(),
+            "counting is asked only the prompt: {counted}"
+        );
+        assert_eq!(
+            charged(&to_hq),
+            vec![2_000 * 8 + 18_000 / 5 + 100 * 20],
+            "2k written at $8, 18k read at 20¢ and 100 out at $20 a million"
+        );
+
+        let mut odd = json!({ "model": "claude-opus-5-5", "max_tokens": 10, "messages": [] });
+        odd["output_config"] = json!({ "effort": "extreme" });
+        let res = app.oneshot(ask("good", odd)).await.unwrap();
+        assert_eq!(
+            res.status(),
+            StatusCode::BAD_REQUEST,
+            "only the five efforts"
+        );
+    }
+
+    #[tokio::test]
+    async fn what_the_last_call_cached_is_reckoned_at_the_cache_price_and_nothing_else() {
+        // A developer's turn on Sonnet with 10¢ left; every prompt counts 20k tokens.
+        let (hq_url, _) = hq(100_000);
+        let (upstream, to_anthropic) = anthropic_caching(20_000, 1_000);
+        let app = super::super::team_relay(node(&hq_url, &upstream));
+        let first = json!({ "role": "user", "content": "You are Linus, the team's developer." });
+        let more = [
+            first.clone(),
+            json!({ "role": "assistant", "content": [{ "type": "text", "text": "Looking." }] }),
+            json!({ "role": "user", "content": "Go on." }),
+        ];
+        let round = |system: &str, messages: &[serde_json::Value], caching: bool| {
+            let mut call = json!({ "model": "claude-sonnet-5-5", "max_tokens": 64_000,
+                                   "system": system, "messages": messages });
+            if caching {
+                call["cache_control"] = json!({ "type": "ephemeral" });
+            }
+            call
+        };
+        for (call, cap, why) in [
+            (
+                round("Be brief.", &[first.clone()], true),
+                2_000,
+                "nothing cached yet: 20k written at $4 leaves 2¢, 2k out",
+            ),
+            (
+                round("Be brief.", &more, true),
+                9_800,
+                "the 20k the call before cached, read at 10¢, leave 9.8¢",
+            ),
+            (
+                round("Be short.", &more, true),
+                2_000,
+                "another system prompt: nothing of the cache is read",
+            ),
+            (
+                round("Be short.", &more, false),
+                6_000,
+                "asking no cache: 20k fresh at $2",
+            ),
+        ] {
+            let res = app.clone().oneshot(ask("good", call)).await.unwrap();
+            assert_eq!(res.status(), StatusCode::OK, "{why}");
+            let sent = messages_sent(&to_anthropic);
+            assert_eq!(sent.last().unwrap()["max_tokens"], cap, "{why}");
+        }
     }
 
     #[tokio::test]

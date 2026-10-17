@@ -335,8 +335,10 @@ const METERED_FIELDS: [&str; 15] = [
 
 /// Why a call cannot be metered, if it cannot: a field not in [`METERED_FIELDS`], a tool that
 /// runs on Anthropic's side (web search and fetch, code execution, MCP: each with fees of its
-/// own, and each a way out to the internet), or content Anthropic would fetch from a URL or
-/// from the owner's files. `None` for a call the relay may pass on.
+/// own, and each a way out to the internet), content Anthropic would fetch from a URL or
+/// from the owner's files, or a cache mark or an `output_config` other than the ephemeral
+/// cache and the five efforts, whose costs the reply's usage reports. `None` for a call the
+/// relay may pass on.
 #[must_use]
 pub fn unmetered(call: &Value) -> Option<String> {
     let Some(fields) = call.as_object() else {
@@ -370,7 +372,119 @@ pub fn unmetered(call: &Value) -> Option<String> {
             ));
         }
     }
+    if let Some(why) = fields.get("cache_control").and_then(uncached) {
+        return Some(why);
+    }
+    if let Some(why) = cache_marks(fields).into_iter().find_map(uncached) {
+        return Some(why);
+    }
+    fields.get("output_config").and_then(unknown_effort)
+}
+
+/// The effort levels a call may ask for: each is billed as the output its reply reports.
+pub const EFFORTS: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
+
+/// Why a `cache_control` cannot be passed on, if it cannot. Only Anthropic's ephemeral
+/// cache is metered (the reply reports what it read and wrote), for five minutes or an hour.
+fn uncached(mark: &Value) -> Option<String> {
+    let Some(mark) = mark.as_object() else {
+        return Some("`cache_control` is not an object".to_owned());
+    };
+    if mark.get("type").and_then(Value::as_str) != Some("ephemeral") {
+        return Some("the relay passes on only an `ephemeral` cache_control".to_owned());
+    }
+    if let Some(field) = mark.keys().find(|k| !matches!(k.as_str(), "type" | "ttl")) {
+        return Some(format!(
+            "the relay does not pass on cache_control's `{field}`"
+        ));
+    }
+    let ttl = mark.get("ttl");
+    if ttl.is_some_and(|ttl| !matches!(ttl.as_str(), Some("5m" | "1h"))) {
+        return Some("a cache_control's `ttl` is \"5m\" or \"1h\"".to_owned());
+    }
     None
+}
+
+/// The `cache_control` marks on a call's blocks: its system's, its tools', and its messages'
+/// content blocks, a tool result's own blocks among them. A tool's input is the model's own
+/// words, never a mark, so it is not looked in.
+fn cache_marks(call: &serde_json::Map<String, Value>) -> Vec<&Value> {
+    let mut blocks: Vec<&Value> = Vec::new();
+    for part in ["system", "tools"] {
+        if let Some(items) = call.get(part).and_then(Value::as_array) {
+            blocks.extend(items);
+        }
+    }
+    for message in call
+        .get("messages")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        for block in message
+            .get("content")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            blocks.push(block);
+            if let Some(inner) = block.get("content").and_then(Value::as_array) {
+                blocks.extend(inner);
+            }
+        }
+    }
+    blocks
+        .into_iter()
+        .filter_map(|b| b.get("cache_control"))
+        .collect()
+}
+
+/// Why an `output_config` cannot be passed on, if it cannot: it may say only how hard the
+/// model tries (`effort`, one of [`EFFORTS`]), which the reply's output tokens price.
+fn unknown_effort(config: &Value) -> Option<String> {
+    let Some(config) = config.as_object() else {
+        return Some("`output_config` is not an object".to_owned());
+    };
+    if let Some(field) = config.keys().find(|k| k.as_str() != "effort") {
+        return Some(format!(
+            "the relay does not pass on output_config's `{field}`"
+        ));
+    }
+    let effort = config.get("effort").and_then(Value::as_str);
+    if effort.is_some_and(|e| EFFORTS.contains(&e)) || config.is_empty() {
+        return None;
+    }
+    Some(format!("an effort is one of {}", EFFORTS.join(", ")))
+}
+
+/// Whether a call asks Anthropic to cache its prompt: a `cache_control` at its top, or on
+/// any of its blocks.
+#[must_use]
+pub fn asks_to_cache(call: &Value) -> bool {
+    let Some(fields) = call.as_object() else {
+        return false;
+    };
+    fields.contains_key("cache_control") || !cache_marks(fields).is_empty()
+}
+
+/// What a call's prompt is reckoned to cost before it is sent: `prompt` tokens as counted,
+/// of which `cached` are the turn's last call's, which that call's reply said the cache now
+/// holds. Those are read at the cache's price; the rest is written to the cache at its
+/// (dearer) price when the call asks to cache, or paid as fresh input when it does not.
+#[must_use]
+pub fn prompt_cost(price: Price, prompt: u64, cached: u64, caching: bool) -> i64 {
+    let read = cached.min(prompt);
+    let rest = prompt - read;
+    let (input, cache_write) = if caching { (0, rest) } else { (rest, 0) };
+    cost(
+        price,
+        Used {
+            input,
+            cache_write,
+            cache_read: read,
+            output: 0,
+        },
+    )
 }
 
 /// The kind of the first image's or document's source in `value` that Anthropic would fetch
@@ -665,6 +779,105 @@ mod tests {
             assert!(refused(change.clone()).is_some(), "{change}");
         }
         assert!(unmetered(&json!([])).is_some(), "a call is an object");
+    }
+
+    #[test]
+    fn caching_and_effort_pass_only_in_the_shapes_the_reply_meters() {
+        let cached = json!({ "model": "claude-opus-5-5", "max_tokens": 10,
+            "cache_control": { "type": "ephemeral" },
+            "output_config": { "effort": "high" },
+            "system": [{ "type": "text", "text": "Be brief.", "cache_control": { "type": "ephemeral", "ttl": "1h" } }],
+            "tools": [{ "name": "post", "input_schema": { "type": "object" }, "cache_control": { "type": "ephemeral", "ttl": "5m" } }],
+            "messages": [
+                { "role": "user", "content": [{ "type": "text", "text": "Hi", "cache_control": { "type": "ephemeral" } }] },
+                { "role": "assistant", "content": [{ "type": "tool_use", "id": "t", "name": "post",
+                    "input": { "cache_control": "the model's own words" } }] },
+                { "role": "user", "content": [{ "type": "tool_result", "tool_use_id": "t",
+                    "content": [{ "type": "text", "text": "ok", "cache_control": { "type": "ephemeral" } }] }] },
+            ] });
+        assert_eq!(unmetered(&cached), None);
+        assert!(asks_to_cache(&cached));
+        for effort in EFFORTS {
+            let mut call = cached.clone();
+            call["output_config"] = json!({ "effort": effort });
+            assert_eq!(unmetered(&call), None, "{effort}");
+        }
+        let refused = |path: &[&str], v: Value| {
+            let mut call = cached.clone();
+            let mut at = &mut call;
+            for step in path {
+                at = match step.parse::<usize>() {
+                    Ok(i) => &mut at[i],
+                    Err(_) => &mut at[*step],
+                };
+            }
+            *at = v;
+            unmetered(&call)
+        };
+        for (path, v) in [
+            (&["cache_control"][..], json!({ "type": "persistent" })),
+            (
+                &["cache_control"][..],
+                json!({ "type": "ephemeral", "ttl": "1d" }),
+            ),
+            (
+                &["cache_control"][..],
+                json!({ "type": "ephemeral", "scope": "org" }),
+            ),
+            (&["cache_control"][..], json!("ephemeral")),
+            (
+                &["system", "0", "cache_control"][..],
+                json!({ "type": "other" }),
+            ),
+            (
+                &["tools", "0", "cache_control"][..],
+                json!({ "type": "ephemeral", "ttl": 3600 }),
+            ),
+            (
+                &["messages", "0", "content", "0", "cache_control"][..],
+                json!({}),
+            ),
+            (
+                &[
+                    "messages",
+                    "2",
+                    "content",
+                    "0",
+                    "content",
+                    "0",
+                    "cache_control",
+                ][..],
+                json!({ "type": "x" }),
+            ),
+            (&["output_config"][..], json!({ "effort": "extreme" })),
+            (
+                &["output_config"][..],
+                json!({ "effort": "low", "task_budget": { "type": "tokens", "total": 20000 } }),
+            ),
+            (
+                &["output_config"][..],
+                json!({ "format": { "type": "json_schema" } }),
+            ),
+            (&["output_config"][..], json!("low")),
+        ] {
+            assert!(refused(path, v.clone()).is_some(), "{path:?} = {v}");
+        }
+        assert!(!asks_to_cache(&json!({ "model": "m", "messages": [] })));
+    }
+
+    #[test]
+    fn a_prompt_is_reckoned_at_the_cache_price_for_what_the_last_call_cached() {
+        let opus = price_of("claude-opus-5-5", 0).unwrap();
+        // 20k counted, none cached: fresh input at $4, or written to the cache at $8.
+        assert_eq!(prompt_cost(opus, 20_000, 0, false), 80_000);
+        assert_eq!(prompt_cost(opus, 20_000, 0, true), 160_000);
+        // 18k of them cached by the call before: read at 20¢, the 2k after written at $8.
+        assert_eq!(prompt_cost(opus, 20_000, 18_000, true), 3_600 + 16_000);
+        assert_eq!(
+            prompt_cost(opus, 1_000, 18_000, true),
+            200,
+            "never more read than counted"
+        );
     }
 
     #[test]
