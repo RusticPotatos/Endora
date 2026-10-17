@@ -943,6 +943,51 @@ impl HomeConsole for Adapter {
                     .unwrap_or_default();
                 Ok(json!({"summary":summary,"items":items}))
             }
+            // The team's contracts (ADR 0106): each container by name, with its compose service
+            // and whether the console protects it, so the node can resolve a name to an id and
+            // refuse what is Endora's own before anything is done.
+            "team-containers" => {
+                let result = self.containers()?;
+                let items: Vec<_> = result
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .take(100)
+                    .map(|item| {
+                        json!({
+                            "id": safe(&item["Id"]),
+                            "name": safe(&item["Names"][0]).trim_start_matches('/'),
+                            "state": safe(&item["State"]),
+                            "status": safe(&item["Status"]),
+                            "service": safe(&item["Labels"]["com.docker.compose.service"]),
+                            "protected": protected_container(item),
+                        })
+                    })
+                    .collect();
+                Ok(json!({ "items": items }))
+            }
+            // One container's state as Docker inspects it, for the team's restart guard: only
+            // its state, how often it was restarted, whether it ran out of memory, its exit code
+            // and when it last started. Never its configuration, which holds its secrets.
+            "team-inspect" => {
+                if query.len() != 64 || !query.bytes().all(|b| b.is_ascii_hexdigit()) {
+                    return Err("invalid_target");
+                }
+                let endpoint = self.endpoint()?;
+                let found = self.call(
+                    "portainer",
+                    "GET",
+                    &format!("/api/endpoints/{endpoint}/docker/containers/{query}/json"),
+                    None,
+                )?;
+                Ok(json!({
+                    "state": safe(&found["State"]["Status"]),
+                    "restart_count": found["RestartCount"].as_u64().unwrap_or(0),
+                    "oom_killed": found["State"]["OOMKilled"].as_bool().unwrap_or(false),
+                    "exit_code": found["State"]["ExitCode"].as_i64().unwrap_or(0),
+                    "started_at": safe(&found["State"]["StartedAt"]),
+                }))
+            }
             "logs" => {
                 if query.len() != 64 || !query.bytes().all(|b| b.is_ascii_hexdigit()) {
                     return Err("invalid_target");

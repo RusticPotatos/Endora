@@ -461,6 +461,11 @@ pub fn app(state: AppState) -> Router {
         .route("/v1/hq/desk/{id}", post(hq_decide))
         .route("/v1/hq/stop", post(hq_stop))
         .route("/v1/hq/resume", post(hq_resume))
+        // The owner's switches for the team's contracts (ADR 0106).
+        .route(
+            "/v1/hq/contracts",
+            get(contracts::switches).post(contracts::switch),
+        )
         // endora-sound, through the node (ADR 0104): only these routes, never a path passed on.
         .route("/v1/sound", get(sound_state))
         .route("/v1/sound/sources", post(sound_add_source))
@@ -653,15 +658,15 @@ pub fn app(state: AppState) -> Router {
         .layer(from_fn_with_state(state.changes.clone(), notify_on_change))
         // Outermost, so nothing behind it runs for a request that has no business being here.
         .layer(from_fn_with_state(state.clone(), require_the_token))
-        // HQ's model relays (ADR 0102, phase 4), after the layers on purpose: a turn's own
-        // token is its credential, not the owner's sign-in, and a model call is not a change
-        // for the console to refresh on.
+        // HQ's model relays (ADR 0102, phase 4) and the team's contracts (ADR 0106), after the
+        // layers on purpose: a turn's own token is its credential, not the owner's sign-in,
+        // and a model call is not a change for the console to refresh on.
         .merge(relay_routes())
         .with_state(state)
 }
 
-/// HQ's model relays, and nothing else of the node: what the plain-HTTP listener on the
-/// team's fenced network serves (`ENDORA_TEAM_ADDR`), since a worker has no way to trust the
+/// HQ's model relays and the team's contracts, and nothing else of the node: what the
+/// plain-HTTP listener on the team's fenced network serves (`ENDORA_TEAM_ADDR`), since a worker has no way to trust the
 /// node's self-signed certificate.
 pub fn team_relay(state: AppState) -> Router {
     relay_routes().with_state(state)
@@ -678,6 +683,9 @@ fn relay_routes() -> Router<AppState> {
             "/team-relay/local/v1/chat/completions",
             post(relay::chat_completions),
         )
+        // The team's contracts (ADR 0106): what Endora offers a turn on the home lab.
+        .route("/team-relay/contracts", get(contracts::list))
+        .route("/team-relay/contracts/{name}", post(contracts::call))
 }
 mod auth;
 mod homelab;
@@ -872,6 +880,8 @@ use brain::*;
 mod hq;
 // HQ's model relay: a team member's only way to a model (ADR 0102, phase 4).
 mod relay;
+// The team's contracts: what Endora offers HQ's workers on the home lab (ADR 0106).
+mod contracts;
 // The providers and ordered model lists on the AI screen (ADR 0105).
 mod model_lists;
 // The agenda loop (ADR 0103): signals become items, and the owner's answers to them.

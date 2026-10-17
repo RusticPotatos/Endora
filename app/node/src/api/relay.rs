@@ -45,8 +45,8 @@ fn refuse_openai(status: StatusCode, kind: &str, message: &str) -> Response {
         .into_response()
 }
 
-/// How a route words a refusal: [`refuse`] or [`refuse_openai`].
-type Wording = fn(StatusCode, &str, &str) -> Response;
+/// How a route words a refusal: [`refuse`] or [`refuse_openai`], or the contracts' own.
+pub(super) type Wording = fn(StatusCode, &str, &str) -> Response;
 
 fn header(headers: &HeaderMap, name: &str) -> Option<String> {
     headers
@@ -55,7 +55,7 @@ fn header(headers: &HeaderMap, name: &str) -> Option<String> {
         .map(str::to_owned)
 }
 
-fn token_of(headers: &HeaderMap) -> String {
+pub(super) fn token_of(headers: &HeaderMap) -> String {
     let bearer =
         header(headers, "authorization").and_then(|v| v.strip_prefix("Bearer ").map(str::to_owned));
     header(headers, "x-api-key")
@@ -77,9 +77,10 @@ fn anthropic_key(config: &endora_capabilities::ConfigStore) -> Option<String> {
         .filter(|k| !k.is_empty())
 }
 
-/// Whose turn a token is, its member's role, and what it may still spend.
-struct Turn {
-    run: i64,
+/// Whose turn a token is: its run, its member's name and role, and what it may still spend.
+pub(super) struct Turn {
+    pub(super) run: i64,
+    pub(super) member: String,
     role: String,
     left: i64,
 }
@@ -111,7 +112,7 @@ impl TurnCalls {
 
 /// Asks HQ whose turn `token` is; a token that opens nothing is refused in the route's own
 /// words.
-async fn turn_of(
+pub(super) async fn turn_of(
     hq: Arc<endora_infrastructure::HqClient>,
     token: String,
     refuse: Wording,
@@ -136,6 +137,7 @@ async fn turn_of(
     match asked {
         Ok(v) => Ok(Turn {
             run: v["run"].as_i64().unwrap_or(0),
+            member: v["member"].as_str().unwrap_or("").to_owned(),
             role: v["role"].as_str().unwrap_or("").to_owned(),
             left: v["left"].as_i64().unwrap_or(0),
         }),
@@ -624,7 +626,7 @@ pub(super) async fn chat_completions(
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
     use endora_infrastructure::{RandomIdSource, ScriptedButler, SqliteStore};
     use http_body_util::BodyExt as _;
@@ -633,11 +635,12 @@ mod tests {
     use tower::ServiceExt as _;
 
     /// What a fake server was sent: the path, the headers (lower-cased) and the body.
-    type Seen = Arc<Mutex<Vec<(String, Vec<(String, String)>, String)>>>;
-    type Answer = Arc<dyn Fn(&str, &str) -> (u16, &'static str, String) + Send + Sync>;
+    pub(in crate::api) type Seen = Arc<Mutex<Vec<(String, Vec<(String, String)>, String)>>>;
+    pub(in crate::api) type Answer =
+        Arc<dyn Fn(&str, &str) -> (u16, &'static str, String) + Send + Sync>;
 
     /// A tiny HTTP server on a local port that answers each request with `answer`.
-    fn fake(answer: Answer) -> (String, Seen) {
+    pub(in crate::api) fn fake(answer: Answer) -> (String, Seen) {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let url = format!("http://{}", listener.local_addr().unwrap());
         let seen: Seen = Arc::new(Mutex::new(Vec::new()));
@@ -691,13 +694,13 @@ mod tests {
         hq_as(left, "developer")
     }
 
-    /// HQ, knowing one turn of a member in `role`.
-    fn hq_as(left: i64, role: &'static str) -> (String, Seen) {
+    /// HQ, knowing one turn (Linus's) of a member in `role`.
+    pub(in crate::api) fn hq_as(left: i64, role: &'static str) -> (String, Seen) {
         fake(Arc::new(move |path, body| match path {
             "/v1/team/turn" if body.contains("\"good\"") => (
                 200,
                 "application/json",
-                json!({ "run": 7, "role": role, "left": left }).to_string(),
+                json!({ "run": 7, "member": "Linus", "role": role, "left": left }).to_string(),
             ),
             "/v1/team/turn" => (
                 404,
@@ -779,7 +782,7 @@ mod tests {
         }))
     }
 
-    fn node(hq_url: &str, upstream: &str) -> AppState {
+    pub(in crate::api) fn node(hq_url: &str, upstream: &str) -> AppState {
         use endora_capabilities::model_lists::ModelListRepository as _;
         let mut state = AppState::new(
             Arc::new(SqliteStore::open_in_memory().unwrap()),

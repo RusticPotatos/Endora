@@ -466,6 +466,190 @@ pub fn scan_outbound_secret(text: &str) -> Option<&'static str> {
     .find_map(classify_secret_token)
 }
 
+/// A log or other text off a machine, as a team member's model may read it (ADR 0106): every
+/// secret this file knows the shape of is replaced with `[redacted]`, and the rest of each line
+/// is kept, so it still says what went wrong. Besides [`scan_outbound_secret`]'s shapes: the
+/// value given to a name that says it is secret (`DB_PASSWORD=…`, `"api_key": "…"`,
+/// `X-Api-Key: …`), the word after `Bearer` or `Basic`, and a private key's whole block. A
+/// block cut short hides everything after its start.
+#[must_use]
+pub fn scrub_secrets(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut in_a_key = false;
+    for line in text.split_inclusive('\n') {
+        let begins = line.contains("-----BEGIN") && line.contains("PRIVATE KEY");
+        let ends = line.contains("-----END") && line.contains("PRIVATE KEY");
+        if !in_a_key && !begins {
+            out.push_str(&scrub_line(line));
+            continue;
+        }
+        if !in_a_key {
+            out.push_str("[redacted: a private key]\n");
+        }
+        in_a_key = !ends;
+    }
+    out
+}
+
+/// Where a word in a log line ends: the delimiters [`scan_outbound_secret`] splits on, but not
+/// `/`, `@`, `#` or `|`, which a password may hold. A word is split on those too before its
+/// pieces are classified.
+fn ends_a_word(c: char) -> bool {
+    c.is_whitespace()
+        || matches!(
+            c,
+            '"' | '\''
+                | '<'
+                | '>'
+                | '('
+                | ')'
+                | '{'
+                | '}'
+                | '['
+                | ']'
+                | ','
+                | ';'
+                | '\\'
+                | '='
+                | '?'
+                | '&'
+                | ':'
+        )
+}
+
+/// Whether a name (lower-cased) says its value is a secret: it ends in a long word that only a
+/// secret goes by (`db_password`, `client_secret`), or is, or ends after a `_`, `-` or `.` in, a
+/// short one (`key`, `x-api-key`, `auth`), so `monkey` and `bypass` are left alone.
+fn names_a_secret(name: &str) -> bool {
+    const LONG: [&str; 7] = [
+        "password",
+        "passwd",
+        "secret",
+        "token",
+        "apikey",
+        "credential",
+        "credentials",
+    ];
+    const SHORT: [&str; 6] = ["pass", "pwd", "key", "auth", "authorization", "cookie"];
+    LONG.iter().any(|w| name.ends_with(w))
+        || SHORT.iter().any(|w| {
+            name == *w
+                || ["_", "-", "."]
+                    .iter()
+                    .any(|sep| name.ends_with(&format!("{sep}{w}")))
+        })
+}
+
+/// One line of [`scrub_secrets`].
+fn scrub_line(line: &str) -> String {
+    let runs = runs_of(line);
+    let mut out = String::with_capacity(line.len());
+    // Hiding: the next word (`Some(None)`), or everything up to a closing quote.
+    let mut hide: Option<Option<char>> = None;
+    let mut skip = false;
+    for (i, &(is_word, run)) in runs.iter().enumerate() {
+        if std::mem::take(&mut skip) {
+            continue;
+        }
+        if let Some(Some(quote)) = hide {
+            if let Some(at) = run.find(quote).filter(|_| !is_word) {
+                out.push_str(&run[at..]);
+                hide = None;
+            }
+            continue;
+        }
+        if !is_word {
+            out.push_str(run);
+            continue;
+        }
+        let lower = run.to_ascii_lowercase();
+        // A scheme before a credential stays, and the credential after it goes.
+        if lower == "bearer" || lower == "basic" || (lower == "token" && hide.is_some()) {
+            out.push_str(run);
+            hide = Some(None);
+            continue;
+        }
+        if hide.take().is_some() {
+            out.push_str("[redacted]");
+            continue;
+        }
+        let given = runs.get(i + 1).map_or("", |(_, r)| *r);
+        // `name=value`, `name: value`, `"name": "value"`; not `name=""`, which gives nothing.
+        let gives = given.contains(['=', ':'])
+            && given
+                .chars()
+                .all(|c| matches!(c, '=' | ':' | ' ' | '"' | '\''))
+            && !given.contains("\"\"")
+            && !given.contains("''");
+        if !gives || !names_a_secret(&lower) {
+            out.push_str(&scrub_pieces(run));
+            continue;
+        }
+        out.push_str(run);
+        // A quoted value is hidden to its closing quote, whatever it holds.
+        match given.chars().last().filter(|c| matches!(c, '"' | '\'')) {
+            Some(quote) => {
+                out.push_str(given);
+                out.push_str("[redacted]");
+                hide = Some(Some(quote));
+                skip = true;
+            }
+            None => hide = Some(None),
+        }
+    }
+    // A quote never closed hid the rest of the line, but not its end.
+    if matches!(hide, Some(Some(_))) && line.ends_with('\n') {
+        out.push('\n');
+    }
+    out
+}
+
+/// A line as runs of word and of delimiters, in order.
+fn runs_of(line: &str) -> Vec<(bool, &str)> {
+    let mut runs = Vec::new();
+    let mut start = 0;
+    let mut word = None;
+    for (i, c) in line.char_indices() {
+        let is_word = !ends_a_word(c);
+        if word != Some(is_word) {
+            if let Some(was) = word {
+                runs.push((was, &line[start..i]));
+            }
+            start = i;
+            word = Some(is_word);
+        }
+    }
+    if let Some(was) = word {
+        runs.push((was, &line[start..]));
+    }
+    runs
+}
+
+/// A word with any piece of it (split on `/`, `@`, `#` and `|`) that has a credential's shape
+/// replaced.
+fn scrub_pieces(word: &str) -> String {
+    let mut out = String::with_capacity(word.len());
+    let mut piece = String::new();
+    let flush = |piece: &mut String, out: &mut String| {
+        if classify_secret_token(piece).is_some() {
+            out.push_str("[redacted]");
+        } else {
+            out.push_str(piece);
+        }
+        piece.clear();
+    };
+    for c in word.chars() {
+        if matches!(c, '/' | '@' | '#' | '|') {
+            flush(&mut piece, &mut out);
+            out.push(c);
+            continue;
+        }
+        piece.push(c);
+    }
+    flush(&mut piece, &mut out);
+    out
+}
+
 /// Query minimization (ADR 0051): redacts personal identifiers from an external
 /// skill's input before it leaves — so a search doesn't carry a real email address
 /// out. Recurses through the JSON, redacting string values in place. Deliberately

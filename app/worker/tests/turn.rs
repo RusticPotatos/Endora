@@ -196,12 +196,55 @@ fn says(text: &str) -> Value {
         "message": { "role": "assistant", "content": text } }] })
 }
 
-/// The worker's environment, pointed at the fakes.
+/// The node's contracts (ADR 0106): it lists `offered`, answers a call to `homelab_status`,
+/// refuses a restart as its limits would (429), and answers `status` to every call when given.
+fn node(offered: Value, status: Option<u16>) -> (String, Seen) {
+    fake(Box::new(move |sent, _| {
+        if let Some(status) = status {
+            return (
+                status,
+                json!({ "error": "no running turn has that token" }).to_string(),
+            );
+        }
+        match sent.path.as_str() {
+            "/team-relay/contracts" => (200, json!({ "tools": offered }).to_string()),
+            "/team-relay/contracts/homelab_status" => (
+                200,
+                json!({ "text": "{\"stale\":false,\"services\":[]}" }).to_string(),
+            ),
+            _ => (
+                429,
+                json!({ "error": "sonarr was not restarted: it was restarted less than an hour ago." })
+                    .to_string(),
+            ),
+        }
+    }))
+}
+
+/// Two of the node's contracts, as it lists them.
+fn contracts() -> Value {
+    json!([
+        { "name": "homelab_status", "description": "Read the home lab's state.",
+          "inputSchema": { "type": "object", "properties": {} } },
+        { "name": "restart_container", "description": "Restart one container.",
+          "inputSchema": { "type": "object", "properties": { "container": { "type": "string" },
+                           "why": { "type": "string" } }, "required": ["container", "why"] } },
+    ])
+}
+
+/// The worker's environment, pointed at the fakes, with a node that offers no contracts.
 fn usual(hq: &str, model: &str) -> Vec<(&'static str, String)> {
+    let (node, _) = node(json!([]), None);
+    with_node(hq, model, &node)
+}
+
+/// The worker's environment, pointed at the fakes and at `node` for the contracts.
+fn with_node(hq: &str, model: &str, node: &str) -> Vec<(&'static str, String)> {
     vec![
         ("ENDORA_RUN_TOKEN", TOKEN.to_owned()),
         ("ENDORA_HQ_MCP", format!("{hq}/v1/team/mcp")),
         ("ENDORA_MODEL_URL", format!("{model}/team-relay/local/v1")),
+        ("ENDORA_CONTRACTS", format!("{node}/team-relay/contracts")),
     ]
 }
 
@@ -420,7 +463,8 @@ fn the_rounds_run_out() {
     let called = methods(&to_hq);
     assert_eq!(
         called.iter().filter(|m| *m == "tools/call claim").count(),
-        3
+        1,
+        "the same claim asked again is answered from what the turn has"
     );
     assert!(
         !called.contains(&"tools/call post".to_owned()),
@@ -441,6 +485,179 @@ fn a_failure_exits_1_and_never_prints_the_token() {
     let said = said(&out);
     assert!(said.contains("500"), "says what went wrong: {said}");
     assert!(!said.contains(TOKEN), "never the token: {said}");
+}
+
+#[test]
+fn the_nodes_contracts_are_offered_beside_hqs_tools_and_called_on_the_node() {
+    let (hq_url, to_hq) = hq(None);
+    let (node_url, to_node) = node(contracts(), None);
+    let (model_url, to_model) = model(vec![
+        (
+            200,
+            calls(&[
+                ("call_1", "homelab_status", ""),
+                (
+                    "call_2",
+                    "restart_container",
+                    r#"{"container": "sonarr", "why": "it is unhealthy"}"#,
+                ),
+            ]),
+        ),
+        (
+            200,
+            says("sonarr is unhealthy and was restarted within the hour; I told the owner."),
+        ),
+    ]);
+    let out = worker(&with_node(&hq_url, &model_url, &node_url));
+    assert_eq!(out.status.code(), Some(0), "{}", said(&out));
+
+    let to_model = to_model.lock().unwrap().clone();
+    let offered: Vec<&str> = to_model[0].body["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|t| t["function"]["name"].as_str())
+        .collect();
+    assert_eq!(
+        offered,
+        [
+            "my_turn",
+            "claim",
+            "post",
+            "set_status",
+            "homelab_status",
+            "restart_container"
+        ]
+    );
+    let told = to_model[0].body["messages"][0]["content"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(told.contains("restart_container"), "{told}");
+    let then = &to_model[1].body["messages"];
+    assert_eq!(
+        then[3],
+        json!({ "role": "tool", "tool_call_id": "call_1", "content": "{\"stale\":false,\"services\":[]}" })
+    );
+    assert_eq!(
+        then[4]["content"],
+        "Refused: sonarr was not restarted: it was restarted less than an hour ago.",
+        "a contract's refusal is a tool error"
+    );
+
+    let to_node = to_node.lock().unwrap().clone();
+    let paths: Vec<&str> = to_node.iter().map(|s| s.path.as_str()).collect();
+    assert_eq!(
+        paths,
+        [
+            "/team-relay/contracts",
+            "/team-relay/contracts/homelab_status",
+            "/team-relay/contracts/restart_container",
+        ]
+    );
+    assert_eq!(to_node[1].body, json!({}));
+    assert_eq!(
+        to_node[2].body,
+        json!({ "container": "sonarr", "why": "it is unhealthy" })
+    );
+    for sent in &to_node {
+        assert_eq!(
+            sent.header("authorization"),
+            Some(format!("Bearer {TOKEN}").as_str())
+        );
+    }
+    assert!(
+        !methods(&to_hq)
+            .iter()
+            .any(|m| m.contains("homelab_status") || m.contains("restart")),
+        "a contract never goes to HQ"
+    );
+}
+
+#[test]
+fn a_401_from_the_node_ends_the_turn_and_a_node_without_contracts_leaves_hqs_tools() {
+    let (hq_url, _) = hq(None);
+    let (node_url, _) = node(json!([]), Some(401));
+    let (model_url, to_model) = model(vec![(200, says("Hello."))]);
+    let out = worker(&with_node(&hq_url, &model_url, &node_url));
+    assert_eq!(out.status.code(), Some(3), "{}", said(&out));
+    assert!(to_model.lock().unwrap().is_empty(), "the turn is over");
+
+    let (hq_url, to_hq) = hq(None);
+    let (node_url, _) = node(json!([]), Some(404));
+    let (model_url, to_model) = model(vec![(200, says("Task 7 is underway."))]);
+    let out = worker(&with_node(&hq_url, &model_url, &node_url));
+    assert_eq!(out.status.code(), Some(0), "{}", said(&out));
+    assert_eq!(
+        to_model.lock().unwrap()[0].body["tools"]
+            .as_array()
+            .unwrap()
+            .len(),
+        4
+    );
+    assert_eq!(
+        methods(&to_hq).last().map(String::as_str),
+        Some("tools/call post")
+    );
+}
+
+#[test]
+fn the_same_call_again_with_nothing_new_is_answered_from_what_it_already_has() {
+    let (hq_url, _) = hq(None);
+    let (node_url, to_node) = node(contracts(), None);
+    let status = ("homelab_status", "{}");
+    let (model_url, to_model) = model(vec![
+        (
+            200,
+            calls(&[
+                ("call_1", status.0, status.1),
+                ("call_2", status.0, ""),
+                ("call_3", status.0, " { } "),
+            ]),
+        ),
+        (
+            200,
+            calls(&[
+                (
+                    "call_4",
+                    "restart_container",
+                    r#"{"container": "sonarr", "why": "unwell"}"#,
+                ),
+                ("call_5", status.0, status.1),
+            ]),
+        ),
+        (200, says("Nothing more to do.")),
+    ]);
+    let out = worker(&with_node(&hq_url, &model_url, &node_url));
+    assert_eq!(out.status.code(), Some(0), "{}", said(&out));
+    let already = "You already have this result; use it, or do something else";
+    let first = to_model.lock().unwrap()[1].body["messages"].clone();
+    assert_eq!(first[3]["content"], "{\"stale\":false,\"services\":[]}");
+    assert_eq!(
+        first[4]["content"], already,
+        "asked again at once: not sent"
+    );
+    assert_eq!(first[5]["content"], already);
+    let then = to_model.lock().unwrap()[2].body["messages"].clone();
+    assert_eq!(
+        then[8]["content"], already,
+        "sent again after another call, but it says nothing new"
+    );
+    let paths: Vec<String> = to_node
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|s| s.path.clone())
+        .collect();
+    assert_eq!(
+        paths,
+        [
+            "/team-relay/contracts",
+            "/team-relay/contracts/homelab_status",
+            "/team-relay/contracts/restart_container",
+            "/team-relay/contracts/homelab_status",
+        ]
+    );
 }
 
 #[test]

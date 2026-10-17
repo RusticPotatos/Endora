@@ -586,7 +586,9 @@ if (failures.length) {
       desk: [{ id: 11, kind: "goal", text: "A goal: Tidy the lab" }, { id: 12, kind: "stuck", task: 7, text: "Stuck: x" },
              { id: 13, kind: "ready_to_merge", task: 7, text: "Ready to merge: y" },
              { id: 14, kind: "ready_to_read", task: 7, text: "Ready to read: z" },
-             { id: 15, kind: "question", task: 7, text: "Linus asks: steel or titanium?" }] };`, context);
+             { id: 15, kind: "question", task: 7, text: "Linus asks: steel or titanium?" },
+             { id: 16, kind: "notice", task: 7, text: "Linus restarted sonarr: it was unhealthy. It is now running." }],
+      contracts: { all: true, restart_container: false } };`, context);
   // The activity log reads like the office's own: who, which task, why, and what it cost.
   runInContext(`hqTell({ id: 41, at: 0, kind: "run.started", data: { run: 9, member: 2, task: 7, reason: "review_requested", reserved: 60000 } }, false);
     hqTell({ id: 42, at: 0, kind: "run.ended", data: { run: 9, member: 2, task: 7, result: "succeeded", spent: 120000 } }, false);
@@ -604,10 +606,13 @@ if (failures.length) {
   if (!office.includes('id="hq-office"')) fail("hq: the office is not drawn");
   for (const act of ["hq:decide:11:approve", "hq:decide:11:decline", "hq:decide:12:retry", "hq:decide:12:drop",
     "hq:decide:13:merged", "hq:decide:13:not_now", "hq:decide:14:read", "hq:decide:14:not_now",
-    "hq:decide:15:seen", "hq:decide:15:dismiss", "hq:stop"]) {
+    "hq:decide:15:seen", "hq:decide:15:dismiss", "hq:decide:16:seen", "hq:decide:16:dismiss", "hq:stop",
+    // The owner's switches for the team's contracts (ADR 0106): each offers the other way.
+    "hq:contracts:all:off", "hq:contracts:restart_container:on"]) {
     if (!office.includes(`data-act="${act}"`)) fail(`hq: the desk does not offer ${act}`);
   }
   if (office.includes("hq:decide:11:retry")) fail("hq: a goal was offered a choice for stuck work");
+  if (office.includes("hq:decide:16:approve") || office.includes('id="hq-answer-16"')) fail("hq: a notice was offered a decision");
   // A member's question can be answered on its card: the answer goes in the task's thread.
   if (!office.includes('id="hq-answer-15"')) fail("hq: a question cannot be answered from its card");
   if (office.includes('id="hq-answer-12"')) fail("hq: stuck work was offered an answer box");

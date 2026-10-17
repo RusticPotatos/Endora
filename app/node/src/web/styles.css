@@ -391,6 +391,7 @@
   .hq-need { background: var(--hq-panel-2); border-left: 3px solid var(--hq-violet); border-radius: 0 4px 4px 0; padding: 8px 10px; }
   .hq-need.stuck { border-left-color: var(--hq-red); }
   .hq-need.ready_to_merge, .hq-need.ready_to_read { border-left-color: var(--hq-green); }
+  .hq-need.notice { border-left-color: var(--hq-muted); }
   .hq-need p { margin: 0 0 6px; }
   .hq-who { color: var(--hq-muted); font-size: 12px; }
   .hq-empty { color: var(--hq-muted); font-size: 12.5px; margin: 0; }

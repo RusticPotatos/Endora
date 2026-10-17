@@ -64,6 +64,8 @@ fn the_observer_sees_a_containers_id_and_how_it_exited_and_a_download_whether_it
     assert_eq!(result["items"][0]["exit"], 1);
     assert_eq!(result["items"][1]["exit"], 137);
     assert!(result["items"][2]["exit"].is_null());
+    // And Docker's status text, which the team's homelab_status reads (ADR 0106).
+    assert_eq!(result["items"][2]["status"], "Up 2 days");
     // What a chat skill hands a model has neither.
     let said = normalize("docker", &containers).unwrap().to_string();
     assert!(!said.contains(&id) && !said.contains("\"exit\""), "{said}");

@@ -14,6 +14,7 @@
 #![forbid(unsafe_code)]
 
 pub mod application;
+pub mod contracts;
 pub mod domain;
 pub mod home_assistant;
 pub mod infrastructure;
@@ -42,8 +43,8 @@ pub use infrastructure::{
     RecipeTrial, RegistryRunner, ReversibleOnlyRunner, SettingSpec, TargetSearchRunner,
     WithdrawnRunner, arguments_for_a_test_call, channels_of, default_capabilities, default_stance,
     place_filled_in, redact_pii_in_text, redact_pii_in_value, same_call_as, scan_outbound_secret,
-    settings_complete, settings_ready, tools_the_toggle_governs, tools_to_open_on_connect,
-    try_recipe,
+    scrub_secrets, settings_complete, settings_ready, tools_the_toggle_governs,
+    tools_to_open_on_connect, try_recipe,
 };
 pub use mcp_http::HttpMcpClient;
 pub use mcp_stdio::StdioMcpClient;

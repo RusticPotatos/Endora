@@ -37,8 +37,9 @@ async fn ask(state: &AppState, path: String, body: Option<serde_json::Value>) ->
     answer.map(Json).map_err(failed)
 }
 
-/// Writes an owner's action in HQ to Endora's audit log, and to Activity.
-fn record(state: &AppState, what: &str) {
+/// Writes an owner's action in HQ, or a team member's use of a contract, to Endora's audit
+/// log, and to Activity.
+pub(super) fn record(state: &AppState, what: &str) {
     let now = state.clock.now();
     if let Ok(entry) = endora_application::AuditRecord::new(
         endora_application::AuditId::new(state.ids.new_id()),
@@ -52,9 +53,11 @@ fn record(state: &AppState, what: &str) {
     let _ = state.changes.send(());
 }
 
-/// Everything the office shows now.
+/// Everything the office shows now, and the owner's switches for the team's contracts.
 pub(super) async fn hq_snapshot(State(state): State<AppState>) -> Answer {
-    ask(&state, "/v1/snapshot".to_owned(), None).await
+    let mut answer = ask(&state, "/v1/snapshot".to_owned(), None).await?;
+    answer.0["contracts"] = super::contracts::switches_said(&state);
+    Ok(answer)
 }
 
 #[derive(Deserialize)]

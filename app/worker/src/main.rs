@@ -1,6 +1,7 @@
 //! Endora HQ's worker (ADR 0102, phase 4): takes one turn of a team member, in the fresh
 //! container the runner starts for it, then exits. It is given its turn's token and where HQ
-//! and the node's model relay are, and nothing else: no key, no mount, no other address.
+//! and the node's model relay are, and nothing else: no key, no mount, no other address. The
+//! node's contracts (ADR 0106) are beside its model relay, on the same listener.
 //!
 //! What its exit says, for the runner: 0, a turn taken (the model's last word, or its rounds
 //! used up); 3, the turn was over before it ended (HQ or the relay answered 401 or 402); 1,
@@ -14,6 +15,8 @@ use turn::{Setup, Stopped, Taken};
 const HQ_MCP: &str = "http://hq:8790/v1/team/mcp";
 /// The node's relay to the local model, on the compose network.
 const MODEL_URL: &str = "http://node:8788/team-relay/local/v1";
+/// The node's contracts, on the compose network.
+const CONTRACTS: &str = "http://node:8788/team-relay/contracts";
 /// The model the worker names. The local relay uses its own, whatever the name.
 const MODEL: &str = "local";
 /// The most rounds of the model in a turn, unless told otherwise.
@@ -42,10 +45,20 @@ fn setup(env: impl Fn(&str) -> Option<String>) -> Result<Setup, String> {
             format!("ENDORA_MOST_ROUNDS must be a whole number above zero, not {n}")
         })?,
     };
+    let model_url = given("ENDORA_MODEL_URL").unwrap_or_else(|| MODEL_URL.to_owned());
+    // The contracts are on the node's team listener, beside its model relay: where the relay
+    // is, unless told otherwise.
+    let contracts = given("ENDORA_CONTRACTS").unwrap_or_else(|| {
+        model_url.split_once("/team-relay/").map_or_else(
+            || CONTRACTS.to_owned(),
+            |(node, _)| format!("{node}/team-relay/contracts"),
+        )
+    });
     Ok(Setup {
         token,
         mcp: given("ENDORA_HQ_MCP").unwrap_or_else(|| HQ_MCP.to_owned()),
-        model_url: given("ENDORA_MODEL_URL").unwrap_or_else(|| MODEL_URL.to_owned()),
+        model_url,
+        contracts,
         model: given("ENDORA_MODEL").unwrap_or_else(|| MODEL.to_owned()),
         most_rounds,
     })
@@ -107,8 +120,37 @@ mod tests {
         assert_eq!(setup.token, "a-turns-token");
         assert_eq!(setup.mcp, "http://hq:8790/v1/team/mcp");
         assert_eq!(setup.model_url, "http://node:8788/team-relay/local/v1");
+        assert_eq!(setup.contracts, "http://node:8788/team-relay/contracts");
         assert_eq!(setup.model, "local");
         assert_eq!(setup.most_rounds, 12);
+    }
+
+    #[test]
+    fn the_contracts_are_beside_the_relay_unless_told() {
+        let at = |pairs: &[(&str, &str)]| {
+            let mut all = vec![("ENDORA_RUN_TOKEN", "a-turns-token")];
+            all.extend_from_slice(pairs);
+            setup(env(&all)).unwrap().contracts
+        };
+        assert_eq!(
+            at(&[(
+                "ENDORA_MODEL_URL",
+                "http://192.168.1.10:8788/team-relay/local/v1"
+            )]),
+            "http://192.168.1.10:8788/team-relay/contracts"
+        );
+        assert_eq!(
+            at(&[("ENDORA_MODEL_URL", "http://192.168.1.10:11434/v1")]),
+            "http://node:8788/team-relay/contracts",
+            "a model elsewhere: the node's own address"
+        );
+        assert_eq!(
+            at(&[(
+                "ENDORA_CONTRACTS",
+                "http://192.168.1.10:8788/team-relay/contracts"
+            )]),
+            "http://192.168.1.10:8788/team-relay/contracts"
+        );
     }
 
     #[test]

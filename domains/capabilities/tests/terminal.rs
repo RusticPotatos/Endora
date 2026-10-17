@@ -183,6 +183,9 @@ fn mock_adapter_with(
     settings
         .set_setting("terminal-overseerr", "request_user", "2")
         .unwrap();
+    settings
+        .set_setting("terminal-portainer", "endpoint", "1")
+        .unwrap();
     let worker = std::thread::spawn(move || {
         for (expected, response) in responses {
             let (mut socket, _) = listener.accept().unwrap();
@@ -254,6 +257,64 @@ fn home_action_uses_fixed_route_reads_back_and_does_not_replay() {
     assert!(!first.to_string().contains("private-upstream-payload"));
     assert!(!first.to_string().contains("fictional-adapter-secret"));
     assert_eq!(adapter.act(&request).unwrap(), first);
+}
+
+#[test]
+fn the_team_sees_containers_by_name_with_their_service_and_whether_they_are_protected() {
+    use endora_capabilities::application::HomeConsole;
+    let (adapter, mock) = mock_adapter(
+        "portainer",
+        vec![(
+            "GET /api/endpoints/1/docker/containers/json?all=true ",
+            json!([
+                {"Id": "ab".repeat(32), "Names": ["/sonarr"], "State": "running", "Status": "Up 2 days",
+                 "Image": "lscr.io/linuxserver/sonarr", "Labels": {"com.docker.compose.service": "sonarr"}},
+                {"Id": "cd".repeat(32), "Names": ["/quirky_hopper"], "State": "running", "Status": "Up 1 minute",
+                 "Image": "endora-node:latest", "Labels": {}}
+            ]),
+        )],
+    );
+    let seen = adapter.read("team-containers", "").unwrap();
+    mock.join().unwrap();
+    assert_eq!(
+        seen["items"][0],
+        json!({"id": "ab".repeat(32), "name": "sonarr", "state": "running", "status": "Up 2 days",
+               "service": "sonarr", "protected": false})
+    );
+    assert_eq!(
+        seen["items"][1]["protected"], true,
+        "a worker, by its image"
+    );
+}
+
+#[test]
+fn the_team_inspects_one_container_for_what_a_restart_would_not_fix() {
+    use endora_capabilities::application::HomeConsole;
+    let id = "ab".repeat(32);
+    let (adapter, mock) = mock_adapter(
+        "portainer",
+        vec![(
+            "GET /api/endpoints/1/docker/containers/abab",
+            json!({ "Id": id, "RestartCount": 14, "Config": { "Env": ["DB_PASSWORD=hunter2"] },
+                    "State": { "Status": "restarting", "OOMKilled": true, "ExitCode": 137,
+                               "StartedAt": "2026-10-17T10:00:00.123456789Z" } }),
+        )],
+    );
+    let seen = adapter.read("team-inspect", &id).unwrap();
+    mock.join().unwrap();
+    assert_eq!(
+        seen,
+        json!({ "state": "restarting", "restart_count": 14, "oom_killed": true, "exit_code": 137,
+                "started_at": "2026-10-17T10:00:00.123456789Z" })
+    );
+    assert!(
+        !seen.to_string().contains("hunter2"),
+        "only the state, never the config"
+    );
+    assert!(
+        adapter.read("team-inspect", "sonarr").is_err(),
+        "an id only"
+    );
 }
 
 #[test]

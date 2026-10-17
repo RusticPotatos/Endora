@@ -504,3 +504,6 @@ mod what_the_city_is_doing;
 
 #[cfg(test)]
 mod recipe_tests;
+
+#[cfg(test)]
+mod a_log_is_scrubbed_before_the_team_reads_it;

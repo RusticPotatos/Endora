@@ -81,8 +81,10 @@ pub fn normalize(service: &str, value: &Value) -> Result<Value, &'static str> {
 }
 
 /// The observer's projection: [`normalize`], and for each container its id and how it exited,
-/// which the agenda loop's restart and its crashed-or-stopped rule need (ADR 0103). For the
-/// console and the agenda only; what a chat skill hands a model stays [`normalize`]'s.
+/// which the agenda loop's restart and its crashed-or-stopped rule need (ADR 0103), and
+/// Docker's status text, which the team's `homelab_status` contract reads (ADR 0106). For the
+/// console, the agenda and the team's contracts only; what a chat skill hands a model stays
+/// [`normalize`]'s.
 ///
 /// # Errors
 /// Unexpected upstream response shape.
@@ -96,6 +98,7 @@ pub fn normalize_observed(service: &str, value: &Value) -> Result<Value, &'stati
         for (item, raw) in items.iter_mut().zip(records.iter().take(100)) {
             item["id"] = text(&raw["Id"]).into();
             item["exit"] = exit_code(raw["Status"].as_str().unwrap_or("")).into();
+            item["status"] = text(&raw["Status"]).into();
         }
     }
     Ok(out)

@@ -3,10 +3,11 @@
 //! model work through the team's tools a round at a time, until it answers without calling
 //! one or the rounds run out. Its last word goes in the task's thread.
 //!
-//! The token is the only credential here, for HQ and the node's model relay alike. A 401 or a
-//! 402 from either means the turn is over (stopped, ended, or out of money), and the worker
-//! does nothing more. Every tool call goes to HQ, which decides it by the team's rules: the
-//! worker itself acts on nothing.
+//! The token is the only credential here, for HQ and the node alike. A 401 or a 402 from
+//! either means the turn is over (stopped, ended, or out of money), and the worker does
+//! nothing more. Beside the team's tools the model is offered the node's contracts (ADR 0106),
+//! narrow abilities on the home lab. Each tool call goes where its tool came from, HQ or the
+//! node, which decides it by its own rules: the worker itself acts on nothing.
 
 use std::time::Duration;
 
@@ -33,6 +34,8 @@ pub struct Setup {
     pub mcp: String,
     /// The node's model relay, up to its `/v1`.
     pub model_url: String,
+    /// The node's contracts.
+    pub contracts: String,
     /// The model the worker names.
     pub model: String,
     /// The most rounds of the model a turn may take.
@@ -77,7 +80,20 @@ fn turn(setup: &Setup) -> Result<Taken, Stopped> {
     let mut hq = Hq::new(&setup.mcp, &setup.token);
     hq.open()?;
     let listed = hq.request("tools/list", json!({}))?;
-    let tools = functions(listed["tools"].as_array().map_or(&[][..], Vec::as_slice));
+    let mut offered: Vec<Value> = listed["tools"].as_array().cloned().unwrap_or_default();
+    let node = Node::new(&setup.contracts, &setup.token);
+    // A contract named like a team tool is left out: the name goes to HQ, as it always did.
+    let contracts: Vec<Value> = node
+        .list()?
+        .into_iter()
+        .filter(|c| !offered.iter().any(|t| t["name"] == c["name"]))
+        .collect();
+    let on_the_node: Vec<String> = contracts
+        .iter()
+        .filter_map(|c| c["name"].as_str().map(str::to_owned))
+        .collect();
+    offered.extend(contracts);
+    let tools = functions(&offered);
     let (briefing, refused) = hq.call("my_turn", &json!({}))?;
     if refused {
         return Err(Stopped::Failed(format!("HQ refused my_turn: {briefing}")));
@@ -85,9 +101,10 @@ fn turn(setup: &Setup) -> Result<Taken, Stopped> {
     let task = task_of(&briefing);
     let model = Model::new(setup);
     let mut messages = vec![
-        json!({ "role": "system", "content": instructions(task.is_some()) }),
+        json!({ "role": "system", "content": instructions(task.is_some(), !on_the_node.is_empty()) }),
         json!({ "role": "user", "content": briefing }),
     ];
+    let mut answered = Answered::default();
     for _ in 0..setup.most_rounds {
         let said = model.ask(&messages, &tools)?;
         let calls = said["tool_calls"].as_array().cloned().unwrap_or_default();
@@ -99,7 +116,7 @@ fn turn(setup: &Setup) -> Result<Taken, Stopped> {
         messages
             .push(json!({ "role": "assistant", "content": said["content"], "tool_calls": calls }));
         for call in &calls {
-            let (content, asked) = run(&mut hq, call)?;
+            let (content, asked) = run(&mut hq, &node, &on_the_node, &mut answered, call)?;
             if asked {
                 return Ok(Taken::AskedTheOwner);
             }
@@ -111,8 +128,9 @@ fn turn(setup: &Setup) -> Result<Taken, Stopped> {
 }
 
 /// How to take a good turn: the worker's own instructions, written for Endora. `posted` says
-/// whether its last word goes in the task's thread for it.
-fn instructions(posted: bool) -> String {
+/// whether its last word goes in the task's thread for it; `contracts`, whether the node
+/// offers it any.
+fn instructions(posted: bool, contracts: bool) -> String {
     let mut told = String::from(
         "You are one member of a small team at Endora HQ, taking one turn of work. The first \
          message is what my_turn says: who you are, your task, why it exists, and what is new \
@@ -132,6 +150,17 @@ fn instructions(posted: bool) -> String {
          - Keep it short, and never say you did what you did not do.\n\
          - When your part is done, stop calling tools and reply in one or two sentences.",
     );
+    if contracts {
+        told.push_str(
+            "\n- The home lab tools are Endora's contracts. homelab_status and \
+             container_logs only look: use them freely to see what is wrong and why. \
+             restart_container is a safe fix you may make on your own, within its limits (one \
+             restart of a container an hour, three in all), and the owner is told: look and \
+             diagnose first, and say why.\n\
+             - Anything else on the home lab is the owner's to decide: ask with ask_owner, and \
+             never try to work around a refusal.",
+        );
+    }
     if posted {
         told.push_str(" That reply goes in your task's thread.");
     }
@@ -187,21 +216,60 @@ fn arguments(given: &Value) -> Result<Value, String> {
     Ok(parsed)
 }
 
+/// What the model is told when it asks again for what it already has.
+const ALREADY: &str = "You already have this result; use it, or do something else";
+
+/// The calls a turn has made, by tool and arguments, and what each last said: so the same
+/// call asked again with nothing new is answered from it. A small model will otherwise ask
+/// for the same thing round after round.
+#[derive(Default)]
+struct Answered {
+    /// The call made last.
+    last: Option<String>,
+    /// What each call last said.
+    said: std::collections::HashMap<String, String>,
+}
+
 /// Runs one tool call the model asked for, and gives what the model reads back, and whether
 /// it put a question on the owner's desk (which ends the turn). A refusal, HQ's or the
 /// worker's own (arguments it cannot read), is said as one, so that the model can do
-/// something about it.
-fn run(hq: &mut Hq<'_>, call: &Value) -> Result<(String, bool), Stopped> {
+/// something about it. The same call asked again straight after is not sent at all; asked
+/// again after something else, it is sent, and if it says just what it said before the model
+/// is told it already has that.
+fn run(
+    hq: &mut Hq<'_>,
+    node: &Node<'_>,
+    on_the_node: &[String],
+    answered: &mut Answered,
+    call: &Value,
+) -> Result<(String, bool), Stopped> {
     let tool = call["function"]["name"].as_str().unwrap_or("");
     let args = match arguments(&call["function"]["arguments"]) {
         Ok(args) => args,
         Err(why) => return Ok((format!("Refused: {why}"), false)),
     };
-    let (said, refused) = hq.call(tool, &args)?;
-    if refused {
-        return Ok((format!("Refused: {said}"), false));
+    let key = format!("{tool} {args}");
+    if answered.last.as_deref() == Some(key.as_str()) && answered.said.contains_key(&key) {
+        return Ok((ALREADY.to_owned(), false));
     }
-    Ok((said, tool == "ask_owner"))
+    let (said, refused) = if on_the_node.iter().any(|c| c == tool) {
+        node.call(tool, &args)?
+    } else {
+        hq.call(tool, &args)?
+    };
+    let said = if refused {
+        format!("Refused: {said}")
+    } else {
+        said
+    };
+    let asked = !refused && tool == "ask_owner";
+    let nothing_new = answered.said.get(&key) == Some(&said);
+    answered.said.insert(key.clone(), said.clone());
+    answered.last = Some(key);
+    if nothing_new && !asked {
+        return Ok((ALREADY.to_owned(), false));
+    }
+    Ok((said, asked))
 }
 
 /// Posts the model's last word in the task's thread. With no task, or no words, there is
@@ -370,6 +438,73 @@ impl<'a> Hq<'a> {
     }
 }
 
+/// The node's contracts (ADR 0106): listed as MCP lists tools, each called with its arguments
+/// as a JSON body, opened by the same token.
+struct Node<'a> {
+    agent: ureq::Agent,
+    url: &'a str,
+    token: &'a str,
+}
+
+impl<'a> Node<'a> {
+    fn new(url: &'a str, token: &'a str) -> Self {
+        Self {
+            agent: agent(HQ_ANSWERS_WITHIN),
+            url: url.trim_end_matches('/'),
+            token,
+        }
+    }
+
+    /// The contracts offered. A node that offers none, or cannot say, leaves the turn to the
+    /// team's tools: only a 401 or a 402 ends it.
+    fn list(&self) -> Result<Vec<Value>, Stopped> {
+        let sent = self
+            .agent
+            .get(self.url)
+            .header("authorization", &format!("Bearer {}", self.token))
+            .call();
+        match read("the node", sent) {
+            Ok(listed) => Ok(listed["tools"].as_array().cloned().unwrap_or_default()),
+            Err(Stopped::Over(why)) => Err(Stopped::Over(why)),
+            Err(Stopped::Failed(why)) => {
+                eprintln!("worker: no contracts this turn: {why}");
+                Ok(Vec::new())
+            }
+        }
+    }
+
+    /// Calls a contract: what it said, and whether that was a refusal. Anything but a 401 or
+    /// a 402 is the tool's own answer, for the model to read.
+    fn call(&self, name: &str, arguments: &Value) -> Result<(String, bool), Stopped> {
+        let sent = self
+            .agent
+            .post(&format!("{}/{name}", self.url))
+            .header("authorization", &format!("Bearer {}", self.token))
+            .send_json(arguments);
+        let mut response = match sent {
+            Ok(response) => response,
+            Err(e) => return Ok((format!("the node could not be reached: {e}"), true)),
+        };
+        let status = response.status().as_u16();
+        if matches!(status, 401 | 402) {
+            return Err(Stopped::Over(format!("the node answered {status}")));
+        }
+        let body: Value = response
+            .body_mut()
+            .read_to_string()
+            .ok()
+            .and_then(|text| serde_json::from_str(&text).ok())
+            .unwrap_or(Value::Null);
+        if (200..300).contains(&status) {
+            return Ok((body["text"].as_str().unwrap_or("").to_owned(), false));
+        }
+        let said = body["error"]
+            .as_str()
+            .map_or_else(|| format!("the node answered {status}"), str::to_owned);
+        Ok((said, true))
+    }
+}
+
 /// The node's model relay: OpenAI's chat completions, opened by the same token.
 struct Model<'a> {
     agent: ureq::Agent,
@@ -502,7 +637,7 @@ mod tests {
 
     #[test]
     fn the_instructions_read_as_a_paragraph_then_one_rule_a_line() {
-        let told = instructions(true);
+        let told = instructions(true, false);
         let (opening, rules) = told.split_once("\n\nHow to take a good turn:\n").unwrap();
         assert!(!opening.contains('\n'), "{opening}");
         let rules: Vec<&str> = rules.lines().collect();
@@ -514,7 +649,19 @@ mod tests {
         );
         assert!(!told.contains('\\'));
         assert!(told.ends_with("one or two sentences. That reply goes in your task's thread."));
-        assert!(instructions(false).ends_with("one or two sentences."));
+        assert!(instructions(false, false).ends_with("one or two sentences."));
+        // With the node's contracts, two rules more: what they may do, and what is the
+        // owner's.
+        let told = instructions(false, true);
+        let rules: Vec<&str> = told.split_once(":\n").unwrap().1.lines().collect();
+        assert_eq!(rules.len(), 10, "{told}");
+        assert!(
+            rules
+                .iter()
+                .all(|r| r.starts_with("- ") && !r.contains("  "))
+        );
+        assert!(told.contains("restart_container"));
+        assert!(told.ends_with("never try to work around a refusal."));
     }
 
     #[test]

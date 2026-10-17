@@ -484,7 +484,9 @@ function viewHQ() {
       ready_to_read: [["read", "Mark read", "ok"], ["not_now", "Not now", "no"]],
       // A member's question (the team protocol's ask_owner): seeing it wakes the member who
       // asked, to read the task's thread, where the answer typed on the card is written first.
-      question: [["seen", "Answer & wake", "ok"], ["dismiss", "Dismiss", "no"]] }[d.kind] || [];
+      question: [["seen", "Answer & wake", "ok"], ["dismiss", "Dismiss", "no"]],
+      // Something a member did through Endora's contracts, such as a restart: only to know of.
+      notice: [["seen", "Seen", "ok"], ["dismiss", "Dismiss", "no"]] }[d.kind] || [];
     // In the demo nothing behind a card is real: say so on the card, not only in the header.
     const demoNote = s.demo ? (d.kind === "ready_to_merge" ? " · demo: there is no pull request behind this"
       : d.kind === "ready_to_read" ? " · demo: there is no write-up behind this" : " · demo") : "";
@@ -526,10 +528,23 @@ function viewHQ() {
         <section class="hq-card"><h2>Team</h2><ul class="hq-team">${team}</ul></section>
         <details class="hq-card"><summary>Set the team a goal</summary>
           <div class="hq-row" style="margin-top:8px;"><input id="hq-goal" placeholder="e.g. Keep the home lab healthy" /><button class="hq-btn ok" data-act="hq:goal">Set it</button></div></details>
+        ${hqContracts(s.contracts)}
       </aside>
     </div>
     <p class="hq-note">Office art: Pixel Agents (MIT) and MetroCity by JIK-A-4 (CC0); <a href="/hq-art/CREDITS.txt">credits</a>. The board is you: decisions land on your desk, and the kill switch is yours.</p>
   </div>`;
+}
+
+// What the team may do on the home lab: Endora's contracts (ADR 0106), and the owner's two
+// switches. Each button offers the other way.
+function hqContracts(c) {
+  if (!c) return "";
+  const btn = (key, on, label) => `<button class="hq-btn ${on ? "ok" : "no"}" aria-pressed="${on ? "true" : "false"}"
+    data-act="hq:contracts:${key}:${on ? "off" : "on"}">${label}: ${on ? "on" : "off"}</button>`;
+  return `<details class="hq-card"><summary>What the team may do on the home lab</summary>
+    <p class="hq-note">Look at the home lab and its logs (secrets replaced), and restart a container: one an hour each, three in all.
+      You are told of every restart. Anything else asks you.</p>
+    <div class="hq-row">${btn("all", c.all, "Contracts")}${c.all ? btn("restart_container", c.restart_container, "Restarts") : ""}</div></details>`;
 }
 
 // What was tapped, in detail: a member's turn and budget, or a task and its chain of why.
@@ -582,6 +597,12 @@ async function hqDispatch(verb, noun, id, arg) {
     const title = val("hq-goal"); if (!title) return true;
     try { await api("POST", "/v1/hq/goals", { title, reason: "" }); flash("Goal set.", "ok"); }
     catch (e) { flash("Couldn't set it: " + e.message, "err"); }
+    await loadHQ(); render(); return true;
+  }
+  // The owner's switches for the team's contracts.
+  if (noun === "contracts") {
+    try { await api("POST", "/v1/hq/contracts", { [id]: arg === "on" }); flash(arg === "on" ? "Switched on." : "Switched off.", "ok"); }
+    catch (e) { flash("Couldn't switch it: " + e.message, "err"); }
     await loadHQ(); render(); return true;
   }
   // Hand the team a piece of work, under the first goal it is working towards, to its lead.
