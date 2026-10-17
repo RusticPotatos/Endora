@@ -117,8 +117,12 @@ function viewSound() {
   if (!s) return `${head}<div class="note">Asking the hub…</div>`;
   const mine = soundMine();
   const listening = new Set(s.listening || []);
-  const range = (act, value, label) =>
-    `<input type="range" min="0" max="100" step="5" value="${Number(value) || 0}" data-change="${act}" aria-label="${esc(label)}" style="flex:1;min-width:90px;" />`;
+  // Drawn by the console, not the browser: Safari's own slider stopped its knob short of the
+  // end at 100. The fill and the knob follow the value exactly, and follow a drag.
+  const range = (act, value, label) => {
+    const v = Number(value) || 0;
+    return `<input type="range" class="level" min="0" max="100" step="5" value="${v}" data-change="${act}" aria-label="${esc(label)}" style="--v:${v / 100};" />`;
+  };
 
   // This device, as a speaker.
   // Listening with nothing wired is silence; it says so, and where to wire something.
@@ -159,7 +163,7 @@ function viewSound() {
       return `<div class="row" style="gap:8px;align-items:center;margin-top:6px;">
         <span class="sub" style="min-width:84px;">${esc(sp.name)}</span>
         ${range(`sound:level:${src.id}-${sp.id}`, w.level, `${src.name} on ${sp.name}`)}
-        <span class="sub" style="min-width:28px;text-align:right;">${w.level}</span></div>`;
+        <span class="sub level-n">${w.level}</span></div>`;
     }).join("");
     const its = (s.wires || []).filter((w) => w.source === src.id);
     const all = its.length > 1
@@ -188,7 +192,7 @@ function viewSound() {
     ].filter(Boolean).join(" · ");
     return `<div class="card"><div class="title">${esc(sp.name)}</div><div class="sub">${esc(said)}</div>
       <div class="row" style="gap:8px;align-items:center;margin-top:6px;"><span class="sub" style="min-width:84px;">Volume</span>
-        ${range(`sound:volume:${sp.id}`, sp.volume, `${sp.name} volume`)}<span class="sub" style="min-width:28px;text-align:right;">${sp.volume}</span></div></div>`;
+        ${range(`sound:volume:${sp.id}`, sp.volume, `${sp.name} volume`)}<span class="sub level-n">${sp.volume}</span></div></div>`;
   }).join("");
 
   // Setups: sets of wires, by name.
@@ -321,3 +325,12 @@ async function soundDispatch(verb, noun, id, arg) {
   } catch (e) { flash(e.message, "err"); }
   await loadSound(); render(); return true;
 }
+
+// While a level is dragged, its fill and its number follow; it is sent once let go.
+document.body.addEventListener("input", (ev) => {
+  const r = ev.target;
+  if (!(r instanceof HTMLInputElement) || !r.classList.contains("level")) return;
+  r.style.setProperty("--v", String(Number(r.value) / 100));
+  const n = r.nextElementSibling;
+  if (n && n.classList.contains("level-n")) n.textContent = r.value;
+});

@@ -291,6 +291,57 @@ async function loadMusic() {
   } catch (e) { MUSIC.error = e.message; }
 }
 
+// ---- Discover: new songs from the artists you play (the handheld's Discover radio) ----------
+// Spotify no longer offers a recommendations feed, so, as on the handheld: your top artists
+// (less those you said no to), six of them at random; their albums and singles you have not
+// saved, three an artist; two songs each from eight of those, none played you before.
+
+function musicRemembered(key) {
+  try { return JSON.parse(localStorage.getItem(key) || "[]"); } catch (_) { return []; }
+}
+function musicRemember(key, list, most) {
+  try { localStorage.setItem(key, JSON.stringify(list.slice(-most))); } catch (_) {}
+}
+function musicShuffle(list) {
+  const out = list.slice();
+  for (let i = out.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [out[i], out[j]] = [out[j], out[i]]; }
+  return out;
+}
+const spotifyId = (uri) => String(uri || "").split(":").pop();
+
+async function musicDiscover() {
+  const avoid = musicRemembered("endora.musicAvoid");
+  const played = musicRemembered("endora.musicPlayed");
+  const top = (((await spotify("GET", "/me/top/artists?limit=30&time_range=medium_term")) || {}).items || [])
+    .filter((a) => a.uri && !avoid.includes(a.uri));
+  if (!top.length) throw new Error("Play some music first: Discover starts from the artists you play");
+  const saved = new Set((((await spotify("GET", "/me/albums?limit=50")) || {}).items || []).map((x) => x.album && x.album.uri));
+  let albums = [];
+  for (const artist of musicShuffle(top).slice(0, 6)) {
+    try {
+      const got = (((await spotify("GET", `/artists/${encodeURIComponent(spotifyId(artist.uri))}/albums?include_groups=album,single&limit=20`)) || {}).items || []);
+      albums.push(...got.filter((a) => a.uri && !saved.has(a.uri)).slice(0, 3));
+    } catch (_) { /* one artist's lookup failing leaves the rest */ }
+  }
+  albums = musicShuffle([...new Map(albums.map((a) => [a.uri, a])).values()]).slice(0, 8);
+  const seen = new Set(played);
+  const batch = [];
+  for (const album of albums) {
+    try {
+      const tracks = musicShuffle((((await spotify("GET", `/albums/${encodeURIComponent(spotifyId(album.uri))}/tracks?limit=50`)) || {}).items || [])
+        .filter((t) => t.uri && !seen.has(t.uri)));
+      for (const t of tracks.slice(0, 2)) { seen.add(t.uri); batch.push(t.uri); }
+    } catch (_) {}
+  }
+  if (!batch.length) throw new Error("No new songs found; play some more music first");
+  const order = musicShuffle(batch).slice(0, 20);
+  const device = musicDevice();
+  if (!device) throw new Error("No device is open. Pick one under Play on");
+  await spotify("PUT", `/me/player/play?device_id=${encodeURIComponent(device)}`, { uris: order });
+  musicRemember("endora.musicPlayed", [...played, ...order], 500);
+  MUSIC.discovering = true;
+}
+
 // Where playback goes: the device playing now, else the one last picked here, else the first.
 function musicDevice() {
   const active = MUSIC.devices.find((d) => d.is_active);
@@ -326,6 +377,7 @@ function viewMusic() {
         <button class="ghost" data-act="music:prev" aria-label="Previous">⏮</button>
         <button class="primary" data-act="music:toggle">${playing ? "Pause" : "Play"}</button>
         <button class="ghost" data-act="music:next" aria-label="Next">⏭</button>
+        <button class="ghost" data-act="music:nope" aria-label="Not this: skip it, and leave this artist out of Discover">👎</button>
         ${!(item && item.type === "track") ? "" : `<button class="ghost" data-act="music:like" aria-pressed="${MUSIC.liked ? "true" : "false"}" aria-label="${MUSIC.liked ? "In Liked Songs: tap to take it out" : "Add to Liked Songs"}">${MUSIC.liked ? "♥" : "♡"}</button>`}
         ${volume === null || volume === undefined ? "" : `<button class="ghost" data-act="music:volume:-10">−</button><span class="sub">${esc(volume)}%</span><button class="ghost" data-act="music:volume:10">+</button>`}
       </div></div>`
@@ -361,6 +413,7 @@ function viewMusic() {
     <div class="form" style="margin:10px 0;">
       <input id="music-q" type="search" placeholder="a song, an album, an artist" autocomplete="off" value="${esc(MUSIC.query)}" />
       <button class="primary" data-act="music:search">Search</button>
+      <button class="ghost" data-act="music:discover" title="New songs from the artists you play">✨ ${MUSIC.discovering ? "Discover more" : "Discover"}</button>
     </div>
     ${found ? `<div class="card">${found}</div>` : ""}
     <details class="card" style="margin-top:12px;"><summary class="title">Your playlists</summary>${listOr(lists, "No playlists.")}</details>`;
@@ -415,6 +468,15 @@ async function musicDispatch(noun, id) {
       const playing = MUSIC.now && MUSIC.now.is_playing;
       const device = musicDevice();
       await spotify("PUT", playing ? "/me/player/pause" : `/me/player/play${device ? `?device_id=${encodeURIComponent(device)}` : ""}`);
+    } else if (noun === "discover") {
+      flash("Finding new songs from the artists you play…", "ok");
+      await musicDiscover();
+    } else if (noun === "nope") {
+      // Not this one: skipped, and its artist left out of Discover from now on (on this device).
+      const artists = ((MUSIC.now && MUSIC.now.item && MUSIC.now.item.artists) || []).map((a) => a.uri).filter(Boolean);
+      if (artists.length) musicRemember("endora.musicAvoid", [...new Set([...musicRemembered("endora.musicAvoid"), ...artists])], 200);
+      await spotify("POST", "/me/player/next");
+      flash(artists.length ? "Skipped, and Discover will leave that artist out." : "Skipped.", "ok");
     } else if (noun === "like") {
       // Spotify's own like: in Liked Songs, or out again. (It has no thumbs-down to give.)
       const track = MUSIC.now && MUSIC.now.item && MUSIC.now.item.id;
