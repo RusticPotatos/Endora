@@ -13,6 +13,8 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+/// Sonarr's and Radarr's queues, and the actions on a stuck download (ADR 0108).
+pub mod arr;
 /// Read-only, explicitly configured home-lab dashboard adapters.
 pub mod homelab;
 /// Chat-facing reads over the handheld's configured services (read-only; see ADR 0093).
@@ -428,6 +430,8 @@ pub fn default_capabilities() -> Vec<Arc<dyn Capability>> {
     all.extend(terminal::handheld_sources());
     // The reads of those same services, for chat: each borrows the settings entry above.
     all.extend(homelab_chat::chat_skills());
+    // The download queues, and the actions on a stuck download, over the same entries.
+    all.extend(arr::arr_skills());
     all
 }
 mod sports;

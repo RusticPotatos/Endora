@@ -13,7 +13,8 @@
 //! moment the entry is set up, the question can be asked in chat; until then the skill is not
 //! offered. Mutations — container controls, media requests, jobs — stay on the handheld's
 //! explicit, confirmed path, because a model that can restart containers on its own is a
-//! different decision and was not the one made here.
+//! different decision and was not the one made here. Sonarr's and Radarr's queues, and the
+//! two actions on a stuck download the owner did decide on, are in [`super::arr`] (ADR 0108).
 //!
 //! What keeps this safe is structure, not instruction:
 //!
@@ -22,14 +23,13 @@
 //!   uses the same hardened fetch as the Overview page: a validated `http(s)` origin, short
 //!   timeout, no redirects, no proxy, a size cap, the key only ever in a header, and failures
 //!   reported as a category — never what the service said, and never the key.
-//! - **Projected, not passed through.** Container lists and queues go through the Overview's
-//!   own [`normalize`]: names, states, titles, progress. Ids, labels, environment and anything
+//! - **Projected, not passed through.** Container lists go through the Overview's own
+//!   [`normalize`]: names, states, health. Ids, labels, environment and anything
 //!   else the service returned are dropped before the model sees the result.
 //! - **No logs, no search.** Container logs and media search are deliberately absent.
 //! - **The turn stays on the device.** Every skill is `third_party`, so a turn that reads one
 //!   is marked, may answer but may not act, and may not be escalated to the deep model (ADR
-//!   0064/0070). For the download queues that is simply true — titles are release names
-//!   from indexers, which anyone can write. For the rest it is a choice: container names and
+//!   0064/0070). It is a choice: container names and
 //!   NAS figures describe the person's own infrastructure and should not leave it. Disguising
 //!   them on the way out would be the alternative, but the escalation door disguises only the
 //!   person's *messages* today, not what a skill returned, so there is nothing to hang it on.
@@ -50,10 +50,6 @@ enum Source {
     Docker,
     /// The same container list, through a Portainer environment.
     Portainer,
-    /// A Sonarr download queue.
-    Sonarr,
-    /// A Radarr download queue.
-    Radarr,
     /// Prometheus figures about the NAS.
     Nas,
 }
@@ -93,24 +89,6 @@ pub fn chat_skills() -> Vec<Arc<dyn Capability>> {
             lender: "terminal-portainer",
             needs: "set up Portainer under Settings → Connections",
             source: Source::Portainer,
-        },
-        HomelabChatSkill {
-            id: "sonarr_queue",
-            name: "What Sonarr is downloading",
-            description: "Sonarr's download queue: what is downloading, how far along it is, \
-                          and whether anything is stuck. Read-only.",
-            lender: "homelab-sonarr",
-            needs: "set up Sonarr under Settings → Connections",
-            source: Source::Sonarr,
-        },
-        HomelabChatSkill {
-            id: "radarr_queue",
-            name: "What Radarr is downloading",
-            description: "Radarr's download queue: what is downloading, how far along it is, \
-                          and whether anything is stuck. Read-only.",
-            lender: "homelab-radarr",
-            needs: "set up Radarr under Settings → Connections",
-            source: Source::Radarr,
         },
         HomelabChatSkill {
             id: "nas_status",
@@ -207,22 +185,6 @@ impl Capability for HomelabChatSkill {
                 let list = get_json(origin, &path, Some(key), 1024 * 1024).map_err(failed)?;
                 normalize("docker", &list).map_err(failed)
             }
-            Source::Sonarr | Source::Radarr => {
-                let key = keyed("API key")?;
-                let list = get_json(
-                    origin,
-                    "/api/v3/queue?page=1&pageSize=100",
-                    Some(key),
-                    1024 * 1024,
-                )
-                .map_err(failed)?;
-                let service = if matches!(self.source, Source::Sonarr) {
-                    "sonarr"
-                } else {
-                    "radarr"
-                };
-                normalize(service, &list).map_err(failed)
-            }
             Source::Nas => {
                 let instance = get("instance");
                 if instance.is_empty() {
@@ -283,28 +245,6 @@ impl Capability for HomelabChatSkill {
                 }
                 lines.join("\n")
             }
-            Source::Sonarr | Source::Radarr => {
-                if items.is_empty() {
-                    return "The download queue is empty.".to_owned();
-                }
-                let mut lines = vec![if output["state"] == "degraded" {
-                    format!(
-                        "{} in the queue; at least one reports a warning or an error.",
-                        output["total"]
-                    )
-                } else {
-                    format!("{} in the queue.", output["total"])
-                }];
-                for item in items {
-                    lines.push(format!(
-                        "- {}: {:.0}% ({})",
-                        field(item, "title"),
-                        item["progress"].as_f64().unwrap_or(0.0),
-                        field(item, "status")
-                    ));
-                }
-                lines.join("\n")
-            }
             Source::Nas => {
                 let mut lines = vec!["NAS figures:".to_owned()];
                 for item in items {
@@ -321,7 +261,7 @@ impl Capability for HomelabChatSkill {
 }
 
 /// A category, in words a person can act on. Never what the service said, and never the key.
-fn phrase(category: &str) -> &'static str {
+pub(super) fn phrase(category: &str) -> &'static str {
     match category {
         "authentication" => "the key was refused — check it in settings",
         "connection" => "could not connect — is it running, and is the address right?",
@@ -335,7 +275,7 @@ fn phrase(category: &str) -> &'static str {
 /// redirects (a configured address must not become a pivot to somewhere else), no proxy, a
 /// short timeout, and a cap on how much of an answer is read. The key goes in a header and
 /// nowhere else.
-fn get_json(
+pub(super) fn get_json(
     origin: &str,
     path: &str,
     key: Option<&str>,

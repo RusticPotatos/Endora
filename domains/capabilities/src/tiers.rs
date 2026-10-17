@@ -30,6 +30,9 @@ pub fn known_tier(id: &str) -> Option<Tier> {
         // The brief: the calendar, the house, the weather where they live and the mail's
         // senders. Its outside parts carry the stranger's mark, as it is a third party's too.
         "brief" => Tier::Confidential,
+        // The download apps' queues and the actions on a stuck download (ADR 0108), named in
+        // their own table, so another app of the same kind is classified with its row.
+        _ if crate::infrastructure::arr::is_arr_skill(id) => Tier::Confidential,
         // A movement history: no disguise hides a trail of places.
         "location" => Tier::Restricted,
         // A tool of a tool server the house has paired (`home.HassTurnOn`): only those reach a
