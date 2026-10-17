@@ -1500,7 +1500,8 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// last question waits; a store failure.
     pub fn ask_owner(&self, run: RunId, text: &str) -> Done<crate::domain::DeskId> {
         let _held = self.held();
-        let text: String = text.trim().chars().take(600).collect();
+        // Room for the question and the worker's line saying what the turn actually did.
+        let text: String = text.trim().chars().take(1200).collect();
         self.ask_held_lock(run, "question", &|name| format!("{name} asks: {text}"))
     }
 

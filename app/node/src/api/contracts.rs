@@ -471,6 +471,13 @@ fn restart_container(
             format!("{name} was not restarted: {}.", contracts::RESTART_WONT_FIX),
         ));
     }
+    // Portainer's restart starts a stopped container, and one may be stopped on purpose.
+    if contracts::restart_would_start(&inspected) {
+        return Err((
+            StatusCode::CONFLICT,
+            format!("{name} was not restarted: {}.", contracts::RESTART_STOPPED),
+        ));
+    }
     let ledger = RestartLedger::new(state.store.db()).map_err(|_| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -618,6 +625,10 @@ mod tests {
                 "team-inspect" if query == "07".repeat(32) => Ok(json!({
                     "state": "restarting", "restart_count": 14, "oom_killed": true,
                     "exit_code": 137, "started_at": "2026-10-17T10:00:00Z" })),
+                // owntone is stopped, on purpose.
+                "team-inspect" if query == "08".repeat(32) => Ok(json!({
+                    "state": "exited", "restart_count": 0, "oom_killed": false,
+                    "exit_code": 0, "started_at": "2026-10-10T10:00:00Z" })),
                 "team-inspect" => Ok(json!({
                     "state": "running", "restart_count": 0, "oom_killed": false,
                     "exit_code": 0, "started_at": "2026-10-15T10:00:00Z" })),
@@ -651,6 +662,7 @@ mod tests {
                 container("jellyfin", 3, false),
                 container("bazarr", 4, false),
                 container("lidarr", 7, false),
+                container("owntone", 8, false),
                 container("endora-hq", 5, true),
                 container("quirky_hopper", 6, true),
             ])),
@@ -891,6 +903,22 @@ mod tests {
                 "restarting will not fix this; put it on the owner's desk with ask_owner (e.g. raise its memory)"
             ),
             "{said}"
+        );
+        // Stopped, perhaps on purpose: a restart would start it, so it is refused, and costs
+        // no restart.
+        let (status, said) = use_contract(&state, "restart_container", restart("owntone")).await;
+        assert_eq!(status, StatusCode::CONFLICT, "{said}");
+        assert_eq!(
+            said["error"],
+            "owntone was not restarted: it is stopped, perhaps on purpose: restart only fixes a running container; ask the owner with ask_owner if it should run."
+        );
+        assert!(
+            lab.acted
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|a| a["target"] != "08".repeat(32)),
+            "nothing was asked of Portainer for it"
         );
         let (status, _) = use_contract(
             &state,

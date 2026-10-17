@@ -165,6 +165,19 @@ pub fn may_restart(this_one: &[i64], all: &[i64], now: i64) -> Result<(), String
 /// What the team is told when a restart would not help.
 pub const RESTART_WONT_FIX: &str = "restarting will not fix this; put it on the owner's desk with ask_owner (e.g. raise its memory)";
 
+/// What the team is told when the container is not running: a restart would start it, and a
+/// stopped container may be stopped on purpose (an old one kept for its settings, whose start
+/// would take a port another needs).
+pub const RESTART_STOPPED: &str = "it is stopped, perhaps on purpose: restart only fixes a running container; ask the owner with ask_owner if it should run";
+
+/// Whether a restart would start a container that is not running, from what Docker's
+/// inspection says of it. Only a `running` container is restarted: anything else, a state
+/// that cannot be read included, is the owner's to start.
+#[must_use]
+pub fn restart_would_start(inspected: &Value) -> bool {
+    inspected["state"] != "running"
+}
+
 /// How many restarts by Docker, with the last start within the hour, make a crash loop.
 pub const CRASH_LOOP_RESTARTS: u64 = 3;
 
@@ -408,6 +421,16 @@ mod tests {
             &seen("exited", 0, false, long_ago),
             NOON
         ));
+    }
+
+    #[test]
+    fn a_restart_never_starts_a_container_that_is_not_running() {
+        let state = |s: &str| json!({ "state": s, "restart_count": 0, "oom_killed": false });
+        assert!(!restart_would_start(&state("running")));
+        for stopped in ["exited", "created", "paused", "dead", ""] {
+            assert!(restart_would_start(&state(stopped)), "{stopped}");
+        }
+        assert!(restart_would_start(&json!({})), "unread is not running");
     }
 
     #[test]

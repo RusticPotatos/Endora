@@ -26,6 +26,15 @@ const LONGEST_CALL: Duration = Duration::from_secs(10 * 60);
 /// The most of a reason the worker says.
 const SAYS_AT_MOST: usize = 300;
 
+/// The most HQ keeps of a post in a thread (the protocol's own limit).
+const POST_AT_MOST: usize = 4000;
+
+/// The most HQ keeps of a question to the owner.
+const ASK_AT_MOST: usize = 1200;
+
+/// The most calls the line saying what a turn did names; the rest are counted.
+const NAMES_AT_MOST: usize = 12;
+
 /// What a turn is taken with.
 pub struct Setup {
     /// The turn's own token: the only credential the worker has.
@@ -92,6 +101,17 @@ fn turn(setup: &Setup) -> Result<Taken, Stopped> {
         .iter()
         .filter_map(|c| c["name"].as_str().map(str::to_owned))
         .collect();
+    // What only looks, as the node marks it: the line saying what the turn did tells a turn
+    // that only read from one that acted.
+    let mut did = Ledger {
+        reads: contracts
+            .iter()
+            .filter(|c| c["kind"] == "read")
+            .filter_map(|c| c["name"].as_str().map(str::to_owned))
+            .chain(std::iter::once("my_turn".to_owned()))
+            .collect(),
+        calls: Vec::new(),
+    };
     offered.extend(contracts);
     let tools = functions(&offered);
     let (briefing, refused) = hq.call("my_turn", &json!({}))?;
@@ -126,13 +146,14 @@ fn turn(setup: &Setup) -> Result<Taken, Stopped> {
         let calls = said["tool_calls"].as_array().cloned().unwrap_or_default();
         if calls.is_empty() {
             let answer = said["content"].as_str().unwrap_or("").trim();
-            last_word(&mut hq, task, answer)?;
+            last_word(&mut hq, task, answer, &did)?;
             return Ok(Taken::Answered);
         }
         messages
             .push(json!({ "role": "assistant", "content": said["content"], "tool_calls": calls }));
         for call in &calls {
-            let (content, asked) = run(&mut hq, &node, &on_the_node, &mut answered, call)?;
+            let (content, asked) =
+                run(&mut hq, &node, &on_the_node, &mut answered, &mut did, call)?;
             if asked {
                 return Ok(Taken::AskedTheOwner);
             }
@@ -268,12 +289,16 @@ fn run(
     node: &Node<'_>,
     on_the_node: &[String],
     answered: &mut Answered,
+    did: &mut Ledger,
     call: &Value,
 ) -> Result<(String, bool), Stopped> {
     let tool = call["function"]["name"].as_str().unwrap_or("");
     let args = match arguments(&call["function"]["arguments"]) {
         Ok(args) => args,
-        Err(why) => return Ok((format!("Refused: {why}"), false)),
+        Err(why) => {
+            did.unreadable(tool);
+            return Ok((format!("Refused: {why}"), false));
+        }
     };
     let key = format!("{tool} {args}");
     if let Some(said) = answered.given.remove(&key) {
@@ -284,12 +309,28 @@ fn run(
     if answered.last.as_deref() == Some(key.as_str()) && answered.said.contains_key(&key) {
         return Ok((ALREADY.to_owned(), false));
     }
-    let (said, refused, approval) = if on_the_node.iter().any(|c| c == tool) {
-        node.call(tool, &args)?
+    // A question to the owner carries what the turn actually did, so the reviewer and the
+    // owner read the truth beside the claim.
+    let sent = if tool == "ask_owner" {
+        with_what_was_done(&args, did)
     } else {
-        let (said, refused) = hq.call(tool, &args)?;
-        (said, refused, false)
+        args.clone()
     };
+    let (said, outcome, approval) = if on_the_node.iter().any(|c| c == tool) {
+        node.call(tool, &sent)?
+    } else {
+        let (said, refused) = hq.call(tool, &sent)?;
+        let outcome = if refused {
+            Outcome::Refused
+        } else {
+            Outcome::Done
+        };
+        (said, outcome, false)
+    };
+    if tool != "ask_owner" {
+        did.note(tool, &args, outcome);
+    }
+    let refused = outcome != Outcome::Done;
     let said = if refused {
         format!("Refused: {said}")
     } else {
@@ -307,22 +348,189 @@ fn run(
     Ok((said, asked))
 }
 
-/// Posts the model's last word in the task's thread. With no task, or no words, there is
-/// nothing to post.
-fn last_word(hq: &mut Hq<'_>, task: Option<i64>, answer: &str) -> Result<(), Stopped> {
+/// Posts the model's last word in the task's thread, with a line saying what the turn
+/// actually did beside it. With no task, or no words, there is nothing to post.
+fn last_word(
+    hq: &mut Hq<'_>,
+    task: Option<i64>,
+    answer: &str,
+    did: &Ledger,
+) -> Result<(), Stopped> {
     let Some(task) = task else {
         return Ok(());
     };
     if answer.is_empty() {
         return Ok(());
     }
-    let (said, refused) = hq.call("post", &json!({ "task": task, "text": answer }))?;
+    let text = beside(answer, &did.line(), POST_AT_MOST);
+    let (said, refused) = hq.call("post", &json!({ "task": task, "text": text }))?;
     if refused {
         return Err(Stopped::Failed(format!(
             "HQ refused the last word for task {task}: {said}"
         )));
     }
     Ok(())
+}
+
+/// How a tool call came back.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Outcome {
+    /// It did what it was asked.
+    Done,
+    /// HQ, the node or the worker said no.
+    Refused,
+    /// It could not be done: the node unreachable, or failing.
+    Failed,
+}
+
+/// The tool calls a turn actually made, and how each came back: what the line beside its
+/// claims is written from. A model may say it restarted something it only looked at; this
+/// is what the audit would show.
+struct Ledger {
+    /// The tools that only look.
+    reads: Vec<String>,
+    /// Each call made, in order: what it was, whether it only looked, and how it came back.
+    calls: Vec<(String, bool, Outcome)>,
+}
+
+impl Ledger {
+    /// Notes a call that was made.
+    fn note(&mut self, tool: &str, args: &Value, outcome: Outcome) {
+        let (done, tried) = what_a_call_is(tool, args);
+        let said = match outcome {
+            Outcome::Done => done,
+            Outcome::Refused => format!("tried to {tried}, refused"),
+            Outcome::Failed => format!("tried to {tried}, failed"),
+        };
+        let read = self.reads.iter().any(|r| r == tool);
+        self.calls.push((said, read, outcome));
+    }
+
+    /// Notes a call whose arguments could not be read, so it was never sent.
+    fn unreadable(&mut self, tool: &str) {
+        let read = self.reads.iter().any(|r| r == tool);
+        self.calls.push((
+            format!("tried to call {tool} with arguments that could not be read, refused"),
+            read,
+            Outcome::Refused,
+        ));
+    }
+
+    /// The calls, one after another, the first [`NAMES_AT_MOST`] by name; `None` for none.
+    fn list(&self) -> Option<String> {
+        if self.calls.is_empty() {
+            return None;
+        }
+        let mut named: Vec<&str> = self
+            .calls
+            .iter()
+            .take(NAMES_AT_MOST)
+            .map(|(said, _, _)| said.as_str())
+            .collect();
+        let more = self.calls.len().saturating_sub(NAMES_AT_MOST);
+        let and_more = format!("and {more} more");
+        if more > 0 {
+            named.push(&and_more);
+        }
+        Some(named.join("; "))
+    }
+
+    /// Whether every call only looked.
+    fn only_read(&self) -> bool {
+        self.calls.iter().all(|(_, read, _)| *read)
+    }
+
+    /// The line under a turn's last word.
+    fn line(&self) -> String {
+        let Some(list) = self.list() else {
+            return "This turn made no tool calls.".to_owned();
+        };
+        if self.only_read() {
+            return format!("This turn did nothing but read: {list}.");
+        }
+        format!("This turn did: {list}.")
+    }
+
+    /// The line under a question to the owner.
+    fn for_the_owner(&self) -> String {
+        let Some(list) = self.list() else {
+            return "What I actually did this turn: no tool calls.".to_owned();
+        };
+        if self.only_read() {
+            return format!("What I actually did this turn: nothing but read: {list}.");
+        }
+        format!("What I actually did this turn: {list}.")
+    }
+}
+
+/// A call in plain words: as done, and as tried. The tool is named, with its main argument.
+fn what_a_call_is(tool: &str, args: &Value) -> (String, String) {
+    let arg = |key: &str| -> String {
+        let text = match &args[key] {
+            Value::String(s) => s.trim().to_owned(),
+            Value::Number(n) => n.to_string(),
+            _ => String::new(),
+        };
+        text.chars().filter(|c| !c.is_control()).take(60).collect()
+    };
+    let both = |s: String| (s.clone(), s);
+    match tool {
+        "my_turn" => both("read what the turn is for".to_owned()),
+        "homelab_status" => both("read the home lab's state".to_owned()),
+        "container_logs" => both(format!("read {}'s log", arg("container"))),
+        "restart_container" => (
+            format!("restarted {}", arg("container")),
+            format!("restart {}", arg("container")),
+        ),
+        "claim" => (
+            format!("claimed task {}", arg("task")),
+            format!("claim task {}", arg("task")),
+        ),
+        "post" => (
+            format!("posted in task {}", arg("task")),
+            format!("post in task {}", arg("task")),
+        ),
+        "set_status" => (
+            format!("set task {} to {}", arg("task"), arg("status")),
+            format!("set task {} to {}", arg("task"), arg("status")),
+        ),
+        "create_task" => (
+            format!("created the task \"{}\"", arg("title")),
+            format!("create the task \"{}\"", arg("title")),
+        ),
+        "check_back" => (
+            format!("set a check-back in {} minutes", arg("minutes")),
+            format!("set a check-back in {} minutes", arg("minutes")),
+        ),
+        _ => {
+            let main = ["container", "item", "name", "id", "task", "query"]
+                .iter()
+                .map(|k| arg(k))
+                .find(|v| !v.is_empty());
+            let call = match main {
+                Some(main) => format!("{tool} ({main})"),
+                None => tool.to_owned(),
+            };
+            (format!("called {call}"), format!("call {call}"))
+        }
+    }
+}
+
+/// `text`, then a blank line and `line`, within `most` characters: the text is cut to make
+/// room, never the line.
+fn beside(text: &str, line: &str, most: usize) -> String {
+    let room = most.saturating_sub(line.chars().count() + 2);
+    let kept: String = text.trim().chars().take(room).collect();
+    format!("{}\n\n{line}", kept.trim_end())
+}
+
+/// A question's arguments with what the turn actually did under its text.
+fn with_what_was_done(args: &Value, did: &Ledger) -> Value {
+    let mut sent = args.clone();
+    if let Some(text) = args["text"].as_str() {
+        sent["text"] = json!(beside(text, &did.for_the_owner(), ASK_AT_MOST));
+    }
+    sent
 }
 
 /// A reason as the worker may say it: never the token, and short. The token goes first, so
@@ -508,10 +716,11 @@ impl<'a> Node<'a> {
         }
     }
 
-    /// Calls a contract: what it said, whether that was a refusal, and whether the node put
-    /// it on the owner's desk for approval, which ends the turn. Anything but a 401 or a 402
-    /// is the tool's own answer, for the model to read.
-    fn call(&self, name: &str, arguments: &Value) -> Result<(String, bool, bool), Stopped> {
+    /// Calls a contract: what it said, how it came back (a 4xx is a refusal; a node that
+    /// cannot be reached, or a 5xx, a failure), and whether the node put it on the owner's
+    /// desk for approval, which ends the turn. Anything but a 401 or a 402 is the tool's own
+    /// answer, for the model to read.
+    fn call(&self, name: &str, arguments: &Value) -> Result<(String, Outcome, bool), Stopped> {
         let sent = self
             .agent
             .post(&format!("{}/{name}", self.url))
@@ -519,7 +728,13 @@ impl<'a> Node<'a> {
             .send_json(arguments);
         let mut response = match sent {
             Ok(response) => response,
-            Err(e) => return Ok((format!("the node could not be reached: {e}"), true, false)),
+            Err(e) => {
+                return Ok((
+                    format!("the node could not be reached: {e}"),
+                    Outcome::Failed,
+                    false,
+                ));
+            }
         };
         let status = response.status().as_u16();
         if matches!(status, 401 | 402) {
@@ -534,14 +749,19 @@ impl<'a> Node<'a> {
         if (200..300).contains(&status) {
             return Ok((
                 body["text"].as_str().unwrap_or("").to_owned(),
-                false,
+                Outcome::Done,
                 body["asked_owner"] == true,
             ));
         }
         let said = body["error"]
             .as_str()
             .map_or_else(|| format!("the node answered {status}"), str::to_owned);
-        Ok((said, true, false))
+        let outcome = if status >= 500 {
+            Outcome::Failed
+        } else {
+            Outcome::Refused
+        };
+        Ok((said, outcome, false))
     }
 }
 

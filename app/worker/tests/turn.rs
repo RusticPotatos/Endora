@@ -196,8 +196,9 @@ fn says(text: &str) -> Value {
         "message": { "role": "assistant", "content": text } }] })
 }
 
-/// The node's contracts (ADR 0106): it lists `offered`, answers a call to `homelab_status`,
-/// refuses a restart as its limits would (429), and answers `status` to every call when given.
+/// The node's contracts (ADR 0106): it lists `offered`, answers `homelab_status` and
+/// `container_logs`, refuses a restart as its limits would (429), and answers `status` to every
+/// call when given.
 fn node(offered: Value, status: Option<u16>) -> (String, Seen) {
     fake(Box::new(move |sent, _| {
         if let Some(status) = status {
@@ -211,6 +212,10 @@ fn node(offered: Value, status: Option<u16>) -> (String, Seen) {
             "/team-relay/contracts/homelab_status" => (
                 200,
                 json!({ "text": "{\"stale\":false,\"services\":[]}" }).to_string(),
+            ),
+            "/team-relay/contracts/container_logs" => (
+                200,
+                json!({ "text": "10:00 started" }).to_string(),
             ),
             _ => (
                 429,
@@ -227,6 +232,20 @@ fn contracts() -> Value {
         { "name": "homelab_status", "description": "Read the home lab's state.",
           "inputSchema": { "type": "object", "properties": {} } },
         { "name": "restart_container", "description": "Restart one container.",
+          "inputSchema": { "type": "object", "properties": { "container": { "type": "string" },
+                           "why": { "type": "string" } }, "required": ["container", "why"] } },
+    ])
+}
+
+/// The node's container contracts as it lists them, each marked read or act.
+fn contracts_that_say_what_they_are() -> Value {
+    json!([
+        { "name": "homelab_status", "kind": "read", "description": "Read the home lab's state.",
+          "inputSchema": { "type": "object", "properties": {} } },
+        { "name": "container_logs", "kind": "read", "description": "Read a container's log.",
+          "inputSchema": { "type": "object", "properties": { "container": { "type": "string" } },
+                           "required": ["container"] } },
+        { "name": "restart_container", "kind": "act", "description": "Restart one container.",
           "inputSchema": { "type": "object", "properties": { "container": { "type": "string" },
                            "why": { "type": "string" } }, "required": ["container", "why"] } },
     ])
@@ -296,8 +315,9 @@ fn a_turn_reads_my_turn_works_through_the_tools_and_posts_its_last_word() {
     assert_eq!(to_hq[4].body["params"]["arguments"], json!({ "task": 7 }));
     assert_eq!(
         to_hq[5].body["params"]["arguments"],
-        json!({ "task": 7, "text": "I took task 7 and listed what is watched." }),
-        "the last word goes in the task's thread"
+        json!({ "task": 7, "text": "I took task 7 and listed what is watched.\n\nThis turn made no tool calls." }),
+        "the last word goes in the task's thread, with what the turn did: the claim was the \
+         worker's own, before the model's first round"
     );
 
     let to_model = to_model.lock().unwrap().clone();
@@ -386,8 +406,134 @@ fn a_refusal_and_arguments_that_are_not_json_go_back_to_the_model() {
         .collect();
     assert_eq!(
         posts,
-        [&json!({ "task": 7, "text": "Task 7 waits for the gate." })],
-        "the broken call never reached HQ; the last word did"
+        [
+            &json!({ "task": 7, "text": "Task 7 waits for the gate.\n\nThis turn did: tried to set \
+            task 7 to done, refused; tried to call post with arguments that could not be read, \
+            refused." })
+        ],
+        "the broken call never reached HQ; the last word did, with what came of each call"
+    );
+}
+
+#[test]
+fn a_turns_claims_sit_beside_what_it_actually_did() {
+    // Live, a lead posted "Restarted owntone-spotify and owntone" in a turn that only read.
+    let (hq_url, to_hq) = hq(None);
+    let (node_url, _) = node(contracts_that_say_what_they_are(), None);
+    let (model_url, _) = model(vec![
+        (
+            200,
+            calls(&[
+                ("call_1", "homelab_status", ""),
+                ("call_2", "container_logs", r#"{"container": "owntone"}"#),
+            ]),
+        ),
+        (200, says("Restarted owntone-spotify and owntone.")),
+    ]);
+    let out = worker(&with_node(&hq_url, &model_url, &node_url));
+    assert_eq!(out.status.code(), Some(0), "{}", said(&out));
+    let last = to_hq
+        .lock()
+        .unwrap()
+        .iter()
+        .rfind(|s| s.method() == "tools/call post")
+        .map(|s| s.body["params"]["arguments"]["text"].clone());
+    assert_eq!(
+        last,
+        Some(json!(
+            "Restarted owntone-spotify and owntone.\n\nThis turn did nothing but read: read the \
+             home lab's state; read owntone's log."
+        ))
+    );
+
+    // An act refused by the node is said as tried and refused, never as done.
+    let (hq_url, to_hq) = hq(None);
+    let (node_url, _) = node(contracts_that_say_what_they_are(), None);
+    let (model_url, _) = model(vec![
+        (
+            200,
+            calls(&[
+                ("call_1", "homelab_status", ""),
+                (
+                    "call_2",
+                    "restart_container",
+                    r#"{"container": "sonarr", "why": "it is unhealthy"}"#,
+                ),
+            ]),
+        ),
+        (200, says("Restarted sonarr.")),
+    ]);
+    let out = worker(&with_node(&hq_url, &model_url, &node_url));
+    assert_eq!(out.status.code(), Some(0), "{}", said(&out));
+    let last = to_hq
+        .lock()
+        .unwrap()
+        .iter()
+        .rfind(|s| s.method() == "tools/call post")
+        .map(|s| s.body["params"]["arguments"]["text"].clone());
+    assert_eq!(
+        last,
+        Some(json!(
+            "Restarted sonarr.\n\nThis turn did: read the home lab's state; tried to restart \
+             sonarr, refused."
+        ))
+    );
+}
+
+#[test]
+fn a_question_to_the_owner_carries_what_the_turn_actually_did() {
+    let (hq_url, to_hq) = hq(None);
+    let (node_url, _) = node(contracts_that_say_what_they_are(), None);
+    let (model_url, _) = model(vec![
+        (200, calls(&[("call_1", "homelab_status", "")])),
+        (
+            200,
+            calls(&[(
+                "call_2",
+                "ask_owner",
+                r#"{"text": "I restarted owntone; should it stay up?"}"#,
+            )]),
+        ),
+    ]);
+    let out = worker(&with_node(&hq_url, &model_url, &node_url));
+    assert_eq!(out.status.code(), Some(0), "{}", said(&out));
+    let asked = to_hq
+        .lock()
+        .unwrap()
+        .iter()
+        .find(|s| s.method() == "tools/call ask_owner")
+        .map(|s| s.body["params"]["arguments"].clone());
+    assert_eq!(
+        asked,
+        Some(
+            json!({ "text": "I restarted owntone; should it stay up?\n\nWhat I actually did \
+            this turn: nothing but read: read the home lab's state." })
+        )
+    );
+
+    // With no calls at all, the question says so.
+    let (hq_url, to_hq) = hq(None);
+    let (model_url, _) = model(vec![(
+        200,
+        calls(&[(
+            "call_1",
+            "ask_owner",
+            r#"{"text": "Shall I restart owntone?"}"#,
+        )]),
+    )]);
+    let out = worker(&usual(&hq_url, &model_url));
+    assert_eq!(out.status.code(), Some(0), "{}", said(&out));
+    let asked = to_hq
+        .lock()
+        .unwrap()
+        .iter()
+        .find(|s| s.method() == "tools/call ask_owner")
+        .map(|s| s.body["params"]["arguments"]["text"].clone());
+    assert_eq!(
+        asked,
+        Some(json!(
+            "Shall I restart owntone?\n\nWhat I actually did this turn: no tool calls."
+        ))
     );
 }
 

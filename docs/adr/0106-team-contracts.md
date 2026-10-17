@@ -66,6 +66,21 @@ boundary.
   or more by Docker, the last start within the hour). The member is told to put it on the
   owner's desk with `ask_owner` (to raise its memory, say). A live test of the local model
   restarted a container crash-looping out of memory; this rule is why it cannot again.
+- **A restart never starts a stopped container** (added 2026-10-17). Portainer's restart
+  starts a container that has exited, and a container may be stopped on purpose: an old sound
+  server kept for its settings would take the ports the sound hub needs. Only a `running`
+  container is restarted; any other state, or one that cannot be read, is refused before the
+  limits are touched, with "it is stopped, perhaps on purpose: restart only fixes a running
+  container; ask the owner with ask_owner if it should run".
+- **A turn's claims sit beside what it actually did** (added 2026-10-17). A lead once posted
+  that it had restarted two containers in a turn whose audit showed only reads. The worker
+  keeps the calls its model made and how each came back (done, refused, failed), naming the
+  tool and its main argument, and writes them under the turn's last word ("This turn did: read
+  the home lab's state; tried to restart sonarr, refused.", "This turn did nothing but read:
+  …", "This turn made no tool calls.") and under any question to the owner ("What I actually
+  did this turn: …"). The reviewer and the owner read the truth beside the claim. A call
+  answered from what the turn already had, and the worker's own claim before the first round,
+  are not listed: they did nothing new.
 - **The same call again, with nothing new, is not answered anew**: the worker answers an
   identical call (same tool, same arguments) made straight after itself from what the turn
   already has, without sending it, and one made again later that says just what it said

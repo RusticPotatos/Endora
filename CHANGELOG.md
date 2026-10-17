@@ -9,6 +9,12 @@ tagged release.
 
 ### Added
 
+- **A turn's claims sit beside what it did** ([ADR 0106](docs/adr/0106-team-contracts.md)):
+  the worker writes the calls its turn actually made, and how each came back, under its last
+  word in the thread ("This turn did: …", "This turn did nothing but read: …", "This turn made
+  no tool calls.") and under any question to the owner ("What I actually did this turn: …").
+  A question to the owner may now be 1,200 characters, to leave room for it.
+
 - **A Thinks switch on each model-list entry** ([ADR 0105](docs/adr/0105-models-in-ordered-lists-by-data-tier.md)).
   Off by default: the butler sends `"reasoning_effort": "none"` to a local entry that may not
   think, which takes a local `qwen3:8b` from about 10 seconds to under one for a tool call.
@@ -218,6 +224,10 @@ tagged release.
 
 ### Fixed
 
+- **`restart_container` never starts a stopped container** ([ADR 0106](docs/adr/0106-team-contracts.md)):
+  Portainer's restart would start an exited one, and a container may be stopped on purpose
+  (an old sound server whose ports the sound hub needs). Only a running container is
+  restarted; any other is refused, costing no restart, and the member is told to ask the owner.
 - HQ's board hides a dropped goal's tasks, so the retired demo's notes do not bury the owner's;
   a live update keeps the page's scroll and the activity log's; and the screen shows money
   spent apart from money held for turns, in dollars.
