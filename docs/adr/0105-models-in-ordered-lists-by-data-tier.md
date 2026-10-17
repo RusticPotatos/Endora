@@ -73,6 +73,10 @@ a local one would.
   key loses the old one. "Forget everything" forgets the old settings too, so nothing moves
   over again. When the lists cannot be read, the environment's model answers, never the old
   settings.
+- The lists are the only source. The old everyday settings and single deep model are read
+  once, to move them over on a start with no lists, and never again as a fallback: not for
+  the deep model's status, its balance, or the AI screen. Only Deep's "on its own" switch is
+  still kept in the old deep row.
 - "On the house's network" is decided from the URL's host, after any user-info: loopback,
   link-local, RFC 1918 and IPv6 unique-local addresses, `.local`, `.lan` and single-label names.
   Every other entry is a cloud entry, reached only through the door.
