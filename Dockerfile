@@ -41,11 +41,13 @@ COPY . .
 # binary is copied OUT of the cache-mounted target within the same step, since a
 # cache mount is not part of the image layer.
 #
-# `touch` the sources first: BuildKit's COPY normalizes file mtimes to a constant,
-# so a changed source can end up OLDER than the cached target/ artifacts and
-# cargo's mtime check skips recompiling it — serving a stale binary. Bumping the
-# mtimes forces cargo to re-fingerprint; it still recompiles only crates whose
-# content actually changed, so incremental builds stay fast.
+# Cargo judges our own crates stale by mtime, and here mtimes lie: the target cache is
+# shared by every checkout that deploys from this machine, so a changed source can be
+# OLDER than an artifact another checkout cached, and cargo would ship that stale
+# binary. scripts/fresh-sources.sh decides by content instead: it keeps the hash of
+# every file the cached build was made from, gives unchanged files an old mtime and
+# changed ones the present, so exactly the crates that changed recompile. (Touching
+# every source, as this once did, rebuilt the whole workspace on every deploy.)
 #
 # Crossing, cargo and the C builds it drives (SQLite, ring) are pointed at the target's
 # compiler; for a native build the variables name a compiler that is unused.
@@ -62,8 +64,11 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     if [ "$triple" = "$(rustc -vV | sed -n 's/^host: //p')" ]; then \
       unset "CARGO_TARGET_${env_triple}_LINKER" "CC_$(echo "$triple" | tr '-' '_')" "AR_$(echo "$triple" | tr '-' '_')"; \
     fi; \
-    find . \( -name '*.rs' -o -name '*.toml' -o -name '*.lock' \) -exec touch {} + \
+    bins="endora-node endora-hq endora-worker endora-runner endora-sound-hub"; \
+    built() { for b in $bins; do echo "target/$triple/release/$b"; done; }; \
+    sh scripts/fresh-sources.sh before "target/$triple" $(built) \
     && cargo build --release -p endora-node -p endora-hq -p endora-worker -p endora-runner -p endora-sound-hub --target "$triple" \
+    && sh scripts/fresh-sources.sh after "target/$triple" $(built) \
     && cp "target/$triple/release/endora-node" /endora-node \
     && cp "target/$triple/release/endora-hq" /endora-hq \
     && cp "target/$triple/release/endora-worker" /endora-worker \
