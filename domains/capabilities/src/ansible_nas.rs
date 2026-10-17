@@ -45,10 +45,11 @@ pub struct Fork {
 impl Fork {
     /// The fork named `repo` (`owner/name`) at `reference` (`master` when empty). `None` when
     /// no repo is given, or it is not a GitHub `owner/name`, or the reference is not a plain
-    /// branch or tag name.
+    /// branch or tag name. The fork's GitHub address (`https://github.com/owner/name`) names it
+    /// too.
     #[must_use]
     pub fn of(repo: &str, reference: &str) -> Option<Self> {
-        let repo = repo.trim();
+        let repo = on_github(repo.trim())?;
         let reference = match reference.trim() {
             "" => "master",
             given => given,
@@ -94,6 +95,23 @@ impl Fork {
         }
         fork
     }
+}
+
+/// `owner/name` from the fork's GitHub address, or as given when it is not one. `None` for an
+/// address somewhere other than GitHub.
+fn on_github(repo: &str) -> Option<&str> {
+    let unschemed = repo
+        .strip_prefix("https://")
+        .or_else(|| repo.strip_prefix("http://"));
+    let host = unschemed.unwrap_or(repo);
+    let host = host.strip_prefix("www.").unwrap_or(host);
+    let path = match host.strip_prefix("github.com/") {
+        Some(path) => path,
+        None if unschemed.is_some() => return None,
+        None => repo,
+    };
+    let path = path.strip_suffix('/').unwrap_or(path);
+    Some(path.strip_suffix(".git").unwrap_or(path))
 }
 
 /// What a path asks for, once it has passed the allowlist.
@@ -611,6 +629,29 @@ mod tests {
         assert_eq!(Fork::of("owner/ansible-nas/../x", ""), None);
         assert_eq!(Fork::of("owner/ansible-nas", "../main"), None);
         assert!(Fork::of("owner/ansible-nas", "feature/x").is_some());
+    }
+
+    #[test]
+    fn the_fork_may_be_named_by_its_github_address() {
+        let named = Fork::of("owner/ansible-nas", "");
+        for address in [
+            "https://github.com/owner/ansible-nas",
+            "https://github.com/owner/ansible-nas/",
+            "https://github.com/owner/ansible-nas.git",
+            "http://github.com/owner/ansible-nas",
+            "github.com/owner/ansible-nas",
+            "https://www.github.com/owner/ansible-nas",
+        ] {
+            assert_eq!(Fork::of(address, ""), named, "{address}");
+        }
+        for elsewhere in [
+            "https://gitlab.com/owner/ansible-nas",
+            "https://github.com.example.com/owner/ansible-nas",
+            "https://github.com/owner/ansible-nas/tree/main",
+            "https://github.com/owner",
+        ] {
+            assert_eq!(Fork::of(elsewhere, ""), None, "{elsewhere}");
+        }
     }
 
     #[test]
