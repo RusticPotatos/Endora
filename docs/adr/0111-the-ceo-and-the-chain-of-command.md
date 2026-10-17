@@ -11,7 +11,9 @@ cloud member refused Confidential results). Built: the CEO's role, its brains an
 the chain of command and decisions for the board; the house log; `read_doc`; the CEO and its
 daily review seated once on an existing team; the relay's Opus and cap for the CEO; the bridge
 and the contracts treating the CEO as a cloud member that only reads; the HQ screen's CEO,
-House log card, decision cards and renaming.
+House log card, decision cards and renaming. Amended by [0113](0113-projects-budgets-and-reports-to.md)
+(2026-10-17): who asks whom follows each member's `reports_to`, which the owner may change, and
+the CEO also proposes projects and goals, decides projects, and plans once a week.
 
 ## Context
 
@@ -52,8 +54,13 @@ became the team's inbox, and the owner its manager. The plan (section 10) foresa
 
 **The chain of command.** While the team has a CEO at work (not paused):
 
-- `ask_owner` from the developer, the researcher or the reviewer goes to the **lead**; the
-  lead's goes to the **CEO**; with no lead at work, a member's goes to the CEO. It is posted in
+- `ask_owner` goes to whom the member **reports to** ([0113](0113-projects-budgets-and-reports-to.md)):
+  set at hire by role (the developer, the researcher and the reviewer to the earliest lead, or
+  the CEO when there is none; the lead to the CEO), backfilled on start for members hired
+  before, and the owner's to change on the member's card, never to itself or into a circle. A
+  manager who is paused is passed over, one step up at a time; a chain that ends goes to the
+  CEO. So by default, as first decided, the developer's, researcher's and reviewer's go to the
+  **lead**, the lead's to the **CEO**, and with no lead at work a member's to the CEO. It is posted in
   the task's thread as "Question for <name>: …", the asker's turn ends as before, and the one
   above is woken (`question_asked`), its briefing saying "<asker> asks you: …".
 - **Whoever is woken answers in the thread** (`post`). Their first post after the question that

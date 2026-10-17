@@ -9,6 +9,27 @@ tagged release.
 
 ### Added
 
+- **Projects, budgets and reports_to** ([ADR 0113](docs/adr/0113-projects-budgets-and-reports-to.md)).
+  A project serves one goal and has a lead (a lead or the CEO) and, if the owner gives it one, a
+  monthly cap; a task may be in a project of its goal, its sub-tasks stay in it, and a routine's
+  tasks go in the routine's. A Claude turn on a capped project reserves no more than is left of
+  it (so the relay's per-call limit holds it), and the caps together stay within the pool's
+  month. At 80% the owner gets one notice a month and the CEO is told; at 100% the project's
+  Claude turns wait (members on the house's model go on) and the desk offers "raise the cap" or
+  "wait for next month", which lifts itself when the month turns; the owner's own pause holds
+  every turn until resumed. Each member reports to someone (set at hire, backfilled on start, the
+  owner's to change, never to itself or in a circle), and a question goes to that manager or
+  past a paused one. A task handed back wakes its project's lead. Leads and the CEO propose
+  projects (`propose_project`) with task numbers and event ids HQ checks; the CEO decides
+  (`decide_project`), the board may overrule, and a cap asked for goes to the owner's desk with
+  the CEO's recommendation; the CEO proposes goals (`propose_goal`). A weekly **Planning**
+  routine briefs the CEO with patterns: projects and their money, the month's tasks by the
+  containers they named, the alarms that came back, proposals waiting, goals with no project.
+  On start, the live store gains its new columns by guarded `ALTER TABLE`, and the home lab's
+  routines and open work go, once, into an active "Home lab upkeep" project. The HQ screen
+  gains a Projects card with its forms, the cap and budget items on the desk, and "reports to"
+  on each member's card.
+
 - **The team knows how the lab is built** ([ADR 0112](docs/adr/0112-the-team-knows-how-the-lab-is-built.md)).
   A new read contract, `homelab_map`, says for every container its image, state, restart
   policy, who manages it (an ansible-nas role, Endora, or unknown), what it depends on and what
