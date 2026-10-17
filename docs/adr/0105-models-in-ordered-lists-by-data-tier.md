@@ -27,7 +27,17 @@ The door looks for the private mark anywhere in a message. A reply to a 🔒 mes
 turn that read a Restricted result, is stored with the mark. A 🔒 standing answer (the brief,
 "are any lights on?") is kept marked, and a private brief posts its facts as themselves rather
 than being worded by the deep model; the brief's wording refuses marked or account-shaped facts
-in any case. Prepared with AI
+in any case, and the place they are based is disguised in it.
+
+What Endora writes is judged the way the owner's messages are: a reply, a posted message or a
+running summary that carries what looks like an account number is kept with the private mark,
+so the turns that later read it stay in the house, and a summary once marked stays marked. The
+learning pass and the running summary skip an owner's account-shaped message as they skip a
+private one, and the door refuses a turn whose running summary is marked.
+
+A standing answer is marked for what is in it, by the same rule as a turn's skill result. The
+brief is Confidential (in the tier table): its reply is not private, and what it carries from
+outside keeps the stranger's mark, so the turn after it stays in the house. Prepared with AI
 assistance (Claude). Step 4 of [the always-on butler plan](../plans/always-on-butler.md). It
 replaces the everyday model's three mechanisms (the preferred rung of
 [0072](0072-the-base-has-rungs-too.md), the base config and its router-and-writer mixture of
@@ -69,10 +79,18 @@ a local one would.
 - A reply that has begun to stream is never finished by another model.
 - An answer from an everyday cloud entry is the everyday answer, not an escalation: only the
   deep list, asked because the everyday answer failed a check, is disclosed as one.
+- Every reply says which model wrote it and whether it runs on the house's network, so the
+  note on a turn the deep model planned names where the skills' results were read: "read by
+  qwen2.5:7b on your network", or "read by claude-sonnet-5-5, disguised" when a cloud model is
+  first in Everyday.
 - A provider's key belongs to its endpoint: a provider moved to another endpoint without a new
   key loses the old one. "Forget everything" forgets the old settings too, so nothing moves
   over again. When the lists cannot be read, the environment's model answers, never the old
   settings.
+- The lists are the only source. The old everyday settings and single deep model are read
+  once, to move them over on a start with no lists, and never again as a fallback: not for
+  the deep model's status, its balance, or the AI screen. Only Deep's "on its own" switch is
+  still kept in the old deep row.
 - "On the house's network" is decided from the URL's host, after any user-info: loopback,
   link-local, RFC 1918 and IPv6 unique-local addresses, `.local`, `.lan` and single-label names.
   Every other entry is a cloud entry, reached only through the door.

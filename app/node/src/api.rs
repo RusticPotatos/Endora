@@ -19,9 +19,9 @@ use axum::routing::{get, post};
 use endora_application::Clock;
 use endora_application::{
     ActivityItem, AppError, AutonomyEnvelope, AutonomyEnvelopeRepository, BriefSchedule, Butler,
-    ButlerModelConfig, ButlerModelConfigRepository, CapabilityConfigRepository,
-    CapabilitySettingsRepository, DeepModelRepository, ExecutionLeaseRepository, MemorySnapshot,
-    ModelSlot, RepositoryError, Sampling, usecases,
+    ButlerModelConfig, CapabilityConfigRepository, CapabilitySettingsRepository,
+    DeepModelRepository, ExecutionLeaseRepository, MemorySnapshot, ModelSlot, RepositoryError,
+    Sampling, usecases,
 };
 use endora_application::{
     AuditRecord, ChatMessage, IdSource, IntentionRepository, Preference, PreferenceId,
