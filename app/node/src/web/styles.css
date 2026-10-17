@@ -393,6 +393,13 @@
   .hq-need.stuck { border-left-color: var(--hq-red); }
   .hq-need.ready_to_merge, .hq-need.ready_to_read { border-left-color: var(--hq-green); }
   .hq-need.notice { border-left-color: var(--hq-muted); }
+  .hq-need.project_cap { border-left-color: var(--hq-amber); }
+  .hq-need.project_budget { border-left-color: var(--hq-red); }
+  .hq-need input { font: 13px var(--hq-mono); width: 100%; box-sizing: border-box; margin: 0 0 6px; }
+  .hq-gauge { height: 6px; background: var(--hq-line); border-radius: 3px; overflow: hidden; margin: 4px 0 2px; }
+  .hq-gauge i { display: block; height: 100%; background: var(--hq-green); }
+  .hq-gauge.warned i { background: var(--hq-amber); }
+  .hq-gauge.spent i { background: var(--hq-red); }
   .hq-need p { margin: 0 0 6px; }
   .hq-who { color: var(--hq-muted); font-size: 12px; }
   .hq-empty { color: var(--hq-muted); font-size: 12.5px; margin: 0; }
