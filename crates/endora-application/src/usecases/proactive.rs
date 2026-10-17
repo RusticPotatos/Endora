@@ -172,13 +172,15 @@ pub fn assembled_brief_facts(
 /// This is THE one routing point — the brief's bespoke pre-route (ADR 0074) folded
 /// in here the day a second question earned the mechanism its name. Every entry
 /// falls through to the ordinary turn when it cannot assemble its answer: broken
-/// routing degrades to a conversation, never to silence.
+/// routing degrades to a conversation, never to silence. `private` is a 🔒 ask: its answer
+/// is never worded outside the house (ADR 0105).
 #[expect(
     clippy::too_many_arguments,
     reason = "explicit dependencies, no hidden state"
 )]
 pub(super) fn standing_answer(
     text: &str,
+    private: bool,
     capabilities: &dyn CapabilityRunner,
     butler: &dyn Butler,
     ids: &impl IdSource,
@@ -189,6 +191,7 @@ pub(super) fn standing_answer(
 ) -> Option<String> {
     if asked_for_their_brief(text) {
         if let Some(answer) = brief_on_request(
+            private,
             capabilities,
             butler,
             ids,
@@ -235,8 +238,14 @@ pub(super) fn asked_for_their_brief(text: &str) -> bool {
 /// assembles the sections, the deep model words them exactly as the scheduled brief
 /// is worded, and the model never routes. `None` — fall through to the ordinary
 /// turn — when the skill is absent, not configured, or failed: a broken assembly
-/// must degrade to a conversation, never to silence.
+/// must degrade to a conversation, never to silence. Asked `private`ly, the facts post
+/// as themselves (ADR 0105).
+#[expect(
+    clippy::too_many_arguments,
+    reason = "explicit dependencies, no hidden state"
+)]
 pub(super) fn brief_on_request(
+    private: bool,
     capabilities: &dyn CapabilityRunner,
     butler: &dyn Butler,
     ids: &impl IdSource,
@@ -264,7 +273,13 @@ pub(super) fn brief_on_request(
         Ok(facts) if !facts.trim().is_empty() => {
             on_step(step(StepStatus::Done, Some(facts.clone())));
             activity.push("Assembled your brief".to_owned());
-            let text = worded_brief(butler, facts.trim(), ids, clock);
+            // Asked privately, the facts post as themselves: wording them would send them to
+            // the deep model, and a private turn never leaves the house (ADR 0105).
+            let text = if private {
+                facts.trim().to_owned()
+            } else {
+                worded_brief(butler, facts.trim(), ids, clock)
+            };
             // Streamed as one chunk: the tail of the turn treats a reply with text
             // as already-delivered, and this one never went through the model.
             on_token(&text);
