@@ -612,48 +612,67 @@ async function dispatch(act) {
       catch (e) { flash("Couldn't save settings: " + e.message, "err"); }
       return reload();
     }
-    // Discover the models an endpoint offers, into its picker.
-    if (verb === "discover") { await discoverModels(noun); return; }
-    if (verb === "testconn") { await testConnection(noun); return; }
-    // Save the butler models. A blank key keeps the stored one; blank sampling
-    // fields mean "use the endpoint default". Applies on the next message.
-    if (verb === "modelsave") {
-      const val = (id) => (document.getElementById(id) || {}).value;
-      const numOrNull = (id) => { const v = val(id); return (v === undefined || String(v).trim() === "") ? null : Number(v); };
-      const intOrNull = (id) => { const v = numOrNull(id); return v === null ? null : Math.round(v); };
-      const slot = (p) => ({
-        model: (val(`m-${p}-model`) || "").trim(),
-        temperature: numOrNull(`m-${p}-temperature`),
-        top_p: numOrNull(`m-${p}-top_p`),
-        top_k: intOrNull(`m-${p}-top_k`),
-        repeat_penalty: numOrNull(`m-${p}-repeat_penalty`),
-      });
-      const body = {
-        base_url: (val("m-base") || "").trim(),
-        mixture: !!(document.getElementById("m-mix") || {}).checked,
-        single: slot("single"), router: slot("router"), synth: slot("synth"),
-        preferred_url: (val("m-preferred-url") || "").trim(),
-        preferred_model: (val("m-preferred-model") || "").trim(),
-      };
-      const key = (val("m-key") || "").trim();
-      if (key) body.api_key = key;
-      try { await api("POST", "/v1/model-config", body); flash("Models saved — active on your next message.", "ok"); }
-      catch (e) { flash("Couldn't save models: " + e.message, "err"); }
-      return reload();
-    }
-    // Save the deep-model config. A blank key keeps the stored one.
-    if (verb === "deepsave") {
-      const url = (document.getElementById("deep-url") || {}).value || "";
-      const model = (document.getElementById("deep-model") || {}).value || "";
-      const key = (document.getElementById("deep-key") || {}).value || "";
-      // Sent explicitly, not defaulted: the server leaves it alone when absent, so
-      // saving an endpoint must never silently flip whether Endora phones out.
-      const escalate = !!(document.getElementById("deep-escalate") || {}).checked;
-      const body = { url: url.trim(), model: model.trim(), escalate };
-      if (key.trim()) body.api_key = key.trim();
-      try { await api("POST", "/v1/deep-model", body); flash(escalate ? "Deep model saved — it may now step in on its own." : "Deep model saved.", "ok"); }
-      catch (e) { flash("Couldn't save: " + e.message, "err"); }
-      return reload();
+    // The providers and the ordered model lists (ADR 0105).
+    if (verb === "mlist") {
+      const val = (el) => ((document.getElementById(el) || {}).value || "").trim();
+      const refresh = async () => { try { MODEL_LISTS = await api("GET", "/v1/model-lists"); } catch (_) {} render(); };
+      try {
+        if (["up", "down", "on", "off", "remove"].includes(noun)) {
+          if (noun === "remove" && !confirm("Remove this model from the list?")) return;
+          await api("POST", `/v1/model-lists/entries/${id}/${noun}`, {});
+          return refresh();
+        }
+        if (noun === "test") {
+          flash("Testing…", "ok");
+          const r = await api("POST", `/v1/model-lists/entries/${id}/${noun}`, {});
+          flash(r.detail || (r.ok ? "Connected." : "Test failed."), r.ok ? "ok" : "err");
+          return;
+        }
+        if (noun === "add") {
+          const model = val(`ml-${id}-model`);
+          if (!model) { flash("Which model?", "err"); return; }
+          await api("POST", "/v1/model-lists/entries", { job: id, provider: Number(val(`ml-${id}-provider`)), model });
+          flash(`Added ${model}. Move it with ↑ ↓.`, "ok");
+          return refresh();
+        }
+        if (noun === "discover") {
+          const provider = val(`ml-${id}-provider`);
+          const r = await api("POST", `/v1/model-lists/providers/${provider}/discover`, {});
+          const list = document.getElementById(`ml-${id}-models`);
+          if (list) list.innerHTML = (r.models || []).map((m) => `<option value="${esc(m)}"></option>`).join("");
+          flash((r.models || []).length ? `Found ${r.models.length} models: start typing in the model box.` : "No models returned.", (r.models || []).length ? "ok" : "err");
+          return;
+        }
+        if (noun === "escalate") {
+          await api("POST", "/v1/model-lists/escalate", { on: id === "1" });
+          return refresh();
+        }
+        if (noun === "provideredit") {
+          PROVIDER_EDITING = Number(id);
+          render();
+          const p = ((MODEL_LISTS && MODEL_LISTS.providers) || []).find((x) => x.id === PROVIDER_EDITING);
+          const set = (el, v) => { const f = document.getElementById(el); if (f) f.value = v || ""; };
+          if (p) { set("pv-name", p.name); set("pv-url", p.url); }
+          return;
+        }
+        if (noun === "providercancel") { PROVIDER_EDITING = null; return render(); }
+        if (noun === "providersave") {
+          const body = { name: val("pv-name"), url: val("pv-url") };
+          if (val("pv-key")) body.api_key = val("pv-key");
+          if (!body.url) { flash("The endpoint, please.", "err"); return; }
+          if (PROVIDER_EDITING) await api("POST", `/v1/model-lists/providers/${PROVIDER_EDITING}`, body);
+          else await api("POST", "/v1/model-lists/providers", body);
+          flash(PROVIDER_EDITING ? "Provider saved." : "Provider added. Now add its models to a list.", "ok");
+          PROVIDER_EDITING = null;
+          return refresh();
+        }
+        if (noun === "providerremove") {
+          if (!confirm("Remove this provider? Its models leave both lists, and its key is forgotten.")) return;
+          await api("POST", `/v1/model-lists/providers/${id}/remove`, {});
+          return refresh();
+        }
+      } catch (e) { flash("Couldn't do that: " + e.message, "err"); }
+      return;
     }
     // Widen/narrow the autonomy envelope (ADR 0051). `noun` is the lever; `id` is 1/0.
     if (verb === "autonomy") {

@@ -14,6 +14,7 @@ pub mod eval;
 pub mod hq;
 pub mod ids;
 pub mod model_layer;
+pub mod model_list;
 pub mod model_watch;
 pub mod sound;
 pub mod sqlite;

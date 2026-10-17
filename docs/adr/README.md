@@ -7,7 +7,7 @@ and numbered in sequence.
 
 ## What they add up to
 
-Forty-six records stand, every one accepted, and forty-nine earlier ones are archived into them
+Forty-seven records stand, every one accepted, and forty-nine earlier ones are archived into them
 (the *Consolidates* column below). A handful of ideas sit underneath all of them. Read this before
 reading any individual record; each line is a rule the code actually follows, with the decision
 that established it.
@@ -97,6 +97,10 @@ that established it.
   ([0103](0103-the-agenda-loop.md)). One loop turns what Endora already reads into items at
   four levels (handled, FYI, needs you, urgent). A persisting signal is one item, a failed
   read closes nothing, mail can only tell, and Stop teaches a rule the owner can undo.
+- **Models are ordered lists; data has a tier, models a clearance**
+  ([0105](0105-models-in-ordered-lists-by-data-tier.md)). Providers are entered once; everyday
+  and deep are sorted lists, the first working, cleared entry answering. A cloud model sees
+  Confidential only disguised and Restricted never; every cloud entry goes through the one door.
 - **Start fresh rather than keep what makes noise** ([0100](0100-the-clean-slate.md)). What
   Endora did unasked (check-ins, the nightly loop, notions, own work, goals) produced stale
   beliefs and repeated questions, so it went, code and storage. A table nothing reads is
@@ -219,6 +223,7 @@ of an existing record and take the next number.
 | [0102](0102-endora-hq.md) | Endora HQ | — |
 | [0103](0103-the-agenda-loop.md) | The agenda loop | — |
 | [0104](0104-endora-sound.md) | Endora sound | — |
+| [0105](0105-models-in-ordered-lists-by-data-tier.md) | Models in ordered lists, cleared by data tier | — |
 
 The forty-eight decisions these consolidate are in [archive/](archive/) — kept in full,
 because the reasoning that produced a rule is the reason it survives an argument later.

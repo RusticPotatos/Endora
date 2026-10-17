@@ -491,6 +491,12 @@ const MODEL_PRESETS = {
     single: { model: "anthropic/claude-sonnet-5",   temperature: 0.5 },
     router: { model: "anthropic/claude-3.5-haiku",  temperature: 0.1 },
     synth:  { model: "anthropic/claude-sonnet-5",   temperature: 0.6 } },
+  // Claude directly, with the owner's own Anthropic API key (its OpenAI-compatible endpoint):
+  // what the models plan calls for, paid from the owner's API credits.
+  claude: { label: "Anthropic (direct, your API key)", base_url: "https://api.anthropic.com/v1", key: true,
+    single: { model: "claude-sonnet-5-5", temperature: 0.5 },
+    router: { model: "claude-haiku-5-5",  temperature: 0.1 },
+    synth:  { model: "claude-sonnet-5-5", temperature: 0.6 } },
   anthropic: { label: "Anthropic (via OpenRouter)", base_url: "https://openrouter.ai/api/v1", key: true,
     single: { model: "anthropic/claude-sonnet-5",   temperature: 0.5 },
     router: { model: "anthropic/claude-3.5-haiku",  temperature: 0.1 },

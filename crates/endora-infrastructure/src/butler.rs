@@ -23,6 +23,7 @@ use endora_application::{
 use endora_application::{Butler, ButlerContext, ButlerReply, FormedBelief, ProposalError};
 use std::sync::{Arc, Mutex};
 
+use endora_capabilities::model_lists::{self, Job, ModelListRepository, Target};
 use endora_capabilities::{ButlerModelConfig, ButlerModelConfigRepository, ModelSlot, Sampling};
 use serde_json::{Value, json};
 
@@ -791,6 +792,15 @@ pub struct ConfigurableButler {
     preferred_health: Mutex<Option<(std::time::Instant, bool)>>,
     /// How the preferred endpoint is probed — injectable so tests need no listener.
     probe: fn(&str) -> bool,
+    /// The providers and the ordered lists (ADR 0105). When set, they decide which model
+    /// answers, and the stored config above is read only to move it over.
+    lists: Option<Arc<dyn ModelListRepository + Send + Sync>>,
+    /// What the lists remember between turns: what failed lately, which machines are awake.
+    health: Arc<crate::model_list::Health>,
+    /// The everyday list, rebuilt when its entries change.
+    everyday_cache: Mutex<Option<(Vec<Target>, Arc<crate::model_list::ModelList>)>>,
+    /// The deep list, rebuilt when its entries change.
+    deep_list_cache: Mutex<Option<(Vec<Target>, Arc<crate::model_list::ModelList>)>>,
 }
 
 impl ConfigurableButler {
@@ -811,7 +821,134 @@ impl ConfigurableButler {
             preferred_cache: Mutex::new(None),
             preferred_health: Mutex::new(None),
             probe: endpoint_answers,
+            lists: None,
+            health: Arc::new(crate::model_list::Health::new(endpoint_answers)),
+            everyday_cache: Mutex::new(None),
+            deep_list_cache: Mutex::new(None),
         }
+    }
+
+    /// Lets the ordered lists decide which model answers (ADR 0105).
+    #[must_use]
+    pub fn with_lists(mut self, lists: Arc<dyn ModelListRepository + Send + Sync>) -> Self {
+        self.lists = Some(lists);
+        self
+    }
+
+    /// A list's enabled entries, resolved; `None` without lists or when they cannot be read.
+    fn list_targets(&self, job: Job) -> Option<Vec<Target>> {
+        let lists = self.lists.as_ref()?;
+        let providers = lists.providers().ok()?;
+        let entries = lists.entries(job).ok()?;
+        Some(model_lists::targets(&providers, &entries))
+    }
+
+    /// A client for one entry, noting its use under `label`.
+    fn client_for(&self, t: &Target, label: &'static str) -> Arc<dyn Butler + Send + Sync> {
+        let mut llm = LlmButler::with_config(
+            t.url.clone(),
+            t.model.clone(),
+            t.api_key.clone(),
+            t.sampling.clone(),
+        );
+        if let Some(log) = &self.usage {
+            llm = llm.with_usage_log(label, Arc::clone(log));
+        }
+        Arc::new(llm)
+    }
+
+    /// The everyday list: its entries in order, a cloud one through the door, and the
+    /// environment's model last, so the conversation always has somewhere to go.
+    fn everyday_list(&self, targets: Vec<Target>) -> Arc<crate::model_list::ModelList> {
+        use crate::model_list::{ModelList, Step, Way};
+        let mut cache = self
+            .everyday_cache
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if let Some((cached, list)) = cache.as_ref() {
+            if *cached == targets {
+                return Arc::clone(list);
+            }
+        }
+        let mut steps: Vec<Step> = targets
+            .iter()
+            .map(|t| {
+                let local = is_private_endpoint(&t.url);
+                let client = self.client_for(t, if local { "everyday" } else { "cloud-everyday" });
+                Step {
+                    key: format!("{}|{}", t.url, t.model),
+                    url: t.url.clone(),
+                    model: t.model.clone(),
+                    local,
+                    way: if local {
+                        Way::Direct(client)
+                    } else {
+                        Way::ThroughTheDoor(endora_application::egress::Deeper::new(client))
+                    },
+                }
+            })
+            .collect();
+        steps.push(Step {
+            key: "environment".to_owned(),
+            url: String::new(),
+            model: String::new(),
+            local: false,
+            way: Way::Direct(Arc::clone(&self.fallback)),
+        });
+        let list = Arc::new(ModelList::new(steps, Arc::clone(&self.health)));
+        *cache = Some((targets, Arc::clone(&list)));
+        list
+    }
+
+    /// The deep list behind the door, when the owner lets Endora use it on its own (ADR 0055,
+    /// one switch for the list). An entry that is the model already answering is left out:
+    /// escalating to it again would be a paid no-op (ADR 0072).
+    fn deep_list(&self) -> Option<endora_application::egress::Deeper> {
+        let on = self.deep.as_ref()?.get().ok().flatten()?.escalate;
+        if !on {
+            return None;
+        }
+        self.deep_on_request()
+    }
+
+    /// The deep list behind the door, whatever the switch says: for the owner's own "ask the
+    /// deep model", which is their choice each time (ADR 0055). `None` when the list is empty.
+    #[must_use]
+    pub fn deep_on_request(&self) -> Option<endora_application::egress::Deeper> {
+        use crate::model_list::{ModelList, Step, Way};
+        let (serving_url, serving_model) = self.serving();
+        let targets: Vec<Target> = self
+            .list_targets(Job::Deep)?
+            .into_iter()
+            .filter(|t| !(t.url == serving_url.trim_end_matches('/') && t.model == serving_model))
+            .collect();
+        if targets.is_empty() {
+            return None;
+        }
+        let mut cache = self
+            .deep_list_cache
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if let Some((cached, list)) = cache.as_ref() {
+            if *cached == targets {
+                return Some(endora_application::egress::Deeper::new(
+                    Arc::clone(list) as _
+                ));
+            }
+        }
+        let steps = targets
+            .iter()
+            .map(|t| Step {
+                key: format!("{}|{}", t.url, t.model),
+                url: t.url.clone(),
+                model: t.model.clone(),
+                local: is_private_endpoint(&t.url),
+                way: Way::Direct(self.client_for(t, "deep")),
+            })
+            .collect();
+        let list = Arc::new(ModelList::new(steps, Arc::clone(&self.health)));
+        *cache = Some((targets, Arc::clone(&list)));
+        Some(endora_application::egress::Deeper::new(list))
     }
 
     /// Whether a stored config actually names the model(s) it needs — a blank
@@ -845,6 +982,7 @@ impl ConfigurableButler {
     #[must_use]
     pub fn with_probe(mut self, probe: fn(&str) -> bool) -> Self {
         self.probe = probe;
+        self.health = Arc::new(crate::model_list::Health::new(probe));
         self
     }
 
@@ -874,6 +1012,13 @@ impl ConfigurableButler {
     /// "which brain answered that?" is a fact on a screen rather than a guess.
     #[must_use]
     pub fn serving(&self) -> (String, String) {
+        if let Some(targets) = self.list_targets(Job::Everyday) {
+            return self
+                .everyday_list(targets)
+                .first_ready()
+                .filter(|(url, _)| !url.is_empty())
+                .unwrap_or_default();
+        }
         let Ok(Some(config)) = self.repo.get() else {
             return (String::new(), String::new());
         };
@@ -899,6 +1044,9 @@ impl ConfigurableButler {
     /// fallback. Falling is silent and per-turn — the next turn re-asks, so the bigger
     /// machine waking up is noticed within one health window.
     fn current(&self) -> Arc<dyn Butler + Send + Sync> {
+        if let Some(targets) = self.list_targets(Job::Everyday) {
+            return self.everyday_list(targets);
+        }
         let Ok(Some(config)) = self.repo.get() else {
             return Arc::clone(&self.fallback);
         };
@@ -1034,6 +1182,9 @@ impl Butler for ConfigurableButler {
     /// off the box. Falling back automatically is a change to where their words go, and
     /// that is theirs to make (ADR 0055).
     fn deeper(&self) -> Option<endora_application::egress::Deeper> {
+        if self.lists.is_some() {
+            return self.deep_list();
+        }
         let config = self.deep.as_ref()?.get().ok().flatten()?;
         if !config.escalate || config.url.trim().is_empty() || config.model.trim().is_empty() {
             return None;

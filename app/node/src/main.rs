@@ -98,9 +98,36 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // The deep model is attached as a FALLBACK, not as the brain: it is used only when the
     // local one fails a deterministic check, and only if the person turned that on (ADR
     // 0055). `ConfigStore` is both repositories, so this is the same handle.
+    // The providers and ordered lists (ADR 0105) decide which model answers. The settings
+    // above move into them once, on the first start that has them; with nothing saved from
+    // the console, the environment's model is everyday's first entry, so the list never looks
+    // empty while something answers.
+    {
+        use endora_capabilities::model_lists::ModelListRepository as _;
+        let everyday = endora_capabilities::ButlerModelConfigRepository::get(model_config.as_ref())
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| endora_capabilities::ButlerModelConfig {
+                base_url: model_url.clone(),
+                single: endora_capabilities::ModelSlot {
+                    model: model.clone(),
+                    sampling: endora_capabilities::Sampling::default(),
+                },
+                ..endora_capabilities::ButlerModelConfig::default()
+            });
+        let deep = endora_capabilities::DeepModelRepository::get(model_config.as_ref())
+            .ok()
+            .flatten();
+        match model_config.move_over_once(Some(&everyday), deep.as_ref()) {
+            Ok(true) => println!("models: the everyday and deep settings moved into ordered lists"),
+            Ok(false) => {}
+            Err(e) => eprintln!("models: could not move the settings into lists ({e})"),
+        }
+    }
     let brain = Arc::new(
         ConfigurableButler::new(model_config.clone(), fallback)
-            .also_knowing(model_config)
+            .also_knowing(model_config.clone())
+            .with_lists(model_config)
             .with_usage_log(store.clone()),
     );
     let butler: Arc<dyn Butler + Send + Sync> = brain.clone();
