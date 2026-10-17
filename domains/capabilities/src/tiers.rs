@@ -27,6 +27,9 @@ pub fn known_tier(id: &str) -> Option<Tier> {
         "terminal-overseerr" | "homelab-sonarr" | "homelab-radarr" | "network-pihole"
         | "network-unifi" | "home_assistant" | "image_review" | "own_activity" | "read_page"
         | "mail" | "sonarr_queue" | "radarr_queue" => Tier::Confidential,
+        // The brief: the calendar, the house, the weather where they live and the mail's
+        // senders. Its outside parts carry the stranger's mark, as it is a third party's too.
+        "brief" => Tier::Confidential,
         // A movement history: no disguise hides a trail of places.
         "location" => Tier::Restricted,
         // A tool of a tool server the house has paired (`home.HassTurnOn`): only those reach a
@@ -66,5 +69,10 @@ mod tests {
         assert_eq!(tier_of("location"), Tier::Restricted);
         assert_eq!(tier_of("homelab-docker"), Tier::Internal);
         assert_eq!(tier_of("home.HassTurnOn"), Tier::Confidential);
+        assert_eq!(
+            tier_of("brief"),
+            Tier::Confidential,
+            "the calendar, the house and the mail's senders: Confidential, not Restricted"
+        );
     }
 }

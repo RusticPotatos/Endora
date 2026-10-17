@@ -34,8 +34,8 @@ const REAL_FACTS: &str = "- john is not home; on the Family calendar:           
 fn only_the_facts_leave_and_they_leave_disguised() {
     let deep = std::sync::Arc::new(Elsewhere(Mutex::new(String::new())));
     let door = crate::egress::Deeper::new(deep.clone());
-    let written =
-        word_the_brief(&door, REAL_FACTS, &FakeIds::default(), &FixedClock(0)).expect("a brief");
+    let written = word_the_brief(&door, REAL_FACTS, "", &FakeIds::default(), &FixedClock(0))
+        .expect("a brief");
 
     let sent = deep.0.lock().unwrap().clone();
     for personal in ["john", "Jane Doe", "Doe"] {
@@ -98,7 +98,7 @@ fn a_brief_cut_off_mid_sentence_posts_the_facts_instead_of_prose_plus_a_dump() {
     // plainly worded, and nothing lost.
     let facts = "- john is not home\n- outside it is 77F and partly cloudy\n\
                  - 38303 messages in the mailbox";
-    let brief = worded_brief(&CutOff, facts, &FakeIds::default(), &FixedClock(0));
+    let brief = worded_brief(&CutOff, facts, "", &FakeIds::default(), &FixedClock(0));
 
     assert_eq!(
         brief, facts,
@@ -132,7 +132,7 @@ fn a_brief_that_finished_still_gets_what_it_left_out_appended() {
         }
     }
     let facts = "- john is not home\n- outside it is 77F and partly cloudy";
-    let brief = worded_brief(&Finished, facts, &FakeIds::default(), &FixedClock(0));
+    let brief = worded_brief(&Finished, facts, "", &FakeIds::default(), &FixedClock(0));
 
     assert!(brief.starts_with("Good morning."), "{brief}");
     assert!(
@@ -222,6 +222,7 @@ fn a_deep_model_that_says_nothing_does_not_become_the_brief() {
         word_the_brief(
             &crate::egress::Deeper::new(std::sync::Arc::new(Mute)),
             REAL_FACTS,
+            "",
             &FakeIds::default(),
             &FixedClock(0)
         ),
