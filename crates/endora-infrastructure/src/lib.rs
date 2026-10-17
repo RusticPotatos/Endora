@@ -15,6 +15,7 @@ pub mod hq;
 pub mod ids;
 pub mod model_layer;
 pub mod model_watch;
+pub mod relay;
 pub mod sqlite;
 pub mod time_zone;
 
