@@ -732,6 +732,12 @@ if (failures.length) {
   if (!music.includes('data-act="music:endora:3"') || !music.includes('data-act="music:endora:4"')) fail("music: the hub's speakers are not offered");
   if (music.includes('data-act="music:device:d-endora"')) fail("music: the Endora receiver is offered as a speaker of its own");
   if (!music.includes('data-act="music:device:d-mac"')) fail("music: Spotify's own devices went missing");
+  runInContext(`MUSIC.now = { is_playing: true, item: { id: "t1", type: "track", name: "A song", artists: [{ name: "Someone" }], album: { images: [] } } };
+    MUSIC.liked = false;`, context);
+  if (!runInContext("viewMusic()", context).includes('data-act="music:like" aria-pressed="false"')) fail("music: a song cannot be liked");
+  runInContext("MUSIC.liked = true;", context);
+  if (!runInContext("viewMusic()", context).includes('aria-pressed="true" aria-label="In Liked Songs')) fail("music: a liked song does not show it");
+  runInContext("MUSIC.now = null; MUSIC.liked = null;", context);
   if (!/pill pick active" data-act="music:endora:4"/.test(music)) fail("music: the speaker Spotify plays on is not shown as playing");
   if (!/data-act="music:endora:4">iPhone · not listening/.test(music)) fail("music: a phone that is not listening does not say so");
   // On that phone itself, it is this device, and a tap starts it listening.

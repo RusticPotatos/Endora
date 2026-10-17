@@ -278,6 +278,12 @@ async function loadMusic() {
   try {
     const [now, devices] = await Promise.all([spotify("GET", "/me/player"), spotify("GET", "/me/player/devices")]);
     MUSIC.now = now;
+    // Whether the song playing is in Liked Songs, for its heart.
+    const track = now && now.item && now.item.type === "track" ? now.item.id : null;
+    MUSIC.liked = null;
+    if (track) {
+      try { MUSIC.liked = !!((await spotify("GET", `/me/tracks/contains?ids=${encodeURIComponent(track)}`)) || [])[0]; } catch (_) {}
+    }
     MUSIC.devices = ((devices && devices.devices) || []).filter((d) => d.id);
     if (!MUSIC.lists.length) MUSIC.lists = musicItems(((await spotify("GET", "/me/playlists?limit=30")) || {}).items, "playlist");
   } catch (e) { MUSIC.error = e.message; }
@@ -318,6 +324,7 @@ function viewMusic() {
         <button class="ghost" data-act="music:prev" aria-label="Previous">⏮</button>
         <button class="primary" data-act="music:toggle">${playing ? "Pause" : "Play"}</button>
         <button class="ghost" data-act="music:next" aria-label="Next">⏭</button>
+        ${MUSIC.liked === null || MUSIC.liked === undefined ? "" : `<button class="ghost" data-act="music:like" aria-pressed="${MUSIC.liked ? "true" : "false"}" aria-label="${MUSIC.liked ? "In Liked Songs: tap to take it out" : "Add to Liked Songs"}">${MUSIC.liked ? "♥" : "♡"}</button>`}
         ${volume === null || volume === undefined ? "" : `<button class="ghost" data-act="music:volume:-10">−</button><span class="sub">${esc(volume)}%</span><button class="ghost" data-act="music:volume:10">+</button>`}
       </div></div>`
     : `<div class="card"><div class="sub">Nothing is playing.</div></div>`;
@@ -406,6 +413,12 @@ async function musicDispatch(noun, id) {
       const playing = MUSIC.now && MUSIC.now.is_playing;
       const device = musicDevice();
       await spotify("PUT", playing ? "/me/player/pause" : `/me/player/play${device ? `?device_id=${encodeURIComponent(device)}` : ""}`);
+    } else if (noun === "like") {
+      // Spotify's own like: in Liked Songs, or out again. (It has no thumbs-down to give.)
+      const track = MUSIC.now && MUSIC.now.item && MUSIC.now.item.id;
+      if (!track) return;
+      await spotify(MUSIC.liked ? "DELETE" : "PUT", `/me/tracks?ids=${encodeURIComponent(track)}`);
+      flash(MUSIC.liked ? "Taken out of Liked Songs." : "Added to Liked Songs.", "ok");
     } else if (noun === "next" || noun === "prev") {
       await spotify("POST", noun === "next" ? "/me/player/next" : "/me/player/previous");
     } else if (noun === "volume") {
