@@ -19,6 +19,13 @@ tagged release.
   cached at the cache-read price before a call. The **CEO's briefing** carries the whole house
   only on its first turn and daily review, and otherwise what changed since its last turn. A
   run's record keeps its input tokens, and the activity log says "cached: N% of input".
+- **HQ's progress and waits, checked against the design it borrows.** A turn that only
+  re-claims its own task and leaves the worker's last word is no longer counted as progress,
+  so the empty-turn back-off finally holds such turns back (the worker claims before every
+  turn, which had made every turn look productive). A task waiting on one that was dropped
+  is no longer released as if the wait were done: its member is told why in the thread and
+  woken once, then it goes to the desk. The plan no longer promises per-task session resume,
+  which was never built.
 - **The CEO and the chain of command** ([ADR 0111](docs/adr/0111-the-ceo-and-the-chain-of-command.md),
   owner's decisions of 2026-10-17). The owner is the board. A new top member, the **CEO**, sits
   above the lead: HQ seats one once on an existing team ("Mara", on Claude Opus, renameable) with

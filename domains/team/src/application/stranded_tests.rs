@@ -191,3 +191,57 @@ fn work_left_in_review_with_no_review_coming_wakes_the_reviewer() {
         "and only once"
     );
 }
+
+/// Found by checking HQ against the design it borrows (2026-10-17): a task waiting on one
+/// that was dropped was released as if the wait were done, though the work it waited for
+/// never happened. A dropped wait releases nothing; the waiting task's member is told why in
+/// its thread and woken once, ten minutes on, through stranded recovery; still stuck after
+/// that, it goes on the desk.
+///
+/// Given a task that waits on another,
+/// when the one it waits on is dropped,
+/// then it is not woken as if its wait were done, and its member is told the wait was dropped.
+#[test]
+fn a_dropped_wait_releases_nothing_and_its_member_is_told() {
+    let clock = Hands(AtomicI64::new(NOON));
+    let (hq, dev, first) = stranded(&clock);
+    let goal = hq.store().task(first).unwrap().unwrap().goal;
+    let after = hq
+        .add_task(
+            Author::Owner,
+            NewTask {
+                goal,
+                parent: None,
+                title: "Restore from the backup".to_owned(),
+                description: String::new(),
+                assignee: Some(dev),
+                priority: Priority::Normal,
+                waits_on: vec![first],
+            },
+        )
+        .unwrap();
+    hq.drop_task(first).unwrap();
+    hq.tick().unwrap();
+    let wait_finished = |hq: &Hq<'_>| {
+        hq.store()
+            .wakes()
+            .unwrap()
+            .iter()
+            .filter(|w| w.task == Some(after) && w.reason == WakeReason::WaitFinished)
+            .count()
+    };
+    assert_eq!(
+        wait_finished(&hq),
+        0,
+        "a dropped wait is not a finished one"
+    );
+    later(&clock, STRANDED_AFTER_MS + 1_000);
+    hq.tick().unwrap();
+    assert_eq!(recoveries(&hq, after).len(), 1, "its member is woken once");
+    let told = hq.store().thread(after).unwrap();
+    assert!(
+        told.iter().any(|p| p.text.contains("was dropped")),
+        "the thread says why: {told:?}"
+    );
+    assert_eq!(wait_finished(&hq), 0);
+}

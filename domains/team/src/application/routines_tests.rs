@@ -546,3 +546,89 @@ fn a_task_that_moves_nothing_twice_backs_off_its_stale_wakes_but_never_news() {
     );
     assert_eq!(hq.tick().unwrap().started, 1, "news is never kept waiting");
 }
+
+/// Takes one turn on `task` for `member` as the real worker does when the model achieves
+/// nothing: it claims the task before the model's first round, and posts the model's last
+/// word with what the turn did. Neither is progress once the task is the member's.
+fn workers_empty_turn(hq: &Hq<'_>, member: MemberId, task: TaskId, reason: WakeReason) {
+    hq.wake(member, Some(task), reason).unwrap();
+    hq.tick().unwrap();
+    let id = running_on(hq, task);
+    let run = hq.store().run(id).unwrap().unwrap();
+    let me = hq
+        .store()
+        .members()
+        .unwrap()
+        .into_iter()
+        .find(|m| m.id == member)
+        .unwrap();
+    let args = serde_json::json!({ "task": task.0 });
+    super::protocol::call(hq, &run, &me, "claim", &args).unwrap();
+    let last = serde_json::json!({
+        "task": task.0,
+        "text": "Nothing to add.\n\nThis turn made no tool calls.",
+        "last_word": true,
+    });
+    super::protocol::call(hq, &run, &me, "post", &last).unwrap();
+    hq.runner().finish(id, true);
+    hq.tick().unwrap();
+}
+
+/// Found by checking HQ against the design it borrows (2026-10-17): the worker claims its task
+/// before every turn and posts the model's last word after it, and both marked the turn as
+/// progress, so the empty-turn back-off never once held a real turn back.
+///
+/// Given a task the member already owns,
+/// when two turns only re-claim it and leave their last word,
+/// then neither moved it forward, and the next stale wake backs off.
+#[test]
+fn turns_that_only_reclaim_and_leave_a_last_word_move_nothing() {
+    let clock = Hands(AtomicI64::new(NOON));
+    let (hq, t) = office(&clock);
+    let task = hq
+        .add_task(
+            Author::Owner,
+            NewTask {
+                goal: t.goal,
+                parent: None,
+                title: "Look at the backups".to_owned(),
+                description: String::new(),
+                assignee: Some(t.dev),
+                priority: Priority::Normal,
+                waits_on: Vec::new(),
+            },
+        )
+        .unwrap();
+    // The first turn takes the task: a real change, and progress.
+    workers_empty_turn(&hq, t.dev, task, WakeReason::Assigned);
+    let ended = |hq: &Hq<'_>| {
+        hq.store()
+            .runs()
+            .unwrap()
+            .into_iter()
+            .filter(|r| r.task == Some(task) && r.status == RunStatus::Succeeded)
+            .collect::<Vec<_>>()
+    };
+    let first = ended(&hq).pop().unwrap();
+    assert!(first.moved_forward, "taking the task is progress");
+    // Two more that only re-claim it and say their last word: not progress.
+    workers_empty_turn(&hq, t.dev, task, WakeReason::Recovery);
+    workers_empty_turn(&hq, t.dev, task, WakeReason::Recovery);
+    let turns = ended(&hq);
+    assert_eq!(turns.len(), 3);
+    assert!(
+        turns[1..].iter().all(|r| !r.moved_forward),
+        "re-claiming and a last word are not progress"
+    );
+    assert_eq!(
+        hq.wake(t.dev, Some(task), WakeReason::Recovery).unwrap(),
+        Receipt::Queued
+    );
+    let waiting = hq.store().runs().unwrap().pop().unwrap();
+    assert_eq!(
+        waiting.status,
+        RunStatus::RetryWaiting,
+        "the back-off holds it"
+    );
+    assert_eq!(waiting.retry_at, Some(clock.at() + 2 * MINUTE_MS));
+}

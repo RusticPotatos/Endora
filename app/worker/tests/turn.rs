@@ -315,7 +315,7 @@ fn a_turn_reads_my_turn_works_through_the_tools_and_posts_its_last_word() {
     assert_eq!(to_hq[4].body["params"]["arguments"], json!({ "task": 7 }));
     assert_eq!(
         to_hq[5].body["params"]["arguments"],
-        json!({ "task": 7, "text": "I took task 7 and listed what is watched.\n\nThis turn made no tool calls." }),
+        json!({ "task": 7, "text": "I took task 7 and listed what is watched.\n\nThis turn made no tool calls.", "last_word": true }),
         "the last word goes in the task's thread, with what the turn did: the claim was the \
          worker's own, before the model's first round"
     );
@@ -409,7 +409,7 @@ fn a_refusal_and_arguments_that_are_not_json_go_back_to_the_model() {
         [
             &json!({ "task": 7, "text": "Task 7 waits for the gate.\n\nThis turn did: tried to set \
             task 7 to done, refused; tried to call post with arguments that could not be read, \
-            refused." })
+            refused.", "last_word": true })
         ],
         "the broken call never reached HQ; the last word did, with what came of each call"
     );

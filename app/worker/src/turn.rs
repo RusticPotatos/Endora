@@ -681,7 +681,11 @@ fn last_word(
         return Ok(());
     }
     let text = beside(answer, &did.line(), POST_AT_MOST);
-    let (said, refused) = hq.call("post", &json!({ "task": task, "text": text }))?;
+    // Marked as the worker's last word: HQ posts it, but does not count it as progress.
+    let (said, refused) = hq.call(
+        "post",
+        &json!({ "task": task, "text": text, "last_word": true }),
+    )?;
     if refused {
         return Err(Stopped::Failed(format!(
             "HQ refused the last word for task {task}: {said}"

@@ -735,7 +735,8 @@ fn a_task_that_waits_is_woken_once_when_what_it_waits_on_finishes() {
         )
         .unwrap();
     assert!(hq.wakes().unwrap().is_empty(), "nothing to do yet");
-    hq.drop_task(first).unwrap();
+    // Done, not dropped: a dropped wait releases nothing (see stranded_tests).
+    hq.store().set_task_status(first, TaskStatus::Done).unwrap();
     assert_eq!(hq.tick().unwrap().woken, 1);
     assert_eq!(hq.tick().unwrap().woken, 0, "once");
     let wake = hq.wakes().unwrap().pop().unwrap();
