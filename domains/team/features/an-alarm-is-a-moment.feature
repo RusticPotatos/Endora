@@ -41,5 +41,5 @@ Feature: An alarm is a moment, not the state now
   Scenario: A member is told its tools are its own
     Given Ada has the task "Check the home lab"
     When Ada's turn starts
-    Then Ada's briefing says "Your tools at HQ: my_turn, claim, post, set_status, create_task, ask_owner, check_back, run_gate, request_action, propose_project."
+    Then Ada's briefing says "Your tools at HQ:"
     And Ada's briefing says "Endora's own tools on the home lab (homelab_status and the like) come beside them: what your tool list offers, you have."

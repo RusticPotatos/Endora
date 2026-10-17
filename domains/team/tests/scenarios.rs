@@ -443,18 +443,29 @@ fn briefing_says(w: &mut Office, name: String, text: String) {
 
 #[when(expr = "{word} asks {string}")]
 fn asks(w: &mut Office, name: String, text: String) {
-    w.use_tool(&name, "ask_owner", &json!({ "text": text }))
-        .expect("the question goes somewhere");
+    // A question up the chain rests on the asker's own task (ADR 0114).
+    let task = w.turn_of(&name).task.expect("a turn on a task");
+    w.use_tool(
+        &name,
+        "ask_owner",
+        &json!({ "text": text, "evidence": [format!("task {}", task.0)] }),
+    )
+    .expect("the question goes somewhere");
 }
 
 #[when(
     expr = "{word} puts the decision {string} to the board, recommending {string}, because {string}"
 )]
 fn decides(w: &mut Office, name: String, decision: String, recommendation: String, why: String) {
+    // What goes to the board rests on the CEO's own task (ADR 0114).
+    let task = w.turn_of(&name).task.expect("a turn on a task");
     w.use_tool(
         &name,
         "ask_owner",
-        &json!({ "decision": decision, "recommendation": recommendation, "why": why }),
+        &json!({
+            "decision": decision, "recommendation": recommendation, "why": why,
+            "evidence": [format!("task {}", task.0)]
+        }),
     )
     .expect("the CEO's decision goes to the board");
 }
@@ -582,11 +593,20 @@ fn propose_project(w: &mut Office, name: String, title: String, cap: f64) {
 
 #[when(expr = "{word} accepts the project {string} because {string}")]
 fn accept_project(w: &mut Office, name: String, title: String, why: String) {
-    let id = w.project(&title).id;
+    // The CEO's decision rests on what the proposal cited (ADR 0114).
+    let project = w.project(&title);
+    let evidence: Vec<String> = project
+        .evidence
+        .iter()
+        .map(|e| match e {
+            endora_team::domain::Evidence::Task(t) => format!("task {}", t.0),
+            endora_team::domain::Evidence::Event(e) => format!("event {e}"),
+        })
+        .collect();
     w.use_tool(
         &name,
         "decide_project",
-        &json!({ "project": id.0, "verdict": "accept", "why": why }),
+        &json!({ "project": project.id.0, "verdict": "accept", "why": why, "evidence": evidence }),
     )
     .expect("the CEO decides");
 }
