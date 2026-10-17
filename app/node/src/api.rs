@@ -120,6 +120,9 @@ pub struct AppState {
     /// the house's network (ADR 0102). A field, like `relay_upstream`, so a test can point it
     /// at a fake.
     pub installed_model: Arc<(String, String)>,
+    /// The turns with a call to Anthropic in flight through HQ's model relay: a turn's calls
+    /// go one at a time, so each is capped by what is left once the one before was charged.
+    pub(crate) relay_calls: Arc<relay::TurnCalls>,
     /// The agenda loop's items, restarts and taught rules (ADR 0103).
     pub agenda: Arc<endora_agenda::infrastructure::SqliteAgendaStore>,
     /// Why the last nightly copy failed, until one succeeds: what the agenda tells.
@@ -297,6 +300,7 @@ impl AppState {
             mail_store,
             relay_upstream: Arc::new(endora_infrastructure::relay::ANTHROPIC.to_owned()),
             // Read as `main` reads them, with its defaults.
+            relay_calls: Arc::default(),
             installed_model: Arc::new((
                 std::env::var("ENDORA_MODEL_URL")
                     .unwrap_or_else(|_| "http://localhost:11434/v1".to_owned()),

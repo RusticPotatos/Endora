@@ -1,8 +1,11 @@
 //! HQ's model relay (ADR 0102, phase 4): the only way a team member's turn reaches a model.
-//! The worker presents its turn's token as its API key; the relay asks HQ whose turn that is
-//! and what it may still spend, caps the reply to what it can afford, adds the owner's
-//! Anthropic key (which never leaves the node), and tells HQ what the call cost. A turn past
-//! its budget is stopped by HQ, and its token then opens nothing here either.
+//! The worker presents its turn's token as its API key; the relay asks HQ whose turn that is,
+//! its member's role and what it may still spend. It passes on only a call it can meter, with
+//! a model the role may use; counts the prompt first (free) and takes its cost off; caps the
+//! reply to what is left; adds the owner's Anthropic key (which never leaves the node); and
+//! tells HQ what the call cost. A turn's calls go one at a time, each after the one before was
+//! charged. A turn past its budget is stopped by HQ, and its token then opens nothing here
+//! either.
 //!
 //! Outside `/v1` on purpose: the owner's sign-in is not the credential here, a turn's token
 //! is, and nothing else this node serves answers to one.
@@ -14,7 +17,8 @@ use super::*;
 use axum::body::{Body, Bytes};
 use axum::http::HeaderMap;
 use endora_infrastructure::relay::{
-    Call, StreamedUsage, Used, affordable_output, cost, price_of, send, send_local,
+    Call, StreamedUsage, Used, affordable_output, betas_passed, cost, counted, may_use, price_of,
+    send, send_local, unmetered,
 };
 
 /// The most of a whole reply the relay holds at once.
@@ -73,10 +77,36 @@ fn anthropic_key(config: &endora_capabilities::ConfigStore) -> Option<String> {
         .filter(|k| !k.is_empty())
 }
 
-/// Whose turn a token is, and what it may still spend.
+/// Whose turn a token is, its member's role, and what it may still spend.
 struct Turn {
     run: i64,
+    role: String,
     left: i64,
+}
+
+/// A turn's calls to Anthropic, one at a time, by token. HQ knows only what has been
+/// charged, so two calls side by side would each be capped by the whole of what is left; one
+/// at a time, each is capped by what the one before left.
+#[derive(Default)]
+pub(crate) struct TurnCalls(
+    std::sync::Mutex<std::collections::HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+);
+
+impl TurnCalls {
+    /// Waits until the turn `token` opens has no call in flight, and holds it while the
+    /// guard lives: until the call has been charged.
+    async fn one_at_a_time(&self, token: &str) -> tokio::sync::OwnedMutexGuard<()> {
+        let turn = {
+            let mut turns = self
+                .0
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            // A turn no call holds or waits for is forgotten.
+            turns.retain(|_, held| Arc::strong_count(held) > 1);
+            turns.entry(token.to_owned()).or_default().clone()
+        };
+        turn.lock_owned().await
+    }
 }
 
 /// Asks HQ whose turn `token` is; a token that opens nothing is refused in the route's own
@@ -106,6 +136,7 @@ async fn turn_of(
     match asked {
         Ok(v) => Ok(Turn {
             run: v["run"].as_i64().unwrap_or(0),
+            role: v["role"].as_str().unwrap_or("").to_owned(),
             left: v["left"].as_i64().unwrap_or(0),
         }),
         Err(endora_infrastructure::HqError::Answered { status: 404, .. }) => Err(refuse(
@@ -149,6 +180,56 @@ fn charge(
     );
 }
 
+/// Asks Anthropic how many tokens `asked` (a call's prompt, as [`counted`] makes it) comes to.
+/// Counting is free, and tells what the call's input will cost before it is sent. Anthropic's
+/// own refusal is passed on as it said it.
+async fn count(
+    upstream: Arc<String>,
+    key: String,
+    version: Option<String>,
+    beta: Option<String>,
+    asked: serde_json::Value,
+) -> Result<u64, Response> {
+    let done = tokio::task::spawn_blocking(move || {
+        let reply = send(
+            &upstream,
+            Call::CountTokens,
+            &key,
+            version.as_deref(),
+            beta.as_deref(),
+            asked.to_string().as_bytes(),
+        )?;
+        let mut bytes = Vec::new();
+        std::io::Read::read_to_end(
+            &mut std::io::Read::take(reply.body, LARGEST_REPLY),
+            &mut bytes,
+        )
+        .map_err(|e| e.to_string())?;
+        Ok::<_, String>((reply.status, bytes))
+    })
+    .await;
+    let Ok(Ok((status, bytes))) = done else {
+        return Err(refuse(
+            StatusCode::BAD_GATEWAY,
+            "api_error",
+            "Anthropic did not answer",
+        ));
+    };
+    if status >= 300 {
+        return Err(whole(status, bytes));
+    }
+    serde_json::from_slice::<serde_json::Value>(&bytes)
+        .ok()
+        .and_then(|v| v["input_tokens"].as_u64())
+        .ok_or_else(|| {
+            refuse(
+                StatusCode::BAD_GATEWAY,
+                "api_error",
+                "Anthropic did not count the prompt",
+            )
+        })
+}
+
 fn whole(status: u16, bytes: Vec<u8>) -> Response {
     Response::builder()
         .status(status)
@@ -170,7 +251,10 @@ pub(super) async fn messages(
             "HQ is not set up on this node",
         );
     };
-    let turn = match turn_of(hq.clone(), token_of(&headers), refuse).await {
+    let token = token_of(&headers);
+    // Held until this call is charged, so the turn's next call sees what this one cost.
+    let one_at_a_time = state.relay_calls.one_at_a_time(&token).await;
+    let turn = match turn_of(hq.clone(), token, refuse).await {
         Ok(turn) => turn,
         Err(refused) => return refused,
     };
@@ -181,25 +265,30 @@ pub(super) async fn messages(
             "the body is not JSON",
         );
     };
+    if let Some(why) = unmetered(&call) {
+        return refuse(StatusCode::BAD_REQUEST, "invalid_request_error", &why);
+    }
     let model = call["model"].as_str().unwrap_or("").to_owned();
-    // The dearest tier of its price bounds what the reply may cost before the prompt is known.
-    let Some(bound) = price_of(&model, u64::MAX) else {
+    let Some(cheapest) = price_of(&model, 0) else {
         return refuse(
             StatusCode::BAD_REQUEST,
             "invalid_request_error",
             &format!("{model} is not a model the team may use"),
         );
     };
-    let affordable = affordable_output(bound, turn.left);
-    if affordable == 0 {
-        return refuse(
+    if let Err(why) = may_use(&turn.role, &model) {
+        return refuse(StatusCode::FORBIDDEN, "permission_error", &why);
+    }
+    let spent = || {
+        refuse(
             StatusCode::PAYMENT_REQUIRED,
             "billing_error",
             "this turn's budget is spent",
-        );
+        )
+    };
+    if affordable_output(cheapest, turn.left) == 0 {
+        return spent();
     }
-    let asked = call["max_tokens"].as_u64().unwrap_or(affordable);
-    call["max_tokens"] = json!(asked.min(affordable));
     let Some(key) = anthropic_key(state.config.as_ref()) else {
         return refuse(
             StatusCode::SERVICE_UNAVAILABLE,
@@ -208,14 +297,48 @@ pub(super) async fn messages(
         );
     };
     let version = header(&headers, "anthropic-version");
-    let beta = header(&headers, "anthropic-beta");
+    let beta = betas_passed(header(&headers, "anthropic-beta").as_deref());
     let upstream = state.relay_upstream.clone();
+    // The prompt is paid for whatever the reply, so its cost comes off first, and the reply
+    // may spend only what is left after it.
+    let prompt = match count(
+        upstream.clone(),
+        key.clone(),
+        version.clone(),
+        beta.clone(),
+        counted(&call),
+    )
+    .await
+    {
+        Ok(prompt) => prompt,
+        Err(refused) => return refused,
+    };
+    let Some(price) = price_of(&model, prompt) else {
+        return spent();
+    };
+    let input = cost(
+        price,
+        Used {
+            input: prompt,
+            ..Used::default()
+        },
+    );
+    let affordable = affordable_output(price, turn.left - input);
+    if affordable == 0 {
+        return spent();
+    }
+    let cap = call["max_tokens"]
+        .as_u64()
+        .unwrap_or(affordable)
+        .min(affordable);
+    call["max_tokens"] = json!(cap);
     let streamed = call["stream"].as_bool().unwrap_or(false);
     let sent = call.to_string().into_bytes();
 
     if !streamed {
         let state2 = state.clone();
         let done = tokio::task::spawn_blocking(move || {
+            let _one_at_a_time = one_at_a_time;
             let reply = send(
                 &upstream,
                 Call::Messages,
@@ -260,6 +383,7 @@ pub(super) async fn messages(
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, std::io::Error>>(32);
     let state2 = state.clone();
     tokio::task::spawn_blocking(move || {
+        let _one_at_a_time = one_at_a_time;
         let mut reply = match send(
             &upstream,
             Call::Messages,
@@ -295,9 +419,14 @@ pub(super) async fn messages(
                 }
             }
         }
-        // Charged for what was used, even if the worker stopped listening part way.
+        // Charged for what was used, even if the worker stopped listening part way. A stream
+        // cut before its last usage said how much it sent is charged all it may have sent.
         if reply.status < 300 {
-            charge(&hq, &state2, turn.run, &model, usage.used());
+            let mut used = usage.used();
+            if !usage.finished() {
+                used.output = used.output.max(cap);
+            }
+            charge(&hq, &state2, turn.run, &model, used);
         }
     });
     let status = match head_rx.await {
@@ -338,6 +467,17 @@ pub(super) async fn count_tokens(
     if let Err(refused) = turn_of(hq, token_of(&headers), refuse).await {
         return refused;
     }
+    let Ok(asked) = serde_json::from_slice::<serde_json::Value>(&body) else {
+        return refuse(
+            StatusCode::BAD_REQUEST,
+            "invalid_request_error",
+            "the body is not JSON",
+        );
+    };
+    // Free to count, but what reaches past the fence is refused here too.
+    if let Some(why) = unmetered(&asked) {
+        return refuse(StatusCode::BAD_REQUEST, "invalid_request_error", &why);
+    }
     let Some(key) = anthropic_key(state.config.as_ref()) else {
         return refuse(
             StatusCode::SERVICE_UNAVAILABLE,
@@ -346,7 +486,7 @@ pub(super) async fn count_tokens(
         );
     };
     let version = header(&headers, "anthropic-version");
-    let beta = header(&headers, "anthropic-beta");
+    let beta = betas_passed(header(&headers, "anthropic-beta").as_deref());
     let upstream = state.relay_upstream.clone();
     let done = tokio::task::spawn_blocking(move || {
         let reply = send(
@@ -546,13 +686,18 @@ mod tests {
         (url, seen)
     }
 
-    /// HQ, knowing one turn (token `good`, run 7) with `left` micros to spend.
+    /// HQ, knowing one turn (token `good`, run 7, a developer's) with `left` micros to spend.
     fn hq(left: i64) -> (String, Seen) {
+        hq_as(left, "developer")
+    }
+
+    /// HQ, knowing one turn of a member in `role`.
+    fn hq_as(left: i64, role: &'static str) -> (String, Seen) {
         fake(Arc::new(move |path, body| match path {
             "/v1/team/turn" if body.contains("\"good\"") => (
                 200,
                 "application/json",
-                json!({ "run": 7, "left": left }).to_string(),
+                json!({ "run": 7, "role": role, "left": left }).to_string(),
             ),
             "/v1/team/turn" => (
                 404,
@@ -563,9 +708,51 @@ mod tests {
         }))
     }
 
-    /// Anthropic: a whole reply, or a streamed one.
+    /// HQ whose turn has `left` micros, less each charge as it lands, as the real one.
+    fn hq_spending(left: i64) -> (String, Seen) {
+        let left = Arc::new(std::sync::atomic::AtomicI64::new(left));
+        fake(Arc::new(move |path, body| {
+            use std::sync::atomic::Ordering::SeqCst;
+            if path == "/v1/team/usage" {
+                let micros = serde_json::from_str::<serde_json::Value>(body).unwrap()["micros"]
+                    .as_i64()
+                    .unwrap();
+                left.fetch_sub(micros, SeqCst);
+                return (200, "application/json", r#"{"may_go_on":true}"#.to_owned());
+            }
+            (
+                200,
+                "application/json",
+                json!({ "run": 7, "role": "developer", "left": left.load(SeqCst) }).to_string(),
+            )
+        }))
+    }
+
+    /// Anthropic: a whole reply, or a streamed one; a prompt counts 1,000 tokens.
     fn anthropic() -> (String, Seen) {
-        fake(Arc::new(|_path, body| {
+        anthropic_counting(1_000)
+    }
+
+    /// Anthropic, counting every prompt as `prompt` tokens.
+    fn anthropic_counting(prompt: u64) -> (String, Seen) {
+        fake(Arc::new(move |path, body| {
+            if path == "/v1/messages/count_tokens" {
+                return (
+                    200,
+                    "application/json",
+                    json!({ "input_tokens": prompt }).to_string(),
+                );
+            }
+            if body.contains("\"stop_sequences\":[\"cut\"]") {
+                let sse = [
+                    r#"event: message_start"#,
+                    r#"data: {"type":"message_start","message":{"usage":{"input_tokens":1200,"cache_read_input_tokens":300,"output_tokens":1}}}"#,
+                    "",
+                    "",
+                ]
+                .join("\n");
+                return (200, "text/event-stream", sse);
+            }
             if body.contains("\"stream\":true") {
                 let sse = [
                     r#"event: message_start"#,
@@ -628,6 +815,27 @@ mod tests {
             .unwrap()
     }
 
+    /// The bodies of the message calls Anthropic was sent, not the counting.
+    fn messages_sent(seen: &Seen) -> Vec<serde_json::Value> {
+        seen.lock()
+            .unwrap()
+            .iter()
+            .filter(|(p, _, _)| p == "/v1/messages")
+            .map(|(_, _, b)| serde_json::from_str(b).unwrap())
+            .collect()
+    }
+
+    /// Waits for `n` charges to reach HQ: a streamed call's follows its end.
+    async fn charges(seen: &Seen, n: usize) -> Vec<i64> {
+        for _ in 0..200 {
+            if charged(seen).len() >= n {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        charged(seen)
+    }
+
     fn charged(seen: &Seen) -> Vec<i64> {
         seen.lock()
             .unwrap()
@@ -653,21 +861,32 @@ mod tests {
             .unwrap();
         assert_eq!(res.status(), StatusCode::OK);
         let sent = to_anthropic.lock().unwrap().clone();
-        let (path, headers, body) = &sent[0];
-        assert_eq!(path, "/v1/messages");
-        let key = headers
-            .iter()
-            .find(|(k, _)| k == "x-api-key")
-            .map(|(_, v)| v.as_str());
+        let paths: Vec<&str> = sent.iter().map(|(p, _, _)| p.as_str()).collect();
         assert_eq!(
-            key,
-            Some("sk-ant-the-owners-key"),
-            "the owner's key, never the turn's token"
+            paths,
+            ["/v1/messages/count_tokens", "/v1/messages"],
+            "the prompt is counted first"
         );
-        let body: serde_json::Value = serde_json::from_str(body).unwrap();
+        let counted: serde_json::Value = serde_json::from_str(&sent[0].2).unwrap();
+        assert!(
+            counted.get("max_tokens").is_none(),
+            "counting takes no max_tokens: {counted}"
+        );
+        for (_, headers, _) in &sent {
+            let key = headers
+                .iter()
+                .find(|(k, _)| k == "x-api-key")
+                .map(|(_, v)| v.as_str());
+            assert_eq!(
+                key,
+                Some("sk-ant-the-owners-key"),
+                "the owner's key, never the turn's token"
+            );
+        }
         assert_eq!(
-            body["max_tokens"], 4_000,
-            "4¢ left buys 4k tokens of Sonnet out"
+            messages_sent(&to_anthropic)[0]["max_tokens"],
+            3_800,
+            "4¢ left, less 1k tokens in at $2, buys 3.8k tokens of Sonnet out"
         );
         assert_eq!(
             charged(&to_hq),
@@ -688,18 +907,165 @@ mod tests {
         assert_eq!(res.status(), StatusCode::OK);
         let body = res.into_body().collect().await.unwrap().to_bytes();
         assert!(String::from_utf8_lossy(&body).contains("message_stop"));
-        // The charge follows the stream's end.
-        for _ in 0..100 {
-            if !charged(&to_hq).is_empty() {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-        }
         assert_eq!(
-            charged(&to_hq),
-            vec![3_000],
-            "1200 in, 300 read from the cache, 57 out"
+            charges(&to_hq, 1).await,
+            vec![3_030],
+            "1200 in at $2, 300 read from the cache at 20¢, 57 out at $10"
         );
+    }
+
+    #[tokio::test]
+    async fn a_stream_cut_before_its_output_is_counted_is_charged_its_whole_cap() {
+        let (hq_url, to_hq) = hq(400_000);
+        let (upstream, _) = anthropic();
+        let app = super::super::app(node(&hq_url, &upstream));
+        let res = app
+            .oneshot(ask(
+                "good",
+                json!({ "model": "claude-sonnet-5-5", "max_tokens": 1000, "stream": true,
+                "stop_sequences": ["cut"], "messages": [] }),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let _ = res.into_body().collect().await;
+        assert_eq!(
+            charges(&to_hq, 1).await,
+            vec![12_460],
+            "1200 in, 300 read, and all 1,000 tokens it may have sent"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_big_prompt_on_little_budget_never_reaches_the_model() {
+        let (hq_url, to_hq) = hq(100_000);
+        let (upstream, to_anthropic) = anthropic_counting(200_000);
+        let app = super::super::app(node(&hq_url, &upstream));
+        let res = app
+            .oneshot(ask(
+                "good",
+                json!({ "model": "claude-sonnet-5-5", "max_tokens": 10, "messages": [] }),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::PAYMENT_REQUIRED);
+        let body = res.into_body().collect().await.unwrap().to_bytes();
+        let said: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(said["error"]["type"], "billing_error");
+        assert!(
+            messages_sent(&to_anthropic).is_empty(),
+            "200k tokens in at $2 is 40¢, and 10¢ is left"
+        );
+        assert!(charged(&to_hq).is_empty(), "counting is free");
+    }
+
+    #[tokio::test]
+    async fn a_turns_calls_go_one_at_a_time_each_capped_by_what_is_left() {
+        let (hq_url, _) = hq_spending(40_000);
+        let (upstream, to_anthropic) = anthropic();
+        let app = super::super::app(node(&hq_url, &upstream));
+        let call = || {
+            ask(
+                "good",
+                json!({ "model": "claude-sonnet-5-5", "max_tokens": 64_000, "messages": [] }),
+            )
+        };
+        let (first, second) =
+            tokio::join!(app.clone().oneshot(call()), app.clone().oneshot(call()));
+        assert_eq!(first.unwrap().status(), StatusCode::OK);
+        assert_eq!(second.unwrap().status(), StatusCode::OK);
+        let mut caps: Vec<u64> = messages_sent(&to_anthropic)
+            .iter()
+            .map(|b| b["max_tokens"].as_u64().unwrap())
+            .collect();
+        caps.sort_unstable();
+        assert_eq!(
+            caps,
+            [3_500, 3_800],
+            "the second is capped by what the first left: 3.7¢, less 0.2¢ in"
+        );
+    }
+
+    #[tokio::test]
+    async fn only_what_the_relay_can_meter_is_passed_on() {
+        let (hq_url, _) = hq(400_000);
+        let (upstream, to_anthropic) = anthropic();
+        let app = super::super::app(node(&hq_url, &upstream));
+        for refused in [
+            json!({ "model": "claude-opus-5-5", "max_tokens": 10, "messages": [], "speed": "fast" }),
+            json!({ "model": "claude-sonnet-5-5", "max_tokens": 10, "messages": [],
+                    "tools": [{ "type": "web_fetch_20260209", "name": "web_fetch" }] }),
+            json!({ "model": "claude-sonnet-5-5", "max_tokens": 10, "messages": [],
+                    "mcp_servers": [{ "type": "url", "url": "https://example.com/mcp", "name": "x" }] }),
+        ] {
+            let res = app
+                .clone()
+                .oneshot(ask("good", refused.clone()))
+                .await
+                .unwrap();
+            assert_eq!(res.status(), StatusCode::BAD_REQUEST, "{refused}");
+        }
+        let mut counting = ask(
+            "good",
+            json!({ "model": "claude-sonnet-5-5", "messages": [],
+                    "mcp_servers": [{ "type": "url", "url": "https://example.com/mcp", "name": "x" }] }),
+        );
+        *counting.uri_mut() = "/team-relay/v1/messages/count_tokens".parse().unwrap();
+        let res = app.clone().oneshot(counting).await.unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST, "counting too");
+        assert!(
+            to_anthropic.lock().unwrap().is_empty(),
+            "nothing was sent on"
+        );
+
+        let mut fine = ask(
+            "good",
+            json!({ "model": "claude-sonnet-5-5", "max_tokens": 10, "messages": [] }),
+        );
+        fine.headers_mut().insert(
+            "anthropic-beta",
+            "fast-mode-2026-02-01,interleaved-thinking-2025-05-14"
+                .parse()
+                .unwrap(),
+        );
+        let res = app.oneshot(fine).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let sent = to_anthropic.lock().unwrap().clone();
+        for (_, headers, _) in &sent {
+            let beta = headers
+                .iter()
+                .find(|(k, _)| k == "anthropic-beta")
+                .map(|(_, v)| v.as_str());
+            assert_eq!(beta, Some("interleaved-thinking-2025-05-14"));
+        }
+    }
+
+    #[tokio::test]
+    async fn opus_waits_for_the_owner_and_a_researcher_thinks_with_haiku() {
+        let (upstream, to_anthropic) = anthropic();
+        let call = |model: &str| {
+            ask(
+                "good",
+                json!({ "model": model, "max_tokens": 10, "messages": [] }),
+            )
+        };
+        let (developer, _) = hq_as(400_000, "developer");
+        let res = super::super::app(node(&developer, &upstream))
+            .oneshot(call("claude-opus-5-5"))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::FORBIDDEN);
+        let (researcher, _) = hq_as(400_000, "researcher");
+        let app = super::super::app(node(&researcher, &upstream));
+        let res = app
+            .clone()
+            .oneshot(call("claude-sonnet-5-5"))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::FORBIDDEN);
+        assert!(to_anthropic.lock().unwrap().is_empty());
+        let res = app.oneshot(call("claude-haiku-5-5")).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
     }
 
     #[tokio::test]

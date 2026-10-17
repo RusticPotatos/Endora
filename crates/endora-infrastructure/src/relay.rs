@@ -151,7 +151,7 @@ pub fn price_of(model: &str, prompt: u64) -> Option<Price> {
         return Some(Price {
             input: 2.0,
             cache_write: 4.0,
-            cache_read: 0.10,
+            cache_read: 0.20,
             output: 10.0,
         });
     }
@@ -244,17 +244,25 @@ pub fn affordable_output(price: Price, left_micros: i64) -> u64 {
 }
 
 /// Reads the usage out of a streamed reply as it passes, event by event: the input in
-/// `message_start`, the output (a running total) in each `message_delta`.
+/// `message_start`, then running totals in each `message_delta`, which can raise the input
+/// and cache counts too (a server-side step adds input part way). Each count is the most any
+/// event has said, so a later event never lowers what is charged.
 #[derive(Debug, Default)]
 pub struct StreamedUsage {
     pending: String,
     used: Used,
+    finished: bool,
 }
 
 impl StreamedUsage {
-    /// Takes the next piece of the stream, whatever its size.
+    /// Takes the next piece of the stream, whatever its size. Events may be framed with
+    /// `\r\n` as well as `\n`; a carriage return is never part of the JSON in them.
     pub fn feed(&mut self, bytes: &[u8]) {
-        self.pending.push_str(&String::from_utf8_lossy(bytes));
+        self.pending.extend(
+            String::from_utf8_lossy(bytes)
+                .chars()
+                .filter(|c| *c != '\r'),
+        );
         while let Some(end) = self.pending.find("\n\n") {
             let event: String = self.pending.drain(..end + 2).collect();
             for line in event.lines() {
@@ -265,22 +273,27 @@ impl StreamedUsage {
                     continue;
                 };
                 match v["type"].as_str() {
-                    Some("message_start") => {
-                        let started = Used::from_usage(&v["message"]["usage"]);
-                        self.used = Used {
-                            output: self.used.output.max(started.output),
-                            ..started
-                        };
-                    }
+                    Some("message_start") => self.raise(&v["message"]["usage"]),
                     Some("message_delta") => {
-                        if let Some(out) = v["usage"]["output_tokens"].as_u64() {
-                            self.used.output = self.used.output.max(out);
-                        }
+                        self.raise(&v["usage"]);
+                        self.finished = true;
                     }
+                    // Anthropic ended the stream itself, and said why.
+                    Some("error") => self.finished = true,
                     _ => {}
                 }
             }
         }
+    }
+
+    fn raise(&mut self, usage: &Value) {
+        let said = Used::from_usage(usage);
+        self.used = Used {
+            input: self.used.input.max(said.input),
+            cache_write: self.used.cache_write.max(said.cache_write),
+            cache_read: self.used.cache_read.max(said.cache_read),
+            output: self.used.output.max(said.output),
+        };
     }
 
     /// What the stream has reported so far.
@@ -288,6 +301,170 @@ impl StreamedUsage {
     pub const fn used(&self) -> Used {
         self.used
     }
+
+    /// Whether the stream reached its last usage (or Anthropic's own error). Until then the
+    /// output count is only the first event's, however much was sent after it.
+    #[must_use]
+    pub const fn finished(&self) -> bool {
+        self.finished
+    }
+}
+
+/// The fields of a message call the relay passes on: the ones whose whole cost is in the
+/// reply's `usage`, at the prices above. Anything else (fast mode, fallbacks to another
+/// model, MCP servers, a container, a service tier, where inference runs) is billed in ways
+/// the relay cannot see, or reaches past the fence, so it is refused.
+const METERED_FIELDS: [&str; 15] = [
+    "model",
+    "messages",
+    "system",
+    "max_tokens",
+    "stream",
+    "stop_sequences",
+    "temperature",
+    "top_p",
+    "top_k",
+    "metadata",
+    "tools",
+    "tool_choice",
+    "thinking",
+    "output_config",
+    "cache_control",
+];
+
+/// Why a call cannot be metered, if it cannot: a field not in [`METERED_FIELDS`], a tool that
+/// runs on Anthropic's side (web search and fetch, code execution, MCP: each with fees of its
+/// own, and each a way out to the internet), or content Anthropic would fetch from a URL or
+/// from the owner's files. `None` for a call the relay may pass on.
+#[must_use]
+pub fn unmetered(call: &Value) -> Option<String> {
+    let Some(fields) = call.as_object() else {
+        return Some("the call is not a JSON object".to_owned());
+    };
+    if let Some(field) = fields
+        .keys()
+        .find(|k| !METERED_FIELDS.contains(&k.as_str()))
+    {
+        return Some(format!("the relay does not pass on `{field}`"));
+    }
+    if let Some(tools) = fields.get("tools") {
+        let Some(tools) = tools.as_array() else {
+            return Some("`tools` is not a list".to_owned());
+        };
+        let server_side = tools.iter().find(|t| {
+            t.get("type")
+                .is_some_and(|kind| kind.as_str() != Some("custom"))
+        });
+        if let Some(tool) = server_side {
+            return Some(format!(
+                "the relay passes on only the worker's own tools, not `{}`",
+                tool["type"].as_str().unwrap_or("?")
+            ));
+        }
+    }
+    for part in ["system", "messages"] {
+        if let Some(kind) = fields.get(part).and_then(fetched_source) {
+            return Some(format!(
+                "content from a `{kind}` source is not passed on: send it inline"
+            ));
+        }
+    }
+    None
+}
+
+/// The kind of the first image's or document's source in `value` that Anthropic would fetch
+/// rather than read inline: from a URL, or from a file stored with the owner's account. Only
+/// those blocks are looked at, so a tool's input that happens to hold a `source` is not.
+fn fetched_source(value: &Value) -> Option<String> {
+    match value {
+        Value::Array(items) => items.iter().find_map(fetched_source),
+        Value::Object(fields) => {
+            let block = matches!(
+                fields.get("type").and_then(Value::as_str),
+                Some("image" | "document")
+            );
+            let kind = fields
+                .get("source")
+                .filter(|_| block)
+                .map(|s| s["type"].as_str().unwrap_or("unknown"))
+                .filter(|k| !matches!(*k, "base64" | "text" | "content"));
+            if let Some(kind) = kind {
+                return Some(kind.to_owned());
+            }
+            fields.values().find_map(fetched_source)
+        }
+        _ => None,
+    }
+}
+
+/// The betas the relay passes on: ones that change nothing about what a call costs beyond
+/// what its `usage` reports. Any other beta the worker names is dropped.
+const METERED_BETAS: [&str; 5] = [
+    "interleaved-thinking-2025-05-14",
+    "fine-grained-tool-streaming-2025-05-14",
+    "token-efficient-tools-2025-02-19",
+    "extended-cache-ttl-2025-04-11",
+    "prompt-caching-2024-07-31",
+];
+
+/// The worker's `anthropic-beta` header with only the [`METERED_BETAS`] left in it, or `None`
+/// when none is.
+#[must_use]
+pub fn betas_passed(header: Option<&str>) -> Option<String> {
+    let kept: Vec<&str> = header?
+        .split(',')
+        .map(str::trim)
+        .filter(|b| METERED_BETAS.contains(b))
+        .collect();
+    if kept.is_empty() {
+        return None;
+    }
+    Some(kept.join(","))
+}
+
+/// Whether a member in `role` may call `model`, by the plan's models by role: Sonnet for the
+/// developer, the reviewer and the lead, Haiku for the researcher (and for anyone, being
+/// cheaper). Opus only when the owner approves it for a task, which HQ cannot ask yet, so
+/// never for now. A role the relay does not know may call nothing.
+///
+/// # Errors
+/// Why not, said to the worker.
+pub fn may_use(role: &str, model: &str) -> Result<(), String> {
+    let is = |family: &str| model == family || model.starts_with(&format!("{family}-"));
+    if is("claude-opus-5-5") {
+        return Err(
+            "Opus needs the owner's approval for the task, and HQ cannot ask for it yet".to_owned(),
+        );
+    }
+    let allowed = match role {
+        "developer" | "reviewer" | "lead" => is("claude-sonnet-5-5") || is("claude-haiku-5-5"),
+        "researcher" => is("claude-haiku-5-5"),
+        _ => false,
+    };
+    if allowed {
+        return Ok(());
+    }
+    Err(format!("a {role} may not use {model}"))
+}
+
+/// What to ask Anthropic to count before a call: the call's prompt, without what only a
+/// message takes (`max_tokens`, `stream`, sampling and the rest).
+#[must_use]
+pub fn counted(call: &Value) -> Value {
+    let mut asked = serde_json::Map::new();
+    for field in [
+        "model",
+        "messages",
+        "system",
+        "tools",
+        "tool_choice",
+        "thinking",
+    ] {
+        if let Some(v) = call.get(field) {
+            asked.insert(field.to_owned(), v.clone());
+        }
+    }
+    Value::Object(asked)
 }
 
 #[cfg(test)]
@@ -317,8 +494,13 @@ mod tests {
         };
         assert_eq!(
             cost(sonnet, cached),
-            14_000,
-            "100k read at 10¢, 1k written at $4"
+            24_000,
+            "100k read at 20¢ (a tenth of input), 1k written at $4"
+        );
+        let opus = price_of("claude-opus-5-5", 0).unwrap();
+        assert!(
+            (opus.cache_read - 0.20).abs() < 1e-9,
+            "Opus 5.5 reads at 20¢ too"
         );
         assert!(
             price_of("claude-fable-5-1", 0).is_none(),
@@ -387,6 +569,119 @@ mod tests {
                 cache_read: 300,
                 output: 57
             }
+        );
+        assert!(usage.finished());
+    }
+
+    #[test]
+    fn a_streamed_reply_counts_the_input_its_last_delta_reports_and_crlf_framing() {
+        let stream = [
+            "event: message_start\r\ndata: ",
+            &json!({ "type": "message_start", "message": { "usage": { "input_tokens": 1200, "output_tokens": 1 } } }).to_string(),
+            "\r\n\r\nevent: message_delta\r\ndata: ",
+            &json!({ "type": "message_delta", "usage": { "input_tokens": 9000, "cache_creation_input_tokens": 40, "cache_read_input_tokens": 300, "output_tokens": 57 } }).to_string(),
+            "\r\n\r\n",
+        ]
+        .concat();
+        let mut usage = StreamedUsage::default();
+        for piece in stream.as_bytes().chunks(5) {
+            usage.feed(piece);
+        }
+        assert_eq!(
+            usage.used(),
+            Used {
+                input: 9000,
+                cache_write: 40,
+                cache_read: 300,
+                output: 57
+            },
+            "the delta's counts are the whole call's"
+        );
+    }
+
+    #[test]
+    fn a_stream_cut_before_its_last_delta_is_not_finished() {
+        let mut usage = StreamedUsage::default();
+        usage.feed(
+            format!(
+                "event: message_start\ndata: {}\n\n",
+                json!({ "type": "message_start", "message": { "usage": { "input_tokens": 10, "output_tokens": 1 } } })
+            )
+            .as_bytes(),
+        );
+        assert!(!usage.finished(), "its output was never reported");
+    }
+
+    #[test]
+    fn a_call_may_use_only_what_the_relay_can_meter() {
+        let fine = json!({ "model": "claude-sonnet-5-5", "max_tokens": 10, "stream": true,
+            "system": [{ "type": "text", "text": "Be brief." }],
+            "messages": [{ "role": "user", "content": [{ "type": "image", "source": { "type": "base64", "media_type": "image/png", "data": "AA==" } }] }],
+            "tools": [{ "name": "post", "input_schema": { "type": "object" } }, { "type": "custom", "name": "claim", "input_schema": { "type": "object" } }],
+            "thinking": { "type": "adaptive" }, "output_config": { "effort": "low" }, "metadata": {} });
+        assert_eq!(unmetered(&fine), None);
+        let mut echoed = fine.clone();
+        echoed["messages"] = json!([{ "role": "assistant", "content": [{ "type": "tool_use", "id": "t", "name": "post",
+            "input": { "source": { "type": "url" } } }] }]);
+        assert_eq!(
+            unmetered(&echoed),
+            None,
+            "a tool's own input is not content"
+        );
+        let refused = |change: serde_json::Value| {
+            let mut call = fine.clone();
+            for (k, v) in change.as_object().unwrap() {
+                call[k] = v.clone();
+            }
+            unmetered(&call)
+        };
+        for change in [
+            json!({ "speed": "fast" }),
+            json!({ "fallbacks": "default" }),
+            json!({ "mcp_servers": [{ "type": "url", "url": "https://example.com/mcp", "name": "x" }] }),
+            json!({ "service_tier": "auto" }),
+            json!({ "container": "c" }),
+            json!({ "tools": [{ "type": "web_search_20260209", "name": "web_search" }] }),
+            json!({ "tools": [{ "type": "web_fetch_20260209", "name": "web_fetch" }] }),
+            json!({ "messages": [{ "role": "user", "content": [{ "type": "image", "source": { "type": "url", "url": "https://example.com/?d=1" } }] }] }),
+            json!({ "messages": [{ "role": "user", "content": [{ "type": "tool_result", "tool_use_id": "t", "content": [{ "type": "document", "source": { "type": "file", "file_id": "file_1" } }] }] }] }),
+            json!({ "tools": "all" }),
+        ] {
+            assert!(refused(change.clone()).is_some(), "{change}");
+        }
+        assert!(unmetered(&json!([])).is_some(), "a call is an object");
+    }
+
+    #[test]
+    fn only_betas_known_to_cost_nothing_extra_are_passed_on() {
+        assert_eq!(
+            betas_passed(Some(
+                "fast-mode-2026-02-01, interleaved-thinking-2025-05-14,mcp-client-2025-11-20"
+            )),
+            Some("interleaved-thinking-2025-05-14".to_owned())
+        );
+        assert_eq!(betas_passed(Some("server-side-fallback-2026-07-01")), None);
+        assert_eq!(betas_passed(None), None);
+    }
+
+    #[test]
+    fn a_role_uses_the_models_the_plan_gives_it_and_opus_waits_for_the_owner() {
+        for role in ["developer", "reviewer", "lead"] {
+            assert!(may_use(role, "claude-sonnet-5-5").is_ok(), "{role}");
+            assert!(
+                may_use(role, "claude-haiku-5-5").is_ok(),
+                "{role}: cheaper is fine"
+            );
+        }
+        assert!(may_use("researcher", "claude-haiku-5-5-20261001").is_ok());
+        assert!(may_use("researcher", "claude-sonnet-5-5").is_err());
+        for role in ["developer", "lead", "researcher", "reviewer"] {
+            let why = may_use(role, "claude-opus-5-5").unwrap_err();
+            assert!(why.contains("owner"), "{why}");
+        }
+        assert!(
+            may_use("", "claude-sonnet-5-5").is_err(),
+            "no role, no model"
         );
     }
 }

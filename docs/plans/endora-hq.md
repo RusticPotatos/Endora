@@ -405,7 +405,15 @@ team pool stays $70 a month. The pieces and their contracts:
    compose, not published), which serves the relays and nothing else: the node's main port
    is HTTPS with a self-signed certificate a worker cannot trust.
    - `POST /team-relay/v1/messages`: Anthropic, with the owner's key, capped and charged
-     (built).
+     (built). It passes on only what it can meter: the plain message fields, the worker's
+     own tools (no server tools), inline content (nothing fetched from a URL or a file),
+     and a short list of betas that cost nothing extra; anything else is refused, and other
+     betas are dropped. The model must be one the member's role may use (Sonnet or Haiku;
+     Haiku only for the researcher); Opus is refused until the owner can approve it for a
+     task. The prompt is counted first (free) and its cost taken off what the turn has left;
+     the reply's `max_tokens` is capped by the rest, and a prompt that leaves nothing is
+     refused with 402. A turn's calls go one at a time, each after the one before was
+     charged. A stream cut before its last usage is charged its whole cap.
    - `POST /team-relay/local/v1/chat/completions`: the local model, OpenAI-compatible, not
      streamed. The relay checks the token with HQ, sends the call to the first enabled
      Everyday entry on the house's network (else the model the node was installed with),
