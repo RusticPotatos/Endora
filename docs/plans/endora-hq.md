@@ -145,7 +145,9 @@ Everything a member does starts with a **wake**: one entry point, with a reason.
 include: assigned a task, mentioned in a thread, a waited-on task finished, all sub-tasks
 finished, a proposal decided, a timer for the lead to look over the team's work, a retry,
 a recovery nudge, a check-back the member asked for, and an alarm passed into a routine's
-open task ([ADR 0107](../adr/0107-routines-alarms-and-check-backs.md)).
+open task, or Endora's word there that what alarmed is back up
+([ADR 0107](../adr/0107-routines-alarms-and-check-backs.md)). An alarm is a moment: the member
+checks the state now before acting, and closes the task if everything has recovered.
 
 Goals are passive and work always arrives as a task: a member never goes looking for work. A
 wake on a clock (a timer, a check-back, an alarm) that names no task, for a member with no open
@@ -305,7 +307,7 @@ container:
 | `claim` | Takes the task; refused if another member has it |
 | `post` | Writes to the task's thread, at most 4,000 characters a post |
 | `set_status` | Moves the task on, with a reason; `done` is refused (only the gate sets it), except a routine's check, which its member closes once taken |
-| `create_task` | Creates a sub-task for another member, with what it waits on |
+| `create_task` | Creates a sub-task for another member, with what it waits on. Refused when an open task under the same goal is already about the same home-lab containers (named in its title, or in its description when the title names none): "#664 already covers this (deluge, nzbget, prowlarr): add to it with post in #664, rather than a second task". The member's own task above the new one, and what is above it, never counts (ADR 0107) |
 | `ask_owner` | Asks a question or puts a proposal and ends the turn: HQ ends the run there and refuses any further call from it, and the worker exits 0. With a CEO at work it goes up the chain, in the task's thread (section 5); the CEO's is `{ "decision", "recommendation", "why" }`, a decision for the board's desk after the reviewer. With no CEO it goes on the owner's desk. One waits at a time per member and task. The owner can answer on the card, into the task's thread, and seeing it wakes the member who asked |
 | `check_back` | Wakes the member on its task again after 5–720 minutes, once, if it is still open: after a fix, to confirm it held |
 | `run_gate` | Runs the tests and build on a runner and returns the result |
@@ -325,7 +327,12 @@ act on, and only the gate sets `done`, for everyone.
 
 Model use is not a tool: the node's model relay charges HQ for every call a turn makes, as it
 makes it, so a worker never reports its own (it would pay twice). The worker's own
-instructions (how to take a good turn) are written for Endora from scratch.
+instructions (how to take a good turn) are written for Endora from scratch. HQ's briefing names
+its own tools as "Your tools at HQ", with Endora's tools on the home lab beside them, and the
+worker's instructions name the container tools the node offered the turn as its own
+("this turn they are yours: homelab_status, ..."): live, a lead on Claude read a briefing that
+listed only HQ's tools as all it had, and said three times it could not read the home lab,
+though `homelab_status` was in its tool list.
 
 ### Runners
 
@@ -650,6 +657,14 @@ work:
   only a change, never what was wrong at the node's start, never Endora's own, at most one a
   container an hour. HQ fires the first routine that is on and takes alarms: a new task, or a
   post in its open task that wakes its member. The demo takes none.
+- **Recoveries**: when something that alarmed within the day is running and healthy again (a
+  service that answers), once an alarm, the node tells HQ (`POST /v1/alarms/recovered`,
+  `{ "text": "deluge is back up at 13:43" }`, signed), and HQ posts "Recovered: …" in the
+  routine's open task as Endora's, waking whoever has it (`alarm`). No open task, no news: it
+  hands out no work. The worker's rules: an alarm is a moment; check `homelab_status` first,
+  and close the task if everything has recovered.
+- **One task a problem**: a member's `create_task` is refused, naming the task to add to, when
+  an open task under the same goal is already about the same containers (section 6).
 - **Check-backs**: the team tool `check_back { minutes, why }` (5–720) wakes the turn's member
   on its task later, if it is still open; a newer one from the member replaces its older, at
   most three a task; the next briefing says why it came back.
@@ -693,7 +708,9 @@ in `domains/capabilities/src/bridge.rs`, in this order:
 - **Never offered**: off; Restricted (and anything unclassified); Endora's administration (the
   settings-only connection entries); the owner's own (`mail`, `own_activity`, `read_page`,
   `brief`, `image_review`, `location`, and tool-server tools named for mail, chat, brain,
-  memory, Endora, the team or money); and what is not set up.
+  memory, Endora, the team or money); every act of the tool server paired with Home Assistant
+  (the owner's devices are not the team's to switch: live, the developer asked to run
+  `HassTurnOff` "to restart" a container); and what is not set up.
 - **Tier**: Confidential only to a turn on a local model, but for what the owner allowed the
   lead on Claude (ADR 0109): `container_logs`, `sonarr_queue` and `radarr_queue`. HQ's
   `/v1/team/turn` answer carries `"cloud": true` (and the `brain`) for a member whose brain is

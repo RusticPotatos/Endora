@@ -9,6 +9,16 @@ tagged release.
 
 ### Added
 
+- **Coming back is news too** ([ADR 0107](docs/adr/0107-routines-alarms-and-check-backs.md)).
+  When a container or service that alarmed within the day is running and healthy again, the
+  node tells HQ once (`POST /v1/alarms/recovered`), and HQ posts "Recovered: deluge is back up
+  at 13:43" in the alarm's open task, waking whoever has it. The worker's rules say an alarm is
+  a moment: check `homelab_status` before acting, and close the task if everything recovered.
+- **One task a problem** ([ADR 0107](docs/adr/0107-routines-alarms-and-check-backs.md)). A
+  member's new task is refused when an open task under the same goal is already about the same
+  home-lab containers, naming it: "#664 already covers this (deluge, nzbget, prowlarr): add to
+  it with post in #664, rather than a second task".
+
 - **Cheaper cloud turns** ([ADR 0109's cost notes](docs/adr/0109-a-brain-per-member.md#cost-notes)).
   Each of the worker's rounds on Claude asks for Anthropic's automatic prompt cache, so a round
   reads the round before's prompt at the cache price and writes only what is new; the prefix is
@@ -324,6 +334,15 @@ tagged release.
 
 ### Fixed
 
+- **The team never switches the owner's devices** ([ADR 0108](docs/adr/0108-the-bridge.md)).
+  Every act of the tool server paired with Home Assistant (`HassTurnOff`, `HassTurnOn` and the
+  rest) is kept off the bridge: live, the developer asked to turn off "deluge" to restart it.
+  The server's named reader stays a read under the tier's rules.
+- **A lead on Claude knows it can read the home lab.** It said three times its tools could not,
+  though `homelab_status` was offered (it had read the lab with it minutes before): HQ's
+  briefing listed only HQ's tools as "Your tools". The line is now "Your tools at HQ", with
+  Endora's home-lab tools beside them, and the worker names the container tools the node
+  offered as the turn's own.
 - **`restart_container` never starts a stopped container** ([ADR 0106](docs/adr/0106-team-contracts.md)):
   Portainer's restart would start an exited one, and a container may be stopped on purpose
   (an old sound server whose ports the sound hub needs). Only a running container is
