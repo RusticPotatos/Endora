@@ -241,7 +241,14 @@ async function spotify(method, path, body, retried) {
   });
   if (res.status === 401 && !retried) return spotify(method, path, body, true);
   if (res.status === 202 || res.status === 204) return null;
-  if (res.status === 403) throw new Error("Spotify needs Premium for that");
+  if (res.status === 403) {
+    // Spotify says why; a missing permission is an older sign-in, not a missing Premium.
+    let said = "";
+    try { said = String(((await res.json()) || {}).error.message || ""); } catch (_) {}
+    if (/scope/i.test(said)) throw new Error("Endora's Spotify sign-in doesn't allow that yet: in Settings → Connections, disconnect Spotify and connect it again");
+    if (/premium/i.test(said) || !said) throw new Error("Spotify needs Premium for that");
+    throw new Error("Spotify said no: " + said);
+  }
   if (res.status === 404) throw new Error("No device is playing. Pick one under Play on");
   if (res.status === 429) throw new Error("Spotify is busy; try again in a moment");
   if (!res.ok) throw new Error("Spotify could not do that");
