@@ -678,3 +678,49 @@ fn the_lead_notes_a_lesson_in_the_goals_notes_and_the_owner_is_told() {
         .unwrap();
     assert_eq!(schema["inputSchema"]["required"], json!(["lesson"]));
 }
+
+/// The lead is told who is on the team and to split the work: the developer fixes, the
+/// researcher looks things up, the reviewer checks, and a step her brain may not take goes to
+/// a member who may. Nobody else's briefing carries it.
+#[test]
+fn the_leads_briefing_names_the_team_and_says_to_hand_work_on() {
+    let clock = Hands(AtomicI64::new(1_792_166_400_000));
+    let (hq, s, linus) = started(&clock);
+    let ada = hq
+        .store()
+        .members()
+        .unwrap()
+        .into_iter()
+        .find(|m| m.name == "Ada")
+        .unwrap()
+        .id;
+    hq.add_task(
+        Author::Owner,
+        NewTask {
+            goal: s.goal,
+            parent: None,
+            title: "Check the home lab".to_owned(),
+            description: String::new(),
+            assignee: Some(ada),
+            priority: Priority::Normal,
+            waits_on: Vec::new(),
+        },
+    )
+    .unwrap();
+    hq.tick().unwrap();
+    let lead = hq
+        .runner()
+        .started()
+        .into_iter()
+        .find(|c| c.member == ada)
+        .expect("the lead's turn started");
+    let (run, me) = turn(&hq, &lead.token);
+    let told = call(&hq, &run, &me, "my_turn", &json!({})).unwrap();
+    assert!(told.contains("Your team:"), "{told}");
+    assert!(told.contains("Linus (developer, Local)"), "{told}");
+    assert!(told.contains("Grace (reviewer, Local)"), "{told}");
+    assert!(told.contains("hand"), "{told}");
+    let (run, me) = turn(&hq, &linus.token);
+    let told = call(&hq, &run, &me, "my_turn", &json!({})).unwrap();
+    assert!(!told.contains("Your team:"), "only the lead's: {told}");
+}

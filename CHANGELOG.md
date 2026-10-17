@@ -9,6 +9,11 @@ tagged release.
 
 ### Added
 
+- **HQ's team works as a team.** The lead's briefing names the team (each member's role and
+  brain) and says to plan and hand work on: fixes to the developer, look-ups to the researcher,
+  the reviewer checking. A cloud turn refused a Confidential step is told to hand it to a member
+  on the house's model. Work left in review with no review coming (moved there before the
+  reviewer path existed) wakes the reviewer after ten minutes, once.
 - **The team's rings, ring 1: a sandbox on the Pi** ([ADR 0110](docs/adr/0110-the-teams-rings.md),
   owner's decisions of 2026-10-17). The node's team listener (8788) is published on the house's
   network, every route on it needing a token, and serves the **team gateway**:

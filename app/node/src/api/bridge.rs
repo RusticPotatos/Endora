@@ -112,10 +112,14 @@ pub(super) fn offered_to(state: &AppState, turn: &Turn) -> Vec<Bridged> {
         .collect()
 }
 
-/// Why a cloud turn is refused a Confidential tool, as the model reads it.
+/// Why a cloud turn is refused a Confidential tool, as the model reads it, and what to do
+/// instead: a member thinking on the house's own model may take the step, so the lead hands it
+/// on rather than leaving it undone.
 pub(super) fn confidential(name: &str) -> String {
     format!(
-        "{name} gives back Confidential results, which stay with turns on the house's own model"
+        "{name} gives back Confidential results, which stay with turns on the house's own \
+         model: hand this step to a member who thinks on the house's model (create_task), \
+         rather than leaving it undone"
     )
 }
 
@@ -725,6 +729,13 @@ mod tests {
             StatusCode::FORBIDDEN,
             "the check point itself refuses"
         );
+    }
+
+    #[test]
+    fn a_cloud_turns_refusal_says_to_hand_the_step_on() {
+        let said = super::confidential("sonarr_retry_import");
+        assert!(said.contains("hand this step"), "{said}");
+        assert!(said.contains("create_task"), "{said}");
     }
 
     #[tokio::test]

@@ -1320,6 +1320,30 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         Ok(true)
     }
 
+    /// The lead's paragraph about the team: who is on it, with each one's role and brain, and
+    /// that the lead plans and hands work on rather than doing it all. Live, a lead on a small
+    /// model never delegated once; and a lead on a cloud brain may not take every step (the
+    /// house's Confidential actions stay with local members, ADR 0109).
+    fn team_for_the_lead(&self, lead: &Member) -> Done<String> {
+        let others: Vec<String> = self
+            .store
+            .members()?
+            .into_iter()
+            .filter(|m| m.id != lead.id && !m.paused)
+            .map(|m| format!("{} ({}, {})", m.name, m.role.name(), m.brain.label()))
+            .collect();
+        if others.is_empty() {
+            return Ok(String::new());
+        }
+        Ok(format!(
+            "Your team: {}. You lead: plan the work and hand its parts on with create_task \
+             (fixes to the developer, look-ups to the researcher); the reviewer checks work \
+             before it counts. When a step is one your tools refuse you, hand it to a member \
+             who may take it, rather than leaving it undone.\n",
+            others.join(", ")
+        ))
+    }
+
     /// What a member is told at the start of a turn.
     fn briefing(&self, member: &Member, run: &Run) -> Done<String> {
         let mut told = format!(
@@ -1343,6 +1367,9 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         let note = self.store.goal_note(task.goal)?;
         if !note.is_empty() {
             told.push_str(&format!("Notes from the owner for this goal: {note}\n"));
+        }
+        if member.role == Role::Lead {
+            told.push_str(&self.team_for_the_lead(member)?);
         }
         let mut why = vec![task.title.clone()];
         let mut parent = task.parent;
@@ -1988,8 +2015,9 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     }
 
     /// The tick's step 5b: open work with a member and nothing that will bring it back, for
-    /// [`STRANDED_AFTER_MS`]. `doing` work is step 5's. Returns how many were nudged and how
-    /// many went on the desk.
+    /// [`STRANDED_AFTER_MS`]. `doing` work is step 5's. Work left `in_review` with no review
+    /// coming wakes the reviewer instead of its owner (whose turns wait while it is reviewed).
+    /// Returns how many were nudged and how many went on the desk.
     fn recover_stranded(
         &self,
         tasks: &[Task],
@@ -2002,8 +2030,10 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         let wakes = self.store.wakes()?;
         let desk = self.store.desk()?;
         for task in tasks {
-            if !matches!(task.status, TaskStatus::Todo | TaskStatus::Blocked)
-                || live.contains(&Some(task.id))
+            if !matches!(
+                task.status,
+                TaskStatus::Todo | TaskStatus::Blocked | TaskStatus::InReview
+            ) || live.contains(&Some(task.id))
                 || !self.waits_over(&task.waits_on)?
                 || !self.store.held_wakes(task.id)?.is_empty()
             {
@@ -2039,8 +2069,12 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             }
             if !task.nudged {
                 self.store.set_nudged(task.id, true)?;
-                self.wake_held_lock(member, Some(task.id), WakeReason::AssignmentRecovery)?;
                 nudged += 1;
+                if task.status == TaskStatus::InReview {
+                    self.review_asked(task)?;
+                    continue;
+                }
+                self.wake_held_lock(member, Some(task.id), WakeReason::AssignmentRecovery)?;
                 continue;
             }
             self.store.set_task_status(task.id, TaskStatus::Blocked)?;
