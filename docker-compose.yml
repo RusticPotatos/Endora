@@ -41,7 +41,8 @@ services:
     security_opt: [no-new-privileges:true]
     restart: unless-stopped
   # Endora HQ (ADR 0102): the team service, in the same image as the node. Reachable only by
-  # the node, on this project's network: no port is published. Its database is its own; it
+  # the node, on this project's network: no port is published. The Pi reaches its worker and
+  # runner doors through the node's team gateway (ADR 0110). Its database is its own; it
   # holds no secret but the token it makes for the node, and nothing private. A scripted
   # demo team (HQ_DEMO=1) works on the simulated runner until real workers exist.
   hq:
@@ -196,6 +197,11 @@ services:
     restart: unless-stopped
     ports:
       - "8787:8787"
+      # The team listener (ENDORA_TEAM_ADDR, plain HTTP), published on the house's network for
+      # the Pi's runner and sandboxes (ADR 0110): the model relays, the contracts and the team
+      # gateway to HQ. Safe to publish because everything on it needs a token (a running
+      # turn's, or the runner's, which HQ checks).
+      - "8788:8788"
     volumes:
       # Everything stateful lives here: the SQLite database (every setting, API key and
       # sign-in secret) and the TLS cert/key. By default a Docker named volume, which sits
@@ -224,7 +230,8 @@ services:
     networks:
       default: {}
       # Also on the team's fenced network (ADR 0102), where a worker reaches the model relay
-      # here, opened only by its turn's token: plain HTTP on ENDORA_TEAM_ADDR, not published.
+      # here, opened only by its turn's token: plain HTTP on ENDORA_TEAM_ADDR, also published
+      # on 8788 for the Pi (ADR 0110).
       team:
         aliases: [node]
     # The image already defaults ENDORA_ADDR=0.0.0.0:8787 and
@@ -275,8 +282,8 @@ services:
       # in docker-compose.override.yml (kept local, so no private IP is in git).
       ENDORA_TLS: "1"
       # The team listener, in plain HTTP, for the team's workers: HQ's model relays (ADR 0102,
-      # phase 4) and the team's contracts (ADR 0106), served nowhere else. No port is published
-      # for it: only the fenced team network reaches it.
+      # phase 4), the team's contracts (ADR 0106) and the team gateway to HQ (ADR 0110), served
+      # nowhere else. Published on 8788 (above) for the Pi; everything on it needs a token.
       ENDORA_TEAM_ADDR: "0.0.0.0:8788"
       # Your time zone, by name (e.g. America/New_York), so a pattern at 07:30 is your 07:30
       # and the brief stays at its hour when the clocks change. Without one, the fixed offset

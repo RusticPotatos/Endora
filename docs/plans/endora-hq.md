@@ -485,8 +485,9 @@ team pool stays $70 a month. The pieces and their contracts:
    token (`Authorization: Bearer <token>`).
 2. **The model relays** in the node, outside `/v1`, opened by the same token. The workers
    reach them on a plain-HTTP listener of their own (`ENDORA_TEAM_ADDR`, `0.0.0.0:8788` in
-   compose, not published), which serves the relays and the team's contracts (below) and
-   nothing else: the node's main port
+   compose, published on the house's network for the Pi since ADR 0110, every route on it
+   needing a token), which serves the relays, the team's contracts (below) and the team
+   gateway, and nothing else: the node's main port
    is HTTPS with a self-signed certificate a worker cannot trust.
    - `POST /team-relay/v1/messages`: Anthropic, with the owner's key, capped and charged
      (built). It passes on only what it can meter: the plain message fields, the worker's

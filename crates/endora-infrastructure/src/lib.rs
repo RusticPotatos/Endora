@@ -37,7 +37,7 @@ pub use endora_capabilities::{
     Capability, CapabilityError, CapabilityInfo, CapabilitySettings, RegistryRunner, SettingSpec,
     default_capabilities, redact_pii_in_value, scan_outbound_secret,
 };
-pub use hq::{HqClient, HqError};
+pub use hq::{HqClient, HqError, Passed, Passing};
 pub use ids::RandomIdSource;
 pub use sound::{Method as SoundMethod, SoundClient, SoundError};
 pub use sqlite::SqliteStore;

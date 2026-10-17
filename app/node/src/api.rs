@@ -672,11 +672,11 @@ pub fn app(state: AppState) -> Router {
         .with_state(state)
 }
 
-/// HQ's model relays (ADR 0102, phase 4) and the team's contracts (ADR 0106), and nothing else
-/// of the node: what the plain-HTTP listener on the team's fenced network serves
+/// HQ's model relays (ADR 0102, phase 4), the team's contracts (ADR 0106) and the team gateway
+/// (ADR 0110), and nothing else of the node: what the plain-HTTP team listener serves
 /// (`ENDORA_TEAM_ADDR`), and the only place they are served. A worker has no way to trust the
 /// node's self-signed certificate, and a turn's own token is its credential, not the owner's
-/// sign-in.
+/// sign-in. Every route here needs a token: a turn's, or the runner's for its routes.
 pub fn team_relay(state: AppState) -> Router {
     relay_routes().with_state(state)
 }
@@ -695,6 +695,13 @@ fn relay_routes() -> Router<AppState> {
         // The team's contracts (ADR 0106): what Endora offers a turn on the home lab.
         .route("/team-relay/contracts", get(contracts::list))
         .route("/team-relay/contracts/{name}", post(contracts::call))
+        // The team gateway (ADR 0110): HQ's two doors for callers on the house's network,
+        // passed on untouched.
+        .route("/team-gateway/mcp", axum::routing::any(gateway::mcp))
+        .route(
+            "/team-gateway/runner/{*route}",
+            axum::routing::any(gateway::runner),
+        )
 }
 mod auth;
 mod homelab;
@@ -893,6 +900,8 @@ mod relay;
 mod contracts;
 // The bridge: Endora's capabilities as the team's tools (ADR 0108).
 mod bridge;
+// The team gateway: HQ's doors for the Pi, passed on (ADR 0110).
+mod gateway;
 // The providers and ordered model lists on the AI screen (ADR 0105).
 mod model_lists;
 // The agenda loop (ADR 0103): signals become items, and the owner's answers to them.

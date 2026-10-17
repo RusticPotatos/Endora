@@ -33,6 +33,28 @@ impl core::fmt::Display for HqError {
 
 impl std::error::Error for HqError {}
 
+/// The caller's headers [`HqClient::pass`] passes on, and no others.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Passing {
+    /// The caller's own `Authorization`, untouched.
+    pub authorization: Option<String>,
+    /// Its `Content-Type`.
+    pub content_type: Option<String>,
+    /// Its `Accept`.
+    pub accept: Option<String>,
+}
+
+/// HQ's answer to a request passed on.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Passed {
+    /// The status HQ answered with.
+    pub status: u16,
+    /// Its content type, if it said one.
+    pub content_type: Option<String>,
+    /// The whole body.
+    pub body: Vec<u8>,
+}
+
 /// Where the client finds the token it signs with.
 enum Token {
     /// Given once.
@@ -58,6 +80,9 @@ impl HqClient {
             agent: ureq::Agent::config_builder()
                 .timeout_global(Some(ANSWERS_WITHIN))
                 .http_status_as_error(false)
+                // HQ never redirects, and the team gateway passes callers to HQ and nowhere
+                // else: a redirect is an answer, passed back.
+                .max_redirects(0)
                 .build()
                 .into(),
         }
@@ -104,6 +129,64 @@ impl HqClient {
             .header("authorization", &format!("Bearer {}", self.token()?))
             .send_json(body);
         Self::read(response)
+    }
+
+    /// Passes a caller's request on to HQ as it came (ADR 0110, the team gateway): a GET, or a
+    /// POST with its body, to `path` on HQ, signed with the caller's own `authorization` (a
+    /// turn's or the runner's token) and never the node's. HQ's answer comes back whole, its
+    /// status and content type with it, unless it is longer than `most` bytes.
+    ///
+    /// # Errors
+    /// [`HqError::Unreachable`] if HQ cannot be reached or its answer is too long; a method
+    /// other than GET or POST is [`HqError::Answered`] 405 without asking HQ.
+    pub fn pass(
+        &self,
+        method: &str,
+        path: &str,
+        headers: &Passing,
+        body: &[u8],
+        most: u64,
+    ) -> Result<Passed, HqError> {
+        let url = format!("{}{path}", self.url);
+        let mut request = match method {
+            "GET" => self.agent.get(&url).force_send_body(),
+            "POST" => self.agent.post(&url),
+            _ => {
+                return Err(HqError::Answered {
+                    status: 405,
+                    message: "the team gateway passes on GET and POST".to_owned(),
+                });
+            }
+        };
+        for (name, value) in [
+            ("authorization", &headers.authorization),
+            ("content-type", &headers.content_type),
+            ("accept", &headers.accept),
+        ] {
+            if let Some(value) = value {
+                request = request.header(name, value);
+            }
+        }
+        let mut response = request
+            .send(body)
+            .map_err(|e| HqError::Unreachable(e.to_string()))?;
+        let status = response.status().as_u16();
+        let content_type = response
+            .headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_owned);
+        let body = response
+            .body_mut()
+            .with_config()
+            .limit(most)
+            .read_to_vec()
+            .map_err(|e| HqError::Unreachable(e.to_string()))?;
+        Ok(Passed {
+            status,
+            content_type,
+            body,
+        })
     }
 
     fn read(
