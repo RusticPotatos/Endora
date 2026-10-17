@@ -2,6 +2,11 @@
 //! trouble, Endora tells HQ, whose routine for the home lab hands its member the work. Only
 //! new trouble: what was already wrong when Endora first saw it, and Endora's own containers,
 //! never raise one, and a container raises at most one an hour.
+//!
+//! Coming back is news too: an alarm is a moment, and a container that alarmed and is running
+//! and healthy again (a service that answers again) is told to HQ once, as long as its alarm
+//! was within the day, so the member on the alarm's task reads that it recovered rather than
+//! diagnosing what has already passed.
 
 use std::collections::HashMap;
 
@@ -11,6 +16,9 @@ use crate::contracts::endoras_own;
 
 /// At most one alarm a container (or service) this often.
 pub const ALARM_EVERY_MS: i64 = 60 * 60 * 1000;
+
+/// How long after its alarm a container's (or service's) coming back is still news.
+pub const RECOVERY_WITHIN_MS: i64 = 24 * 60 * 60 * 1000;
 
 /// How a container or service was last seen.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -46,19 +54,24 @@ fn service(state: &str) -> Seen {
     }
 }
 
-/// Something that went from well to trouble.
+/// Something that went from well to trouble, or, `recovered`, came back from it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Alarm {
     /// The container or service.
     pub name: String,
     /// What it became.
     pub became: String,
+    /// Whether it is back up after an alarm, rather than in trouble.
+    pub recovered: bool,
 }
 
 impl Alarm {
     /// The alarm as HQ is told it: a short factual line, at the owner's time of day.
     #[must_use]
     pub fn said(&self, hh_mm: &str) -> String {
+        if self.recovered {
+            return format!("{} is back up at {hh_mm}", self.name);
+        }
         format!("{} became {} at {hh_mm}", self.name, self.became)
     }
 }
@@ -69,6 +82,8 @@ impl Alarm {
 pub struct LabWatch {
     seen: HashMap<String, Seen>,
     alarmed: HashMap<String, i64>,
+    /// What HQ was told is in trouble and has not yet been told is back, and when.
+    unrecovered: HashMap<String, i64>,
 }
 
 impl LabWatch {
@@ -79,8 +94,12 @@ impl LabWatch {
     }
 
     /// Takes one snapshot of the observer's and returns what went from well to trouble since
-    /// the last: new trouble only, never Endora's own, at most one an hour a name.
+    /// the last: new trouble only, never Endora's own, at most one an hour a name. Beside it,
+    /// what alarmed within the day and is well again, running and no longer starting: once an
+    /// alarm.
     pub fn observe(&mut self, snapshot: &Value, now: i64) -> Vec<Alarm> {
+        self.unrecovered
+            .retain(|_, at| now - *at < RECOVERY_WITHIN_MS);
         let mut alarms = Vec::new();
         for svc in snapshot["services"].as_array().into_iter().flatten() {
             let name = svc["name"].as_str().unwrap_or("");
@@ -95,11 +114,17 @@ impl LabWatch {
                     if it.is_empty() || endoras_own(it, "") {
                         continue;
                     }
-                    let now_seen = container(
-                        item["state"].as_str().unwrap_or(""),
-                        item["health"].as_str().unwrap_or(""),
+                    let health = item["health"].as_str().unwrap_or("");
+                    let now_seen = container(item["state"].as_str().unwrap_or(""), health);
+                    // Running but its health check not yet passed is not yet back.
+                    let settled = health != "starting";
+                    self.note(
+                        &format!("container:{it}"),
+                        it,
+                        (now_seen, settled),
+                        now,
+                        &mut alarms,
                     );
-                    self.note(&format!("container:{it}"), it, now_seen, now, &mut alarms);
                 }
                 continue;
             }
@@ -109,7 +134,7 @@ impl LabWatch {
             self.note(
                 &format!("service:{name}"),
                 name,
-                service(state),
+                (service(state), true),
                 now,
                 &mut alarms,
             );
@@ -117,8 +142,25 @@ impl LabWatch {
         alarms
     }
 
-    fn note(&mut self, key: &str, name: &str, now_seen: Seen, now: i64, out: &mut Vec<Alarm>) {
+    /// Notes how `key` (`name`) is seen now, and whether it has settled there, and adds what
+    /// is news to `out`.
+    fn note(
+        &mut self,
+        key: &str,
+        name: &str,
+        (now_seen, settled): (Seen, bool),
+        now: i64,
+        out: &mut Vec<Alarm>,
+    ) {
         let before = self.seen.insert(key.to_owned(), now_seen.clone());
+        if now_seen == Seen::Well && settled && self.unrecovered.remove(key).is_some() {
+            out.push(Alarm {
+                name: name.to_owned(),
+                became: "running".to_owned(),
+                recovered: true,
+            });
+            return;
+        }
         let Some(Seen::Well) = before else {
             return;
         };
@@ -133,9 +175,11 @@ impl LabWatch {
             return;
         }
         self.alarmed.insert(name.to_owned(), now);
+        self.unrecovered.insert(key.to_owned(), now);
         out.push(Alarm {
             name: name.to_owned(),
             became,
+            recovered: false,
         });
     }
 }
@@ -186,7 +230,8 @@ mod tests {
             alarms,
             [Alarm {
                 name: "sonarr".to_owned(),
-                became: "unhealthy".to_owned()
+                became: "unhealthy".to_owned(),
+                recovered: false,
             }]
         );
         assert_eq!(alarms[0].said("14:02"), "sonarr became unhealthy at 14:02");
@@ -213,6 +258,82 @@ mod tests {
         );
         watch.observe(&well, 6 * MIN);
         assert_eq!(watch.observe(&down, MIN + ALARM_EVERY_MS).len(), 1);
+    }
+
+    /// The lab of 2026-10-17: deluge, nzbget and prowlarr in a VPN container's network.
+    fn vpn(state: &str, health: &str) -> Value {
+        lab(
+            &[
+                ("deluge", state, health),
+                ("nzbget", state, health),
+                ("prowlarr", state, health),
+                ("sonarr", "running", "healthy"),
+            ],
+            "healthy",
+        )
+    }
+
+    fn said(alarms: &[Alarm]) -> Vec<String> {
+        alarms.iter().map(|a| a.said("13:43")).collect()
+    }
+
+    #[test]
+    fn what_alarmed_and_came_back_up_is_news_once() {
+        let mut watch = LabWatch::new();
+        watch.observe(&vpn("running", "unknown"), 0);
+        let down = watch.observe(&vpn("exited", "unknown"), MIN);
+        assert_eq!(down.len(), 3);
+        assert!(down.iter().all(|a| !a.recovered));
+        assert!(
+            watch
+                .observe(&vpn("running", "starting"), 2 * MIN)
+                .is_empty(),
+            "running, but not yet healthy: not yet back"
+        );
+        let back = watch.observe(&vpn("running", "healthy"), 3 * MIN);
+        assert!(back.iter().all(|a| a.recovered));
+        assert_eq!(
+            said(&back),
+            [
+                "deluge is back up at 13:43",
+                "nzbget is back up at 13:43",
+                "prowlarr is back up at 13:43"
+            ]
+        );
+        assert!(
+            watch
+                .observe(&vpn("running", "healthy"), 4 * MIN)
+                .is_empty(),
+            "said once"
+        );
+        // Down again within the hour raises no alarm, so its coming back is no news either.
+        assert!(watch.observe(&vpn("exited", "unknown"), 5 * MIN).is_empty());
+        assert!(
+            watch
+                .observe(&vpn("running", "unknown"), 6 * MIN)
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn only_what_alarmed_in_the_last_day_comes_back_as_news() {
+        let mut watch = LabWatch::new();
+        // Down when Endora first looked: no alarm, so no news when it comes up.
+        watch.observe(&vpn("exited", "unknown"), 0);
+        assert!(watch.observe(&vpn("running", "unknown"), MIN).is_empty());
+        // An alarm a day and more ago is old news: its recovery is not told.
+        assert_eq!(watch.observe(&vpn("exited", "unknown"), 2 * MIN).len(), 3);
+        assert!(
+            watch
+                .observe(&vpn("running", "unknown"), 3 * MIN + RECOVERY_WITHIN_MS)
+                .is_empty()
+        );
+        // A service that answers again is back too.
+        let mut watch = LabWatch::new();
+        watch.observe(&lab(&[], "healthy"), 0);
+        assert_eq!(watch.observe(&lab(&[], "unavailable"), MIN).len(), 1);
+        let back = watch.observe(&lab(&[], "degraded"), 2 * MIN);
+        assert_eq!(said(&back), ["sonarr is back up at 13:43"]);
     }
 
     #[test]

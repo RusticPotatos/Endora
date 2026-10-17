@@ -3250,6 +3250,47 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         Ok(Some((id, fired)))
     }
 
+    /// Endora's word that something in the home lab that alarmed is back up, in its words:
+    /// said in the open task of the first routine that is on and takes the home lab's alarms,
+    /// as Endora's post, waking whoever has it as an alarm does. An alarm is a moment; this
+    /// tells the member that the moment passed, so it looks at the state now rather than
+    /// diagnosing what already recovered. `None`, and nothing done, when no routine takes the
+    /// alarms or its task is not open: a recovery hands out no work.
+    ///
+    /// # Errors
+    /// A store failure.
+    pub fn recovered(&self, said: &str) -> Done<Option<TaskId>> {
+        let _held = self.held();
+        let said = one_line(said, 300);
+        if said.is_empty() {
+            return Err(EngineError::Unknown("recovery text"));
+        }
+        let Some(routine) = self
+            .store
+            .routines()?
+            .into_iter()
+            .find(|r| r.enabled && r.on_lab_trouble)
+        else {
+            return Ok(None);
+        };
+        let open = match routine.last_task {
+            Some(task) => Some(self.task(task)?).filter(|t| !t.status.finished()),
+            None => None,
+        };
+        let Some(task) = open else {
+            return Ok(None);
+        };
+        self.post_held_lock(Author::Endora, task.id, &format!("Recovered: {said}"))?;
+        let to = task.owner.or(task.assignee).unwrap_or(routine.assignee);
+        self.wake_held_lock(to, Some(task.id), WakeReason::Alarm)?;
+        self.emit(
+            EventKind::RoutinePosted,
+            json!({ "routine": routine.id.0, "title": routine.title, "task": task.id.0,
+                    "said": said, "recovered": true }),
+        )?;
+        Ok(Some(task.id))
+    }
+
     /// Fires a routine, through the engine's rules: never past the kill switch, to a paused
     /// member, beyond the budget or for a goal that is not active. A routine has one open task:
     /// on the clock it is skipped while that is open, and an alarm is passed into it instead.

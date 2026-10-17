@@ -81,6 +81,7 @@ pub fn app(state: State) -> Router {
         .route("/v1/routines/{id}", post(switch_routine))
         .route("/v1/routines/{id}/fire", post(fire_routine))
         .route("/v1/alarms", post(alarm))
+        .route("/v1/alarms/recovered", post(recovered))
         // The home lab's containers, as the node sees them: what a question to the owner is
         // checked against before it reaches the desk.
         .route("/v1/lab/names", post(lab_names))
@@ -507,6 +508,27 @@ async fn alarm(
     let mut said = fired(&done);
     said["routine"] = json!(routine.0);
     Ok(Json(said))
+}
+
+/// Endora's node says something in the home lab that alarmed is back up: said in the open
+/// task the alarm went to, waking whoever has it. It hands out no work (`"posted": null`
+/// when no alarm's task is open), and the demo takes none.
+async fn recovered(
+    Extract(state): Extract<State>,
+    Json(req): Json<AlarmRequest>,
+) -> Result<Json<serde_json::Value>, Response> {
+    if state.demo {
+        return Err((
+            StatusCode::CONFLICT,
+            Json(json!({ "error": "the demo is on: it takes no alarms" })),
+        )
+            .into_response());
+    }
+    let hq = state.hq.clone();
+    let posted = blocking(move || hq.recovered(&req.text))
+        .await
+        .map_err(IntoResponse::into_response)?;
+    Ok(Json(json!({ "posted": posted.map(|t| t.0) })))
 }
 
 #[derive(Deserialize)]
@@ -1589,6 +1611,52 @@ mod tests {
             task.description
                 .contains("sonarr became unhealthy at 14:02")
         );
+    }
+
+    #[tokio::test]
+    async fn a_recovery_from_the_node_is_said_in_the_alarms_open_task() {
+        let back = |token: Option<&str>| {
+            call(
+                "POST",
+                "/v1/alarms/recovered",
+                token,
+                &json!({ "text": "deluge is back up at 13:43" }).to_string(),
+            )
+        };
+        let demo = app(state(true));
+        let res = demo.oneshot(back(Some(TOKEN))).await.unwrap();
+        assert_eq!(
+            res.status(),
+            StatusCode::CONFLICT,
+            "nothing in the demo is real"
+        );
+
+        let st = state(false);
+        let app = app(st.clone());
+        let res = app.clone().oneshot(back(None)).await.unwrap();
+        assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+        st.hq.hire("John Doe", Role::Lead, 25, 2, 0).unwrap();
+        st.hq.set_goal(crate::LAB_GOAL, "", Author::Owner).unwrap();
+        crate::seed_routine(&st.hq).unwrap();
+        let none = json_of(app.clone().oneshot(back(Some(TOKEN))).await.unwrap()).await;
+        assert_eq!(
+            none["posted"],
+            json!(null),
+            "no alarm's task is open: {none}"
+        );
+        let fired = st
+            .hq
+            .alarm("deluge became exited at 13:42")
+            .unwrap()
+            .unwrap()
+            .1;
+        let endora_team::application::Fired::Created(task) = fired else {
+            panic!("a task: {fired:?}");
+        };
+        let took = json_of(app.oneshot(back(Some(TOKEN))).await.unwrap()).await;
+        assert_eq!(took["posted"], task.0, "{took}");
+        let said = st.hq.store().thread(task).unwrap().pop().unwrap();
+        assert_eq!(said.text, "Recovered: deluge is back up at 13:43");
     }
 
     #[tokio::test]

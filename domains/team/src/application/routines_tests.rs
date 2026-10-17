@@ -280,6 +280,55 @@ fn an_alarm_hands_out_a_task_or_joins_the_open_one_and_wakes_its_member() {
 }
 
 #[test]
+fn coming_back_up_is_said_in_the_alarms_open_task_and_wakes_its_owner() {
+    let clock = Hands(AtomicI64::new(NOON));
+    let (hq, t) = office(&clock);
+    assert_eq!(
+        hq.recovered("deluge is back up at 13:43").unwrap(),
+        None,
+        "no routine takes the home lab's news"
+    );
+    check_the_lab(&hq, &t, true);
+    assert_eq!(
+        hq.recovered("deluge is back up at 13:43").unwrap(),
+        None,
+        "no alarm's task is open: there is nothing to tell"
+    );
+    assert!(
+        tasks(&hq).is_empty(),
+        "news of a recovery hands out no work"
+    );
+    // The shape of 2026-10-17: three containers down in a minute, up again the next.
+    for name in ["deluge", "nzbget", "prowlarr"] {
+        hq.alarm(&format!("{name} became exited at 13:42")).unwrap();
+    }
+    let task = tasks(&hq)[0].id;
+    for name in ["deluge", "nzbget", "prowlarr"] {
+        assert_eq!(
+            hq.recovered(&format!("{name} is back up at 13:43"))
+                .unwrap(),
+            Some(task)
+        );
+    }
+    assert_eq!(tasks(&hq).len(), 1, "still one task");
+    let said = hq.store().thread(task).unwrap().pop().unwrap();
+    assert_eq!(
+        (said.author.as_str(), said.text.as_str()),
+        ("endora", "Recovered: prowlarr is back up at 13:43")
+    );
+    let wake = hq.wakes().unwrap().pop().unwrap();
+    assert_eq!((wake.member, wake.reason), (t.lead, WakeReason::Alarm));
+    assert!(kinds(&hq).contains(&"routine.posted".to_owned()));
+    // Its owner, woken, reads it beside the alarms in its thread.
+    hq.tick().unwrap();
+    let told = hq.runner().started().last().unwrap().told.clone();
+    assert!(
+        told.contains("endora: Recovered: deluge is back up at 13:43"),
+        "{told}"
+    );
+}
+
+#[test]
 fn a_firing_goes_through_the_kill_switch_a_pause_and_its_goal() {
     let clock = Hands(AtomicI64::new(NOON));
     let (hq, t) = office(&clock);

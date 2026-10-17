@@ -66,8 +66,10 @@ fn hh_mm(now_ms: i64, offset_minutes: i64) -> String {
 
 /// Tells HQ of new trouble in the home lab (ADR 0107), signed with HQ's token: one call a
 /// container or service that went from well to trouble, which HQ's routine for the home lab
-/// takes. Nothing when HQ is not set up (and HQ itself refuses while its demo is on). Each
-/// alarm is in Endora's audit log. Returns how many HQ was told of.
+/// takes; and one (`/v1/alarms/recovered`) a container or service that alarmed and is back
+/// up, which HQ posts in the alarm's task. Nothing when HQ is not set up (and HQ itself
+/// refuses while its demo is on). Each is in Endora's audit log. Returns how many HQ was told
+/// of.
 pub(super) fn raise_alarms(
     state: &AppState,
     watch: &mut endora_capabilities::lab_alarms::LabWatch,
@@ -81,10 +83,15 @@ pub(super) fn raise_alarms(
     let mut told = 0;
     for alarm in watch.observe(snapshot, now) {
         let said = alarm.said(&hh_mm(now, offset_minutes));
-        match hq.post("/v1/alarms", &json!({ "text": said })) {
+        let (path, recorded) = if alarm.recovered {
+            ("/v1/alarms/recovered", format!("Endora told HQ: {said}"))
+        } else {
+            ("/v1/alarms", format!("Endora raised an alarm: {said}"))
+        };
+        match hq.post(path, &json!({ "text": said })) {
             Ok(_) => {
                 told += 1;
-                super::hq::record(state, &format!("Endora raised an alarm: {said}"));
+                super::hq::record(state, &recorded);
             }
             Err(e) => eprintln!("homelab: HQ was not told that {said}: {e}"),
         }
@@ -259,6 +266,51 @@ mod tests {
             audit
                 .iter()
                 .any(|a| a == "HQ: Endora raised an alarm: sonarr became unhealthy at 14:02"),
+            "{audit:?}"
+        );
+    }
+
+    #[test]
+    fn coming_back_up_after_an_alarm_is_told_to_hq_as_a_recovery() {
+        let (url, seen) = fake(Arc::new(|_, _| {
+            (200, "application/json", r#"{"posted":3}"#.to_owned())
+        }));
+        let state = node(&url, "http://127.0.0.1:9");
+        let mut watch = endora_capabilities::lab_alarms::LabWatch::new();
+        let noon = 1_792_152_000_000; // 2026-10-16 12:00 UTC
+        raise_alarms(&state, &mut watch, &lab("healthy"), noon, 0);
+        raise_alarms(&state, &mut watch, &lab("unhealthy"), noon + 60_000, 0);
+        assert_eq!(
+            raise_alarms(&state, &mut watch, &lab("healthy"), noon + 120_000, 0),
+            1
+        );
+        let sent = seen.lock().unwrap().clone();
+        let told: Vec<(String, serde_json::Value)> = sent
+            .iter()
+            .map(|(path, _, body)| (path.clone(), serde_json::from_str(body).unwrap()))
+            .collect();
+        assert_eq!(
+            told,
+            [
+                (
+                    "/v1/alarms".to_owned(),
+                    json!({ "text": "sonarr became unhealthy at 12:01" })
+                ),
+                (
+                    "/v1/alarms/recovered".to_owned(),
+                    json!({ "text": "sonarr is back up at 12:02" })
+                ),
+            ]
+        );
+        let audit: Vec<String> = endora_application::AuditLog::recent(state.audit.as_ref(), 5)
+            .unwrap()
+            .iter()
+            .map(|r| r.summary().to_owned())
+            .collect();
+        assert!(
+            audit
+                .iter()
+                .any(|a| a == "HQ: Endora told HQ: sonarr is back up at 12:02"),
             "{audit:?}"
         );
     }

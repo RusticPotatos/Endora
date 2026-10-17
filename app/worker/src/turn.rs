@@ -250,6 +250,10 @@ fn instructions(posted: bool, contracts: bool, lessons: bool, shell: bool) -> St
             "\n\nThe home lab tools are Endora's contracts:\n\
              - homelab_status and container_logs only look: use them freely to see what is \
              wrong and why.\n\
+             - An alarm is a moment, not the state now: check homelab_status before you act, \
+             since what alarmed may be back up (Endora says so in the thread). If everything \
+             has recovered, say so and close the task: a routine's check as done, other work \
+             moved on with set_status.\n\
              - restart_container is a safe fix you may make on your own, within its limits (one \
              restart of a container an hour, three in all), and the owner is told: look and \
              diagnose first, and say why.\n\
@@ -1300,7 +1304,16 @@ mod tests {
         let parts: Vec<&str> = told.split("\n\n").collect();
         assert_eq!(parts.len(), 4, "{told}");
         let rules: Vec<&str> = parts[2].lines().collect();
-        assert_eq!(rules.len(), 8, "{told}");
+        assert_eq!(rules.len(), 9, "{told}");
+        assert!(
+            told.contains(
+                "- An alarm is a moment, not the state now: check homelab_status before you \
+                 act, since what alarmed may be back up (Endora says so in the thread). If \
+                 everything has recovered, say so and close the task: a routine's check as \
+                 done, other work moved on with set_status."
+            ),
+            "{told}"
+        );
         assert!(
             told.contains(
                 "- Report something as a problem only when a tool shows it causing harm: an item \
