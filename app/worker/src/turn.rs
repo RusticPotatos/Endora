@@ -7,11 +7,15 @@
 //! either means the turn is over (stopped, ended, or out of money), and the worker does
 //! nothing more. Beside the team's tools the model is offered the node's contracts (ADR 0106),
 //! narrow abilities on the home lab. Each tool call goes where its tool came from, HQ or the
-//! node, which decides it by its own rules: the worker itself acts on nothing.
+//! node, which decides it by its own rules: the worker itself acts on nothing. The one
+//! exception is the workbench's shell (ring 1), which runs in the sandbox the worker is in:
+//! nothing outside it, since the sandbox is offline but for the team gateway.
 
 use std::time::Duration;
 
 use serde_json::{Value, json};
+
+use crate::shell::Shell;
 
 /// The MCP version the worker speaks.
 const PROTOCOL: &str = "2025-06-18";
@@ -38,6 +42,12 @@ const NAMES_AT_MOST: usize = 12;
 /// The most a cloud model may say in one round. The relay lowers it to what the turn can
 /// still pay for; a round's answer is a few sentences and tool calls, far less than this.
 const MOST_A_REPLY: u32 = 4096;
+
+/// The workbench's shell, as the model names it.
+const SHELL: &str = "shell";
+
+/// The most of a command the line saying what a turn did shows.
+const COMMAND_AT_MOST: usize = 60;
 
 /// The version of Anthropic's Messages API the worker speaks.
 const ANTHROPIC_VERSION: &str = "2023-06-01";
@@ -67,6 +77,9 @@ pub struct Setup {
     pub api: Api,
     /// The most rounds of the model a turn may take.
     pub most_rounds: u32,
+    /// Where the workbench's shell runs, when the worker is in the workbench; `None` anywhere
+    /// else, where it has no shell.
+    pub workbench: Option<std::path::PathBuf>,
 }
 
 /// How a turn was taken.
@@ -131,6 +144,16 @@ fn turn(setup: &Setup) -> Result<Taken, Stopped> {
         calls: Vec::new(),
     };
     offered.extend(contracts);
+    // In the workbench, the sandbox's own shell: run here, never sent to HQ or the node, so a
+    // tool of theirs named the same is left out.
+    let shell = setup
+        .workbench
+        .as_ref()
+        .map(|dir| Shell::new(dir.clone(), &setup.token));
+    if shell.is_some() {
+        offered.retain(|t| t["name"] != SHELL);
+        offered.push(shell_tool());
+    }
     let lessons = offered.iter().any(|t| t["name"] == "note_lesson");
     let (briefing, refused) = hq.call("my_turn", &json!({}))?;
     if refused {
@@ -155,7 +178,12 @@ fn turn(setup: &Setup) -> Result<Taken, Stopped> {
         );
     }
     let model = Model::new(setup);
-    let told = instructions(task.is_some(), !on_the_node.is_empty(), lessons);
+    let told = instructions(
+        task.is_some(),
+        !on_the_node.is_empty(),
+        lessons,
+        shell.is_some(),
+    );
     let mut talk = Talk::new(setup.api, told, briefing, &offered);
     // One loop whichever API the relay speaks: the rounds limit, the repeat guard, the line
     // saying what the turn did, and the ends of a turn are the same for every brain.
@@ -168,7 +196,10 @@ fn turn(setup: &Setup) -> Result<Taken, Stopped> {
         talk.said(&said);
         let mut replies = Vec::new();
         for call in &said.calls {
-            let reply = run(&mut hq, &node, &on_the_node, &mut answered, &mut did, call)?;
+            let reply = match &shell {
+                Some(shell) if call.name == SHELL => in_the_shell(shell, &mut did, call),
+                _ => run(&mut hq, &node, &on_the_node, &mut answered, &mut did, call)?,
+            };
             if reply.asked {
                 return Ok(Taken::AskedTheOwner);
             }
@@ -181,17 +212,26 @@ fn turn(setup: &Setup) -> Result<Taken, Stopped> {
 
 /// How to take a good turn: the worker's own instructions, written for Endora. `posted` says
 /// whether its last word goes in the task's thread for it; `contracts`, whether the node
-/// offers it any; `lessons`, whether it keeps the team's lessons (`note_lesson`).
-fn instructions(posted: bool, contracts: bool, lessons: bool) -> String {
+/// offers it any; `lessons`, whether it keeps the team's lessons (`note_lesson`); `shell`,
+/// whether it is in the workbench, with a shell.
+fn instructions(posted: bool, contracts: bool, lessons: bool, shell: bool) -> String {
     let mut told = String::from(
         "You are one member of a small team at Endora HQ, taking one turn of work. The first \
          message is what my_turn says: who you are, your task, why it exists, and what is new \
          in its thread. Read the thread: the owner may have told you something there.\n\
          \n\
-         Take your turn in these steps:\n\
-         1. Look: use the tools to find out what you need. You have no other way to see or do \
-         anything. You cannot run commands, ping, open files or browse: never offer to.\n\
-         2. Post in the task's thread what you found, briefly, so whoever comes next can go on \
+         Take your turn in these steps:\n",
+    );
+    if shell {
+        told.push_str("1. Look: use the tools to find out what you need, the shell among them.\n");
+    } else {
+        told.push_str(
+            "1. Look: use the tools to find out what you need. You have no other way to see or \
+             do anything. You cannot run commands, ping, open files or browse: never offer to.\n",
+        );
+    }
+    told.push_str(
+        "2. Post in the task's thread what you found, briefly, so whoever comes next can go on \
          from there.\n\
          3. End the turn with exactly one of these: move the task on with set_status and say \
          why; create sub-tasks for members below you when the work needs them; or put a \
@@ -220,6 +260,20 @@ fn instructions(posted: bool, contracts: bool, lessons: bool) -> String {
              odd lines in a log are evidence to explain, not problems in themselves. Normal \
              operation (e.g. an RSS sync that finds releases and grabs none) is not a problem.",
         );
+    }
+    if shell {
+        told.push_str(
+            "\n\nYou have a real shell in a disposable sandbox: run commands, git and \
+             python there with the shell tool, and say why. The sandbox is offline: neither the \
+             internet nor the house's services are reachable from the shell, so use the house \
+             through the team's tools. Anything you leave in /work is gone when the \
+             turn ends: write durable findings in the task's thread",
+        );
+        told.push_str(if lessons {
+            ", or with note_lesson."
+        } else {
+            "."
+        });
     }
     if lessons {
         told.push_str(
@@ -507,6 +561,91 @@ fn run(
     })
 }
 
+/// The workbench's shell, as MCP lists a tool.
+fn shell_tool() -> Value {
+    json!({
+        "name": SHELL,
+        "description": "Run a command with bash in your sandbox, in /work, and read what it \
+            printed (stdout and stderr together, its start and end when long) and its exit \
+            code. The sandbox is offline: neither the internet nor the house's services are \
+            reachable from it. Nothing you leave here outlives the turn.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "command": { "type": "string", "description": "What bash runs." },
+                "why": { "type": "string", "description": "Why you run it, in a few words." },
+                "seconds": {
+                    "type": "integer",
+                    "description": "How long it may take: 60 unless you say, at most 300.",
+                },
+            },
+            "required": ["command", "why"],
+        },
+    })
+}
+
+/// Runs one call of the workbench's shell, here in the sandbox, and notes it in the turn's
+/// line. A command without a reason is refused, as a contract would; one that fails, or runs
+/// out of time, is said as such to the model.
+fn in_the_shell(shell: &Shell, did: &mut Ledger, call: &Call) -> Reply {
+    let refused = |text: String| Reply {
+        text: format!("Refused: {text}"),
+        refused: true,
+        asked: false,
+    };
+    let args = match arguments(&call.arguments) {
+        Ok(args) => args,
+        Err(why) => {
+            did.unreadable(SHELL);
+            return refused(why);
+        }
+    };
+    let command = args["command"].as_str().unwrap_or("").trim();
+    let shown = cut(command);
+    if command.is_empty() {
+        did.ran("tried to run nothing, refused".to_owned());
+        return refused("give the command to run, in `command`".to_owned());
+    }
+    if args["why"].as_str().is_none_or(|why| why.trim().is_empty()) {
+        did.ran(format!("tried to run `{shown}`, refused"));
+        return refused("say why you run it, in `why`".to_owned());
+    }
+    let within = Shell::within(args["seconds"].as_u64());
+    let ran = match shell.run(command, within) {
+        Ok(ran) => ran,
+        Err(why) => {
+            did.ran(format!("tried to run `{shown}`, failed"));
+            return refused(why);
+        }
+    };
+    let how = match (ran.timed_out, ran.code) {
+        (true, _) => " (timed out)".to_owned(),
+        (false, Some(0)) => String::new(),
+        (false, Some(code)) => format!(" (exit {code})"),
+        (false, None) => " (killed)".to_owned(),
+    };
+    did.ran(format!("ran `{shown}`{how}"));
+    Reply {
+        text: ran.said(within),
+        refused: !ran.ok(),
+        asked: false,
+    }
+}
+
+/// A command as the turn's line shows it: on one line, cut short.
+fn cut(command: &str) -> String {
+    let one_line: String = command
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect();
+    let one_line = one_line.trim();
+    if one_line.chars().count() <= COMMAND_AT_MOST {
+        return one_line.to_owned();
+    }
+    let kept: String = one_line.chars().take(COMMAND_AT_MOST).collect();
+    format!("{kept}…")
+}
+
 /// Posts the model's last word in the task's thread, with a line saying what the turn
 /// actually did beside it. With no task, or no words, there is nothing to post.
 fn last_word(
@@ -563,6 +702,17 @@ impl Ledger {
         };
         let read = self.reads.iter().any(|r| r == tool);
         self.calls.push((said, read, outcome));
+    }
+
+    /// Notes a command run in the workbench's shell, said as `said`: never a read, since a
+    /// command may do what it likes inside the sandbox.
+    fn ran(&mut self, said: String) {
+        let outcome = if said.starts_with("ran ") {
+            Outcome::Done
+        } else {
+            Outcome::Refused
+        };
+        self.calls.push((said, false, outcome));
     }
 
     /// Notes a call whose arguments could not be read, so it was never sent.
@@ -1105,7 +1255,7 @@ mod tests {
 
     #[test]
     fn the_instructions_read_as_paragraphs_then_one_step_or_rule_a_line() {
-        let told = instructions(true, false, false);
+        let told = instructions(true, false, false, false);
         let parts: Vec<&str> = told.split("\n\n").collect();
         assert_eq!(parts.len(), 3, "{told}");
         assert!(!parts[0].contains('\n'), "{told}");
@@ -1118,11 +1268,11 @@ mod tests {
         assert!(told.contains("You cannot run commands"));
         assert!(!told.contains('\\') && !told.contains("  "), "{told}");
         assert!(told.ends_with("one or two sentences. That reply goes in your task's thread."));
-        assert!(instructions(false, false, false).ends_with("one or two sentences."));
+        assert!(instructions(false, false, false, false).ends_with("one or two sentences."));
         assert!(!told.contains("note_lesson"), "{told}");
         // With the node's contracts, a paragraph more: what they may do, and what is the
         // owner's, one rule a line.
-        let told = instructions(false, true, false);
+        let told = instructions(false, true, false, false);
         let parts: Vec<&str> = told.split("\n\n").collect();
         assert_eq!(parts.len(), 4, "{told}");
         let rules: Vec<&str> = parts[2].lines().collect();
@@ -1148,7 +1298,7 @@ mod tests {
         assert!(told.contains("a routine's check"), "{told}");
         assert!(!told.contains("  "), "{told}");
         // The lead and the reviewer keep the team's lessons: a paragraph of its own.
-        let told = instructions(true, true, true);
+        let told = instructions(true, true, true, false);
         let parts: Vec<&str> = told.split("\n\n").collect();
         assert_eq!(parts.len(), 5, "{told}");
         assert_eq!(
@@ -1157,6 +1307,46 @@ mod tests {
              will need again, note it with note_lesson so nobody asks twice."
         );
         assert!(told.ends_with("That reply goes in your task's thread."));
+    }
+
+    #[test]
+    fn in_the_workbench_the_instructions_give_the_shell_a_paragraph() {
+        let told = instructions(true, true, true, true);
+        let parts: Vec<&str> = told.split("\n\n").collect();
+        assert_eq!(parts.len(), 6, "{told}");
+        assert!(!told.contains("You cannot run commands"), "{told}");
+        assert!(
+            parts[1].contains(
+                "1. Look: use the tools to find out what you need, the shell among them."
+            ),
+            "{told}"
+        );
+        assert_eq!(
+            parts[3],
+            "You have a real shell in a disposable sandbox: run commands, git and python there \
+             with the shell tool, and say why. The sandbox is offline: neither the internet nor \
+             the house's services are reachable from the shell, so use the house through the \
+             team's tools. Anything you leave in /work is gone when the turn ends: write \
+             durable findings in the task's thread, or with note_lesson."
+        );
+        assert!(!told.contains("  ") && !told.contains('\\'), "{told}");
+        let told = instructions(true, false, false, true);
+        assert!(
+            told.contains("durable findings in the task's thread.\n\n"),
+            "no note_lesson for a member without it: {told}"
+        );
+    }
+
+    #[test]
+    fn a_command_on_the_turns_line_is_one_line_cut_short() {
+        assert_eq!(cut("  git status  "), "git status");
+        assert_eq!(cut("cd repo\ngit log"), "cd repo git log");
+        let long = "x".repeat(COMMAND_AT_MOST + 1);
+        assert_eq!(cut(&long), format!("{}…", "x".repeat(COMMAND_AT_MOST)));
+        assert_eq!(
+            cut(&"é".repeat(COMMAND_AT_MOST)),
+            "é".repeat(COMMAND_AT_MOST)
+        );
     }
 
     #[test]

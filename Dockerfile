@@ -138,6 +138,27 @@ VOLUME /data
 EXPOSE 8791
 ENTRYPOINT ["endora-sound-hub"]
 
+# The workbench (ring 1): a team member's disposable sandbox on the Pi, one container a turn,
+# where the worker gives the model a real shell. Built with `--target workbench` and tagged
+# endora-workbench:latest:
+#   docker buildx build --platform linux/arm64 --target workbench -t endora-workbench:latest --load .
+# It is not the node's image: the node keeps the last stage. Run with a read-only root, /work as
+# a tmpfs owned by the workbench user, and HTTPS_PROXY (and https_proxy, which curl and git read
+# for plain HTTP) naming Endora's egress proxy, its only way out. The proxy does not decrypt TLS,
+# so the system's own certificates are all the sandbox trusts.
+FROM debian:bookworm-slim AS workbench
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        bash ca-certificates curl dnsutils git iputils-ping jq less procps python3 \
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd --uid 10001 --home-dir /work --no-create-home --shell /bin/bash workbench
+COPY --from=builder /endora-worker /usr/local/bin/endora-worker
+ENV HOME=/work
+ENV ENDORA_WORKBENCH=1
+WORKDIR /work
+USER workbench
+ENTRYPOINT ["endora-worker"]
+
 # --- runtime stage ---------------------------------------------------------
 FROM debian:bookworm-slim
 # ca-certificates lets an optional HTTPS model endpoint be reached; SQLite is

@@ -682,6 +682,32 @@ in `domains/capabilities/src/bridge.rs`, in this order:
   proxy (an allowlist grown by the owner's Approve on desk cards, then optionally inspection
   with a team CA), canaries and credential injection are designed and deferred (ADR 0110).
 
+### The workbench (ring 1, owner's decision of 2026-10-17, ADR 0110)
+
+A disposable **sandbox** on the Pi, one container a turn, where a member has a real shell.
+Contracts and the bridge stay the only way to act on the home lab (ring 3); the workbench is
+for working things out: scripts, parsing what the tools returned, trying commands.
+
+- **The image**: the Dockerfile's `workbench` stage, tagged `endora-workbench:latest`
+  (`docker buildx build --platform linux/arm64 --target workbench -t endora-workbench:latest --load .`),
+  never the node's image. Debian slim with bash, git, curl, ca-certificates, python3, jq,
+  dnsutils, ping, procps and less, and `endora-worker`. It runs as the unprivileged
+  `workbench` user (uid 10001) with a read-only root; `/work` is its home and workspace, a
+  tmpfs the runner mounts owned by that user (`uid=10001,gid=10001`).
+- **Offline**: ring 1 reaches nothing but the team gateway (the egress proxy is designed and
+  deferred, ADR 0110), so no proxy variables are set and no extra CA is trusted.
+- **The `shell` tool**: offered only when `ENDORA_WORKBENCH=1`. `{ "command", "why",
+  "seconds"? }` runs `bash -lc` in `/work`, for 60 s unless told, at most 300, with its whole
+  process group killed when out of time; stdout and stderr together, kept to 16 KB (the first
+  and last 8 KB, with how much was cut between), and the exit code said. It goes to neither HQ
+  nor the node. The command's environment has no `ENDORA_RUN_TOKEN`, and the token is replaced
+  wherever it appears in the output. A call without `why` is refused. Each call is in the
+  turn's line, the command cut to 60 characters: "ran `…` (exit 2)", never as a read.
+- **The instructions** gain a paragraph: a real shell in a disposable, offline sandbox; the
+  house's services and the internet are not reachable from it, and the house is used through
+  the team's tools (the bridge and the contracts); `/work` is gone when the turn ends, so
+  durable findings go in the task's thread (or with `note_lesson`, for a member who has it).
+
 ## 16. Later, and not at all
 
 - **Later:** skills and adapter plugins, including adapters to other systems; more teams; a

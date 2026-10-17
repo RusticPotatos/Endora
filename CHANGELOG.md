@@ -21,6 +21,13 @@ tagged release.
   unchanged. The ADR records the four layers against leaks (no keys in the sandbox, one exit
   for writes, exact-match blocking with variants, canaries), why machine-learning detection of
   personal data is skipped, and the egress proxy as designed and deferred.
+- **The workbench (ring 1)**: a Dockerfile stage `workbench` (`endora-workbench:latest`, built
+  with `--target workbench`, never the node's image), a disposable sandbox with bash, git,
+  curl, python3 and a few tools, run as an unprivileged user with `/work` as its writable home.
+  There the worker offers the model a `shell` tool (only under `ENDORA_WORKBENCH=1`): `bash -lc`
+  in `/work`, 60 s unless told and at most 300, output kept to 16 KB head and tail, the exit
+  code said, each call listed in the turn's line. The sandbox is offline (the egress proxy is
+  deferred): the house's services and the models are reached only through the team's tools.
 - **A brain per member, and what a cloud turn may read** ([ADR 0109](docs/adr/0109-a-brain-per-member.md),
   owner's decisions of 2026-10-17). Each member of HQ's team has a brain, local by default or a
   Claude its role may use (Sonnet or Haiku for the lead, developer and reviewer; Haiku for the

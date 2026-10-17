@@ -5,10 +5,14 @@
 //! thinks with Claude (ADR 0109) is given the Anthropic relay and the model's name, and the
 //! worker speaks Anthropic's Messages API to it; otherwise OpenAI's, to the local relay.
 //!
+//! In the workbench (ring 1, `ENDORA_WORKBENCH=1`), the disposable sandbox whose only way out
+//! is Endora's egress proxy, the model is also given a shell, run right there in `/work`.
+//!
 //! What its exit says, for the runner: 0, a turn taken (the model's last word, or its rounds
 //! used up); 3, the turn was over before it ended (HQ or the relay answered 401 or 402); 1,
 //! anything else, with a short reason on stderr. The token is never printed.
 
+mod shell;
 mod turn;
 
 use turn::{Api, Setup, Stopped, Taken};
@@ -23,6 +27,8 @@ const CONTRACTS: &str = "http://node:8788/team-relay/contracts";
 const MODEL: &str = "local";
 /// The most rounds of the model in a turn, unless told otherwise.
 const MOST_ROUNDS: u32 = 12;
+/// Where the workbench's shell runs: the sandbox's writable home, gone when the turn ends.
+const WORKBENCH_DIR: &str = "/work";
 
 /// A turn taken.
 const TAKEN: i32 = 0;
@@ -64,6 +70,12 @@ fn setup(env: impl Fn(&str) -> Option<String>) -> Result<Setup, String> {
     } else {
         Api::OpenAi
     };
+    // The workbench (ring 1) says so: only there is the model given a shell.
+    let workbench = (given("ENDORA_WORKBENCH").as_deref() == Some("1")).then(|| {
+        given("ENDORA_WORKBENCH_DIR")
+            .unwrap_or_else(|| WORKBENCH_DIR.to_owned())
+            .into()
+    });
     Ok(Setup {
         token,
         mcp: given("ENDORA_HQ_MCP").unwrap_or_else(|| HQ_MCP.to_owned()),
@@ -72,6 +84,7 @@ fn setup(env: impl Fn(&str) -> Option<String>) -> Result<Setup, String> {
         model,
         api,
         most_rounds,
+        workbench,
     })
 }
 
@@ -135,6 +148,28 @@ mod tests {
         assert_eq!(setup.model, "local");
         assert_eq!(setup.api, Api::OpenAi);
         assert_eq!(setup.most_rounds, 12);
+        assert_eq!(setup.workbench, None, "no shell outside the workbench");
+    }
+
+    #[test]
+    fn the_workbench_says_so_and_its_shell_runs_in_work() {
+        let at = |pairs: &[(&str, &str)]| {
+            let mut all = vec![("ENDORA_RUN_TOKEN", "a-turns-token")];
+            all.extend_from_slice(pairs);
+            setup(env(&all)).unwrap().workbench
+        };
+        assert_eq!(at(&[("ENDORA_WORKBENCH", "1")]), Some("/work".into()));
+        assert_eq!(
+            at(&[
+                ("ENDORA_WORKBENCH", "1"),
+                ("ENDORA_WORKBENCH_DIR", "/tmp/elsewhere")
+            ]),
+            Some("/tmp/elsewhere".into())
+        );
+        for no in ["0", "", "yes", "true"] {
+            assert_eq!(at(&[("ENDORA_WORKBENCH", no)]), None, "{no}");
+        }
+        assert_eq!(at(&[("ENDORA_WORKBENCH_DIR", "/work")]), None);
     }
 
     #[test]
