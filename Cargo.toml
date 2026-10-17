@@ -17,6 +17,7 @@ members = [
     "app/node",
     "app/cli",
     "app/hq",
+    "app/runner",
     "clients/terminal",
 ]
 

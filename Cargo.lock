@@ -750,6 +750,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "endora-runner"
+version = "0.12.0"
+dependencies = [
+ "serde_json",
+]
+
+[[package]]
 name = "endora-scheduling"
 version = "0.12.0"
 dependencies = [

@@ -1,0 +1,21 @@
+[package]
+name = "endora-runner"
+description = "Endora's runner: starts each team turn HQ hands it as a fresh, fenced worker container through Docker's API."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "endora-runner"
+path = "src/main.rs"
+
+# Nothing but JSON. The runner holds Docker's socket, so what it runs is kept small: it
+# speaks HTTP/1.1 itself, to Docker on the socket and to HQ on the house's network.
+[dependencies]
+serde_json = "1.0.150"
+
+[lints]
+workspace = true
