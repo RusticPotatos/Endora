@@ -2285,10 +2285,26 @@ async fn providers_go_in_once_lists_sort_and_no_key_ever_comes_back_out() {
         ))
         .await
         .unwrap();
-    let shown = json_body(app(state).oneshot(get("/v1/model-lists")).await.unwrap()).await;
+    let shown = json_body(
+        app(state.clone())
+            .oneshot(get("/v1/model-lists"))
+            .await
+            .unwrap(),
+    )
+    .await;
     assert_eq!(
         shown["everyday"].as_array().unwrap().len(),
         1,
         "its places went with it"
     );
+    // Saving over a provider that is gone says so, rather than "saved" while the typed key is
+    // dropped.
+    let gone = app(state)
+        .oneshot(post(
+            &format!("/v1/model-lists/providers/{claude}"),
+            r#"{"name":"DeepSeek","url":"https://api.deepseek.com/v1","api_key":"sk-fictional"}"#,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(gone.status(), StatusCode::NOT_FOUND);
 }

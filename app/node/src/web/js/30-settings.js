@@ -195,21 +195,47 @@ function modelListRows(job) {
   return rows ? `<ol class="mlist">${rows}</ol>` : `<div class="sub" style="margin:6px 0;">Nothing in this list yet.</div>`;
 }
 
+// What Discover found for a list, as buttons to tap: a datalist alone is all but invisible on a
+// phone. A model name holds ':', and data-act is split on ':', so the name rides in a data
+// attribute and a tap goes to pickListModel.
+function foundModelsHtml(job) {
+  const found = FOUND_MODELS[job];
+  if (!found) return "";
+  if (!found.models.length) return `<div class="sub">No models returned.</div>`;
+  return `<div class="sub" style="margin:6px 0 4px;">Tap a model to use it:</div>
+    <div class="model-picker">${found.models.map((m) =>
+      `<button type="button" class="pill pick" data-model="${esc(m)}" onclick="pickListModel('${job}', this.dataset.model)">${esc(m)}</button>`).join("")}</div>`;
+}
+
+// Fill a list's model box with a model Discover found.
+function pickListModel(job, name) {
+  if (!name) return;
+  const box = document.getElementById(`ml-${job}-model`);
+  if (box) box.value = name;
+}
+
 function modelListAdd(job) {
   const providers = (MODEL_LISTS && MODEL_LISTS.providers) || [];
   if (!providers.length) return `<div class="sub">Add a provider below first.</div>`;
+  const found = FOUND_MODELS[job];
+  const chosen = found ? found.provider : null;
+  const models = found ? found.models : [];
   return `
     <div class="mlist-add">
-      <select id="ml-${job}-provider" aria-label="Provider">${providers.map((p) => `<option value="${p.id}">${esc(p.name)}</option>`).join("")}</select>
+      <select id="ml-${job}-provider" aria-label="Provider">${providers.map((p) => `<option value="${p.id}"${p.id === chosen ? " selected" : ""}>${esc(p.name)}</option>`).join("")}</select>
       <input id="ml-${job}-model" list="ml-${job}-models" placeholder="model, e.g. ${job === "deep" ? "claude-sonnet-5-5" : "qwen2.5:7b"}" aria-label="Model" />
-      <datalist id="ml-${job}-models"></datalist>
-      <button class="ghost small" data-act="mlist:discover:${job}">Discover</button>
+      <datalist id="ml-${job}-models">${models.map((m) => `<option value="${esc(m)}"></option>`).join("")}</datalist>
+      <button class="ghost small" data-act="mlist:discover:${job}">${icon("sparkle", 14)} Discover models</button>
       <button class="primary small" data-act="mlist:add:${job}">Add</button>
-    </div>`;
+    </div>
+    ${foundModelsHtml(job)}`;
 }
 
 function providersCard() {
   const providers = (MODEL_LISTS && MODEL_LISTS.providers) || [];
+  // The provider being changed, drawn with what it holds; one removed meanwhile is not changed.
+  const editing = providers.find((p) => p.id === PROVIDER_EDITING) || null;
+  if (!editing) PROVIDER_EDITING = null;
   const rows = providers.map((p) => `
     <li class="mlist-row">
       <div class="grow">
@@ -226,17 +252,17 @@ function providersCard() {
       <div class="model-role">Providers</div>
       <div class="sub" style="margin:-4px 0 6px;">Where models run, each with its key, entered once and used by both lists.</div>
       ${rows ? `<ol class="mlist plain">${rows}</ol>` : `<div class="sub">None yet.</div>`}
-      <details class="adv" id="provider-form" ${PROVIDER_EDITING ? "open" : ""}>
-        <summary>${PROVIDER_EDITING ? "Change the provider" : "Add a provider"}</summary>
+      <details class="adv" id="provider-form" ${editing ? "open" : ""}>
+        <summary>${editing ? `Change ${esc(editing.name)}` : "Add a provider"}</summary>
         <div class="field"><label>Preset</label>
           <select id="pv-preset" onchange="applyProviderPreset(this.value)"><option value="">Choose a provider…</option>${presetOptions("")}</select></div>
-        <div class="field"><label>Name</label><input id="pv-name" placeholder="e.g. Anthropic" /></div>
-        <div class="field"><label>Endpoint</label><input id="pv-url" placeholder="https://api.provider.com/v1" /></div>
+        <div class="field"><label>Name</label><input id="pv-name" placeholder="e.g. Anthropic" value="${esc(editing ? editing.name : "")}" /></div>
+        <div class="field"><label>Endpoint</label><input id="pv-url" placeholder="https://api.provider.com/v1" value="${esc(editing ? editing.url : "")}" /></div>
         <div class="field"><label>API key <span style="opacity:.7;">· cloud only; stored securely, never shown</span></label>
-          <input id="pv-key" type="password" autocomplete="off" placeholder="${PROVIDER_EDITING ? "•••••• (unchanged)" : ""}" /></div>
+          <input id="pv-key" type="password" autocomplete="off" placeholder="${editing ? "•••••• (unchanged, unless the endpoint changes)" : ""}" /></div>
         <div class="row" style="justify-content:flex-end;gap:8px;">
-          ${PROVIDER_EDITING ? `<button class="ghost" data-act="mlist:providercancel">Cancel</button>` : ""}
-          <button class="primary" data-act="mlist:providersave">${PROVIDER_EDITING ? "Save" : "Add provider"}</button>
+          ${editing ? `<button class="ghost" data-act="mlist:providercancel">Cancel</button>` : ""}
+          <button class="primary" data-act="mlist:providersave">${editing ? "Save" : "Add provider"}</button>
         </div>
       </details>
     </div>`;

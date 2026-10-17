@@ -148,9 +148,19 @@ pub fn seeded_from(
         .map(|m| match m.role() {
             MessageRole::User => TurnMessage::User(m.text().to_owned()),
             MessageRole::Butler => {
-                let found: Vec<String> = findings(&m.id().value().to_string())
+                let all: Vec<String> = findings(&m.id().value().to_string())
                     .into_iter()
                     .filter(|f| !f.trim().is_empty())
+                    .collect();
+                // The marks of everything it found ride with what is carried, even a finding
+                // too far down to be carried itself: the reply may repeat any of it, and the
+                // marks are what keep it in the house (ADR 0064, 0105).
+                let marks: String = [STRANGER_MARK, crate::egress::RESTRICTED_MARK]
+                    .into_iter()
+                    .filter(|mark| all.iter().any(|f| f.starts_with(mark)))
+                    .collect();
+                let found: Vec<String> = all
+                    .into_iter()
                     .take(MOST_FINDINGS_CARRIED)
                     .map(|f| {
                         let short: String = f.chars().take(LONGEST_FINDING_CARRIED).collect();
@@ -160,7 +170,11 @@ pub fn seeded_from(
                 let text = if found.is_empty() {
                     m.text().to_owned()
                 } else {
-                    format!("{}\n(what I found then: {})", m.text(), found.join(" | "))
+                    format!(
+                        "{}\n({marks}what I found then: {})",
+                        m.text(),
+                        found.join(" | ")
+                    )
                 };
                 TurnMessage::Assistant {
                     text,
