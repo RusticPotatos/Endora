@@ -2,7 +2,11 @@
 
 ## Status
 
-Accepted, 2026-10-17, by the owner. Prepared with AI assistance (Claude). Amends
+Accepted, 2026-10-17, by the owner. Prepared with AI assistance (Claude). Amended by
+[0114](0114-evidence-acceptance-criteria-and-the-tester.md) (2026-10-17): the back-off reads each
+turn's label (posts alone are no longer progress), a member's turns that show nothing are nudged
+twice and then its task goes up, the home lab's checks carry two live criteria and close on a
+fresh reading, and a check-back on a task blocked on a wait is replaced by the wait. Amends
 [0102](0102-endora-hq.md) (the engine's wakes and tick) and builds on
 [0106](0106-team-contracts.md) (the contracts a routine's member uses). Built: routines in HQ's
 store, engine and API, the node's routes and the HQ screen's Routines card; alarms from the

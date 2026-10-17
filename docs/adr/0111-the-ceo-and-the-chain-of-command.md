@@ -13,7 +13,12 @@ daily review seated once on an existing team; the relay's Opus and cap for the C
 and the contracts treating the CEO as a cloud member that only reads; the HQ screen's CEO,
 House log card, decision cards and renaming. Amended by [0113](0113-projects-budgets-and-reports-to.md)
 (2026-10-17): who asks whom follows each member's `reports_to`, which the owner may change, and
-the CEO also proposes projects and goals, decides projects, and plans once a week.
+the CEO also proposes projects and goals, decides projects, and plans once a week. Amended by
+[0114](0114-evidence-acceptance-criteria-and-the-tester.md) (2026-10-17): the reviewer is shown
+as the **tester** and re-checks work on her own readings before its lead accepts it; the CEO's
+decision for the board, the tester's passing it on, and the lead's question up to the CEO each
+carry evidence from HQ's record, refused without; and whom a member reports to, and anyone
+above, may move, close, accept, send back or hand on that member's task.
 
 ## Context
 

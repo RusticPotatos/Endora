@@ -2,7 +2,11 @@
 
 ## Status
 
-Accepted, 2026-10-17, by the owner. Prepared with AI assistance (Claude). Amends
+Accepted, 2026-10-17, by the owner. Prepared with AI assistance (Claude). Amended by
+[0114](0114-evidence-acceptance-criteria-and-the-tester.md) (2026-10-17): the CEO decides a
+project on evidence from HQ's record (`decide_project` takes `evidence`, at least one reference,
+each looked up), by the one rule proposals are checked by; the deferred "turn verdicts that
+weigh evidence" are built there. Amends
 [0102](0102-endora-hq.md) (a project between a goal and its tasks),
 [0107](0107-routines-alarms-and-check-backs.md) (a routine may name a project, and the CEO has
 a weekly planning beside its daily review), [0109](0109-a-brain-per-member.md) (a project's cap
@@ -124,8 +128,7 @@ owner is the board, and a local member costs nothing.
 - A task's project is fixed when it is made (and by the migration); moving a task between
   projects is not built.
 - **Deferred:** hiring that acts (a proposal to hire is still a decision for the board, made by
-  the owner); turn verdicts that weigh evidence (a review that checks a claim against the record
-  as proposals are checked); per-project effort or brain; moving tasks between projects; the
+  the owner); per-project effort or brain; moving tasks between projects; the
   owner setting the pool itself on screen.
 
 ## Alternatives considered

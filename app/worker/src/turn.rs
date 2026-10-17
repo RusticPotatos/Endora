@@ -310,11 +310,16 @@ fn instructions(posted: bool, on_the_node: &[String], lessons: bool, shell: bool
              team will need again, note it with note_lesson so nobody asks twice.",
         );
     }
+    // How done is shown (ADR 0114): from the record, never from what a model says.
     told.push_str(
-        "\n\nNever set a task to done: only the gate does that, except a routine's check, which \
-         you close as done once you have looked, saying what you found. Keep it short, and never say \
-         you did what you did not do. When your part is done, stop calling tools and reply in \
-         one or two sentences.",
+        "\n\nDone is shown, never said: your task's criteria (in my_turn) say what done means. \
+         Each result of Endora's tools names its receipt (receipt r12): cite those ids in \
+         `evidence`, one list per criterion, when you submit with set_status in_review or close \
+         a routine's check as done; anything about the lab now needs a reading taken this turn, \
+         never memory or another member's word. The tester then re-checks it with her own \
+         readings, and the lead accepts it. A post that states a finding cites what it rests \
+         on. Keep it short, and never say you did what you did not do. When your part is done, \
+         stop calling tools and reply in one or two sentences.",
     );
     if posted {
         told.push_str(" That reply goes in your task's thread.");
@@ -1356,6 +1361,11 @@ mod tests {
             assert!(step.starts_with(&format!("{}. ", n + 1)), "{step}");
         }
         assert!(told.contains("You cannot run commands"));
+        assert!(
+            told.contains("Each result of Endora's tools names its receipt (receipt r12)"),
+            "{told}"
+        );
+        assert!(told.contains("a reading taken this turn, never memory"));
         assert!(!told.contains('\\') && !told.contains("  "), "{told}");
         assert!(told.ends_with("one or two sentences. That reply goes in your task's thread."));
         assert!(instructions(false, &[], false, false).ends_with("one or two sentences."));

@@ -157,7 +157,8 @@ fn a_tasks_project_serves_its_goal_and_a_sub_task_stays_in_its_parents() {
         &hq,
         &context,
         "create_task",
-        &json!({ "title": "Restart sonarr", "description": "and watch it", "assignee": "Linus" }),
+        &json!({ "title": "Restart sonarr", "description": "and watch it", "assignee": "Linus",
+                 "criteria": [{ "text": "sonarr is running", "live": true }] }),
     )
     .unwrap();
     let sub = hq.store().tasks().unwrap().pop().unwrap();
@@ -620,7 +621,7 @@ fn a_proposal_needs_a_lead_or_the_ceo_and_evidence_in_hqs_record() {
     assert_eq!(proposed.evidence, [crate::domain::Evidence::Task(task)]);
     // Only the CEO decides it.
     assert_eq!(
-        hq.decide_project(lead.run, ProjectId(1), true, "yes", None),
+        hq.decide_project(lead.run, ProjectId(1), true, "yes", None, &[]),
         Err(EngineError::Refused(Refusal::OnlyTheCeo))
     );
 }
@@ -653,12 +654,24 @@ fn the_ceo_accepts_or_sends_back_a_proposal_and_its_proposer_hears_why() {
         "{}",
         ceo.told
     );
-    assert_eq!(
+    // The CEO decides on evidence from HQ's record, as the proposal was made (ADR 0114).
+    assert!(
         use_tool(
             &hq,
             &ceo,
             "decide_project",
             &json!({ "project": 1, "verdict": "send_back", "why": "one task is no pattern" })
+        )
+        .unwrap_err()
+        .contains("needs evidence")
+    );
+    assert_eq!(
+        use_tool(
+            &hq,
+            &ceo,
+            "decide_project",
+            &json!({ "project": 1, "verdict": "send_back", "why": "one task is no pattern",
+                     "evidence": [format!("task {}", mine.0)] })
         ),
         Ok("Project 1 is dropped.".to_owned())
     );
@@ -667,7 +680,8 @@ fn the_ceo_accepts_or_sends_back_a_proposal_and_its_proposer_hears_why() {
             &hq,
             &ceo,
             "decide_project",
-            &json!({ "project": 2, "verdict": "accept", "why": "backups failed thrice" })
+            &json!({ "project": 2, "verdict": "accept", "why": "backups failed thrice",
+                     "evidence": [format!("task {}", mine.0)] })
         ),
         Ok("Project 2 is active.".to_owned())
     );
@@ -679,10 +693,13 @@ fn the_ceo_accepts_or_sends_back_a_proposal_and_its_proposer_hears_why() {
         .map(|p| format!("{}: {}", p.author, p.text))
         .collect();
     assert!(
-        thread.contains(
-            &"Mara: Project #1 Media stack: sent back. one task is no pattern".to_owned()
-        ) && thread
-            .contains(&"Mara: Project #2 Backups: accepted. backups failed thrice".to_owned()),
+        thread.contains(&format!(
+            "Mara: Project #1 Media stack: sent back. one task is no pattern (evidence: task {})",
+            mine.0
+        )) && thread.contains(&format!(
+            "Mara: Project #2 Backups: accepted. backups failed thrice (evidence: task {})",
+            mine.0
+        )),
         "{thread:?}"
     );
     assert_eq!(
@@ -703,7 +720,11 @@ fn the_ceo_accepts_or_sends_back_a_proposal_and_its_proposer_hears_why() {
     let cap = waiting(&hq, "project_cap").remove(0);
     assert_eq!(
         cap.text,
-        "A cap for project #2 Backups: $5.00 a month.\nThe CEO recommends: backups failed thrice"
+        format!(
+            "A cap for project #2 Backups: $5.00 a month.\nThe CEO recommends: backups failed \
+             thrice (evidence: task {})",
+            mine.0
+        )
     );
     assert_eq!(cap.member, Some(t.ceo));
     // The owner grants less than asked.
@@ -716,7 +737,8 @@ fn the_ceo_accepts_or_sends_back_a_proposal_and_its_proposer_hears_why() {
             &hq,
             &ceo,
             "decide_project",
-            &json!({ "project": 2, "verdict": "accept", "why": "again" })
+            &json!({ "project": 2, "verdict": "accept", "why": "again",
+                     "evidence": [format!("task {}", mine.0)] })
         ),
         Err("no such proposed project with that number".to_owned())
     );

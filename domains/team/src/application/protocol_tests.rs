@@ -109,12 +109,14 @@ fn the_tools_act_as_the_turns_member_under_the_engines_rules() {
     assert!(
         use_tool("my_turn", json!({}))
             .unwrap()
-            .contains("Linus: Started on the list.")
+            .contains("Linus [unsupported]: Started on the list."),
+        "a post citing nothing, in a turn with no reading"
     );
 
     use_tool(
         "set_status",
-        json!({ "task": s.task.0, "status": "in_review", "reason": "ready for a look" }),
+        json!({ "task": s.task.0, "status": "in_review", "reason": "ready for a look",
+                "evidence": [format!("task {}", s.task.0)] }),
     )
     .unwrap();
     let refused = use_tool(
@@ -484,7 +486,8 @@ fn a_turn_acts_on_its_own_task_and_below_and_writes_above_or_where_it_was_named(
     let status = |task: TaskId, to: &str| {
         use_tool(
             "set_status",
-            json!({ "task": task.0, "status": to, "reason": "on it" }),
+            json!({ "task": task.0, "status": to, "reason": "on it",
+                    "evidence": [format!("task {}", task.0)] }),
         )
     };
     let post = |task: TaskId| use_tool("post", json!({ "task": task.0, "text": "A note." }));

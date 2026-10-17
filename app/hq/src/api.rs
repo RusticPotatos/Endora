@@ -95,6 +95,9 @@ pub fn app(state: State) -> Router {
         // The node's model relay: whose a turn's token is, and what each call cost.
         .route("/v1/team/turn", post(crate::team::turn))
         .route("/v1/team/usage", post(crate::team::usage))
+        // The node's receipts (ADR 0114): each call a turn made of Endora's tools, with the
+        // turn's own token, written by the node and never by the model.
+        .route("/v1/team/receipt", post(crate::team::receipt))
         // The node's contracts: a safe fix a member made, told to the owner (ADR 0106).
         .route("/v1/team/notice", post(crate::team::notice))
         // The bridge (ADR 0108): an action waiting for the owner's yes, and what came of it.
@@ -250,6 +253,10 @@ struct TaskRequest {
     /// The project of the goal it goes in, if any (ADR 0113).
     #[serde(default)]
     project: Option<i64>,
+    /// What done means, a line each; `live:` before one marks it about the lab now
+    /// (ADR 0114). The owner's tasks may have none.
+    #[serde(default)]
+    criteria: Vec<String>,
 }
 
 /// The owner hands the team a piece of work.
@@ -265,8 +272,9 @@ async fn add_task(
         return Err(Failed(EngineError::Unknown("task title")));
     }
     let hq = state.hq.clone();
+    let criteria = endora_team::domain::Criterion::from_lines(&req.criteria);
     let task = blocking(move || {
-        hq.add_task(
+        hq.add_task_with(
             Author::Owner,
             NewTask {
                 goal: GoalId(req.goal),
@@ -278,6 +286,7 @@ async fn add_task(
                 priority,
                 waits_on: Vec::new(),
             },
+            &criteria,
         )
     })
     .await?;
@@ -1014,9 +1023,10 @@ mod tests {
             .filter_map(|t| t["name"].as_str())
             .collect();
         // The demo's first turn is its lead's, who keeps the team's lessons and proposes
-        // projects too.
-        assert_eq!(names.len(), 11);
+        // projects, accepts tested work and hands a subordinate's task on, too.
+        assert_eq!(names.len(), 13);
         assert!(names.contains(&"note_lesson") && names.contains(&"propose_project"));
+        assert!(names.contains(&"accept") && names.contains(&"hand_to"));
         assert!(
             !names.contains(&"report_usage"),
             "the relay charges for model use, not the worker"
@@ -1067,6 +1077,58 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(after.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn only_the_node_records_a_receipt_and_only_for_a_turn_that_is_running() {
+        let st = state(true);
+        st.hq.tick().unwrap();
+        let turn = scripted(&st).started()[0].clone();
+        let app = app(st.clone());
+        let tell = |signed: Option<&str>, token: &str| {
+            call(
+                "POST",
+                "/v1/team/receipt",
+                signed,
+                &json!({ "token": token, "tool": "homelab_status", "args": "",
+                         "excerpt": "sonarr: running", "ok": true })
+                .to_string(),
+            )
+        };
+        let res = app
+            .clone()
+            .oneshot(tell(Some(&turn.token), &turn.token))
+            .await
+            .unwrap();
+        assert_eq!(
+            res.status(),
+            StatusCode::UNAUTHORIZED,
+            "a worker cannot write its own receipts"
+        );
+        let forged = app
+            .clone()
+            .oneshot(tell(Some(TOKEN), "not-a-turns-token"))
+            .await
+            .unwrap();
+        assert_eq!(forged.status(), StatusCode::NOT_FOUND);
+        let kept = json_of(
+            app.clone()
+                .oneshot(tell(Some(TOKEN), &turn.token))
+                .await
+                .unwrap(),
+        )
+        .await;
+        let id = kept["receipt"].as_i64().expect("a receipt");
+        let found = st.hq.store().call_receipt(id).unwrap().unwrap();
+        assert_eq!(
+            (found.run, found.tool.as_str(), found.excerpt.as_str()),
+            (turn.run, "homelab_status", "sonarr: running")
+        );
+        // Once the turn has ended, its token records nothing more.
+        scripted(&st).finish(turn.run, true);
+        st.hq.tick().unwrap();
+        let late = app.oneshot(tell(Some(TOKEN), &turn.token)).await.unwrap();
+        assert_eq!(late.status(), StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]

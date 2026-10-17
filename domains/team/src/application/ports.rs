@@ -3,6 +3,7 @@
 use core::fmt;
 use std::time::Duration;
 
+use crate::domain::{CallReceipt, Criterion, Label, Ref};
 use crate::domain::{CheckBack, CheckBackStatus, Goal, Liveness, Project, Routine, RoutineId};
 use crate::domain::{
     Event, GoalId, GoalStatus, Member, MemberId, Micros, Millis, Priority, Receipt, Role, RunId,
@@ -101,6 +102,29 @@ pub struct Post {
     pub text: String,
     /// When.
     pub at: Millis,
+    /// Whether a member wrote it stating nothing from the record, in a turn that took no
+    /// reading (ADR 0114): shown as unsupported to the tester and the lead.
+    pub unsupported: bool,
+}
+
+/// Evidence cited for one criterion of a task, at one stage of its checking (ADR 0114).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Cited {
+    /// The task.
+    pub task: TaskId,
+    /// The turn that cited it.
+    pub run: RunId,
+    /// The member whose turn it was.
+    pub member: MemberId,
+    /// `submitted` (the member's), `tested` (the tester's pass), `accepted` (the lead's), or
+    /// `closed` (a routine's check closed by its member).
+    pub stage: String,
+    /// Which criterion, from 1; 0 for work with none.
+    pub criterion: usize,
+    /// What it cites.
+    pub refs: Vec<Ref>,
+    /// When.
+    pub at: Millis,
 }
 
 /// One wake, as its receipt keeps it.
@@ -153,8 +177,15 @@ pub struct Run {
     pub told: String,
     /// Why it ended, in a few words.
     pub end_reason: String,
-    /// Whether it moved the work forward: posted, or changed its task.
+    /// Whether it changed something through HQ: moved a task, made one, changed a project
+    /// (ADR 0114; before it, also whether it posted).
     pub moved_forward: bool,
+    /// Whether it posted in a thread.
+    pub posted: bool,
+    /// Whether it left its task blocked or put a blocker to someone (a question, an approval).
+    pub blocked: bool,
+    /// What it came to, once it ended (ADR 0114); `None` before, and for turns before labels.
+    pub label: Option<Label>,
     /// The fresh input tokens its model calls sent, as the relay reported them.
     pub input_tokens: i64,
     /// The input tokens they read from the prompt cache.
@@ -347,7 +378,58 @@ pub trait TeamStore {
     ///
     /// # Errors
     /// [`StoreError`] if the store fails.
-    fn post(&self, task: TaskId, author: &str, text: &str, at: Millis) -> Stored<()>;
+    fn post(&self, task: TaskId, author: &str, text: &str, at: Millis) -> Stored<()> {
+        self.post_marked(task, author, text, at, &[], false)
+    }
+    /// Adds a post to a task's thread with the evidence it cites, and whether it is
+    /// unsupported (ADR 0114).
+    ///
+    /// # Errors
+    /// [`StoreError`] if the store fails.
+    fn post_marked(
+        &self,
+        task: TaskId,
+        author: &str,
+        text: &str,
+        at: Millis,
+        evidence: &[Ref],
+        unsupported: bool,
+    ) -> Stored<()>;
+    /// Sets what done means for a task.
+    ///
+    /// # Errors
+    /// [`StoreError`] if the store fails.
+    fn set_criteria(&self, task: TaskId, criteria: &[Criterion]) -> Stored<()>;
+    /// Hands a task to a member, or to nobody.
+    ///
+    /// # Errors
+    /// [`StoreError`] if the store fails.
+    fn set_assignee(&self, task: TaskId, member: Option<MemberId>) -> Stored<()>;
+    /// Records a receipt the node wrote (its `id` is ignored) and returns its id.
+    ///
+    /// # Errors
+    /// [`StoreError`] if the store fails.
+    fn add_call_receipt(&self, receipt: &CallReceipt) -> Stored<i64>;
+    /// A receipt, by its id.
+    ///
+    /// # Errors
+    /// [`StoreError`] if the store fails.
+    fn call_receipt(&self, id: i64) -> Stored<Option<CallReceipt>>;
+    /// A turn's receipts, oldest first.
+    ///
+    /// # Errors
+    /// [`StoreError`] if the store fails.
+    fn call_receipts_of(&self, run: RunId) -> Stored<Vec<CallReceipt>>;
+    /// Records evidence cited for a criterion.
+    ///
+    /// # Errors
+    /// [`StoreError`] if the store fails.
+    fn add_cited(&self, cited: &Cited) -> Stored<()>;
+    /// The evidence cited on a task, oldest first.
+    ///
+    /// # Errors
+    /// [`StoreError`] if the store fails.
+    fn cited(&self, task: TaskId) -> Stored<Vec<Cited>>;
     /// A task's thread, oldest first.
     ///
     /// # Errors
@@ -533,6 +615,11 @@ pub trait TeamStore {
     /// # Errors
     /// [`StoreError`] if the store fails.
     fn prune_events(&self, keep: i64) -> Stored<usize>;
+    /// The event with this id, if the feed still has it.
+    ///
+    /// # Errors
+    /// [`StoreError`] if the store fails.
+    fn event(&self, id: i64) -> Stored<Option<Event>>;
     /// Whether the feed still has the event with this id.
     ///
     /// # Errors

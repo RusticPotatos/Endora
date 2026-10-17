@@ -227,11 +227,12 @@ with `retry_waiting` between attempts. Each run records:
 
 - the wake that started it and a snapshot of what the member was told;
 - the steps it took and what each cost;
-- why it ended, and a separate verdict on whether it moved the work forward. Progress is
-  evidence, not words: a status change, a sub-task, a post the model chose to make, a claim
-  that took the task. Re-claiming a task the member already has, and the worker's own last
-  word for the model, are not progress, so the empty-turn back-off holds a turn that did
-  nothing (fixed 2026-10-17).
+- why it ended, and a **label** worked out from its record when it ends
+  ([ADR 0114](../adr/0114-evidence-acceptance-criteria-and-the-tester.md)): `advanced` (a task
+  moved or was made, a project changed, an act succeeded), `blocked` (it left its task blocked
+  or put a blocker to someone), `checked` (readings: receipts), `talk only` (posts alone) or
+  `empty`. Re-claiming a task the member already has is not a change, and posts are only talk,
+  so the empty-turn back-off holds a turn that did nothing.
 
 A turn does not resume a model session: each starts fresh, and continuity comes from the
 briefing ("what is new since your last turn"), the thread, the goal's notes and lessons, and
@@ -893,11 +894,38 @@ for working things out: scripts, parsing what the tools returned, trying command
   budget items on the desk with an amount box; "Reports to" on each member's card, and "Reports
   to the board: you." on the CEO's.
 
+### Evidence, acceptance criteria and the tester (owner's decisions of 2026-10-17, [ADR 0114](../adr/0114-evidence-acceptance-criteria-and-the-tester.md))
+
+- **Receipts**: the node tells HQ every call a turn makes through its contracts and bridge
+  (`POST /v1/team/receipt`, node-signed, naming the turn by its token; HQ keeps it only while the
+  turn runs), and the model reads "(receipt r41)" after the result. A `call_receipts` table, never
+  changed; Confidential excerpts are never shown to a member on a cloud model.
+- **Criteria** on tasks (`tasks.criteria`, JSON), required for work a member hands another,
+  optional for the owner's (`criteria` lines on `POST /v1/tasks`, `live:` marking one), and the
+  home lab's two live criteria on its routine's and alarm's tasks.
+- **One evidence rule** (`domain::evidence::judge`) for submission, a check closed, the tester's
+  pass (with a reading of her own), the lead's acceptance (`accept`), the CEO's `decide_project`
+  and decisions for the board, a tester's passing on the CEO's decision, and the lead's question
+  up to the CEO. Evidence cited per criterion is kept (`cited`).
+- **The path**: member → tester (`review`) → lead (`accept`, woken by `acceptance_asked`) → done;
+  nobody checks its own work, and the fallbacks are said on the task; three send-backs and the
+  next round is the owner's (`rounds` on the desk: accept or send back).
+- **Turn labels** on runs (`runs.posted`, `runs.blocked`, `runs.label`), in `run.ended` and on
+  screen; the back-off reads them. Two nudges, then a task that shows nothing goes to whom its
+  member reports to, once; the same reading again shows nothing; a check-back on a task blocked on
+  a wait is replaced by the wait, which is not stranded either.
+- **The chain of command** may move, close, accept, send back or hand on (`hand_to`) a
+  subordinate's task, saying for whom. **Unsupported** posts are marked (`posts.unsupported`).
+- **The CEO's effort**: `low`, `medium` for its reviews, `high` for decisions.
+- **The store**: new columns by guarded `ALTER TABLE`, new tables with the schema, tested from the
+  schema as it was. **The screen**: criteria with their evidence, the tester's pass, run lines'
+  labels, "unsupported", "Tester", and the owner's rounds.
+
 ## 16. Later, and not at all
 
 - **Later:** skills and adapter plugins, including adapters to other systems; more teams;
-  hiring that acts (a proposal to hire carried out once the board says yes); turn verdicts that
-  weigh evidence; moving a task between projects; the pool and the shares as settings on
+  hiring that acts (a proposal to hire carried out once the board says yes); commits and
+  command output from the workbench as receipts; moving a task between projects; the pool and the shares as settings on
   screen; virtual-machine test environments; the office on the handheld.
 - **Not at all:** members holding any credential; anything merged or deployed without the
   owner; paid billing beyond the credits without the owner; the team reading the brain,

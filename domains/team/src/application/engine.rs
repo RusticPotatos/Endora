@@ -27,9 +27,11 @@ use crate::domain::{
 };
 use crate::domain::{docs, house};
 
+mod evidence;
 mod planning;
 mod projects;
 
+pub use evidence::Called;
 pub use planning::PLANNING;
 pub use projects::{LAB_UPKEEP, Proposal};
 
@@ -741,6 +743,22 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         Ok(true)
     }
 
+    /// What a task waits on that is still open: the tasks it waits for, and its sub-tasks.
+    fn waiting_on(&self, task: &Task) -> Done<Vec<TaskId>> {
+        let mut open = Vec::new();
+        for wait in &task.waits_on {
+            if !self.task(*wait)?.status.finished() {
+                open.push(*wait);
+            }
+        }
+        for sub in self.store.tasks()? {
+            if sub.parent == Some(task.id) && !sub.status.finished() {
+                open.push(sub.id);
+            }
+        }
+        Ok(open)
+    }
+
     /// The first task in `waits` that was dropped, if any: a wait that will never finish.
     fn dropped_wait(&self, waits: &[TaskId]) -> Done<Option<Task>> {
         for wait in waits {
@@ -893,7 +911,12 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             .filter(|r| r.task == Some(task) && !r.status.live() && r.started_at.is_some())
             .collect();
         ended.sort_by_key(|r| core::cmp::Reverse(r.id));
-        Ok(ended.iter().take_while(|r| !r.moved_forward).count())
+        // A turn's label says whether it did something (ADR 0114); a turn from before labels,
+        // whether it moved its task forward.
+        Ok(ended
+            .iter()
+            .take_while(|r| r.label.map_or(!r.moved_forward, |l| !l.productive()))
+            .count())
     }
 
     /// How long a wake that brings nothing new to `task` waits now (ADR 0107).
@@ -1075,30 +1098,38 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// # Errors
     /// [`Refusal::TurnOver`], [`Refusal::OutOfReach`], or a task that does not exist.
     pub fn post_in(&self, run: RunId, task: TaskId, text: &str) -> Done<()> {
-        self.post_in_counting(run, task, text, true)
+        self.post_in_marked(run, task, text, true, &[])
     }
 
     /// A turn's last word, which the worker posts for the model when it stops: in the thread
-    /// like any post, but not progress. It is what the model said, not something it did, and
-    /// counting it would make every turn look like one that moved its task forward.
+    /// like any post. It is what the model said, not something it did: a turn whose only word
+    /// is this is talk only (ADR 0114), never one that moved its task forward.
     ///
     /// # Errors
     /// As [`Self::post_in`].
     pub fn last_word_in(&self, run: RunId, task: TaskId, text: &str) -> Done<()> {
-        self.post_in_counting(run, task, text, false)
+        self.post_in_marked(run, task, text, false, &[])
     }
 
-    fn post_in_counting(&self, run: RunId, task: TaskId, text: &str, progress: bool) -> Done<()> {
+    fn post_in_marked(
+        &self,
+        run: RunId,
+        task: TaskId,
+        text: &str,
+        answers: bool,
+        cited: &[crate::domain::Ref],
+    ) -> Done<()> {
         let _held = self.held();
         let run = self.running(run)?;
         self.reach(&run, task, true)?;
         let member = self.member(run.member)?;
-        let askers = if text.trim_start().starts_with(chain::QUESTION_FOR) {
+        let askers = if !answers || text.trim_start().starts_with(chain::QUESTION_FOR) {
             Vec::new()
         } else {
             self.askers_of(&member, task)?
         };
-        self.post_held_lock_counting(Author::Member(member.id), task, text, progress)?;
+        let unsupported = cited.is_empty() && !self.took_readings(run.id)?;
+        self.post_held_lock_marked(Author::Member(member.id), task, text, cited, unsupported)?;
         let members = self.store.members()?;
         let named = mentions(text, &members);
         for asker in askers {
@@ -1242,26 +1273,31 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     }
 
     fn post_held_lock(&self, by: Author, task: TaskId, text: &str) -> Done<()> {
-        self.post_held_lock_counting(by, task, text, true)
+        self.post_held_lock_marked(by, task, text, &[], false)
     }
 
-    fn post_held_lock_counting(
+    /// Writes to a thread; a member's post marks its turn as one that posted (talk, unless it
+    /// did more), never as one that moved its task forward (ADR 0114).
+    fn post_held_lock_marked(
         &self,
         by: Author,
         task: TaskId,
         text: &str,
-        progress: bool,
+        cited: &[crate::domain::Ref],
+        unsupported: bool,
     ) -> Done<()> {
         self.task(task)?;
         let author = self.author_name(by)?;
-        self.store.post(task, &author, text, self.clock.now())?;
+        self.store
+            .post_marked(task, &author, text, self.clock.now(), cited, unsupported)?;
         let preview: String = text.chars().take(80).collect();
         self.emit(
             EventKind::ThreadPosted,
-            json!({ "task": task.0, "author": author, "preview": preview }),
+            json!({ "task": task.0, "author": author, "preview": preview,
+                    "unsupported": unsupported }),
         )?;
-        if let (Author::Member(member), true) = (by, progress) {
-            self.mark_progress(member, task)?;
+        if let Author::Member(member) = by {
+            self.mark_turn(member, task, &|run| run.posted = true)?;
         }
         let members = self.store.members()?;
         for named in mentions(text, &members) {
@@ -1300,9 +1336,15 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         reason: &str,
     ) -> Done<()> {
         let current = self.task(task)?;
-        if current.owner != Some(member) {
+        // Its holder moves it, or anyone above the holder in the chain of command (ADR 0114),
+        // saying so.
+        let on_behalf = if current.owner == Some(member) {
+            None
+        } else if self.above_in_chain(member, current.owner.or(current.assignee))? {
+            current.owner.or(current.assignee)
+        } else {
             return Err(EngineError::Refused(Refusal::NotYours));
-        }
+        };
         // A routine's check changes no code: its member closes it (ADR 0107).
         let check = to == TaskStatus::Done && self.routine_of(task)?.is_some();
         if check {
@@ -1311,12 +1353,22 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             work::may_set_status(current.status, to).map_err(EngineError::Refused)?;
         }
         self.store.set_task_status(task, to)?;
-        self.mark_progress(member, task)?;
-        let said = if to == TaskStatus::Todo {
+        if to == TaskStatus::Blocked {
+            self.mark_turn(member, task, &|run| run.blocked = true)?;
+        } else {
+            self.mark_progress(member, task)?;
+        }
+        let mut said = if to == TaskStatus::Todo {
             format!("Handed back: {reason}")
         } else {
             format!("{} → {}: {reason}", current.status.name(), to.name())
         };
+        if let Some(holder) = on_behalf {
+            said.push_str(&format!(
+                " (for {}, as one above them)",
+                self.member(holder)?.name
+            ));
+        }
         self.post_held_lock(Author::Member(member), task, &said)?;
         if to == TaskStatus::Todo {
             self.store.release(task)?;
@@ -1356,12 +1408,30 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// reviewer, or the reviewer's own work, it is on the owner's desk to read, with its
     /// thread, as it stands.
     fn review_asked(&self, task: &Task) -> Done<()> {
-        let reviewer = self
-            .reviewer()?
-            .filter(|r| Some(r.id) != task.owner.or(task.assignee));
-        if let Some(reviewer) = reviewer {
-            self.wake_held_lock(reviewer.id, Some(task.id), WakeReason::ReviewRequested)?;
-            return Ok(());
+        // Sent back three times: this round is the owner's (ADR 0114).
+        if crate::domain::evidence::to_the_owner(self.sent_back(task.id)?) {
+            return self.rounds_to_the_owner(task);
+        }
+        match self.checkers_of(task)? {
+            crate::domain::evidence::Checkers::Both { tester, .. }
+            | crate::domain::evidence::Checkers::TesterAlone(tester) => {
+                self.wake_held_lock(tester, Some(task.id), WakeReason::ReviewRequested)?;
+                return Ok(());
+            }
+            crate::domain::evidence::Checkers::LeadAlone(lead) => {
+                let name = self.member(lead)?.name;
+                self.post_held_lock(
+                    Author::Endora,
+                    task.id,
+                    &format!(
+                        "No tester but the one who did this work: {name}, its lead, accepts it \
+                         alone."
+                    ),
+                )?;
+                self.wake_held_lock(lead, Some(task.id), WakeReason::AcceptanceAsked)?;
+                return Ok(());
+            }
+            crate::domain::evidence::Checkers::Owner => {}
         }
         let thread: Vec<String> = self
             .store
@@ -1424,6 +1494,8 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         if worker == Some(reviewer.id) {
             return Err(EngineError::Refused(Refusal::OwnWork));
         }
+        // The tester's verdict is her deliverable, whichever way it goes (ADR 0114).
+        self.mark_progress(reviewer.id, task)?;
         if !approve {
             self.store.set_task_status(task, TaskStatus::Doing)?;
             self.post_held_lock(
@@ -1706,18 +1778,28 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
 
     /// Why a turn was started: the reason of the wake that queued it.
     /// How hard the member's Claude tries this turn, by its role and what the turn is for
-    /// (see [`effort::effort_for`]): for the CEO, whether it weighs a decision.
+    /// (see [`effort::effort_for`]): for the CEO, what the turn is for.
     fn effort_of(&self, member: &Member, run: &Run) -> Done<Option<Effort>> {
         if member.role != Role::Ceo {
-            return Ok(effort::effort_for(member.brain, member.role, false));
+            return Ok(effort::effort_for(
+                member.brain,
+                member.role,
+                effort::Weight::Ordinary,
+            ));
         }
-        let drafted = match run.task {
-            Some(task) => self.ceos_draft(&self.task(task)?)?.is_some(),
-            None => false,
+        let (drafted, review) = match run.task {
+            Some(task) => (
+                self.ceos_draft(&self.task(task)?)?.is_some(),
+                self.routine_of(task)?.is_some(),
+            ),
+            None => (false, false),
         };
-        let reason = WakeReason::from_name(self.reason_for(run)?);
-        let weighty = reason.map_or(drafted, |r| effort::weighs_a_decision(r, drafted));
-        Ok(effort::effort_for(member.brain, member.role, weighty))
+        let proposals = self.proposals_waiting()? > 0;
+        let weight = WakeReason::from_name(self.reason_for(run)?)
+            .map_or(effort::Weight::Ordinary, |r| {
+                effort::ceo_weight(r, review, proposals, drafted)
+            });
+        Ok(effort::effort_for(member.brain, member.role, weight))
     }
 
     fn reason_for(&self, run: &Run) -> Done<&'static str> {
@@ -1736,6 +1818,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         if run.started_at.is_some() {
             self.store.settle(run.id, run.member, self.today(), now)?;
         }
+        let label = self.settle_label(&mut run)?;
         run.status = status;
         run.ended_at = Some(now);
         run.end_reason = why.to_owned();
@@ -1762,16 +1845,26 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             EventKind::RunEnded,
             json!({ "run": run.id.0, "member": run.member.0, "task": run.task.map(|t| t.0),
                     "result": status.name(), "why": why, "moved_forward": run.moved_forward,
+                    "label": label.map(crate::domain::Label::name),
                     "spent": run.spent, "cached": cached,
                     "input": tokens.map(|t| t.0), "output": tokens.map(|t| t.1) }),
         )?;
         if let Some(task) = run.task {
-            if run.moved_forward {
+            if label.is_some_and(crate::domain::Label::productive) {
                 self.store.set_nudged(task, false)?;
             }
             self.release_held(task)?;
         }
+        if status == RunStatus::Succeeded && label.is_some() {
+            self.after_nothing_shown(&run)?;
+        }
         Ok(())
+    }
+
+    /// Ends a turn that put a blocker to someone: a question, a draft, a decision, an approval.
+    fn end_blocked(&self, mut run: Run, status: RunStatus, why: &str) -> Done<()> {
+        run.blocked = true;
+        self.end(run, status, why)
     }
 
     /// A failed turn: tried again a minute later, at most twice; then failed for good.
@@ -1828,10 +1921,11 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         let mut told = format!(
             "You are {}, the team's {}.\n",
             member.name,
-            if member.role == Role::Ceo {
-                "CEO"
-            } else {
-                member.role.name()
+            match member.role {
+                Role::Ceo => "CEO",
+                // The reviewer's role is shown as the tester (ADR 0114).
+                Role::Reviewer => "tester",
+                role => role.name(),
             }
         );
         if member.role == Role::Ceo {
@@ -1872,6 +1966,10 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             task.priority.name(),
             task.description
         ));
+        told.push_str(&self.criteria_said(&task));
+        if let Some(nudge) = self.nudge_for(member.id, run)? {
+            told.push_str(&format!("{nudge}\n"));
+        }
         let note = self.store.goal_note(task.goal)?;
         if !note.is_empty() {
             told.push_str(&format!("Notes from the owner for this goal: {note}\n"));
@@ -1918,7 +2016,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             .thread(task.id)?
             .into_iter()
             .filter(|p| p.at > since)
-            .map(|p| format!("{}: {}", p.author, p.text))
+            .map(|p| Self::post_line(&p.author, &p.text, p.unsupported))
             .collect();
         if new.is_empty() {
             told.push_str("Nothing new in the thread since your last turn.\n");
@@ -1962,8 +2060,11 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                             review::REVIEW_BOARD_DRAFT
                         ));
                     }
+                    let cited = self
+                        .draft_receipts(draft, member.brain.cloud())
+                        .unwrap_or_default();
                     return Some(format!(
-                        "{} wrote this draft for the owner: {draft}\n{}",
+                        "{} wrote this draft for the owner: {draft}\n{}\n{cited}",
                         p.author,
                         review::REVIEW_DRAFT
                     ));
@@ -1977,9 +2078,10 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 })
             });
             if let Some(asked) = asked {
-                told.push_str(&format!("{asked}\n"));
+                told.push_str(&format!("{}\n", asked.trim_end()));
             }
         }
+        told.push_str(&self.checking_said(member, run, &task)?);
         // HQ's own tools, never as all a member has: live, a lead on Claude offered the home
         // lab's read took this line for its whole kit and said it could not read the lab.
         let beside = "Endora's own tools on the home lab (homelab_status and the like) come \
@@ -1987,7 +2089,8 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         if member.role == Role::Ceo {
             told.push_str(
                 "Your tools at HQ: my_turn, claim, post, set_status, create_task, ask_owner (a \
-                 decision for the board), check_back, note_house, rewrite_house, read_doc. ",
+                 decision for the board), check_back, note_house, rewrite_house, read_doc, \
+                 accept, hand_to. ",
             );
             told.push_str(beside);
             return Ok(told);
@@ -1998,7 +2101,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         );
         told.push_str(match member.role {
             Role::Reviewer => ", review. ",
-            Role::Lead => ", propose_project. ",
+            Role::Lead => ", propose_project, accept, hand_to. ",
             _ => ". ",
         });
         told.push_str(beside);
@@ -2317,9 +2420,29 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 continue;
             }
             let about = json!({ "task": back.task.0, "member": back.member.0, "why": back.why });
-            if self.task(back.task)?.status.finished() {
+            let task = self.task(back.task)?;
+            if task.status.finished() {
                 self.store
                     .set_check_back(back.id, CheckBackStatus::Dropped, now)?;
+                self.emit(EventKind::CheckBackDropped, about)?;
+                continue;
+            }
+            // Waiting is not a turn (ADR 0114): a blocked task's wait ending is its wake.
+            let waits = self.waiting_on(&task)?;
+            if task.status == TaskStatus::Blocked && !waits.is_empty() {
+                self.store
+                    .set_check_back(back.id, CheckBackStatus::Replaced, now)?;
+                let on: Vec<String> = waits.iter().map(|t| format!("#{t}")).collect();
+                self.post_held_lock(
+                    Author::Endora,
+                    back.task,
+                    &format!(
+                        "The check-back ({}) is replaced by the wait on {}: you are woken when \
+                         it finishes, not before.",
+                        back.why,
+                        on.join(", ")
+                    ),
+                )?;
                 self.emit(EventKind::CheckBackDropped, about)?;
                 continue;
             }
@@ -2607,6 +2730,21 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     /// [`Refusal::TurnOver`] for a turn that has ended, or [`Refusal::AlreadyAsked`] while its
     /// last question waits; a store failure.
     pub fn ask_owner(&self, run: RunId, text: &str) -> Done<Asked> {
+        self.ask_owner_citing(run, text, &[])
+    }
+
+    /// [`Self::ask_owner`], citing evidence from HQ's record (ADR 0114). What goes to the
+    /// owner's desk as a decision, or from the lead up to the CEO, needs it, each reference in
+    /// the record; the ids go with the question.
+    ///
+    /// # Errors
+    /// As [`Self::ask_owner`]; [`Refusal::NoEvidenceFor`] or [`Refusal::NoSuchEvidence`].
+    pub fn ask_owner_citing(
+        &self,
+        run: RunId,
+        text: &str,
+        cited: &[crate::domain::Ref],
+    ) -> Done<Asked> {
         let _held = self.held();
         // Room for the question and the worker's line saying what the turn actually did.
         let text: String = text.trim().chars().take(1200).collect();
@@ -2621,22 +2759,30 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         if member.role == Role::Ceo {
             let decision =
                 Decision::read(&text).ok_or(EngineError::Refused(Refusal::NotADecision))?;
-            return self.to_the_board(turn, &task, &member, &decision);
+            return self.to_the_board(turn, &task, &member, &decision, cited);
         }
         // The reviewer passing on the CEO's decision, checked: it reaches the board as the
         // CEO's, as the reviewer wrote it, or as the CEO did if the reviewer's lost its shape.
         if member.role == Role::Reviewer {
             if let Some((ceo, drafted)) = self.ceos_draft(&task)? {
+                self.judge_decision(cited, turn.id)?;
                 let decision = Decision::read(&text).unwrap_or(drafted);
+                let evidence = self.evidence_said(cited)?;
                 return self
-                    .board_desk(turn, &task, &ceo, &decision, Some(&member))
+                    .board_desk(turn, &task, &ceo, &decision, Some(&member), &evidence)
                     .map(Asked::Desk);
             }
         }
         // Up the chain, while the team has a CEO at work; otherwise as before there was one.
         if let Some(above) = self.above(&member)? {
+            // The lead sends something up to the CEO only on evidence (ADR 0114).
+            if member.role == Role::Lead && above.role == Role::Ceo {
+                self.judge_decision(cited, turn.id)?;
+            }
+            let text = self.with_evidence(&text, cited)?;
             return self.up_the_chain(turn, &task, &member, &above, &text);
         }
+        let text = self.with_evidence(&text, cited)?;
         if let Some(reviewer) = self.reviewer_for(&member, &task, &text, lab.as_deref())? {
             return self.to_review(turn, &task, &member, reviewer, &text);
         }
@@ -2651,30 +2797,49 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
     ///
     /// # Errors
     /// [`Refusal::OnlyTheCeo`] for any other member, and what [`Self::ask_owner`] refuses.
-    pub fn ask_board(&self, run: RunId, decision: &Decision) -> Done<Asked> {
+    pub fn ask_board(
+        &self,
+        run: RunId,
+        decision: &Decision,
+        cited: &[crate::domain::Ref],
+    ) -> Done<Asked> {
         let _held = self.held();
         let (turn, ceo) = self.the_ceos_turn(run)?;
         let task = self.task(
             turn.task
                 .ok_or(EngineError::Unknown("task for this turn"))?,
         )?;
-        self.to_the_board(turn, &task, &ceo, decision)
+        self.to_the_board(turn, &task, &ceo, decision, cited)
     }
 
+    /// A question with the evidence it cites under it, by id.
+    fn with_evidence(&self, text: &str, cited: &[crate::domain::Ref]) -> Done<String> {
+        if cited.is_empty() {
+            return Ok(text.to_owned());
+        }
+        Ok(format!("{text}\nEvidence: {}", self.evidence_said(cited)?))
+    }
+
+    /// The CEO's decision on its way to the board: only on evidence from HQ's record (ADR
+    /// 0114), through the reviewer first.
     fn to_the_board(
         &self,
         run: Run,
         task: &Task,
         ceo: &Member,
         decision: &Decision,
+        cited: &[crate::domain::Ref],
     ) -> Done<Asked> {
+        self.judge_decision(cited, run.id)?;
+        let evidence = self.evidence_said(cited)?;
         let reviewer = self
             .reviewer()?
             .filter(|r| !r.paused && r.id != ceo.id && !task.status.finished());
         if let Some(reviewer) = reviewer {
-            return self.to_review(run, task, ceo, reviewer.id, &decision.text());
+            let text = format!("{}\nEvidence: {evidence}", decision.text());
+            return self.to_review(run, task, ceo, reviewer.id, &text);
         }
-        self.board_desk(run, task, ceo, decision, None)
+        self.board_desk(run, task, ceo, decision, None, &evidence)
             .map(Asked::Desk)
     }
 
@@ -2687,11 +2852,35 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         ceo: &Member,
         decision: &Decision,
         checked_by: Option<&Member>,
+        evidence: &str,
     ) -> Done<crate::domain::DeskId> {
         if self.waiting_question(ceo.id, task.id)? {
             return Err(EngineError::Refused(Refusal::AlreadyAsked));
         }
         let mut text = decision.text();
+        // What the CEO cited, and what the reviewer did when she checked it.
+        let drafted = self
+            .store
+            .thread(task.id)?
+            .into_iter()
+            .rev()
+            .find(|p| p.text.starts_with(review::DRAFT) && p.author == ceo.name)
+            .and_then(|p| {
+                p.text
+                    .lines()
+                    .find_map(|l| l.strip_prefix("Evidence: ").map(str::to_owned))
+            });
+        if let Some(cited) = drafted.filter(|_| checked_by.is_some()) {
+            text.push_str(&format!("\nEvidence: {cited}"));
+        }
+        if !evidence.is_empty() {
+            let whose = if checked_by.is_some() {
+                "Checked against"
+            } else {
+                "Evidence"
+            };
+            text.push_str(&format!("\n{whose}: {evidence}"));
+        }
         if let Some(reviewer) = checked_by {
             text.push_str(&format!("\nChecked by {}, the reviewer.", reviewer.name));
         }
@@ -2708,7 +2897,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             json!({ "item": desk.0, "kind": "decision", "task": task.id.0 }),
         )?;
         let id = run.id;
-        self.end(run, RunStatus::Succeeded, "put a decision to the board")?;
+        self.end_blocked(run, RunStatus::Succeeded, "put a decision to the board")?;
         self.runner.stop(id, self.settings.grace);
         Ok(desk)
     }
@@ -2783,7 +2972,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             &chain::question(&above.name, text),
         )?;
         let id = run.id;
-        self.end(
+        self.end_blocked(
             run,
             RunStatus::Succeeded,
             &format!("asked {}, the {}", above.name, above.role.name()),
@@ -2846,7 +3035,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             &format!("{}{text}", review::DRAFT),
         )?;
         let id = run.id;
-        self.end(
+        self.end_blocked(
             run,
             RunStatus::Succeeded,
             "sent a draft for the owner to review",
@@ -2910,7 +3099,7 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         // The worker ends its turn on reading that it has; its container is let go too, so a
         // worker that does not cannot linger.
         let id = run.id;
-        self.end(run, RunStatus::Succeeded, "asked the owner")?;
+        self.end_blocked(run, RunStatus::Succeeded, "asked the owner")?;
         self.runner.stop(id, self.settings.grace);
         Ok(desk)
     }
@@ -3070,6 +3259,31 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             ("approval", "decline") => {
                 self.settle_unrun(found, "The owner declined this, and it was not run")?;
             }
+            // Work sent back three times is the owner's to advance (ADR 0114).
+            ("rounds", "accept") => {
+                let task = self.task(found.task.ok_or(EngineError::Unknown("task"))?)?;
+                if task.status == TaskStatus::InReview {
+                    self.post_held_lock(Author::Owner, task.id, "The owner accepts this as done.")?;
+                    self.store.set_task_status(task.id, TaskStatus::Done)?;
+                    self.emit_status(&task, TaskStatus::Done)?;
+                    self.after_finishing(&task)?;
+                }
+            }
+            ("rounds", "send_back") => {
+                let task = self.task(found.task.ok_or(EngineError::Unknown("task"))?)?;
+                if task.status == TaskStatus::InReview {
+                    self.store.set_task_status(task.id, TaskStatus::Doing)?;
+                    self.post_held_lock(
+                        Author::Owner,
+                        task.id,
+                        "The owner sends this back: put it right and submit it again.",
+                    )?;
+                    self.emit_status(&task, TaskStatus::Doing)?;
+                    if let Some(member) = task.owner.or(task.assignee) {
+                        self.wake_held_lock(member, Some(task.id), WakeReason::SentBack)?;
+                    }
+                }
+            }
             ("ready_to_merge", "merged" | "not_now")
             | ("ready_to_read", "read" | "not_now")
             | ("question", "dismiss")
@@ -3108,10 +3322,11 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             {
                 continue;
             }
-            // Still waiting on work that will happen: not stranded. Waiting on work that was
+            // Still waiting on work that will happen (what it waits for, or its open sub-tasks):
+            // not stranded, and the wait's end is its wake (ADR 0114). Waiting on work that was
             // dropped: stranded, and its member is told why.
             let dropped = self.dropped_wait(&task.waits_on)?;
-            if dropped.is_none() && !self.waits_over(&task.waits_on)? {
+            if dropped.is_none() && !self.waiting_on(task)?.is_empty() {
                 continue;
             }
             let Some(member) = task.owner.or(task.assignee) else {
@@ -3498,6 +3713,11 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 waits_on: Vec::new(),
             },
         )?;
+        if routine.on_lab_trouble {
+            // The home lab's check says what done means: the lab as it is now (ADR 0114).
+            self.store
+                .set_criteria(task, &crate::domain::Criterion::lab())?;
+        }
         routine.last_task = Some(task);
         routine.last_fired_at = Some(now);
         self.store.save_routine(&routine)?;
@@ -3702,8 +3922,11 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                 "gate": self.store.gate(t.id)?, "why": why(t),
                 "routine": routine_list.iter().find(|r| r.last_task == Some(t.id)).map(|r| r.id.0),
                 "thread": self.store.thread(t.id)?.iter()
-                    .map(|p| json!({ "author": p.author, "text": p.text, "at": p.at }))
+                    .map(|p| json!({ "author": p.author, "text": p.text, "at": p.at,
+                                     "unsupported": p.unsupported }))
                     .collect::<Vec<_>>(),
+                // What done means, and what was cited for it at each stage (ADR 0114).
+                "evidence": self.evidence_shown(t)?,
             }));
         }
         // Spent is what turns reported using; held is what they have reserved and not yet
@@ -3775,6 +3998,8 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             }).collect::<Vec<_>>(),
             "house_log": self.store.setting(HOUSE_LOG)?.unwrap_or_default(),
             "projects": self.projects_shown(&tasks)?,
+            // The turns that ended last, with their labels (ADR 0114).
+            "recent_runs": self.recent_runs(30)?,
         }))
     }
 

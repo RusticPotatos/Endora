@@ -323,6 +323,8 @@ pub struct Task {
     pub waits_on: Vec<TaskId>,
     /// Whether it has had its one recovery nudge.
     pub nudged: bool,
+    /// What done means for it (ADR 0114); empty for the owner's work that gave none.
+    pub criteria: Vec<super::evidence::Criterion>,
 }
 
 /// Why something a member asked for is refused.
@@ -417,6 +419,32 @@ pub enum Refusal {
     /// A member reports to another member, never to itself, and never in a circle; the CEO
     /// reports to the board.
     NotAManager,
+    /// Work handed to another member says what done means (ADR 0114).
+    NoCriteria,
+    /// A criterion with nothing cited for it; `0` for work with no criteria.
+    NoEvidenceFor {
+        /// Which criterion, from 1.
+        criterion: usize,
+        /// What it says.
+        text: String,
+    },
+    /// A criterion about the lab now with no reading from this turn.
+    NotFresh {
+        /// Which criterion, from 1.
+        criterion: usize,
+        /// What it says.
+        text: String,
+    },
+    /// Evidence from another piece of work than this one.
+    NotThisWork(String),
+    /// A receipt of a call that was refused or failed: it shows nothing.
+    RefusedCall(String),
+    /// The tester passes work only on readings of her own.
+    NoOwnReading,
+    /// The lead accepts work only once the tester has passed it.
+    NotTested,
+    /// Only the work's lead accepts it, never its own.
+    NotTheLead,
     /// That is not a step a project takes from where it is.
     NotAProjectStep {
         /// Where it is.
@@ -523,6 +551,41 @@ impl fmt::Display for Refusal {
                  event (`events`) from HQ's own record",
             ),
             Self::NoSuchEvidence(what) => write!(f, "{what} is not in HQ's record"),
+            Self::NoCriteria => f.write_str(
+                "work handed to another member says what done means: give `criteria`, a short \
+                 list (each { text, live }; live for anything about the lab as it is now)",
+            ),
+            Self::NoEvidenceFor { criterion: 0, .. } => f.write_str(
+                "this needs evidence: cite at least one receipt (r12), task or event from HQ's \
+                 record in `evidence`",
+            ),
+            Self::NoEvidenceFor { criterion, text } => write!(
+                f,
+                "criterion {criterion} ({text}) has no evidence: cite a receipt (r12), task or \
+                 event for it in `evidence`, one list per criterion in order"
+            ),
+            Self::NotFresh { criterion, text } => write!(
+                f,
+                "criterion {criterion} ({text}) is about the lab now: cite a reading from this \
+                 turn (take one now, e.g. homelab_status, and cite its receipt), not an older \
+                 one or someone's word"
+            ),
+            Self::NotThisWork(what) => {
+                write!(f, "{what} is not from this task's work: cite this work's own")
+            }
+            Self::RefusedCall(what) => {
+                write!(f, "{what} is a call that was refused or failed: it shows nothing")
+            }
+            Self::NoOwnReading => f.write_str(
+                "a tester passes work on her own readings: take them this turn and cite their \
+                 receipts",
+            ),
+            Self::NotTested => f.write_str(
+                "the tester has not passed this work yet: wait for her verdict",
+            ),
+            Self::NotTheLead => f.write_str(
+                "only the work's lead accepts it, and never work of its own",
+            ),
             Self::NotAProjectStep { from, asked } => {
                 write!(f, "a project that is {from} does not {asked}")
             }

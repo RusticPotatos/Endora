@@ -192,7 +192,8 @@ fn a_question_goes_up_the_chain_to_a_decision_on_the_boards_desk_and_back_down()
         &hq,
         &lead,
         "ask_owner",
-        &json!({ "text": "Linus wants sonarr at 2 GB; the NAS has 16 GB. Spend it?" }),
+        &json!({ "text": "Linus wants sonarr at 2 GB; the NAS has 16 GB. Spend it?",
+                 "evidence": [format!("task {}", lead.task.unwrap().0)] }),
     )
     .unwrap();
     assert_eq!(
@@ -214,7 +215,8 @@ fn a_question_goes_up_the_chain_to_a_decision_on_the_boards_desk_and_back_down()
         "ask_owner",
         &json!({ "decision": "Give sonarr 2 GB of the NAS's 16?",
                  "recommendation": "Yes: it is the one container short of memory.",
-                 "why": "Linus found it killed for memory three times today." }),
+                 "why": "Linus found it killed for memory three times today.",
+                 "evidence": [format!("task {}", task.0)] }),
     )
     .unwrap();
     assert!(said.contains("with the reviewer"), "{said}");
@@ -248,7 +250,19 @@ fn a_question_goes_up_the_chain_to_a_decision_on_the_boards_desk_and_back_down()
     let draft = "Decision: Give sonarr 2 GB of the NAS's 16?\nRecommendation: Yes: it is the \
                  one container short of memory.\nWhy: Its log shows it killed for memory three \
                  times.";
-    use_tool(&hq, &check, "ask_owner", &json!({ "text": draft })).unwrap();
+    // She passes it on only on evidence of her own (ADR 0114).
+    assert!(
+        use_tool(&hq, &check, "ask_owner", &json!({ "text": draft }))
+            .unwrap_err()
+            .contains("needs evidence")
+    );
+    use_tool(
+        &hq,
+        &check,
+        "ask_owner",
+        &json!({ "text": draft, "evidence": [format!("task {}", task.0)] }),
+    )
+    .unwrap();
     let desk = hq.store().desk().unwrap();
     assert_eq!(desk.len(), 1, "{desk:?}");
     assert_eq!(desk[0].kind, "decision");
@@ -435,21 +449,36 @@ fn with_no_reviewer_the_ceos_decision_goes_straight_to_the_board_and_is_never_ba
         hq.ask_owner(ceo.run, "What now?").unwrap_err(),
         EngineError::Refused(Refusal::NotADecision)
     );
-    let said = use_tool(
-        &hq,
-        &ceo,
-        "ask_owner",
-        &json!({ "decision": "Hire a second developer?", "recommendation": "Not yet.",
-                 "why": "The queue is short." }),
-    )
-    .unwrap();
+    // Nothing reaches the owner's desk without evidence from HQ's record (ADR 0114).
+    let ask = |evidence: serde_json::Value| {
+        use_tool(
+            &hq,
+            &ceo,
+            "ask_owner",
+            &json!({ "decision": "Hire a second developer?", "recommendation": "Not yet.",
+                     "why": "The queue is short.", "evidence": evidence }),
+        )
+    };
+    let unfounded = ask(json!([])).unwrap_err();
+    assert!(unfounded.contains("needs evidence"), "{unfounded}");
+    assert_eq!(
+        ask(json!(["task 999"])).unwrap_err(),
+        "task 999 is not in HQ's record"
+    );
+    assert!(hq.store().desk().unwrap().is_empty());
+    let own = ceo.task.unwrap().0;
+    let said = ask(json!([format!("#{own}")])).unwrap();
     assert!(said.contains("board's desk"), "{said}");
     let desk = hq.store().desk().unwrap();
     assert_eq!(
         (desk[0].kind.as_str(), desk[0].text.as_str()),
         (
             "decision",
-            "Decision: Hire a second developer?\nRecommendation: Not yet.\nWhy: The queue is short."
+            format!(
+                "Decision: Hire a second developer?\nRecommendation: Not yet.\nWhy: The queue is \
+                 short.\nEvidence: task {own}"
+            )
+            .as_str()
         )
     );
     // Declined: the thread says so and the CEO is woken; only the decision's words take.
@@ -525,7 +554,7 @@ fn the_house_log_is_the_ceos_to_keep_and_starts_the_ceos_and_the_leads_turns() {
         &hq,
         &lead,
         "ask_owner",
-        &json!({ "text": "What matters this week?" }),
+        &json!({ "text": "What matters this week?", "evidence": [format!("task {}", lead.task.unwrap().0)] }),
     )
     .unwrap();
     let ceo = turn(&hq, t.ceo);
@@ -611,7 +640,13 @@ fn the_ceo_reads_endoras_public_records_and_nothing_else() {
         .unwrap_err(),
         Refusal::OnlyTheCeo.to_string()
     );
-    use_tool(&hq, &lead, "ask_owner", &json!({ "text": "Which plan?" })).unwrap();
+    use_tool(
+        &hq,
+        &lead,
+        "ask_owner",
+        &json!({ "text": "Which plan?", "evidence": [format!("task {}", lead.task.unwrap().0)] }),
+    )
+    .unwrap();
     let ceo = turn(&hq, t.ceo);
     let read = use_tool(
         &hq,
@@ -728,7 +763,13 @@ fn the_pool_is_split_between_the_paid_and_a_local_member_is_never_turned_away_fo
         hq.store().run(lead.run).unwrap().unwrap().reserved,
         MOST_A_TURN
     );
-    use_tool(&hq, &lead, "ask_owner", &json!({ "text": "Which first?" })).unwrap();
+    use_tool(
+        &hq,
+        &lead,
+        "ask_owner",
+        &json!({ "text": "Which first?", "evidence": [format!("task {}", lead.task.unwrap().0)] }),
+    )
+    .unwrap();
     let ceo = turn(&hq, t.ceo);
     assert_eq!(
         hq.store().run(ceo.run).unwrap().unwrap().reserved,
@@ -774,7 +815,7 @@ fn the_ceos_briefing_holds_the_house_the_team_the_work_the_trouble_and_the_board
         &hq,
         &lead,
         "ask_owner",
-        &json!({ "text": "Sonarr again: what now?" }),
+        &json!({ "text": "Sonarr again: what now?", "evidence": [format!("task {}", lead.task.unwrap().0)] }),
     )
     .unwrap();
     let ceo = turn(&hq, t.ceo);
@@ -800,7 +841,7 @@ fn the_ceos_briefing_holds_the_house_the_team_the_work_the_trouble_and_the_board
 }
 
 #[test]
-fn the_ceo_weighs_a_question_at_high_effort_its_review_at_medium_and_the_lead_at_medium() {
+fn the_ceo_answers_a_question_at_low_effort_its_review_at_medium_and_the_lead_at_medium() {
     use crate::domain::Effort;
     let clock = Hands(AtomicI64::new(OCT_17));
     let hq = engine(&clock);
@@ -808,10 +849,20 @@ fn the_ceo_weighs_a_question_at_high_effort_its_review_at_medium_and_the_lead_at
     let task = task_for(&hq, t.goal, t.lead, "Plan the week");
     let lead = turn(&hq, t.lead);
     assert_eq!(lead.effort, Some(Effort::Medium), "the lead, on Sonnet");
-    use_tool(&hq, &lead, "ask_owner", &json!({ "text": "Which first?" })).unwrap();
+    use_tool(
+        &hq,
+        &lead,
+        "ask_owner",
+        &json!({ "text": "Which first?", "evidence": [format!("task {}", lead.task.unwrap().0)] }),
+    )
+    .unwrap();
     let asked = turn(&hq, t.ceo);
     assert_eq!(asked.task, Some(task));
-    assert_eq!(asked.effort, Some(Effort::High), "answering a question");
+    assert_eq!(
+        asked.effort,
+        Some(Effort::Low),
+        "answering a question is ordinary"
+    );
 
     let dev_task = task_for(&hq, t.goal, t.dev, "Fix the feed");
     let dev = turn(&hq, t.dev);
@@ -838,6 +889,21 @@ fn the_ceo_weighs_a_question_at_high_effort_its_review_at_medium_and_the_lead_at
     hq.fire_routine(routine).unwrap();
     let review = turn(&hq, t.ceo);
     assert_eq!(review.effort, Some(Effort::Medium), "its daily review");
+    // A proposal waiting for its decision: high (the owner's decision of 2026-10-17).
+    let mine = task_for(&hq, t.goal, t.lead, "Look over the lab");
+    let lead = turn(&hq, t.lead);
+    use_tool(
+        &hq,
+        &lead,
+        "propose_project",
+        &json!({ "title": "Media stack", "reason": "it keeps failing", "tasks": [mine.0] }),
+    )
+    .unwrap();
+    hq.runner().finish(review.run, true);
+    hq.tick().unwrap();
+    task_for(&hq, t.goal, t.ceo, "Weigh it");
+    let weighs = turn(&hq, t.ceo);
+    assert_eq!(weighs.effort, Some(Effort::High), "a project to decide");
 }
 
 #[test]
@@ -868,7 +934,13 @@ fn after_its_first_turn_the_ceo_is_told_only_what_changed_and_the_whole_on_its_r
     }
     let task = task_for(&hq, t.goal, t.lead, "Plan the week");
     let lead = turn(&hq, t.lead);
-    use_tool(&hq, &lead, "ask_owner", &json!({ "text": "Which first?" })).unwrap();
+    use_tool(
+        &hq,
+        &lead,
+        "ask_owner",
+        &json!({ "text": "Which first?", "evidence": [format!("task {}", lead.task.unwrap().0)] }),
+    )
+    .unwrap();
 
     // Its first turn: everything, as there is no last turn to go from.
     let first = turn(&hq, t.ceo);
@@ -909,9 +981,10 @@ fn after_its_first_turn_the_ceo_is_told_only_what_changed_and_the_whole_on_its_r
     }
     assert!(
         quiet.told.len() * 2 < first.told.len(),
-        "under half as long: {} against {}",
+        "under half as long: {} against {}\n{}",
         quiet.told.len(),
-        first.told.len()
+        first.told.len(),
+        quiet.told
     );
     // The house and the team open every briefing, in one order.
     let house = quiet.told.find("The house log").unwrap();

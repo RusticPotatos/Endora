@@ -388,6 +388,11 @@
   .hq-why li { padding-left: 12px; border-left: 2px solid var(--hq-line); margin-bottom: 3px; color: var(--hq-muted); }
   .hq-why li:first-child { color: var(--hq-fg); border-left-color: var(--hq-neon); }
   .hq-thread { margin-top: 8px; color: var(--hq-muted); }
+  /* Evidence (ADR 0114): each criterion with what was cited for it, and posts that cite nothing. */
+  .hq-evidence { margin-top: 8px; font-size: 12.5px; }
+  .hq-evidence h3 { font-size: 12.5px; margin: 0 0 4px; }
+  .hq-evidence ul ul { list-style: none; padding-left: 12px; margin: 2px 0; color: var(--hq-muted); }
+  .hq-unsupported { color: var(--hq-muted); border: 1px dashed var(--hq-line); padding: 0 4px; font-size: 11px; }
   .hq-needs { display: grid; gap: 8px; }
   .hq-need { background: var(--hq-panel-2); border-left: 3px solid var(--hq-violet); border-radius: 0 4px 4px 0; padding: 8px 10px; }
   .hq-need.stuck { border-left-color: var(--hq-red); }

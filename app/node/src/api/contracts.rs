@@ -5,7 +5,9 @@
 //! does it through its own console adapter. No key and no raw access leave the node.
 //!
 //! Every call is written to Endora's audit log with the member and the run. A restart lands
-//! on the owner's desk in HQ as a notice.
+//! on the owner's desk in HQ as a notice. Every call a turn makes, done or refused, is also told
+//! to HQ as a receipt, with the turn's own token (ADR 0114): the node writes it, never the
+//! model, and the model reads its id (`receipt r12`) to cite as evidence.
 
 use super::relay::{Turn, token_of, turn_of};
 use super::*;
@@ -138,7 +140,62 @@ struct Done {
 /// Why a contract was refused or failed: a status, and what the model reads.
 type Refused = (StatusCode, String);
 
-/// `POST /team-relay/contracts/{name}`: one call of a contract, its arguments the JSON body.
+/// What a call came to, for its receipt.
+pub(super) struct Came {
+    /// The tool's name.
+    pub(super) tool: String,
+    /// Its arguments, in plain words.
+    pub(super) args: String,
+    /// What the turn read back: the result, or why it was refused.
+    pub(super) said: String,
+    /// Whether it did what was asked.
+    pub(super) ok: bool,
+    /// Whether the tool acts.
+    pub(super) act: bool,
+    /// Whether its result is Confidential.
+    pub(super) confidential: bool,
+}
+
+/// Tells HQ what a call came to, as a receipt the turn can cite (ADR 0114), and returns what
+/// the model reads after the result: ` (receipt r12)`, or nothing when HQ kept none. A receipt
+/// HQ cannot keep is said in the log; the call's result stands, and the audit log has it.
+pub(super) async fn receipt(state: &AppState, token: &str, came: Came) -> String {
+    let Some(hq) = state.hq.clone() else {
+        return String::new();
+    };
+    let body = json!({
+        "token": token, "tool": came.tool, "args": came.args, "ok": came.ok, "act": came.act,
+        "confidential": came.confidential,
+        "excerpt": came.said.chars().take(1_000).collect::<String>(),
+    });
+    let kept = tokio::task::spawn_blocking(move || hq.post("/v1/team/receipt", &body)).await;
+    match kept {
+        Ok(Ok(answer)) => answer["receipt"]
+            .as_i64()
+            .map_or_else(String::new, |id| format!(" (receipt r{id})")),
+        Ok(Err(e)) => {
+            eprintln!("contracts: HQ kept no receipt of a call: {e}");
+            String::new()
+        }
+        Err(_) => String::new(),
+    }
+}
+
+/// A call's arguments in plain words, for its receipt: its keys and values, not its reason.
+fn args_said(args: &serde_json::Value) -> String {
+    let mut given = args.clone();
+    if let Some(object) = given.as_object_mut() {
+        object.remove("why");
+    }
+    endora_capabilities::bridge::plain_words(&given)
+        .iter()
+        .map(|(k, v)| format!("{k}: {v}"))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// `POST /team-relay/contracts/{name}`: one call of a contract, its arguments the JSON body,
+/// with its receipt's id after what the model reads.
 pub(super) async fn call(
     State(state): State<AppState>,
     Path(name): Path<String>,
@@ -150,11 +207,48 @@ pub(super) async fn call(
         Ok(turn) => turn,
         Err(refused) => return refused,
     };
+    let token = token_of(&headers);
     let args = if body.iter().all(u8::is_ascii_whitespace) {
         json!({})
     } else {
         serde_json::from_slice(&body).unwrap_or(serde_json::Value::Null)
     };
+    let said = args_said(&args);
+    let (response, came) = called(state.clone(), turn, name, args).await;
+    let Some(came) = came else {
+        return response;
+    };
+    let receipt = receipt(&state, &token, Came { args: said, ..came }).await;
+    if receipt.is_empty() {
+        return response;
+    }
+    with_receipt(response, &receipt).await
+}
+
+/// A contract's answer with the receipt's id after its text, or its error.
+async fn with_receipt(response: Response, receipt: &str) -> Response {
+    let status = response.status();
+    let Ok(bytes) = axum::body::to_bytes(response.into_body(), 1 << 24).await else {
+        return refuse(StatusCode::INTERNAL_SERVER_ERROR, "", "the contract failed");
+    };
+    let mut answer: serde_json::Value = serde_json::from_slice(&bytes).unwrap_or_default();
+    for key in ["text", "error"] {
+        if let Some(text) = answer[key].as_str() {
+            answer[key] = format!("{text}{receipt}").into();
+        }
+    }
+    (status, Json(answer)).into_response()
+}
+
+/// One call of a contract or a bridged tool, decided by the node's rules: the answer, and
+/// what it came to for its receipt (`None` for a call that never reached a tool's rules: the
+/// arguments unreadable, a name that is no tool, or an approval put on the desk).
+async fn called(
+    state: AppState,
+    turn: Turn,
+    name: String,
+    args: serde_json::Value,
+) -> (Response, Option<Came>) {
     // Every call is in the audit log, these refusals too; a name the worker made up is
     // written as one short line.
     let refused_for = |why: &str| {
@@ -170,15 +264,27 @@ pub(super) async fn call(
     };
     if !args.is_object() {
         refused_for("the arguments must be one JSON object");
-        return refuse(
+        let refused = refuse(
             StatusCode::BAD_REQUEST,
             "",
             "the arguments must be one JSON object",
         );
+        return (refused, None);
     }
     if !contracts::all().iter().any(|c| c.name == name) {
         return bridged(state, turn, name, args).await;
     }
+    let found = contracts::all().into_iter().find(|c| c.name == name);
+    let came = |said: &str, ok: bool| {
+        found.as_ref().map(|c| Came {
+            tool: c.name.to_owned(),
+            args: String::new(),
+            said: said.to_owned(),
+            ok,
+            act: c.kind != contracts::Kind::Read,
+            confidential: c.tier == "confidential",
+        })
+    };
     let Some(contract) = offered(switches_of(&state))
         .into_iter()
         .find(|c| c.name == name)
@@ -191,11 +297,8 @@ pub(super) async fn call(
                 turn.run
             ),
         );
-        return refuse(
-            StatusCode::FORBIDDEN,
-            "",
-            &format!("the owner has switched {name} off"),
-        );
+        let why = format!("the owner has switched {name} off");
+        return (refuse(StatusCode::FORBIDDEN, "", &why), came(&why, false));
     };
     if !may_see(&contract, &turn) {
         let why = if contract.may_be_seen_by(&turn.role, turn.cloud) {
@@ -205,7 +308,7 @@ pub(super) async fn call(
             super::bridge::confidential(&name)
         };
         refused_for(&why);
-        return refuse(StatusCode::FORBIDDEN, "", &why);
+        return (refuse(StatusCode::FORBIDDEN, "", &why), came(&why, false));
     }
     let state2 = state.clone();
     let name2 = name.clone();
@@ -226,21 +329,30 @@ pub(super) async fn call(
     match done {
         Ok(Ok(done)) => {
             record(&state, &format!("{member} (run {run}) {}", done.said));
-            Json(json!({ "text": done.text })).into_response()
+            let came = came(&done.text, true);
+            (Json(json!({ "text": done.text })).into_response(), came)
         }
         Ok(Err((status, why))) => {
             record(
                 &state,
                 &format!("{member} (run {run}) was refused {name}: {why}"),
             );
-            refuse(status, "", &why)
+            (refuse(status, "", &why), came(&why, false))
         }
-        Err(_) => refuse(StatusCode::INTERNAL_SERVER_ERROR, "", "the contract failed"),
+        Err(_) => (
+            refuse(StatusCode::INTERNAL_SERVER_ERROR, "", "the contract failed"),
+            None,
+        ),
     }
 }
 
 /// A call of a bridged tool (ADR 0108): offered to this turn now, or refused as no contract.
-async fn bridged(state: AppState, turn: Turn, name: String, args: serde_json::Value) -> Response {
+async fn bridged(
+    state: AppState,
+    turn: Turn,
+    name: String,
+    args: serde_json::Value,
+) -> (Response, Option<Came>) {
     let member = who(&turn);
     let run = turn.run;
     let worked = state.clone();
@@ -254,22 +366,46 @@ async fn bridged(state: AppState, turn: Turn, name: String, args: serde_json::Va
             .find(|b| b.name == called_name)
             .filter(|_| switched_on);
         let Some(tool) = tool else {
-            return Err((
-                StatusCode::NOT_FOUND,
-                format!("no contract is called {called_name}"),
-            ));
+            return (
+                None,
+                Err((
+                    StatusCode::NOT_FOUND,
+                    format!("no contract is called {called_name}"),
+                )),
+            );
         };
-        super::bridge::call(&worked, &turn, &tool, &args)
+        let kind = Some((
+            tool.kind == endora_capabilities::bridge::Kind::Act,
+            tool.confidential(),
+        ));
+        (kind, super::bridge::call(&worked, &turn, &tool, &args))
     })
     .await;
+    let (kind, done) = match done {
+        Ok((kind, done)) => (kind, Ok(done)),
+        Err(e) => (None, Err(e)),
+    };
+    let came = |said: &str, ok: bool| {
+        kind.map(|(act, confidential)| Came {
+            tool: name.clone(),
+            args: String::new(),
+            said: said.to_owned(),
+            ok,
+            act,
+            confidential,
+        })
+    };
     match done {
         Ok(Ok(called)) => {
             record(&state, &format!("{member} (run {run}) {}", called.said));
             let mut answer = json!({ "text": called.text });
             if called.asked_owner {
                 answer["asked_owner"] = true.into();
+                // An approval put on the desk ran nothing: there is no reading to keep.
+                return (Json(answer).into_response(), None);
             }
-            Json(answer).into_response()
+            let came = came(&called.text, true);
+            (Json(answer).into_response(), came)
         }
         Ok(Err((status, why))) => {
             let why = if status == StatusCode::NOT_FOUND {
@@ -289,9 +425,13 @@ async fn bridged(state: AppState, turn: Turn, name: String, args: serde_json::Va
             } else {
                 why
             };
-            refuse(status, "", &said)
+            let came = came(&said, false);
+            (refuse(status, "", &said), came)
         }
-        Err(_) => refuse(StatusCode::INTERNAL_SERVER_ERROR, "", "the contract failed"),
+        Err(_) => (
+            refuse(StatusCode::INTERNAL_SERVER_ERROR, "", "the contract failed"),
+            None,
+        ),
     }
 }
 
@@ -1097,6 +1237,90 @@ mod tests {
         assert!(
             !text.contains("hunter2") && text.contains("[redacted]"),
             "scrubbed: {text}"
+        );
+    }
+
+    #[tokio::test]
+    async fn every_call_a_turn_makes_is_told_to_hq_as_a_receipt_with_the_turns_token() {
+        use super::super::relay::tests::fake;
+        let (hq_url, seen) = fake(Arc::new(|path, body| match path {
+            "/v1/team/turn" if body.contains("\"good\"") => (
+                200,
+                "application/json",
+                json!({ "run": 7, "member": "Linus", "role": "developer", "left": 0,
+                        "cloud": false })
+                .to_string(),
+            ),
+            "/v1/team/turn" => (404, "application/json", "{}".to_owned()),
+            "/v1/team/receipt" => (200, "application/json", r#"{"receipt":41}"#.to_owned()),
+            _ => (200, "application/json", "{}".to_owned()),
+        }));
+        let mut state = node(&hq_url, "http://127.0.0.1:9");
+        state.console = lab();
+        let (status, said) =
+            use_contract(&state, "container_logs", json!({ "container": "sonarr" })).await;
+        assert_eq!(status, StatusCode::OK, "{said}");
+        assert!(
+            said["text"].as_str().unwrap().ends_with(" (receipt r41)"),
+            "{said}"
+        );
+        let (status, said) = use_contract(
+            &state,
+            "container_logs",
+            json!({ "container": "endora-hq" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert!(said["error"].as_str().unwrap().ends_with(" (receipt r41)"));
+        let told: Vec<serde_json::Value> = seen
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(p, _, _)| p == "/v1/team/receipt")
+            .map(|(_, _, b)| serde_json::from_str(b).unwrap())
+            .collect();
+        assert_eq!(told.len(), 2);
+        assert_eq!(
+            (
+                &told[0]["token"],
+                &told[0]["tool"],
+                &told[0]["args"],
+                &told[0]["ok"],
+                &told[0]["confidential"]
+            ),
+            (
+                &json!("good"),
+                &json!("container_logs"),
+                &json!("container: sonarr"),
+                &json!(true),
+                &json!(true)
+            ),
+            "the node writes it, with the turn's own token"
+        );
+        assert!(
+            !told[0]["excerpt"].as_str().unwrap().contains("hunter2"),
+            "scrubbed"
+        );
+        assert_eq!(told[1]["ok"], false, "a refusal is a receipt too");
+        // A stranger's token makes no receipt at all.
+        let (status, _) = answer(
+            &state,
+            ask(
+                "POST",
+                "/team-relay/contracts/homelab_status",
+                Some("bad"),
+                "{}",
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            seen.lock()
+                .unwrap()
+                .iter()
+                .filter(|(p, _, _)| p == "/v1/team/receipt")
+                .count(),
+            2
         );
     }
 

@@ -79,6 +79,8 @@ pub enum EventKind {
     ProjectBudget,
     /// The owner changed whom a member reports to (ADR 0113).
     ReportsTo,
+    /// The node recorded a call a turn made of Endora's tools (ADR 0114).
+    ReceiptRecorded,
 }
 
 impl EventKind {
@@ -124,6 +126,7 @@ impl EventKind {
             Self::ProjectChanged => "project.changed",
             Self::ProjectBudget => "project.budget",
             Self::ReportsTo => "member.reports_to",
+            Self::ReceiptRecorded => "receipt.recorded",
         }
     }
 }

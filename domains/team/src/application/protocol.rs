@@ -6,11 +6,116 @@
 
 use serde_json::{Value, json};
 
-use super::engine::{Author, Engine, EngineError, Proposal};
+use super::engine::{Engine, EngineError, Proposal};
 use super::ports::{Clock, NewTask, Run, TeamStore, WorkerAdapter};
 use crate::domain::{
-    GoalId, Member, Micros, Priority, ProjectId, Refusal, Role, RunStatus, TaskId, TaskStatus,
+    Criterion, GoalId, Member, Micros, Priority, ProjectId, Ref, Refusal, Role, RunStatus, TaskId,
+    TaskStatus,
 };
+
+/// What counts as evidence, as every tool that takes it says (ADR 0114).
+const WHAT_COUNTS: &str = "Evidence is ids from HQ's record: receipts (r12) of your Endora \
+    tool calls, which each tool result names, task numbers (task 12) and event ids (event \
+    340). A model's word is not evidence; a reading is.";
+
+/// An `evidence` parameter: one list of ids per criterion, in order (or one id each).
+fn per_criterion(what: &str) -> Value {
+    json!({
+        "type": "array",
+        "items": { "anyOf": [
+            { "type": "string" },
+            { "type": "array", "items": { "type": "string" } },
+        ] },
+        "description": format!("{what} One list per criterion of the task, in order. {WHAT_COUNTS}"),
+    })
+}
+
+/// An `evidence` parameter that is one list of ids.
+fn ids(what: &str) -> Value {
+    json!({
+        "type": "array",
+        "items": { "type": "string" },
+        "description": format!("{what} {WHAT_COUNTS}"),
+    })
+}
+
+/// One piece of evidence as the model gave it.
+fn one_ref(v: &Value) -> Result<Ref, String> {
+    let said = v.as_str().unwrap_or_default();
+    Ref::parse(said).ok_or_else(|| {
+        format!(
+            "`{}` is not evidence: cite a receipt as r12, a task as task 12, an event as event 340",
+            crate::domain::evidence::short(&v.to_string(), 40)
+        )
+    })
+}
+
+/// The `evidence` argument, one list per criterion: each item an id or a list of ids.
+fn evidence_lists(args: &Value) -> Result<Vec<Vec<Ref>>, String> {
+    let Some(items) = args["evidence"].as_array() else {
+        return Ok(Vec::new());
+    };
+    items
+        .iter()
+        .map(|item| match item {
+            Value::Array(list) => list.iter().map(one_ref).collect(),
+            other => one_ref(other).map(|r| vec![r]),
+        })
+        .collect()
+}
+
+/// The `evidence` argument as one list.
+fn evidence_flat(args: &Value) -> Result<Vec<Ref>, String> {
+    Ok(evidence_lists(args)?.concat())
+}
+
+/// The `criteria` argument: each `{ text, live }`, or a line of text.
+fn criteria_arg(args: &Value) -> Vec<Criterion> {
+    args["criteria"]
+        .as_array()
+        .map(|all| {
+            all.iter()
+                .filter_map(|c| {
+                    let (text, live) = match c {
+                        Value::String(s) => (s.as_str(), false),
+                        other => (
+                            other["text"].as_str()?,
+                            other["live"].as_bool() == Some(true),
+                        ),
+                    };
+                    (!text.trim().is_empty()).then(|| Criterion::new(text, live))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// The tool a manager hands a subordinate's task on with (ADR 0114).
+fn hand_to_tool() -> Value {
+    json!({
+        "name": "hand_to",
+        "description": "Hand a task held by someone below you in the chain (who reports to you, or to someone who does) to another member: yourself, or one below you. Say why; it goes in the thread, and they are woken.",
+        "inputSchema": { "type": "object", "properties": {
+            "task": { "type": "integer", "description": "the task's number" },
+            "to": { "type": "string", "description": "the member's name" },
+            "why": { "type": "string" },
+        }, "required": ["task", "to", "why"] },
+    })
+}
+
+/// The tool a lead and the CEO accept or send back tested work with (ADR 0114).
+fn accept_tool() -> Value {
+    json!({
+        "name": "accept",
+        "description": "Accept work in review against its criteria (it is done), or send it back to its member with exactly what does not hold. Only once the tester has passed it (when there is a tester who did not do it), and never your own work. Accepting cites evidence per criterion: the tester's readings count as fresh.",
+        "inputSchema": { "type": "object", "properties": {
+            "task": { "type": "integer", "description": "the task's number" },
+            "verdict": { "type": "string", "enum": ["accept", "send_back"] },
+            "notes": { "type": "string" },
+            "evidence": per_criterion("For accept: what shows each criterion holds."),
+        }, "required": ["task", "verdict", "notes"] },
+    })
+}
 
 /// The tool a lead and the CEO propose a project with (ADR 0113).
 fn propose_project_tool() -> Value {
@@ -62,26 +167,26 @@ pub fn tools(role: Role) -> Value {
         ),
         tool(
             "post",
-            "Write in a task's thread (yours, one under it, the one above it, or one where you were named): what you did, found or need. Mention a member by name to wake them.",
-            json!({ "task": task, "text": { "type": "string" } }),
+            "Write in a task's thread (yours, one under it, the one above it, or one where you were named): what you did, found or need. Mention a member by name to wake them. A finding cites its evidence; a post that cites none in a turn with no readings is marked unsupported.",
+            json!({ "task": task, "text": { "type": "string" }, "evidence": ids("What the post rests on, if anything.") }),
             &["task", "text"]
         ),
         tool(
             "set_status",
-            "Move your task on (todo, doing, in_review, blocked), with a reason. Done is set only by the gate, except a routine's check: close that as done, with what you found, once you have looked.",
-            json!({ "task": task, "status": { "type": "string", "enum": ["todo", "doing", "in_review", "blocked", "done"] }, "reason": { "type": "string" } }),
+            "Move your task on (todo, doing, in_review, blocked), with a reason. Submitting it (in_review) cites evidence for each of its criteria, and a live criterion a reading from this turn; the tester then re-checks it and its lead accepts it. Done is set only that way, except a routine's check: close that as done, with its evidence, once you have looked.",
+            json!({ "task": task, "status": { "type": "string", "enum": ["todo", "doing", "in_review", "blocked", "done"] }, "reason": { "type": "string" }, "evidence": per_criterion("For in_review, or a check closed as done: what shows each criterion holds.") }),
             &["task", "status", "reason"]
         ),
         tool(
             "create_task",
-            "Create a sub-task of your task for another member (by name), with the tasks it waits on.",
-            json!({ "title": { "type": "string" }, "description": { "type": "string" }, "assignee": { "type": "string", "description": "a member's name" }, "waits_on": { "type": "array", "items": { "type": "integer" } } }),
+            "Create a sub-task of your task for another member (by name), with the tasks it waits on and its acceptance criteria: what done means, a short list, required for work handed to someone else. Mark live any criterion about the lab as it is now.",
+            json!({ "title": { "type": "string" }, "description": { "type": "string" }, "assignee": { "type": "string", "description": "a member's name" }, "waits_on": { "type": "array", "items": { "type": "integer" } }, "criteria": { "type": "array", "items": { "type": "object", "properties": { "text": { "type": "string" }, "live": { "type": "boolean", "description": "about the lab now: shown only by a reading in the same turn" } }, "required": ["text"] } } }),
             &["title", "description"]
         ),
         tool(
             "ask_owner",
-            "Ask a question or put a proposal about your task up the chain: to the lead, or the lead's to the CEO, in the task's thread (to the owner's desk only when the team has no CEO). Asking ends your turn: you are woken when they answer.",
-            json!({ "text": { "type": "string" } }),
+            "Ask a question or put a proposal about your task up the chain: to the lead, or the lead's to the CEO, in the task's thread (to the owner's desk only when the team has no CEO). The lead's to the CEO, and a tester's passing on the CEO's decision, cite evidence. Asking ends your turn: you are woken when they answer.",
+            json!({ "text": { "type": "string" }, "evidence": ids("What it rests on.") }),
             &["text"]
         ),
         tool(
@@ -107,8 +212,8 @@ pub fn tools(role: Role) -> Value {
         if let Some(list) = all.as_array_mut() {
             list.push(tool(
                 "review",
-                "Your verdict on work in review, after checking every claim in its thread against your tools: approve what holds (it is done, unless it needs the gate), or send it back to its owner with exactly what does not hold. Never your own work.",
-                json!({ "task": task, "verdict": { "type": "string", "enum": ["approve", "send_back"] }, "notes": { "type": "string", "description": "what you checked, or what does not hold" } }),
+                "You are the tester. Your verdict on work in review, after re-checking it yourself: take your own readings to confirm each piece of its evidence is real and still true. approve passes it on your evidence per criterion, with at least one reading of your own this turn (its lead then accepts it); send_back returns it to its owner with exactly what does not hold. Sending back is a finished test too. Never your own work.",
+                json!({ "task": task, "verdict": { "type": "string", "enum": ["approve", "send_back"] }, "notes": { "type": "string", "description": "what you checked, or what does not hold" }, "evidence": per_criterion("For approve: your readings and what else shows each criterion holds.") }),
                 &["task", "verdict", "notes"],
             ));
         }
@@ -116,6 +221,8 @@ pub fn tools(role: Role) -> Value {
     if role == Role::Lead {
         if let Some(list) = all.as_array_mut() {
             list.push(propose_project_tool());
+            list.push(accept_tool());
+            list.push(hand_to_tool());
         }
     }
     if crate::domain::lessons::keeps_lessons(role) {
@@ -159,13 +266,14 @@ fn ceos_tools() -> Value {
     let part = |what: &str| json!({ "type": "string", "maxLength": crate::domain::chain::DECISION_PART_MOST, "description": what });
     list.push(tool(
         "ask_owner",
-        "Put a decision to the owner, who is the board: only what they alone decide (money beyond the pool, new goals and priorities, hiring or letting go a member, what only they can know). The reviewer checks it first. Asking ends your turn: you are woken when the board decides.",
+        "Put a decision to the owner, who is the board: only what they alone decide (money beyond the pool, new goals and priorities, hiring or letting go a member, what only they can know), on evidence. The reviewer checks it first. Asking ends your turn: you are woken when the board decides.",
         json!({
             "decision": part("what the board is to decide, as a question"),
             "recommendation": part("what you recommend, and the options"),
             "why": part("why, from what the team found"),
+            "evidence": ids("What it rests on: at least one."),
         }),
-        &["decision", "recommendation", "why"],
+        &["decision", "recommendation", "why", "evidence"],
     ));
     list.push(tool(
         "note_house",
@@ -188,8 +296,9 @@ fn ceos_tools() -> Value {
             "verdict": { "type": "string", "enum": ["accept", "send_back"] },
             "why": { "type": "string" },
             "cap": { "type": "number", "description": "a monthly cap in dollars to recommend to the owner" },
+            "evidence": ids("What your decision rests on: at least one."),
         }),
-        &["project", "verdict", "why"],
+        &["project", "verdict", "why", "evidence"],
     ));
     list.push(tool(
         "propose_goal",
@@ -202,6 +311,8 @@ fn ceos_tools() -> Value {
         }),
         &["title", "reason"],
     ));
+    list.push(accept_tool());
+    list.push(hand_to_tool());
     list.push(tool(
         "read_doc",
         "Read one of Endora's public decision records or plans: a path in docs/adr or docs/plans (that folder alone lists them), 20,000 characters a part.",
@@ -292,7 +403,8 @@ pub fn call<S: TeamStore, W: WorkerAdapter, C: Clock>(
                 if !thread.is_empty() {
                     out.push_str("\n\nThe thread, newest last:\n");
                     for p in thread.iter().rev().take(12).rev() {
-                        out.push_str(&format!("- {}: {}\n", p.author, p.text));
+                        let line = Engine::<S, W, C>::post_line(&p.author, &p.text, p.unsupported);
+                        out.push_str(&format!("- {line}\n"));
                     }
                 }
             }
@@ -318,7 +430,10 @@ pub fn call<S: TeamStore, W: WorkerAdapter, C: Clock>(
                     .map_err(|e| said(&e))?;
                 return Ok("Posted.".to_owned());
             }
-            engine.post_in(run.id, task, text).map_err(|e| said(&e))?;
+            let cited = evidence_flat(args)?;
+            engine
+                .post_citing(run.id, task, text, &cited)
+                .map_err(|e| said(&e))?;
             Ok("Posted.".to_owned())
         }
         "set_status" => {
@@ -331,8 +446,9 @@ pub fn call<S: TeamStore, W: WorkerAdapter, C: Clock>(
                         .to_owned()
                 })?;
             let reason = text_arg(args, "reason")?;
+            let cited = evidence_lists(args)?;
             engine
-                .set_status_in(run.id, task, to, reason)
+                .set_status_citing(run.id, task, to, reason, &cited)
                 .map_err(|e| said(&e))?;
             Ok(format!("Task {} is {}.", task.0, to.name()))
         }
@@ -368,8 +484,8 @@ pub fn call<S: TeamStore, W: WorkerAdapter, C: Clock>(
                 .map(|a| a.iter().filter_map(Value::as_i64).map(TaskId).collect())
                 .unwrap_or_default();
             let id = engine
-                .add_task(
-                    Author::Member(member.id),
+                .create_task_in(
+                    run.id,
                     NewTask {
                         goal,
                         project: None,
@@ -380,6 +496,7 @@ pub fn call<S: TeamStore, W: WorkerAdapter, C: Clock>(
                         priority: Priority::Normal,
                         waits_on,
                     },
+                    &criteria_arg(args),
                 )
                 .map_err(|e| said(&e))?;
             Ok(format!("Created task {}.", id.0))
@@ -391,7 +508,11 @@ pub fn call<S: TeamStore, W: WorkerAdapter, C: Clock>(
                 args["why"].as_str().unwrap_or(""),
             )
             .map_err(|e| e.to_string())?;
-            match engine.ask_board(run.id, &decision).map_err(|e| said(&e))? {
+            let cited = evidence_flat(args)?;
+            match engine
+                .ask_board(run.id, &decision, &cited)
+                .map_err(|e| said(&e))?
+            {
                 super::engine::Asked::Review(_) => Ok("It is with the reviewer, who checks it before it reaches the board, and this turn has ended: stop now. You are woken if it is sent back, or when the board decides.".to_owned()),
                 _ => Ok("It is on the board's desk, and this turn has ended: stop now. You are woken when the board decides.".to_owned()),
             }
@@ -455,7 +576,14 @@ pub fn call<S: TeamStore, W: WorkerAdapter, C: Clock>(
             };
             let why = text_arg(args, "why")?;
             let now = engine
-                .decide_project(run.id, project, accept, why, cap_arg(args)?)
+                .decide_project(
+                    run.id,
+                    project,
+                    accept,
+                    why,
+                    cap_arg(args)?,
+                    &evidence_flat(args)?,
+                )
                 .map_err(|e| said(&e))?;
             Ok(format!("Project {} is {}.", project.0, now.name()))
         }
@@ -495,7 +623,11 @@ pub fn call<S: TeamStore, W: WorkerAdapter, C: Clock>(
         }
         "ask_owner" => {
             let text = text_arg(args, "text")?;
-            match engine.ask_owner(run.id, text).map_err(|e| said(&e))? {
+            let cited = evidence_flat(args)?;
+            match engine
+                .ask_owner_citing(run.id, text, &cited)
+                .map_err(|e| said(&e))?
+            {
                 super::engine::Asked::Up(to) => {
                     let to = engine
                         .store()
@@ -521,7 +653,8 @@ pub fn call<S: TeamStore, W: WorkerAdapter, C: Clock>(
             if notes.chars().count() > LONGEST_POST {
                 return Err(format!("notes are at most {LONGEST_POST} characters"));
             }
-            match engine.review_in(run.id, task, approve, notes) {
+            let cited = evidence_lists(args)?;
+            match engine.test_in(run.id, task, approve, notes, &cited) {
                 Ok(()) if approve => Ok(format!("Task {} is approved.", task.0)),
                 Ok(()) => Ok(format!(
                     "Task {} is sent back to its owner, who is woken to put it right.",
@@ -529,6 +662,40 @@ pub fn call<S: TeamStore, W: WorkerAdapter, C: Clock>(
                 )),
                 Err(super::engine::EngineError::Refused(Refusal::GateNotPassed)) => Err(
                     "this work needs the gate (tests, lint and build), which has not passed: it stays in review. Say so in its thread; the owner decides"
+                        .to_owned(),
+                ),
+                Err(e) => Err(said(&e)),
+            }
+        }
+        "hand_to" => {
+            let task = task_arg(args)?;
+            let to = member_named(engine, text_arg(args, "to")?)?;
+            let why = text_arg(args, "why")?;
+            engine
+                .hand_to_in(run.id, task, to.id, why)
+                .map_err(|e| said(&e))?;
+            Ok(format!(
+                "Task {} is {}'s now; they are woken.",
+                task.0, to.name
+            ))
+        }
+        "accept" => {
+            let task = task_arg(args)?;
+            let accept = match args["verdict"].as_str() {
+                Some("accept") => true,
+                Some("send_back") => false,
+                _ => return Err("`verdict` must be accept or send_back".to_owned()),
+            };
+            let notes = text_arg(args, "notes")?;
+            let cited = evidence_lists(args)?;
+            match engine.accept_in(run.id, task, accept, notes, &cited) {
+                Ok(()) if accept => Ok(format!("Task {} is accepted: it is done.", task.0)),
+                Ok(()) => Ok(format!(
+                    "Task {} is sent back to its member, who is woken to put it right.",
+                    task.0
+                )),
+                Err(EngineError::Refused(Refusal::GateNotPassed)) => Err(
+                    "this work needs the gate (tests, lint and build), which has not passed: it stays in review"
                         .to_owned(),
                 ),
                 Err(e) => Err(said(&e)),
