@@ -40,7 +40,7 @@ Endora gets a sound hub, **endora-sound**: the owner's own program, not a fork.
   `airptpd` acts as AirPlay 2 senders, each limited to the speakers of the group it plays.
   We fork OwnTone only if its AirPlay code itself must change.
 - **Classic AirPlay receivers, on the NAS's own address.** One shairport-sync receiver per
-  device ("Endora · iPhone", "Endora · iPad", a guest "Endora"), built for classic AirPlay,
+  device ("Endora Mixer (iPhone)", "Endora Mixer (iPad)", a guest "Endora Mixer"), built for classic AirPlay,
   in the senders' container. *Changed 2026-10-17, by the owner:* AirPlay 2 receivers were the
   plan, but their `nqptp` and the senders' `airptpd` both need UDP 319/320, which would have
   meant a container on a LAN address of its own; classic AirPlay needs no PTP clock, so it

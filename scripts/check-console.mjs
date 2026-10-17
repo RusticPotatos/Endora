@@ -673,7 +673,7 @@ if (failures.length) {
   runInContext(`SOUND.error = ""; SOUND.ticket = null; SOUND.listening = false; SOUND.found = ["Kitchen", "Living room"];
     SOUND.state = { senders: 4, listening: [4],
       sources: [{ id: 1, name: "<b>Classical</b>", kind: "radio", device: null, address: "https://radio.example.com/c" },
-                { id: 2, name: "Endora · iPhone", kind: "airplay", device: "iphone" }],
+                { id: 2, name: "Endora Mixer (iPhone)", kind: "airplay", device: "iphone" }],
       speakers: [{ id: 3, name: "Kitchen", kind: "airplay", device: null, volume: 40, borrowed: false },
                  { id: 4, name: "iPhone", kind: "stream", device: "iphone", volume: 100, borrowed: false },
                  { id: 5, name: "Office", kind: "airplay", device: null, volume: 70, borrowed: true }],
@@ -689,7 +689,7 @@ if (failures.length) {
     if (!screen.includes(act)) fail(`speakers: the screen does not offer ${act}`);
   }
   if (screen.includes('data-act="sound:wire:2-4"')) fail("speakers: the phone was offered its own stream");
-  if (!screen.includes("pick “Endora · iPhone” in its AirPlay menu")) fail("speakers: a receiver does not say how to use it");
+  if (!screen.includes("pick “Endora Mixer (iPhone)” in its AirPlay menu")) fail("speakers: a receiver does not say how to use it");
   if (!screen.includes('data-act="sound:addreceiver"')) fail("speakers: a receiver cannot be added");
   if (screen.includes('data-act="sound:addfound:0"')) fail("speakers: a speaker already added was offered again");
   if (screen.includes('data-act="sound:free:3"')) fail("speakers: a speaker nobody borrowed offered to be taken back");

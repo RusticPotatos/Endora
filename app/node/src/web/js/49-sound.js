@@ -96,7 +96,8 @@ function soundName(kind, id) {
 }
 
 // The name a device's AirPlay receiver shows in its AirPlay menu.
-function soundReceiverName(name) { return "Endora · " + name; }
+// "Endora Mixer (Mac)": what it is (the way into the mixer) and whose it is. The owner's name.
+function soundReceiverName(name) { return `Endora Mixer (${name})`; }
 
 // Whether a device already plays into Endora: an AirPlay source of the same device.
 function soundHasReceiver(device) {
@@ -231,8 +232,8 @@ function viewSound() {
     <details class="card" style="margin-top:12px;"><summary class="title">Add or remove</summary>
       ${sources ? radioForm : ""}
       ${foundRows ? `<div class="sub" style="margin-top:8px;">Found on the network</div>${foundRows}` : ""}
-      <div class="sub" style="margin-top:8px;">A device that plays into Endora over AirPlay (blank: a guest receiver called Endora)</div>
-      <div class="form"><input id="sound-receiver-name" placeholder="e.g. iPad" maxlength="31" autocomplete="off" />
+      <div class="sub" style="margin-top:8px;">A device that plays into Endora over AirPlay (blank: a guest one called Endora Mixer)</div>
+      <div class="form"><input id="sound-receiver-name" placeholder="e.g. iPad" maxlength="25" autocomplete="off" />
         <button class="ghost" data-act="sound:addreceiver">Add</button></div>
       <div class="sub" style="margin-top:8px;">An AirPlay speaker, by the name it shows</div>
       <div class="form"><input id="sound-airplay-name" placeholder="e.g. Kitchen" maxlength="40" autocomplete="off" />
@@ -277,7 +278,7 @@ async function soundDispatch(verb, noun, id, arg) {
     } else if (noun === "addreceiver") {
       const name = val("sound-receiver-name");
       if (name) await api("POST", "/v1/sound/sources", { name: soundReceiverName(name), kind: "airplay", device: name.toLowerCase() });
-      else await api("POST", "/v1/sound/sources", { name: "Endora", kind: "airplay" });
+      else await api("POST", "/v1/sound/sources", { name: "Endora Mixer", kind: "airplay" });
     } else if (noun === "wire") {
       const [source, speaker] = String(id).split("-").map(Number);
       if (soundWire(source, speaker)) await api("DELETE", `/v1/sound/wires/${source}/${speaker}`);
