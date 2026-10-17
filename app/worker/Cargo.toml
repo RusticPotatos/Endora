@@ -1,0 +1,25 @@
+[package]
+name = "endora-worker"
+description = "Endora HQ's worker: takes one turn of a team member, in its own container, through the team protocol and the node's model relay."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "endora-worker"
+path = "src/main.rs"
+
+[dependencies]
+serde_json = "1.0.150"
+ureq = { version = "3.4", features = ["json", "socks-proxy"] }
+
+[dev-dependencies]
+# The briefing the worker reads its task from is written by the team engine: a test reads a
+# real one, so a change to its shape fails there instead of quietly losing a turn's last word.
+endora-team = { path = "../../domains/team" }
+
+[lints]
+workspace = true

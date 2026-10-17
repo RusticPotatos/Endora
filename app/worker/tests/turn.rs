@@ -1,0 +1,427 @@
+//! The worker as the runner runs it: its own process, its environment and its exit code,
+//! against a fake HQ and a fake model relay on local ports.
+
+use std::io::{Read as _, Write as _};
+use std::process::{Command, Output};
+use std::sync::{Arc, Mutex};
+
+use serde_json::{Value, json};
+
+/// A turn's token, for these tests only.
+const TOKEN: &str = "a-turns-token-for-these-tests-and-nothing-else";
+
+/// What HQ's `my_turn` says.
+const BRIEFING: &str = "You are Jane, the team's developer.\n\
+Your task: Add a list of watches (#7, todo, normal)\n\
+List what is being watched.\n\
+Why it exists: Add a list of watches ← goal: Ship the watch tracker\n\
+Nothing new in the thread since your last turn.\n";
+
+/// One request a fake server was sent.
+#[derive(Debug, Clone)]
+struct Sent {
+    path: String,
+    /// Lower-cased names.
+    headers: Vec<(String, String)>,
+    body: Value,
+}
+
+impl Sent {
+    fn header(&self, name: &str) -> Option<&str> {
+        self.headers
+            .iter()
+            .find(|(k, _)| k == name)
+            .map(|(_, v)| v.as_str())
+    }
+
+    /// `tools/call claim`, or just the method when it is not a tool call.
+    fn method(&self) -> String {
+        let method = self.body["method"].as_str().unwrap_or("");
+        match self.body["params"]["name"].as_str() {
+            Some(tool) => format!("{method} {tool}"),
+            None => method.to_owned(),
+        }
+    }
+}
+
+type Seen = Arc<Mutex<Vec<Sent>>>;
+/// Answers a request, given it and how many came before it: a status and a body.
+type Answer = Box<dyn Fn(&Sent, usize) -> (u16, String) + Send>;
+
+/// A tiny HTTP server on a local port that answers each request with `answer`.
+fn fake(answer: Answer) -> (String, Seen) {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let seen: Seen = Arc::new(Mutex::new(Vec::new()));
+    let kept = seen.clone();
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { continue };
+            let mut head = Vec::new();
+            let mut byte = [0u8];
+            while !head.ends_with(b"\r\n\r\n") {
+                if stream.read_exact(&mut byte).is_err() {
+                    break;
+                }
+                head.push(byte[0]);
+            }
+            let head = String::from_utf8_lossy(&head).into_owned();
+            let mut lines = head.lines();
+            let path = lines
+                .next()
+                .unwrap_or("")
+                .split(' ')
+                .nth(1)
+                .unwrap_or("")
+                .to_owned();
+            let headers: Vec<(String, String)> = lines
+                .filter_map(|l| l.split_once(": "))
+                .map(|(k, v)| (k.to_ascii_lowercase(), v.to_owned()))
+                .collect();
+            let length: usize = headers
+                .iter()
+                .find(|(k, _)| k == "content-length")
+                .and_then(|(_, v)| v.parse().ok())
+                .unwrap_or(0);
+            let mut body = vec![0u8; length];
+            let _ = stream.read_exact(&mut body);
+            let sent = Sent {
+                path,
+                headers,
+                body: serde_json::from_slice(&body).unwrap_or(Value::Null),
+            };
+            let before = kept.lock().unwrap().len();
+            let (status, reply) = answer(&sent, before);
+            kept.lock().unwrap().push(sent);
+            let _ = write!(
+                stream,
+                "HTTP/1.1 {status} Answered\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{reply}",
+                reply.len()
+            );
+        }
+    });
+    (url, seen)
+}
+
+/// The team's tools, as HQ lists them (a few of them).
+fn tools() -> Value {
+    let task = json!({ "type": "integer", "description": "the task's number" });
+    json!([
+        { "name": "my_turn", "description": "What this turn is for. Call it first.",
+          "inputSchema": { "type": "object", "properties": {}, "required": [] } },
+        { "name": "claim", "description": "Take a task as yours.",
+          "inputSchema": { "type": "object", "properties": { "task": task }, "required": ["task"] } },
+        { "name": "post", "description": "Write in a task's thread.",
+          "inputSchema": { "type": "object", "properties": { "task": task, "text": { "type": "string" } },
+                           "required": ["task", "text"] } },
+        { "name": "set_status", "description": "Move your task on, with a reason.",
+          "inputSchema": { "type": "object", "properties": { "task": task, "status": { "type": "string" },
+                           "reason": { "type": "string" } }, "required": ["task", "status", "reason"] } },
+    ])
+}
+
+/// HQ's team protocol: `my_turn` says [`BRIEFING`], `claim` and `post` work, and anything else
+/// is refused. The tool named in `stopped` answers 401, as for a turn HQ has just stopped.
+fn hq(stopped: Option<&'static str>) -> (String, Seen) {
+    fake(Box::new(move |sent, _| {
+        let id = sent.body["id"].clone();
+        let tool = sent.body["params"]["name"].as_str().unwrap_or("");
+        if stopped == Some(tool) {
+            return (
+                401,
+                json!({ "error": "no running turn has that token" }).to_string(),
+            );
+        }
+        let result = match sent.body["method"].as_str().unwrap_or("") {
+            "initialize" => json!({
+                "protocolVersion": "2025-06-18",
+                "capabilities": { "tools": {} },
+                "serverInfo": { "name": "endora-hq", "version": "0" },
+            }),
+            m if m.starts_with("notifications/") => return (202, String::new()),
+            "tools/list" => json!({ "tools": tools() }),
+            "tools/call" => {
+                let (text, refused) = match tool {
+                    "my_turn" => (BRIEFING, false),
+                    "claim" => ("Task 7 is yours.", false),
+                    "post" => ("Posted.", false),
+                    _ => ("`status` must be todo, doing, in_review or blocked", true),
+                };
+                json!({ "content": [{ "type": "text", "text": text }], "isError": refused })
+            }
+            _ => {
+                let error = json!({ "code": -32601, "message": "no such method" });
+                return (
+                    200,
+                    json!({ "jsonrpc": "2.0", "id": id, "error": error }).to_string(),
+                );
+            }
+        };
+        (
+            200,
+            json!({ "jsonrpc": "2.0", "id": id, "result": result }).to_string(),
+        )
+    }))
+}
+
+/// The model relay: its nth call answered with `replies[n]`, and the last one again after.
+fn model(replies: Vec<(u16, Value)>) -> (String, Seen) {
+    fake(Box::new(move |_, before| {
+        let (status, body) = &replies[before.min(replies.len() - 1)];
+        (*status, body.to_string())
+    }))
+}
+
+/// A model's answer calling tools: each an id, a name and its arguments as the JSON text the
+/// OpenAI format carries.
+fn calls(list: &[(&str, &str, &str)]) -> Value {
+    let calls: Vec<Value> = list
+        .iter()
+        .map(|(id, name, arguments)| {
+            json!({ "id": id, "type": "function",
+                    "function": { "name": name, "arguments": arguments } })
+        })
+        .collect();
+    json!({ "choices": [{ "index": 0, "finish_reason": "tool_calls",
+        "message": { "role": "assistant", "content": null, "tool_calls": calls } }] })
+}
+
+/// A model's answer in words, calling nothing.
+fn says(text: &str) -> Value {
+    json!({ "choices": [{ "index": 0, "finish_reason": "stop",
+        "message": { "role": "assistant", "content": text } }] })
+}
+
+/// The worker's environment, pointed at the fakes.
+fn usual(hq: &str, model: &str) -> Vec<(&'static str, String)> {
+    vec![
+        ("ENDORA_RUN_TOKEN", TOKEN.to_owned()),
+        ("ENDORA_HQ_MCP", format!("{hq}/v1/team/mcp")),
+        ("ENDORA_MODEL_URL", format!("{model}/team-relay/local/v1")),
+    ]
+}
+
+/// Runs the worker with only `env` in its environment.
+fn worker(env: &[(&'static str, String)]) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_endora-worker"))
+        .env_clear()
+        .envs(env.iter().map(|(k, v)| (*k, v.as_str())))
+        .output()
+        .unwrap()
+}
+
+fn said(out: &Output) -> String {
+    format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    )
+}
+
+fn methods(seen: &Seen) -> Vec<String> {
+    seen.lock().unwrap().iter().map(Sent::method).collect()
+}
+
+#[test]
+fn a_turn_reads_my_turn_works_through_the_tools_and_posts_its_last_word() {
+    let (hq_url, to_hq) = hq(None);
+    let (model_url, to_model) = model(vec![
+        (200, calls(&[("call_1", "claim", r#"{"task": 7}"#)])),
+        (200, says("I took task 7 and listed what is watched.")),
+    ]);
+    let out = worker(&usual(&hq_url, &model_url));
+    assert_eq!(out.status.code(), Some(0), "{}", said(&out));
+
+    assert_eq!(
+        methods(&to_hq),
+        [
+            "initialize",
+            "notifications/initialized",
+            "tools/list",
+            "tools/call my_turn",
+            "tools/call claim",
+            "tools/call post",
+        ]
+    );
+    let to_hq = to_hq.lock().unwrap().clone();
+    assert!(to_hq.iter().all(|s| s.path == "/v1/team/mcp"));
+    assert_eq!(to_hq[0].body["params"]["protocolVersion"], "2025-06-18");
+    assert_eq!(to_hq[4].body["params"]["arguments"], json!({ "task": 7 }));
+    assert_eq!(
+        to_hq[5].body["params"]["arguments"],
+        json!({ "task": 7, "text": "I took task 7 and listed what is watched." }),
+        "the last word goes in the task's thread"
+    );
+
+    let to_model = to_model.lock().unwrap().clone();
+    assert_eq!(to_model.len(), 2);
+    let first = &to_model[0];
+    assert_eq!(first.path, "/team-relay/local/v1/chat/completions");
+    assert_eq!(first.body["model"], "local");
+    assert_eq!(first.body["tools"].as_array().unwrap().len(), 4);
+    assert_eq!(
+        first.body["tools"][1],
+        json!({ "type": "function", "function": {
+            "name": "claim",
+            "description": "Take a task as yours.",
+            "parameters": tools()[1]["inputSchema"],
+        } }),
+        "an MCP tool, as an OpenAI function"
+    );
+    assert_eq!(first.body["messages"][0]["role"], "system");
+    assert_eq!(
+        first.body["messages"][1],
+        json!({ "role": "user", "content": BRIEFING })
+    );
+    let then = &to_model[1].body["messages"];
+    assert_eq!(then[2]["role"], "assistant");
+    assert_eq!(then[2]["tool_calls"][0]["id"], "call_1");
+    assert_eq!(
+        then[3],
+        json!({ "role": "tool", "tool_call_id": "call_1", "content": "Task 7 is yours." })
+    );
+
+    for sent in to_hq.iter().chain(to_model.iter()) {
+        assert_eq!(
+            sent.header("authorization"),
+            Some(format!("Bearer {TOKEN}").as_str()),
+            "the turn's token, as a bearer, to both"
+        );
+        assert!(!sent.body.to_string().contains(TOKEN), "and in no body");
+    }
+    assert!(!said(&out).contains(TOKEN), "and never printed");
+}
+
+#[test]
+fn a_refusal_and_arguments_that_are_not_json_go_back_to_the_model() {
+    let (hq_url, to_hq) = hq(None);
+    let (model_url, to_model) = model(vec![
+        (
+            200,
+            calls(&[
+                (
+                    "call_1",
+                    "set_status",
+                    r#"{"task": 7, "status": "done", "reason": "it works"}"#,
+                ),
+                ("call_2", "post", r#"{"task": 7, "text": "#),
+            ]),
+        ),
+        (200, says("Task 7 waits for the gate.")),
+    ]);
+    let out = worker(&usual(&hq_url, &model_url));
+    assert_eq!(out.status.code(), Some(0), "{}", said(&out));
+
+    let then = to_model.lock().unwrap()[1].body["messages"].clone();
+    assert_eq!(
+        then[3],
+        json!({ "role": "tool", "tool_call_id": "call_1",
+                "content": "Refused: `status` must be todo, doing, in_review or blocked" })
+    );
+    assert_eq!(then[4]["tool_call_id"], "call_2");
+    assert!(
+        then[4]["content"]
+            .as_str()
+            .unwrap()
+            .starts_with("Refused: "),
+        "{}",
+        then[4]
+    );
+    let to_hq = to_hq.lock().unwrap().clone();
+    let posts: Vec<&Value> = to_hq
+        .iter()
+        .filter(|s| s.method() == "tools/call post")
+        .map(|s| &s.body["params"]["arguments"])
+        .collect();
+    assert_eq!(
+        posts,
+        [&json!({ "task": 7, "text": "Task 7 waits for the gate." })],
+        "the broken call never reached HQ; the last word did"
+    );
+}
+
+#[test]
+fn a_402_from_the_relay_ends_the_turn_at_once() {
+    let (hq_url, to_hq) = hq(None);
+    let (model_url, to_model) = model(vec![(
+        402,
+        json!({ "error": { "message": "this turn's budget is spent" } }),
+    )]);
+    let out = worker(&usual(&hq_url, &model_url));
+    assert_eq!(out.status.code(), Some(3), "{}", said(&out));
+    assert_eq!(to_model.lock().unwrap().len(), 1);
+    assert_eq!(
+        methods(&to_hq).last().map(String::as_str),
+        Some("tools/call my_turn"),
+        "nothing more is sent to HQ"
+    );
+}
+
+#[test]
+fn a_401_from_hq_mid_turn_ends_it_at_once() {
+    let (hq_url, to_hq) = hq(Some("claim"));
+    let (model_url, to_model) = model(vec![
+        (200, calls(&[("call_1", "claim", r#"{"task": 7}"#)])),
+        (200, says("Done.")),
+    ]);
+    let out = worker(&usual(&hq_url, &model_url));
+    assert_eq!(out.status.code(), Some(3), "{}", said(&out));
+    assert_eq!(
+        to_model.lock().unwrap().len(),
+        1,
+        "the model is not asked again"
+    );
+    assert_eq!(
+        methods(&to_hq).last().map(String::as_str),
+        Some("tools/call claim")
+    );
+}
+
+#[test]
+fn the_rounds_run_out() {
+    let (hq_url, to_hq) = hq(None);
+    let (model_url, to_model) = model(vec![(200, calls(&[("call_1", "claim", r#"{"task": 7}"#)]))]);
+    let mut env = usual(&hq_url, &model_url);
+    env.push(("ENDORA_MOST_ROUNDS", "3".to_owned()));
+    let out = worker(&env);
+    assert_eq!(out.status.code(), Some(0), "a turn taken: {}", said(&out));
+    assert_eq!(to_model.lock().unwrap().len(), 3);
+    let called = methods(&to_hq);
+    assert_eq!(
+        called.iter().filter(|m| *m == "tools/call claim").count(),
+        3
+    );
+    assert!(
+        !called.contains(&"tools/call post".to_owned()),
+        "no last word to post"
+    );
+}
+
+#[test]
+fn a_failure_exits_1_and_never_prints_the_token() {
+    let (hq_url, _) = hq(None);
+    // A relay that says back the token it was sent, early in its refusal.
+    let (model_url, _) = fake(Box::new(|sent, _| {
+        let echo = format!("you sent {}", sent.header("authorization").unwrap_or(""));
+        (500, json!({ "error": { "message": echo } }).to_string())
+    }));
+    let out = worker(&usual(&hq_url, &model_url));
+    assert_eq!(out.status.code(), Some(1));
+    let said = said(&out);
+    assert!(said.contains("500"), "says what went wrong: {said}");
+    assert!(!said.contains(TOKEN), "never the token: {said}");
+}
+
+#[test]
+fn without_a_token_there_is_no_turn() {
+    let (hq_url, to_hq) = hq(None);
+    let (model_url, _) = model(vec![(200, says("Hello."))]);
+    let env: Vec<_> = usual(&hq_url, &model_url)
+        .into_iter()
+        .filter(|(k, _)| *k != "ENDORA_RUN_TOKEN")
+        .collect();
+    let out = worker(&env);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("ENDORA_RUN_TOKEN"));
+    assert!(to_hq.lock().unwrap().is_empty());
+}
