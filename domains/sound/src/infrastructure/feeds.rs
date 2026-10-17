@@ -282,6 +282,23 @@ struct Pipe {
     path: PathBuf,
 }
 
+/// The file name of a source's pipe, in the pipes folder: `spotify.pcm`, `airplay-<device>.pcm`
+/// (or `airplay-<id>.pcm` for a receiver of no device of the owner's, a guest's), `<id>.pcm`.
+#[must_use]
+pub fn pipe_name(source: &Source) -> String {
+    match source.kind {
+        SourceKind::Spotify => "spotify.pcm".to_owned(),
+        SourceKind::AirPlay => format!(
+            "airplay-{}.pcm",
+            source
+                .device
+                .as_deref()
+                .map_or_else(|| source.id.to_string(), safe)
+        ),
+        _ => format!("{}.pcm", source.id),
+    }
+}
+
 /// A name a device gives, as a file name: letters, digits and dashes, the rest as `_`.
 fn safe(device: &str) -> String {
     device
@@ -394,18 +411,7 @@ impl FeedSet {
     /// `spotify.pcm` for Spotify, `airplay-<device>.pcm` for a device's AirPlay receiver.
     #[must_use]
     pub fn pipe_of(&self, source: &Source) -> PathBuf {
-        let name = match source.kind {
-            SourceKind::Spotify => "spotify.pcm".to_owned(),
-            SourceKind::AirPlay => format!(
-                "airplay-{}.pcm",
-                source
-                    .device
-                    .as_deref()
-                    .map_or_else(|| source.id.to_string(), safe)
-            ),
-            _ => format!("{}.pcm", source.id),
-        };
-        self.places.pipes.join(name)
+        self.places.pipes.join(pipe_name(source))
     }
 
     /// Opens the sources in `wanted` that are not open, and closes those open that are not

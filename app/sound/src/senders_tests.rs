@@ -399,3 +399,33 @@ fn a_sender_left_with_nothing_to_play_has_its_pipe_closed() {
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
+
+#[test]
+fn the_receivers_are_listed_for_the_senders_only_when_they_change() {
+    let dir = std::env::temp_dir().join(format!("endora-sound-receivers-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let receivers = vec![
+        (
+            "airplay-iphone.pcm".to_owned(),
+            "Endora · iPhone".to_owned(),
+        ),
+        ("airplay-7.pcm".to_owned(), "Endora".to_owned()),
+    ];
+    assert!(write_receivers(&dir, &receivers).unwrap());
+    assert_eq!(
+        std::fs::read_to_string(dir.join(RECEIVERS)).unwrap(),
+        "airplay-7.pcm\tEndora\nairplay-iphone.pcm\tEndora · iPhone\n"
+    );
+    assert!(
+        !write_receivers(&dir, &receivers).unwrap(),
+        "unchanged, so the receivers are not restarted"
+    );
+    let bad = vec![("airplay-x.pcm".to_owned(), "Two\tparts".to_owned())];
+    assert!(write_receivers(&dir, &bad).unwrap());
+    assert_eq!(
+        std::fs::read_to_string(dir.join(RECEIVERS)).unwrap(),
+        "",
+        "a name that would break the list got in"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

@@ -57,14 +57,16 @@ office HomePod and the Mac at 90. That makes two groups and two mixes, running a
 | **endora-sound** | The owner's own program, in Rust at `app/sound`, Apache-2.0, in its own container | Ingests every source, mixes one stream per group, serves the streams, holds the wires and setups, has its own HTTP API. Decodes and encodes with `ffmpeg`. Works without Endora. |
 | **Senders** | A pool of four **stock, unmodified** OwnTone instances | AirPlay 2 out, in sync, with OwnTone's HomePod and Apple TV workarounds. Each plays one group's stream from a pipe, and is limited to that group's speakers. |
 | **airptpd** | OwnTone's shared PTP timing daemon | It must start before the senders. All four senders share it. |
-| **Receivers** | shairport-sync, one instance per device, sharing one `nqptp` | Named "Endora · iPhone", "Endora · iPad" and "Endora" (for guests). Each writes PCM into a pipe that endora-sound reads. |
-| **Spotify** | The existing librespot receiver | Unchanged. It writes into a pipe. |
+| **Receivers** | shairport-sync built for classic AirPlay, one instance per device, in the senders' container | Named "Endora · iPhone", "Endora · iPad" and "Endora" (for guests). Each writes PCM into its pipe, `airplay-<device>.pcm`, which endora-sound reads; the hub lists which to run. |
+| **Spotify** (the hub's own) | librespot, called "Endora" | A Spotify Connect receiver writing into `spotify.pcm`. Picked once in the Spotify app, it keeps its own login. |
 | **Voice** | Kokoro-FastAPI, already on the NAS GPU | endora-sound asks it to speak and mixes the result in with ducking. |
 
-**Why the receivers need their own address.** `nqptp` (receiving) and `airptpd` (sending) both
-bind UDP 319/320 with no port sharing, and speakers expect those ports. So the receivers run
-in a separate container on a macvlan network with a LAN address the owner reserves in UniFi.
-They appear on the network as their own device.
+**Why the receivers are classic AirPlay.** An AirPlay 2 receiver needs `nqptp`, and `nqptp`
+and the senders' `airptpd` both bind UDP 319/320 with no port sharing. AirPlay 2 receivers
+would have needed a container on a LAN address of their own. Classic AirPlay needs no PTP
+clock, so its receivers share the NAS's address, beside the senders, with the same lossless
+sound and the same two-second delay. The owner chose it on 2026-10-17; moving to AirPlay 2
+later needs that address, and nothing else in the hub changes.
 
 **Why stock OwnTone, and why four.** OwnTone's player is single-session: one queue, one input
 and one clock, on file-scope state throughout `player.c`, `input.c` and `outputs/`. Several

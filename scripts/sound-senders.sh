@@ -1,6 +1,7 @@
 #!/bin/sh
-# endora-sound's AirPlay senders (ADR 0104): one shared airptpd and four stock OwnTone
-# instances, each playing the pipe the hub writes for one speaker group.
+# endora-sound's AirPlay senders and receivers (ADR 0104): one shared airptpd and four stock
+# OwnTone instances, each playing the pipe the hub writes for one speaker group; and a classic
+# AirPlay receiver for each device the hub lists, each writing into its own pipe.
 #
 # - On the host's network, because AirPlay speakers are found and reached over mDNS.
 # - airptpd first: it is the one AirPlay 2 clock all four share. Without it only the first
@@ -27,10 +28,15 @@ speaker_sections() {
   done < "$NAMES"
 }
 names_now() { cksum < "$NAMES" 2>/dev/null || echo none; }
+# The AirPlay receivers to run, written by the hub: a pipe's file name, a tab, the name the
+# owner's devices show. One classic AirPlay receiver each, writing into its pipe.
+RECEIVERS=/pipes/airplay-receivers.txt
+receivers_now() { cksum < "$RECEIVERS" 2>/dev/null || echo none; }
 
 if [ ! -s "$SECRET" ]; then
-  umask 077
-  head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n' > "$SECRET"
+  # Private to its owner, and only it: a umask left set for the rest of the script made the
+  # folders after it private too, and avahi could not start on the very first run.
+  (umask 077 && head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n' > "$SECRET")
 fi
 PASSWORD=$(cat "$SECRET")
 
@@ -89,11 +95,45 @@ EOF
   n=$((n + 1))
 done
 
-echo "sound: airptpd and $SENDERS senders started, $(grep -c 'reconnect = false' /run/owntone-1.conf || true) speakers they will not take back by themselves"
+r=0
+TAB=$(printf '\t')
+if [ -f "$RECEIVERS" ]; then
+  while IFS="$TAB" read -r pipe name; do
+    [ -n "$pipe" ] && [ -n "$name" ] || continue
+    # A file name in /pipes and nothing else: never a path somewhere else.
+    case "$pipe" in */*|.*) continue ;; esac
+    # Its pipe made here, before it starts: it runs as its own user, which cannot make files in
+    # the pipes folder, and would stop if the hub had not made the pipe yet.
+    if [ ! -p "/pipes/$pipe" ]; then
+      rm -f "/pipes/$pipe"
+      mkfifo -m 0666 "/pipes/$pipe"
+    fi
+    quoted=$(printf '%s' "$name" | sed 's/\\/\\\\/g; s/"/\\"/g')
+    cat > "/run/shairport-$r.conf" <<EOF
+general = {
+	name = "$quoted";
+	output_backend = "pipe";
+	mdns_backend = "avahi";
+	port = $((5100 + r));
+	udp_port_base = $((6101 + r * 10));
+	udp_port_range = 10;
+};
+pipe = {
+	name = "/pipes/$pipe";
+};
+EOF
+    su-exec owntone shairport-sync -c "/run/shairport-$r.conf" &
+    PIDS="$PIDS $!"
+    r=$((r + 1))
+  done < "$RECEIVERS"
+fi
+
+echo "sound: airptpd, $SENDERS senders and $r AirPlay receivers started, $(grep -c 'reconnect = false' /run/owntone-1.conf || true) speakers they will not take back by themselves"
 SEEN=$(names_now)
+SEEN_RECEIVERS=$(receivers_now)
 while :; do
-  if [ "$(names_now)" != "$SEEN" ]; then
-    echo "sound: the hub's speakers changed; starting again to read them"
+  if [ "$(names_now)" != "$SEEN" ] || [ "$(receivers_now)" != "$SEEN_RECEIVERS" ]; then
+    echo "sound: the hub's speakers or receivers changed; starting again to read them"
     kill $PIDS 2>/dev/null || true
     exit 0
   fi

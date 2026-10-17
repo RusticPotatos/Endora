@@ -39,9 +39,13 @@ Endora gets a sound hub, **endora-sound**: the owner's own program, not a fork.
 - **Stock OwnTone only sends.** A pool of four unmodified OwnTone instances sharing one
   `airptpd` acts as AirPlay 2 senders, each limited to the speakers of the group it plays.
   We fork OwnTone only if its AirPlay code itself must change.
-- **Receivers on their own address.** One shairport-sync receiver per device ("Endora ·
-  iPhone", "Endora · iPad", a guest one) shares one `nqptp`. They run in a separate container
-  with a reserved LAN address, because `nqptp` and `airptpd` both need UDP 319/320.
+- **Classic AirPlay receivers, on the NAS's own address.** One shairport-sync receiver per
+  device ("Endora · iPhone", "Endora · iPad", a guest "Endora"), built for classic AirPlay,
+  in the senders' container. *Changed 2026-10-17, by the owner:* AirPlay 2 receivers were the
+  plan, but their `nqptp` and the senders' `airptpd` both need UDP 319/320, which would have
+  meant a container on a LAN address of its own; classic AirPlay needs no PTP clock, so it
+  shares the host, with the same sound quality and delay. Moving to AirPlay 2 later changes
+  nothing in the hub: both write the same pipes.
 - **Endora is the remote.** A Speakers screen in the console shows the wires and changes them
   by tapping. Chat gets a fixed set of actions: apply a setup, set a level or a volume, play
   a station, say something on speakers, and stop a source. The model proposes; the hub's API
@@ -49,6 +53,20 @@ Endora gets a sound hub, **endora-sound**: the owner's own program, not a fork.
   from home the hub is reachable only through Endora's sign-in and tunnel.
 - **Deployed** as a `sound` role in `endora.homelab`, built on the Mac. The ansible-nas
   `owntone` role stays as the fallback until it is retired.
+
+## Changes found by building it (2026-10-17)
+
+- **The old OwnTone retires.** The senders cannot run beside the ansible-nas `owntone`
+  container (both take the AirPlay clock's ports and the speakers), and once Spotify plays
+  into the hub through a receiver of its own ("Endora", librespot) and the senders reach the
+  HomePods, nothing it does is left: the owner chose to retire it.
+- **Spotify is a hub source,** through a Spotify Connect receiver called Endora writing into
+  the hub's pipe. The Music screen lists the hub's speakers beside Spotify's own devices.
+- **OwnTone must not reconnect to a speaker by itself** (`reconnect = false` per speaker): in
+  the first live test it took a HomePod back from the owner's Mac five seconds after the Mac
+  took it. The hub alone takes a speaker back, when the owner says.
+- **Every pipe is read with backpressure:** librespot decodes faster than real time and relies
+  on its output to hold it back.
 
 ## Consequences
 

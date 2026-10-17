@@ -85,6 +85,22 @@ pub fn start(
                 if let Err(e) = crate::senders::write_speaker_names(&pipes, &names) {
                     eprintln!("sound: cannot write the senders' speaker names: {e}");
                 }
+                // And the AirPlay receivers to run: every AirPlay source, by its pipe and name.
+                let receivers: Vec<(String, String)> = hub.read(|bay| {
+                    bay.sources()
+                        .into_iter()
+                        .filter(|s| s.kind == endora_sound::domain::SourceKind::AirPlay)
+                        .map(|s| {
+                            (
+                                endora_sound::infrastructure::feeds::pipe_name(s),
+                                s.name.clone(),
+                            )
+                        })
+                        .collect()
+                });
+                if let Err(e) = crate::senders::write_receivers(&pipes, &receivers) {
+                    eprintln!("sound: cannot write the AirPlay receivers' list: {e}");
+                }
                 revision = Some(now);
             }
             let due_total = (began.elapsed().as_secs_f64() * f64::from(RATE)) as u64;

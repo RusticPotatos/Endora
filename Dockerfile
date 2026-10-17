@@ -90,11 +90,24 @@ RUN git clone --depth 1 -b "$OWNTONE_VERSION" https://github.com/owntone/owntone
     && autoreconf -fi && ./configure --enable-daemon --prefix=/usr && make \
     && install -D daemon/airptpd /tmp/build/usr/sbin/airptpd \
     && rm -rf /tmp/build/var /tmp/build/etc
+# The hub's AirPlay receivers ("Endora · iPhone" and so on): shairport-sync, built for classic
+# AirPlay, which needs no PTP clock of its own and so shares the host with airptpd (an AirPlay 2
+# build's nqptp would want the same ports; the owner chose classic, 2026-10-17). Its own layer,
+# so OwnTone's build above stays cached.
+ARG SHAIRPORT_VERSION=5.6
+RUN apk add -U -q --no-cache --no-progress popt-dev libconfig-dev openssl-dev \
+    && git clone --depth 1 -b "$SHAIRPORT_VERSION" https://github.com/mikebrady/shairport-sync.git /tmp/shairport \
+    && cd /tmp/shairport \
+    && autoreconf -fi \
+    && ./configure --with-pipe --with-avahi --with-ssl=openssl --prefix=/usr --sysconfdir=/etc \
+    && make \
+    && install -D shairport-sync /tmp/build/usr/bin/shairport-sync
 
 FROM alpine:3.23 AS senders
 RUN apk add -U -q --no-cache --no-progress \
       alsa-lib avahi confuse curl dbus ffmpeg gnutls json-c libevent libgcrypt libplist \
       libsodium libunistring libuuid libwebsockets libxml2 protobuf-c sqlite sqlite-libs \
+      popt libconfig openssl su-exec \
     && rm -f /etc/avahi/services/* \
     && adduser -S -H -D owntone
 COPY --from=owntone-build /tmp/build/ /

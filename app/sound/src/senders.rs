@@ -467,6 +467,39 @@ pub fn write_speaker_names(dir: &std::path::Path, names: &[String]) -> std::io::
     Ok(true)
 }
 
+/// The file, in the pipes folder, that lists the AirPlay receivers to run: one a line, the
+/// pipe it writes and the name it shows on the owner's devices, a tab between. The senders'
+/// container runs one classic AirPlay receiver for each, and starts again when it changes.
+pub const RECEIVERS: &str = "airplay-receivers.txt";
+
+/// Writes the receivers' list for the senders' container when it differs from what is there.
+/// Says whether it wrote. A name with a tab or a line break in it is left out.
+///
+/// # Errors
+/// A file that cannot be written.
+pub fn write_receivers(
+    dir: &std::path::Path,
+    receivers: &[(String, String)],
+) -> std::io::Result<bool> {
+    let mut lines: Vec<String> = receivers
+        .iter()
+        .filter(|(pipe, name)| !(pipe.contains(['\t', '\n']) || name.contains(['\t', '\n'])))
+        .map(|(pipe, name)| format!("{pipe}\t{name}\n"))
+        .collect();
+    lines.sort_unstable();
+    lines.dedup();
+    let text: String = lines.concat();
+    let path = dir.join(RECEIVERS);
+    if std::fs::read_to_string(&path).is_ok_and(|now| now == text) {
+        return Ok(false);
+    }
+    std::fs::create_dir_all(dir)?;
+    let beside = dir.join(format!("{RECEIVERS}.saving"));
+    std::fs::write(&beside, text)?;
+    std::fs::rename(&beside, &path)?;
+    Ok(true)
+}
+
 /// Makes a sender's pipe, and its folder, if they are not there.
 ///
 /// # Errors
