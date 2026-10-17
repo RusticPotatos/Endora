@@ -54,16 +54,48 @@ services:
       HQ_ADDR: 0.0.0.0:8790
       HQ_DB: /data/hq.db
       HQ_TOKEN_FILE: /token/token
+      # The runner's own token, made like the node's, in a volume only HQ and the runner mount.
+      HQ_RUNNER_TOKEN_FILE: /runner-token/token
       HQ_DEMO: "${ENDORA_HQ_DEMO:-1}"
       HQ_TICK_SECONDS: "${ENDORA_HQ_TICK_SECONDS:-30}"
     volumes:
       - ${ENDORA_HQ_DIR:-endora-hq-data}:/data
       - endora-hq-token:/token
+      - endora-hq-runner-token:/runner-token
+    networks:
+      default: {}
+      # Also on the team's fenced network, where a worker's one door into HQ is the team
+      # protocol, opened only by its turn's token.
+      team:
+        aliases: [hq]
     read_only: true
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
     # A small service on a NAS whose memory is tight: a hard cap, not a hope.
     mem_limit: 128m
+  # The runner (ADR 0102, phase 4): starts each turn HQ hands it as a fresh worker container,
+  # from this same image, on the fenced `team` network. It holds Docker's socket, which is as
+  # good as holding the host, so it is a profile of its own, off until the owner turns it on,
+  # and it takes nothing from HQ but a run and its token: the image, the mounts, the network
+  # and the limits are its own. HQ hands it turns only with the demo off.
+  runner:
+    profiles: [workers]
+    image: endora-node:latest
+    container_name: endora-runner
+    entrypoint: [endora-runner]
+    restart: unless-stopped
+    environment:
+      HQ_URL: http://hq:8790
+      HQ_RUNNER_TOKEN_FILE: /runner-token/token
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      # The token HQ makes for the runner. Read-only here; only HQ writes it.
+      - endora-hq-runner-token:/runner-token:ro
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    # It only asks and tells; each worker has its own cap, set by the runner.
+    mem_limit: 64m
   node:
     build:
       context: .
@@ -99,6 +131,12 @@ services:
       # The token Endora HQ makes for itself, which the node signs with (ADR 0102).
       # Read-only here; only HQ writes it.
       - endora-hq-token:/hq-token:ro
+    networks:
+      default: {}
+      # Also on the team's fenced network (ADR 0102), where a worker reaches the model relay
+      # here, opened only by its turn's token.
+      team:
+        aliases: [node]
     # The image already defaults ENDORA_ADDR=0.0.0.0:8787 and
     # ENDORA_DB=/data/endora.db. Point the butler/proposer at an Ollama running
     # on the host (host.docker.internal → the host gateway). Without a reachable
@@ -183,12 +221,22 @@ services:
               count: all
               capabilities: [gpu]
 
+networks:
+  # The fence around the team's workers (ADR 0102, phase 4). Internal: a worker container on
+  # it reaches the node and HQ, which join it too, and nothing else (no internet, no LAN, not
+  # the NAS itself). Named outright, because the runner starts workers on it by that name.
+  team:
+    name: endora_team
+    internal: true
+
 volumes:
   endora-data:
   endora-brain:
   endora-hq-data:
   # Holds one file: the token HQ makes for itself and the node signs with.
   endora-hq-token:
+  # Holds one file: the token HQ makes for the runner, which signs with it.
+  endora-hq-runner-token:
   # Empty on purpose: what /mail is when no mail copy is configured.
   endora-no-mail:
   endora-models:

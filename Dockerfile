@@ -63,9 +63,11 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
       unset "CARGO_TARGET_${env_triple}_LINKER" "CC_$(echo "$triple" | tr '-' '_')" "AR_$(echo "$triple" | tr '-' '_')"; \
     fi; \
     find . \( -name '*.rs' -o -name '*.toml' -o -name '*.lock' \) -exec touch {} + \
-    && cargo build --release -p endora-node -p endora-hq --target "$triple" \
+    && cargo build --release -p endora-node -p endora-hq -p endora-worker -p endora-runner --target "$triple" \
     && cp "target/$triple/release/endora-node" /endora-node \
-    && cp "target/$triple/release/endora-hq" /endora-hq
+    && cp "target/$triple/release/endora-hq" /endora-hq \
+    && cp "target/$triple/release/endora-worker" /endora-worker \
+    && cp "target/$triple/release/endora-runner" /endora-runner
 
 # --- runtime stage ---------------------------------------------------------
 FROM debian:bookworm-slim
@@ -84,6 +86,11 @@ RUN apt-get update \
 COPY --from=builder /endora-node /usr/local/bin/endora-node
 # Endora HQ, the team service (ADR 0102): the same image, run as its own container.
 COPY --from=builder /endora-hq /usr/local/bin/endora-hq
+# The team's worker, which takes one turn in a fresh container, and the runner, which starts
+# those containers (ADR 0102, phase 4). The same image again, so a worker runs nothing that
+# was not built here.
+COPY --from=builder /endora-worker /usr/local/bin/endora-worker
+COPY --from=builder /endora-runner /usr/local/bin/endora-runner
 COPY scripts/homelab-docker-proxy.py /usr/local/lib/endora/homelab-docker-proxy.py
 
 # Listen on all interfaces (so the mapped port is reachable) and keep the
