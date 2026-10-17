@@ -91,6 +91,12 @@ became the team's inbox, and the owner its manager. The plan (section 10) foresa
 - what reached the board's desk in the last 7 days, and how the board decided;
 - the board's items, and that it wakes only for escalations and its review.
 
+Since 2026-10-17 ([0109's cost notes](0109-a-brain-per-member.md#cost-notes)), only the CEO's
+first turn and its daily review carry the goals' notes, the open tasks, the alarms and the
+desk. Every other turn starts with the house log, the team, the board's items and the goals'
+titles, then what changed since its last turn began: tasks made or moved, alarms, the board's
+word and lessons noted.
+
 **The cloud data rule (0109) holds.** The CEO, on a cloud model, is a cloud member that is not
 the lead: the bridge and the contracts give it nothing Confidential (no logs, no queues, no Home
 Assistant). The bridge's profile for the CEO is read only, and the contracts offer it no act

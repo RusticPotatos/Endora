@@ -408,6 +408,36 @@ developer would have $0.69.
 - When the credits are gone, the team stops. It never moves to paid billing. Raising any
   limit is the owner's decision.
 
+**Spending less a turn** (2026-10-17, [ADR 0109](../adr/0109-a-brain-per-member.md#cost-notes)).
+A cloud turn resends its whole conversation every round, so most of what it cost was the same
+prefix read again. Three things cut that without changing what the model is told:
+
+- **Prompt caching.** Each of the worker's rounds on Claude asks for Anthropic's automatic
+  cache (`cache_control: {type: "ephemeral"}` at the top of the call), which puts the cache's
+  breakpoint on the prompt's last block: a round reads all the round before wrote (tools,
+  instructions, briefing, every round so far) at a twentieth of the input price, and writes only
+  what is new. The prefix is kept byte-stable: instructions built once, tools sorted by name,
+  the briefing first, each round only appended. The relay passes the ephemeral cache (5 minutes
+  or an hour) and nothing else of its kind; the reply's usage prices reads and writes apart, as
+  before. Its estimate before a call reads what the turn's last call cached (same model, system,
+  tools, thinking and effort; its messages carried on; within four minutes) at the cache-read
+  price, and the rest of a caching call at the (dearer) write price. A prefix shorter than the
+  model's minimum is not cached, and costs nothing more.
+- **Effort by role and purpose.** HQ names the effort with each cloud turn
+  (`/v1/runner/next` → `effort`, the runner's `ENDORA_EFFORT`, the worker's
+  `output_config.effort`): the CEO `medium`, `high` when the turn weighs a decision (a question
+  up the chain, the board's word on its decision, its decision sent back, or a decision draft in
+  its task); the lead `medium`; the researcher `low`; the developer and the reviewer their
+  model's own. The house's model is told nothing.
+- **Lean briefings for the CEO.** The CEO's briefing opens with the house log, the team, what
+  only the board decides and the goals' titles, in that order. Its first turn and its daily
+  review add the whole picture (goals' notes and lessons, open tasks, the week's alarms and
+  desk); any other turn adds only what changed since its last turn began (tasks made or moved,
+  alarms, the board's word, lessons noted; the newest 20), or one line saying nothing did.
+
+A turn's record keeps the input tokens the relay reported (fresh, read from the cache, written
+to it), and the activity log's line for its end says "cached: N% of input".
+
 ## 10. The owner's desk
 
 Everything that needs the owner lands on their desk in HQ, and Endora's Now line and chat

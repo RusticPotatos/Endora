@@ -21,6 +21,9 @@ reviewer 20, researcher 15): a member on the house's model costs nothing, reserv
 never turned away for money. The CEO on Claude is a cloud member that is not the lead: it is
 given nothing Confidential, and reads its members' findings in their threads.
 
+Cost notes added 2026-10-17 (see [Cost notes](#cost-notes)): prompt caching, effort by role and
+purpose, and lean briefings for the CEO.
+
 ## Context
 
 Every member thought with the house's model (qwen3:8b, thinking). The lead coordinates the
@@ -82,6 +85,26 @@ The node then:
   given only what a cloud turn may see; switched home, the Anthropic relay refuses its calls.
 - Logs leave the house scrubbed, not disguised: the scrubbing removes secrets, not names. That
   is the owner's accepted trade for the lead.
+
+## Cost notes
+
+Added 2026-10-17, prepared with AI assistance (Claude), to spend less a cloud turn without
+changing what the model is told (the plan's section 9, "Spending less a turn"):
+
+- **Prompt caching.** The worker asks for Anthropic's automatic cache on every round, so each
+  round reads at the cache price what the round before wrote. HQ's ledger prices a cache write
+  at the one-hour price, the dearer, while the worker asks for the five-minute cache: the ledger
+  overstates writes, and errs safe. The relay passes only the ephemeral cache, with a `ttl` of
+  `5m` or `1h`, at the top of a call or on its blocks.
+- **Effort.** Opus 5.5 cannot turn thinking off, and Sonnet 5.5 cannot either the way older
+  models did; effort (`output_config.effort`) is the dial. HQ sets it per turn: the CEO
+  `medium`, `high` when the turn weighs a decision; the lead `medium` (Sonnet's own default is
+  `high`); the researcher `low`. The relay passes only the five efforts, and no other part of
+  `output_config`. The worker never forces a tool (`tool_choice` is left out, which is `auto`).
+- **Lean briefings.** Only the CEO's first turn and daily review carry the whole house; other
+  turns carry what changed since the last.
+- **Measured.** Each run's record keeps the input tokens fresh, read and written, and its end
+  says how much of its input the cache gave.
 
 ## Alternatives considered
 

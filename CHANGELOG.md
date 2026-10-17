@@ -9,6 +9,16 @@ tagged release.
 
 ### Added
 
+- **Cheaper cloud turns** ([ADR 0109's cost notes](docs/adr/0109-a-brain-per-member.md#cost-notes)).
+  Each of the worker's rounds on Claude asks for Anthropic's automatic prompt cache, so a round
+  reads the round before's prompt at the cache price and writes only what is new; the prefix is
+  byte-stable (instructions once, tools by name, the briefing first, rounds appended). HQ names
+  each cloud turn's **effort** (CEO `medium`, `high` when it weighs a decision; lead `medium`;
+  researcher `low`), passed by the runner as `ENDORA_EFFORT`. The relay passes the ephemeral
+  cache and the five efforts and still refuses the rest, and reckons what the turn's last call
+  cached at the cache-read price before a call. The **CEO's briefing** carries the whole house
+  only on its first turn and daily review, and otherwise what changed since its last turn. A
+  run's record keeps its input tokens, and the activity log says "cached: N% of input".
 - **The CEO and the chain of command** ([ADR 0111](docs/adr/0111-the-ceo-and-the-chain-of-command.md),
   owner's decisions of 2026-10-17). The owner is the board. A new top member, the **CEO**, sits
   above the lead: HQ seats one once on an existing team ("Mara", on Claude Opus, renameable) with
