@@ -366,3 +366,46 @@ fn an_unwired_source_is_drained_in_time_and_a_wired_one_is_left_alone() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// A reader that hands out a counting sequence of samples, as fast as asked.
+struct Counting(u16);
+
+impl std::io::Read for Counting {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let mut n = 0;
+        while n + 2 <= buf.len() {
+            buf[n..n + 2].copy_from_slice(&self.0.to_le_bytes());
+            self.0 = self.0.wrapping_add(1);
+            n += 2;
+        }
+        Ok(n)
+    }
+}
+
+#[test]
+fn a_fast_writer_loses_nothing_when_taken_in_small_bites() {
+    // The pump must read only as much as fits: a whole chunk into a nearly full buffer pushed
+    // the oldest out, and the first live try ran at twice real time.
+    let into: Shared = Arc::default();
+    let stop = Arc::new(AtomicBool::new(false));
+    let (i, st) = (into.clone(), stop.clone());
+    let pumping = std::thread::spawn(move || pump(Counting(0), &i, &st));
+    let mut next: Option<u16> = None;
+    let mut taken = 0usize;
+    let until = Instant::now() + Duration::from_millis(600);
+    while Instant::now() < until {
+        // About a tick's worth at a time, as the player takes.
+        for s in lock(&into).take(1_764) {
+            let s = s as u16;
+            if let Some(want) = next {
+                assert_eq!(s, want, "a gap after {taken} samples: some were dropped");
+            }
+            next = Some(s.wrapping_add(1));
+            taken += 1;
+        }
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    stop.store(true, Ordering::Relaxed);
+    pumping.join().unwrap();
+    assert!(taken > MOST, "too little went through to tell: {taken}");
+}

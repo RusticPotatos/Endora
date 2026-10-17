@@ -101,6 +101,12 @@ impl Buffer {
         self.samples.len() >= self.most
     }
 
+    /// How many more samples it keeps before it is full.
+    #[must_use]
+    pub fn room(&self) -> usize {
+        self.most.saturating_sub(self.samples.len())
+    }
+
     /// How many samples it holds.
     #[must_use]
     pub fn len(&self) -> usize {
@@ -132,11 +138,16 @@ fn pump(mut from: impl std::io::Read, into: &Shared, stop: &AtomicBool) {
     let mut bytes = [0u8; 8192];
     let mut carry: Option<u8> = None;
     while !stop.load(Ordering::Relaxed) {
-        if lock(into).full() {
+        // Only as much as fits: reading a whole chunk into a nearly full buffer would push its
+        // oldest out, and the writer would run ahead by what was lost (twice real time, the
+        // first try showed).
+        let room = lock(into).room() * 2;
+        if room < 2 {
             std::thread::sleep(Duration::from_millis(5));
             continue;
         }
-        let n = match from.read(&mut bytes) {
+        let most = room.min(bytes.len());
+        let n = match from.read(&mut bytes[..most]) {
             Ok(0) | Err(_) => return,
             Ok(n) => n,
         };
