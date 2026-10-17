@@ -12,7 +12,8 @@ use serde_json::Value;
 pub struct Price {
     /// Fresh input.
     pub input: f64,
-    /// Writing the prompt cache (the one-hour price: the dearer, so a guess errs safe).
+    /// Writing the prompt cache for five minutes (1.25 times fresh input): the only cache the
+    /// relay passes on, so what is charged is what is billed.
     pub cache_write: f64,
     /// Reading the prompt cache.
     pub cache_read: f64,
@@ -151,7 +152,7 @@ pub fn price_of(model: &str, prompt: u64) -> Option<Price> {
     if is("claude-sonnet-5-5") {
         return Some(Price {
             input: 2.0,
-            cache_write: 4.0,
+            cache_write: 2.5,
             cache_read: 0.10,
             output: 10.0,
         });
@@ -159,7 +160,7 @@ pub fn price_of(model: &str, prompt: u64) -> Option<Price> {
     if is("claude-opus-5-5") {
         return Some(Price {
             input: 4.0,
-            cache_write: 8.0,
+            cache_write: 5.0,
             cache_read: 0.20,
             output: 20.0,
         });
@@ -168,14 +169,14 @@ pub fn price_of(model: &str, prompt: u64) -> Option<Price> {
         if prompt > HAIKU_LONG_PROMPT {
             return Some(Price {
                 input: 0.50,
-                cache_write: 1.0,
+                cache_write: 0.625,
                 cache_read: 0.05,
                 output: 2.50,
             });
         }
         return Some(Price {
             input: 0.10,
-            cache_write: 0.20,
+            cache_write: 0.125,
             cache_read: 0.01,
             output: 0.50,
         });
@@ -384,8 +385,10 @@ pub fn unmetered(call: &Value) -> Option<String> {
 /// The effort levels a call may ask for: each is billed as the output its reply reports.
 pub const EFFORTS: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
 
-/// Why a `cache_control` cannot be passed on, if it cannot. Only Anthropic's ephemeral
-/// cache is metered (the reply reports what it read and wrote), for five minutes or an hour.
+/// Why a `cache_control` cannot be passed on, if it cannot. Only Anthropic's ephemeral cache
+/// for five minutes is passed on: the reply meters what it read and wrote, and the price table
+/// charges writing it at the five-minute price, so an hour's cache (dearer) would be charged
+/// short. The worker never asks for one.
 fn uncached(mark: &Value) -> Option<String> {
     let Some(mark) = mark.as_object() else {
         return Some("`cache_control` is not an object".to_owned());
@@ -399,8 +402,8 @@ fn uncached(mark: &Value) -> Option<String> {
         ));
     }
     let ttl = mark.get("ttl");
-    if ttl.is_some_and(|ttl| !matches!(ttl.as_str(), Some("5m" | "1h"))) {
-        return Some("a cache_control's `ttl` is \"5m\" or \"1h\"".to_owned());
+    if ttl.is_some_and(|ttl| ttl.as_str() != Some("5m")) {
+        return Some("a cache_control's `ttl` is \"5m\": the relay meters only that".to_owned());
     }
     None
 }
@@ -619,8 +622,8 @@ mod tests {
         };
         assert_eq!(
             cost(sonnet, cached),
-            14_000,
-            "100k read at 10¢ (a twentieth of input), 1k written at $4"
+            12_500,
+            "100k read at 10¢ (a twentieth of input), 1k written at $2.50 (five minutes)"
         );
         assert!(
             (sonnet.cache_read - 0.10).abs() < 1e-9,
@@ -786,7 +789,7 @@ mod tests {
         let cached = json!({ "model": "claude-opus-5-5", "max_tokens": 10,
             "cache_control": { "type": "ephemeral" },
             "output_config": { "effort": "high" },
-            "system": [{ "type": "text", "text": "Be brief.", "cache_control": { "type": "ephemeral", "ttl": "1h" } }],
+            "system": [{ "type": "text", "text": "Be brief.", "cache_control": { "type": "ephemeral", "ttl": "5m" } }],
             "tools": [{ "name": "post", "input_schema": { "type": "object" }, "cache_control": { "type": "ephemeral", "ttl": "5m" } }],
             "messages": [
                 { "role": "user", "content": [{ "type": "text", "text": "Hi", "cache_control": { "type": "ephemeral" } }] },
@@ -868,11 +871,11 @@ mod tests {
     #[test]
     fn a_prompt_is_reckoned_at_the_cache_price_for_what_the_last_call_cached() {
         let opus = price_of("claude-opus-5-5", 0).unwrap();
-        // 20k counted, none cached: fresh input at $4, or written to the cache at $8.
+        // 20k counted, none cached: fresh input at $4, or written to the cache at $5.
         assert_eq!(prompt_cost(opus, 20_000, 0, false), 80_000);
-        assert_eq!(prompt_cost(opus, 20_000, 0, true), 160_000);
-        // 18k of them cached by the call before: read at 20¢, the 2k after written at $8.
-        assert_eq!(prompt_cost(opus, 20_000, 18_000, true), 3_600 + 16_000);
+        assert_eq!(prompt_cost(opus, 20_000, 0, true), 100_000);
+        // 18k of them cached by the call before: read at 20¢, the 2k after written at $5.
+        assert_eq!(prompt_cost(opus, 20_000, 18_000, true), 3_600 + 10_000);
         assert_eq!(
             prompt_cost(opus, 1_000, 18_000, true),
             200,

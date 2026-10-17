@@ -1383,8 +1383,8 @@ pub(super) mod tests {
         );
         assert_eq!(
             charged(&to_hq),
-            vec![2_000 * 8 + 18_000 / 5 + 100 * 20],
-            "2k written at $8, 18k read at 20¢ and 100 out at $20 a million"
+            vec![2_000 * 5 + 18_000 / 5 + 100 * 20],
+            "2k written at $5, 18k read at 20¢ and 100 out at $20 a million"
         );
         let told = to_hq
             .lock()
@@ -1432,8 +1432,8 @@ pub(super) mod tests {
         for (call, cap, why) in [
             (
                 round("Be brief.", &[first.clone()], true),
-                2_000,
-                "nothing cached yet: 20k written at $4 leaves 2¢, 2k out",
+                5_000,
+                "nothing cached yet: 20k written at $2.50 leaves 5¢, 5k out",
             ),
             (
                 round("Be brief.", &more, true),
@@ -1442,7 +1442,7 @@ pub(super) mod tests {
             ),
             (
                 round("Be short.", &more, true),
-                2_000,
+                5_000,
                 "another system prompt: nothing of the cache is read",
             ),
             (
