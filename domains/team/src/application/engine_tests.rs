@@ -438,16 +438,17 @@ fn a_turns_record_says_how_much_of_its_input_was_read_from_the_cache() {
     hq.tick().unwrap();
     let run = hq.store().runs().unwrap()[0].clone();
     // Two rounds: the first writes the prompt to the cache, the second reads it back.
-    hq.note_tokens(run.id, 100, 0, 9_000).unwrap();
-    hq.note_tokens(run.id, 100, 9_000, 800).unwrap();
+    hq.note_tokens(run.id, 100, 0, 9_000, 40).unwrap();
+    hq.note_tokens(run.id, 100, 9_000, 800, 60).unwrap();
     let kept = hq.store().run(run.id).unwrap().unwrap();
     assert_eq!(
         (
             kept.input_tokens,
             kept.cache_read_tokens,
-            kept.cache_write_tokens
+            kept.cache_write_tokens,
+            kept.output_tokens
         ),
-        (200, 9_000, 9_800)
+        (200, 9_000, 9_800, 100)
     );
     // A copy of the run saved again keeps them: only the relay's reports add to them.
     hq.store().save_run(&run).unwrap();
@@ -465,6 +466,16 @@ fn a_turns_record_says_how_much_of_its_input_was_read_from_the_cache() {
         .rfind(|e| e.kind == "run.ended")
         .unwrap();
     assert_eq!(ended.data["cached"], 47, "9,000 of 19,000 tokens in");
+    assert_eq!(
+        (&ended.data["input"], &ended.data["output"]),
+        (&serde_json::json!(19_000), &serde_json::json!(100)),
+        "all it sent, and all it got back"
+    );
+    let snap = hq.snapshot().unwrap();
+    assert!(
+        snap["runs"].as_array().unwrap().is_empty(),
+        "an ended run leaves the snapshot"
+    );
 
     // A turn that never reached Claude says nothing of a cache.
     task_for(&hq, t.goal, Some(t.lead), "Plan it");
@@ -481,6 +492,8 @@ fn a_turns_record_says_how_much_of_its_input_was_read_from_the_cache() {
         .unwrap();
     assert_eq!(ended.data["run"], other.id.0);
     assert_eq!(ended.data["cached"], serde_json::Value::Null);
+    assert_eq!(ended.data["input"], serde_json::Value::Null);
+    assert_eq!(ended.data["output"], serde_json::Value::Null);
 }
 
 #[test]

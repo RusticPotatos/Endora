@@ -161,6 +161,8 @@ pub struct Run {
     pub cache_read_tokens: i64,
     /// The input tokens they wrote to the prompt cache.
     pub cache_write_tokens: i64,
+    /// The output tokens its model calls produced, as the relay reported them.
+    pub output_tokens: i64,
 }
 
 /// One item on the owner's desk.
@@ -408,12 +410,19 @@ pub trait TeamStore {
     /// [`StoreError`] if the store fails.
     fn save_run(&self, run: &Run) -> Stored<()>;
 
-    /// Adds a model call's input tokens to a turn's (fresh, read from the cache, written to
-    /// it). Only this adds to them; [`Self::save_run`] leaves them as they are.
+    /// Adds a model call's tokens to a turn's: input (fresh, read from the cache, written to
+    /// it) and output. Only this adds to them; [`Self::save_run`] leaves them as they are.
     ///
     /// # Errors
     /// [`StoreError`] if the store fails.
-    fn add_tokens(&self, run: RunId, fresh: i64, read: i64, written: i64) -> Stored<()>;
+    fn add_tokens(
+        &self,
+        run: RunId,
+        fresh: i64,
+        read: i64,
+        written: i64,
+        output: i64,
+    ) -> Stored<()>;
 
     /// Issues a fresh token for a turn, replacing any it had: what its worker presents to the
     /// team protocol, good for this run only (spec section 3, invariant 3).
@@ -676,6 +685,10 @@ pub trait WorkerAdapter {
     fn start(&self, run: &RunContext) -> Result<(), StartError>;
     /// Whether the turn is still alive, ended, or gone.
     fn status(&self, run: RunId) -> Liveness;
+    /// Why a turn that finished badly did, in the runner's words, when it said.
+    fn why_ended(&self, _run: RunId) -> Option<String> {
+        None
+    }
     /// Asks the turn to stop, then ends it after the grace period.
     fn stop(&self, run: RunId, grace: Duration);
     /// How many turns it can run at once.

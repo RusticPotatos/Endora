@@ -67,6 +67,12 @@ pub trait Docker {
     /// # Errors
     /// What Docker said, or that it could not be reached.
     fn kill(&self, id: &str) -> Result<(), String>;
+    /// The last `lines` lines a container wrote to stderr, as one text: what a worker said
+    /// before it exited, read before the container is removed and its words with it.
+    ///
+    /// # Errors
+    /// What Docker said, or that it could not be reached.
+    fn stderr_tail(&self, id: &str, lines: usize) -> Result<String, String>;
     /// Removes a container and the anonymous volumes it was given. One gone is no failure.
     ///
     /// # Errors
@@ -110,6 +116,29 @@ fn refusal(what: &str, answer: &Answer) -> String {
         .as_str()
         .map_or_else(String::new, |m| format!(": {m}"));
     format!("Docker would not {what} ({}){said}", answer.status)
+}
+
+/// A container's log as text. Docker sends the log of a container without a TTY as a
+/// multiplexed stream: each frame an 8-byte header (the stream, 0, 1 or 2; three zero bytes;
+/// the frame's size, big-endian) and then that many bytes. A body that does not start with
+/// such a header is a TTY container's, written plain, and taken as it is.
+fn demuxed(body: &[u8]) -> String {
+    let mut text = Vec::new();
+    let mut rest = body;
+    while rest.len() >= 8 {
+        let framed = rest[0] <= 2 && rest[1..4] == [0, 0, 0];
+        if !framed {
+            return String::from_utf8_lossy(body).into_owned();
+        }
+        let size = u32::from_be_bytes([rest[4], rest[5], rest[6], rest[7]]) as usize;
+        let frame = &rest[8..];
+        text.extend_from_slice(&frame[..size.min(frame.len())]);
+        rest = frame.get(size..).unwrap_or_default();
+    }
+    if text.is_empty() {
+        return String::from_utf8_lossy(body).into_owned();
+    }
+    String::from_utf8_lossy(&text).into_owned()
 }
 
 /// A container's id, as Docker writes one, so it goes into a path as nothing else.
@@ -177,6 +206,15 @@ impl Docker for Engine {
             return Ok(());
         }
         Err(refusal("kill it", &answer))
+    }
+
+    fn stderr_tail(&self, id: &str, lines: usize) -> Result<String, String> {
+        let path = format!("/containers/{}/logs?stderr=1&tail={lines}", checked(id)?);
+        let answer = self.call("GET", &path, None)?;
+        if answer.status != 200 {
+            return Err(refusal("give its log", &answer));
+        }
+        Ok(demuxed(&answer.body))
     }
 
     fn remove(&self, id: &str) -> Result<(), String> {
@@ -318,6 +356,14 @@ mod tests {
             "DELETE /containers/c0ffee?v=true&force=true HTTP/1.1" => {
                 "HTTP/1.1 204 No Content\r\n\r\n".to_owned()
             }
+            // Two frames of stderr (stream 2), as Docker multiplexes a container's log.
+            "GET /containers/c0ffee/logs?stderr=1&tail=8 HTTP/1.1" => whole(
+                "200 OK",
+                "\u{2}\0\0\0\0\0\0\u{15}worker: round 1 done\n\u{2}\0\0\0\0\0\0\u{1a}worker: the model said no\n",
+            ),
+            "GET /containers/tty/logs?stderr=1&tail=8 HTTP/1.1" => {
+                whole("200 OK", "plain words from a tty\n")
+            }
             line if line.starts_with("GET /containers/json?") => whole(
                 "200 OK",
                 r#"[{"Id":"old","Created":1700000000,"Labels":{"endora.run":"7","endora.lease":"1007"},"State":"running"}]"#,
@@ -341,6 +387,16 @@ mod tests {
         assert_eq!(engine.inspect("going").unwrap(), Some(State::Running));
         assert_eq!(engine.inspect("gone").unwrap(), None);
         engine.kill("c0ffee").unwrap();
+        assert_eq!(
+            engine.stderr_tail("c0ffee", 8).unwrap(),
+            "worker: round 1 done\nworker: the model said no\n",
+            "the frames' words, without their headers"
+        );
+        assert_eq!(
+            engine.stderr_tail("tty", 8).unwrap(),
+            "plain words from a tty\n",
+            "a tty container's log is not framed"
+        );
         engine.remove("c0ffee").unwrap();
         assert_eq!(
             engine.left().unwrap(),
@@ -380,6 +436,7 @@ mod tests {
         assert!(refused.contains("No such image"), "{refused}");
         for odd in ["../images", "c?all=1", "", "c d"] {
             assert!(engine.kill(odd).is_err());
+            assert!(engine.stderr_tail(odd, 8).is_err());
             assert!(engine.remove(odd).is_err());
         }
         assert_eq!(asked.lock().unwrap().len(), 1, "only the create was sent");

@@ -166,6 +166,9 @@ pub(crate) struct UsageReported {
     cache_read: i64,
     #[serde(default)]
     cache_write: i64,
+    /// The call's output tokens. A relay that says none is taken at none.
+    #[serde(default)]
+    output: i64,
 }
 
 /// For the node's model relay: what one model call of a turn cost. Crossing the turn's
@@ -178,7 +181,7 @@ pub(crate) async fn usage(
     let reported = tokio::task::spawn_blocking(move || {
         let run = endora_team::domain::RunId(req.run);
         // The tokens first: a charge that stops the turn ends its record too.
-        hq.note_tokens(run, req.input, req.cache_read, req.cache_write)?;
+        hq.note_tokens(run, req.input, req.cache_read, req.cache_write, req.output)?;
         hq.report_usage(run, req.micros.max(0))
     })
     .await;

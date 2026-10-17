@@ -164,7 +164,7 @@ function hqTell(e, live) {
     "wake.refused": ["warn", `Wake for ${name} skipped: ${String(d.why || "").replace(/_/g, " ")}`],
     "run.started": ["run", `R${d.run} ${name} starts${key ? " on " + key : ""}${reason ? ` (${reason})` : ""}, ${hqDollars(d.reserved)} held`],
     "run.ended": [d.result === "succeeded" ? "done" : d.result === "retry_waiting" ? "warn" : "bad",
-      `R${d.run} ${name} ${d.result === "succeeded" ? "finished" : result}${d.spent ? " · " + hqDollars(d.spent) + " spent" : ""}${d.cached != null ? ` · cached: ${d.cached}% of input` : ""}`],
+      `R${d.run} ${name} ${d.result === "succeeded" ? "finished" : result}${d.result !== "succeeded" && d.why ? `: ${d.why}` : ""}${d.spent ? " · " + hqDollars(d.spent) + " spent" : ""}${d.input != null ? ` · in ${d.input} / out ${d.output || 0}` : ""}${d.cached != null ? ` · cached: ${d.cached}% of input` : ""}`],
     "gate.result": [d.passed ? "done" : "bad", `Gate on ${key}: ${d.passed ? "passed" : "failed"}`],
     "desk.added": ["you", `On your desk: ${String(d.kind || "").replace(/_/g, " ")}${on}`],
     "desk.decided": ["you", `You decided: ${String(d.decision || "").replace(/_/g, " ")}`],

@@ -54,7 +54,8 @@ CREATE TABLE IF NOT EXISTS runs (
     reserved INTEGER NOT NULL DEFAULT 0, spent INTEGER NOT NULL DEFAULT 0,
     told TEXT NOT NULL DEFAULT '', end_reason TEXT NOT NULL DEFAULT '',
     moved_forward INTEGER NOT NULL DEFAULT 0, input_tokens INTEGER NOT NULL DEFAULT 0,
-    cache_read_tokens INTEGER NOT NULL DEFAULT 0, cache_write_tokens INTEGER NOT NULL DEFAULT 0
+    cache_read_tokens INTEGER NOT NULL DEFAULT 0, cache_write_tokens INTEGER NOT NULL DEFAULT 0,
+    output_tokens INTEGER NOT NULL DEFAULT 0
 ) STRICT;
 -- A turn's token for the team protocol: its worker's only credential, valid while it runs.
 CREATE TABLE IF NOT EXISTS run_tokens (
@@ -205,8 +206,13 @@ impl SqliteTeamStore {
             )
             .map_err(backend)?;
         }
-        // A store made before runs counted their input tokens gains the columns, at none.
-        for column in ["input_tokens", "cache_read_tokens", "cache_write_tokens"] {
+        // A store made before runs counted their tokens gains the columns, at none.
+        for column in [
+            "input_tokens",
+            "cache_read_tokens",
+            "cache_write_tokens",
+            "output_tokens",
+        ] {
             let has: bool = conn
                 .query_row(
                     "SELECT COUNT(*) > 0 FROM pragma_table_info('runs') WHERE name = ?1",
@@ -362,12 +368,13 @@ fn run_from(row: &rusqlite::Row<'_>) -> rusqlite::Result<Run> {
         input_tokens: row.get(15)?,
         cache_read_tokens: row.get(16)?,
         cache_write_tokens: row.get(17)?,
+        output_tokens: row.get(18)?,
     })
 }
 
 const RUN_COLUMNS: &str = "id, member, task, wake, status, attempts, queued_at, started_at, \
     retry_at, ended_at, reserved, spent, told, end_reason, moved_forward, input_tokens, \
-    cache_read_tokens, cache_write_tokens";
+    cache_read_tokens, cache_write_tokens, output_tokens";
 
 impl TeamStore for SqliteTeamStore {
     fn add_member(
@@ -871,14 +878,28 @@ impl TeamStore for SqliteTeamStore {
             .map_err(backend)
     }
 
-    fn add_tokens(&self, run: RunId, fresh: i64, read: i64, written: i64) -> Stored<()> {
+    fn add_tokens(
+        &self,
+        run: RunId,
+        fresh: i64,
+        read: i64,
+        written: i64,
+        output: i64,
+    ) -> Stored<()> {
         self.conn()?
             .execute(
                 "UPDATE runs SET input_tokens = input_tokens + ?2,
                     cache_read_tokens = cache_read_tokens + ?3,
-                    cache_write_tokens = cache_write_tokens + ?4
+                    cache_write_tokens = cache_write_tokens + ?4,
+                    output_tokens = output_tokens + ?5
                  WHERE id = ?1",
-                params![run.0, fresh.max(0), read.max(0), written.max(0)],
+                params![
+                    run.0,
+                    fresh.max(0),
+                    read.max(0),
+                    written.max(0),
+                    output.max(0)
+                ],
             )
             .map_err(backend)?;
         Ok(())
@@ -1570,6 +1591,51 @@ CREATE TABLE IF NOT EXISTS check_backs (
             [None, Some(a)]
         );
         assert_eq!(desk[0].text, "Linus asks: why?");
+    }
+
+    #[test]
+    fn a_store_made_before_runs_counted_output_tokens_gains_the_column_at_none() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+        conn.execute_batch(SCHEMA_BEFORE_PROJECTS).unwrap();
+        conn.execute_batch(
+            "INSERT INTO members (id, name, role, share_percent, slots) VALUES
+                (1, 'Ada', 'developer', 40, 2);
+             INSERT INTO goals (id, title, reason, status) VALUES (1, 'Ship it', '', 'active');
+             INSERT INTO tasks (id, goal, title, description, status, priority, depth) VALUES
+                (1, 1, 'Write it', '', 'doing', 'normal', 0);
+             INSERT INTO wakes (id, member, task, reason, receipt, at_ms) VALUES
+                (1, 1, 1, 'assigned', 'started', 0);
+             INSERT INTO runs (id, member, task, wake, status, queued_at, input_tokens,
+                cache_read_tokens, cache_write_tokens) VALUES
+                (1, 1, 1, 1, 'running', 0, 100, 9000, 800);",
+        )
+        .unwrap();
+        let store = SqliteTeamStore::over(conn).unwrap();
+        let run = store.run(RunId(1)).unwrap().unwrap();
+        assert_eq!(
+            (
+                run.input_tokens,
+                run.cache_read_tokens,
+                run.cache_write_tokens,
+                run.output_tokens
+            ),
+            (100, 9_000, 800, 0),
+            "what it counted stays; what it did not is none"
+        );
+        store.add_tokens(RunId(1), 1, 2, 3, 40).unwrap();
+        let run = store.run(RunId(1)).unwrap().unwrap();
+        assert_eq!(
+            (
+                run.input_tokens,
+                run.cache_read_tokens,
+                run.cache_write_tokens,
+                run.output_tokens
+            ),
+            (101, 9_002, 803, 40)
+        );
+        // Opened again, the column is already there: nothing is added twice.
+        assert!(SqliteTeamStore::in_memory().is_ok());
     }
 
     /// 17 October 2026, at noon UTC.

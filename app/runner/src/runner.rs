@@ -9,10 +9,85 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde_json::{Value, json};
 
 use crate::docker::{Docker, LEASE_LABEL, RUN_LABEL, State};
-use crate::hq::{Hq, HqError};
+use crate::hq::{Ending, Hq, HqError};
 
 /// The longest a turn's container runs before it is killed, in seconds.
 pub const LONGEST_TURN: u64 = 30 * 60;
+
+/// The exit code of a container killed, as Docker reports one.
+const KILLED: i64 = 137;
+
+/// How many of a worker's last lines on stderr go into its ending.
+const STDERR_LINES: usize = 8;
+
+/// The most characters of a worker's last words that go to HQ.
+const LONGEST_WHY: usize = 400;
+
+/// How long a run of letters, digits, `_` and `-` must be to be taken for a token (a turn's
+/// is 64 hex characters, the runner's 32 or more) and taken out of what goes to HQ.
+const TOKEN_LENGTH: usize = 24;
+
+/// What a worker's exit code says (see `endora-worker`): 0, a turn taken; 3, the turn was
+/// over before it ended; 1, it failed; -1, its container never started; 137, killed, after
+/// thirty minutes when the runner killed it.
+pub fn meaning(code: Option<i64>, past_time: bool) -> String {
+    match code {
+        None => "its container was gone before it was seen to end".to_owned(),
+        Some(0) => "taken".to_owned(),
+        Some(-1) => "its container never started".to_owned(),
+        Some(KILLED) if past_time => "killed after thirty minutes".to_owned(),
+        Some(KILLED) => "killed (exit 137)".to_owned(),
+        Some(code) => format!("exit {code}"),
+    }
+}
+
+/// `text` with every token-shaped word (24 or more letters, digits, `_` and `-` together)
+/// replaced by `<token>`: a worker never prints its token, and what it prints goes to HQ
+/// without one all the same.
+pub fn scrubbed(text: &str) -> String {
+    let mut out = String::new();
+    let mut word = String::new();
+    let flush = |word: &mut String, out: &mut String| {
+        if word.chars().count() >= TOKEN_LENGTH {
+            out.push_str("<token>");
+        } else {
+            out.push_str(word);
+        }
+        word.clear();
+    };
+    for c in text.chars() {
+        if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
+            word.push(c);
+            continue;
+        }
+        flush(&mut word, &mut out);
+        out.push(c);
+    }
+    flush(&mut word, &mut out);
+    out
+}
+
+/// Why a turn ended, for HQ: what its exit code means and then the worker's last words on
+/// stderr (`tail`), scrubbed of tokens, one line after another, the last [`LONGEST_WHY`]
+/// characters of them when there are more.
+pub fn why(meaning: &str, tail: &str) -> String {
+    let tail = scrubbed(tail);
+    let lines: Vec<&str> = tail
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect();
+    if lines.is_empty() {
+        return meaning.to_owned();
+    }
+    let said = lines.join("; ");
+    let count = said.chars().count();
+    if count <= LONGEST_WHY {
+        return format!("{meaning}: {said}");
+    }
+    let kept: String = said.chars().skip(count - LONGEST_WHY).collect();
+    format!("{meaning}: …{kept}")
+}
 
 /// What every turn's container is, whatever HQ says.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -318,7 +393,7 @@ impl<D: Docker> Runner<D> {
                 }
             };
             self.fine("Docker");
-            let succeeded = match state {
+            let (code, past_time) = match state {
                 Some(State::Running) if now.saturating_sub(turn.since) > LONGEST_TURN => {
                     if let Err(e) = self.docker.kill(&turn.container) {
                         eprintln!(
@@ -329,20 +404,20 @@ impl<D: Docker> Runner<D> {
                         continue;
                     }
                     println!("runner: run {} ran past thirty minutes; killed", turn.run);
-                    false
+                    (Some(KILLED), true)
                 }
                 Some(State::Running) => {
                     self.running.push(turn);
                     continue;
                 }
-                Some(State::Exited(code)) => code == 0,
+                Some(State::Exited(code)) => (Some(code), false),
                 // Removed by someone else: how it ended is not known, so not a success.
-                None => false,
+                None => (None, false),
             };
+            let ending = self.ending(turn.run, &turn.container, code, past_time);
             // Told before it is removed: while HQ cannot hear, the container keeps how it
             // ended. An answer of any kind is hearing.
-            if let Err(e @ HqError::Unreachable(_)) = self.hq.ended(turn.run, turn.lease, succeeded)
-            {
+            if let Err(e @ HqError::Unreachable(_)) = self.hq.ended(turn.run, turn.lease, &ending) {
                 self.trouble("HQ", &e.to_string());
                 self.running.push(turn);
                 continue;
@@ -350,11 +425,38 @@ impl<D: Docker> Runner<D> {
             if let Err(e) = self.docker.remove(&turn.container) {
                 eprintln!("runner: could not remove run {}'s container: {e}", turn.run);
             }
-            println!(
-                "runner: run {} ended, {}",
-                turn.run,
-                if succeeded { "taken" } else { "failed" }
-            );
+            if ending.succeeded {
+                println!("runner: run {} ended, taken", turn.run);
+                continue;
+            }
+            println!("runner: run {} failed: {}", turn.run, ending.why);
+        }
+    }
+
+    /// How a turn ended, in words HQ keeps on its record: what the exit code means and, for
+    /// one that did not succeed, the worker's last words on stderr, read before the container
+    /// is removed and its log with it. A log Docker will not give leaves the meaning alone.
+    fn ending(&self, run: u64, container: &str, code: Option<i64>, past_time: bool) -> Ending {
+        let meaning = meaning(code, past_time);
+        let succeeded = code == Some(0);
+        if succeeded || code.is_none() {
+            return Ending {
+                succeeded,
+                code,
+                why: meaning,
+            };
+        }
+        let tail = match self.docker.stderr_tail(container, STDERR_LINES) {
+            Ok(tail) => tail,
+            Err(e) => {
+                eprintln!("runner: could not read run {run}'s log: {e}");
+                String::new()
+            }
+        };
+        Ending {
+            succeeded,
+            code,
+            why: why(&meaning, &tail),
         }
     }
 
@@ -385,16 +487,13 @@ impl<D: Docker> Runner<D> {
                     eprintln!("runner: refused run {run}: it came with no lease");
                 }
                 Err(Refused::Token(run, lease)) => {
-                    eprintln!("runner: refused run {run}: its token is not 64 hex characters");
-                    self.failed(run, lease);
+                    self.refused(run, lease, "its token is not 64 hex characters");
                 }
                 Err(Refused::Brain(run, lease)) => {
-                    eprintln!("runner: refused run {run}: its brain is not a model's name");
-                    self.failed(run, lease);
+                    self.refused(run, lease, "its brain is not a model's name");
                 }
                 Err(Refused::Effort(run, lease)) => {
-                    eprintln!("runner: refused run {run}: its effort is not one of the five");
-                    self.failed(run, lease);
+                    self.refused(run, lease, "its effort is not one of the five");
                 }
             }
         }
@@ -406,7 +505,7 @@ impl<D: Docker> Runner<D> {
             Ok(container) => container,
             Err(e) => {
                 eprintln!("runner: could not make run {}'s container: {e}", turn.run);
-                return self.failed(turn.run, turn.lease);
+                return self.never_ran(turn.run, turn.lease, &e);
             }
         };
         if let Err(e) = self.docker.start(&container) {
@@ -414,7 +513,7 @@ impl<D: Docker> Runner<D> {
             if let Err(e) = self.docker.remove(&container) {
                 eprintln!("runner: could not remove run {}'s container: {e}", turn.run);
             }
-            return self.failed(turn.run, turn.lease);
+            return self.never_ran(turn.run, turn.lease, &e);
         }
         println!(
             "runner: run {} started: {:?}, {:?}, task {}",
@@ -432,10 +531,21 @@ impl<D: Docker> Runner<D> {
         });
     }
 
-    /// Reports a turn that never ran. If HQ cannot hear it, the engine's longest-turn limit
-    /// ends it.
-    fn failed(&mut self, run: u64, lease: u64) {
-        match self.hq.ended(run, lease, false) {
+    /// Refuses a turn HQ handed out, saying why, and reports it as one that never ran.
+    fn refused(&mut self, run: u64, lease: u64, why: &str) {
+        eprintln!("runner: refused run {run}: {why}");
+        self.never_ran(run, lease, why);
+    }
+
+    /// Reports a turn whose container never started, with what went wrong. If HQ cannot hear
+    /// it, the engine's longest-turn limit ends it.
+    fn never_ran(&mut self, run: u64, lease: u64, what: &str) {
+        let ending = Ending {
+            succeeded: false,
+            code: Some(-1),
+            why: why(&meaning(Some(-1), false), what),
+        };
+        match self.hq.ended(run, lease, &ending) {
             Ok(()) => {}
             Err(e @ HqError::Unreachable(_)) => self.trouble("HQ", &e.to_string()),
             Err(e) => eprintln!("runner: HQ did not take run {run}'s failure: {e}"),
@@ -586,6 +696,14 @@ mod tests {
 
         /// What it was told of how runs ended. Each report must quote its run's lease.
         fn told(&self) -> Vec<(u64, bool)> {
+            self.endings()
+                .into_iter()
+                .map(|(run, b)| (run, b["succeeded"].as_bool().unwrap()))
+                .collect()
+        }
+
+        /// Each report of how a run ended, whole.
+        fn endings(&self) -> Vec<(u64, Value)> {
             self.seen
                 .lock()
                 .unwrap()
@@ -597,7 +715,7 @@ mod tests {
                         .parse()
                         .ok()?;
                     assert_eq!(b["lease"].as_u64(), Some(lease(run)), "run {run}'s lease");
-                    Some((run, b["succeeded"].as_bool()?))
+                    Some((run, b.clone()))
                 })
                 .collect()
         }
@@ -615,6 +733,10 @@ mod tests {
         down: bool,
         /// How many kills fail before they work again.
         kills_fail: u32,
+        /// What each container's worker wrote to stderr.
+        stderr: BTreeMap<String, String>,
+        /// The containers whose log Docker will not give.
+        no_log: BTreeSet<String>,
     }
 
     /// Docker, pretending; a clone sees the same containers.
@@ -638,6 +760,15 @@ mod tests {
                 .unwrap()
                 .containers
                 .insert(id.to_owned(), State::Exited(code));
+        }
+        /// A container's worker ends with `code`, having written `stderr`.
+        fn exits_saying(&self, id: &str, code: i64, stderr: &str) {
+            self.exits(id, code);
+            self.0
+                .lock()
+                .unwrap()
+                .stderr
+                .insert(id.to_owned(), stderr.to_owned());
         }
     }
 
@@ -680,6 +811,19 @@ mod tests {
                 docker.containers.insert(id.to_owned(), State::Exited(137));
             }
             Ok(())
+        }
+        fn stderr_tail(&self, id: &str, lines: usize) -> Result<String, String> {
+            let mut docker = self.0.lock().unwrap();
+            docker.calls.push(format!("logs {id}"));
+            if docker.no_log.contains(id) {
+                return Err("Docker would not give its log (500)".to_owned());
+            }
+            if !docker.containers.contains_key(id) {
+                return Err("Docker would not give its log (404)".to_owned());
+            }
+            let all = docker.stderr.get(id).cloned().unwrap_or_default();
+            let kept: Vec<&str> = all.lines().rev().take(lines).collect();
+            Ok(kept.into_iter().rev().map(|l| format!("{l}\n")).collect())
         }
         fn remove(&self, id: &str) -> Result<(), String> {
             let mut docker = self.0.lock().unwrap();
@@ -840,6 +984,112 @@ mod tests {
     }
 
     #[test]
+    fn a_failed_turns_exit_code_and_last_words_reach_hq_without_its_token() {
+        let hq = FakeHq::new(vec![turn(1), turn(2), turn(3), turn(4)]);
+        let docker = FakeDocker::default();
+        let mut runner = runner("why", &hq, &docker, 4);
+        runner.step(T0);
+        docker.exits_saying("c1", 0, "worker: asked the owner, which ends the turn\n");
+        // What a worker says when HQ ended its turn under it, with the token it never prints
+        // and a container id, as a bad day might print them.
+        docker.exits_saying(
+            "c2",
+            3,
+            &format!(
+                "round 1\nround 2\n\nworker: the turn is over: HQ answered 401 ({} on c0ffee_1234)\n",
+                token(2)
+            ),
+        );
+        docker.exits_saying("c3", 1, "worker: the model answered 500\n");
+        docker.0.lock().unwrap().no_log.insert("c3".to_owned());
+        docker.exits("c4", 1);
+        runner.step(T0 + 2);
+
+        let endings = hq.endings();
+        let of = |run: u64| endings.iter().find(|(r, _)| *r == run).unwrap().1.clone();
+        assert_eq!(
+            of(1),
+            json!({ "succeeded": true, "lease": lease(1), "code": 0, "why": "taken" }),
+            "a taken turn's words are not read"
+        );
+        let over = of(2);
+        assert_eq!(over["succeeded"], false);
+        assert_eq!(over["code"], 3);
+        assert_eq!(
+            over["why"],
+            "exit 3: round 1; round 2; worker: the turn is over: HQ answered 401 (<token> on c0ffee_1234)"
+        );
+        assert!(
+            !over.to_string().contains(&token(2)),
+            "the turn's token never goes to HQ"
+        );
+        assert_eq!(
+            of(3)["why"],
+            "exit 1",
+            "a log Docker will not give leaves the exit code's meaning"
+        );
+        assert_eq!(of(4)["why"], "exit 1", "a worker that said nothing");
+        assert!(
+            docker.calls().iter().all(|c| c != "logs c1"),
+            "a taken turn's log is not read"
+        );
+        assert!(
+            docker.containers().is_empty(),
+            "each is removed all the same"
+        );
+    }
+
+    #[test]
+    fn a_turn_the_runner_refuses_is_reported_as_one_that_never_started_and_why() {
+        let mut odd = turn(7);
+        odd["brain"] = json!("gpt-5");
+        let hq = FakeHq::new(vec![odd]);
+        let docker = FakeDocker::default();
+        let mut runner = runner("refused-why", &hq, &docker, 1);
+        runner.step(T0);
+        let endings = hq.endings();
+        assert_eq!(endings.len(), 1);
+        let (run, refused) = &endings[0];
+        assert_eq!(*run, 7);
+        assert_eq!(refused["succeeded"], false);
+        assert_eq!(refused["code"], -1);
+        assert_eq!(
+            refused["why"],
+            "its container never started: its brain is not a model's name"
+        );
+    }
+
+    #[test]
+    fn a_workers_words_are_scrubbed_of_tokens_and_kept_to_their_last_four_hundred() {
+        assert_eq!(
+            scrubbed(&format!("Bearer {} x", token(2))),
+            "Bearer <token> x",
+            "a turn's 64 hex characters"
+        );
+        assert_eq!(
+            scrubbed("a-runner-token-of-at-least-thirty-two-characters, said HQ"),
+            "<token>, said HQ"
+        );
+        assert_eq!(
+            scrubbed("http://192.168.1.10:8788/team-relay/local/v1 answered 502"),
+            "http://192.168.1.10:8788/team-relay/local/v1 answered 502",
+            "ordinary words and addresses stay"
+        );
+        assert_eq!(why("exit 1", ""), "exit 1");
+        assert_eq!(why("exit 1", "\n  \n"), "exit 1");
+        assert_eq!(
+            why("exit 1", "one\ntwo\n"),
+            "exit 1: one; two",
+            "line after line"
+        );
+        let long = format!("{}end", "x ".repeat(300));
+        let kept = why("exit 1", &long);
+        assert!(kept.starts_with("exit 1: …"), "{kept}");
+        assert!(kept.ends_with("x end"), "the last words are the ones kept");
+        assert_eq!(kept.chars().count(), "exit 1: …".chars().count() + 400);
+    }
+
+    #[test]
     fn a_stop_kills_its_turn_and_only_its_turn() {
         let hq = FakeHq::new(vec![turn(12), turn(13)]);
         let docker = FakeDocker::default();
@@ -890,9 +1140,21 @@ mod tests {
         assert!(hq.told().is_empty(), "29 minutes is allowed");
         assert_eq!(docker.containers(), ["c1"]);
 
+        docker
+            .0
+            .lock()
+            .unwrap()
+            .stderr
+            .insert("c1".to_owned(), "worker: round 11 of 12\n".to_owned());
         runner.step(T0 + 31 * 60);
         assert!(docker.calls().contains(&"kill c1".to_owned()));
         assert_eq!(hq.told(), [(5, false)]);
+        let (_, ending) = &hq.endings()[0];
+        assert_eq!(ending["code"], 137);
+        assert_eq!(
+            ending["why"], "killed after thirty minutes: worker: round 11 of 12",
+            "HQ hears it was the runner, and what the worker was at"
+        );
         assert!(docker.containers().is_empty(), "and removed");
     }
 

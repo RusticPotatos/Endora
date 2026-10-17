@@ -1112,7 +1112,7 @@ mod tests {
             "/v1/team/usage",
             Some(TOKEN),
             &json!({ "run": turn.run.0, "micros": 10, "input": 100,
-                     "cache_read": 9_000, "cache_write": 900 })
+                     "cache_read": 9_000, "cache_write": 900, "output": 250 })
             .to_string(),
         );
         let ok = json_of(app.clone().oneshot(cached).await.unwrap()).await;
@@ -1122,10 +1122,11 @@ mod tests {
             (
                 kept.input_tokens,
                 kept.cache_read_tokens,
-                kept.cache_write_tokens
+                kept.cache_write_tokens,
+                kept.output_tokens
             ),
-            (100, 9_000, 900),
-            "the turn's record keeps the tokens the relay reported"
+            (100, 9_000, 900, 250),
+            "the turn's record keeps the tokens the relay reported, in and out"
         );
         let over = json_of(app.clone().oneshot(spend(left)).await.unwrap()).await;
         assert_eq!(over["may_go_on"], false, "past its budget, the turn stops");
@@ -1453,6 +1454,106 @@ mod tests {
         assert!(
             st.hq.turn_of(token).unwrap().is_none(),
             "its token is spent"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_runners_reason_for_a_failed_turn_is_kept_on_the_run_and_an_old_report_still_taken()
+    {
+        let st = state(false);
+        let (run, _) = a_turn_starts(&st);
+        let app = app(st.clone());
+        let next = || {
+            call(
+                "POST",
+                "/v1/runner/next",
+                Some(RUNNER),
+                &json!({ "free": 1 }).to_string(),
+            )
+        };
+        let handed = json_of(app.clone().oneshot(next()).await.unwrap()).await;
+        let lease = handed["lease"].as_u64().unwrap();
+        let end = |body: serde_json::Value| {
+            call(
+                "POST",
+                &format!("/v1/runner/{}/ended", run.0),
+                Some(RUNNER),
+                &body.to_string(),
+            )
+        };
+        // The worker exited 3: HQ or the relay had ended the turn under it.
+        let over = app
+            .clone()
+            .oneshot(end(json!({
+                "succeeded": false, "lease": lease, "code": 3,
+                "why": "exit 3: worker: the turn is over: HQ answered 401"
+            })))
+            .await
+            .unwrap();
+        assert_eq!(over.status(), StatusCode::NO_CONTENT);
+        assert_eq!(st.hq.tick().unwrap().retrying, 1);
+        let kept = st.hq.store().run(run).unwrap().unwrap();
+        assert_eq!(kept.status, RunStatus::RetryWaiting);
+        assert_eq!(
+            kept.end_reason,
+            "the turn was over: exit 3: worker: the turn is over: HQ answered 401"
+        );
+        let said = st
+            .hq
+            .store()
+            .events_after(0)
+            .unwrap()
+            .into_iter()
+            .rfind(|e| e.kind == "run.ended")
+            .unwrap();
+        assert_eq!(
+            said.data["why"], kept.end_reason,
+            "the activity says it too"
+        );
+
+        // The retry waits a minute, which the system clock cannot skip: it is made due by hand.
+        let due_now = || {
+            let mut waiting = st.hq.store().run(run).unwrap().unwrap();
+            waiting.retry_at = Some(0);
+            st.hq.store().save_run(&waiting).unwrap();
+            st.hq.tick().unwrap();
+        };
+        // The second attempt's worker failed, and the runner that took it is an older one,
+        // saying only that it did not succeed.
+        due_now();
+        let again = json_of(app.clone().oneshot(next()).await.unwrap()).await;
+        let lease = again["lease"].as_u64().unwrap();
+        let old = app
+            .clone()
+            .oneshot(end(json!({ "succeeded": false, "lease": lease })))
+            .await
+            .unwrap();
+        assert_eq!(
+            old.status(),
+            StatusCode::NO_CONTENT,
+            "a report without code or why"
+        );
+        st.hq.tick().unwrap();
+        let kept = st.hq.store().run(run).unwrap().unwrap();
+        assert_eq!(kept.end_reason, "the turn failed", "as before");
+
+        // The third attempt's worker failed and said why.
+        due_now();
+        let third = json_of(app.clone().oneshot(next()).await.unwrap()).await;
+        let lease = third["lease"].as_u64().unwrap();
+        let failed = app
+            .oneshot(end(json!({
+                "succeeded": false, "lease": lease, "code": 1,
+                "why": "exit 1: worker: the model answered 500"
+            })))
+            .await
+            .unwrap();
+        assert_eq!(failed.status(), StatusCode::NO_CONTENT);
+        st.hq.tick().unwrap();
+        let kept = st.hq.store().run(run).unwrap().unwrap();
+        assert_eq!(
+            kept.end_reason,
+            "the turn failed: exit 1: worker: the model answered 500"
         );
     }
 

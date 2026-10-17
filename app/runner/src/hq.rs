@@ -32,6 +32,18 @@ impl std::fmt::Display for HqError {
     }
 }
 
+/// How a turn ended, as the runner reports it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Ending {
+    /// Whether the worker took its turn (exit 0).
+    pub succeeded: bool,
+    /// The worker's exit code; `None` for a container gone before it was seen to end.
+    pub code: Option<i64>,
+    /// Why, in words: what the exit code means and the worker's last words on stderr, with
+    /// anything token-shaped taken out.
+    pub why: String,
+}
+
 /// The path of the node's team gateway (ADR 0110), which passes `/runner/...` on to HQ's
 /// `/v1/runner/...`: how a runner on another host, such as the Pi, reaches HQ, which is not
 /// published.
@@ -174,14 +186,21 @@ impl Hq {
         }
     }
 
-    /// Tells HQ how a run ended, quoting the lease it was handed out with. HQ refuses (409) a
-    /// report from an attempt that is no longer the run's current one.
+    /// Tells HQ how a run ended, quoting the lease it was handed out with: whether it
+    /// succeeded, the worker's exit code (`None` for a container that was never seen to end)
+    /// and why, in words HQ keeps on the run's record. HQ refuses (409) a report from an
+    /// attempt that is no longer the run's current one.
     ///
     /// # Errors
     /// [`HqError`] if HQ was not heard, or did not take it.
-    pub fn ended(&self, run: u64, lease: u64, succeeded: bool) -> Result<(), HqError> {
+    pub fn ended(&self, run: u64, lease: u64, ending: &Ending) -> Result<(), HqError> {
         let route = self.route(&format!("/{run}/ended"));
-        let body = json!({ "succeeded": succeeded, "lease": lease });
+        let body = json!({
+            "succeeded": ending.succeeded,
+            "lease": lease,
+            "code": ending.code,
+            "why": ending.why,
+        });
         let answer = self.call("POST", &route, Some(&body))?;
         if !(200..300).contains(&answer.status) {
             return Err(HqError::Answered(answer.status));
