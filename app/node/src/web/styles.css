@@ -362,8 +362,9 @@
   .hq .hq-btn.stop[aria-pressed="true"] { background: var(--hq-red); color: #fff; }
   .hq .hq-btn.ok { border-color: var(--hq-green); color: var(--hq-green); }
   .hq .hq-btn.no { border-color: var(--hq-red); color: var(--hq-red); }
-  .hq-main { display: grid; grid-template-columns: minmax(0, 1fr) 360px; gap: 14px; align-items: start; }
-  @media (max-width: 1000px) { .hq-main { grid-template-columns: minmax(0, 1fr); } }
+  /* The office takes the whole width on every screen; the cards flow underneath it, in as
+     many columns as fit (one on a phone, two or three on a big screen). */
+  .hq-main { display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; align-items: start; }
   .hq-stage, .hq-card { background: var(--hq-panel); border: 1px solid var(--hq-line); border-radius: 6px; min-width: 0; }
   .hq-stage { padding: 8px; }
   .hq-card { padding: 12px 14px; }
@@ -371,7 +372,7 @@
   .hq-stats { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
   .hq-stat { border: 1px solid var(--hq-line); border-radius: 4px; padding: 4px 9px; font-size: 12px; color: var(--hq-muted); font-variant-numeric: tabular-nums; }
   .hq-stat b { color: var(--hq-fg); font-weight: 600; }
-  .hq-side { display: grid; gap: 12px; min-width: 0; }
+  .hq-side { display: grid; gap: 12px; min-width: 0; grid-template-columns: repeat(auto-fill, minmax(min(100%, 340px), 1fr)); align-items: start; }
   .hq-card h2, .hq-card summary {
     font: 400 12px var(--hq-pixel); letter-spacing: .04em; margin: 0 0 8px; color: var(--hq-muted);
     display: flex; justify-content: space-between; gap: 8px;
