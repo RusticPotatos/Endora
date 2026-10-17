@@ -9,6 +9,13 @@ tagged release.
 
 ### Added
 
+- **The workbench (ring 1)**: a Dockerfile stage `workbench` (`endora-workbench:latest`, built
+  with `--target workbench`, never the node's image), a disposable sandbox with bash, git,
+  curl, python3 and a few tools, run as an unprivileged user with `/work` as its writable home;
+  its entrypoint trusts the team CA through a bundle built in `/work`. There the worker offers
+  the model a `shell` tool (only under `ENDORA_WORKBENCH=1`): `bash -lc` in `/work`, 60 s
+  unless told and at most 300, output kept to 16 KB head and tail, the exit code said, each
+  call listed in the turn's line, and the instructions say what the sandbox is.
 - **A brain per member, and what a cloud turn may read** ([ADR 0109](docs/adr/0109-a-brain-per-member.md),
   owner's decisions of 2026-10-17). Each member of HQ's team has a brain, local by default or a
   Claude its role may use (Sonnet or Haiku for the lead, developer and reviewer; Haiku for the

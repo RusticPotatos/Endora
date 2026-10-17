@@ -659,6 +659,37 @@ in `domains/capabilities/src/bridge.rs`, in this order:
   something about this house that the team will need again, note it with note_lesson so nobody
   asks twice."
 
+### The workbench (ring 1, owner's decision of 2026-10-17, ADR 0110)
+
+The first of the team's rings: a disposable **sandbox** on the Pi, one container a turn, where a
+member has a real shell. Contracts stay the only way to act on the home lab (ring 3); the
+workbench is for reading the internet, cloning, trying and checking.
+
+- **The image**: the Dockerfile's `workbench` stage, tagged `endora-workbench:latest`
+  (`docker buildx build --platform linux/arm64 --target workbench -t endora-workbench:latest --load .`),
+  never the node's image. Debian slim with bash, git, curl, ca-certificates, python3, jq,
+  dnsutils, ping, procps and less, and `endora-worker`. It runs as the unprivileged
+  `workbench` user (uid 10001) with a read-only root; `/work` is its home and workspace, a
+  tmpfs the runner mounts owned by that user (`uid=10001,gid=10001`).
+- **Trust**: `scripts/workbench-entry.sh` builds a bundle of the system's certificates and the
+  team CA (mounted read-only at `/etc/endora/team-ca.pem`) in `/work`, points `SSL_CERT_FILE`,
+  `CURL_CA_BUNDLE`, `GIT_SSL_CAINFO` and `REQUESTS_CA_BUNDLE` at it, sets both spellings of
+  the proxy variables, and runs the worker. The runner must keep that entrypoint (give the
+  worker as the command), or the sandbox trusts no intercepted site.
+- **The `shell` tool**: offered only when `ENDORA_WORKBENCH=1` (the image sets it).
+  `{ "command", "why", "seconds"? }` runs `bash -lc` in `/work`, for 60 s unless told, at most
+  300, with its whole process group killed when out of time; stdout and stderr together, kept
+  to 16 KB (the first and last 8 KB, with how much was cut between), and the exit code said.
+  It is not a contract and goes to neither HQ nor the node: it runs in the sandbox, whose
+  only way out is the egress proxy. The command's environment has no `ENDORA_RUN_TOKEN`, and
+  the token is replaced wherever it appears in the output (the proxy's address carries it).
+  A call without `why` is refused. Each call is in the turn's line, the command on one line and
+  cut to 60 characters: "ran `git clone …` (exit 128)", never as a read.
+- **The instructions** gain a paragraph: a real shell in a disposable sandbox; the internet
+  readable through Endora's proxy; sending anywhere but known services blocked; keys never in
+  the sandbox, added by the proxy for known services; `/work` gone when the turn ends, so
+  durable findings go in the task's thread (or with `note_lesson`, for a member who has it).
+
 ## 16. Later, and not at all
 
 - **Later:** skills and adapter plugins, including adapters to other systems; more teams; a

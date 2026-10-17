@@ -878,6 +878,143 @@ fn without_a_token_there_is_no_turn() {
     assert!(to_hq.lock().unwrap().is_empty());
 }
 
+/// The worker's environment in the workbench (ring 1): the usual one, with its shell running
+/// in `dir` instead of the sandbox's `/work`.
+fn in_the_workbench(hq: &str, model: &str, dir: &std::path::Path) -> Vec<(&'static str, String)> {
+    let mut env = usual(hq, model);
+    env.push(("ENDORA_WORKBENCH", "1".to_owned()));
+    env.push(("ENDORA_WORKBENCH_DIR", dir.display().to_string()));
+    env.push(("PATH", std::env::var("PATH").unwrap_or_default()));
+    env
+}
+
+/// The tools offered in the model's first round, by name.
+fn offered(to_model: &Seen) -> Vec<String> {
+    to_model.lock().unwrap()[0].body["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|t| t["function"]["name"].as_str().map(str::to_owned))
+        .collect()
+}
+
+#[test]
+fn the_shell_is_offered_only_in_the_workbench() {
+    let (hq_url, _) = hq(None);
+    let (model_url, to_model) = model(vec![(200, says("Done."))]);
+    let out = worker(&usual(&hq_url, &model_url));
+    assert_eq!(out.status.code(), Some(0), "{}", said(&out));
+    assert!(!offered(&to_model).contains(&"shell".to_owned()));
+    let system = to_model.lock().unwrap()[0].body["messages"][0]["content"].clone();
+    assert!(system.as_str().unwrap().contains("You cannot run commands"));
+
+    // ENDORA_WORKBENCH set to anything but 1 is not the workbench.
+    let (hq_url, _) = hq(None);
+    let (model_url, to_model) = model(vec![(200, says("Done."))]);
+    let mut env = usual(&hq_url, &model_url);
+    env.push(("ENDORA_WORKBENCH", "yes".to_owned()));
+    let out = worker(&env);
+    assert_eq!(out.status.code(), Some(0), "{}", said(&out));
+    assert!(!offered(&to_model).contains(&"shell".to_owned()));
+
+    let (hq_url, _) = hq(None);
+    let (model_url, to_model) = model(vec![(200, says("Done."))]);
+    let out = worker(&in_the_workbench(
+        &hq_url,
+        &model_url,
+        &std::env::temp_dir(),
+    ));
+    assert_eq!(out.status.code(), Some(0), "{}", said(&out));
+    assert_eq!(offered(&to_model).last().map(String::as_str), Some("shell"));
+    let first = to_model.lock().unwrap()[0].body.clone();
+    let shell = &first["tools"].as_array().unwrap().last().unwrap()["function"];
+    assert_eq!(
+        shell["parameters"]["required"],
+        json!(["command", "why"]),
+        "{shell}"
+    );
+    let system = first["messages"][0]["content"].as_str().unwrap().to_owned();
+    assert!(!system.contains("You cannot run commands"), "{system}");
+    assert!(
+        system.contains("You have a real shell in a disposable sandbox"),
+        "{system}"
+    );
+    assert!(
+        system.contains("Anything you leave in /work is gone when the turn ends"),
+        "{system}"
+    );
+    assert!(
+        !system.contains("note_lesson"),
+        "a member without note_lesson is not told to use it: {system}"
+    );
+}
+
+#[test]
+fn a_shell_call_runs_in_the_sandbox_and_the_turn_says_what_it_ran() {
+    let dir = std::env::temp_dir().join(format!("endora-workbench-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let dir = dir.canonicalize().unwrap();
+    let (hq_url, to_hq) = hq(None);
+    let long = format!("echo {}", "a".repeat(80));
+    let (model_url, to_model) = model(vec![
+        (
+            200,
+            calls(&[
+                (
+                    "call_1",
+                    "shell",
+                    r#"{"command": "pwd -P; echo oops >&2; exit 2", "why": "to look"}"#,
+                ),
+                ("call_2", "shell", r#"{"command": "true"}"#),
+            ]),
+        ),
+        (
+            200,
+            calls(&[(
+                "call_3",
+                "shell",
+                &json!({ "command": long, "why": "to look", "seconds": 5 }).to_string(),
+            )]),
+        ),
+        (200, says("I looked around the sandbox.")),
+    ]);
+    let out = worker(&in_the_workbench(&hq_url, &model_url, &dir));
+    assert_eq!(out.status.code(), Some(0), "{}", said(&out));
+
+    let to_model = to_model.lock().unwrap().clone();
+    let then = &to_model[1].body["messages"];
+    assert_eq!(
+        then[3],
+        json!({ "role": "tool", "tool_call_id": "call_1",
+                "content": format!("exit 2\n{}\noops\n", dir.display()) })
+    );
+    assert_eq!(
+        then[4]["content"], "Refused: say why you run it, in `why`",
+        "a command without its reason is not run"
+    );
+    let then = &to_model[2].body["messages"];
+    assert_eq!(then[6]["content"], format!("exit 0\n{}\n", "a".repeat(80)));
+
+    let to_hq = to_hq.lock().unwrap().clone();
+    assert!(
+        to_hq.iter().all(|s| s.body["params"]["name"] != "shell"),
+        "the shell never goes to HQ"
+    );
+    let last = to_hq
+        .iter()
+        .rfind(|s| s.method() == "tools/call post")
+        .map(|s| s.body["params"]["arguments"]["text"].clone());
+    assert_eq!(
+        last,
+        Some(json!(format!(
+            "I looked around the sandbox.\n\nThis turn did: ran `pwd -P; echo oops >&2; exit 2` \
+             (exit 2); tried to run `true`, refused; ran `echo {}…`.",
+            "a".repeat(55)
+        )))
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// A model's answer in Anthropic's Messages form: `text`, then each call a `tool_use` block.
 fn claude(text: &str, list: &[(&str, &str, Value)]) -> Value {
     let mut content = Vec::new();
