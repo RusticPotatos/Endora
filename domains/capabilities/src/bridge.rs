@@ -103,6 +103,11 @@ pub const NEVER_BRIDGED: [&str; 6] = [
     "location",
 ];
 
+/// The built-in skills that reach any address with arguments the caller chooses. Offered to
+/// the team they would be a way out of its fence: what a turn has read (the home lab's state,
+/// a scrubbed log) could leave in a URL. The team asks the owner instead.
+pub const OUT_OF_THE_FENCE: [&str; 2] = ["web_fetch", "web_search"];
+
 /// Words that keep a tool server's tool off the bridge whatever its stance: a tool about the
 /// owner's mail, chat, brain or memory, about Endora itself or the team, or about money. A
 /// tool server can be named anything, so this fails safe: a tool kept off by mistake is
@@ -182,6 +187,9 @@ pub fn kept_off(c: &Candidate) -> Option<&'static str> {
     }
     if NEVER_BRIDGED.contains(&c.id.as_str()) {
         return Some("the owner's, never the team's");
+    }
+    if OUT_OF_THE_FENCE.contains(&c.id.as_str()) {
+        return Some("a way out of the team's fence");
     }
     let lower = c.id.to_ascii_lowercase();
     if c.from_a_server && NEVER_WORDS.iter().any(|w| lower.contains(w)) {
@@ -603,6 +611,15 @@ mod tests {
                 kept(&candidate(server, Kind::Read, Stance::Auto)),
                 Some("the owner's, never the team's"),
                 "{server}"
+            );
+        }
+        // Reaching any address with arguments the member chooses would be a way out of the
+        // team's fence: what a turn has read could leave in a URL.
+        for out in ["web_fetch", "web_search"] {
+            assert_eq!(
+                kept(&candidate(out, Kind::Read, Stance::Auto)),
+                Some("a way out of the team's fence"),
+                "{out}"
             );
         }
         let mut settings_only = candidate("terminal-portainer", Kind::Read, Stance::Auto);

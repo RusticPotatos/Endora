@@ -45,7 +45,9 @@ listener, `GET /team-relay/contracts` and `POST /team-relay/contracts/{name}`):
    connection's settings entry and its test); and anything about the team, its money, or the
    owner's chat, brain, memory or mail (`mail`, `own_activity`, `read_page`, `brief`,
    `image_review`, `location`, and a tool server's tool whose name touches mail, chat, brain,
-   memory, Endora, the team or money). A tool not set up is not offered either.
+   memory, Endora, the team or money). Nor is anything that reaches any address with
+   arguments the member chooses (`web_fetch`, `web_search`): what a turn has read could leave
+   in a URL, a way out of the team's fence. A tool not set up is not offered either.
 2. **The tier.** A Confidential result is given only to a turn on a local model. The check
    point is the turn as HQ describes it to the node: HQ says `"cloud": true` for a member that
    thinks on a cloud model, and the node then neither offers nor runs a Confidential tool for
