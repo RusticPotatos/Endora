@@ -321,18 +321,29 @@ function musicShuffle(list) {
 }
 const spotifyId = (uri) => String(uri || "").split(":").pop();
 
+// A list from Spotify, asking for `limit`; told the limit is too many (it lowered some to 10),
+// it asks again for 10.
+async function spotifyList(path, limit) {
+  const join = path.includes("?") ? "&" : "?";
+  try { return await spotify("GET", `${path}${join}limit=${limit}`); }
+  catch (e) {
+    if (limit > 10 && /invalid limit/i.test(e.message)) return spotify("GET", `${path}${join}limit=10`);
+    throw e;
+  }
+}
+
 async function musicDiscover() {
   const avoid = musicRemembered("endora.musicAvoid");
   const played = musicRemembered("endora.musicPlayed");
-  const top = (((await spotify("GET", "/me/top/artists?limit=30&time_range=medium_term")) || {}).items || [])
+  const top = (((await spotifyList("/me/top/artists?time_range=medium_term", 30)) || {}).items || [])
     .filter((a) => a.uri && !avoid.includes(a.uri));
   if (!top.length) throw new Error("Play some music first: Discover starts from the artists you play");
-  const saved = new Set((((await spotify("GET", "/me/albums?limit=50")) || {}).items || []).map((x) => x.album && x.album.uri));
+  const saved = new Set((((await spotifyList("/me/albums", 50)) || {}).items || []).map((x) => x.album && x.album.uri));
   let albums = [];
   let firstError = "";
   for (const artist of musicShuffle(top).slice(0, 6)) {
     try {
-      const got = (((await spotify("GET", `/artists/${encodeURIComponent(spotifyId(artist.uri))}/albums?include_groups=album,single&limit=20`)) || {}).items || []);
+      const got = (((await spotifyList(`/artists/${encodeURIComponent(spotifyId(artist.uri))}/albums?include_groups=album,single`, 10)) || {}).items || []);
       albums.push(...got.filter((a) => a.uri && !saved.has(a.uri)).slice(0, 3));
     } catch (e) { firstError = firstError || e.message; /* one artist's failing leaves the rest */ }
   }
@@ -341,7 +352,7 @@ async function musicDiscover() {
   const batch = [];
   for (const album of albums) {
     try {
-      const tracks = musicShuffle((((await spotify("GET", `/albums/${encodeURIComponent(spotifyId(album.uri))}/tracks?limit=50`)) || {}).items || [])
+      const tracks = musicShuffle((((await spotifyList(`/albums/${encodeURIComponent(spotifyId(album.uri))}/tracks`, 50)) || {}).items || [])
         .filter((t) => t.uri && !seen.has(t.uri)));
       for (const t of tracks.slice(0, 2)) { seen.add(t.uri); batch.push(t.uri); }
     } catch (e) { firstError = firstError || e.message; }
