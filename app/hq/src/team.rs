@@ -176,3 +176,41 @@ pub(crate) async fn usage(
         Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     }
 }
+
+#[derive(serde::Deserialize)]
+pub(crate) struct NoticeTold {
+    /// The turn it is from, if any.
+    #[serde(default)]
+    run: Option<i64>,
+    text: String,
+}
+
+/// For the node's contracts (ADR 0106): something a member did that the owner should know of
+/// but need not decide, such as a container restarted, as a notice on the owner's desk.
+/// Signed by the node; nothing else may tell it.
+pub(crate) async fn notice(
+    Extract(state): Extract<State>,
+    Json(req): Json<NoticeTold>,
+) -> Response {
+    if req.text.trim().is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "a notice says something" })),
+        )
+            .into_response();
+    }
+    let hq = state.hq.clone();
+    let told = tokio::task::spawn_blocking(move || {
+        hq.notice(req.run.map(endora_team::domain::RunId), &req.text)
+    })
+    .await;
+    match told {
+        Ok(Ok(item)) => Json(json!({ "item": item.0 })).into_response(),
+        Ok(Err(e)) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": e.to_string() })),
+        )
+            .into_response(),
+        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    }
+}

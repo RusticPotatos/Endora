@@ -5,7 +5,9 @@
 
 use crate::application::engine::{Author, Done, Engine};
 use crate::application::ports::{Clock, NewTask, TeamStore, WorkerAdapter};
-use crate::domain::{GoalId, Member, Priority, Role, RunId, RunStatus, Task, TaskStatus};
+use crate::domain::{
+    Goal, GoalId, GoalStatus, Member, Priority, Role, RunId, RunStatus, Task, TaskStatus,
+};
 use crate::infrastructure::SimulatedRunner;
 
 /// What the demo team works on, in turn.
@@ -27,18 +29,76 @@ pub fn seed<S: TeamStore, W: WorkerAdapter, C: Clock>(hq: &Engine<S, W, C>) -> D
     hq.hire("Bo", Role::Developer, 40, 2, 4)?;
     hq.hire("Cy", Role::Researcher, 15, 2, 2)?;
     hq.hire("Dee", Role::Reviewer, 20, 2, 1)?;
-    let goal = hq.set_goal(
-        "Keep the home lab healthy",
-        "A demo goal: the team is scripted",
-        Author::Owner,
-    )?;
+    let goal = hq.set_goal("Keep the home lab healthy", DEMO_GOAL, Author::Owner)?;
     hq.set_goal(
         "Make Endora handle most things itself",
-        "A demo proposal, waiting on your desk",
+        DEMO_PROPOSAL,
         Author::Endora,
     )?;
     next_piece_of_work(hq, goal, 0)?;
     Ok(goal)
+}
+
+/// The reason the demo's goal is given, by which HQ knows it again.
+pub const DEMO_GOAL: &str = "A demo goal: the team is scripted";
+/// The reason the demo's proposed goal is given.
+pub const DEMO_PROPOSAL: &str = "A demo proposal, waiting on your desk";
+
+/// The demo's goal, for a team already set up: the active goal the demo gave, or a new one
+/// with its first piece of work when that was retired. Never a goal of the owner's.
+///
+/// # Errors
+/// What the engine refuses, or a store failure.
+pub fn goal<S: TeamStore, W: WorkerAdapter, C: Clock>(hq: &Engine<S, W, C>) -> Done<GoalId> {
+    if hq.store().members()?.is_empty() {
+        return seed(hq);
+    }
+    let found = hq
+        .store()
+        .goals()?
+        .into_iter()
+        .find(|g| g.status == GoalStatus::Active && g.reason == DEMO_GOAL);
+    if let Some(found) = found {
+        return Ok(found.id);
+    }
+    let goal = hq.set_goal("Keep the home lab healthy", DEMO_GOAL, Author::Owner)?;
+    next_piece_of_work(hq, goal, 0)?;
+    Ok(goal)
+}
+
+/// Puts the demo's work away, for HQ started with the demo off: its goals (the one it set and
+/// the one it proposed) are retired, with their open tasks and the turns queued for them, so
+/// none of it becomes a real turn. A notice on the owner's desk says what went. Returns how
+/// many goals it retired: none once they are gone, so starting again changes nothing.
+///
+/// # Errors
+/// What the engine refuses, or a store failure.
+pub fn retire<S: TeamStore, W: WorkerAdapter, C: Clock>(hq: &Engine<S, W, C>) -> Done<usize> {
+    let goals: Vec<Goal> = hq
+        .store()
+        .goals()?
+        .into_iter()
+        .filter(|g| matches!(g.status, GoalStatus::Active | GoalStatus::Proposed))
+        .filter(|g| g.reason == DEMO_GOAL || g.reason == DEMO_PROPOSAL)
+        .collect();
+    if goals.is_empty() {
+        return Ok(0);
+    }
+    let mut tasks = 0;
+    for goal in &goals {
+        tasks += hq.retire_goal(goal.id, "the demo is off")?;
+    }
+    let titles: Vec<String> = goals.iter().map(|g| format!("\"{}\"", g.title)).collect();
+    hq.notice(
+        None,
+        &format!(
+            "The demo is off, so its work was put away: {} dropped, with {tasks} open task{}. \
+             None of it becomes a real turn. Set the team a goal of your own to start it.",
+            titles.join(" and "),
+            if tasks == 1 { "" } else { "s" },
+        ),
+    )?;
+    Ok(goals.len())
 }
 
 /// How many items may wait on the owner's desk before the demo team is handed no more work:
@@ -280,6 +340,64 @@ mod tests {
             desk.iter().all(|d| d.kind != "stuck"),
             "the demo never gets stuck: {desk:?}"
         );
+    }
+
+    #[test]
+    fn with_the_demo_off_its_work_is_put_away_once_and_the_owners_is_left_alone() {
+        let clock = Ticking(AtomicI64::new(1_792_166_400_000));
+        let hq = Engine::new(
+            SqliteTeamStore::in_memory().unwrap(),
+            SimulatedRunner::new(4),
+            &clock,
+            Settings::default(),
+        );
+        let demo = seed(&hq).unwrap();
+        for _ in 0..3 {
+            hq.tick().unwrap();
+            act(&hq, hq.runner(), demo).unwrap();
+        }
+        let owners = hq
+            .set_goal("Keep the home lab healthy", "", Author::Owner)
+            .unwrap();
+        assert_eq!(retire(&hq).unwrap(), 2, "the demo's goal and its proposal");
+        let goals = hq.store().goals().unwrap();
+        for g in goals.iter().filter(|g| g.id != owners) {
+            assert_eq!(g.status, GoalStatus::Dropped, "{}", g.title);
+        }
+        assert_eq!(
+            goals.iter().find(|g| g.id == owners).unwrap().status,
+            GoalStatus::Active
+        );
+        assert!(
+            hq.store()
+                .tasks()
+                .unwrap()
+                .iter()
+                .all(|t| t.status.finished()),
+            "no open demo work"
+        );
+        let notices: Vec<_> = hq
+            .store()
+            .desk()
+            .unwrap()
+            .into_iter()
+            .filter(|d| d.kind == "notice")
+            .collect();
+        assert_eq!(notices.len(), 1);
+        assert!(
+            notices[0].text.contains("\"Keep the home lab healthy\""),
+            "{}",
+            notices[0].text
+        );
+        // No demo turn starts after, and starting again changes nothing.
+        let before = hq.runner().started().len();
+        hq.tick().unwrap();
+        hq.tick().unwrap();
+        assert_eq!(hq.runner().started().len(), before);
+        assert_eq!(retire(&hq).unwrap(), 0);
+        // Turned on again, the demo works on a goal of its own, never the owner's.
+        let again = goal(&hq).unwrap();
+        assert_ne!(again, owners);
     }
 
     #[test]

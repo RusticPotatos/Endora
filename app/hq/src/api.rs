@@ -17,8 +17,8 @@ use serde::Deserialize;
 use serde_json::json;
 
 use endora_team::application::engine::{Author, EngineError};
-use endora_team::application::ports::{Clock, NewTask, TeamStore};
-use endora_team::domain::{DeskId, GoalId, GoalStatus, MemberId, Priority, Refusal};
+use endora_team::application::ports::{Clock, NewTask};
+use endora_team::domain::{DeskId, GoalId, MemberId, Priority, Refusal};
 use endora_team::infrastructure::demo;
 
 use crate::Hq;
@@ -49,20 +49,13 @@ pub struct State {
     pub tick_seconds: u64,
 }
 
-/// The demo's goal: set up the demo team the first time, and find its goal after.
+/// The demo's goal: set up the demo team the first time, and find its goal after (or give
+/// it a new one, if the demo's was put away while the demo was off).
 ///
 /// # Errors
 /// What the engine refuses, or a store failure.
 pub fn demo_goal(hq: &Hq) -> Result<GoalId, EngineError> {
-    if hq.store().members()?.is_empty() {
-        return demo::seed(hq);
-    }
-    Ok(hq
-        .store()
-        .goals()?
-        .into_iter()
-        .find(|g| g.status == GoalStatus::Active)
-        .map_or(GoalId(1), |g| g.id))
+    demo::goal(hq)
 }
 
 /// HQ's routes.
@@ -78,6 +71,8 @@ pub fn app(state: State) -> Router {
         // The node's model relay: whose a turn's token is, and what each call cost.
         .route("/v1/team/turn", post(crate::team::turn))
         .route("/v1/team/usage", post(crate::team::usage))
+        // The node's contracts: a safe fix a member made, told to the owner (ADR 0106).
+        .route("/v1/team/notice", post(crate::team::notice))
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             signed_by_the_node,
@@ -306,6 +301,7 @@ mod tests {
     use axum::body::Body;
     use axum::http::Request as HttpRequest;
     use endora_team::application::engine::Settings;
+    use endora_team::application::ports::TeamStore as _;
     use endora_team::domain::{Role, RunId, RunStatus, TaskId};
     use endora_team::infrastructure::{RemoteRunner, Runner, SimulatedRunner, SqliteTeamStore};
     use http_body_util::BodyExt as _;
@@ -736,6 +732,60 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(gone.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn the_node_tells_the_owner_of_a_contracts_fix_as_a_notice_on_the_desk() {
+        let st = state(true);
+        st.hq.tick().unwrap();
+        let turn = scripted(&st).started()[0].clone();
+        let app = app(st.clone());
+        let body = json!({ "run": turn.run.0, "text": "Ada restarted sonarr: it was unhealthy. It is now running." })
+            .to_string();
+        let res = app
+            .clone()
+            .oneshot(call("POST", "/v1/team/notice", Some(&turn.token), &body))
+            .await
+            .unwrap();
+        assert_eq!(
+            res.status(),
+            StatusCode::UNAUTHORIZED,
+            "only the node tells"
+        );
+        let told = json_of(
+            app.clone()
+                .oneshot(call("POST", "/v1/team/notice", Some(TOKEN), &body))
+                .await
+                .unwrap(),
+        )
+        .await;
+        let item = told["item"].as_i64().unwrap();
+        let snap = json_of(
+            app.clone()
+                .oneshot(call("GET", "/v1/snapshot", Some(TOKEN), ""))
+                .await
+                .unwrap(),
+        )
+        .await;
+        let shown = snap["desk"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|d| d["id"] == item)
+            .cloned()
+            .unwrap();
+        assert_eq!(shown["kind"], "notice", "{shown}");
+        assert!(shown["text"].as_str().unwrap().contains("restarted sonarr"));
+        let seen = app
+            .oneshot(call(
+                "POST",
+                &format!("/v1/desk/{item}"),
+                Some(TOKEN),
+                r#"{"decision":"seen"}"#,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(seen.status(), StatusCode::OK);
     }
 
     /// The runner's three routes, each with a body it might send.

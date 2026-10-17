@@ -902,3 +902,106 @@ fn the_snapshot_counts_what_the_office_shows_and_old_events_can_go() {
         "the newest three stay"
     );
 }
+
+#[test]
+fn a_notice_lands_on_the_desk_from_the_turns_member_and_is_only_seen_or_dismissed() {
+    let clock = hands();
+    let hq = hq(&clock, 4);
+    let t = team(&hq);
+    let task = task_for(&hq, t.goal, Some(t.dev), "Keep sonarr up");
+    hq.tick().unwrap();
+    let run = hq.store().runs().unwrap().pop().unwrap();
+    assert_eq!(run.status, RunStatus::Running);
+    let item = hq
+        .notice(
+            Some(run.id),
+            "Linus restarted sonarr: it was unhealthy. It is now running.",
+        )
+        .unwrap();
+    let found = hq.store().desk().unwrap().pop().unwrap();
+    assert_eq!(found.id, item);
+    assert_eq!(
+        (
+            found.kind.as_str(),
+            found.member,
+            found.task,
+            found.status.as_str()
+        ),
+        ("notice", Some(t.dev), Some(task), "waiting")
+    );
+    assert_eq!(
+        hq.decide(item, "approve"),
+        Err(EngineError::Unknown("decision for this item"))
+    );
+    hq.decide(item, "seen").unwrap();
+    // A notice from no turn, and a dismissal.
+    let other = hq.notice(None, "The demo is off.").unwrap();
+    hq.decide(other, "dismiss").unwrap();
+    assert!(kinds(&hq).iter().any(|k| k == "desk.added"));
+    assert!(
+        hq.wakes()
+            .unwrap()
+            .iter()
+            .all(|w| w.reason != WakeReason::ProposalDecided),
+        "seeing a notice wakes nobody"
+    );
+}
+
+#[test]
+fn a_retired_goal_drops_its_open_work_and_no_turn_of_it_starts() {
+    let clock = hands();
+    let hq = hq(&clock, 1);
+    let t = team(&hq);
+    let other = hq
+        .set_goal("Keep the home lab healthy", "", Author::Owner)
+        .unwrap();
+    let running = task_for(&hq, t.goal, Some(t.dev), "Add a list of watches");
+    hq.tick().unwrap();
+    let queued = task_for(&hq, t.goal, Some(t.lead), "Plan the next part");
+    let kept = task_for(&hq, other, None, "Check the home lab");
+    hq.set_goal("Make it faster", "a proposal", Author::Endora)
+        .unwrap();
+    let live = |task: TaskId| {
+        hq.store()
+            .runs()
+            .unwrap()
+            .into_iter()
+            .filter(|r| r.task == Some(task) && r.status.live())
+            .count()
+    };
+    assert_eq!((live(running), live(queued)), (1, 1));
+
+    let retired = hq.retire_goal(t.goal, "the demo is off").unwrap();
+    assert_eq!(retired, 2, "two open tasks");
+    assert_eq!(
+        hq.store().goal(t.goal).unwrap().unwrap().status,
+        crate::domain::GoalStatus::Dropped
+    );
+    for task in [running, queued] {
+        assert_eq!(
+            hq.store().task(task).unwrap().unwrap().status,
+            TaskStatus::Dropped
+        );
+        assert_eq!(live(task), 0, "its turns end");
+    }
+    assert!(!hq.runner().started().is_empty());
+    hq.tick().unwrap();
+    hq.tick().unwrap();
+    assert_eq!(live(running) + live(queued), 0, "and none starts after");
+    assert_eq!(
+        hq.store().task(kept).unwrap().unwrap().status,
+        TaskStatus::Todo,
+        "another goal's work is left alone"
+    );
+    // A proposed goal is retired off the desk too.
+    let proposed = hq.store().goals().unwrap().pop().unwrap();
+    assert_eq!(hq.retire_goal(proposed.id, "the demo is off").unwrap(), 0);
+    assert!(
+        hq.store()
+            .desk()
+            .unwrap()
+            .iter()
+            .all(|d| d.kind != "goal" || d.status != "waiting"),
+        "its proposal no longer waits"
+    );
+}

@@ -144,6 +144,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     } else {
         None
     };
+    // With the demo off, nothing it left behind becomes a real turn: its goals and their open
+    // tasks are put away, and a notice on the owner's desk says so.
+    if !demo_mode {
+        match demo::retire(&hq) {
+            Ok(0) => {}
+            Ok(n) => println!("hq: the demo is off: put away its {n} goals and their open work"),
+            Err(e) => eprintln!("hq: could not put the demo's work away: {e}"),
+        }
+    }
 
     // The tick: every `tick_every` seconds; a late one runs once.
     let ticking = hq.clone();

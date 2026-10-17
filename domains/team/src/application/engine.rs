@@ -1162,6 +1162,16 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         queued.sort_by_key(|r| (priority(r), r.queued_at, r.id));
         let mut started = 0;
         for mut run in queued {
+            // A turn queued for work that has since finished (dropped, or done) is ended, not
+            // started: nothing is left for it to do.
+            let over = run
+                .task
+                .and_then(|t| tasks.iter().find(|task| task.id == t))
+                .is_some_and(|t| t.status.finished());
+            if over {
+                self.end(run, RunStatus::Stopped, "its task is over")?;
+                continue;
+            }
             let running: Vec<Run> = self
                 .store
                 .runs()?
@@ -1369,7 +1379,8 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             }
             ("ready_to_merge", "merged" | "not_now")
             | ("ready_to_read", "read" | "not_now")
-            | ("question", "dismiss") => {}
+            | ("question", "dismiss")
+            | ("notice", "seen" | "dismiss") => {}
             _ => return Err(EngineError::Unknown("decision for this item")),
         }
         self.store.set_desk_status(item, decision)?;
@@ -1378,6 +1389,95 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             json!({ "item": item.0, "kind": found.kind, "decision": decision }),
         )?;
         Ok(())
+    }
+
+    /// Tells the owner something done that needs no decision: a notice on the desk, only seen
+    /// or dismissed. From a turn (`run`), it is from that turn's member and about its task:
+    /// how Endora reports a safe fix a member made through a contract (ADR 0106).
+    ///
+    /// # Errors
+    /// A store failure.
+    pub fn notice(&self, run: Option<RunId>, text: &str) -> Done<crate::domain::DeskId> {
+        let _held = self.held();
+        let run = match run {
+            Some(id) => self.store.run(id)?,
+            None => None,
+        };
+        let text: String = text.trim().chars().take(600).collect();
+        let task = run.as_ref().and_then(|r| r.task);
+        let desk = self.store.add_desk(
+            "notice",
+            task,
+            None,
+            run.as_ref().map(|r| r.member),
+            &text,
+            self.clock.now(),
+        )?;
+        self.emit(
+            EventKind::DeskAdded,
+            json!({ "item": desk.0, "kind": "notice", "task": task.map(|t| t.0) }),
+        )?;
+        Ok(desk)
+    }
+
+    /// Retires a goal: it is dropped, and so is every task under it not yet finished; their
+    /// turns end, queued or running, and what waits on the desk about them is put away, so
+    /// none of it becomes a turn again. Returns how many tasks it dropped. How HQ puts away the
+    /// demo's work when it starts with the demo off.
+    ///
+    /// # Errors
+    /// [`EngineError::Unknown`] for a goal that does not exist; a store failure.
+    pub fn retire_goal(&self, goal: GoalId, why: &str) -> Done<usize> {
+        let _held = self.held();
+        let found = self.store.goal(goal)?.ok_or(EngineError::Unknown("goal"))?;
+        self.store.set_goal_status(goal, GoalStatus::Dropped)?;
+        self.emit(
+            EventKind::GoalChanged,
+            json!({ "goal": goal.0, "title": found.title, "status": GoalStatus::Dropped.name() }),
+        )?;
+        let open: Vec<Task> = self
+            .store
+            .tasks()?
+            .into_iter()
+            .filter(|t| t.goal == goal && !t.status.finished())
+            .collect();
+        for task in &open {
+            self.store.set_task_status(task.id, TaskStatus::Dropped)?;
+            self.emit(
+                EventKind::TaskChanged,
+                json!({ "task": task.id.0, "goal": goal.0, "owner": task.owner.map(|o| o.0),
+                        "status": TaskStatus::Dropped.name(), "priority": task.priority.name() }),
+            )?;
+        }
+        let ids: Vec<TaskId> = open.iter().map(|t| t.id).collect();
+        for run in self.store.runs()? {
+            if !run.status.live() || !run.task.is_some_and(|t| ids.contains(&t)) {
+                continue;
+            }
+            if run.status == RunStatus::Running {
+                self.runner.stop(run.id, self.settings.grace);
+            }
+            self.end(run, RunStatus::Stopped, why)?;
+        }
+        for item in self.store.desk()? {
+            let about = item.goal == Some(goal) || item.task.is_some_and(|t| ids.contains(&t));
+            if item.status != "waiting" || !about {
+                continue;
+            }
+            // Put away with the word the owner would have used to let it go.
+            let decision = match item.kind.as_str() {
+                "goal" => "decline",
+                "stuck" => "drop",
+                "ready_to_merge" | "ready_to_read" => "not_now",
+                _ => "dismiss",
+            };
+            self.store.set_desk_status(item.id, decision)?;
+            self.emit(
+                EventKind::DeskDecided,
+                json!({ "item": item.id.0, "kind": item.kind, "decision": decision }),
+            )?;
+        }
+        Ok(open.len())
     }
 
     // ---- what the office shows ------------------------------------------------------------
