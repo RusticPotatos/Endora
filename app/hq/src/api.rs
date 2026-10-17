@@ -1112,7 +1112,7 @@ mod tests {
             "/v1/team/usage",
             Some(TOKEN),
             &json!({ "run": turn.run.0, "micros": 10, "input": 100,
-                     "cache_read": 9_000, "cache_write": 900 })
+                     "cache_read": 9_000, "cache_write": 900, "output": 250 })
             .to_string(),
         );
         let ok = json_of(app.clone().oneshot(cached).await.unwrap()).await;
@@ -1122,10 +1122,11 @@ mod tests {
             (
                 kept.input_tokens,
                 kept.cache_read_tokens,
-                kept.cache_write_tokens
+                kept.cache_write_tokens,
+                kept.output_tokens
             ),
-            (100, 9_000, 900),
-            "the turn's record keeps the tokens the relay reported"
+            (100, 9_000, 900, 250),
+            "the turn's record keeps the tokens the relay reported, in and out"
         );
         let over = json_of(app.clone().oneshot(spend(left)).await.unwrap()).await;
         assert_eq!(over["may_go_on"], false, "past its budget, the turn stops");
