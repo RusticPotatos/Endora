@@ -126,6 +126,10 @@ pub struct AppState {
     /// The turns with a call to Anthropic in flight through HQ's model relay: a turn's calls
     /// go one at a time, so each is capped by what is left once the one before was charged.
     pub(crate) relay_calls: Arc<relay::TurnCalls>,
+    /// How the home lab is built (ADR 0112): the lab's ansible-nas docs, the owner's retired
+    /// list, and the map the team reads, kept a minute. From the environment
+    /// (`ENDORA_ANSIBLE_NAS_REPO`, `ENDORA_ANSIBLE_NAS_REF`, `ENDORA_LAB_RETIRED`).
+    pub(crate) lab: Arc<contracts::LabKnowledge>,
     /// The agenda loop's items, restarts and taught rules (ADR 0103).
     pub agenda: Arc<endora_agenda::infrastructure::SqliteAgendaStore>,
     /// Why the last nightly copy failed, until one succeeds: what the agenda tells.
@@ -305,6 +309,7 @@ impl AppState {
             relay_upstream: Arc::new(endora_infrastructure::relay::ANTHROPIC.to_owned()),
             // Read as `main` reads them, with its defaults.
             relay_calls: Arc::default(),
+            lab: Arc::new(contracts::LabKnowledge::from_env()),
             installed_model: Arc::new((
                 std::env::var("ENDORA_MODEL_URL")
                     .unwrap_or_else(|_| "http://localhost:11434/v1".to_owned()),

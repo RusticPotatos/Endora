@@ -261,6 +261,7 @@ of an existing record and take the next number.
 | [0109](0109-a-brain-per-member.md) | A brain per member, and what a cloud turn may read | — |
 | [0110](0110-the-teams-rings.md) | The team's rings: a sandbox on the Pi, the team gateway, the egress proxy, and undo | — |
 | [0111](0111-the-ceo-and-the-chain-of-command.md) | The CEO and the chain of command | — |
+| [0112](0112-the-team-knows-how-the-lab-is-built.md) | The team knows how the lab is built | — |
 
 The forty-nine decisions these consolidate are in [archive/](archive/) — kept in full,
 because the reasoning that produced a rule is the reason it survives an argument later.

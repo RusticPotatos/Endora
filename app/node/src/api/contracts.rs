@@ -11,9 +11,13 @@ use super::relay::{Turn, token_of, turn_of};
 use super::*;
 use axum::body::Bytes;
 use axum::http::HeaderMap;
+use endora_capabilities::ansible_nas::{self, Docs};
+use endora_capabilities::application::HomelabObserver as _;
 use endora_capabilities::contracts::{
-    self, CONTAINER_LOGS, Contract, HOMELAB_STATUS, RESTART_CONTAINER, RestartLedger,
+    self, ANSIBLE_NAS_DOC, CONTAINER_LOGS, Contract, HOMELAB_MAP, HOMELAB_STATUS,
+    RESTART_CONTAINER, RestartLedger,
 };
+use endora_capabilities::lab_map;
 
 /// Where the owner's switches are kept, among the node's settings.
 const SWITCHES: &str = "hq-contracts";
@@ -209,6 +213,8 @@ pub(super) async fn call(
     let run = turn.run;
     let done = tokio::task::spawn_blocking(move || match name2.as_str() {
         HOMELAB_STATUS => Ok(homelab_status(&state2)),
+        HOMELAB_MAP => homelab_map(&state2),
+        ANSIBLE_NAS_DOC => ansible_nas_doc(&state2, &args),
         CONTAINER_LOGS => container_logs(&state2, &args),
         RESTART_CONTAINER => restart_container(&state2, &turn, &args),
         _ => Err((
@@ -362,6 +368,150 @@ fn compact(snapshot: &serde_json::Value, now: i64) -> serde_json::Value {
         })
         .collect();
     json!({ "observed_at_ms": observed, "stale": stale, "services": services })
+}
+
+/// How the home lab is built, as the node knows it (ADR 0112): the lab's ansible-nas docs,
+/// the owner's retired list, and the last map, kept [`lab_map::MAP_FOR_MS`].
+pub(crate) struct LabKnowledge {
+    pub(crate) docs: Docs,
+    pub(crate) retired: Vec<(String, String)>,
+    map: std::sync::Mutex<Option<(i64, serde_json::Value)>>,
+}
+
+impl LabKnowledge {
+    /// The docs and the retired list as given.
+    pub(crate) fn new(docs: Docs, retired: Vec<(String, String)>) -> Self {
+        Self {
+            docs,
+            retired,
+            map: std::sync::Mutex::new(None),
+        }
+    }
+
+    /// From the node's environment: `ENDORA_ANSIBLE_NAS_REPO`, `ENDORA_ANSIBLE_NAS_REF` and
+    /// `ENDORA_LAB_RETIRED`.
+    pub(crate) fn from_env() -> Self {
+        let retired = std::env::var("ENDORA_LAB_RETIRED").unwrap_or_default();
+        Self::new(Docs::from_env(), lab_map::retired_of(&retired))
+    }
+}
+
+/// Why Endora's Docker observer could not be used, as the model reads it.
+fn observer(code: &str) -> Refused {
+    if code == "unconfigured" || code == "configuration" {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Endora's Docker observer is not set up, so the home lab's map is not available. Tell the owner if you need it.".to_owned(),
+        );
+    }
+    (
+        StatusCode::BAD_GATEWAY,
+        format!("Docker did not answer ({})", code.replace('_', " ")),
+    )
+}
+
+/// `homelab_map`: how the home lab is built, from Docker's own metadata through the observer's
+/// fixed routes (its list, then each container's inspection), with who manages each container
+/// from the lab's ansible-nas roles. Kept a minute.
+fn homelab_map(state: &AppState) -> Result<Done, Refused> {
+    let now = state.clock.now().unix_millis();
+    let said = "read how the home lab is built".to_owned();
+    let mut kept = state
+        .lab
+        .map
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some((at, map)) = kept.as_ref() {
+        if now - at < lab_map::MAP_FOR_MS {
+            return Ok(Done {
+                text: map.to_string(),
+                said,
+            });
+        }
+    }
+    let reader = endora_capabilities::infrastructure::homelab::Reader::new(state.config.clone());
+    let listed = reader.observe("docker").map_err(observer)?;
+    let mut inspected = 0;
+    let containers: Vec<serde_json::Value> = listed["items"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .take(100)
+        .map(|item| {
+            let name = item["name"].as_str().unwrap_or("");
+            match reader.inspect(name) {
+                Ok(seen) if seen["name"] != "" => {
+                    inspected += 1;
+                    seen
+                }
+                _ => json!({ "name": name, "state": item["state"] }),
+            }
+        })
+        .collect();
+    let roles = state.lab.docs.roles(now);
+    let mut map = lab_map::build(&containers, roles.as_deref(), &state.lab.retired);
+    map["observed_at_ms"] = now.into();
+    map["ansible_nas"] = match (&roles, state.lab.docs.configured()) {
+        (Some(roles), _) => format!("{} roles in the lab's ansible-nas", roles.len()),
+        (None, false) => {
+            "not configured: who manages a container is unknown (ansible_nas_doc says how)"
+                .to_owned()
+        }
+        (None, true) => {
+            "the role list could not be read from GitHub: who manages a container is unknown"
+                .to_owned()
+        }
+    }
+    .into();
+    if inspected == 0 && !containers.is_empty() {
+        map["note"] =
+            "Docker's inspection was not available: no wiring and no restart policies".into();
+    }
+    *kept = Some((now, map.clone()));
+    Ok(Done {
+        text: map.to_string(),
+        said,
+    })
+}
+
+/// `ansible_nas_doc`: one of the lab's ansible-nas docs, or a folder of them, by the
+/// allowlist.
+fn ansible_nas_doc(state: &AppState, args: &serde_json::Value) -> Result<Done, Refused> {
+    let path = match &args["path"] {
+        serde_json::Value::Null => "",
+        serde_json::Value::String(path) => path.as_str(),
+        _ => {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                "the path is a string, e.g. roles/deluge/README.md".to_owned(),
+            ));
+        }
+    };
+    let now = state.clock.now().unix_millis();
+    let shown = one_line(path);
+    let shown = if shown.is_empty() {
+        "the top"
+    } else {
+        shown.as_str()
+    };
+    match state.lab.docs.read(path, now) {
+        Ok(text) => Ok(Done {
+            text,
+            said: format!("read {shown} of the lab's ansible-nas"),
+        }),
+        Err(why) => {
+            let status = if why == ansible_nas::NOT_CONFIGURED {
+                StatusCode::SERVICE_UNAVAILABLE
+            } else if why == ansible_nas::ONLY_THE_DOCS {
+                StatusCode::FORBIDDEN
+            } else if why.starts_with("there is no") || why.contains("is not there") {
+                StatusCode::NOT_FOUND
+            } else {
+                StatusCode::BAD_GATEWAY
+            };
+            Err((status, why))
+        }
+    }
 }
 
 /// Why Portainer could not be used, as the model reads it.
@@ -1070,6 +1220,214 @@ mod tests {
         );
     }
 
+    /// GitHub, faked for the lab's ansible-nas: the role list, and nothing else there.
+    struct Hub;
+    impl ansible_nas::Fetch for Hub {
+        fn get(&self, url: &str) -> Result<(u16, String), &'static str> {
+            if url.contains("/contents/roles?") {
+                let roles: Vec<serde_json::Value> = ["deluge", "gluetun", "nzbget", "prowlarr"]
+                    .iter()
+                    .map(|r| json!({ "name": r, "path": format!("roles/{r}"), "type": "dir" }))
+                    .collect();
+                return Ok((200, serde_json::Value::Array(roles).to_string()));
+            }
+            Ok((404, "{}".to_owned()))
+        }
+    }
+
+    /// Docker, as the observer's origin answers it: gluetun with three in its network,
+    /// Endora's node, and a container nobody knows. Each inspection carries what the map must
+    /// never pass on.
+    fn docker() -> (String, super::super::relay::tests::Seen) {
+        let id = |n: u8| format!("{n:02x}").repeat(32);
+        let lab: Vec<(u8, &str, String)> = vec![
+            (1, "gluetun", "bridge".to_owned()),
+            (2, "deluge", format!("container:{}", id(1))),
+            (3, "nzbget", format!("container:{}", id(1))),
+            (4, "prowlarr", format!("container:{}", id(1))),
+            (5, "endora-node", "endora_default".to_owned()),
+            (6, "mystery", "bridge".to_owned()),
+        ];
+        super::super::relay::tests::fake(Arc::new(move |path, _| {
+            if path == "/containers/json?all=true" {
+                let rows: Vec<serde_json::Value> = lab
+                    .iter()
+                    .map(|(n, name, _)| json!({ "Id": id(*n), "Names": [format!("/{name}")], "State": "running", "Status": "Up 1 minute" }))
+                    .collect();
+                return (
+                    200,
+                    "application/json",
+                    serde_json::Value::Array(rows).to_string(),
+                );
+            }
+            let Some((n, name, network)) = lab
+                .iter()
+                .find(|(_, name, _)| path == format!("/containers/{name}/json"))
+            else {
+                return (404, "application/json", "{}".to_owned());
+            };
+            let seen = json!({
+                "Id": id(*n), "Name": format!("/{name}"),
+                "Config": { "Image": format!("example/{name}:latest@sha256:{}", id(9)),
+                            "Env": ["WIREGUARD_PRIVATE_KEY=fictional-secret"] },
+                "State": { "Status": "running" },
+                "HostConfig": { "NetworkMode": network, "Binds": ["/srv/fictional:/config"],
+                                "RestartPolicy": { "Name": "unless-stopped" } },
+                "Mounts": [{ "Source": "/srv/fictional" }],
+            });
+            (200, "application/json", seen.to_string())
+        }))
+    }
+
+    #[tokio::test]
+    async fn the_map_says_what_runs_in_gluetuns_network_and_who_manages_each_container() {
+        let (mut state, _) = with(lab());
+        let (origin, asked) = docker();
+        state
+            .config
+            .set_setting("homelab-docker", "origin", &origin)
+            .unwrap();
+        state.lab = Arc::new(LabKnowledge::new(
+            Docs::new(
+                ansible_nas::Fork::of("owner/ansible-nas", ""),
+                Box::new(Hub),
+            ),
+            vec![(
+                "mystery".to_owned(),
+                "retired: kept for its settings".to_owned(),
+            )],
+        ));
+        let (status, said) = use_contract(&state, "homelab_map", json!({})).await;
+        assert_eq!(status, StatusCode::OK, "{said}");
+        let text = said["text"].as_str().unwrap();
+        for never in [
+            "fictional-secret",
+            "PRIVATE_KEY",
+            "/srv",
+            "Binds",
+            "Mounts",
+            "sha256",
+        ] {
+            assert!(!text.contains(never), "{never} in {text}");
+        }
+        let map: serde_json::Value = serde_json::from_str(text).unwrap();
+        assert_eq!(
+            map["wiring"],
+            json!(["gluetun → deluge, nzbget, prowlarr (run in its network)"])
+        );
+        let of = |name: &str| {
+            map["containers"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|c| c["name"] == name)
+                .cloned()
+                .unwrap()
+        };
+        assert_eq!(
+            of("deluge"),
+            json!({ "name": "deluge", "state": "running", "managed_by": "ansible-nas role deluge",
+                    "image": "example/deluge:latest", "restart": "unless-stopped",
+                    "depends_on": ["gluetun"], "in_network_of": "gluetun" })
+        );
+        assert_eq!(
+            of("gluetun")["needed_by"],
+            json!(["deluge", "nzbget", "prowlarr"])
+        );
+        assert_eq!(of("endora-node")["managed_by"], "Endora");
+        assert_eq!(of("mystery")["managed_by"], "unknown");
+        assert_eq!(of("mystery")["note"], "retired: kept for its settings");
+        assert_eq!(map["ansible_nas"], "4 roles in the lab's ansible-nas");
+        assert!(
+            audit(&state)
+                .iter()
+                .any(|a| a.ends_with("Linus (run 7) read how the home lab is built"))
+        );
+        // Kept a minute: asked again, Docker is not.
+        let before = asked.lock().unwrap().len();
+        assert_eq!(before, 7, "the list and six inspections");
+        let (status, again) = use_contract(&state, "homelab_map", json!({})).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(again, said);
+        assert_eq!(asked.lock().unwrap().len(), before);
+    }
+
+    #[tokio::test]
+    async fn without_the_observer_or_the_ansible_nas_fork_the_map_and_the_docs_say_so() {
+        let (mut state, _) = with(lab());
+        state.lab = Arc::new(LabKnowledge::new(
+            Docs::new(None, Box::new(Hub)),
+            Vec::new(),
+        ));
+        let (status, said) = use_contract(&state, "homelab_map", json!({})).await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{said}");
+        assert!(
+            said["error"]
+                .as_str()
+                .unwrap()
+                .contains("Docker observer is not set up")
+        );
+        let (status, said) =
+            use_contract(&state, "ansible_nas_doc", json!({ "path": "roles" })).await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{said}");
+        assert_eq!(said["error"], ansible_nas::NOT_CONFIGURED);
+        // The fork set up, the map's managers come from it; with none, they are unknown.
+        let (origin, _) = docker();
+        state
+            .config
+            .set_setting("homelab-docker", "origin", &origin)
+            .unwrap();
+        let (_, said) = use_contract(&state, "homelab_map", json!({})).await;
+        let map: serde_json::Value = serde_json::from_str(said["text"].as_str().unwrap()).unwrap();
+        assert!(
+            map["ansible_nas"]
+                .as_str()
+                .unwrap()
+                .starts_with("not configured")
+        );
+        assert_eq!(
+            map["containers"][0]["managed_by"], "unknown",
+            "deluge, unknown"
+        );
+        state.lab = Arc::new(LabKnowledge::new(
+            Docs::new(
+                ansible_nas::Fork::of("owner/ansible-nas", ""),
+                Box::new(Hub),
+            ),
+            Vec::new(),
+        ));
+        for path in [
+            "group_vars/all.yml",
+            "inventories/my-ansible-nas/inventory",
+            "../nas.yml",
+        ] {
+            let (status, said) =
+                use_contract(&state, "ansible_nas_doc", json!({ "path": path })).await;
+            assert_eq!(status, StatusCode::FORBIDDEN, "{path}: {said}");
+        }
+        let (status, said) =
+            use_contract(&state, "ansible_nas_doc", json!({ "path": "roles" })).await;
+        assert_eq!(status, StatusCode::OK, "{said}");
+        assert!(
+            said["text"]
+                .as_str()
+                .unwrap()
+                .contains("deluge, gluetun, nzbget, prowlarr")
+        );
+        let (status, _) = use_contract(&state, "ansible_nas_doc", json!({ "path": 7 })).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        // Every role on any brain is offered both (names and wiring, Internal).
+        for role in ["ceo", "lead", "developer", "reviewer", "researcher"] {
+            let offered = listed(&on_claude(role)).await;
+            for name in ["homelab_map", "ansible_nas_doc"] {
+                assert!(
+                    offered.contains(&name.to_owned()),
+                    "{name} to a cloud {role}"
+                );
+            }
+        }
+    }
+
     #[tokio::test]
     async fn the_owner_switches_the_restart_or_every_contract_off() {
         let lab = lab();
@@ -1097,7 +1455,15 @@ mod tests {
             ask("GET", "/team-relay/contracts", Some("good"), ""),
         )
         .await;
-        assert_eq!(names(&listed), ["homelab_status", "container_logs"]);
+        assert_eq!(
+            names(&listed),
+            [
+                "homelab_status",
+                "container_logs",
+                "homelab_map",
+                "ansible_nas_doc"
+            ]
+        );
         let (status, said) = use_contract(
             &state,
             "restart_container",
