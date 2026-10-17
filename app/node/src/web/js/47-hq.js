@@ -114,7 +114,11 @@ function hqName(id) { const m = hqMember(id); return m ? m.name : "someone"; }
 
 // A task's key, as the office writes it: EL-7.
 function hqKey(id) { return id ? "EL-" + id : ""; }
-function hqCents(micros) { return Math.round((micros || 0) / 10000) + "¢"; }
+// Money in dollars, from the ledger's micro-dollars: $0.40.
+function hqDollars(micros) { return "$" + ((micros || 0) / 1e6).toFixed(2); }
+// What was really spent apart from what is only held for turns: a free local turn holds money
+// while it runs and spends none.
+function hqMoney(m, perDay) { return `${hqDollars(m.spent)} spent · ${hqDollars(m.held)} held ${perDay}`; }
 
 // One event, in words for the activity log, and on screen if it is live.
 function hqTell(e, live) {
@@ -133,9 +137,9 @@ function hqTell(e, live) {
     "wake.folded": ["wake", `${reason} → folded into ${name}'s live run${on}`],
     "wake.held": ["wake", `${name} waits: ${key} is being worked (${reason})`],
     "wake.refused": ["warn", `Wake for ${name} skipped: ${String(d.why || "").replace(/_/g, " ")}`],
-    "run.started": ["run", `R${d.run} ${name} starts${key ? " on " + key : ""}${reason ? ` (${reason})` : ""}, ${hqCents(d.reserved)} reserved`],
+    "run.started": ["run", `R${d.run} ${name} starts${key ? " on " + key : ""}${reason ? ` (${reason})` : ""}, ${hqDollars(d.reserved)} held`],
     "run.ended": [d.result === "succeeded" ? "done" : d.result === "retry_waiting" ? "warn" : "bad",
-      `R${d.run} ${name} ${d.result === "succeeded" ? "finished" : result}${d.spent ? " · " + hqCents(d.spent) : ""}`],
+      `R${d.run} ${name} ${d.result === "succeeded" ? "finished" : result}${d.spent ? " · " + hqDollars(d.spent) + " spent" : ""}`],
     "gate.result": [d.passed ? "done" : "bad", `Gate on ${key}: ${d.passed ? "passed" : "failed"}`],
     "desk.added": ["you", `On your desk: ${String(d.kind || "").replace(/_/g, " ")}${on}`],
     "desk.decided": ["you", `You decided: ${String(d.decision || "").replace(/_/g, " ")}`],
@@ -488,7 +492,7 @@ function viewHQ() {
   }, 0);
   const pool = s.pool || {}, c = s.counts || {};
   const stats = [["Tick", c.ticks || 0], ["Running", c.running || 0], ["Queued", c.queued || 0], ["Waiting", c.held || 0],
-    ["Coalesced", c.folded || 0], ["Burn today", `${hqCents(pool.committed)} / ${hqCents(pool.per_day)}`], ["Open tasks", c.open_tasks || 0]]
+    ["Coalesced", c.folded || 0], ["Today", hqMoney(pool, `· ${hqDollars(pool.per_day)} a day`)], ["Open tasks", c.open_tasks || 0]]
     .map(([k, v]) => `<span class="hq-stat">${k} <b>${v}</b></span>`).join("");
   const desk = (s.desk || []).map((d) => {
     const choices = { goal: [["approve", "Approve", "ok"], ["decline", "Decline", "no"]], stuck: [["retry", "Try again", "ok"], ["drop", "Drop it", "no"]],
@@ -512,7 +516,7 @@ function viewHQ() {
   const team = (s.members || []).map((m) => {
     const on = (m.running || []).map((r) => r.task ? hqKey(r.task) : "a look round").join(", ");
     return `<li><button class="hq-link" data-act="hq:pick:member:${m.id}">${esc(m.name)}</button>
-      <span>${esc(m.role)}${m.paused ? " · paused" : ""} · ${on ? "on " + esc(on) : "between turns"} · ${hqCents(m.committed)} of ${hqCents(m.per_day)}</span></li>`;
+      <span>${esc(m.role)}${m.paused ? " · paused" : ""} · ${on ? "on " + esc(on) : "between turns"} · ${hqMoney(m, `of ${hqDollars(m.per_day)} a day`)}</span></li>`;
   }).join("");
   return `<div class="hq">
     <div class="hq-bar">
@@ -590,7 +594,7 @@ function hqSelected() {
     return `<div class="hq-sel">${esc(m.name)} · ${esc(m.role)}</div><dl class="hq-kv">
       <dt>Doing</dt><dd>${m.paused ? "Paused" : t ? esc((HQ.people[m.id] || {}).doing || "starting") : "Waiting for a wake"}</dd>
       <dt>Run</dt><dd>${run ? "R" + run.run + (t ? " · " + hqKey(t.id) : "") : "none"}</dd>
-      <dt>Budget</dt><dd>${hqCents(m.committed)} of ${hqCents(m.per_day)} today · ${m.slots} at once</dd></dl>${t ? why(t) : ""}`;
+      <dt>Budget</dt><dd>${hqMoney(m, `of ${hqDollars(m.per_day)} today`)} · ${m.slots} at once</dd></dl>${t ? why(t) : ""}`;
   }
   const t = hqTask(sel.id); if (!t) return "";
   const runner = ((HQ.snap && HQ.snap.runs) || []).find((r) => r.task === t.id && r.status === "running");

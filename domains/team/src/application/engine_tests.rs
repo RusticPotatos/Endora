@@ -413,6 +413,40 @@ fn a_turn_reserves_before_it_starts_and_is_stopped_the_moment_it_crosses() {
 }
 
 #[test]
+fn the_snapshot_tells_money_spent_from_money_held() {
+    let clock = hands();
+    let hq = hq(&clock, 4);
+    let t = team(&hq);
+    task_for(&hq, t.goal, Some(t.dev), "Add a list");
+    hq.tick().unwrap();
+    let run = hq.store().runs().unwrap()[0].clone();
+    hq.report_usage(run.id, 120_000).unwrap();
+    let snap = hq.snapshot().unwrap();
+    assert_eq!(snap["pool"]["spent"], 120_000);
+    assert_eq!(snap["pool"]["held"], MOST_A_TURN - 120_000);
+    let dev = snap["members"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|m| m["id"] == t.dev.0)
+        .cloned()
+        .unwrap();
+    assert_eq!(
+        (dev["spent"].clone(), dev["held"].clone()),
+        (120_000.into(), (MOST_A_TURN - 120_000).into())
+    );
+    // The turn ends: what it spent is charged, and nothing is held.
+    hq.runner().finish(run.id, true);
+    hq.tick().unwrap();
+    let snap = hq.snapshot().unwrap();
+    assert_eq!(
+        (snap["pool"]["spent"].clone(), snap["pool"]["held"].clone()),
+        (120_000.into(), 0.into())
+    );
+    assert_eq!(snap["pool"]["committed"], 120_000);
+}
+
+#[test]
 fn a_report_too_large_to_add_up_is_held_to_a_turn_and_hq_keeps_going() {
     let clock = hands();
     let hq = hq(&clock, 4);

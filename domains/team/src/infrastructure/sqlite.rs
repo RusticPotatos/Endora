@@ -779,6 +779,17 @@ impl TeamStore for SqliteTeamStore {
             .map_err(backend)
     }
 
+    fn spent(&self, member: Option<MemberId>, day: i64) -> Stored<Micros> {
+        self.conn()?
+            .query_row(
+                "SELECT COALESCE(SUM(amount), 0) FROM ledger
+                 WHERE kind = 'use' AND day = ?1 AND (?2 IS NULL OR member = ?2)",
+                params![day, member.map(|m| m.0)],
+                |r| r.get(0),
+            )
+            .map_err(backend)
+    }
+
     fn emit(&self, at: Millis, kind: &str, data: &serde_json::Value) -> Stored<i64> {
         let conn = self.conn()?;
         conn.execute(

@@ -1906,11 +1906,13 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
         let goals = self.store.goals()?;
         let mut members = Vec::new();
         for m in self.store.members()? {
+            let committed = self.store.committed(Some(m.id), day)?;
+            let spent = self.store.spent(Some(m.id), day)?;
             members.push(json!({
                 "id": m.id.0, "name": m.name, "role": m.role.name(), "look": m.look,
                 "paused": m.paused, "slots": m.slots,
                 "per_day": money::member_a_day(pool, m.share_percent),
-                "committed": self.store.committed(Some(m.id), day)?,
+                "committed": committed, "spent": spent, "held": (committed - spent).max(0),
                 "running": runs.iter().filter(|r| r.member == m.id && r.status == RunStatus::Running)
                     .map(|r| json!({ "run": r.id.0, "task": r.task.map(|t| t.0) }))
                     .collect::<Vec<_>>(),
@@ -1947,6 +1949,10 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
                     .collect::<Vec<_>>(),
             }));
         }
+        // Spent is what turns reported using; held is what they have reserved and not yet
+        // spent. Committed, the two together, is what the budget counts.
+        let pool_committed = self.store.committed(None, day)?;
+        let pool_spent = self.store.spent(None, day)?;
         let (ticks, last_tick_at) = self.store.count_events(EventKind::Tick.name())?;
         let (folded, _) = self.store.count_events(EventKind::WakeFolded.name())?;
         let held = self
@@ -1969,7 +1975,8 @@ impl<S: TeamStore, W: WorkerAdapter, C: Clock> Engine<S, W, C> {
             "counts": { "ticks": ticks, "running": running, "queued": queued, "held": held,
                         "folded": folded, "open_tasks": tasks.iter().filter(|t| !t.status.finished()).count() },
             "last_tick_at": last_tick_at,
-            "pool": { "per_day": money::pool_a_day(pool), "committed": self.store.committed(None, day)? },
+            "pool": { "per_day": money::pool_a_day(pool), "committed": pool_committed,
+                      "spent": pool_spent, "held": (pool_committed - pool_spent).max(0) },
             "members": members,
             "goals": goals.iter().map(|g| json!({
                 "id": g.id.0, "title": g.title, "reason": g.reason, "status": g.status.name(),

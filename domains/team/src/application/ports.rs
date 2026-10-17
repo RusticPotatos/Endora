@@ -386,6 +386,12 @@ pub trait TeamStore {
     /// # Errors
     /// [`StoreError`] if the store fails.
     fn committed(&self, member: Option<MemberId>, day: i64) -> Stored<Micros>;
+    /// What `member` has really spent on `day`: the use its turns reported, not what they
+    /// hold. `None` for the whole pool.
+    ///
+    /// # Errors
+    /// [`StoreError`] if the store fails.
+    fn spent(&self, member: Option<MemberId>, day: i64) -> Stored<Micros>;
 
     /// Appends an event to the feed and returns its id.
     ///

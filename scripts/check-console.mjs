@@ -576,9 +576,9 @@ if (failures.length) {
   const fail = (what) => { console.error(what); process.exit(1); };
   runInContext(`HQ.error = ""; HQ.log = []; HQ.selected = { type: "task", id: 7 };
     HQ.snap = { demo: true, stopped: false, last_event: 40, tick_seconds: 30, last_tick_at: 1,
-      counts: { ticks: 9, running: 1, queued: 2, held: 1, folded: 3, open_tasks: 4 }, pool: { per_day: 2333333, committed: 400000 },
-      members: [{ id: 1, name: "Ada", role: "lead", look: 0, paused: false, slots: 2, per_day: 583333, committed: 0, running: [] },
-                { id: 2, name: "Bo", role: "developer", look: 4, paused: false, slots: 2, per_day: 933333, committed: 400000, running: [{ run: 3, task: 7 }] }],
+      counts: { ticks: 9, running: 1, queued: 2, held: 1, folded: 3, open_tasks: 4 }, pool: { per_day: 2333333, committed: 400000, spent: 0, held: 400000 },
+      members: [{ id: 1, name: "Ada", role: "lead", look: 0, paused: false, slots: 2, per_day: 583333, committed: 0, spent: 0, held: 0, running: [] },
+                { id: 2, name: "Bo", role: "developer", look: 4, paused: false, slots: 2, per_day: 933333, committed: 400000, spent: 0, held: 400000, running: [{ run: 3, task: 7 }] }],
       goals: [{ id: 1, title: "Keep the home lab healthy", status: "active" }],
       tasks: [{ id: 7, goal: 1, parent: null, title: "<img src=x onerror=alert(1)>", status: "doing", owner: 2, priority: "normal",
                 gate: null, why: ["<b>Fix</b> it", "Goal: Keep the home lab healthy"], thread: [{ author: "Bo", text: "On it", at: 1 }] }],
@@ -600,12 +600,12 @@ if (failures.length) {
     hqTell({ id: 44, at: 0, kind: "routine.skipped", data: { routine: 3, title: "Check the home lab", why: "its last task, #7, is still open" } }, false);
     hqTell({ id: 45, at: 0, kind: "checkback.set", data: { member: 1, task: 7, minutes: 30, why: "see it held" } }, false);`, context);
   const office = runInContext("viewHQ()", context);
-  for (const line of ["R9 Bo starts on EL-7 (review requested), 6¢ reserved", "R9 Bo finished · 12¢", "Woke Ada: mentioned (EL-7)",
+  for (const line of ["R9 Bo starts on EL-7 (review requested), $0.06 held", "R9 Bo finished · $0.12 spent", "Woke Ada: mentioned (EL-7)",
     "Routine Check the home lab skipped: its last task, #7, is still open", "Ada will check back on EL-7 in 30 min"]) {
     if (!office.includes(line)) fail(`hq: the activity log does not say "${line}"`);
   }
   if (!office.includes('class="k-done"') || !office.includes('class="k-wake"')) fail("hq: the activity log is not coloured by kind");
-  for (const chip of ["Tick <b>9</b>", "Coalesced <b>3</b>", "Burn today <b>40¢ / 233¢</b>", "Open tasks <b>4</b>"]) {
+  for (const chip of ["Tick <b>9</b>", "Coalesced <b>3</b>", "Today <b>$0.00 spent · $0.40 held · $2.33 a day</b>", "$0.00 spent · $0.40 held of $0.93 a day", "Open tasks <b>4</b>"]) {
     if (!office.includes(chip)) fail(`hq: the office's numbers do not show ${chip}`);
   }
   if (!office.includes('data-act="hq:work"')) fail("hq: the team cannot be given work");
